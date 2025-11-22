@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:SwiftStateTree}",
+            "name": "Debug SwiftStateTreeVaporDemo",
+            "preLaunchTask": "swift: Build Debug SwiftStateTreeVaporDemo",
+            "target": "SwiftStateTreeVaporDemo",
+            "configuration": "debug"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:SwiftStateTree}",
+            "name": "Release SwiftStateTreeVaporDemo",
+            "preLaunchTask": "swift: Build Release SwiftStateTreeVaporDemo",
+            "target": "SwiftStateTreeVaporDemo",
+            "configuration": "release"
+        }
+    ]
+}
