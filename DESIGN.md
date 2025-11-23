@@ -47,7 +47,58 @@
 - **[DESIGN_CLIENT_SDK.md](./DESIGN_CLIENT_SDK.md)**：客戶端 SDK 自動生成、Code-gen 架構設計、TypeScript 支援
 
 ### 範例與速查
-- **[DESIGN_EXAMPLES.md](./DESIGN_EXAMPLES.md)**：端到端範例、語法速查表、命名說明、設計決策
+- **[DESIGN_EXAMPLES.md](./DESIGN_EXAMPLES.md)**：端到端範例、語法速查表、命名說明、設計決策、**專案目錄結構**
+
+---
+
+## 專案結構
+
+### 模組架構
+
+本專案採用模組化設計，分為四個核心模組：
+
+| 模組 | 簡寫 | 完整名稱 | 說明 |
+|------|------|---------|------|
+| **core** | `SwiftStateTree` | `swift-state-tree` | 核心模組（不相依網路） |
+| **transport** | `SwiftStateTreeTransport` | `swift-state-tree-transport` | 網路傳輸模組 |
+| **app** | `SwiftStateTreeServerApp` | `swift-state-tree-server-app` | Server 應用啟動模組 |
+| **codegen** | `SwiftStateTreeCodeGen` | `swift-state-tree-codegen` | Schema 生成工具 |
+
+### 模組依賴關係
+
+```
+core (swift-state-tree)
+    ↑
+    ├── transport (swift-state-tree-transport)
+    │       ↑
+    │       └── app (swift-state-tree-server-app)
+    │
+    └── codegen (swift-state-tree-codegen)
+```
+
+### 專案目錄結構
+
+詳見 [DESIGN_EXAMPLES.md](./DESIGN_EXAMPLES.md) 的「專案目錄結構建議」章節。
+
+**快速參考**：
+
+```
+swift-state-tree/
+├── Sources/
+│   ├── SwiftStateTree/              # core：核心模組
+│   │   ├── StateTree/               # StateTree 定義
+│   │   ├── Sync/                    # @Sync 同步規則
+│   │   ├── Realm/                   # Realm DSL
+│   │   ├── Runtime/                 # RealmActor
+│   │   └── SchemaGen/              # Schema 生成器
+│   ├── SwiftStateTreeTransport/     # transport：網路傳輸模組
+│   ├── SwiftStateTreeServerApp/     # app：Server 應用模組
+│   └── SwiftStateTreeCodeGen/      # codegen：Schema 生成工具
+├── Tests/                           # 各模組的測試
+└── Examples/                        # 範例專案
+```
+
+**詳細結構說明**：請參考 [DESIGN_EXAMPLES.md](./DESIGN_EXAMPLES.md#專案目錄結構建議)
 
 ---
 

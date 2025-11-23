@@ -622,16 +622,16 @@ core (swift-state-tree)
 swift-state-tree/
 ├── Sources/
 │   ├── SwiftStateTree/              # core：核心模組
-│   │   ├── StateTree/               # StateTree 定義
-│   │   ├── Sync/                    # @Sync 同步規則
-│   │   ├── Realm/                   # Realm DSL
-│   │   ├── Runtime/                 # RealmActor、SyncEngine
-│   │   └── SchemaGen/              # Schema 生成器
+│   │   ├── StateTree/               # StateTree 定義（StateNode、StateTreeEngine）
+│   │   ├── Sync/                    # @Sync 同步規則（SyncPolicy、SyncEngine）
+│   │   ├── Realm/                   # Realm DSL（RealmDefinition、RealmContext）
+│   │   ├── Runtime/                 # RealmActor（不含 Transport）
+│   │   └── SchemaGen/              # Schema 生成器（JSON Schema）
 │   │
 │   ├── SwiftStateTreeTransport/     # transport：網路傳輸模組
-│   │   ├── Transport/              # Transport 協議
-│   │   ├── WebSocket/              # WebSocket 實作
-│   │   └── Connection/             # 連接管理
+│   │   ├── Transport/              # Transport 協議（GameTransport）
+│   │   ├── WebSocket/              # WebSocket 實作（WebSocketTransport）
+│   │   └── Connection/             # 連接管理（三層識別）
 │   │
 │   ├── SwiftStateTreeServerApp/     # app：Server 應用模組
 │   │   ├── Vapor/                  # Vapor 應用端
@@ -639,8 +639,8 @@ swift-state-tree/
 │   │   └── Common/                 # 共用應用邏輯
 │   │
 │   └── SwiftStateTreeCodeGen/      # codegen：Schema 生成工具
-│       ├── Extractor/              # Type Extractor
-│       ├── Generator/              # Generator Interface
+│       ├── Extractor/              # Type Extractor（從 Swift 提取型別）
+│       ├── Generator/              # Generator Interface（TypeScript、Kotlin 等）
 │       └── CLI/                    # CLI 工具
 │
 ├── Tests/

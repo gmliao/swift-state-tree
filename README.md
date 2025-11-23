@@ -1,39 +1,49 @@
 # SwiftStateTree
 
-一个基于 Swift 的状态树（State Tree）游戏引擎库，提供纯逻辑层的状态管理，可轻松集成到任何 Swift 项目中。
+一個基於 Swift 的狀態樹（State Tree）遊戲引擎庫，採用 **單一 StateTree + 同步規則 + Realm DSL** 的設計理念。
 
-## 📋 目录
+## 📋 目錄
 
-- [功能特性](#功能特性)
-- [系统要求](#系统要求)
-- [安装](#安装)
-- [快速开始](#快速开始)
-- [项目结构](#项目结构)
-- [使用示例](#使用示例)
-- [开发指南](#开发指南)
-- [测试](#测试)
-- [贡献](#贡献)
-- [许可证](#许可证)
+- [設計理念](#設計理念)
+- [系統要求](#系統要求)
+- [安裝](#安裝)
+- [快速開始](#快速開始)
+- [專案結構](#專案結構)
+- [核心概念](#核心概念)
+- [開發指南](#開發指南)
+- [設計文檔](#設計文檔)
+- [貢獻](#貢獻)
+- [許可證](#許可證)
 
-## ✨ 功能特性
+## 🎯 設計理念
 
-- 🎮 **纯逻辑层**：核心 Library 不依赖任何 Web 框架，可独立使用
-- 🌳 **状态树架构**：基于 StateTree 的状态管理设计
-- 🎯 **Actor 并发**：使用 Swift Actor 确保线程安全
-- 🔌 **WebSocket 支持**：附带 Vapor Demo 展示实时通信
-- 🧪 **完整测试**：包含单元测试示例
+SwiftStateTree 採用以下核心設計：
 
-## 📦 系统要求
+- 🌳 **單一權威狀態樹**：用一棵 `StateTree` 表示整個領域的狀態
+- 🔄 **同步規則 DSL**：使用 `@Sync` 規則控制伺服器要把哪些資料同步給誰
+- 🏛️ **Realm DSL**：定義領域、RPC/Event 處理、Tick 設定
+- 💻 **UI 計算交給客戶端**：伺服器只送「邏輯資料」，UI 渲染由客戶端處理
+
+### 模組架構
+
+| 模組 | 說明 |
+|------|------|
+| **core** | 核心模組（不相依網路） |
+| **transport** | 網路傳輸模組 |
+| **app** | Server 應用啟動模組 |
+| **codegen** | Schema 生成工具 |
+
+## 📦 系統要求
 
 - Swift 6.0+
 - macOS 13.0+
-- Xcode 15.0+（推荐）
+- Xcode 15.0+（推薦）
 
-## 🚀 安装
+## 🚀 安裝
 
 ### Swift Package Manager
 
-在你的 `Package.swift` 中添加依赖：
+在你的 `Package.swift` 中添加依賴：
 
 ```swift
 dependencies: [
@@ -43,257 +53,276 @@ dependencies: [
 
 或者在 Xcode 中：
 1. File → Add Packages...
-2. 输入仓库 URL
-3. 选择版本并添加
+2. 輸入倉庫 URL
+3. 選擇版本並添加
 
-## 🏃 快速开始
+## 🏃 快速開始
 
-### 1. 克隆仓库
+### 1. 克隆倉庫
 
 ```bash
 git clone https://github.com/your-username/SwiftStateTree.git
 cd SwiftStateTree
 ```
 
-### 2. 构建项目
+### 2. 構建專案
 
 ```bash
 swift build
 ```
 
-### 3. 运行测试
+### 3. 運行測試
 
 ```bash
 swift test
 ```
 
-### 4. 运行 Demo Server
+## 📁 專案結構
 
-```bash
-swift run SwiftStateTreeVaporDemo
-```
+### 模組架構
 
-服务器将在 `http://localhost:8080` 启动。
+本專案採用模組化設計，分為四個核心模組：
 
-## 📁 项目结构
+| 模組 | 簡寫 | 說明 |
+|------|------|------|
+| **core** | `SwiftStateTree` | 核心模組（不相依網路） |
+| **transport** | `SwiftStateTreeTransport` | 網路傳輸模組 |
+| **app** | `SwiftStateTreeServerApp` | Server 應用啟動模組 |
+| **codegen** | `SwiftStateTreeCodeGen` | Schema 生成工具 |
+
+### 目錄結構
 
 ```
 SwiftStateTree/
-├── Package.swift
 ├── Sources/
-│   ├── SwiftStateTree/              # 核心 Library（纯逻辑）
-│   │   ├── GameCore/
-│   │   │   ├── GameState.swift      # 游戏状态定义
-│   │   │   ├── GameCommand.swift    # 游戏指令枚举
-│   │   │   └── RoomActor.swift      # 房间 Actor（状态管理）
-│   │   └── StateTree/
-│   │       ├── StateNode.swift      # 状态树节点
-│   │       └── StateTreeEngine.swift # 状态树引擎
-│   └── SwiftStateTreeVaporDemo/     # Demo Server（Vapor）
-│       ├── main.swift               # 入口文件
-│       ├── Configure.swift          # 配置与 Room 管理
-│       └── Routes.swift              # WebSocket 路由
-└── Tests/
-    └── SwiftStateTreeTests/
-        └── SwiftStateTreeTests.swift # 单元测试
+│   ├── SwiftStateTree/              # core：核心模組
+│   │   ├── StateTree/               # StateTree 定義（StateNode、StateTreeEngine）
+│   │   ├── Sync/                    # @Sync 同步規則（SyncPolicy、SyncEngine）
+│   │   ├── Realm/                   # Realm DSL（RealmDefinition、RealmContext）
+│   │   ├── Runtime/                 # RealmActor（不含 Transport）
+│   │   └── SchemaGen/              # Schema 生成器（JSON Schema）
+│   │
+│   ├── SwiftStateTreeTransport/     # transport：網路傳輸模組
+│   │   ├── Transport/              # Transport 協議（GameTransport）
+│   │   ├── WebSocket/              # WebSocket 實作（WebSocketTransport）
+│   │   └── Connection/             # 連接管理（三層識別）
+│   │
+│   ├── SwiftStateTreeServerApp/     # app：Server 應用模組
+│   │   ├── Vapor/                  # Vapor 應用端
+│   │   ├── Kestrel/                # Kestrel 應用端（未來）
+│   │   └── Common/                 # 共用應用邏輯
+│   │
+│   └── SwiftStateTreeCodeGen/      # codegen：Schema 生成工具
+│       ├── Extractor/              # Type Extractor（從 Swift 提取型別）
+│       ├── Generator/              # Generator Interface（TypeScript、Kotlin 等）
+│       └── CLI/                    # CLI 工具
+│
+├── Tests/
+│   ├── SwiftStateTreeTests/        # core 測試
+│   ├── SwiftStateTreeTransportTests/ # transport 測試
+│   └── SwiftStateTreeServerAppTests/ # app 測試
+│
+└── Examples/                        # 範例專案（可選）
+    ├── GameServer/                  # 遊戲伺服器範例
+    └── SNSApp/                      # SNS App 範例
 ```
 
-## 💡 使用示例
+> **注意**：本專案正在重新設計中，目前僅實作 core 模組。詳細的專案結構說明請參考 [DESIGN_EXAMPLES.md](./DESIGN_EXAMPLES.md#專案目錄結構建議)。
 
-### 基本使用
+## 💡 核心概念
+
+### StateTree：單一權威狀態樹
 
 ```swift
-import SwiftStateTree
-
-// 创建房间
-let room = RoomActor(roomID: "room1")
-
-// 创建玩家
-let alice = PlayerID("alice")
-let bob = PlayerID("bob")
-
-// 加入房间
-await room.handle(.join(playerID: alice, name: "Alice"))
-await room.handle(.join(playerID: bob, name: "Bob"))
-
-// 执行攻击
-await room.handle(.attack(attacker: alice, target: bob, damage: 10))
-
-// 获取状态快照
-let snapshot = await room.snapshot()
-print("Bob's HP: \(snapshot.players[bob]?.hp ?? 0)") // 输出: 90
+@StateTree
+struct GameStateTree {
+    // 所有玩家的公開狀態（血量、名字等），可以廣播給大家
+    @Sync(.broadcast)
+    var players: [PlayerID: PlayerState] = [:]
+    
+    // 手牌：每個玩家只看得到自己的
+    @Sync(.perPlayer(\.ownerID))
+    var hands: [PlayerID: HandState] = [:]
+    
+    // 伺服器內部用，不同步給任何 Client
+    @Sync(.serverOnly)
+    var hiddenDeck: [Card] = []
+}
 ```
 
-### WebSocket 连接（Demo）
+### 同步規則：@Sync
 
-连接到 Demo Server：
+使用 `@Sync` 屬性標記欄位，定義同步策略：
 
-```javascript
-const ws = new WebSocket('ws://localhost:8080/ws/room1/alice');
+- `.broadcast`：同一份資料同步給所有 client
+- `.serverOnly`：完全不對任何 client 同步
+- `.perPlayer(\.ownerID)`：依玩家 ID 過濾，只同步該玩家的資料
+- `.masked((Value) -> Any)`：用 mask function 改寫值
+- `.custom((PlayerID, Value) -> Any?)`：完全客製化
 
-ws.onmessage = (event) => {
-    console.log('收到:', event.data);
-};
-
-// 攻击玩家 bob，造成 10 点伤害
-ws.send('hit:bob:10');
-```
-
-### 自定义状态树
+### Realm DSL：領域定義
 
 ```swift
-import SwiftStateTree
-
-// 创建状态树节点
-let root = StateNode(id: "root", children: [
-    StateNode(id: "child1"),
-    StateNode(id: "child2")
-])
-
-// 创建引擎
-let engine = StateTreeEngine(root: root)
-
-// 评估状态
-let newState = engine.evaluate()
+let matchRealm = Realm("match-3", using: GameStateTree.self) {
+    Config {
+        MaxPlayers(4)
+        Tick(every: .milliseconds(100))
+        IdleTimeout(.seconds(60))
+    }
+    
+    RPC(GameRPC.join) { state, (id, name), ctx -> RPCResponse in
+        state.players[id] = PlayerState(name: name, hpCurrent: 100, hpMax: 100)
+        await ctx.syncNow()
+        return .success(.joinResult(...))
+    }
+    
+    On(ClientEvent.heartbeat) { state, timestamp, ctx in
+        state.playerLastActivity[ctx.playerID] = timestamp
+    }
+}
 ```
 
-## 🛠 开发指南
+## 🛠 開發指南
 
-### 扩展 GameState
+### 定義 StateTree
 
-在 `Sources/SwiftStateTree/GameCore/GameState.swift` 中添加你的状态字段：
+在 `Sources/SwiftStateTree/` 中定義你的狀態樹：
 
 ```swift
-public struct GameState: Sendable {
+@StateTree
+public struct GameStateTree {
+    @Sync(.broadcast)
     public var players: [PlayerID: PlayerState]
-    public var gameMode: String  // 新增字段
-    // ... 更多字段
+    
+    @Sync(.perPlayer(\.ownerID))
+    public var hands: [PlayerID: HandState]
 }
 ```
 
-### 添加新的 GameCommand
+### 定義 Realm
 
-在 `Sources/SwiftStateTree/GameCore/GameCommand.swift` 中扩展指令：
+使用 Realm DSL 定義領域邏輯：
 
 ```swift
-public enum GameCommand: Sendable {
-    case join(playerID: PlayerID, name: String)
-    case leave(playerID: PlayerID)
-    case attack(attacker: PlayerID, target: PlayerID, damage: Int)
-    case heal(playerID: PlayerID, amount: Int)  // 新增指令
+let gameRealm = Realm("game-room", using: GameStateTree.self) {
+    Config {
+        MaxPlayers(4)
+        Tick(every: .milliseconds(100))
+    }
+    
+    RPC(GameRPC.self) { state, rpc, ctx -> RPCResponse in
+        // 處理 RPC
+    }
+    
+    On(ClientEvent.self) { state, event, ctx in
+        // 處理 Event
+    }
 }
 ```
 
-### 实现 StateTreeEngine
+## 📚 設計文檔
 
-在 `Sources/SwiftStateTree/StateTree/StateTreeEngine.swift` 中实现你的状态树逻辑：
+本專案的設計文檔已切分為多個章節：
 
-```swift
-public func evaluate() -> StateNode<ID> {
-    // 实现你的状态树评估逻辑
-    // 例如：计算下一帧状态、处理事件等
-    return root
-}
-```
+### 核心概念
+- **[DESIGN_CORE.md](./DESIGN_CORE.md)**：整體理念、StateTree 結構、同步規則 DSL
 
-## 🧪 测试
+### 通訊模式
+- **[DESIGN_COMMUNICATION.md](./DESIGN_COMMUNICATION.md)**：RPC 與 Event 通訊模式、WebSocket 傳輸、路由機制
 
-运行所有测试：
+### Realm DSL
+- **[DESIGN_REALM_DSL.md](./DESIGN_REALM_DSL.md)**：領域宣告語法、RPC 處理、Event 處理、RealmContext
+
+### Transport 層
+- **[DESIGN_TRANSPORT.md](./DESIGN_TRANSPORT.md)**：網路傳輸抽象、Transport 協議、服務注入
+
+### Runtime 結構
+- **[DESIGN_RUNTIME.md](./DESIGN_RUNTIME.md)**：RealmActor、SyncEngine 的運行時結構
+
+### 客戶端 SDK 與程式碼生成
+- **[DESIGN_CLIENT_SDK.md](./DESIGN_CLIENT_SDK.md)**：客戶端 SDK 自動生成、Code-gen 架構設計、TypeScript 支援
+
+### 範例與速查
+- **[DESIGN_EXAMPLES.md](./DESIGN_EXAMPLES.md)**：端到端範例、語法速查表、命名說明、設計決策
+
+### 相關文檔
+- **[APP_APPLICATION.md](./APP_APPLICATION.md)**：StateTree 在 App 開發中的應用
+
+### 快速導覽
+
+**新手入門**：
+1. 閱讀 [DESIGN_CORE.md](./DESIGN_CORE.md) 了解核心概念
+2. 閱讀 [DESIGN_COMMUNICATION.md](./DESIGN_COMMUNICATION.md) 了解通訊模式
+3. 查看 [DESIGN_EXAMPLES.md](./DESIGN_EXAMPLES.md) 中的範例
+
+**開發參考**：
+- 定義 StateTree：參考 [DESIGN_CORE.md](./DESIGN_CORE.md) 的「StateTree：狀態樹結構」和「同步規則 DSL」
+- 定義 Realm：參考 [DESIGN_REALM_DSL.md](./DESIGN_REALM_DSL.md)
+- 設定 Transport：參考 [DESIGN_TRANSPORT.md](./DESIGN_TRANSPORT.md)
+- 生成客戶端 SDK：參考 [DESIGN_CLIENT_SDK.md](./DESIGN_CLIENT_SDK.md)
+- 語法速查：參考 [DESIGN_EXAMPLES.md](./DESIGN_EXAMPLES.md) 的「語法速查表」
+
+**架構深入**：
+- Runtime 運作：參考 [DESIGN_RUNTIME.md](./DESIGN_RUNTIME.md)
+- 多伺服器架構：參考 [DESIGN_TRANSPORT.md](./DESIGN_TRANSPORT.md) 的「多伺服器架構設計」章節
+
+## 🧪 測試
+
+運行所有測試：
 
 ```bash
 swift test
 ```
 
-运行特定测试：
+運行特定測試：
 
 ```bash
-swift test --filter SwiftStateTreeTests.testJoinAndAttack
+swift test --filter SwiftStateTreeTests.testYourFeature
 ```
 
-### 编写新测试
+### 編寫新測試
 
-在 `Tests/SwiftStateTreeTests/` 中添加测试用例：
+在 `Tests/SwiftStateTreeTests/` 中添加測試用例：
 
 ```swift
 func testYourFeature() async throws {
-    // 你的测试代码
+    // 你的測試代碼
 }
 ```
 
-## 📝 API 文档
+## 🤝 貢獻
 
-### RoomActor
+歡迎貢獻代碼！請遵循以下步驟：
 
-管理单个房间的游戏状态。
-
-```swift
-public actor RoomActor {
-    public let roomID: String
-    public init(roomID: String, initialState: GameState = GameState())
-    public func handle(_ command: GameCommand)
-    public func snapshot() -> GameState
-}
-```
-
-### GameCommand
-
-游戏指令枚举，用于状态更新。
-
-```swift
-public enum GameCommand: Sendable {
-    case join(playerID: PlayerID, name: String)
-    case leave(playerID: PlayerID)
-    case attack(attacker: PlayerID, target: PlayerID, damage: Int)
-}
-```
-
-### StateTreeEngine
-
-状态树引擎，用于评估和更新状态树。
-
-```swift
-public struct StateTreeEngine<ID: Hashable & Sendable>: Sendable {
-    public var root: StateNode<ID>
-    public init(root: StateNode<ID>)
-    public func evaluate() -> StateNode<ID>
-}
-```
-
-## 🤝 贡献
-
-欢迎贡献代码！请遵循以下步骤：
-
-1. Fork 本仓库
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
+1. Fork 本倉庫
+2. 創建特性分支 (`git checkout -b feature/AmazingFeature`)
 3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
 4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 开启 Pull Request
+5. 開啟 Pull Request
 
-### 代码规范
+### 代碼規範
 
-- 遵循 Swift API 设计指南
-- 使用 Swift 6 并发特性（Actor、async/await）
-- 确保所有公开 API 符合 `Sendable`
-- 为新功能添加测试用例
+- 遵循 Swift API 設計指南
+- 使用 Swift 6 並發特性（Actor、async/await）
+- 確保所有公開 API 符合 `Sendable`
+- 為新功能添加測試用例
+- 回覆問題請使用繁體中文；如需程式碼範例或註解，註解請保持英文
 
-## 📄 许可证
+## 📄 許可證
 
-本项目采用 MIT 许可证。详见 [LICENSE](LICENSE) 文件。
+本專案採用 MIT 許可證。詳見 [LICENSE](LICENSE) 文件。
 
-## 🔗 相关链接
+## 🔗 相關鏈接
 
-- [Swift 官方文档](https://swift.org/documentation/)
-- [Vapor 文档](https://docs.vapor.codes/)
+- [Swift 官方文檔](https://swift.org/documentation/)
 - [Swift Concurrency](https://docs.swift.org/swift-book/documentation/the-swift-programming-language/concurrency/)
 
-## 📧 联系方式
+## 📧 聯繫方式
 
-如有问题或建议，请通过以下方式联系：
+如有問題或建議，請通過以下方式聯繫：
 
 - 提交 [Issue](https://github.com/your-username/SwiftStateTree/issues)
-- 发送邮件至：your-email@example.com
 
 ---
 
-**注意**：本项目仍在积极开发中，API 可能会发生变化。建议在生产环境使用前仔细测试。
-
+**注意**：本專案正在積極開發中，API 可能會發生變化。建議在生產環境使用前仔細測試。

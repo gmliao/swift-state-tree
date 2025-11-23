@@ -22,6 +22,8 @@
 - Framework: SwiftPM XCTest.
 - Add tests under `Tests/SwiftStateTreeTests`, mirroring the type under test (e.g., `GameStateTests.swift`).
 - Name async tests with clear intent (`testPlayerJoinCreatesSnapshot`); prefer arranging with setup/act/assert comments when logic grows.
+- Use Arrange‑Act‑Assert structure and name cases `test_<Scenario>_<Expectation>()`; keep test files suffixed with `*Tests.swift` matching the type under test.
+- When adding public APIs or core game logic, add/refresh tests and run `swift test` before sending changes out.
 - Aim to cover new public APIs and concurrency paths; avoid shared mutable state between tests.
 
 ## Commit & Pull Request Guidelines
