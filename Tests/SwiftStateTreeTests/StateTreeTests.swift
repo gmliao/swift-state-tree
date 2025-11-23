@@ -234,6 +234,17 @@ func testSyncEngineSnapshot_WithStateTree() throws {
     #expect(snapshot["players"] != nil, "Broadcast field 'players' should be in snapshot")
     #expect(snapshot["round"] != nil, "Broadcast field 'round' should be in snapshot")
     
+    // Verify broadcast field values
+    #expect(snapshot["round"]?.intValue == 5, "Round should be 5")
+    
+    // Verify players dictionary content
+    if let players = snapshot["players"]?.objectValue {
+        #expect(players["alice"]?.stringValue == "Alice", "Alice's name should be 'Alice'")
+        #expect(players["bob"]?.stringValue == "Bob", "Bob's name should be 'Bob'")
+    } else {
+        Issue.record("Players should exist in snapshot as object")
+    }
+    
     // ServerOnly fields should not be visible
     #expect(snapshot["hiddenData"] == nil, "ServerOnly field 'hiddenData' should not be in snapshot")
     
@@ -244,6 +255,9 @@ func testSyncEngineSnapshot_WithStateTree() throws {
         #expect(hands.arrayValue != nil, "Hands should be an array for perPlayer policy")
         if let handsArray = hands.arrayValue {
             #expect(handsArray.count == 2, "Alice should see her 2 cards")
+            // Verify actual card values
+            #expect(handsArray[0].stringValue == "card1", "First card should be 'card1'")
+            #expect(handsArray[1].stringValue == "card2", "Second card should be 'card2'")
         }
     } else {
         Issue.record("Hands field should exist in snapshot")
