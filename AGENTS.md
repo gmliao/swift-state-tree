@@ -41,3 +41,9 @@
 
 ## Communication & Notes
 - 回覆問題請使用繁體中文；如需程式碼範例或註解，註解請保持英文。
+
+## Code Comments & Documentation
+- **All code comments must be in English** (including `///` documentation comments and `//` inline comments)
+- This applies to all source files in `Sources/` directory
+- Documentation comments should follow Swift API Design Guidelines
+- Use clear, concise English for all code annotations

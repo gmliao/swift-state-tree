@@ -181,6 +181,44 @@ struct GameStateTree: StateTreeProtocol {
 - 所有 stored properties 必須明確標記（`@Sync` 或 `@Internal`）
 - Computed properties 自動跳過驗證
 
+### 效能優化：@SnapshotConvertible
+
+對於在 StateTree 中使用的巢狀結構（如 `PlayerState`、`Card` 等），可以使用 `@SnapshotConvertible` Macro 自動生成 `SnapshotValueConvertible` protocol 實作，避免使用 runtime reflection（Mirror），大幅提升效能。
+
+**使用方式**：
+
+```swift
+// 只需要標記 @SnapshotConvertible
+@SnapshotConvertible
+struct PlayerState: Codable {
+    var name: String
+    var hpCurrent: Int
+    var hpMax: Int
+}
+
+// Macro 自動生成 protocol 實作
+// extension PlayerState: SnapshotValueConvertible {
+//     func toSnapshotValue() throws -> SnapshotValue {
+//         return .object([
+//             "name": .string(name),
+//             "hpCurrent": .int(hpCurrent),
+//             "hpMax": .int(hpMax)
+//         ])
+//     }
+// }
+```
+
+**效能優勢**：
+- ✅ 基本型別（String, Int, Bool 等）直接轉換，避免 Mirror
+- ✅ 自動生成，無需手寫程式碼
+- ✅ 編譯時生成，型別安全
+- ✅ 巢狀結構會優先檢查 protocol，完全避免 Mirror
+
+**適用場景**：
+- 在 StateTree 中頻繁使用的巢狀結構
+- 需要高效能轉換的使用者定義型別
+- 複雜的巢狀結構（多層級）
+
 ### Realm DSL：領域定義
 
 ```swift
@@ -349,6 +387,7 @@ func testYourFeature() throws {
 - 使用 Swift 6 並發特性（Actor、async/await）
 - 確保所有公開 API 符合 `Sendable`
 - 為新功能添加測試用例
+- **所有程式碼註解必須使用英文**（包括 `///` 文檔註解和 `//` 行內註解）
 - 回覆問題請使用繁體中文；如需程式碼範例或註解，註解請保持英文
 
 ## 📄 許可證

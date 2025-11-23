@@ -137,17 +137,21 @@ struct PlayerID: Hashable, Codable {
     let rawValue: String
 }
 
+// 使用 @SnapshotConvertible 自動生成 protocol 實作（推薦）
+@SnapshotConvertible
 struct PlayerState: Codable {
     var name: String
     var hpCurrent: Int
     var hpMax: Int
 }
 
+@SnapshotConvertible
 struct HandState: Codable {
     var ownerID: PlayerID
     var cards: [Card]
 }
 
+@SnapshotConvertible
 struct Card: Codable {
     let id: Int
     let suit: Int
@@ -193,6 +197,84 @@ StateTree 中的欄位需要明確標記其用途：
 - `@Sync(.serverOnly)` vs `@Internal` 的差異：
   - `@Sync(.serverOnly)`：同步引擎知道這個欄位存在，但不輸出給 Client
   - `@Internal`：完全不需要同步引擎知道，純粹伺服器內部使用
+
+---
+
+## 效能優化：@SnapshotConvertible Macro
+
+### 概述
+
+`@SnapshotConvertible` Macro 自動為使用者定義的型別生成 `SnapshotValueConvertible` protocol 實作，避免使用 runtime reflection（Mirror），大幅提升轉換效能。
+
+### 使用方式
+
+```swift
+// 只需要標記 @SnapshotConvertible
+@SnapshotConvertible
+struct PlayerState: Codable {
+    var name: String
+    var hpCurrent: Int
+    var hpMax: Int
+}
+
+// Macro 自動生成以下程式碼：
+// extension PlayerState: SnapshotValueConvertible {
+//     func toSnapshotValue() throws -> SnapshotValue {
+//         return .object([
+//             "name": .string(name),
+//             "hpCurrent": .int(hpCurrent),
+//             "hpMax": .int(hpMax)
+//         ])
+//     }
+// }
+```
+
+### 效能優勢
+
+1. **基本型別直接轉換**：String, Int, Bool 等基本型別直接生成轉換程式碼，完全避免 Mirror
+2. **自動生成**：使用者只需標記，無需手寫任何程式碼
+3. **編譯時生成**：型別安全，減少執行時錯誤
+4. **遞迴優化**：巢狀結構會優先檢查是否實作 protocol，完全避免 Mirror
+
+### 處理邏輯
+
+Macro 會根據欄位型別生成不同的轉換程式碼：
+
+- **基本型別**（String, Int, Bool 等）：直接生成 `.string(name)`, `.int(hpCurrent)` 等
+- **Optional 型別**：使用 `try SnapshotValue.make(from: value)` 處理 nil
+- **複雜型別**（Array, Dictionary, Struct 等）：使用 `try SnapshotValue.make(from: value)`，內部會優先檢查 protocol
+
+### 適用場景
+
+- ✅ 在 StateTree 中頻繁使用的巢狀結構
+- ✅ 需要高效能轉換的使用者定義型別
+- ✅ 複雜的多層級巢狀結構
+
+### 與 make(from:) 的整合
+
+`SnapshotValue.make(from:)` 會優先檢查型別是否實作 `SnapshotValueConvertible`：
+
+```swift
+public extension SnapshotValue {
+    static func make(from value: Any) throws -> SnapshotValue {
+        // Priority 1: Check protocol (best performance)
+        if let convertible = value as? SnapshotValueConvertible {
+            return try convertible.toSnapshotValue()
+        }
+        
+        // Priority 2: Handle basic types directly
+        // ...
+        
+        // Priority 3: Fallback to Mirror
+        // ...
+    }
+}
+```
+
+這樣設計確保了：
+- 實作 protocol 的型別：完全避免 Mirror（最佳效能）
+- 基本型別：直接轉換（良好效能）
+- 其他型別：使用 Mirror fallback（確保功能完整）
 
 ---
 

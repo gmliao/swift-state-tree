@@ -27,3 +27,36 @@ public macro StateTreeBuilder() = #externalMacro(
     type: "StateTreeBuilderMacro"
 )
 
+/// Macro that automatically generates `SnapshotValueConvertible` protocol conformance.
+///
+/// This macro analyzes the struct's stored properties and generates a `toSnapshotValue()` method
+/// that efficiently converts the struct to `SnapshotValue` without using runtime reflection.
+///
+/// Example:
+/// ```swift
+/// @SnapshotConvertible
+/// struct PlayerState: Codable {
+///     var name: String
+///     var hpCurrent: Int
+///     var hpMax: Int
+/// }
+/// ```
+///
+/// The macro automatically generates:
+/// ```swift
+/// extension PlayerState: SnapshotValueConvertible {
+///     func toSnapshotValue() throws -> SnapshotValue {
+///         return .object([
+///             "name": .string(name),
+///             "hpCurrent": .int(hpCurrent),
+///             "hpMax": .int(hpMax)
+///         ])
+///     }
+/// }
+/// ```
+@attached(extension, conformances: SnapshotValueConvertible, names: named(toSnapshotValue))
+public macro SnapshotConvertible() = #externalMacro(
+    module: "SwiftStateTreeMacros",
+    type: "SnapshotConvertibleMacro"
+)
+

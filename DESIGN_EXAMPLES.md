@@ -184,6 +184,27 @@ struct PlayerViewState {
 ### 1. StateTree + Sync
 
 ```swift
+// 定義巢狀結構（推薦使用 @SnapshotConvertible 提升效能）
+@SnapshotConvertible
+struct PlayerState: Codable {
+    var name: String
+    var hpCurrent: Int
+    var hpMax: Int
+}
+
+@SnapshotConvertible
+struct HandState: Codable {
+    var ownerID: PlayerID
+    var cards: [Card]
+}
+
+@SnapshotConvertible
+struct Card: Codable {
+    let id: Int
+    let suit: Int
+    let rank: Int
+}
+
 @StateTreeBuilder
 struct GameStateTree: StateTreeProtocol {
     @Sync(.broadcast)

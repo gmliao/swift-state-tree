@@ -73,6 +73,13 @@ public struct StateTreeBuilderMacro: MemberMacro {
                 
                 let propertyName = pattern.identifier.text
                 
+                // Extract type information
+                var typeName: String? = nil
+                if let typeAnnotation = binding.typeAnnotation {
+                    // Get the type as a string
+                    typeName = typeAnnotation.type.description.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                
                 // Check for @Sync or @Internal attribute
                 let hasSync = variableDecl.attributes.contains { attr in
                     if let attribute = attr.as(AttributeSyntax.self) {
@@ -108,7 +115,8 @@ public struct StateTreeBuilderMacro: MemberMacro {
                         name: propertyName,
                         hasSync: hasSync,
                         hasInternal: hasInternal,
-                        policyType: policyType
+                        policyType: policyType,
+                        typeName: typeName
                     ),
                     Syntax(variableDecl)
                 ))
@@ -222,7 +230,10 @@ public struct StateTreeBuilderMacro: MemberMacro {
             let storageName = "_\(propertyName)"
             
             codeLines.append("if let value = self.\(storageName).policy.filteredValue(self.\(storageName).wrappedValue, for: playerID) {")
-            codeLines.append("    result[\"\(fieldName)\"] = try SnapshotValue.make(from: value)")
+            
+            // Generate optimized conversion code based on type
+            let conversionCode = generateConversionCode(for: property.typeName, valueName: "value")
+            codeLines.append("    result[\"\(fieldName)\"] = \(conversionCode)")
             codeLines.append("}")
             codeLines.append("")
         }
@@ -239,6 +250,68 @@ public struct StateTreeBuilderMacro: MemberMacro {
             """
         )
     }
+    
+    /// Generate optimized conversion code based on type
+    /// For basic types, generates direct conversion; for complex types, uses make(from:)
+    private static func generateConversionCode(for typeName: String?, valueName: String) -> String {
+        guard let typeName = typeName else {
+            // Unknown type, use make(from:) as fallback
+            return "try SnapshotValue.make(from: \(valueName))"
+        }
+        
+        let normalizedType = typeName.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        // Check if it's an Optional type (handle first)
+        if normalizedType.hasSuffix("?") {
+            // Optional type: use make(from:) to handle nil properly
+            return "try SnapshotValue.make(from: \(valueName))"
+        }
+        
+        if normalizedType.hasPrefix("Optional<") && normalizedType.hasSuffix(">") {
+            // Optional<Type> format: use make(from:) to handle nil properly
+            return "try SnapshotValue.make(from: \(valueName))"
+        }
+        
+        // Handle basic types with direct conversion (no Mirror needed)
+        switch normalizedType {
+        case "Bool":
+            return ".bool(\(valueName) as! Bool)"
+        case "Int":
+            return ".int(\(valueName) as! Int)"
+        case "Int8":
+            return ".int(Int(\(valueName) as! Int8))"
+        case "Int16":
+            return ".int(Int(\(valueName) as! Int16))"
+        case "Int32":
+            return ".int(Int(\(valueName) as! Int32))"
+        case "Int64":
+            return ".int(Int(\(valueName) as! Int64))"
+        case "UInt":
+            return ".int(Int(\(valueName) as! UInt))"
+        case "UInt8":
+            return ".int(Int(\(valueName) as! UInt8))"
+        case "UInt16":
+            return ".int(Int(\(valueName) as! UInt16))"
+        case "UInt32":
+            return ".int(Int(\(valueName) as! UInt32))"
+        case "UInt64":
+            return ".int(Int(\(valueName) as! UInt64))"
+        case "Double":
+            return ".double(\(valueName) as! Double)"
+        case "Float":
+            return ".double(Double(\(valueName) as! Float))"
+        case "String":
+            return ".string(\(valueName) as! String)"
+        case "PlayerID":
+            return ".string((\(valueName) as! PlayerID).rawValue)"
+        default:
+            // Complex types (structs, classes, arrays, dictionaries, etc.)
+            // Use make(from:) which will:
+            // 1. Check for SnapshotValueConvertible protocol first
+            // 2. Fall back to Mirror for nested structures
+            return "try SnapshotValue.make(from: \(valueName))"
+        }
+    }
 }
 
 /// Information about a property in a StateTree
@@ -247,6 +320,7 @@ private struct PropertyInfo {
     let hasSync: Bool
     let hasInternal: Bool
     let policyType: String?
+    let typeName: String?  // Type name for optimization
 }
 
 /// Macro errors
@@ -298,6 +372,7 @@ private struct StateTreeBuilderDiagnostic: DiagnosticMessage, @unchecked Sendabl
 @main
 struct SwiftStateTreeMacrosPlugin: CompilerPlugin {
     let providingMacros: [Macro.Type] = [
-        StateTreeBuilderMacro.self
+        StateTreeBuilderMacro.self,
+        SnapshotConvertibleMacro.self
     ]
 }

@@ -2,7 +2,7 @@
 
 import Foundation
 
-/// 玩家識別符（帳號層級）
+/// Player identifier (account level)
 public struct PlayerID: Hashable, Codable, Sendable, CustomStringConvertible {
     public let rawValue: String
     public var description: String { rawValue }
@@ -12,7 +12,7 @@ public struct PlayerID: Hashable, Codable, Sendable, CustomStringConvertible {
     }
 }
 
-/// 表示一個欄位的同步策略。
+/// Represents the synchronization policy for a field.
 public enum SyncPolicy<Value: Sendable>: Sendable {
     case serverOnly
     case broadcast
@@ -37,7 +37,7 @@ public enum SyncPolicy<Value: Sendable>: Sendable {
 }
 
 public extension SyncPolicy {
-    /// 方便處理以 PlayerID 為 key 的 dictionary，只同步該玩家的值。
+    /// Convenience method for handling dictionaries keyed by PlayerID, only syncing the value for that player.
     static func perPlayerDictionaryValue<Element>() -> SyncPolicy<[PlayerID: Element]> {
         .perPlayer { value, playerID in
             value[playerID]
@@ -45,7 +45,7 @@ public extension SyncPolicy {
     }
 }
 
-/// 標示 StateTree 欄位的同步策略。
+/// Marks a StateTree field with a synchronization policy.
 @propertyWrapper
 public struct Sync<Value: Sendable>: Sendable {
     public let policy: SyncPolicy<Value>
@@ -57,11 +57,11 @@ public struct Sync<Value: Sendable>: Sendable {
     }
 }
 
-/// 標記為伺服器內部使用，不需要同步，也不需要驗證。
+/// Marks a field as server-only internal use, not requiring synchronization or validation.
 /// 
-/// 與 `@Sync(.serverOnly)` 的差異：
-/// - `@Sync(.serverOnly)`：同步引擎知道這個欄位存在，但不輸出給 Client
-/// - `@Internal`：完全不需要同步引擎知道，純粹伺服器內部使用
+/// Difference from `@Sync(.serverOnly)`:
+/// - `@Sync(.serverOnly)`: The sync engine knows this field exists but doesn't output it to clients
+/// - `@Internal`: The sync engine doesn't need to know about this field at all; purely for server internal use
 @propertyWrapper
 public struct Internal<Value: Sendable>: Sendable {
     public var wrappedValue: Value
@@ -71,7 +71,7 @@ public struct Internal<Value: Sendable>: Sendable {
     }
 }
 
-/// 型別抹除後的同步值存取。
+/// Type-erased access to synchronized values.
 private protocol SyncValueProvider {
     func syncValue(for playerID: PlayerID) -> Any?
 }
@@ -82,7 +82,7 @@ extension Sync: SyncValueProvider {
     }
 }
 
-/// Snapshot 允許的資料形態，用於輸出 JSON 友善的結構。
+/// Allowed data types for snapshots, used for JSON-friendly output structures.
 public enum SnapshotValue: Equatable, Sendable {
     case null
     case bool(Bool)
@@ -128,8 +128,50 @@ public enum SyncError: Error, Equatable {
     case unsupportedKey(String)
 }
 
+/// Protocol for types that can efficiently convert themselves to SnapshotValue
+/// without using runtime reflection.
+///
+/// Types conforming to this protocol can provide their own conversion implementation,
+/// which avoids the performance overhead of using Mirror for reflection.
+///
+/// **Recommended Usage**: Use `@SnapshotConvertible` macro to automatically generate
+/// the protocol conformance implementation.
+///
+/// Example with macro (recommended):
+/// ```swift
+/// @SnapshotConvertible
+/// struct PlayerState: Codable {
+///     var name: String
+///     var hpCurrent: Int
+///     var hpMax: Int
+/// }
+/// // Macro automatically generates the protocol conformance
+/// ```
+///
+/// Example with manual implementation:
+/// ```swift
+/// extension PlayerState: SnapshotValueConvertible {
+///     func toSnapshotValue() throws -> SnapshotValue {
+///         return .object([
+///             "name": .string(name),
+///             "hpCurrent": .int(hpCurrent),
+///             "hpMax": .int(hpMax)
+///         ])
+///     }
+/// }
+/// ```
+public protocol SnapshotValueConvertible {
+    func toSnapshotValue() throws -> SnapshotValue
+}
+
 public extension SnapshotValue {
     static func make(from value: Any) throws -> SnapshotValue {
+        // Priority 1: Check if type conforms to SnapshotValueConvertible (best performance)
+        if let convertible = value as? SnapshotValueConvertible {
+            return try convertible.toSnapshotValue()
+        }
+        
+        // Priority 2: Handle basic types directly (no Mirror needed)
         if value is NSNull {
             return .null
         }
@@ -222,7 +264,7 @@ public extension SnapshotValue {
     }
 }
 
-/// 裁切後的狀態快照（JSON 友善結構）。
+/// Filtered state snapshot (JSON-friendly structure).
 public struct StateSnapshot: Equatable, Sendable {
     public let values: [String: SnapshotValue]
 
@@ -239,19 +281,19 @@ public struct StateSnapshot: Equatable, Sendable {
     }
 }
 
-/// SyncEngine 會根據 SyncPolicy 裁切 StateTree 並輸出 StateSnapshot。
+/// SyncEngine filters StateTree according to SyncPolicy and outputs StateSnapshot.
 ///
-/// **目前實作**：此方法委派給 `StateTreeProtocol.snapshot(for:)` 方法，
-/// 該方法由 `@StateTreeBuilder` macro 在編譯時生成，避免使用 runtime reflection。
+/// **Current Implementation**: This method delegates to `StateTreeProtocol.snapshot(for:)`,
+/// which is generated at compile time by the `@StateTreeBuilder` macro, avoiding runtime reflection.
 ///
-/// **未來擴展**：SyncEngine 將負責：
-/// - 差異計算（diff）：比較新舊快照，生成 path-based diff
-/// - 快取管理：緩存 broadcast 和 perPlayer 的快照
-/// - 批次同步：優化多玩家同步的效能
+/// **Future Extensions**: SyncEngine will be responsible for:
+/// - Diff calculation: Compare old and new snapshots, generate path-based diffs
+/// - Cache management: Cache broadcast and perPlayer snapshots
+/// - Batch synchronization: Optimize multi-player synchronization performance
 ///
-/// **使用建議**：
-/// - 簡單場景：直接使用 `state.snapshot(for: playerID)`
-/// - 需要 SyncEngine 功能時：使用 `SyncEngine().snapshot(for:from:)`
+/// **Usage Recommendations**:
+/// - Simple scenarios: Use `state.snapshot(for: playerID)` directly
+/// - When SyncEngine features are needed: Use `SyncEngine().snapshot(for:from:)`
 public struct SyncEngine: Sendable {
     public init() {}
 
