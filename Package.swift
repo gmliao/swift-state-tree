@@ -1,6 +1,7 @@
 // swift-tools-version: 6.0
 
 import PackageDescription
+import CompilerPluginSupport
 
 let package = Package(
     name: "SwiftStateTree",
@@ -15,13 +16,15 @@ let package = Package(
         )
     ],
     dependencies: [
-        // Dependencies will be added as needed during development
+        .package(url: "https://github.com/apple/swift-syntax.git", from: "509.0.0")
     ],
     targets: [
         // 🔹 Core Library: Pure Swift game logic, no network dependency
         .target(
             name: "SwiftStateTree",
-            dependencies: [],
+            dependencies: [
+                "SwiftStateTreeMacros"
+            ],
             path: "Sources/SwiftStateTree",
             exclude: [
                 "Realm/README.md",
@@ -30,12 +33,34 @@ let package = Package(
             ]
         ),
         
+        // 🔹 Macro Implementation: Compile-time macro expansion
+        .macro(
+            name: "SwiftStateTreeMacros",
+            dependencies: [
+                .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
+                .product(name: "SwiftCompilerPlugin", package: "swift-syntax")
+            ],
+            path: "Sources/SwiftStateTreeMacros"
+        ),
+        
         // 🔹 Library tests (using Swift Testing framework)
         .testTarget(
             name: "SwiftStateTreeTests",
-            dependencies: ["SwiftStateTree"],
+            dependencies: [
+                "SwiftStateTree",
+                "SwiftStateTreeMacros"
+            ],
             path: "Tests/SwiftStateTreeTests"
+        ),
+        
+        // 🔹 Macro tests
+        .testTarget(
+            name: "SwiftStateTreeMacrosTests",
+            dependencies: [
+                "SwiftStateTreeMacros",
+                .product(name: "SwiftSyntaxMacrosTestSupport", package: "swift-syntax")
+            ],
+            path: "Tests/SwiftStateTreeMacrosTests"
         )
     ]
 )
-

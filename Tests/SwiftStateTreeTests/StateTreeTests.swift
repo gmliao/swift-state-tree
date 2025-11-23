@@ -7,6 +7,7 @@ import Testing
 // MARK: - Test StateTree Examples
 
 /// Test StateTree with various sync policies
+@StateTreeBuilder
 struct TestGameStateTree: StateTreeProtocol {
     @Sync(.broadcast)
     var players: [PlayerID: String] = [:]
@@ -22,6 +23,7 @@ struct TestGameStateTree: StateTreeProtocol {
 }
 
 /// Test StateTree with all fields marked with @Sync
+@StateTreeBuilder
 struct CompleteStateTree: StateTreeProtocol {
     @Sync(.broadcast)
     var publicData: String = "public"
@@ -31,6 +33,7 @@ struct CompleteStateTree: StateTreeProtocol {
 }
 
 /// Test StateTree with @Internal fields
+@StateTreeBuilder
 struct StateTreeWithInternal: StateTreeProtocol {
     @Sync(.broadcast)
     var players: [PlayerID: String] = [:]
@@ -48,6 +51,7 @@ struct StateTreeWithInternal: StateTreeProtocol {
 }
 
 /// Test StateTree with no fields (edge case)
+@StateTreeBuilder
 struct EmptyStateTree: StateTreeProtocol {
     // No fields
 }
@@ -350,6 +354,7 @@ func testSyncPolicy_PerPlayer() throws {
 @Test("StateTree handles nil optional fields")
 func testStateTree_WithNilOptionalFields() throws {
     // Test StateTree with optional fields
+    @StateTreeBuilder
     struct OptionalStateTree: StateTreeProtocol {
         @Sync(.broadcast)
         var optionalValue: String? = nil

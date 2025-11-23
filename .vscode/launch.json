@@ -21,6 +21,24 @@
             "target": "SwiftStateTreeVaporDemo",
             "configuration": "release",
             "program": "${workspaceFolder:swift-state-tree-internal}/.build/release/SwiftStateTreeVaporDemo"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:swift-state-tree-internal}",
+            "name": "Debug SwiftStateTreeMacros",
+            "program": "${workspaceFolder:swift-state-tree-internal}/.build/debug/SwiftStateTreeMacros",
+            "preLaunchTask": "swift: Build Debug SwiftStateTreeMacros"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:swift-state-tree-internal}",
+            "name": "Release SwiftStateTreeMacros",
+            "program": "${workspaceFolder:swift-state-tree-internal}/.build/release/SwiftStateTreeMacros",
+            "preLaunchTask": "swift: Build Release SwiftStateTreeMacros"
         }
     ]
 }

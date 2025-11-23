@@ -3,6 +3,7 @@
         "codegen",
         "inout",
         "MVVM",
+        "preconcurrency",
         "typealias"
     ]
 }
