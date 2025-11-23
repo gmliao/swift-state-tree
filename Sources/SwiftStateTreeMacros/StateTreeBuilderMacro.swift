@@ -38,9 +38,13 @@ public struct StateTreeBuilderMacro: MemberMacro {
         // Generate validateSyncFields() method
         let validateSyncFieldsMethod = try generateValidateSyncFields(properties: properties)
         
+        // Generate snapshot(for:) method
+        let snapshotMethod = try generateSnapshotMethod(propertiesWithNodes: propertiesWithNodes)
+        
         return [
             DeclSyntax(getSyncFieldsMethod),
-            DeclSyntax(validateSyncFieldsMethod)
+            DeclSyntax(validateSyncFieldsMethod),
+            DeclSyntax(snapshotMethod)
         ]
     }
     
@@ -195,6 +199,42 @@ public struct StateTreeBuilderMacro: MemberMacro {
             """
             public func validateSyncFields() -> Bool {
                 return true
+            }
+            """
+        )
+    }
+    
+    /// Generate snapshot(for:) method
+    private static func generateSnapshotMethod(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> FunctionDeclSyntax {
+        let syncProperties = propertiesWithNodes.filter { $0.0.hasSync }
+        
+        var codeLines: [String] = []
+        codeLines.append("var result: [String: SnapshotValue] = [:]")
+        codeLines.append("")
+        
+        // Generate code for each @Sync field
+        // Note: Property wrappers are stored as _propertyName, but we access them via propertyName
+        // The property wrapper itself has .policy and .wrappedValue
+        for (property, _) in syncProperties {
+            let propertyName = property.name
+            let fieldName = propertyName
+            // Property wrapper storage name (Swift automatically creates _propertyName for @Sync)
+            let storageName = "_\(propertyName)"
+            
+            codeLines.append("if let value = self.\(storageName).policy.filteredValue(self.\(storageName).wrappedValue, for: playerID) {")
+            codeLines.append("    result[\"\(fieldName)\"] = try SnapshotValue.make(from: value)")
+            codeLines.append("}")
+            codeLines.append("")
+        }
+        
+        codeLines.append("return StateSnapshot(values: result)")
+        
+        let body = codeLines.joined(separator: "\n")
+        
+        return try FunctionDeclSyntax(
+            """
+            public func snapshot(for playerID: PlayerID) throws -> StateSnapshot {
+                \(raw: body)
             }
             """
         )

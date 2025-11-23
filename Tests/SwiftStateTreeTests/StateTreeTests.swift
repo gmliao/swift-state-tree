@@ -4,6 +4,28 @@ import Foundation
 import Testing
 @testable import SwiftStateTree
 
+// MARK: - Nested Structure Definitions
+
+/// Test nested structure: Player state with multiple fields
+struct TestPlayerState: Codable, Sendable {
+    var name: String
+    var hpCurrent: Int
+    var hpMax: Int
+}
+
+/// Test nested structure: Hand state containing cards
+struct TestHandState: Codable, Sendable {
+    var ownerID: PlayerID
+    var cards: [TestCard]
+}
+
+/// Test nested structure: Card with multiple properties
+struct TestCard: Codable, Sendable {
+    let id: Int
+    let suit: Int
+    let rank: Int
+}
+
 // MARK: - Test StateTree Examples
 
 /// Test StateTree with various sync policies
@@ -54,6 +76,22 @@ struct StateTreeWithInternal: StateTreeProtocol {
 @StateTreeBuilder
 struct EmptyStateTree: StateTreeProtocol {
     // No fields
+}
+
+/// Test StateTree with nested struct structures
+@StateTreeBuilder
+struct NestedStateTree: StateTreeProtocol {
+    @Sync(.broadcast)
+    var players: [PlayerID: TestPlayerState] = [:]
+    
+    @Sync(.perPlayerDictionaryValue())
+    var hands: [PlayerID: TestHandState] = [:]
+    
+    @Sync(.serverOnly)
+    var hiddenDeck: [TestCard] = []
+    
+    @Sync(.broadcast)
+    var round: Int = 0
 }
 
 // MARK: - StateTree Protocol Tests
@@ -388,4 +426,218 @@ func testStateTree_MultipleSyncPolicies() {
     // Verify different policy types are detected
     let policyTypes = Set(fields.map { $0.policyType })
     #expect(!policyTypes.isEmpty, "Should detect policy types")
+}
+
+// MARK: - Nested Structure Tests
+
+@Test("StateTree with nested struct structures can be created")
+func testNestedStateTree_Creation() {
+    // Arrange & Act
+    let nestedState = NestedStateTree()
+    
+    // Assert
+    #expect(nestedState.players.isEmpty, "Initial players should be empty")
+    #expect(nestedState.hands.isEmpty, "Initial hands should be empty")
+    #expect(nestedState.hiddenDeck.isEmpty, "Initial hiddenDeck should be empty")
+    #expect(nestedState.round == 0, "Initial round should be 0")
+}
+
+@Test("Nested struct structures are properly serialized in snapshot")
+func testNestedStateTree_Serialization() throws {
+    // Arrange
+    var nestedState = NestedStateTree()
+    let alice = PlayerID("alice")
+    let bob = PlayerID("bob")
+    
+    nestedState.players[alice] = TestPlayerState(name: "Alice", hpCurrent: 100, hpMax: 100)
+    nestedState.players[bob] = TestPlayerState(name: "Bob", hpCurrent: 80, hpMax: 100)
+    
+    nestedState.hands[alice] = TestHandState(
+        ownerID: alice,
+        cards: [
+            TestCard(id: 1, suit: 0, rank: 1),
+            TestCard(id: 2, suit: 0, rank: 2)
+        ]
+    )
+    
+    nestedState.hiddenDeck = [
+        TestCard(id: 99, suit: 3, rank: 13)
+    ]
+    
+    nestedState.round = 5
+    
+    let syncEngine = SyncEngine()
+    
+    // Act
+    let snapshot = try syncEngine.snapshot(for: alice, from: nestedState)
+    
+    // Assert
+    // Broadcast fields should be visible
+    #expect(snapshot["players"] != nil, "Broadcast field 'players' should be in snapshot")
+    #expect(snapshot["round"] != nil, "Broadcast field 'round' should be in snapshot")
+    
+    // ServerOnly fields should not be visible
+    #expect(snapshot["hiddenDeck"] == nil, "ServerOnly field 'hiddenDeck' should not be in snapshot")
+    
+    // Verify nested structure in players
+    if let players = snapshot["players"]?.objectValue {
+        #expect(players["alice"] != nil, "Alice's player state should be in snapshot")
+        #expect(players["bob"] != nil, "Bob's player state should be in snapshot")
+        
+        // Verify nested structure fields
+        if let aliceState = players["alice"]?.objectValue {
+            #expect(aliceState["name"]?.stringValue == "Alice", "Alice's name should be correct")
+            #expect(aliceState["hpCurrent"]?.intValue == 100, "Alice's hpCurrent should be correct")
+            #expect(aliceState["hpMax"]?.intValue == 100, "Alice's hpMax should be correct")
+        } else {
+            Issue.record("Alice's player state should be an object")
+        }
+    } else {
+        Issue.record("Players should exist in snapshot as object")
+    }
+    
+    // Verify perPlayer hands structure
+    if let hands = snapshot["hands"] {
+        // perPlayerDictionaryValue returns the value for the player, which is TestHandState
+        #expect(hands.objectValue != nil, "Hands should be an object (TestHandState)")
+        
+        if let handState = hands.objectValue {
+            #expect(handState["ownerID"] != nil, "Hand state should contain ownerID")
+            #expect(handState["cards"] != nil, "Hand state should contain cards")
+            
+            // Verify cards array
+            if let cards = handState["cards"]?.arrayValue {
+                #expect(cards.count == 2, "Alice should see her 2 cards")
+                
+                // Verify first card structure
+                if let firstCard = cards.first?.objectValue {
+                    #expect(firstCard["id"]?.intValue == 1, "First card id should be 1")
+                    #expect(firstCard["suit"]?.intValue == 0, "First card suit should be 0")
+                    #expect(firstCard["rank"]?.intValue == 1, "First card rank should be 1")
+                }
+            }
+        }
+    } else {
+        Issue.record("Hands field should exist in snapshot")
+    }
+}
+
+@Test("Nested structures work with perPlayer policy")
+func testNestedStateTree_PerPlayerPolicy() throws {
+    // Arrange
+    var nestedState = NestedStateTree()
+    let alice = PlayerID("alice")
+    let bob = PlayerID("bob")
+    
+    nestedState.hands[alice] = TestHandState(
+        ownerID: alice,
+        cards: [
+            TestCard(id: 1, suit: 0, rank: 1),
+            TestCard(id: 2, suit: 0, rank: 2)
+        ]
+    )
+    
+    nestedState.hands[bob] = TestHandState(
+        ownerID: bob,
+        cards: [
+            TestCard(id: 3, suit: 1, rank: 3)
+        ]
+    )
+    
+    let syncEngine = SyncEngine()
+    
+    // Act
+    let aliceSnapshot = try syncEngine.snapshot(for: alice, from: nestedState)
+    let bobSnapshot = try syncEngine.snapshot(for: bob, from: nestedState)
+    
+    // Assert
+    // Alice should only see her own hand
+    if let aliceHands = aliceSnapshot["hands"]?.objectValue {
+        if let aliceCards = aliceHands["cards"]?.arrayValue {
+            #expect(aliceCards.count == 2, "Alice should see her 2 cards")
+            #expect(aliceCards.first?.objectValue?["id"]?.intValue == 1, "Alice's first card id should be 1")
+        }
+    } else {
+        Issue.record("Alice should have hands field in snapshot")
+    }
+    
+    // Bob should only see his own hand
+    if let bobHands = bobSnapshot["hands"]?.objectValue {
+        if let bobCards = bobHands["cards"]?.arrayValue {
+            #expect(bobCards.count == 1, "Bob should see his 1 card")
+            #expect(bobCards.first?.objectValue?["id"]?.intValue == 3, "Bob's first card id should be 3")
+        }
+    } else {
+        Issue.record("Bob should have hands field in snapshot")
+    }
+    
+    // Hands should be different for different players
+    #expect(aliceSnapshot["hands"] != bobSnapshot["hands"], "Different players should see different hands")
+}
+
+@Test("Nested structures in broadcast fields are same for all players")
+func testNestedStateTree_BroadcastNestedStructures() throws {
+    // Arrange
+    var nestedState = NestedStateTree()
+    let alice = PlayerID("alice")
+    let bob = PlayerID("bob")
+    
+    nestedState.players[alice] = TestPlayerState(name: "Alice", hpCurrent: 100, hpMax: 100)
+    nestedState.players[bob] = TestPlayerState(name: "Bob", hpCurrent: 80, hpMax: 100)
+    nestedState.round = 10
+    
+    let syncEngine = SyncEngine()
+    
+    // Act
+    let aliceSnapshot = try syncEngine.snapshot(for: alice, from: nestedState)
+    let bobSnapshot = try syncEngine.snapshot(for: bob, from: nestedState)
+    
+    // Assert
+    // Broadcast fields should be the same for all players
+    #expect(aliceSnapshot["players"] == bobSnapshot["players"], "Broadcast field 'players' should be the same for all players")
+    #expect(aliceSnapshot["round"]?.intValue == bobSnapshot["round"]?.intValue,
+           "Broadcast field 'round' should be the same for all players")
+    
+    // Verify nested structure is correctly serialized in broadcast field
+    if let players = aliceSnapshot["players"]?.objectValue {
+        #expect(players["alice"] != nil, "Alice's player state should be in snapshot")
+        #expect(players["bob"] != nil, "Bob's player state should be in snapshot")
+        
+        // Both players should see the same players dictionary
+        if let aliceState = players["alice"]?.objectValue,
+           let bobState = players["bob"]?.objectValue {
+            #expect(aliceState["name"]?.stringValue == "Alice", "Alice's name should be correct")
+            #expect(bobState["name"]?.stringValue == "Bob", "Bob's name should be correct")
+        }
+    }
+}
+
+@Test("getSyncFields works with nested structures")
+func testNestedStateTree_GetSyncFields() {
+    // Arrange
+    let nestedState = NestedStateTree()
+    
+    // Act
+    let fields = nestedState.getSyncFields()
+    
+    // Assert
+    #expect(fields.count == 4, "Should find 4 @Sync fields")
+    
+    let fieldNames = Set(fields.map { $0.name })
+    #expect(fieldNames.contains("players"), "Should contain 'players' field")
+    #expect(fieldNames.contains("hands"), "Should contain 'hands' field")
+    #expect(fieldNames.contains("hiddenDeck"), "Should contain 'hiddenDeck' field")
+    #expect(fieldNames.contains("round"), "Should contain 'round' field")
+}
+
+@Test("validateSyncFields works with nested structures")
+func testNestedStateTree_ValidateSyncFields() {
+    // Arrange
+    let nestedState = NestedStateTree()
+    
+    // Act
+    let isValid = nestedState.validateSyncFields()
+    
+    // Assert
+    #expect(isValid == true, "StateTree with nested structures should validate")
 }
