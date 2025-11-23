@@ -175,6 +175,92 @@ case .attack(let attacker, let target, let damage):
     return .success(AttackResponse(success: true))
 ```
 
+### 統一使用 WebSocket 傳輸
+
+**設計決策**：RPC 和 Event 都透過 WebSocket 傳輸，統一訊息格式
+
+- **統一傳輸層**：所有通訊都透過 WebSocket，不需要混合 HTTP 和 WebSocket
+- **訊息格式**：使用統一的 `TransportMessage` 格式來區分 RPC 和 Event
+- **路由機制**：透過 `realmID` 路由到對應的 Realm，在 Transport 層處理
+
+#### 統一的傳輸訊息格式
+
+```swift
+// 統一的傳輸訊息格式（透過 WebSocket 傳輸）
+enum TransportMessage: Codable {
+    // RPC 請求（Client -> Server）
+    case rpc(requestID: String, realmID: String, rpc: GameRPC)
+    
+    // RPC 回應（Server -> Client）
+    case rpcResponse(requestID: String, response: RPCResponse)
+    
+    // Event（雙向）
+    case event(realmID: String, event: GameEvent)
+}
+
+// Client 發送 RPC
+let message = TransportMessage.rpc(
+    requestID: UUID().uuidString,
+    realmID: "match-3",
+    rpc: .join(playerID: id, name: "Alice")
+)
+await websocket.send(message)
+
+// Server 回應 RPC
+let response = TransportMessage.rpcResponse(
+    requestID: requestID,
+    response: .success(.joinResult(...))
+)
+await websocket.send(response)
+
+// Server 推送 Event
+let event = TransportMessage.event(
+    realmID: "match-3",
+    event: .fromServer(.stateUpdate(snapshot))
+)
+await websocket.send(event)
+```
+
+#### 路由機制
+
+路由在 Transport 層處理，而不是在 Realm 定義中：
+
+```swift
+// Server App 啟動時設定 Transport 和路由
+func configure(_ app: Application) throws {
+    // 1. 定義 Realm（不包含網路細節）
+    let matchRealm = Realm("match-3", using: GameStateTree.self) { ... }
+    
+    // 2. 設定 Transport（處理網路層細節）
+    let transport = WebSocketTransport(
+        baseURL: "wss://api.example.com",
+        routing: [
+            "match-3": "/realm/match-3",
+            "game-room": "/realm/game-room",
+        ]
+    )
+    
+    // 3. 註冊 Realm 到 Transport
+    transport.register(matchRealm)
+    
+    // 4. 設定 WebSocket 路由（Vapor 層）
+    app.webSocket("realm", ":realmID", ":playerID") { req, ws in
+        guard let realmID = req.parameters.get("realmID"),
+              let playerID = req.parameters.get("playerID") else {
+            ws.close(promise: nil)
+            return
+        }
+        
+        // Transport 處理訊息路由
+        await transport.handleConnection(
+            realmID: realmID,
+            playerID: PlayerID(playerID),
+            websocket: ws
+        )
+    }
+}
+```
+
 ### Event 處理範圍
 
 **設計決策**：採用 **選項 C（Realm DSL 中定義）**
@@ -408,8 +494,8 @@ public struct ConfigNode: RealmNode {
     public var maxPlayers: Int?
     public var tickInterval: Duration?
     public var idleTimeout: Duration?
-    public var baseURL: String?
-    public var webSocketURL: String?
+    // 注意：baseURL 和 webSocketURL 已移除
+    // 網路層細節應該在 Transport 層處理，而不是在 StateTree/Realm 層
 }
 
 // RPC 節點：支援統一 RPC 型別或特定 RPC case
@@ -816,10 +902,11 @@ await ctx.sendEvent(.fromServer(.systemMessage("Private message")), to: .player(
 ```swift
 public struct RealmContext {
     public let realmID: String
-    public let services: RealmServices
+    public let playerID: PlayerID
+    public let services: RealmServices  // 服務抽象，不依賴 HTTP
     public let transport: GameTransport
     
-    // 推送 Event（替代原本的 broadcast/send）
+    // 推送 Event（透過 transport）
     public func sendEvent(_ event: GameEvent, to target: EventTarget) async {
         switch target {
         case .all:
@@ -834,11 +921,173 @@ public struct RealmContext {
     }
 }
 
-
 enum EventTarget {
     case all
     case player(PlayerID)
     case players([PlayerID])
+}
+
+// 服務抽象（不依賴 HTTP 細節）
+public struct RealmServices {
+    public let timelineService: TimelineService?
+    public let userService: UserService?
+    // ... 其他服務（可選）
+}
+
+// 服務協議（不依賴 HTTP）
+protocol TimelineService {
+    func fetch(page: Int) async throws -> [Post]
+}
+
+// 實作時可以選擇 HTTP、gRPC、或其他方式
+// 這些實作細節在 Transport 層注入，不在 Realm 定義中
+struct HTTPTimelineService: TimelineService {
+    let baseURL: String
+    func fetch(page: Int) async throws -> [Post] {
+        // HTTP 實作細節在這裡
+    }
+}
+```
+
+---
+
+## Transport 層：網路傳輸抽象
+
+### 設計理念
+
+**Transport 層負責處理所有網路細節**，StateTree/Realm 層不應該知道 HTTP 路徑或 WebSocket URL 等細節。
+
+### 架構分層
+
+```
+┌─────────────────────────────────────┐
+│   StateTree / Realm DSL (領域層)     │
+│   - 不知道 HTTP/WebSocket 細節      │
+│   - 只使用邏輯路徑和服務抽象         │
+└─────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────┐
+│   Transport Layer (傳輸層)           │
+│   - 處理 WebSocket/HTTP 細節        │
+│   - 路由 realmID 到對應的 Realm      │
+│   - 訊息序列化/反序列化              │
+└─────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────┐
+│   Server App (應用層)                │
+│   - 設定 Transport 和路由            │
+│   - 註冊 Realm                       │
+│   - 配置 WebSocket endpoint          │
+└─────────────────────────────────────┘
+```
+
+### Transport 協議
+
+```swift
+// Transport 抽象協議
+protocol GameTransport {
+    // 註冊 Realm
+    func register(_ realm: RealmDefinition<some StateTree>) async
+    
+    // 處理 WebSocket 連接
+    func handleConnection(
+        realmID: String,
+        playerID: PlayerID,
+        websocket: WebSocket
+    ) async
+    
+    // 發送 Event
+    func send(_ event: GameEvent, to playerID: PlayerID, in realmID: String) async
+    func broadcast(_ event: GameEvent, in realmID: String) async
+    
+    // 發送 RPC 回應
+    func sendRPCResponse(
+        requestID: String,
+        response: RPCResponse,
+        to playerID: PlayerID
+    ) async
+}
+
+// WebSocket Transport 實作
+actor WebSocketTransport: GameTransport {
+    private var realmActors: [String: RealmActor] = [:]
+    private var connections: [PlayerID: WebSocket] = [:]
+    private let routing: [String: String]  // realmID -> WebSocket path
+    
+    init(baseURL: String, routing: [String: String]) {
+        self.routing = routing
+    }
+    
+    func register(_ realm: RealmDefinition<some StateTree>) async {
+        // 創建 RealmActor 並註冊
+        let actor = RealmActor(definition: realm, context: ...)
+        realmActors[realm.id] = actor
+    }
+    
+    func handleConnection(
+        realmID: String,
+        playerID: PlayerID,
+        websocket: WebSocket
+    ) async {
+        connections[playerID] = websocket
+        
+        websocket.onText { [weak self] _, text in
+            guard let self = self,
+                  let message = try? JSONDecoder().decode(TransportMessage.self, from: text.data(using: .utf8)!) else {
+                return
+            }
+            
+            Task {
+                await self.handleMessage(message, from: playerID)
+            }
+        }
+    }
+    
+    private func handleMessage(_ message: TransportMessage, from playerID: PlayerID) async {
+        switch message {
+        case .rpc(let requestID, let realmID, let rpc):
+            guard let actor = realmActors[realmID] else { return }
+            let response = await actor.handleRPC(rpc, from: playerID)
+            await sendRPCResponse(requestID: requestID, response: response, to: playerID)
+            
+        case .event(let realmID, let event):
+            guard let actor = realmActors[realmID] else { return }
+            await actor.handleEvent(event, from: playerID)
+            
+        case .rpcResponse:
+            // Server 不應該收到 RPC Response
+            break
+        }
+    }
+}
+```
+
+### 服務注入
+
+服務實作可以在 Transport 層注入，而不是在 Realm 定義中：
+
+```swift
+// Server App 啟動時注入服務
+func configure(_ app: Application) throws {
+    // 創建服務實作（可以選擇 HTTP、gRPC 等）
+    let timelineService = HTTPTimelineService(baseURL: "https://api.example.com")
+    let userService = HTTPUserService(baseURL: "https://api.example.com")
+    
+    // 創建服務容器
+    let services = RealmServices(
+        timelineService: timelineService,
+        userService: userService
+    )
+    
+    // 設定 Transport（注入服務）
+    let transport = WebSocketTransport(
+        baseURL: "wss://api.example.com",
+        routing: [...],
+        services: services  // 注入服務
+    )
+    
+    // 註冊 Realm
+    transport.register(matchRealm)
 }
 ```
 

@@ -90,13 +90,16 @@ websocket.on('newPost', (post) => {
 struct SNSAppState {
     // 聲明式同步規則：自動處理快取、雲端同步
     @Sync(.cache(ttl: .minutes(5)))
-    @Sync(.cloud(endpoint: "/api/timeline"))
+    @Sync(.cloud(service: "timeline"))  // 使用邏輯服務名稱，而非 HTTP endpoint
     var timeline: [Post] = []
 }
 
-// RPC 自動處理 API 呼叫和狀態更新
+// RPC 使用服務抽象處理狀態更新
 RPC(SNSRPC.fetchTimeline) { state, page, ctx -> RPCResponse in
-    let posts = try await ctx.api.get("/timeline?page=\(page)")
+    guard let timelineService = ctx.services.timelineService else {
+        return .failure("Timeline service not available")
+    }
+    let posts = try await timelineService.fetch(page: page)
     state.timeline = posts  // 自動更新，自動同步
     return .success(.timeline(posts))
 }
@@ -151,12 +154,12 @@ var timeline: [Post] = []
 struct SNSAppState {
     // 用戶資料（本地持久化 + 雲端同步）
     @Sync(.local(key: "user_profile"))
-    @Sync(.cloud(endpoint: "/api/user"))
+    @Sync(.cloud(service: "user"))  // 使用邏輯服務名稱
     var currentUser: User?
     
     // Timeline（快取 + 雲端同步）
     @Sync(.cache(ttl: .minutes(5)))
-    @Sync(.cloud(endpoint: "/api/timeline"))
+    @Sync(.cloud(service: "timeline"))  // 使用邏輯服務名稱
     var timeline: [Post] = []
     
     // 通知（即時推送，僅記憶體）
@@ -266,9 +269,9 @@ enum GameEvent: Codable {
 ```swift
 let snsApp = App("sns-app", using: SNSAppState.self) {
     Config {
-        BaseURL("https://api.snsapp.com")
-        WebSocketURL("wss://realtime.snsapp.com")
         CachePolicy(.expiresAfter(.minutes(5)))
+        // 注意：BaseURL 和 WebSocketURL 已移除
+        // 網路層細節應該在 Transport 層處理
     }
     
     AllowedClientEvents {
@@ -277,11 +280,15 @@ let snsApp = App("sns-app", using: SNSAppState.self) {
         SNSClientEvent.heartbeat
     }
     
-    // ========== RPC 處理（API 呼叫） ==========
+    // ========== RPC 處理（使用服務抽象） ==========
     
     // 簡單的查詢：獨立 handler
     RPC(SNSRPC.fetchTimeline) { state, page, ctx -> RPCResponse in
-        let posts = try await ctx.api.get("/timeline?page=\(page)")
+        // 使用服務抽象，不直接寫 HTTP 路徑
+        guard let timelineService = ctx.services.timelineService else {
+            return .failure("Timeline service not available")
+        }
+        let posts = try await timelineService.fetch(page: page)
         if page == 0 {
             state.timeline = posts  // 刷新
         } else {
@@ -338,11 +345,14 @@ let snsApp = App("sns-app", using: SNSAppState.self) {
 private func handleCreatePost(
     _ state: inout SNSAppState,
     _ content: String,
-    _ ctx: AppContext
+    _ ctx: RealmContext
 ) async -> RPCResponse {
-    let post = try await ctx.api.post("/posts", body: ["content": content])
+    guard let postService = ctx.services.postService else {
+        return .failure("Post service not available")
+    }
+    let post = try await postService.create(content: content)
     state.timeline.insert(post, at: 0)
-    await ctx.sendEvent(.fromServer(.newPost(post)), to: .followers)
+    await ctx.sendEvent(.fromServer(.newPost(post)), to: .all)
     return .success(.post(post))
 }
 ```
@@ -443,8 +453,8 @@ sealed class SNSRPC {
 ```kotlin
 val snsApp = App("sns-app", SNSAppState::class) {
     config {
-        baseURL = "https://api.snsapp.com"
-        webSocketURL = "wss://realtime.snsapp.com"
+        // 注意：baseURL 和 webSocketURL 已移除
+        // 網路層細節應該在 Transport 層處理
     }
     
     allowedClientEvents {
@@ -452,9 +462,11 @@ val snsApp = App("sns-app", SNSAppState::class) {
         SNSClientEvent.Heartbeat::class
     }
     
-    // RPC 處理
+    // RPC 處理（使用服務抽象）
     rpc(SNSRPC.FetchTimeline::class) { state, rpc, ctx ->
-        val posts = ctx.api.get("/timeline?page=${rpc.page}")
+        val timelineService = ctx.services.timelineService
+            ?: return@rpc RPCResponse.Failure("Timeline service not available")
+        val posts = timelineService.fetch(page = rpc.page)
         state.timeline = if (rpc.page == 0) posts else state.timeline + posts
         RPCResponse.Success(RPCResultData.Timeline(posts))
     }
@@ -506,8 +518,8 @@ function Sync(options: SyncOptions) { /* 實作 */ }
 ```typescript
 const snsApp = App("sns-app", SNSAppState, {
     config: {
-        baseURL: "https://api.snsapp.com",
-        webSocketURL: "wss://realtime.snsapp.com"
+        // 注意：baseURL 和 webSocketURL 已移除
+        // 網路層細節應該在 Transport 層處理
     },
     
     allowedClientEvents: [
@@ -517,7 +529,11 @@ const snsApp = App("sns-app", SNSAppState, {
     
     rpc: {
         [SNSRPC.FetchTimeline]: async (state, rpc, ctx) => {
-            const posts = await ctx.api.get(`/timeline?page=${rpc.page}`);
+            const timelineService = ctx.services.timelineService;
+            if (!timelineService) {
+                return { success: false, error: "Timeline service not available" };
+            }
+            const posts = await timelineService.fetch(page: rpc.page);
             state.timeline = rpc.page === 0 ? posts : [...state.timeline, ...posts];
             return { success: true, data: { timeline: posts } };
         }
