@@ -1,12 +1,12 @@
 # SwiftStateTree DSL 設計草案 v0.2
 
-> 單一 StateTree + 同步規則 + Room DSL
+> 單一 StateTree + 同步規則 + Realm DSL
 
 ## 目標
 
-- 用**一棵權威狀態樹 RoomTree** 表示整個房間的遊戲世界
+- 用**一棵權威狀態樹 StateTree** 表示整個領域的狀態
 - 用 **@Sync 規則** 控制伺服器要把哪些資料同步給誰
-- 用 **Room DSL** 定義房型、指令處理、Tick 設定
+- 用 **Realm DSL** 定義領域、指令處理、Tick 設定
 - **UI 計算全部交給客戶端**，伺服器只送「邏輯資料」
 
 ---
@@ -15,16 +15,15 @@
 
 1. [整體理念與資料流](#整體理念與資料流)
 2. [通訊模式：RPC 與 Event](#通訊模式-rpc-與-event)
-3. [StateTree：RoomTree 結構](#statetree-roomtree-結構)
+3. [StateTree：狀態樹結構](#statetree-狀態樹結構)
 4. [同步規則 DSL：@Sync / SyncPolicy](#同步規則-dsl-sync-syncpolicy)
-5. [Room DSL：房型宣告語法](#room-dsl-房型宣告語法)
+5. [Realm DSL：領域宣告語法](#realm-dsl-領域宣告語法)
 6. [RPC 處理：RPC DSL](#rpc-處理-rpc-dsl)
 7. [Event 處理：On(Event) DSL](#event-處理-onevent-dsl)
-8. [Runtime 大致結構：RoomActor + SyncEngine](#runtime-大致結構-roomactor-syncengine)
+8. [Runtime 大致結構：RealmActor + SyncEngine](#runtime-大致結構-realmactor-syncengine)
 9. [端到端範例](#端到端範例)
-10. [App 開發應用](#app-開發應用)
-11. [跨平台實現：Android / 其他平台](#跨平台實現-android--其他平台)
-12. [語法速查表](#語法速查表)
+10. [語法速查表](#語法速查表)
+11. [相關文檔](#相關文檔)
 
 ---
 
@@ -32,7 +31,7 @@
 
 ### 伺服器只做三件事
 
-1. **維護唯一真實狀態**：RoomTree
+1. **維護唯一真實狀態**：StateTree（狀態樹）
 2. **根據指令（Command）更新這棵樹**
 3. **根據同步規則 SyncPolicy**，為每個玩家產生專屬 JSON，同步出去
 
@@ -42,8 +41,8 @@
 
 ```
 Client 發 RPC
-  → Server RoomActor 處理
-  → 更新 RoomTree（可選）
+  → Server RealmActor 處理
+  → 更新 StateTree（可選）
   → 返回 Response（可包含狀態快照，用於 late join）
   → Client 收到 Response
 ```
@@ -53,8 +52,8 @@ Client 發 RPC
 ```
 Client -> Server Event:
   Client 發 Event
-    → Server RoomActor 處理
-    → 可選：更新 RoomTree / 觸發邏輯
+    → Server RealmActor 處理
+    → 可選：更新 StateTree / 觸發邏輯
 
 Server -> Client Event:
   Server 推送 Event
@@ -65,7 +64,7 @@ Server -> Client Event:
 #### 狀態同步流程
 
 ```
-RoomTree 狀態變化
+StateTree 狀態變化
   → SyncEngine 依 @Sync 規則裁切
   → 為每個 Player 產生 JSON
   → 透過 Event 推送給 Client
@@ -98,7 +97,7 @@ RoomTree 狀態變化
 ```swift
 // Client 發起 RPC
 let result = try await client.rpc(.join(playerID: id, name: "Alice"))
-// result: JoinResponse { success: Bool, roomID: String, state: StateSnapshot? }
+// result: JoinResponse { success: Bool, realmID: String, state: StateSnapshot? }
 
 // Server 處理 RPC
 func handle(_ rpc: GameRPC, from player: PlayerID) async -> RPCResponse {
@@ -106,7 +105,7 @@ func handle(_ rpc: GameRPC, from player: PlayerID) async -> RPCResponse {
     case .join(let id, let name):
         state.players[id] = PlayerState(...)
         let snapshot = syncEngine.snapshot(for: id, from: state)
-        return .success(JoinResponse(roomID: roomID, state: snapshot))
+        return .success(JoinResponse(realmID: realmID, state: snapshot))
     }
 }
 ```
@@ -150,7 +149,7 @@ RPC Response 可以選擇性包含狀態快照，用於特殊場景：
 case .join(let id, let name):
     state.players[id] = PlayerState(...)
     let snapshot = syncEngine.snapshot(for: id, from: state)
-    return .success(JoinResponse(roomID: roomID, state: snapshot))  // 包含狀態
+    return .success(JoinResponse(realmID: realmID, state: snapshot))  // 包含狀態
 
 // 抽卡：需要立即知道抽到的卡
 case .drawCard(let id):
@@ -178,11 +177,11 @@ case .attack(let attacker, let target, let damage):
 
 ### Event 處理範圍
 
-**設計決策**：採用 **選項 C（Room DSL 中定義）**
+**設計決策**：採用 **選項 C（Realm DSL 中定義）**
 
 - `AllowedClientEvents` **只限制 Client->Server 的 Event**（`ClientEvent`）
 - **Server->Client 的 Event 不受限制**（`ServerEvent`，因為是 Server 自己控制的）
-- 在 Room DSL 中使用 `AllowedClientEvents` 定義允許的 `ClientEvent`
+- 在 Realm DSL 中使用 `AllowedClientEvents` 定義允許的 `ClientEvent`
 
 #### ClientEvent 分類
 
@@ -203,20 +202,20 @@ Server 可以自由定義和發送 ServerEvent（不受 AllowedClientEvents 限�
 
 ---
 
-## StateTree：RoomTree 結構
+## StateTree：狀態樹結構
 
 ### 目標
 
-- 只一棵樹 `RoomTree` 表示整個房間狀態
+- 只一棵樹 `StateTree` 表示整個領域狀態
 - 不再額外定一個 `UIGameState` 在伺服器
 - UI 專用計算丟給 Client
 
 ### 範例
 
 ```swift
-// 單一權威狀態樹
+// 單一權威狀態樹（遊戲場景範例）
 @StateTree
-struct RoomTree {
+struct GameStateTree {
     // 所有玩家的公開狀態（血量、名字等），可以廣播給大家
     @Sync(.broadcast)
     var players: [PlayerID: PlayerState] = [:]
@@ -260,7 +259,7 @@ struct Card: Codable {
 }
 ```
 
-> **RoomTree 是單一來源真相（single source of truth）。**  
+> **StateTree 是單一來源真相（single source of truth）。**  
 > UI 只會收到「裁切後的 JSON 表示」。
 
 ---
@@ -269,7 +268,7 @@ struct Card: Codable {
 
 ### 基本概念
 
-`@Sync` 會標在 `RoomTree` 的欄位上，定義這個欄位對同步引擎的策略。
+`@Sync` 會標在 `StateTree` 的欄位上，定義這個欄位對同步引擎的策略。
 
 ### 範例
 
@@ -328,22 +327,29 @@ public struct Sync<Value> {
 
 ---
 
-## Room DSL：房型宣告語法
+## Realm DSL：領域宣告語法
 
 ### 使用場景
 
-定義「這種房間」的：
-- 對應 state type（RoomTree）
-- 最大玩家數
-- Tick 間隔
-- Idle timeout 等
+定義「這種領域」的：
+- 對應 state type（StateTree）
+- 最大玩家數（遊戲場景）
+- Tick 間隔（遊戲場景）
+- Idle timeout 等（遊戲場景）
 - command handler
 - 之後還可以掛 service / DI
+
+### 核心概念
+
+**Realm（領域/土地）**：StateTree 生長的地方
+- App 場景：`App` 是 `Realm` 的別名
+- 功能模組：`Feature` 是 `Realm` 的別名
 
 ### 語法示例
 
 ```swift
-let matchRoom = Room("match-3", using: RoomTree.self) {
+// 使用 Realm（核心名稱）
+let matchRealm = Realm("match-3", using: GameStateTree.self) {
     Config {
         MaxPlayers(4)
         Tick(every: .milliseconds(100))
@@ -369,7 +375,7 @@ let matchRoom = Room("match-3", using: RoomTree.self) {
             state.hands[id] = HandState(ownerID: id, cards: [])
             let snapshot = syncEngine.snapshot(for: id, from: state)
             await ctx.sendEvent(.fromServer(.stateUpdate(snapshot)), to: .all)
-            return .success(.joinResult(JoinResponse(roomID: ctx.roomID, state: snapshot)))
+            return .success(.joinResult(JoinResponse(realmID: ctx.realmID, state: snapshot)))
         default:
             return await handleOtherRPC(&state, rpc, ctx)
         }
@@ -393,35 +399,37 @@ let matchRoom = Room("match-3", using: RoomTree.self) {
 }
 ```
 
-### Room DSL 元件（設計概念）
+### Realm DSL 元件（設計概念）
 
 ```swift
-public protocol RoomNode {}
+public protocol RealmNode {}
 
-public struct ConfigNode: RoomNode {
+public struct ConfigNode: RealmNode {
     public var maxPlayers: Int?
     public var tickInterval: Duration?
     public var idleTimeout: Duration?
+    public var baseURL: String?
+    public var webSocketURL: String?
 }
 
 // RPC 節點：支援統一 RPC 型別或特定 RPC case
-public struct RPCNode<C>: RoomNode {
-    public let handler: (inout RoomTree, C, RoomContext) async -> RPCResponse
+public struct RPCNode<C>: RealmNode {
+    public let handler: (inout StateTree, C, RealmContext) async -> RPCResponse
 }
 
 // 特定 RPC case 的節點（用於簡單的 RPC）
-public struct SpecificRPCNode<C>: RoomNode {
-    public let handler: (inout RoomTree, C, RoomContext) async -> RPCResponse
+public struct SpecificRPCNode<C>: RealmNode {
+    public let handler: (inout StateTree, C, RealmContext) async -> RPCResponse
 }
 
 // Event 節點：支援統一 Event 型別或特定 ClientEvent case
-public struct OnEventNode<E>: RoomNode {
-    public let handler: (inout RoomTree, E, RoomContext) async -> Void
+public struct OnEventNode<E>: RealmNode {
+    public let handler: (inout StateTree, E, RealmContext) async -> Void
 }
 
 // 特定 ClientEvent case 的節點（用於簡單的 Event）
-public struct OnSpecificEventNode<E>: RoomNode {
-    public let handler: (inout RoomTree, E, RoomContext) async -> Void
+public struct OnSpecificEventNode<E>: RealmNode {
+    public let handler: (inout StateTree, E, RealmContext) async -> Void
 }
 ```
 
@@ -429,24 +437,29 @@ public struct OnSpecificEventNode<E>: RoomNode {
 
 ```swift
 @resultBuilder
-public enum RoomDSL {
-    public static func buildBlock(_ components: RoomNode...) -> [RoomNode] {
+public enum RealmDSL {
+    public static func buildBlock(_ components: RealmNode...) -> [RealmNode] {
         components
     }
 }
 
-public struct RoomDefinition<State> {
+public struct RealmDefinition<State> {
     public let id: String
-    public let nodes: [RoomNode]
+    public let nodes: [RealmNode]
 }
 
-public func Room<State>(
+// 核心函數：Realm
+public func Realm<State>(
     _ id: String,
     using stateType: State.Type,
-    @RoomDSL _ content: () -> [RoomNode]
-) -> RoomDefinition<State> {
-    RoomDefinition(id: id, nodes: content())
+    @RealmDSL _ content: () -> [RealmNode]
+) -> RealmDefinition<State> {
+    RealmDefinition(id: id, nodes: content())
 }
+
+// 語義化別名
+public typealias App<State> = Realm<State>
+public typealias Feature<State> = Realm<State>
 ```
 
 ---
@@ -460,7 +473,7 @@ enum GameRPC: Codable {
     // 查詢操作
     case getPlayerHand(PlayerID)
     case canAttack(PlayerID, target: PlayerID)
-    case getRoomInfo
+    case getRealmInfo
     
     // 需要結果的狀態修改
     case join(playerID: PlayerID, name: String)
@@ -477,12 +490,12 @@ enum RPCResultData: Codable {
     case joinResult(JoinResponse)
     case hand([Card])
     case card(Card)
-    case roomInfo(RoomInfo)
+    case realmInfo(RealmInfo)
     case empty
 }
 
 struct JoinResponse: Codable {
-    let roomID: String
+    let realmID: String
     let state: StateSnapshot?  // 可選：用於 late join
 }
 ```
@@ -494,7 +507,8 @@ struct JoinResponse: Codable {
 #### 方式 1：針對特定 RPC 的獨立 Handler（推薦用於簡單邏輯）
 
 ```swift
-let matchRoom = Room("match-3", using: RoomTree.self) {
+// 使用 Realm（核心名稱）
+let matchRealm = Realm("match-3", using: GameStateTree.self) {
     Config { ... }
     
     // 簡單的查詢 RPC：用獨立 handler
@@ -521,7 +535,7 @@ let matchRoom = Room("match-3", using: RoomTree.self) {
 #### 方式 2：統一的 RPC Handler（適合複雜邏輯或需要共享邏輯）
 
 ```swift
-let matchRoom = Room("match-3", using: RoomTree.self) {
+let matchRealm = Realm("match-3", using: GameStateTree.self) {
     Config { ... }
     
     // 複雜邏輯用統一 handler
@@ -532,9 +546,9 @@ let matchRoom = Room("match-3", using: RoomTree.self) {
 
 // 提取複雜邏輯到獨立函數
 private func handleRPC(
-    _ state: inout RoomTree,
+    _ state: inout GameStateTree,
     _ rpc: GameRPC,
-    _ ctx: RoomContext
+    _ ctx: RealmContext
 ) async -> RPCResponse {
     switch rpc {
     case .getPlayerHand(let id):
@@ -549,16 +563,16 @@ private func handleRPC(
 }
 
 private func handleJoin(
-    _ state: inout RoomTree,
+    _ state: inout GameStateTree,
     _ id: PlayerID,
     _ name: String,
-    _ ctx: RoomContext
+    _ ctx: RealmContext
 ) async -> RPCResponse {
     state.players[id] = PlayerState(name: name, hpCurrent: 100, hpMax: 100)
     state.hands[id] = HandState(ownerID: id, cards: [])
     let snapshot = syncEngine.snapshot(for: id, from: state)
     await ctx.sendEvent(.fromServer(.stateUpdate(snapshot)), to: .all)
-    return .success(.joinResult(JoinResponse(roomID: ctx.roomID, state: snapshot)))
+    return .success(.joinResult(JoinResponse(realmID: ctx.realmID, state: snapshot)))
 }
 ```
 
@@ -567,7 +581,7 @@ private func handleJoin(
 結合兩種方式的優點：
 
 ```swift
-let matchRoom = Room("match-3", using: RoomTree.self) {
+let matchRealm = Realm("match-3", using: GameStateTree.self) {
     Config { ... }
     
     // 簡單的查詢 RPC：用獨立 handler
@@ -648,7 +662,8 @@ enum GameEvent: Codable {
 #### 方式 1：針對特定 ClientEvent 的獨立 Handler（推薦用於簡單邏輯）
 
 ```swift
-let matchRoom = Room("match-3", using: RoomTree.self) {
+// 使用 Realm（核心名稱）
+let matchRealm = Realm("match-3", using: GameStateTree.self) {
     Config { ... }
     
     AllowedClientEvents {
@@ -680,7 +695,7 @@ let matchRoom = Room("match-3", using: RoomTree.self) {
 #### 方式 2：統一的 GameEvent Handler（適合複雜邏輯或需要共享邏輯）
 
 ```swift
-let matchRoom = Room("match-3", using: RoomTree.self) {
+let matchRealm = Realm("match-3", using: GameStateTree.self) {
     Config { ... }
     
     AllowedClientEvents {
@@ -705,9 +720,9 @@ let matchRoom = Room("match-3", using: RoomTree.self) {
 
 // 提取複雜邏輯到獨立函數
 private func handleClientEvent(
-    _ state: inout RoomTree,
+    _ state: inout GameStateTree,
     _ event: ClientEvent,
-    _ ctx: RoomContext
+    _ ctx: RealmContext
 ) async {
     switch event {
     case .playerReady(let id):
@@ -724,9 +739,9 @@ private func handleClientEvent(
 }
 
 private func handlePlayerReady(
-    _ state: inout RoomTree,
+    _ state: inout GameStateTree,
     _ id: PlayerID,
-    _ ctx: RoomContext
+    _ ctx: RealmContext
 ) async {
     state.readyPlayers.insert(id)
     await ctx.sendEvent(.fromServer(.gameEvent(.playerReady(id))), to: .all)
@@ -742,7 +757,7 @@ private func handlePlayerReady(
 結合兩種方式的優點：
 
 ```swift
-let matchRoom = Room("match-3", using: RoomTree.self) {
+let matchRealm = Realm("match-3", using: GameStateTree.self) {
     Config { ... }
     
     AllowedClientEvents {
@@ -796,28 +811,29 @@ await ctx.sendEvent(.fromServer(.systemMessage("Private message")), to: .player(
 // 不需要在 AllowedClientEvents 中定義這些 ServerEvent
 ```
 
-### RoomContext（提供 sendEvent / service / random 等）
+### RealmContext（提供 sendEvent / service / random 等）
 
 ```swift
-public struct RoomContext {
-    public let roomID: String
-    public let services: RoomServices
+public struct RealmContext {
+    public let realmID: String
+    public let services: RealmServices
     public let transport: GameTransport
     
     // 推送 Event（替代原本的 broadcast/send）
     public func sendEvent(_ event: GameEvent, to target: EventTarget) async {
         switch target {
         case .all:
-            await transport.broadcast(event, in: roomID)
+            await transport.broadcast(event, in: realmID)
         case .player(let id):
-            await transport.send(event, to: id, in: roomID)
+            await transport.send(event, to: id, in: realmID)
         case .players(let ids):
             for id in ids {
-                await transport.send(event, to: id, in: roomID)
+                await transport.send(event, to: id, in: realmID)
             }
         }
     }
 }
+
 
 enum EventTarget {
     case all
@@ -828,20 +844,20 @@ enum EventTarget {
 
 ---
 
-## Runtime 大致結構：RoomActor + SyncEngine
+## Runtime 大致結構：RealmActor + SyncEngine
 
-### RoomActor（概念）
+### RealmActor（概念）
 
 ```swift
-actor RoomActor {
-    private var state: RoomTree
-    private let def: RoomDefinition<RoomTree>
+actor RealmActor {
+    private var state: StateTree
+    private let def: RealmDefinition<StateTree>
     private let syncEngine: SyncEngine
-    private let ctx: RoomContext
+    private let ctx: RealmContext
     
-    init(definition: RoomDefinition<RoomTree>, context: RoomContext) {
+    init(definition: RealmDefinition<StateTree>, context: RealmContext) {
         self.def = definition
-        self.state = RoomTree()
+        self.state = StateTree()
         self.syncEngine = SyncEngine()
         self.ctx = context
     }
@@ -873,13 +889,14 @@ actor RoomActor {
         }
     }
 }
+
 ```
 
 ### SyncEngine（概念）
 
 ```swift
 struct SyncEngine {
-    func snapshot(for player: PlayerID, from tree: RoomTree) throws -> Data {
+    func snapshot(for player: PlayerID, from tree: StateTree) throws -> Data {
         // 1. 反射 / macro 生成的 Metadata：知道每個欄位的 SyncPolicy
         // 2. 逐欄位根據 policy 過濾：
         //    - serverOnly → 忽略
@@ -910,7 +927,7 @@ struct SyncEngine {
        state.hands[id] = HandState(ownerID: id, cards: [])
        let snapshot = syncEngine.snapshot(for: id, from: state)
        await ctx.sendEvent(.stateUpdate(snapshot), to: .all)
-       return .success(.joinResult(JoinResponse(roomID: ctx.roomID, state: snapshot)))
+       return .success(.joinResult(JoinResponse(realmID: ctx.realmID, state: snapshot)))
    ```
 
 3. **Client A 收到 RPC Response**：
@@ -990,7 +1007,7 @@ struct SyncEngine {
        let snapshot = syncEngine.snapshot(for: id, from: state)
        await ctx.sendEvent(.stateUpdate(snapshot), to: .all)
        // Response 包含完整狀態，Client C 可以立即同步
-       return .success(.joinResult(JoinResponse(roomID: ctx.roomID, state: snapshot)))
+       return .success(.joinResult(JoinResponse(realmID: ctx.realmID, state: snapshot)))
    ```
 
 3. **Client C 收到 Response**：
@@ -1043,515 +1060,31 @@ struct PlayerViewState {
 
 ---
 
-## App 開發應用
+## 命名說明
 
-### 適用場景
+### Realm vs App vs Feature
 
-StateTree 設計不僅適用於遊戲伺服器，也非常適合 App 開發，特別是：
+**核心概念**：`Realm`（領域/土地）是 StateTree 生長的地方
 
-- **即時推送類型的 App**：SNS（Twitter、Facebook）、即時通訊（WhatsApp、Telegram）、協作工具（Slack、Discord）
-- **需要狀態同步的 App**：雲端筆記（Notion）、任務管理（Todoist）、雲端儲存（Dropbox）
-- **複雜狀態管理的 App**：電商 App、社交 App、協作工具
+- **Realm**：核心名稱，通用於所有場景
+- **App**：`Realm` 的別名，適合 App 場景
+- **Feature**：`Realm` 的別名，適合功能模組場景
 
-### 核心優勢
+**使用建議**：
+- 遊戲場景：使用 `Realm`
+- App 場景：使用 `App` 或 `Realm`
+- 功能模組：使用 `Feature` 或 `Realm`
+- 通用場景：使用 `Realm`
 
-1. **單一狀態樹**：取代 Redux/Vuex/TCA，統一管理所有狀態
-2. **聲明式同步規則**：不需要寫分散的同步邏輯
-3. **清晰的通訊模式**：RPC（API 呼叫）+ Event（即時推送）
-4. **型別安全的 DSL**：編譯時檢查，避免執行時錯誤
+**內部實作**：所有別名都指向 `Realm`，實作完全相同。
 
-### SNS App 完整範例
+## 相關文檔
 
-#### 狀態樹定義
-
-```swift
-@StateTree
-struct SNSAppState {
-    // 用戶資料（本地持久化 + 雲端同步）
-    @Sync(.local(key: "user_profile"))
-    @Sync(.cloud(endpoint: "/api/user"))
-    var currentUser: User?
-    
-    // Timeline（快取 + 雲端同步）
-    @Sync(.cache(ttl: .minutes(5)))
-    @Sync(.cloud(endpoint: "/api/timeline"))
-    var timeline: [Post] = []
-    
-    // 通知（即時推送，僅記憶體）
-    @Sync(.memory)
-    var notifications: [Notification] = []
-    
-    // 未讀數量（本地計算）
-    @Sync(.memory)
-    var unreadCount: Int {
-        notifications.filter { !$0.isRead }.count
-    }
-    
-    // 草稿（僅本地持久化）
-    @Sync(.local(key: "drafts"))
-    var drafts: [DraftPost] = []
-    
-    // UI 狀態（僅記憶體）
-    @Sync(.memory)
-    var uiState: UIState = UIState()
-    
-    // 連線狀態
-    @Sync(.memory)
-    var connectionStatus: ConnectionStatus = .disconnected
-}
-
-struct User: Codable {
-    let id: String
-    let username: String
-    let avatar: URL?
-    var followersCount: Int
-    var followingCount: Int
-}
-
-struct Post: Codable, Identifiable {
-    let id: String
-    let authorID: String
-    let content: String
-    let createdAt: Date
-    var likesCount: Int
-    var commentsCount: Int
-    var isLiked: Bool
-}
-
-struct Notification: Codable, Identifiable {
-    let id: String
-    let type: NotificationType
-    let fromUser: User
-    let postID: String?
-    var isRead: Bool
-    let createdAt: Date
-}
-
-enum NotificationType: Codable {
-    case like(postID: String)
-    case comment(postID: String)
-    case follow
-    case mention(postID: String)
-}
-```
-
-#### RPC 定義（API 呼叫）
-
-```swift
-enum SNSRPC: Codable {
-    // 查詢操作
-    case fetchTimeline(page: Int)
-    case fetchUserProfile(userID: String)
-    case fetchPost(postID: String)
-    
-    // 狀態修改（需要立即回饋）
-    case createPost(content: String)
-    case likePost(postID: String)
-    case unlikePost(postID: String)
-    case followUser(userID: String)
-    case unfollowUser(userID: String)
-    case markNotificationAsRead(notificationID: String)
-}
-```
-
-#### Event 定義（即時推送）
-
-```swift
-// Client -> Server Event
-enum SNSClientEvent: Codable {
-    case viewPost(postID: String)        // 追蹤用戶行為
-    case scrollTimeline(position: Int)   // 分析用
-    case heartbeat
-}
-
-// Server -> Client Event（即時推送）
-enum SNSServerEvent: Codable {
-    case newPost(Post)                   // 新貼文出現
-    case postUpdated(Post)               // 貼文被更新（例如按讚數變化）
-    case notification(Notification)      // 新通知
-    case userOnline(userID: String)      // 用戶上線
-    case userOffline(userID: String)     // 用戶下線
-}
-
-enum GameEvent: Codable {
-    case fromClient(SNSClientEvent)
-    case fromServer(SNSServerEvent)
-}
-```
-
-#### App 定義（DSL）
-
-```swift
-let snsApp = App("sns-app", using: SNSAppState.self) {
-    Config {
-        BaseURL("https://api.snsapp.com")
-        WebSocketURL("wss://realtime.snsapp.com")
-        CachePolicy(.expiresAfter(.minutes(5)))
-    }
-    
-    AllowedClientEvents {
-        SNSClientEvent.viewPost
-        SNSClientEvent.scrollTimeline
-        SNSClientEvent.heartbeat
-    }
-    
-    // ========== RPC 處理（API 呼叫） ==========
-    
-    // 簡單的查詢：獨立 handler
-    RPC(SNSRPC.fetchTimeline) { state, page, ctx -> RPCResponse in
-        let posts = try await ctx.api.get("/timeline?page=\(page)")
-        if page == 0 {
-            state.timeline = posts  // 刷新
-        } else {
-            state.timeline.append(contentsOf: posts)  // 載入更多
-        }
-        return .success(.timeline(posts))
-    }
-    
-    // 複雜的狀態修改：統一 handler
-    RPC(SNSRPC.self) { state, rpc, ctx -> RPCResponse in
-        switch rpc {
-        case .createPost(let content):
-            return await handleCreatePost(&state, content, ctx)
-        case .likePost(let postID):
-            return await handleLikePost(&state, postID, ctx)
-        default:
-            return await handleOtherRPC(&state, rpc, ctx)
-        }
-    }
-    
-    // ========== Event 處理（即時推送） ==========
-    
-    // 簡單的 Event：獨立 handler
-    On(SNSClientEvent.heartbeat) { state, _, ctx in
-        state.connectionStatus = .connected
-    }
-    
-    // 複雜的 Event：統一 handler（處理即時推送）
-    On(GameEvent.self) { state, event, ctx in
-        switch event {
-        case .fromServer(.newPost(let post)):
-            // 新貼文推送到 Timeline
-            state.timeline.insert(post, at: 0)
-            if !ctx.isCurrentPage(.timeline) {
-                showNotification("新貼文：\(post.content.prefix(50))...")
-            }
-            
-        case .fromServer(.notification(let notification)):
-            // 新通知推送到通知列表
-            state.notifications.insert(notification, at: 0)
-            updateBadge(count: state.unreadCount)
-            
-        case .fromClient(.viewPost(let postID)):
-            // 追蹤用戶行為（分析用）
-            analytics.track("view_post", params: ["post_id": postID])
-            
-        default:
-            break
-        }
-    }
-}
-
-// Handler 函數
-private func handleCreatePost(
-    _ state: inout SNSAppState,
-    _ content: String,
-    _ ctx: AppContext
-) async -> RPCResponse {
-    let post = try await ctx.api.post("/posts", body: ["content": content])
-    state.timeline.insert(post, at: 0)
-    await ctx.sendEvent(.fromServer(.newPost(post)), to: .followers)
-    return .success(.post(post))
-}
-```
-
-### 與現有方案比較
-
-#### vs Redux / Vuex
-
-**Redux/Vuex：**
-- 分散的 reducer 和 action
-- 手動管理同步邏輯
-- 需要額外的 middleware
-
-**StateTree：**
-- 單一狀態樹 + 聲明式同步規則
-- DSL 定義處理邏輯，集中且型別安全
-- 內建同步策略
-
-#### vs TCA (The Composable Architecture)
-
-**TCA：**
-- 需要定義 State + Action + Reducer
-- 處理邏輯分散在各個 reducer
-
-**StateTree：**
-- 更簡潔的 DSL
-- 混合模式：簡單用獨立 handler，複雜用統一 handler
-
-#### vs SwiftUI StateObject
-
-**SwiftUI：**
-- 需要手動管理 loading 狀態
-- 狀態同步邏輯分散
-
-**StateTree：**
-- RPC 自動處理 loading 狀態
-- 聲明式同步規則
-
-### 其他應用場景
-
-#### 即時通訊 App（WhatsApp、Telegram）
-
-```swift
-@StateTree
-struct ChatAppState {
-    @Sync(.local) var conversations: [Conversation]
-    @Sync(.memory) var messages: [Message]
-    @Sync(.memory) var onlineUsers: Set<UserID>
-}
-
-On(SNSServerEvent.newMessage) { state, message, ctx in
-    state.messages.append(message)
-    playNotificationSound()
-}
-```
-
-#### 協作工具（Slack、Discord）
-
-```swift
-@StateTree
-struct CollaborationAppState {
-    @Sync(.cloud) var channels: [Channel]
-    @Sync(.memory) var currentChannel: Channel?
-    @Sync(.memory) var onlineUsers: Set<UserID>
-}
-
-On(SNSServerEvent.userOnline) { state, userID, ctx in
-    state.onlineUsers.insert(userID)
-}
-```
-
----
-
-## 跨平台實現：Android / 其他平台
-
-### 實現可行性
-
-StateTree 設計的核心理念是**語言無關的協議和架構**，可以跨平台實現：
-
-1. **狀態樹結構**：可以用任何語言實現（Swift、Kotlin、TypeScript、Rust 等）
-2. **同步規則**：`@Sync` 可以用 annotation/decorator 實現
-3. **RPC + Event 協議**：使用標準的序列化格式（JSON、Protobuf、MsgPack）
-4. **DSL**：每個語言可以用自己的方式實現（Kotlin DSL、TypeScript decorators）
-
-### Android (Kotlin) 實現範例
-
-#### 狀態樹定義
-
-```kotlin
-@StateTree
-data class SNSAppState(
-    // 用戶資料（本地持久化 + 雲端同步）
-    @Sync(SyncPolicy.Local("user_profile"))
-    @Sync(SyncPolicy.Cloud("/api/user"))
-    var currentUser: User? = null,
-    
-    // Timeline（快取 + 雲端同步）
-    @Sync(SyncPolicy.Cache(ttl = Duration.ofMinutes(5)))
-    @Sync(SyncPolicy.Cloud("/api/timeline"))
-    var timeline: List<Post> = emptyList(),
-    
-    // 通知（即時推送）
-    @Sync(SyncPolicy.Memory)
-    var notifications: List<Notification> = emptyList(),
-    
-    // UI 狀態
-    @Sync(SyncPolicy.Memory)
-    var uiState: UIState = UIState()
-)
-
-@StateTree
-annotation class StateTree
-
-enum class SyncPolicy {
-    Local(val key: String),
-    Cloud(val endpoint: String),
-    Cache(val ttl: Duration),
-    Memory
-}
-```
-
-#### RPC 定義
-
-```kotlin
-sealed class SNSRPC {
-    data class FetchTimeline(val page: Int) : SNSRPC()
-    data class CreatePost(val content: String) : SNSRPC()
-    data class LikePost(val postID: String) : SNSRPC()
-}
-```
-
-#### DSL 定義（Kotlin DSL）
-
-```kotlin
-val snsApp = App("sns-app", SNSAppState::class) {
-    config {
-        baseURL = "https://api.snsapp.com"
-        webSocketURL = "wss://realtime.snsapp.com"
-    }
-    
-    allowedClientEvents {
-        SNSClientEvent.ViewPost::class
-        SNSClientEvent.Heartbeat::class
-    }
-    
-    // RPC 處理
-    rpc(SNSRPC.FetchTimeline::class) { state, rpc, ctx ->
-        val posts = ctx.api.get("/timeline?page=${rpc.page}")
-        state.timeline = if (rpc.page == 0) posts else state.timeline + posts
-        RPCResponse.Success(RPCResultData.Timeline(posts))
-    }
-    
-    // Event 處理
-    on(SNSClientEvent.Heartbeat::class) { state, event, ctx ->
-        state.connectionStatus = ConnectionStatus.Connected
-    }
-    
-    on(GameEvent::class) { state, event, ctx ->
-        when (event) {
-            is GameEvent.FromServer -> when (event.serverEvent) {
-                is SNSServerEvent.NewPost -> {
-                    state.timeline = listOf(event.serverEvent.post) + state.timeline
-                }
-                is SNSServerEvent.Notification -> {
-                    state.notifications = listOf(event.serverEvent.notification) + state.notifications
-                }
-            }
-            is GameEvent.FromClient -> { /* 處理 client event */ }
-        }
-    }
-}
-```
-
-### TypeScript / JavaScript 實現範例
-
-#### 狀態樹定義
-
-```typescript
-@StateTree
-class SNSAppState {
-    @Sync({ local: { key: "user_profile" }, cloud: { endpoint: "/api/user" } })
-    currentUser?: User;
-    
-    @Sync({ cache: { ttl: "5m" }, cloud: { endpoint: "/api/timeline" } })
-    timeline: Post[] = [];
-    
-    @Sync({ memory: true })
-    notifications: Notification[] = [];
-}
-
-function StateTree(target: any) { /* 實作 */ }
-function Sync(options: SyncOptions) { /* 實作 */ }
-```
-
-#### DSL 定義
-
-```typescript
-const snsApp = App("sns-app", SNSAppState, {
-    config: {
-        baseURL: "https://api.snsapp.com",
-        webSocketURL: "wss://realtime.snsapp.com"
-    },
-    
-    allowedClientEvents: [
-        SNSClientEvent.ViewPost,
-        SNSClientEvent.Heartbeat
-    ],
-    
-    rpc: {
-        [SNSRPC.FetchTimeline]: async (state, rpc, ctx) => {
-            const posts = await ctx.api.get(`/timeline?page=${rpc.page}`);
-            state.timeline = rpc.page === 0 ? posts : [...state.timeline, ...posts];
-            return { success: true, data: { timeline: posts } };
-        }
-    },
-    
-    events: {
-        [SNSClientEvent.Heartbeat]: (state, event, ctx) => {
-            state.connectionStatus = ConnectionStatus.Connected;
-        },
-        
-        [GameEvent]: (state, event, ctx) => {
-            if (event.type === "fromServer") {
-                switch (event.serverEvent.type) {
-                    case "newPost":
-                        state.timeline = [event.serverEvent.post, ...state.timeline];
-                        break;
-                }
-            }
-        }
-    }
-});
-```
-
-### 跨平台實現的優勢
-
-1. **統一的架構**：
-   - 所有平台使用相同的設計理念
-   - 狀態結構可以共享（使用相同的資料模型）
-   - RPC/Event 協議可以跨平台
-
-2. **協議層標準化**：
-   - 序列化格式統一（JSON、Protobuf）
-   - RPC 和 Event 的協議定義可以共享
-   - 狀態樹結構可以跨平台共享
-
-3. **開發體驗一致**：
-   - iOS 和 Android 使用相似的 DSL
-   - 學習成本低（一次學習，多平台適用）
-   - 測試邏輯可以共享（狀態變化邏輯）
-
-### 實現建議
-
-1. **核心模組（語言無關）**：
-   - 定義協議格式（JSON Schema、Protobuf）
-   - 定義狀態樹結構（可以用 JSON Schema 描述）
-   - 定義 RPC/Event 協議
-
-2. **平台特定實現**：
-   - **Swift**：使用 Swift Macros、Property Wrappers
-   - **Kotlin**：使用 Kotlin DSL、Annotations
-   - **TypeScript**：使用 Decorators、Type System
-
-3. **共享層**：
-   - 狀態模型定義（可以用 JSON Schema 生成）
-   - RPC/Event 型別定義（可以用 Protobuf 生成）
-   - 測試邏輯（狀態變化測試可以跨平台共享）
-
-### 與現有跨平台方案比較
-
-#### vs Flutter / React Native
-
-**Flutter/RN：**
-- 需要寫平台特定程式碼
-- 狀態管理分散（Redux、MobX）
-
-**StateTree：**
-- 統一的架構設計
-- 每個平台用原生語言實現（性能更好）
-- 狀態管理集中且一致
-
-#### vs KMM (Kotlin Multiplatform)
-
-**KMM：**
-- 共享業務邏輯
-- UI 層還是需要平台特定
-
-**StateTree：**
-- 可以配合 KMM 使用
-- 共享狀態樹定義和處理邏輯
-- UI 層用各平台原生框架
+- **[APP_APPLICATION.md](./APP_APPLICATION.md)**：StateTree 在 App 開發中的應用
+  - SNS App 完整範例
+  - 與現有方案比較（Redux、MVVM、TCA）
+  - 跨平台實現（Android/Kotlin、TypeScript）
+  - 狀態同步方式詳解
 
 ---
 
@@ -1561,7 +1094,7 @@ const snsApp = App("sns-app", SNSAppState, {
 
 ```swift
 @StateTree
-struct RoomTree {
+struct GameStateTree {
     @Sync(.broadcast)
     var players: [PlayerID: PlayerState]
     
@@ -1573,10 +1106,11 @@ struct RoomTree {
 }
 ```
 
-### 2. Room 定義（混合模式）
+### 2. Realm 定義（混合模式）
 
 ```swift
-let room = Room("match-3", using: RoomTree.self) {
+// 使用 Realm（核心名稱）
+let realm = Realm("match-3", using: GameStateTree.self) {
     Config {
         MaxPlayers(4)
         Tick(every: .milliseconds(100))
@@ -1668,9 +1202,9 @@ await ctx.sendEvent(.systemMessage("xxx"), to: .player(playerID))
 
 ## Event 範圍限制設計決策
 
-### 設計決策：採用選項 C（Room DSL 中定義）
+### 設計決策：採用選項 C（Realm DSL 中定義）
 
-**決定**：使用 Room DSL 中的 `AllowedClientEvents` 來限制 Client->Server Event。
+**決定**：使用 Realm DSL 中的 `AllowedClientEvents` 來限制 Client->Server Event。
 
 **重要限制**：
 - `AllowedClientEvents` **只限制 Client->Server 的 Event**（`ClientEvent`）
@@ -1707,24 +1241,24 @@ enum GameEvent: Codable {
 }
 ```
 
-### Room DSL 定義（選項 C）
+### Realm DSL 定義（選項 C）
 
 **範例：採用選項 C**
 
 ```swift
-// Room DSL 中定義允許的 Client Event（只限制 Client->Server）
-let matchRoom = Room("match-3", using: RoomTree.self) {
+// Realm DSL 中定義允許的 Client Event（只限制 Client->Server）
+let matchRealm = Realm("match-3", using: GameStateTree.self) {
     Config {
         MaxPlayers(4)
         Tick(every: .milliseconds(100))
     }
     
-    // 定義這個房間允許的 Client Event（只能指定 ClientEvent 類型）
+    // 定義這個領域允許的 Client Event（只能指定 ClientEvent 類型）
     AllowedClientEvents {
         ClientEvent.playerReady
         ClientEvent.heartbeat
         ClientEvent.uiInteraction
-        // 只有這些 ClientEvent 可以被 Client 發送到這個房間
+        // 只有這些 ClientEvent 可以被 Client 發送到這個領域
         // ServerEvent 不受此限制（Server 可以自由發送）
     }
     
@@ -1764,9 +1298,9 @@ let matchRoom = Room("match-3", using: RoomTree.self) {
 
 ```swift
 // DSL 實作：AllowedClientEvents 只接受 ClientEvent
-protocol RoomNode {}
+protocol RealmNode {}
 
-struct AllowedClientEventsNode: RoomNode {
+struct AllowedClientEventsNode: RealmNode {
     let allowedClientEvents: Set<ClientEventType>
     
     init(@AllowedClientEventsBuilder _ builder: () -> Set<ClientEventType>) {
@@ -1787,7 +1321,7 @@ enum AllowedClientEventsBuilder {
 }
 
 // Runtime 驗證（只驗證 ClientEvent）
-actor RoomActor {
+actor RealmActor {
     private let allowedClientEvents: Set<ClientEventType>
     
     func handleEvent(_ event: GameEvent, from player: PlayerID) async throws {
@@ -1795,7 +1329,7 @@ actor RoomActor {
         case .fromClient(let clientEvent):
             // 檢查 ClientEvent 是否在允許列表中
             guard allowedClientEvents.contains(ClientEventType(type(of: clientEvent))) else {
-                throw EventError.notAllowed("ClientEvent type not allowed in this room")
+                throw EventError.notAllowed("ClientEvent type not allowed in this realm")
             }
             // 處理允許的 ClientEvent
             await processClientEvent(clientEvent, from: player)
@@ -1815,10 +1349,10 @@ actor RoomActor {
    - 只能列舉 `ClientEvent` 的類型
    - `ServerEvent` 不受限制（Server 自己控制）
 
-2. **不同房型可以有不同的 ClientEvent 規則**
+2. **不同領域可以有不同的 ClientEvent 規則**
    ```swift
-   // 卡牌遊戲房間
-   let cardRoom = Room("card-game", using: CardRoomTree.self) {
+   // 卡牌遊戲領域
+   let cardRealm = Realm("card-game", using: CardGameStateTree.self) {
        AllowedClientEvents {
            ClientEvent.playerReady
            ClientEvent.playCard
@@ -1826,8 +1360,8 @@ actor RoomActor {
        }
    }
    
-   // 即時對戰房間
-   let battleRoom = Room("realtime-battle", using: BattleRoomTree.self) {
+   // 即時對戰領域
+   let battleRealm = Realm("realtime-battle", using: BattleStateTree.self) {
        AllowedClientEvents {
            ClientEvent.playerReady
            ClientEvent.movementUpdate
@@ -1859,8 +1393,8 @@ actor RoomActor {
 
 #### Swift 版本
 
-- **SwiftStateTreeCore**：RoomTree、@Sync、SyncPolicy、StateTree 核心
-- **SwiftStateTreeServer**：RoomDefinition、RoomActor、SyncEngine、RPC/Event 處理、GameTransport
+- **SwiftStateTreeCore**：StateTree、@Sync、SyncPolicy、StateTree 核心
+- **SwiftStateTreeServer**：RealmDefinition、RealmActor、SyncEngine、RPC/Event 處理、GameTransport
 - **SwiftStateTreeClient**：Client SDK、狀態同步、RPC/Event 客戶端
 
 #### 跨平台版本
