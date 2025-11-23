@@ -486,14 +486,25 @@ actor RealmActor {
 
 - **SwiftStateTreeCore**：StateTree、@Sync、SyncPolicy、StateTree 核心
 - **SwiftStateTreeServer**：RealmDefinition、RealmActor、SyncEngine、RPC/Event 處理、GameTransport
-- **SwiftStateTreeClient**：Client SDK、狀態同步、RPC/Event 客戶端
+- **SwiftStateTreeClient**：Client SDK、狀態同步、RPC/Event 客戶端（可選，建議使用自動生成）
 
 #### 跨平台版本
 
 - **StateTree Protocol**（語言無關）：協議定義、JSON Schema、Protobuf 定義
 - **StateTree Swift**：Swift 實現（使用 Macros、Property Wrappers）
 - **StateTree Kotlin**：Kotlin 實現（使用 DSL、Annotations）
-- **StateTree TypeScript**：TypeScript 實現（使用 Decorators）
+- **StateTree TypeScript**：TypeScript 實現（使用 Decorators，**自動生成**）
+
+#### Code Generation
+
+- **StateTreeCodeGen**：程式碼生成工具
+  - Type Extractor：從 Server 定義提取型別資訊
+  - Generator Interface：統一的生成器介面
+  - TypeScript Generator：生成 TypeScript 客戶端 SDK（優先實作）
+  - Kotlin Generator：生成 Kotlin 客戶端 SDK（後續擴充）
+  - 其他語言生成器（根據需求擴充）
+
+> **注意**：客戶端 SDK **必須**從 Server 定義自動生成，不支援手動定義。詳見 [DESIGN_CLIENT_SDK.md](./DESIGN_CLIENT_SDK.md)。
 
 ### 專案目錄結構建議
 
@@ -535,8 +546,16 @@ StateTree/
    - 實作 TypeScript 版本
    - 確保協議層一致性
 
-4. **Phase 4：優化和擴展**
+4. **Phase 4：客戶端 SDK 與 Code Generation**
+   - 實作 Type Extractor（從 Swift 定義提取型別）
+   - 實作 TypeScript Generator（優先）
+   - 建立 Code-gen 架構（可擴充設計）
+   - CLI 工具和 Build Phase 整合
+   - 詳見 [DESIGN_CLIENT_SDK.md](./DESIGN_CLIENT_SDK.md)
+
+5. **Phase 5：優化和擴展**
    - 性能優化
-   - 工具鏈（Code Generation、Linting）
+   - 擴充其他語言生成器（Kotlin、Swift Client 等）
+   - 工具鏈完善（Linting、格式化）
    - 文檔和測試覆蓋率
 

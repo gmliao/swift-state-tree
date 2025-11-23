@@ -30,6 +30,9 @@
 ### Runtime 結構
 - **[DESIGN_RUNTIME.md](./DESIGN_RUNTIME.md)**：RealmActor、SyncEngine 的運行時結構
 
+### 客戶端 SDK 與程式碼生成
+- **[DESIGN_CLIENT_SDK.md](./DESIGN_CLIENT_SDK.md)**：客戶端 SDK 自動生成、Code-gen 架構設計、TypeScript 支援
+
 ### 範例與速查
 - **[DESIGN_EXAMPLES.md](./DESIGN_EXAMPLES.md)**：端到端範例、語法速查表、命名說明、設計決策
 
@@ -56,6 +59,7 @@
 - 定義 StateTree：參考 [DESIGN_CORE.md](./DESIGN_CORE.md) 的「StateTree：狀態樹結構」和「同步規則 DSL」
 - 定義 Realm：參考 [DESIGN_REALM_DSL.md](./DESIGN_REALM_DSL.md)
 - 設定 Transport：參考 [DESIGN_TRANSPORT.md](./DESIGN_TRANSPORT.md)
+- 生成客戶端 SDK：參考 [DESIGN_CLIENT_SDK.md](./DESIGN_CLIENT_SDK.md)
 - 語法速查：參考 [DESIGN_EXAMPLES.md](./DESIGN_EXAMPLES.md) 的「語法速查表」
 
 ### 架構深入
