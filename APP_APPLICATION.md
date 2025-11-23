@@ -1,27 +1,25 @@
-# StateTree App 開發應用指南
+# StateTree App 應用探索（概念草案）
 
-> StateTree 設計在 App 開發中的應用，特別是即時推送類型的 App（SNS、即時通訊、協作工具）
+> 說明：本文件僅為「如何把現有架構延伸到 App」的探索草案，尚未列入當前實作計畫。內容聚焦於可能的使用方式、可行性與擴充點，保留後續調整彈性。
 
-## 適用場景
+## 適用場景（概念）
 
-StateTree 設計不僅適用於遊戲伺服器，也非常適合 App 開發，特別是：
+StateTree 架構在理論上可延伸到 App 開發，特別是：
 
 - **即時推送類型的 App**：SNS（Twitter、Facebook）、即時通訊（WhatsApp、Telegram）、協作工具（Slack、Discord）
 - **需要狀態同步的 App**：雲端筆記（Notion）、任務管理（Todoist）、雲端儲存（Dropbox）
 - **複雜狀態管理的 App**：電商 App、社交 App、協作工具
 
-## 核心優勢
+## 核心優勢（假設導入後）
 
-1. **單一狀態樹**：取代 Redux/Vuex/TCA，統一管理所有狀態
-2. **聲明式同步規則**：不需要寫分散的同步邏輯
-3. **清晰的通訊模式**：RPC（API 呼叫）+ Event（即時推送）
-4. **型別安全的 DSL**：編譯時檢查，避免執行時錯誤
+1. **單一狀態樹**：統一管理狀態，避免多套快取/資料源
+2. **聲明式同步規則**：用 `@Sync` 描述同步策略，減少手寫同步邏輯
+3. **一致通訊模式**：RPC（請求）+ Event（推送），沿用現有伺服器模型
+4. **型別安全 DSL**：若導入宏/代碼生成，可保持客戶端型別一致
 
-## 狀態同步方式
+## 狀態同步方式（推測使用方式）
 
-### StateTree 的狀態同步方式
-
-StateTree 採用兩種方式同步狀態：
+若沿用現行伺服器設計，App 端可能以下列方式取得/更新狀態：
 
 #### 1. 初始狀態獲取（RPC）
 
@@ -49,594 +47,75 @@ On(SNSServerEvent.postUpdated) { state, post, ctx in
 }
 ```
 
-**特點**：
-- **單一真實來源（Single Source of Truth）**：本地 state 是權威狀態
-- **聲明式同步**：`@Sync` 規則自動處理同步策略
-- **事件驅動**：狀態變化來自 RPC Response 和 Event 推送
+**特點（暫定假設）**：
+- **單一真實來源（Single Source of Truth）**：伺服器仍是權威，App 端持有裁切後的快取
+- **聲明式同步**：`@Sync` 規則可望沿用，但需再定義適用於本地快取/離線場景的語義
+- **事件驅動**：狀態變化來自 RPC Response 和 Event 推送；離線/重連行為尚待設計
 
 ## 與目前主流做法比較
 
-### vs Redux / Vuex
+### 與常見做法的概念對比（簡表）
 
-**Redux/Vuex：**
-```javascript
-// 需要手動管理分散的邏輯
-const FETCH_TIMELINE = 'FETCH_TIMELINE'
-const ADD_POST = 'ADD_POST'
+| 面向 | 傳統方案 (Redux/Vuex/MVVM/TCA) | StateTree 架構（假設導入 App） |
+| ---- | ------------------------------ | ------------------------------- |
+| 狀態來源 | 多處快取 + API + WebSocket 手動整合 | 單一 StateTree + `@Sync` 規則裁切 |
+| 通訊 | API + WebSocket 需自行編排 | RPC + Event 統一格式 |
+| 型別安全 | 依語言/框架各自處理 | 期望透過宏/codegen 與伺服器型別一致 |
+| 離線/重連 | 需自行處理 | 尚未設計，保留彈性 |
 
-function timelineReducer(state = initialState, action) {
-    switch (action.type) {
-        case FETCH_TIMELINE:
-            return { ...state, timeline: action.payload }
-        case ADD_POST:
-            return { ...state, timeline: [action.payload, ...state.timeline] }
-    }
-}
+## SNS App 概念範例（簡化示意）
 
-// 手動處理 API 和 WebSocket
-async function fetchTimeline() {
-    const posts = await api.get('/timeline')
-    dispatch({ type: FETCH_TIMELINE, payload: posts })
-}
+- **狀態樹概念**：以 `@Sync(.cache/.cloud/.local/.memory)` 描述 timeline、通知、草稿、UI 狀態的同步與快取；僅作概念示意，未在核心 DSL 落地。
+- **RPC/Event 概念**：RPC 取得或更新 timeline/貼文；Server 以 Event 推送新貼文、通知、上線狀態。型別與 payload 細節留待未來決策。
+- **離線/重連**：需額外設計（衝突解決、增量同步、重放策略），此處只說明可能的資料流。
 
-websocket.on('newPost', (post) => {
-    dispatch({ type: ADD_POST, payload: post })
-})
-```
+## 其他應用場景（概念化）
 
-**StateTree：**
+- **即時通訊**：重點是訊息有序與已讀回報；可用 `@Sync(.local)` 存會話、`.memory` 存目前緩衝訊息，Event 用於新訊息/已讀回推。程式碼建議保持最小：單一 handler 接新訊息，單一 handler 處理已讀狀態。
+- **協作/聊天室**：核心是頻道列表與目前頻道狀態；`@Sync(.cloud)` 放頻道資料、`.memory` 放當前頻道/在線成員，Event 推播上線/下線。程式碼以一個 switch 處理「userOnline/userOffline/channelUpdated」即可。
+- **未來新增功能**：可先用文字 + 最小示意程式碼描述資料流，等決策後再展開完整型別。保持 handler 數量少、以概念 payload 命名即可。
+
+## 新增 feature 的最小模板（示意）
+
+- 以「狀態欄位 + RPC + Event + Handler」的四步最小骨架描述，型別和 payload 可先用佔位符。
+- `@Sync` 先寫最直覺策略（如 .broadcast/.memory），之後再調 perPlayer/masked。
+- Handler 只保留一條 happy path，錯誤/重試與離線衝突留待後續。
+
 ```swift
+// 狀態樹：用佔位型別 + 直覺 Sync 策略
 @StateTree
-struct SNSAppState {
-    // 聲明式同步規則：自動處理快取、雲端同步
-    @Sync(.cache(ttl: .minutes(5)))
-    @Sync(.cloud(service: "timeline"))  // 使用邏輯服務名稱，而非 HTTP endpoint
-    var timeline: [Post] = []
+struct FeatureState {
+    @Sync(.broadcast) var items: [Item] = []  // 後續可改 perPlayer/masked
 }
 
-// RPC 使用服務抽象處理狀態更新
-RPC(SNSRPC.fetchTimeline) { state, page, ctx -> RPCResponse in
-    guard let timelineService = ctx.services.timelineService else {
-        return .failure("Timeline service not available")
-    }
-    let posts = try await timelineService.fetch(page: page)
-    state.timeline = posts  // 自動更新，自動同步
-    return .success(.timeline(posts))
+// RPC：只列 case 名稱/參數，回傳先用佔位
+enum FeatureRPC: Codable {
+    case addItem(name: String)
 }
 
-// Event 自動處理即時推送
-On(SNSServerEvent.newPost) { state, post, ctx in
-    state.timeline.insert(post, at: 0)  // 自動更新，自動同步
-}
-```
-
-### vs MVVM + Reactive Programming
-
-**SwiftUI + Combine：**
-```swift
-class TimelineViewModel: ObservableObject {
-    @Published var timeline: [Post] = []
-    
-    // 需要手動管理多個資料源
-    func fetchTimeline() {
-        // 檢查快取、API 呼叫、更新狀態、更新快取
-        // WebSocket 處理、錯誤處理...
-    }
-}
-```
-
-**StateTree：**
-```swift
-// 聲明式定義，自動處理所有同步邏輯
-@Sync(.cache(ttl: .minutes(5)))
-@Sync(.cloud(endpoint: "/api/timeline"))
-var timeline: [Post] = []
-```
-
-### vs TCA (The Composable Architecture)
-
-**TCA：**
-- 需要定義 State + Action + Reducer
-- 手動處理副作用（API、WebSocket）
-- 沒有自動同步策略
-
-**StateTree：**
-- 更簡潔的 DSL
-- 混合模式：簡單用獨立 handler，複雜用統一 handler
-- 聲明式同步規則
-
-## SNS App 完整範例
-
-### 狀態樹定義
-
-```swift
-@StateTree
-struct SNSAppState {
-    // 用戶資料（本地持久化 + 雲端同步）
-    @Sync(.local(key: "user_profile"))
-    @Sync(.cloud(service: "user"))  // 使用邏輯服務名稱
-    var currentUser: User?
-    
-    // Timeline（快取 + 雲端同步）
-    @Sync(.cache(ttl: .minutes(5)))
-    @Sync(.cloud(service: "timeline"))  // 使用邏輯服務名稱
-    var timeline: [Post] = []
-    
-    // 通知（即時推送，僅記憶體）
-    @Sync(.memory)
-    var notifications: [Notification] = []
-    
-    // 未讀數量（本地計算）
-    @Sync(.memory)
-    var unreadCount: Int {
-        notifications.filter { !$0.isRead }.count
-    }
-    
-    // 草稿（僅本地持久化）
-    @Sync(.local(key: "drafts"))
-    var drafts: [DraftPost] = []
-    
-    // UI 狀態（僅記憶體）
-    @Sync(.memory)
-    var uiState: UIState = UIState()
-    
-    // 連線狀態
-    @Sync(.memory)
-    var connectionStatus: ConnectionStatus = .disconnected
+// Event：先用單一 case 名稱 + 簡單 payload
+enum FeatureEvent: Codable {
+    case itemAdded(Item)
 }
 
-struct User: Codable {
-    let id: String
-    let username: String
-    let avatar: URL?
-    var followersCount: Int
-    var followingCount: Int
-}
-
-struct Post: Codable, Identifiable {
-    let id: String
-    let authorID: String
-    let content: String
-    let createdAt: Date
-    var likesCount: Int
-    var commentsCount: Int
-    var isLiked: Bool
-}
-
-struct Notification: Codable, Identifiable {
-    let id: String
-    let type: NotificationType
-    let fromUser: User
-    let postID: String?
-    var isRead: Bool
-    let createdAt: Date
-}
-
-enum NotificationType: Codable {
-    case like(postID: String)
-    case comment(postID: String)
-    case follow
-    case mention(postID: String)
-}
-```
-
-### RPC 定義（API 呼叫）
-
-```swift
-enum SNSRPC: Codable {
-    // 查詢操作
-    case fetchTimeline(page: Int)
-    case fetchUserProfile(userID: String)
-    case fetchPost(postID: String)
-    
-    // 狀態修改（需要立即回饋）
-    case createPost(content: String)
-    case likePost(postID: String)
-    case unlikePost(postID: String)
-    case followUser(userID: String)
-    case unfollowUser(userID: String)
-    case markNotificationAsRead(notificationID: String)
-}
-```
-
-### Event 定義（即時推送）
-
-```swift
-// Client -> Server Event
-enum SNSClientEvent: Codable {
-    case viewPost(postID: String)        // 追蹤用戶行為
-    case scrollTimeline(position: Int)   // 分析用
-    case heartbeat
-}
-
-// Server -> Client Event（即時推送）
-enum SNSServerEvent: Codable {
-    case newPost(Post)                   // 新貼文出現
-    case postUpdated(Post)               // 貼文被更新（例如按讚數變化）
-    case notification(Notification)      // 新通知
-    case userOnline(userID: String)      // 用戶上線
-    case userOffline(userID: String)     // 用戶下線
-}
-
-enum GameEvent: Codable {
-    case fromClient(SNSClientEvent)
-    case fromServer(SNSServerEvent)
-}
-```
-
-### App 定義（DSL）
-
-```swift
-let snsApp = App("sns-app", using: SNSAppState.self) {
-    Config {
-        CachePolicy(.expiresAfter(.minutes(5)))
-        // 注意：BaseURL 和 WebSocketURL 已移除
-        // 網路層細節應該在 Transport 層處理
-    }
-    
-    AllowedClientEvents {
-        SNSClientEvent.viewPost
-        SNSClientEvent.scrollTimeline
-        SNSClientEvent.heartbeat
-    }
-    
-    // ========== RPC 處理（使用服務抽象） ==========
-    
-    // 簡單的查詢：獨立 handler
-    RPC(SNSRPC.fetchTimeline) { state, page, ctx -> RPCResponse in
-        // 使用服務抽象，不直接寫 HTTP 路徑
-        guard let timelineService = ctx.services.timelineService else {
-            return .failure("Timeline service not available")
-        }
-        let posts = try await timelineService.fetch(page: page)
-        if page == 0 {
-            state.timeline = posts  // 刷新
-        } else {
-            state.timeline.append(contentsOf: posts)  // 載入更多
-        }
-        return .success(.timeline(posts))
-    }
-    
-    // 複雜的狀態修改：統一 handler
-    RPC(SNSRPC.self) { state, rpc, ctx -> RPCResponse in
+// DSL 骨架：一條 happy path，必要時再補錯誤處理/同步策略
+let feature = Realm("feature-demo", using: FeatureState.self) {
+    RPC(FeatureRPC.self) { state, rpc, ctx -> RPCResponse in
         switch rpc {
-        case .createPost(let content):
-            return await handleCreatePost(&state, content, ctx)
-        case .likePost(let postID):
-            return await handleLikePost(&state, postID, ctx)
-        default:
-            return await handleOtherRPC(&state, rpc, ctx)
+        case .addItem(let name):
+            let item = Item(id: UUID().uuidString, name: name)
+            state.items.append(item)
+            await ctx.sendEvent(.itemAdded(item), to: .all)
+            return .success(.empty) // 後續可改成回傳明細或快照
         }
     }
-    
-    // ========== Event 處理（即時推送） ==========
-    
-    // 簡單的 Event：獨立 handler
-    On(SNSClientEvent.heartbeat) { state, _, ctx in
-        state.connectionStatus = .connected
-    }
-    
-    // 複雜的 Event：統一 handler（處理即時推送）
-    On(GameEvent.self) { state, event, ctx in
+
+    On(FeatureEvent.self) { state, event, ctx in
         switch event {
-        case .fromServer(.newPost(let post)):
-            // 新貼文推送到 Timeline
-            state.timeline.insert(post, at: 0)
-            if !ctx.isCurrentPage(.timeline) {
-                showNotification("新貼文：\(post.content.prefix(50))...")
-            }
-            
-        case .fromServer(.notification(let notification)):
-            // 新通知推送到通知列表
-            state.notifications.insert(notification, at: 0)
-            updateBadge(count: state.unreadCount)
-            
-        case .fromClient(.viewPost(let postID)):
-            // 追蹤用戶行為（分析用）
-            analytics.track("view_post", params: ["post_id": postID])
-            
-        default:
-            break
-        }
-    }
-}
-
-// Handler 函數
-private func handleCreatePost(
-    _ state: inout SNSAppState,
-    _ content: String,
-    _ ctx: RealmContext
-) async -> RPCResponse {
-    guard let postService = ctx.services.postService else {
-        return .failure("Post service not available")
-    }
-    let post = try await postService.create(content: content)
-    state.timeline.insert(post, at: 0)
-    await ctx.sendEvent(.fromServer(.newPost(post)), to: .all)
-    return .success(.post(post))
-}
-```
-
-## 其他應用場景
-
-### 即時通訊 App（WhatsApp、Telegram）
-
-```swift
-@StateTree
-struct ChatAppState {
-    @Sync(.local) var conversations: [Conversation]
-    @Sync(.memory) var messages: [Message]
-    @Sync(.memory) var onlineUsers: Set<UserID>
-}
-
-On(SNSServerEvent.newMessage) { state, message, ctx in
-    state.messages.append(message)
-    playNotificationSound()
-}
-```
-
-### 協作工具（Slack、Discord）
-
-```swift
-@StateTree
-struct CollaborationAppState {
-    @Sync(.cloud) var channels: [Channel]
-    @Sync(.memory) var currentChannel: Channel?
-    @Sync(.memory) var onlineUsers: Set<UserID>
-}
-
-On(SNSServerEvent.userOnline) { state, userID, ctx in
-    state.onlineUsers.insert(userID)
-}
-```
-
-## 跨平台實現：Android / 其他平台
-
-### 實現可行性
-
-StateTree 設計的核心理念是**語言無關的協議和架構**，可以跨平台實現：
-
-1. **狀態樹結構**：可以用任何語言實現（Swift、Kotlin、TypeScript、Rust 等）
-2. **同步規則**：`@Sync` 可以用 annotation/decorator 實現
-3. **RPC + Event 協議**：使用標準的序列化格式（JSON、Protobuf、MsgPack）
-4. **DSL**：每個語言可以用自己的方式實現（Kotlin DSL、TypeScript decorators）
-
-### Android (Kotlin) 實現範例
-
-#### 狀態樹定義
-
-```kotlin
-@StateTree
-data class SNSAppState(
-    // 用戶資料（本地持久化 + 雲端同步）
-    @Sync(SyncPolicy.Local("user_profile"))
-    @Sync(SyncPolicy.Cloud("/api/user"))
-    var currentUser: User? = null,
-    
-    // Timeline（快取 + 雲端同步）
-    @Sync(SyncPolicy.Cache(ttl = Duration.ofMinutes(5)))
-    @Sync(SyncPolicy.Cloud("/api/timeline"))
-    var timeline: List<Post> = emptyList(),
-    
-    // 通知（即時推送）
-    @Sync(SyncPolicy.Memory)
-    var notifications: List<Notification> = emptyList(),
-    
-    // UI 狀態
-    @Sync(SyncPolicy.Memory)
-    var uiState: UIState = UIState()
-)
-
-@StateTree
-annotation class StateTree
-
-enum class SyncPolicy {
-    Local(val key: String),
-    Cloud(val endpoint: String),
-    Cache(val ttl: Duration),
-    Memory
-}
-```
-
-#### RPC 定義
-
-```kotlin
-sealed class SNSRPC {
-    data class FetchTimeline(val page: Int) : SNSRPC()
-    data class CreatePost(val content: String) : SNSRPC()
-    data class LikePost(val postID: String) : SNSRPC()
-}
-```
-
-#### DSL 定義（Kotlin DSL）
-
-```kotlin
-val snsApp = App("sns-app", SNSAppState::class) {
-    config {
-        // 注意：baseURL 和 webSocketURL 已移除
-        // 網路層細節應該在 Transport 層處理
-    }
-    
-    allowedClientEvents {
-        SNSClientEvent.ViewPost::class
-        SNSClientEvent.Heartbeat::class
-    }
-    
-    // RPC 處理（使用服務抽象）
-    rpc(SNSRPC.FetchTimeline::class) { state, rpc, ctx ->
-        val timelineService = ctx.services.timelineService
-            ?: return@rpc RPCResponse.Failure("Timeline service not available")
-        val posts = timelineService.fetch(page = rpc.page)
-        state.timeline = if (rpc.page == 0) posts else state.timeline + posts
-        RPCResponse.Success(RPCResultData.Timeline(posts))
-    }
-    
-    // Event 處理
-    on(SNSClientEvent.Heartbeat::class) { state, event, ctx ->
-        state.connectionStatus = ConnectionStatus.Connected
-    }
-    
-    on(GameEvent::class) { state, event, ctx ->
-        when (event) {
-            is GameEvent.FromServer -> when (event.serverEvent) {
-                is SNSServerEvent.NewPost -> {
-                    state.timeline = listOf(event.serverEvent.post) + state.timeline
-                }
-                is SNSServerEvent.Notification -> {
-                    state.notifications = listOf(event.serverEvent.notification) + state.notifications
-                }
-            }
-            is GameEvent.FromClient -> { /* 處理 client event */ }
+        case .itemAdded: break  // 先保留掛鉤，必要時再處理
         }
     }
 }
 ```
 
-### TypeScript / JavaScript 實現範例
-
-#### 狀態樹定義
-
-```typescript
-@StateTree
-class SNSAppState {
-    @Sync({ local: { key: "user_profile" }, cloud: { endpoint: "/api/user" } })
-    currentUser?: User;
-    
-    @Sync({ cache: { ttl: "5m" }, cloud: { endpoint: "/api/timeline" } })
-    timeline: Post[] = [];
-    
-    @Sync({ memory: true })
-    notifications: Notification[] = [];
-}
-
-function StateTree(target: any) { /* 實作 */ }
-function Sync(options: SyncOptions) { /* 實作 */ }
-```
-
-#### DSL 定義
-
-```typescript
-const snsApp = App("sns-app", SNSAppState, {
-    config: {
-        // 注意：baseURL 和 webSocketURL 已移除
-        // 網路層細節應該在 Transport 層處理
-    },
-    
-    allowedClientEvents: [
-        SNSClientEvent.ViewPost,
-        SNSClientEvent.Heartbeat
-    ],
-    
-    rpc: {
-        [SNSRPC.FetchTimeline]: async (state, rpc, ctx) => {
-            const timelineService = ctx.services.timelineService;
-            if (!timelineService) {
-                return { success: false, error: "Timeline service not available" };
-            }
-            const posts = await timelineService.fetch(page: rpc.page);
-            state.timeline = rpc.page === 0 ? posts : [...state.timeline, ...posts];
-            return { success: true, data: { timeline: posts } };
-        }
-    },
-    
-    events: {
-        [SNSClientEvent.Heartbeat]: (state, event, ctx) => {
-            state.connectionStatus = ConnectionStatus.Connected;
-        },
-        
-        [GameEvent]: (state, event, ctx) => {
-            if (event.type === "fromServer") {
-                switch (event.serverEvent.type) {
-                    case "newPost":
-                        state.timeline = [event.serverEvent.post, ...state.timeline];
-                        break;
-                }
-            }
-        }
-    }
-});
-```
-
-### 跨平台實現的優勢
-
-1. **統一的架構**：
-   - 所有平台使用相同的設計理念
-   - 狀態結構可以共享（使用相同的資料模型）
-   - RPC/Event 協議可以跨平台
-
-2. **協議層標準化**：
-   - 序列化格式統一（JSON、Protobuf）
-   - RPC 和 Event 的協議定義可以共享
-   - 狀態樹結構可以跨平台共享
-
-3. **開發體驗一致**：
-   - iOS 和 Android 使用相似的 DSL
-   - 學習成本低（一次學習，多平台適用）
-   - 測試邏輯可以共享（狀態變化邏輯）
-
-### 實現建議
-
-1. **核心模組（語言無關）**：
-   - 定義協議格式（JSON Schema、Protobuf）
-   - 定義狀態樹結構（可以用 JSON Schema 描述）
-   - 定義 RPC/Event 協議
-
-2. **平台特定實現**：
-   - **Swift**：使用 Swift Macros、Property Wrappers
-   - **Kotlin**：使用 Kotlin DSL、Annotations
-   - **TypeScript**：使用 Decorators、Type System
-
-3. **共享層**：
-   - 狀態模型定義（可以用 JSON Schema 生成）
-   - RPC/Event 型別定義（可以用 Protobuf 生成）
-   - 測試邏輯（狀態變化測試可以跨平台共享）
-
-### 與現有跨平台方案比較
-
-#### vs Flutter / React Native
-
-**Flutter/RN：**
-- 需要寫平台特定程式碼
-- 狀態管理分散（Redux、MobX）
-
-**StateTree：**
-- 統一的架構設計
-- 每個平台用原生語言實現（性能更好）
-- 狀態管理集中且一致
-
-#### vs KMM (Kotlin Multiplatform)
-
-**KMM：**
-- 共享業務邏輯
-- UI 層還是需要平台特定
-
-**StateTree：**
-- 可以配合 KMM 使用
-- 共享狀態樹定義和處理邏輯
-- UI 層用各平台原生框架
-
-## 實際場景對比
-
-### 場景：用戶打開 Timeline
-
-**目前主流做法需要寫：**
-1. 檢查快取
-2. 載入快取數據（如果有）
-3. 發送 API 請求
-4. 處理 Response
-5. 更新狀態
-6. 更新快取
-7. 連接 WebSocket
-8. 處理 WebSocket 事件
-9. 更新狀態
-10. 錯誤處理
-
-**StateTree 只需要寫：**
-1. 定義狀態樹（聲明同步規則）
-2. 定義 RPC handler（處理 API）
-3. 定義 Event handler（處理推送）
-
-其他都是自動處理的。
-
-這就是 StateTree 的核心優勢：**用狀態樹同步狀態，通過聲明式規則自動處理同步邏輯，而不是手動管理**。
-
+- 若要新增更多 case，先列名稱/參數即可，細節等決策後再展開。
