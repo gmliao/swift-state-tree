@@ -489,33 +489,117 @@ await ctx.sendEvent(.fromServer(.systemMessage("Private message")), to: .player(
 
 ### RealmContext（提供 sendEvent / service / random 等）
 
+**設計原則**：RealmContext **不應該**知道 Transport 的存在，WebSocket 細節不應該暴露到 StateTree 層。
+
+**設計模式**：RealmContext 採用 **Request-scoped Context** 模式，類似 NestJS 的 Request Context。
+
+#### 類似 NestJS Request Context
+
+RealmContext 的設計概念類似 NestJS 的 Request Context：
+
+| 特性 | NestJS Request Context | StateTree RealmContext |
+|------|----------------------|----------------------|
+| **建立時機** | 每個 HTTP 請求 | 每個 RPC/Event 請求 |
+| **生命週期** | 請求開始 → 請求結束 | 請求開始 → 請求結束 |
+| **包含資訊** | user、params、headers、ip 等 | playerID、clientID、sessionID、realmID 等 |
+| **傳遞方式** | Dependency Injection | 作為參數傳遞給 handler |
+| **釋放時機** | 請求處理完成後 | 請求處理完成後 |
+
+**關鍵點**：
+- ✅ **請求級別**：每次 RPC/Event 請求建立一個新的 RealmContext
+- ✅ **不持久化**：處理完成後釋放，不保留在記憶體中
+- ✅ **資訊集中**：請求相關資訊（playerID、clientID、sessionID）集中在 context 中
+- ✅ **請求隔離**：每個請求有獨立的 context，不會互相干擾
+
 ```swift
+// ✅ 正確：RealmContext 不包含 Transport
 public struct RealmContext {
     public let realmID: String
-    public let playerID: PlayerID
+    public let playerID: PlayerID      // 帳號識別（用戶身份）
+    public let clientID: ClientID      // 裝置識別（客戶端實例，應用端提供）
+    public let sessionID: SessionID    // 會話識別（動態生成，用於追蹤）
     public let services: RealmServices  // 服務抽象，不依賴 HTTP
-    public let transport: GameTransport
     
-    // 推送 Event（透過 transport）
+    // ❌ 移除：public let transport: GameTransport
+    
+    // ✅ 推送 Event（透過閉包委派，不暴露 Transport）
     public func sendEvent(_ event: GameEvent, to target: EventTarget) async {
-        switch target {
-        case .all:
-            await transport.broadcast(event, in: realmID)
-        case .player(let id):
-            await transport.send(event, to: id, in: realmID)
-        case .players(let ids):
-            for id in ids {
-                await transport.send(event, to: id, in: realmID)
-            }
-        }
+        // 實作在 Runtime 層（RealmActor），不暴露 Transport 細節
+        await sendEventHandler(event, target)
+    }
+    
+    // ✅ 透過閉包委派，不暴露 Transport
+    private let sendEventHandler: (GameEvent, EventTarget) async -> Void
+    
+    internal init(
+        realmID: String,
+        playerID: PlayerID,
+        clientID: ClientID,
+        sessionID: SessionID,
+        services: RealmServices,
+        sendEventHandler: @escaping (GameEvent, EventTarget) async -> Void
+    ) {
+        self.realmID = realmID
+        self.playerID = playerID
+        self.clientID = clientID
+        self.sessionID = sessionID
+        self.services = services
+        self.sendEventHandler = sendEventHandler
     }
 }
 
 enum EventTarget {
     case all
-    case player(PlayerID)
+    case player(PlayerID)      // 發送給該 playerID 的所有連接（所有裝置/標籤頁）
+    case client(ClientID)       // 發送給特定 clientID（單一裝置的所有標籤頁）
+    case session(SessionID)     // 發送給特定 sessionID（單一連接）
     case players([PlayerID])
 }
+
+// 三層識別系統
+struct PlayerID: Hashable, Codable {
+    let rawValue: String
+    init(_ rawValue: String) { self.rawValue = rawValue }
+}
+
+struct ClientID: Hashable, Codable {
+    let rawValue: String
+    init(_ rawValue: String) { self.rawValue = rawValue }
+}
+
+struct SessionID: Hashable, Codable {
+    let rawValue: String
+    init(_ rawValue: String) { self.rawValue = rawValue }
+}
+```
+
+#### RealmContext 的生命週期
+
+**重要**：RealmContext 不是「每個玩家有一個」，而是「每次請求建立一個」。
+
+```swift
+// 範例：Alice 發送多個 RPC
+
+// 請求 1：Alice 發送 join RPC
+// ├─ 建立 RealmContext #1
+// │  ├─ playerID: "alice-123"
+// │  ├─ clientID: "device-mobile-001"
+// │  └─ sessionID: "session-001"
+// └─ 處理完成後，RealmContext #1 被釋放
+
+// 請求 2：Alice 發送 attack RPC
+// ├─ 建立 RealmContext #2
+// │  ├─ playerID: "alice-123"      (相同)
+// │  ├─ clientID: "device-mobile-001" (相同)
+// │  └─ sessionID: "session-001"    (相同)
+// └─ 處理完成後，RealmContext #2 被釋放
+```
+
+**設計要點**：
+1. **請求級別**：每次 RPC/Event 請求建立一個新的 RealmContext
+2. **不持久化**：處理完成後釋放，不保留在記憶體中
+3. **輕量級**：只包含該請求需要的資訊
+4. **請求隔離**：每個請求有獨立的 context，不會互相干擾
 
 // 服務抽象（不依賴 HTTP 細節）
 public struct RealmServices {

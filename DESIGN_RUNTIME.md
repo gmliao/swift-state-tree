@@ -7,22 +7,85 @@
 
 ### RealmActor（概念）
 
+**設計原則**：RealmActor 負責處理 Transport 細節，但不暴露給 StateTree 層。
+
 ```swift
 actor RealmActor {
     private var state: StateTree
     private let def: RealmDefinition<StateTree>
     private let syncEngine: SyncEngine
-    private let ctx: RealmContext
+    private let transport: GameTransport  // ✅ Transport 只在 Runtime 層
+    private let services: RealmServices
     
-    init(definition: RealmDefinition<StateTree>, context: RealmContext) {
+    init(
+        definition: RealmDefinition<StateTree>,
+        transport: GameTransport,
+        services: RealmServices
+    ) {
         self.def = definition
         self.state = StateTree()
         self.syncEngine = SyncEngine()
-        self.ctx = context
+        self.transport = transport
+        self.services = services
+    }
+    
+    // ✅ 建立 RealmContext（不暴露 Transport）
+    // 注意：每次請求都建立一個新的 RealmContext（類似 NestJS Request Context）
+    private func createContext(
+        playerID: PlayerID,
+        clientID: ClientID,
+        sessionID: SessionID
+    ) -> RealmContext {
+        RealmContext(
+            realmID: def.id,
+            playerID: playerID,
+            clientID: clientID,
+            sessionID: sessionID,
+            services: services,
+            // ✅ 透過閉包委派，不暴露 Transport
+            sendEventHandler: { [weak self] event, target in
+                await self?.sendEventInternal(event, to: target)
+            }
+        )
+    }
+    
+    // 注意：RealmContext 是請求級別的，不是玩家級別的
+    // - 每次 RPC/Event 請求建立一個新的 RealmContext
+    // - 處理完成後釋放，不持久化
+    // - 類似 NestJS 的 Request Context 設計模式
+    
+    // ✅ 內部方法處理 Transport 細節
+    private func sendEventInternal(_ event: GameEvent, to target: EventTarget) async {
+        switch target {
+        case .all:
+            await transport.broadcast(event, in: def.id)
+        case .player(let id):
+            await transport.send(event, to: id, in: def.id)
+        case .client(let clientID):
+            await transport.send(event, to: clientID, in: def.id)
+        case .session(let sessionID):
+            await transport.send(event, to: sessionID, in: def.id)
+        case .players(let ids):
+            for id in ids {
+                await transport.send(event, to: id, in: def.id)
+            }
+        }
     }
     
     // 處理 RPC（Client -> Server）
-    func handleRPC(_ rpc: GameRPC, from player: PlayerID) async -> RPCResponse {
+    func handleRPC(
+        _ rpc: GameRPC,
+        from playerID: PlayerID,
+        clientID: ClientID,
+        sessionID: SessionID
+    ) async -> RPCResponse {
+        // 建立 RealmContext（不暴露 Transport）
+        let ctx = createContext(
+            playerID: playerID,
+            clientID: clientID,
+            sessionID: sessionID
+        )
+        
         // 從 def.nodes 找 RPCNode<GameRPC>，執行 handler
         guard let rpcNode = findRPCNode(rpc) else {
             return .failure("Unknown RPC type")
@@ -31,7 +94,19 @@ actor RealmActor {
     }
     
     // 處理 Event（雙向）
-    func handleEvent(_ event: GameEvent, from player: PlayerID?) async {
+    func handleEvent(
+        _ event: GameEvent,
+        from playerID: PlayerID,
+        clientID: ClientID,
+        sessionID: SessionID
+    ) async {
+        // 建立 RealmContext（不暴露 Transport）
+        let ctx = createContext(
+            playerID: playerID,
+            clientID: clientID,
+            sessionID: sessionID
+        )
+        
         // 從 def.nodes 找 OnEventNode<GameEvent>，執行 handler
         guard let eventNode = findEventNode(event) else {
             return  // 未知的 Event 類型，忽略
@@ -44,7 +119,12 @@ actor RealmActor {
         let players = Array(state.players.keys)
         for pid in players {
             let snapshot = try syncEngine.snapshot(for: pid, from: state)
-            await ctx.sendEvent(.stateUpdate(snapshot), to: .player(pid))
+            // 發送給該 playerID 的所有連接
+            await transport.send(
+                .fromServer(.stateUpdate(snapshot)),
+                to: pid,
+                in: def.id
+            )
         }
     }
 }

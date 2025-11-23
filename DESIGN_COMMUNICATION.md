@@ -179,17 +179,24 @@ func configure(_ app: Application) throws {
     await transport.register(gameRealm)
     await transport.register(lobbyRealm)
     
-    // 4. 設定統一的 WebSocket 路由
-    app.webSocket("ws", ":playerID") { req, ws in
-        guard let playerID = req.parameters.get("playerID") else {
+    // 4. 設定統一的 WebSocket 路由（三層識別）
+    app.webSocket("ws", ":playerID", ":clientID") { req, ws in
+        guard let playerIDRaw = req.parameters.get("playerID"),
+              let clientIDRaw = req.parameters.get("clientID") else {
             ws.close(promise: nil)
             return
         }
         
+        let playerID = PlayerID(playerIDRaw)
+        let clientID = ClientID(clientIDRaw)  // 應用端提供
+        let sessionID = SessionID(UUID().uuidString)  // Server 自動生成
+        
         // 所有 realm 共用同一個 WebSocket 連接
         // realmID 在訊息中指定（TransportMessage 包含 realmID）
         await transport.handleConnection(
-            playerID: PlayerID(playerID),
+            playerID: playerID,
+            clientID: clientID,
+            sessionID: sessionID,
             websocket: ws
         )
     }
@@ -199,8 +206,9 @@ func configure(_ app: Application) throws {
 **訊息流程**：
 
 ```swift
-// Client 連接到統一的 WebSocket endpoint
-let ws = await connect("wss://api.example.com/ws/player-123")
+// Client 連接到統一的 WebSocket endpoint（帶上 playerID 和 clientID）
+let clientID = generateOrGetClientID()  // 應用端生成
+let ws = await connect("wss://api.example.com/ws/player-123/\(clientID)")
 
 // Client 發送訊息時指定 realmID
 let message = TransportMessage.rpc(
@@ -217,8 +225,10 @@ await ws.send(message)
 **設計要點**：
 1. **訊息層級路由**：`realmID` 在 `TransportMessage` 中，而非 URL 路徑
 2. **Transport 層處理**：根據 `realmID` 查找對應的 `RealmActor`
-3. **單一連接**：一個玩家一個 WebSocket 連接，可以與多個 realm 互動
-4. **動態加入**：新 realm 只需註冊，不需要修改路由配置
+3. **三層識別**：`playerID`（帳號）+ `clientID`（裝置）+ `sessionID`（會話）
+4. **多連接支援**：同一個 `playerID` 可以有多個 `clientID`（多裝置），同一個 `clientID` 可以有多個 `sessionID`（多標籤頁）
+5. **動態加入**：新 realm 只需註冊，不需要修改路由配置
+6. **WebSocket 不暴露**：StateTree/Realm 層不知道 WebSocket 的存在，透過 RealmContext 抽象
 
 **可選：分離路由**（特殊場景）
 
