@@ -184,16 +184,25 @@ struct PlayerViewState {
 ### 1. StateTree + Sync
 
 ```swift
-@StateTree
-struct GameStateTree {
+@StateTreeBuilder
+struct GameStateTree: StateTreeProtocol {
     @Sync(.broadcast)
-    var players: [PlayerID: PlayerState]
+    var players: [PlayerID: PlayerState] = [:]
     
-    @Sync(.perPlayer(\.ownerID))
-    var hands: [PlayerID: HandState]
+    @Sync(.perPlayerDictionaryValue())
+    var hands: [PlayerID: HandState] = [:]
     
     @Sync(.serverOnly)
-    var hiddenDeck: [Card]
+    var hiddenDeck: [Card] = []
+    
+    // 伺服器內部使用的暫存值
+    @Internal
+    var lastProcessedTimestamp: Date = Date()
+    
+    // 計算屬性：自動跳過驗證
+    var totalPlayers: Int {
+        players.count
+    }
 }
 ```
 
@@ -489,6 +498,7 @@ actor RealmActor {
 | 簡寫 | 完整名稱 | 說明 |
 |------|---------|------|
 | **core** | `swift-state-tree` | 核心模組（不相依網路） |
+| **macros** | `swift-state-tree-macros` | Macro 實作模組（編譯時使用） |
 | **transport** | `swift-state-tree-transport` | 網路傳輸模組 |
 | **app** | `swift-state-tree-server-app` | Server 應用啟動模組 |
 | **codegen** | `swift-state-tree-codegen` | Schema 生成工具 |
@@ -500,10 +510,11 @@ actor RealmActor {
 **職責**：核心定義，不相依任何網路
 
 **包含**：
-- `@StateTree`：StateTree 定義
-- `@Sync`：同步規則 DSL
+- `@StateTreeBuilder`：StateTree DSL（Property Wrapper + Macro）
+- `@Sync`：同步規則 Property Wrapper
+- `@Internal`：伺服器內部欄位 Property Wrapper
 - `SyncPolicy`：同步策略定義
-- `StateTree`：狀態樹結構
+- `StateTreeProtocol`：StateTree 協議
 - **Schema Generator**：從 StateTree 定義生成 JSON Schema
 - `RealmDefinition`：Realm DSL 定義（不含網路細節）
 - `RealmContext`：RealmContext 定義
@@ -518,7 +529,37 @@ actor RealmActor {
 
 **依賴**：無外部依賴（純 Swift）
 
-##### 2. **transport** (`swift-state-tree-transport`)
+##### 2. **macros** (`swift-state-tree-macros`)
+
+**職責**：`@StateTreeBuilder` macro 的實作模組（編譯時使用）
+
+**包含**：
+- `StateTreeBuilderMacro`：`@StateTreeBuilder` macro 的實作
+- Macro 展開邏輯：驗證、程式碼生成
+
+**不包含**：
+- ❌ 執行時程式碼
+- ❌ StateTree 相關型別定義（這些在主模組中）
+
+**依賴**：
+- `SwiftSyntax`：用於解析和生成 Swift 程式碼的語法樹
+
+**使用方式**：
+- 作為 `core` 模組的編譯時依賴
+- 使用者不需要直接 import，由編譯器自動處理
+
+**模組架構**：
+```
+SwiftStateTree (core)
+├── 定義 Macro：@StateTreeBuilder
+└── 使用 Macro：@StateTreeBuilder struct GameStateTree { ... }
+
+SwiftStateTreeMacros (macros)
+├── 實作 Macro：StateTreeBuilderMacro
+└── 依賴 SwiftSyntax
+```
+
+##### 3. **transport** (`swift-state-tree-transport`)
 
 **職責**：網路傳輸抽象和實作
 
@@ -532,7 +573,7 @@ actor RealmActor {
 
 **依賴**：`core`
 
-##### 3. **app** (`swift-state-tree-server-app`)
+##### 4. **app** (`swift-state-tree-server-app`)
 
 **職責**：Server 應用啟動和配置
 
@@ -582,6 +623,9 @@ func configure(_ app: Application) throws {
 ```
 core (swift-state-tree)
     ↑
+    ├── macros (swift-state-tree-macros) [編譯時依賴]
+    │       └── 依賴 SwiftSyntax
+    │
     ├── transport (swift-state-tree-transport)
     │       ↑
     │       └── app (swift-state-tree-server-app)
@@ -589,11 +633,17 @@ core (swift-state-tree)
     └── codegen (swift-state-tree-codegen)
 ```
 
+**說明**：
+- `macros` 是 `core` 的編譯時依賴，只在編譯時使用
+- `macros` 依賴 `SwiftSyntax` 來實作 Macro
+- 使用者不需要直接 import `macros`，由編譯器自動處理
+
 #### 模組職責對照表
 
 | 模組 | 簡寫 | 職責 | 包含內容 | 不包含 |
 |------|------|------|---------|--------|
-| `swift-state-tree` | **core** | 核心定義 | StateTree、@Sync、Realm DSL、SyncEngine、Schema Gen | WebSocket、HTTP、Transport |
+| `swift-state-tree` | **core** | 核心定義 | StateTree、@Sync、@Internal、Realm DSL、SyncEngine、Schema Gen | WebSocket、HTTP、Transport |
+| `swift-state-tree-macros` | **macros** | Macro 實作 | @StateTreeBuilder macro 實作 | 執行時程式碼、StateTree 型別定義 |
 | `swift-state-tree-transport` | **transport** | 網路傳輸 | Transport 協議、WebSocket 實作、連接管理 | Server 啟動、應用框架 |
 | `swift-state-tree-server-app` | **app** | Server 應用 | WebSocket 路由、Realm 註冊、應用啟動 | 核心邏輯、Transport 實作 |
 | `swift-state-tree-codegen` | **codegen** | Schema 生成 | Type Extractor、Schema Generator、CLI | 運行時邏輯 |

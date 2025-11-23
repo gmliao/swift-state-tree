@@ -57,6 +57,20 @@ public struct Sync<Value: Sendable>: Sendable {
     }
 }
 
+/// 標記為伺服器內部使用，不需要同步，也不需要驗證。
+/// 
+/// 與 `@Sync(.serverOnly)` 的差異：
+/// - `@Sync(.serverOnly)`：同步引擎知道這個欄位存在，但不輸出給 Client
+/// - `@Internal`：完全不需要同步引擎知道，純粹伺服器內部使用
+@propertyWrapper
+public struct Internal<Value: Sendable>: Sendable {
+    public var wrappedValue: Value
+
+    public init(wrappedValue: Value) {
+        self.wrappedValue = wrappedValue
+    }
+}
+
 /// 型別抹除後的同步值存取。
 private protocol SyncValueProvider {
     func syncValue(for playerID: PlayerID) -> Any?

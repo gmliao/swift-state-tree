@@ -28,9 +28,14 @@ let package = Package(
                 "Runtime/README.md",
                 "SchemaGen/README.md"
             ]
+        ),
+        
+        // 🔹 Library tests (using Swift Testing framework)
+        .testTarget(
+            name: "SwiftStateTreeTests",
+            dependencies: ["SwiftStateTree"],
+            path: "Tests/SwiftStateTreeTests"
         )
-
-        // Note: Demo server and tests will be added as development progresses
     ]
 )
 

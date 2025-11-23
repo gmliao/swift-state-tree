@@ -29,6 +29,7 @@ SwiftStateTree 採用以下核心設計：
 | 模組 | 說明 |
 |------|------|
 | **core** | 核心模組（不相依網路） |
+| **macros** | Macro 實作模組（編譯時使用） |
 | **transport** | 網路傳輸模組 |
 | **app** | Server 應用啟動模組 |
 | **codegen** | Schema 生成工具 |
@@ -81,11 +82,12 @@ swift test
 
 ### 模組架構
 
-本專案採用模組化設計，分為四個核心模組：
+本專案採用模組化設計，分為五個核心模組：
 
 | 模組 | 簡寫 | 說明 |
 |------|------|------|
 | **core** | `SwiftStateTree` | 核心模組（不相依網路） |
+| **macros** | `SwiftStateTreeMacros` | Macro 實作模組（編譯時使用） |
 | **transport** | `SwiftStateTreeTransport` | 網路傳輸模組 |
 | **app** | `SwiftStateTreeServerApp` | Server 應用啟動模組 |
 | **codegen** | `SwiftStateTreeCodeGen` | Schema 生成工具 |
@@ -134,31 +136,50 @@ SwiftStateTree/
 ### StateTree：單一權威狀態樹
 
 ```swift
-@StateTree
-struct GameStateTree {
+@StateTreeBuilder
+struct GameStateTree: StateTreeProtocol {
     // 所有玩家的公開狀態（血量、名字等），可以廣播給大家
     @Sync(.broadcast)
     var players: [PlayerID: PlayerState] = [:]
     
     // 手牌：每個玩家只看得到自己的
-    @Sync(.perPlayer(\.ownerID))
+    @Sync(.perPlayerDictionaryValue())
     var hands: [PlayerID: HandState] = [:]
     
-    // 伺服器內部用，不同步給任何 Client
+    // 伺服器內部用，不同步給任何 Client（但仍會被同步引擎知道）
     @Sync(.serverOnly)
     var hiddenDeck: [Card] = []
+    
+    // 伺服器內部計算用的暫存值（不需要同步引擎知道）
+    @Internal
+    var lastProcessedTimestamp: Date = Date()
+    
+    // 計算屬性：自動跳過驗證
+    var totalPlayers: Int {
+        players.count
+    }
 }
 ```
 
-### 同步規則：@Sync
+### 同步規則：@Sync 與 @Internal
 
-使用 `@Sync` 屬性標記欄位，定義同步策略：
+使用 `@Sync` 屬性標記需要同步的欄位，定義同步策略：
 
 - `.broadcast`：同一份資料同步給所有 client
-- `.serverOnly`：完全不對任何 client 同步
-- `.perPlayer(\.ownerID)`：依玩家 ID 過濾，只同步該玩家的資料
+- `.serverOnly`：伺服器內部用，不同步給 Client（但仍會被同步引擎知道）
+- `.perPlayerDictionaryValue()`：依玩家 ID 過濾 Dictionary，只同步該玩家的值
 - `.masked((Value) -> Any)`：用 mask function 改寫值
 - `.custom((PlayerID, Value) -> Any?)`：完全客製化
+
+使用 `@Internal` 標記伺服器內部使用的欄位（不需要同步引擎知道）：
+
+- 純粹伺服器內部計算用的暫存值、快取等
+- 驗證機制會自動跳過
+- 與 `@Sync(.serverOnly)` 的差異：`@Internal` 完全不需要同步引擎知道
+
+**驗證規則**：
+- 所有 stored properties 必須明確標記（`@Sync` 或 `@Internal`）
+- Computed properties 自動跳過驗證
 
 ### Realm DSL：領域定義
 
@@ -268,6 +289,10 @@ let gameRealm = Realm("game-room", using: GameStateTree.self) {
 
 ## 🧪 測試
 
+本專案使用 **Swift Testing**（Swift 6 的新測試框架）進行單元測試。
+
+### 運行測試
+
 運行所有測試：
 
 ```bash
@@ -277,7 +302,7 @@ swift test
 運行特定測試：
 
 ```bash
-swift test --filter SwiftStateTreeTests.testYourFeature
+swift test --filter StateTreeTests.testGetSyncFields
 ```
 
 ### 編寫新測試
@@ -285,10 +310,28 @@ swift test --filter SwiftStateTreeTests.testYourFeature
 在 `Tests/SwiftStateTreeTests/` 中添加測試用例：
 
 ```swift
-func testYourFeature() async throws {
-    // 你的測試代碼
+import Testing
+@testable import SwiftStateTree
+
+@Test("Description of what is being tested")
+func testYourFeature() throws {
+    // Arrange
+    let state = YourStateTree()
+    
+    // Act
+    let result = state.someMethod()
+    
+    // Assert
+    #expect(result == expectedValue)
 }
 ```
+
+### 測試框架說明
+
+- **使用 Swift Testing**：Swift 6 的新測試框架，提供更現代的測試體驗
+- **`@Test` 屬性**：標記測試函數，可選描述文字
+- **`#expect()`**：用於斷言，替代 `XCTAssert*`
+- **`Issue.record()`**：記錄測試失敗資訊
 
 ## 🤝 貢獻
 

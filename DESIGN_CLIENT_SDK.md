@@ -94,13 +94,13 @@ enum ServerEvent: Codable {
     case gameEvent(GameEventDetail)
 }
 
-@StateTree
-struct GameStateTree {
+@StateTreeBuilder
+struct GameStateTree: StateTreeProtocol {
     @Sync(.broadcast)
-    var players: [PlayerID: PlayerState]
+    var players: [PlayerID: PlayerState] = [:]
     
-    @Sync(.perPlayer(\.ownerID))
-    var hands: [PlayerID: HandState]
+    @Sync(.perPlayerDictionaryValue())
+    var hands: [PlayerID: HandState] = [:]
 }
 ```
 

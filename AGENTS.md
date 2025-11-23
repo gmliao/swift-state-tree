@@ -8,7 +8,7 @@
 
 ## Build, Test, and Development Commands
 - `swift build`: compile all targets; use `-c release` for performance checks.
-- `swift test`: run library tests; use `swift test --filter SwiftStateTreeTests.testJoinAndAttack` for a single case.
+- `swift test`: run library tests; use `swift test --filter StateTreeTests.testGetSyncFields` for a single case.
 - `swift run SwiftStateTreeVaporDemo`: start the demo server at `http://localhost:8080`.
 - `swift package resolve`: refresh dependencies if `Package.resolved` drifts.
 
@@ -19,10 +19,13 @@
 - Place new game logic in `Sources/SwiftStateTree/GameCore`; keep demo-only code inside `SwiftStateTreeVaporDemo`.
 
 ## Testing Guidelines
-- Framework: SwiftPM XCTest.
-- Add tests under `Tests/SwiftStateTreeTests`, mirroring the type under test (e.g., `GameStateTests.swift`).
-- Name async tests with clear intent (`testPlayerJoinCreatesSnapshot`); prefer arranging with setup/act/assert comments when logic grows.
-- Use Arrange‑Act‑Assert structure and name cases `test_<Scenario>_<Expectation>()`; keep test files suffixed with `*Tests.swift` matching the type under test.
+- **Framework: Swift Testing** (Swift 6's new testing framework, not XCTest).
+- Add tests under `Tests/SwiftStateTreeTests`, mirroring the type under test (e.g., `StateTreeTests.swift`).
+- Use `@Test` attribute with descriptive names: `@Test("Description of what is being tested")`.
+- Use `#expect()` for assertions instead of `XCTAssert*`.
+- Use `Issue.record()` for test failures that should be reported.
+- Name test functions with clear intent; prefer arranging with setup/act/assert comments when logic grows.
+- Use Arrange‑Act‑Assert structure; keep test files suffixed with `*Tests.swift` matching the type under test.
 - When adding public APIs or core game logic, add/refresh tests and run `swift test` before sending changes out.
 - Aim to cover new public APIs and concurrency paths; avoid shared mutable state between tests.
 
