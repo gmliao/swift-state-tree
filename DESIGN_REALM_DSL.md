@@ -28,8 +28,14 @@
 let matchRealm = Realm("match-3", using: GameStateTree.self) {
     Config {
         MaxPlayers(4)
-        Tick(every: .milliseconds(100))
+        Tick(every: .milliseconds(100))  // ✅ Tick-based：自動批次更新
         IdleTimeout(.seconds(60))
+    }
+    
+    // ✅ 可選：定義 Tick handler（每 tick 執行）
+    // 簡單邏輯可以直接寫，複雜邏輯建議拆分成獨立函數
+    OnTick { state, ctx in
+        await handleTick(&state, ctx)
     }
     
     // 定義允許的 ClientEvent（只限制 Client->Server）
@@ -49,9 +55,25 @@ let matchRealm = Realm("match-3", using: GameStateTree.self) {
         case .join(let id, let name):
             state.players[id] = PlayerState(name: name, hpCurrent: 100, hpMax: 100)
             state.hands[id] = HandState(ownerID: id, cards: [])
+            
+            // ✅ Tick-based：自動標記變化，等待 tick 批次同步
+            // ✅ Event-driven：手動調用 syncNow() 立即同步
+            await ctx.syncNow()  // 或讓系統自動處理（如果有 Tick）
+            
+            // Late join：返回完整快照
             let snapshot = syncEngine.snapshot(for: id, from: state)
-            await ctx.sendEvent(.fromServer(.stateUpdate(snapshot)), to: .all)
             return .success(.joinResult(JoinResponse(realmID: ctx.realmID, state: snapshot)))
+            
+        case .attack(let attacker, let target, let damage):
+            state.players[target]?.hpCurrent -= damage
+            
+            // ✅ Tick-based：自動標記變化，等待 tick 批次同步
+            // ✅ Event-driven：手動調用 syncNow() 立即同步
+            // 重要操作可以強迫立即同步
+            await ctx.syncNow()
+            
+            return .success(.empty)
+            
         default:
             return await handleOtherRPC(&state, rpc, ctx)
         }
@@ -528,8 +550,20 @@ public struct RealmContext {
         await sendEventHandler(event, target)
     }
     
+    // ✅ 手動強迫立即同步狀態（無論是否有 Tick）
+    public func syncNow() async {
+        await syncHandler()
+    }
+    
+    // ✅ 標記狀態變化（Tick-based 模式使用）
+    public func markDirty(_ path: String? = nil) {
+        // 標記變化，等待 tick 批次同步
+        // 實作在 Runtime 層
+    }
+    
     // ✅ 透過閉包委派，不暴露 Transport
     private let sendEventHandler: (GameEvent, EventTarget) async -> Void
+    private let syncHandler: () async -> Void
     
     internal init(
         realmID: String,
@@ -537,7 +571,8 @@ public struct RealmContext {
         clientID: ClientID,
         sessionID: SessionID,
         services: RealmServices,
-        sendEventHandler: @escaping (GameEvent, EventTarget) async -> Void
+        sendEventHandler: @escaping (GameEvent, EventTarget) async -> Void,
+        syncHandler: @escaping () async -> Void
     ) {
         self.realmID = realmID
         self.playerID = playerID
@@ -545,6 +580,7 @@ public struct RealmContext {
         self.sessionID = sessionID
         self.services = services
         self.sendEventHandler = sendEventHandler
+        self.syncHandler = syncHandler
     }
 }
 
@@ -622,6 +658,154 @@ struct HTTPTimelineService: TimelineService {
     }
 }
 ```
+
+### Tick Handler 實作範例
+
+**設計原則**：OnTick handler 應該簡潔，複雜邏輯拆分成獨立函數。
+
+```swift
+// ✅ 推薦：OnTick 只調用函數，邏輯拆分到獨立函數
+let gameRealm = Realm("game-room", using: GameStateTree.self) {
+    Config {
+        Tick(every: .milliseconds(100))
+    }
+    
+    // ✅ OnTick：簡潔，只調用函數
+    OnTick { state, ctx in
+        await handleTick(&state, ctx)
+    }
+    
+    // RPC Handler...
+}
+
+// ✅ 複雜邏輯拆分成獨立函數
+private func handleTick(
+    _ state: inout GameStateTree,
+    _ ctx: RealmContext
+) async {
+    // 1. AI 自動行動
+    await handleAIActions(&state, ctx)
+    
+    // 2. 自動恢復
+    handleAutoRegeneration(&state)
+    
+    // 3. 檢查遊戲狀態
+    checkGameStatus(&state)
+    
+    // ✅ 狀態變化會自動標記，Tick 結束後自動批次同步
+}
+
+private func handleAIActions(
+    _ state: inout GameStateTree,
+    _ ctx: RealmContext
+) async {
+    for (playerID, player) in state.players {
+        guard player.isAI, player.hpCurrent > 0 else { continue }
+        
+        let action = await aiController.decideAction(for: playerID, state: state)
+        executeAction(action, in: &state)
+    }
+}
+
+private func handleAutoRegeneration(_ state: inout GameStateTree) {
+    for (playerID, player) in state.players {
+        if player.hpCurrent < player.hpMax {
+            state.players[playerID]?.hpCurrent += 1
+        }
+    }
+}
+
+private func checkGameStatus(_ state: inout GameStateTree) {
+    let alivePlayers = state.players.values.filter { $0.hpCurrent > 0 }
+    if alivePlayers.count <= 1 {
+        state.gameStatus = .finished
+        state.winner = alivePlayers.first?.id
+    }
+}
+```
+
+**優勢**：
+- ✅ **可讀性**：OnTick 簡潔，邏輯清晰
+- ✅ **可測試**：每個函數可以獨立測試
+- ✅ **可重用**：函數可以在其他地方重用
+- ✅ **易維護**：邏輯分離，容易修改
+
+**使用場景**：
+- AI Battle：AI 自動決策和行動
+- 自動恢復：血量、魔法值自動恢復
+- 倒數計時：回合倒數、遊戲時間倒數
+- 定期檢查：檢查遊戲結束條件、清理過期資料
+
+### Tick Handler 實作範例
+
+**設計原則**：OnTick handler 應該簡潔，複雜邏輯拆分成獨立函數。
+
+```swift
+// ✅ 推薦：OnTick 只調用函數，邏輯拆分到獨立函數
+let gameRealm = Realm("game-room", using: GameStateTree.self) {
+    Config {
+        Tick(every: .milliseconds(100))
+    }
+    
+    // ✅ OnTick：簡潔，只調用函數
+    OnTick { state, ctx in
+        await handleTick(&state, ctx)
+    }
+    
+    // RPC Handler...
+}
+
+// ✅ 複雜邏輯拆分成獨立函數
+private func handleTick(
+    _ state: inout GameStateTree,
+    _ ctx: RealmContext
+) async {
+    // 1. AI 自動行動
+    await handleAIActions(&state, ctx)
+    
+    // 2. 自動恢復
+    handleAutoRegeneration(&state)
+    
+    // 3. 檢查遊戲狀態
+    checkGameStatus(&state)
+    
+    // ✅ 狀態變化會自動標記，Tick 結束後自動批次同步
+}
+
+private func handleAIActions(
+    _ state: inout GameStateTree,
+    _ ctx: RealmContext
+) async {
+    for (playerID, player) in state.players {
+        guard player.isAI, player.hpCurrent > 0 else { continue }
+        
+        let action = await aiController.decideAction(for: playerID, state: state)
+        executeAction(action, in: &state)
+    }
+}
+
+private func handleAutoRegeneration(_ state: inout GameStateTree) {
+    for (playerID, player) in state.players {
+        if player.hpCurrent < player.hpMax {
+            state.players[playerID]?.hpCurrent += 1
+        }
+    }
+}
+
+private func checkGameStatus(_ state: inout GameStateTree) {
+    let alivePlayers = state.players.values.filter { $0.hpCurrent > 0 }
+    if alivePlayers.count <= 1 {
+        state.gameStatus = .finished
+        state.winner = alivePlayers.first?.id
+    }
+}
+```
+
+**優勢**：
+- ✅ **可讀性**：OnTick 簡潔，邏輯清晰
+- ✅ **可測試**：每個函數可以獨立測試
+- ✅ **可重用**：函數可以在其他地方重用
+- ✅ **易維護**：邏輯分離，容易修改
 
 ---
 

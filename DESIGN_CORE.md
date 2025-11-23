@@ -38,13 +38,37 @@ Server -> Client Event:
 
 #### 狀態同步流程
 
+**兩種同步模式**：
+
+1. **Tick-based（自動批次更新）**：
 ```
 StateTree 狀態變化
+  → 標記為「需要同步」
+  → 等待 Tick（例如 100ms）
   → SyncEngine 依 @Sync 規則裁切
-  → 為每個 Player 產生 JSON
-  → 透過 Event 推送給 Client
+  → 分層計算：broadcast（共用）+ perPlayer（個別）
+  → Merge 合併差異
+  → 透過 Event 推送給 Client（path-based diff）
   → Client 更新本地狀態
 ```
+
+2. **Event-driven（手動強迫刷新）**：
+```
+StateTree 狀態變化
+  → 手動調用 syncNow()
+  → SyncEngine 依 @Sync 規則裁切
+  → 分層計算：broadcast（共用）+ perPlayer（個別）
+  → Merge 合併差異
+  → 透過 Event 推送給 Client（path-based diff）
+  → Client 更新本地狀態
+```
+
+**差異計算機制**：
+- ✅ **緩存上次快照**：broadcast 部分共用一份，perPlayer 部分每個玩家一份
+- ✅ **比較差異**：新舊快照比較，找出變化的路徑
+- ✅ **分層計算**：先計算 broadcast（所有人共用），再計算 perPlayer（每個人不同）
+- ✅ **Merge 合併**：合併 broadcast 和 perPlayer 的差異
+- ✅ **Path-based diff**：只發送變化的部分（path + value + operation）
 
 ---
 

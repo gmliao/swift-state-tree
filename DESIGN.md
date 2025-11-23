@@ -2,6 +2,19 @@
 
 > 單一 StateTree + 同步規則 + Realm DSL
 
+## 模組簡寫
+
+為了方便後續溝通，定義以下簡寫：
+
+| 簡寫 | 完整名稱 | 說明 |
+|------|---------|------|
+| **core** | `swift-state-tree` | 核心模組（不相依網路） |
+| **transport** | `swift-state-tree-transport` | 網路傳輸模組 |
+| **app** | `swift-state-tree-server-app` | Server 應用啟動模組 |
+| **codegen** | `swift-state-tree-codegen` | Schema 生成工具 |
+
+詳見 [DESIGN_EXAMPLES.md](./DESIGN_EXAMPLES.md) 的「模組拆分建議」章節。
+
 ## 目標
 
 - 用**一棵權威狀態樹 StateTree** 表示整個領域的狀態

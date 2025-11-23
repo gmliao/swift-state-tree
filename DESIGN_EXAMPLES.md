@@ -482,11 +482,121 @@ actor RealmActor {
 
 ### 模組拆分建議
 
-#### Swift 版本
+#### 模組命名與簡寫
 
-- **SwiftStateTreeCore**：StateTree、@Sync、SyncPolicy、StateTree 核心
-- **SwiftStateTreeServer**：RealmDefinition、RealmActor、SyncEngine、RPC/Event 處理、GameTransport
-- **SwiftStateTreeClient**：Client SDK、狀態同步、RPC/Event 客戶端（可選，建議使用自動生成）
+為了方便後續溝通，定義以下簡寫：
+
+| 簡寫 | 完整名稱 | 說明 |
+|------|---------|------|
+| **core** | `swift-state-tree` | 核心模組（不相依網路） |
+| **transport** | `swift-state-tree-transport` | 網路傳輸模組 |
+| **app** | `swift-state-tree-server-app` | Server 應用啟動模組 |
+| **codegen** | `swift-state-tree-codegen` | Schema 生成工具 |
+
+#### Swift 版本模組劃分
+
+##### 1. **core** (`swift-state-tree`)
+
+**職責**：核心定義，不相依任何網路
+
+**包含**：
+- `@StateTree`：StateTree 定義
+- `@Sync`：同步規則 DSL
+- `SyncPolicy`：同步策略定義
+- `StateTree`：狀態樹結構
+- **Schema Generator**：從 StateTree 定義生成 JSON Schema
+- `RealmDefinition`：Realm DSL 定義（不含網路細節）
+- `RealmContext`：RealmContext 定義
+- `RealmActor`：RealmActor 定義（不含 Transport）
+- `SyncEngine`：同步引擎（不含 Transport）
+
+**不包含**：
+- ❌ WebSocket 相關
+- ❌ HTTP 相關
+- ❌ Transport 相關
+- ❌ Server 啟動相關
+
+**依賴**：無外部依賴（純 Swift）
+
+##### 2. **transport** (`swift-state-tree-transport`)
+
+**職責**：網路傳輸抽象和實作
+
+**包含**：
+- `GameTransport`：Transport 協議定義
+- `WebSocketTransport`：WebSocket 實作
+- `TransportMessage`：傳輸訊息格式
+- 連接管理（三層識別：playerID、clientID、sessionID）
+- 訊息序列化/反序列化
+- 路由機制（realmID 路由）
+
+**依賴**：`core`
+
+##### 3. **app** (`swift-state-tree-server-app`)
+
+**職責**：Server 應用啟動和配置
+
+**包含**：
+- Server 應用啟動設定
+- WebSocket 路由配置
+- Realm 註冊和配置
+- Transport 初始化
+- 服務注入（Services）
+- 應用端類別定義（例如：Vapor、Kestrel 等）
+
+**範例**：
+```swift
+// Vapor 應用端
+import SwiftStateTreeServerApp
+import Vapor
+
+func configure(_ app: Application) throws {
+    // 設定 Transport
+    let transport = WebSocketTransport(...)
+    
+    // 註冊 Realm
+    await transport.register(gameRealm)
+    
+    // 設定 WebSocket 路由
+    app.webSocket("ws", ":playerID", ":clientID") { req, ws in
+        await transport.handleConnection(...)
+    }
+}
+```
+
+**依賴**：`core`、`transport`、應用框架（Vapor、Kestrel 等）
+
+##### 4. **codegen** (`swift-state-tree-codegen`)
+
+**職責**：從 StateTree 定義生成 JSON Schema
+
+**包含**：
+- Type Extractor：從 Swift 定義提取型別資訊
+- Schema Generator：生成 JSON Schema
+- CLI 工具：命令列介面
+
+**依賴**：`core`
+
+#### 模組依賴關係
+
+```
+core (swift-state-tree)
+    ↑
+    ├── transport (swift-state-tree-transport)
+    │       ↑
+    │       └── app (swift-state-tree-server-app)
+    │
+    └── codegen (swift-state-tree-codegen)
+```
+
+#### 模組職責對照表
+
+| 模組 | 簡寫 | 職責 | 包含內容 | 不包含 |
+|------|------|------|---------|--------|
+| `swift-state-tree` | **core** | 核心定義 | StateTree、@Sync、Realm DSL、SyncEngine、Schema Gen | WebSocket、HTTP、Transport |
+| `swift-state-tree-transport` | **transport** | 網路傳輸 | Transport 協議、WebSocket 實作、連接管理 | Server 啟動、應用框架 |
+| `swift-state-tree-server-app` | **app** | Server 應用 | WebSocket 路由、Realm 註冊、應用啟動 | 核心邏輯、Transport 實作 |
+| `swift-state-tree-codegen` | **codegen** | Schema 生成 | Type Extractor、Schema Generator、CLI | 運行時邏輯 |
 
 #### 跨平台版本
 
@@ -509,25 +619,45 @@ actor RealmActor {
 ### 專案目錄結構建議
 
 ```
-StateTree/
-├── Protocol/              # 語言無關的協議定義
-│   ├── schemas/           # JSON Schema
-│   ├── protobuf/          # Protobuf 定義
-│   └── docs/              # 協議文檔
-├── Swift/                 # Swift 實現
-│   ├── StateTreeCore/     # 核心模組
-│   ├── StateTreeServer/   # 伺服器模組
-│   └── StateTreeClient/   # 客戶端模組
-├── Kotlin/                # Kotlin 實現
-│   ├── state-tree-core/   # 核心模組
-│   └── state-tree-dsl/    # DSL 模組
-├── TypeScript/            # TypeScript 實現
-│   ├── state-tree-core/   # 核心模組
-│   └── state-tree-dsl/    # DSL 模組
-└── Examples/              # 範例專案
-    ├── GameServer/        # 遊戲伺服器範例
-    └── SNSApp/            # SNS App 範例
+swift-state-tree/
+├── Sources/
+│   ├── SwiftStateTree/              # core：核心模組
+│   │   ├── StateTree/               # StateTree 定義
+│   │   ├── Sync/                    # @Sync 同步規則
+│   │   ├── Realm/                   # Realm DSL
+│   │   ├── Runtime/                 # RealmActor、SyncEngine
+│   │   └── SchemaGen/              # Schema 生成器
+│   │
+│   ├── SwiftStateTreeTransport/     # transport：網路傳輸模組
+│   │   ├── Transport/              # Transport 協議
+│   │   ├── WebSocket/              # WebSocket 實作
+│   │   └── Connection/             # 連接管理
+│   │
+│   ├── SwiftStateTreeServerApp/     # app：Server 應用模組
+│   │   ├── Vapor/                  # Vapor 應用端
+│   │   ├── Kestrel/                # Kestrel 應用端（未來）
+│   │   └── Common/                 # 共用應用邏輯
+│   │
+│   └── SwiftStateTreeCodeGen/      # codegen：Schema 生成工具
+│       ├── Extractor/              # Type Extractor
+│       ├── Generator/              # Generator Interface
+│       └── CLI/                    # CLI 工具
+│
+├── Tests/
+│   ├── SwiftStateTreeTests/        # core 測試
+│   ├── SwiftStateTreeTransportTests/ # transport 測試
+│   └── SwiftStateTreeServerAppTests/ # app 測試
+│
+└── Examples/                        # 範例專案
+    ├── GameServer/                  # 遊戲伺服器範例
+    └── SNSApp/                      # SNS App 範例
 ```
+
+**模組簡寫對照**：
+- `SwiftStateTree` = **core**
+- `SwiftStateTreeTransport` = **transport**
+- `SwiftStateTreeServerApp` = **app**
+- `SwiftStateTreeCodeGen` = **codegen**
 
 ### 開發順序建議
 
