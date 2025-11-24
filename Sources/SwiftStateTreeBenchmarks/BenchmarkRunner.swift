@@ -247,3 +247,77 @@ struct MultiPlayerParallelRunner: BenchmarkRunner {
     }
 }
 
+// MARK: - Diff Benchmark Runner
+
+/// Benchmark runner that compares snapshot vs diff generation performance
+struct DiffBenchmarkRunner: BenchmarkRunner {
+    let iterations: Int
+    
+    init(iterations: Int = 100) {
+        self.iterations = iterations
+    }
+    
+    func run(
+        config: BenchmarkConfig,
+        state: BenchmarkStateTree,
+        playerID: PlayerID
+    ) async -> BenchmarkResult {
+        var syncEngine = SyncEngine()
+        
+        print("  Warming up...", terminator: "")
+        // Warmup - first sync caches
+        _ = try? syncEngine.generateDiff(for: playerID, from: state)
+        _ = try? syncEngine.snapshot(for: playerID, from: state)
+        print(" ✓")
+        
+        print("  Running \(iterations) iterations for diff generation...", terminator: "")
+        var diffTimes: [TimeInterval] = []
+        
+        // Create a modified state for diff calculation
+        var modifiedState = state
+        modifiedState.round = 2
+        modifiedState.players[playerID]?.hpCurrent = 90
+        
+        // Benchmark diff generation
+        for i in 0..<iterations {
+            let time = try! measureTime {
+                _ = try syncEngine.generateDiff(for: playerID, from: modifiedState)
+            }
+            diffTimes.append(time)
+            
+            if (i + 1) % 10 == 0 {
+                print(".", terminator: "")
+            }
+        }
+        print(" ✓")
+        
+        // Estimate diff size
+        let diffUpdate = try! syncEngine.generateDiff(for: playerID, from: modifiedState)
+        var diffSize = 0
+        if case .diff(let patches) = diffUpdate {
+            // Rough estimate: path + value size
+            for patch in patches {
+                diffSize += patch.path.utf8.count
+                diffSize += 50 // Rough estimate for patch data
+            }
+        }
+        
+        let diffAverage = diffTimes.reduce(0, +) / Double(diffTimes.count)
+        let snapshot = try! syncEngine.snapshot(for: playerID, from: modifiedState)
+        let snapshotSize = estimateSnapshotSize(snapshot)
+        
+        print("  Diff size: ~\(diffSize) bytes vs Snapshot size: ~\(snapshotSize) bytes")
+        print("  Size reduction: \(String(format: "%.1f", Double(snapshotSize - diffSize) / Double(snapshotSize) * 100))%")
+        
+        return BenchmarkResult(
+            config: config,
+            averageTime: diffAverage,
+            minTime: diffTimes.min() ?? 0,
+            maxTime: diffTimes.max() ?? 0,
+            snapshotSize: diffSize,
+            throughput: 1.0 / diffAverage,
+            executionMode: "Diff Generation (\(iterations) iterations)"
+        )
+    }
+}
+

@@ -1,6 +1,9 @@
 # 通訊模式：RPC 與 Event
 
 > 本文檔說明 SwiftStateTree 的通訊模式設計
+> 
+> 相關文檔：
+> - [DESIGN_SYNC_FIRSTSYNC.md](./DESIGN_SYNC_FIRSTSYNC.md) - 首次同步機制（Join → Snapshot → FirstSync → Diff）
 
 ## 兩種通訊模式
 

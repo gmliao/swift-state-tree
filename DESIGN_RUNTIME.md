@@ -1,6 +1,9 @@
 # Runtime 結構：RealmActor + SyncEngine
 
 > 本文檔說明 SwiftStateTree 的運行時結構
+> 
+> 相關文檔：
+> - [DESIGN_SYNC_FIRSTSYNC.md](./DESIGN_SYNC_FIRSTSYNC.md) - 首次同步機制（First Sync）
 
 
 ## Runtime 大致結構：RealmActor + SyncEngine
@@ -174,18 +177,28 @@ actor RealmActor {
 
 ```
 
-### SyncEngine（概念）
+### SyncEngine（實現狀態）
 
 **設計原則**：SyncEngine 負責狀態同步，支援完整快照和差異更新兩種模式。
 
+> **首次同步機制**：SyncEngine 使用 First Sync 信號來告知客戶端同步引擎已啟動。
+> 詳見 [DESIGN_SYNC_FIRSTSYNC.md](./DESIGN_SYNC_FIRSTSYNC.md)。
+
+#### 實現狀態說明
+
+- ✅ **已實現**：完整快照生成（用於 late join）
+- ⏳ **計劃中**：差異更新（delta/diff）、快取機制、分層計算優化
+
+#### 當前實現
+
 ```swift
 struct SyncEngine {
-    // ✅ 分層緩存：broadcast 部分共用，perPlayer 部分個別緩存
-    private var lastBroadcastSnapshot: BroadcastSnapshot?  // 共用部分（只存一份）
-    private var lastPerPlayerSnapshots: [PlayerID: PerPlayerSnapshot] = [:]  // 個別部分
+    // ⏳ 計劃中：分層緩存：broadcast 部分共用，perPlayer 部分個別緩存
+    // private var lastBroadcastSnapshot: BroadcastSnapshot?  // 共用部分（只存一份）
+    // private var lastPerPlayerSnapshots: [PlayerID: PerPlayerSnapshot] = [:]  // 個別部分
     
-    // ✅ 生成完整快照（用於 late join）
-    func snapshot(for player: PlayerID, from tree: StateTree) throws -> StateSnapshot {
+    // ✅ 已實現：生成完整快照（用於 late join）
+    func snapshot(for player: PlayerID, from state: State) throws -> StateSnapshot {
         // 1. 反射 / macro 生成的 Metadata：知道每個欄位的 SyncPolicy
         // 2. 逐欄位根據 policy 過濾：
         //    - serverOnly → 忽略
@@ -196,8 +209,16 @@ struct SyncEngine {
         // 4. encode 成 JSON / MsgPack 等
         return StateSnapshot(...)
     }
-    
-    // ✅ 生成差異更新（path-based diff）
+}
+```
+
+#### 計劃實現功能
+
+以下功能為計劃中的實現，當前尚未完成：
+
+```swift
+extension SyncEngine {
+    // ⏳ 計劃中：生成差異更新（path-based diff）
     func generateDiff(
         for player: PlayerID,
         from tree: StateTree,
@@ -230,7 +251,7 @@ struct SyncEngine {
         }
     }
     
-    // ✅ 計算 broadcast 部分的差異（所有人共用）
+    // ⏳ 計劃中：計算 broadcast 部分的差異（所有人共用）
     private func computeBroadcastDiff(
         from tree: StateTree,
         onlyPaths: Set<String>?
@@ -258,7 +279,7 @@ struct SyncEngine {
         return patches
     }
     
-    // ✅ 計算 perPlayer 部分的差異（每個人不同）
+    // ⏳ 計劃中：計算 perPlayer 部分的差異（每個人不同）
     private func computePerPlayerDiff(
         for player: PlayerID,
         from tree: StateTree,
@@ -287,7 +308,7 @@ struct SyncEngine {
         return patches
     }
     
-    // ✅ Merge 合併 broadcast 和 perPlayer 的差異
+    // ⏳ 計劃中：Merge 合併 broadcast 和 perPlayer 的差異
     private func mergePatches(
         _ broadcast: [StatePatch],
         _ perPlayer: [StatePatch]
@@ -320,7 +341,7 @@ struct SyncEngine {
         return merged
     }
     
-    // ✅ 自動同步所有變化（Tick-based 或 Event-driven）
+    // ⏳ 計劃中：自動同步所有變化（Tick-based 或 Event-driven）
     func syncStateChanges(
         from tree: StateTree,
         pendingPaths: Set<String>?,
@@ -343,16 +364,30 @@ struct SyncEngine {
         }
     }
     
-    // ✅ 清理不活躍玩家的緩存
+    // ⏳ 計劃中：清理不活躍玩家的緩存
     func cleanupCache(olderThan: TimeInterval = 300) {
         let now = Date()
         // 清理 perPlayer 緩存
         // broadcast 緩存保留（所有人共用）
     }
+    
+    // ⏳ 計劃中：專門的 late join 方法（可選優化）
+    // 目前可以透過 snapshot(for:from:) 實現，未來可針對 late join 場景進行優化
+    func lateJoinSnapshot(
+        for playerID: PlayerID,
+        from state: State
+    ) throws -> StateSnapshot {
+        // 未來可加入：
+        // - 確保返回完整快照（非差異）
+        // - 可選的壓縮優化
+        return try snapshot(for: playerID, from: state)
+    }
 }
 ```
 
 ### 差異計算優化：分層計算 + Merge
+
+> **狀態**：⏳ 計劃中功能
 
 **設計決策**：採用分層計算策略，先計算共用部分，再計算個別部分，最後合併。
 

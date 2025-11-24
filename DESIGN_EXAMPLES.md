@@ -36,6 +36,8 @@
 
 ### 範例 2：攻擊操作（RPC 不包含狀態，透過 Event 推送）
 
+> **注意**：目前使用完整快照。當 delta/diff 功能實現後，會改為發送增量更新。
+
 #### 流程
 
 1. **Client A 發送 RPC**：`.attack(attacker: "A", target: "B", damage: 10)`
@@ -44,6 +46,8 @@
    ```swift
    case .attack(let attacker, let target, let damage):
        state.players[target]?.hpCurrent -= damage
+       // ⚠️ 當前實現：使用完整快照
+       // ⏳ 未來實現：使用 syncEngine.generateDiff(for:from:onlyPaths:) 生成增量更新
        let snapshot = syncEngine.snapshot(for: attacker, from: state)
        await ctx.sendEvent(.stateUpdate(snapshot), to: .all)
        await ctx.sendEvent(.gameEvent(.damage(from: attacker, to: target, amount: damage)), to: .all)
@@ -56,6 +60,8 @@
 
 4. **所有 Client 收到兩個 Event**：
    - `.stateUpdate(snapshot)`：更新狀態（B 的血量減少）
+     - ⚠️ 當前：完整快照
+     - ⏳ 未來：path-based diff（只包含變化的部分）
    - `.gameEvent(.damage(...))`：觸發傷害動畫、音效等
 
 ### 範例 3：玩家準備（Event 雙向）
@@ -82,6 +88,8 @@
 
 ### 範例 4：Late Join 場景
 
+> **狀態**：✅ 已實現 - 使用完整快照
+
 #### 場景
 
 玩家在遊戲進行中才加入，需要立即取得完整狀態。
@@ -94,7 +102,8 @@
    ```swift
    case .join(let id, let name):
        state.players[id] = PlayerState(...)
-       // 生成完整的狀態快照（包含所有可見資料）
+       // ✅ 生成完整的狀態快照（包含所有可見資料）- 已實現
+       // 用於 late join：新玩家需要完整的初始狀態
        let snapshot = syncEngine.snapshot(for: id, from: state)
        await ctx.sendEvent(.stateUpdate(snapshot), to: .all)
        // Response 包含完整狀態，Client C 可以立即同步

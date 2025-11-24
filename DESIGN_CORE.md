@@ -1,6 +1,9 @@
 # 核心概念：整體理念、StateTree、同步規則
 
 > 本文檔說明 SwiftStateTree 的核心設計理念
+> 
+> 相關文檔：
+> - [DESIGN_SYNC_FIRSTSYNC.md](./DESIGN_SYNC_FIRSTSYNC.md) - 首次同步機制（First Sync）
 
 ## 整體理念與資料流
 
@@ -46,9 +49,9 @@ StateTree 狀態變化
   → 標記為「需要同步」
   → 等待 Tick（例如 100ms）
   → SyncEngine 依 @Sync 規則裁切
-  → 分層計算：broadcast（共用）+ perPlayer（個別）
-  → Merge 合併差異
-  → 透過 Event 推送給 Client（path-based diff）
+  → ⏳ 分層計算：broadcast（共用）+ perPlayer（個別）
+  → ⏳ Merge 合併差異
+  → ⏳ 透過 Event 推送給 Client（path-based diff）
   → Client 更新本地狀態
 ```
 
@@ -57,18 +60,24 @@ StateTree 狀態變化
 StateTree 狀態變化
   → 手動調用 syncNow()
   → SyncEngine 依 @Sync 規則裁切
-  → 分層計算：broadcast（共用）+ perPlayer（個別）
-  → Merge 合併差異
-  → 透過 Event 推送給 Client（path-based diff）
+  → ⏳ 分層計算：broadcast（共用）+ perPlayer（個別）
+  → ⏳ Merge 合併差異
+  → ⏳ 透過 Event 推送給 Client（path-based diff）
   → Client 更新本地狀態
 ```
 
-**差異計算機制**：
-- ✅ **緩存上次快照**：broadcast 部分共用一份，perPlayer 部分每個玩家一份
-- ✅ **比較差異**：新舊快照比較，找出變化的路徑
-- ✅ **分層計算**：先計算 broadcast（所有人共用），再計算 perPlayer（每個人不同）
-- ✅ **Merge 合併**：合併 broadcast 和 perPlayer 的差異
-- ✅ **Path-based diff**：只發送變化的部分（path + value + operation）
+**當前實現狀態**：
+- ✅ **完整快照生成**：`SyncEngine.snapshot(for:from:)` 已實現，可用於 late join
+- ✅ **差異計算機制**：已實現
+  - ✅ **緩存上次快照**：broadcast 部分共用一份，perPlayer 部分每個玩家一份
+  - ✅ **比較差異**：新舊快照比較，找出變化的路徑
+  - ✅ **分層計算**：先計算 broadcast（所有人共用），再計算 perPlayer（每個人不同）
+  - ✅ **Merge 合併**：合併 broadcast 和 perPlayer 的差異
+  - ✅ **Path-based diff**：只發送變化的部分（path + value + operation）
+  - ✅ **First Sync 信號**：首次同步時返回 `StateUpdate.firstSync`，告知客戶端同步引擎已啟動
+
+> **首次同步機制**：SwiftStateTree 採用「Join Snapshot + FirstSync + Diff」模式。
+> 詳見 [DESIGN_SYNC_FIRSTSYNC.md](./DESIGN_SYNC_FIRSTSYNC.md)。
 
 ---
 

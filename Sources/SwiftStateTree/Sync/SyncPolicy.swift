@@ -24,6 +24,20 @@ public enum SyncPolicy<Value: Sendable>: Sendable {
             return handler(playerID, value)
         }
     }
+    
+    /// Filter value for a player, or return broadcast-only fields if playerID is nil
+    public func filteredValue(_ value: Value, for playerID: PlayerID?) -> Any? {
+        guard let playerID = playerID else {
+            // When playerID is nil, only return broadcast fields
+            switch self {
+            case .broadcast:
+                return value
+            case .serverOnly, .perPlayer, .masked, .custom:
+                return nil
+            }
+        }
+        return filteredValue(value, for: playerID)
+    }
 }
 
 public extension SyncPolicy {
@@ -68,6 +82,10 @@ private protocol SyncValueProvider {
 
 extension Sync: SyncValueProvider {
     fileprivate func syncValue(for playerID: PlayerID) -> Any? {
+        policy.filteredValue(wrappedValue, for: playerID)
+    }
+    
+    fileprivate func syncValue(for playerID: PlayerID?) -> Any? {
         policy.filteredValue(wrappedValue, for: playerID)
     }
 }

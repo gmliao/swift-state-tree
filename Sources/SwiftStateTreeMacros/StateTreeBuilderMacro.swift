@@ -217,7 +217,12 @@ public struct StateTreeBuilderMacro: MemberMacro {
         let syncProperties = propertiesWithNodes.filter { $0.0.hasSync }
         
         var codeLines: [String] = []
-        codeLines.append("var result: [String: SnapshotValue] = [:]")
+        // Use var only if there are properties to process, otherwise use let
+        if syncProperties.isEmpty {
+            codeLines.append("let result: [String: SnapshotValue] = [:]")
+        } else {
+            codeLines.append("var result: [String: SnapshotValue] = [:]")
+        }
         codeLines.append("")
         
         // Generate code for each @Sync field
@@ -244,7 +249,7 @@ public struct StateTreeBuilderMacro: MemberMacro {
         
         return try FunctionDeclSyntax(
             """
-            public func snapshot(for playerID: PlayerID) throws -> StateSnapshot {
+            public func snapshot(for playerID: PlayerID?) throws -> StateSnapshot {
                 \(raw: body)
             }
             """

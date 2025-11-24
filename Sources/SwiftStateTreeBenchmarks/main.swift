@@ -84,6 +84,19 @@ func main() async {
     )
     allResults.append(contentsOf: await multiPlayerSuite.run())
     
+    // Run diff vs snapshot comparison benchmarks
+    let diffConfigs = [
+        BenchmarkConfigurations.standard[0],  // Tiny State
+        BenchmarkConfigurations.standard[1],  // Small State
+        BenchmarkConfigurations.standard[2]   // Medium State
+    ]
+    let diffSuite = BenchmarkSuite(
+        name: "Diff vs Snapshot Comparison",
+        runner: DiffBenchmarkRunner(iterations: 100),
+        configurations: diffConfigs
+    )
+    allResults.append(contentsOf: await diffSuite.run())
+    
     // Summary
     print("\n" + String(repeating: "═", count: 65))
     print("SUMMARY")
