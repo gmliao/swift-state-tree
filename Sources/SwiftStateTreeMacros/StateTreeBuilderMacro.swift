@@ -41,10 +41,14 @@ public struct StateTreeBuilderMacro: MemberMacro {
         // Generate snapshot(for:) method
         let snapshotMethod = try generateSnapshotMethod(propertiesWithNodes: propertiesWithNodes)
         
+        // Generate extractBroadcastFields() method
+        let extractBroadcastFieldsMethod = try generateExtractBroadcastFieldsMethod(propertiesWithNodes: propertiesWithNodes)
+        
         return [
             DeclSyntax(getSyncFieldsMethod),
             DeclSyntax(validateSyncFieldsMethod),
-            DeclSyntax(snapshotMethod)
+            DeclSyntax(snapshotMethod),
+            DeclSyntax(extractBroadcastFieldsMethod)
         ]
     }
     
@@ -250,6 +254,57 @@ public struct StateTreeBuilderMacro: MemberMacro {
         return try FunctionDeclSyntax(
             """
             public func snapshot(for playerID: PlayerID?) throws -> StateSnapshot {
+                \(raw: body)
+            }
+            """
+        )
+    }
+    
+    /// Generate extractBroadcastFields() method
+    /// This method extracts only broadcast fields, avoiding runtime reflection
+    private static func generateExtractBroadcastFieldsMethod(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> FunctionDeclSyntax {
+        let syncProperties = propertiesWithNodes.filter { $0.0.hasSync }
+        let broadcastProperties = syncProperties.filter { property, _ in
+            // Check if the property has broadcast policy
+            // We need to check the policy type from the property info
+            property.policyType == "broadcast"
+        }
+        
+        var codeLines: [String] = []
+        if broadcastProperties.isEmpty {
+            codeLines.append("let result: [String: SnapshotValue] = [:]")
+        } else {
+            codeLines.append("var result: [String: SnapshotValue] = [:]")
+        }
+        codeLines.append("")
+        
+        // Generate code for each broadcast @Sync field
+        // Directly access the property wrapper's wrappedValue without filtering
+        for (property, _) in broadcastProperties {
+            let propertyName = property.name
+            let fieldName = propertyName
+            let storageName = "_\(propertyName)"
+            
+            // For broadcast fields, we directly access wrappedValue without filtering
+            codeLines.append("do {")
+            codeLines.append("    let value = self.\(storageName).wrappedValue")
+            
+            // Generate optimized conversion code based on type
+            let conversionCode = generateConversionCode(for: property.typeName, valueName: "value")
+            codeLines.append("    result[\"\(fieldName)\"] = \(conversionCode)")
+            codeLines.append("} catch {")
+            codeLines.append("    throw error")
+            codeLines.append("}")
+            codeLines.append("")
+        }
+        
+        codeLines.append("return StateSnapshot(values: result)")
+        
+        let body = codeLines.joined(separator: "\n")
+        
+        return try FunctionDeclSyntax(
+            """
+            public func extractBroadcastFields() throws -> StateSnapshot {
                 \(raw: body)
             }
             """

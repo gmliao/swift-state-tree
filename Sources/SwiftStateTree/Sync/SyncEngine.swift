@@ -19,7 +19,7 @@ import Foundation
 /// - **Cache management**: Cache broadcast and perPlayer snapshots for efficient diff calculation
 ///   - `lastBroadcastSnapshot` - shared cache for broadcast fields
 ///   - `lastPerPlayerSnapshots` - per-player cache dictionary
-///   - `clearCache(for:)` and `clearAllCaches()` - cache management methods
+///   - `clearCacheForDisconnectedPlayer(_:)` - clear cache when a player disconnects
 /// - **Diff merging**: `mergePatches(_:_:)` - combines broadcast and perPlayer diffs with per-player precedence
 /// - **Path-based diff**: Uses JSON Pointer format (RFC 6901) for patch paths
 /// - **Late join**: `lateJoinSnapshot(for:from:)` - optimized full snapshot generation for late join scenarios
@@ -39,7 +39,7 @@ import Foundation
 ///
 /// - **For optimization**:
 ///   - Use `onlyPaths` parameter to limit diff calculation to specific paths
-///   - Use `cleanupCache(activePlayerIDs:)` to manage memory for inactive players
+///   - Use `clearCacheForDisconnectedPlayer(_:)` to clear cache when a player disconnects
 ///
 /// See [DESIGN_RUNTIME.md](../../../DESIGN_RUNTIME.md) for detailed design documentation.
 public struct SyncEngine: Sendable {
@@ -102,7 +102,28 @@ public struct SyncEngine: Sendable {
     ///
     /// This method directly accesses broadcast fields from the StateTree without needing
     /// a specific player ID, since broadcast fields are identical for all players.
+    ///
+    /// **Default implementation**: Uses macro-generated method (microVersion) for optimal performance.
+    /// For benchmarking purposes, use `extractBroadcastSnapshotMirrorVersion` to compare with Mirror-based implementation.
     private func extractBroadcastSnapshot<State: StateTreeProtocol>(
+        from state: State
+    ) throws -> StateSnapshot {
+        // Use macro-generated method to extract broadcast fields directly
+        // This avoids runtime reflection (Mirror) and is much more efficient
+        return try state.extractBroadcastFields()
+    }
+    
+    /// Mirror-based implementation of extractBroadcastSnapshot (for benchmarking comparison)
+    ///
+    /// This method uses runtime reflection (Mirror) to extract broadcast fields.
+    /// It is kept for performance comparison purposes in benchmarks.
+    ///
+    /// **Note**: This is the old implementation before macro optimization.
+    /// The default `extractBroadcastSnapshot` uses macro-generated code which is much faster.
+    ///
+    /// - Parameter state: The StateTree instance
+    /// - Returns: A `StateSnapshot` containing only broadcast fields
+    public func extractBroadcastSnapshotMirrorVersion<State: StateTreeProtocol>(
         from state: State
     ) throws -> StateSnapshot {
         // Get all sync fields and filter for broadcast policy
@@ -482,27 +503,18 @@ public struct SyncEngine: Sendable {
     
     // MARK: - Cache Management
     
-    /// Clear cache for a specific player (useful when player leaves)
-    public mutating func clearCache(for playerID: PlayerID) {
-        lastPerPlayerSnapshots.removeValue(forKey: playerID)
-    }
-    
-    /// Clear all caches
-    public mutating func clearAllCaches() {
-        lastBroadcastSnapshot = nil
-        lastPerPlayerSnapshots.removeAll()
-    }
-    
-    /// Clean up cache for inactive players
+    /// Clear cache for a disconnected player
     ///
-    /// Note: This is a simplified version. A full implementation would track last access times.
-    public mutating func cleanupCache(activePlayerIDs: Set<PlayerID>) {
-        let cachedPlayerIDs = Set(lastPerPlayerSnapshots.keys)
-        let inactivePlayerIDs = cachedPlayerIDs.subtracting(activePlayerIDs)
-        
-        for playerID in inactivePlayerIDs {
-            lastPerPlayerSnapshots.removeValue(forKey: playerID)
-        }
+    /// Use this method when a player explicitly leaves or disconnects.
+    /// After clearing the cache, the next `generateDiff` call for this player will return
+    /// `.firstSync([StatePatch])` instead of regular diffs.
+    ///
+    /// **Important**: Only call this when you are certain the player has disconnected.
+    /// Clearing cache for an active player will cause incorrect sync behavior.
+    ///
+    /// - Parameter playerID: The player ID whose cache should be cleared
+    public mutating func clearCacheForDisconnectedPlayer(_ playerID: PlayerID) {
+        lastPerPlayerSnapshots.removeValue(forKey: playerID)
     }
     
     // MARK: - Cache Population Helper

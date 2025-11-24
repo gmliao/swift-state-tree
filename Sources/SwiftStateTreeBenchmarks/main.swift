@@ -97,6 +97,20 @@ func main() async {
     )
     allResults.append(contentsOf: await diffSuite.run())
     
+    // Run Mirror vs Macro comparison benchmarks
+    let mirrorVsMacroConfigs = [
+        BenchmarkConfigurations.standard[0],  // Tiny State
+        BenchmarkConfigurations.standard[1],  // Small State
+        BenchmarkConfigurations.standard[2],  // Medium State
+        BenchmarkConfigurations.standard[3]   // Large State
+    ]
+    let mirrorVsMacroSuite = BenchmarkSuite(
+        name: "Mirror vs Macro Performance Comparison",
+        runner: MirrorVsMacroComparisonRunner(iterations: 1000),
+        configurations: mirrorVsMacroConfigs
+    )
+    allResults.append(contentsOf: await mirrorVsMacroSuite.run())
+    
     // Summary
     print("\n" + String(repeating: "═", count: 65))
     print("SUMMARY")
