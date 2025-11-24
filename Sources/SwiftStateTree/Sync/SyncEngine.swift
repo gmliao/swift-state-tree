@@ -194,6 +194,25 @@ public struct SyncEngine: Sendable {
         to newSnapshot: StateSnapshot,
         onlyPaths: Set<String>? = nil
     ) -> [StatePatch] {
+        compareSnapshots(
+            from: oldSnapshot,
+            to: newSnapshot,
+            onlyPaths: onlyPaths,
+            dirtyFields: nil
+        )
+    }
+    
+    /// Compare two snapshots and generate patches (with dirty tracking support)
+    ///
+    /// When `dirtyFields` is provided, only dirty fields are compared to avoid false positives.
+    /// If a field exists in old snapshot but not in new snapshot, it's only considered a delete
+    /// if the field is marked as dirty. Otherwise, it's skipped (assumed unchanged).
+    private func compareSnapshots(
+        from oldSnapshot: StateSnapshot,
+        to newSnapshot: StateSnapshot,
+        onlyPaths: Set<String>? = nil,
+        dirtyFields: Set<String>?
+    ) -> [StatePatch] {
         var patches: [StatePatch] = []
         
         // Get all keys from both snapshots
@@ -212,18 +231,51 @@ public struct SyncEngine: Sendable {
             
             if let oldValue = oldValue, let newValue = newValue {
                 // Both exist - compare recursively
-                patches.append(contentsOf: compareSnapshotValues(
-                    from: oldValue,
-                    to: newValue,
-                    basePath: path,
-                    onlyPaths: onlyPaths
-                ))
+                // If dirtyFields is provided, only compare if this field is dirty
+                if let dirtyFields = dirtyFields {
+                    if dirtyFields.contains(key) {
+                        patches.append(contentsOf: compareSnapshotValues(
+                            from: oldValue,
+                            to: newValue,
+                            basePath: path,
+                            onlyPaths: onlyPaths
+                        ))
+                    }
+                    // If not dirty, skip comparison (assume unchanged)
+                } else {
+                    // No dirty tracking - compare all fields
+                    patches.append(contentsOf: compareSnapshotValues(
+                        from: oldValue,
+                        to: newValue,
+                        basePath: path,
+                        onlyPaths: onlyPaths
+                    ))
+                }
             } else if oldValue != nil && newValue == nil {
                 // Deleted
-                patches.append(StatePatch(path: path, operation: .delete))
+                // ⚠️ Key: If dirtyFields is provided, only consider it a delete if the field is dirty
+                if let dirtyFields = dirtyFields {
+                    if dirtyFields.contains(key) {
+                        // Field is dirty and missing - true delete
+                        patches.append(StatePatch(path: path, operation: .delete))
+                    }
+                    // If not dirty, skip (assume unchanged, not deleted)
+                } else {
+                    // No dirty tracking - treat as delete
+                    patches.append(StatePatch(path: path, operation: .delete))
+                }
             } else if oldValue == nil, let newValue = newValue {
                 // Added
-                patches.append(StatePatch(path: path, operation: .set(newValue)))
+                // If dirtyFields is provided, only add if field is dirty
+                if let dirtyFields = dirtyFields {
+                    if dirtyFields.contains(key) {
+                        patches.append(StatePatch(path: path, operation: .set(newValue)))
+                    }
+                    // If not dirty, skip (shouldn't happen, but safe to skip)
+                } else {
+                    // No dirty tracking - treat as add
+                    patches.append(StatePatch(path: path, operation: .set(newValue)))
+                }
             }
         }
         
@@ -314,7 +366,8 @@ public struct SyncEngine: Sendable {
     /// Compute broadcast diff (shared across all players)
     private mutating func computeBroadcastDiff<State: StateNodeProtocol>(
         from state: State,
-        onlyPaths: Set<String>?
+        onlyPaths: Set<String>?,
+        dirtyFields: Set<String>? = nil
     ) throws -> [StatePatch] {
         // Generate current broadcast snapshot
         let currentBroadcast = try extractBroadcastSnapshot(from: state)
@@ -326,11 +379,12 @@ public struct SyncEngine: Sendable {
             return []
         }
         
-        // Compare and generate patches
+        // Compare and generate patches (with dirty tracking if provided)
         let patches = compareSnapshots(
             from: lastBroadcast,
             to: currentBroadcast,
-            onlyPaths: onlyPaths
+            onlyPaths: onlyPaths,
+            dirtyFields: dirtyFields
         )
         
         // Update cache
@@ -343,7 +397,8 @@ public struct SyncEngine: Sendable {
     private mutating func computePerPlayerDiff<State: StateNodeProtocol>(
         for playerID: PlayerID,
         from state: State,
-        onlyPaths: Set<String>?
+        onlyPaths: Set<String>?,
+        dirtyFields: Set<String>? = nil
     ) throws -> [StatePatch] {
         // Generate current per-player snapshot
         let currentPerPlayer = try extractPerPlayerSnapshot(for: playerID, from: state)
@@ -355,11 +410,12 @@ public struct SyncEngine: Sendable {
             return []
         }
         
-        // Compare and generate patches
+        // Compare and generate patches (with dirty tracking if provided)
         let patches = compareSnapshots(
             from: lastPerPlayer,
             to: currentPerPlayer,
-            onlyPaths: onlyPaths
+            onlyPaths: onlyPaths,
+            dirtyFields: dirtyFields
         )
         
         // Update cache
@@ -424,9 +480,42 @@ public struct SyncEngine: Sendable {
         from state: State,
         onlyPaths: Set<String>? = nil
     ) throws -> StateUpdate {
+        try generateDiff(
+            for: playerID,
+            from: state,
+            onlyPaths: onlyPaths,
+            useDirtyTracking: false
+        )
+    }
+    
+    /// Generate a diff update for a specific player (with dirty tracking optimization)
+    ///
+    /// This is an optimized version that uses dirty tracking to reduce computation.
+    /// Only dirty fields are compared, reducing serialization and comparison overhead.
+    ///
+    /// **Important**: When using dirty tracking, the comparison logic considers dirty fields to avoid
+    /// false positives (e.g., a field present in old snapshot but absent in new snapshot is only
+    /// considered a delete if it's marked as dirty).
+    ///
+    /// - Parameters:
+    ///   - playerID: The player ID to generate the diff for
+    ///   - state: The current StateNode instance
+    ///   - onlyPaths: Optional set of paths to limit the diff calculation to (for optimization)
+    ///   - useDirtyTracking: If `true`, only compare dirty fields. Default is `false` for backward compatibility.
+    /// - Returns: A `StateUpdate` containing either no changes, first sync signal, or a list of patches
+    /// - Throws: `SyncError` if value conversion fails
+    public mutating func generateDiff<State: StateNodeProtocol>(
+        for playerID: PlayerID,
+        from state: State,
+        onlyPaths: Set<String>? = nil,
+        useDirtyTracking: Bool
+    ) throws -> StateUpdate {
         // Check if this is the first sync for this specific player
         // Note: broadcast cache may already exist (from other players), but perPlayer cache is per-player
         let isFirstSyncForPlayer = lastPerPlayerSnapshots[playerID] == nil
+        
+        // Get dirty fields if dirty tracking is enabled
+        let dirtyFields: Set<String>? = useDirtyTracking && state.isDirty() ? state.getDirtyFields() : nil
         
         // IMPORTANT: We must compute diffs BEFORE returning firstSync because:
         // 1. computeBroadcastDiff and computePerPlayerDiff populate the cache
@@ -437,7 +526,8 @@ public struct SyncEngine: Sendable {
         // This will populate lastBroadcastSnapshot if it's the first time
         let broadcastDiff = try computeBroadcastDiff(
             from: state,
-            onlyPaths: onlyPaths?.filter { isBroadcastPath($0, state: state) }
+            onlyPaths: onlyPaths?.filter { isBroadcastPath($0, state: state) },
+            dirtyFields: dirtyFields
         )
         
         // Compute per-player diff (individual for each player)
@@ -445,7 +535,8 @@ public struct SyncEngine: Sendable {
         let perPlayerDiff = try computePerPlayerDiff(
             for: playerID,
             from: state,
-            onlyPaths: onlyPaths?.filter { isPerPlayerPath($0, state: state) }
+            onlyPaths: onlyPaths?.filter { isPerPlayerPath($0, state: state) },
+            dirtyFields: dirtyFields
         )
         
         // Merge patches (per-player takes precedence)
