@@ -147,9 +147,33 @@ public struct SyncEngine: Sendable {
                     // Extract wrappedValue from property wrapper if needed
                     // Sync<T> wraps the actual value, we need to unwrap it
                     let valueMirror = Mirror(reflecting: value)
-                    if let wrappedChild = valueMirror.children.first(where: { $0.label == "wrappedValue" }) {
+                    let valueTypeName = String(describing: type(of: value))
+                    
+                    // Check if this is a Sync property wrapper
+                    // Sync struct has: policy (SyncPolicy<Value>) and _wrappedValue (Value)
+                    // We must find _wrappedValue, not policy
+                    if valueTypeName.contains("Sync<") || valueTypeName.hasPrefix("Sync<") {
+                        // This is a Sync property wrapper - find _wrappedValue explicitly
+                        if let wrappedChild = valueMirror.children.first(where: { $0.label == "_wrappedValue" }) {
+                            value = wrappedChild.value
+                        } else {
+                            // If _wrappedValue not found, this is an error
+                            throw SyncError.unsupportedValue(
+                                "Failed to extract _wrappedValue from Sync property wrapper. " +
+                                "Type: \(valueTypeName), available children: \(valueMirror.children.map { $0.label ?? "nil" })"
+                            )
+                        }
+                    } else if let wrappedChild = valueMirror.children.first(where: { $0.label == "wrappedValue" }) {
+                        // Fallback: try wrappedValue (for other property wrappers)
                         value = wrappedChild.value
+                    } else if valueTypeName.contains("SyncPolicy") {
+                        // Error: we got the policy instead of the value
+                        throw SyncError.unsupportedValue(
+                            "Unexpectedly got SyncPolicy instead of wrappedValue from property wrapper. " +
+                            "This indicates a bug in property wrapper extraction. Type: \(valueTypeName)"
+                        )
                     }
+                    // If none of the above, value is already the unwrapped value (not a property wrapper)
                     
                     // Convert value to SnapshotValue
                     // For broadcast fields, we directly use the raw value without player filtering

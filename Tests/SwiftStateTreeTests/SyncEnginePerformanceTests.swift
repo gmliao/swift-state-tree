@@ -106,6 +106,8 @@ struct SyncEnginePerformanceTests {
         state.clearDirty()
         
         // Measure standard diff (no dirty tracking)
+        var standardUpdate: StateUpdate?
+        var standardSnapshotSize: Int = 0
         let standardTime = measureTime {
             // Modify only one player's HP (direct assignment marks as dirty)
             if let firstPlayerID = state.players.keys.first {
@@ -116,7 +118,10 @@ struct SyncEnginePerformanceTests {
             
             // Generate diff without dirty tracking
             do {
-                _ = try syncEngine.generateDiff(for: playerID, from: state, useDirtyTracking: false)
+                standardUpdate = try syncEngine.generateDiff(for: playerID, from: state, useDirtyTracking: false)
+                if case .diff(let patches) = standardUpdate {
+                    standardSnapshotSize = estimatePatchesSize(patches)
+                }
             } catch {
                 // Ignore errors for performance test
             }
@@ -134,6 +139,8 @@ struct SyncEnginePerformanceTests {
         state.clearDirty()
         
         // Measure optimized diff (with dirty tracking)
+        var optimizedUpdate: StateUpdate?
+        var optimizedSnapshotSize: Int = 0
         let optimizedTime = measureTime {
             // Modify only one player's HP (direct assignment marks as dirty)
             if let firstPlayerID = state.players.keys.first {
@@ -144,21 +151,58 @@ struct SyncEnginePerformanceTests {
             
             // Generate diff with dirty tracking
             do {
-                _ = try syncEngine.generateDiff(for: playerID, from: state, useDirtyTracking: true)
+                optimizedUpdate = try syncEngine.generateDiff(for: playerID, from: state, useDirtyTracking: true)
+                if case .diff(let patches) = optimizedUpdate {
+                    optimizedSnapshotSize = estimatePatchesSize(patches)
+                }
             } catch {
                 // Ignore errors for performance test
             }
         }
         
-        // Print results
-        print("Standard diff time: \(standardTime)ms")
-        print("Optimized diff time: \(optimizedTime)ms")
-        print("Speedup: \(standardTime / optimizedTime)x")
+        // Print detailed results
+        print("\n=== Performance Comparison (Standard vs Optimized Diff) ===")
+        print("Standard diff (no dirty tracking):")
+        print("  ⏱️  Total time: \(String(format: "%.3f", standardTime))ms")
+        if case .diff(let standardPatches) = standardUpdate {
+            print("  📦 Patches count: \(standardPatches.count)")
+        }
+        print("  💾 Estimated size: \(standardSnapshotSize) bytes")
+        
+        print("Optimized diff (with dirty tracking):")
+        print("  ⏱️  Total time: \(String(format: "%.3f", optimizedTime))ms")
+        if case .diff(let optimizedPatches) = optimizedUpdate {
+            print("  📦 Patches count: \(optimizedPatches.count)")
+        }
+        print("  💾 Estimated size: \(optimizedSnapshotSize) bytes")
+        
+        let speedup = standardTime / optimizedTime
+        let timeImprovement = (standardTime - optimizedTime) / standardTime * 100
+        print("\n📊 Performance Metrics:")
+        print("  🚀 Speedup: \(String(format: "%.2f", speedup))x")
+        print("  ⚡ Time improvement: \(String(format: "%.1f", timeImprovement))%")
+        
+        if standardSnapshotSize > 0 && optimizedSnapshotSize > 0 {
+            let sizeReduction = Double(standardSnapshotSize - optimizedSnapshotSize) / Double(standardSnapshotSize) * 100
+            if sizeReduction != 0 {
+                print("  📉 Size reduction: \(String(format: "%.1f", sizeReduction))%")
+            } else {
+                print("  📊 Size: Same (both produce identical patches)")
+            }
+        }
+        print("===========================================================\n")
         
         // Assert that optimized version is at least as fast (or faster)
         // Note: In some cases, the overhead of dirty tracking might make it slightly slower
         // for very small states, but it should be faster for larger states
         #expect(optimizedTime <= standardTime * 1.5, "Optimized diff should not be significantly slower")
+        
+        // Assert that both produce same results (same number of patches)
+        if case .diff(let standardPatches) = standardUpdate,
+           case .diff(let optimizedPatches) = optimizedUpdate {
+            #expect(standardPatches.count == optimizedPatches.count, 
+                    "Standard and optimized diff should produce same number of patches")
+        }
     }
     
     /// Measure performance with multiple dirty fields
@@ -273,6 +317,47 @@ struct SyncEnginePerformanceTests {
         block()
         let end = CFAbsoluteTimeGetCurrent()
         return (end - start) * 1000.0 // Convert to milliseconds
+    }
+    
+    /// Estimate the size of patches in bytes
+    private func estimatePatchesSize(_ patches: [StatePatch]) -> Int {
+        var size = 0
+        for patch in patches {
+            // Path size
+            size += patch.path.utf8.count
+            
+            // Operation size
+            switch patch.operation {
+            case .set(let value):
+                size += estimateSnapshotValueSize(value)
+            case .delete:
+                size += 6 // "delete" keyword
+            case .add(let value):
+                size += 3 // "add" keyword
+                size += estimateSnapshotValueSize(value)
+            }
+        }
+        return size
+    }
+    
+    /// Estimate the size of a SnapshotValue in bytes
+    private func estimateSnapshotValueSize(_ value: SnapshotValue) -> Int {
+        switch value {
+        case .null:
+            return 4
+        case .bool:
+            return 1
+        case .int:
+            return 8
+        case .double:
+            return 8
+        case .string(let s):
+            return s.utf8.count
+        case .array(let arr):
+            return arr.reduce(0) { $0 + estimateSnapshotValueSize($1) }
+        case .object(let obj):
+            return obj.reduce(0) { $0 + $1.key.utf8.count + estimateSnapshotValueSize($1.value) }
+        }
     }
 }
 
