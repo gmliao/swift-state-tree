@@ -1,4 +1,4 @@
-// Sources/SwiftStateTreeMacros/StateTreeBuilderMacro.swift
+// Sources/SwiftStateTreeMacros/StateNodeBuilderMacro.swift
 
 @preconcurrency import SwiftCompilerPlugin
 @preconcurrency import SwiftDiagnostics
@@ -6,13 +6,13 @@ import SwiftSyntax
 import SwiftSyntaxBuilder
 import SwiftSyntaxMacros
 
-/// Macro that validates and generates code for StateTree types.
+/// Macro that validates and generates code for StateNode types.
 ///
 /// This macro:
 /// 1. Validates that all stored properties have @Sync or @Internal markers
 /// 2. Generates `getSyncFields()` method implementation
 /// 3. Generates `validateSyncFields()` method implementation
-public struct StateTreeBuilderMacro: MemberMacro {
+public struct StateNodeBuilderMacro: MemberMacro {
     public static func expansion(
         of node: AttributeSyntax,
         providingMembersOf declaration: some DeclGroupSyntax,
@@ -164,7 +164,7 @@ public struct StateTreeBuilderMacro: MemberMacro {
             if !property.hasSync && !property.hasInternal {
                 let error = MacroError.missingMarker(
                     propertyName: property.name,
-                    structName: "StateTree",
+                    structName: "StateNode",
                     node: node
                 )
                 error.diagnose(context: context)
@@ -242,7 +242,8 @@ public struct StateTreeBuilderMacro: MemberMacro {
             
             // Generate optimized conversion code based on type
             // value is Any? from filteredValue, so we need to cast it
-            let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: "value", isAnyType: true)
+            // Pass playerID for recursive filtering support
+            let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: "value", isAnyType: true, playerID: "playerID")
             if needsTry {
                 codeLines.append("    result[\"\(fieldName)\"] = try \(conversionCode)")
             } else {
@@ -322,28 +323,41 @@ public struct StateTreeBuilderMacro: MemberMacro {
     }
     
     /// Generate optimized conversion code based on type
-    /// For basic types, generates direct conversion; for complex types, uses make(from:)
+    /// For basic types, generates direct conversion; for complex types, uses make(from:for:)
     /// Returns a tuple: (code, needsTry) where needsTry indicates if the code can throw
     /// valueName is expected to be of type Any? (from filteredValue) for snapshot method
     /// valueName is expected to be the actual typed value for broadcastSnapshot method
+    /// playerID is passed for recursive filtering support in nested StateNode structures
     /// Note: The returned code does NOT include 'try' keyword - it should be added by the caller if needsTry is true
-    private static func generateConversionCode(for typeName: String?, valueName: String, isAnyType: Bool = true) -> (code: String, needsTry: Bool) {
+    private static func generateConversionCode(for typeName: String?, valueName: String, isAnyType: Bool = true, playerID: String? = nil) -> (code: String, needsTry: Bool) {
         guard let typeName = typeName else {
-            // Unknown type, use make(from:) as fallback
-            return ("SnapshotValue.make(from: \(valueName))", true)
+            // Unknown type, use make(from:for:) as fallback
+            if let playerID = playerID {
+                return ("SnapshotValue.make(from: \(valueName), for: \(playerID))", true)
+            } else {
+                return ("SnapshotValue.make(from: \(valueName))", true)
+            }
         }
         
         let normalizedType = typeName.trimmingCharacters(in: .whitespacesAndNewlines)
         
         // Check if it's an Optional type (handle first)
         if normalizedType.hasSuffix("?") {
-            // Optional type: use make(from:) to handle nil properly
-            return ("SnapshotValue.make(from: \(valueName))", true)
+            // Optional type: use make(from:for:) to handle nil properly
+            if let playerID = playerID {
+                return ("SnapshotValue.make(from: \(valueName), for: \(playerID))", true)
+            } else {
+                return ("SnapshotValue.make(from: \(valueName))", true)
+            }
         }
         
         if normalizedType.hasPrefix("Optional<") && normalizedType.hasSuffix(">") {
-            // Optional<Type> format: use make(from:) to handle nil properly
-            return ("SnapshotValue.make(from: \(valueName))", true)
+            // Optional<Type> format: use make(from:for:) to handle nil properly
+            if let playerID = playerID {
+                return ("SnapshotValue.make(from: \(valueName), for: \(playerID))", true)
+            } else {
+                return ("SnapshotValue.make(from: \(valueName))", true)
+            }
         }
         
         // Handle basic types with direct conversion (no Mirror needed)
@@ -441,15 +455,20 @@ public struct StateTreeBuilderMacro: MemberMacro {
             }
         default:
             // Complex types (structs, classes, arrays, dictionaries, etc.)
-            // Use make(from:) which will:
-            // 1. Check for SnapshotValueConvertible protocol first
-            // 2. Fall back to Mirror for nested structures
-            return ("SnapshotValue.make(from: \(valueName))", true)
+            // Use make(from:for:) which will:
+            // 1. Check for StateNodeProtocol first (for recursive filtering)
+            // 2. Check for SnapshotValueConvertible protocol
+            // 3. Fall back to Mirror for nested structures
+            if let playerID = playerID {
+                return ("SnapshotValue.make(from: \(valueName), for: \(playerID))", true)
+            } else {
+                return ("SnapshotValue.make(from: \(valueName))", true)
+            }
         }
     }
 }
 
-/// Information about a property in a StateTree
+/// Information about a property in a StateNode
 private struct PropertyInfo {
     let name: String
     let hasSync: Bool
@@ -469,34 +488,34 @@ private enum MacroError: Error, @unchecked Sendable {
             context.diagnose(
                 Diagnostic(
                     node: node,
-                    message: StateTreeBuilderDiagnostic.onlyStructsSupported
+                    message: StateNodeBuilderDiagnostic.onlyStructsSupported
                 )
             )
         case .missingMarker(let propertyName, let structName, let node):
             context.diagnose(
                 Diagnostic(
                     node: node,
-                    message: StateTreeBuilderDiagnostic.missingMarker(propertyName: propertyName, structName: structName)
+                    message: StateNodeBuilderDiagnostic.missingMarker(propertyName: propertyName, structName: structName)
                 )
             )
         }
     }
 }
 
-/// Diagnostic messages for StateTreeBuilder macro
-private struct StateTreeBuilderDiagnostic: DiagnosticMessage, @unchecked Sendable {
+/// Diagnostic messages for StateNodeBuilder macro
+private struct StateNodeBuilderDiagnostic: DiagnosticMessage, @unchecked Sendable {
     let message: String
     let diagnosticID: MessageID
     let severity: DiagnosticSeverity
     
-    static let onlyStructsSupported: StateTreeBuilderDiagnostic = StateTreeBuilderDiagnostic(
-        message: "@StateTreeBuilder can only be applied to struct declarations",
+    static let onlyStructsSupported: StateNodeBuilderDiagnostic = StateNodeBuilderDiagnostic(
+        message: "@StateNodeBuilder can only be applied to struct declarations",
         diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "onlyStructsSupported"),
         severity: .error
     )
     
-    static func missingMarker(propertyName: String, structName: String) -> StateTreeBuilderDiagnostic {
-        StateTreeBuilderDiagnostic(
+    static func missingMarker(propertyName: String, structName: String) -> StateNodeBuilderDiagnostic {
+        StateNodeBuilderDiagnostic(
             message: "Stored property '\(propertyName)' in \(structName) must be marked with @Sync or @Internal",
             diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "missingMarker"),
             severity: .error
@@ -507,7 +526,7 @@ private struct StateTreeBuilderDiagnostic: DiagnosticMessage, @unchecked Sendabl
 @main
 struct SwiftStateTreeMacrosPlugin: CompilerPlugin {
     let providingMacros: [Macro.Type] = [
-        StateTreeBuilderMacro.self,
+        StateNodeBuilderMacro.self,
         SnapshotConvertibleMacro.self,
         StateMacro.self
     ]

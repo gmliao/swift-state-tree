@@ -40,7 +40,7 @@ func estimateValueSize(_ value: SnapshotValue) -> Int {
 protocol BenchmarkRunner {
     func run(
         config: BenchmarkConfig,
-        state: BenchmarkStateTree,
+        state: BenchmarkStateRootNode,
         playerID: PlayerID
     ) async -> BenchmarkResult
 }
@@ -56,7 +56,7 @@ protocol BenchmarkRunner {
 struct SingleThreadedRunner: BenchmarkRunner {
     func run(
         config: BenchmarkConfig,
-        state: BenchmarkStateTree,
+        state: BenchmarkStateRootNode,
         playerID: PlayerID
     ) async -> BenchmarkResult {
         let syncEngine = SyncEngine()
@@ -119,7 +119,7 @@ struct ParallelRunner: BenchmarkRunner {
     
     func run(
         config: BenchmarkConfig,
-        state: BenchmarkStateTree,
+        state: BenchmarkStateRootNode,
         playerID: PlayerID
     ) async -> BenchmarkResult {
         let syncEngine = SyncEngine()
@@ -189,7 +189,7 @@ struct MultiPlayerParallelRunner: BenchmarkRunner {
     
     func run(
         config: BenchmarkConfig,
-        state: BenchmarkStateTree,
+        state: BenchmarkStateRootNode,
         playerID: PlayerID
     ) async -> BenchmarkResult {
         let syncEngine = SyncEngine()
@@ -259,7 +259,7 @@ struct DiffBenchmarkRunner: BenchmarkRunner {
     
     func run(
         config: BenchmarkConfig,
-        state: BenchmarkStateTree,
+        state: BenchmarkStateRootNode,
         playerID: PlayerID
     ) async -> BenchmarkResult {
         var syncEngine = SyncEngine()
@@ -342,7 +342,7 @@ struct MirrorVsMacroComparisonRunner: BenchmarkRunner {
     
     func run(
         config: BenchmarkConfig,
-        state: BenchmarkStateTree,
+        state: BenchmarkStateRootNode,
         playerID: PlayerID
     ) async -> BenchmarkResult {
         let syncEngine = SyncEngine()

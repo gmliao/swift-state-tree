@@ -4,11 +4,11 @@ import Foundation
 import Testing
 @testable import SwiftStateTree
 
-// MARK: - Test StateTree Examples
+// MARK: - Test StateNode Examples
 
-/// Test StateTree for diff testing
-@StateTreeBuilder
-struct DiffTestStateTree: StateTreeProtocol {
+/// Test StateNode for diff testing
+@StateNodeBuilder
+struct DiffTestStateRootNode: StateNodeProtocol {
     @Sync(.broadcast)
     var players: [PlayerID: String] = [:]
     
@@ -28,7 +28,7 @@ struct DiffTestStateTree: StateTreeProtocol {
 func testGenerateDiff_FirstTime_ReturnsFirstSync() throws {
     // Arrange
     var syncEngine = SyncEngine()
-    var state = DiffTestStateTree()
+    var state = DiffTestStateRootNode()
     let playerID = PlayerID("alice")
     
     state.players[playerID] = "Alice"
@@ -51,7 +51,7 @@ func testGenerateDiff_FirstTime_ReturnsFirstSync() throws {
 func testGenerateDiff_SingleFieldChange_GeneratesSetPatch() throws {
     // Arrange
     var syncEngine = SyncEngine()
-    var state = DiffTestStateTree()
+    var state = DiffTestStateRootNode()
     let playerID = PlayerID("alice")
     
     // First sync (cache)
@@ -82,7 +82,7 @@ func testGenerateDiff_SingleFieldChange_GeneratesSetPatch() throws {
 func testGenerateDiff_FieldDeletion_GeneratesDeletePatch() throws {
     // Arrange
     var syncEngine = SyncEngine()
-    var state = DiffTestStateTree()
+    var state = DiffTestStateRootNode()
     let playerID = PlayerID("alice")
     
     // First sync (cache)
@@ -115,7 +115,7 @@ func testGenerateDiff_FieldDeletion_GeneratesDeletePatch() throws {
 func testGenerateDiff_NewField_GeneratesSetPatch() throws {
     // Arrange
     var syncEngine = SyncEngine()
-    var state = DiffTestStateTree()
+    var state = DiffTestStateRootNode()
     let playerID = PlayerID("alice")
     
     // First sync (cache)
@@ -143,7 +143,7 @@ func testGenerateDiff_NewField_GeneratesSetPatch() throws {
 func testGenerateDiff_BroadcastFieldChange_AffectsAllPlayers() throws {
     // Arrange
     var syncEngine = SyncEngine()
-    var state = DiffTestStateTree()
+    var state = DiffTestStateRootNode()
     let alice = PlayerID("alice")
     let bob = PlayerID("bob")
     
@@ -186,7 +186,7 @@ func testGenerateDiff_BroadcastFieldChange_AffectsAllPlayers() throws {
 func testGenerateDiff_PerPlayerFieldChange_OnlyAffectsThatPlayer() throws {
     // Arrange
     var syncEngine = SyncEngine()
-    var state = DiffTestStateTree()
+    var state = DiffTestStateRootNode()
     let alice = PlayerID("alice")
     let bob = PlayerID("bob")
     
@@ -219,7 +219,7 @@ func testGenerateDiff_PerPlayerFieldChange_OnlyAffectsThatPlayer() throws {
 func testCache_UpdatedAfterFirstSync() throws {
     // Arrange
     var syncEngine = SyncEngine()
-    var state = DiffTestStateTree()
+    var state = DiffTestStateRootNode()
     let playerID = PlayerID("alice")
     
     state.round = 1
@@ -243,7 +243,7 @@ func testCache_UpdatedAfterFirstSync() throws {
 func testCache_MultiplePlayers_IsolatedCaches() throws {
     // Arrange
     var syncEngine = SyncEngine()
-    var state = DiffTestStateTree()
+    var state = DiffTestStateRootNode()
     let alice = PlayerID("alice")
     let bob = PlayerID("bob")
     
@@ -287,7 +287,7 @@ func testCache_MultiplePlayers_IsolatedCaches() throws {
 func testPathFormat_JSONPointer() throws {
     // Arrange
     var syncEngine = SyncEngine()
-    var state = DiffTestStateTree()
+    var state = DiffTestStateRootNode()
     let playerID = PlayerID("alice")
     
     state.round = 1
@@ -312,7 +312,7 @@ func testPathFormat_JSONPointer() throws {
 func testPathFormat_NestedObjects_JSONPointer() throws {
     // Arrange
     var syncEngine = SyncEngine()
-    var state = DiffTestStateTree()
+    var state = DiffTestStateRootNode()
     let playerID = PlayerID("alice")
     
     state.players[playerID] = "Alice"
@@ -339,7 +339,7 @@ func testPathFormat_NestedObjects_JSONPointer() throws {
 func testOnlyPaths_FiltersToSpecifiedPaths() throws {
     // Arrange
     var syncEngine = SyncEngine()
-    var state = DiffTestStateTree()
+    var state = DiffTestStateRootNode()
     let playerID = PlayerID("alice")
     
     state.round = 1
@@ -375,7 +375,7 @@ func testOnlyPaths_FiltersToSpecifiedPaths() throws {
 func testEdgeCase_EmptySnapshots() throws {
     // Arrange
     var syncEngine = SyncEngine()
-    var state = DiffTestStateTree()
+    var state = DiffTestStateRootNode()
     let playerID = PlayerID("alice")
     
     // First sync (empty state)
@@ -396,7 +396,7 @@ func testEdgeCase_EmptySnapshots() throws {
 func testEdgeCase_IdenticalSnapshots_NoChange() throws {
     // Arrange
     var syncEngine = SyncEngine()
-    var state = DiffTestStateTree()
+    var state = DiffTestStateRootNode()
     let playerID = PlayerID("alice")
     
     state.round = 1
@@ -419,7 +419,7 @@ func testEdgeCase_IdenticalSnapshots_NoChange() throws {
 func testLateJoin_UsesFullSnapshot() throws {
     // Arrange
     var syncEngine = SyncEngine()
-    var state = DiffTestStateTree()
+    var state = DiffTestStateRootNode()
     let playerID = PlayerID("alice")
     
     state.round = 1
@@ -437,7 +437,7 @@ func testLateJoin_UsesFullSnapshot() throws {
 func testLateJoin_PopulatesCache() throws {
     // Arrange
     var syncEngine = SyncEngine()
-    var state = DiffTestStateTree()
+    var state = DiffTestStateRootNode()
     let playerID = PlayerID("alice")
     
     state.round = 1
@@ -469,7 +469,7 @@ func testLateJoin_PopulatesCache() throws {
 func testFirstSync_SentOnlyOnce() throws {
     // Arrange
     var syncEngine = SyncEngine()
-    var state = DiffTestStateTree()
+    var state = DiffTestStateRootNode()
     let playerID = PlayerID("alice")
     
     state.round = 1
@@ -503,7 +503,7 @@ func testFirstSync_SentOnlyOnce() throws {
 func testStateUpdate_UsesDiff() throws {
     // Arrange
     var syncEngine = SyncEngine()
-    var state = DiffTestStateTree()
+    var state = DiffTestStateRootNode()
     let playerID = PlayerID("alice")
     
     // First sync (cache) - should return firstSync

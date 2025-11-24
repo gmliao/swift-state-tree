@@ -28,9 +28,9 @@ struct BenchmarkCard: StateProtocol {
     let rank: Int
 }
 
-/// Test StateTree with nested struct structures for benchmarking
-@StateTreeBuilder
-struct BenchmarkStateTree: StateTreeProtocol {
+/// Test StateNode with nested struct structures for benchmarking
+@StateNodeBuilder
+struct BenchmarkStateRootNode: StateNodeProtocol {
     @Sync(.broadcast)
     var players: [PlayerID: BenchmarkPlayerState] = [:]
     
@@ -50,8 +50,8 @@ struct BenchmarkStateTree: StateTreeProtocol {
 func generateTestState(
     playerCount: Int,
     cardsPerPlayer: Int
-) -> BenchmarkStateTree {
-    var state = BenchmarkStateTree()
+) -> BenchmarkStateRootNode {
+    var state = BenchmarkStateRootNode()
     
     for i in 0..<playerCount {
         let playerID = PlayerID("player_\(i)")

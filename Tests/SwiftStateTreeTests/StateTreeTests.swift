@@ -29,11 +29,11 @@ struct TestCard: StateProtocol {
     let rank: Int
 }
 
-// MARK: - Test StateTree Examples
+// MARK: - Test StateNode Examples
 
-/// Test StateTree with various sync policies
-@StateTreeBuilder
-struct TestGameStateTree: StateTreeProtocol {
+/// Test StateNode with various sync policies
+@StateNodeBuilder
+struct TestGameStateRootNode: StateNodeProtocol {
     @Sync(.broadcast)
     var players: [PlayerID: String] = [:]
     
@@ -47,9 +47,9 @@ struct TestGameStateTree: StateTreeProtocol {
     var round: Int = 0
 }
 
-/// Test StateTree with all fields marked with @Sync
-@StateTreeBuilder
-struct CompleteStateTree: StateTreeProtocol {
+/// Test StateNode with all fields marked with @Sync
+@StateNodeBuilder
+struct CompleteStateNode: StateNodeProtocol {
     @Sync(.broadcast)
     var publicData: String = "public"
     
@@ -57,9 +57,9 @@ struct CompleteStateTree: StateTreeProtocol {
     var privateData: Int = 42
 }
 
-/// Test StateTree with @Internal fields
-@StateTreeBuilder
-struct StateTreeWithInternal: StateTreeProtocol {
+/// Test StateNode with @Internal fields
+@StateNodeBuilder
+struct StateNodeWithInternal: StateNodeProtocol {
     @Sync(.broadcast)
     var players: [PlayerID: String] = [:]
     
@@ -75,15 +75,15 @@ struct StateTreeWithInternal: StateTreeProtocol {
     }
 }
 
-/// Test StateTree with no fields (edge case)
-@StateTreeBuilder
-struct EmptyStateTree: StateTreeProtocol {
+/// Test StateNode with no fields (edge case)
+@StateNodeBuilder
+struct EmptyStateNode: StateNodeProtocol {
     // No fields
 }
 
-/// Test StateTree with nested struct structures
-@StateTreeBuilder
-struct NestedStateTree: StateTreeProtocol {
+/// Test StateNode with nested struct structures
+@StateNodeBuilder
+struct NestedStateRootNode: StateNodeProtocol {
     @Sync(.broadcast)
     var players: [PlayerID: TestPlayerState] = [:]
     
@@ -97,27 +97,27 @@ struct NestedStateTree: StateTreeProtocol {
     var round: Int = 0
 }
 
-// MARK: - StateTree Protocol Tests
+// MARK: - StateNode Protocol Tests
 
 // MARK: - Protocol Conformance Tests
 
-@Test("StateTree types can conform to StateTreeProtocol")
-func testStateTreeProtocolConformance() {
-    // Test that types can conform to StateTreeProtocol
-    let gameState = TestGameStateTree()
-    let _: StateTreeProtocol = gameState
+@Test("StateNode types can conform to StateNodeProtocol")
+func testStateNodeProtocolConformance() {
+    // Test that types can conform to StateNodeProtocol
+    let gameState = TestGameStateRootNode()
+    let _: StateNodeProtocol = gameState
     
-    let emptyState = EmptyStateTree()
-    let _: StateTreeProtocol = emptyState
+    let emptyState = EmptyStateNode()
+    let _: StateNodeProtocol = emptyState
     
-    // If we can assign to StateTreeProtocol, conformance is verified
-    #expect(true, "Types conform to StateTreeProtocol")
+    // If we can assign to StateNodeProtocol, conformance is verified
+    #expect(true, "Types conform to StateNodeProtocol")
 }
 
 @Test("StateTree types are Sendable")
 func testStateTreeIsSendable() {
     // Test that StateTree types are Sendable
-    let gameState = TestGameStateTree()
+    let gameState = TestGameStateRootNode()
     
     // This should compile without errors, indicating Sendable conformance
     let _: any Sendable = gameState
@@ -128,7 +128,7 @@ func testStateTreeIsSendable() {
 @Test("getSyncFields returns all sync fields")
 func testGetSyncFields_ReturnsAllSyncFields() {
     // Arrange
-    var gameState = TestGameStateTree()
+    var gameState = TestGameStateRootNode()
     gameState.players[PlayerID("alice")] = "Alice"
     gameState.hiddenData = 100
     gameState.round = 1
@@ -149,7 +149,7 @@ func testGetSyncFields_ReturnsAllSyncFields() {
 @Test("getSyncFields returns empty array for empty StateTree")
 func testGetSyncFields_EmptyStateTree() {
     // Arrange
-    let emptyState = EmptyStateTree()
+    let emptyState = EmptyStateNode()
     
     // Act
     let fields = emptyState.getSyncFields()
@@ -161,7 +161,7 @@ func testGetSyncFields_EmptyStateTree() {
 @Test("getSyncFields normalizes field names")
 func testGetSyncFields_FieldNamesAreNormalized() {
     // Arrange
-    let gameState = TestGameStateTree()
+    let gameState = TestGameStateRootNode()
     
     // Act
     let fields = gameState.getSyncFields()
@@ -178,7 +178,7 @@ func testGetSyncFields_FieldNamesAreNormalized() {
 @Test("validateSyncFields returns true when all fields have @Sync")
 func testValidateSyncFields_AllFieldsHaveSync() {
     // Arrange
-    let completeState = CompleteStateTree()
+    let completeState = CompleteStateNode()
     
     // Act
     let isValid = completeState.validateSyncFields()
@@ -190,7 +190,7 @@ func testValidateSyncFields_AllFieldsHaveSync() {
 @Test("validateSyncFields returns true when fields have @Sync or @Internal")
 func testValidateSyncFields_WithInternalFields() {
     // Arrange
-    let stateWithInternal = StateTreeWithInternal()
+    let stateWithInternal = StateNodeWithInternal()
     
     // Act
     let isValid = stateWithInternal.validateSyncFields()
@@ -202,7 +202,7 @@ func testValidateSyncFields_WithInternalFields() {
 @Test("validateSyncFields returns true for empty StateTree")
 func testValidateSyncFields_EmptyStateTree() {
     // Arrange
-    let emptyState = EmptyStateTree()
+    let emptyState = EmptyStateNode()
     
     // Act
     let isValid = emptyState.validateSyncFields()
@@ -216,7 +216,7 @@ func testValidateSyncFields_EmptyStateTree() {
 @Test("SyncEngine snapshot works with StateTree")
 func testSyncEngineSnapshot_WithStateTree() throws {
     // Arrange
-    var gameState = TestGameStateTree()
+    var gameState = TestGameStateRootNode()
     let alice = PlayerID("alice")
     let bob = PlayerID("bob")
     
@@ -270,7 +270,7 @@ func testSyncEngineSnapshot_WithStateTree() throws {
 @Test("Different players get different snapshots")
 func testSyncEngineSnapshot_DifferentPlayersGetDifferentSnapshots() throws {
     // Arrange
-    var gameState = TestGameStateTree()
+    var gameState = TestGameStateRootNode()
     let alice = PlayerID("alice")
     let bob = PlayerID("bob")
     
@@ -306,7 +306,7 @@ func testSyncEngineSnapshot_DifferentPlayersGetDifferentSnapshots() throws {
 @Test("Broadcast policy syncs same data to all players")
 func testSyncPolicy_Broadcast() throws {
     // Arrange
-    var gameState = TestGameStateTree()
+    var gameState = TestGameStateRootNode()
     gameState.players[PlayerID("alice")] = "Alice"
     gameState.round = 10
     
@@ -330,7 +330,7 @@ func testSyncPolicy_Broadcast() throws {
 @Test("ServerOnly policy excludes fields from snapshot")
 func testSyncPolicy_ServerOnly() throws {
     // Arrange
-    var gameState = TestGameStateTree()
+    var gameState = TestGameStateRootNode()
     gameState.hiddenData = 42
     
     let syncEngine = SyncEngine()
@@ -346,7 +346,7 @@ func testSyncPolicy_ServerOnly() throws {
 @Test("Internal fields are excluded from snapshot")
 func testInternalFields_ExcludedFromSnapshot() throws {
     // Arrange
-    var stateWithInternal = StateTreeWithInternal()
+    var stateWithInternal = StateNodeWithInternal()
     stateWithInternal.players[PlayerID("alice")] = "Alice"
     stateWithInternal.lastProcessedTimestamp = Date()
     stateWithInternal.cache["key"] = "value"
@@ -369,7 +369,7 @@ func testInternalFields_ExcludedFromSnapshot() throws {
 @Test("PerPlayer policy filters data per player")
 func testSyncPolicy_PerPlayer() throws {
     // Arrange
-    var gameState = TestGameStateTree()
+    var gameState = TestGameStateRootNode()
     let alice = PlayerID("alice")
     let bob = PlayerID("bob")
     
@@ -409,13 +409,13 @@ func testSyncPolicy_PerPlayer() throws {
 @Test("StateTree handles nil optional fields")
 func testStateTree_WithNilOptionalFields() throws {
     // Test StateTree with optional fields
-    @StateTreeBuilder
-    struct OptionalStateTree: StateTreeProtocol {
+    @StateNodeBuilder
+    struct OptionalStateNode: StateNodeProtocol {
         @Sync(.broadcast)
         var optionalValue: String? = nil
     }
     
-    let state = OptionalStateTree()
+    let state = OptionalStateNode()
     let syncEngine = SyncEngine()
     let player = PlayerID("test")
     
@@ -432,7 +432,7 @@ func testStateTree_WithNilOptionalFields() throws {
 @Test("StateTree detects multiple sync policies")
 func testStateTree_MultipleSyncPolicies() {
     // Arrange
-    let gameState = TestGameStateTree()
+    let gameState = TestGameStateRootNode()
     
     // Act
     let fields = gameState.getSyncFields()
@@ -450,7 +450,7 @@ func testStateTree_MultipleSyncPolicies() {
 @Test("StateTree with nested struct structures can be created")
 func testNestedStateTree_Creation() {
     // Arrange & Act
-    let nestedState = NestedStateTree()
+    let nestedState = NestedStateRootNode()
     
     // Assert
     #expect(nestedState.players.isEmpty, "Initial players should be empty")
@@ -462,7 +462,7 @@ func testNestedStateTree_Creation() {
 @Test("Nested struct structures are properly serialized in snapshot")
 func testNestedStateTree_Serialization() throws {
     // Arrange
-    var nestedState = NestedStateTree()
+    var nestedState = NestedStateRootNode()
     let alice = PlayerID("alice")
     let bob = PlayerID("bob")
     
@@ -542,7 +542,7 @@ func testNestedStateTree_Serialization() throws {
 @Test("Nested structures work with perPlayer policy")
 func testNestedStateTree_PerPlayerPolicy() throws {
     // Arrange
-    var nestedState = NestedStateTree()
+    var nestedState = NestedStateRootNode()
     let alice = PlayerID("alice")
     let bob = PlayerID("bob")
     
@@ -595,7 +595,7 @@ func testNestedStateTree_PerPlayerPolicy() throws {
 @Test("Nested structures in broadcast fields are same for all players")
 func testNestedStateTree_BroadcastNestedStructures() throws {
     // Arrange
-    var nestedState = NestedStateTree()
+    var nestedState = NestedStateRootNode()
     let alice = PlayerID("alice")
     let bob = PlayerID("bob")
     
@@ -632,7 +632,7 @@ func testNestedStateTree_BroadcastNestedStructures() throws {
 @Test("getSyncFields works with nested structures")
 func testNestedStateTree_GetSyncFields() {
     // Arrange
-    let nestedState = NestedStateTree()
+    let nestedState = NestedStateRootNode()
     
     // Act
     let fields = nestedState.getSyncFields()
@@ -650,11 +650,183 @@ func testNestedStateTree_GetSyncFields() {
 @Test("validateSyncFields works with nested structures")
 func testNestedStateTree_ValidateSyncFields() {
     // Arrange
-    let nestedState = NestedStateTree()
+    let nestedState = NestedStateRootNode()
     
     // Act
     let isValid = nestedState.validateSyncFields()
     
     // Assert
     #expect(isValid == true, "StateTree with nested structures should validate")
+}
+
+// MARK: - Recursive Filtering Tests
+
+/// Test nested StateNode structure with perPlayer field inside
+@StateNodeBuilder
+struct TestPlayerStateNode: StateNodeProtocol {
+    @Sync(.broadcast)
+    var position: Vec2 = Vec2(x: 0.0, y: 0.0)
+    
+    @Sync(.broadcast)
+    var hp: Int = 0
+    
+    @Sync(.perPlayer { inventory, pid in
+        inventory[pid]
+    })
+    var inventory: [PlayerID: [String]] = [:]
+}
+
+/// Vec2 helper struct for testing
+struct Vec2: Codable, Sendable {
+    var x: Double
+    var y: Double
+}
+
+/// Test root node with nested StateNode that has perPlayer field
+@StateNodeBuilder
+struct TestRoomStateRootNode: StateNodeProtocol {
+    @Sync(.broadcast)
+    var players: [PlayerID: TestPlayerStateNode] = [:]
+}
+
+@Test("Recursive filtering: nested StateNode with perPlayer field correctly filters")
+func testRecursiveFiltering_NestedStateNodeWithPerPlayerField() throws {
+    // Arrange
+    var roomState = TestRoomStateRootNode()
+    let alice = PlayerID("alice")
+    let bob = PlayerID("bob")
+    
+    // Create player states with different inventories
+    var aliceState = TestPlayerStateNode()
+    aliceState.position = Vec2(x: 10.0, y: 20.0)
+    aliceState.hp = 100
+    aliceState.inventory[alice] = ["sword", "shield"]
+    aliceState.inventory[bob] = ["potion"]
+    
+    var bobState = TestPlayerStateNode()
+    bobState.position = Vec2(x: 30.0, y: 40.0)
+    bobState.hp = 80
+    bobState.inventory[alice] = ["bow"]
+    bobState.inventory[bob] = ["arrow", "quiver"]
+    
+    roomState.players[alice] = aliceState
+    roomState.players[bob] = bobState
+    
+    let syncEngine = SyncEngine()
+    
+    // Act
+    let aliceSnapshot = try syncEngine.snapshot(for: alice, from: roomState)
+    let bobSnapshot = try syncEngine.snapshot(for: bob, from: roomState)
+    
+    // Assert
+    // Both should see the players dictionary (broadcast)
+    #expect(aliceSnapshot["players"] != nil, "Alice should see players field")
+    #expect(bobSnapshot["players"] != nil, "Bob should see players field")
+    
+    if let players = aliceSnapshot["players"]?.objectValue {
+        // Alice should see her own player state
+        if let alicePlayerState = players["alice"]?.objectValue {
+            // Broadcast fields should be visible
+            #expect(alicePlayerState["position"] != nil, "Alice should see her position (broadcast)")
+            #expect(alicePlayerState["hp"]?.intValue == 100, "Alice should see her hp (broadcast)")
+            
+            // PerPlayer field: Alice should only see her own inventory
+            if let aliceInventory = alicePlayerState["inventory"]?.arrayValue {
+                #expect(aliceInventory.count == 2, "Alice should see 2 items in her inventory")
+                let items = aliceInventory.compactMap { $0.stringValue }
+                #expect(items.contains("sword"), "Alice should see sword in her inventory")
+                #expect(items.contains("shield"), "Alice should see shield in her inventory")
+                #expect(!items.contains("potion"), "Alice should NOT see Bob's potion in her inventory")
+            } else {
+                Issue.record("Alice should have inventory field in snapshot")
+            }
+        }
+        
+        // Alice should also see Bob's player state (broadcast)
+        if let bobPlayerState = players["bob"]?.objectValue {
+            // Broadcast fields should be visible
+            #expect(bobPlayerState["position"] != nil, "Alice should see Bob's position (broadcast)")
+            #expect(bobPlayerState["hp"]?.intValue == 80, "Alice should see Bob's hp (broadcast)")
+            
+            // PerPlayer field: Alice should see Bob's inventory filtered for Alice
+            // Since Bob's inventory[alice] = ["bow"], Alice should see ["bow"]
+            if let bobInventoryForAlice = bobPlayerState["inventory"]?.arrayValue {
+                #expect(bobInventoryForAlice.count == 1, "Alice should see 1 item in Bob's inventory (filtered for Alice)")
+                #expect(bobInventoryForAlice.first?.stringValue == "bow", "Alice should see 'bow' in Bob's inventory (filtered for Alice)")
+            } else {
+                Issue.record("Alice should have inventory field for Bob in snapshot")
+            }
+        }
+    }
+    
+    // Verify Bob's snapshot
+    if let players = bobSnapshot["players"]?.objectValue {
+        // Bob should see his own player state
+        if let bobPlayerState = players["bob"]?.objectValue {
+            // PerPlayer field: Bob should only see his own inventory
+            if let bobInventory = bobPlayerState["inventory"]?.arrayValue {
+                #expect(bobInventory.count == 2, "Bob should see 2 items in his inventory")
+                let items = bobInventory.compactMap { $0.stringValue }
+                #expect(items.contains("arrow"), "Bob should see arrow in his inventory")
+                #expect(items.contains("quiver"), "Bob should see quiver in his inventory")
+            } else {
+                Issue.record("Bob should have inventory field in snapshot")
+            }
+        }
+        
+        // Bob should see Alice's player state (broadcast)
+        if let alicePlayerState = players["alice"]?.objectValue {
+            // PerPlayer field: Bob should see Alice's inventory filtered for Bob
+            // Since Alice's inventory[bob] = ["potion"], Bob should see ["potion"]
+            if let aliceInventoryForBob = alicePlayerState["inventory"]?.arrayValue {
+                #expect(aliceInventoryForBob.count == 1, "Bob should see 1 item in Alice's inventory (filtered for Bob)")
+                #expect(aliceInventoryForBob.first?.stringValue == "potion", "Bob should see 'potion' in Alice's inventory (filtered for Bob)")
+            } else {
+                Issue.record("Bob should have inventory field for Alice in snapshot")
+            }
+        }
+    }
+}
+
+@Test("Recursive filtering: nested StateNode with broadcast fields are same, perPlayer fields differ")
+func testRecursiveFiltering_NestedStateNodeBroadcastFields() throws {
+    // Arrange
+    var roomState = TestRoomStateRootNode()
+    let alice = PlayerID("alice")
+    let bob = PlayerID("bob")
+    
+    var playerState = TestPlayerStateNode()
+    playerState.position = Vec2(x: 10.0, y: 20.0)
+    playerState.hp = 100
+    playerState.inventory[alice] = ["sword"]
+    playerState.inventory[bob] = ["shield"]
+    
+    roomState.players[alice] = playerState
+    
+    let syncEngine = SyncEngine()
+    
+    // Act
+    let aliceSnapshot = try syncEngine.snapshot(for: alice, from: roomState)
+    let bobSnapshot = try syncEngine.snapshot(for: bob, from: roomState)
+    
+    // Assert
+    // Note: The entire players dictionary will NOT be the same because perPlayer fields differ
+    // But broadcast fields within each player state should be the same
+    
+    if let alicePlayers = aliceSnapshot["players"]?.objectValue?["alice"]?.objectValue,
+       let bobPlayers = bobSnapshot["players"]?.objectValue?["alice"]?.objectValue {
+        // Broadcast fields should be the same for both players
+        #expect(alicePlayers["position"] == bobPlayers["position"], "Both should see the same position (broadcast)")
+        #expect(alicePlayers["hp"] == bobPlayers["hp"], "Both should see the same hp (broadcast)")
+        
+        // But perPlayer fields should be different
+        let aliceInventory = alicePlayers["inventory"]?.arrayValue
+        let bobInventory = bobPlayers["inventory"]?.arrayValue
+        
+        #expect(aliceInventory != bobInventory, "Inventories should be different (perPlayer filtering)")
+        #expect(aliceInventory?.count == 1, "Alice should see 1 item in her inventory")
+        #expect(bobInventory?.count == 1, "Bob should see 1 item in Alice's inventory (filtered for Bob)")
+        #expect(aliceInventory?.first?.stringValue == "sword", "Alice should see sword")
+        #expect(bobInventory?.first?.stringValue == "shield", "Bob should see shield (filtered for Bob)")
+    }
 }

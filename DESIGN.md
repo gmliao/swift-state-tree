@@ -17,8 +17,10 @@
 
 ## 目標
 
-- 用**一棵權威狀態樹 StateTree** 表示整個領域的狀態
+- 用**一棵權威狀態樹 StateTree**（包含一個 StateNode 作為根部）表示整個領域的狀態
+- StateTree 可以長出多個 StateNode（支援巢狀結構）
 - 用 **@Sync 規則** 控制伺服器要把哪些資料同步給誰
+- 支援遞迴過濾：巢狀的 StateNode 可以獨立套用 @Sync 政策
 - 用 **Realm DSL** 定義領域、RPC/Event 處理、Tick 設定
 - **UI 計算全部交給客戶端**，伺服器只送「邏輯資料」
 

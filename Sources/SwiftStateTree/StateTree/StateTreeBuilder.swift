@@ -1,6 +1,6 @@
 // Sources/SwiftStateTree/StateTree/StateTreeBuilder.swift
 
-/// Macro that validates and generates code for StateTree types.
+/// Macro that validates and generates code for StateNode types.
 ///
 /// This macro:
 /// 1. Validates that all stored properties have @Sync or @Internal markers
@@ -9,10 +9,10 @@
 ///
 /// Example:
 /// ```swift
-/// @StateTreeBuilder
-/// struct GameStateTree: StateTreeProtocol {
+/// @StateNodeBuilder
+/// struct GameStateRootNode: StateNodeProtocol {
 ///     @Sync(.broadcast)
-///     var players: [PlayerID: PlayerState] = [:]
+///     var players: [PlayerID: PlayerStateNode] = [:]
 ///     
 ///     @Sync(.serverOnly)
 ///     var hiddenDeck: [Card] = []
@@ -22,9 +22,9 @@
 /// }
 /// ```
 @attached(member, names: arbitrary)
-public macro StateTreeBuilder() = #externalMacro(
+public macro StateNodeBuilder() = #externalMacro(
     module: "SwiftStateTreeMacros",
-    type: "StateTreeBuilderMacro"
+    type: "StateNodeBuilderMacro"
 )
 
 /// Macro that automatically generates `SnapshotValueConvertible` protocol conformance.

@@ -49,7 +49,7 @@ public extension SyncPolicy {
     }
 }
 
-/// Marks a StateTree field with a synchronization policy.
+/// Marks a StateNode field with a synchronization policy.
 @propertyWrapper
 public struct Sync<Value: Sendable>: Sendable {
     public let policy: SyncPolicy<Value>
@@ -74,19 +74,3 @@ public struct Internal<Value: Sendable>: Sendable {
         self.wrappedValue = wrappedValue
     }
 }
-
-/// Type-erased access to synchronized values.
-private protocol SyncValueProvider {
-    func syncValue(for playerID: PlayerID) -> Any?
-}
-
-extension Sync: SyncValueProvider {
-    fileprivate func syncValue(for playerID: PlayerID) -> Any? {
-        policy.filteredValue(wrappedValue, for: playerID)
-    }
-    
-    fileprivate func syncValue(for playerID: PlayerID?) -> Any? {
-        policy.filteredValue(wrappedValue, for: playerID)
-    }
-}
-

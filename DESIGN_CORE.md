@@ -9,9 +9,9 @@
 
 ### 伺服器只做三件事
 
-1. **維護唯一真實狀態**：StateTree（狀態樹）
+1. **維護唯一真實狀態**：StateTree（狀態樹，包含一個 StateNode 作為根部）
 2. **根據 RPC 和 Event 更新這棵樹**
-3. **根據同步規則 SyncPolicy**，為每個玩家產生專屬 JSON，同步出去
+3. **根據同步規則 SyncPolicy**，為每個玩家產生專屬 JSON，同步出去（支援遞迴過濾）
 
 ### 資料流
 
@@ -20,7 +20,7 @@
 ```
 Client 發 RPC
   → Server RealmActor 處理
-  → 更新 StateTree（可選）
+  → 更新 StateTree（可選，更新根部的 StateNode）
   → 返回 Response（可包含狀態快照，用於 late join）
   → Client 收到 Response
 ```
@@ -31,7 +31,7 @@ Client 發 RPC
 Client -> Server Event:
   Client 發 Event
     → Server RealmActor 處理
-    → 可選：更新 StateTree / 觸發邏輯
+    → 可選：更新 StateTree（更新根部的 StateNode）/ 觸發邏輯
 
 Server -> Client Event:
   Server 推送 Event
@@ -45,10 +45,10 @@ Server -> Client Event:
 
 1. **Tick-based（自動批次更新）**：
 ```
-StateTree 狀態變化
+StateTree（根部 StateNode）狀態變化
   → 標記為「需要同步」
   → 等待 Tick（例如 100ms）
-  → SyncEngine 依 @Sync 規則裁切
+  → SyncEngine 依 @Sync 規則裁切（支援遞迴過濾）
   → ⏳ 分層計算：broadcast（共用）+ perPlayer（個別）
   → ⏳ Merge 合併差異
   → ⏳ 透過 Event 推送給 Client（path-based diff）
@@ -57,9 +57,9 @@ StateTree 狀態變化
 
 2. **Event-driven（手動強迫刷新）**：
 ```
-StateTree 狀態變化
+StateTree（根部 StateNode）狀態變化
   → 手動調用 syncNow()
-  → SyncEngine 依 @Sync 規則裁切
+  → SyncEngine 依 @Sync 規則裁切（支援遞迴過濾）
   → ⏳ 分層計算：broadcast（共用）+ perPlayer（個別）
   → ⏳ Merge 合併差異
   → ⏳ 透過 Event 推送給 Client（path-based diff）
@@ -68,6 +68,7 @@ StateTree 狀態變化
 
 **當前實現狀態**：
 - ✅ **完整快照生成**：`SyncEngine.snapshot(for:from:)` 已實現，可用於 late join
+- ✅ **遞迴過濾**：支援巢狀 StateNode 的遞迴過濾，每個節點獨立套用 @Sync 政策
 - ✅ **差異計算機制**：已實現
   - ✅ **緩存上次快照**：broadcast 部分共用一份，perPlayer 部分每個玩家一份
   - ✅ **比較差異**：新舊快照比較，找出變化的路徑
@@ -81,99 +82,174 @@ StateTree 狀態變化
 
 ---
 
-## StateTree：狀態樹結構
+## 名詞定義與架構
 
-### 目標
+### 核心概念
 
-- 只一棵樹 `StateTree` 表示整個領域狀態
-- 不再額外定一個 `UIGameState` 在伺服器
-- UI 專用計算丟給 Client
+**StateTree（狀態樹）**：
+- 包含一個 `StateNode` 作為根部的樹狀結構
+- 表示整個領域的狀態
+- 是單一來源真相（single source of truth）
+- 可以長出多個 `StateNode`（支援巢狀結構）
+
+**StateNode（狀態節點）**：
+- 樹中的節點，可以巢狀遞迴
+- 使用 `@StateNodeBuilder` macro 標記
+- 實作 `StateNodeProtocol`
+- 支援 `@Sync` 政策，可以進行遞迴過濾
+- 可以是根節點（RootNode）或子節點
+
+**State（狀態資料）**：
+- 簡單的資料結構，不需要同步政策
+- 使用 `@State` macro 標記
+- 實作 `StateProtocol`（Codable + Sendable）
+- 整包更新，不支援內部細分過濾
+
+### 架構層級
+
+```
+StateTree（狀態樹）
+└── StateNode（根節點，RootNode）
+    ├── @Sync 欄位
+    │   ├── 基本型別（Int, String, Bool 等）
+    │   ├── State（簡單資料結構，整包更新）
+    │   └── StateNode（巢狀節點，可遞迴過濾）
+    │       ├── @Sync 欄位
+    │       └── ...（可以無限巢狀）
+    └── @Internal 欄位（伺服器內部使用）
+```
+
+### 使用場景對比
+
+| 特性 | `@State` + `StateProtocol` | `@StateNodeBuilder` + `StateNodeProtocol` |
+|------|---------------------------|------------------------------------------|
+| 用途 | 簡單資料結構 | 需要同步政策的節點 |
+| 同步方式 | 整包更新 | 可以細分過濾 |
+| 支援 perPlayer | ✅ 可以（頂層） | ✅ 可以（頂層 + 遞迴） |
+| 內部細分過濾 | ❌ 不行 | ✅ 可以（遞迴過濾） |
+| 使用場景 | 純資料，整包同步 | 複雜結構，需要內部過濾 |
 
 ### StateTree DSL 設計
 
 StateTree 採用 **Property Wrapper + Macro** 的設計方式：
 
-- **語法**：使用 `@StateTreeBuilder` macro 標記 struct
+- **根節點**：使用 `@StateNodeBuilder` macro 標記 struct（通常命名為 `*RootNode`）
+- **子節點**：使用 `@StateNodeBuilder` macro 標記 struct（通常命名為 `*Node`）
+- **資料結構**：使用 `@State` macro 標記 struct（通常命名為 `*State`）
 - **同步欄位**：使用 `@Sync` property wrapper 標記需要同步的欄位
 - **內部欄位**：使用 `@Internal` property wrapper 標記伺服器內部使用的欄位
 - **計算屬性**：原生支援，自動跳過驗證
 
 ### 範例
 
+#### 範例 1：使用 State（整包更新）
+
 ```swift
-// 單一權威狀態樹（遊戲場景範例）
-@StateTreeBuilder
-struct GameStateTree: StateTreeProtocol {
-    // 所有玩家的公開狀態（血量、名字等），可以廣播給大家
-    @Sync(.broadcast)
-    var players: [PlayerID: PlayerState] = [:]
-    
-    // 回合資訊，所有人都可以知道現在輪到誰
-    @Sync(.broadcast)
-    var turn: PlayerID?
-    
-    // 手牌：每個玩家只看得到自己的
-    @Sync(.perPlayerDictionaryValue())
-    var hands: [PlayerID: HandState] = [:]
-    
-    // 伺服器內部用，不同步給任何 Client（但仍會被同步引擎知道）
-    @Sync(.serverOnly)
-    var hiddenDeck: [Card] = []
-    
-    // 伺服器內部計算用的暫存值（不需要同步引擎知道）
-    @Internal
-    var lastProcessedTimestamp: Date = Date()
-    
-    @Internal
-    var aiDecisionCache: [PlayerID: AIDecision] = [:]
-    
-    // 其他純邏輯狀態（例如倒數、回合數等）
-    @Sync(.broadcast)
-    var round: Int = 0
-    
-    // 計算屬性：自動跳過驗證，不需要標記
-    var totalPlayers: Int {
-        players.count
-    }
-    
-    var averageHP: Double {
-        let total = players.values.reduce(0) { $0 + $1.hpCurrent }
-        return Double(total) / Double(players.count)
-    }
-}
-
-struct PlayerID: Hashable, Codable {
-    let rawValue: String
-}
-
-// 使用 @SnapshotConvertible 自動生成 protocol 實作（推薦）
-@SnapshotConvertible
-struct PlayerState: Codable {
+// 簡單資料結構：整包更新，不需要細分過濾
+@State
+struct PlayerState: StateProtocol {
     var name: String
     var hpCurrent: Int
     var hpMax: Int
 }
 
-@SnapshotConvertible
-struct HandState: Codable {
+@State
+struct HandState: StateProtocol {
     var ownerID: PlayerID
     var cards: [Card]
 }
 
-@SnapshotConvertible
-struct Card: Codable {
+// 根節點：StateTree 的根部
+@StateNodeBuilder
+struct GameStateRootNode: StateNodeProtocol {
+    // 所有玩家的公開狀態（整包更新）
+    @Sync(.broadcast)
+    var players: [PlayerID: PlayerState] = [:]
+    
+    // 手牌：每個玩家只看得到自己的（整包更新）
+    @Sync(.perPlayerDictionaryValue())
+    var hands: [PlayerID: HandState] = [:]
+    
+    // 回合資訊
+    @Sync(.broadcast)
+    var round: Int = 0
+}
+```
+
+**行為**：
+- `players` 是 `.broadcast` → 所有玩家看到完整的 `PlayerState`（整包）
+- `hands` 是 `.perPlayerDictionaryValue()` → 每個玩家只看到自己的 `HandState`（整包）
+- `PlayerState` 和 `HandState` 內部不會再細分過濾
+
+#### 範例 2：使用 StateNode（可以細分過濾）
+
+```swift
+// 巢狀節點：需要內部細分過濾
+@StateNodeBuilder
+struct PlayerStateNode: StateNodeProtocol {
+    @Sync(.broadcast)
+    var position: Vec2
+    
+    @Sync(.broadcast)
+    var hp: Int
+    
+    // 只有自己看到的東西（可以細分過濾）
+    @Sync(.perPlayer { inventory, pid in inventory[pid] })
+    var inventory: [PlayerID: [Item]]
+}
+
+// 根節點：StateTree 的根部
+@StateNodeBuilder
+struct RoomStateRootNode: StateNodeProtocol {
+    // 整張 players 字典對所有人可見（裡面再細分）
+    @Sync(.broadcast)
+    var players: [PlayerID: PlayerStateNode] = [:]
+}
+```
+
+**行為**：
+- `players` 是 `.broadcast` → 所有玩家看到 `players` 字典
+- 但每個 `PlayerStateNode` 會遞迴套用 `@Sync` 政策：
+  - `position` 和 `hp` → 所有人可見（broadcast）
+  - `inventory` → 只有該玩家可見（perPlayer，遞迴過濾）
+
+#### 範例 3：混合使用
+
+```swift
+// 簡單資料結構（整包更新）
+@State
+struct Card: StateProtocol {
     let id: Int
     let suit: Int
     let rank: Int
 }
+
+// 巢狀節點（可以細分過濾）
+@StateNodeBuilder
+struct PlayerStateNode: StateNodeProtocol {
+    @Sync(.broadcast) var name: String
+    @Sync(.broadcast) var hp: Int
+    @Sync(.perPlayer { ... }) var inventory: [PlayerID: [Item]]
+}
+
+// 根節點
+@StateNodeBuilder
+struct GameStateRootNode: StateNodeProtocol {
+    @Sync(.broadcast)
+    var players: [PlayerID: PlayerStateNode] = [:]  // 可以遞迴過濾
+    
+    @Sync(.perPlayerDictionaryValue())
+    var hands: [PlayerID: [Card]] = [:]  // Card 是 State，整包更新
+}
 ```
 
 > **StateTree 是單一來源真相（single source of truth）。**  
+> StateTree 包含一個 StateNode 作為根部，可以長出多個 StateNode（支援巢狀）。  
 > UI 只會收到「裁切後的 JSON 表示」。
 
 ### 欄位標記規則
 
-StateTree 中的欄位需要明確標記其用途：
+StateNode 中的欄位需要明確標記其用途：
 
 1. **`@Sync`**：需要同步的欄位（必須標記）
    - `.broadcast`：同步給所有 Client
@@ -194,7 +270,7 @@ StateTree 中的欄位需要明確標記其用途：
 
 ### 驗證規則
 
-`@StateTreeBuilder` macro 會自動驗證：
+`@StateNodeBuilder` macro 會自動驗證：
 
 - ✅ **`@Sync` 標記的欄位**：需要同步（broadcast/perPlayer/serverOnly）
 - ✅ **`@Internal` 標記的欄位**：伺服器內部使用，跳過驗證
@@ -206,6 +282,34 @@ StateTree 中的欄位需要明確標記其用途：
 - `@Sync(.serverOnly)` vs `@Internal` 的差異：
   - `@Sync(.serverOnly)`：同步引擎知道這個欄位存在，但不輸出給 Client
   - `@Internal`：完全不需要同步引擎知道，純粹伺服器內部使用
+
+### 遞迴過濾機制
+
+當 StateNode 包含其他 StateNode 時，會進行遞迴過濾：
+
+```swift
+@StateNodeBuilder
+struct PlayerStateNode: StateNodeProtocol {
+    @Sync(.broadcast) var position: Vec2
+    @Sync(.perPlayer { ... }) var inventory: [PlayerID: [Item]]
+}
+
+@StateNodeBuilder
+struct RoomStateRootNode: StateNodeProtocol {
+    @Sync(.broadcast)
+    var players: [PlayerID: PlayerStateNode] = [:]
+}
+```
+
+**過濾流程**：
+1. `RoomStateRootNode.players` 是 `.broadcast` → 所有玩家看到字典
+2. 字典中的每個 `PlayerStateNode` 會遞迴套用 `@Sync` 政策：
+   - `position` → 所有人可見（broadcast）
+   - `inventory` → 只有該玩家可見（perPlayer）
+
+**與 State 的差異**：
+- `State`（`@State` + `StateProtocol`）：整包更新，不支援遞迴過濾
+- `StateNode`（`@StateNodeBuilder` + `StateNodeProtocol`）：支援遞迴過濾，可以細分
 
 ---
 
@@ -291,7 +395,7 @@ public extension SnapshotValue {
 
 ### 基本概念
 
-`@Sync` 會標在 `StateTree` 的欄位上，定義這個欄位對同步引擎的策略。
+`@Sync` 會標在 `StateNode` 的欄位上，定義這個欄位對同步引擎的策略。當欄位值是 `StateNode` 時，會進行遞迴過濾。
 
 ### 範例
 
@@ -360,18 +464,34 @@ public struct Internal<Value: Sendable>: Sendable {
 }
 ```
 
-### @StateTreeBuilder Macro
+### @StateNodeBuilder Macro
 
 ```swift
 /// Macro 會自動：
 /// 1. 驗證所有 stored properties 都有 @Sync 或 @Internal 標記
 /// 2. 生成 getSyncFields() 的實作（不再需要 runtime reflection）
 /// 3. 生成 validateSyncFields() 的實作
-/// 4. 提供編譯時檢查
+/// 4. 生成 snapshot(for:) 方法（支援遞迴過濾）
+/// 5. 生成 broadcastSnapshot() 方法
+/// 6. 提供編譯時檢查
 @attached(member, names: arbitrary)
-public macro StateTreeBuilder() = #externalMacro(
+public macro StateNodeBuilder() = #externalMacro(
     module: "SwiftStateTreeMacros",
-    type: "StateTreeBuilderMacro"
+    type: "StateNodeBuilderMacro"
+)
+```
+
+### @State Macro
+
+```swift
+/// Macro 會自動：
+/// 1. 驗證 struct 符合 StateProtocol（Codable + Sendable）
+/// 2. 提供編譯時檢查
+/// 3. 不生成程式碼，只做驗證
+@attached(peer)
+public macro State() = #externalMacro(
+    module: "SwiftStateTreeMacros",
+    type: "StateMacro"
 )
 ```
 
@@ -398,140 +518,26 @@ Swift Macro 的架構要求將 Macro 定義和實作分離：
 4. **模組架構**：
    ```
    SwiftStateTree (主模組)
-   ├── 定義 Macro：@StateTreeBuilder
-   └── 使用 Macro：@StateTreeBuilder struct GameStateTree { ... }
+   ├── 定義 Macro：@StateNodeBuilder, @State, @SnapshotConvertible
+   └── 使用 Macro：@StateNodeBuilder struct GameStateRootNode { ... }
    
    SwiftStateTreeMacros (獨立模組)
-   ├── 實作 Macro：StateTreeBuilderMacro
+   ├── 實作 Macro：StateNodeBuilderMacro, StateMacro, SnapshotConvertibleMacro
    └── 依賴 SwiftSyntax
    ```
 
 **目前的實作狀態**：
 - ✅ `@Sync` 和 `@Internal` property wrapper 已實作
-- ✅ 驗證邏輯已實作（使用 runtime reflection）
-- ⏳ `@StateTreeBuilder` macro 待實作（需要建立獨立的 `SwiftStateTreeMacros` 模組）
+- ✅ `@StateNodeBuilder` macro 已實作（生成 snapshot 方法，支援遞迴過濾）
+- ✅ `@State` macro 已實作（驗證 StateProtocol）
+- ✅ `@SnapshotConvertible` macro 已實作（生成 SnapshotValueConvertible）
 
-**暫時方案**：
-目前使用 runtime reflection 來實作 `getSyncFields()` 和 `validateSyncFields()`，功能完整但效能較差。未來實作 Macro 後，這些方法會由 Macro 在編譯時生成，效能會大幅提升。
-
-**優勢**（實作 Macro 後）：
+**優勢**：
 - ✅ **編譯時檢查**：Macro 在編譯期驗證，無需 runtime reflection
-- ✅ **效能提升**：`getSyncFields()` 由 Macro 生成，避免 Mirror 反射
+- ✅ **效能提升**：`getSyncFields()` 和 `snapshot(for:)` 由 Macro 生成，避免 Mirror 反射
 - ✅ **型別安全**：編譯期就能發現缺少 `@Sync` 的欄位
+- ✅ **遞迴過濾**：支援巢狀 StateNode 的遞迴過濾
 - ✅ **語法自然**：像定義普通 struct，學習成本低
-
-### SwiftStateTreeMacros 模組
-
-`SwiftStateTreeMacros` 是 `@StateTreeBuilder` macro 的實作模組，作為獨立的 Swift Package 存在。
-
-#### 模組結構
-
-```
-SwiftStateTreeMacros/
-├── Package.swift              # Macro 模組定義
-├── Sources/
-│   └── SwiftStateTreeMacros/
-│       └── StateTreeBuilderMacro.swift  # Macro 實作
-└── Tests/
-    └── SwiftStateTreeMacrosTests/
-        └── StateTreeBuilderMacroTests.swift
-```
-
-#### 依賴關係
-
-```swift
-// Package.swift
-dependencies: [
-    .package(url: "https://github.com/apple/swift-syntax.git", from: "509.0.0")
-]
-```
-
-#### Macro 實作功能
-
-`StateTreeBuilderMacro` 會執行以下操作：
-
-1. **驗證所有 stored properties**：
-   - 檢查每個 stored property 是否有 `@Sync` 或 `@Internal` 標記
-   - 如果發現未標記的 stored property，產生編譯錯誤
-
-2. **生成 `getSyncFields()` 方法**：
-   ```swift
-   // 編譯前（開發者寫的）
-   @StateTreeBuilder
-   struct GameStateTree: StateTreeProtocol {
-       @Sync(.broadcast)
-       var players: [PlayerID: PlayerState] = [:]
-   }
-   
-   // 編譯後（Macro 展開的）
-   struct GameStateTree: StateTreeProtocol {
-       @Sync(.broadcast)
-       var players: [PlayerID: PlayerState] = [:]
-       
-       // Macro 自動生成
-       public func getSyncFields() -> [SyncFieldInfo] {
-           return [
-               SyncFieldInfo(name: "players", policyType: "broadcast")
-           ]
-       }
-   }
-   ```
-
-3. **生成 `validateSyncFields()` 方法**：
-   ```swift
-   // Macro 自動生成
-   public func validateSyncFields() -> Bool {
-       // 編譯時已驗證，直接返回 true
-       return true
-   }
-   ```
-
-#### 使用方式
-
-在主專案的 `Package.swift` 中：
-
-```swift
-dependencies: [
-    .package(path: "../SwiftStateTree"),
-    // SwiftStateTreeMacros 會自動被引入（作為 SwiftStateTree 的依賴）
-]
-```
-
-在程式碼中使用：
-
-```swift
-import SwiftStateTree
-
-@StateTreeBuilder  // 使用 Macro
-struct GameStateTree: StateTreeProtocol {
-    @Sync(.broadcast)
-    var players: [PlayerID: PlayerState] = [:]
-}
-```
-
-#### 編譯流程
-
-1. **編譯時**：
-   - 編譯器發現 `@StateTreeBuilder` macro
-   - 調用 `SwiftStateTreeMacros` 模組中的 `StateTreeBuilderMacro`
-   - Macro 展開，生成 `getSyncFields()` 和 `validateSyncFields()` 方法
-   - 驗證所有 stored properties 都有適當標記
-
-2. **執行時**：
-   - 使用 Macro 生成的程式碼，無需 runtime reflection
-   - 效能大幅提升
-
-#### 與主模組的關係
-
-- **SwiftStateTree**（主模組）：
-  - 定義 `@StateTreeBuilder` macro（使用 `#externalMacro`）
-  - 定義 `StateTreeProtocol`、`@Sync`、`@Internal` 等
-  - 使用者直接 import 這個模組
-
-- **SwiftStateTreeMacros**（獨立模組）：
-  - 實作 `StateTreeBuilderMacro`
-  - 依賴 `SwiftSyntax`
-  - 只在編譯時使用，不會出現在執行時依賴中
 
 ---
 
@@ -547,10 +553,10 @@ struct GameStateTree: StateTreeProtocol {
 - **適合作資料模型**：純資料結構，不包含行為邏輯
 
 ```swift
-@StateTreeBuilder
-struct GameStateTree: StateTreeProtocol {
+@StateNodeBuilder
+struct GameStateRootNode: StateNodeProtocol {
     @Sync(.broadcast)
-    var players: [PlayerID: PlayerState] = [:]
+    var players: [PlayerID: PlayerStateNode] = [:]
     
     @Internal
     var cache: [String: Any] = [:]

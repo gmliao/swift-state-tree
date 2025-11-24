@@ -1,21 +1,21 @@
-// Tests/SwiftStateTreeMacrosTests/StateTreeBuilderMacroTests.swift
+// Tests/SwiftStateTreeMacrosTests/StateNodeBuilderMacroTests.swift
 
 import SwiftSyntaxMacros
 import SwiftSyntaxMacrosTestSupport
 import Testing
 import SwiftStateTreeMacros
 
-final class StateTreeBuilderMacroTests {
+final class StateNodeBuilderMacroTests {
     let testMacros: [String: Macro.Type] = [
-        "StateTreeBuilder": StateTreeBuilderMacro.self
+        "StateNodeBuilder": StateNodeBuilderMacro.self
     ]
     
-    @Test("StateTreeBuilder macro generates getSyncFields and validateSyncFields")
-    func testStateTreeBuilderMacro() throws {
+    @Test("StateNodeBuilder macro generates getSyncFields and validateSyncFields")
+    func testStateNodeBuilderMacro() throws {
         assertMacroExpansion(
             """
-            @StateTreeBuilder
-            struct TestStateTree: StateTreeProtocol {
+            @StateNodeBuilder
+            struct TestStateNode: StateNodeProtocol {
                 @Sync(.broadcast)
                 var players: [String: String] = [:]
                 
@@ -27,7 +27,7 @@ final class StateTreeBuilderMacroTests {
             }
             """,
             expandedSource: """
-            struct TestStateTree: StateTreeProtocol {
+            struct TestStateNode: StateNodeProtocol {
                 @Sync(.broadcast)
                 var players: [String: String] = [:]
                 
@@ -50,12 +50,12 @@ final class StateTreeBuilderMacroTests {
         )
     }
     
-    @Test("StateTreeBuilder macro rejects unmarked stored properties")
-    func testStateTreeBuilderMacroRejectsUnmarkedProperties() {
+    @Test("StateNodeBuilder macro rejects unmarked stored properties")
+    func testStateNodeBuilderMacroRejectsUnmarkedProperties() {
         assertMacroExpansion(
             """
-            @StateTreeBuilder
-            struct InvalidStateTree: StateTreeProtocol {
+            @StateNodeBuilder
+            struct InvalidStateNode: StateNodeProtocol {
                 @Sync(.broadcast)
                 var players: [String: String] = [:]
                 
@@ -63,7 +63,7 @@ final class StateTreeBuilderMacroTests {
             }
             """,
             expandedSource: """
-            struct InvalidStateTree: StateTreeProtocol {
+            struct InvalidStateNode: StateNodeProtocol {
                 @Sync(.broadcast)
                 var players: [String: String] = [:]
                 
@@ -72,7 +72,7 @@ final class StateTreeBuilderMacroTests {
             """,
             diagnostics: [
                 DiagnosticSpec(
-                    message: "Stored property 'unmarkedProperty' in StateTree must be marked with @Sync or @Internal",
+                    message: "Stored property 'unmarkedProperty' in StateNode must be marked with @Sync or @Internal",
                     line: 6,
                     column: 5
                 )

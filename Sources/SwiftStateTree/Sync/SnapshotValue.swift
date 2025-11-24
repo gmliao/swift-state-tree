@@ -80,13 +80,22 @@ public protocol SnapshotValueConvertible {
 }
 
 public extension SnapshotValue {
-    static func make(from value: Any) throws -> SnapshotValue {
-        // Priority 1: Check if type conforms to SnapshotValueConvertible (best performance)
+    static func make(from value: Any, for playerID: PlayerID? = nil) throws -> SnapshotValue {
+        // Priority 1: Check if type conforms to StateNodeProtocol (for recursive filtering)
+        // This must be checked before SnapshotValueConvertible to enable recursive @Sync policy filtering
+        if let stateNode = value as? any StateNodeProtocol {
+            // Recursively apply @Sync policies by calling snapshot(for:)
+            let snapshot = try stateNode.snapshot(for: playerID)
+            // Convert StateSnapshot to SnapshotValue.object
+            return .object(snapshot.values)
+        }
+        
+        // Priority 2: Check if type conforms to SnapshotValueConvertible (best performance)
         if let convertible = value as? SnapshotValueConvertible {
             return try convertible.toSnapshotValue()
         }
         
-        // Priority 2: Handle basic types directly (no Mirror needed)
+        // Priority 3: Handle basic types directly (no Mirror needed)
         if value is NSNull {
             return .null
         }
@@ -129,7 +138,7 @@ public extension SnapshotValue {
 
         if mirror.displayStyle == .optional {
             if let child = mirror.children.first {
-                return try make(from: child.value)
+                return try make(from: child.value, for: playerID)
             } else {
                 return .null
             }
@@ -137,7 +146,7 @@ public extension SnapshotValue {
 
         switch mirror.displayStyle {
         case .collection:
-            let array = try mirror.children.map { try make(from: $0.value) }
+            let array = try mirror.children.map { try make(from: $0.value, for: playerID) }
             return .array(array)
         case .dictionary:
             var object: [String: SnapshotValue] = [:]
@@ -149,7 +158,7 @@ public extension SnapshotValue {
                 let keyMirror = pair.children.first!
                 let valueMirror = pair.children.dropFirst().first!
                 let keyString = try makeKeyString(from: keyMirror.value)
-                let mappedValue = try make(from: valueMirror.value)
+                let mappedValue = try make(from: valueMirror.value, for: playerID)
                 object[keyString] = mappedValue
             }
             return .object(object)
@@ -157,7 +166,7 @@ public extension SnapshotValue {
             var object: [String: SnapshotValue] = [:]
             for child in mirror.children {
                 guard let label = child.label else { continue }
-                object[label] = try make(from: child.value)
+                object[label] = try make(from: child.value, for: playerID)
             }
             return .object(object)
         default:
