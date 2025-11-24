@@ -41,14 +41,14 @@ public struct StateTreeBuilderMacro: MemberMacro {
         // Generate snapshot(for:) method
         let snapshotMethod = try generateSnapshotMethod(propertiesWithNodes: propertiesWithNodes)
         
-        // Generate extractBroadcastFields() method
-        let extractBroadcastFieldsMethod = try generateExtractBroadcastFieldsMethod(propertiesWithNodes: propertiesWithNodes)
+        // Generate broadcastSnapshot() method
+        let broadcastSnapshotMethod = try generateBroadcastSnapshotMethod(propertiesWithNodes: propertiesWithNodes)
         
         return [
             DeclSyntax(getSyncFieldsMethod),
             DeclSyntax(validateSyncFieldsMethod),
             DeclSyntax(snapshotMethod),
-            DeclSyntax(extractBroadcastFieldsMethod)
+            DeclSyntax(broadcastSnapshotMethod)
         ]
     }
     
@@ -260,9 +260,9 @@ public struct StateTreeBuilderMacro: MemberMacro {
         )
     }
     
-    /// Generate extractBroadcastFields() method
-    /// This method extracts only broadcast fields, avoiding runtime reflection
-    private static func generateExtractBroadcastFieldsMethod(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> FunctionDeclSyntax {
+    /// Generate broadcastSnapshot() method
+    /// This method generates a snapshot containing only broadcast fields, avoiding runtime reflection
+    private static func generateBroadcastSnapshotMethod(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> FunctionDeclSyntax {
         let syncProperties = propertiesWithNodes.filter { $0.0.hasSync }
         let broadcastProperties = syncProperties.filter { property, _ in
             // Check if the property has broadcast policy
@@ -304,7 +304,7 @@ public struct StateTreeBuilderMacro: MemberMacro {
         
         return try FunctionDeclSyntax(
             """
-            public func extractBroadcastFields() throws -> StateSnapshot {
+            public func broadcastSnapshot() throws -> StateSnapshot {
                 \(raw: body)
             }
             """

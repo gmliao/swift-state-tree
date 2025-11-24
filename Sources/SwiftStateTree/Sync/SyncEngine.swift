@@ -108,9 +108,9 @@ public struct SyncEngine: Sendable {
     private func extractBroadcastSnapshot<State: StateTreeProtocol>(
         from state: State
     ) throws -> StateSnapshot {
-        // Use macro-generated method to extract broadcast fields directly
+        // Use macro-generated method to generate broadcast snapshot directly
         // This avoids runtime reflection (Mirror) and is much more efficient
-        return try state.extractBroadcastFields()
+        return try state.broadcastSnapshot()
     }
     
     /// Mirror-based implementation of extractBroadcastSnapshot (for benchmarking comparison)
