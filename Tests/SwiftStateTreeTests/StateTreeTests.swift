@@ -8,7 +8,7 @@ import Testing
 
 /// Test nested structure: Player state with multiple fields
 @State
-struct TestPlayerState: StateProtocol {
+struct TestPlayerState: StateProtocol, Equatable {
     var name: String
     var hpCurrent: Int
     var hpMax: Int
@@ -16,14 +16,14 @@ struct TestPlayerState: StateProtocol {
 
 /// Test nested structure: Hand state containing cards
 @State
-struct TestHandState: StateProtocol {
+struct TestHandState: StateProtocol, Equatable {
     var ownerID: PlayerID
     var cards: [TestCard]
 }
 
 /// Test nested structure: Card with multiple properties
 @State
-struct TestCard: StateProtocol {
+struct TestCard: StateProtocol, Equatable {
     let id: Int
     let suit: Int
     let rank: Int
@@ -677,7 +677,7 @@ struct TestPlayerStateNode: StateNodeProtocol {
 }
 
 /// Vec2 helper struct for testing
-struct Vec2: Codable, Sendable {
+struct Vec2: Codable, Sendable, Equatable {
     var x: Double
     var y: Double
 }
@@ -829,4 +829,271 @@ func testRecursiveFiltering_NestedStateNodeBroadcastFields() throws {
         #expect(aliceInventory?.first?.stringValue == "sword", "Alice should see sword")
         #expect(bobInventory?.first?.stringValue == "shield", "Bob should see shield (filtered for Bob)")
     }
+}
+
+// MARK: - Container Helper Methods Tests
+
+/// Test StateNode with Dictionary container type
+@StateNodeBuilder
+struct TestDictionaryStateNode: StateNodeProtocol {
+    @Sync(.broadcast)
+    var players: [PlayerID: String] = [:]
+}
+
+@Test("Macro generates helper methods for Dictionary container type")
+func testContainerHelperMethods_Dictionary() {
+    // Arrange
+    var state = TestDictionaryStateNode()
+    let alice = PlayerID("alice")
+    
+    // Act: Use generated helper method
+    state.updatePlayers("Alice", forKey: alice)
+    
+    // Assert
+    #expect(state.players[alice] == "Alice", "Player should be updated")
+    #expect(state.isDirty() == true, "Should be dirty after using helper method")
+    #expect(state.getDirtyFields().contains("players"), "Should contain 'players' in dirty fields")
+    
+    // Test remove helper method
+    state.clearDirty()
+    let removed = state.removePlayers(forKey: alice)
+    #expect(removed == "Alice", "Should return removed value")
+    #expect(state.players[alice] == nil, "Player should be removed")
+    #expect(state.isDirty() == true, "Should be dirty after remove")
+    #expect(state.getDirtyFields().contains("players"), "Should contain 'players' in dirty fields")
+}
+
+/// Test StateNode with Array container type
+@StateNodeBuilder
+struct TestArrayStateNode: StateNodeProtocol {
+    @Sync(.broadcast)
+    var cards: [String] = []
+}
+
+@Test("Macro generates helper methods for Array container type")
+func testContainerHelperMethods_Array() {
+    // Arrange
+    var state = TestArrayStateNode()
+    
+    // Act: Use generated helper method
+    state.appendCards("card1")
+    
+    // Assert
+    #expect(state.cards.count == 1, "Should have 1 card")
+    #expect(state.isDirty() == true, "Should be dirty after append")
+    #expect(state.getDirtyFields().contains("cards"), "Should contain 'cards' in dirty fields")
+    
+    // Test remove helper method
+    state.clearDirty()
+    let removed = state.removeCards(at: 0)
+    #expect(removed == "card1", "Should return removed card")
+    #expect(state.cards.count == 0, "Should have 0 cards after removal")
+    #expect(state.isDirty() == true, "Should be dirty after remove")
+    #expect(state.getDirtyFields().contains("cards"), "Should contain 'cards' in dirty fields")
+    
+    // Test insert helper method
+    state.clearDirty()
+    state.insertCards("card0", at: 0)
+    #expect(state.cards.count == 1, "Should have 1 card after insert")
+    #expect(state.cards[0] == "card0", "First card should be card0")
+    #expect(state.isDirty() == true, "Should be dirty after insert")
+    #expect(state.getDirtyFields().contains("cards"), "Should contain 'cards' in dirty fields")
+}
+
+/// Test StateNode with Set container type
+@StateNodeBuilder
+struct TestSetStateNode: StateNodeProtocol {
+    @Sync(.broadcast)
+    var readyPlayers: Set<PlayerID> = []
+}
+
+@Test("Macro generates helper methods for Set container type")
+func testContainerHelperMethods_Set() {
+    // Arrange
+    var state = TestSetStateNode()
+    let alice = PlayerID("alice")
+    
+    // Act: Use generated helper method
+    let insertResult = state.insertReadyPlayers(alice)
+    
+    // Assert
+    #expect(insertResult.inserted == true, "Should insert successfully")
+    #expect(state.readyPlayers.contains(alice), "Should contain alice")
+    #expect(state.isDirty() == true, "Should be dirty after insert (when actually inserted)")
+    #expect(state.getDirtyFields().contains("readyPlayers"), "Should contain 'readyPlayers' in dirty fields")
+    
+    // Test remove helper method
+    state.clearDirty()
+    let removed = state.removeReadyPlayers(alice)
+    #expect(removed == alice, "Should return removed player")
+    #expect(state.readyPlayers.contains(alice) == false, "Should not contain alice after removal")
+    #expect(state.isDirty() == true, "Should be dirty after remove")
+    #expect(state.getDirtyFields().contains("readyPlayers"), "Should contain 'readyPlayers' in dirty fields")
+    
+    // Test insert when element already exists (still marks dirty)
+    // First, re-insert alice so it exists
+    state.clearDirty()
+    let reinsertResult = state.insertReadyPlayers(alice)
+    #expect(reinsertResult.inserted == true, "Should insert successfully")
+    #expect(state.isDirty() == true, "Should be dirty after insert")
+    
+    // Now try to insert again (duplicate) - still marks dirty (by design)
+    // Note: Helper methods always mark dirty, even if the operation didn't change the value
+    state.clearDirty()
+    let insertResult2 = state.insertReadyPlayers(alice)
+    #expect(insertResult2.inserted == false, "Should not insert duplicate")
+    // Note: The helper method always marks dirty, even if inserted == false
+    // This is by design: any set operation marks the field as dirty
+    #expect(state.isDirty() == true, "Should be dirty even if element already exists (by design)")
+    #expect(state.getDirtyFields().contains("readyPlayers"), "Should contain 'readyPlayers' in dirty fields")
+}
+
+// MARK: - Dirty Tracking Tests
+
+/// Test StateNode with multiple @Sync fields for dirty tracking
+@StateNodeBuilder
+struct TestDirtyTrackingStateNode: StateNodeProtocol {
+    @Sync(.broadcast)
+    var round: Int = 0
+    
+    @Sync(.broadcast)
+    var players: [PlayerID: String] = [:]
+    
+    @Sync(.broadcast)
+    var score: Int = 0
+}
+
+@Test("StateNode isDirty() returns true when any field is dirty")
+func testIsDirty_ReturnsTrueWhenAnyFieldIsDirty() {
+    // Arrange
+    var state = TestDirtyTrackingStateNode()
+    
+    // Act & Assert: Initially should be clean
+    #expect(state.isDirty() == false, "Initially should not be dirty")
+    
+    // Modify a field
+    state.round = 10
+    #expect(state.isDirty() == true, "Should be dirty after modifying round")
+    
+    // Clear dirty
+    state.clearDirty()
+    #expect(state.isDirty() == false, "Should not be dirty after clear")
+    
+    // Modify another field
+    state.score = 100
+    #expect(state.isDirty() == true, "Should be dirty after modifying score")
+}
+
+@Test("StateNode getDirtyFields() returns correct set of dirty field names")
+func testGetDirtyFields_ReturnsCorrectSet() {
+    // Arrange
+    var state = TestDirtyTrackingStateNode()
+    
+    // Act & Assert: Initially should be empty
+    #expect(state.getDirtyFields().isEmpty == true, "Initially should have no dirty fields")
+    
+    // Modify one field
+    state.round = 10
+    let dirtyFields1 = state.getDirtyFields()
+    #expect(dirtyFields1.count == 1, "Should have 1 dirty field")
+    #expect(dirtyFields1.contains("round"), "Should contain 'round'")
+    
+    // Modify another field
+    state.score = 100
+    let dirtyFields2 = state.getDirtyFields()
+    #expect(dirtyFields2.count == 2, "Should have 2 dirty fields")
+    #expect(dirtyFields2.contains("round"), "Should contain 'round'")
+    #expect(dirtyFields2.contains("score"), "Should contain 'score'")
+    
+    // Clear and verify
+    state.clearDirty()
+    #expect(state.getDirtyFields().isEmpty == true, "Should have no dirty fields after clear")
+}
+
+@Test("StateNode clearDirty() clears all dirty flags")
+func testClearDirty_ClearsAllFlags() {
+    // Arrange
+    var state = TestDirtyTrackingStateNode()
+    
+    // Act: Modify multiple fields
+    state.round = 10
+    state.score = 100
+    state.updatePlayers("Alice", forKey: PlayerID("alice"))
+    
+    // Assert: All should be dirty
+    #expect(state.isDirty() == true, "Should be dirty")
+    #expect(state.getDirtyFields().count == 3, "Should have 3 dirty fields")
+    
+    // Clear all
+    state.clearDirty()
+    
+    // Assert: All should be clean
+    #expect(state.isDirty() == false, "Should not be dirty after clear")
+    #expect(state.getDirtyFields().isEmpty == true, "Should have no dirty fields after clear")
+}
+
+@Test("StateNode dirty tracking works with container helper methods")
+func testDirtyTracking_WithContainerHelperMethods() {
+    // Arrange
+    var state = TestDirtyTrackingStateNode()
+    let alice = PlayerID("alice")
+    
+    // Act: Use container helper method
+    state.updatePlayers("Alice", forKey: alice)
+    
+    // Assert: Should be marked as dirty
+    #expect(state.isDirty() == true, "Should be dirty after using helper method")
+    #expect(state.getDirtyFields().contains("players"), "Should contain 'players' in dirty fields")
+    
+    // Clear and verify
+    state.clearDirty()
+    #expect(state.isDirty() == false, "Should not be dirty after clear")
+    
+    // Use another helper method
+    state.removePlayers(forKey: alice)
+    #expect(state.isDirty() == true, "Should be dirty after remove")
+    #expect(state.getDirtyFields().contains("players"), "Should contain 'players' in dirty fields")
+}
+
+@Test("StateNode dirty tracking works with nested StateNode")
+func testDirtyTracking_WithNestedStateNode() {
+    // Arrange
+    @StateNodeBuilder
+    struct NestedTestStateNode: StateNodeProtocol {
+        @Sync(.broadcast)
+        var nestedValue: Int = 0
+    }
+    
+    @StateNodeBuilder
+    struct ParentTestStateNode: StateNodeProtocol {
+        @Sync(.broadcast)
+        var parentValue: Int = 0
+        
+        @Sync(.broadcast)
+        var nested: NestedTestStateNode = NestedTestStateNode()
+    }
+    
+    var state = ParentTestStateNode()
+    
+    // Act: Modify parent field
+    state.parentValue = 10
+    #expect(state.isDirty() == true, "Should be dirty after modifying parent field")
+    #expect(state.getDirtyFields().contains("parentValue"), "Should contain 'parentValue'")
+    
+    // Clear
+    state.clearDirty()
+    #expect(state.isDirty() == false, "Should not be dirty after clear")
+    
+    // Note: Modifying nested StateNode's fields does NOT automatically mark parent as dirty
+    // Each StateNode tracks its own dirty state independently
+    // The nested StateNode itself is a value, so modifying its internal fields
+    // will mark the parent's "nested" field as dirty (because the nested value changed)
+    state.nested.nestedValue = 20
+    // The nested field itself is dirty because the nested StateNode instance changed
+    #expect(state.isDirty() == true, "Should be dirty after modifying nested field (nested value changed)")
+    #expect(state.getDirtyFields().contains("nested"), "Should contain 'nested'")
+    
+    // The nested StateNode also has its own dirty tracking
+    #expect(state.nested.isDirty() == true, "Nested StateNode should also be dirty")
+    #expect(state.nested.getDirtyFields().contains("nestedValue"), "Nested should contain 'nestedValue'")
 }

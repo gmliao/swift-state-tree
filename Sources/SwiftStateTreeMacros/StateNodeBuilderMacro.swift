@@ -44,12 +44,23 @@ public struct StateNodeBuilderMacro: MemberMacro {
         // Generate broadcastSnapshot() method
         let broadcastSnapshotMethod = try generateBroadcastSnapshotMethod(propertiesWithNodes: propertiesWithNodes)
         
+        // Generate dirty tracking methods (isDirty, getDirtyFields, clearDirty)
+        let isDirtyMethod = try generateIsDirtyMethod(propertiesWithNodes: propertiesWithNodes)
+        let getDirtyFieldsMethod = try generateGetDirtyFieldsMethod(propertiesWithNodes: propertiesWithNodes)
+        let clearDirtyMethod = try generateClearDirtyMethod(propertiesWithNodes: propertiesWithNodes)
+        
+        // Generate helper methods for container types (Dictionary, Array, Set)
+        let containerHelperMethods = try generateContainerHelperMethods(propertiesWithNodes: propertiesWithNodes)
+        
         return [
             DeclSyntax(getSyncFieldsMethod),
             DeclSyntax(validateSyncFieldsMethod),
             DeclSyntax(snapshotMethod),
-            DeclSyntax(broadcastSnapshotMethod)
-        ]
+            DeclSyntax(broadcastSnapshotMethod),
+            DeclSyntax(isDirtyMethod),
+            DeclSyntax(getDirtyFieldsMethod),
+            DeclSyntax(clearDirtyMethod)
+        ] + containerHelperMethods
     }
     
     /// Collect all stored properties from a struct declaration
@@ -322,6 +333,296 @@ public struct StateNodeBuilderMacro: MemberMacro {
         )
     }
     
+    /// Generate isDirty() method
+    private static func generateIsDirtyMethod(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> FunctionDeclSyntax {
+        let syncProperties = propertiesWithNodes.filter { $0.0.hasSync }
+        
+        if syncProperties.isEmpty {
+            return try FunctionDeclSyntax(
+                """
+                public func isDirty() -> Bool {
+                    return false
+                }
+                """
+            )
+        }
+        
+        var codeLines: [String] = []
+        var conditions: [String] = []
+        
+        for (property, _) in syncProperties {
+            let storageName = "_\(property.name)"
+            conditions.append("\(storageName).isDirty")
+        }
+        
+        codeLines.append("return \(conditions.joined(separator: " || "))")
+        
+        let body = codeLines.joined(separator: "\n")
+        
+        return try FunctionDeclSyntax(
+            """
+            public func isDirty() -> Bool {
+                \(raw: body)
+            }
+            """
+        )
+    }
+    
+    /// Generate getDirtyFields() method
+    private static func generateGetDirtyFieldsMethod(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> FunctionDeclSyntax {
+        let syncProperties = propertiesWithNodes.filter { $0.0.hasSync }
+        
+        if syncProperties.isEmpty {
+            return try FunctionDeclSyntax(
+                """
+                public func getDirtyFields() -> Set<String> {
+                    return []
+                }
+                """
+            )
+        }
+        
+        var codeLines: [String] = []
+        codeLines.append("var dirtyFields: Set<String> = []")
+        codeLines.append("")
+        
+        for (property, _) in syncProperties {
+            let propertyName = property.name
+            let storageName = "_\(propertyName)"
+            
+            codeLines.append("if \(storageName).isDirty {")
+            codeLines.append("    dirtyFields.insert(\"\(propertyName)\")")
+            codeLines.append("}")
+        }
+        
+        codeLines.append("")
+        codeLines.append("return dirtyFields")
+        
+        let body = codeLines.joined(separator: "\n")
+        
+        return try FunctionDeclSyntax(
+            """
+            public func getDirtyFields() -> Set<String> {
+                \(raw: body)
+            }
+            """
+        )
+    }
+    
+    /// Generate clearDirty() method
+    private static func generateClearDirtyMethod(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> FunctionDeclSyntax {
+        let syncProperties = propertiesWithNodes.filter { $0.0.hasSync }
+        
+        if syncProperties.isEmpty {
+            return try FunctionDeclSyntax(
+                """
+                public mutating func clearDirty() {
+                }
+                """
+            )
+        }
+        
+        var codeLines: [String] = []
+        for (property, _) in syncProperties {
+            let propertyName = property.name
+            let storageName = "_\(propertyName)"
+            
+            codeLines.append("\(storageName).clearDirty()")
+        }
+        
+        let body = codeLines.joined(separator: "\n")
+        
+        return try FunctionDeclSyntax(
+            """
+            public mutating func clearDirty() {
+                \(raw: body)
+            }
+            """
+        )
+    }
+    
+    /// Generate helper methods for container types (Dictionary, Array, Set)
+    /// These methods automatically mark the field as dirty when modifying containers
+    private static func generateContainerHelperMethods(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> [DeclSyntax] {
+        let syncProperties = propertiesWithNodes.filter { $0.0.hasSync }
+        var methods: [DeclSyntax] = []
+        
+        for (property, _) in syncProperties {
+            let propertyName = property.name
+            let storageName = "_\(propertyName)"
+            let containerType = detectContainerType(from: property.typeName)
+            
+            switch containerType {
+            case .dictionary(let keyType, let valueType):
+                // Generate helper methods for Dictionary
+                methods.append(contentsOf: try generateDictionaryHelperMethods(
+                    propertyName: propertyName,
+                    storageName: storageName,
+                    keyType: keyType,
+                    valueType: valueType
+                ))
+                
+            case .array(let elementType):
+                // Generate helper methods for Array
+                methods.append(contentsOf: try generateArrayHelperMethods(
+                    propertyName: propertyName,
+                    storageName: storageName,
+                    elementType: elementType
+                ))
+                
+            case .set(let elementType):
+                // Generate helper methods for Set
+                methods.append(contentsOf: try generateSetHelperMethods(
+                    propertyName: propertyName,
+                    storageName: storageName,
+                    elementType: elementType
+                ))
+                
+            case .none:
+                // Not a container type, skip
+                break
+            }
+        }
+        
+        return methods
+    }
+    
+    /// Generate helper methods for Dictionary container type
+    private static func generateDictionaryHelperMethods(
+        propertyName: String,
+        storageName: String,
+        keyType: String,
+        valueType: String
+    ) throws -> [DeclSyntax] {
+        var methods: [DeclSyntax] = []
+        
+        // Method: updateValue(_:forKey:) - Update or insert a value
+        methods.append(DeclSyntax(try FunctionDeclSyntax(
+            """
+            /// Update or insert a value in \(raw: propertyName) dictionary and mark as dirty
+            /// Note: This method always marks the field as dirty, even if the value didn't change
+            public mutating func update\(raw: capitalizeFirst(propertyName))(_ value: \(raw: valueType), forKey key: \(raw: keyType)) {
+                \(raw: storageName).wrappedValue[key] = value
+                \(raw: storageName).markDirty()
+            }
+            """
+        )))
+        
+        // Method: removeValue(forKey:) - Remove a value
+        methods.append(DeclSyntax(try FunctionDeclSyntax(
+            """
+            /// Remove a value from \(raw: propertyName) dictionary and mark as dirty
+            /// Note: This method always marks the field as dirty, even if the key didn't exist
+            @discardableResult
+            public mutating func remove\(raw: capitalizeFirst(propertyName))(forKey key: \(raw: keyType)) -> \(raw: valueType)? {
+                let result = \(raw: storageName).wrappedValue.removeValue(forKey: key)
+                \(raw: storageName).markDirty()
+                return result
+            }
+            """
+        )))
+        
+        // Method: setValue(_:forKey:) - Alias for updateValue
+        methods.append(DeclSyntax(try FunctionDeclSyntax(
+            """
+            /// Set a value in \(raw: propertyName) dictionary and mark as dirty (alias for update\(raw: capitalizeFirst(propertyName)))
+            public mutating func set\(raw: capitalizeFirst(propertyName))(_ value: \(raw: valueType), forKey key: \(raw: keyType)) {
+                update\(raw: capitalizeFirst(propertyName))(value, forKey: key)
+            }
+            """
+        )))
+        
+        return methods
+    }
+    
+    /// Generate helper methods for Array container type
+    private static func generateArrayHelperMethods(
+        propertyName: String,
+        storageName: String,
+        elementType: String
+    ) throws -> [DeclSyntax] {
+        var methods: [DeclSyntax] = []
+        
+        // Method: append(_:) - Append an element
+        methods.append(DeclSyntax(try FunctionDeclSyntax(
+            """
+            /// Append an element to \(raw: propertyName) array and mark as dirty
+            /// Note: This method always marks the field as dirty
+            public mutating func append\(raw: capitalizeFirst(propertyName))(_ element: \(raw: elementType)) {
+                \(raw: storageName).wrappedValue.append(element)
+                \(raw: storageName).markDirty()
+            }
+            """
+        )))
+        
+        // Method: remove(at:) - Remove an element at index
+        methods.append(DeclSyntax(try FunctionDeclSyntax(
+            """
+            /// Remove an element from \(raw: propertyName) array at index and mark as dirty
+            /// Note: This method always marks the field as dirty
+            @discardableResult
+            public mutating func remove\(raw: capitalizeFirst(propertyName))(at index: Int) -> \(raw: elementType) {
+                let result = \(raw: storageName).wrappedValue.remove(at: index)
+                \(raw: storageName).markDirty()
+                return result
+            }
+            """
+        )))
+        
+        // Method: insert(_:at:) - Insert an element at index
+        methods.append(DeclSyntax(try FunctionDeclSyntax(
+            """
+            /// Insert an element into \(raw: propertyName) array at index and mark as dirty
+            /// Note: This method always marks the field as dirty
+            public mutating func insert\(raw: capitalizeFirst(propertyName))(_ element: \(raw: elementType), at index: Int) {
+                \(raw: storageName).wrappedValue.insert(element, at: index)
+                \(raw: storageName).markDirty()
+            }
+            """
+        )))
+        
+        return methods
+    }
+    
+    /// Generate helper methods for Set container type
+    private static func generateSetHelperMethods(
+        propertyName: String,
+        storageName: String,
+        elementType: String
+    ) throws -> [DeclSyntax] {
+        var methods: [DeclSyntax] = []
+        
+        // Method: insert(_:) - Insert an element
+        methods.append(DeclSyntax(try FunctionDeclSyntax(
+            """
+            /// Insert an element into \(raw: propertyName) set and mark as dirty
+            /// Note: This method always marks the field as dirty, even if the element already exists (inserted == false)
+            @discardableResult
+            public mutating func insert\(raw: capitalizeFirst(propertyName))(_ element: \(raw: elementType)) -> (inserted: Bool, memberAfterInsert: \(raw: elementType)) {
+                let result = \(raw: storageName).wrappedValue.insert(element)
+                \(raw: storageName).markDirty()
+                return result
+            }
+            """
+        )))
+        
+        // Method: remove(_:) - Remove an element
+        methods.append(DeclSyntax(try FunctionDeclSyntax(
+            """
+            /// Remove an element from \(raw: propertyName) set and mark as dirty
+            /// Note: This method always marks the field as dirty, even if the element didn't exist
+            @discardableResult
+            public mutating func remove\(raw: capitalizeFirst(propertyName))(_ element: \(raw: elementType)) -> \(raw: elementType)? {
+                let result = \(raw: storageName).wrappedValue.remove(element)
+                \(raw: storageName).markDirty()
+                return result
+            }
+            """
+        )))
+        
+        return methods
+    }
+    
     /// Generate optimized conversion code based on type
     /// For basic types, generates direct conversion; for complex types, uses make(from:for:)
     /// Returns a tuple: (code, needsTry) where needsTry indicates if the code can throw
@@ -475,6 +776,68 @@ private struct PropertyInfo {
     let hasInternal: Bool
     let policyType: String?
     let typeName: String?  // Type name for optimization
+}
+
+/// Container type information
+private enum ContainerType {
+    case dictionary(keyType: String, valueType: String)
+    case array(elementType: String)
+    case set(elementType: String)
+    case none
+}
+
+/// Capitalize first letter of a string
+private func capitalizeFirst(_ str: String) -> String {
+    guard !str.isEmpty else { return str }
+    return str.prefix(1).uppercased() + str.dropFirst()
+}
+
+/// Detect if a type is a container type and extract its element types
+private func detectContainerType(from typeName: String?) -> ContainerType {
+    guard let typeName = typeName else { return .none }
+    
+    let normalized = typeName.trimmingCharacters(in: .whitespacesAndNewlines)
+    
+    // Check for Dictionary: [Key: Value] or Dictionary<Key, Value>
+    if normalized.hasPrefix("[") && normalized.contains(":") && normalized.hasSuffix("]") {
+        // Format: [Key: Value]
+        let content = String(normalized.dropFirst().dropLast()) // Remove [ and ]
+        let parts = content.split(separator: ":", maxSplits: 1)
+        if parts.count == 2 {
+            let keyType = String(parts[0]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let valueType = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+            return .dictionary(keyType: keyType, valueType: valueType)
+        }
+    } else if normalized.hasPrefix("Dictionary<") && normalized.hasSuffix(">") {
+        // Format: Dictionary<Key, Value>
+        let content = String(normalized.dropFirst("Dictionary<".count).dropLast())
+        let parts = content.split(separator: ",", maxSplits: 1)
+        if parts.count == 2 {
+            let keyType = String(parts[0]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let valueType = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+            return .dictionary(keyType: keyType, valueType: valueType)
+        }
+    }
+    
+    // Check for Array: [Element] or Array<Element>
+    if normalized.hasPrefix("[") && normalized.hasSuffix("]") && !normalized.contains(":") {
+        // Format: [Element]
+        let elementType = String(normalized.dropFirst().dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+        return .array(elementType: elementType)
+    } else if normalized.hasPrefix("Array<") && normalized.hasSuffix(">") {
+        // Format: Array<Element>
+        let elementType = String(normalized.dropFirst("Array<".count).dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+        return .array(elementType: elementType)
+    }
+    
+    // Check for Set: Set<Element>
+    if normalized.hasPrefix("Set<") && normalized.hasSuffix(">") {
+        // Format: Set<Element>
+        let elementType = String(normalized.dropFirst("Set<".count).dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+        return .set(elementType: elementType)
+    }
+    
+    return .none
 }
 
 /// Macro errors
