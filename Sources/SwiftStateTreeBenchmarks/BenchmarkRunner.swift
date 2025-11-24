@@ -34,6 +34,11 @@ func estimateValueSize(_ value: SnapshotValue) -> Int {
     }
 }
 
+/// Estimate the size of a SnapshotValue in bytes (for patch size calculation)
+func estimateSnapshotValueSize(_ value: SnapshotValue) -> Int {
+    return estimateValueSize(value)
+}
+
 // MARK: - Benchmark Runner Protocol
 
 /// Protocol for different benchmark execution strategies
@@ -250,6 +255,7 @@ struct MultiPlayerParallelRunner: BenchmarkRunner {
 // MARK: - Diff Benchmark Runner
 
 /// Benchmark runner that compares snapshot vs diff generation performance
+/// Also compares standard diff (useDirtyTracking=false) vs optimized diff (useDirtyTracking=true)
 struct DiffBenchmarkRunner: BenchmarkRunner {
     let iterations: Int
     
@@ -262,28 +268,58 @@ struct DiffBenchmarkRunner: BenchmarkRunner {
         state: BenchmarkStateRootNode,
         playerID: PlayerID
     ) async -> BenchmarkResult {
-        var syncEngine = SyncEngine()
-        
-        print("  Warming up...", terminator: "")
-        // Warmup - first sync caches
-        _ = try? syncEngine.generateDiff(for: playerID, from: state)
-        _ = try? syncEngine.snapshot(for: playerID, from: state)
-        print(" ✓")
-        
-        print("  Running \(iterations) iterations for diff generation...", terminator: "")
-        var diffTimes: [TimeInterval] = []
-        
         // Create a modified state for diff calculation
         var modifiedState = state
         modifiedState.round = 2
-        modifiedState.players[playerID]?.hpCurrent = 90
+        if var player = modifiedState.players[playerID] {
+            player.hpCurrent = 90
+            modifiedState.players[playerID] = player
+        }
         
-        // Benchmark diff generation
-        for i in 0..<iterations {
-            let time = try! measureTime {
-                _ = try syncEngine.generateDiff(for: playerID, from: modifiedState)
+        // Estimate diff size BEFORE benchmark (cache still has original state)
+        // Create a fresh sync engine to get accurate diff size
+        var sizeSyncEngine = SyncEngine()
+        _ = try? sizeSyncEngine.generateDiff(for: playerID, from: state) // Populate cache with original state
+        let diffUpdate = try! sizeSyncEngine.generateDiff(for: playerID, from: modifiedState)
+        var diffSize = 0
+        if case .diff(let patches) = diffUpdate {
+            // Calculate actual patch size
+            for patch in patches {
+                diffSize += patch.path.utf8.count
+                switch patch.operation {
+                case .set(let value):
+                    diffSize += estimateSnapshotValueSize(value)
+                case .delete:
+                    diffSize += 6 // "delete" keyword
+                case .add(let value):
+                    diffSize += 3 // "add" keyword
+                    diffSize += estimateSnapshotValueSize(value)
+                }
             }
-            diffTimes.append(time)
+        } else if case .noChange = diffUpdate {
+            // No changes detected
+            diffSize = 0
+        }
+        
+        // Benchmark standard diff (useDirtyTracking = false)
+        print("  Warming up (standard diff)...", terminator: "")
+        var standardSyncEngine = SyncEngine()
+        _ = try? standardSyncEngine.generateDiff(for: playerID, from: state)
+        print(" ✓")
+        
+        print("  Running \(iterations) iterations for standard diff (no dirty tracking)...", terminator: "")
+        var standardTimes: [TimeInterval] = []
+        for i in 0..<iterations {
+            // Reset cache for each iteration to get consistent results
+            if i > 0 {
+                standardSyncEngine = SyncEngine()
+                _ = try? standardSyncEngine.generateDiff(for: playerID, from: state)
+            }
+            
+            let time = try! measureTime {
+                _ = try standardSyncEngine.generateDiff(for: playerID, from: modifiedState, useDirtyTracking: false)
+            }
+            standardTimes.append(time)
             
             if (i + 1) % 10 == 0 {
                 print(".", terminator: "")
@@ -291,32 +327,73 @@ struct DiffBenchmarkRunner: BenchmarkRunner {
         }
         print(" ✓")
         
-        // Estimate diff size
-        let diffUpdate = try! syncEngine.generateDiff(for: playerID, from: modifiedState)
-        var diffSize = 0
-        if case .diff(let patches) = diffUpdate {
-            // Rough estimate: path + value size
-            for patch in patches {
-                diffSize += patch.path.utf8.count
-                diffSize += 50 // Rough estimate for patch data
+        // Benchmark optimized diff (useDirtyTracking = true)
+        print("  Warming up (optimized diff)...", terminator: "")
+        var optimizedSyncEngine = SyncEngine()
+        _ = try? optimizedSyncEngine.generateDiff(for: playerID, from: state)
+        var optimizedState = modifiedState
+        optimizedState.clearDirty() // Clear dirty state before benchmark
+        print(" ✓")
+        
+        print("  Running \(iterations) iterations for optimized diff (with dirty tracking)...", terminator: "")
+        var optimizedTimes: [TimeInterval] = []
+        for i in 0..<iterations {
+            // Reset cache and state for each iteration to get consistent results
+            if i > 0 {
+                optimizedSyncEngine = SyncEngine()
+                _ = try? optimizedSyncEngine.generateDiff(for: playerID, from: state)
+                optimizedState = modifiedState
+                optimizedState.clearDirty()
+            }
+            
+            // Mark as dirty before generating diff
+            optimizedState.round = 2
+            if var player = optimizedState.players[playerID] {
+                player.hpCurrent = 90
+                optimizedState.players[playerID] = player
+            }
+            
+            let time = try! measureTime {
+                _ = try optimizedSyncEngine.generateDiff(for: playerID, from: optimizedState, useDirtyTracking: true)
+            }
+            optimizedTimes.append(time)
+            
+            if (i + 1) % 10 == 0 {
+                print(".", terminator: "")
             }
         }
+        print(" ✓")
         
-        let diffAverage = diffTimes.reduce(0, +) / Double(diffTimes.count)
-        let snapshot = try! syncEngine.snapshot(for: playerID, from: modifiedState)
+        // Calculate averages
+        let standardAverage = standardTimes.reduce(0, +) / Double(standardTimes.count)
+        let optimizedAverage = optimizedTimes.reduce(0, +) / Double(optimizedTimes.count)
+        let speedup = standardAverage / optimizedAverage
+        let timeImprovement = (standardAverage - optimizedAverage) / standardAverage * 100
+        
+        let snapshot = try! sizeSyncEngine.snapshot(for: playerID, from: modifiedState)
         let snapshotSize = estimateSnapshotSize(snapshot)
         
-        print("  Diff size: ~\(diffSize) bytes vs Snapshot size: ~\(snapshotSize) bytes")
-        print("  Size reduction: \(String(format: "%.1f", Double(snapshotSize - diffSize) / Double(snapshotSize) * 100))%")
+        // Print comparison results
+        print("\n  📊 Performance Comparison:")
+        print("    Standard diff (no dirty tracking):")
+        print("      ⏱️  Average time: \(String(format: "%.3f", standardAverage * 1000))ms")
+        print("    Optimized diff (with dirty tracking):")
+        print("      ⏱️  Average time: \(String(format: "%.3f", optimizedAverage * 1000))ms")
+        print("    🚀 Speedup: \(String(format: "%.2f", speedup))x")
+        print("    ⚡ Time improvement: \(String(format: "%.1f", timeImprovement))%")
+        print("  📦 Size Comparison:")
+        print("    Diff size: ~\(diffSize) bytes vs Snapshot size: ~\(snapshotSize) bytes")
+        print("    Size reduction: \(String(format: "%.1f", Double(snapshotSize - diffSize) / Double(snapshotSize) * 100))%")
         
+        // Return result using optimized diff (as it's the recommended approach)
         return BenchmarkResult(
             config: config,
-            averageTime: diffAverage,
-            minTime: diffTimes.min() ?? 0,
-            maxTime: diffTimes.max() ?? 0,
+            averageTime: optimizedAverage,
+            minTime: optimizedTimes.min() ?? 0,
+            maxTime: optimizedTimes.max() ?? 0,
             snapshotSize: diffSize,
-            throughput: 1.0 / diffAverage,
-            executionMode: "Diff Generation (\(iterations) iterations)"
+            throughput: 1.0 / optimizedAverage,
+            executionMode: "Diff Generation (Optimized, \(iterations) iterations)"
         )
     }
 }
