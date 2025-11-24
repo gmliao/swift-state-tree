@@ -10,7 +10,7 @@ public enum SyncPolicy<Value: Sendable>: Sendable {
     case masked(@Sendable (Value) -> Any)
     case custom(@Sendable (PlayerID, Value) -> Any?)
 
-    func filteredValue(_ value: Value, for playerID: PlayerID) -> Any? {
+    public func filteredValue(_ value: Value, for playerID: PlayerID) -> Any? {
         switch self {
         case .serverOnly:
             return nil

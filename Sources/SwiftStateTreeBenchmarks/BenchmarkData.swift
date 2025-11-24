@@ -1,0 +1,81 @@
+// Sources/SwiftStateTreeBenchmarks/BenchmarkData.swift
+
+import Foundation
+import SwiftStateTree
+
+// MARK: - Test Data Structures
+
+/// Test nested structure: Player state with multiple fields
+struct BenchmarkPlayerState: Codable, Sendable {
+    var name: String
+    var hpCurrent: Int
+    var hpMax: Int
+}
+
+/// Test nested structure: Hand state containing cards
+struct BenchmarkHandState: Codable, Sendable {
+    var ownerID: PlayerID
+    var cards: [BenchmarkCard]
+}
+
+/// Test nested structure: Card with multiple properties
+struct BenchmarkCard: Codable, Sendable {
+    let id: Int
+    let suit: Int
+    let rank: Int
+}
+
+/// Test StateTree with nested struct structures for benchmarking
+@StateTreeBuilder
+struct BenchmarkStateTree: StateTreeProtocol {
+    @Sync(.broadcast)
+    var players: [PlayerID: BenchmarkPlayerState] = [:]
+    
+    @Sync(.perPlayerDictionaryValue())
+    var hands: [PlayerID: BenchmarkHandState] = [:]
+    
+    @Sync(.serverOnly)
+    var hiddenDeck: [BenchmarkCard] = []
+    
+    @Sync(.broadcast)
+    var round: Int = 0
+}
+
+// MARK: - Test Data Generation
+
+/// Generate test state with specified size
+func generateTestState(
+    playerCount: Int,
+    cardsPerPlayer: Int
+) -> BenchmarkStateTree {
+    var state = BenchmarkStateTree()
+    
+    for i in 0..<playerCount {
+        let playerID = PlayerID("player_\(i)")
+        
+        // Add player
+        state.players[playerID] = BenchmarkPlayerState(
+            name: "Player \(i)",
+            hpCurrent: 100,
+            hpMax: 100
+        )
+        
+        // Add hand with cards
+        var cards: [BenchmarkCard] = []
+        for j in 0..<cardsPerPlayer {
+            cards.append(BenchmarkCard(
+                id: i * cardsPerPlayer + j,
+                suit: j % 4,
+                rank: j % 13
+            ))
+        }
+        state.hands[playerID] = BenchmarkHandState(
+            ownerID: playerID,
+            cards: cards
+        )
+    }
+    
+    state.round = 1
+    return state
+}
+

@@ -13,6 +13,11 @@ let package = Package(
         .library(
             name: "SwiftStateTree",
             targets: ["SwiftStateTree"]
+        ),
+        // 🔹 Benchmark executable
+        .executable(
+            name: "SwiftStateTreeBenchmarks",
+            targets: ["SwiftStateTreeBenchmarks"]
         )
     ],
     dependencies: [
@@ -61,6 +66,19 @@ let package = Package(
                 .product(name: "SwiftSyntaxMacrosTestSupport", package: "swift-syntax")
             ],
             path: "Tests/SwiftStateTreeMacrosTests"
+        ),
+        
+        // 🔹 Benchmark executable
+        .executableTarget(
+            name: "SwiftStateTreeBenchmarks",
+            dependencies: [
+                "SwiftStateTree",
+                "SwiftStateTreeMacros"
+            ],
+            path: "Sources/SwiftStateTreeBenchmarks",
+            exclude: [
+                "README.md"
+            ]
         )
     ]
 )
