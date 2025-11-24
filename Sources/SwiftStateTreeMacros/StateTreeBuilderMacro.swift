@@ -241,8 +241,13 @@ public struct StateTreeBuilderMacro: MemberMacro {
             codeLines.append("if let value = self.\(storageName).policy.filteredValue(self.\(storageName).wrappedValue, for: playerID) {")
             
             // Generate optimized conversion code based on type
-            let conversionCode = generateConversionCode(for: property.typeName, valueName: "value")
-            codeLines.append("    result[\"\(fieldName)\"] = \(conversionCode)")
+            // value is Any? from filteredValue, so we need to cast it
+            let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: "value", isAnyType: true)
+            if needsTry {
+                codeLines.append("    result[\"\(fieldName)\"] = try \(conversionCode)")
+            } else {
+                codeLines.append("    result[\"\(fieldName)\"] = \(conversionCode)")
+            }
             codeLines.append("}")
             codeLines.append("")
         }
@@ -286,15 +291,20 @@ public struct StateTreeBuilderMacro: MemberMacro {
             let storageName = "_\(propertyName)"
             
             // For broadcast fields, we directly access wrappedValue without filtering
-            codeLines.append("do {")
-            codeLines.append("    let value = self.\(storageName).wrappedValue")
+            // wrappedValue is the actual typed value, not Any?
+            let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: "self.\(storageName).wrappedValue", isAnyType: false)
             
-            // Generate optimized conversion code based on type
-            let conversionCode = generateConversionCode(for: property.typeName, valueName: "value")
-            codeLines.append("    result[\"\(fieldName)\"] = \(conversionCode)")
-            codeLines.append("} catch {")
-            codeLines.append("    throw error")
-            codeLines.append("}")
+            if needsTry {
+                // Complex types that may throw - use do-catch
+                codeLines.append("do {")
+                codeLines.append("    result[\"\(fieldName)\"] = try \(conversionCode)")
+                codeLines.append("} catch {")
+                codeLines.append("    throw error")
+                codeLines.append("}")
+            } else {
+                // Basic types that don't throw - no do-catch needed
+                codeLines.append("result[\"\(fieldName)\"] = \(conversionCode)")
+            }
             codeLines.append("")
         }
         
@@ -313,10 +323,14 @@ public struct StateTreeBuilderMacro: MemberMacro {
     
     /// Generate optimized conversion code based on type
     /// For basic types, generates direct conversion; for complex types, uses make(from:)
-    private static func generateConversionCode(for typeName: String?, valueName: String) -> String {
+    /// Returns a tuple: (code, needsTry) where needsTry indicates if the code can throw
+    /// valueName is expected to be of type Any? (from filteredValue) for snapshot method
+    /// valueName is expected to be the actual typed value for broadcastSnapshot method
+    /// Note: The returned code does NOT include 'try' keyword - it should be added by the caller if needsTry is true
+    private static func generateConversionCode(for typeName: String?, valueName: String, isAnyType: Bool = true) -> (code: String, needsTry: Bool) {
         guard let typeName = typeName else {
             // Unknown type, use make(from:) as fallback
-            return "try SnapshotValue.make(from: \(valueName))"
+            return ("SnapshotValue.make(from: \(valueName))", true)
         }
         
         let normalizedType = typeName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -324,52 +338,113 @@ public struct StateTreeBuilderMacro: MemberMacro {
         // Check if it's an Optional type (handle first)
         if normalizedType.hasSuffix("?") {
             // Optional type: use make(from:) to handle nil properly
-            return "try SnapshotValue.make(from: \(valueName))"
+            return ("SnapshotValue.make(from: \(valueName))", true)
         }
         
         if normalizedType.hasPrefix("Optional<") && normalizedType.hasSuffix(">") {
             // Optional<Type> format: use make(from:) to handle nil properly
-            return "try SnapshotValue.make(from: \(valueName))"
+            return ("SnapshotValue.make(from: \(valueName))", true)
         }
         
         // Handle basic types with direct conversion (no Mirror needed)
+        // If valueName is Any?, we need to cast it first
         switch normalizedType {
         case "Bool":
-            return ".bool(\(valueName) as! Bool)"
+            if isAnyType {
+                return (".bool(\(valueName) as! Bool)", false)
+            } else {
+                return (".bool(\(valueName))", false)
+            }
         case "Int":
-            return ".int(\(valueName) as! Int)"
+            if isAnyType {
+                return (".int(\(valueName) as! Int)", false)
+            } else {
+                return (".int(\(valueName))", false)
+            }
         case "Int8":
-            return ".int(Int(\(valueName) as! Int8))"
+            if isAnyType {
+                return (".int(Int(\(valueName) as! Int8))", false)
+            } else {
+                return (".int(Int(\(valueName)))", false)
+            }
         case "Int16":
-            return ".int(Int(\(valueName) as! Int16))"
+            if isAnyType {
+                return (".int(Int(\(valueName) as! Int16))", false)
+            } else {
+                return (".int(Int(\(valueName)))", false)
+            }
         case "Int32":
-            return ".int(Int(\(valueName) as! Int32))"
+            if isAnyType {
+                return (".int(Int(\(valueName) as! Int32))", false)
+            } else {
+                return (".int(Int(\(valueName)))", false)
+            }
         case "Int64":
-            return ".int(Int(\(valueName) as! Int64))"
+            if isAnyType {
+                return (".int(Int(\(valueName) as! Int64))", false)
+            } else {
+                return (".int(Int(\(valueName)))", false)
+            }
         case "UInt":
-            return ".int(Int(\(valueName) as! UInt))"
+            if isAnyType {
+                return (".int(Int(\(valueName) as! UInt))", false)
+            } else {
+                return (".int(Int(\(valueName)))", false)
+            }
         case "UInt8":
-            return ".int(Int(\(valueName) as! UInt8))"
+            if isAnyType {
+                return (".int(Int(\(valueName) as! UInt8))", false)
+            } else {
+                return (".int(Int(\(valueName)))", false)
+            }
         case "UInt16":
-            return ".int(Int(\(valueName) as! UInt16))"
+            if isAnyType {
+                return (".int(Int(\(valueName) as! UInt16))", false)
+            } else {
+                return (".int(Int(\(valueName)))", false)
+            }
         case "UInt32":
-            return ".int(Int(\(valueName) as! UInt32))"
+            if isAnyType {
+                return (".int(Int(\(valueName) as! UInt32))", false)
+            } else {
+                return (".int(Int(\(valueName)))", false)
+            }
         case "UInt64":
-            return ".int(Int(\(valueName) as! UInt64))"
+            if isAnyType {
+                return (".int(Int(\(valueName) as! UInt64))", false)
+            } else {
+                return (".int(Int(\(valueName)))", false)
+            }
         case "Double":
-            return ".double(\(valueName) as! Double)"
+            if isAnyType {
+                return (".double(\(valueName) as! Double)", false)
+            } else {
+                return (".double(\(valueName))", false)
+            }
         case "Float":
-            return ".double(Double(\(valueName) as! Float))"
+            if isAnyType {
+                return (".double(Double(\(valueName) as! Float))", false)
+            } else {
+                return (".double(Double(\(valueName)))", false)
+            }
         case "String":
-            return ".string(\(valueName) as! String)"
+            if isAnyType {
+                return (".string(\(valueName) as! String)", false)
+            } else {
+                return (".string(\(valueName))", false)
+            }
         case "PlayerID":
-            return ".string((\(valueName) as! PlayerID).rawValue)"
+            if isAnyType {
+                return (".string((\(valueName) as! PlayerID).rawValue)", false)
+            } else {
+                return (".string(\(valueName).rawValue)", false)
+            }
         default:
             // Complex types (structs, classes, arrays, dictionaries, etc.)
             // Use make(from:) which will:
             // 1. Check for SnapshotValueConvertible protocol first
             // 2. Fall back to Mirror for nested structures
-            return "try SnapshotValue.make(from: \(valueName))"
+            return ("SnapshotValue.make(from: \(valueName))", true)
         }
     }
 }
