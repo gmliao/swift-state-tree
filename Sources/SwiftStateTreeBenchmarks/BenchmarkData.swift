@@ -6,20 +6,23 @@ import SwiftStateTree
 // MARK: - Test Data Structures
 
 /// Test nested structure: Player state with multiple fields
-struct BenchmarkPlayerState: Codable, Sendable {
+@State
+struct BenchmarkPlayerState: StateProtocol {
     var name: String
     var hpCurrent: Int
     var hpMax: Int
 }
 
 /// Test nested structure: Hand state containing cards
-struct BenchmarkHandState: Codable, Sendable {
+@State
+struct BenchmarkHandState: StateProtocol {
     var ownerID: PlayerID
     var cards: [BenchmarkCard]
 }
 
 /// Test nested structure: Card with multiple properties
-struct BenchmarkCard: Codable, Sendable {
+@State
+struct BenchmarkCard: StateProtocol {
     let id: Int
     let suit: Int
     let rank: Int
