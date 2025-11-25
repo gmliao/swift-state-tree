@@ -7,23 +7,20 @@ import Testing
 // MARK: - Nested Structure Definitions
 
 /// Test nested structure: Player state with multiple fields
-@State
-struct TestPlayerState: StateProtocol, Equatable {
+struct TestPlayerState: StateProtocol {
     var name: String
     var hpCurrent: Int
     var hpMax: Int
 }
 
 /// Test nested structure: Hand state containing cards
-@State
-struct TestHandState: StateProtocol, Equatable {
+struct TestHandState: StateProtocol {
     var ownerID: PlayerID
     var cards: [TestCard]
 }
 
 /// Test nested structure: Card with multiple properties
-@State
-struct TestCard: StateProtocol, Equatable {
+struct TestCard: StateProtocol {
     let id: Int
     let suit: Int
     let rank: Int

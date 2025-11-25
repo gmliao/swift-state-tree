@@ -60,27 +60,3 @@ public macro SnapshotConvertible() = #externalMacro(
     type: "SnapshotConvertibleMacro"
 )
 
-/// Macro that validates State types conform to StateProtocol.
-///
-/// This macro ensures that all State types:
-/// - Conform to `StateProtocol` (which requires `Codable` and `Sendable`)
-/// - Are struct types (not classes)
-///
-/// The macro performs compile-time validation and does not generate any code.
-/// It serves as a marker and validation tool to ensure type safety.
-///
-/// Example:
-/// ```swift
-/// @State
-/// struct PlayerState: StateProtocol {
-///     var name: String
-///     var hpCurrent: Int
-///     var hpMax: Int
-/// }
-/// ```
-@attached(peer)
-public macro State() = #externalMacro(
-    module: "SwiftStateTreeMacros",
-    type: "StateMacro"
-)
-
