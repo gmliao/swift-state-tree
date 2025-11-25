@@ -95,7 +95,42 @@ public extension SnapshotValue {
             return try convertible.toSnapshotValue()
         }
         
-        // Priority 3: Handle basic types directly (no Mirror needed)
+        // Priority 3: Handle known collection types directly (avoid Mirror overhead)
+        // This significantly reduces dynamic dispatch overhead for common types
+        if let arrayValue = value as? [SnapshotValue] {
+            return .array(arrayValue)
+        }
+        if let dictValue = value as? [String: SnapshotValue] {
+            return .object(dictValue)
+        }
+        
+        // Priority 4: Handle other common collection types directly
+        if let stringArray = value as? [String] {
+            let mapped = stringArray.map { SnapshotValue.string($0) }
+            return .array(mapped)
+        }
+        if let intArray = value as? [Int] {
+            let mapped = intArray.map { SnapshotValue.int($0) }
+            return .array(mapped)
+        }
+        if let dictStringAny = value as? [String: Any] {
+            var object: [String: SnapshotValue] = [:]
+            object.reserveCapacity(dictStringAny.count)
+            for (key, val) in dictStringAny {
+                object[key] = try make(from: val, for: playerID)
+            }
+            return .object(object)
+        }
+        if let playerIDDict = value as? [PlayerID: Any] {
+            var object: [String: SnapshotValue] = [:]
+            object.reserveCapacity(playerIDDict.count)
+            for (key, val) in playerIDDict {
+                object[key.rawValue] = try make(from: val, for: playerID)
+            }
+            return .object(object)
+        }
+        
+        // Priority 5: Handle basic types directly (no Mirror needed)
         if value is NSNull {
             return .null
         }
@@ -146,25 +181,40 @@ public extension SnapshotValue {
 
         switch mirror.displayStyle {
         case .collection:
-            let array = try mirror.children.map { try make(from: $0.value, for: playerID) }
+            // Optimize: Direct iteration instead of map to reduce dynamic dispatch
+            // Pre-count children if possible for capacity reservation
+            let childrenArray = Array(mirror.children)
+            var array: [SnapshotValue] = []
+            array.reserveCapacity(childrenArray.count)
+            for child in childrenArray {
+                array.append(try make(from: child.value, for: playerID))
+            }
             return .array(array)
         case .dictionary:
+            // Optimize: Pre-allocate capacity and use direct iteration
+            let childrenArray = Array(mirror.children)
             var object: [String: SnapshotValue] = [:]
-            for child in mirror.children {
+            object.reserveCapacity(childrenArray.count)
+            for child in childrenArray {
                 let pair = Mirror(reflecting: child.value)
                 guard pair.children.count == 2 else {
                     throw SyncError.unsupportedValue("Dictionary entry must contain exactly two children.")
                 }
-                let keyMirror = pair.children.first!
-                let valueMirror = pair.children.dropFirst().first!
+                // Use Array conversion to avoid iterator overhead
+                let pairChildren = Array(pair.children)
+                let keyMirror = pairChildren[0]
+                let valueMirror = pairChildren[1]
                 let keyString = try makeKeyString(from: keyMirror.value)
                 let mappedValue = try make(from: valueMirror.value, for: playerID)
                 object[keyString] = mappedValue
             }
             return .object(object)
         case .struct, .class:
+            // Optimize: Pre-allocate capacity based on expected field count
+            let childrenArray = Array(mirror.children)
             var object: [String: SnapshotValue] = [:]
-            for child in mirror.children {
+            object.reserveCapacity(childrenArray.count)
+            for child in childrenArray {
                 guard let label = child.label else { continue }
                 object[label] = try make(from: child.value, for: playerID)
             }
