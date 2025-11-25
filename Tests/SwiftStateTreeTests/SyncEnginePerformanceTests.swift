@@ -157,38 +157,6 @@ struct SyncEnginePerformanceTests {
             }
         }
         
-        // Print detailed results
-        print("\n=== Performance Comparison (Standard vs Optimized Diff) ===")
-        print("Standard diff (no dirty tracking):")
-        print("  ⏱️  Total time: \(String(format: "%.3f", standardTime))ms")
-        if case .diff(let standardPatches) = standardUpdate {
-            print("  📦 Patches count: \(standardPatches.count)")
-        }
-        print("  💾 Estimated size: \(standardSnapshotSize) bytes")
-        
-        print("Optimized diff (with dirty tracking):")
-        print("  ⏱️  Total time: \(String(format: "%.3f", optimizedTime))ms")
-        if case .diff(let optimizedPatches) = optimizedUpdate {
-            print("  📦 Patches count: \(optimizedPatches.count)")
-        }
-        print("  💾 Estimated size: \(optimizedSnapshotSize) bytes")
-        
-        let speedup = standardTime / optimizedTime
-        let timeImprovement = (standardTime - optimizedTime) / standardTime * 100
-        print("\n📊 Performance Metrics:")
-        print("  🚀 Speedup: \(String(format: "%.2f", speedup))x")
-        print("  ⚡ Time improvement: \(String(format: "%.1f", timeImprovement))%")
-        
-        if standardSnapshotSize > 0 && optimizedSnapshotSize > 0 {
-            let sizeReduction = Double(standardSnapshotSize - optimizedSnapshotSize) / Double(standardSnapshotSize) * 100
-            if sizeReduction != 0 {
-                print("  📉 Size reduction: \(String(format: "%.1f", sizeReduction))%")
-            } else {
-                print("  📊 Size: Same (both produce identical patches)")
-            }
-        }
-        print("===========================================================\n")
-        
         // Assert that optimized version is at least as fast (or faster)
         // Note: In some cases, the overhead of dirty tracking might make it slightly slower
         // for very small states, but it should be faster for larger states

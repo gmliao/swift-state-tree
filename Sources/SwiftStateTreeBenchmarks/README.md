@@ -6,9 +6,24 @@
 
 Benchmark 程式碼已模組化，方便擴展新的測試：
 
+### 核心檔案
 - **BenchmarkData.swift**: 測試數據結構和生成邏輯
 - **BenchmarkConfig.swift**: 配置、結果定義和預設配置
-- **BenchmarkRunner.swift**: 不同的執行策略（單執行緒、並行、多玩家並行）
+- **BenchmarkUtilities.swift**: 共用工具函數（時間測量、大小估算）
+- **BenchmarkRunner.swift**: Benchmark runner protocol 定義
+
+### Runner 實作
+- **SingleThreadedRunner.swift**: 單執行緒執行策略
+- **ParallelRunner.swift**: 並行執行策略
+- **MultiPlayerParallelRunner.swift**: 多玩家並行執行策略
+- **DiffBenchmarkRunner.swift**: Standard vs Optimized Diff 比較
+- **MirrorVsMacroComparisonRunner.swift**: Mirror vs Macro 效能比較
+
+### 組織檔案
+- **BenchmarkSuite.swift**: Benchmark suite 執行邏輯
+- **BenchmarkSuiteConfig.swift**: 所有 benchmark suite 配置
+- **BenchmarkSummary.swift**: 摘要報告生成
+- **CommandLineParser.swift**: 命令行參數解析
 - **main.swift**: 主入口，組織和運行不同的 benchmark suite
 
 ## 執行模式
@@ -18,16 +33,72 @@ Benchmark 支援多種執行模式：
 1. **單執行緒執行**：順序執行，確保準確的時間測量
 2. **並行執行**：使用多核心並行生成 snapshot，測試實際加速比
 3. **多玩家並行執行**：模擬真實場景，同時為多個玩家生成 snapshot
+4. **Standard vs Optimized Diff 比較**：比較標準 diff（無 dirty tracking）與優化 diff（有 dirty tracking）的效能差異
+5. **Mirror vs Macro 比較**：比較 runtime reflection 與 compile-time macro 的效能差異
 
 ## 執行方式
 
+### 基本使用
+
 ```bash
-# 執行 benchmark
+# 執行所有 benchmark（預設）
 swift run SwiftStateTreeBenchmarks
 
 # 使用 release 模式執行（更準確的效能測試）
 swift run -c release SwiftStateTreeBenchmarks
 ```
+
+### 選擇特定 Benchmark Suite
+
+```bash
+# 執行單執行緒 benchmark
+swift run SwiftStateTreeBenchmarks single
+
+# 執行並行 benchmark
+swift run SwiftStateTreeBenchmarks parallel
+
+# 執行多玩家並行 benchmark
+swift run SwiftStateTreeBenchmarks multiplayer
+
+# 執行 Standard vs Optimized Diff 比較
+swift run SwiftStateTreeBenchmarks diff
+
+# 執行 Mirror vs Macro 比較
+swift run SwiftStateTreeBenchmarks mirror
+
+# 執行多個 suite
+swift run SwiftStateTreeBenchmarks single parallel
+
+# 執行比較類的 benchmark
+swift run SwiftStateTreeBenchmarks diff mirror
+```
+
+### 顯示幫助
+
+```bash
+swift run SwiftStateTreeBenchmarks --help
+# 或
+swift run SwiftStateTreeBenchmarks -h
+```
+
+### 包含 CSV 輸出
+
+```bash
+# 使用 --csv 或 -c 參數
+swift run SwiftStateTreeBenchmarks --csv
+swift run SwiftStateTreeBenchmarks single -c
+```
+
+### 可用的 Benchmark Suite
+
+| Suite | 說明 |
+|-------|------|
+| `single` | 單執行緒執行 |
+| `parallel` | 並行執行 |
+| `multiplayer` | 多玩家並行執行 |
+| `diff` | Standard vs Optimized Diff 比較 |
+| `mirror` | Mirror vs Macro 比較 |
+| `all` | 執行所有 suite（預設） |
 
 ## 輸出說明
 
@@ -54,25 +125,34 @@ Benchmark 會自動比較單執行緒和並行執行的效能：
 - **Speedup**: 實際加速比 vs 理論加速比（核心數）
 - **Efficiency**: 並行效率（實際加速比 / 核心數 × 100%）
 
-## CSV 輸出
+## CSV 輸出（可選）
 
-Benchmark 結束時會輸出 CSV 格式的結果，方便後續分析：
-
-```csv
-Name,Players,Cards/Player,Iterations,ExecutionMode,AvgTime(ms),MinTime(ms),MaxTime(ms),Throughput(snapshots/sec),Size(bytes)
-```
-
-可以將輸出重定向到檔案：
+如果需要 CSV 格式的結果進行後續分析，可以使用 `--csv` 或 `-c` 參數：
 
 ```bash
-swift run SwiftStateTreeBenchmarks > benchmark_results.csv
+# 執行 benchmark 並包含 CSV 輸出
+swift run SwiftStateTreeBenchmarks --csv
+
+# 執行特定 suite 並包含 CSV 輸出
+swift run SwiftStateTreeBenchmarks single parallel --csv
+
+# 將 CSV 輸出重定向到檔案
+swift run SwiftStateTreeBenchmarks --csv > benchmark_results.csv
 ```
+
+CSV 格式：
+```csv
+Name,Players,Cards/Player,PlayerStateFields,Iterations,ExecutionMode,AvgTime(ms),MinTime(ms),MaxTime(ms),Throughput(snapshots/sec),Size(bytes)
+```
+
+**注意**：預設情況下不會輸出 CSV，只有在明確指定 `--csv` 參數時才會輸出。
 
 ## 使用場景
 
 - 效能回歸測試：在 CI/CD 中執行，檢測效能退化
 - 優化驗證：比較不同實作方式的效能差異
 - 容量規劃：了解不同狀態大小下的效能表現
+- 開發除錯：執行特定 suite 快速驗證變更
 
 ## 擴展新的 Benchmark
 
@@ -81,25 +161,27 @@ swift run SwiftStateTreeBenchmarks > benchmark_results.csv
 1. **創建新的 Runner**（如果需要新的執行策略）：
    ```swift
    struct MyCustomRunner: BenchmarkRunner {
-       func run(config: BenchmarkConfig, state: BenchmarkStateTree, playerID: PlayerID) async -> BenchmarkResult {
+       func run(
+           config: BenchmarkConfig,
+           state: BenchmarkStateRootNode,
+           playerID: PlayerID
+       ) async -> BenchmarkResult {
            // Your custom benchmark logic
        }
    }
    ```
 
-2. **在 main.swift 中添加新的 Suite**：
+2. **在 BenchmarkSuiteConfig.swift 中添加配置**：
    ```swift
-   let mySuite = BenchmarkSuite(
+   BenchmarkSuiteConfig(
+       type: .myCustom,
        name: "My Custom Benchmark",
        runner: MyCustomRunner(),
        configurations: BenchmarkConfigurations.standard
    )
-   allResults.append(contentsOf: await mySuite.run())
    ```
 
-3. **或使用現有的配置**：
-   - `BenchmarkConfigurations.standard`: 完整的測試配置
-   - `BenchmarkConfigurations.quick`: 快速測試配置
+3. **在 BenchmarkSuiteType enum 中添加新類型**（如果需要命令行支援）
 
 ## 注意事項
 
@@ -108,4 +190,4 @@ swift run SwiftStateTreeBenchmarks > benchmark_results.csv
 - **Release 模式**：建議使用 `-c release` 進行準確的效能測試（但編譯時間較長）
 - **系統負載**：建議在系統負載較低時執行，以獲得最準確的結果
 - **SwiftSyntax 編譯時間**：第一次編譯 release 模式時，SwiftSyntax 可能需要 2-5 分鐘
-
+- **錯誤處理**：如果輸入無效的 suite 名稱，程式會顯示錯誤訊息並退出，不會執行任何 benchmark

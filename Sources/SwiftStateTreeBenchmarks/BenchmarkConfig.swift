@@ -38,6 +38,7 @@ struct BenchmarkResult {
         // Configuration section
         table.addRow(values: ["Players", "\(config.playerCount)"])
         table.addRow(values: ["Cards/Player", "\(config.cardsPerPlayer)"])
+        table.addRow(values: ["Player State Fields", "8 per player"])
         table.addRow(values: ["Iterations", "\(config.iterations)"])
         table.addRow(values: ["Execution", executionMode])
         
@@ -52,7 +53,7 @@ struct BenchmarkResult {
     }
     
     var csvRow: String {
-        "\(config.name),\(config.playerCount),\(config.cardsPerPlayer),\(config.iterations),\(executionMode),\(averageTime * 1000),\(minTime * 1000),\(maxTime * 1000),\(throughput),\(snapshotSize)"
+        "\(config.name),\(config.playerCount),\(config.cardsPerPlayer),8,\(config.iterations),\(executionMode),\(averageTime * 1000),\(minTime * 1000),\(maxTime * 1000),\(throughput),\(snapshotSize)"
     }
 }
 

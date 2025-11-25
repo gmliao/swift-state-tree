@@ -25,11 +25,42 @@ struct BenchmarkCard: StateProtocol {
     let rank: Int
 }
 
+/// Player-specific StateNode with multiple fields for testing dirty tracking
+@StateNodeBuilder
+struct BenchmarkPlayerStateNode: StateNodeProtocol {
+    @Sync(.broadcast)
+    var hpCurrent: Int = 100
+    
+    @Sync(.broadcast)
+    var hpMax: Int = 100
+    
+    @Sync(.broadcast)
+    var level: Int = 1
+    
+    @Sync(.broadcast)
+    var experience: Int = 0
+    
+    @Sync(.broadcast)
+    var positionX: Double = 0.0
+    
+    @Sync(.broadcast)
+    var positionY: Double = 0.0
+    
+    @Sync(.broadcast)
+    var status: String = "idle"
+    
+    @Sync(.broadcast)
+    var lastAction: String = "none"
+}
+
 /// Test StateNode with nested struct structures for benchmarking
 @StateNodeBuilder
 struct BenchmarkStateRootNode: StateNodeProtocol {
     @Sync(.broadcast)
     var players: [PlayerID: BenchmarkPlayerState] = [:]
+    
+    @Sync(.perPlayerDictionaryValue())
+    var playerNodes: [PlayerID: BenchmarkPlayerStateNode] = [:]
     
     @Sync(.perPlayerDictionaryValue())
     var hands: [PlayerID: BenchmarkHandState] = [:]
@@ -39,6 +70,27 @@ struct BenchmarkStateRootNode: StateNodeProtocol {
     
     @Sync(.broadcast)
     var round: Int = 0
+    
+    @Sync(.broadcast)
+    var gamePhase: String = "waiting"
+    
+    @Sync(.broadcast)
+    var turnOrder: [PlayerID] = []
+    
+    @Sync(.broadcast)
+    var score: Int = 0
+    
+    @Sync(.broadcast)
+    var timestamp: Int64 = 0
+    
+    @Sync(.perPlayerDictionaryValue())
+    var playerScores: [PlayerID: Int] = [:]
+    
+    @Sync(.broadcast)
+    var activePlayers: [PlayerID] = []
+    
+    @Sync(.broadcast)
+    var gameConfig: [String: String] = [:]
 }
 
 // MARK: - Test Data Generation
@@ -60,6 +112,18 @@ func generateTestState(
             hpMax: 100
         )
         
+        // Add player state node with multiple fields
+        state.playerNodes[playerID] = BenchmarkPlayerStateNode(
+            hpCurrent: 100,
+            hpMax: 100,
+            level: 1,
+            experience: 0,
+            positionX: Double(i * 10),
+            positionY: Double(i * 10),
+            status: "idle",
+            lastAction: "none"
+        )
+        
         // Add hand with cards
         var cards: [BenchmarkCard] = []
         for j in 0..<cardsPerPlayer {
@@ -73,9 +137,20 @@ func generateTestState(
             ownerID: playerID,
             cards: cards
         )
+        
+        // Initialize perPlayer fields
+        state.playerScores[playerID] = 0
     }
     
+    // Initialize broadcast fields
     state.round = 1
+    state.gamePhase = "waiting"
+    state.turnOrder = Array(state.players.keys).sorted(by: { $0.rawValue < $1.rawValue })
+    state.score = 0
+    state.timestamp = Int64(Date().timeIntervalSince1970)
+    state.activePlayers = Array(state.players.keys)
+    state.gameConfig = ["mode": "standard", "version": "1.0"]
+    
     return state
 }
 
