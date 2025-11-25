@@ -81,6 +81,14 @@ public protocol SnapshotValueConvertible {
 
 public extension SnapshotValue {
     static func make(from value: Any, for playerID: PlayerID? = nil) throws -> SnapshotValue {
+        // Short-circuit if value is already a snapshot-friendly type
+        if let snapshotValue = value as? SnapshotValue {
+            return snapshotValue
+        }
+        if let snapshot = value as? StateSnapshot {
+            return .object(snapshot.values)
+        }
+        
         // Priority 1: Check if type conforms to StateNodeProtocol (for recursive filtering)
         // This must be checked before SnapshotValueConvertible to enable recursive @Sync policy filtering
         if let stateNode = value as? any StateNodeProtocol {
@@ -237,4 +245,3 @@ public extension SnapshotValue {
         throw SyncError.unsupportedKey("Unsupported dictionary key type: \(type(of: value))")
     }
 }
-

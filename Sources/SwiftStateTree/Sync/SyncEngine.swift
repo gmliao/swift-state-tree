@@ -445,6 +445,11 @@ public struct SyncEngine: Sendable {
         onlyPaths: Set<String>?,
         dirtyFields: Set<String>? = nil
     ) throws -> [StatePatch] {
+        // If only broadcast fields are dirty, we can skip per-player diff when cache exists
+        if let dirtyFields = dirtyFields, dirtyFields.isEmpty, lastPerPlayerSnapshots[playerID] != nil {
+            return []
+        }
+        
         // Generate current per-player snapshot (only dirty fields if dirtyFields is provided)
         let currentPerPlayer = try extractPerPlayerSnapshot(for: playerID, from: state, dirtyFields: dirtyFields)
         
@@ -572,6 +577,11 @@ public struct SyncEngine: Sendable {
         
         // Get dirty fields if dirty tracking is enabled
         let dirtyFields: Set<String>? = useDirtyTracking && state.isDirty() ? state.getDirtyFields() : nil
+        let syncFields = state.getSyncFields()
+        let broadcastFieldNames = Set(syncFields.filter { $0.policyType == "broadcast" }.map { $0.name })
+        let perPlayerFieldNames = Set(syncFields.filter { $0.policyType != "broadcast" && $0.policyType != "serverOnly" }.map { $0.name })
+        let dirtyFieldsForBroadcast = dirtyFields.map { $0.intersection(broadcastFieldNames) }
+        let dirtyFieldsForPerPlayer = dirtyFields.map { $0.intersection(perPlayerFieldNames) }
         
         // IMPORTANT: We must compute diffs BEFORE returning firstSync because:
         // 1. computeBroadcastDiff and computePerPlayerDiff populate the cache
@@ -582,8 +592,13 @@ public struct SyncEngine: Sendable {
         // This will populate lastBroadcastSnapshot if it's the first time
         let broadcastDiff = try computeBroadcastDiff(
             from: state,
-            onlyPaths: onlyPaths?.filter { isBroadcastPath($0, state: state) },
-            dirtyFields: dirtyFields
+            onlyPaths: onlyPaths?.filter {
+                if let fieldName = $0.split(separator: "/", omittingEmptySubsequences: true).first {
+                    return broadcastFieldNames.contains(String(fieldName))
+                }
+                return false
+            },
+            dirtyFields: dirtyFieldsForBroadcast
         )
         
         // Compute per-player diff (individual for each player)
@@ -591,8 +606,13 @@ public struct SyncEngine: Sendable {
         let perPlayerDiff = try computePerPlayerDiff(
             for: playerID,
             from: state,
-            onlyPaths: onlyPaths?.filter { isPerPlayerPath($0, state: state) },
-            dirtyFields: dirtyFields
+            onlyPaths: onlyPaths?.filter {
+                if let fieldName = $0.split(separator: "/", omittingEmptySubsequences: true).first {
+                    return perPlayerFieldNames.contains(String(fieldName))
+                }
+                return false
+            },
+            dirtyFields: dirtyFieldsForPerPlayer
         )
         
         // Merge patches (per-player takes precedence)
@@ -610,42 +630,6 @@ public struct SyncEngine: Sendable {
         } else {
             return .diff(mergedPatches)
         }
-    }
-    
-    // MARK: - Path Filtering
-    
-    /// Check if a path belongs to a broadcast field
-    private func isBroadcastPath<State: StateNodeProtocol>(_ path: String, state: State) -> Bool {
-        // Extract field name from path (first segment after "/")
-        let pathComponents = path.split(separator: "/", omittingEmptySubsequences: true)
-        guard let fieldName = pathComponents.first.map(String.init) else {
-            return false
-        }
-        
-        // Check sync fields for broadcast policy
-        let syncFields = state.getSyncFields()
-        if let field = syncFields.first(where: { $0.name == fieldName }) {
-            return field.policyType == "broadcast"
-        }
-        
-        return false
-    }
-    
-    /// Check if a path belongs to a per-player field
-    private func isPerPlayerPath<State: StateNodeProtocol>(_ path: String, state: State) -> Bool {
-        // Extract field name from path (first segment after "/")
-        let pathComponents = path.split(separator: "/", omittingEmptySubsequences: true)
-        guard let fieldName = pathComponents.first.map(String.init) else {
-            return false
-        }
-        
-        // Check sync fields for non-broadcast policy
-        let syncFields = state.getSyncFields()
-        if let field = syncFields.first(where: { $0.name == fieldName }) {
-            return field.policyType != "broadcast" && field.policyType != "serverOnly"
-        }
-        
-        return false
     }
     
     // MARK: - Cache Management
@@ -749,4 +733,3 @@ public struct SyncEngine: Sendable {
         return container
     }
 }
-
