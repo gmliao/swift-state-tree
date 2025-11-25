@@ -41,7 +41,7 @@ func testDictionaryDirtyTracking() {
     print("\n🏷️  Dirty Fields: \(dirtyFields)")
     
     // Generate snapshot with dirty tracking
-    let snapshotWithDirty = try! syncEngine.snapshot(for: playerID, from: state, dirtyFields: dirtyFields)
+    let snapshotWithDirty = try! syncEngine.snapshot(for: playerID, from: state, mode: .dirtyTracking(dirtyFields))
     
     print("\n📊 Snapshot with Dirty Tracking:")
     print("  Keys: \(snapshotWithDirty.values.keys.sorted())")

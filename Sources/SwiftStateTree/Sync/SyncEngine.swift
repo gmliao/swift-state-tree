@@ -2,6 +2,31 @@
 
 import Foundation
 
+/// Snapshot generation mode for controlling which fields are included in the snapshot
+///
+/// This enum provides a type-safe way to specify snapshot generation behavior,
+/// making the API more expressive and easier to understand.
+public enum SnapshotMode: Sendable {
+    /// Include all fields (default, for late join scenarios)
+    case all
+    
+    /// Include only specified fields (for optimization)
+    case include(Set<String>)
+    
+    /// Include only dirty fields (for dirty tracking optimization)
+    case dirtyTracking(Set<String>)
+    
+    /// Get the field set for internal use
+    internal var fields: Set<String>? {
+        switch self {
+        case .all:
+            return nil
+        case .include(let fields), .dirtyTracking(let fields):
+            return fields
+        }
+    }
+}
+
 /// SyncEngine filters StateNode according to SyncPolicy and outputs StateSnapshot.
 ///
 /// ## Implementation Status
@@ -61,27 +86,23 @@ public struct SyncEngine: Sendable {
     ///
     /// **Note**: For simple use cases, you can call `state.snapshot(for: playerID)` directly.
     ///
-    /// **About `dirtyFields` parameter**: This parameter is primarily used internally by `generateDiff` for optimization.
-    /// In most cases, you should use `dirtyFields: nil` (default) to get a complete snapshot for late join scenarios.
-    /// If you need incremental updates, use `generateDiff(for:from:useDirtyTracking:)` instead.
-    ///
     /// - Parameters:
     ///   - playerID: The player ID to generate the snapshot for. If `nil`, only broadcast fields are included.
     ///   - state: The StateNode instance
-    ///   - dirtyFields: Optional set of dirty field names. If provided, only dirty fields are serialized.
-    ///     **Note**: This is mainly for internal optimization. Use `nil` (default) for complete snapshots.
+    ///   - mode: Snapshot generation mode. Default is `.all` for complete snapshots.
+    ///     - `.all`: Include all fields (default, for late join)
+    ///     - `.include(fields)`: Include only specified fields (for optimization)
+    ///     - `.dirtyTracking(fields)`: Include only dirty fields (for dirty tracking optimization)
     /// - Returns: A `StateSnapshot` containing filtered fields based on sync policies
     /// - Throws: `SyncError` if value conversion fails
     public func snapshot<State: StateNodeProtocol>(
         for playerID: PlayerID? = nil,
         from state: State,
-        dirtyFields: Set<String>? = nil
+        mode: SnapshotMode = .all
     ) throws -> StateSnapshot {
         // Delegate to the macro-generated snapshot method
         // This avoids runtime reflection and provides better performance
-        // If dirtyFields is provided, only dirty fields are serialized for optimization
-        // Note: This is primarily used internally by generateDiff for performance optimization
-        return try state.snapshot(for: playerID, dirtyFields: dirtyFields)
+        return try state.snapshot(for: playerID, dirtyFields: mode.fields)
     }
     
     /// Generate a full snapshot and merge into an existing container
@@ -93,15 +114,16 @@ public struct SyncEngine: Sendable {
     ///   - playerID: The player ID to generate the snapshot for. If `nil`, only broadcast fields are included.
     ///   - state: The StateNode instance
     ///   - into: Container to reuse for the snapshot. Values will be merged into this container.
+    ///   - mode: Snapshot generation mode. Default is `.all` for complete snapshots.
     /// - Returns: The same container with merged values
     /// - Throws: `SyncError` if value conversion fails
     public func snapshot<State: StateNodeProtocol>(
         for playerID: PlayerID?,
         from state: State,
         into container: inout StateSnapshot,
-        dirtyFields: Set<String>? = nil
+        mode: SnapshotMode = .all
     ) throws -> StateSnapshot {
-        let newSnapshot = try state.snapshot(for: playerID, dirtyFields: dirtyFields)
+        let newSnapshot = try state.snapshot(for: playerID, dirtyFields: mode.fields)
         container.merge(newSnapshot, overwrite: true)
         return container
     }
@@ -115,27 +137,26 @@ public struct SyncEngine: Sendable {
     ///
     /// **Default implementation**: Uses macro-generated method for optimal performance.
     ///
-    /// - Parameter dirtyFields: Optional set of dirty field names. If provided, only dirty fields are serialized.
+    /// - Parameter mode: Snapshot generation mode. Default is `.all` for complete snapshots.
     private func extractBroadcastSnapshot<State: StateNodeProtocol>(
         from state: State,
-        dirtyFields: Set<String>? = nil
+        mode: SnapshotMode = .all
     ) throws -> StateSnapshot {
         // Use macro-generated method to generate broadcast snapshot directly
         // This avoids runtime reflection (Mirror) and is much more efficient
-        // If dirtyFields is provided, only dirty fields are serialized for optimization
-        return try state.broadcastSnapshot(dirtyFields: dirtyFields)
+        return try state.broadcastSnapshot(dirtyFields: mode.fields)
     }
     
     /// Extract per-player fields snapshot (fields that differ per player)
     ///
-    /// - Parameter dirtyFields: Optional set of dirty field names. If provided, only dirty fields are serialized.
+    /// - Parameter mode: Snapshot generation mode. Default is `.all` for complete snapshots.
     private func extractPerPlayerSnapshot<State: StateNodeProtocol>(
         for playerID: PlayerID,
         from state: State,
-        dirtyFields: Set<String>? = nil
+        mode: SnapshotMode = .all
     ) throws -> StateSnapshot {
-        // Generate snapshot for the specific player (with dirty tracking if provided)
-        let fullSnapshot = try state.snapshot(for: playerID, dirtyFields: dirtyFields)
+        // Generate snapshot for the specific player (with mode if provided)
+        let fullSnapshot = try state.snapshot(for: playerID, dirtyFields: mode.fields)
         
         // Filter to only include non-broadcast fields (perPlayer, masked, custom)
         let syncFields = state.getSyncFields()
@@ -333,30 +354,30 @@ public struct SyncEngine: Sendable {
     private mutating func computeBroadcastDiff<State: StateNodeProtocol>(
         from state: State,
         onlyPaths: Set<String>?,
-        dirtyFields: Set<String>? = nil
+        mode: SnapshotMode = .all
     ) throws -> [StatePatch] {
-        // Generate current broadcast snapshot (only dirty fields if dirtyFields is provided)
-        let currentBroadcast = try extractBroadcastSnapshot(from: state, dirtyFields: dirtyFields)
+        // Generate current broadcast snapshot (using specified mode)
+        let currentBroadcast = try extractBroadcastSnapshot(from: state, mode: mode)
         
         // Check if we have cached broadcast snapshot
         guard let lastBroadcast = lastBroadcastSnapshot else {
             // First time: cache and return empty (first sync uses full snapshot)
-            // Note: On first sync, we always generate full snapshot (dirtyFields is ignored)
+            // Note: On first sync, we always generate full snapshot (mode is ignored)
             lastBroadcastSnapshot = currentBroadcast
             return []
         }
         
-        // Compare and generate patches (with dirty tracking if provided)
+        // Compare and generate patches (with mode if provided)
         let patches = compareSnapshots(
             from: lastBroadcast,
             to: currentBroadcast,
             onlyPaths: onlyPaths,
-            dirtyFields: dirtyFields
+            dirtyFields: mode.fields
         )
         
         // Update cache by merging dirty fields into existing cache
         // This avoids generating a full snapshot when using dirty tracking
-        if let dirtyFields = dirtyFields, !dirtyFields.isEmpty, var cachedSnapshot = lastBroadcastSnapshot {
+        if case .dirtyTracking(let dirtyFields) = mode, !dirtyFields.isEmpty, var cachedSnapshot = lastBroadcastSnapshot {
             // Merge only dirty fields into cached snapshot (more efficient than regenerating full snapshot)
             for (key, value) in currentBroadcast.values {
                 cachedSnapshot.values[key] = value
@@ -375,35 +396,35 @@ public struct SyncEngine: Sendable {
         for playerID: PlayerID,
         from state: State,
         onlyPaths: Set<String>?,
-        dirtyFields: Set<String>? = nil
+        mode: SnapshotMode = .all
     ) throws -> [StatePatch] {
         // If only broadcast fields are dirty, we can skip per-player diff when cache exists
-        if let dirtyFields = dirtyFields, dirtyFields.isEmpty, lastPerPlayerSnapshots[playerID] != nil {
+        if case .dirtyTracking(let dirtyFields) = mode, dirtyFields.isEmpty, lastPerPlayerSnapshots[playerID] != nil {
             return []
         }
         
-        // Generate current per-player snapshot (only dirty fields if dirtyFields is provided)
-        let currentPerPlayer = try extractPerPlayerSnapshot(for: playerID, from: state, dirtyFields: dirtyFields)
+        // Generate current per-player snapshot (using specified mode)
+        let currentPerPlayer = try extractPerPlayerSnapshot(for: playerID, from: state, mode: mode)
         
         // Check if we have cached per-player snapshot
         guard let lastPerPlayer = lastPerPlayerSnapshots[playerID] else {
             // First time: cache and return empty (first sync uses full snapshot)
-            // Note: On first sync, we always generate full snapshot (dirtyFields is ignored)
+            // Note: On first sync, we always generate full snapshot (mode is ignored)
             lastPerPlayerSnapshots[playerID] = currentPerPlayer
             return []
         }
         
-        // Compare and generate patches (with dirty tracking if provided)
+        // Compare and generate patches (with mode if provided)
         let patches = compareSnapshots(
             from: lastPerPlayer,
             to: currentPerPlayer,
             onlyPaths: onlyPaths,
-            dirtyFields: dirtyFields
+            dirtyFields: mode.fields
         )
         
         // Update cache by merging dirty fields into existing cache
         // This avoids generating a full snapshot when using dirty tracking
-        if let dirtyFields = dirtyFields, !dirtyFields.isEmpty, var cachedSnapshot = lastPerPlayerSnapshots[playerID] {
+        if case .dirtyTracking(let dirtyFields) = mode, !dirtyFields.isEmpty, var cachedSnapshot = lastPerPlayerSnapshots[playerID] {
             // Merge only dirty fields into cached snapshot (more efficient than regenerating full snapshot)
             for (key, value) in currentPerPlayer.values {
                 cachedSnapshot.values[key] = value
@@ -486,13 +507,32 @@ public struct SyncEngine: Sendable {
         // Note: broadcast cache may already exist (from other players), but perPlayer cache is per-player
         let isFirstSyncForPlayer = lastPerPlayerSnapshots[playerID] == nil
         
-        // Get dirty fields if dirty tracking is enabled
-        let dirtyFields: Set<String>? = useDirtyTracking && state.isDirty() ? state.getDirtyFields() : nil
+        // Get snapshot mode based on dirty tracking
+        let snapshotMode: SnapshotMode
+        if useDirtyTracking && state.isDirty() {
+            let dirtyFields = state.getDirtyFields()
+            snapshotMode = .dirtyTracking(dirtyFields)
+        } else {
+            snapshotMode = .all
+        }
+        
+        // Split dirty fields by policy type for optimization
         let syncFields = state.getSyncFields()
         let broadcastFieldNames = Set(syncFields.filter { $0.policyType == "broadcast" }.map { $0.name })
         let perPlayerFieldNames = Set(syncFields.filter { $0.policyType != "broadcast" && $0.policyType != "serverOnly" }.map { $0.name })
-        let dirtyFieldsForBroadcast = dirtyFields.map { $0.intersection(broadcastFieldNames) }
-        let dirtyFieldsForPerPlayer = dirtyFields.map { $0.intersection(perPlayerFieldNames) }
+        
+        // Create mode-specific filters for broadcast and per-player
+        let broadcastMode: SnapshotMode
+        let perPlayerMode: SnapshotMode
+        if case .dirtyTracking(let fields) = snapshotMode {
+            let broadcastFields = fields.intersection(broadcastFieldNames)
+            let perPlayerFields = fields.intersection(perPlayerFieldNames)
+            broadcastMode = broadcastFields.isEmpty ? .all : .dirtyTracking(broadcastFields)
+            perPlayerMode = perPlayerFields.isEmpty ? .all : .dirtyTracking(perPlayerFields)
+        } else {
+            broadcastMode = .all
+            perPlayerMode = .all
+        }
         
         // IMPORTANT: We must compute diffs BEFORE returning firstSync because:
         // 1. computeBroadcastDiff and computePerPlayerDiff populate the cache
@@ -509,7 +549,7 @@ public struct SyncEngine: Sendable {
                 }
                 return false
             },
-            dirtyFields: dirtyFieldsForBroadcast
+            mode: broadcastMode
         )
         
         // Compute per-player diff (individual for each player)
@@ -523,7 +563,7 @@ public struct SyncEngine: Sendable {
                 }
                 return false
             },
-            dirtyFields: dirtyFieldsForPerPlayer
+            mode: perPlayerMode
         )
         
         // Merge patches (per-player takes precedence)
@@ -580,13 +620,13 @@ public struct SyncEngine: Sendable {
         // Populate broadcast cache if not already populated
         // (may already exist from other players, but we ensure it's set)
         if lastBroadcastSnapshot == nil {
-            lastBroadcastSnapshot = try extractBroadcastSnapshot(from: state)
+            lastBroadcastSnapshot = try extractBroadcastSnapshot(from: state, mode: .all)
         }
         
         // Populate per-player cache for this player
         // (must be set for this specific player to establish baseline)
         if lastPerPlayerSnapshots[playerID] == nil {
-            lastPerPlayerSnapshots[playerID] = try extractPerPlayerSnapshot(for: playerID, from: state)
+            lastPerPlayerSnapshots[playerID] = try extractPerPlayerSnapshot(for: playerID, from: state, mode: .all)
         }
     }
     
@@ -635,7 +675,7 @@ public struct SyncEngine: Sendable {
         from state: State,
         into container: inout StateSnapshot
     ) throws -> StateSnapshot {
-        let newSnapshot = try state.snapshot(for: playerID, dirtyFields: nil)
+        let newSnapshot = try state.snapshot(for: playerID, dirtyFields: nil)  // Use .all mode for late join
         container.merge(newSnapshot, overwrite: true)
         
         // Populate cache so subsequent generateDiff calls can detect changes
