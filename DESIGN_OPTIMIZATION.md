@@ -21,6 +21,20 @@
 
 ---
 
+## 已完成的優化與量測結果（2024-XX-XX）
+
+- **Dirty Tracking 分流**：`generateDiff` 依 `getSyncFields()` 將 dirty 欄位拆成 broadcast/per-player，分別序列化並比較。dirty 為空時，per-player 路徑直接返回，避免無效序列化。
+- **序列化快路**：
+  - `SnapshotValue.make` 對 `SnapshotValue` / `StateSnapshot` 直接短路，繞過動態 cast。
+  - 增加常見字典快路（`[PlayerID: SnapshotValue]` / `[PlayerID: SnapshotValueConvertible]` / `[PlayerID: StateNodeProtocol]` / `[String: SnapshotValueConvertible]`）以避免 Mirror。
+  - benchmark 型別盡量使用 macro 產生的 typed 序列化，降低 Any/Mirror 負擔。
+- **實際效能（單核心、100 iterations，DiffBenchmarkRunner）：**
+  - Tiny (5 players, 3 cards)：標準 0.378ms → 優化 0.154ms，**2.45x**。
+  - Small (10 players, 5 cards)：標準 0.306ms → 優化 0.167ms，**1.83x**。
+  - Medium (100 players, 10 cards)：標準 1.768ms → 優化 0.935ms，**1.89x**。
+
+> 總體：單核心每秒可處理 ~1–6k 次 diff，視狀態大小而定。
+
 ## 1. isDirty 機制優化
 
 ### 目標
@@ -866,4 +880,3 @@ func benchmarkDiffGeneration() {
 2. **可選啟用**：優化功能應該可以選擇性啟用，讓開發者根據需求選擇
 3. **效能測試**：每個優化都應該有對應的基準測試
 4. **文檔更新**：實作優化後，應該更新相關文檔和範例
-

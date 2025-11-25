@@ -111,6 +111,14 @@ public extension SnapshotValue {
         if let dictValue = value as? [String: SnapshotValue] {
             return .object(dictValue)
         }
+        if let playerSnapshotDict = value as? [PlayerID: SnapshotValue] {
+            var object: [String: SnapshotValue] = [:]
+            object.reserveCapacity(playerSnapshotDict.count)
+            for (key, val) in playerSnapshotDict {
+                object[key.rawValue] = val
+            }
+            return .object(object)
+        }
         
         // Priority 4: Handle other common collection types directly
         if let stringArray = value as? [String] {
@@ -120,6 +128,31 @@ public extension SnapshotValue {
         if let intArray = value as? [Int] {
             let mapped = intArray.map { SnapshotValue.int($0) }
             return .array(mapped)
+        }
+        if let playerConvertibleDict = value as? [PlayerID: SnapshotValueConvertible] {
+            var object: [String: SnapshotValue] = [:]
+            object.reserveCapacity(playerConvertibleDict.count)
+            for (key, val) in playerConvertibleDict {
+                object[key.rawValue] = try val.toSnapshotValue()
+            }
+            return .object(object)
+        }
+        if let playerStateNodeDict = value as? [PlayerID: any StateNodeProtocol] {
+            var object: [String: SnapshotValue] = [:]
+            object.reserveCapacity(playerStateNodeDict.count)
+            for (key, val) in playerStateNodeDict {
+                let snapshot = try val.snapshot(for: playerID, dirtyFields: nil)
+                object[key.rawValue] = .object(snapshot.values)
+            }
+            return .object(object)
+        }
+        if let stringConvertibleDict = value as? [String: SnapshotValueConvertible] {
+            var object: [String: SnapshotValue] = [:]
+            object.reserveCapacity(stringConvertibleDict.count)
+            for (key, val) in stringConvertibleDict {
+                object[key] = try val.toSnapshotValue()
+            }
+            return .object(object)
         }
         if let dictStringAny = value as? [String: Any] {
             var object: [String: SnapshotValue] = [:]
