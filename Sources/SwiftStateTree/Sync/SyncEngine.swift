@@ -501,7 +501,7 @@ public struct SyncEngine: Sendable {
         for playerID: PlayerID,
         from state: State,
         onlyPaths: Set<String>? = nil,
-        useDirtyTracking: Bool = false
+        useDirtyTracking: Bool = true
     ) throws -> StateUpdate {
         // Check if this is the first sync for this specific player
         // Note: broadcast cache may already exist (from other players), but perPlayer cache is per-player
