@@ -108,7 +108,7 @@ func testStateNodeProtocolConformance() {
     let _: StateNodeProtocol = emptyState
     
     // If we can assign to StateNodeProtocol, conformance is verified
-    #expect(true, "Types conform to StateNodeProtocol")
+    #expect(Bool(true), "Types conform to StateNodeProtocol")
 }
 
 @Test("StateTree types are Sendable")

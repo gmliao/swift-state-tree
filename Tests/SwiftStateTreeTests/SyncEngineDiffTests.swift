@@ -375,7 +375,7 @@ func testOnlyPaths_FiltersToSpecifiedPaths() throws {
 func testEdgeCase_EmptySnapshots() throws {
     // Arrange
     var syncEngine = SyncEngine()
-    var state = DiffTestStateRootNode()
+    let state = DiffTestStateRootNode()
     let playerID = PlayerID("alice")
     
     // First sync (empty state)

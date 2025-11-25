@@ -253,8 +253,9 @@ public struct StateNodeBuilderMacro: MemberMacro {
             
             // Generate optimized conversion code based on type
             // value is Any? from filteredValue, so we need to cast it
+            // Explicitly cast to Any to avoid implicit coercion warnings
             // Pass playerID for recursive filtering support
-            let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: "value", isAnyType: true, playerID: "playerID")
+            let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: "value as Any", isAnyType: true, playerID: "playerID")
             if needsTry {
                 codeLines.append("    result[\"\(fieldName)\"] = try \(conversionCode)")
             } else {
@@ -304,7 +305,15 @@ public struct StateNodeBuilderMacro: MemberMacro {
             
             // For broadcast fields, we directly access wrappedValue without filtering
             // wrappedValue is the actual typed value, not Any?
-            let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: "self.\(storageName).wrappedValue", isAnyType: false)
+            // For optional types, explicitly cast to Any to avoid implicit coercion warnings
+            let valueExpression: String
+            if let typeName = property.typeName, (typeName.hasSuffix("?") || (typeName.hasPrefix("Optional<") && typeName.hasSuffix(">"))) {
+                // Optional type: explicitly cast to Any to avoid implicit coercion warnings
+                valueExpression = "self.\(storageName).wrappedValue as Any"
+            } else {
+                valueExpression = "self.\(storageName).wrappedValue"
+            }
+            let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: valueExpression, isAnyType: false)
             
             if needsTry {
                 // Complex types that may throw - use do-catch

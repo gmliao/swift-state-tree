@@ -21,7 +21,7 @@ struct SyncEngineMirrorVersionTests {
         )
         state.round = 1
         
-        var syncEngine = SyncEngine()
+        let syncEngine = SyncEngine()
         
         // Act - This should not crash with "Unsupported type: SyncPolicy<Dictionary<...>>"
         let snapshot = try syncEngine.extractBroadcastSnapshotMirrorVersion(from: state)
@@ -54,7 +54,7 @@ struct SyncEngineMirrorVersionTests {
         )
         state.round = 1
         
-        var syncEngine = SyncEngine()
+        let syncEngine = SyncEngine()
         
         // Act - This should not crash
         let snapshot = try syncEngine.extractBroadcastSnapshotMirrorVersion(from: state)
