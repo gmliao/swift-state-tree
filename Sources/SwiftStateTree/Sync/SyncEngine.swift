@@ -61,9 +61,15 @@ public struct SyncEngine: Sendable {
     ///
     /// **Note**: For simple use cases, you can call `state.snapshot(for: playerID)` directly.
     ///
+    /// **About `dirtyFields` parameter**: This parameter is primarily used internally by `generateDiff` for optimization.
+    /// In most cases, you should use `dirtyFields: nil` (default) to get a complete snapshot for late join scenarios.
+    /// If you need incremental updates, use `generateDiff(for:from:useDirtyTracking:)` instead.
+    ///
     /// - Parameters:
     ///   - playerID: The player ID to generate the snapshot for. If `nil`, only broadcast fields are included.
     ///   - state: The StateNode instance
+    ///   - dirtyFields: Optional set of dirty field names. If provided, only dirty fields are serialized.
+    ///     **Note**: This is mainly for internal optimization. Use `nil` (default) for complete snapshots.
     /// - Returns: A `StateSnapshot` containing filtered fields based on sync policies
     /// - Throws: `SyncError` if value conversion fails
     public func snapshot<State: StateNodeProtocol>(
@@ -74,6 +80,7 @@ public struct SyncEngine: Sendable {
         // Delegate to the macro-generated snapshot method
         // This avoids runtime reflection and provides better performance
         // If dirtyFields is provided, only dirty fields are serialized for optimization
+        // Note: This is primarily used internally by generateDiff for performance optimization
         return try state.snapshot(for: playerID, dirtyFields: dirtyFields)
     }
     
@@ -106,8 +113,7 @@ public struct SyncEngine: Sendable {
     /// This method directly accesses broadcast fields from the StateNode without needing
     /// a specific player ID, since broadcast fields are identical for all players.
     ///
-    /// **Default implementation**: Uses macro-generated method (microVersion) for optimal performance.
-    /// For benchmarking purposes, use `extractBroadcastSnapshotMirrorVersion` to compare with Mirror-based implementation.
+    /// **Default implementation**: Uses macro-generated method for optimal performance.
     ///
     /// - Parameter dirtyFields: Optional set of dirty field names. If provided, only dirty fields are serialized.
     private func extractBroadcastSnapshot<State: StateNodeProtocol>(
@@ -118,80 +124,6 @@ public struct SyncEngine: Sendable {
         // This avoids runtime reflection (Mirror) and is much more efficient
         // If dirtyFields is provided, only dirty fields are serialized for optimization
         return try state.broadcastSnapshot(dirtyFields: dirtyFields)
-    }
-    
-    /// Mirror-based implementation of extractBroadcastSnapshot (for benchmarking comparison)
-    ///
-    /// This method uses runtime reflection (Mirror) to extract broadcast fields.
-    /// It is kept for performance comparison purposes in benchmarks.
-    ///
-    /// **Note**: This is the old implementation before macro optimization.
-    /// The default `extractBroadcastSnapshot` uses macro-generated code which is much faster.
-    ///
-    /// - Parameter state: The StateNode instance
-    /// - Returns: A `StateSnapshot` containing only broadcast fields
-    public func extractBroadcastSnapshotMirrorVersion<State: StateNodeProtocol>(
-        from state: State
-    ) throws -> StateSnapshot {
-        // Get all sync fields and filter for broadcast policy
-        let syncFields = state.getSyncFields()
-        let broadcastFields = syncFields.filter { $0.policyType == "broadcast" }
-        
-        // Use reflection to access broadcast field values directly from StateNode
-        // For property wrappers, we need to extract wrappedValue
-        let mirror = Mirror(reflecting: state)
-        var broadcastValues: [String: SnapshotValue] = [:]
-        
-        for field in broadcastFields {
-            // Property wrapper fields may be stored with underscore prefix (_fieldName)
-            // or as the field name directly, depending on macro implementation
-            let possibleLabels = [field.name, "_\(field.name)"]
-            
-            for label in possibleLabels {
-                if let child = mirror.children.first(where: { $0.label == label }) {
-                    var value = child.value
-                    
-                    // Extract wrappedValue from property wrapper if needed
-                    // Sync<T> wraps the actual value, we need to unwrap it
-                    let valueMirror = Mirror(reflecting: value)
-                    let valueTypeName = String(describing: type(of: value))
-                    
-                    // Check if this is a Sync property wrapper
-                    // Sync struct has: policy (SyncPolicy<Value>) and _wrappedValue (Value)
-                    // We must find _wrappedValue, not policy
-                    if valueTypeName.contains("Sync<") || valueTypeName.hasPrefix("Sync<") {
-                        // This is a Sync property wrapper - find _wrappedValue explicitly
-                        if let wrappedChild = valueMirror.children.first(where: { $0.label == "_wrappedValue" }) {
-                            value = wrappedChild.value
-                        } else {
-                            // If _wrappedValue not found, this is an error
-                            throw SyncError.unsupportedValue(
-                                "Failed to extract _wrappedValue from Sync property wrapper. " +
-                                "Type: \(valueTypeName), available children: \(valueMirror.children.map { $0.label ?? "nil" })"
-                            )
-                        }
-                    } else if let wrappedChild = valueMirror.children.first(where: { $0.label == "wrappedValue" }) {
-                        // Fallback: try wrappedValue (for other property wrappers)
-                        value = wrappedChild.value
-                    } else if valueTypeName.contains("SyncPolicy") {
-                        // Error: we got the policy instead of the value
-                        throw SyncError.unsupportedValue(
-                            "Unexpectedly got SyncPolicy instead of wrappedValue from property wrapper. " +
-                            "This indicates a bug in property wrapper extraction. Type: \(valueTypeName)"
-                        )
-                    }
-                    // If none of the above, value is already the unwrapped value (not a property wrapper)
-                    
-                    // Convert value to SnapshotValue
-                    // For broadcast fields, we directly use the raw value without player filtering
-                    let snapshotValue = try SnapshotValue.make(from: value)
-                    broadcastValues[field.name] = snapshotValue
-                    break // Found and processed, move to next field
-                }
-            }
-        }
-        
-        return StateSnapshot(values: broadcastValues)
     }
     
     /// Extract per-player fields snapshot (fields that differ per player)
@@ -530,29 +462,8 @@ public struct SyncEngine: Sendable {
     ///
     /// See [DESIGN_SYNC_FIRSTSYNC.md](../../../DESIGN_SYNC_FIRSTSYNC.md) for detailed design documentation.
     ///
-    /// - Parameters:
-    ///   - playerID: The player ID to generate the diff for
-    ///   - state: The current StateNode instance
-    ///   - onlyPaths: Optional set of paths to limit the diff calculation to (for optimization)
-    /// - Returns: A `StateUpdate` containing either no changes, first sync signal, or a list of patches
-    /// - Throws: `SyncError` if value conversion fails
-    public mutating func generateDiff<State: StateNodeProtocol>(
-        for playerID: PlayerID,
-        from state: State,
-        onlyPaths: Set<String>? = nil
-    ) throws -> StateUpdate {
-        try generateDiff(
-            for: playerID,
-            from: state,
-            onlyPaths: onlyPaths,
-            useDirtyTracking: false
-        )
-    }
-    
-    /// Generate a diff update for a specific player (with dirty tracking optimization)
-    ///
-    /// This is an optimized version that uses dirty tracking to reduce computation.
-    /// Only dirty fields are compared, reducing serialization and comparison overhead.
+    /// **Performance Optimization**: When `useDirtyTracking` is `true`, only dirty fields are compared,
+    /// reducing serialization and comparison overhead. This is recommended for production use.
     ///
     /// **Important**: When using dirty tracking, the comparison logic considers dirty fields to avoid
     /// false positives (e.g., a field present in old snapshot but absent in new snapshot is only
@@ -569,7 +480,7 @@ public struct SyncEngine: Sendable {
         for playerID: PlayerID,
         from state: State,
         onlyPaths: Set<String>? = nil,
-        useDirtyTracking: Bool
+        useDirtyTracking: Bool = false
     ) throws -> StateUpdate {
         // Check if this is the first sync for this specific player
         // Note: broadcast cache may already exist (from other players), but perPlayer cache is per-player
@@ -731,5 +642,84 @@ public struct SyncEngine: Sendable {
         try populateCacheIfNeeded(for: playerID, from: state)
         
         return container
+    }
+}
+
+// MARK: - Benchmark/Testing Extensions
+
+extension SyncEngine {
+    /// Mirror-based implementation of extractBroadcastSnapshot (for benchmarking comparison)
+    ///
+    /// This method uses runtime reflection (Mirror) to extract broadcast fields.
+    /// It is kept for performance comparison purposes in benchmarks and tests.
+    ///
+    /// **Note**: This is the old implementation before macro optimization.
+    /// The default `extractBroadcastSnapshot` uses macro-generated code which is much faster.
+    /// This method should only be used for performance comparison, not in production code.
+    ///
+    /// - Parameter state: The StateNode instance
+    /// - Returns: A `StateSnapshot` containing only broadcast fields
+    public func extractBroadcastSnapshotMirrorVersion<State: StateNodeProtocol>(
+        from state: State
+    ) throws -> StateSnapshot {
+        // Get all sync fields and filter for broadcast policy
+        let syncFields = state.getSyncFields()
+        let broadcastFields = syncFields.filter { $0.policyType == "broadcast" }
+        
+        // Use reflection to access broadcast field values directly from StateNode
+        // For property wrappers, we need to extract wrappedValue
+        let mirror = Mirror(reflecting: state)
+        var broadcastValues: [String: SnapshotValue] = [:]
+        
+        for field in broadcastFields {
+            // Property wrapper fields may be stored with underscore prefix (_fieldName)
+            // or as the field name directly, depending on macro implementation
+            let possibleLabels = [field.name, "_\(field.name)"]
+            
+            for label in possibleLabels {
+                if let child = mirror.children.first(where: { $0.label == label }) {
+                    var value = child.value
+                    
+                    // Extract wrappedValue from property wrapper if needed
+                    // Sync<T> wraps the actual value, we need to unwrap it
+                    let valueMirror = Mirror(reflecting: value)
+                    let valueTypeName = String(describing: type(of: value))
+                    
+                    // Check if this is a Sync property wrapper
+                    // Sync struct has: policy (SyncPolicy<Value>) and _wrappedValue (Value)
+                    // We must find _wrappedValue, not policy
+                    if valueTypeName.contains("Sync<") || valueTypeName.hasPrefix("Sync<") {
+                        // This is a Sync property wrapper - find _wrappedValue explicitly
+                        if let wrappedChild = valueMirror.children.first(where: { $0.label == "_wrappedValue" }) {
+                            value = wrappedChild.value
+                        } else {
+                            // If _wrappedValue not found, this is an error
+                            throw SyncError.unsupportedValue(
+                                "Failed to extract _wrappedValue from Sync property wrapper. " +
+                                "Type: \(valueTypeName), available children: \(valueMirror.children.map { $0.label ?? "nil" })"
+                            )
+                        }
+                    } else if let wrappedChild = valueMirror.children.first(where: { $0.label == "wrappedValue" }) {
+                        // Fallback: try wrappedValue (for other property wrappers)
+                        value = wrappedChild.value
+                    } else if valueTypeName.contains("SyncPolicy") {
+                        // Error: we got the policy instead of the value
+                        throw SyncError.unsupportedValue(
+                            "Unexpectedly got SyncPolicy instead of wrappedValue from property wrapper. " +
+                            "This indicates a bug in property wrapper extraction. Type: \(valueTypeName)"
+                        )
+                    }
+                    // If none of the above, value is already the unwrapped value (not a property wrapper)
+                    
+                    // Convert value to SnapshotValue
+                    // For broadcast fields, we directly use the raw value without player filtering
+                    let snapshotValue = try SnapshotValue.make(from: value)
+                    broadcastValues[field.name] = snapshotValue
+                    break // Found and processed, move to next field
+                }
+            }
+        }
+        
+        return StateSnapshot(values: broadcastValues)
     }
 }
