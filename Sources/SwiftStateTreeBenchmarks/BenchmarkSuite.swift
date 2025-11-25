@@ -15,7 +15,19 @@ struct BenchmarkSuite: @unchecked Sendable {
         var results: [BenchmarkResult] = []
         
         for (index, config) in configurations.enumerated() {
-            print("\n[\(index + 1)/\(configurations.count)] Running: \(config.description)")
+            // For DiffBenchmarkRunner, use actual iterations (100) instead of config.iterations
+            let displayConfig: BenchmarkConfig
+            if runner is DiffBenchmarkRunner {
+                displayConfig = BenchmarkConfig(
+                    name: config.name,
+                    playerCount: config.playerCount,
+                    cardsPerPlayer: config.cardsPerPlayer,
+                    iterations: 100  // DiffBenchmarkRunner uses fixed 100 iterations
+                )
+            } else {
+                displayConfig = config
+            }
+            print("\n[\(index + 1)/\(configurations.count)] Running: \(displayConfig.description)")
             print("  Generating test state...", terminator: "")
             
             let state = generateTestState(

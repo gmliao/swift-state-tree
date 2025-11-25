@@ -85,7 +85,7 @@ public extension SnapshotValue {
         // This must be checked before SnapshotValueConvertible to enable recursive @Sync policy filtering
         if let stateNode = value as? any StateNodeProtocol {
             // Recursively apply @Sync policies by calling snapshot(for:)
-            let snapshot = try stateNode.snapshot(for: playerID)
+            let snapshot = try stateNode.snapshot(for: playerID, dirtyFields: nil)
             // Convert StateSnapshot to SnapshotValue.object
             return .object(snapshot.values)
         }

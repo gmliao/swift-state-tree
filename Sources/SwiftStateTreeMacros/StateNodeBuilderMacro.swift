@@ -228,6 +228,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
     }
     
     /// Generate snapshot(for:) method
+    /// If dirtyFields is provided, only dirty fields are serialized for optimization
     private static func generateSnapshotMethod(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> FunctionDeclSyntax {
         let syncProperties = propertiesWithNodes.filter { $0.0.hasSync }
         
@@ -249,7 +250,10 @@ public struct StateNodeBuilderMacro: MemberMacro {
             // Property wrapper storage name (Swift automatically creates _propertyName for @Sync)
             let storageName = "_\(propertyName)"
             
-            codeLines.append("if let value = self.\(storageName).policy.filteredValue(self.\(storageName).wrappedValue, for: playerID) {")
+            // Check if field should be included (either no dirtyFields filter, or field is dirty)
+            codeLines.append("// Include \(fieldName) if no dirtyFields filter or if field is dirty")
+            codeLines.append("if dirtyFields == nil || dirtyFields?.contains(\"\(fieldName)\") == true {")
+            codeLines.append("    if let value = self.\(storageName).policy.filteredValue(self.\(storageName).wrappedValue, for: playerID) {")
             
             // Generate optimized conversion code based on type
             // value is Any? from filteredValue, so we need to cast it
@@ -257,10 +261,11 @@ public struct StateNodeBuilderMacro: MemberMacro {
             // Pass playerID for recursive filtering support
             let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: "value as Any", isAnyType: true, playerID: "playerID")
             if needsTry {
-                codeLines.append("    result[\"\(fieldName)\"] = try \(conversionCode)")
+                codeLines.append("        result[\"\(fieldName)\"] = try \(conversionCode)")
             } else {
-                codeLines.append("    result[\"\(fieldName)\"] = \(conversionCode)")
+                codeLines.append("        result[\"\(fieldName)\"] = \(conversionCode)")
             }
+            codeLines.append("    }")
             codeLines.append("}")
             codeLines.append("")
         }
@@ -271,7 +276,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
         
         return try FunctionDeclSyntax(
             """
-            public func snapshot(for playerID: PlayerID?) throws -> StateSnapshot {
+            public func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>? = nil) throws -> StateSnapshot {
                 \(raw: body)
             }
             """
@@ -280,6 +285,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
     
     /// Generate broadcastSnapshot() method
     /// This method generates a snapshot containing only broadcast fields, avoiding runtime reflection
+    /// If dirtyFields is provided, only dirty fields are serialized for optimization
     private static func generateBroadcastSnapshotMethod(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> FunctionDeclSyntax {
         let syncProperties = propertiesWithNodes.filter { $0.0.hasSync }
         let broadcastProperties = syncProperties.filter { property, _ in
@@ -303,6 +309,10 @@ public struct StateNodeBuilderMacro: MemberMacro {
             let fieldName = propertyName
             let storageName = "_\(propertyName)"
             
+            // Check if field should be included (either no dirtyFields filter, or field is dirty)
+            codeLines.append("// Include \(fieldName) if no dirtyFields filter or if field is dirty")
+            codeLines.append("if dirtyFields == nil || dirtyFields?.contains(\"\(fieldName)\") == true {")
+            
             // For broadcast fields, we directly access wrappedValue without filtering
             // wrappedValue is the actual typed value, not Any?
             // For optional types, explicitly cast to Any to avoid implicit coercion warnings
@@ -317,15 +327,16 @@ public struct StateNodeBuilderMacro: MemberMacro {
             
             if needsTry {
                 // Complex types that may throw - use do-catch
-                codeLines.append("do {")
-                codeLines.append("    result[\"\(fieldName)\"] = try \(conversionCode)")
-                codeLines.append("} catch {")
-                codeLines.append("    throw error")
-                codeLines.append("}")
+                codeLines.append("    do {")
+                codeLines.append("        result[\"\(fieldName)\"] = try \(conversionCode)")
+                codeLines.append("    } catch {")
+                codeLines.append("        throw error")
+                codeLines.append("    }")
             } else {
                 // Basic types that don't throw - no do-catch needed
-                codeLines.append("result[\"\(fieldName)\"] = \(conversionCode)")
+                codeLines.append("    result[\"\(fieldName)\"] = \(conversionCode)")
             }
+            codeLines.append("}")
             codeLines.append("")
         }
         
@@ -335,7 +346,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
         
         return try FunctionDeclSyntax(
             """
-            public func broadcastSnapshot() throws -> StateSnapshot {
+            public func broadcastSnapshot(dirtyFields: Set<String>? = nil) throws -> StateSnapshot {
                 \(raw: body)
             }
             """

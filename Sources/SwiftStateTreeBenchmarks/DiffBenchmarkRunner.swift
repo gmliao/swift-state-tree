@@ -9,17 +9,21 @@ import SwiftStateTree
 /// - Standard diff (useDirtyTracking=false): Compares full snapshots to detect changes
 /// - Optimized diff (useDirtyTracking=true): Uses dirty tracking to only check changed fields
 struct DiffBenchmarkRunner: BenchmarkRunner {
-    let iterations: Int
-    
-    init(iterations: Int = 100) {
-        self.iterations = iterations
-    }
-    
     func run(
         config: BenchmarkConfig,
         state: BenchmarkStateRootNode,
         playerID: PlayerID
     ) async -> BenchmarkResult {
+        let iterations = 100  // Use fixed iterations for diff comparison (warmup + measurement)
+        
+        // Update description to reflect actual iterations
+        let actualConfig = BenchmarkConfig(
+            name: config.name,
+            playerCount: config.playerCount,
+            cardsPerPlayer: config.cardsPerPlayer,
+            iterations: iterations
+        )
+        
         // Create a modified state for diff calculation
         // Simulate real game scenario: only modify a few fields per operation
         var modifiedState = state
@@ -38,20 +42,25 @@ struct DiffBenchmarkRunner: BenchmarkRunner {
         // Benchmark standard diff (useDirtyTracking = false)
         print("  Warming up (standard diff)...", terminator: "")
         var standardSyncEngine = SyncEngine()
+        // Establish baseline (first sync)
         _ = try? standardSyncEngine.generateDiff(for: playerID, from: state)
         print(" ✓")
         
         print("  Running \(iterations) iterations for standard diff (no dirty tracking)...", terminator: "")
         var standardTimes: [TimeInterval] = []
+        // For each iteration, create a fresh modified state to test diff generation
         for i in 0..<iterations {
-            // Reset cache for each iteration to get consistent results
-            if i > 0 {
-                standardSyncEngine = SyncEngine()
-                _ = try? standardSyncEngine.generateDiff(for: playerID, from: state)
+            var iterState = state
+            iterState.round = 2 + i  // Change round to ensure diff is generated
+            
+            if var playerNode = iterState.playerNodes[playerID] {
+                playerNode.hpCurrent = 90 - i  // Change hpCurrent
+                playerNode.lastAction = "attacked_\(i)"  // Change lastAction
+                iterState.playerNodes[playerID] = playerNode
             }
             
             let time = try! measureTime {
-                _ = try standardSyncEngine.generateDiff(for: playerID, from: modifiedState, useDirtyTracking: false)
+                _ = try standardSyncEngine.generateDiff(for: playerID, from: iterState, useDirtyTracking: false)
             }
             standardTimes.append(time)
             
@@ -64,33 +73,25 @@ struct DiffBenchmarkRunner: BenchmarkRunner {
         // Benchmark optimized diff (useDirtyTracking = true)
         print("  Warming up (optimized diff)...", terminator: "")
         var optimizedSyncEngine = SyncEngine()
+        // Establish baseline (first sync)
         _ = try? optimizedSyncEngine.generateDiff(for: playerID, from: state)
-        var optimizedState = modifiedState
-        optimizedState.clearDirty() // Clear dirty state before benchmark
         print(" ✓")
         
         print("  Running \(iterations) iterations for optimized diff (with dirty tracking)...", terminator: "")
         var optimizedTimes: [TimeInterval] = []
+        // For each iteration, create a fresh modified state with dirty flags set
         for i in 0..<iterations {
-            // Reset cache and state for each iteration to get consistent results
-            if i > 0 {
-                optimizedSyncEngine = SyncEngine()
-                _ = try? optimizedSyncEngine.generateDiff(for: playerID, from: state)
-                optimizedState = modifiedState
-                optimizedState.clearDirty()
-            }
+            var iterState = state
+            iterState.round = 2 + i  // Change round (automatically marked as dirty)
             
-            // Mark as dirty before generating diff (same modifications as standard diff)
-            optimizedState.round = 2
-            
-            if var playerNode = optimizedState.playerNodes[playerID] {
-                playerNode.hpCurrent = 90
-                playerNode.lastAction = "attacked"
-                optimizedState.playerNodes[playerID] = playerNode
+            if var playerNode = iterState.playerNodes[playerID] {
+                playerNode.hpCurrent = 90 - i  // Change hpCurrent (automatically marked as dirty)
+                playerNode.lastAction = "attacked_\(i)"  // Change lastAction (automatically marked as dirty)
+                iterState.playerNodes[playerID] = playerNode
             }
             
             let time = try! measureTime {
-                _ = try optimizedSyncEngine.generateDiff(for: playerID, from: optimizedState, useDirtyTracking: true)
+                _ = try optimizedSyncEngine.generateDiff(for: playerID, from: iterState, useDirtyTracking: true)
             }
             optimizedTimes.append(time)
             
@@ -122,7 +123,7 @@ struct DiffBenchmarkRunner: BenchmarkRunner {
         
         // Return result using optimized diff (as it's the recommended approach)
         return BenchmarkResult(
-            config: config,
+            config: actualConfig,
             averageTime: optimizedAverage,
             minTime: optimizedTimes.min() ?? 0,
             maxTime: optimizedTimes.max() ?? 0,

@@ -71,7 +71,7 @@ struct BenchmarkSuites {
             BenchmarkSuiteConfig(
                 type: .diff,
                 name: "Standard vs Optimized Diff Comparison",
-                runner: DiffBenchmarkRunner(iterations: 100),
+                runner: DiffBenchmarkRunner(),
                 configurations: [
                     BenchmarkConfigurations.standard[0],  // Tiny State
                     BenchmarkConfigurations.standard[1],  // Small State
