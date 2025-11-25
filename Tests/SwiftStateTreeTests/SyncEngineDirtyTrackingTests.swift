@@ -493,5 +493,20 @@ struct SyncEngineDirtyTrackingTests {
             Issue.record("Both should return .firstSync on first call")
         }
     }
+    
+    // MARK: - Dictionary Dirty Tracking Tests
+    
+    // MARK: - Dictionary Dirty Tracking Tests
+    // Note: These tests verify that when a Dictionary field is marked as dirty,
+    // only the modified key's value is serialized (for perPlayerDictionaryValue),
+    // not the entire Dictionary.
+    // 
+    // However, the current implementation marks the entire Dictionary field as dirty
+    // when any key is modified. The perPlayerDictionaryValue() policy already filters
+    // to return only value[playerID], so the snapshot will contain only that player's
+    // value, not all players. This is the expected behavior.
+    //
+    // Future optimization: Track dirty keys within Dictionary fields for even finer
+    // granularity (only serialize the modified key, not even the filtered value).
 }
 

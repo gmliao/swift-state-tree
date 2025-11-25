@@ -73,6 +73,38 @@ swift run SwiftStateTreeBenchmarks single parallel
 swift run SwiftStateTreeBenchmarks diff mirror
 ```
 
+### Diff Benchmark 環境變數控制
+
+`DiffBenchmarkRunner` 支援透過環境變數 `DIFF_BENCHMARK_MODE` 來選擇要執行的測試模式：
+
+```bash
+# 只測試標準 diff (useDirtyTracking = false)
+DIFF_BENCHMARK_MODE=standard swift run SwiftStateTreeBenchmarks diff
+
+# 只測試優化 diff (useDirtyTracking = true) - 適合 Instruments 測試
+DIFF_BENCHMARK_MODE=optimized swift run SwiftStateTreeBenchmarks diff
+
+# 測試兩者並比較（預設）
+DIFF_BENCHMARK_MODE=both swift run SwiftStateTreeBenchmarks diff
+# 或直接
+swift run SwiftStateTreeBenchmarks diff
+```
+
+**使用場景**：
+- `standard`：只測試標準 diff 效能，適合單獨分析標準實作
+- `optimized`：只測試優化 diff 效能，適合在 Instruments 中進行效能分析
+- `both`：同時測試兩者並比較，適合驗證優化效果
+
+**在 Instruments 中使用**：
+1. 在 Xcode 中選擇 Scheme：`SwiftStateTreeBenchmarks`
+2. 選擇 Scheme → Edit Scheme... → Run → Arguments
+3. 在 Environment Variables 中添加：
+   - Name: `DIFF_BENCHMARK_MODE`
+   - Value: `optimized`（或 `standard`）
+4. 在 Xcode 中選擇 Product → Profile（或按 `Cmd + I`）
+5. 選擇要使用的 Instrument（例如 Time Profiler）
+6. 點擊 Record 開始測試
+
 ### 顯示幫助
 
 ```bash
