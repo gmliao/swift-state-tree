@@ -150,12 +150,12 @@ public struct StateNodeBuilderMacro: MemberMacro {
         // Look for the first argument (the policy)
         if let firstArg = argument.first {
             // Try to extract the policy type from the argument
-            // Examples: .broadcast, .serverOnly, .perPlayerDictionaryValue()
+            // Examples: .broadcast, .serverOnly, .perPlayerSlice()
             if let memberAccess = firstArg.expression.as(MemberAccessExprSyntax.self) {
                 return memberAccess.declName.baseName.text
             }
             
-            // Handle function calls like .perPlayerDictionaryValue()
+            // Handle function calls like .perPlayerSlice()
             if let functionCall = firstArg.expression.as(FunctionCallExprSyntax.self) {
                 if let memberAccess = functionCall.calledExpression.as(MemberAccessExprSyntax.self) {
                     return memberAccess.declName.baseName.text

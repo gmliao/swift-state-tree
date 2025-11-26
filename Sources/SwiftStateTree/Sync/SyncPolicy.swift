@@ -3,12 +3,38 @@
 import Foundation
 
 /// Represents the synchronization policy for a field.
+///
+/// **Policy Types Overview**:
+/// - `.serverOnly`: Field is not synced to clients (returns `nil`)
+/// - `.broadcast`: Field is synced to all clients with the same value (returns `Value` as-is)
+/// - `.perPlayer`: Field is filtered per player (returns `Value?`, same type, can be different for each player)
+/// - `.masked`: Field is masked for all players (returns `Value`, same type, same value for all)
+/// - `.custom`: Fully custom filtering logic (returns `Value?`, same type, can be different for each player)
 public enum SyncPolicy<Value: Sendable>: Sendable {
+    /// Field is not synced to clients
     case serverOnly
+    
+    /// Field is synced to all clients with the same value
     case broadcast
-    case perPlayer(@Sendable (Value, PlayerID) -> Any?)
-    case masked(@Sendable (Value) -> Any)
-    case custom(@Sendable (PlayerID, Value) -> Any?)
+    
+    /// Field is filtered per player based on playerID
+    /// - Parameter: `(Value, PlayerID)` - The field value and the player ID
+    /// - Returns: `Value?` - The filtered value for this player (same type), or `nil` to hide the field
+    /// - Note: Must return the same type as input to ensure type safety in macro-generated code
+    case perPlayer(@Sendable (Value, PlayerID) -> Value?)
+    
+    /// Field is masked for all players (same masked value for everyone)
+    /// - Parameter: `Value` - The field value
+    /// - Returns: `Value` - The masked value (MUST be the same type as input)
+    /// - Note: Must return the same type to ensure type safety in macro-generated code
+    ///   If you need to return a different type, use `.custom` instead
+    case masked(@Sendable (Value) -> Value)
+    
+    /// Fully custom filtering logic with playerID and value
+    /// - Parameter: `(PlayerID, Value)` - The player ID and the field value (note: order differs from `.perPlayer`)
+    /// - Returns: `Value?` - The filtered value for this player (same type), or `nil` to hide the field
+    /// - Note: Must return the same type as input to ensure type safety in macro-generated code
+    case custom(@Sendable (PlayerID, Value) -> Value?)
 
     public func filteredValue(_ value: Value, for playerID: PlayerID) -> Any? {
         switch self {
@@ -41,10 +67,21 @@ public enum SyncPolicy<Value: Sendable>: Sendable {
 }
 
 public extension SyncPolicy {
-    /// Convenience method for handling dictionaries keyed by PlayerID, only syncing the value for that player.
-    static func perPlayerDictionaryValue<Element>() -> SyncPolicy<[PlayerID: Element]> {
+    /// Convenience method for handling dictionaries keyed by PlayerID, only syncing the slice for that player.
+    /// 
+    /// **Semantics**: Returns a dictionary containing only the current player's key-value pair.
+    /// The snapshot structure matches the server structure (both are dictionaries), but only contains
+    /// the current player's entry.
+    /// 
+    /// **Usage**: When used with `[PlayerID: Element]`, the snapshot will contain a dictionary
+    /// with only the current player's key: `{"playerID": element}` or the field will be absent if the player has no value.
+    static func perPlayerSlice<Element>() -> SyncPolicy<[PlayerID: Element]> {
         .perPlayer { value, playerID in
-            value[playerID]
+            // Return a dictionary slice containing only this player's key-value pair
+            if let element = value[playerID] {
+                return [playerID: element]  // Return a dictionary with only this player's value
+            }
+            return nil
         }
     }
 }

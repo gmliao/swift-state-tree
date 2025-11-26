@@ -138,6 +138,7 @@ public extension SnapshotValue {
             return .object(object)
         }
         if let playerStateNodeDict = value as? [PlayerID: any StateNodeProtocol] {
+            // Process all StateNodes in the dictionary (including single-element dictionaries from perPlayerSlice)
             var object: [String: SnapshotValue] = [:]
             object.reserveCapacity(playerStateNodeDict.count)
             for (key, val) in playerStateNodeDict {
@@ -163,6 +164,8 @@ public extension SnapshotValue {
             return .object(object)
         }
         if let playerIDDict = value as? [PlayerID: Any] {
+            // Treat as a normal dictionary (including single-element dictionaries from perPlayerSlice)
+            // The structure is consistent: server and client both see dictionary structure
             var object: [String: SnapshotValue] = [:]
             object.reserveCapacity(playerIDDict.count)
             for (key, val) in playerIDDict {

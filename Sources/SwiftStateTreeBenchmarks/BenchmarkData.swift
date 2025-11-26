@@ -59,10 +59,10 @@ struct BenchmarkStateRootNode: StateNodeProtocol {
     @Sync(.broadcast)
     var players: [PlayerID: BenchmarkPlayerState] = [:]
     
-    @Sync(.perPlayerDictionaryValue())
+    @Sync(.perPlayerSlice())
     var playerNodes: [PlayerID: BenchmarkPlayerStateNode] = [:]
     
-    @Sync(.perPlayerDictionaryValue())
+    @Sync(.perPlayerSlice())
     var hands: [PlayerID: BenchmarkHandState] = [:]
     
     @Sync(.serverOnly)
@@ -83,7 +83,7 @@ struct BenchmarkStateRootNode: StateNodeProtocol {
     @Sync(.broadcast)
     var timestamp: Int64 = 0
     
-    @Sync(.perPlayerDictionaryValue())
+    @Sync(.perPlayerSlice())
     var playerScores: [PlayerID: Int] = [:]
     
     @Sync(.broadcast)

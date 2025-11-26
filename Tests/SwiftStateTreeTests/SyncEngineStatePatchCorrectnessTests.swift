@@ -456,13 +456,13 @@ struct SyncEngineStatePatchCorrectnessTests {
         let playerID = PlayerID("alice")
         
         state.round = 42
-        _ = try syncEngine.generateDiff(for: playerID, from: state)
+        _ = try syncEngine.generateDiff(for: playerID, from: state, useDirtyTracking: false)
         state.clearDirty()
         
         // Act - Set to same value (should not generate patch)
         state.round = 42
         
-        let update = try syncEngine.generateDiff(for: playerID, from: state)
+        let update = try syncEngine.generateDiff(for: playerID, from: state, useDirtyTracking: false)
         
         // Assert - Should return noChange, not generate unnecessary patch
         #expect(update == .noChange, "Same value should return .noChange, not generate patch")
@@ -477,14 +477,14 @@ struct SyncEngineStatePatchCorrectnessTests {
         
         state.round = 1
         state.players[playerID] = "Alice"
-        _ = try syncEngine.generateDiff(for: playerID, from: state)
+        _ = try syncEngine.generateDiff(for: playerID, from: state, useDirtyTracking: false)
         state.clearDirty()
         
         // Act - Only change one field, leave others unchanged
         state.round = 2
         // players[playerID] remains "Alice" (unchanged)
         
-        let update = try syncEngine.generateDiff(for: playerID, from: state)
+        let update = try syncEngine.generateDiff(for: playerID, from: state, useDirtyTracking: false)
         
         // Assert - Should only have patch for round, not for unchanged players field
         if case .diff(let patches) = update {
@@ -515,12 +515,8 @@ struct SyncEngineStatePatchCorrectnessTests {
         state.round = 2
         // Note: In practice, @Sync setter marks dirty, but we test the behavior
         
-        // Use dirty tracking - only round should be in dirtyFields
-        let update = try syncEngine.generateDiff(
-            for: playerID,
-            from: state,
-            useDirtyTracking: true
-        )
+        // Use default dirty tracking (useDirtyTracking: true) - only round should be in dirtyFields
+        let update = try syncEngine.generateDiff(for: playerID, from: state)
         
         // Assert - Should only have patch for round (dirty field), not for players (not dirty)
         if case .diff(let patches) = update {
@@ -545,12 +541,12 @@ struct SyncEngineStatePatchCorrectnessTests {
         let playerID = PlayerID("alice")
         
         state.round = 1
-        _ = try syncEngine.generateDiff(for: playerID, from: state)
+        _ = try syncEngine.generateDiff(for: playerID, from: state, useDirtyTracking: false)
         state.clearDirty()
         
         // Act - No changes at all
         
-        let update = try syncEngine.generateDiff(for: playerID, from: state)
+        let update = try syncEngine.generateDiff(for: playerID, from: state, useDirtyTracking: false)
         
         // Assert - Should return .noChange, not .diff([])
         #expect(update == .noChange, "No changes should return .noChange, not empty patches")
@@ -569,13 +565,13 @@ struct SyncEngineStatePatchCorrectnessTests {
         let playerID = PlayerID("alice")
         
         state.hands[playerID] = ["card1", "card2"]
-        _ = try syncEngine.generateDiff(for: playerID, from: state)
+        _ = try syncEngine.generateDiff(for: playerID, from: state, useDirtyTracking: false)
         state.clearDirty()
         
         // Act - Set to identical array
         state.hands[playerID] = ["card1", "card2"]
         
-        let update = try syncEngine.generateDiff(for: playerID, from: state)
+        let update = try syncEngine.generateDiff(for: playerID, from: state, useDirtyTracking: false)
         
         // Assert - Should return noChange
         #expect(update == .noChange, "Identical array should return .noChange")
@@ -589,13 +585,13 @@ struct SyncEngineStatePatchCorrectnessTests {
         let playerID = PlayerID("alice")
         
         state.players[playerID] = "Alice"
-        _ = try syncEngine.generateDiff(for: playerID, from: state)
+        _ = try syncEngine.generateDiff(for: playerID, from: state, useDirtyTracking: false)
         state.clearDirty()
         
         // Act - Set to identical value
         state.players[playerID] = "Alice"
         
-        let update = try syncEngine.generateDiff(for: playerID, from: state)
+        let update = try syncEngine.generateDiff(for: playerID, from: state, useDirtyTracking: false)
         
         // Assert - Should return noChange
         #expect(update == .noChange, "Identical dictionary value should return .noChange")
@@ -611,14 +607,14 @@ struct SyncEngineStatePatchCorrectnessTests {
         state.round = 1
         state.players[playerID] = "Alice"
         state.hands[playerID] = ["card1"]
-        _ = try syncEngine.generateDiff(for: playerID, from: state)
+        _ = try syncEngine.generateDiff(for: playerID, from: state, useDirtyTracking: false)
         state.clearDirty()
         
         // Act - Only change round, leave others unchanged
         state.round = 2
         // players and hands remain unchanged
         
-        let update = try syncEngine.generateDiff(for: playerID, from: state)
+        let update = try syncEngine.generateDiff(for: playerID, from: state, useDirtyTracking: false)
         
         // Assert - Should only have patch for round
         if case .diff(let patches) = update {

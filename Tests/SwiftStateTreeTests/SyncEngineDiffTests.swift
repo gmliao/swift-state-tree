@@ -12,7 +12,7 @@ struct DiffTestStateRootNode: StateNodeProtocol {
     @Sync(.broadcast)
     var players: [PlayerID: String] = [:]
     
-    @Sync(.perPlayerDictionaryValue())
+    @Sync(.perPlayerSlice())
     var hands: [PlayerID: [String]] = [:]
     
     @Sync(.broadcast)

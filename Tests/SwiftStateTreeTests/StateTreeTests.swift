@@ -37,7 +37,7 @@ struct TestGameStateRootNode: StateNodeProtocol {
     @Sync(.serverOnly)
     var hiddenData: Int = 0
     
-    @Sync(.perPlayerDictionaryValue())
+    @Sync(.perPlayerSlice())
     var hands: [PlayerID: [String]] = [:]
     
     @Sync(.broadcast)
@@ -84,7 +84,7 @@ struct NestedStateRootNode: StateNodeProtocol {
     @Sync(.broadcast)
     var players: [PlayerID: TestPlayerState] = [:]
     
-    @Sync(.perPlayerDictionaryValue())
+    @Sync(.perPlayerSlice())
     var hands: [PlayerID: TestHandState] = [:]
     
     @Sync(.serverOnly)
@@ -248,16 +248,19 @@ func testSyncEngineSnapshot_WithStateTree() throws {
     // ServerOnly fields should not be visible
     #expect(snapshot["hiddenData"] == nil, "ServerOnly field 'hiddenData' should not be in snapshot")
     
-    // PerPlayer fields: perPlayerDictionaryValue returns value[playerID]
-    // So for alice, it returns hands[alice], which is an array
+    // PerPlayer fields: perPlayerSlice returns a dictionary slice with only this player's key
+    // So for alice, it returns {"alice": ["card1", "card2"]}
     if let hands = snapshot["hands"] {
-        // Should be an array value (the filtered result for alice)
-        #expect(hands.arrayValue != nil, "Hands should be an array for perPlayer policy")
-        if let handsArray = hands.arrayValue {
-            #expect(handsArray.count == 2, "Alice should see her 2 cards")
-            // Verify actual card values
-            #expect(handsArray[0].stringValue == "card1", "First card should be 'card1'")
-            #expect(handsArray[1].stringValue == "card2", "Second card should be 'card2'")
+        // Should be a dictionary with only alice's key
+        #expect(hands.objectValue != nil, "Hands should be a dictionary for perPlayerSlice policy")
+        if let handsDict = hands.objectValue {
+            #expect(handsDict["alice"] != nil, "Hands should contain alice's key")
+            if let aliceHands = handsDict["alice"]?.arrayValue {
+                #expect(aliceHands.count == 2, "Alice should see her 2 cards")
+                // Verify actual card values
+                #expect(aliceHands[0].stringValue == "card1", "First card should be 'card1'")
+                #expect(aliceHands[1].stringValue == "card2", "Second card should be 'card2'")
+            }
         }
     } else {
         Issue.record("Hands field should exist in snapshot")
@@ -286,15 +289,20 @@ func testSyncEngineSnapshot_DifferentPlayersGetDifferentSnapshots() throws {
            "Broadcast fields should be the same for all players")
     
     // But perPlayer fields should be different
-    // perPlayerDictionaryValue returns value[playerID], so it's the array value, not the dict
-    if let aliceHands = aliceSnapshot["hands"]?.arrayValue,
-       let bobHands = bobSnapshot["hands"]?.arrayValue {
-        #expect(aliceHands.count == 1, "Alice should see her 1 card")
-        #expect(bobHands.count == 1, "Bob should see his 1 card")
-        // The arrays should be different
-        #expect(aliceHands != bobHands, "Players should see different hands")
+    // perPlayerSlice returns a dictionary slice: {"alice": [...]} or {"bob": [...]}
+    if let aliceHandsDict = aliceSnapshot["hands"]?.objectValue,
+       let bobHandsDict = bobSnapshot["hands"]?.objectValue {
+        if let aliceHands = aliceHandsDict["alice"]?.arrayValue,
+           let bobHands = bobHandsDict["bob"]?.arrayValue {
+            #expect(aliceHands.count == 1, "Alice should see her 1 card")
+            #expect(bobHands.count == 1, "Bob should see his 1 card")
+            // The arrays should be different
+            #expect(aliceHands != bobHands, "Players should see different hands")
+        } else {
+            Issue.record("Hands should contain player keys")
+        }
     } else {
-        Issue.record("Hands should exist in both snapshots as arrays")
+        Issue.record("Hands should exist in both snapshots as dictionaries")
     }
 }
 
@@ -380,24 +388,32 @@ func testSyncPolicy_PerPlayer() throws {
     let bobSnapshot = try syncEngine.snapshot(for: bob, from: gameState)
     
     // Assert
-    // perPlayerDictionaryValue returns value[playerID], so it's the array, not the dict
-    if let aliceHands = aliceSnapshot["hands"]?.arrayValue {
-        #expect(aliceHands.count == 1, "Alice should see her 1 card")
-        if let firstCard = aliceHands.first?.stringValue {
-            #expect(firstCard == "alice_card", "Alice should see her card")
+    // perPlayerSlice returns a dictionary slice: {"alice": [...]} or {"bob": [...]}
+    if let aliceHandsDict = aliceSnapshot["hands"]?.objectValue {
+        if let aliceHands = aliceHandsDict["alice"]?.arrayValue {
+            #expect(aliceHands.count == 1, "Alice should see her 1 card")
+            if let firstCard = aliceHands.first?.stringValue {
+                #expect(firstCard == "alice_card", "Alice should see her card")
+            }
+        } else {
+            Issue.record("Alice's hands should contain 'alice' key")
         }
     } else {
-        Issue.record("Alice should have hands field in snapshot as array")
+        Issue.record("Alice should have hands field in snapshot as dictionary")
     }
     
     // Bob should only see his own hands
-    if let bobHands = bobSnapshot["hands"]?.arrayValue {
-        #expect(bobHands.count == 1, "Bob should see his 1 card")
-        if let firstCard = bobHands.first?.stringValue {
-            #expect(firstCard == "bob_card", "Bob should see his card")
+    if let bobHandsDict = bobSnapshot["hands"]?.objectValue {
+        if let bobHands = bobHandsDict["bob"]?.arrayValue {
+            #expect(bobHands.count == 1, "Bob should see his 1 card")
+            if let firstCard = bobHands.first?.stringValue {
+                #expect(firstCard == "bob_card", "Bob should see his card")
+            }
+        } else {
+            Issue.record("Bob's hands should contain 'bob' key")
         }
     } else {
-        Issue.record("Bob should have hands field in snapshot as array")
+        Issue.record("Bob should have hands field in snapshot as dictionary")
     }
 }
 
@@ -512,27 +528,32 @@ func testNestedStateTree_Serialization() throws {
     
     // Verify perPlayer hands structure
     if let hands = snapshot["hands"] {
-        // perPlayerDictionaryValue returns the value for the player, which is TestHandState
-        #expect(hands.objectValue != nil, "Hands should be an object (TestHandState)")
+        // perPlayerSlice returns a dictionary slice: {"alice": TestHandState}
+        #expect(hands.objectValue != nil, "Hands should be a dictionary")
         
-        if let handState = hands.objectValue {
-            #expect(handState["ownerID"] != nil, "Hand state should contain ownerID")
-            #expect(handState["cards"] != nil, "Hand state should contain cards")
-            
-            // Verify cards array
-            if let cards = handState["cards"]?.arrayValue {
-                #expect(cards.count == 2, "Alice should see her 2 cards")
+        if let handsDict = hands.objectValue {
+            #expect(handsDict["alice"] != nil, "Hands should contain alice's key")
+            if let handState = handsDict["alice"]?.objectValue {
+                #expect(handState["ownerID"] != nil, "Hand state should contain ownerID")
+                #expect(handState["cards"] != nil, "Hand state should contain cards")
                 
-                // Verify first card structure
-                if let firstCard = cards.first?.objectValue {
-                    #expect(firstCard["id"]?.intValue == 1, "First card id should be 1")
-                    #expect(firstCard["suit"]?.intValue == 0, "First card suit should be 0")
-                    #expect(firstCard["rank"]?.intValue == 1, "First card rank should be 1")
+                // Verify cards array
+                if let cards = handState["cards"]?.arrayValue {
+                    #expect(cards.count == 2, "Alice should see her 2 cards")
+                    
+                    // Verify first card structure
+                    if let firstCard = cards.first?.objectValue {
+                        #expect(firstCard["id"]?.intValue == 1, "First card id should be 1")
+                        #expect(firstCard["suit"]?.intValue == 0, "First card suit should be 0")
+                        #expect(firstCard["rank"]?.intValue == 1, "First card rank should be 1")
+                    }
                 }
             }
+        } else {
+            Issue.record("Hands should be a dictionary")
         }
     } else {
-        Issue.record("Hands field should exist in snapshot")
+        Issue.record("Hands should exist in snapshot")
     }
 }
 
@@ -565,21 +586,29 @@ func testNestedStateTree_PerPlayerPolicy() throws {
     let bobSnapshot = try syncEngine.snapshot(for: bob, from: nestedState)
     
     // Assert
-    // Alice should only see her own hand
-    if let aliceHands = aliceSnapshot["hands"]?.objectValue {
-        if let aliceCards = aliceHands["cards"]?.arrayValue {
-            #expect(aliceCards.count == 2, "Alice should see her 2 cards")
-            #expect(aliceCards.first?.objectValue?["id"]?.intValue == 1, "Alice's first card id should be 1")
+    // Alice should only see her own hand (as a dictionary slice: {"alice": {...}})
+    if let aliceHandsDict = aliceSnapshot["hands"]?.objectValue {
+        if let aliceHand = aliceHandsDict["alice"]?.objectValue {
+            if let aliceCards = aliceHand["cards"]?.arrayValue {
+                #expect(aliceCards.count == 2, "Alice should see her 2 cards")
+                #expect(aliceCards.first?.objectValue?["id"]?.intValue == 1, "Alice's first card id should be 1")
+            }
+        } else {
+            Issue.record("Alice's hands should contain 'alice' key")
         }
     } else {
         Issue.record("Alice should have hands field in snapshot")
     }
     
-    // Bob should only see his own hand
-    if let bobHands = bobSnapshot["hands"]?.objectValue {
-        if let bobCards = bobHands["cards"]?.arrayValue {
-            #expect(bobCards.count == 1, "Bob should see his 1 card")
-            #expect(bobCards.first?.objectValue?["id"]?.intValue == 3, "Bob's first card id should be 3")
+    // Bob should only see his own hand (as a dictionary slice: {"bob": {...}})
+    if let bobHandsDict = bobSnapshot["hands"]?.objectValue {
+        if let bobHand = bobHandsDict["bob"]?.objectValue {
+            if let bobCards = bobHand["cards"]?.arrayValue {
+                #expect(bobCards.count == 1, "Bob should see his 1 card")
+                #expect(bobCards.first?.objectValue?["id"]?.intValue == 3, "Bob's first card id should be 3")
+            }
+        } else {
+            Issue.record("Bob's hands should contain 'bob' key")
         }
     } else {
         Issue.record("Bob should have hands field in snapshot")
@@ -668,7 +697,11 @@ struct TestPlayerStateNode: StateNodeProtocol {
     var hp: Int = 0
     
     @Sync(.perPlayer { inventory, pid in
-        inventory[pid]
+        // Return same type (dictionary with only this player's value)
+        if let element = inventory[pid] {
+            return [pid: element]
+        }
+        return nil
     })
     var inventory: [PlayerID: [String]] = [:]
 }

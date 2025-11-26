@@ -4,6 +4,7 @@
 > 
 > 相關文檔：
 > - [DESIGN_SYNC_FIRSTSYNC.md](./DESIGN_SYNC_FIRSTSYNC.md) - 首次同步機制（First Sync）
+> - [DESIGN_POLICY_FILTERING.md](./DESIGN_POLICY_FILTERING.md) - Policy 過濾機制：篩子層層過濾與樹的深度優先遍歷
 
 ## 整體理念與資料流
 
@@ -167,7 +168,7 @@ struct GameStateRootNode: StateNodeProtocol {
     var players: [PlayerID: PlayerState] = [:]
     
     // 手牌：每個玩家只看得到自己的（整包更新）
-    @Sync(.perPlayerDictionaryValue())
+    @Sync(.perPlayerSlice())
     var hands: [PlayerID: HandState] = [:]
     
     // 回合資訊
@@ -178,8 +179,51 @@ struct GameStateRootNode: StateNodeProtocol {
 
 **行為**：
 - `players` 是 `.broadcast` → 所有玩家看到完整的 `PlayerState`（整包）
-- `hands` 是 `.perPlayerDictionaryValue()` → 每個玩家只看到自己的 `HandState`（整包）
+- `hands` 是 `.perPlayerSlice()` → 每個玩家只看到自己的 `HandState`（整包）
 - `PlayerState` 和 `HandState` 內部不會再細分過濾
+
+**⚠️ 重要：必須使用系統提供的 CRUD 函數**
+
+對於 Dictionary、Array 等集合類型，**必須通過 `@Sync` property wrapper 的 setter 來修改**，才能正確觸發 dirty tracking：
+
+```swift
+// ✅ 正確：使用 @Sync setter（自動標記 dirty）
+state.players[playerID] = PlayerState(...)  // 會觸發 @Sync setter，自動標記 players 為 dirty
+state.round = 1  // 會觸發 @Sync setter，自動標記 round 為 dirty
+state.hands[playerID] = HandState(...)  // 會觸發 @Sync setter，自動標記 hands 為 dirty
+
+// ❌ 錯誤：直接修改字典內容（不會觸發 dirty tracking）
+// var dict = state.players  // 取得字典副本
+// dict[playerID] = PlayerState(...)  // 修改副本
+// state.players = dict  // 需要重新賦值才能觸發 setter，但這樣會丟失 dirty tracking
+```
+
+**為什麼必須使用系統提供的函數？**
+
+1. **Dirty Tracking 依賴 Setter**：`@Sync` property wrapper 的 `wrappedValue` setter 會自動標記字段為 dirty
+2. **直接修改不會觸發 Setter**：如果直接修改字典/數組的內部內容而不通過 setter，dirty tracking 無法檢測到變化
+3. **優化版 Diff 的準確性**：優化版 diff（`useDirtyTracking: true`）只比較 dirty 字段，如果字段沒有被標記為 dirty，變化可能被忽略
+
+**對於 ReactiveDictionary 和 ReactiveSet**
+
+如果使用 `ReactiveDictionary` 或 `ReactiveSet`，它們內建了 dirty tracking，可以直接使用它們的方法：
+
+```swift
+@StateNodeBuilder
+struct GameStateRootNode: StateNodeProtocol {
+    @Sync(.broadcast)
+    var players: ReactiveDictionary<PlayerID, PlayerState> = ReactiveDictionary()
+    
+    @Sync(.broadcast)
+    var activePlayers: ReactiveSet<PlayerID> = ReactiveSet()
+}
+
+// ✅ 正確：使用 ReactiveDictionary/ReactiveSet 的方法（自動標記 dirty）
+state.players[playerID] = PlayerState(...)  // 自動標記 dirty
+state.players.removeValue(forKey: playerID)  // 自動標記 dirty
+state.activePlayers.insert(playerID)  // 自動標記 dirty
+state.activePlayers.remove(playerID)  // 自動標記 dirty
+```
 
 #### 範例 2：使用 StateNode（可以細分過濾）
 
@@ -238,7 +282,7 @@ struct GameStateRootNode: StateNodeProtocol {
     @Sync(.broadcast)
     var players: [PlayerID: PlayerStateNode] = [:]  // 可以遞迴過濾
     
-    @Sync(.perPlayerDictionaryValue())
+    @Sync(.perPlayerSlice())
     var hands: [PlayerID: [Card]] = [:]  // Card 是 State，整包更新
 }
 ```

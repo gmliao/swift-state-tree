@@ -3,29 +3,113 @@
 > 本文檔說明 SwiftStateTree 的 Realm DSL 設計
 
 
+## 核心概念：StateTree vs Realm
+
+### 🌳 StateTree：世界本體
+
+`StateTree` = 這個世界「長什麼樣子」：
+
+- 有哪些資料（玩家、商品、白板、聊天…）
+- 每個欄位的同步規則 `@Sync(...)`
+- snapshot / diff / dirty tracking 都在這一層
+
+它只是 **一個「世界的資料結構」＋「同步策略」**，  
+還沒有說「這個世界開在哪裡？誰可以進來？怎麼玩？」
+
+---
+
+### 🎡 Realm：這棵樹實際被開成「一個樂園」的地方
+
+`Realm` 是將 `StateTree` 實例化為一個可運行的「樂園實體」的配置。它的職責分為三個核心部分：
+
+#### 1️⃣ 誰可以進來看這棵樹？（大門規則）
+
+- 權限 / 身分 / playerID / role
+- 是否允許加入？人數上限？
+- 沒進來 = 根本看不到這棵樹的任何東西（連 Sync 都不開始）
+
+👉 `Realm` 管的是 **「這個樂園的大門怎麼管」**。
+
+#### 2️⃣ 我提供哪些功能讓你操作這棵樹？（遊戲規則）
+
+- 可以呼叫什麼 RPC / Command：
+  - `move`
+  - `attack`
+  - `sendMessage`
+  - `addToCart`
+- `OnJoin / OnLeave` 時要怎麼改樹
+- `Tick` 的時候要怎麼推進樹
+- 允許哪些 ClientEvent
+
+👉 `Realm` 決定 **「你在這個樂園裡可以玩哪些設施、按哪些按鈕，按了會怎麼改世界」**。
+
+#### 3️⃣ 這個樂園的營業時間是什麼？（營業時間 / 生命週期管理）
+
+**核心概念**：Realm 的**生命週期管理（Lifetime Management）**，定義這個「樂園實體」何時開始、如何運行、何時結束。
+
+**包含的決策**：
+
+1. **何時建立這棵樹的 instance？（開園時機）**
+   - 第一個人進來才開園？（Lazy initialization）
+   - 系統啟動時就預先開好？（Eager initialization）
+   - 定時建立？（Scheduled creation）
+   - 基於條件觸發？（Condition-based creation）
+
+2. **如何運行？（運行時配置）**
+   - Tick 要不要一直跑？頻率多少？（例如：遊戲需要 100ms tick，聊天室不需要）
+   - 要不要定期存檔？（Snapshot persistence）
+   - 要不要記錄 replay / log？（Audit trail）
+   - 是否需要狀態恢復機制？（State recovery）
+
+3. **何時關園？（銷毀規則）**
+   - 沒人了就自動銷毀？（Destroy when empty）
+   - 結束後保留一段時間？（Retention period）
+   - 要不要存到 DB（存檔）？（Persist on shutdown）
+   - 是否需要優雅關閉流程？（Graceful shutdown）
+
+**實際應用場景**：
+- **遊戲房間**：第一人進入時建立，沒人後 5 分鐘自動銷毀，每 30 秒存檔
+- **聊天室**：系統啟動時建立，常駐運行，不需要 tick，每小時記錄 log
+- **白板協作**：第一人進入時建立，最後一人離開後保留 1 小時，然後自動銷毀
+- **單人遊戲**：玩家登入時建立，登出時存檔並銷毀
+
+👉 這就是 **「樂園的營業時間、關門規則、是否每天清場」**，也就是 **Realm 的完整生命週期管理**。
+
+---
+
+### ✅ 一句話定義
+
+> **StateTree = 樹長什麼樣（世界地圖 & 狀態），欄位級同步規則。**
+>
+> **Realm = 這棵樹被開成一個「樂園實體」之後的：**
+> - **大門規則**（誰能進、多少人）
+> - **遊戲規則**（能做什麼、怎麼操作）
+> - **營業時間**（生命週期管理：何時建立、如何運行、何時關閉、是否存檔）
+
+---
+
 ## Realm DSL：領域宣告語法
 
 ### 使用場景
 
 定義「這種領域」的：
 - 對應 state type（StateTree）
-- 最大玩家數（遊戲場景）
-- Tick 間隔（遊戲場景）
-- Idle timeout 等（遊戲場景）
-- RPC/Event handler
+- 大門規則（誰可以進入、人數限制）
+- 遊戲規則（可用的 RPC/Event handler）
+- 營業時間（Tick 間隔、生命週期管理、持久化策略）
 - 之後還可以掛 service / DI
 
-### 核心概念
+### 語義化別名
 
-**Realm（領域/土地）**：StateTree 生長的地方
-- App 場景：`App` 是 `Realm` 的別名
-- 功能模組：`Feature` 是 `Realm` 的別名
+- **App 場景**：`App` 是 `Realm` 的別名
+- **功能模組**：`Feature` 是 `Realm` 的別名
 
-### 語法示例
+### 語法示例（現有版本）
 
 ```swift
 // 使用 Realm（核心名稱）
 let matchRealm = Realm("match-3", using: GameStateTree.self) {
+    // 1️⃣ 大門規則：誰可以進來（整合在 Config 中）
     Config {
         MaxPlayers(4)
         Tick(every: .milliseconds(100))  // ✅ Tick-based：自動批次更新
@@ -38,14 +122,14 @@ let matchRealm = Realm("match-3", using: GameStateTree.self) {
         await handleTick(&state, ctx)
     }
     
-    // 定義允許的 ClientEvent（只限制 Client->Server）
+    // 2️⃣ 遊戲規則：定義允許的 ClientEvent（只限制 Client->Server）
     AllowedClientEvents {
         ClientEvent.playerReady
         ClientEvent.heartbeat
         ClientEvent.uiInteraction
     }
     
-    // RPC 處理：混合模式（簡單的用獨立 handler，複雜的用統一 handler）
+    // 2️⃣ 遊戲規則：RPC 處理（混合模式）
     RPC(GameRPC.getPlayerHand) { state, id, ctx -> RPCResponse in
         return .success(.hand(state.hands[id]?.cards ?? []))
     }
@@ -79,7 +163,7 @@ let matchRealm = Realm("match-3", using: GameStateTree.self) {
         }
     }
     
-    // Event 處理：混合模式（簡單的用獨立 handler，複雜的用統一 handler）
+    // 2️⃣ 遊戲規則：Event 處理（混合模式）
     On(ClientEvent.heartbeat) { state, timestamp, ctx in
         state.playerLastActivity[ctx.playerID] = timestamp
     }
@@ -96,6 +180,69 @@ let matchRealm = Realm("match-3", using: GameStateTree.self) {
     }
 }
 ```
+
+### 語法示例（未來版本：更明確的三職責分組）
+
+未來的 DSL 語法可能會更明確地分組為三個職責：
+
+```swift
+@Realm(RoomState.self)
+struct RoomRealm {
+    // 1️⃣ 大門規則：誰可以進來看這棵樹
+    AccessControl {
+        AllowPublic()              // 或 OnlyVIP(), OnlyTeacher(), ...
+        MaxPlayers(10)
+        // 未來可擴展：權限檢查、角色限制等
+    }
+    
+    // 2️⃣ 遊戲規則：提供哪些功能讓你操作這棵樹
+    OnJoin { state, ctx in
+        // 玩家加入時的處理
+    }
+    
+    OnLeave { state, ctx in
+        // 玩家離開時的處理
+    }
+    
+    RPC("attack") { state, rpc, ctx in
+        // 攻擊 RPC 處理
+    }
+    
+    RPC("sendChat") { state, rpc, ctx in
+        // 聊天 RPC 處理
+    }
+    
+    AllowedClientEvents {
+        ClientEvent.playerReady
+        ClientEvent.heartbeat
+    }
+    
+    // 3️⃣ 營業時間：這個樂園的生命週期和運行規則（Lifetime Management）
+    Lifetime {
+        // 開園時機：第一個人進來才建立（Lazy initialization）
+        CreateOnFirstJoin()
+        
+        // 運行配置：Tick 頻率和處理邏輯
+        Tick(every: .milliseconds(50)) { state, ctx in
+            // Tick handler：每 50ms 執行一次
+            await handleTick(&state, ctx)
+        }
+        
+        // 持久化策略：定期存檔
+        PersistSnapshot(every: .seconds(30))    // 每 30 秒存檔一次
+        
+        // 關園規則：沒人了 5 分鐘後自動銷毀
+        DestroyWhenEmpty(after: .minutes(5))
+        
+        // 可選：關閉前的最後處理（存檔、通知等）
+        OnShutdown { state in
+            await saveFinalState(state)
+        }
+    }
+}
+```
+
+**注意**：目前版本的 DSL 已經涵蓋了三個核心職責，但語法較為扁平化。未來版本可能會採用更明確的分組結構，使三個職責更加清晰。
 
 ### Realm DSL 元件（設計概念）
 
@@ -159,6 +306,26 @@ public func Realm<State>(
 public typealias App<State> = Realm<State>
 public typealias Feature<State> = Realm<State>
 ```
+
+### 三個核心職責與 DSL 元件的對應
+
+將 Realm 的三個核心職責映射到現有的 DSL 元件：
+
+| 核心職責 | 對應的 DSL 元件 | 說明 |
+|---------|---------------|------|
+| **1️⃣ 大門規則** | `ConfigNode` 中的 `maxPlayers` | 控制誰可以進入、人數上限 |
+| | 未來可擴展：`AccessControlNode` | 權限檢查、角色限制等 |
+| **2️⃣ 遊戲規則** | `RPCNode` / `SpecificRPCNode` | 定義可用的 RPC 操作 |
+| | `OnEventNode` / `OnSpecificEventNode` | 定義可處理的 Event |
+| | `AllowedClientEvents` | 限制 Client 可發送的 Event |
+| | `OnJoin` / `OnLeave` (未來) | 玩家加入/離開時的處理 |
+| **3️⃣ 營業時間<br>（生命週期管理）** | `ConfigNode` 中的 `tickInterval` | Tick 頻率（如何運行） |
+| | `ConfigNode` 中的 `idleTimeout` | 空閒超時（何時銷毀） |
+| | `OnTick` (未來) | Tick 處理邏輯 |
+| | 未來可擴展：`LifetimeNode` | 完整生命週期管理：<br>• 開園時機（Lazy/Eager 建立）<br>• 運行配置（Tick 頻率、存檔間隔）<br>• 關園規則（銷毀條件、保留時間）<br>• 持久化策略（是否存檔、replay/log） |
+
+**現有實現**：目前的 DSL 將這三個職責整合在 `ConfigNode` 和各種 handler 節點中。  
+**未來方向**：可能會採用更明確的分組結構（如 `AccessControl`、`Lifetime`），使三個職責更加清晰和易於理解。
 
 ---
 
@@ -735,77 +902,6 @@ private func checkGameStatus(_ state: inout GameStateTree) {
 - 自動恢復：血量、魔法值自動恢復
 - 倒數計時：回合倒數、遊戲時間倒數
 - 定期檢查：檢查遊戲結束條件、清理過期資料
-
-### Tick Handler 實作範例
-
-**設計原則**：OnTick handler 應該簡潔，複雜邏輯拆分成獨立函數。
-
-```swift
-// ✅ 推薦：OnTick 只調用函數，邏輯拆分到獨立函數
-let gameRealm = Realm("game-room", using: GameStateTree.self) {
-    Config {
-        Tick(every: .milliseconds(100))
-    }
-    
-    // ✅ OnTick：簡潔，只調用函數
-    OnTick { state, ctx in
-        await handleTick(&state, ctx)
-    }
-    
-    // RPC Handler...
-}
-
-// ✅ 複雜邏輯拆分成獨立函數
-private func handleTick(
-    _ state: inout GameStateTree,
-    _ ctx: RealmContext
-) async {
-    // 1. AI 自動行動
-    await handleAIActions(&state, ctx)
-    
-    // 2. 自動恢復
-    handleAutoRegeneration(&state)
-    
-    // 3. 檢查遊戲狀態
-    checkGameStatus(&state)
-    
-    // ✅ 狀態變化會自動標記，Tick 結束後自動批次同步
-}
-
-private func handleAIActions(
-    _ state: inout GameStateTree,
-    _ ctx: RealmContext
-) async {
-    for (playerID, player) in state.players {
-        guard player.isAI, player.hpCurrent > 0 else { continue }
-        
-        let action = await aiController.decideAction(for: playerID, state: state)
-        executeAction(action, in: &state)
-    }
-}
-
-private func handleAutoRegeneration(_ state: inout GameStateTree) {
-    for (playerID, player) in state.players {
-        if player.hpCurrent < player.hpMax {
-            state.players[playerID]?.hpCurrent += 1
-        }
-    }
-}
-
-private func checkGameStatus(_ state: inout GameStateTree) {
-    let alivePlayers = state.players.values.filter { $0.hpCurrent > 0 }
-    if alivePlayers.count <= 1 {
-        state.gameStatus = .finished
-        state.winner = alivePlayers.first?.id
-    }
-}
-```
-
-**優勢**：
-- ✅ **可讀性**：OnTick 簡潔，邏輯清晰
-- ✅ **可測試**：每個函數可以獨立測試
-- ✅ **可重用**：函數可以在其他地方重用
-- ✅ **易維護**：邏輯分離，容易修改
 
 ---
 
