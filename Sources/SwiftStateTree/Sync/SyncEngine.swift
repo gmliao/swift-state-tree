@@ -120,7 +120,7 @@ public struct SyncEngine: Sendable {
         // Get sync field definitions to identify per-player fields
         let syncFields = state.getSyncFields()
         let perPlayerFieldNames = Set(
-            syncFields.filter { $0.policyType != "broadcast" && $0.policyType != "serverOnly" }
+            syncFields.filter { $0.policyType != .broadcast && $0.policyType != .serverOnly }
                 .map { $0.name }
         )
         
@@ -614,8 +614,8 @@ public struct SyncEngine: Sendable {
         
         // Split dirty fields by policy type for optimization
         let syncFields = state.getSyncFields()
-        let broadcastFieldNames = Set(syncFields.filter { $0.policyType == "broadcast" }.map { $0.name })
-        let perPlayerFieldNames = Set(syncFields.filter { $0.policyType != "broadcast" && $0.policyType != "serverOnly" }.map { $0.name })
+        let broadcastFieldNames = Set(syncFields.filter { $0.policyType == .broadcast }.map { $0.name })
+        let perPlayerFieldNames = Set(syncFields.filter { $0.policyType != .broadcast && $0.policyType != .serverOnly }.map { $0.name })
         
         // Create mode-specific filters for broadcast and per-player
         let broadcastMode: SnapshotMode
@@ -784,7 +784,7 @@ extension SyncEngine {
     ) throws -> StateSnapshot {
         // Get all sync fields and filter for broadcast policy
         let syncFields = state.getSyncFields()
-        let broadcastFields = syncFields.filter { $0.policyType == "broadcast" }
+        let broadcastFields = syncFields.filter { $0.policyType == .broadcast }
         
         // Use reflection to access broadcast field values directly from StateNode
         // For property wrappers, we need to extract wrappedValue

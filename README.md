@@ -129,7 +129,7 @@ SwiftStateTree/
     └── SNSApp/                      # SNS App 範例
 ```
 
-> **注意**：本專案正在重新設計中，目前僅實作 core 模組。詳細的專案結構說明請參考 [DESIGN_EXAMPLES.md](./DESIGN_EXAMPLES.md#專案目錄結構建議)。
+> **注意**：本專案正在重新設計中，目前僅實作 core 模組。詳細的專案結構說明請參考 [DESIGN_EXAMPLES.md](./docs/design/DESIGN_EXAMPLES.md#專案目錄結構建議)。
 
 ## 💡 核心概念
 
@@ -284,46 +284,46 @@ let gameRealm = Realm("game-room", using: GameStateTree.self) {
 本專案的設計文檔已切分為多個章節：
 
 ### 核心概念
-- **[DESIGN_CORE.md](./DESIGN_CORE.md)**：整體理念、StateTree 結構、同步規則 DSL
+- **[DESIGN_CORE.md](./docs/design/DESIGN_CORE.md)**：整體理念、StateTree 結構、同步規則 DSL
 
 ### 通訊模式
-- **[DESIGN_COMMUNICATION.md](./DESIGN_COMMUNICATION.md)**：RPC 與 Event 通訊模式、WebSocket 傳輸、路由機制
+- **[DESIGN_COMMUNICATION.md](./docs/design/DESIGN_COMMUNICATION.md)**：RPC 與 Event 通訊模式、WebSocket 傳輸、路由機制
 
 ### Realm DSL
-- **[DESIGN_REALM_DSL.md](./DESIGN_REALM_DSL.md)**：領域宣告語法、RPC 處理、Event 處理、RealmContext
+- **[DESIGN_REALM_DSL.md](./docs/design/DESIGN_REALM_DSL.md)**：領域宣告語法、RPC 處理、Event 處理、RealmContext
 
 ### Transport 層
-- **[DESIGN_TRANSPORT.md](./DESIGN_TRANSPORT.md)**：網路傳輸抽象、Transport 協議、服務注入
+- **[DESIGN_TRANSPORT.md](./docs/design/DESIGN_TRANSPORT.md)**：網路傳輸抽象、Transport 協議、服務注入
 
 ### Runtime 結構
-- **[DESIGN_RUNTIME.md](./DESIGN_RUNTIME.md)**：RealmActor、SyncEngine 的運行時結構
+- **[DESIGN_RUNTIME.md](./docs/design/DESIGN_RUNTIME.md)**：RealmActor、SyncEngine 的運行時結構
 
 ### 客戶端 SDK 與程式碼生成
-- **[DESIGN_CLIENT_SDK.md](./DESIGN_CLIENT_SDK.md)**：客戶端 SDK 自動生成、Code-gen 架構設計、TypeScript 支援
+- **[DESIGN_CLIENT_SDK.md](./docs/guides/DESIGN_CLIENT_SDK.md)**：客戶端 SDK 自動生成、Code-gen 架構設計、TypeScript 支援
 
 ### 範例與速查
-- **[DESIGN_EXAMPLES.md](./DESIGN_EXAMPLES.md)**：端到端範例、語法速查表、命名說明、設計決策
+- **[DESIGN_EXAMPLES.md](./docs/design/DESIGN_EXAMPLES.md)**：端到端範例、語法速查表、命名說明、設計決策
 
 ### 相關文檔
-- **[APP_APPLICATION.md](./APP_APPLICATION.md)**：StateTree 在 App 開發中的應用
+- **[APP_APPLICATION.md](./docs/guides/APP_APPLICATION.md)**：StateTree 在 App 開發中的應用
 
 ### 快速導覽
 
 **新手入門**：
-1. 閱讀 [DESIGN_CORE.md](./DESIGN_CORE.md) 了解核心概念
-2. 閱讀 [DESIGN_COMMUNICATION.md](./DESIGN_COMMUNICATION.md) 了解通訊模式
-3. 查看 [DESIGN_EXAMPLES.md](./DESIGN_EXAMPLES.md) 中的範例
+1. 閱讀 [DESIGN_CORE.md](./docs/design/DESIGN_CORE.md) 了解核心概念
+2. 閱讀 [DESIGN_COMMUNICATION.md](./docs/design/DESIGN_COMMUNICATION.md) 了解通訊模式
+3. 查看 [DESIGN_EXAMPLES.md](./docs/design/DESIGN_EXAMPLES.md) 中的範例
 
 **開發參考**：
-- 定義 StateTree：參考 [DESIGN_CORE.md](./DESIGN_CORE.md) 的「StateTree：狀態樹結構」和「同步規則 DSL」
-- 定義 Realm：參考 [DESIGN_REALM_DSL.md](./DESIGN_REALM_DSL.md)
-- 設定 Transport：參考 [DESIGN_TRANSPORT.md](./DESIGN_TRANSPORT.md)
-- 生成客戶端 SDK：參考 [DESIGN_CLIENT_SDK.md](./DESIGN_CLIENT_SDK.md)
-- 語法速查：參考 [DESIGN_EXAMPLES.md](./DESIGN_EXAMPLES.md) 的「語法速查表」
+- 定義 StateTree：參考 [DESIGN_CORE.md](./docs/design/DESIGN_CORE.md) 的「StateTree：狀態樹結構」和「同步規則 DSL」
+- 定義 Realm：參考 [DESIGN_REALM_DSL.md](./docs/design/DESIGN_REALM_DSL.md)
+- 設定 Transport：參考 [DESIGN_TRANSPORT.md](./docs/design/DESIGN_TRANSPORT.md)
+- 生成客戶端 SDK：參考 [DESIGN_CLIENT_SDK.md](./docs/guides/DESIGN_CLIENT_SDK.md)
+- 語法速查：參考 [DESIGN_EXAMPLES.md](./docs/design/DESIGN_EXAMPLES.md) 的「語法速查表」
 
 **架構深入**：
-- Runtime 運作：參考 [DESIGN_RUNTIME.md](./DESIGN_RUNTIME.md)
-- 多伺服器架構：參考 [DESIGN_TRANSPORT.md](./DESIGN_TRANSPORT.md) 的「多伺服器架構設計」章節
+- Runtime 運作：參考 [DESIGN_RUNTIME.md](./docs/design/DESIGN_RUNTIME.md)
+- 多伺服器架構：參考 [DESIGN_TRANSPORT.md](./docs/design/DESIGN_TRANSPORT.md) 的「多伺服器架構設計」章節
 
 ## 🧪 測試
 

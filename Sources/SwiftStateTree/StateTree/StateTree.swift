@@ -2,15 +2,29 @@
 
 import Foundation
 
+/// Policy type for sync fields
+///
+/// **IMPORTANT**: When adding a new case, also update `LocalPolicyType`
+/// in `StateNodeBuilderMacro.swift` to keep them in sync.
+public enum PolicyType: String, Sendable, Codable {
+    case broadcast = "broadcast"
+    case serverOnly = "serverOnly"
+    case perPlayer = "perPlayer"
+    case perPlayerSlice = "perPlayerSlice"
+    case masked = "masked"
+    case custom = "custom"
+    case unknown = "unknown"
+}
+
 /// Information about a sync field in a StateNode
 public struct SyncFieldInfo: Sendable {
     /// The name of the field
     public let name: String
     
     /// The sync policy applied to this field
-    public let policyType: String
+    public let policyType: PolicyType
     
-    public init(name: String, policyType: String) {
+    public init(name: String, policyType: PolicyType) {
         self.name = name
         self.policyType = policyType
     }

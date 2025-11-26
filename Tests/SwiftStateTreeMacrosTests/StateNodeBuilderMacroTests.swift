@@ -38,7 +38,7 @@ final class StateNodeBuilderMacroTests {
                 var cache: [String: String] = [:]
             
                 public func getSyncFields() -> [SyncFieldInfo] {
-                    return [SyncFieldInfo(name: "players", policyType: "broadcast"), SyncFieldInfo(name: "hiddenData", policyType: "serverOnly")]
+                    return [SyncFieldInfo(name: "players", policyType: .broadcast), SyncFieldInfo(name: "hiddenData", policyType: .serverOnly)]
                 }
             
                 public func validateSyncFields() -> Bool {

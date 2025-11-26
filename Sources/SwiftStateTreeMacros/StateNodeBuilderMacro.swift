@@ -113,7 +113,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
                 }
                 
                 // Extract policy type from @Sync attribute
-                var policyType: String? = nil
+                var policyType: LocalPolicyType? = nil
                 if hasSync {
                     if let attribute = variableDecl.attributes.first(where: { attr in
                         if let attr = attr.as(AttributeSyntax.self) {
@@ -142,28 +142,33 @@ public struct StateNodeBuilderMacro: MemberMacro {
     }
     
     /// Extract policy type from @Sync attribute
-    private static func extractPolicyType(from attribute: AttributeSyntax) -> String? {
+    private static func extractPolicyType(from attribute: AttributeSyntax) -> LocalPolicyType? {
         guard let argument = attribute.arguments?.as(LabeledExprListSyntax.self) else {
             return nil
         }
         
         // Look for the first argument (the policy)
         if let firstArg = argument.first {
+            var policyTypeString: String?
+            
             // Try to extract the policy type from the argument
             // Examples: .broadcast, .serverOnly, .perPlayerSlice()
             if let memberAccess = firstArg.expression.as(MemberAccessExprSyntax.self) {
-                return memberAccess.declName.baseName.text
+                policyTypeString = memberAccess.declName.baseName.text
+            } else if let functionCall = firstArg.expression.as(FunctionCallExprSyntax.self) {
+                // Handle function calls like .perPlayerSlice()
+                if let memberAccess = functionCall.calledExpression.as(MemberAccessExprSyntax.self) {
+                    policyTypeString = memberAccess.declName.baseName.text
+                }
             }
             
-            // Handle function calls like .perPlayerSlice()
-            if let functionCall = firstArg.expression.as(FunctionCallExprSyntax.self) {
-                if let memberAccess = functionCall.calledExpression.as(MemberAccessExprSyntax.self) {
-                    return memberAccess.declName.baseName.text
-                }
+            // Convert string to LocalPolicyType enum
+            if let policyString = policyTypeString {
+                return LocalPolicyType(rawValue: policyString) ?? .unknown
             }
         }
         
-        return "unknown"
+        return .unknown
     }
     
     /// Validate that all stored properties have @Sync or @Internal markers
@@ -191,12 +196,15 @@ public struct StateNodeBuilderMacro: MemberMacro {
         var arrayElements: [ArrayElementSyntax] = []
         
         for (index, property) in syncProperties.enumerated() {
-            let policyType = property.policyType ?? "unknown"
+            let policyType = property.policyType ?? .unknown
+            // Use rawValue to get the string representation for code generation
+            let policyTypeName = policyType.rawValue
+            
             let trailingComma = index < syncProperties.count - 1 ? TokenSyntax.commaToken() : nil
             let element = ArrayElementSyntax(
                 expression: ExprSyntax(
                     """
-                    SyncFieldInfo(name: "\(raw: property.name)", policyType: "\(raw: policyType)")
+                    SyncFieldInfo(name: "\(raw: property.name)", policyType: .\(raw: policyTypeName))
                     """
                 ),
                 trailingComma: trailingComma
@@ -290,7 +298,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
         let broadcastProperties = syncProperties.filter { property, _ in
             // Check if the property has broadcast policy
             // We need to check the policy type from the property info
-            property.policyType == "broadcast"
+            property.policyType == .broadcast
         }
         
         var codeLines: [String] = []
@@ -789,12 +797,26 @@ public struct StateNodeBuilderMacro: MemberMacro {
     }
 }
 
+/// Local policy type enum for macro internal use (maps to PolicyType at runtime)
+///
+/// **IMPORTANT**: Must be kept in sync with `PolicyType` enum in `StateTree.swift`.
+/// When adding a new case to `PolicyType`, add the same case here.
+private enum LocalPolicyType: String {
+    case broadcast = "broadcast"
+    case serverOnly = "serverOnly"
+    case perPlayer = "perPlayer"
+    case perPlayerSlice = "perPlayerSlice"
+    case masked = "masked"
+    case custom = "custom"
+    case unknown = "unknown"
+}
+
 /// Information about a property in a StateNode
 private struct PropertyInfo {
     let name: String
     let hasSync: Bool
     let hasInternal: Bool
-    let policyType: String?
+    let policyType: LocalPolicyType?
     let typeName: String?  // Type name for optimization
 }
 

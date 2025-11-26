@@ -69,7 +69,7 @@ struct SyncEngineDirtyTrackingTests_PatchAnalysis {
         // Simulate extractPerPlayerSnapshot logic
         let syncFields = state.getSyncFields()
         let perPlayerFieldNames = Set(
-            syncFields.filter { $0.policyType != "broadcast" && $0.policyType != "serverOnly" }
+            syncFields.filter { $0.policyType != .broadcast && $0.policyType != .serverOnly }
                 .map { $0.name }
         )
         var perPlayerValues: [String: SnapshotValue] = [:]
