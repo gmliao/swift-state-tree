@@ -5,13 +5,13 @@
 
 ## 端到端範例
 
-### 範例 1：玩家加入（RPC + Event，包含 late join）
+### 範例 1：玩家加入（Action + Event，包含 late join）
 
 #### 流程
 
-1. **Client A 發送 RPC**：`.join(playerID: "A", name: "Alice")`
+1. **Client A 發送 Action**：`.join(playerID: "A", name: "Alice")`
 
-2. **Server 處理 RPC**：
+2. **Server 處理 Action**：
    ```swift
    case .join(let id, let name):
        state.players[id] = PlayerState(name: name, hpCurrent: 100, hpMax: 100)
@@ -21,7 +21,7 @@
        return .success(.joinResult(JoinResponse(realmID: ctx.realmID, state: snapshot)))
    ```
 
-3. **Client A 收到 RPC Response**：
+3. **Client A 收到 Action Response**：
    - 包含完整狀態快照（late join 使用）
    - Client A 立即更新本地狀態，無需等待 Event
 
@@ -34,15 +34,15 @@
    - `hands`：perPlayer(ownerID) → 只輸出 A 的
    - `hiddenDeck`：serverOnly → 不輸出
 
-### 範例 2：攻擊操作（RPC 不包含狀態，透過 Event 推送）
+### 範例 2：攻擊操作（Action 不包含狀態，透過 Event 推送）
 
 > **注意**：目前使用完整快照。當 delta/diff 功能實現後，會改為發送增量更新。
 
 #### 流程
 
-1. **Client A 發送 RPC**：`.attack(attacker: "A", target: "B", damage: 10)`
+1. **Client A 發送 Action**：`.attack(attacker: "A", target: "B", damage: 10)`
 
-2. **Server 處理 RPC**：
+2. **Server 處理 Action**：
    ```swift
    case .attack(let attacker, let target, let damage):
        state.players[target]?.hpCurrent -= damage
@@ -54,7 +54,7 @@
        return .success(.empty)  // 不包含狀態，透過 Event 取得
    ```
 
-3. **Client A 收到 RPC Response**：
+3. **Client A 收到 Action Response**：
    - 只是 `.success(.empty)`
    - 知道操作成功，等待 Event 獲取狀態更新
 
@@ -96,7 +96,7 @@
 
 #### 流程
 
-1. **Client 發送 RPC**：`.join(playerID: "C", name: "Charlie")`
+1. **Client 發送 Action**：`.join(playerID: "C", name: "Charlie")`
 
 2. **Server 處理**：
    ```swift
@@ -112,7 +112,7 @@
 
 3. **Client C 收到 Response**：
    ```swift
-   let response = try await client.rpc(.join(...))
+   let response = try await client.action(.join(...))
    if case .success(.joinResult(let joinResponse)) = response,
       let snapshot = joinResponse.state {
        // 立即更新本地狀態（late join）
@@ -252,15 +252,15 @@ let realm = Realm("match-3", using: GameStateTree.self) {
         ClientEvent.uiInteraction
     }
     
-    // RPC 處理：混合模式
+    // Action 處理：混合模式
     // 簡單的查詢：用獨立 handler
-    RPC(GameRPC.getPlayerHand) { state, id, ctx -> RPCResponse in
+    Action(GameAction.getPlayerHand) { state, id, ctx -> ActionResult in
         return .success(.hand(state.hands[id]?.cards ?? []))
     }
     
     // 複雜的狀態修改：用統一 handler
-    RPC(GameRPC.self) { state, rpc, ctx -> RPCResponse in
-        switch rpc {
+    Action(GameAction.self) { state, action, ctx -> ActionResult in
+        switch action {
         case .join(let id, let name):
             return await handleJoin(&state, id, name, ctx)
         // ...
@@ -284,10 +284,10 @@ let realm = Realm("match-3", using: GameStateTree.self) {
 }
 ```
 
-### 3. RPC 例子
+### 3. Action 例子
 
 ```swift
-enum GameRPC: Codable {
+enum GameAction: Codable {
     case join(playerID: PlayerID, name: String)
     case drawCard(playerID: PlayerID)
     case attack(attacker: PlayerID, target: PlayerID, damage: Int)
@@ -418,8 +418,8 @@ let matchRealm = Realm("match-3", using: GameStateTree.self) {
         }
     }
     
-    // RPC 處理
-    RPC(GameRPC.self) { state, rpc, ctx -> RPCResponse in
+    // Action 處理
+    Action(GameAction.self) { state, action, ctx -> ActionResult in
         // ...
     }
 }
@@ -502,13 +502,13 @@ actor RealmActor {
 
 3. **Server 可以自由發送 ServerEvent**
    ```swift
-   // 在任何 RPC 或 Event handler 中
+   // 在任何 Action 或 Event handler 中
    await ctx.sendEvent(.fromServer(.stateUpdate(snapshot)), to: .all)
    await ctx.sendEvent(.fromServer(.gameEvent(.damage(...))), to: .all)
    // 不需要在 AllowedClientEvents 中定義
    ```
 
-### RPC Response 是否總是包含狀態？
+### Action Response 是否總是包含狀態？
 
 **當前設計**：可選包含狀態（用於 late join 等場景）
 

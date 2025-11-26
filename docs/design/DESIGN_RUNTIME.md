@@ -56,7 +56,7 @@ actor RealmActor {
     }
     
     // 注意：RealmContext 是請求級別的，不是玩家級別的
-    // - 每次 RPC/Event 請求建立一個新的 RealmContext
+    // - 每次 Action/Event 請求建立一個新的 RealmContext
     // - 處理完成後釋放，不持久化
     // - 類似 NestJS 的 Request Context 設計模式
     
@@ -78,13 +78,13 @@ actor RealmActor {
         }
     }
     
-    // 處理 RPC（Client -> Server）
-    func handleRPC(
-        _ rpc: GameRPC,
+    // 處理 Action（Client -> Server）
+    func handleAction(
+        _ action: GameAction,
         from playerID: PlayerID,
         clientID: ClientID,
         sessionID: SessionID
-    ) async -> RPCResponse {
+    ) async -> ActionResult {
         // 建立 RealmContext（不暴露 Transport）
         let ctx = createContext(
             playerID: playerID,
@@ -92,11 +92,11 @@ actor RealmActor {
             sessionID: sessionID
         )
         
-        // 從 def.nodes 找 RPCNode<GameRPC>，執行 handler
-        guard let rpcNode = findRPCNode(rpc) else {
-            return .failure("Unknown RPC type")
+        // 從 def.nodes 找 ActionHandlerNode<GameAction>，執行 handler
+        guard let actionNode = findActionNode(action) else {
+            return .failure("Unknown Action type")
         }
-        return await rpcNode.handler(&state, rpc, ctx)
+        return await actionNode.handler(&state, action, ctx)
     }
     
     // 處理 Event（雙向）

@@ -9,11 +9,11 @@
 StateTree 的核心設計理念是**單一來源真相（Single Source of Truth）**：
 
 1. **Server 定義是權威來源**：
-   - Server 端定義 StateTree、RPC、Event 的完整型別和結構
+   - Server 端定義 StateTree、Action、Event 的完整型別和結構
    - 這些定義包含所有業務邏輯和同步規則
 
 2. **客戶端需要型別安全的介面**：
-   - 客戶端必須知道如何呼叫 RPC、處理 Event
+   - 客戶端必須知道如何呼叫 Action、處理 Event
    - 必須確保型別一致性，避免執行時錯誤
 
 3. **手動維護容易出錯**：
@@ -58,13 +58,13 @@ TypeScript 客戶端 SDK
 
 1. **型別定義**：
    - StateTree 型別（對應 Server 的 StateTree）
-   - RPC 型別（對應 Server 的 RPC enum）
+   - Action 型別（對應 Server 的 Action enum）
    - Event 型別（對應 Server 的 ClientEvent / ServerEvent）
-   - Response 型別（對應 Server 的 RPCResponse）
+   - Response 型別（對應 Server 的 ActionResult）
 
 2. **客戶端 SDK 類別**：
    - `StateTreeClient`：WebSocket 連接管理
-   - RPC 方法：型別安全的 RPC 呼叫
+   - Action 方法：型別安全的 Action 呼叫
    - Event 處理：型別安全的 Event 訂閱
 
 3. **型別輔助**：
@@ -78,7 +78,7 @@ TypeScript 客戶端 SDK
 
 ```swift
 // Server 端定義
-enum GameRPC: Codable {
+enum GameAction: Codable {
     case join(playerID: PlayerID, name: String)
     case attack(attacker: PlayerID, target: PlayerID, damage: Int)
     case getPlayerHand(PlayerID)
@@ -126,8 +126,8 @@ export interface GameStateSnapshot {
     hands: Record<PlayerID, HandState>;
 }
 
-// RPC 型別
-export type GameRPC =
+// Action 型別
+export type GameAction =
     | { type: 'join'; playerID: PlayerID; name: string }
     | { type: 'attack'; attacker: PlayerID; target: PlayerID; damage: number }
     | { type: 'getPlayerHand'; playerID: PlayerID };
@@ -144,8 +144,8 @@ export type ServerEvent =
 // 客戶端 SDK
 export class StateTreeClient {
     private ws: WebSocket;
-    private pendingRPCs: Map<string, {
-        resolve: (response: RPCResponse) => void;
+    private pendingActions: Map<string, {
+        resolve: (response: ActionResult) => void;
         reject: (error: Error) => void;
     }> = new Map();
     
@@ -162,24 +162,24 @@ export class StateTreeClient {
         this.setupWebSocket(config);
     }
     
-    // 型別安全的 RPC 呼叫
-    async rpc(realmID: string, rpc: GameRPC): Promise<RPCResponse> {
+    // 型別安全的 Action 呼叫
+    async action(realmID: string, action: GameAction): Promise<ActionResult> {
         const requestID = crypto.randomUUID();
         const message: TransportMessage = {
-            type: 'rpc',
+            type: 'action',
             requestID,
             realmID,
-            rpc
+            action
         };
         
         return new Promise((resolve, reject) => {
-            this.pendingRPCs.set(requestID, { resolve, reject });
+            this.pendingActions.set(requestID, { resolve, reject });
             
             // 設定 timeout
             setTimeout(() => {
-                if (this.pendingRPCs.has(requestID)) {
-                    this.pendingRPCs.delete(requestID);
-                    reject(new Error('RPC timeout'));
+                if (this.pendingActions.has(requestID)) {
+                    this.pendingActions.delete(requestID);
+                    reject(new Error('Action timeout'));
                 }
             }, 30000); // 30 秒 timeout
             
@@ -187,9 +187,9 @@ export class StateTreeClient {
         });
     }
     
-    // 便利方法：針對特定 RPC 的型別安全方法
+    // 便利方法：針對特定 Action 的型別安全方法
     async join(realmID: string, playerID: PlayerID, name: string): Promise<JoinResponse> {
-        const response = await this.rpc(realmID, {
+        const response = await this.action(realmID, {
             type: 'join',
             playerID,
             name
@@ -207,7 +207,7 @@ export class StateTreeClient {
         target: PlayerID,
         damage: number
     ): Promise<AttackResponse> {
-        const response = await this.rpc(realmID, {
+        const response = await this.action(realmID, {
             type: 'attack',
             attacker,
             target,
@@ -268,11 +268,11 @@ export class StateTreeClient {
     
     private handleMessage(message: TransportMessage): void {
         switch (message.type) {
-            case 'rpcResponse':
-                const pending = this.pendingRPCs.get(message.requestID);
+            case 'actionResponse':
+                const pending = this.pendingActions.get(message.requestID);
                 if (pending) {
                     pending.resolve(message.response);
-                    this.pendingRPCs.delete(message.requestID);
+                    this.pendingActions.delete(message.requestID);
                 }
                 break;
                 
@@ -300,7 +300,7 @@ const client = new StateTreeClient({
     onDisconnect: () => console.log('Disconnected')
 });
 
-// 型別安全的 RPC 呼叫
+// 型別安全的 Action 呼叫
 const joinResponse = await client.join('game-room', 'player-123', 'Alice');
 
 // 訂閱 Event
@@ -374,7 +374,7 @@ Code-gen 架構必須滿足以下需求：
 ┌─────────────────────────────────────────┐
 │   Server Definition (Swift)             │
 │   - StateTree                           │
-│   - RPC / Event                         │
+│   - Action / Event                         │
 │   - Realm DSL                           │
 └─────────────────────────────────────────┘
               ↓
@@ -388,7 +388,7 @@ Code-gen 架構必須滿足以下需求：
 ┌─────────────────────────────────────────┐
 │   JSON Schema (中間格式)                │
 │   - 語言無關的型別定義                  │
-│   - Realm / RPC / Event 定義            │
+│   - Realm / Action / Event 定義            │
 │   - 可版本化、可驗證                    │
 └─────────────────────────────────────────┘
               ↓
@@ -1299,7 +1299,7 @@ node ./tools/openapi-converter/index.js \
 ## 相關文檔
 
 - **[DESIGN_CORE.md](./DESIGN_CORE.md)**：StateTree 核心概念
-- **[DESIGN_COMMUNICATION.md](./DESIGN_COMMUNICATION.md)**：RPC 與 Event 通訊模式
+- **[DESIGN_COMMUNICATION.md](./DESIGN_COMMUNICATION.md)**：Action 與 Event 通訊模式
 - **[DESIGN_REALM_DSL.md](./DESIGN_REALM_DSL.md)**：Realm DSL 定義
 - **[APP_APPLICATION.md](./APP_APPLICATION.md)**：跨平台實現範例
 

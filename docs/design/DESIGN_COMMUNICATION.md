@@ -1,4 +1,4 @@
-# 通訊模式：RPC 與 Event
+# 通訊模式：Action 與 Event
 
 > 本文檔說明 SwiftStateTree 的通訊模式設計
 > 
@@ -9,7 +9,7 @@
 
 系統採用兩種通訊模式，各自有不同的語義和用途：
 
-### 1. RPC（Client -> Server only，有 Response）
+### 1. Action（Client -> Server only，有 Response）
 
 **用途**：需要立即回饋的操作
 - 查詢操作（取得手牌、驗證是否可攻擊）
@@ -17,7 +17,7 @@
 - 需要結果的操作（drawCard 需要知道抽到哪張卡）
 
 **特點**：
-- **單向**：只有 Client 可以發起 RPC 給 Server
+- **單向**：只有 Client 可以發起 Action 給 Server
 - **有 Response**：Server 必須回傳結果
 - **等待回應**：Client 發送後會等待 Server 回應
 - **可選包含狀態**：Response 可以包含完整的狀態快照（用於 late join）
@@ -25,13 +25,13 @@
 **範例**：
 
 ```swift
-// Client 發起 RPC
-let result = try await client.rpc(.join(playerID: id, name: "Alice"))
+// Client 發起 Action
+let result = try await client.action(.join(playerID: id, name: "Alice"))
 // result: JoinResponse { success: Bool, realmID: String, state: StateSnapshot? }
 
-// Server 處理 RPC
-func handle(_ rpc: GameRPC, from player: PlayerID) async -> RPCResponse {
-    switch rpc {
+// Server 處理 Action
+func handle(_ action: GameAction, from player: PlayerID) async -> ActionResult {
+    switch action {
     case .join(let id, let name):
         state.players[id] = PlayerState(...)
         let snapshot = syncEngine.snapshot(for: id, from: state)
@@ -68,9 +68,9 @@ server.sendEvent(.fromServer(.gameEvent(.damage(from: attacker, to: target))))
 server.sendEvent(.fromServer(.systemMessage("Game started")))
 ```
 
-## RPC Response 設計
+## Action Response 設計
 
-RPC Response 可以選擇性包含狀態快照，用於特殊場景：
+Action Response 可以選擇性包含狀態快照，用於特殊場景：
 
 ### 包含狀態的場景
 
@@ -107,10 +107,10 @@ case .attack(let attacker, let target, let damage):
 
 ## 統一使用 WebSocket 傳輸
 
-**設計決策**：RPC 和 Event 都透過 WebSocket 傳輸，統一訊息格式
+**設計決策**：Action 和 Event 都透過 WebSocket 傳輸，統一訊息格式
 
 - **統一傳輸層**：所有通訊都透過 WebSocket，不需要混合 HTTP 和 WebSocket
-- **訊息格式**：使用統一的 `TransportMessage` 格式來區分 RPC 和 Event
+- **訊息格式**：使用統一的 `TransportMessage` 格式來區分 Action 和 Event
 - **路由機制**：透過 `realmID` 路由到對應的 Realm，在 Transport 層處理
 
 ### 統一的傳輸訊息格式
@@ -118,26 +118,26 @@ case .attack(let attacker, let target, let damage):
 ```swift
 // 統一的傳輸訊息格式（透過 WebSocket 傳輸）
 enum TransportMessage: Codable {
-    // RPC 請求（Client -> Server）
-    case rpc(requestID: String, realmID: String, rpc: GameRPC)
+    // Action 請求（Client -> Server）
+    case action(requestID: String, realmID: String, action: GameAction)
     
-    // RPC 回應（Server -> Client）
-    case rpcResponse(requestID: String, response: RPCResponse)
+    // Action 回應（Server -> Client）
+    case actionResponse(requestID: String, response: ActionResult)
     
     // Event（雙向）
     case event(realmID: String, event: GameEvent)
 }
 
-// Client 發送 RPC
-let message = TransportMessage.rpc(
+// Client 發送 Action
+let message = TransportMessage.action(
     requestID: UUID().uuidString,
     realmID: "match-3",
-    rpc: .join(playerID: id, name: "Alice")
+    action: .join(playerID: id, name: "Alice")
 )
 await websocket.send(message)
 
-// Server 回應 RPC
-let response = TransportMessage.rpcResponse(
+// Server 回應 Action
+let response = TransportMessage.actionResponse(
     requestID: requestID,
     response: .success(.joinResult(...))
 )
@@ -214,10 +214,10 @@ let clientID = generateOrGetClientID()  // 應用端生成
 let ws = await connect("wss://api.example.com/ws/player-123/\(clientID)")
 
 // Client 發送訊息時指定 realmID
-let message = TransportMessage.rpc(
+let message = TransportMessage.action(
     requestID: UUID().uuidString,
     realmID: "match-3",  // 在訊息中指定 realm
-    rpc: .join(playerID: id, name: "Alice")
+    action: .join(playerID: id, name: "Alice")
 )
 await ws.send(message)
 

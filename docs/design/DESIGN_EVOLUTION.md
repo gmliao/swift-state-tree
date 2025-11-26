@@ -23,7 +23,7 @@ StateTree 的誕生，是為了徹底解決「多執行緒同步」與「狀態�
 *   **核心哲學**：**狀態 (State) 與 行為 (Realm) 分離**。
 *   **特徵**：
     *   **Immutable Snapshots**：利用 Swift 的 Value Type (Struct) 特性，每個 Tick 結束就是一張唯讀快照。同步執行緒可以慢慢算 Diff，完全不用鎖。
-    *   **單向資料流**：Client 不再直接改變數，而是發送 RPC (意圖)。只有 Server 能修改 StateTree。
+    *   **單向資料流**：Client 不再直接改變數，而是發送 Action (意圖)。只有 Server 能修改 StateTree。
     *   **宣告式同步**：`@Sync` 決定了欄位如何被看見，而不是由程式碼動態決定。
 
 ---
@@ -36,7 +36,7 @@ flowchart LR
     
     subgraph Server [Server / Realm Runner]
         direction TB
-        RPC_Queue[RPC Queue]
+        Action_Queue[Action Queue]
         Realm[Realm (Logic / Write)]
         StateTree[StateTree (Data / State)]
         Snapshot[Immutable Snapshot]
@@ -48,7 +48,7 @@ flowchart LR
         Snapshot -->|Input| SyncEngine
     end
 
-    Client -->|1. Send RPC (move, attack)| RPC_Queue
+    Client -->|1. Send Action (move, attack)| Action_Queue
     SyncEngine -->|2. Compute View & Diff| SyncEngine
     SyncEngine -->|3. Send Binary Patch| Client
     Client -.->|4. Apply Patch| Client
@@ -174,7 +174,7 @@ public class ActorFramework {
 
 ---
 
-## 2️⃣ 新框架：StateTree + SyncPolicy + Realm + RPC
+## 2️⃣ 新框架：StateTree + SyncPolicy + Realm + Action
 
 ### 🌳 新概念對應
 
@@ -192,7 +192,7 @@ public class ActorFramework {
   * 決定誰能進來、可以做什麼、Tick、Lifetime、持久化
   * server 在這裡 **唯一有權改 state**
 
-* **RPC（Command 的進化版）**
+* **Action（Command 的進化版）**
   * client 發意圖：`move`, `attack`, `sendChat`…
   * Realm 收到 → 改 StateTree → sync engine 自動算 diff
 
@@ -255,12 +255,12 @@ struct RoomRealm {
         state.players.removeValue(forKey: ctx.playerID)
     }
 
-    // 3. 可以對這個世界做哪些操作（RPC）
-    RPC("move") { state, rpc, ctx in
-        state.players[ctx.playerID]?.position = rpc.position
+    // 3. 可以對這個世界做哪些操作（Action）
+    Action("move") { state, action, ctx in
+        state.players[ctx.playerID]?.position = action.position
     }
-
-    RPC("attack") { state, rpc, ctx in
+    
+    Action("attack") { state, action, ctx in
         // 改 HP、加特效旗標等等
     }
 
@@ -288,8 +288,8 @@ actor RealmRunner {
     var clients: [Client]
 
     func tick(dt: TimeInterval) async {
-        // 1. 處理 RPC（意圖）
-        applyPendingRPCs()
+        // 1. 處理 Action（意圖）
+        applyPendingActions()
 
         // 2. 執行 Tick 邏輯
         updateGameLogic(dt)
@@ -353,11 +353,11 @@ extension RealmRunner {
 | **「狀態」的基本單位** | `Actor`：一個物件，裡面一堆 `NetVar` | `StateTree`：一組純 struct（`RoomState`, `PlayerState`） | Actor 變成單純資料模型 |
 | **欄位封裝** | `NetVar<T>`：Value + Ownership + DirtyFlag | `var foo: T` + `@Sync(...)` metadata | 欄位本身乾淨，metadata 負責同步策略 |
 | **欄位同步語意** | `ENetVarOwnership` 混合「誰能讀／寫／同步」 | `SyncPolicy`（`.broadcast`, `.perPlayerSlice`, `.perRole`, `.serverOnly`）只管「誰看得到」 | 寫入權利搬走，統一交給 server |
-| **權威寫入者** | Actor / NetVar 支援 owner write / share write → client 也可能改 | **只有 server（Realm）改 StateTree**，client 僅發 RPC | 減少同步衝突、避免作弊 |
-| **操作（行為）** | `Actor.OnCommand(...)`、`Actor.Tick(...)`，行為綁在 Actor 類別上 | `RPC("xxx") { state, rpc, ctx in ... }` + Realm 的 Tick block | 行為拆成 RPC + Realm DSL，StateTree 保持資料模型 |
+| **權威寫入者** | Actor / NetVar 支援 owner write / share write → client 也可能改 | **只有 server（Realm）改 StateTree**，client 僅發 Action | 減少同步衝突、避免作弊 |
+| **操作（行為）** | `Actor.OnCommand(...)`、`Actor.Tick(...)`，行為綁在 Actor 類別上 | `Action("xxx") { state, action, ctx in ... }` + Realm 的 Tick block | 行為拆成 Action + Realm DSL，StateTree 保持資料模型 |
 | **同步管線** | ActorFramework 掃所有 Actor.NetVar，判斷 IsDirty + Ownership，組成更新 Command | SyncEngine 走整棵 StateTree + SyncPolicy + ctx，算出每個 client 的 view，再 diff | 差異計算與可見度一體化 |
 | **客製視角** | `StateView` / 手動決定哪些 Actor / NetVar 要加進封包 | SyncPolicy per-field + 自動 per-connection filter（perPlayer/perRole 等） | 不再手動 add/remove node，改成宣告式 policy |
-| **房間／世界管理** | ActorFramework + Room 邏輯散在多處 | `Realm<RoomState>`：AccessControl / OnJoin / OnLeave / RPC / Tick / Lifetime / Persist | Realm 正式變成「世界樂園容器」 |
+| **房間／世界管理** | ActorFramework + Room 邏輯散在多處 | `Realm<RoomState>`：AccessControl / OnJoin / OnLeave / Action / Tick / Lifetime / Persist | Realm 正式變成「世界樂園容器」 |
 | **事件／廣播** | `ActorEvent` + Framework 廣播給相關 Actor / client | 一部分用 StateTree 欄位（例如 `@Sync(.broadcast)` 的 `events` queue），或額外定義 event stream | 可直接投影成狀態的一部分 |
 | **多執行緒：更新** | 遊戲邏輯與同步邏輯都觸碰同一份 NetVar（Value + DirtyFlag），要鎖很醜 | Realm（可用 Swift actor）單執行緒更新 StateTree，這一階段不考慮同步 | 更新階段像傳統 game loop，簡單穩定 |
 | **多執行緒：同步** | 同步程式也要改 NetVar 狀態（清 Dirty / Updated），很難安全平行化 | Tick 後拿一份 `RoomState` snapshot（struct 值），用多 Task/Thread 並行算各 client 的 view + diff，只讀、不改 snapshot | 自然形成「單寫入、多讀取」，非常適合並行化 |

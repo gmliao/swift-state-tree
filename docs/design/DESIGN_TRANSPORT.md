@@ -108,10 +108,10 @@ protocol GameTransport {
     func send(_ event: GameEvent, to sessionID: SessionID, in realmID: String) async
     func broadcast(_ event: GameEvent, in realmID: String) async
     
-    // 發送 RPC 回應
-    func sendRPCResponse(
+    // 發送 Action 回應
+    func sendActionResult(
         requestID: String,
-        response: RPCResponse,
+        response: ActionResult,
         to sessionID: SessionID
     ) async
 }
@@ -193,15 +193,15 @@ actor WebSocketTransport: GameTransport {
         guard let session = clientSessions[sessionID] else { return }
         
         switch message {
-        case .rpc(let requestID, let realmID, let rpc):
+        case .action(let requestID, let realmID, let action):
             guard let actor = realmActors[realmID] else { return }
-            let response = await actor.handleRPC(
-                rpc,
+            let response = await actor.handleAction(
+                action,
                 from: session.playerID,
                 clientID: session.clientID,
                 sessionID: session.sessionID
             )
-            await sendRPCResponse(requestID: requestID, response: response, to: sessionID)
+            await sendActionResult(requestID: requestID, response: response, to: sessionID)
             
         case .event(let realmID, let event):
             guard let actor = realmActors[realmID] else { return }
@@ -212,8 +212,8 @@ actor WebSocketTransport: GameTransport {
                 sessionID: session.sessionID
             )
             
-        case .rpcResponse:
-            // Server 不應該收到 RPC Response
+        case .actionResponse:
+            // Server 不應該收到 Action Response
             break
         }
     }
@@ -260,9 +260,9 @@ actor WebSocketTransport: GameTransport {
         }
     }
     
-    func sendRPCResponse(
+    func sendActionResult(
         requestID: String,
-        response: RPCResponse,
+        response: ActionResult,
         to sessionID: SessionID
     ) async {
         guard let session = clientSessions[sessionID],
@@ -270,7 +270,7 @@ actor WebSocketTransport: GameTransport {
             return
         }
         
-        let message = TransportMessage.rpcResponse(
+        let message = TransportMessage.actionResponse(
             requestID: requestID,
             response: response
         )

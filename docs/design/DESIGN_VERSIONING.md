@@ -190,8 +190,8 @@ Realm 內部完全不需要版本邏輯。
 
 **Client 只有一種情況需要版本資訊：**
 
-- 舊 client 連到新版 server，需要 RPC 轉換
-- 這由你將來做的 RPC adapter / feature flag 處理即可
+- 舊 client 連到新版 server，需要 Action 轉換
+- 這由你將來做的 Action adapter / feature flag 處理即可
 
 一般遊戲或 app，用不到 client-side version negotiation。
 

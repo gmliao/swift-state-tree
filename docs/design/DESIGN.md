@@ -21,7 +21,7 @@
 - StateTree 可以長出多個 StateNode（支援巢狀結構）
 - 用 **@Sync 規則** 控制伺服器要把哪些資料同步給誰
 - 支援遞迴過濾：巢狀的 StateNode 可以獨立套用 @Sync 政策
-- 用 **Realm DSL** 定義領域、RPC/Event 處理、Tick 設定
+- 用 **Realm DSL** 定義領域、Action/Event 處理、Tick 設定
 - **UI 計算全部交給客戶端**，伺服器只送「邏輯資料」
 
 ---
@@ -35,10 +35,10 @@
 - **[DESIGN_VERSIONING.md](./DESIGN_VERSIONING.md)**：Schema 版本控制機制、`@Since` 標記、自動補欄位、Persistence 處理
 
 ### 通訊模式
-- **[DESIGN_COMMUNICATION.md](./DESIGN_COMMUNICATION.md)**：RPC 與 Event 通訊模式、WebSocket 傳輸、路由機制
+- **[DESIGN_COMMUNICATION.md](./DESIGN_COMMUNICATION.md)**：Action 與 Event 通訊模式、WebSocket 傳輸、路由機制
 
 ### Realm DSL
-- **[DESIGN_REALM_DSL.md](./DESIGN_REALM_DSL.md)**：領域宣告語法、RPC 處理、Event 處理、RealmContext
+- **[DESIGN_REALM_DSL.md](./DESIGN_REALM_DSL.md)**：領域宣告語法、Action 處理、Event 處理、RealmContext
 
 ### Transport 層
 - **[DESIGN_TRANSPORT.md](./DESIGN_TRANSPORT.md)**：網路傳輸抽象、Transport 協議、服務注入

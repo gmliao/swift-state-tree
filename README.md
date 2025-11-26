@@ -21,7 +21,7 @@ SwiftStateTree 採用以下核心設計：
 
 - 🌳 **單一權威狀態樹**：用一棵 `StateTree` 表示整個領域的狀態
 - 🔄 **同步規則 DSL**：使用 `@Sync` 規則控制伺服器要把哪些資料同步給誰
-- 🏛️ **Realm DSL**：定義領域、RPC/Event 處理、Tick 設定
+- 🏛️ **Realm DSL**：定義領域、Action/Event 處理、Tick 設定
 - 💻 **UI 計算交給客戶端**：伺服器只送「邏輯資料」，UI 渲染由客戶端處理
 
 ### 模組架構
@@ -229,7 +229,7 @@ let matchRealm = Realm("match-3", using: GameStateTree.self) {
         IdleTimeout(.seconds(60))
     }
     
-    RPC(GameRPC.join) { state, (id, name), ctx -> RPCResponse in
+    Action(GameAction.join) { state, (id, name), ctx -> ActionResult in
         state.players[id] = PlayerState(name: name, hpCurrent: 100, hpMax: 100)
         await ctx.syncNow()
         return .success(.joinResult(...))
@@ -269,8 +269,8 @@ let gameRealm = Realm("game-room", using: GameStateTree.self) {
         Tick(every: .milliseconds(100))
     }
     
-    RPC(GameRPC.self) { state, rpc, ctx -> RPCResponse in
-        // 處理 RPC
+    Action(GameAction.self) { state, action, ctx -> ActionResult in
+        // 處理 Action
     }
     
     On(ClientEvent.self) { state, event, ctx in
@@ -287,10 +287,10 @@ let gameRealm = Realm("game-room", using: GameStateTree.self) {
 - **[DESIGN_CORE.md](./docs/design/DESIGN_CORE.md)**：整體理念、StateTree 結構、同步規則 DSL
 
 ### 通訊模式
-- **[DESIGN_COMMUNICATION.md](./docs/design/DESIGN_COMMUNICATION.md)**：RPC 與 Event 通訊模式、WebSocket 傳輸、路由機制
+- **[DESIGN_COMMUNICATION.md](./docs/design/DESIGN_COMMUNICATION.md)**：Action 與 Event 通訊模式、WebSocket 傳輸、路由機制
 
 ### Realm DSL
-- **[DESIGN_REALM_DSL.md](./docs/design/DESIGN_REALM_DSL.md)**：領域宣告語法、RPC 處理、Event 處理、RealmContext
+- **[DESIGN_REALM_DSL.md](./docs/design/DESIGN_REALM_DSL.md)**：領域宣告語法、Action 處理、Event 處理、RealmContext
 
 ### Transport 層
 - **[DESIGN_TRANSPORT.md](./docs/design/DESIGN_TRANSPORT.md)**：網路傳輸抽象、Transport 協議、服務注入

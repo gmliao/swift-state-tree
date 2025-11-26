@@ -11,15 +11,15 @@
 ### 伺服器只做三件事
 
 1. **維護唯一真實狀態**：StateTree（狀態樹，包含一個 StateNode 作為根部）
-2. **根據 RPC 和 Event 更新這棵樹**
+2. **根據 Action 和 Event 更新這棵樹**
 3. **根據同步規則 SyncPolicy**，為每個玩家產生專屬 JSON，同步出去（支援遞迴過濾）
 
 ### 資料流
 
-#### RPC 流程（Client -> Server，有 Response）
+#### Action 流程（Client -> Server，有 Response）
 
 ```
-Client 發 RPC
+Client 發 Action
   → Server RealmActor 處理
   → 更新 StateTree（可選，更新根部的 StateNode）
   → 返回 Response（可包含狀態快照，用於 late join）
@@ -610,7 +610,7 @@ struct GameStateRootNode: StateNodeProtocol {
 **Realm → Builder DSL（Result Builder DSL）**
 
 - **描述「這個領域要做什麼」**：定義行為邏輯
-- **RPC handler**：處理客戶端請求
+- **Action handler**：處理客戶端請求
 - **Event handler**：處理事件
 - **Tick handler**：定期執行邏輯
 - **Config**：領域配置
@@ -623,7 +623,7 @@ let matchRealm = Realm("match-3", using: GameStateTree.self) {
         Tick(every: .milliseconds(100))
     }
     
-    RPC(GameRPC.join) { state, (id, name), ctx -> RPCResponse in
+    Action(GameAction.join) { state, (id, name), ctx -> ActionResult in
         state.players[id] = PlayerState(name: name, hpCurrent: 100, hpMax: 100)
         await ctx.syncNow()
         return .success(.joinResult(...))

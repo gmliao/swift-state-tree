@@ -25,7 +25,7 @@ Join → Snapshot → FirstSync → (開始 Diff)
 1. 建立 Session（playerID、clientID）
 2. 根據 SyncPolicy 裁切 StateTree（broadcast + perPlayer）
 3. 產生 **完整 snapshot**
-4. 透過 RPC.join（系統級）回傳給客戶端
+4. 透過 Action.join（系統級）回傳給客戶端
 
 ### 📥 客戶端收到的是完整狀態：
 
@@ -49,7 +49,7 @@ Join → Snapshot → FirstSync → (開始 Diff)
 **實作範例**：
 
 ```swift
-// Server 處理 join RPC
+// Server 處理 join Action
 case .join(let id, let name):
     state.players[id] = PlayerState(name: name, hpCurrent: 100, hpMax: 100)
     state.hands[id] = HandState(ownerID: id, cards: [])
@@ -87,7 +87,7 @@ case .join(let id, let name):
 
 也就是：
 
-* baseline 已建立（由 RPC.join snapshot 提供）
+* baseline 已建立（由 Action.join snapshot 提供）
 * SyncEngine 進入 operational mode
 * 未來都會收到 patch（diff-based updates）
 
@@ -175,7 +175,7 @@ case .diff(let patches):
 * 接受 diff
 * 啟動本地 reducer / state listener
 
-### 🟡 架構乾淨：RPC 與 SyncEngine 分離
+### 🟡 架構乾淨：Action 與 SyncEngine 分離
 
 * `join`：一次性 → snapshot
 * `sync`：持續性 → diff
@@ -209,7 +209,7 @@ Client -----------------------> Server
 ```
 時間軸：
 
-T0: Client 發送 join RPC
+T0: Client 發送 join Action
 T1: Server 處理 join，生成 snapshot
 T2: Client 收到 snapshot，建立 baseline
 T3: Server SyncEngine 第一次為該玩家生成 diff
@@ -303,7 +303,7 @@ func handleStateUpdate(_ update: StateUpdate) {
 ## 📍 8. 相關文檔
 
 * [DESIGN_RUNTIME.md](./DESIGN_RUNTIME.md) - SyncEngine 實作細節
-* [DESIGN_COMMUNICATION.md](./DESIGN_COMMUNICATION.md) - RPC 與 Event 通訊模式
+* [DESIGN_COMMUNICATION.md](./DESIGN_COMMUNICATION.md) - Action 與 Event 通訊模式
 * [DESIGN_CORE.md](./DESIGN_CORE.md) - 核心同步概念
 * [DESIGN_EXAMPLES.md](./DESIGN_EXAMPLES.md) - 端到端範例
 

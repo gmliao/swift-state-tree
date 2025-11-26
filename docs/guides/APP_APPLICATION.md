@@ -14,18 +14,18 @@ StateTree 架構在理論上可延伸到 App 開發，特別是：
 
 1. **單一狀態樹**：統一管理狀態，避免多套快取/資料源
 2. **聲明式同步規則**：用 `@Sync` 描述同步策略，減少手寫同步邏輯
-3. **一致通訊模式**：RPC（請求）+ Event（推送），沿用現有伺服器模型
+3. **一致通訊模式**：Action（請求）+ Event（推送），沿用現有伺服器模型
 4. **型別安全 DSL**：若導入宏/代碼生成，可保持客戶端型別一致
 
 ## 狀態同步方式（推測使用方式）
 
 若沿用現行伺服器設計，App 端可能以下列方式取得/更新狀態：
 
-#### 1. 初始狀態獲取（RPC）
+#### 1. 初始狀態獲取（Action）
 
 ```swift
 // 用戶打開 Timeline
-let response = await client.rpc(.fetchTimeline(page: 0))
+let response = await client.action(.fetchTimeline(page: 0))
 // Response 包含完整的狀態快照
 state.timeline = response.data.timeline
 ```
@@ -50,7 +50,7 @@ On(SNSServerEvent.postUpdated) { state, post, ctx in
 **特點（暫定假設）**：
 - **單一真實來源（Single Source of Truth）**：伺服器仍是權威，App 端持有裁切後的快取
 - **聲明式同步**：`@Sync` 規則可望沿用，但需再定義適用於本地快取/離線場景的語義
-- **事件驅動**：狀態變化來自 RPC Response 和 Event 推送；離線/重連行為尚待設計
+- **事件驅動**：狀態變化來自 Action Response 和 Event 推送；離線/重連行為尚待設計
 
 ## 與目前主流做法比較
 
@@ -59,14 +59,14 @@ On(SNSServerEvent.postUpdated) { state, post, ctx in
 | 面向 | 傳統方案 (Redux/Vuex/MVVM/TCA) | StateTree 架構（假設導入 App） |
 | ---- | ------------------------------ | ------------------------------- |
 | 狀態來源 | 多處快取 + API + WebSocket 手動整合 | 單一 StateTree + `@Sync` 規則裁切 |
-| 通訊 | API + WebSocket 需自行編排 | RPC + Event 統一格式 |
+| 通訊 | API + WebSocket 需自行編排 | Action + Event 統一格式 |
 | 型別安全 | 依語言/框架各自處理 | 期望透過宏/codegen 與伺服器型別一致 |
 | 離線/重連 | 需自行處理 | 尚未設計，保留彈性 |
 
 ## SNS App 概念範例（簡化示意）
 
 - **狀態樹概念**：以 `@Sync(.cache/.cloud/.local/.memory)` 描述 timeline、通知、草稿、UI 狀態的同步與快取；僅作概念示意，未在核心 DSL 落地。
-- **RPC/Event 概念**：RPC 取得或更新 timeline/貼文；Server 以 Event 推送新貼文、通知、上線狀態。型別與 payload 細節留待未來決策。
+- **Action/Event 概念**：Action 取得或更新 timeline/貼文；Server 以 Event 推送新貼文、通知、上線狀態。型別與 payload 細節留待未來決策。
 - **離線/重連**：需額外設計（衝突解決、增量同步、重放策略），此處只說明可能的資料流。
 
 ## 其他應用場景（概念化）
@@ -77,7 +77,7 @@ On(SNSServerEvent.postUpdated) { state, post, ctx in
 
 ## 新增 feature 的最小模板（示意）
 
-- 以「狀態欄位 + RPC + Event + Handler」的四步最小骨架描述，型別和 payload 可先用佔位符。
+- 以「狀態欄位 + Action + Event + Handler」的四步最小骨架描述，型別和 payload 可先用佔位符。
 - `@Sync` 先寫最直覺策略（如 .broadcast/.memory），之後再調 perPlayer/masked。
 - Handler 只保留一條 happy path，錯誤/重試與離線衝突留待後續。
 
@@ -88,7 +88,7 @@ struct FeatureState {
     @Sync(.broadcast) var items: [Item] = []  // 後續可改 perPlayer/masked
 }
 
-// RPC：只列 case 名稱/參數，回傳先用佔位
+// Action：只列 case 名稱/參數，回傳先用佔位
 enum FeatureRPC: Codable {
     case addItem(name: String)
 }
@@ -100,8 +100,8 @@ enum FeatureEvent: Codable {
 
 // DSL 骨架：一條 happy path，必要時再補錯誤處理/同步策略
 let feature = Realm("feature-demo", using: FeatureState.self) {
-    RPC(FeatureRPC.self) { state, rpc, ctx -> RPCResponse in
-        switch rpc {
+    Action(FeatureAction.self) { state, action, ctx -> ActionResult in
+        switch action {
         case .addItem(let name):
             let item = Item(id: UUID().uuidString, name: name)
             state.items.append(item)

@@ -1,4 +1,4 @@
-# Realm DSL：領域宣告、RPC 處理、Event 處理
+# Realm DSL：領域宣告、Action 處理、Event 處理
 
 > 本文檔說明 SwiftStateTree 的 Realm DSL 設計
 
@@ -32,7 +32,7 @@
 
 #### 2️⃣ 我提供哪些功能讓你操作這棵樹？（遊戲規則）
 
-- 可以呼叫什麼 RPC / Command：
+- 可以呼叫什麼 Action / Command：
   - `move`
   - `attack`
   - `sendMessage`
@@ -95,7 +95,7 @@
 定義「這種領域」的：
 - 對應 state type（StateTree）
 - 大門規則（誰可以進入、人數限制）
-- 遊戲規則（可用的 RPC/Event handler）
+- 遊戲規則（可用的 Action/Event handler）
 - 營業時間（Tick 間隔、生命週期管理、持久化策略）
 - 之後還可以掛 service / DI
 
@@ -129,13 +129,13 @@ let matchRealm = Realm("match-3", using: GameStateTree.self) {
         ClientEvent.uiInteraction
     }
     
-    // 2️⃣ 遊戲規則：RPC 處理（混合模式）
-    RPC(GameRPC.getPlayerHand) { state, id, ctx -> RPCResponse in
+    // 2️⃣ 遊戲規則：Action 處理（混合模式）
+    Action(GameAction.getPlayerHand) { state, id, ctx -> ActionResult in
         return .success(.hand(state.hands[id]?.cards ?? []))
     }
     
-    RPC(GameRPC.self) { state, rpc, ctx -> RPCResponse in
-        switch rpc {
+    Action(GameAction.self) { state, action, ctx -> ActionResult in
+        switch action {
         case .join(let id, let name):
             state.players[id] = PlayerState(name: name, hpCurrent: 100, hpMax: 100)
             state.hands[id] = HandState(ownerID: id, cards: [])
@@ -159,7 +159,7 @@ let matchRealm = Realm("match-3", using: GameStateTree.self) {
             return .success(.empty)
             
         default:
-            return await handleOtherRPC(&state, rpc, ctx)
+            return await handleOtherAction(&state, action, ctx)
         }
     }
     
@@ -204,12 +204,12 @@ struct RoomRealm {
         // 玩家離開時的處理
     }
     
-    RPC("attack") { state, rpc, ctx in
-        // 攻擊 RPC 處理
+    Action("attack") { state, action, ctx in
+        // 攻擊 Action 處理
     }
     
-    RPC("sendChat") { state, rpc, ctx in
-        // 聊天 RPC 處理
+    Action("sendChat") { state, action, ctx in
+        // 聊天 Action 處理
     }
     
     AllowedClientEvents {
@@ -257,14 +257,14 @@ public struct ConfigNode: RealmNode {
     // 網路層細節應該在 Transport 層處理，而不是在 StateTree/Realm 層
 }
 
-// RPC 節點：支援統一 RPC 型別或特定 RPC case
-public struct RPCNode<C>: RealmNode {
-    public let handler: (inout StateTree, C, RealmContext) async -> RPCResponse
+// Action 節點：支援統一 Action 型別或特定 Action case
+public struct ActionHandlerNode<C>: RealmNode {
+    public let handler: (inout StateTree, C, RealmContext) async -> ActionResult
 }
 
-// 特定 RPC case 的節點（用於簡單的 RPC）
-public struct SpecificRPCNode<C>: RealmNode {
-    public let handler: (inout StateTree, C, RealmContext) async -> RPCResponse
+// 特定 Action case 的節點（用於簡單的 Action）
+public struct SpecificActionHandlerNode<C>: RealmNode {
+    public let handler: (inout StateTree, C, RealmContext) async -> ActionResult
 }
 
 // Event 節點：支援統一 Event 型別或特定 ClientEvent case
@@ -315,7 +315,7 @@ public typealias Feature<State> = Realm<State>
 |---------|---------------|------|
 | **1️⃣ 大門規則** | `ConfigNode` 中的 `maxPlayers` | 控制誰可以進入、人數上限 |
 | | 未來可擴展：`AccessControlNode` | 權限檢查、角色限制等 |
-| **2️⃣ 遊戲規則** | `RPCNode` / `SpecificRPCNode` | 定義可用的 RPC 操作 |
+| **2️⃣ 遊戲規則** | `ActionHandlerNode` / `SpecificActionHandlerNode` | 定義可用的 Action 操作 |
 | | `OnEventNode` / `OnSpecificEventNode` | 定義可處理的 Event |
 | | `AllowedClientEvents` | 限制 Client 可發送的 Event |
 | | `OnJoin` / `OnLeave` (未來) | 玩家加入/離開時的處理 |
@@ -329,12 +329,12 @@ public typealias Feature<State> = Realm<State>
 
 ---
 
-## RPC 處理：RPC DSL
+## Action 處理：Action DSL
 
-### RPC 型別定義
+### Action 型別定義
 
 ```swift
-enum GameRPC: Codable {
+enum GameAction: Codable {
     // 查詢操作
     case getPlayerHand(PlayerID)
     case canAttack(PlayerID, target: PlayerID)
@@ -346,12 +346,12 @@ enum GameRPC: Codable {
     case attack(attacker: PlayerID, target: PlayerID, damage: Int)
 }
 
-enum RPCResponse: Codable {
-    case success(RPCResultData)
+enum ActionResult: Codable {
+    case success(ActionResultData)
     case failure(String)
 }
 
-enum RPCResultData: Codable {
+enum ActionResultData: Codable {
     case joinResult(JoinResponse)
     case hand([Card])
     case card(Card)
@@ -365,23 +365,23 @@ struct JoinResponse: Codable {
 }
 ```
 
-### RPC DSL 寫法（混合模式）
+### Action DSL 寫法（混合模式）
 
 為了避免 handler 過於肥大，支援兩種寫法：
 
-#### 方式 1：針對特定 RPC 的獨立 Handler（推薦用於簡單邏輯）
+#### 方式 1：針對特定 Action 的獨立 Handler（推薦用於簡單邏輯）
 
 ```swift
 // 使用 Realm（核心名稱）
 let matchRealm = Realm("match-3", using: GameStateTree.self) {
     Config { ... }
     
-    // 簡單的查詢 RPC：用獨立 handler
-    RPC(GameRPC.getPlayerHand) { state, id, ctx -> RPCResponse in
+    // 簡單的查詢 Action：用獨立 handler
+    Action(GameAction.getPlayerHand) { state, id, ctx -> ActionResult in
         return .success(.hand(state.hands[id]?.cards ?? []))
     }
     
-    RPC(GameRPC.canAttack) { state, (attacker, target), ctx -> RPCResponse in
+    Action(GameAction.canAttack) { state, (attacker, target), ctx -> ActionResult in
         guard let attackerState = state.players[attacker],
               let targetState = state.players[target] else {
             return .failure("Player not found")
@@ -390,32 +390,32 @@ let matchRealm = Realm("match-3", using: GameStateTree.self) {
         return .success(.empty)  // 或定義 CanAttackResponse
     }
     
-    // 複雜的 RPC：用統一 handler 或提取到函數
-    RPC(GameRPC.join) { state, (id, name), ctx -> RPCResponse in
+    // 複雜的 Action：用統一 handler 或提取到函數
+    Action(GameAction.join) { state, (id, name), ctx -> ActionResult in
         return await handleJoin(&state, id, name, ctx)
     }
 }
 ```
 
-#### 方式 2：統一的 RPC Handler（適合複雜邏輯或需要共享邏輯）
+#### 方式 2：統一的 Action Handler（適合複雜邏輯或需要共享邏輯）
 
 ```swift
 let matchRealm = Realm("match-3", using: GameStateTree.self) {
     Config { ... }
     
     // 複雜邏輯用統一 handler
-    RPC(GameRPC.self) { state, rpc, ctx -> RPCResponse in
-        return await handleRPC(&state, rpc, ctx)
+    Action(GameAction.self) { state, action, ctx -> ActionResult in
+        return await handleAction(&state, action, ctx)
     }
 }
 
 // 提取複雜邏輯到獨立函數
-private func handleRPC(
+private func handleAction(
     _ state: inout GameStateTree,
-    _ rpc: GameRPC,
+    _ action: GameAction,
     _ ctx: RealmContext
-) async -> RPCResponse {
-    switch rpc {
+) async -> ActionResult {
+    switch action {
     case .getPlayerHand(let id):
         return .success(.hand(state.hands[id]?.cards ?? []))
     case .join(let id, let name):
@@ -432,7 +432,7 @@ private func handleJoin(
     _ id: PlayerID,
     _ name: String,
     _ ctx: RealmContext
-) async -> RPCResponse {
+) async -> ActionResult {
     state.players[id] = PlayerState(name: name, hpCurrent: 100, hpMax: 100)
     state.hands[id] = HandState(ownerID: id, cards: [])
     let snapshot = syncEngine.snapshot(for: id, from: state)
@@ -449,12 +449,12 @@ private func handleJoin(
 let matchRealm = Realm("match-3", using: GameStateTree.self) {
     Config { ... }
     
-    // 簡單的查詢 RPC：用獨立 handler
-    RPC(GameRPC.getPlayerHand) { state, id, ctx -> RPCResponse in
+    // 簡單的查詢 Action：用獨立 handler
+    Action(GameAction.getPlayerHand) { state, id, ctx -> ActionResult in
         return .success(.hand(state.hands[id]?.cards ?? []))
     }
     
-    RPC(GameRPC.canAttack) { state, (attacker, target), ctx -> RPCResponse in
+    Action(GameAction.canAttack) { state, (attacker, target), ctx -> ActionResult in
         guard state.players[attacker] != nil,
               state.players[target] != nil else {
             return .failure("Player not found")
@@ -462,9 +462,9 @@ let matchRealm = Realm("match-3", using: GameStateTree.self) {
         return .success(.empty)
     }
     
-    // 複雜的狀態修改 RPC：用統一 handler
-    RPC(GameRPC.self) { state, rpc, ctx -> RPCResponse in
-        switch rpc {
+    // 複雜的狀態修改 Action：用統一 handler
+    Action(GameAction.self) { state, action, ctx -> ActionResult in
+        switch action {
         case .join(let id, let name):
             return await handleJoin(&state, id, name, ctx)
         case .drawCard(let id):
@@ -472,15 +472,15 @@ let matchRealm = Realm("match-3", using: GameStateTree.self) {
         case .attack(let attacker, let target, let damage):
             return await handleAttack(&state, attacker, target, damage, ctx)
         default:
-            return .failure("Unknown RPC")
+            return .failure("Unknown Action")
         }
     }
 }
 ```
 
 **建議**：
-- 簡單的查詢 RPC（如 `getPlayerHand`、`canAttack`）→ 使用 `RPC(GameRPC.xxx)`
-- 複雜的狀態修改 RPC（如 `join`、`drawCard`、`attack`）→ 使用 `RPC(GameRPC.self)` 或提取到函數
+- 簡單的查詢 Action（如 `getPlayerHand`、`canAttack`）→ 使用 `Action(GameAction.xxx)`
+- 複雜的狀態修改 Action（如 `join`、`drawCard`、`attack`）→ 使用 `Action(GameAction.self)` 或提取到函數
 - 按邏輯分組處理（如查詢類、狀態修改類）
 
 ---
@@ -665,7 +665,7 @@ let matchRealm = Realm("match-3", using: GameStateTree.self) {
 
 ### Server 推送 Event
 
-在 RPC handler 或內部邏輯中，Server 可以自由推送 ServerEvent（**不受 AllowedClientEvents 限制**）：
+在 Action handler 或內部邏輯中，Server 可以自由推送 ServerEvent（**不受 AllowedClientEvents 限制**）：
 
 ```swift
 // 在任何 handler 中，Server 可以自由發送 ServerEvent
@@ -688,14 +688,14 @@ RealmContext 的設計概念類似 NestJS 的 Request Context：
 
 | 特性 | NestJS Request Context | StateTree RealmContext |
 |------|----------------------|----------------------|
-| **建立時機** | 每個 HTTP 請求 | 每個 RPC/Event 請求 |
+| **建立時機** | 每個 HTTP 請求 | 每個 Action/Event 請求 |
 | **生命週期** | 請求開始 → 請求結束 | 請求開始 → 請求結束 |
 | **包含資訊** | user、params、headers、ip 等 | playerID、clientID、sessionID、realmID 等 |
 | **傳遞方式** | Dependency Injection | 作為參數傳遞給 handler |
 | **釋放時機** | 請求處理完成後 | 請求處理完成後 |
 
 **關鍵點**：
-- ✅ **請求級別**：每次 RPC/Event 請求建立一個新的 RealmContext
+- ✅ **請求級別**：每次 Action/Event 請求建立一個新的 RealmContext
 - ✅ **不持久化**：處理完成後釋放，不保留在記憶體中
 - ✅ **資訊集中**：請求相關資訊（playerID、clientID、sessionID）集中在 context 中
 - ✅ **請求隔離**：每個請求有獨立的 context，不會互相干擾
@@ -781,16 +781,16 @@ struct SessionID: Hashable, Codable {
 **重要**：RealmContext 不是「每個玩家有一個」，而是「每次請求建立一個」。
 
 ```swift
-// 範例：Alice 發送多個 RPC
+// 範例：Alice 發送多個 Action
 
-// 請求 1：Alice 發送 join RPC
+// 請求 1：Alice 發送 join Action
 // ├─ 建立 RealmContext #1
 // │  ├─ playerID: "alice-123"
 // │  ├─ clientID: "device-mobile-001"
 // │  └─ sessionID: "session-001"
 // └─ 處理完成後，RealmContext #1 被釋放
 
-// 請求 2：Alice 發送 attack RPC
+// 請求 2：Alice 發送 attack Action
 // ├─ 建立 RealmContext #2
 // │  ├─ playerID: "alice-123"      (相同)
 // │  ├─ clientID: "device-mobile-001" (相同)
@@ -799,7 +799,7 @@ struct SessionID: Hashable, Codable {
 ```
 
 **設計要點**：
-1. **請求級別**：每次 RPC/Event 請求建立一個新的 RealmContext
+1. **請求級別**：每次 Action/Event 請求建立一個新的 RealmContext
 2. **不持久化**：處理完成後釋放，不保留在記憶體中
 3. **輕量級**：只包含該請求需要的資訊
 4. **請求隔離**：每個請求有獨立的 context，不會互相干擾
@@ -842,7 +842,7 @@ let gameRealm = Realm("game-room", using: GameStateTree.self) {
         await handleTick(&state, ctx)
     }
     
-    // RPC Handler...
+    // Action Handler...
 }
 
 // ✅ 複雜邏輯拆分成獨立函數
