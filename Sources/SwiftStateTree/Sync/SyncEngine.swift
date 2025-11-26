@@ -38,6 +38,12 @@ public struct SyncEngine: Sendable {
     /// Cache for per-player snapshots (individual cache per player)
     private var lastPerPlayerSnapshots: [PlayerID: StateSnapshot] = [:]
     
+    /// Track which players have received firstSync signal
+    /// This is separate from cache population to handle lateJoin scenarios:
+    /// - lateJoinSnapshot populates cache but doesn't mark as firstSync received
+    /// - First generateDiff after lateJoin will return firstSync signal
+    private var hasReceivedFirstSync: Set<PlayerID> = []
+    
     public init() {}
 
     /// Generate a full snapshot for a specific player or broadcast fields only.
@@ -516,37 +522,62 @@ public struct SyncEngine: Sendable {
     
     // MARK: - Main Diff Generation
     
-    /// Generate a diff update using pre-extracted snapshots (ensures consistency).
+    /// Generate a diff update using pre-extracted snapshots with automatic dirty tracking.
     ///
     /// Allows locking state, extracting snapshots, unlocking, then computing diff.
     /// Ensures broadcast and per-player diffs use the same state version.
+    ///
+    /// **Automatic Dirty Tracking**: If `state.isDirty()` is `true`,
+    /// automatically splits dirty fields into broadcast and per-player modes for optimization.
+    /// This matches the behavior of `generateDiff(for:from:useDirtyTracking:)`.
     ///
     /// - Parameters:
     ///   - playerID: The player ID.
     ///   - broadcastSnapshot: Pre-extracted broadcast snapshot (shared across all players).
     ///   - perPlayerSnapshot: Pre-extracted per-player snapshot (specific to this player).
     ///   - onlyPaths: Optional set of paths to limit diff calculation (JSON Pointer format).
-    ///   - mode: Snapshot generation mode. Default is `.all`.
+    ///   - state: State for automatic dirty tracking. If dirty, automatically
+    ///            splits dirty fields into broadcast and per-player modes.
     /// - Returns: `.firstSync([StatePatch])` on first call, `.diff([StatePatch])` with changes, or `.noChange`.
     /// - Throws: `SyncError` if value conversion fails.
-    public mutating func generateDiffFromSnapshots(
+    public mutating func generateDiffFromSnapshots<State: StateNodeProtocol>(
         for playerID: PlayerID,
         broadcastSnapshot: StateSnapshot,
         perPlayerSnapshot: StateSnapshot,
         onlyPaths: Set<String>? = nil,
-        mode: SnapshotMode = .all
+        state: State
     ) throws -> StateUpdate {
-        let isFirstSyncForPlayer = lastPerPlayerSnapshots[playerID] == nil
+        // Check if this is the first sync for this player
+        // This is separate from cache check to handle lateJoin scenarios
+        let isFirstSyncForPlayer = !hasReceivedFirstSync.contains(playerID)
         
-        // Get sync field definitions to filter onlyPaths
-        // Note: We need to determine field types, but we don't have access to state here
-        // For now, we'll pass onlyPaths as-is and let the comparison handle it
+        // Automatically handle dirty tracking
+        let broadcastMode: SnapshotMode
+        let perPlayerMode: SnapshotMode
+        
+        if state.isDirty() {
+            // Automatically use dirty tracking mode (same logic as generateDiff)
+            let dirtyFields = state.getDirtyFields()
+            let syncFields = state.getSyncFields()
+            let broadcastFieldNames = Set(syncFields.filter { $0.policyType == .broadcast }.map { $0.name })
+            let perPlayerFieldNames = Set(syncFields.filter { $0.policyType != .broadcast && $0.policyType != .serverOnly }.map { $0.name })
+            
+            let broadcastFields = dirtyFields.intersection(broadcastFieldNames)
+            let perPlayerFields = dirtyFields.intersection(perPlayerFieldNames)
+            
+            broadcastMode = broadcastFields.isEmpty ? .all : .dirtyTracking(broadcastFields)
+            perPlayerMode = perPlayerFields.isEmpty ? .all : .dirtyTracking(perPlayerFields)
+        } else {
+            // No state provided or state is not dirty, use .all
+            broadcastMode = .all
+            perPlayerMode = .all
+        }
         
         // Compute broadcast diff using pre-extracted snapshot
         let broadcastDiff = computeBroadcastDiffFromSnapshot(
             currentBroadcast: broadcastSnapshot,
             onlyPaths: onlyPaths,
-            mode: mode
+            mode: broadcastMode
         )
         
         // Compute per-player diff using pre-extracted snapshot
@@ -554,7 +585,7 @@ public struct SyncEngine: Sendable {
             for: playerID,
             currentPerPlayer: perPlayerSnapshot,
             onlyPaths: onlyPaths,
-            mode: mode
+            mode: perPlayerMode
         )
         
         // Merge patches (per-player takes precedence)
@@ -562,6 +593,7 @@ public struct SyncEngine: Sendable {
         
         // Now that cache is populated, we can safely return firstSync signal
         if isFirstSyncForPlayer {
+            hasReceivedFirstSync.insert(playerID)  // Mark as received
             return .firstSync(mergedPatches)
         }
         
@@ -601,7 +633,9 @@ public struct SyncEngine: Sendable {
         onlyPaths: Set<String>? = nil,
         useDirtyTracking: Bool = true
     ) throws -> StateUpdate {
-        let isFirstSyncForPlayer = lastPerPlayerSnapshots[playerID] == nil
+        // Check if this is the first sync for this player
+        // This is separate from cache check to handle lateJoin scenarios
+        let isFirstSyncForPlayer = !hasReceivedFirstSync.contains(playerID)
         
         // Get snapshot mode based on dirty tracking
         let snapshotMode: SnapshotMode
@@ -668,6 +702,7 @@ public struct SyncEngine: Sendable {
         // Now that cache is populated, we can safely return firstSync signal
         // Include patches to handle any changes between join and first diff generation
         if isFirstSyncForPlayer {
+            hasReceivedFirstSync.insert(playerID)  // Mark as received
             return .firstSync(mergedPatches)
         }
         
@@ -707,6 +742,7 @@ public struct SyncEngine: Sendable {
     /// - Parameter playerID: The player ID whose cache should be cleared.
     public mutating func clearCacheForDisconnectedPlayer(_ playerID: PlayerID) {
         lastPerPlayerSnapshots.removeValue(forKey: playerID)
+        hasReceivedFirstSync.remove(playerID)  // Also clear firstSync flag
     }
     
     // MARK: - Cache Population Helper

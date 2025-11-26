@@ -38,8 +38,6 @@ struct SyncEngineDirtyTrackingTests_Discussion {
         // 選項 A：不生成 patch（因為沒有 dirty fields）
         // 選項 B：生成 patch（因為字段在 cache 中不存在）
         // 當前行為：選項 B（會生成 patch）
-        
-        print("Case 1 result: \(update)")
     }
     
     // MARK: - 情況 2: 字典字段新增了 key（但整個字典沒有被標記為 dirty）
@@ -72,8 +70,6 @@ struct SyncEngineDirtyTrackingTests_Discussion {
         // 選項 A：只檢測 dirty 字段（players），生成 players 的完整 patch
         // 選項 B：檢測所有字段，但只對 dirty 字段生成 patch
         // 當前行為：選項 A（會生成 patch，因為 players 是 dirty）
-        
-        print("Case 2 result: \(update)")
     }
     
     // MARK: - 情況 3: 第一次 sync 時字段沒有被包含，後續 sync 時出現了
@@ -97,7 +93,6 @@ struct SyncEngineDirtyTrackingTests_Discussion {
         // 檢查第一次 sync 的 snapshot 是否包含 turn
         if case .firstSync(let patches) = firstUpdate {
             let hasTurn = patches.contains { $0.path == "/turn" }
-            print("First sync contains /turn: \(hasTurn)")
         }
         
         state.clearDirty()
@@ -111,8 +106,6 @@ struct SyncEngineDirtyTrackingTests_Discussion {
         // 選項 A：不生成 patch（因為沒有 dirty fields，且值沒有改變）
         // 選項 B：生成 patch（因為字段在 cache 中不存在，視為新增）
         // 當前行為：選項 B（會生成 patch）
-        
-        print("Case 3 result: \(secondUpdate)")
     }
     
     // MARK: - 情況 4: 嵌套對象中的字段新增
@@ -147,8 +140,6 @@ struct SyncEngineDirtyTrackingTests_Discussion {
         // 選項 A：不檢測（因為 players 不是 dirty）
         // 選項 B：檢測（因為比較所有字段，但只對 dirty 字段生成 patch）
         // 當前行為：選項 A（不會檢測，因為只比較 dirty 字段）
-        
-        print("Case 4 result: \(update)")
     }
     
     // MARK: - 情況 5: 字段從有值變成 nil
@@ -182,8 +173,6 @@ struct SyncEngineDirtyTrackingTests_Discussion {
         // 選項 A：不生成 patch（因為 turn 不是 dirty）
         // 選項 B：生成 delete patch（因為 turn 是 dirty）
         // 當前行為：選項 B（會生成 delete patch，因為 turn 是 dirty）
-        
-        print("Case 5 result: \(update)")
     }
 }
 

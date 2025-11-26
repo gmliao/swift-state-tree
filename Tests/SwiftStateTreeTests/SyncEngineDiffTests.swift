@@ -433,8 +433,8 @@ func testLateJoin_UsesFullSnapshot() throws {
     #expect(snapshot["round"] != nil, "Should have round field")
 }
 
-@Test("Late join populates cache so subsequent generateDiff detects changes")
-func testLateJoin_PopulatesCache() throws {
+@Test("Late join populates cache and first generateDiff returns firstSync")
+func testLateJoin_PopulatesCache_ReturnsFirstSync() throws {
     // Arrange
     var syncEngine = SyncEngine()
     var state = DiffTestStateRootNode()
@@ -443,25 +443,25 @@ func testLateJoin_PopulatesCache() throws {
     state.round = 1
     state.players[playerID] = "Alice"
     
-    // Act 1 - Late join (should populate cache)
+    // Act 1 - Late join (should populate cache but NOT mark as firstSync received)
     let snapshot = try syncEngine.lateJoinSnapshot(for: playerID, from: state)
     #expect(!snapshot.isEmpty, "Snapshot should not be empty")
     
     // Act 2 - Change state after join
     state.round = 2
     
-    // Act 3 - Generate diff (should NOT return firstSync because cache was populated by lateJoinSnapshot)
+    // Act 3 - Generate diff (should return firstSync because firstSync flag not set)
     let update = try syncEngine.generateDiff(for: playerID, from: state)
     
     // Assert
-    // Should return diff (not firstSync) because cache was already populated
-    if case .diff(let patches) = update {
-        #expect(patches.count > 0, "Should have patches for the change")
+    // Should return firstSync (not diff) because firstSync flag was not set by lateJoinSnapshot
+    if case .firstSync(let patches) = update {
+        #expect(patches.count > 0, "Should have patches for the change from lateJoin to first sync")
         // Should have a patch for /round changing from 1 to 2
         let roundPatch = patches.first { $0.path == "/round" }
         #expect(roundPatch != nil, "Should have patch for round change")
     } else {
-        Issue.record("After lateJoinSnapshot, generateDiff should return .diff (not .firstSync), got: \(update)")
+        Issue.record("After lateJoinSnapshot, first generateDiff should return .firstSync (not .diff), got: \(update)")
     }
 }
 
@@ -842,3 +842,200 @@ func testGenerateDiff_PerPlayerFieldChange_WithDirtyTracking() throws {
     }
 }
 
+
+// MARK: - Late Join Tests
+
+@Test("Late join: Changes before lateJoin are included in snapshot")
+func testLateJoin_ChangesBeforeJoin_IncludedInSnapshot() throws {
+    // Arrange
+    var syncEngine = SyncEngine()
+    var state = DiffTestStateRootNode()
+    let playerID = PlayerID("alice")
+    
+    // State changes before lateJoin
+    state.round = 5
+    state.players[playerID] = "Alice"
+    state.hands[playerID] = ["card1", "card2"]
+    
+    // Act - Late join
+    let snapshot = try syncEngine.lateJoinSnapshot(for: playerID, from: state)
+    
+    // Assert
+    #expect(snapshot["round"]?.intValue == 5, "Snapshot should include round value")
+    #expect(snapshot["players"]?.objectValue?["alice"]?.stringValue == "Alice", "Snapshot should include player")
+    #expect(snapshot["hands"]?.objectValue?["alice"]?.arrayValue?.count == 2, "Snapshot should include hands")
+}
+
+@Test("Late join: Changes after lateJoin but before first generateDiff are captured in firstSync")
+func testLateJoin_ChangesAfterJoin_BeforeFirstSync_CapturedInFirstSync() throws {
+    // Arrange
+    var syncEngine = SyncEngine()
+    var state = DiffTestStateRootNode()
+    let playerID = PlayerID("alice")
+    
+    // Initial state at lateJoin
+    state.round = 1
+    state.players[playerID] = "Alice"
+    
+    // Act 1 - Late join (populates cache with state at join time)
+    let snapshot = try syncEngine.lateJoinSnapshot(for: playerID, from: state)
+    #expect(snapshot["round"]?.intValue == 1, "Snapshot should have initial round")
+    
+    // Act 2 - State changes after lateJoin but before first generateDiff
+    state.round = 2
+    state.players[playerID] = "Alice Updated"
+    state.hands[playerID] = ["newCard"]
+    
+    // Act 3 - First generateDiff (should return firstSync with changes)
+    let update = try syncEngine.generateDiff(for: playerID, from: state)
+    
+    // Assert
+    if case .firstSync(let patches) = update {
+        #expect(patches.count > 0, "FirstSync should include patches for changes after lateJoin")
+        
+        // Verify round change is captured
+        let roundPatch = patches.first { $0.path == "/round" }
+        #expect(roundPatch != nil, "Should have patch for round change")
+        if case .set(let value) = roundPatch?.operation {
+            #expect(value.intValue == 2, "Round should be updated to 2")
+        }
+        
+        // Verify player name change is captured
+        let playerPatch = patches.first { $0.path == "/players/alice" }
+        #expect(playerPatch != nil, "Should have patch for player name change")
+        
+        // Verify hands addition is captured
+        let handsPatch = patches.first { $0.path == "/hands" }
+        #expect(handsPatch != nil, "Should have patch for hands addition")
+    } else {
+        Issue.record("After lateJoin, first generateDiff should return .firstSync, got: \(update)")
+    }
+}
+
+@Test("Late join: Second generateDiff after firstSync returns diff")
+func testLateJoin_SecondGenerateDiff_ReturnsDiff() throws {
+    // Arrange
+    var syncEngine = SyncEngine()
+    var state = DiffTestStateRootNode()
+    let playerID = PlayerID("alice")
+    
+    // Initial state
+    state.round = 1
+    state.players[playerID] = "Alice"
+    
+    // Act 1 - Late join
+    _ = try syncEngine.lateJoinSnapshot(for: playerID, from: state)
+    
+    // Act 2 - First generateDiff (should return firstSync)
+    state.round = 2
+    let firstUpdate = try syncEngine.generateDiff(for: playerID, from: state)
+    
+    // Act 3 - Second generateDiff (should return diff, not firstSync)
+    state.round = 3
+    let secondUpdate = try syncEngine.generateDiff(for: playerID, from: state)
+    
+    // Assert
+    if case .firstSync = firstUpdate {
+        // First update should be firstSync
+    } else {
+        Issue.record("First update should be firstSync, got: \(firstUpdate)")
+    }
+    
+    if case .diff(let patches) = secondUpdate {
+        #expect(patches.count > 0, "Second update should return diff with patches")
+        let roundPatch = patches.first { $0.path == "/round" }
+        #expect(roundPatch != nil, "Should have patch for round change")
+        if case .set(let value) = roundPatch?.operation {
+            #expect(value.intValue == 3, "Round should be updated to 3")
+        }
+    } else {
+        Issue.record("Second generateDiff should return .diff, got: \(secondUpdate)")
+    }
+}
+
+@Test("Late join: Multiple players can lateJoin independently")
+func testLateJoin_MultiplePlayers_Independent() throws {
+    // Arrange
+    var syncEngine = SyncEngine()
+    var state = DiffTestStateRootNode()
+    let alice = PlayerID("alice")
+    let bob = PlayerID("bob")
+    
+    // Initial state
+    state.round = 1
+    state.players[alice] = "Alice"
+    state.players[bob] = "Bob"
+    
+    // Act 1 - Alice late joins
+    let aliceSnapshot = try syncEngine.lateJoinSnapshot(for: alice, from: state)
+    #expect(aliceSnapshot["round"]?.intValue == 1, "Alice should see round 1")
+    
+    // Act 2 - State changes
+    state.round = 2
+    state.players[alice] = "Alice Updated"
+    
+    // Act 3 - Bob late joins (should see current state)
+    let bobSnapshot = try syncEngine.lateJoinSnapshot(for: bob, from: state)
+    #expect(bobSnapshot["round"]?.intValue == 2, "Bob should see round 2")
+    #expect(bobSnapshot["players"]?.objectValue?["alice"]?.stringValue == "Alice Updated", "Bob should see updated Alice")
+    
+    // Act 4 - Alice's first generateDiff (should return firstSync with changes)
+    let aliceUpdate = try syncEngine.generateDiff(for: alice, from: state)
+    if case .firstSync(let alicePatches) = aliceUpdate {
+        #expect(alicePatches.count > 0, "Alice should have patches for changes after lateJoin")
+    } else {
+        Issue.record("Alice's first generateDiff should return .firstSync, got: \(aliceUpdate)")
+    }
+    
+    // Act 5 - Bob's first generateDiff (should return firstSync, but may have no changes if state didn't change)
+    state.round = 3
+    let bobUpdate = try syncEngine.generateDiff(for: bob, from: state)
+    if case .firstSync(let bobPatches) = bobUpdate {
+        // Bob's firstSync should include the round change from 2 to 3
+        #expect(bobPatches.count > 0, "Bob should have patches for round change")
+    } else {
+        Issue.record("Bob's first generateDiff should return .firstSync, got: \(bobUpdate)")
+    }
+}
+
+@Test("Late join: clearCache resets firstSync flag")
+func testLateJoin_ClearCache_ResetsFirstSync() throws {
+    // Arrange
+    var syncEngine = SyncEngine()
+    var state = DiffTestStateRootNode()
+    let playerID = PlayerID("alice")
+    
+    // Initial state
+    state.round = 1
+    
+    // Act 1 - Late join
+    _ = try syncEngine.lateJoinSnapshot(for: playerID, from: state)
+    
+    // Act 2 - First generateDiff (should return firstSync)
+    state.round = 2
+    let firstUpdate = try syncEngine.generateDiff(for: playerID, from: state)
+    if case .firstSync = firstUpdate {
+        // Expected
+    } else {
+        Issue.record("First update should be firstSync, got: \(firstUpdate)")
+    }
+    
+    // Act 3 - Clear cache
+    syncEngine.clearCacheForDisconnectedPlayer(playerID)
+    
+    // Act 4 - Generate diff again (should return firstSync again because cache was cleared)
+    state.round = 3
+    let secondUpdate = try syncEngine.generateDiff(for: playerID, from: state)
+    
+    // Assert
+    if case .firstSync(let patches) = secondUpdate {
+        #expect(patches.count > 0, "After clearCache, should return firstSync again")
+        let roundPatch = patches.first { $0.path == "/round" }
+        #expect(roundPatch != nil, "Should have patch for round change")
+        if case .set(let value) = roundPatch?.operation {
+            #expect(value.intValue == 3, "Round should be updated to 3")
+        }
+    } else {
+        Issue.record("After clearCache, generateDiff should return .firstSync again, got: \(secondUpdate)")
+    }
+}

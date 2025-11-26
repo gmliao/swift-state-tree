@@ -123,7 +123,8 @@ func testGenerateDiffFromSnapshots_ProducesSameResultAsGenerateDiff() throws {
     _ = try syncEngine2.generateDiffFromSnapshots(
         for: playerID,
         broadcastSnapshot: broadcastSnapshot,
-        perPlayerSnapshot: perPlayerSnapshot
+        perPlayerSnapshot: perPlayerSnapshot,
+        state: state2
     )
     
     // Change state
@@ -137,7 +138,8 @@ func testGenerateDiffFromSnapshots_ProducesSameResultAsGenerateDiff() throws {
     let update2 = try syncEngine2.generateDiffFromSnapshots(
         for: playerID,
         broadcastSnapshot: broadcastSnapshot2,
-        perPlayerSnapshot: perPlayerSnapshot2
+        perPlayerSnapshot: perPlayerSnapshot2,
+        state: state2
     )
     
     // Assert
@@ -149,6 +151,239 @@ func testGenerateDiffFromSnapshots_ProducesSameResultAsGenerateDiff() throws {
         }
     } else {
         Issue.record("Both updates should return .diff")
+    }
+}
+
+@Test("generateDiffFromSnapshots with dirty tracking produces same result as generateDiff")
+func testGenerateDiffFromSnapshots_WithDirtyTracking_ProducesSameResultAsGenerateDiff() throws {
+    // Arrange
+    var syncEngine1 = SyncEngine()
+    var syncEngine2 = SyncEngine()
+    var state1 = OptimizationTestStateRootNode()
+    var state2 = OptimizationTestStateRootNode()
+    let playerID = PlayerID("alice")
+    
+    // Initial state
+    state1.players[playerID] = "Alice"
+    state1.round = 1
+    state1.hands[playerID] = ["card1"]
+    state2.players[playerID] = "Alice"
+    state2.round = 1
+    state2.hands[playerID] = ["card1"]
+    
+    // First sync for both engines
+    _ = try syncEngine1.generateDiff(for: playerID, from: state1, useDirtyTracking: true)
+    let broadcastSnapshot = try syncEngine2.extractBroadcastSnapshot(from: state2)
+    let perPlayerSnapshot = try syncEngine2.extractPerPlayerSnapshot(for: playerID, from: state2)
+    _ = try syncEngine2.generateDiffFromSnapshots(
+        for: playerID,
+        broadcastSnapshot: broadcastSnapshot,
+        perPlayerSnapshot: perPlayerSnapshot,
+        state: state2
+    )
+    
+    // Clear dirty flags
+    state1.clearDirty()
+    state2.clearDirty()
+    
+    // Change only broadcast field (round)
+    state1.round = 2
+    state2.round = 2
+    
+    // Act
+    let update1 = try syncEngine1.generateDiff(for: playerID, from: state1, useDirtyTracking: true)
+    let broadcastSnapshot2 = try syncEngine2.extractBroadcastSnapshot(from: state2)
+    let perPlayerSnapshot2 = try syncEngine2.extractPerPlayerSnapshot(for: playerID, from: state2)
+    let update2 = try syncEngine2.generateDiffFromSnapshots(
+        for: playerID,
+        broadcastSnapshot: broadcastSnapshot2,
+        perPlayerSnapshot: perPlayerSnapshot2,
+        state: state2
+    )
+    
+    // Assert - both should produce same result
+    if case .diff(let patches1) = update1,
+       case .diff(let patches2) = update2 {
+        #expect(patches1.count == patches2.count, "Both methods should produce same number of patches")
+        // Both should only have patch for round (broadcast field)
+        let roundPatch1 = patches1.first { $0.path == "/round" }
+        let roundPatch2 = patches2.first { $0.path == "/round" }
+        #expect(roundPatch1 != nil, "generateDiff should have patch for round")
+        #expect(roundPatch2 != nil, "generateDiffFromSnapshots should have patch for round")
+    } else {
+        Issue.record("Both updates should return .diff")
+    }
+}
+
+@Test("generateDiffFromSnapshots with dirty tracking handles per-player fields correctly")
+func testGenerateDiffFromSnapshots_WithDirtyTracking_HandlesPerPlayerFields() throws {
+    // Arrange
+    var syncEngine1 = SyncEngine()
+    var syncEngine2 = SyncEngine()
+    var state1 = OptimizationTestStateRootNode()
+    var state2 = OptimizationTestStateRootNode()
+    let playerID = PlayerID("alice")
+    
+    // Initial state
+    state1.players[playerID] = "Alice"
+    state1.round = 1
+    state1.hands[playerID] = ["card1"]
+    state2.players[playerID] = "Alice"
+    state2.round = 1
+    state2.hands[playerID] = ["card1"]
+    
+    // First sync for both engines
+    _ = try syncEngine1.generateDiff(for: playerID, from: state1, useDirtyTracking: true)
+    let broadcastSnapshot = try syncEngine2.extractBroadcastSnapshot(from: state2)
+    let perPlayerSnapshot = try syncEngine2.extractPerPlayerSnapshot(for: playerID, from: state2)
+    _ = try syncEngine2.generateDiffFromSnapshots(
+        for: playerID,
+        broadcastSnapshot: broadcastSnapshot,
+        perPlayerSnapshot: perPlayerSnapshot,
+        state: state2
+    )
+    
+    // Clear dirty flags
+    state1.clearDirty()
+    state2.clearDirty()
+    
+    // Change only per-player field (hands)
+    state1.hands[playerID] = ["card1", "card2"]
+    state2.hands[playerID] = ["card1", "card2"]
+    
+    // Act
+    let update1 = try syncEngine1.generateDiff(for: playerID, from: state1, useDirtyTracking: true)
+    let broadcastSnapshot2 = try syncEngine2.extractBroadcastSnapshot(from: state2)
+    let perPlayerSnapshot2 = try syncEngine2.extractPerPlayerSnapshot(for: playerID, from: state2)
+    let update2 = try syncEngine2.generateDiffFromSnapshots(
+        for: playerID,
+        broadcastSnapshot: broadcastSnapshot2,
+        perPlayerSnapshot: perPlayerSnapshot2,
+        state: state2
+    )
+    
+    // Assert - both should produce same result
+    if case .diff(let patches1) = update1,
+       case .diff(let patches2) = update2 {
+        #expect(patches1.count == patches2.count, "Both methods should produce same number of patches")
+        // Both should only have patch for hands (per-player field)
+        let handsPatch1 = patches1.first { $0.path.hasPrefix("/hands") }
+        let handsPatch2 = patches2.first { $0.path.hasPrefix("/hands") }
+        #expect(handsPatch1 != nil, "generateDiff should have patch for hands")
+        #expect(handsPatch2 != nil, "generateDiffFromSnapshots should have patch for hands")
+    } else {
+        Issue.record("Both updates should return .diff")
+    }
+}
+
+@Test("generateDiffFromSnapshots with dirty tracking handles mixed broadcast and per-player fields")
+func testGenerateDiffFromSnapshots_WithDirtyTracking_HandlesMixedFields() throws {
+    // Arrange
+    var syncEngine1 = SyncEngine()
+    var syncEngine2 = SyncEngine()
+    var state1 = OptimizationTestStateRootNode()
+    var state2 = OptimizationTestStateRootNode()
+    let playerID = PlayerID("alice")
+    
+    // Initial state
+    state1.players[playerID] = "Alice"
+    state1.round = 1
+    state1.hands[playerID] = ["card1"]
+    state2.players[playerID] = "Alice"
+    state2.round = 1
+    state2.hands[playerID] = ["card1"]
+    
+    // First sync for both engines
+    _ = try syncEngine1.generateDiff(for: playerID, from: state1, useDirtyTracking: true)
+    let broadcastSnapshot = try syncEngine2.extractBroadcastSnapshot(from: state2)
+    let perPlayerSnapshot = try syncEngine2.extractPerPlayerSnapshot(for: playerID, from: state2)
+    _ = try syncEngine2.generateDiffFromSnapshots(
+        for: playerID,
+        broadcastSnapshot: broadcastSnapshot,
+        perPlayerSnapshot: perPlayerSnapshot,
+        state: state2
+    )
+    
+    // Clear dirty flags
+    state1.clearDirty()
+    state2.clearDirty()
+    
+    // Change both broadcast and per-player fields
+    state1.round = 2
+    state1.hands[playerID] = ["card1", "card2"]
+    state2.round = 2
+    state2.hands[playerID] = ["card1", "card2"]
+    
+    // Act
+    let update1 = try syncEngine1.generateDiff(for: playerID, from: state1, useDirtyTracking: true)
+    let broadcastSnapshot2 = try syncEngine2.extractBroadcastSnapshot(from: state2)
+    let perPlayerSnapshot2 = try syncEngine2.extractPerPlayerSnapshot(for: playerID, from: state2)
+    let update2 = try syncEngine2.generateDiffFromSnapshots(
+        for: playerID,
+        broadcastSnapshot: broadcastSnapshot2,
+        perPlayerSnapshot: perPlayerSnapshot2,
+        state: state2
+    )
+    
+    // Assert - both should produce same result
+    if case .diff(let patches1) = update1,
+       case .diff(let patches2) = update2 {
+        #expect(patches1.count == patches2.count, "Both methods should produce same number of patches")
+        // Both should have patches for both round and hands
+        let roundPatch1 = patches1.first { $0.path == "/round" }
+        let roundPatch2 = patches2.first { $0.path == "/round" }
+        let handsPatch1 = patches1.first { $0.path.hasPrefix("/hands") }
+        let handsPatch2 = patches2.first { $0.path.hasPrefix("/hands") }
+        #expect(roundPatch1 != nil, "generateDiff should have patch for round")
+        #expect(roundPatch2 != nil, "generateDiffFromSnapshots should have patch for round")
+        #expect(handsPatch1 != nil, "generateDiff should have patch for hands")
+        #expect(handsPatch2 != nil, "generateDiffFromSnapshots should have patch for hands")
+    } else {
+        Issue.record("Both updates should return .diff")
+    }
+}
+
+@Test("generateDiffFromSnapshots with state parameter uses automatic dirty tracking")
+func testGenerateDiffFromSnapshots_WithState_UsesDirtyTracking() throws {
+    // Arrange
+    var syncEngine = SyncEngine()
+    var state = OptimizationTestStateRootNode()
+    let playerID = PlayerID("alice")
+    
+    // Initial state
+    state.players[playerID] = "Alice"
+    state.round = 1
+    state.hands[playerID] = ["card1"]
+    
+    // First sync
+    let broadcastSnapshot1 = try syncEngine.extractBroadcastSnapshot(from: state)
+    let perPlayerSnapshot1 = try syncEngine.extractPerPlayerSnapshot(for: playerID, from: state)
+    _ = try syncEngine.generateDiffFromSnapshots(
+        for: playerID,
+        broadcastSnapshot: broadcastSnapshot1,
+        perPlayerSnapshot: perPlayerSnapshot1,
+        state: state
+    )
+    
+    // Change state
+    state.round = 2
+    state.hands[playerID] = ["card1", "card2"]
+    
+    // Act - with state parameter for automatic dirty tracking
+    let broadcastSnapshot2 = try syncEngine.extractBroadcastSnapshot(from: state)
+    let perPlayerSnapshot2 = try syncEngine.extractPerPlayerSnapshot(for: playerID, from: state)
+    let update = try syncEngine.generateDiffFromSnapshots(
+        for: playerID,
+        broadcastSnapshot: broadcastSnapshot2,
+        perPlayerSnapshot: perPlayerSnapshot2,
+        state: state
+    )
+    
+    // Assert - should still work and detect changes
+    if case .diff(let patches) = update {
+        #expect(patches.count > 0, "Should have patches for changed fields")
+    } else {
+        Issue.record("Should return .diff after first sync")
     }
 }
 
@@ -168,7 +403,8 @@ func testGenerateDiffFromSnapshots_HandlesFirstSync() throws {
     let update = try syncEngine.generateDiffFromSnapshots(
         for: playerID,
         broadcastSnapshot: broadcastSnapshot,
-        perPlayerSnapshot: perPlayerSnapshot
+        perPlayerSnapshot: perPlayerSnapshot,
+        state: state
     )
     
     // Assert
@@ -196,7 +432,8 @@ func testGenerateDiffFromSnapshots_UpdatesCache() throws {
     _ = try syncEngine.generateDiffFromSnapshots(
         for: playerID,
         broadcastSnapshot: broadcastSnapshot1,
-        perPlayerSnapshot: perPlayerSnapshot1
+        perPlayerSnapshot: perPlayerSnapshot1,
+        state: state
     )
     
     // Change state
@@ -208,7 +445,8 @@ func testGenerateDiffFromSnapshots_UpdatesCache() throws {
     let update = try syncEngine.generateDiffFromSnapshots(
         for: playerID,
         broadcastSnapshot: broadcastSnapshot2,
-        perPlayerSnapshot: perPlayerSnapshot2
+        perPlayerSnapshot: perPlayerSnapshot2,
+        state: state
     )
     
     // Assert

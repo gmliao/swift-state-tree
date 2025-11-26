@@ -368,12 +368,6 @@ struct SyncEngineEndToEndTests {
         // Generate snapshot
         let snapshot = try syncEngine.snapshot(for: playerID, from: serverState)
         
-        // Debug: Print snapshot to verify content
-        print("Snapshot keys: \(snapshot.values.keys.sorted())")
-        if let roundValue = snapshot["round"] {
-            print("Round value: \(roundValue)")
-        }
-        
         // Simulate JSON serialization/deserialization
         let jsonData = try JSONSerialization.data(withJSONObject: snapshot.values.mapValues { $0.toJSONValue() })
         let jsonObject = try JSONSerialization.jsonObject(with: jsonData) as! [String: Any]
@@ -626,13 +620,6 @@ struct SyncEngineEndToEndTests {
         let aliceSnapshot = try syncEngine.snapshot(for: alice, from: serverState)
         let bobSnapshot = try syncEngine.snapshot(for: bob, from: serverState)
         
-        // Debug: Check snapshot content
-        print("Alice snapshot keys: \(aliceSnapshot.values.keys.sorted())")
-        if let playersValue = aliceSnapshot["players"] {
-            print("Alice snapshot players type: \(type(of: playersValue))")
-            print("Alice snapshot players value: \(playersValue)")
-        }
-        
         // Reconstruct client states
         var aliceClientState = ClientStateTree(from: aliceSnapshot, playerID: alice)
         var bobClientState = ClientStateTree(from: bobSnapshot, playerID: bob)
@@ -662,7 +649,6 @@ struct SyncEngineEndToEndTests {
         let syncEngine = SyncEngine()
         
         // === Design 1: Shared Inventory (with PlayerID key) ===
-        print("=== Design 1: Shared Inventory ===")
         var sharedState = E2ETestGameStateRootNode()
         var aliceNodeShared = TestPlayerNode(name: "Alice", hpCurrent: 100, hpMax: 100)
         aliceNodeShared.inventory[alice] = ["sword", "shield"]  // Alice's items
@@ -678,10 +664,6 @@ struct SyncEngineEndToEndTests {
         let aliceSnapshotShared = try syncEngine.snapshot(for: alice, from: sharedState)
         var aliceClientShared = ClientStateTree(from: aliceSnapshotShared, playerID: alice)
         
-        print("Alice's view (shared inventory):")
-        print("  - players[\"alice\"].inventory = \(aliceClientShared.players["alice"]?.inventory ?? [])")
-        print("  - players[\"bob\"].inventory = \(aliceClientShared.players["bob"]?.inventory ?? [])")
-        
         // Alice sees:
         // - Her own items: ["sword", "shield"]
         // - Items she stored in Bob's inventory: ["potion"]
@@ -691,7 +673,6 @@ struct SyncEngineEndToEndTests {
                 "Alice should see items she stored in Bob's inventory")
         
         // === Design 2: Independent Inventory (no PlayerID key) ===
-        print("\n=== Design 2: Independent Inventory ===")
         var independentState = E2ETestGameStateRootNodeWithIndependentInventory()
         var aliceNodeIndependent = TestPlayerNodeWithIndependentInventory(name: "Alice", hpCurrent: 100, hpMax: 100)
         aliceNodeIndependent.inventory = ["sword", "shield"]  // Alice's items only
@@ -705,10 +686,6 @@ struct SyncEngineEndToEndTests {
         let aliceSnapshotIndependent = try syncEngine.snapshot(for: alice, from: independentState)
         var aliceClientIndependent = ClientStateTree(from: aliceSnapshotIndependent, playerID: alice)
         
-        print("Alice's view (independent inventory):")
-        print("  - players[\"alice\"].inventory = \(aliceClientIndependent.players["alice"]?.inventory ?? [])")
-        print("  - players[\"bob\"] = \(aliceClientIndependent.players["bob"] == nil ? "nil (not visible)" : "visible")")
-        
         // Alice sees:
         // - Her own items: ["sword", "shield"]
         // - Only her own player node (because players is .perPlayerSlice())
@@ -716,20 +693,6 @@ struct SyncEngineEndToEndTests {
                 "Alice should see her own items")
         #expect(aliceClientIndependent.players["bob"] == nil, 
                 "Alice should NOT see Bob's player node (because players is perPlayerSlice)")
-        
-        // === Key Differences ===
-        print("\n=== Key Differences ===")
-        print("Shared Inventory ([PlayerID: [String]]):")
-        print("  - Supports cross-player item storage")
-        print("  - Alice can store items in Bob's inventory (key: \"alice\")")
-        print("  - Requires @Sync(.perPlayerSlice()) to filter by playerID")
-        print("  - players is .broadcast, so all players see all player nodes")
-        print("  - Alice sees: her items + items she stored in others' inventories")
-        print("\nIndependent Inventory ([String]):")
-        print("  - Each player has their own inventory")
-        print("  - No cross-player item storage")
-        print("  - players is .perPlayerSlice(), so each player only sees their own player node")
-        print("  - Alice sees: only her own player node and inventory")
     }
     
     // MARK: - Multiple Players Scenario

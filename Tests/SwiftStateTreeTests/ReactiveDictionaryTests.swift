@@ -65,7 +65,7 @@ func testReactiveDictionary_Subscript_Set_TriggersOnChange() async {
     }
     let tracker = CallbackTracker()
     var dict = ReactiveDictionary<String, Int>(onChange: {
-        Task { @MainActor in await tracker.markInvoked() }
+        Task { await tracker.markInvoked() }
     })
     
     // Act

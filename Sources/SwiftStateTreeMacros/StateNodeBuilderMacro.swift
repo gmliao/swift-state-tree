@@ -265,8 +265,16 @@ public struct StateNodeBuilderMacro: MemberMacro {
             
             // Generate optimized conversion code based on type
             // value is Value? from filteredValue (same type as the field), maintaining type safety
+            // For optional types, explicitly cast to Any to avoid implicit coercion warnings
             // Pass playerID for recursive filtering support
-            let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: "value", isAnyType: false, playerID: "playerID")
+            let valueExpression: String
+            if let typeName = property.typeName, (typeName.hasSuffix("?") || (typeName.hasPrefix("Optional<") && typeName.hasSuffix(">"))) {
+                // Optional type: explicitly cast to Any to avoid implicit coercion warnings
+                valueExpression = "value as Any"
+            } else {
+                valueExpression = "value"
+            }
+            let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: valueExpression, isAnyType: false, playerID: "playerID")
             if needsTry {
                 codeLines.append("        result[\"\(fieldName)\"] = try \(conversionCode)")
             } else {
@@ -673,19 +681,21 @@ public struct StateNodeBuilderMacro: MemberMacro {
         // Check if it's an Optional type (handle first)
         if normalizedType.hasSuffix("?") {
             // Optional type: use make(from:for:) to handle nil properly
+            // Explicitly cast to Any to avoid implicit coercion warning
             if let playerID = playerID {
-                return ("SnapshotValue.make(from: \(valueName), for: \(playerID))", true)
+                return ("SnapshotValue.make(from: \(valueName) as Any, for: \(playerID))", true)
             } else {
-                return ("SnapshotValue.make(from: \(valueName))", true)
+                return ("SnapshotValue.make(from: \(valueName) as Any)", true)
             }
         }
         
         if normalizedType.hasPrefix("Optional<") && normalizedType.hasSuffix(">") {
             // Optional<Type> format: use make(from:for:) to handle nil properly
+            // Explicitly cast to Any to avoid implicit coercion warning
             if let playerID = playerID {
-                return ("SnapshotValue.make(from: \(valueName), for: \(playerID))", true)
+                return ("SnapshotValue.make(from: \(valueName) as Any, for: \(playerID))", true)
             } else {
-                return ("SnapshotValue.make(from: \(valueName))", true)
+                return ("SnapshotValue.make(from: \(valueName) as Any)", true)
             }
         }
         

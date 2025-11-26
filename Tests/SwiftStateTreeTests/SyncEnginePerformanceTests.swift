@@ -201,8 +201,6 @@ struct SyncEnginePerformanceTests {
             }
         }
         
-        print("Optimized diff time (multiple dirty fields): \(optimizedTime)ms")
-        
         // Should complete in reasonable time
         #expect(optimizedTime < 100, "Should complete in reasonable time")
     }
@@ -230,8 +228,6 @@ struct SyncEnginePerformanceTests {
                 // Ignore errors
             }
         }
-        
-        print("Optimized diff time (no dirty fields): \(optimizedTime)ms")
         
         // Should be very fast when no fields are dirty
         #expect(optimizedTime < 10, "Should be very fast when no fields are dirty")
@@ -267,8 +263,6 @@ struct SyncEnginePerformanceTests {
                 // Ignore errors
             }
         }
-        
-        print("Optimized diff time (container operation): \(optimizedTime)ms")
         
         // Should complete in reasonable time
         #expect(optimizedTime < 100, "Should complete in reasonable time")
