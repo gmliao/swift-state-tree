@@ -2,18 +2,15 @@
 
 import Foundation
 
-/// Snapshot generation mode for controlling which fields are included in the snapshot
-///
-/// This enum provides a type-safe way to specify snapshot generation behavior,
-/// making the API more expressive and easier to understand.
+/// Snapshot generation mode for controlling which fields are included in the snapshot.
 public enum SnapshotMode: Sendable {
-    /// Include all fields (default, for late join scenarios)
+    /// Include all fields (default, for late join scenarios).
     case all
     
-    /// Include only specified fields (for optimization)
+    /// Include only specified fields (for optimization).
     case include(Set<String>)
     
-    /// Include only dirty fields (for dirty tracking optimization)
+    /// Include only dirty fields (for dirty tracking optimization).
     case dirtyTracking(Set<String>)
     
     /// Get the field set for internal use
@@ -29,10 +26,9 @@ public enum SnapshotMode: Sendable {
 
 /// SyncEngine filters StateNode according to SyncPolicy and outputs StateSnapshot.
 ///
-/// Main methods:
-/// - `snapshot(for:from:mode:)` - Generate complete snapshots for late join scenarios
-/// - `generateDiff(for:from:useDirtyTracking:)` - Generate incremental updates with path-based patches
-/// - `lateJoinSnapshot(for:from:)` - Generate snapshot and populate cache for late join
+/// Manages cache for efficient diff computation:
+/// - Broadcast cache: Shared across all players
+/// - Per-player cache: Individual cache per player
 ///
 /// See [DESIGN_RUNTIME.md](../../../DESIGN_RUNTIME.md) for detailed documentation.
 public struct SyncEngine: Sendable {
@@ -44,17 +40,17 @@ public struct SyncEngine: Sendable {
     
     public init() {}
 
-    /// Generate a full snapshot of the StateNode for a specific player or broadcast fields only
+    /// Generate a full snapshot for a specific player or broadcast fields only.
     ///
-    /// Used for late join scenarios where a player needs to receive the complete state snapshot.
-    /// For incremental updates, use `generateDiff(for:from:useDirtyTracking:)` instead.
+    /// Used for late join scenarios. For incremental updates, use `generateDiff(for:from:useDirtyTracking:)`.
+    /// **Note:** Does not populate cache. Use `lateJoinSnapshot(for:from:)` to also populate cache.
     ///
     /// - Parameters:
-    ///   - playerID: The player ID to generate the snapshot for. If `nil`, only broadcast fields are included.
-    ///   - state: The StateNode instance
-    ///   - mode: Snapshot generation mode. Default is `.all` for complete snapshots.
-    /// - Returns: A `StateSnapshot` containing filtered fields based on sync policies
-    /// - Throws: `SyncError` if value conversion fails
+    ///   - playerID: Player ID. If `nil`, only broadcast fields are included.
+    ///   - state: The StateNode instance.
+    ///   - mode: Snapshot generation mode. Default is `.all`.
+    /// - Returns: A `StateSnapshot` containing filtered fields based on sync policies.
+    /// - Throws: `SyncError` if value conversion fails.
     public func snapshot<State: StateNodeProtocol>(
         for playerID: PlayerID? = nil,
         from state: State,
@@ -63,17 +59,17 @@ public struct SyncEngine: Sendable {
         return try state.snapshot(for: playerID, dirtyFields: mode.fields)
     }
     
-    /// Generate a full snapshot and merge into an existing container
+    /// Generate a full snapshot and merge into an existing container.
     ///
     /// Allows reusing a `StateSnapshot` container to avoid repeated allocations.
     ///
     /// - Parameters:
-    ///   - playerID: The player ID to generate the snapshot for. If `nil`, only broadcast fields are included.
-    ///   - state: The StateNode instance
-    ///   - into: Container to reuse for the snapshot. Values will be merged into this container.
-    ///   - mode: Snapshot generation mode. Default is `.all` for complete snapshots.
-    /// - Returns: The same container with merged values
-    /// - Throws: `SyncError` if value conversion fails
+    ///   - playerID: Player ID. If `nil`, only broadcast fields are included.
+    ///   - state: The StateNode instance.
+    ///   - into: Container to reuse. Values will be merged (overwriting existing values).
+    ///   - mode: Snapshot generation mode. Default is `.all`.
+    /// - Returns: The same container with merged values.
+    /// - Throws: `SyncError` if value conversion fails.
     public func snapshot<State: StateNodeProtocol>(
         for playerID: PlayerID?,
         from state: State,
@@ -87,17 +83,15 @@ public struct SyncEngine: Sendable {
     
     // MARK: - Snapshot Extraction
     
-    /// Extract broadcast fields snapshot (fields that are the same for all players)
+    /// Extract broadcast fields snapshot (shared across all players).
     ///
-    /// **Important**: Broadcast snapshot is shared across all players. You only need to extract
-    /// it once and reuse it for all players when computing diffs. This reduces redundant
-    /// serialization overhead.
+    /// **Important:** Extract once and reuse for all players to reduce serialization overhead.
     ///
     /// - Parameters:
-    ///   - state: The StateNode instance
-    ///   - mode: Snapshot generation mode. Default is `.all` for complete snapshots.
-    /// - Returns: A `StateSnapshot` containing only broadcast fields
-    /// - Throws: `SyncError` if value conversion fails
+    ///   - state: The StateNode instance.
+    ///   - mode: Snapshot generation mode. Default is `.all`.
+    /// - Returns: A `StateSnapshot` containing only broadcast fields.
+    /// - Throws: `SyncError` if value conversion fails.
     public func extractBroadcastSnapshot<State: StateNodeProtocol>(
         from state: State,
         mode: SnapshotMode = .all
@@ -105,17 +99,16 @@ public struct SyncEngine: Sendable {
         return try state.broadcastSnapshot(dirtyFields: mode.fields)
     }
     
-    /// Extract per-player fields snapshot (fields that differ per player)
+    /// Extract per-player fields snapshot (differs per player).
     ///
-    /// Filters full snapshot to only include per-player fields (excludes broadcast and serverOnly).
-    /// Each player has their own per-player snapshot, so this must be called separately for each player.
+    /// Must be called separately for each player. Excludes broadcast and serverOnly fields.
     ///
     /// - Parameters:
-    ///   - playerID: The player ID to generate the snapshot for
-    ///   - state: The StateNode instance
-    ///   - mode: Snapshot generation mode. Default is `.all` for complete snapshots.
-    /// - Returns: A `StateSnapshot` containing only per-player fields for the specified player
-    /// - Throws: `SyncError` if value conversion fails
+    ///   - playerID: The player ID.
+    ///   - state: The StateNode instance.
+    ///   - mode: Snapshot generation mode. Default is `.all`.
+    /// - Returns: A `StateSnapshot` containing only per-player fields for the specified player.
+    /// - Throws: `SyncError` if value conversion fails.
     public func extractPerPlayerSnapshot<State: StateNodeProtocol>(
         for playerID: PlayerID,
         from state: State,
@@ -142,7 +135,7 @@ public struct SyncEngine: Sendable {
     
     // MARK: - Snapshot Comparison
     
-    /// Compare two snapshots and generate patches
+    /// Compare two snapshots and generate patches.
     private func compareSnapshots(
         from oldSnapshot: StateSnapshot,
         to newSnapshot: StateSnapshot,
@@ -156,10 +149,9 @@ public struct SyncEngine: Sendable {
         )
     }
     
-    /// Compare two snapshots and generate patches (with dirty tracking support)
+    /// Compare two snapshots and generate patches (with dirty tracking support).
     ///
     /// When `dirtyFields` is provided, only dirty fields are compared.
-    /// Fields missing in new snapshot are only considered deletes if marked as dirty.
     private func compareSnapshots(
         from oldSnapshot: StateSnapshot,
         to newSnapshot: StateSnapshot,
@@ -233,9 +225,8 @@ public struct SyncEngine: Sendable {
         return patches
     }
     
-    /// Recursively compare two SnapshotValues and generate patches
+    /// Recursively compare two SnapshotValues and generate patches.
     ///
-    /// Handles nested objects by recursively comparing their properties.
     /// Arrays are treated as atomic values (whole array replacement).
     private func compareSnapshotValues(
         from oldValue: SnapshotValue,
@@ -299,13 +290,13 @@ public struct SyncEngine: Sendable {
         return patches
     }
     
-    /// Escape a key for JSON Pointer format (RFC 6901)
+    /// Escape a key for JSON Pointer format (RFC 6901).
     private func escapeJsonPointer(_ key: String) -> String {
         return key.replacingOccurrences(of: "~", with: "~0")
                   .replacingOccurrences(of: "/", with: "~1")
     }
     
-    /// Check if a path matches any path in the onlyPaths set (including prefix matches)
+    /// Check if a path matches any path in the onlyPaths set (including prefix matches).
     private func anyPathMatches(_ path: String, in onlyPaths: Set<String>) -> Bool {
         for allowedPath in onlyPaths {
             if path == allowedPath || path.hasPrefix(allowedPath + "/") {
@@ -317,10 +308,9 @@ public struct SyncEngine: Sendable {
     
     // MARK: - Diff Computation
     
-    /// Compute broadcast diff (shared across all players)
+    /// Compute broadcast diff (shared across all players).
     ///
-    /// Returns empty array on first call (cache population). For dirty tracking mode,
-    /// merges only dirty fields into cache instead of regenerating full snapshot.
+    /// Returns empty array on first call (cache population).
     private mutating func computeBroadcastDiff<State: StateNodeProtocol>(
         from state: State,
         onlyPaths: Set<String>?,
@@ -361,11 +351,9 @@ public struct SyncEngine: Sendable {
         return patches
     }
     
-    /// Compute per-player diff (individual for each player)
+    /// Compute per-player diff (individual for each player).
     ///
-    /// Returns empty array on first call (cache population). Early returns if dirty tracking
-    /// mode has no dirty fields and cache exists. For dirty tracking mode, merges only dirty
-    /// fields into cache instead of regenerating full snapshot.
+    /// Returns empty array on first call (cache population).
     private mutating func computePerPlayerDiff<State: StateNodeProtocol>(
         for playerID: PlayerID,
         from state: State,
@@ -412,10 +400,7 @@ public struct SyncEngine: Sendable {
         return patches
     }
     
-    /// Merge broadcast and per-player patches (per-player takes precedence over broadcast)
-    ///
-    /// Per-player patches override broadcast patches for the same path, allowing
-    /// player-specific values to take precedence over shared broadcast values.
+    /// Merge broadcast and per-player patches (per-player takes precedence).
     private func mergePatches(
         _ broadcast: [StatePatch],
         _ perPlayer: [StatePatch]
@@ -449,10 +434,7 @@ public struct SyncEngine: Sendable {
     
     // MARK: - Diff Computation with Pre-extracted Snapshots
     
-    /// Compute broadcast diff using pre-extracted snapshot
-    ///
-    /// This method allows using a pre-extracted snapshot instead of extracting from state,
-    /// ensuring consistency when state may be modified concurrently.
+    /// Compute broadcast diff using pre-extracted snapshot.
     private mutating func computeBroadcastDiffFromSnapshot(
         currentBroadcast: StateSnapshot,
         onlyPaths: Set<String>?,
@@ -490,10 +472,7 @@ public struct SyncEngine: Sendable {
         return patches
     }
     
-    /// Compute per-player diff using pre-extracted snapshot
-    ///
-    /// This method allows using a pre-extracted snapshot instead of extracting from state,
-    /// ensuring consistency when state may be modified concurrently.
+    /// Compute per-player diff using pre-extracted snapshot.
     private mutating func computePerPlayerDiffFromSnapshot(
         for playerID: PlayerID,
         currentPerPlayer: StateSnapshot,
@@ -537,37 +516,19 @@ public struct SyncEngine: Sendable {
     
     // MARK: - Main Diff Generation
     
-    /// Generate a diff update using pre-extracted snapshots (ensures consistency)
+    /// Generate a diff update using pre-extracted snapshots (ensures consistency).
     ///
-    /// This method allows the caller to lock state, extract snapshots, unlock, then compute diff.
-    /// This ensures that `computeBroadcastDiff` and `computePerPlayerDiff` use the same state version,
-    /// avoiding inconsistencies when state may be modified concurrently.
-    ///
-    /// **Usage pattern** (caller should implement):
-    /// ```swift
-    /// // In RealmActor or similar:
-    /// await actor {
-    ///     // Extract broadcast once (shared across all players)
-    ///     let broadcastSnapshot = try syncEngine.extractBroadcastSnapshot(from: state)
-    ///     // Extract per-player for this player
-    ///     let perPlayerSnapshot = try syncEngine.extractPerPlayerSnapshot(for: playerID, from: state)
-    ///     // Unlock before computing diff
-    ///     return try syncEngine.generateDiffFromSnapshots(
-    ///         for: playerID,
-    ///         broadcastSnapshot: broadcastSnapshot,
-    ///         perPlayerSnapshot: perPlayerSnapshot
-    ///     )
-    /// }
-    /// ```
+    /// Allows locking state, extracting snapshots, unlocking, then computing diff.
+    /// Ensures broadcast and per-player diffs use the same state version.
     ///
     /// - Parameters:
-    ///   - playerID: The player ID to generate the diff for
-    ///   - broadcastSnapshot: Pre-extracted broadcast snapshot
-    ///   - perPlayerSnapshot: Pre-extracted per-player snapshot
-    ///   - onlyPaths: Optional set of paths to limit the diff calculation to (for optimization)
-    ///   - mode: Snapshot generation mode used to extract the snapshots. Default is `.all`.
-    /// - Returns: A `StateUpdate` containing either no changes, first sync signal, or a list of patches
-    /// - Throws: `SyncError` if value conversion fails
+    ///   - playerID: The player ID.
+    ///   - broadcastSnapshot: Pre-extracted broadcast snapshot (shared across all players).
+    ///   - perPlayerSnapshot: Pre-extracted per-player snapshot (specific to this player).
+    ///   - onlyPaths: Optional set of paths to limit diff calculation (JSON Pointer format).
+    ///   - mode: Snapshot generation mode. Default is `.all`.
+    /// - Returns: `.firstSync([StatePatch])` on first call, `.diff([StatePatch])` with changes, or `.noChange`.
+    /// - Throws: `SyncError` if value conversion fails.
     public mutating func generateDiffFromSnapshots(
         for playerID: PlayerID,
         broadcastSnapshot: StateSnapshot,
@@ -612,28 +573,28 @@ public struct SyncEngine: Sendable {
         }
     }
     
-    /// Generate a diff update for a specific player
+    /// Generate a diff update for a specific player.
     ///
-    /// Computes the differences between the current state and the last cached snapshot,
-    /// generating path-based patches that describe what changed.
+    /// Computes differences between current state and cached snapshot, generating path-based patches.
+    /// Automatically splits broadcast (shared) and per-player (individual) diffs for efficiency.
     ///
-    /// On the first call for a player (when cache is empty), returns `.firstSync([StatePatch])`
-    /// to signal that the sync engine has started. Subsequent calls return `.diff([StatePatch])`
-    /// or `.noChange` if there are no changes.
+    /// **Return Values:**
+    /// - `.firstSync([StatePatch])` - First call (cache populated)
+    /// - `.diff([StatePatch])` - Changes detected
+    /// - `.noChange` - No changes
     ///
-    /// When `useDirtyTracking` is `true`, only dirty fields are compared, reducing overhead.
-    /// A field present in old snapshot but absent in new snapshot is only considered a delete
-    /// if it's marked as dirty.
+    /// When `useDirtyTracking` is `true`, only dirty fields are compared. Missing fields are only
+    /// considered deletes if marked as dirty.
     ///
     /// See [DESIGN_SYNC_FIRSTSYNC.md](../../../DESIGN_SYNC_FIRSTSYNC.md) for detailed documentation.
     ///
     /// - Parameters:
-    ///   - playerID: The player ID to generate the diff for
-    ///   - state: The current StateNode instance
-    ///   - onlyPaths: Optional set of paths to limit the diff calculation to (for optimization)
-    ///   - useDirtyTracking: If `true`, only compare dirty fields. Default is `true` for optimal performance.
-    /// - Returns: A `StateUpdate` containing either no changes, first sync signal, or a list of patches
-    /// - Throws: `SyncError` if value conversion fails
+    ///   - playerID: The player ID.
+    ///   - state: The current StateNode instance.
+    ///   - onlyPaths: Optional set of paths to limit diff calculation (JSON Pointer format).
+    ///   - useDirtyTracking: If `true`, only compare dirty fields. Default is `true`.
+    /// - Returns: `.firstSync([StatePatch])`, `.diff([StatePatch])`, or `.noChange`.
+    /// - Throws: `SyncError` if value conversion fails.
     public mutating func generateDiff<State: StateNodeProtocol>(
         for playerID: PlayerID,
         from state: State,
@@ -720,21 +681,13 @@ public struct SyncEngine: Sendable {
     
     // MARK: - Cache Management
     
-    /// Warm up broadcast cache with initial state snapshot
+    /// Warm up broadcast cache with initial state snapshot.
     ///
-    /// Call this after initial state is fully set up to avoid first player triggering full snapshot.
-    /// This reduces latency for the first player by pre-populating the broadcast cache.
+    /// Call after initial state is fully set up to reduce first player latency.
+    /// **Important:** Only warms broadcast cache. Per-player caches are populated automatically on first `generateDiff`.
     ///
-    /// **Important**: 
-    /// - Only call this after the initial state is fully initialized. Calling this with a partially
-    ///   initialized state will populate the cache with incomplete data, causing the first diff to
-    ///   return a large patch with all the "cleanup" changes.
-    /// - This only warms up the broadcast cache (shared across all players). Per-player caches are
-    ///   automatically populated when players first call `generateDiff`, so there's no need to
-    ///   pre-warm them.
-    ///
-    /// - Parameter state: The initial StateNode instance (should be fully initialized)
-    /// - Throws: `SyncError` if value conversion fails
+    /// - Parameter state: The initial StateNode instance (should be fully initialized).
+    /// - Throws: `SyncError` if value conversion fails.
     public mutating func warmupCache<State: StateNodeProtocol>(
         from state: State
     ) throws {
@@ -746,29 +699,19 @@ public struct SyncEngine: Sendable {
         // Note: Per-player caches are populated automatically when players first call generateDiff
     }
     
-    /// Clear cache for a disconnected player
+    /// Clear cache for a disconnected player.
     ///
-    /// After clearing the cache, the next `generateDiff` call for this player will return
-    /// `.firstSync([StatePatch])` instead of regular diffs.
+    /// Next `generateDiff` call for this player will return `.firstSync([StatePatch])`.
+    /// **Important:** Only call when player has disconnected.
     ///
-    /// **Important**: Only call this when you are certain the player has disconnected.
-    ///
-    /// - Parameter playerID: The player ID whose cache should be cleared
+    /// - Parameter playerID: The player ID whose cache should be cleared.
     public mutating func clearCacheForDisconnectedPlayer(_ playerID: PlayerID) {
         lastPerPlayerSnapshots.removeValue(forKey: playerID)
     }
     
     // MARK: - Cache Population Helper
     
-    /// Populate cache for a player if not already populated
-    ///
-    /// Ensures that both broadcast and per-player caches are set up so that subsequent
-    /// `generateDiff` calls can correctly detect changes.
-    ///
-    /// - Parameters:
-    ///   - playerID: The player ID to populate cache for
-    ///   - state: The StateNode instance
-    /// - Throws: `SyncError` if value conversion fails
+    /// Populate cache for a player if not already populated.
     private mutating func populateCacheIfNeeded<State: StateNodeProtocol>(
         for playerID: PlayerID,
         from state: State
@@ -784,16 +727,16 @@ public struct SyncEngine: Sendable {
     
     // MARK: - Late Join
     
-    /// Generate a full snapshot for late join scenarios
+    /// Generate a full snapshot for late join scenarios.
     ///
-    /// Ensures that late-joining players receive a complete state snapshot and populates
-    /// the cache so that subsequent `generateDiff` calls can correctly detect changes.
+    /// Populates cache so subsequent `generateDiff` calls can detect changes.
+    /// **Difference from `snapshot(for:from:)`:** This also populates cache.
     ///
     /// - Parameters:
-    ///   - playerID: The player ID to generate the snapshot for
-    ///   - state: The StateNode instance
-    /// - Returns: A complete `StateSnapshot` containing all visible fields
-    /// - Throws: `SyncError` if value conversion fails
+    ///   - playerID: The player ID.
+    ///   - state: The StateNode instance.
+    /// - Returns: A complete `StateSnapshot` containing all visible fields.
+    /// - Throws: `SyncError` if value conversion fails.
     public mutating func lateJoinSnapshot<State: StateNodeProtocol>(
         for playerID: PlayerID,
         from state: State
@@ -803,16 +746,17 @@ public struct SyncEngine: Sendable {
         return snapshot
     }
     
-    /// Generate a full snapshot for late join scenarios and merge into an existing container
+    /// Generate a full snapshot for late join and merge into an existing container.
     ///
     /// Allows reusing a `StateSnapshot` container to avoid repeated allocations.
+    /// Also populates cache, similar to `lateJoinSnapshot(for:from:)`.
     ///
     /// - Parameters:
-    ///   - playerID: The player ID to generate the snapshot for
-    ///   - state: The StateNode instance
-    ///   - into: Container to reuse for the snapshot. Values will be merged into this container.
-    /// - Returns: The same container with merged values
-    /// - Throws: `SyncError` if value conversion fails
+    ///   - playerID: The player ID.
+    ///   - state: The StateNode instance.
+    ///   - into: Container to reuse. Values will be merged (overwriting existing values).
+    /// - Returns: The same container with merged values.
+    /// - Throws: `SyncError` if value conversion fails.
     public mutating func lateJoinSnapshot<State: StateNodeProtocol>(
         for playerID: PlayerID,
         from state: State,
@@ -828,17 +772,13 @@ public struct SyncEngine: Sendable {
 // MARK: - Benchmark/Testing Extensions
 
 extension SyncEngine {
-    /// Mirror-based implementation of extractBroadcastSnapshot (for benchmarking comparison)
+    /// Mirror-based implementation of extractBroadcastSnapshot (for benchmarking comparison).
     ///
-    /// This method uses runtime reflection (Mirror) to extract broadcast fields.
-    /// It is kept for performance comparison purposes in benchmarks and tests.
+    /// Uses runtime reflection (Mirror). The default `extractBroadcastSnapshot` uses macro-generated
+    /// code which is much faster. **Only use for performance comparison, not in production code.**
     ///
-    /// **Note**: This is the old implementation before macro optimization.
-    /// The default `extractBroadcastSnapshot` uses macro-generated code which is much faster.
-    /// This method should only be used for performance comparison, not in production code.
-    ///
-    /// - Parameter state: The StateNode instance
-    /// - Returns: A `StateSnapshot` containing only broadcast fields
+    /// - Parameter state: The StateNode instance.
+    /// - Returns: A `StateSnapshot` containing only broadcast fields.
     public func extractBroadcastSnapshotMirrorVersion<State: StateNodeProtocol>(
         from state: State
     ) throws -> StateSnapshot {
