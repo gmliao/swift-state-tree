@@ -5,6 +5,7 @@
         "inout",
         "MVVM",
         "preconcurrency",
-        "typealias"
+        "typealias",
+        "uppercased"
     ]
 }

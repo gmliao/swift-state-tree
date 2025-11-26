@@ -265,16 +265,9 @@ public struct StateNodeBuilderMacro: MemberMacro {
             
             // Generate optimized conversion code based on type
             // value is Value? from filteredValue (same type as the field), maintaining type safety
-            // For optional types, explicitly cast to Any to avoid implicit coercion warnings
             // Pass playerID for recursive filtering support
-            let valueExpression: String
-            if let typeName = property.typeName, (typeName.hasSuffix("?") || (typeName.hasPrefix("Optional<") && typeName.hasSuffix(">"))) {
-                // Optional type: explicitly cast to Any to avoid implicit coercion warnings
-                valueExpression = "value as Any"
-            } else {
-                valueExpression = "value"
-            }
-            let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: valueExpression, isAnyType: false, playerID: "playerID")
+            // Note: generateConversionCode will handle optional type casting to Any
+            let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: "value", isAnyType: false, playerID: "playerID")
             if needsTry {
                 codeLines.append("        result[\"\(fieldName)\"] = try \(conversionCode)")
             } else {
@@ -330,15 +323,8 @@ public struct StateNodeBuilderMacro: MemberMacro {
             
             // For broadcast fields, we directly access wrappedValue without filtering
             // wrappedValue is the actual typed value, not Any?
-            // For optional types, explicitly cast to Any to avoid implicit coercion warnings
-            let valueExpression: String
-            if let typeName = property.typeName, (typeName.hasSuffix("?") || (typeName.hasPrefix("Optional<") && typeName.hasSuffix(">"))) {
-                // Optional type: explicitly cast to Any to avoid implicit coercion warnings
-                valueExpression = "self.\(storageName).wrappedValue as Any"
-            } else {
-                valueExpression = "self.\(storageName).wrappedValue"
-            }
-            let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: valueExpression, isAnyType: false)
+            // Note: generateConversionCode will handle optional type casting to Any
+            let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: "self.\(storageName).wrappedValue", isAnyType: false)
             
             if needsTry {
                 // Complex types that may throw - use do-catch
@@ -681,7 +667,8 @@ public struct StateNodeBuilderMacro: MemberMacro {
         // Check if it's an Optional type (handle first)
         if normalizedType.hasSuffix("?") {
             // Optional type: use make(from:for:) to handle nil properly
-            // Explicitly cast to Any to avoid implicit coercion warning
+            // Explicitly cast to Any to silence implicit coercion warning
+            // Note: Only one 'as Any' is needed here since we removed the duplicate in generateSnapshotMethod/generateBroadcastSnapshotMethod
             if let playerID = playerID {
                 return ("SnapshotValue.make(from: \(valueName) as Any, for: \(playerID))", true)
             } else {
@@ -691,7 +678,8 @@ public struct StateNodeBuilderMacro: MemberMacro {
         
         if normalizedType.hasPrefix("Optional<") && normalizedType.hasSuffix(">") {
             // Optional<Type> format: use make(from:for:) to handle nil properly
-            // Explicitly cast to Any to avoid implicit coercion warning
+            // Explicitly cast to Any to silence implicit coercion warning
+            // Note: Only one 'as Any' is needed here since we removed the duplicate in generateSnapshotMethod/generateBroadcastSnapshotMethod
             if let playerID = playerID {
                 return ("SnapshotValue.make(from: \(valueName) as Any, for: \(playerID))", true)
             } else {
