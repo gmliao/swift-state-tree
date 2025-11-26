@@ -104,7 +104,6 @@ struct SyncEnginePerformanceTests {
         
         // Measure standard diff (no dirty tracking)
         var standardUpdate: StateUpdate?
-        var standardSnapshotSize: Int = 0
         let standardTime = measureTime {
             // Modify only one player's HP (direct assignment marks as dirty)
             if let firstPlayerID = state.players.keys.first {
@@ -116,9 +115,6 @@ struct SyncEnginePerformanceTests {
             // Generate diff without dirty tracking
             do {
                 standardUpdate = try syncEngine.generateDiff(for: playerID, from: state, useDirtyTracking: false)
-                if case .diff(let patches) = standardUpdate {
-                    standardSnapshotSize = estimatePatchesSize(patches)
-                }
             } catch {
                 // Ignore errors for performance test
             }
@@ -137,7 +133,6 @@ struct SyncEnginePerformanceTests {
         
         // Measure optimized diff (with dirty tracking)
         var optimizedUpdate: StateUpdate?
-        var optimizedSnapshotSize: Int = 0
         let optimizedTime = measureTime {
             // Modify only one player's HP (direct assignment marks as dirty)
             if let firstPlayerID = state.players.keys.first {
@@ -149,9 +144,6 @@ struct SyncEnginePerformanceTests {
             // Generate diff with dirty tracking
             do {
                 optimizedUpdate = try syncEngine.generateDiff(for: playerID, from: state, useDirtyTracking: true)
-                if case .diff(let patches) = optimizedUpdate {
-                    optimizedSnapshotSize = estimatePatchesSize(patches)
-                }
             } catch {
                 // Ignore errors for performance test
             }

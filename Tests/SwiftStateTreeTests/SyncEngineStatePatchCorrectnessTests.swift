@@ -525,7 +525,7 @@ struct SyncEngineStatePatchCorrectnessTests {
             
             // Players field should not appear in patches if it's not dirty
             // (even if it changed, dirty tracking should ignore it)
-            let playersPatches = patches.filter { $0.path.hasPrefix("/players") }
+            _ = patches.filter { $0.path.hasPrefix("/players") }
             // Note: This test verifies that dirty tracking prevents unnecessary patches
             // If players is not in dirtyFields, it should not generate a patch
         } else {

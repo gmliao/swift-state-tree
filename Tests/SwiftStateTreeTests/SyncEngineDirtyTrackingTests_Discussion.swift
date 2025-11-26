@@ -33,7 +33,7 @@ struct SyncEngineDirtyTrackingTests_Discussion {
         // 問題：如果 turn 在 cache 中不存在，但在新 snapshot 中存在（即使是 nil），
         //       是否應該生成 patch？
         
-        let update = try syncEngine.generateDiff(for: playerID, from: state)
+        _ = try syncEngine.generateDiff(for: playerID, from: state)
         
         // 選項 A：不生成 patch（因為沒有 dirty fields）
         // 選項 B：生成 patch（因為字段在 cache 中不存在）
@@ -65,7 +65,7 @@ struct SyncEngineDirtyTrackingTests_Discussion {
         // 實際上，如果通過 @Sync setter，會標記為 dirty
         state.players[PlayerID("bob")] = "Bob"  // 這會標記 players 為 dirty
         
-        let update = try syncEngine.generateDiff(for: playerID, from: state)
+        _ = try syncEngine.generateDiff(for: playerID, from: state)
         
         // 選項 A：只檢測 dirty 字段（players），生成 players 的完整 patch
         // 選項 B：檢測所有字段，但只對 dirty 字段生成 patch
@@ -92,13 +92,13 @@ struct SyncEngineDirtyTrackingTests_Discussion {
         
         // 檢查第一次 sync 的 snapshot 是否包含 turn
         if case .firstSync(let patches) = firstUpdate {
-            let hasTurn = patches.contains { $0.path == "/turn" }
+            _ = patches.contains { $0.path == "/turn" }
         }
         
         state.clearDirty()
         
         // 不改變任何東西
-        let secondUpdate = try syncEngine.generateDiff(for: playerID, from: state)
+        _ = try syncEngine.generateDiff(for: playerID, from: state)
         
         // 問題：如果 turn 在第一次 snapshot 中不存在，但在第二次中存在，
         //       是否應該生成 patch？
@@ -131,7 +131,7 @@ struct SyncEngineDirtyTrackingTests_Discussion {
         state.round = 2
         // players 沒有改變，所以不會被標記為 dirty
         
-        let update = try syncEngine.generateDiff(for: playerID, from: state)
+        _ = try syncEngine.generateDiff(for: playerID, from: state)
         
         // 問題：如果 players 在 cache 中是 ["alice": "Alice"]，
         //       但在新 snapshot 中是 ["alice": "Alice", "bob": "Bob"]，
@@ -165,7 +165,7 @@ struct SyncEngineDirtyTrackingTests_Discussion {
         // 注意：這在實際使用中不應該發生，因為 @Sync setter 會標記 dirty
         state.turn = nil  // 這會標記 turn 為 dirty
         
-        let update = try syncEngine.generateDiff(for: playerID, from: state)
+        _ = try syncEngine.generateDiff(for: playerID, from: state)
         
         // 問題：如果 turn 在 cache 中有值，但在新 snapshot 中是 nil，
         //       是否應該生成 delete patch？

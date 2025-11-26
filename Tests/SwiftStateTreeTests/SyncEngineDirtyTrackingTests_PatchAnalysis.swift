@@ -22,7 +22,7 @@ struct SyncEngineDirtyTrackingTests_PatchAnalysis {
         
         // Generate snapshots
         let fullSnapshot = try state.snapshot(for: playerID, dirtyFields: nil)
-        let broadcastSnapshot = try state.broadcastSnapshot(dirtyFields: nil)
+        _ = try state.broadcastSnapshot(dirtyFields: nil)
         
         // Simulate extractPerPlayerSnapshot logic
         let syncFields = state.getSyncFields()
@@ -53,8 +53,8 @@ struct SyncEngineDirtyTrackingTests_PatchAnalysis {
         // First sync for both - initialize players as empty
         state1.players = [:]
         state2.players = [:]
-        let firstStandard = try syncEngine1.generateDiff(for: playerID, from: state1, useDirtyTracking: false)
-        let firstOptimized = try syncEngine2.generateDiff(for: playerID, from: state2, useDirtyTracking: true)
+        _ = try syncEngine1.generateDiff(for: playerID, from: state1, useDirtyTracking: false)
+        _ = try syncEngine2.generateDiff(for: playerID, from: state2, useDirtyTracking: true)
         
         state1.clearDirty()
         state2.clearDirty()

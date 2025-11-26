@@ -400,7 +400,7 @@ struct SyncEngineEndToEndTests {
             }
             clientSnapshot.values[key] = snapshotValue
         }
-        var clientState = ClientStateTree(from: clientSnapshot, playerID: playerID)
+        let clientState = ClientStateTree(from: clientSnapshot, playerID: playerID)
         
         // Assert
         #expect(clientState.players["alice"] != nil, "Client should have Alice")
@@ -431,8 +431,8 @@ struct SyncEngineEndToEndTests {
         let bobSnapshot = try syncEngine.snapshot(for: bob, from: serverState)
         
         // Reconstruct client states
-        var aliceClientState = ClientStateTree(from: aliceSnapshot, playerID: alice)
-        var bobClientState = ClientStateTree(from: bobSnapshot, playerID: bob)
+        let aliceClientState = ClientStateTree(from: aliceSnapshot, playerID: alice)
+        let bobClientState = ClientStateTree(from: bobSnapshot, playerID: bob)
         
         // Assert: Both players should see all players (broadcast)
         #expect(aliceClientState.players["alice"] != nil, "Alice should see herself")
@@ -548,8 +548,8 @@ struct SyncEngineEndToEndTests {
         let bobSnapshot = try syncEngine.snapshot(for: bob, from: serverState)
         
         // Reconstruct client states
-        var aliceClientState = ClientStateTree(from: aliceSnapshot, playerID: alice)
-        var bobClientState = ClientStateTree(from: bobSnapshot, playerID: bob)
+        let aliceClientState = ClientStateTree(from: aliceSnapshot, playerID: alice)
+        let bobClientState = ClientStateTree(from: bobSnapshot, playerID: bob)
         
         // Assert: Nested per-player data should be filtered
         // Note: For nested StateNode with perPlayerSlice, when generating snapshot for a player,
@@ -621,8 +621,8 @@ struct SyncEngineEndToEndTests {
         let bobSnapshot = try syncEngine.snapshot(for: bob, from: serverState)
         
         // Reconstruct client states
-        var aliceClientState = ClientStateTree(from: aliceSnapshot, playerID: alice)
-        var bobClientState = ClientStateTree(from: bobSnapshot, playerID: bob)
+        let aliceClientState = ClientStateTree(from: aliceSnapshot, playerID: alice)
+        let bobClientState = ClientStateTree(from: bobSnapshot, playerID: bob)
         
         // Assert: Each player only sees their own player node
         // Since players is .perPlayerSlice(), it returns a dict with only the current player's key
@@ -662,7 +662,7 @@ struct SyncEngineEndToEndTests {
         sharedState.players[bob] = bobNodeShared
         
         let aliceSnapshotShared = try syncEngine.snapshot(for: alice, from: sharedState)
-        var aliceClientShared = ClientStateTree(from: aliceSnapshotShared, playerID: alice)
+        let aliceClientShared = ClientStateTree(from: aliceSnapshotShared, playerID: alice)
         
         // Alice sees:
         // - Her own items: ["sword", "shield"]
@@ -684,7 +684,7 @@ struct SyncEngineEndToEndTests {
         independentState.players[bob] = bobNodeIndependent
         
         let aliceSnapshotIndependent = try syncEngine.snapshot(for: alice, from: independentState)
-        var aliceClientIndependent = ClientStateTree(from: aliceSnapshotIndependent, playerID: alice)
+        let aliceClientIndependent = ClientStateTree(from: aliceSnapshotIndependent, playerID: alice)
         
         // Alice sees:
         // - Her own items: ["sword", "shield"]
@@ -701,7 +701,7 @@ struct SyncEngineEndToEndTests {
     func testE2E_MultiplePlayers_Isolation() throws {
         // Arrange
         var serverState = E2ETestGameStateRootNode()
-        var syncEngine = SyncEngine()
+        let syncEngine = SyncEngine()
         let alice = PlayerID("alice")
         let bob = PlayerID("bob")
         let charlie = PlayerID("charlie")
@@ -722,9 +722,9 @@ struct SyncEngineEndToEndTests {
         let charlieSnapshot = try syncEngine.snapshot(for: charlie, from: serverState)
         
         // Reconstruct client states
-        var aliceClientState = ClientStateTree(from: aliceSnapshot, playerID: alice)
-        var bobClientState = ClientStateTree(from: bobSnapshot, playerID: bob)
-        var charlieClientState = ClientStateTree(from: charlieSnapshot, playerID: charlie)
+        let aliceClientState = ClientStateTree(from: aliceSnapshot, playerID: alice)
+        let bobClientState = ClientStateTree(from: bobSnapshot, playerID: bob)
+        let charlieClientState = ClientStateTree(from: charlieSnapshot, playerID: charlie)
         
         // Assert: All players should see broadcast data
         #expect(aliceClientState.players.count == 3, "Alice should see all 3 players")
@@ -766,7 +766,7 @@ struct SyncEngineEndToEndTests {
         // Act: Multiple updates
         // Update 1: Change round
         serverState.round = 2
-        var update1 = try syncEngine.generateDiff(for: alice, from: serverState)
+        let update1 = try syncEngine.generateDiff(for: alice, from: serverState)
         if case .diff(let patches1) = update1 {
             clientState.applyPatches(patches1, playerID: alice)
         }
@@ -775,7 +775,7 @@ struct SyncEngineEndToEndTests {
         
         // Update 2: Change Alice's HP
         serverState.players[alice]?.hpCurrent = 90
-        var update2 = try syncEngine.generateDiff(for: alice, from: serverState)
+        let update2 = try syncEngine.generateDiff(for: alice, from: serverState)
         if case .diff(let patches2) = update2 {
             clientState.applyPatches(patches2, playerID: alice)
         }
@@ -784,7 +784,7 @@ struct SyncEngineEndToEndTests {
         
         // Update 3: Add card to Alice's hand
         serverState.hands[alice]?.append("card2")
-        var update3 = try syncEngine.generateDiff(for: alice, from: serverState)
+        let update3 = try syncEngine.generateDiff(for: alice, from: serverState)
         if case .diff(let patches3) = update3 {
             clientState.applyPatches(patches3, playerID: alice)
         }
@@ -873,7 +873,7 @@ struct SyncEngineEndToEndTests {
         
         // Generate a fresh snapshot to verify the state is correct
         let updatedSnapshot = try syncEngine.snapshot(for: alice, from: serverState)
-        var updatedClientState = ClientStateTree(from: updatedSnapshot, playerID: alice)
+        let updatedClientState = ClientStateTree(from: updatedSnapshot, playerID: alice)
         let aliceInventory = updatedClientState.players["alice"]?.inventory ?? []
         #expect(aliceInventory.contains("sword"), 
                 "Alice should have sword in inventory (got: \(aliceInventory))")
