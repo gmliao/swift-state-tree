@@ -32,6 +32,7 @@
 
 ### 核心概念
 - **[DESIGN_CORE.md](./DESIGN_CORE.md)**：整體理念、StateTree 結構、同步規則 DSL
+- **[DESIGN_VERSIONING.md](./DESIGN_VERSIONING.md)**：Schema 版本控制機制、`@Since` 標記、自動補欄位、Persistence 處理
 
 ### 通訊模式
 - **[DESIGN_COMMUNICATION.md](./DESIGN_COMMUNICATION.md)**：RPC 與 Event 通訊模式、WebSocket 傳輸、路由機制

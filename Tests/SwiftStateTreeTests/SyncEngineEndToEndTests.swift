@@ -368,6 +368,12 @@ struct SyncEngineEndToEndTests {
         // Generate snapshot
         let snapshot = try syncEngine.snapshot(for: playerID, from: serverState)
         
+        // Debug: Print snapshot keys to verify format
+        print("📸 Snapshot keys (total: \(snapshot.values.count)):")
+        for key in snapshot.values.keys.sorted() {
+            print("  - '\(key)'")
+        }
+        
         // Simulate JSON serialization/deserialization
         let jsonData = try JSONSerialization.data(withJSONObject: snapshot.values.mapValues { $0.toJSONValue() })
         let jsonObject = try JSONSerialization.jsonObject(with: jsonData) as! [String: Any]
@@ -475,8 +481,14 @@ struct SyncEngineEndToEndTests {
         // Generate diff
         let update = try syncEngine.generateDiff(for: playerID, from: serverState)
         
-        // Apply patches to client state
+        // Debug: Print patch paths to verify format
         if case .diff(let patches) = update {
+            print("🔧 Patch paths (total: \(patches.count)):")
+            for patch in patches {
+                print("  - '\(patch.path)' (operation: \(patch.operation))")
+            }
+            
+            // Apply patches to client state
             clientState.applyPatches(patches, playerID: playerID)
         }
         
