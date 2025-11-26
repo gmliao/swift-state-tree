@@ -44,6 +44,166 @@
 - **啟動預熱**：可在 Realm/伺服器啟動時先鎖定 state 並生成一次 broadcast/per-player baseline（或至少 broadcast），填入 cache，降低第一位玩家觸發全量 snapshot 的延遲。
   - 預熱時機要在初始狀態「打理完」後再做，避免把半成品寫進 cache，導致第一個 diff 回傳大批「開門前打掃」的 patch。
 
+### 已實作的 API（2024-XX-XX）
+
+以下優化項目已經實作並可用：
+
+#### 1. 統一快照提取 API
+
+**API**：
+- `SyncEngine.extractBroadcastSnapshot(from:mode:)` - 提取 broadcast 快照（所有玩家共用，只需提取一次）
+- `SyncEngine.extractPerPlayerSnapshot(for:from:mode:)` - 提取 per-player 快照（每個玩家不同）
+
+**重要設計**：
+- **Broadcast 快照是共用的**：所有玩家看到相同的 broadcast 欄位，只需提取一次即可重用
+- **Per-player 快照是獨立的**：每個玩家有不同的 per-player 欄位，需要分別提取
+
+**推薦使用方式**（多玩家場景）：
+```swift
+// 在 actor 或鎖內：
+// 1. 提取一次 broadcast（所有玩家共用）
+let broadcastSnapshot = try syncEngine.extractBroadcastSnapshot(from: state)
+
+// 2. 為每個玩家分別提取 per-player
+for playerID in allPlayerIDs {
+    let perPlayerSnapshot = try syncEngine.extractPerPlayerSnapshot(for: playerID, from: state)
+    
+    // 3. 解鎖後計算 diff
+    let update = try syncEngine.generateDiffFromSnapshots(
+        for: playerID,
+        broadcastSnapshot: broadcastSnapshot,  // 共用同一個 broadcast
+        perPlayerSnapshot: perPlayerSnapshot
+    )
+}
+```
+
+**單玩家場景**：
+```swift
+// 即使只有一個玩家，也推薦分別提取（保持一致性）
+let broadcastSnapshot = try syncEngine.extractBroadcastSnapshot(from: state)
+let perPlayerSnapshot = try syncEngine.extractPerPlayerSnapshot(for: playerID, from: state)
+```
+
+**優點**：
+- 減少重複序列化（broadcast 只需提取一次）
+- 保證一致性（broadcast 和 per-player 快照來自同一 state 版本）
+- 支援 dirty tracking 模式（透過 `mode` 參數）
+
+#### 2. 一致性保障 API
+
+**API**：`SyncEngine.generateDiffFromSnapshots(for:broadcastSnapshot:perPlayerSnapshot:onlyPaths:mode:)`
+
+使用預提取的快照計算 diff，允許外層鎖定 state、提取快照、解鎖後再計算 diff。
+
+**使用模式**（外層需實作）：
+
+**單玩家場景**：
+```swift
+// 在 RealmActor 或類似的外層：
+actor RealmActor {
+    private var state: GameState
+    private var syncEngine: SyncEngine
+    
+    func syncForPlayer(_ playerID: PlayerID) async throws -> StateUpdate {
+        // 1. 在 actor 內鎖定 state 並提取快照
+        let broadcastSnapshot = try syncEngine.extractBroadcastSnapshot(from: state)
+        let perPlayerSnapshot = try syncEngine.extractPerPlayerSnapshot(for: playerID, from: state)
+        
+        // 2. 解鎖後再計算 diff（避免長時間持有鎖）
+        return try syncEngine.generateDiffFromSnapshots(
+            for: playerID,
+            broadcastSnapshot: broadcastSnapshot,
+            perPlayerSnapshot: perPlayerSnapshot
+        )
+    }
+}
+```
+
+**多玩家場景**（推薦，效能更好）：
+```swift
+actor RealmActor {
+    private var state: GameState
+    private var syncEngine: SyncEngine
+    
+    func syncForAllPlayers(_ playerIDs: [PlayerID]) async throws -> [PlayerID: StateUpdate] {
+        // 1. 在 actor 內鎖定 state，提取一次 broadcast（所有玩家共用）
+        let broadcastSnapshot = try syncEngine.extractBroadcastSnapshot(from: state)
+        
+        // 2. 為每個玩家提取 per-player 快照
+        var perPlayerSnapshots: [PlayerID: StateSnapshot] = [:]
+        for playerID in playerIDs {
+            perPlayerSnapshots[playerID] = try syncEngine.extractPerPlayerSnapshot(for: playerID, from: state)
+        }
+        
+        // 3. 解鎖後再計算 diff（避免長時間持有鎖）
+        var updates: [PlayerID: StateUpdate] = [:]
+        for playerID in playerIDs {
+            updates[playerID] = try syncEngine.generateDiffFromSnapshots(
+                for: playerID,
+                broadcastSnapshot: broadcastSnapshot,  // 共用同一個 broadcast
+                perPlayerSnapshot: perPlayerSnapshots[playerID]!
+            )
+        }
+        return updates
+    }
+}
+```
+
+**優點**：
+- 確保 `computeBroadcastDiff` 和 `computePerPlayerDiff` 使用同一版本的快照
+- 允許外層控制鎖定時機，減少鎖持有時間
+- 與現有 `generateDiff` API 完全相容（可選擇性使用）
+
+#### 3. 啟動預熱 API
+
+**API**：`SyncEngine.warmupCache(from:)`
+
+在 Realm/伺服器啟動時預熱 broadcast cache，降低第一位玩家觸發全量 snapshot 的延遲。
+
+```swift
+// 在初始狀態完全設置完成後調用
+try syncEngine.warmupCache(from: initialState)
+```
+
+**實作細節**：
+- 如果 broadcast cache 已存在，跳過（避免覆蓋）
+- 生成 broadcast snapshot 並存入 cache（所有玩家共用）
+- **不預熱 per-player cache**：per-player cache 會在玩家第一次調用 `generateDiff` 時自動建立
+- 確保預熱時機在初始狀態「打理完」後（由外層控制）
+
+**設計理由**：
+- Broadcast cache 是所有玩家共用的，在啟動時就可以預熱
+- Per-player cache 是每個玩家獨立的，在啟動時：
+  - 可能還沒有玩家加入
+  - 不知道哪些玩家會加入
+  - 應該在玩家實際加入時（第一次調用 `generateDiff`）才建立
+
+**注意事項**：
+- ⚠️ **預熱時機很重要**：必須在初始狀態完全初始化後調用，避免把半成品寫進 cache
+- 如果預熱時機過早，第一個 diff 會回傳大批「開門前打掃」的 patch
+
+#### 4. 值語義拷貝策略
+
+**設計原則**：
+
+由於 `StateNode` 為 `struct`（值語義），可以在鎖內進行值拷貝後解鎖計算：
+
+```swift
+// 在 actor 或鎖內：
+var snapshot = state  // 值語義拷貝（struct copy）
+// 解鎖後再使用 snapshot 計算 diff
+```
+
+**要求**：
+- ✅ **值語義欄位**：標準 Swift 型別（`Int`, `String`, `Bool` 等）自動支援
+- ✅ **COW 容器**：標準 `Array`/`Dictionary`/`Set` 使用 Copy-on-Write，效率高
+- ⚠️ **非 COW 型別**：若欄位包含 `class` 或非 COW 型別，需要深拷貝或確保不可變
+
+**最佳實踐**：
+- 在 `StateNode` 定義中，確保所有 `@Sync` 欄位為值語義或 COW 型別
+- 避免在狀態中直接使用 `class` 型別（除非是不可變的）
+- 使用 `Sendable` 標記確保線程安全
+
 ## 1. isDirty 機制優化
 
 ### 目標

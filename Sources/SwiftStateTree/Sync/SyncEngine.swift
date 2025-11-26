@@ -88,7 +88,17 @@ public struct SyncEngine: Sendable {
     // MARK: - Snapshot Extraction
     
     /// Extract broadcast fields snapshot (fields that are the same for all players)
-    private func extractBroadcastSnapshot<State: StateNodeProtocol>(
+    ///
+    /// **Important**: Broadcast snapshot is shared across all players. You only need to extract
+    /// it once and reuse it for all players when computing diffs. This reduces redundant
+    /// serialization overhead.
+    ///
+    /// - Parameters:
+    ///   - state: The StateNode instance
+    ///   - mode: Snapshot generation mode. Default is `.all` for complete snapshots.
+    /// - Returns: A `StateSnapshot` containing only broadcast fields
+    /// - Throws: `SyncError` if value conversion fails
+    public func extractBroadcastSnapshot<State: StateNodeProtocol>(
         from state: State,
         mode: SnapshotMode = .all
     ) throws -> StateSnapshot {
@@ -98,7 +108,15 @@ public struct SyncEngine: Sendable {
     /// Extract per-player fields snapshot (fields that differ per player)
     ///
     /// Filters full snapshot to only include per-player fields (excludes broadcast and serverOnly).
-    private func extractPerPlayerSnapshot<State: StateNodeProtocol>(
+    /// Each player has their own per-player snapshot, so this must be called separately for each player.
+    ///
+    /// - Parameters:
+    ///   - playerID: The player ID to generate the snapshot for
+    ///   - state: The StateNode instance
+    ///   - mode: Snapshot generation mode. Default is `.all` for complete snapshots.
+    /// - Returns: A `StateSnapshot` containing only per-player fields for the specified player
+    /// - Throws: `SyncError` if value conversion fails
+    public func extractPerPlayerSnapshot<State: StateNodeProtocol>(
         for playerID: PlayerID,
         from state: State,
         mode: SnapshotMode = .all
@@ -429,7 +447,170 @@ public struct SyncEngine: Sendable {
         return merged
     }
     
+    // MARK: - Diff Computation with Pre-extracted Snapshots
+    
+    /// Compute broadcast diff using pre-extracted snapshot
+    ///
+    /// This method allows using a pre-extracted snapshot instead of extracting from state,
+    /// ensuring consistency when state may be modified concurrently.
+    private mutating func computeBroadcastDiffFromSnapshot(
+        currentBroadcast: StateSnapshot,
+        onlyPaths: Set<String>?,
+        mode: SnapshotMode = .all
+    ) -> [StatePatch] {
+        // Check if we have cached broadcast snapshot
+        guard let lastBroadcast = lastBroadcastSnapshot else {
+            // First time: seed cache with the provided snapshot
+            // If mode is dirtyTracking, we still need full snapshot for cache
+            // But since we're using pre-extracted snapshot, we use what we have
+            lastBroadcastSnapshot = currentBroadcast
+            return []
+        }
+        
+        // Compare and generate patches
+        let patches = compareSnapshots(
+            from: lastBroadcast,
+            to: currentBroadcast,
+            onlyPaths: onlyPaths,
+            dirtyFields: mode.fields
+        )
+        
+        // Update cache by merging dirty fields into existing cache
+        if case .dirtyTracking(let dirtyFields) = mode, !dirtyFields.isEmpty, var cachedSnapshot = lastBroadcastSnapshot {
+            // Merge only dirty fields into cached snapshot
+            for (key, value) in currentBroadcast.values {
+                cachedSnapshot.values[key] = value
+            }
+            lastBroadcastSnapshot = cachedSnapshot
+        } else {
+            // No dirty tracking or no cache, update cache with current snapshot
+            lastBroadcastSnapshot = currentBroadcast
+        }
+        
+        return patches
+    }
+    
+    /// Compute per-player diff using pre-extracted snapshot
+    ///
+    /// This method allows using a pre-extracted snapshot instead of extracting from state,
+    /// ensuring consistency when state may be modified concurrently.
+    private mutating func computePerPlayerDiffFromSnapshot(
+        for playerID: PlayerID,
+        currentPerPlayer: StateSnapshot,
+        onlyPaths: Set<String>?,
+        mode: SnapshotMode = .all
+    ) -> [StatePatch] {
+        // If only broadcast fields are dirty, we can skip per-player diff when cache exists
+        if case .dirtyTracking(let dirtyFields) = mode, dirtyFields.isEmpty, lastPerPlayerSnapshots[playerID] != nil {
+            return []
+        }
+        
+        // Check if we have cached per-player snapshot
+        guard let lastPerPlayer = lastPerPlayerSnapshots[playerID] else {
+            // First time: seed cache with the provided snapshot
+            lastPerPlayerSnapshots[playerID] = currentPerPlayer
+            return []
+        }
+        
+        // Compare and generate patches
+        let patches = compareSnapshots(
+            from: lastPerPlayer,
+            to: currentPerPlayer,
+            onlyPaths: onlyPaths,
+            dirtyFields: mode.fields
+        )
+        
+        // Update cache by merging dirty fields into existing cache
+        if case .dirtyTracking(let dirtyFields) = mode, !dirtyFields.isEmpty, var cachedSnapshot = lastPerPlayerSnapshots[playerID] {
+            // Merge only dirty fields into cached snapshot
+            for (key, value) in currentPerPlayer.values {
+                cachedSnapshot.values[key] = value
+            }
+            lastPerPlayerSnapshots[playerID] = cachedSnapshot
+        } else {
+            // No dirty tracking or no cache, update cache with current snapshot
+            lastPerPlayerSnapshots[playerID] = currentPerPlayer
+        }
+        
+        return patches
+    }
+    
     // MARK: - Main Diff Generation
+    
+    /// Generate a diff update using pre-extracted snapshots (ensures consistency)
+    ///
+    /// This method allows the caller to lock state, extract snapshots, unlock, then compute diff.
+    /// This ensures that `computeBroadcastDiff` and `computePerPlayerDiff` use the same state version,
+    /// avoiding inconsistencies when state may be modified concurrently.
+    ///
+    /// **Usage pattern** (caller should implement):
+    /// ```swift
+    /// // In RealmActor or similar:
+    /// await actor {
+    ///     // Extract broadcast once (shared across all players)
+    ///     let broadcastSnapshot = try syncEngine.extractBroadcastSnapshot(from: state)
+    ///     // Extract per-player for this player
+    ///     let perPlayerSnapshot = try syncEngine.extractPerPlayerSnapshot(for: playerID, from: state)
+    ///     // Unlock before computing diff
+    ///     return try syncEngine.generateDiffFromSnapshots(
+    ///         for: playerID,
+    ///         broadcastSnapshot: broadcastSnapshot,
+    ///         perPlayerSnapshot: perPlayerSnapshot
+    ///     )
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - playerID: The player ID to generate the diff for
+    ///   - broadcastSnapshot: Pre-extracted broadcast snapshot
+    ///   - perPlayerSnapshot: Pre-extracted per-player snapshot
+    ///   - onlyPaths: Optional set of paths to limit the diff calculation to (for optimization)
+    ///   - mode: Snapshot generation mode used to extract the snapshots. Default is `.all`.
+    /// - Returns: A `StateUpdate` containing either no changes, first sync signal, or a list of patches
+    /// - Throws: `SyncError` if value conversion fails
+    public mutating func generateDiffFromSnapshots(
+        for playerID: PlayerID,
+        broadcastSnapshot: StateSnapshot,
+        perPlayerSnapshot: StateSnapshot,
+        onlyPaths: Set<String>? = nil,
+        mode: SnapshotMode = .all
+    ) throws -> StateUpdate {
+        let isFirstSyncForPlayer = lastPerPlayerSnapshots[playerID] == nil
+        
+        // Get sync field definitions to filter onlyPaths
+        // Note: We need to determine field types, but we don't have access to state here
+        // For now, we'll pass onlyPaths as-is and let the comparison handle it
+        
+        // Compute broadcast diff using pre-extracted snapshot
+        let broadcastDiff = computeBroadcastDiffFromSnapshot(
+            currentBroadcast: broadcastSnapshot,
+            onlyPaths: onlyPaths,
+            mode: mode
+        )
+        
+        // Compute per-player diff using pre-extracted snapshot
+        let perPlayerDiff = computePerPlayerDiffFromSnapshot(
+            for: playerID,
+            currentPerPlayer: perPlayerSnapshot,
+            onlyPaths: onlyPaths,
+            mode: mode
+        )
+        
+        // Merge patches (per-player takes precedence)
+        let mergedPatches = mergePatches(broadcastDiff, perPlayerDiff)
+        
+        // Now that cache is populated, we can safely return firstSync signal
+        if isFirstSyncForPlayer {
+            return .firstSync(mergedPatches)
+        }
+        
+        // Return result
+        if mergedPatches.isEmpty {
+            return .noChange
+        } else {
+            return .diff(mergedPatches)
+        }
+    }
     
     /// Generate a diff update for a specific player
     ///
@@ -538,6 +719,32 @@ public struct SyncEngine: Sendable {
     }
     
     // MARK: - Cache Management
+    
+    /// Warm up broadcast cache with initial state snapshot
+    ///
+    /// Call this after initial state is fully set up to avoid first player triggering full snapshot.
+    /// This reduces latency for the first player by pre-populating the broadcast cache.
+    ///
+    /// **Important**: 
+    /// - Only call this after the initial state is fully initialized. Calling this with a partially
+    ///   initialized state will populate the cache with incomplete data, causing the first diff to
+    ///   return a large patch with all the "cleanup" changes.
+    /// - This only warms up the broadcast cache (shared across all players). Per-player caches are
+    ///   automatically populated when players first call `generateDiff`, so there's no need to
+    ///   pre-warm them.
+    ///
+    /// - Parameter state: The initial StateNode instance (should be fully initialized)
+    /// - Throws: `SyncError` if value conversion fails
+    public mutating func warmupCache<State: StateNodeProtocol>(
+        from state: State
+    ) throws {
+        // Warm up broadcast cache if not already populated
+        // Broadcast cache is shared across all players, so it can be pre-warmed at startup
+        if lastBroadcastSnapshot == nil {
+            lastBroadcastSnapshot = try extractBroadcastSnapshot(from: state, mode: .all)
+        }
+        // Note: Per-player caches are populated automatically when players first call generateDiff
+    }
     
     /// Clear cache for a disconnected player
     ///
