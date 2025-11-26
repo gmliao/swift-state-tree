@@ -35,6 +35,15 @@
 
 > 總體：單核心每秒可處理 ~1–6k 次 diff，視狀態大小而定。
 
+## 後續優化：Snapshot 一致性與提取策略
+
+- **一致性保障**：`computeBroadcastDiff` / `computePerPlayerDiff` 需要與 cache 比較的同一版本快照。外層應以 lock/actor 包裹「讀 state → 拷貝/凍結 → 解鎖 → diff」流程，避免計算中途 state 被改。
+- **值語義拷貝**：`StateNode` 為 struct 時，可在鎖內 `var snapshot = state` 後解鎖計算；需確保欄位是值語義或 COW（標準 `Array`/`Dictionary`/`Set` 可用），若元素含 class 或非 COW 型別則要深拷。
+- **統一提取快照**：考慮新增 API 讓呼叫端一次產出 broadcast / per-player 快照（dirty/all 模式）後傳入 diff，減少重複序列化並保證同一 state 版本；diff 內仍需保持首次呼叫時用 `.all` 補全 cache 的行為。
+- **型別規範**：在 `StateNode` 模型層要求欄位為值語義 + `Sendable`，必要時以自訂 COW wrapper 或 lint/SwiftSyntax 規則禁止引用型別進入狀態，避免拷貝後仍共享底層資料。
+- **啟動預熱**：可在 Realm/伺服器啟動時先鎖定 state 並生成一次 broadcast/per-player baseline（或至少 broadcast），填入 cache，降低第一位玩家觸發全量 snapshot 的延遲。
+  - 預熱時機要在初始狀態「打理完」後再做，避免把半成品寫進 cache，導致第一個 diff 回傳大批「開門前打掃」的 patch。
+
 ## 1. isDirty 機制優化
 
 ### 目標

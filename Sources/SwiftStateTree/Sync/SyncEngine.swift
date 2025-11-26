@@ -308,15 +308,16 @@ public struct SyncEngine: Sendable {
         onlyPaths: Set<String>?,
         mode: SnapshotMode = .all
     ) throws -> [StatePatch] {
-        // Generate current broadcast snapshot (using specified mode)
-        let currentBroadcast = try extractBroadcastSnapshot(from: state, mode: mode)
-        
         // Check if we have cached broadcast snapshot
         guard let lastBroadcast = lastBroadcastSnapshot else {
-            // First time: cache and return empty (first sync uses full snapshot)
-            lastBroadcastSnapshot = currentBroadcast
+            // First time: always seed cache with a full snapshot to avoid missing fields when using dirty tracking
+            // We extract full snapshot directly instead of extracting partial snapshot first to avoid redundant work
+            lastBroadcastSnapshot = try extractBroadcastSnapshot(from: state, mode: .all)
             return []
         }
+        
+        // Generate current broadcast snapshot (using specified mode)
+        let currentBroadcast = try extractBroadcastSnapshot(from: state, mode: mode)
         
         // Compare and generate patches (with mode if provided)
         let patches = compareSnapshots(
@@ -358,15 +359,16 @@ public struct SyncEngine: Sendable {
             return []
         }
         
-        // Generate current per-player snapshot (using specified mode)
-        let currentPerPlayer = try extractPerPlayerSnapshot(for: playerID, from: state, mode: mode)
-        
         // Check if we have cached per-player snapshot
         guard let lastPerPlayer = lastPerPlayerSnapshots[playerID] else {
-            // First time: cache and return empty (first sync uses full snapshot)
-            lastPerPlayerSnapshots[playerID] = currentPerPlayer
+            // First time: always seed cache with a full snapshot to avoid missing fields when using dirty tracking
+            // We extract full snapshot directly instead of extracting partial snapshot first to avoid redundant work
+            lastPerPlayerSnapshots[playerID] = try extractPerPlayerSnapshot(for: playerID, from: state, mode: .all)
             return []
         }
+        
+        // Generate current per-player snapshot (using specified mode)
+        let currentPerPlayer = try extractPerPlayerSnapshot(for: playerID, from: state, mode: mode)
         
         // Compare and generate patches (with mode if provided)
         let patches = compareSnapshots(
