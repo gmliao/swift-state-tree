@@ -256,10 +256,9 @@ public struct StateNodeBuilderMacro: MemberMacro {
             codeLines.append("    if let value = self.\(storageName).policy.filteredValue(self.\(storageName).wrappedValue, for: playerID) {")
             
             // Generate optimized conversion code based on type
-            // value is Any? from filteredValue, so we need to cast it
-            // Explicitly cast to Any to avoid implicit coercion warnings
+            // value is Value? from filteredValue (same type as the field), maintaining type safety
             // Pass playerID for recursive filtering support
-            let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: "value as Any", isAnyType: true, playerID: "playerID")
+            let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: "value", isAnyType: false, playerID: "playerID")
             if needsTry {
                 codeLines.append("        result[\"\(fieldName)\"] = try \(conversionCode)")
             } else {
@@ -646,7 +645,8 @@ public struct StateNodeBuilderMacro: MemberMacro {
     /// Generate optimized conversion code based on type
     /// For basic types, generates direct conversion; for complex types, uses make(from:for:)
     /// Returns a tuple: (code, needsTry) where needsTry indicates if the code can throw
-    /// valueName is expected to be of type Any? (from filteredValue) for snapshot method
+    /// valueName is expected to be of the same type as the field (Value) for snapshot method
+    /// filteredValue now returns Value? instead of Any?, maintaining type safety
     /// valueName is expected to be the actual typed value for broadcastSnapshot method
     /// playerID is passed for recursive filtering support in nested StateNode structures
     /// Note: The returned code does NOT include 'try' keyword - it should be added by the caller if needsTry is true

@@ -36,7 +36,11 @@ public enum SyncPolicy<Value: Sendable>: Sendable {
     /// - Note: Must return the same type as input to ensure type safety in macro-generated code
     case custom(@Sendable (PlayerID, Value) -> Value?)
 
-    public func filteredValue(_ value: Value, for playerID: PlayerID) -> Any? {
+    /// Filter value for a player, returning the same type as input (Value?)
+    ///
+    /// This method maintains type safety by returning Value? instead of Any?.
+    /// The return type matches the input type, making it easier to work with in macro-generated code.
+    public func filteredValue(_ value: Value, for playerID: PlayerID) -> Value? {
         switch self {
         case .serverOnly:
             return nil
@@ -52,7 +56,9 @@ public enum SyncPolicy<Value: Sendable>: Sendable {
     }
     
     /// Filter value for a player, or return broadcast-only fields if playerID is nil
-    public func filteredValue(_ value: Value, for playerID: PlayerID?) -> Any? {
+    ///
+    /// Returns Value? to maintain type safety, making it easier to work with in macro-generated code.
+    public func filteredValue(_ value: Value, for playerID: PlayerID?) -> Value? {
         guard let playerID = playerID else {
             // When playerID is nil, only return broadcast fields
             switch self {

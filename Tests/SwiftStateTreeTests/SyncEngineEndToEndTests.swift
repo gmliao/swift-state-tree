@@ -293,11 +293,15 @@ extension ClientStateTree {
                             var inventory: [String] = []
                             if let inventoryValue = playerObj["inventory"] {
                                 if case .array(let arr) = inventoryValue {
-                                    // Per-player filtered: extract from dict structure
+                                    // Direct array (independent inventory)
                                     inventory = arr.compactMap { $0.stringValue }
                                 } else if case .object(let invDict) = inventoryValue {
-                                    // Fallback: if it's still a dict, extract values
-                                    inventory = invDict.values.compactMap { $0.stringValue }
+                                    // Per-player filtered: extract from dict structure {"playerID": [...]}
+                                    // The dict should only contain one key (filtered for the viewing player)
+                                    // Extract the first (and only) value
+                                    if let firstValue = invDict.values.first, case .array(let arr) = firstValue {
+                                        inventory = arr.compactMap { $0.stringValue }
+                                    }
                                 }
                             }
                             
@@ -318,9 +322,15 @@ extension ClientStateTree {
                             var inventory: [String] = []
                             if let inventoryValue = playerObj["inventory"] {
                                 if case .array(let arr) = inventoryValue {
+                                    // Direct array (independent inventory)
                                     inventory = arr.compactMap { $0.stringValue }
                                 } else if case .object(let invDict) = inventoryValue {
-                                    inventory = invDict.values.compactMap { $0.stringValue }
+                                    // Per-player filtered: extract from dict structure {"playerID": [...]}
+                                    // The dict should only contain one key (filtered for the viewing player)
+                                    // Extract the first (and only) value
+                                    if let firstValue = invDict.values.first, case .array(let arr) = firstValue {
+                                        inventory = arr.compactMap { $0.stringValue }
+                                    }
                                 }
                             }
                             

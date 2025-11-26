@@ -761,12 +761,19 @@ func testRecursiveFiltering_NestedStateNodeWithPerPlayerField() throws {
             #expect(alicePlayerState["hp"]?.intValue == 100, "Alice should see her hp (broadcast)")
             
             // PerPlayer field: Alice should only see her own inventory
-            if let aliceInventory = alicePlayerState["inventory"]?.arrayValue {
-                #expect(aliceInventory.count == 2, "Alice should see 2 items in her inventory")
-                let items = aliceInventory.compactMap { $0.stringValue }
-                #expect(items.contains("sword"), "Alice should see sword in her inventory")
-                #expect(items.contains("shield"), "Alice should see shield in her inventory")
-                #expect(!items.contains("potion"), "Alice should NOT see Bob's potion in her inventory")
+            // Note: filteredValue returns [PlayerID: [String]] (dictionary), not [String] (array)
+            // The structure is: {"alice": ["sword", "shield"]}
+            if let aliceInventoryDict = alicePlayerState["inventory"]?.objectValue {
+                // Extract Alice's items from the dictionary
+                if let aliceItems = aliceInventoryDict["alice"]?.arrayValue {
+                    #expect(aliceItems.count == 2, "Alice should see 2 items in her inventory")
+                    let items = aliceItems.compactMap { $0.stringValue }
+                    #expect(items.contains("sword"), "Alice should see sword in her inventory")
+                    #expect(items.contains("shield"), "Alice should see shield in her inventory")
+                    #expect(!items.contains("potion"), "Alice should NOT see Bob's potion in her inventory")
+                } else {
+                    Issue.record("Alice should have her own items in inventory dictionary")
+                }
             } else {
                 Issue.record("Alice should have inventory field in snapshot")
             }
@@ -779,10 +786,16 @@ func testRecursiveFiltering_NestedStateNodeWithPerPlayerField() throws {
             #expect(bobPlayerState["hp"]?.intValue == 80, "Alice should see Bob's hp (broadcast)")
             
             // PerPlayer field: Alice should see Bob's inventory filtered for Alice
-            // Since Bob's inventory[alice] = ["bow"], Alice should see ["bow"]
-            if let bobInventoryForAlice = bobPlayerState["inventory"]?.arrayValue {
-                #expect(bobInventoryForAlice.count == 1, "Alice should see 1 item in Bob's inventory (filtered for Alice)")
-                #expect(bobInventoryForAlice.first?.stringValue == "bow", "Alice should see 'bow' in Bob's inventory (filtered for Alice)")
+            // Since Bob's inventory[alice] = ["bow"], Alice should see {"alice": ["bow"]}
+            // Note: filteredValue returns [PlayerID: [String]] (dictionary), not [String] (array)
+            if let bobInventoryDict = bobPlayerState["inventory"]?.objectValue {
+                // Extract Alice's items from Bob's inventory dictionary
+                if let aliceItemsInBobInventory = bobInventoryDict["alice"]?.arrayValue {
+                    #expect(aliceItemsInBobInventory.count == 1, "Alice should see 1 item in Bob's inventory (filtered for Alice)")
+                    #expect(aliceItemsInBobInventory.first?.stringValue == "bow", "Alice should see 'bow' in Bob's inventory (filtered for Alice)")
+                } else {
+                    Issue.record("Alice should have items in Bob's inventory dictionary (keyed by alice)")
+                }
             } else {
                 Issue.record("Alice should have inventory field for Bob in snapshot")
             }
@@ -794,11 +807,18 @@ func testRecursiveFiltering_NestedStateNodeWithPerPlayerField() throws {
         // Bob should see his own player state
         if let bobPlayerState = players["bob"]?.objectValue {
             // PerPlayer field: Bob should only see his own inventory
-            if let bobInventory = bobPlayerState["inventory"]?.arrayValue {
-                #expect(bobInventory.count == 2, "Bob should see 2 items in his inventory")
-                let items = bobInventory.compactMap { $0.stringValue }
-                #expect(items.contains("arrow"), "Bob should see arrow in his inventory")
-                #expect(items.contains("quiver"), "Bob should see quiver in his inventory")
+            // Note: filteredValue returns [PlayerID: [String]] (dictionary), not [String] (array)
+            // The structure is: {"bob": ["arrow", "quiver"]}
+            if let bobInventoryDict = bobPlayerState["inventory"]?.objectValue {
+                // Extract Bob's items from the dictionary
+                if let bobItems = bobInventoryDict["bob"]?.arrayValue {
+                    #expect(bobItems.count == 2, "Bob should see 2 items in his inventory")
+                    let items = bobItems.compactMap { $0.stringValue }
+                    #expect(items.contains("arrow"), "Bob should see arrow in his inventory")
+                    #expect(items.contains("quiver"), "Bob should see quiver in his inventory")
+                } else {
+                    Issue.record("Bob should have his own items in inventory dictionary")
+                }
             } else {
                 Issue.record("Bob should have inventory field in snapshot")
             }
@@ -807,10 +827,16 @@ func testRecursiveFiltering_NestedStateNodeWithPerPlayerField() throws {
         // Bob should see Alice's player state (broadcast)
         if let alicePlayerState = players["alice"]?.objectValue {
             // PerPlayer field: Bob should see Alice's inventory filtered for Bob
-            // Since Alice's inventory[bob] = ["potion"], Bob should see ["potion"]
-            if let aliceInventoryForBob = alicePlayerState["inventory"]?.arrayValue {
-                #expect(aliceInventoryForBob.count == 1, "Bob should see 1 item in Alice's inventory (filtered for Bob)")
-                #expect(aliceInventoryForBob.first?.stringValue == "potion", "Bob should see 'potion' in Alice's inventory (filtered for Bob)")
+            // Since Alice's inventory[bob] = ["potion"], Bob should see {"bob": ["potion"]}
+            // Note: filteredValue returns [PlayerID: [String]] (dictionary), not [String] (array)
+            if let aliceInventoryDict = alicePlayerState["inventory"]?.objectValue {
+                // Extract Bob's items from Alice's inventory dictionary
+                if let bobItemsInAliceInventory = aliceInventoryDict["bob"]?.arrayValue {
+                    #expect(bobItemsInAliceInventory.count == 1, "Bob should see 1 item in Alice's inventory (filtered for Bob)")
+                    #expect(bobItemsInAliceInventory.first?.stringValue == "potion", "Bob should see 'potion' in Alice's inventory (filtered for Bob)")
+                } else {
+                    Issue.record("Bob should have items in Alice's inventory dictionary (keyed by bob)")
+                }
             } else {
                 Issue.record("Bob should have inventory field for Alice in snapshot")
             }
@@ -850,14 +876,29 @@ func testRecursiveFiltering_NestedStateNodeBroadcastFields() throws {
         #expect(alicePlayers["hp"] == bobPlayers["hp"], "Both should see the same hp (broadcast)")
         
         // But perPlayer fields should be different
-        let aliceInventory = alicePlayers["inventory"]?.arrayValue
-        let bobInventory = bobPlayers["inventory"]?.arrayValue
+        // Note: filteredValue returns [PlayerID: [String]] (dictionary), not [String] (array)
+        // Alice sees: {"alice": ["sword"]}
+        // Bob sees: {"bob": ["shield"]}
+        let aliceInventoryDict = alicePlayers["inventory"]?.objectValue
+        let bobInventoryDict = bobPlayers["inventory"]?.objectValue
         
-        #expect(aliceInventory != bobInventory, "Inventories should be different (perPlayer filtering)")
-        #expect(aliceInventory?.count == 1, "Alice should see 1 item in her inventory")
-        #expect(bobInventory?.count == 1, "Bob should see 1 item in Alice's inventory (filtered for Bob)")
-        #expect(aliceInventory?.first?.stringValue == "sword", "Alice should see sword")
-        #expect(bobInventory?.first?.stringValue == "shield", "Bob should see shield (filtered for Bob)")
+        #expect(aliceInventoryDict != bobInventoryDict, "Inventories should be different (perPlayer filtering)")
+        
+        // Extract Alice's items from her view
+        if let aliceItems = aliceInventoryDict?["alice"]?.arrayValue {
+            #expect(aliceItems.count == 1, "Alice should see 1 item in her inventory")
+            #expect(aliceItems.first?.stringValue == "sword", "Alice should see sword")
+        } else {
+            Issue.record("Alice should have her own items in inventory dictionary")
+        }
+        
+        // Extract Bob's items from his view (filtered for Bob)
+        if let bobItems = bobInventoryDict?["bob"]?.arrayValue {
+            #expect(bobItems.count == 1, "Bob should see 1 item in Alice's inventory (filtered for Bob)")
+            #expect(bobItems.first?.stringValue == "shield", "Bob should see shield (filtered for Bob)")
+        } else {
+            Issue.record("Bob should have items in inventory dictionary (keyed by bob)")
+        }
     }
 }
 
