@@ -222,12 +222,12 @@ let message = TransportMessage.action(
 await ws.send(message)
 
 // Transport 層根據訊息中的 landID 路由
-// handleMessage 中：landActors[landID] 找到對應的 LandActor
+// handleMessage 中：landActors[landID] 找到對應的 LandKeeper
 ```
 
 **設計要點**：
 1. **訊息層級路由**：`landID` 在 `TransportMessage` 中，而非 URL 路徑
-2. **Transport 層處理**：根據 `landID` 查找對應的 `LandActor`
+2. **Transport 層處理**：根據 `landID` 查找對應的 `LandKeeper`
 3. **三層識別**：`playerID`（帳號）+ `clientID`（裝置）+ `sessionID`（會話）
 4. **多連接支援**：同一個 `playerID` 可以有多個 `clientID`（多裝置），同一個 `clientID` 可以有多個 `sessionID`（多標籤頁）
 5. **動態加入**：新 land 只需註冊，不需要修改路由配置

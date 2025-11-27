@@ -451,7 +451,7 @@ enum AllowedClientEventsBuilder {
 }
 
 // Runtime 驗證（只驗證 ClientEvent）
-actor LandActor {
+actor LandKeeper {
     private let allowedClientEvents: Set<ClientEventType>
     
     func handleEvent(_ event: GameEvent, from player: PlayerID) async throws {
@@ -548,7 +548,7 @@ actor LandActor {
 - **Schema Generator**：從 StateTree 定義生成 JSON Schema
 - `LandDefinition`：Land DSL 定義（不含網路細節）
 - `LandContext`：LandContext 定義
-- `LandActor`：LandActor 定義（不含 Transport）
+- `LandKeeper`：LandKeeper 定義（不含 Transport）
 - `SyncEngine`：同步引擎（不含 Transport）
 
 **不包含**：
@@ -705,7 +705,7 @@ swift-state-tree/
 │   │   ├── StateTree/               # StateTree 定義（StateNode、StateTreeEngine）
 │   │   ├── Sync/                    # @Sync 同步規則（SyncPolicy、SyncEngine）
 │   │   ├── Land/                   # Land DSL（LandDefinition、LandContext）
-│   │   ├── Runtime/                 # LandActor（不含 Transport）
+│   │   ├── Runtime/                 # LandKeeper（不含 Transport）
 │   │   └── SchemaGen/              # Schema 生成器（JSON Schema）
 │   │
 │   ├── SwiftStateTreeTransport/     # transport：網路傳輸模組

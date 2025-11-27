@@ -101,7 +101,7 @@ SwiftStateTree/
 │   │   ├── StateTree/               # StateTree 定義（StateNode、StateTreeEngine）
 │   │   ├── Sync/                    # @Sync 同步規則（SyncPolicy、SyncEngine）
 │   │   ├── Land/                   # Land DSL（LandDefinition、LandContext）
-│   │   ├── Runtime/                 # LandActor（不含 Transport）
+│   │   ├── Runtime/                 # LandKeeper（不含 Transport）
 │   │   └── SchemaGen/              # Schema 生成器（JSON Schema）
 │   │
 │   ├── SwiftStateTreeTransport/     # transport：網路傳輸模組
@@ -296,7 +296,7 @@ let gameLand = Land("game-room", using: GameStateTree.self) {
 - **[DESIGN_TRANSPORT.md](./docs/design/DESIGN_TRANSPORT.md)**：網路傳輸抽象、Transport 協議、服務注入
 
 ### Runtime 結構
-- **[DESIGN_RUNTIME.md](./docs/design/DESIGN_RUNTIME.md)**：LandActor、SyncEngine 的運行時結構
+- **[DESIGN_RUNTIME.md](./docs/design/DESIGN_RUNTIME.md)**：LandKeeper、SyncEngine 的運行時結構
 
 ### 客戶端 SDK 與程式碼生成
 - **[DESIGN_CLIENT_SDK.md](./docs/guides/DESIGN_CLIENT_SDK.md)**：客戶端 SDK 自動生成、Code-gen 架構設計、TypeScript 支援

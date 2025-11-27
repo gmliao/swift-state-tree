@@ -22,7 +22,7 @@
 └─────────────────────────────────────┘
               ↓
 ┌─────────────────────────────────────┐
-│   Runtime Layer (LandActor)        │
+│   Runtime Layer (LandKeeper)        │
 │   - 持有 Transport                   │
 │   - 建立 LandContext（不暴露 Transport）│
 │   - 處理 Transport 細節              │
@@ -118,7 +118,7 @@ protocol GameTransport {
 
 // WebSocket Transport 實作
 actor WebSocketTransport: GameTransport {
-    private var landActors: [String: LandActor] = [:]
+    private var landActors: [String: LandKeeper] = [:]
     
     // ✅ 三層連接管理：playerID -> clientID -> sessionID -> WebSocket
     private var connections: [PlayerID: [ClientID: [SessionID: WebSocket]]] = [:]
@@ -138,8 +138,8 @@ actor WebSocketTransport: GameTransport {
     }
     
     func register(_ land: LandDefinition<some StateTree>) async {
-        // 創建 LandActor 並註冊（注入 Transport 和 Services）
-        let actor = LandActor(
+        // 創建 LandKeeper 並註冊（注入 Transport 和 Services）
+        let actor = LandKeeper(
             definition: land,
             transport: self,
             services: services

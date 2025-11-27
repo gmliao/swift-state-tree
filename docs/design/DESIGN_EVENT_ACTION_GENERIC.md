@@ -1,44 +1,34 @@
 # SwiftStateTree
 
-## Generic Event Payload & Action 設計草案 v0.2（Land 版）
+## Generic Event Payload & Action 設計 v1（Land DSL 優化版）
 
-> 本文件描述 **Event（泛型 Payload）** 與 **Action（RPC）** 的正式設計，
-> 已全面採用 **Land（世界/領域）** 作為 DSL 名稱。
+> 本文件同步 Land DSL v1 規格，描述 **Event（泛型 Payload）** 與 **Action（型別導向 RPC）** 的正式設計，並說明 Transport 端如何與 `@Land` 語法糖協作。
 
 ---
 
 # 0. 設計目標
 
-本文件解決三件事：
-
-### ① Event 要可擴充（不被 core 限制）
-
-* core 不定義固定事件 enum
-* event payload 由 app / feature 自己定義
-
-### ② Action（RPC）要型別安全
-
-* 每個 Action 定義自己的 Response
-* handler / Transport 能在編譯期知道 input/output
-
-### ③ 與 StateTree / Land DSL / Transport 完全相容
-
-* 不動你的 StateTree 演算法
-* 不動 SyncEngine（snapshot/diff）
-* 多執行緒 diff 也不受影響
+1. **Event 完全型別導向**：core 只提供協定與泛型容器，事件型別由 App/Feature 自行定義，並可透過 macro 產出語義化 handler (`OnReady`, `OnChat` ...)。
+2. **Action 不再綁單一 enum**：每個 Action 自成一個 `struct`/`enum`，以 `Action(FireMissile.self) { ... }` 方式註冊，Handler 回傳 `some Codable & Sendable`，runtime 以 `AnyCodable` 打包回應。
+3. **與 StateTree / SyncEngine / Transport 完整相容**：單線程 LandKeeper 仍操控 StateTree，SyncEngine diff 流程不需修改，Transport 透過 `ActionEnvelope` + `Event` 泛型即可對應所有型別。
 
 ---
 
-# 1. Event：Generic Payload 設計
-
-## 1.1 core：Event Payload 協定
+# 1. Protocol 基礎
 
 ```swift
+public protocol ActionPayload: Codable, Sendable {}
 public protocol ClientEventPayload: Codable, Sendable {}
 public protocol ServerEventPayload: Codable, Sendable {}
 ```
 
-## 1.2 core：泛型 Event 容器
+* **ActionPayload**：Client → Land 的「意圖」或 RPC。
+* **ClientEventPayload**：Client → Land 的即時事件（需經 `AllowedClientEvents` 細項授權）。
+* **ServerEventPayload**：Land → Client 的廣播事件。
+
+---
+
+# 2. Generic Event 容器（core）
 
 ```swift
 public enum Event<C: ClientEventPayload, S: ServerEventPayload>: Codable, Sendable {
@@ -47,245 +37,187 @@ public enum Event<C: ClientEventPayload, S: ServerEventPayload>: Codable, Sendab
 }
 ```
 
-* **core 不定義具體事件種類**
-* App 端事件用 `C`、Server 端事件用 `S`
-
-> 對應舊版 GameEvent，只是泛型版。
+* core 不定義具體事件名稱，只負責傳遞 `C` / `S`。
+* 與舊版 `GameEvent` 對齊，但改為泛型。
 
 ---
 
-# 2. App/Feature 端定義自己的事件
-
-## 2.1 Client Events
+# 3. App / Feature 自訂事件
 
 ```swift
-public enum MyClientEvents: ClientEventPayload {
-    case playerReady(PlayerID)
-    case heartbeat(Date)
-    case uiInteraction(playerID: PlayerID, action: String)
-    case playCard(playerID: PlayerID, cardID: Int)
+@GenerateLandEventHandlers
+enum ClientEvents: ClientEventPayload {
+    case ready
+    case move(Vec2)
+    case chat(String)
 }
-```
 
-## 2.2 Server Events
-
-```swift
-public enum MyServerEvents: ServerEventPayload {
-    case stateUpdate(StateSnapshot)
-    case gameEvent(GameEventDetail)
+enum ServerEvents: ServerEventPayload {
     case systemMessage(String)
-}
-
-public enum GameEventDetail: Codable, Sendable {
-    case damage(from: PlayerID, to: PlayerID, amount: Int)
-    case playerJoined(PlayerID, name: String)
-    case playerReady(PlayerID)
-    case gameStarted
+    case stateUpdate(StateSnapshot)
 }
 ```
 
-## 2.3 Alias 統一命名
+* `@GenerateLandEventHandlers` 會產出 `OnReady`, `OnMove`, `OnChat` 等語法糖（參見 §6）。
+* 若需要多個 Land，各自定義自己的 `ClientEvents` / `ServerEvents`。
+
+Alias（可選）：
 
 ```swift
-public typealias GameEvent = Event<MyClientEvents, MyServerEvents>
+public typealias GameEvent = Event<ClientEvents, ServerEvents>
 ```
 
 ---
 
-# 3. Land DSL 與 Event 整合
+# 4. LandDefinition 與 `@Land`
 
-核心 LandDefinition 需支援 event 的型別參數。
-
-## 3.1 core：LandDefinition
+## 4.1 LandDefinition（v1）
 
 ```swift
 public struct LandDefinition<
     State: StateNodeProtocol,
     ClientE: ClientEventPayload,
-    ServerE: ServerEventPayload,
-    Action: Codable & Sendable
-> {
+    ServerE: ServerEventPayload
+>: Sendable {
     public let id: String
-    public let nodes: [LandNode]
-
+    public let stateType: State.Type
     public let clientEventType: ClientE.Type
     public let serverEventType: ServerE.Type
-    public let actionType: Action.Type
+    public let config: LandConfig
+    public let actionHandlers: [AnyActionHandler<State>]
+    public let eventHandlers: [AnyClientEventHandler<State, ClientE>]
+    public let lifetimeHandlers: LifetimeHandlers<State>
 }
 ```
 
-## 3.2 Land() DSL 建構器
+* `LandConfig`：AccessControl / Tick / Idle / etc.
+* `AnyActionHandler`：型別抹除後的 Action 處理器。
+* `AnyClientEventHandler`：型別抹除後的事件處理器（含 macro 產生的語義化 handler）。
+* `LifetimeHandlers`：OnJoin / OnLeave / Tick / OnShutdown ...
+
+## 4.2 Land Builder 入口
 
 ```swift
+@resultBuilder
+public enum LandDSL {
+    public static func buildBlock(_ components: LandNode...) -> [LandNode] {
+        components
+    }
+}
+
 public func Land<
     State: StateNodeProtocol,
     ClientE: ClientEventPayload,
-    ServerE: ServerEventPayload,
-    Action: Codable & Sendable
+    ServerE: ServerEventPayload
 >(
     _ id: String,
     using stateType: State.Type,
     clientEvents: ClientE.Type,
     serverEvents: ServerE.Type,
-    actions: Action.Type,
     @LandDSL _ content: () -> [LandNode]
-) -> LandDefinition<State, ClientE, ServerE, Action> {
-    .init(
+) -> LandDefinition<State, ClientE, ServerE> {
+    LandBuilder.build(
         id: id,
-        nodes: content(),
-        clientEventType: clientEvents,
-        serverEventType: serverEvents,
-        actionType: actions
+        stateType: stateType,
+        clientEvents: clientEvents,
+        serverEvents: serverEvents,
+        nodes: content()
     )
 }
 ```
 
----
-
-# 4. Land DSL 實際使用範例
+## 4.3 `@Land` Macro 語法糖
 
 ```swift
-let matchLand = Land(
-    "match-3",
-    using: GameStateTree.self,
-    clientEvents: MyClientEvents.self,
-    serverEvents: MyServerEvents.self,
-    actions: GameAction.self
-) {
+@Land(GameState.self, client: ClientEvents.self, server: ServerEvents.self)
+struct GameLand {
+    AccessControl { ... }
+    Rules { ... }
+    Lifetime { ... }
+}
+```
 
-    Config {
-        MaxPlayers(4)
-        Tick(every: .milliseconds(100))
-    }
+Macro 會產生 `static var definition: LandDefinition<...>`，且自動呼叫 `Land(...)`。
 
-    AllowedClientEvents {
-        MyClientEvents.playerReady
-        MyClientEvents.heartbeat
-        MyClientEvents.uiInteraction
-        MyClientEvents.playCard
-    }
+---
 
-    On(MyClientEvents.self) { state, event, ctx in
-        switch event {
+# 5. AccessControl / Rules / Lifetime 區塊
 
-        case .playerReady(let id):
-            await handlePlayerReady(&state, id, ctx)
+* **AccessControl**：`AllowPublic()`, `MaxPlayers(_:)`，未來可擴充 role-based / custom policy。
+* **Rules**：`OnJoin`、`OnLeave`、`AllowedClientEvents`、`Action(...)`、`On(ClientEvents.self)`、`OnReady` 等語法糖全部收斂在此。
+* **Lifetime**：`Tick(every:_:)`、`DestroyWhenEmpty(after:)`、`PersistSnapshot(every:)`、`OnShutdown` 等生命週期設定。Tick handler 會儲存在 `LifetimeHandlers` 供 LandKeeper 掛載。
 
-        case .heartbeat(let ts):
-            state.playerLastActivity[ctx.playerID] = ts
+---
 
-        case .uiInteraction(let id, let action):
-            analytics.track(id, action: action)
+# 6. Event DSL（泛型 + 語義化 handler）
 
-        case .playCard(let id, let cardID):
-            await handlePlayCard(&state, id, cardID, ctx)
+## 6.1 基礎 handler
+
+```swift
+public struct AnyClientEventHandler<State: StateNodeProtocol, E: ClientEventPayload>: LandNode {
+    let handler: @Sendable (inout State, E, LandContext) async -> Void
+}
+
+public func On<State, E: ClientEventPayload>(
+    _ type: E.Type,
+    _ body: @escaping @Sendable (inout State, E, LandContext) async -> Void
+) -> AnyClientEventHandler<State, E> {
+    AnyClientEventHandler(handler: body)
+}
+```
+
+## 6.2 AllowedClientEvents
+
+```swift
+public struct AllowedClientEventsNode: LandNode {
+    public let allowed: Set<AnyHashable>
+}
+
+public func AllowedClientEvents(_ builder: () -> [AnyHashable]) -> AllowedClientEventsNode {
+    AllowedClientEventsNode(allowed: Set(builder()))
+}
+```
+
+Transport 僅允許 `allowed` 內的 case 進入 LandKeeper。
+
+## 6.3 Macro 產生的語義化 handler
+
+`@GenerateLandEventHandlers` 會為每個 enum case 產生一個 `OnXxx`，本質是包裝 `On(ClientEvents.self)`：
+
+```swift
+func OnReady<State: StateNodeProtocol>(
+    _ body: @escaping @Sendable (inout State, LandContext) async -> Void
+) -> AnyClientEventHandler<State, ClientEvents> {
+    On(ClientEvents.self) { state, event, ctx in
+        if case .ready = event {
+            await body(&state, ctx)
         }
     }
 }
 ```
 
-> `AllowedClientEvents` 只限制 Client→Land。
-> ServerEvents 不需要限制（Land 自己送）。
-
----
-
-# 5. Action（RPC）設計
-
-## 5.1 core：ActionPayload 協定
+使用者只需寫：
 
 ```swift
-public protocol ActionPayload: Codable, Sendable {
-    associatedtype Response: Codable & Sendable
-}
-```
+Rules {
+    AllowedClientEvents {
+        ClientEvents.ready
+        ClientEvents.move
+        ClientEvents.chat
+    }
 
-每個 Action 都要有自己的 Response 型別。
+    OnReady { state, ctx in
+        state.readyPlayers.insert(ctx.playerID)
+    }
 
----
+    OnMove { state, vec, ctx in
+        state.players[ctx.playerID]?.position = vec
+    }
 
-## 5.2 App 端定義 Action 與 Response
-
-### Response
-
-```swift
-public enum GameActionResponse: Codable, Sendable {
-    case joinResult(JoinResponse)
-    case hand([Card])
-    case card(Card)
-    case landInfo(LandInfo)
-    case empty
-}
-```
-
-### Action
-
-```swift
-public enum GameAction: ActionPayload {
-    public typealias Response = GameActionResponse
-
-    case getPlayerHand(PlayerID)
-    case getLandInfo
-
-    case join(playerID: PlayerID, name: String)
-    case drawCard(playerID: PlayerID)
-    case attack(attacker: PlayerID, target: PlayerID, damage: Int)
-}
-```
-
----
-
-# 6. Land DSL：Action Handler
-
-## 6.1 Handler typealias
-
-```swift
-public typealias ActionHandler<State, Act: ActionPayload> =
-    (inout State, Act, LandContext) async throws -> Act.Response
-```
-
-## 6.2 DSL Node
-
-```swift
-public struct ActionNode<State, Act: ActionPayload>: LandNode {
-    public let handler: ActionHandler<State, Act>
-}
-
-public func Action<Act: ActionPayload>(
-    _ type: Act.Type,
-    _ handler: @escaping ActionHandler<State, Act>
-) -> LandNode {
-    ActionNode(handler: handler)
-}
-```
-
----
-
-# 7. Land 內使用範例（完整）
-
-```swift
-Action(GameAction.self) { state, action, ctx in
-    switch action {
-
-    case .getPlayerHand(let id):
-        let cards = state.hands[id]?.cards ?? []
-        return .hand(cards)
-
-    case .getLandInfo:
-        let info = LandInfo(
-            id: ctx.landID,
-            playerCount: state.players.count
-        )
-        return .landInfo(info)
-
-    case .join(let id, let name):
-        return try await handleJoin(&state, id: id, name: name, ctx: ctx)
-
-    case .drawCard(let id):
-        return try await handleDrawCard(&state, id: id, ctx: ctx)
-
-    case .attack(let attacker, let target, let damage):
-        return try await handleAttack(
-            &state, attacker: attacker, target: target, damage: damage, ctx: ctx
+    OnChat { state, msg, ctx in
+        await ctx.sendEvent(
+            ServerEvents.systemMessage("[\(ctx.playerID.rawValue)] \(msg)"),
+            to: .all
         )
     }
 }
@@ -293,24 +225,139 @@ Action(GameAction.self) { state, action, ctx in
 
 ---
 
-# 8. TransportMessage（泛型 + Land 版）
+# 7. Action DSL（型別導向）
+
+## 7.1 `ActionPayload` 寫法
 
 ```swift
-public enum TransportMessage<Action, ClientE, ServerE>: Codable
-where
-    Action: ActionPayload,
-    ClientE: ClientEventPayload,
-    ServerE: ServerEventPayload
-{
+struct Join: ActionPayload { let name: String }
+struct Move: ActionPayload { let x: Int; let y: Int }
+struct Attack: ActionPayload { let target: PlayerID; let damage: Int }
+struct GetInventory: ActionPayload { let owner: PlayerID }
+```
+
+每個 Action 可置於獨立檔案，維持模組化。
+
+## 7.2 Handler 介面與型別抹除
+
+```swift
+public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
+    let type: Any.Type
+    let handler: @Sendable (inout State, Any, LandContext) async throws -> AnyCodable
+
+    func canHandle(_ actionType: Any.Type) -> Bool {
+        actionType == type
+    }
+
+    func invoke<A: ActionPayload>(
+        _ state: inout State,
+        action: A,
+        ctx: LandContext
+    ) async throws -> AnyCodable {
+        try await handler(&state, action, ctx)
+    }
+}
+
+public func Action<State, A: ActionPayload>(
+    _ type: A.Type,
+    _ body: @escaping @Sendable (inout State, A, LandContext) async throws -> some Codable & Sendable
+) -> AnyActionHandler<State> {
+    AnyActionHandler(
+        type: A.self,
+        handler: { state, anyAction, ctx in
+            guard let action = anyAction as? A else {
+                throw LandError.invalidActionType
+            }
+            let result = try await body(&state, action, ctx)
+            return AnyCodable(result)
+        }
+    )
+}
+```
+
+* Handler 可 `throw`，錯誤會被 LandKeeper 傳回給 Transport。
+* 回傳值使用 `some Codable & Sendable`，由編譯器推論實際型別，runtime 轉為 `AnyCodable`。
+
+## 7.3 Rules 區塊中的 Action
+
+```swift
+Rules {
+    Action(Join.self) { state, action, ctx in
+        state.players[ctx.playerID] = PlayerState(name: action.name)
+        return VoidResponse.ok
+    }
+
+    Action(Move.self) { state, action, ctx in
+        state.players[ctx.playerID]?.position = Vec2(action.x, action.y)
+        return VoidResponse.ok
+    }
+
+    Action(GetInventory.self) { state, action, ctx in
+        return state.players[action.owner]?.inventory ?? []
+    }
+}
+```
+
+---
+
+# 8. LandContext（請求級上下文）
+
+```swift
+public struct LandContext: Sendable {
+    public let landID: String
+    public let playerID: PlayerID
+    public let clientID: ClientID
+    public let sessionID: SessionID
+    public let services: LandServices
+
+    public func sendEvent(_ event: any ServerEventPayload, to target: EventTarget) async {
+        await sendEventHandler(event, target)
+    }
+
+    public func syncNow() async {
+        await syncHandler()
+    }
+
+    private let sendEventHandler: @Sendable (any ServerEventPayload, EventTarget) async -> Void
+    private let syncHandler: @Sendable () async -> Void
+}
+```
+
+* **Request-scoped**：每次 Action/Event 進入 LandKeeper 時建立。
+* **Transport 隔離**：只透過閉包回呼觸發 WebSocket / HTTP 傳輸，Land 端不需要知道底層協定。
+
+---
+
+# 9. Transport：ActionEnvelope + Event
+
+## 9.1 ActionEnvelope
+
+為了支援「多個 Action 型別」，Transport 以 `ActionEnvelope` 表示一次 RPC：
+
+```swift
+public struct ActionEnvelope: Codable, Sendable {
+    public let typeIdentifier: String   // e.g. fully-qualified Swift type name
+    public let payload: Data            // JSON / MsgPack 編碼後的資料
+}
+```
+
+* **encode**：Client 端根據即將送出的 Action 型別，填入 `typeIdentifier`（可由 codegen/macro 提供常數），並將 `ActionPayload` 序列化成 `payload`。
+* **decode**：Land Transport 依照 `typeIdentifier` 找到對應的 Swift 型別並解碼，再交由 LandKeeper 處理。
+
+## 9.2 TransportMessage（v1）
+
+```swift
+public enum TransportMessage<ClientE, ServerE>: Codable
+where ClientE: ClientEventPayload, ServerE: ServerEventPayload {
     case action(
         requestID: String,
         landID: String,
-        action: Action
+        action: ActionEnvelope
     )
 
     case actionResponse(
         requestID: String,
-        response: Action.Response
+        response: AnyCodable
     )
 
     case event(
@@ -320,48 +367,62 @@ where
 }
 ```
 
-App 端別名：
+* `AnyCodable` 回傳值可由 TypeScript / Kotlin SDK 轉回動態物件，或透過 schema codegen 轉型。
+* 若需要靜態型別，可在 codegen 時為每個 Action 建立 Response decoder。
+
+## 9.3 App 別名
 
 ```swift
-typealias GameMessage =
-    TransportMessage<GameAction, MyClientEvents, MyServerEvents>
+typealias GameMessage = TransportMessage<ClientEvents, ServerEvents>
 ```
 
 ---
 
-# 9. 與 StateTree / SyncEngine 完整相容
+# 10. LandKeeper 運作概念
 
-此設計不影響：
+```swift
+actor LandKeeper<State, ClientE, ServerE>
+where State: StateNodeProtocol,
+      ClientE: ClientEventPayload,
+      ServerE: ServerEventPayload {
 
-### ✓ 單執行緒 mutate LandStateTree（LandActor）
+    let definition: LandDefinition<State, ClientE, ServerE>
+    private var state: State = .init()
 
-Land 內接受 Action / Event → 修改 StateTree。
+    func handleAction(_ envelope: ActionEnvelope, ctx: LandContext) async throws -> AnyCodable {
+        let action = try decodeAction(from: envelope)
+        guard let handler = definition.actionHandlers.first(where: { $0.canHandle(type(of: action)) }) else {
+            throw LandError.actionNotRegistered
+        }
+        return try await handler.invoke(&state, action: action, ctx: ctx)
+    }
 
-### ✓ 多執行緒 snapshot → diff 計算（SyncEngine）
+    func handleClientEvent(_ event: ClientE, ctx: LandContext) async {
+        for handler in definition.eventHandlers {
+            await handler.handler(&state, event, ctx)
+        }
+    }
 
-仍維持高效、多執行緒、可並行。
+    // Tick / lifetime 依據 definition.lifetimeHandlers 設定
+}
+```
 
-### ✓ Per-player 過濾
-
-ServerEvents 的 `.stateUpdate(...)` 照原本路線走。
-
-### ✓ Land 可以擁有多種事件型別
-
-每個 Land 可定義不同的 ClientEvents / ServerEvents / Action。
+* `decodeAction(from:)` 由 Transport 提供，負責把 `ActionEnvelope` 轉成實際 `ActionPayload`。
+* Event handler 無需判斷型別，macro 已經拆好。
 
 ---
 
-# 10. 給 Cursor 使用的建議
+# 11. 相容性說明
 
-1. 把這份文件放：
-   `docs/design/DESIGN_EVENT_ACTION_GENERIC.md`
+* **StateTree / SyncEngine**：完全沿用既有演算法與 snapshot/diff 機制。
+* **多 Land 共存**：每個 Land 只要提供自己的 `State` / `ClientEvents` / `ServerEvents` / Action 集合即可，Transport 依 `landID` 路由。
+* **多語言 SDK**：可從 `ActionPayload` & `EventPayload` 型別反射出 schema，自動產生 TypeScript / Kotlin / Unity 客戶端。
 
-2. 在 Cursor system prompt 加：
+---
 
-   * Land DSL 的事件與 RPC 需使用泛型設計
-   * 所有 Land 都必須明確指定：
-     `clientEvents`, `serverEvents`, `actions`
+# 12. Cursor System 提示（建議）
 
-3. 未來要產生 TypeScript SDK 時：
-
-   * 可從 `MyClientEvents` / `MyServerEvents` / `GameAction` 自動導出 Schema。
+1. 所有 Land 定義都必須透過 `@Land` 或 `Land(...)` 指定 `clientEvents` / `serverEvents`。
+2. Action handler 一律使用 `Action(SomePayload.self) { ... }`，不得再集中到單一 enum。
+3. Event handler 應優先使用 macro 產生的語義化 API（`OnReady`, `OnChat` ...），除非需要 `switch` 全列處理。
+4. Transport 必須處理 `ActionEnvelope` 的 encode/decode 與 `AnyCodable` 回傳值。

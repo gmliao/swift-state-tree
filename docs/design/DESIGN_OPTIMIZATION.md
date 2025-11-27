@@ -99,8 +99,8 @@ let perPlayerSnapshot = try syncEngine.extractPerPlayerSnapshot(for: playerID, f
 
 **單玩家場景**：
 ```swift
-// 在 LandActor 或類似的外層：
-actor LandActor {
+// 在 LandKeeper 或類似的外層：
+actor LandKeeper {
     private var state: GameState
     private var syncEngine: SyncEngine
     
@@ -121,7 +121,7 @@ actor LandActor {
 
 **多玩家場景**（推薦，效能更好）：
 ```swift
-actor LandActor {
+actor LandKeeper {
     private var state: GameState
     private var syncEngine: SyncEngine
     

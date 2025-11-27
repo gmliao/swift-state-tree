@@ -1,4 +1,4 @@
-# Runtime 結構：LandActor + SyncEngine
+# Runtime 結構：LandKeeper + SyncEngine
 
 > 本文檔說明 SwiftStateTree 的運行時結構
 > 
@@ -6,14 +6,14 @@
 > - [DESIGN_SYNC_FIRSTSYNC.md](./DESIGN_SYNC_FIRSTSYNC.md) - 首次同步機制（First Sync）
 
 
-## Runtime 大致結構：LandActor + SyncEngine
+## Runtime 大致結構：LandKeeper + SyncEngine
 
-### LandActor（概念）
+### LandKeeper（概念）
 
-**設計原則**：LandActor 負責處理 Transport 細節，但不暴露給 StateTree 層。
+**設計原則**：LandKeeper 負責處理 Transport 細節，但不暴露給 StateTree 層。
 
 ```swift
-actor LandActor {
+actor LandKeeper {
     private var state: StateTree
     private let def: LandDefinition<StateTree>
     private let syncEngine: SyncEngine

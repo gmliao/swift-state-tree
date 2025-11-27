@@ -44,7 +44,7 @@
 - **[DESIGN_TRANSPORT.md](./DESIGN_TRANSPORT.md)**：網路傳輸抽象、Transport 協議、服務注入
 
 ### Runtime 結構
-- **[DESIGN_RUNTIME.md](./DESIGN_RUNTIME.md)**：LandActor、SyncEngine 的運行時結構
+- **[DESIGN_RUNTIME.md](./DESIGN_RUNTIME.md)**：LandKeeper、SyncEngine 的運行時結構
 
 ### 客戶端 SDK 與程式碼生成
 - **[DESIGN_CLIENT_SDK.md](./DESIGN_CLIENT_SDK.md)**：客戶端 SDK 自動生成、Code-gen 架構設計、TypeScript 支援
@@ -92,7 +92,7 @@ swift-state-tree/
 │   │   ├── StateTree/               # StateTree 定義
 │   │   ├── Sync/                    # @Sync 同步規則
 │   │   ├── Land/                   # Land DSL
-│   │   ├── Runtime/                 # LandActor
+│   │   ├── Runtime/                 # LandKeeper
 │   │   └── SchemaGen/              # Schema 生成器
 │   ├── SwiftStateTreeTransport/     # transport：網路傳輸模組
 │   ├── SwiftStateTreeServerApp/     # app：Server 應用模組

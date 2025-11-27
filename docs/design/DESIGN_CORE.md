@@ -20,7 +20,7 @@
 
 ```
 Client 發 Action
-  → Server LandActor 處理
+  → Server LandKeeper 處理
   → 更新 StateTree（可選，更新根部的 StateNode）
   → 返回 Response（可包含狀態快照，用於 late join）
   → Client 收到 Response
@@ -31,7 +31,7 @@ Client 發 Action
 ```
 Client -> Server Event:
   Client 發 Event
-    → Server LandActor 處理
+    → Server LandKeeper 處理
     → 可選：更新 StateTree（更新根部的 StateNode）/ 觸發邏輯
 
 Server -> Client Event:

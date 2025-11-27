@@ -51,7 +51,7 @@ public struct LandContext: Sendable {
     /// Send event to specified target
     ///
     /// Events are sent through closure delegation, without exposing Transport details.
-    /// The actual implementation is handled by the Runtime layer (LandActor).
+    /// The actual implementation is handled by the Runtime layer (LandKeeper).
     ///
     /// - Parameters:
     ///   - event: ServerEventPayload to send
