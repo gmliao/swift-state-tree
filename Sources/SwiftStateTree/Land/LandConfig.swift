@@ -4,17 +4,17 @@ import Foundation
 
 /// Flattened configuration that the runtime consumes after the DSL is processed.
 public struct LandConfig: Sendable {
-    /// Whether the land can be discovered/joined publicly
+    /// Whether the land can be discovered/joined publicly.
     public var allowPublic: Bool
-    /// Maximum number of players (nil = unlimited, runtime may still enforce transport caps)
+    /// Maximum number of players (nil = unlimited, runtime may still enforce transport caps).
     public var maxPlayers: Int?
-    /// Allowed client events enforced at the transport layer
+    /// Allowed client events enforced at the transport layer.
     public var allowedClientEvents: Set<AllowedEventIdentifier>
-    /// Tick interval requested by Lifetime block
+    /// Tick interval requested by Lifetime block.
     public var tickInterval: Duration?
-    /// Destroy land when empty for the specified duration
+    /// Destroy land when empty for the specified duration.
     public var destroyWhenEmptyAfter: Duration?
-    /// Persist snapshot interval
+    /// Persist snapshot interval.
     public var persistInterval: Duration?
 
     public init(
@@ -38,7 +38,9 @@ public struct LandConfig: Sendable {
 
 /// Configuration for the `AccessControl { ... }` block.
 public struct AccessControlConfig: Sendable {
+    /// Maximum number of players allowed.
     public var maxPlayers: Int?
+    /// Whether the land is public.
     public var allowPublic: Bool
 
     public init(

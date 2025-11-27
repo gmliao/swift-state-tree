@@ -1,6 +1,11 @@
 import Foundation
 
+/// Internal builder that processes the DSL nodes and constructs a `LandDefinition`.
 enum LandBuilder {
+    /// Builds a `LandDefinition` from a list of `LandNode`s.
+    ///
+    /// This function iterates through the provided nodes, flattening nested structures (like `RulesNode`),
+    /// and aggregating configuration into the final definition.
     static func build<
         State: StateNodeProtocol,
         ClientE: ClientEventPayload,

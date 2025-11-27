@@ -2,6 +2,10 @@ import Foundation
 
 // MARK: - Land Node Protocol
 
+/// A marker protocol for all components within the Land DSL.
+///
+/// Any element that can be used inside a `@LandDSL` block (or its sub-blocks) must conform to this protocol.
+/// The `LandBuilder` uses this to recursively traverse and collect configuration.
 public protocol LandNode: Sendable {}
 
 // MARK: - Access Control
@@ -19,6 +23,17 @@ public enum AccessControlBuilder {
     }
 }
 
+/// Defines the access control policy for the Land.
+///
+/// Use this block to configure who can join the Land and under what conditions.
+///
+/// Example:
+/// ```swift
+/// AccessControl {
+///     AllowPublic()
+///     MaxPlayers(8)
+/// }
+/// ```
 public func AccessControl(
     _ configure: (inout AccessControlConfig) -> Void
 ) -> AccessControlNode {
@@ -27,6 +42,9 @@ public func AccessControl(
     return AccessControlNode(config: config)
 }
 
+/// Defines the access control policy for the Land using a result builder.
+///
+/// This overload allows using the declarative syntax with `AccessControlBuilder`.
 public func AccessControl(
     @AccessControlBuilder _ content: () -> [AccessControlDirective]
 ) -> AccessControlNode {
@@ -35,10 +53,16 @@ public func AccessControl(
     return AccessControlNode(config: config)
 }
 
+/// Sets whether the Land is publicly visible and joinable.
+///
+/// - Parameter allow: `true` to allow public access, `false` for private. Default is `true`.
 public func AllowPublic(_ allow: Bool = true) -> AccessControlDirective {
     { $0.allowPublic = allow }
 }
 
+/// Sets the maximum number of players allowed in the Land.
+///
+/// - Parameter value: The maximum player count.
 public func MaxPlayers(_ value: Int) -> AccessControlDirective {
     { $0.maxPlayers = value }
 }
@@ -49,6 +73,17 @@ public struct RulesNode: LandNode {
     public let nodes: [LandNode]
 }
 
+/// Defines the rules and behaviors of the Land.
+///
+/// This block contains event handlers, action handlers, and other rule definitions.
+///
+/// Example:
+/// ```swift
+/// Rules {
+///     OnJoin { ... }
+///     Action(Move.self) { ... }
+/// }
+/// ```
 public func Rules(@LandDSL _ content: () -> [LandNode]) -> RulesNode {
     RulesNode(nodes: content())
 }
@@ -57,6 +92,11 @@ public struct OnJoinNode<State: StateNodeProtocol>: LandNode {
     public let handler: @Sendable (inout State, LandContext) async -> Void
 }
 
+/// Registers a handler called when a player joins the Land.
+///
+/// This handler is executed after the player is added to the state.
+///
+/// - Parameter body: The async closure to execute.
 public func OnJoin<State: StateNodeProtocol>(
     _ body: @escaping @Sendable (inout State, LandContext) async -> Void
 ) -> OnJoinNode<State> {
@@ -67,6 +107,11 @@ public struct OnLeaveNode<State: StateNodeProtocol>: LandNode {
     public let handler: @Sendable (inout State, LandContext) async -> Void
 }
 
+/// Registers a handler called when a player leaves the Land.
+///
+/// This handler is executed just before the player is removed from the state.
+///
+/// - Parameter body: The async closure to execute.
 public func OnLeave<State: StateNodeProtocol>(
     _ body: @escaping @Sendable (inout State, LandContext) async -> Void
 ) -> OnLeaveNode<State> {
@@ -88,6 +133,17 @@ public enum AllowedClientEventsBuilder {
     }
 }
 
+/// explicitly lists the client events allowed to be sent to this Land.
+///
+/// If specified, the transport layer can reject unauthorized events early.
+///
+/// Example:
+/// ```swift
+/// AllowedClientEvents {
+///     ClientEvents.move
+///     ClientEvents.chat
+/// }
+/// ```
 public func AllowedClientEvents(
     @AllowedClientEventsBuilder _ content: () -> [AllowedEventIdentifier]
 ) -> AllowedClientEventsNode {
@@ -131,12 +187,24 @@ public enum LifetimeBuilder<State: StateNodeProtocol> {
     }
 }
 
+/// Defines the lifetime and periodic behaviors of the Land.
+///
+/// Use this block to configure ticks, auto-destruction, and persistence.
+///
+/// Example:
+/// ```swift
+/// Lifetime {
+///     Tick(every: .milliseconds(50)) { ... }
+///     DestroyWhenEmpty(after: .minutes(5))
+/// }
+/// ```
 public func Lifetime<State: StateNodeProtocol>(
     _ configure: @escaping @Sendable (inout LifetimeConfig<State>) -> Void
 ) -> LifetimeNode<State> {
     LifetimeNode(configure: configure)
 }
 
+/// Defines the lifetime and periodic behaviors of the Land using a result builder.
 public func Lifetime<State: StateNodeProtocol>(
     @LifetimeBuilder<State> _ directives: @escaping @Sendable () -> [LifetimeDirective<State>]
 ) -> LifetimeNode<State> {
@@ -145,6 +213,11 @@ public func Lifetime<State: StateNodeProtocol>(
     }
 }
 
+/// Configures a periodic tick handler.
+///
+/// - Parameters:
+///   - interval: The duration between ticks.
+///   - body: The handler to execute on each tick.
 public func Tick<State: StateNodeProtocol>(
     every interval: Duration,
     _ body: @escaping @Sendable (inout State, LandContext) async -> Void
@@ -155,6 +228,9 @@ public func Tick<State: StateNodeProtocol>(
     }
 }
 
+/// Configures the Land to automatically destroy itself when empty.
+///
+/// - Parameter duration: The duration to wait after the last player leaves before destroying.
 public func DestroyWhenEmpty<State: StateNodeProtocol>(
     after duration: Duration
 ) -> LifetimeDirective<State> {
@@ -163,6 +239,9 @@ public func DestroyWhenEmpty<State: StateNodeProtocol>(
     }
 }
 
+/// Configures the interval for persisting state snapshots.
+///
+/// - Parameter interval: The duration between snapshots.
 public func PersistSnapshot<State: StateNodeProtocol>(
     every interval: Duration
 ) -> LifetimeDirective<State> {
@@ -171,6 +250,9 @@ public func PersistSnapshot<State: StateNodeProtocol>(
     }
 }
 
+/// Registers a handler called when the Land is shutting down.
+///
+/// - Parameter body: The async closure to execute.
 public func OnShutdown<State: StateNodeProtocol>(
     _ body: @escaping @Sendable (State) async -> Void
 ) -> LifetimeDirective<State> {
@@ -206,6 +288,13 @@ public enum LandDSL {
 
 // MARK: - DSL Helpers
 
+/// Registers an action handler for a specific Action type.
+///
+/// - Parameters:
+///   - type: The Action type to handle.
+///   - body: The handler closure. It receives the state, the action, and the context.
+///           It must return a `Codable & Sendable` response.
+/// - Returns: A type-erased `AnyActionHandler`.
 public func Action<State: StateNodeProtocol, A: ActionPayload>(
     _ type: A.Type,
     _ body: @escaping @Sendable (inout State, A, LandContext) async throws -> some Codable & Sendable
@@ -222,6 +311,15 @@ public func Action<State: StateNodeProtocol, A: ActionPayload>(
     )
 }
 
+/// Registers a generic event handler for a specific Client Event type.
+///
+/// This is the base function for event handling. Typically, you might use generated helpers
+/// like `OnReady` or `OnChat` which wrap this function.
+///
+/// - Parameters:
+///   - type: The Client Event type to handle.
+///   - body: The handler closure.
+/// - Returns: A type-erased `AnyClientEventHandler`.
 public func On<State: StateNodeProtocol, Event: ClientEventPayload>(
     _ type: Event.Type,
     _ body: @escaping @Sendable (inout State, Event, LandContext) async -> Void
@@ -231,6 +329,18 @@ public func On<State: StateNodeProtocol, Event: ClientEventPayload>(
 
 // MARK: - Land Entry Point
 
+/// The main entry point for defining a Land.
+///
+/// This function creates a `LandDefinition` by collecting all the configuration nodes
+/// defined in the DSL block.
+///
+/// - Parameters:
+///   - id: The unique identifier for this Land.
+///   - stateType: The type of the root state node.
+///   - clientEvents: The type of client events.
+///   - serverEvents: The type of server events.
+///   - content: The DSL block containing `AccessControl`, `Rules`, `Lifetime`, etc.
+/// - Returns: A complete `LandDefinition`.
 public func Land<
     State: StateNodeProtocol,
     ClientE: ClientEventPayload,

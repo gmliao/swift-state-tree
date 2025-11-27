@@ -6,31 +6,69 @@ import Foundation
 ///
 /// It captures all the configuration, handlers, and metadata that the runtime (`LandKeeper`)
 /// needs in order to operate a single land instance.
+///
+/// This structure acts as the blueprint for creating a `LandKeeper` actor. It decouples the
+/// declarative DSL from the runtime execution logic.
 public struct LandDefinition<
     State: StateNodeProtocol,
     ClientE: ClientEventPayload,
     ServerE: ServerEventPayload
 >: Sendable {
+    /// Unique identifier for this Land definition (e.g., "battle-royale", "lobby").
     public let id: String
+    /// The type of the root state node managed by this Land.
     public let stateType: State.Type
+    /// The type of client events accepted by this Land.
     public let clientEventType: ClientE.Type
+    /// The type of server events emitted by this Land.
     public let serverEventType: ServerE.Type
+    /// Aggregated configuration (access control, lifetime, etc.).
     public let config: LandConfig
+    /// List of registered action handlers.
     public let actionHandlers: [AnyActionHandler<State>]
+    /// List of registered client event handlers.
     public let eventHandlers: [AnyClientEventHandler<State, ClientE>]
+    /// Lifecycle handlers (join, leave, tick, shutdown).
     public let lifetimeHandlers: LifetimeHandlers<State>
 }
 
 // MARK: - Lifetime Handlers
 
 /// Collection of lifecycle handlers extracted from the DSL.
+///
+/// These handlers define how the Land reacts to lifecycle events such as players joining/leaving,
+/// periodic ticks, and system shutdown.
 public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
+    /// Handler called when a player successfully joins the Land.
+    ///
+    /// This is called after the player has been added to the authoritative state.
+    /// Use this to initialize player-specific state or broadcast welcome messages.
     public var onJoin: (@Sendable (inout State, LandContext) async -> Void)?
+
+    /// Handler called when a player leaves the Land.
+    ///
+    /// This is called just before the player is removed from the authoritative state.
+    /// Use this to clean up player state or broadcast departure messages.
     public var onLeave: (@Sendable (inout State, LandContext) async -> Void)?
+
+    /// The interval at which the `tickHandler` should be called.
     public var tickInterval: Duration?
+
+    /// Handler called periodically based on `tickInterval`.
+    ///
+    /// Use this for game loop logic, physics simulation, or periodic state updates.
+    /// It is recommended to keep this handler synchronous or fast to maintain a stable tick rate.
     public var tickHandler: (@Sendable (inout State, LandContext) async -> Void)?
+
+    /// Duration to wait before destroying the Land when it becomes empty.
     public var destroyWhenEmptyAfter: Duration?
+
+    /// Interval at which to persist the state snapshot.
     public var persistInterval: Duration?
+
+    /// Handler called when the Land is shutting down.
+    ///
+    /// Use this to save final state or perform cleanup.
     public var onShutdown: (@Sendable (State) async -> Void)?
 
     public init(
@@ -55,6 +93,10 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
 // MARK: - Action Handler Type Erasure
 
 /// Type-erased action handler collected from the DSL.
+///
+/// Wraps a strongly-typed action handler into a generic form that can be stored and invoked
+/// by the runtime. The runtime uses `canHandle` to check if this handler supports a specific
+/// action type.
 public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
     private let type: Any.Type
     private let handler: @Sendable (inout State, Any, LandContext) async throws -> AnyCodable
@@ -83,6 +125,9 @@ public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
 // MARK: - Client Event Handler Type Erasure
 
 /// Type-erased client event handler collected from the DSL.
+///
+/// Wraps a strongly-typed event handler. Unlike actions, event handlers are typically
+/// invoked for all matching events (or specific enum cases if using the generated helpers).
 public struct AnyClientEventHandler<State: StateNodeProtocol, ClientE: ClientEventPayload>: LandNode {
     private let handler: @Sendable (inout State, ClientE, LandContext) async -> Void
 

@@ -18,6 +18,9 @@ public struct LandContext: Sendable {
     public let sessionID: SessionID
 
     /// Service abstractions (does not depend on HTTP)
+    ///
+    /// Provides access to external services like database, metrics, or logging
+    /// in a protocol-agnostic way.
     public let services: LandServices
 
     /// Send event handler closure (delegates to Runtime layer without exposing Transport)

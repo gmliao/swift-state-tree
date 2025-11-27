@@ -1,5 +1,15 @@
 import Foundation
 
+/// The runtime executor for a Land instance.
+///
+/// `LandKeeper` is an actor that manages the authoritative state and executes the handlers
+/// defined in a `LandDefinition`. It handles:
+/// - Player join/leave lifecycle
+/// - Action and event processing
+/// - Periodic ticks
+/// - Automatic shutdown when empty
+///
+/// All state mutations are serialized through the actor, ensuring thread-safety.
 public actor LandKeeper<State, ClientE, ServerE>
 where State: StateNodeProtocol,
       ClientE: ClientEventPayload,
@@ -19,6 +29,13 @@ where State: StateNodeProtocol,
     private let systemClientID = ClientID("_system")
     private let systemSessionID = SessionID("_system")
 
+    /// Initializes a new LandKeeper with the given definition and initial state.
+    ///
+    /// - Parameters:
+    ///   - definition: The Land definition containing all handlers and configuration.
+    ///   - initialState: The initial state of the Land.
+    ///   - sendEvent: Closure for sending server events to clients (injected by transport layer).
+    ///   - syncNow: Closure for triggering immediate state synchronization (injected by transport layer).
     public init(
         definition: LandDefinition<State, ClientE, ServerE>,
         initialState: State,
@@ -38,6 +55,9 @@ where State: StateNodeProtocol,
         }
     }
 
+    /// Returns the current state snapshot.
+    ///
+    /// This is a read-only view of the state. Mutations should be done through action/event handlers.
     public func currentState() -> State {
         state
     }
@@ -49,6 +69,16 @@ where State: StateNodeProtocol,
 
     // MARK: - Player Lifecycle
 
+    /// Handles a player joining the Land.
+    ///
+    /// If this is the player's first connection, the `OnJoin` handler is called.
+    /// Multiple clients/sessions for the same player are tracked.
+    ///
+    /// - Parameters:
+    ///   - playerID: The player's unique identifier.
+    ///   - clientID: The client instance identifier.
+    ///   - sessionID: The session/connection identifier.
+    ///   - services: Services to inject into the LandContext.
     public func join(
         playerID: PlayerID,
         clientID: ClientID,
@@ -78,6 +108,14 @@ where State: StateNodeProtocol,
         }
     }
 
+    /// Handles a player/client leaving the Land.
+    ///
+    /// If this is the player's last connection, the `OnLeave` handler is called.
+    /// If the Land becomes empty, automatic shutdown may be scheduled.
+    ///
+    /// - Parameters:
+    ///   - playerID: The player's unique identifier.
+    ///   - clientID: The client instance identifier.
     public func leave(playerID: PlayerID, clientID: ClientID) async {
         guard var session = players[playerID] else { return }
         session.clients.remove(clientID)
@@ -103,6 +141,17 @@ where State: StateNodeProtocol,
 
     // MARK: - Action & Event Handling
 
+    /// Handles an action from a player.
+    ///
+    /// Finds the registered handler for the action type and executes it.
+    ///
+    /// - Parameters:
+    ///   - action: The action payload.
+    ///   - playerID: The player sending the action.
+    ///   - clientID: The client instance.
+    ///   - sessionID: The session identifier.
+    /// - Returns: The action result (type-erased as `AnyCodable`).
+    /// - Throws: `LandError.actionNotRegistered` if no handler is found.
     public func handleAction<A: ActionPayload>(
         _ action: A,
         playerID: PlayerID,
@@ -119,6 +168,15 @@ where State: StateNodeProtocol,
         }
     }
 
+    /// Handles a client event from a player.
+    ///
+    /// Checks if the event is allowed, then invokes all registered event handlers.
+    ///
+    /// - Parameters:
+    ///   - event: The client event payload.
+    ///   - playerID: The player sending the event.
+    ///   - clientID: The client instance.
+    ///   - sessionID: The session identifier.
     public func handleClientEvent(
         _ event: ClientE,
         playerID: PlayerID,
