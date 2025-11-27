@@ -108,7 +108,13 @@
 
 ```swift
 // 使用 Land（核心名稱）
-let matchLand = Land("match-3", using: GameStateTree.self) {
+let matchLand = Land(
+    "match-3",
+    using: GameStateTree.self,
+    clientEvents: MyClientEvents.self,
+    serverEvents: MyServerEvents.self,
+    actions: GameAction.self
+) {
     // 1️⃣ 大門規則：誰可以進來（整合在 Config 中）
     Config {
         MaxPlayers(4)
@@ -124,17 +130,13 @@ let matchLand = Land("match-3", using: GameStateTree.self) {
     
     // 2️⃣ 遊戲規則：定義允許的 ClientEvent（只限制 Client->Server）
     AllowedClientEvents {
-        ClientEvent.playerReady
-        ClientEvent.heartbeat
-        ClientEvent.uiInteraction
+        MyClientEvents.playerReady
+        MyClientEvents.heartbeat
+        MyClientEvents.uiInteraction
     }
     
-    // 2️⃣ 遊戲規則：Action 處理（混合模式）
-    Action(GameAction.getPlayerHand) { state, id, ctx -> ActionResult in
-        return .success(.hand(state.hands[id]?.cards ?? []))
-    }
-    
-    Action(GameAction.self) { state, action, ctx -> ActionResult in
+    // 2️⃣ 遊戲規則：Action 處理（以 ActionPayload 為核心）
+    Action(GameAction.self) { state, action, ctx in
         switch action {
         case .join(let id, let name):
             state.players[id] = PlayerState(name: name, hpCurrent: 100, hpMax: 100)
@@ -146,7 +148,7 @@ let matchLand = Land("match-3", using: GameStateTree.self) {
             
             // Late join：返回完整快照
             let snapshot = syncEngine.snapshot(for: id, from: state)
-            return .success(.joinResult(JoinResponse(landID: ctx.landID, state: snapshot)))
+            return .joinResult(JoinResponse(landID: ctx.landID, state: snapshot))
             
         case .attack(let attacker, let target, let damage):
             state.players[target]?.hpCurrent -= damage
@@ -156,26 +158,24 @@ let matchLand = Land("match-3", using: GameStateTree.self) {
             // 重要操作可以強迫立即同步
             await ctx.syncNow()
             
-            return .success(.empty)
+            return .attackResult(AttackResponse(success: true, damage: damage))
             
-        default:
-            return await handleOtherAction(&state, action, ctx)
+        case .getLandInfo:
+            return .landInfo(
+                LandInfo(id: ctx.landID, playerCount: state.players.count)
+            )
         }
     }
     
-    // 2️⃣ 遊戲規則：Event 處理（混合模式）
-    On(ClientEvent.heartbeat) { state, timestamp, ctx in
-        state.playerLastActivity[ctx.playerID] = timestamp
-    }
-    
-    On(GameEvent.self) { state, event, ctx in
+    // 2️⃣ 遊戲規則：Event 處理（針對 ClientEventPayload）
+    On(MyClientEvents.self) { state, event, ctx in
         switch event {
-        case .fromClient(.playerReady(let id)):
+        case .playerReady(let id):
             await handlePlayerReady(&state, id, ctx)
-        case .fromClient(.uiInteraction(let id, let action)):
+        case .heartbeat(let timestamp):
+            state.playerLastActivity[ctx.playerID] = timestamp
+        case .uiInteraction(let id, let action):
             analytics.track(id, action: action)
-        default:
-            break
         }
     }
 }
@@ -247,34 +247,26 @@ struct RoomLand {
 ### Land DSL 元件（設計概念）
 
 ```swift
-public protocol LandNode {}
+public protocol LandNode: Sendable {}
 
 public struct ConfigNode: LandNode {
-    public var maxPlayers: Int?
-    public var tickInterval: Duration?
-    public var idleTimeout: Duration?
-    // 注意：baseURL 和 webSocketURL 已移除
-    // 網路層細節應該在 Transport 層處理，而不是在 StateTree/Land 層
+    public let config: LandConfig
 }
 
-// Action 節點：支援統一 Action 型別或特定 Action case
-public struct ActionHandlerNode<C>: LandNode {
-    public let handler: (inout StateTree, C, LandContext) async -> ActionResult
+public struct ActionHandlerNode<State: StateNodeProtocol, Act: ActionPayload>: LandNode {
+    public let handler: @Sendable (inout State, Act, LandContext) async throws -> Act.Response
 }
 
-// 特定 Action case 的節點（用於簡單的 Action）
-public struct SpecificActionHandlerNode<C>: LandNode {
-    public let handler: (inout StateTree, C, LandContext) async -> ActionResult
+public struct OnEventNode<State: StateNodeProtocol, Event: ClientEventPayload>: LandNode {
+    public let handler: @Sendable (inout State, Event, LandContext) async -> Void
 }
 
-// Event 節點：支援統一 Event 型別或特定 ClientEvent case
-public struct OnEventNode<E>: LandNode {
-    public let handler: (inout StateTree, E, LandContext) async -> Void
+public struct AllowedClientEventsNode: LandNode {
+    public let allowedEventTypes: [Any.Type]
 }
 
-// 特定 ClientEvent case 的節點（用於簡單的 Event）
-public struct OnSpecificEventNode<E>: LandNode {
-    public let handler: (inout StateTree, E, LandContext) async -> Void
+public struct OnTickNode<State: StateNodeProtocol>: LandNode {
+    public let handler: @Sendable (inout State, LandContext) async -> Void
 }
 ```
 
@@ -284,27 +276,47 @@ public struct OnSpecificEventNode<E>: LandNode {
 @resultBuilder
 public enum LandDSL {
     public static func buildBlock(_ components: LandNode...) -> [LandNode] {
-        components
+        Array(components)
     }
 }
 
-public struct LandDefinition<State> {
+public struct LandDefinition<
+    State: StateNodeProtocol,
+    ClientE: ClientEventPayload,
+    ServerE: ServerEventPayload,
+    Action: ActionPayload
+> {
     public let id: String
+    public let stateType: State.Type
+    public let clientEventType: ClientE.Type
+    public let serverEventType: ServerE.Type
+    public let actionType: Action.Type
     public let nodes: [LandNode]
 }
 
 // 核心函數：Land
-public func Land<State>(
+public func Land<
+    State: StateNodeProtocol,
+    ClientE: ClientEventPayload,
+    ServerE: ServerEventPayload,
+    Action: ActionPayload
+>(
     _ id: String,
     using stateType: State.Type,
+    clientEvents: ClientE.Type,
+    serverEvents: ServerE.Type,
+    actions: Action.Type,
     @LandDSL _ content: () -> [LandNode]
-) -> LandDefinition<State> {
-    LandDefinition(id: id, nodes: content())
+) -> LandDefinition<State, ClientE, ServerE, Action> {
+    LandDefinition(
+        id: id,
+        stateType: stateType,
+        clientEventType: clientEvents,
+        serverEventType: serverEvents,
+        actionType: actions,
+        nodes: content()
+    )
 }
-
-// 語義化別名
-public typealias App<State> = Land<State>
-public typealias Feature<State> = Land<State>
 ```
 
 ### 三個核心職責與 DSL 元件的對應
@@ -315,8 +327,8 @@ public typealias Feature<State> = Land<State>
 |---------|---------------|------|
 | **1️⃣ 大門規則** | `ConfigNode` 中的 `maxPlayers` | 控制誰可以進入、人數上限 |
 | | 未來可擴展：`AccessControlNode` | 權限檢查、角色限制等 |
-| **2️⃣ 遊戲規則** | `ActionHandlerNode` / `SpecificActionHandlerNode` | 定義可用的 Action 操作 |
-| | `OnEventNode` / `OnSpecificEventNode` | 定義可處理的 Event |
+| **2️⃣ 遊戲規則** | `ActionHandlerNode<State, Act>` | 定義可用的 ActionPayload 操作 |
+| | `OnEventNode<State, Event>` | 定義可處理的 ClientEventPayload |
 | | `AllowedClientEvents` | 限制 Client 可發送的 Event |
 | | `OnJoin` / `OnLeave` (未來) | 玩家加入/離開時的處理 |
 | **3️⃣ 營業時間<br>（生命週期管理）** | `ConfigNode` 中的 `tickInterval` | Tick 頻率（如何運行） |
@@ -334,7 +346,18 @@ public typealias Feature<State> = Land<State>
 ### Action 型別定義
 
 ```swift
-enum GameAction: Codable {
+enum GameActionResponse: Codable, Sendable {
+    case joinResult(JoinResponse)
+    case hand([Card])
+    case card(Card)
+    case landInfo(LandInfo)
+    case attackResult(AttackResponse)
+    case empty
+}
+
+enum GameAction: ActionPayload {
+    typealias Response = GameActionResponse
+    
     // 查詢操作
     case getPlayerHand(PlayerID)
     case canAttack(PlayerID, target: PlayerID)
@@ -346,142 +369,70 @@ enum GameAction: Codable {
     case attack(attacker: PlayerID, target: PlayerID, damage: Int)
 }
 
-enum ActionResult: Codable {
-    case success(ActionResultData)
-    case failure(String)
-}
-
-enum ActionResultData: Codable {
-    case joinResult(JoinResponse)
-    case hand([Card])
-    case card(Card)
-    case landInfo(LandInfo)
-    case empty
-}
-
-struct JoinResponse: Codable {
+struct JoinResponse: Codable, Sendable {
     let landID: String
     let state: StateSnapshot?  // 可選：用於 late join
 }
 ```
 
-### Action DSL 寫法（混合模式）
+### Action DSL 寫法
 
-為了避免 handler 過於肥大，支援兩種寫法：
-
-#### 方式 1：針對特定 Action 的獨立 Handler（推薦用於簡單邏輯）
+目前 DSL 透過 `Action(GameAction.self)` 註冊整個 `ActionPayload` 型別。  
+在 handler 內使用 `switch` 依 case 分派，必要時再拆分成協助函式維持可讀性。
 
 ```swift
-// 使用 Land（核心名稱）
-let matchLand = Land("match-3", using: GameStateTree.self) {
+let matchLand = Land(
+    "match-3",
+    using: GameStateTree.self,
+    clientEvents: MyClientEvents.self,
+    serverEvents: MyServerEvents.self,
+    actions: GameAction.self
+) {
     Config { ... }
     
-    // 簡單的查詢 Action：用獨立 handler
-    Action(GameAction.getPlayerHand) { state, id, ctx -> ActionResult in
-        return .success(.hand(state.hands[id]?.cards ?? []))
-    }
-    
-    Action(GameAction.canAttack) { state, (attacker, target), ctx -> ActionResult in
-        guard let attackerState = state.players[attacker],
-              let targetState = state.players[target] else {
-            return .failure("Player not found")
+    Action(GameAction.self) { state, action, ctx in
+        switch action {
+        case .getPlayerHand(let id):
+            return .hand(state.hands[id]?.cards ?? [])
+            
+        case .canAttack(let attacker, let target):
+            return try await handleCanAttack(&state, attacker: attacker, target: target, ctx: ctx)
+            
+        case .join(let id, let name):
+            return try await handleJoin(&state, id: id, name: name, ctx: ctx)
+            
+        case .drawCard(let id):
+            return try await handleDrawCard(&state, id: id, ctx: ctx)
+            
+        case .attack(let attacker, let target, let damage):
+            return try await handleAttack(&state, attacker: attacker, target: target, damage: damage, ctx: ctx)
+            
+        case .getLandInfo:
+            return .landInfo(LandInfo(id: ctx.landID, playerCount: state.players.count))
         }
-        let canAttack = attackerState.hpCurrent > 0 && targetState.hpCurrent > 0
-        return .success(.empty)  // 或定義 CanAttackResponse
-    }
-    
-    // 複雜的 Action：用統一 handler 或提取到函數
-    Action(GameAction.join) { state, (id, name), ctx -> ActionResult in
-        return await handleJoin(&state, id, name, ctx)
     }
 }
 ```
 
-#### 方式 2：統一的 Action Handler（適合複雜邏輯或需要共享邏輯）
-
 ```swift
-let matchLand = Land("match-3", using: GameStateTree.self) {
-    Config { ... }
-    
-    // 複雜邏輯用統一 handler
-    Action(GameAction.self) { state, action, ctx -> ActionResult in
-        return await handleAction(&state, action, ctx)
-    }
-}
-
-// 提取複雜邏輯到獨立函數
-private func handleAction(
-    _ state: inout GameStateTree,
-    _ action: GameAction,
-    _ ctx: LandContext
-) async -> ActionResult {
-    switch action {
-    case .getPlayerHand(let id):
-        return .success(.hand(state.hands[id]?.cards ?? []))
-    case .join(let id, let name):
-        return await handleJoin(&state, id, name, ctx)
-    case .drawCard(let id):
-        return await handleDrawCard(&state, id, ctx)
-    case .attack(let attacker, let target, let damage):
-        return await handleAttack(&state, attacker, target, damage, ctx)
-    }
-}
-
 private func handleJoin(
     _ state: inout GameStateTree,
-    _ id: PlayerID,
-    _ name: String,
-    _ ctx: LandContext
-) async -> ActionResult {
+    id: PlayerID,
+    name: String,
+    ctx: LandContext
+) async throws -> GameActionResponse {
     state.players[id] = PlayerState(name: name, hpCurrent: 100, hpMax: 100)
     state.hands[id] = HandState(ownerID: id, cards: [])
     let snapshot = syncEngine.snapshot(for: id, from: state)
-    await ctx.sendEvent(.fromServer(.stateUpdate(snapshot)), to: .all)
-    return .success(.joinResult(JoinResponse(landID: ctx.landID, state: snapshot)))
-}
-```
-
-#### 方式 3：混合使用（推薦）
-
-結合兩種方式的優點：
-
-```swift
-let matchLand = Land("match-3", using: GameStateTree.self) {
-    Config { ... }
-    
-    // 簡單的查詢 Action：用獨立 handler
-    Action(GameAction.getPlayerHand) { state, id, ctx -> ActionResult in
-        return .success(.hand(state.hands[id]?.cards ?? []))
-    }
-    
-    Action(GameAction.canAttack) { state, (attacker, target), ctx -> ActionResult in
-        guard state.players[attacker] != nil,
-              state.players[target] != nil else {
-            return .failure("Player not found")
-        }
-        return .success(.empty)
-    }
-    
-    // 複雜的狀態修改 Action：用統一 handler
-    Action(GameAction.self) { state, action, ctx -> ActionResult in
-        switch action {
-        case .join(let id, let name):
-            return await handleJoin(&state, id, name, ctx)
-        case .drawCard(let id):
-            return await handleDrawCard(&state, id, ctx)
-        case .attack(let attacker, let target, let damage):
-            return await handleAttack(&state, attacker, target, damage, ctx)
-        default:
-            return .failure("Unknown Action")
-        }
-    }
+    await ctx.sendEvent(MyServerEvents.stateUpdate(snapshot), to: .all)
+    return .joinResult(JoinResponse(landID: ctx.landID, state: snapshot))
 }
 ```
 
 **建議**：
-- 簡單的查詢 Action（如 `getPlayerHand`、`canAttack`）→ 使用 `Action(GameAction.xxx)`
-- 複雜的狀態修改 Action（如 `join`、`drawCard`、`attack`）→ 使用 `Action(GameAction.self)` 或提取到函數
-- 按邏輯分組處理（如查詢類、狀態修改類）
+- 將共用或大型邏輯拆成私有函式，維持 main handler 的可讀性。
+- `Act.Response` 可以是 enum/struct，按需求切分成功／錯誤型別。
+- 需要失敗訊息時可讓 `Response` 攜帶 `.failure(reason:)` 或改用 `throws`。
 
 ---
 
@@ -491,177 +442,90 @@ let matchLand = Land("match-3", using: GameStateTree.self) {
 
 ```swift
 // Client -> Server Event（需要限制，在 AllowedClientEvents 中定義）
-enum ClientEvent: Codable {
+enum MyClientEvents: ClientEventPayload {
     case playerReady(PlayerID)
     case heartbeat(timestamp: Date)
     case uiInteraction(PlayerID, action: String)
-    // 更多 Client Event...
+    case playCard(PlayerID, cardID: Int)
+    case discardCard(PlayerID, cardID: Int)
 }
 
 // Server -> Client Event（不受限制，Server 自由定義）
-enum ServerEvent: Codable {
+enum MyServerEvents: ServerEventPayload {
     case stateUpdate(StateSnapshot)
     case gameEvent(GameEventDetail)
     case systemMessage(String)
-    // Server 可以自由定義和發送
 }
 
-enum GameEventDetail: Codable {
+enum GameEventDetail: Codable, Sendable {
     case damage(from: PlayerID, to: PlayerID, amount: Int)
     case playerJoined(PlayerID, name: String)
     case playerReady(PlayerID)
     case gameStarted
 }
 
-// 統一的 Event 包裝（用於傳輸層）
-enum GameEvent: Codable {
-    case fromClient(ClientEvent)   // Client -> Server
-    case fromServer(ServerEvent)   // Server -> Client
-}
+typealias GameEvent = Event<MyClientEvents, MyServerEvents>
 ```
 
-### Event DSL 寫法（混合模式）
+### Event DSL 寫法
 
-為了避免 handler 過於肥大，支援兩種寫法：
-
-#### 方式 1：針對特定 ClientEvent 的獨立 Handler（推薦用於簡單邏輯）
+`On(MyClientEvents.self)` 會收到 Land 所允許的所有 Client -> Server 事件。  
+在 handler 內依事件 case 切換，必要時呼叫協助函式。
 
 ```swift
-// 使用 Land（核心名稱）
-let matchLand = Land("match-3", using: GameStateTree.self) {
+let matchLand = Land(
+    "match-3",
+    using: GameStateTree.self,
+    clientEvents: MyClientEvents.self,
+    serverEvents: MyServerEvents.self,
+    actions: GameAction.self
+) {
     Config { ... }
     
     AllowedClientEvents {
-        ClientEvent.playerReady
-        ClientEvent.heartbeat
-        ClientEvent.uiInteraction
-        ClientEvent.playCard
-        ClientEvent.discardCard
+        MyClientEvents.playerReady
+        MyClientEvents.heartbeat
+        MyClientEvents.uiInteraction
+        MyClientEvents.playCard
+        MyClientEvents.discardCard
     }
     
-    // 簡單的 Event 用獨立 handler（避免 switch 過大）
-    On(ClientEvent.heartbeat) { state, timestamp, ctx in
-        // 更新玩家最後活動時間
-        state.playerLastActivity[ctx.playerID] = timestamp
-    }
-    
-    On(ClientEvent.uiInteraction) { state, (id, action), ctx in
-        // 記錄 UI 事件
-        analytics.track(id, action: action)
-    }
-    
-    // 複雜的 Event 可以用完整 handler 或提取到函數
-    On(ClientEvent.playerReady) { state, id, ctx in
-        await handlePlayerReady(&state, id, ctx)
-    }
-}
-```
-
-#### 方式 2：統一的 GameEvent Handler（適合複雜邏輯或需要共享邏輯）
-
-```swift
-let matchLand = Land("match-3", using: GameStateTree.self) {
-    Config { ... }
-    
-    AllowedClientEvents {
-        ClientEvent.playerReady
-        ClientEvent.heartbeat
-        ClientEvent.uiInteraction
-        ClientEvent.playCard
-        ClientEvent.discardCard
-    }
-    
-    // 複雜邏輯用統一 handler
-    On(GameEvent.self) { state, event, ctx in
+    On(MyClientEvents.self) { state, event, ctx in
         switch event {
-        case .fromClient(let clientEvent):
-            await handleClientEvent(&state, clientEvent, ctx)
-        case .fromServer:
-            // ServerEvent 不應該從 Client 收到
-            break
+        case .playerReady(let id):
+            await handlePlayerReady(&state, id, ctx)
+        case .heartbeat(let timestamp):
+            state.playerLastActivity[ctx.playerID] = timestamp
+        case .uiInteraction(let id, let action):
+            analytics.track(id, action: action)
+        case .playCard(let id, let cardID):
+            await handlePlayCard(&state, id, cardID, ctx)
+        case .discardCard(let id, let cardID):
+            await handleDiscardCard(&state, id, cardID, ctx)
         }
     }
 }
+```
 
-// 提取複雜邏輯到獨立函數
-private func handleClientEvent(
-    _ state: inout GameStateTree,
-    _ event: ClientEvent,
-    _ ctx: LandContext
-) async {
-    switch event {
-    case .playerReady(let id):
-        await handlePlayerReady(&state, id, ctx)
-    case .heartbeat(let timestamp):
-        state.playerLastActivity[ctx.playerID] = timestamp
-    case .uiInteraction(let id, let action):
-        analytics.track(id, action: action)
-    case .playCard(let id, let card):
-        await handlePlayCard(&state, id, card, ctx)
-    case .discardCard(let id, let card):
-        await handleDiscardCard(&state, id, card, ctx)
-    }
-}
-
+```swift
 private func handlePlayerReady(
     _ state: inout GameStateTree,
     _ id: PlayerID,
     _ ctx: LandContext
 ) async {
     state.readyPlayers.insert(id)
-    await ctx.sendEvent(.fromServer(.gameEvent(.playerReady(id))), to: .all)
+    await ctx.sendEvent(MyServerEvents.gameEvent(.playerReady(id)), to: .all)
     if state.readyPlayers.count == state.players.count {
         state.round = 1
-        await ctx.sendEvent(.fromServer(.gameEvent(.gameStarted)), to: .all)
-    }
-}
-```
-
-#### 方式 3：混合使用（推薦）
-
-結合兩種方式的優點：
-
-```swift
-let matchLand = Land("match-3", using: GameStateTree.self) {
-    Config { ... }
-    
-    AllowedClientEvents {
-        ClientEvent.playerReady
-        ClientEvent.heartbeat
-        ClientEvent.uiInteraction
-        ClientEvent.playCard
-        ClientEvent.discardCard
-    }
-    
-    // 簡單的 Event：用獨立 handler
-    On(ClientEvent.heartbeat) { state, timestamp, ctx in
-        state.playerLastActivity[ctx.playerID] = timestamp
-    }
-    
-    On(ClientEvent.uiInteraction) { state, (id, action), ctx in
-        analytics.track(id, action: action)
-    }
-    
-    // 複雜的 Event：用統一 handler 或提取到函數
-    On(GameEvent.self) { state, event, ctx in
-        switch event {
-        case .fromClient(.playerReady(let id)):
-            await handlePlayerReady(&state, id, ctx)
-        case .fromClient(.playCard(let id, let card)):
-            await handlePlayCard(&state, id, card, ctx)
-        case .fromClient(.discardCard(let id, let card)):
-            await handleDiscardCard(&state, id, card, ctx)
-        default:
-            break
-        }
+        await ctx.sendEvent(MyServerEvents.gameEvent(.gameStarted), to: .all)
     }
 }
 ```
 
 **建議**：
-- 簡單的 Event（如 `heartbeat`、`uiInteraction`）→ 使用 `On(ClientEvent.xxx)`
-- 複雜的 Event（如 `playerReady`、`playCard`）→ 使用 `On(GameEvent.self)` 或提取到函數
-- 按邏輯分組處理（如遊戲邏輯、系統事件）
+- 事件 handler 同樣可以拆分成多個私有函式，保持 `switch` 精簡。
+- 只需要在 `AllowedClientEvents` 中列出允許的事件 case，其餘會被 Transport 層擋掉。
+- Server -> Client 事件使用 `LandContext.sendEvent` 主動推播，無須額外的 DSL 宣告。
 
 ### Server 推送 Event
 
@@ -669,9 +533,9 @@ let matchLand = Land("match-3", using: GameStateTree.self) {
 
 ```swift
 // 在任何 handler 中，Server 可以自由發送 ServerEvent
-await ctx.sendEvent(.fromServer(.stateUpdate(snapshot)), to: .all)
-await ctx.sendEvent(.fromServer(.gameEvent(.damage(from: attacker, to: target, amount: 10))), to: .all)
-await ctx.sendEvent(.fromServer(.systemMessage("Private message")), to: .player(playerID))
+await ctx.sendEvent(MyServerEvents.stateUpdate(snapshot), to: .all)
+await ctx.sendEvent(MyServerEvents.gameEvent(.damage(from: attacker, to: target, amount: 10)), to: .all)
+await ctx.sendEvent(MyServerEvents.systemMessage("Private message"), to: .player(playerID))
 
 // 不需要在 AllowedClientEvents 中定義這些 ServerEvent
 ```
@@ -709,10 +573,8 @@ public struct LandContext {
     public let sessionID: SessionID    // 會話識別（動態生成，用於追蹤）
     public let services: LandServices  // 服務抽象，不依賴 HTTP
     
-    // ❌ 移除：public let transport: GameTransport
-    
     // ✅ 推送 Event（透過閉包委派，不暴露 Transport）
-    public func sendEvent(_ event: GameEvent, to target: EventTarget) async {
+    public func sendEvent(_ event: any ServerEventPayload, to target: EventTarget) async {
         // 實作在 Runtime 層（LandActor），不暴露 Transport 細節
         await sendEventHandler(event, target)
     }
@@ -721,16 +583,10 @@ public struct LandContext {
     public func syncNow() async {
         await syncHandler()
     }
-    
-    // ✅ 標記狀態變化（Tick-based 模式使用）
-    public func markDirty(_ path: String? = nil) {
-        // 標記變化，等待 tick 批次同步
-        // 實作在 Runtime 層
-    }
-    
+
     // ✅ 透過閉包委派，不暴露 Transport
-    private let sendEventHandler: (GameEvent, EventTarget) async -> Void
-    private let syncHandler: () async -> Void
+    private let sendEventHandler: @Sendable (any ServerEventPayload, EventTarget) async -> Void
+    private let syncHandler: @Sendable () async -> Void
     
     internal init(
         landID: String,
@@ -738,8 +594,8 @@ public struct LandContext {
         clientID: ClientID,
         sessionID: SessionID,
         services: LandServices,
-        sendEventHandler: @escaping (GameEvent, EventTarget) async -> Void,
-        syncHandler: @escaping () async -> Void
+        sendEventHandler: @escaping @Sendable (any ServerEventPayload, EventTarget) async -> Void,
+        syncHandler: @escaping @Sendable () async -> Void
     ) {
         self.landID = landID
         self.playerID = playerID
@@ -832,7 +688,13 @@ struct HTTPTimelineService: TimelineService {
 
 ```swift
 // ✅ 推薦：OnTick 只調用函數，邏輯拆分到獨立函數
-let gameLand = Land("game-room", using: GameStateTree.self) {
+let gameLand = Land(
+    "game-room",
+    using: GameStateTree.self,
+    clientEvents: MyClientEvents.self,
+    serverEvents: MyServerEvents.self,
+    actions: GameAction.self
+) {
     Config {
         Tick(every: .milliseconds(100))
     }
@@ -904,4 +766,5 @@ private func checkGameStatus(_ state: inout GameStateTree) {
 - 定期檢查：檢查遊戲結束條件、清理過期資料
 
 ---
+
 

@@ -1,5 +1,3 @@
-// Tests/SwiftStateTreeTests/LandDSLTests.swift
-
 import Foundation
 import Testing
 @testable import SwiftStateTree
@@ -11,29 +9,34 @@ import Testing
 struct TestLandState: StateNodeProtocol {
     @Sync(.broadcast)
     var players: [PlayerID: String] = [:]
-    
+
     @Sync(.broadcast)
     var round: Int = 0
 }
 
 // MARK: - Test Action and Event Types
 
+enum TestActionResponse: Codable, Sendable {
+    case empty
+}
+
 /// Test Action enum for Land DSL tests
-enum TestAction: Codable, Sendable {
+enum TestAction: ActionPayload {
+    typealias Response = TestActionResponse
     case join(playerID: PlayerID, name: String)
     case attack(attacker: PlayerID, target: PlayerID, damage: Int)
     case getPlayerHand(PlayerID)
 }
 
 /// Test ClientEvent enum
-enum TestClientEvent: ClientEvent {
+enum TestClientEvent: ClientEventPayload {
     case playerReady(PlayerID)
     case heartbeat(timestamp: Date)
     case uiInteraction(PlayerID, action: String)
 }
 
 /// Test ServerEvent enum
-enum TestServerEvent: ServerEvent {
+enum TestServerEvent: ServerEventPayload {
     case stateUpdate(StateSnapshot)
     case gameEvent(String)
     case systemMessage(String)
@@ -49,7 +52,7 @@ func testClientID_CreationAndComparison() {
     let clientID1 = ClientID("device-001")
     let clientID2 = ClientID("device-001")
     let clientID3 = ClientID("device-002")
-    
+
     // Assert
     #expect(clientID1 == clientID2, "Same rawValue should be equal")
     #expect(clientID1 != clientID3, "Different rawValue should not be equal")
@@ -62,7 +65,7 @@ func testSessionID_CreationAndComparison() {
     let sessionID1 = SessionID("session-001")
     let sessionID2 = SessionID("session-001")
     let sessionID3 = SessionID("session-002")
-    
+
     // Assert
     #expect(sessionID1 == sessionID2, "Same rawValue should be equal")
     #expect(sessionID1 != sessionID3, "Different rawValue should not be equal")
@@ -74,14 +77,14 @@ func testIdentityTypes_AreCodable() throws {
     // Arrange
     let clientID = ClientID("device-001")
     let sessionID = SessionID("session-001")
-    
+
     // Act
     let clientData = try JSONEncoder().encode(clientID)
     let sessionData = try JSONEncoder().encode(sessionID)
-    
+
     let decodedClientID = try JSONDecoder().decode(ClientID.self, from: clientData)
     let decodedSessionID = try JSONDecoder().decode(SessionID.self, from: sessionData)
-    
+
     // Assert
     #expect(decodedClientID == clientID, "ClientID should decode correctly")
     #expect(decodedSessionID == sessionID, "SessionID should decode correctly")
@@ -95,69 +98,22 @@ func testEventTarget_EnumCases() {
     let playerID = PlayerID("alice")
     let clientID = ClientID("device-001")
     let sessionID = SessionID("session-001")
-    
+
     // Act & Assert
     let allTarget = EventTarget.all
     #expect(String(describing: allTarget) == "all", "all case should work")
-    
+
     let playerTarget = EventTarget.player(playerID)
     #expect(String(describing: playerTarget).contains("alice"), "player case should work")
-    
+
     let clientTarget = EventTarget.client(clientID)
     #expect(String(describing: clientTarget).contains("device-001"), "client case should work")
-    
+
     let sessionTarget = EventTarget.session(sessionID)
     #expect(String(describing: sessionTarget).contains("session-001"), "session case should work")
-    
+
     let playersTarget = EventTarget.players([playerID])
     #expect(String(describing: playersTarget).contains("alice"), "players case should work")
-}
-
-// MARK: - ActionResult Tests
-
-@Test("ActionResult success and failure cases work")
-func testActionResult_Cases() {
-    // Arrange
-    let successResult = ActionResult.success(.empty)
-    let failureResult = ActionResult.failure("Error message")
-    
-    // Assert
-    if case .success = successResult {
-        #expect(Bool(true), "Success case should work")
-    } else {
-        Issue.record("Success case failed")
-    }
-    
-    if case .failure(let message) = failureResult {
-        #expect(message == "Error message", "Failure case should contain error message")
-    } else {
-        Issue.record("Failure case failed")
-    }
-}
-
-@Test("ActionResultData cases work correctly")
-func testActionResultData_Cases() throws {
-    // Arrange
-    let joinResponse = JoinResponse(landID: "land-1", state: nil)
-    let emptyData = ActionResultData.empty
-    let joinResult = ActionResultData.joinResult(joinResponse)
-    let landInfo = ActionResultData.landInfo(LandInfo(landID: "land-1", playerCount: 4))
-    
-    // Assert
-    #expect(String(describing: emptyData) == "empty", "empty case should work")
-    
-    if case .joinResult(let response) = joinResult {
-        #expect(response.landID == "land-1", "joinResult should contain JoinResponse")
-    } else {
-        Issue.record("joinResult case failed")
-    }
-    
-    if case .landInfo(let info) = landInfo {
-        #expect(info.landID == "land-1", "landInfo should contain LandInfo")
-        #expect(info.playerCount == 4, "landInfo should contain player count")
-    } else {
-        Issue.record("landInfo case failed")
-    }
 }
 
 // MARK: - LandConfig Tests
@@ -166,7 +122,7 @@ func testActionResultData_Cases() throws {
 func testLandConfig_DefaultValues() {
     // Arrange & Act
     let config = LandConfig()
-    
+
     // Assert
     #expect(config.maxPlayers == nil, "maxPlayers should be nil by default")
     #expect(config.tickInterval == nil, "tickInterval should be nil by default")
@@ -181,7 +137,7 @@ func testLandConfig_AllValues() {
         tickInterval: .milliseconds(100),
         idleTimeout: .seconds(60)
     )
-    
+
     // Assert
     #expect(config.maxPlayers == 4, "maxPlayers should be set")
     #expect(config.tickInterval == .milliseconds(100), "tickInterval should be set")
@@ -192,12 +148,12 @@ func testLandConfig_AllValues() {
 func testLandConfig_MutatingMethods() {
     // Arrange
     var config = LandConfig()
-    
+
     // Act
     config.setMaxPlayers(8)
     config.setTickInterval(.milliseconds(50))
     config.setIdleTimeout(.seconds(120))
-    
+
     // Assert
     #expect(config.maxPlayers == 8, "setMaxPlayers should work")
     #expect(config.tickInterval == .milliseconds(50), "setTickInterval should work")
@@ -214,7 +170,7 @@ func testConfigDSL_BuildsConfiguration() {
         Tick(every: .milliseconds(100))
         IdleTimeout(.seconds(60))
     }
-    
+
     // Assert
     #expect(config.maxPlayers == 4, "Config DSL should set maxPlayers")
     #expect(config.tickInterval == .milliseconds(100), "Config DSL should set tickInterval")
@@ -227,7 +183,7 @@ func testConfigDSL_PartialConfiguration() {
     let config = Config {
         MaxPlayers(8)
     }
-    
+
     // Assert
     #expect(config.maxPlayers == 8, "Config DSL should set maxPlayers")
     #expect(config.tickInterval == nil, "tickInterval should remain nil")
@@ -244,15 +200,15 @@ func testLandContext_Creation() {
     let clientID = ClientID("device-001")
     let sessionID = SessionID("session-001")
     let services = LandServices()
-    
-    let sendEventHandler: @Sendable (GameEvent, EventTarget) async -> Void = { _, _ in
+
+    let sendEventHandler: @Sendable (any ServerEventPayload, EventTarget) async -> Void = { _, _ in
         // Handler for testing
     }
-    
+
     let syncHandler: @Sendable () async -> Void = {
         // Handler for testing
     }
-    
+
     // Act
     let context = LandContext(
         landID: landID,
@@ -263,7 +219,7 @@ func testLandContext_Creation() {
         sendEventHandler: sendEventHandler,
         syncHandler: syncHandler
     )
-    
+
     // Assert
     #expect(context.landID == landID, "landID should be set")
     #expect(context.playerID == playerID, "playerID should be set")
@@ -275,23 +231,23 @@ func testLandContext_Creation() {
 func testLandContext_SendEvent() async {
     // Arrange
     actor TestState {
-        var eventSent: GameEvent?
+        var eventSent: (any ServerEventPayload)?
         var targetUsed: EventTarget?
-        
-        func setEvent(_ event: GameEvent, target: EventTarget) {
+
+        func setEvent(_ event: any ServerEventPayload, target: EventTarget) {
             self.eventSent = event
             self.targetUsed = target
         }
     }
-    
+
     let testState = TestState()
-    
-    let sendEventHandler: @Sendable (GameEvent, EventTarget) async -> Void = { event, target in
+
+    let sendEventHandler: @Sendable (any ServerEventPayload, EventTarget) async -> Void = { event, target in
         await testState.setEvent(event, target: target)
     }
-    
+
     let syncHandler: @Sendable () async -> Void = {}
-    
+
     let context = LandContext(
         landID: "test-land",
         playerID: PlayerID("alice"),
@@ -301,11 +257,11 @@ func testLandContext_SendEvent() async {
         sendEventHandler: sendEventHandler,
         syncHandler: syncHandler
     )
-    
+
     // Act
-    let testEvent = GameEvent.fromServer(TestServerEvent.systemMessage("test"))
+    let testEvent = TestServerEvent.systemMessage("test")
     await context.sendEvent(testEvent, to: .all)
-    
+
     // Assert
     let eventSent = await testState.eventSent
     let targetUsed = await testState.targetUsed
@@ -322,19 +278,19 @@ func testLandContext_SyncNow() async {
     // Arrange
     actor TestState {
         var syncCalled = false
-        
+
         func setSyncCalled() {
             self.syncCalled = true
         }
     }
-    
+
     let testState = TestState()
-    
-    let sendEventHandler: @Sendable (GameEvent, EventTarget) async -> Void = { _, _ in }
+
+    let sendEventHandler: @Sendable (any ServerEventPayload, EventTarget) async -> Void = { _, _ in }
     let syncHandler: @Sendable () async -> Void = {
         await testState.setSyncCalled()
     }
-    
+
     let context = LandContext(
         landID: "test-land",
         playerID: PlayerID("alice"),
@@ -344,10 +300,10 @@ func testLandContext_SyncNow() async {
         sendEventHandler: sendEventHandler,
         syncHandler: syncHandler
     )
-    
+
     // Act
     await context.syncNow()
-    
+
     // Assert
     let syncCalled = await testState.syncCalled
     #expect(syncCalled == true, "syncNow should call handler")
@@ -358,12 +314,18 @@ func testLandContext_SyncNow() async {
 @Test("LandDefinition can be created")
 func testLandDefinition_Creation() {
     // Arrange & Act
-    let landDef = Land("test-land", using: TestLandState.self) {
+    let landDef = Land(
+        "test-land",
+        using: TestLandState.self,
+        clientEvents: TestClientEvent.self,
+        serverEvents: TestServerEvent.self,
+        actions: TestAction.self
+    ) {
         Config {
             MaxPlayers(4)
         }
     }
-    
+
     // Assert
     #expect(landDef.id == "test-land", "landDef id should be set")
     #expect(landDef.config.maxPlayers == 4, "config should be extracted from nodes")
@@ -371,22 +333,28 @@ func testLandDefinition_Creation() {
 
 @Test("Land DSL can combine multiple nodes")
 func testLandDSL_CombinesNodes() {
-    // Arrange & Act - Type must be explicitly specified in closures
-    let landDef = Land("test-land", using: TestLandState.self) {
+    // Arrange & Act
+    let landDef = Land(
+        "test-land",
+        using: TestLandState.self,
+        clientEvents: TestClientEvent.self,
+        serverEvents: TestServerEvent.self,
+        actions: TestAction.self
+    ) {
         Config {
             MaxPlayers(4)
             Tick(every: .milliseconds(100))
         }
-        
-        Action(TestAction.self) { (state: inout TestLandState, action: TestAction, ctx: LandContext) -> ActionResult in
-            return .success(.empty)
+
+        Action(TestAction.self) { (state: inout TestLandState, action: TestAction, ctx: LandContext) in
+            return .empty
         }
-        
+
         On(TestClientEvent.self) { (state: inout TestLandState, event: TestClientEvent, ctx: LandContext) in
             // Handler logic
         }
     }
-    
+
     // Assert
     #expect(landDef.id == "test-land", "landDef id should be set")
     #expect(landDef.nodes.count >= 2, "landDef should contain multiple nodes")
@@ -397,10 +365,10 @@ func testLandDSL_CombinesNodes() {
 func testLandDSL_ConfigNode() {
     // Arrange
     let config = LandConfig(maxPlayers: 4, tickInterval: .milliseconds(100))
-    
+
     // Act
     let configNode = ConfigNode(config)
-    
+
     // Assert
     #expect(configNode.config.maxPlayers == 4, "ConfigNode should store config")
     #expect(configNode.config.tickInterval == .milliseconds(100), "ConfigNode should store tickInterval")
@@ -408,41 +376,41 @@ func testLandDSL_ConfigNode() {
 
 @Test("Land DSL ActionHandlerNode can be created")
 func testLandDSL_ActionHandlerNode() {
-    // Arrange & Act - Explicitly specify State type
-    let actionNode = Action(TestAction.self) { (state: inout TestLandState, action: TestAction, ctx: LandContext) -> ActionResult in
+    // Arrange & Act
+    let actionNode = Action(TestAction.self) { (state: inout TestLandState, action: TestAction, ctx: LandContext) in
         switch action {
         case .join(let playerID, let name):
             state.players[playerID] = name
-            return .success(.empty)
+            return .empty
         case .attack:
-            return .success(.empty)
+            return .empty
         case .getPlayerHand:
-            return .success(.empty)
+            return .empty
         }
     }
-    
+
     // Assert
     #expect(String(describing: actionNode).contains("ActionHandlerNode"), "Should create ActionHandlerNode")
 }
 
 @Test("Land DSL OnEventNode can be created")
 func testLandDSL_OnEventNode() {
-    // Arrange & Act - Explicitly specify types
+    // Arrange & Act
     let eventNode = On(TestClientEvent.self) { (state: inout TestLandState, event: TestClientEvent, ctx: LandContext) in
         // Handle event
     }
-    
+
     // Assert
     #expect(String(describing: eventNode).contains("OnEventNode"), "Should create OnEventNode")
 }
 
 @Test("Land DSL OnTickNode can be created")
 func testLandDSL_OnTickNode() {
-    // Arrange & Act - Explicitly specify types
+    // Arrange & Act
     let tickNode = OnTick { (state: inout TestLandState, ctx: LandContext) in
         // Handle tick
     }
-    
+
     // Assert
     #expect(String(describing: tickNode).contains("OnTickNode"), "Should create OnTickNode")
 }
@@ -453,68 +421,46 @@ func testLandDSL_AllowedClientEvents() {
     let allowedEvents = AllowedClientEvents {
         TestClientEvent.self
     }
-    
+
     // Assert
     #expect(allowedEvents.allowedEventTypes.count >= 1, "Should contain event types")
-}
-
-@Test("App alias works correctly")
-func testLandDSL_AppAlias() {
-    // Arrange & Act
-    let appDef = App("my-app", using: TestLandState.self) {
-        Config {
-            MaxPlayers(4)
-        }
-    }
-    
-    // Assert
-    #expect(appDef.id == "my-app", "App alias should work")
-    #expect(appDef.config.maxPlayers == 4, "App should support config")
-}
-
-@Test("Feature alias works correctly")
-func testLandDSL_FeatureAlias() {
-    // Arrange & Act
-    let featureDef = Feature("my-feature", using: TestLandState.self) {
-        Config {
-            MaxPlayers(8)
-        }
-    }
-    
-    // Assert
-    #expect(featureDef.id == "my-feature", "Feature alias should work")
-    #expect(featureDef.config.maxPlayers == 8, "Feature should support config")
 }
 
 // MARK: - Integration Tests
 
 @Test("Land DSL can create complete land definition")
 func testLandDSL_CompleteDefinition() {
-    // Arrange & Act - Type must be explicitly specified in closures
-    let landDef = Land("complete-land", using: TestLandState.self) {
+    // Arrange & Act
+    let landDef = Land(
+        "complete-land",
+        using: TestLandState.self,
+        clientEvents: TestClientEvent.self,
+        serverEvents: TestServerEvent.self,
+        actions: TestAction.self
+    ) {
         Config {
             MaxPlayers(4)
             Tick(every: .milliseconds(100))
             IdleTimeout(.seconds(60))
         }
-        
+
         AllowedClientEvents {
             TestClientEvent.self
         }
-        
-        Action(TestAction.self) { (state: inout TestLandState, action: TestAction, ctx: LandContext) -> ActionResult in
-            return .success(.empty)
+
+        Action(TestAction.self) { (state: inout TestLandState, action: TestAction, ctx: LandContext) in
+            return .empty
         }
-        
+
         On(TestClientEvent.self) { (state: inout TestLandState, event: TestClientEvent, ctx: LandContext) in
             // Handle event
         }
-        
+
         OnTick { (state: inout TestLandState, ctx: LandContext) in
             // Handle tick
         }
     }
-    
+
     // Assert
     #expect(landDef.id == "complete-land", "landDef id should be correct")
     #expect(landDef.config.maxPlayers == 4, "config should be correct")
@@ -522,4 +468,3 @@ func testLandDSL_CompleteDefinition() {
     #expect(landDef.config.idleTimeout == .seconds(60), "idleTimeout should be correct")
     #expect(landDef.nodes.count >= 4, "should contain multiple nodes")
 }
-
