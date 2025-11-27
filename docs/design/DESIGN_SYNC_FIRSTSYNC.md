@@ -20,7 +20,7 @@ Join → Snapshot → FirstSync → (開始 Diff)
 
 ## 📍 1. Join：取得完整初始狀態（Snapshot）
 
-當玩家加入 Realm/Room 時，SwiftStateTree Runtime 會：
+當玩家加入 Land/Room 時，SwiftStateTree Runtime 會：
 
 1. 建立 Session（playerID、clientID）
 2. 根據 SyncPolicy 裁切 StateTree（broadcast + perPlayer）
@@ -54,7 +54,7 @@ case .join(let id, let name):
     state.players[id] = PlayerState(name: name, hpCurrent: 100, hpMax: 100)
     state.hands[id] = HandState(ownerID: id, cards: [])
     let snapshot = try syncEngine.snapshot(for: id, from: state)
-    return .success(.joinResult(JoinResponse(realmID: ctx.realmID, state: snapshot)))
+    return .success(.joinResult(JoinResponse(landID: ctx.landID, state: snapshot)))
 ```
 
 ---

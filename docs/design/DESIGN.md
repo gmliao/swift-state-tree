@@ -1,6 +1,6 @@
 # SwiftStateTree DSL 設計草案 v0.2
 
-> 單一 StateTree + 同步規則 + Realm DSL
+> 單一 StateTree + 同步規則 + Land DSL
 
 ## 模組簡寫
 
@@ -21,7 +21,7 @@
 - StateTree 可以長出多個 StateNode（支援巢狀結構）
 - 用 **@Sync 規則** 控制伺服器要把哪些資料同步給誰
 - 支援遞迴過濾：巢狀的 StateNode 可以獨立套用 @Sync 政策
-- 用 **Realm DSL** 定義領域、Action/Event 處理、Tick 設定
+- 用 **Land DSL** 定義領域、Action/Event 處理、Tick 設定
 - **UI 計算全部交給客戶端**，伺服器只送「邏輯資料」
 
 ---
@@ -37,14 +37,14 @@
 ### 通訊模式
 - **[DESIGN_COMMUNICATION.md](./DESIGN_COMMUNICATION.md)**：Action 與 Event 通訊模式、WebSocket 傳輸、路由機制
 
-### Realm DSL
-- **[DESIGN_REALM_DSL.md](./DESIGN_REALM_DSL.md)**：領域宣告語法、Action 處理、Event 處理、RealmContext
+### Land DSL
+- **[DESIGN_REALM_DSL.md](./DESIGN_REALM_DSL.md)**：領域宣告語法、Action 處理、Event 處理、LandContext
 
 ### Transport 層
 - **[DESIGN_TRANSPORT.md](./DESIGN_TRANSPORT.md)**：網路傳輸抽象、Transport 協議、服務注入
 
 ### Runtime 結構
-- **[DESIGN_RUNTIME.md](./DESIGN_RUNTIME.md)**：RealmActor、SyncEngine 的運行時結構
+- **[DESIGN_RUNTIME.md](./DESIGN_RUNTIME.md)**：LandActor、SyncEngine 的運行時結構
 
 ### 客戶端 SDK 與程式碼生成
 - **[DESIGN_CLIENT_SDK.md](./DESIGN_CLIENT_SDK.md)**：客戶端 SDK 自動生成、Code-gen 架構設計、TypeScript 支援
@@ -91,8 +91,8 @@ swift-state-tree/
 │   ├── SwiftStateTree/              # core：核心模組
 │   │   ├── StateTree/               # StateTree 定義
 │   │   ├── Sync/                    # @Sync 同步規則
-│   │   ├── Realm/                   # Realm DSL
-│   │   ├── Runtime/                 # RealmActor
+│   │   ├── Land/                   # Land DSL
+│   │   ├── Runtime/                 # LandActor
 │   │   └── SchemaGen/              # Schema 生成器
 │   ├── SwiftStateTreeTransport/     # transport：網路傳輸模組
 │   ├── SwiftStateTreeServerApp/     # app：Server 應用模組
@@ -124,7 +124,7 @@ swift-state-tree/
 
 ### 開發參考
 - 定義 StateTree：參考 [DESIGN_CORE.md](./DESIGN_CORE.md) 的「StateTree：狀態樹結構」和「同步規則 DSL」
-- 定義 Realm：參考 [DESIGN_REALM_DSL.md](./DESIGN_REALM_DSL.md)
+- 定義 Land：參考 [DESIGN_REALM_DSL.md](./DESIGN_REALM_DSL.md)
 - 設定 Transport：參考 [DESIGN_TRANSPORT.md](./DESIGN_TRANSPORT.md)
 - 生成客戶端 SDK：參考 [DESIGN_CLIENT_SDK.md](./DESIGN_CLIENT_SDK.md)
 - 語法速查：參考 [DESIGN_EXAMPLES.md](./DESIGN_EXAMPLES.md) 的「語法速查表」

@@ -1,4 +1,4 @@
-// Tests/SwiftStateTreeTests/RealmDSLTests.swift
+// Tests/SwiftStateTreeTests/LandDSLTests.swift
 
 import Foundation
 import Testing
@@ -6,9 +6,9 @@ import Testing
 
 // MARK: - Test StateNode Definitions
 
-/// Test StateNode for Realm DSL tests
+/// Test StateNode for Land DSL tests
 @StateNodeBuilder
-struct TestRealmState: StateNodeProtocol {
+struct TestLandState: StateNodeProtocol {
     @Sync(.broadcast)
     var players: [PlayerID: String] = [:]
     
@@ -18,7 +18,7 @@ struct TestRealmState: StateNodeProtocol {
 
 // MARK: - Test Action and Event Types
 
-/// Test Action enum for Realm DSL tests
+/// Test Action enum for Land DSL tests
 enum TestAction: Codable, Sendable {
     case join(playerID: PlayerID, name: String)
     case attack(attacker: PlayerID, target: PlayerID, damage: Int)
@@ -138,34 +138,34 @@ func testActionResult_Cases() {
 @Test("ActionResultData cases work correctly")
 func testActionResultData_Cases() throws {
     // Arrange
-    let joinResponse = JoinResponse(realmID: "realm-1", state: nil)
+    let joinResponse = JoinResponse(landID: "land-1", state: nil)
     let emptyData = ActionResultData.empty
     let joinResult = ActionResultData.joinResult(joinResponse)
-    let realmInfo = ActionResultData.realmInfo(RealmInfo(realmID: "realm-1", playerCount: 4))
+    let landInfo = ActionResultData.landInfo(LandInfo(landID: "land-1", playerCount: 4))
     
     // Assert
     #expect(String(describing: emptyData) == "empty", "empty case should work")
     
     if case .joinResult(let response) = joinResult {
-        #expect(response.realmID == "realm-1", "joinResult should contain JoinResponse")
+        #expect(response.landID == "land-1", "joinResult should contain JoinResponse")
     } else {
         Issue.record("joinResult case failed")
     }
     
-    if case .realmInfo(let info) = realmInfo {
-        #expect(info.realmID == "realm-1", "realmInfo should contain RealmInfo")
-        #expect(info.playerCount == 4, "realmInfo should contain player count")
+    if case .landInfo(let info) = landInfo {
+        #expect(info.landID == "land-1", "landInfo should contain LandInfo")
+        #expect(info.playerCount == 4, "landInfo should contain player count")
     } else {
-        Issue.record("realmInfo case failed")
+        Issue.record("landInfo case failed")
     }
 }
 
-// MARK: - RealmConfig Tests
+// MARK: - LandConfig Tests
 
-@Test("RealmConfig can be created with default values")
-func testRealmConfig_DefaultValues() {
+@Test("LandConfig can be created with default values")
+func testLandConfig_DefaultValues() {
     // Arrange & Act
-    let config = RealmConfig()
+    let config = LandConfig()
     
     // Assert
     #expect(config.maxPlayers == nil, "maxPlayers should be nil by default")
@@ -173,10 +173,10 @@ func testRealmConfig_DefaultValues() {
     #expect(config.idleTimeout == nil, "idleTimeout should be nil by default")
 }
 
-@Test("RealmConfig can be created with all values")
-func testRealmConfig_AllValues() {
+@Test("LandConfig can be created with all values")
+func testLandConfig_AllValues() {
     // Arrange & Act
-    let config = RealmConfig(
+    let config = LandConfig(
         maxPlayers: 4,
         tickInterval: .milliseconds(100),
         idleTimeout: .seconds(60)
@@ -188,10 +188,10 @@ func testRealmConfig_AllValues() {
     #expect(config.idleTimeout == .seconds(60), "idleTimeout should be set")
 }
 
-@Test("RealmConfig mutating methods work correctly")
-func testRealmConfig_MutatingMethods() {
+@Test("LandConfig mutating methods work correctly")
+func testLandConfig_MutatingMethods() {
     // Arrange
-    var config = RealmConfig()
+    var config = LandConfig()
     
     // Act
     config.setMaxPlayers(8)
@@ -234,16 +234,16 @@ func testConfigDSL_PartialConfiguration() {
     #expect(config.idleTimeout == nil, "idleTimeout should remain nil")
 }
 
-// MARK: - RealmContext Tests
+// MARK: - LandContext Tests
 
-@Test("RealmContext can be created with required parameters")
-func testRealmContext_Creation() {
+@Test("LandContext can be created with required parameters")
+func testLandContext_Creation() {
     // Arrange
-    let realmID = "test-realm"
+    let landID = "test-land"
     let playerID = PlayerID("alice")
     let clientID = ClientID("device-001")
     let sessionID = SessionID("session-001")
-    let services = RealmServices()
+    let services = LandServices()
     
     let sendEventHandler: @Sendable (GameEvent, EventTarget) async -> Void = { _, _ in
         // Handler for testing
@@ -254,8 +254,8 @@ func testRealmContext_Creation() {
     }
     
     // Act
-    let context = RealmContext(
-        realmID: realmID,
+    let context = LandContext(
+        landID: landID,
         playerID: playerID,
         clientID: clientID,
         sessionID: sessionID,
@@ -265,14 +265,14 @@ func testRealmContext_Creation() {
     )
     
     // Assert
-    #expect(context.realmID == realmID, "realmID should be set")
+    #expect(context.landID == landID, "landID should be set")
     #expect(context.playerID == playerID, "playerID should be set")
     #expect(context.clientID == clientID, "clientID should be set")
     #expect(context.sessionID == sessionID, "sessionID should be set")
 }
 
-@Test("RealmContext sendEvent calls handler")
-func testRealmContext_SendEvent() async {
+@Test("LandContext sendEvent calls handler")
+func testLandContext_SendEvent() async {
     // Arrange
     actor TestState {
         var eventSent: GameEvent?
@@ -292,12 +292,12 @@ func testRealmContext_SendEvent() async {
     
     let syncHandler: @Sendable () async -> Void = {}
     
-    let context = RealmContext(
-        realmID: "test-realm",
+    let context = LandContext(
+        landID: "test-land",
         playerID: PlayerID("alice"),
         clientID: ClientID("device-001"),
         sessionID: SessionID("session-001"),
-        services: RealmServices(),
+        services: LandServices(),
         sendEventHandler: sendEventHandler,
         syncHandler: syncHandler
     )
@@ -317,8 +317,8 @@ func testRealmContext_SendEvent() async {
     }
 }
 
-@Test("RealmContext syncNow calls handler")
-func testRealmContext_SyncNow() async {
+@Test("LandContext syncNow calls handler")
+func testLandContext_SyncNow() async {
     // Arrange
     actor TestState {
         var syncCalled = false
@@ -335,12 +335,12 @@ func testRealmContext_SyncNow() async {
         await testState.setSyncCalled()
     }
     
-    let context = RealmContext(
-        realmID: "test-realm",
+    let context = LandContext(
+        landID: "test-land",
         playerID: PlayerID("alice"),
         clientID: ClientID("device-001"),
         sessionID: SessionID("session-001"),
-        services: RealmServices(),
+        services: LandServices(),
         sendEventHandler: sendEventHandler,
         syncHandler: syncHandler
     )
@@ -353,50 +353,50 @@ func testRealmContext_SyncNow() async {
     #expect(syncCalled == true, "syncNow should call handler")
 }
 
-// MARK: - RealmDSL Tests
+// MARK: - LandDSL Tests
 
-@Test("RealmDefinition can be created")
-func testRealmDefinition_Creation() {
+@Test("LandDefinition can be created")
+func testLandDefinition_Creation() {
     // Arrange & Act
-    let realmDef = Realm("test-realm", using: TestRealmState.self) {
+    let landDef = Land("test-land", using: TestLandState.self) {
         Config {
             MaxPlayers(4)
         }
     }
     
     // Assert
-    #expect(realmDef.id == "test-realm", "realmDef id should be set")
-    #expect(realmDef.config.maxPlayers == 4, "config should be extracted from nodes")
+    #expect(landDef.id == "test-land", "landDef id should be set")
+    #expect(landDef.config.maxPlayers == 4, "config should be extracted from nodes")
 }
 
-@Test("Realm DSL can combine multiple nodes")
-func testRealmDSL_CombinesNodes() {
+@Test("Land DSL can combine multiple nodes")
+func testLandDSL_CombinesNodes() {
     // Arrange & Act - Type must be explicitly specified in closures
-    let realmDef = Realm("test-realm", using: TestRealmState.self) {
+    let landDef = Land("test-land", using: TestLandState.self) {
         Config {
             MaxPlayers(4)
             Tick(every: .milliseconds(100))
         }
         
-        Action(TestAction.self) { (state: inout TestRealmState, action: TestAction, ctx: RealmContext) -> ActionResult in
+        Action(TestAction.self) { (state: inout TestLandState, action: TestAction, ctx: LandContext) -> ActionResult in
             return .success(.empty)
         }
         
-        On(TestClientEvent.self) { (state: inout TestRealmState, event: TestClientEvent, ctx: RealmContext) in
+        On(TestClientEvent.self) { (state: inout TestLandState, event: TestClientEvent, ctx: LandContext) in
             // Handler logic
         }
     }
     
     // Assert
-    #expect(realmDef.id == "test-realm", "realmDef id should be set")
-    #expect(realmDef.nodes.count >= 2, "realmDef should contain multiple nodes")
-    #expect(realmDef.config.maxPlayers == 4, "config should be extracted")
+    #expect(landDef.id == "test-land", "landDef id should be set")
+    #expect(landDef.nodes.count >= 2, "landDef should contain multiple nodes")
+    #expect(landDef.config.maxPlayers == 4, "config should be extracted")
 }
 
-@Test("Realm DSL ConfigNode works correctly")
-func testRealmDSL_ConfigNode() {
+@Test("Land DSL ConfigNode works correctly")
+func testLandDSL_ConfigNode() {
     // Arrange
-    let config = RealmConfig(maxPlayers: 4, tickInterval: .milliseconds(100))
+    let config = LandConfig(maxPlayers: 4, tickInterval: .milliseconds(100))
     
     // Act
     let configNode = ConfigNode(config)
@@ -406,10 +406,10 @@ func testRealmDSL_ConfigNode() {
     #expect(configNode.config.tickInterval == .milliseconds(100), "ConfigNode should store tickInterval")
 }
 
-@Test("Realm DSL ActionHandlerNode can be created")
-func testRealmDSL_ActionHandlerNode() {
+@Test("Land DSL ActionHandlerNode can be created")
+func testLandDSL_ActionHandlerNode() {
     // Arrange & Act - Explicitly specify State type
-    let actionNode = Action(TestAction.self) { (state: inout TestRealmState, action: TestAction, ctx: RealmContext) -> ActionResult in
+    let actionNode = Action(TestAction.self) { (state: inout TestLandState, action: TestAction, ctx: LandContext) -> ActionResult in
         switch action {
         case .join(let playerID, let name):
             state.players[playerID] = name
@@ -425,10 +425,10 @@ func testRealmDSL_ActionHandlerNode() {
     #expect(String(describing: actionNode).contains("ActionHandlerNode"), "Should create ActionHandlerNode")
 }
 
-@Test("Realm DSL OnEventNode can be created")
-func testRealmDSL_OnEventNode() {
+@Test("Land DSL OnEventNode can be created")
+func testLandDSL_OnEventNode() {
     // Arrange & Act - Explicitly specify types
-    let eventNode = On(TestClientEvent.self) { (state: inout TestRealmState, event: TestClientEvent, ctx: RealmContext) in
+    let eventNode = On(TestClientEvent.self) { (state: inout TestLandState, event: TestClientEvent, ctx: LandContext) in
         // Handle event
     }
     
@@ -436,10 +436,10 @@ func testRealmDSL_OnEventNode() {
     #expect(String(describing: eventNode).contains("OnEventNode"), "Should create OnEventNode")
 }
 
-@Test("Realm DSL OnTickNode can be created")
-func testRealmDSL_OnTickNode() {
+@Test("Land DSL OnTickNode can be created")
+func testLandDSL_OnTickNode() {
     // Arrange & Act - Explicitly specify types
-    let tickNode = OnTick { (state: inout TestRealmState, ctx: RealmContext) in
+    let tickNode = OnTick { (state: inout TestLandState, ctx: LandContext) in
         // Handle tick
     }
     
@@ -447,8 +447,8 @@ func testRealmDSL_OnTickNode() {
     #expect(String(describing: tickNode).contains("OnTickNode"), "Should create OnTickNode")
 }
 
-@Test("Realm DSL AllowedClientEvents can be created")
-func testRealmDSL_AllowedClientEvents() {
+@Test("Land DSL AllowedClientEvents can be created")
+func testLandDSL_AllowedClientEvents() {
     // Arrange & Act
     let allowedEvents = AllowedClientEvents {
         TestClientEvent.self
@@ -459,9 +459,9 @@ func testRealmDSL_AllowedClientEvents() {
 }
 
 @Test("App alias works correctly")
-func testRealmDSL_AppAlias() {
+func testLandDSL_AppAlias() {
     // Arrange & Act
-    let appDef = App("my-app", using: TestRealmState.self) {
+    let appDef = App("my-app", using: TestLandState.self) {
         Config {
             MaxPlayers(4)
         }
@@ -473,9 +473,9 @@ func testRealmDSL_AppAlias() {
 }
 
 @Test("Feature alias works correctly")
-func testRealmDSL_FeatureAlias() {
+func testLandDSL_FeatureAlias() {
     // Arrange & Act
-    let featureDef = Feature("my-feature", using: TestRealmState.self) {
+    let featureDef = Feature("my-feature", using: TestLandState.self) {
         Config {
             MaxPlayers(8)
         }
@@ -488,10 +488,10 @@ func testRealmDSL_FeatureAlias() {
 
 // MARK: - Integration Tests
 
-@Test("Realm DSL can create complete realm definition")
-func testRealmDSL_CompleteDefinition() {
+@Test("Land DSL can create complete land definition")
+func testLandDSL_CompleteDefinition() {
     // Arrange & Act - Type must be explicitly specified in closures
-    let realmDef = Realm("complete-realm", using: TestRealmState.self) {
+    let landDef = Land("complete-land", using: TestLandState.self) {
         Config {
             MaxPlayers(4)
             Tick(every: .milliseconds(100))
@@ -502,24 +502,24 @@ func testRealmDSL_CompleteDefinition() {
             TestClientEvent.self
         }
         
-        Action(TestAction.self) { (state: inout TestRealmState, action: TestAction, ctx: RealmContext) -> ActionResult in
+        Action(TestAction.self) { (state: inout TestLandState, action: TestAction, ctx: LandContext) -> ActionResult in
             return .success(.empty)
         }
         
-        On(TestClientEvent.self) { (state: inout TestRealmState, event: TestClientEvent, ctx: RealmContext) in
+        On(TestClientEvent.self) { (state: inout TestLandState, event: TestClientEvent, ctx: LandContext) in
             // Handle event
         }
         
-        OnTick { (state: inout TestRealmState, ctx: RealmContext) in
+        OnTick { (state: inout TestLandState, ctx: LandContext) in
             // Handle tick
         }
     }
     
     // Assert
-    #expect(realmDef.id == "complete-realm", "realmDef id should be correct")
-    #expect(realmDef.config.maxPlayers == 4, "config should be correct")
-    #expect(realmDef.config.tickInterval == .milliseconds(100), "tickInterval should be correct")
-    #expect(realmDef.config.idleTimeout == .seconds(60), "idleTimeout should be correct")
-    #expect(realmDef.nodes.count >= 4, "should contain multiple nodes")
+    #expect(landDef.id == "complete-land", "landDef id should be correct")
+    #expect(landDef.config.maxPlayers == 4, "config should be correct")
+    #expect(landDef.config.tickInterval == .milliseconds(100), "tickInterval should be correct")
+    #expect(landDef.config.idleTimeout == .seconds(60), "idleTimeout should be correct")
+    #expect(landDef.nodes.count >= 4, "should contain multiple nodes")
 }
 

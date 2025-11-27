@@ -7,7 +7,7 @@
 
 ### 設計理念
 
-**Transport 層負責處理所有網路細節**，StateTree/Realm 層不應該知道 HTTP 路徑或 WebSocket URL 等細節。
+**Transport 層負責處理所有網路細節**，StateTree/Land 層不應該知道 HTTP 路徑或 WebSocket URL 等細節。
 
 ### 架構分層
 
@@ -15,16 +15,16 @@
 
 ```
 ┌─────────────────────────────────────┐
-│   StateTree / Realm DSL (領域層)     │
+│   StateTree / Land DSL (領域層)     │
 │   - 不知道 HTTP/WebSocket 細節      │
-│   - RealmContext 不包含 Transport    │
+│   - LandContext 不包含 Transport    │
 │   - 只使用邏輯路徑和服務抽象         │
 └─────────────────────────────────────┘
               ↓
 ┌─────────────────────────────────────┐
-│   Runtime Layer (RealmActor)        │
+│   Runtime Layer (LandActor)        │
 │   - 持有 Transport                   │
-│   - 建立 RealmContext（不暴露 Transport）│
+│   - 建立 LandContext（不暴露 Transport）│
 │   - 處理 Transport 細節              │
 └─────────────────────────────────────┘
               ↓
@@ -32,14 +32,14 @@
 │   Transport Layer (傳輸層)           │
 │   - 處理 WebSocket/HTTP 細節        │
 │   - 連接管理（三層識別）             │
-│   - 路由 realmID 到對應的 Realm      │
+│   - 路由 landID 到對應的 Land      │
 │   - 訊息序列化/反序列化              │
 └─────────────────────────────────────┘
               ↓
 ┌─────────────────────────────────────┐
 │   Server App (應用層)                │
 │   - 設定 Transport 和路由            │
-│   - 註冊 Realm                       │
+│   - 註冊 Land                       │
 │   - 配置 WebSocket endpoint          │
 └─────────────────────────────────────┘
 ```
@@ -91,8 +91,8 @@ const client = new StateTreeClient({
 ```swift
 // Transport 抽象協議
 protocol GameTransport {
-    // 註冊 Realm
-    func register(_ realm: RealmDefinition<some StateTree>) async
+    // 註冊 Land
+    func register(_ land: LandDefinition<some StateTree>) async
     
     // 處理 WebSocket 連接（三層識別）
     func handleConnection(
@@ -103,10 +103,10 @@ protocol GameTransport {
     ) async
     
     // 發送 Event（支援多種目標）
-    func send(_ event: GameEvent, to playerID: PlayerID, in realmID: String) async
-    func send(_ event: GameEvent, to clientID: ClientID, in realmID: String) async
-    func send(_ event: GameEvent, to sessionID: SessionID, in realmID: String) async
-    func broadcast(_ event: GameEvent, in realmID: String) async
+    func send(_ event: GameEvent, to playerID: PlayerID, in landID: String) async
+    func send(_ event: GameEvent, to clientID: ClientID, in landID: String) async
+    func send(_ event: GameEvent, to sessionID: SessionID, in landID: String) async
+    func broadcast(_ event: GameEvent, in landID: String) async
     
     // 發送 Action 回應
     func sendActionResult(
@@ -118,7 +118,7 @@ protocol GameTransport {
 
 // WebSocket Transport 實作
 actor WebSocketTransport: GameTransport {
-    private var realmActors: [String: RealmActor] = [:]
+    private var landActors: [String: LandActor] = [:]
     
     // ✅ 三層連接管理：playerID -> clientID -> sessionID -> WebSocket
     private var connections: [PlayerID: [ClientID: [SessionID: WebSocket]]] = [:]
@@ -131,20 +131,20 @@ actor WebSocketTransport: GameTransport {
         let connectedAt: Date
     }
     
-    private let services: RealmServices
+    private let services: LandServices
     
-    init(services: RealmServices) {
+    init(services: LandServices) {
         self.services = services
     }
     
-    func register(_ realm: RealmDefinition<some StateTree>) async {
-        // 創建 RealmActor 並註冊（注入 Transport 和 Services）
-        let actor = RealmActor(
-            definition: realm,
+    func register(_ land: LandDefinition<some StateTree>) async {
+        // 創建 LandActor 並註冊（注入 Transport 和 Services）
+        let actor = LandActor(
+            definition: land,
             transport: self,
             services: services
         )
-        realmActors[realm.id] = actor
+        landActors[land.id] = actor
     }
     
     func handleConnection(
@@ -193,8 +193,8 @@ actor WebSocketTransport: GameTransport {
         guard let session = clientSessions[sessionID] else { return }
         
         switch message {
-        case .action(let requestID, let realmID, let action):
-            guard let actor = realmActors[realmID] else { return }
+        case .action(let requestID, let landID, let action):
+            guard let actor = landActors[landID] else { return }
             let response = await actor.handleAction(
                 action,
                 from: session.playerID,
@@ -203,8 +203,8 @@ actor WebSocketTransport: GameTransport {
             )
             await sendActionResult(requestID: requestID, response: response, to: sessionID)
             
-        case .event(let realmID, let event):
-            guard let actor = realmActors[realmID] else { return }
+        case .event(let landID, let event):
+            guard let actor = landActors[landID] else { return }
             await actor.handleEvent(
                 event,
                 from: session.playerID,
@@ -219,7 +219,7 @@ actor WebSocketTransport: GameTransport {
     }
     
     // 發送 Event 給特定 playerID 的所有連接（所有裝置/標籤頁）
-    func send(_ event: GameEvent, to playerID: PlayerID, in realmID: String) async {
+    func send(_ event: GameEvent, to playerID: PlayerID, in landID: String) async {
         guard let clientConnections = connections[playerID] else { return }
         
         for (clientID, sessions) in clientConnections {
@@ -230,7 +230,7 @@ actor WebSocketTransport: GameTransport {
     }
     
     // 發送 Event 給特定 clientID（單一裝置的所有標籤頁）
-    func send(_ event: GameEvent, to clientID: ClientID, in realmID: String) async {
+    func send(_ event: GameEvent, to clientID: ClientID, in landID: String) async {
         for (playerID, clients) in connections {
             if let sessions = clients[clientID] {
                 for (sessionID, websocket) in sessions {
@@ -241,7 +241,7 @@ actor WebSocketTransport: GameTransport {
     }
     
     // 發送 Event 給特定 sessionID（單一連接）
-    func send(_ event: GameEvent, to sessionID: SessionID, in realmID: String) async {
+    func send(_ event: GameEvent, to sessionID: SessionID, in landID: String) async {
         guard let session = clientSessions[sessionID],
               let websocket = connections[session.playerID]?[session.clientID]?[sessionID] else {
             return
@@ -249,8 +249,8 @@ actor WebSocketTransport: GameTransport {
         await sendEvent(event, to: websocket)
     }
     
-    func broadcast(_ event: GameEvent, in realmID: String) async {
-        // 發送給該 realm 的所有連接
+    func broadcast(_ event: GameEvent, in landID: String) async {
+        // 發送給該 land 的所有連接
         for (playerID, clients) in connections {
             for (clientID, sessions) in clients {
                 for (sessionID, websocket) in sessions {
@@ -279,7 +279,7 @@ actor WebSocketTransport: GameTransport {
     
     private func sendEvent(_ event: GameEvent, to websocket: WebSocket) async {
         let message = TransportMessage.event(
-            realmID: "",  // 會在發送時設定
+            landID: "",  // 會在發送時設定
             event: event
         )
         await websocket.send(JSONEncoder().encode(message))
@@ -307,7 +307,7 @@ actor WebSocketTransport: GameTransport {
 
 ### 服務注入
 
-服務實作可以在 Transport 層注入，而不是在 Realm 定義中：
+服務實作可以在 Transport 層注入，而不是在 Land 定義中：
 
 ```swift
 // Server App 啟動時注入服務
@@ -317,7 +317,7 @@ func configure(_ app: Application) throws {
     let userService = HTTPUserService(baseURL: "https://api.example.com")
     
     // 創建服務容器
-    let services = RealmServices(
+    let services = LandServices(
         timelineService: timelineService,
         userService: userService
     )
@@ -329,8 +329,8 @@ func configure(_ app: Application) throws {
         services: services  // 注入服務
     )
     
-    // 註冊 Realm
-    transport.register(matchRealm)
+    // 註冊 Land
+    transport.register(matchLand)
 }
 ```
 

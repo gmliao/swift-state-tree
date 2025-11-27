@@ -163,12 +163,12 @@ export class StateTreeClient {
     }
     
     // 型別安全的 Action 呼叫
-    async action(realmID: string, action: GameAction): Promise<ActionResult> {
+    async action(landID: string, action: GameAction): Promise<ActionResult> {
         const requestID = crypto.randomUUID();
         const message: TransportMessage = {
             type: 'action',
             requestID,
-            realmID,
+            landID,
             action
         };
         
@@ -188,8 +188,8 @@ export class StateTreeClient {
     }
     
     // 便利方法：針對特定 Action 的型別安全方法
-    async join(realmID: string, playerID: PlayerID, name: string): Promise<JoinResponse> {
-        const response = await this.action(realmID, {
+    async join(landID: string, playerID: PlayerID, name: string): Promise<JoinResponse> {
+        const response = await this.action(landID, {
             type: 'join',
             playerID,
             name
@@ -202,12 +202,12 @@ export class StateTreeClient {
     }
     
     async attack(
-        realmID: string,
+        landID: string,
         attacker: PlayerID,
         target: PlayerID,
         damage: number
     ): Promise<AttackResponse> {
-        const response = await this.action(realmID, {
+        const response = await this.action(landID, {
             type: 'attack',
             attacker,
             target,
@@ -221,25 +221,25 @@ export class StateTreeClient {
     }
     
     // 發送 Event
-    sendEvent(realmID: string, event: ClientEvent): void {
+    sendEvent(landID: string, event: ClientEvent): void {
         const message: TransportMessage = {
             type: 'event',
-            realmID,
+            landID,
             event: { type: 'fromClient', clientEvent: event }
         };
         this.ws.send(JSON.stringify(message));
     }
     
     // 訂閱 Event
-    onEvent(realmID: string, handler: (event: ServerEvent) => void): () => void {
-        if (!this.eventHandlers.has(realmID)) {
-            this.eventHandlers.set(realmID, new Set());
+    onEvent(landID: string, handler: (event: ServerEvent) => void): () => void {
+        if (!this.eventHandlers.has(landID)) {
+            this.eventHandlers.set(landID, new Set());
         }
-        this.eventHandlers.get(realmID)!.add(handler);
+        this.eventHandlers.get(landID)!.add(handler);
         
         // 返回取消訂閱函數
         return () => {
-            this.eventHandlers.get(realmID)?.delete(handler);
+            this.eventHandlers.get(landID)?.delete(handler);
         };
     }
     
@@ -277,7 +277,7 @@ export class StateTreeClient {
                 break;
                 
             case 'event':
-                const handlers = this.eventHandlers.get(message.realmID);
+                const handlers = this.eventHandlers.get(message.landID);
                 if (handlers) {
                     if (message.event.type === 'fromServer') {
                         handlers.forEach(handler => handler(message.event.serverEvent));
@@ -375,7 +375,7 @@ Code-gen 架構必須滿足以下需求：
 │   Server Definition (Swift)             │
 │   - StateTree                           │
 │   - Action / Event                         │
-│   - Realm DSL                           │
+│   - Land DSL                           │
 └─────────────────────────────────────────┘
               ↓
 ┌─────────────────────────────────────────┐
@@ -388,7 +388,7 @@ Code-gen 架構必須滿足以下需求：
 ┌─────────────────────────────────────────┐
 │   JSON Schema (中間格式)                │
 │   - 語言無關的型別定義                  │
-│   - Realm / Action / Event 定義            │
+│   - Land / Action / Event 定義            │
 │   - 可版本化、可驗證                    │
 └─────────────────────────────────────────┘
               ↓
@@ -470,7 +470,7 @@ struct PropertyInfo {
     "sourceVersion": "6.0",
     "extractorVersion": "1.0.0"
   },
-  "realms": [
+  "lands": [
     {
       "id": "game-room",
       "stateTree": {
@@ -687,7 +687,7 @@ struct PropertyInfo {
       "kind": "struct",
       "properties": [
         {
-          "name": "realmID",
+          "name": "landID",
           "type": "String"
         },
         {
@@ -866,13 +866,13 @@ struct StateTreeExtractor {
                 sourceLanguage: "swift",
                 sourceVersion: "6.0"
             ),
-            realms: [],
+            lands: [],
             types: [:]
         )
         
         // 3. 提取 StateTree 定義
         let stateTrees = try extractStateTrees(from: ast)
-        schema.realms = try extractRealms(from: ast, stateTrees: stateTrees)
+        schema.lands = try extractLands(from: ast, stateTrees: stateTrees)
         
         // 4. 提取型別定義
         schema.types = try extractTypes(from: ast)
@@ -900,7 +900,7 @@ import * as path from 'path';
 interface Schema {
     version: string;
     metadata: Metadata;
-    realms: Realm[];
+    lands: Land[];
     types: Record<string, TypeInfo>;
 }
 
@@ -919,7 +919,7 @@ class TypeScriptGenerator {
         );
         
         // 3. 生成客戶端 SDK
-        const clientSDK = this.generateClientSDK(schema.realms);
+        const clientSDK = this.generateClientSDK(schema.lands);
         fs.writeFileSync(
             path.join(outputPath, 'client.ts'),
             clientSDK
@@ -967,7 +967,7 @@ class TypeScriptGenerator {
         return lines.join('\n');
     }
     
-    private generateClientSDK(realms: Realm[]): string {
+    private generateClientSDK(lands: Land[]): string {
         // 生成客戶端 SDK 程式碼
         // （見前面的完整範例）
         return `// Generated Client SDK...`;
@@ -1081,7 +1081,7 @@ class KotlinGenerator : CodeGenerator {
         
         // 2. 生成 Kotlin 程式碼
         val typeDefinitions = generateTypes(schema.types)
-        val clientSDK = generateClientSDK(schema.realms)
+        val clientSDK = generateClientSDK(schema.lands)
         
         // 3. 返回生成的檔案
         return GeneratedCode(
@@ -1300,6 +1300,6 @@ node ./tools/openapi-converter/index.js \
 
 - **[DESIGN_CORE.md](./DESIGN_CORE.md)**：StateTree 核心概念
 - **[DESIGN_COMMUNICATION.md](./DESIGN_COMMUNICATION.md)**：Action 與 Event 通訊模式
-- **[DESIGN_REALM_DSL.md](./DESIGN_REALM_DSL.md)**：Realm DSL 定義
+- **[DESIGN_REALM_DSL.md](./DESIGN_REALM_DSL.md)**：Land DSL 定義
 - **[APP_APPLICATION.md](./APP_APPLICATION.md)**：跨平台實現範例
 

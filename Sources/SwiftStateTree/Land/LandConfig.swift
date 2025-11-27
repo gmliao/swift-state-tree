@@ -1,23 +1,23 @@
-// Sources/SwiftStateTree/Realm/RealmConfig.swift
+// Sources/SwiftStateTree/Land/LandConfig.swift
 
 import Foundation
 
-// MARK: - Realm Configuration
+// MARK: - Land Configuration
 
-/// Realm configuration structure
+/// Land configuration structure
 /// 
-/// Contains configuration options for realm lifecycle, tick interval, and player limits.
+/// Contains configuration options for land lifecycle, tick interval, and player limits.
 /// Network layer details (baseURL, webSocketURL) are handled at the Transport layer,
-/// not in StateTree/Realm layer.
-public struct RealmConfig: Sendable {
-    /// Maximum number of players allowed in the realm
+/// not in StateTree/Land layer.
+public struct LandConfig: Sendable {
+    /// Maximum number of players allowed in the land
     public var maxPlayers: Int?
     
     /// Tick interval for periodic updates (Tick-based mode)
-    /// If `nil`, the realm operates in Event-driven mode (no automatic ticks)
+    /// If `nil`, the land operates in Event-driven mode (no automatic ticks)
     public var tickInterval: Duration?
     
-    /// Idle timeout duration before realm cleanup
+    /// Idle timeout duration before land cleanup
     public var idleTimeout: Duration?
     
     public init(
@@ -48,13 +48,13 @@ public struct RealmConfig: Sendable {
 
 // MARK: - Config DSL Components
 
-/// Config builder for Realm DSL
+/// Config builder for Land DSL
 /// 
-/// Used within Realm DSL to configure realm settings.
+/// Used within Land DSL to configure land settings.
 /// 
 /// Example:
 /// ```swift
-/// Realm("match-3", using: GameStateTree.self) {
+/// Land("match-3", using: GameStateTree.self) {
 ///     Config {
 ///         MaxPlayers(4)
 ///         Tick(every: .milliseconds(100))
@@ -64,8 +64,8 @@ public struct RealmConfig: Sendable {
 /// ```
 @resultBuilder
 public enum ConfigBuilder {
-    public static func buildBlock(_ components: ConfigComponent...) -> RealmConfig {
-        var config = RealmConfig()
+    public static func buildBlock(_ components: ConfigComponent...) -> LandConfig {
+        var config = LandConfig()
         for component in components {
             component.apply(to: &config)
         }
@@ -75,7 +75,7 @@ public enum ConfigBuilder {
 
 /// Protocol for config components
 public protocol ConfigComponent: Sendable {
-    func apply(to config: inout RealmConfig)
+    func apply(to config: inout LandConfig)
 }
 
 /// MaxPlayers configuration component
@@ -86,7 +86,7 @@ public struct MaxPlayers: ConfigComponent {
         self.value = value
     }
     
-    public func apply(to config: inout RealmConfig) {
+    public func apply(to config: inout LandConfig) {
         config.setMaxPlayers(value)
     }
 }
@@ -99,7 +99,7 @@ public struct Tick: ConfigComponent {
         self.interval = interval
     }
     
-    public func apply(to config: inout RealmConfig) {
+    public func apply(to config: inout LandConfig) {
         config.setTickInterval(interval)
     }
 }
@@ -112,12 +112,12 @@ public struct IdleTimeout: ConfigComponent {
         self.duration = duration
     }
     
-    public func apply(to config: inout RealmConfig) {
+    public func apply(to config: inout LandConfig) {
         config.setIdleTimeout(duration)
     }
 }
 
-/// Config function for Realm DSL
+/// Config function for Land DSL
 /// 
 /// Creates a configuration block using ConfigBuilder.
 /// 
@@ -129,7 +129,7 @@ public struct IdleTimeout: ConfigComponent {
 ///     IdleTimeout(.seconds(60))
 /// }
 /// ```
-public func Config(@ConfigBuilder _ content: () -> RealmConfig) -> RealmConfig {
+public func Config(@ConfigBuilder _ content: () -> LandConfig) -> LandConfig {
     content()
 }
 

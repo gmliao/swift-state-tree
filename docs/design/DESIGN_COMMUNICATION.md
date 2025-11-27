@@ -27,7 +27,7 @@
 ```swift
 // Client 發起 Action
 let result = try await client.action(.join(playerID: id, name: "Alice"))
-// result: JoinResponse { success: Bool, realmID: String, state: StateSnapshot? }
+// result: JoinResponse { success: Bool, landID: String, state: StateSnapshot? }
 
 // Server 處理 Action
 func handle(_ action: GameAction, from player: PlayerID) async -> ActionResult {
@@ -35,7 +35,7 @@ func handle(_ action: GameAction, from player: PlayerID) async -> ActionResult {
     case .join(let id, let name):
         state.players[id] = PlayerState(...)
         let snapshot = syncEngine.snapshot(for: id, from: state)
-        return .success(JoinResponse(realmID: realmID, state: snapshot))
+        return .success(JoinResponse(landID: landID, state: snapshot))
     }
 }
 ```
@@ -79,7 +79,7 @@ Action Response 可以選擇性包含狀態快照，用於特殊場景：
 case .join(let id, let name):
     state.players[id] = PlayerState(...)
     let snapshot = syncEngine.snapshot(for: id, from: state)
-    return .success(JoinResponse(realmID: realmID, state: snapshot))  // 包含狀態
+    return .success(JoinResponse(landID: landID, state: snapshot))  // 包含狀態
 
 // 抽卡：需要立即知道抽到的卡
 case .drawCard(let id):
@@ -111,7 +111,7 @@ case .attack(let attacker, let target, let damage):
 
 - **統一傳輸層**：所有通訊都透過 WebSocket，不需要混合 HTTP 和 WebSocket
 - **訊息格式**：使用統一的 `TransportMessage` 格式來區分 Action 和 Event
-- **路由機制**：透過 `realmID` 路由到對應的 Realm，在 Transport 層處理
+- **路由機制**：透過 `landID` 路由到對應的 Land，在 Transport 層處理
 
 ### 統一的傳輸訊息格式
 
@@ -119,19 +119,19 @@ case .attack(let attacker, let target, let damage):
 // 統一的傳輸訊息格式（透過 WebSocket 傳輸）
 enum TransportMessage: Codable {
     // Action 請求（Client -> Server）
-    case action(requestID: String, realmID: String, action: GameAction)
+    case action(requestID: String, landID: String, action: GameAction)
     
     // Action 回應（Server -> Client）
     case actionResponse(requestID: String, response: ActionResult)
     
     // Event（雙向）
-    case event(realmID: String, event: GameEvent)
+    case event(landID: String, event: GameEvent)
 }
 
 // Client 發送 Action
 let message = TransportMessage.action(
     requestID: UUID().uuidString,
-    realmID: "match-3",
+    landID: "match-3",
     action: .join(playerID: id, name: "Alice")
 )
 await websocket.send(message)
@@ -145,7 +145,7 @@ await websocket.send(response)
 
 // Server 推送 Event
 let event = TransportMessage.event(
-    realmID: "match-3",
+    landID: "match-3",
     event: .fromServer(.stateUpdate(snapshot))
 )
 await websocket.send(event)
@@ -153,34 +153,34 @@ await websocket.send(event)
 
 ### 路由機制
 
-**設計決策**：所有 Realm 共用統一的 WebSocket 路由，透過訊息中的 `realmID` 進行路由
+**設計決策**：所有 Land 共用統一的 WebSocket 路由，透過訊息中的 `landID` 進行路由
 
 **優勢**：
-- **簡化配置**：不需要為每個 realm 配置不同的路由
+- **簡化配置**：不需要為每個 land 配置不同的路由
 - **客戶端更簡單**：只需要連接到一個 WebSocket endpoint
-- **更靈活**：可以動態加入新的 realm，不需要修改路由配置
+- **更靈活**：可以動態加入新的 land，不需要修改路由配置
 - **符合微服務架構**：單一入口點
 
-路由在 Transport 層處理，而不是在 Realm 定義中：
+路由在 Transport 層處理，而不是在 Land 定義中：
 
 ```swift
 // ✅ 推薦：統一 WebSocket 路由
 func configure(_ app: Application) throws {
-    // 1. 定義多個 Realm（不包含網路細節）
-    let matchRealm = Realm("match-3", using: GameStateTree.self) { ... }
-    let gameRealm = Realm("game-room", using: GameRoomStateTree.self) { ... }
-    let lobbyRealm = Realm("lobby", using: LobbyStateTree.self) { ... }
+    // 1. 定義多個 Land（不包含網路細節）
+    let matchLand = Land("match-3", using: GameStateTree.self) { ... }
+    let gameLand = Land("game-room", using: GameRoomStateTree.self) { ... }
+    let lobbyLand = Land("lobby", using: LobbyStateTree.self) { ... }
     
     // 2. 設定 Transport（不需要 routing 配置）
     let transport = WebSocketTransport(
         baseURL: "wss://api.example.com"
-        // 不需要 routing 配置，因為訊息中已包含 realmID
+        // 不需要 routing 配置，因為訊息中已包含 landID
     )
     
-    // 3. 註冊所有 Realm
-    await transport.register(matchRealm)
-    await transport.register(gameRealm)
-    await transport.register(lobbyRealm)
+    // 3. 註冊所有 Land
+    await transport.register(matchLand)
+    await transport.register(gameLand)
+    await transport.register(lobbyLand)
     
     // 4. 設定統一的 WebSocket 路由（三層識別）
     app.webSocket("ws", ":playerID", ":clientID") { req, ws in
@@ -194,8 +194,8 @@ func configure(_ app: Application) throws {
         let clientID = ClientID(clientIDRaw)  // 應用端提供
         let sessionID = SessionID(UUID().uuidString)  // Server 自動生成
         
-        // 所有 realm 共用同一個 WebSocket 連接
-        // realmID 在訊息中指定（TransportMessage 包含 realmID）
+        // 所有 land 共用同一個 WebSocket 連接
+        // landID 在訊息中指定（TransportMessage 包含 landID）
         await transport.handleConnection(
             playerID: playerID,
             clientID: clientID,
@@ -213,37 +213,37 @@ func configure(_ app: Application) throws {
 let clientID = generateOrGetClientID()  // 應用端生成
 let ws = await connect("wss://api.example.com/ws/player-123/\(clientID)")
 
-// Client 發送訊息時指定 realmID
+// Client 發送訊息時指定 landID
 let message = TransportMessage.action(
     requestID: UUID().uuidString,
-    realmID: "match-3",  // 在訊息中指定 realm
+    landID: "match-3",  // 在訊息中指定 land
     action: .join(playerID: id, name: "Alice")
 )
 await ws.send(message)
 
-// Transport 層根據訊息中的 realmID 路由
-// handleMessage 中：realmActors[realmID] 找到對應的 RealmActor
+// Transport 層根據訊息中的 landID 路由
+// handleMessage 中：landActors[landID] 找到對應的 LandActor
 ```
 
 **設計要點**：
-1. **訊息層級路由**：`realmID` 在 `TransportMessage` 中，而非 URL 路徑
-2. **Transport 層處理**：根據 `realmID` 查找對應的 `RealmActor`
+1. **訊息層級路由**：`landID` 在 `TransportMessage` 中，而非 URL 路徑
+2. **Transport 層處理**：根據 `landID` 查找對應的 `LandActor`
 3. **三層識別**：`playerID`（帳號）+ `clientID`（裝置）+ `sessionID`（會話）
 4. **多連接支援**：同一個 `playerID` 可以有多個 `clientID`（多裝置），同一個 `clientID` 可以有多個 `sessionID`（多標籤頁）
-5. **動態加入**：新 realm 只需註冊，不需要修改路由配置
-6. **WebSocket 不暴露**：StateTree/Realm 層不知道 WebSocket 的存在，透過 RealmContext 抽象
+5. **動態加入**：新 land 只需註冊，不需要修改路由配置
+6. **WebSocket 不暴露**：StateTree/Land 層不知道 WebSocket 的存在，透過 LandContext 抽象
 
 **可選：分離路由**（特殊場景）
 
-如果需要，仍可為特定 realm 使用獨立路由（例如隔離或效能考量），但統一路由是推薦的預設方式。
+如果需要，仍可為特定 land 使用獨立路由（例如隔離或效能考量），但統一路由是推薦的預設方式。
 
 ## Event 處理範圍
 
-**設計決策**：採用 **選項 C（Realm DSL 中定義）**
+**設計決策**：採用 **選項 C（Land DSL 中定義）**
 
 - `AllowedClientEvents` **只限制 Client->Server 的 Event**（`ClientEvent`）
 - **Server->Client 的 Event 不受限制**（`ServerEvent`，因為是 Server 自己控制的）
-- 在 Realm DSL 中使用 `AllowedClientEvents` 定義允許的 `ClientEvent`
+- 在 Land DSL 中使用 `AllowedClientEvents` 定義允許的 `ClientEvent`
 
 ### ClientEvent 分類
 

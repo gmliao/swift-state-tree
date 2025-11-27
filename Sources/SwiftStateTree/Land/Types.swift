@@ -1,4 +1,4 @@
-// Sources/SwiftStateTree/Realm/Types.swift
+// Sources/SwiftStateTree/Land/Types.swift
 
 import Foundation
 
@@ -34,7 +34,7 @@ public struct SessionID: Hashable, Codable, Sendable, CustomStringConvertible {
 
 /// Event delivery target for sending events to specific recipients
 public enum EventTarget: Sendable {
-    /// Send to all players in the realm
+    /// Send to all players in the land
     case all
     /// Send to all connections for a specific playerID (all devices/tabs)
     case player(PlayerID)
@@ -59,17 +59,17 @@ public enum ActionResultData: Codable, Sendable {
     case joinResult(JoinResponse)
     case hand([Card])
     case card(Card)
-    case realmInfo(RealmInfo)
+    case landInfo(LandInfo)
     case empty
 }
 
-/// Join response containing realm ID and optional state snapshot for late join
+/// Join response containing land ID and optional state snapshot for late join
 public struct JoinResponse: Codable, Sendable {
-    public let realmID: String
+    public let landID: String
     public let state: StateSnapshot?
     
-    public init(realmID: String, state: StateSnapshot? = nil) {
-        self.realmID = realmID
+    public init(landID: String, state: StateSnapshot? = nil) {
+        self.landID = landID
         self.state = state
     }
 }
@@ -77,13 +77,13 @@ public struct JoinResponse: Codable, Sendable {
 /// Placeholder types for Action result data
 /// These are example types - users should define their own types based on their domain
 
-/// Realm information response
-public struct RealmInfo: Codable, Sendable {
-    public let realmID: String
+/// Land information response
+public struct LandInfo: Codable, Sendable {
+    public let landID: String
     public let playerCount: Int
     
-    public init(realmID: String, playerCount: Int) {
-        self.realmID = realmID
+    public init(landID: String, playerCount: Int) {
+        self.landID = landID
         self.playerCount = playerCount
     }
 }
@@ -125,7 +125,7 @@ public enum GameEvent: Sendable {
 
 /// Protocol for client events (Client -> Server)
 /// 
-/// Client events need to be explicitly allowed in Realm DSL using `AllowedClientEvents`.
+/// Client events need to be explicitly allowed in Land DSL using `AllowedClientEvents`.
 /// Users should define concrete enum or struct types conforming to this protocol.
 /// 
 /// Example:
@@ -151,13 +151,13 @@ public protocol ClientEvent: Codable, Sendable {}
 /// ```
 public protocol ServerEvent: Codable, Sendable {}
 
-// MARK: - Realm Services
+// MARK: - Land Services
 
 /// Service abstraction structure (does not depend on HTTP)
 /// 
-/// Services are injected at the Transport layer and accessed through RealmContext.
-/// This allows Realm DSL to use services without knowing transport details.
-public struct RealmServices: Sendable {
+/// Services are injected at the Transport layer and accessed through LandContext.
+/// This allows Land DSL to use services without knowing transport details.
+public struct LandServices: Sendable {
     /// Timeline service (optional)
     public let timelineService: TimelineService?
     /// User service (optional)

@@ -18,7 +18,7 @@
        state.hands[id] = HandState(ownerID: id, cards: [])
        let snapshot = syncEngine.snapshot(for: id, from: state)
        await ctx.sendEvent(.stateUpdate(snapshot), to: .all)
-       return .success(.joinResult(JoinResponse(realmID: ctx.realmID, state: snapshot)))
+       return .success(.joinResult(JoinResponse(landID: ctx.landID, state: snapshot)))
    ```
 
 3. **Client A 收到 Action Response**：
@@ -107,7 +107,7 @@
        let snapshot = syncEngine.snapshot(for: id, from: state)
        await ctx.sendEvent(.stateUpdate(snapshot), to: .all)
        // Response 包含完整狀態，Client C 可以立即同步
-       return .success(.joinResult(JoinResponse(realmID: ctx.realmID, state: snapshot)))
+       return .success(.joinResult(JoinResponse(landID: ctx.landID, state: snapshot)))
    ```
 
 3. **Client C 收到 Response**：
@@ -162,21 +162,21 @@ struct PlayerViewState {
 
 ## 命名說明
 
-### Realm vs App vs Feature
+### Land vs App vs Feature
 
-**核心概念**：`Realm`（領域/土地）是 StateTree 生長的地方
+**核心概念**：`Land`（領域/土地）是 StateTree 生長的地方
 
-- **Realm**：核心名稱，通用於所有場景
-- **App**：`Realm` 的別名，適合 App 場景
-- **Feature**：`Realm` 的別名，適合功能模組場景
+- **Land**：核心名稱，通用於所有場景
+- **App**：`Land` 的別名，適合 App 場景
+- **Feature**：`Land` 的別名，適合功能模組場景
 
 **使用建議**：
-- 遊戲場景：使用 `Realm`
-- App 場景：使用 `App` 或 `Realm`
-- 功能模組：使用 `Feature` 或 `Realm`
-- 通用場景：使用 `Realm`
+- 遊戲場景：使用 `Land`
+- App 場景：使用 `App` 或 `Land`
+- 功能模組：使用 `Feature` 或 `Land`
+- 通用場景：使用 `Land`
 
-**內部實作**：所有別名都指向 `Realm`，實作完全相同。
+**內部實作**：所有別名都指向 `Land`，實作完全相同。
 
 ## 相關文檔
 
@@ -236,11 +236,11 @@ struct GameStateTree: StateTreeProtocol {
 }
 ```
 
-### 2. Realm 定義（混合模式）
+### 2. Land 定義（混合模式）
 
 ```swift
-// 使用 Realm（核心名稱）
-let realm = Realm("match-3", using: GameStateTree.self) {
+// 使用 Land（核心名稱）
+let land = Land("match-3", using: GameStateTree.self) {
     Config {
         MaxPlayers(4)
         Tick(every: .milliseconds(100))
@@ -332,9 +332,9 @@ await ctx.sendEvent(.systemMessage("xxx"), to: .player(playerID))
 
 ## Event 範圍限制設計決策
 
-### 設計決策：採用選項 C（Realm DSL 中定義）
+### 設計決策：採用選項 C（Land DSL 中定義）
 
-**決定**：使用 Realm DSL 中的 `AllowedClientEvents` 來限制 Client->Server Event。
+**決定**：使用 Land DSL 中的 `AllowedClientEvents` 來限制 Client->Server Event。
 
 **重要限制**：
 - `AllowedClientEvents` **只限制 Client->Server 的 Event**（`ClientEvent`）
@@ -371,13 +371,13 @@ enum GameEvent: Codable {
 }
 ```
 
-### Realm DSL 定義（選項 C）
+### Land DSL 定義（選項 C）
 
 **範例：採用選項 C**
 
 ```swift
-// Realm DSL 中定義允許的 Client Event（只限制 Client->Server）
-let matchRealm = Realm("match-3", using: GameStateTree.self) {
+// Land DSL 中定義允許的 Client Event（只限制 Client->Server）
+let matchLand = Land("match-3", using: GameStateTree.self) {
     Config {
         MaxPlayers(4)
         Tick(every: .milliseconds(100))
@@ -428,9 +428,9 @@ let matchRealm = Realm("match-3", using: GameStateTree.self) {
 
 ```swift
 // DSL 實作：AllowedClientEvents 只接受 ClientEvent
-protocol RealmNode {}
+protocol LandNode {}
 
-struct AllowedClientEventsNode: RealmNode {
+struct AllowedClientEventsNode: LandNode {
     let allowedClientEvents: Set<ClientEventType>
     
     init(@AllowedClientEventsBuilder _ builder: () -> Set<ClientEventType>) {
@@ -451,7 +451,7 @@ enum AllowedClientEventsBuilder {
 }
 
 // Runtime 驗證（只驗證 ClientEvent）
-actor RealmActor {
+actor LandActor {
     private let allowedClientEvents: Set<ClientEventType>
     
     func handleEvent(_ event: GameEvent, from player: PlayerID) async throws {
@@ -459,7 +459,7 @@ actor RealmActor {
         case .fromClient(let clientEvent):
             // 檢查 ClientEvent 是否在允許列表中
             guard allowedClientEvents.contains(ClientEventType(type(of: clientEvent))) else {
-                throw EventError.notAllowed("ClientEvent type not allowed in this realm")
+                throw EventError.notAllowed("ClientEvent type not allowed in this land")
             }
             // 處理允許的 ClientEvent
             await processClientEvent(clientEvent, from: player)
@@ -482,7 +482,7 @@ actor RealmActor {
 2. **不同領域可以有不同的 ClientEvent 規則**
    ```swift
    // 卡牌遊戲領域
-   let cardRealm = Realm("card-game", using: CardGameStateTree.self) {
+   let cardLand = Land("card-game", using: CardGameStateTree.self) {
        AllowedClientEvents {
            ClientEvent.playerReady
            ClientEvent.playCard
@@ -491,7 +491,7 @@ actor RealmActor {
    }
    
    // 即時對戰領域
-   let battleRealm = Realm("realtime-battle", using: BattleStateTree.self) {
+   let battleLand = Land("realtime-battle", using: BattleStateTree.self) {
        AllowedClientEvents {
            ClientEvent.playerReady
            ClientEvent.movementUpdate
@@ -546,9 +546,9 @@ actor RealmActor {
 - `SyncPolicy`：同步策略定義
 - `StateTreeProtocol`：StateTree 協議
 - **Schema Generator**：從 StateTree 定義生成 JSON Schema
-- `RealmDefinition`：Realm DSL 定義（不含網路細節）
-- `RealmContext`：RealmContext 定義
-- `RealmActor`：RealmActor 定義（不含 Transport）
+- `LandDefinition`：Land DSL 定義（不含網路細節）
+- `LandContext`：LandContext 定義
+- `LandActor`：LandActor 定義（不含 Transport）
 - `SyncEngine`：同步引擎（不含 Transport）
 
 **不包含**：
@@ -599,7 +599,7 @@ SwiftStateTreeMacros (macros)
 - `TransportMessage`：傳輸訊息格式
 - 連接管理（三層識別：playerID、clientID、sessionID）
 - 訊息序列化/反序列化
-- 路由機制（realmID 路由）
+- 路由機制（landID 路由）
 
 **依賴**：`core`
 
@@ -610,7 +610,7 @@ SwiftStateTreeMacros (macros)
 **包含**：
 - Server 應用啟動設定
 - WebSocket 路由配置
-- Realm 註冊和配置
+- Land 註冊和配置
 - Transport 初始化
 - 服務注入（Services）
 - 應用端類別定義（例如：Vapor、Kestrel 等）
@@ -625,8 +625,8 @@ func configure(_ app: Application) throws {
     // 設定 Transport
     let transport = WebSocketTransport(...)
     
-    // 註冊 Realm
-    await transport.register(gameRealm)
+    // 註冊 Land
+    await transport.register(gameLand)
     
     // 設定 WebSocket 路由
     app.webSocket("ws", ":playerID", ":clientID") { req, ws in
@@ -672,10 +672,10 @@ core (swift-state-tree)
 
 | 模組 | 簡寫 | 職責 | 包含內容 | 不包含 |
 |------|------|------|---------|--------|
-| `swift-state-tree` | **core** | 核心定義 | StateTree、@Sync、@Internal、Realm DSL、SyncEngine、Schema Gen | WebSocket、HTTP、Transport |
+| `swift-state-tree` | **core** | 核心定義 | StateTree、@Sync、@Internal、Land DSL、SyncEngine、Schema Gen | WebSocket、HTTP、Transport |
 | `swift-state-tree-macros` | **macros** | Macro 實作 | @StateTreeBuilder macro 實作 | 執行時程式碼、StateTree 型別定義 |
 | `swift-state-tree-transport` | **transport** | 網路傳輸 | Transport 協議、WebSocket 實作、連接管理 | Server 啟動、應用框架 |
-| `swift-state-tree-server-app` | **app** | Server 應用 | WebSocket 路由、Realm 註冊、應用啟動 | 核心邏輯、Transport 實作 |
+| `swift-state-tree-server-app` | **app** | Server 應用 | WebSocket 路由、Land 註冊、應用啟動 | 核心邏輯、Transport 實作 |
 | `swift-state-tree-codegen` | **codegen** | Schema 生成 | Type Extractor、Schema Generator、CLI | 運行時邏輯 |
 
 #### 跨平台版本
@@ -704,8 +704,8 @@ swift-state-tree/
 │   ├── SwiftStateTree/              # core：核心模組
 │   │   ├── StateTree/               # StateTree 定義（StateNode、StateTreeEngine）
 │   │   ├── Sync/                    # @Sync 同步規則（SyncPolicy、SyncEngine）
-│   │   ├── Realm/                   # Realm DSL（RealmDefinition、RealmContext）
-│   │   ├── Runtime/                 # RealmActor（不含 Transport）
+│   │   ├── Land/                   # Land DSL（LandDefinition、LandContext）
+│   │   ├── Runtime/                 # LandActor（不含 Transport）
 │   │   └── SchemaGen/              # Schema 生成器（JSON Schema）
 │   │
 │   ├── SwiftStateTreeTransport/     # transport：網路傳輸模組

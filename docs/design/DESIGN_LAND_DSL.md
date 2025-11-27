@@ -1,9 +1,9 @@
-# Realm DSL：領域宣告、Action 處理、Event 處理
+# Land DSL：領域宣告、Action 處理、Event 處理
 
-> 本文檔說明 SwiftStateTree 的 Realm DSL 設計
+> 本文檔說明 SwiftStateTree 的 Land DSL 設計
 
 
-## 核心概念：StateTree vs Realm
+## 核心概念：StateTree vs Land
 
 ### 🌳 StateTree：世界本體
 
@@ -18,9 +18,9 @@
 
 ---
 
-### 🎡 Realm：這棵樹實際被開成「一個樂園」的地方
+### 🎡 Land：這棵樹實際被開成「一個樂園」的地方
 
-`Realm` 是將 `StateTree` 實例化為一個可運行的「樂園實體」的配置。它的職責分為三個核心部分：
+`Land` 是將 `StateTree` 實例化為一個可運行的「樂園實體」的配置。它的職責分為三個核心部分：
 
 #### 1️⃣ 誰可以進來看這棵樹？（大門規則）
 
@@ -28,7 +28,7 @@
 - 是否允許加入？人數上限？
 - 沒進來 = 根本看不到這棵樹的任何東西（連 Sync 都不開始）
 
-👉 `Realm` 管的是 **「這個樂園的大門怎麼管」**。
+👉 `Land` 管的是 **「這個樂園的大門怎麼管」**。
 
 #### 2️⃣ 我提供哪些功能讓你操作這棵樹？（遊戲規則）
 
@@ -41,11 +41,11 @@
 - `Tick` 的時候要怎麼推進樹
 - 允許哪些 ClientEvent
 
-👉 `Realm` 決定 **「你在這個樂園裡可以玩哪些設施、按哪些按鈕，按了會怎麼改世界」**。
+👉 `Land` 決定 **「你在這個樂園裡可以玩哪些設施、按哪些按鈕，按了會怎麼改世界」**。
 
 #### 3️⃣ 這個樂園的營業時間是什麼？（營業時間 / 生命週期管理）
 
-**核心概念**：Realm 的**生命週期管理（Lifetime Management）**，定義這個「樂園實體」何時開始、如何運行、何時結束。
+**核心概念**：Land 的**生命週期管理（Lifetime Management）**，定義這個「樂園實體」何時開始、如何運行、何時結束。
 
 **包含的決策**：
 
@@ -73,7 +73,7 @@
 - **白板協作**：第一人進入時建立，最後一人離開後保留 1 小時，然後自動銷毀
 - **單人遊戲**：玩家登入時建立，登出時存檔並銷毀
 
-👉 這就是 **「樂園的營業時間、關門規則、是否每天清場」**，也就是 **Realm 的完整生命週期管理**。
+👉 這就是 **「樂園的營業時間、關門規則、是否每天清場」**，也就是 **Land 的完整生命週期管理**。
 
 ---
 
@@ -81,14 +81,14 @@
 
 > **StateTree = 樹長什麼樣（世界地圖 & 狀態），欄位級同步規則。**
 >
-> **Realm = 這棵樹被開成一個「樂園實體」之後的：**
+> **Land = 這棵樹被開成一個「樂園實體」之後的：**
 > - **大門規則**（誰能進、多少人）
 > - **遊戲規則**（能做什麼、怎麼操作）
 > - **營業時間**（生命週期管理：何時建立、如何運行、何時關閉、是否存檔）
 
 ---
 
-## Realm DSL：領域宣告語法
+## Land DSL：領域宣告語法
 
 ### 使用場景
 
@@ -101,14 +101,14 @@
 
 ### 語義化別名
 
-- **App 場景**：`App` 是 `Realm` 的別名
-- **功能模組**：`Feature` 是 `Realm` 的別名
+- **App 場景**：`App` 是 `Land` 的別名
+- **功能模組**：`Feature` 是 `Land` 的別名
 
 ### 語法示例（現有版本）
 
 ```swift
-// 使用 Realm（核心名稱）
-let matchRealm = Realm("match-3", using: GameStateTree.self) {
+// 使用 Land（核心名稱）
+let matchLand = Land("match-3", using: GameStateTree.self) {
     // 1️⃣ 大門規則：誰可以進來（整合在 Config 中）
     Config {
         MaxPlayers(4)
@@ -146,7 +146,7 @@ let matchRealm = Realm("match-3", using: GameStateTree.self) {
             
             // Late join：返回完整快照
             let snapshot = syncEngine.snapshot(for: id, from: state)
-            return .success(.joinResult(JoinResponse(realmID: ctx.realmID, state: snapshot)))
+            return .success(.joinResult(JoinResponse(landID: ctx.landID, state: snapshot)))
             
         case .attack(let attacker, let target, let damage):
             state.players[target]?.hpCurrent -= damage
@@ -186,8 +186,8 @@ let matchRealm = Realm("match-3", using: GameStateTree.self) {
 未來的 DSL 語法可能會更明確地分組為三個職責：
 
 ```swift
-@Realm(RoomState.self)
-struct RoomRealm {
+@Land(RoomState.self)
+struct RoomLand {
     // 1️⃣ 大門規則：誰可以進來看這棵樹
     AccessControl {
         AllowPublic()              // 或 OnlyVIP(), OnlyTeacher(), ...
@@ -244,37 +244,37 @@ struct RoomRealm {
 
 **注意**：目前版本的 DSL 已經涵蓋了三個核心職責，但語法較為扁平化。未來版本可能會採用更明確的分組結構，使三個職責更加清晰。
 
-### Realm DSL 元件（設計概念）
+### Land DSL 元件（設計概念）
 
 ```swift
-public protocol RealmNode {}
+public protocol LandNode {}
 
-public struct ConfigNode: RealmNode {
+public struct ConfigNode: LandNode {
     public var maxPlayers: Int?
     public var tickInterval: Duration?
     public var idleTimeout: Duration?
     // 注意：baseURL 和 webSocketURL 已移除
-    // 網路層細節應該在 Transport 層處理，而不是在 StateTree/Realm 層
+    // 網路層細節應該在 Transport 層處理，而不是在 StateTree/Land 層
 }
 
 // Action 節點：支援統一 Action 型別或特定 Action case
-public struct ActionHandlerNode<C>: RealmNode {
-    public let handler: (inout StateTree, C, RealmContext) async -> ActionResult
+public struct ActionHandlerNode<C>: LandNode {
+    public let handler: (inout StateTree, C, LandContext) async -> ActionResult
 }
 
 // 特定 Action case 的節點（用於簡單的 Action）
-public struct SpecificActionHandlerNode<C>: RealmNode {
-    public let handler: (inout StateTree, C, RealmContext) async -> ActionResult
+public struct SpecificActionHandlerNode<C>: LandNode {
+    public let handler: (inout StateTree, C, LandContext) async -> ActionResult
 }
 
 // Event 節點：支援統一 Event 型別或特定 ClientEvent case
-public struct OnEventNode<E>: RealmNode {
-    public let handler: (inout StateTree, E, RealmContext) async -> Void
+public struct OnEventNode<E>: LandNode {
+    public let handler: (inout StateTree, E, LandContext) async -> Void
 }
 
 // 特定 ClientEvent case 的節點（用於簡單的 Event）
-public struct OnSpecificEventNode<E>: RealmNode {
-    public let handler: (inout StateTree, E, RealmContext) async -> Void
+public struct OnSpecificEventNode<E>: LandNode {
+    public let handler: (inout StateTree, E, LandContext) async -> Void
 }
 ```
 
@@ -282,34 +282,34 @@ public struct OnSpecificEventNode<E>: RealmNode {
 
 ```swift
 @resultBuilder
-public enum RealmDSL {
-    public static func buildBlock(_ components: RealmNode...) -> [RealmNode] {
+public enum LandDSL {
+    public static func buildBlock(_ components: LandNode...) -> [LandNode] {
         components
     }
 }
 
-public struct RealmDefinition<State> {
+public struct LandDefinition<State> {
     public let id: String
-    public let nodes: [RealmNode]
+    public let nodes: [LandNode]
 }
 
-// 核心函數：Realm
-public func Realm<State>(
+// 核心函數：Land
+public func Land<State>(
     _ id: String,
     using stateType: State.Type,
-    @RealmDSL _ content: () -> [RealmNode]
-) -> RealmDefinition<State> {
-    RealmDefinition(id: id, nodes: content())
+    @LandDSL _ content: () -> [LandNode]
+) -> LandDefinition<State> {
+    LandDefinition(id: id, nodes: content())
 }
 
 // 語義化別名
-public typealias App<State> = Realm<State>
-public typealias Feature<State> = Realm<State>
+public typealias App<State> = Land<State>
+public typealias Feature<State> = Land<State>
 ```
 
 ### 三個核心職責與 DSL 元件的對應
 
-將 Realm 的三個核心職責映射到現有的 DSL 元件：
+將 Land 的三個核心職責映射到現有的 DSL 元件：
 
 | 核心職責 | 對應的 DSL 元件 | 說明 |
 |---------|---------------|------|
@@ -338,7 +338,7 @@ enum GameAction: Codable {
     // 查詢操作
     case getPlayerHand(PlayerID)
     case canAttack(PlayerID, target: PlayerID)
-    case getRealmInfo
+    case getLandInfo
     
     // 需要結果的狀態修改
     case join(playerID: PlayerID, name: String)
@@ -355,12 +355,12 @@ enum ActionResultData: Codable {
     case joinResult(JoinResponse)
     case hand([Card])
     case card(Card)
-    case realmInfo(RealmInfo)
+    case landInfo(LandInfo)
     case empty
 }
 
 struct JoinResponse: Codable {
-    let realmID: String
+    let landID: String
     let state: StateSnapshot?  // 可選：用於 late join
 }
 ```
@@ -372,8 +372,8 @@ struct JoinResponse: Codable {
 #### 方式 1：針對特定 Action 的獨立 Handler（推薦用於簡單邏輯）
 
 ```swift
-// 使用 Realm（核心名稱）
-let matchRealm = Realm("match-3", using: GameStateTree.self) {
+// 使用 Land（核心名稱）
+let matchLand = Land("match-3", using: GameStateTree.self) {
     Config { ... }
     
     // 簡單的查詢 Action：用獨立 handler
@@ -400,7 +400,7 @@ let matchRealm = Realm("match-3", using: GameStateTree.self) {
 #### 方式 2：統一的 Action Handler（適合複雜邏輯或需要共享邏輯）
 
 ```swift
-let matchRealm = Realm("match-3", using: GameStateTree.self) {
+let matchLand = Land("match-3", using: GameStateTree.self) {
     Config { ... }
     
     // 複雜邏輯用統一 handler
@@ -413,7 +413,7 @@ let matchRealm = Realm("match-3", using: GameStateTree.self) {
 private func handleAction(
     _ state: inout GameStateTree,
     _ action: GameAction,
-    _ ctx: RealmContext
+    _ ctx: LandContext
 ) async -> ActionResult {
     switch action {
     case .getPlayerHand(let id):
@@ -431,13 +431,13 @@ private func handleJoin(
     _ state: inout GameStateTree,
     _ id: PlayerID,
     _ name: String,
-    _ ctx: RealmContext
+    _ ctx: LandContext
 ) async -> ActionResult {
     state.players[id] = PlayerState(name: name, hpCurrent: 100, hpMax: 100)
     state.hands[id] = HandState(ownerID: id, cards: [])
     let snapshot = syncEngine.snapshot(for: id, from: state)
     await ctx.sendEvent(.fromServer(.stateUpdate(snapshot)), to: .all)
-    return .success(.joinResult(JoinResponse(realmID: ctx.realmID, state: snapshot)))
+    return .success(.joinResult(JoinResponse(landID: ctx.landID, state: snapshot)))
 }
 ```
 
@@ -446,7 +446,7 @@ private func handleJoin(
 結合兩種方式的優點：
 
 ```swift
-let matchRealm = Realm("match-3", using: GameStateTree.self) {
+let matchLand = Land("match-3", using: GameStateTree.self) {
     Config { ... }
     
     // 簡單的查詢 Action：用獨立 handler
@@ -527,8 +527,8 @@ enum GameEvent: Codable {
 #### 方式 1：針對特定 ClientEvent 的獨立 Handler（推薦用於簡單邏輯）
 
 ```swift
-// 使用 Realm（核心名稱）
-let matchRealm = Realm("match-3", using: GameStateTree.self) {
+// 使用 Land（核心名稱）
+let matchLand = Land("match-3", using: GameStateTree.self) {
     Config { ... }
     
     AllowedClientEvents {
@@ -560,7 +560,7 @@ let matchRealm = Realm("match-3", using: GameStateTree.self) {
 #### 方式 2：統一的 GameEvent Handler（適合複雜邏輯或需要共享邏輯）
 
 ```swift
-let matchRealm = Realm("match-3", using: GameStateTree.self) {
+let matchLand = Land("match-3", using: GameStateTree.self) {
     Config { ... }
     
     AllowedClientEvents {
@@ -587,7 +587,7 @@ let matchRealm = Realm("match-3", using: GameStateTree.self) {
 private func handleClientEvent(
     _ state: inout GameStateTree,
     _ event: ClientEvent,
-    _ ctx: RealmContext
+    _ ctx: LandContext
 ) async {
     switch event {
     case .playerReady(let id):
@@ -606,7 +606,7 @@ private func handleClientEvent(
 private func handlePlayerReady(
     _ state: inout GameStateTree,
     _ id: PlayerID,
-    _ ctx: RealmContext
+    _ ctx: LandContext
 ) async {
     state.readyPlayers.insert(id)
     await ctx.sendEvent(.fromServer(.gameEvent(.playerReady(id))), to: .all)
@@ -622,7 +622,7 @@ private func handlePlayerReady(
 結合兩種方式的優點：
 
 ```swift
-let matchRealm = Realm("match-3", using: GameStateTree.self) {
+let matchLand = Land("match-3", using: GameStateTree.self) {
     Config { ... }
     
     AllowedClientEvents {
@@ -676,44 +676,44 @@ await ctx.sendEvent(.fromServer(.systemMessage("Private message")), to: .player(
 // 不需要在 AllowedClientEvents 中定義這些 ServerEvent
 ```
 
-### RealmContext（提供 sendEvent / service / random 等）
+### LandContext（提供 sendEvent / service / random 等）
 
-**設計原則**：RealmContext **不應該**知道 Transport 的存在，WebSocket 細節不應該暴露到 StateTree 層。
+**設計原則**：LandContext **不應該**知道 Transport 的存在，WebSocket 細節不應該暴露到 StateTree 層。
 
-**設計模式**：RealmContext 採用 **Request-scoped Context** 模式，類似 NestJS 的 Request Context。
+**設計模式**：LandContext 採用 **Request-scoped Context** 模式，類似 NestJS 的 Request Context。
 
 #### 類似 NestJS Request Context
 
-RealmContext 的設計概念類似 NestJS 的 Request Context：
+LandContext 的設計概念類似 NestJS 的 Request Context：
 
-| 特性 | NestJS Request Context | StateTree RealmContext |
+| 特性 | NestJS Request Context | StateTree LandContext |
 |------|----------------------|----------------------|
 | **建立時機** | 每個 HTTP 請求 | 每個 Action/Event 請求 |
 | **生命週期** | 請求開始 → 請求結束 | 請求開始 → 請求結束 |
-| **包含資訊** | user、params、headers、ip 等 | playerID、clientID、sessionID、realmID 等 |
+| **包含資訊** | user、params、headers、ip 等 | playerID、clientID、sessionID、landID 等 |
 | **傳遞方式** | Dependency Injection | 作為參數傳遞給 handler |
 | **釋放時機** | 請求處理完成後 | 請求處理完成後 |
 
 **關鍵點**：
-- ✅ **請求級別**：每次 Action/Event 請求建立一個新的 RealmContext
+- ✅ **請求級別**：每次 Action/Event 請求建立一個新的 LandContext
 - ✅ **不持久化**：處理完成後釋放，不保留在記憶體中
 - ✅ **資訊集中**：請求相關資訊（playerID、clientID、sessionID）集中在 context 中
 - ✅ **請求隔離**：每個請求有獨立的 context，不會互相干擾
 
 ```swift
-// ✅ 正確：RealmContext 不包含 Transport
-public struct RealmContext {
-    public let realmID: String
+// ✅ 正確：LandContext 不包含 Transport
+public struct LandContext {
+    public let landID: String
     public let playerID: PlayerID      // 帳號識別（用戶身份）
     public let clientID: ClientID      // 裝置識別（客戶端實例，應用端提供）
     public let sessionID: SessionID    // 會話識別（動態生成，用於追蹤）
-    public let services: RealmServices  // 服務抽象，不依賴 HTTP
+    public let services: LandServices  // 服務抽象，不依賴 HTTP
     
     // ❌ 移除：public let transport: GameTransport
     
     // ✅ 推送 Event（透過閉包委派，不暴露 Transport）
     public func sendEvent(_ event: GameEvent, to target: EventTarget) async {
-        // 實作在 Runtime 層（RealmActor），不暴露 Transport 細節
+        // 實作在 Runtime 層（LandActor），不暴露 Transport 細節
         await sendEventHandler(event, target)
     }
     
@@ -733,15 +733,15 @@ public struct RealmContext {
     private let syncHandler: () async -> Void
     
     internal init(
-        realmID: String,
+        landID: String,
         playerID: PlayerID,
         clientID: ClientID,
         sessionID: SessionID,
-        services: RealmServices,
+        services: LandServices,
         sendEventHandler: @escaping (GameEvent, EventTarget) async -> Void,
         syncHandler: @escaping () async -> Void
     ) {
-        self.realmID = realmID
+        self.landID = landID
         self.playerID = playerID
         self.clientID = clientID
         self.sessionID = sessionID
@@ -776,36 +776,36 @@ struct SessionID: Hashable, Codable {
 }
 ```
 
-#### RealmContext 的生命週期
+#### LandContext 的生命週期
 
-**重要**：RealmContext 不是「每個玩家有一個」，而是「每次請求建立一個」。
+**重要**：LandContext 不是「每個玩家有一個」，而是「每次請求建立一個」。
 
 ```swift
 // 範例：Alice 發送多個 Action
 
 // 請求 1：Alice 發送 join Action
-// ├─ 建立 RealmContext #1
+// ├─ 建立 LandContext #1
 // │  ├─ playerID: "alice-123"
 // │  ├─ clientID: "device-mobile-001"
 // │  └─ sessionID: "session-001"
-// └─ 處理完成後，RealmContext #1 被釋放
+// └─ 處理完成後，LandContext #1 被釋放
 
 // 請求 2：Alice 發送 attack Action
-// ├─ 建立 RealmContext #2
+// ├─ 建立 LandContext #2
 // │  ├─ playerID: "alice-123"      (相同)
 // │  ├─ clientID: "device-mobile-001" (相同)
 // │  └─ sessionID: "session-001"    (相同)
-// └─ 處理完成後，RealmContext #2 被釋放
+// └─ 處理完成後，LandContext #2 被釋放
 ```
 
 **設計要點**：
-1. **請求級別**：每次 Action/Event 請求建立一個新的 RealmContext
+1. **請求級別**：每次 Action/Event 請求建立一個新的 LandContext
 2. **不持久化**：處理完成後釋放，不保留在記憶體中
 3. **輕量級**：只包含該請求需要的資訊
 4. **請求隔離**：每個請求有獨立的 context，不會互相干擾
 
 // 服務抽象（不依賴 HTTP 細節）
-public struct RealmServices {
+public struct LandServices {
     public let timelineService: TimelineService?
     public let userService: UserService?
     // ... 其他服務（可選）
@@ -817,7 +817,7 @@ protocol TimelineService {
 }
 
 // 實作時可以選擇 HTTP、gRPC、或其他方式
-// 這些實作細節在 Transport 層注入，不在 Realm 定義中
+// 這些實作細節在 Transport 層注入，不在 Land 定義中
 struct HTTPTimelineService: TimelineService {
     let baseURL: String
     func fetch(page: Int) async throws -> [Post] {
@@ -832,7 +832,7 @@ struct HTTPTimelineService: TimelineService {
 
 ```swift
 // ✅ 推薦：OnTick 只調用函數，邏輯拆分到獨立函數
-let gameRealm = Realm("game-room", using: GameStateTree.self) {
+let gameLand = Land("game-room", using: GameStateTree.self) {
     Config {
         Tick(every: .milliseconds(100))
     }
@@ -848,7 +848,7 @@ let gameRealm = Realm("game-room", using: GameStateTree.self) {
 // ✅ 複雜邏輯拆分成獨立函數
 private func handleTick(
     _ state: inout GameStateTree,
-    _ ctx: RealmContext
+    _ ctx: LandContext
 ) async {
     // 1. AI 自動行動
     await handleAIActions(&state, ctx)
@@ -864,7 +864,7 @@ private func handleTick(
 
 private func handleAIActions(
     _ state: inout GameStateTree,
-    _ ctx: RealmContext
+    _ ctx: LandContext
 ) async {
     for (playerID, player) in state.players {
         guard player.isAI, player.hpCurrent > 0 else { continue }

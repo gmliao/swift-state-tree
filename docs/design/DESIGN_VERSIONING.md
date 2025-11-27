@@ -127,32 +127,32 @@ func loadSnapshot(from json: [String: Any], schemaVersion: Int) -> GameStateRoot
 
 ---
 
-## Realm 不需要有版本的概念
+## Land 不需要有版本的概念
 
 ### 設計重點
 
-Realm 的設計重點：
+Land 的設計重點：
 
 - 內部永遠操作「最新版本的 Swift struct」
 - 不需要知道「這房間以前是 v1 還 v2」
-- 版本處理是在 *Realm 邊界* 完成
+- 版本處理是在 *Land 邊界* 完成
 
 ### 在「載入 snapshot」邊界做
 
 1. 從 DB 拿到舊 JSON + 舊版本（例如 v1）
 2. Persistence / migration layer 自動補齊缺欄位
-3. 回傳「**完整 v 最新版**」的 StateTree 給 Realm
+3. 回傳「**完整 v 最新版**」的 StateTree 給 Land
 
-Realm 內部完全不需要版本邏輯。
+Land 內部完全不需要版本邏輯。
 
-> **Realm only knows the latest schema.  
-> Version compatibility is handled outside Realm.**
+> **Land only knows the latest schema.  
+> Version compatibility is handled outside Land.**
 
 ### 架構示意
 
 ```
 ┌─────────────────────────────────────┐
-│  Realm (RealmActor)                 │
+│  Land (LandActor)                 │
 │  - 只操作最新版本的 StateTree       │
 │  - 不知道版本概念                   │
 └─────────────────────────────────────┘
@@ -211,9 +211,9 @@ Realm 內部完全不需要版本邏輯。
 ### 範例：PostgreSQL Schema
 
 ```sql
-CREATE TABLE realm_snapshots (
+CREATE TABLE land_snapshots (
     id UUID PRIMARY KEY,
-    realm_id VARCHAR(255) NOT NULL,
+    land_id VARCHAR(255) NOT NULL,
     snapshot JSONB NOT NULL,
     version INTEGER NOT NULL,  -- 記錄 snapshot 的版本
     created_at TIMESTAMP DEFAULT NOW()
@@ -272,7 +272,7 @@ Persistence layer 需要：
 
 1. 讀取 snapshot 時檢查版本
 2. 自動補齊缺欄位（使用 default 值）
-3. 確保回傳給 Realm 的 StateTree 永遠是最新完整版本
+3. 確保回傳給 Land 的 StateTree 永遠是最新完整版本
 
 ---
 
@@ -324,7 +324,7 @@ let state = persistence.loadSnapshot(from: oldSnapshot, version: 1)
 // state.round = 5 (正常 decode)
 // state.weather = .sunny (自動補 default)
 
-// Realm 收到的是完整 v2 版本的 StateTree
+// Land 收到的是完整 v2 版本的 StateTree
 ```
 
 ---
@@ -337,7 +337,7 @@ let state = persistence.loadSnapshot(from: oldSnapshot, version: 1)
 > - ✅ 自動補齊缺欄位
 > - ✅ 舊資料相容
 > - ✅ 無痛 schema evolution
-> - ✅ Realm 無版本感
+> - ✅ Land 無版本感
 > 
 > **工程師與 CI/CD 都能因此變得更輕鬆。**
 

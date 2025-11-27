@@ -1,4 +1,4 @@
-# Runtime 結構：RealmActor + SyncEngine
+# Runtime 結構：LandActor + SyncEngine
 
 > 本文檔說明 SwiftStateTree 的運行時結構
 > 
@@ -6,24 +6,24 @@
 > - [DESIGN_SYNC_FIRSTSYNC.md](./DESIGN_SYNC_FIRSTSYNC.md) - 首次同步機制（First Sync）
 
 
-## Runtime 大致結構：RealmActor + SyncEngine
+## Runtime 大致結構：LandActor + SyncEngine
 
-### RealmActor（概念）
+### LandActor（概念）
 
-**設計原則**：RealmActor 負責處理 Transport 細節，但不暴露給 StateTree 層。
+**設計原則**：LandActor 負責處理 Transport 細節，但不暴露給 StateTree 層。
 
 ```swift
-actor RealmActor {
+actor LandActor {
     private var state: StateTree
-    private let def: RealmDefinition<StateTree>
+    private let def: LandDefinition<StateTree>
     private let syncEngine: SyncEngine
     private let transport: GameTransport  // ✅ Transport 只在 Runtime 層
-    private let services: RealmServices
+    private let services: LandServices
     
     init(
-        definition: RealmDefinition<StateTree>,
+        definition: LandDefinition<StateTree>,
         transport: GameTransport,
-        services: RealmServices
+        services: LandServices
     ) {
         self.def = definition
         self.state = StateTree()
@@ -32,15 +32,15 @@ actor RealmActor {
         self.services = services
     }
     
-    // ✅ 建立 RealmContext（不暴露 Transport）
-    // 注意：每次請求都建立一個新的 RealmContext（類似 NestJS Request Context）
+    // ✅ 建立 LandContext（不暴露 Transport）
+    // 注意：每次請求都建立一個新的 LandContext（類似 NestJS Request Context）
     private func createContext(
         playerID: PlayerID,
         clientID: ClientID,
         sessionID: SessionID
-    ) -> RealmContext {
-        RealmContext(
-            realmID: def.id,
+    ) -> LandContext {
+        LandContext(
+            landID: def.id,
             playerID: playerID,
             clientID: clientID,
             sessionID: sessionID,
@@ -55,8 +55,8 @@ actor RealmActor {
         )
     }
     
-    // 注意：RealmContext 是請求級別的，不是玩家級別的
-    // - 每次 Action/Event 請求建立一個新的 RealmContext
+    // 注意：LandContext 是請求級別的，不是玩家級別的
+    // - 每次 Action/Event 請求建立一個新的 LandContext
     // - 處理完成後釋放，不持久化
     // - 類似 NestJS 的 Request Context 設計模式
     
@@ -85,7 +85,7 @@ actor RealmActor {
         clientID: ClientID,
         sessionID: SessionID
     ) async -> ActionResult {
-        // 建立 RealmContext（不暴露 Transport）
+        // 建立 LandContext（不暴露 Transport）
         let ctx = createContext(
             playerID: playerID,
             clientID: clientID,
@@ -106,7 +106,7 @@ actor RealmActor {
         clientID: ClientID,
         sessionID: SessionID
     ) async {
-        // 建立 RealmContext（不暴露 Transport）
+        // 建立 LandContext（不暴露 Transport）
         let ctx = createContext(
             playerID: playerID,
             clientID: clientID,
@@ -165,7 +165,7 @@ actor RealmActor {
             from: state,
             pendingPaths: pendingChanges.isEmpty ? nil : pendingChanges,
             transport: transport,
-            realmID: def.id
+            landID: def.id
         )
     }
     
@@ -346,7 +346,7 @@ extension SyncEngine {
         from tree: StateTree,
         pendingPaths: Set<String>?,
         transport: GameTransport,
-        realmID: String
+        landID: String
     ) async {
         // 1. 取得所有需要同步的玩家
         let players = extractAllPlayers(from: tree)
@@ -360,7 +360,7 @@ extension SyncEngine {
             )
             
             // 3. 發送更新
-            await sendUpdate(update, to: playerID, transport: transport, realmID: realmID)
+            await sendUpdate(update, to: playerID, transport: transport, landID: landID)
         }
     }
     

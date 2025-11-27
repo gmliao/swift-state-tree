@@ -32,7 +32,7 @@ let package = Package(
             ],
             path: "Sources/SwiftStateTree",
             exclude: [
-                "Realm/README.md",
+                "Land/README.md",
                 "Runtime/README.md",
                 "SchemaGen/README.md"
             ]

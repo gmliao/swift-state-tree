@@ -20,7 +20,7 @@
 
 ```
 Client 發 Action
-  → Server RealmActor 處理
+  → Server LandActor 處理
   → 更新 StateTree（可選，更新根部的 StateNode）
   → 返回 Response（可包含狀態快照，用於 late join）
   → Client 收到 Response
@@ -31,7 +31,7 @@ Client 發 Action
 ```
 Client -> Server Event:
   Client 發 Event
-    → Server RealmActor 處理
+    → Server LandActor 處理
     → 可選：更新 StateTree（更新根部的 StateNode）/ 觸發邏輯
 
 Server -> Client Event:
@@ -585,7 +585,7 @@ Swift Macro 的架構要求將 Macro 定義和實作分離：
 
 ---
 
-## StateTree vs Realm：設計理念對比
+## StateTree vs Land：設計理念對比
 
 ### 最終結論
 
@@ -607,7 +607,7 @@ struct GameStateRootNode: StateNodeProtocol {
 }
 ```
 
-**Realm → Builder DSL（Result Builder DSL）**
+**Land → Builder DSL（Result Builder DSL）**
 
 - **描述「這個領域要做什麼」**：定義行為邏輯
 - **Action handler**：處理客戶端請求
@@ -617,7 +617,7 @@ struct GameStateRootNode: StateNodeProtocol {
 - **適合作行為邏輯**：定義領域的行為和處理流程
 
 ```swift
-let matchRealm = Realm("match-3", using: GameStateTree.self) {
+let matchLand = Land("match-3", using: GameStateTree.self) {
     Config {
         MaxPlayers(4)
         Tick(every: .milliseconds(100))
@@ -636,7 +636,7 @@ let matchRealm = Realm("match-3", using: GameStateTree.self) {
 ```
 
 **設計原則**：
-- ✅ **資料與行為分離**：StateTree 定義資料，Realm 定義行為
-- ✅ **語法風格一致**：StateTree 用 Property Wrapper，Realm 用 Result Builder
-- ✅ **職責清晰**：StateTree 是「什麼」，Realm 是「如何做」
+- ✅ **資料與行為分離**：StateTree 定義資料，Land 定義行為
+- ✅ **語法風格一致**：StateTree 用 Property Wrapper，Land 用 Result Builder
+- ✅ **職責清晰**：StateTree 是「什麼」，Land 是「如何做」
 

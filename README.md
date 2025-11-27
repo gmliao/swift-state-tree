@@ -1,6 +1,6 @@
 # SwiftStateTree
 
-一個基於 Swift 的狀態樹（State Tree）遊戲引擎庫，採用 **單一 StateTree + 同步規則 + Realm DSL** 的設計理念。
+一個基於 Swift 的狀態樹（State Tree）遊戲引擎庫，採用 **單一 StateTree + 同步規則 + Land DSL** 的設計理念。
 
 ## 📋 目錄
 
@@ -21,7 +21,7 @@ SwiftStateTree 採用以下核心設計：
 
 - 🌳 **單一權威狀態樹**：用一棵 `StateTree` 表示整個領域的狀態
 - 🔄 **同步規則 DSL**：使用 `@Sync` 規則控制伺服器要把哪些資料同步給誰
-- 🏛️ **Realm DSL**：定義領域、Action/Event 處理、Tick 設定
+- 🏛️ **Land DSL**：定義領域、Action/Event 處理、Tick 設定
 - 💻 **UI 計算交給客戶端**：伺服器只送「邏輯資料」，UI 渲染由客戶端處理
 
 ### 模組架構
@@ -100,8 +100,8 @@ SwiftStateTree/
 │   ├── SwiftStateTree/              # core：核心模組
 │   │   ├── StateTree/               # StateTree 定義（StateNode、StateTreeEngine）
 │   │   ├── Sync/                    # @Sync 同步規則（SyncPolicy、SyncEngine）
-│   │   ├── Realm/                   # Realm DSL（RealmDefinition、RealmContext）
-│   │   ├── Runtime/                 # RealmActor（不含 Transport）
+│   │   ├── Land/                   # Land DSL（LandDefinition、LandContext）
+│   │   ├── Runtime/                 # LandActor（不含 Transport）
 │   │   └── SchemaGen/              # Schema 生成器（JSON Schema）
 │   │
 │   ├── SwiftStateTreeTransport/     # transport：網路傳輸模組
@@ -219,10 +219,10 @@ struct PlayerState: Codable {
 - 需要高效能轉換的使用者定義型別
 - 複雜的巢狀結構（多層級）
 
-### Realm DSL：領域定義
+### Land DSL：領域定義
 
 ```swift
-let matchRealm = Realm("match-3", using: GameStateTree.self) {
+let matchLand = Land("match-3", using: GameStateTree.self) {
     Config {
         MaxPlayers(4)
         Tick(every: .milliseconds(100))
@@ -258,12 +258,12 @@ public struct GameStateTree {
 }
 ```
 
-### 定義 Realm
+### 定義 Land
 
-使用 Realm DSL 定義領域邏輯：
+使用 Land DSL 定義領域邏輯：
 
 ```swift
-let gameRealm = Realm("game-room", using: GameStateTree.self) {
+let gameLand = Land("game-room", using: GameStateTree.self) {
     Config {
         MaxPlayers(4)
         Tick(every: .milliseconds(100))
@@ -289,14 +289,14 @@ let gameRealm = Realm("game-room", using: GameStateTree.self) {
 ### 通訊模式
 - **[DESIGN_COMMUNICATION.md](./docs/design/DESIGN_COMMUNICATION.md)**：Action 與 Event 通訊模式、WebSocket 傳輸、路由機制
 
-### Realm DSL
-- **[DESIGN_REALM_DSL.md](./docs/design/DESIGN_REALM_DSL.md)**：領域宣告語法、Action 處理、Event 處理、RealmContext
+### Land DSL
+- **[DESIGN_REALM_DSL.md](./docs/design/DESIGN_REALM_DSL.md)**：領域宣告語法、Action 處理、Event 處理、LandContext
 
 ### Transport 層
 - **[DESIGN_TRANSPORT.md](./docs/design/DESIGN_TRANSPORT.md)**：網路傳輸抽象、Transport 協議、服務注入
 
 ### Runtime 結構
-- **[DESIGN_RUNTIME.md](./docs/design/DESIGN_RUNTIME.md)**：RealmActor、SyncEngine 的運行時結構
+- **[DESIGN_RUNTIME.md](./docs/design/DESIGN_RUNTIME.md)**：LandActor、SyncEngine 的運行時結構
 
 ### 客戶端 SDK 與程式碼生成
 - **[DESIGN_CLIENT_SDK.md](./docs/guides/DESIGN_CLIENT_SDK.md)**：客戶端 SDK 自動生成、Code-gen 架構設計、TypeScript 支援
@@ -316,7 +316,7 @@ let gameRealm = Realm("game-room", using: GameStateTree.self) {
 
 **開發參考**：
 - 定義 StateTree：參考 [DESIGN_CORE.md](./docs/design/DESIGN_CORE.md) 的「StateTree：狀態樹結構」和「同步規則 DSL」
-- 定義 Realm：參考 [DESIGN_REALM_DSL.md](./docs/design/DESIGN_REALM_DSL.md)
+- 定義 Land：參考 [DESIGN_REALM_DSL.md](./docs/design/DESIGN_REALM_DSL.md)
 - 設定 Transport：參考 [DESIGN_TRANSPORT.md](./docs/design/DESIGN_TRANSPORT.md)
 - 生成客戶端 SDK：參考 [DESIGN_CLIENT_SDK.md](./docs/guides/DESIGN_CLIENT_SDK.md)
 - 語法速查：參考 [DESIGN_EXAMPLES.md](./docs/design/DESIGN_EXAMPLES.md) 的「語法速查表」

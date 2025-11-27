@@ -20,7 +20,7 @@
 
 ### Phase 3: Swift 值型別時代 (The Value-Type Era)
 StateTree 的誕生，是為了徹底解決「多執行緒同步」與「狀態管理」的衝突。
-*   **核心哲學**：**狀態 (State) 與 行為 (Realm) 分離**。
+*   **核心哲學**：**狀態 (State) 與 行為 (Land) 分離**。
 *   **特徵**：
     *   **Immutable Snapshots**：利用 Swift 的 Value Type (Struct) 特性，每個 Tick 結束就是一張唯讀快照。同步執行緒可以慢慢算 Diff，完全不用鎖。
     *   **單向資料流**：Client 不再直接改變數，而是發送 Action (意圖)。只有 Server 能修改 StateTree。
@@ -34,16 +34,16 @@ StateTree 的誕生，是為了徹底解決「多執行緒同步」與「狀態�
 flowchart LR
     Client((Client))
     
-    subgraph Server [Server / Realm Runner]
+    subgraph Server [Server / Land Runner]
         direction TB
         Action_Queue[Action Queue]
-        Realm[Realm (Logic / Write)]
+        Land[Land (Logic / Write)]
         StateTree[StateTree (Data / State)]
         Snapshot[Immutable Snapshot]
         SyncEngine[Sync Engine (Read Only)]
         
-        RPC_Queue -->|Apply Intent| Realm
-        Realm -->|Mutate| StateTree
+        RPC_Queue -->|Apply Intent| Land
+        Land -->|Mutate| StateTree
         StateTree -.->|Copy on Tick| Snapshot
         Snapshot -->|Input| SyncEngine
     end
@@ -174,7 +174,7 @@ public class ActorFramework {
 
 ---
 
-## 2️⃣ 新框架：StateTree + SyncPolicy + Realm + Action
+## 2️⃣ 新框架：StateTree + SyncPolicy + Land + Action
 
 ### 🌳 新概念對應
 
@@ -187,14 +187,14 @@ public class ActorFramework {
   * `.broadcast`、`.perPlayerSlice`、`.perRole`、`.serverOnly`…
   * 決定每個欄位在不同 client 視角下要怎麼被切／被隱藏
 
-* **Realm**
+* **Land**
   * 一個 StateTree 的**實體世界（樂園）**
   * 決定誰能進來、可以做什麼、Tick、Lifetime、持久化
   * server 在這裡 **唯一有權改 state**
 
 * **Action（Command 的進化版）**
   * client 發意圖：`move`, `attack`, `sendChat`…
-  * Realm 收到 → 改 StateTree → sync engine 自動算 diff
+  * Land 收到 → 改 StateTree → sync engine 自動算 diff
 
 * **Sync Engine**
   * 在每個 tick 後拿一份 StateTree snapshot
@@ -235,11 +235,11 @@ struct RoomState: StateTreeProtocol {
 
 ---
 
-#### Realm（取代 ActorFramework + Room 管理）
+#### Land（取代 ActorFramework + Room 管理）
 
 ```swift
-@Realm(RoomState.self)
-struct RoomRealm {
+@Land(RoomState.self)
+struct RoomLand {
     // 1. 誰可以進來這個世界
     AccessControl {
         AllowPublic()
@@ -283,7 +283,7 @@ struct RoomRealm {
 #### Phase A：單執行緒更新 StateTree（像舊的 game loop）
 
 ```swift
-actor RealmRunner {
+actor LandRunner {
     var state: RoomState
     var clients: [Client]
 
@@ -303,7 +303,7 @@ actor RealmRunner {
 #### Phase B：snapshot + 並行算「每個人的視角」
 
 ```swift
-extension RealmRunner {
+extension LandRunner {
     func syncAllClients() async {
         let snapshot = state   // RoomState 是 struct，這裡是值語意 copy
 
@@ -346,20 +346,20 @@ extension RealmRunner {
 
 ## 3️⃣ 綜合對照表（舊概念＋新概念＋多執行緒）
 
-### 《Actor / NetVar 世界 vs StateTree / Realm 世界》
+### 《Actor / NetVar 世界 vs StateTree / Land 世界》
 
-| 類別 | 舊世界：Actor / NetVar / Framework | 新世界：StateTree / SyncPolicy / Realm | 說明 |
+| 類別 | 舊世界：Actor / NetVar / Framework | 新世界：StateTree / SyncPolicy / Land | 說明 |
 | :--- | :--- | :--- | :--- |
 | **「狀態」的基本單位** | `Actor`：一個物件，裡面一堆 `NetVar` | `StateTree`：一組純 struct（`RoomState`, `PlayerState`） | Actor 變成單純資料模型 |
 | **欄位封裝** | `NetVar<T>`：Value + Ownership + DirtyFlag | `var foo: T` + `@Sync(...)` metadata | 欄位本身乾淨，metadata 負責同步策略 |
 | **欄位同步語意** | `ENetVarOwnership` 混合「誰能讀／寫／同步」 | `SyncPolicy`（`.broadcast`, `.perPlayerSlice`, `.perRole`, `.serverOnly`）只管「誰看得到」 | 寫入權利搬走，統一交給 server |
-| **權威寫入者** | Actor / NetVar 支援 owner write / share write → client 也可能改 | **只有 server（Realm）改 StateTree**，client 僅發 Action | 減少同步衝突、避免作弊 |
-| **操作（行為）** | `Actor.OnCommand(...)`、`Actor.Tick(...)`，行為綁在 Actor 類別上 | `Action("xxx") { state, action, ctx in ... }` + Realm 的 Tick block | 行為拆成 Action + Realm DSL，StateTree 保持資料模型 |
+| **權威寫入者** | Actor / NetVar 支援 owner write / share write → client 也可能改 | **只有 server（Land）改 StateTree**，client 僅發 Action | 減少同步衝突、避免作弊 |
+| **操作（行為）** | `Actor.OnCommand(...)`、`Actor.Tick(...)`，行為綁在 Actor 類別上 | `Action("xxx") { state, action, ctx in ... }` + Land 的 Tick block | 行為拆成 Action + Land DSL，StateTree 保持資料模型 |
 | **同步管線** | ActorFramework 掃所有 Actor.NetVar，判斷 IsDirty + Ownership，組成更新 Command | SyncEngine 走整棵 StateTree + SyncPolicy + ctx，算出每個 client 的 view，再 diff | 差異計算與可見度一體化 |
 | **客製視角** | `StateView` / 手動決定哪些 Actor / NetVar 要加進封包 | SyncPolicy per-field + 自動 per-connection filter（perPlayer/perRole 等） | 不再手動 add/remove node，改成宣告式 policy |
-| **房間／世界管理** | ActorFramework + Room 邏輯散在多處 | `Realm<RoomState>`：AccessControl / OnJoin / OnLeave / Action / Tick / Lifetime / Persist | Realm 正式變成「世界樂園容器」 |
+| **房間／世界管理** | ActorFramework + Room 邏輯散在多處 | `Land<RoomState>`：AccessControl / OnJoin / OnLeave / Action / Tick / Lifetime / Persist | Land 正式變成「世界樂園容器」 |
 | **事件／廣播** | `ActorEvent` + Framework 廣播給相關 Actor / client | 一部分用 StateTree 欄位（例如 `@Sync(.broadcast)` 的 `events` queue），或額外定義 event stream | 可直接投影成狀態的一部分 |
-| **多執行緒：更新** | 遊戲邏輯與同步邏輯都觸碰同一份 NetVar（Value + DirtyFlag），要鎖很醜 | Realm（可用 Swift actor）單執行緒更新 StateTree，這一階段不考慮同步 | 更新階段像傳統 game loop，簡單穩定 |
+| **多執行緒：更新** | 遊戲邏輯與同步邏輯都觸碰同一份 NetVar（Value + DirtyFlag），要鎖很醜 | Land（可用 Swift actor）單執行緒更新 StateTree，這一階段不考慮同步 | 更新階段像傳統 game loop，簡單穩定 |
 | **多執行緒：同步** | 同步程式也要改 NetVar 狀態（清 Dirty / Updated），很難安全平行化 | Tick 後拿一份 `RoomState` snapshot（struct 值），用多 Task/Thread 並行算各 client 的 view + diff，只讀、不改 snapshot | 自然形成「單寫入、多讀取」，非常適合並行化 |
 | **適用範圍** | 主要針對「線上遊戲伺服器」（高度客製） | 適用遊戲、教學平台、即時電商、協作白板、任何「多人共用狀態」場景 | 抽象層從「遊戲專用」提升到「通用狀態同步引擎」 |
-| **開發體驗** | 手寫 NetVar / Ownership / encode/decode / Command 分派 | Swift DSL：`@StateTreeBuilder` + `@Sync` + Realm DSL，型別安全、IDE 友善、結構清楚 | 更接近 SwiftUI / SwiftData 的開發模式 |
+| **開發體驗** | 手寫 NetVar / Ownership / encode/decode / Command 分派 | Swift DSL：`@StateTreeBuilder` + `@Sync` + Land DSL，型別安全、IDE 友善、結構清楚 | 更接近 SwiftUI / SwiftData 的開發模式 |

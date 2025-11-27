@@ -99,7 +99,7 @@ enum FeatureEvent: Codable {
 }
 
 // DSL 骨架：一條 happy path，必要時再補錯誤處理/同步策略
-let feature = Realm("feature-demo", using: FeatureState.self) {
+let feature = Land("feature-demo", using: FeatureState.self) {
     Action(FeatureAction.self) { state, action, ctx -> ActionResult in
         switch action {
         case .addItem(let name):

@@ -1,23 +1,23 @@
-// Sources/SwiftStateTree/Realm/RealmDSL.swift
+// Sources/SwiftStateTree/Land/LandDSL.swift
 
 import Foundation
 
-// MARK: - Realm Node Protocol
+// MARK: - Land Node Protocol
 
-/// Protocol for all Realm DSL nodes
+/// Protocol for all Land DSL nodes
 /// 
-/// All nodes in Realm DSL must conform to this protocol.
-public protocol RealmNode: Sendable {}
+/// All nodes in Land DSL must conform to this protocol.
+public protocol LandNode: Sendable {}
 
 // MARK: - Config Node
 
-/// Configuration node for Realm DSL
+/// Configuration node for Land DSL
 /// 
-/// Contains realm configuration settings such as max players, tick interval, and idle timeout.
-public struct ConfigNode: RealmNode {
-    public let config: RealmConfig
+/// Contains land configuration settings such as max players, tick interval, and idle timeout.
+public struct ConfigNode: LandNode {
+    public let config: LandConfig
     
-    public init(_ config: RealmConfig) {
+    public init(_ config: LandConfig) {
         self.config = config
     }
 }
@@ -39,10 +39,10 @@ public struct ConfigNode: RealmNode {
 ///     }
 /// }
 /// ```
-public struct ActionHandlerNode<State: StateNodeProtocol, Action: Codable & Sendable>: RealmNode {
-    public let handler: @Sendable (inout State, Action, RealmContext) async -> ActionResult
+public struct ActionHandlerNode<State: StateNodeProtocol, Action: Codable & Sendable>: LandNode {
+    public let handler: @Sendable (inout State, Action, LandContext) async -> ActionResult
     
-    public init(handler: @escaping @Sendable (inout State, Action, RealmContext) async -> ActionResult) {
+    public init(handler: @escaping @Sendable (inout State, Action, LandContext) async -> ActionResult) {
         self.handler = handler
     }
 }
@@ -50,8 +50,8 @@ public struct ActionHandlerNode<State: StateNodeProtocol, Action: Codable & Send
 /// Type-erased action handler node for runtime use
 /// 
 /// Note: This is an internal type used for runtime type erasure.
-/// The actual handler execution will be done at the RealmActor level with proper type information.
-internal struct AnyActionHandlerNode: RealmNode {
+/// The actual handler execution will be done at the LandActor level with proper type information.
+internal struct AnyActionHandlerNode: LandNode {
     let actionType: Any.Type
     
     init<State: StateNodeProtocol, Action: Codable & Sendable>(
@@ -69,14 +69,14 @@ internal struct AnyActionHandlerNode: RealmNode {
 /// This requires using a KeyPath or similar mechanism to extract the case.
 /// 
 /// Note: Due to Swift's limitations with enum case extraction, this node
-/// will need to be implemented at the RealmActor level with proper type information.
-public struct SpecificActionHandlerNode<State: StateNodeProtocol, ActionCase>: RealmNode {
-    public let handler: @Sendable (inout State, ActionCase, RealmContext) async -> ActionResult
+/// will need to be implemented at the LandActor level with proper type information.
+public struct SpecificActionHandlerNode<State: StateNodeProtocol, ActionCase>: LandNode {
+    public let handler: @Sendable (inout State, ActionCase, LandContext) async -> ActionResult
     public let actionType: Any.Type
     
     public init<Action: Codable & Sendable>(
         actionType: Action.Type,
-        handler: @escaping @Sendable (inout State, ActionCase, RealmContext) async -> ActionResult
+        handler: @escaping @Sendable (inout State, ActionCase, LandContext) async -> ActionResult
     ) {
         self.handler = handler
         self.actionType = actionType
@@ -100,10 +100,10 @@ public struct SpecificActionHandlerNode<State: StateNodeProtocol, ActionCase>: R
 ///     }
 /// }
 /// ```
-public struct OnEventNode<State: StateNodeProtocol, Event: Sendable>: RealmNode {
-    public let handler: @Sendable (inout State, Event, RealmContext) async -> Void
+public struct OnEventNode<State: StateNodeProtocol, Event: Sendable>: LandNode {
+    public let handler: @Sendable (inout State, Event, LandContext) async -> Void
     
-    public init(handler: @escaping @Sendable (inout State, Event, RealmContext) async -> Void) {
+    public init(handler: @escaping @Sendable (inout State, Event, LandContext) async -> Void) {
         self.handler = handler
     }
 }
@@ -113,14 +113,14 @@ public struct OnEventNode<State: StateNodeProtocol, Event: Sendable>: RealmNode 
 /// Used to handle a specific event case with a dedicated handler.
 /// 
 /// Note: Similar to SpecificActionHandlerNode, this requires proper type handling
-/// at the RealmActor level.
-public struct OnSpecificEventNode<State: StateNodeProtocol, EventCase>: RealmNode {
-    public let handler: @Sendable (inout State, EventCase, RealmContext) async -> Void
+/// at the LandActor level.
+public struct OnSpecificEventNode<State: StateNodeProtocol, EventCase>: LandNode {
+    public let handler: @Sendable (inout State, EventCase, LandContext) async -> Void
     public let eventType: Any.Type
     
     public init<Event: Sendable>(
         eventType: Event.Type,
-        handler: @escaping @Sendable (inout State, EventCase, RealmContext) async -> Void
+        handler: @escaping @Sendable (inout State, EventCase, LandContext) async -> Void
     ) {
         self.handler = handler
         self.eventType = eventType
@@ -131,7 +131,7 @@ public struct OnSpecificEventNode<State: StateNodeProtocol, EventCase>: RealmNod
 
 /// Node for specifying allowed client events
 /// 
-/// Used to restrict which client events are allowed in the realm.
+/// Used to restrict which client events are allowed in the land.
 /// Only Client->Server events are restricted; Server events are not restricted.
 /// 
 /// Example:
@@ -141,11 +141,11 @@ public struct OnSpecificEventNode<State: StateNodeProtocol, EventCase>: RealmNod
 ///     MyClientEvent.heartbeat
 /// }
 /// ```
-public struct AllowedClientEventsNode: RealmNode {
+public struct AllowedClientEventsNode: LandNode {
     /// Type information for allowed client event types
     /// 
     /// Note: Due to Swift's protocol limitations, we store type information
-    /// and check at runtime in the RealmActor.
+    /// and check at runtime in the LandActor.
     public let allowedEventTypes: [Any.Type]
     
     public init(allowedEventTypes: [Any.Type]) {
@@ -165,101 +165,101 @@ public struct AllowedClientEventsNode: RealmNode {
 ///     await handleTick(&state, ctx)
 /// }
 /// ```
-public struct OnTickNode<State: StateNodeProtocol>: RealmNode {
-    public let handler: @Sendable (inout State, RealmContext) async -> Void
+public struct OnTickNode<State: StateNodeProtocol>: LandNode {
+    public let handler: @Sendable (inout State, LandContext) async -> Void
     
-    public init(handler: @escaping @Sendable (inout State, RealmContext) async -> Void) {
+    public init(handler: @escaping @Sendable (inout State, LandContext) async -> Void) {
         self.handler = handler
     }
 }
 
-// MARK: - Realm DSL Builder
+// MARK: - Land DSL Builder
 
-/// Result builder for Realm DSL
+/// Result builder for Land DSL
 /// 
-/// Builds an array of RealmNode components from DSL syntax.
+/// Builds an array of LandNode components from DSL syntax.
 @resultBuilder
-public enum RealmDSL {
-    public static func buildBlock(_ components: RealmNode...) -> [RealmNode] {
+public enum LandDSL {
+    public static func buildBlock(_ components: LandNode...) -> [LandNode] {
         Array(components)
     }
     
-    public static func buildArray(_ components: [[RealmNode]]) -> [RealmNode] {
+    public static func buildArray(_ components: [[LandNode]]) -> [LandNode] {
         components.flatMap { $0 }
     }
     
-    public static func buildOptional(_ component: [RealmNode]?) -> [RealmNode] {
+    public static func buildOptional(_ component: [LandNode]?) -> [LandNode] {
         component ?? []
     }
     
-    public static func buildEither(first component: [RealmNode]) -> [RealmNode] {
+    public static func buildEither(first component: [LandNode]) -> [LandNode] {
         component
     }
     
-    public static func buildEither(second component: [RealmNode]) -> [RealmNode] {
+    public static func buildEither(second component: [LandNode]) -> [LandNode] {
         component
     }
 }
 
 /// Extension to allow Config directly in DSL
-extension RealmDSL {
-    /// Build block that accepts RealmConfig and converts it to ConfigNode
-    public static func buildBlock(_ config: RealmConfig) -> ConfigNode {
+extension LandDSL {
+    /// Build block that accepts LandConfig and converts it to ConfigNode
+    public static func buildBlock(_ config: LandConfig) -> ConfigNode {
         ConfigNode(config)
     }
     
     /// Build block that accepts multiple components including Config
-    public static func buildBlock(_ config: RealmConfig, _ components: RealmNode...) -> [RealmNode] {
+    public static func buildBlock(_ config: LandConfig, _ components: LandNode...) -> [LandNode] {
         [ConfigNode(config)] + components
     }
     
     /// Build block that accepts Config and other components
-    public static func buildBlock(_ component: RealmNode, _ config: RealmConfig, _ components: RealmNode...) -> [RealmNode] {
+    public static func buildBlock(_ component: LandNode, _ config: LandConfig, _ components: LandNode...) -> [LandNode] {
         [component, ConfigNode(config)] + components
     }
 }
 
-// MARK: - Realm Definition
+// MARK: - Land Definition
 
-/// Realm definition structure
+/// Land definition structure
 /// 
-/// Contains the realm ID, state type, and all configured nodes.
-public struct RealmDefinition<State: StateNodeProtocol>: Sendable {
-    /// Realm identifier
+/// Contains the land ID, state type, and all configured nodes.
+public struct LandDefinition<State: StateNodeProtocol>: Sendable {
+    /// Land identifier
     public let id: String
     
-    /// State type for this realm
+    /// State type for this land
     public let stateType: State.Type
     
     /// All configured nodes
-    public let nodes: [RealmNode]
+    public let nodes: [LandNode]
     
     /// Configuration extracted from nodes
-    public var config: RealmConfig {
+    public var config: LandConfig {
         for node in nodes {
             if let configNode = node as? ConfigNode {
                 return configNode.config
             }
         }
-        return RealmConfig()
+        return LandConfig()
     }
     
-    internal init(id: String, stateType: State.Type, nodes: [RealmNode]) {
+    internal init(id: String, stateType: State.Type, nodes: [LandNode]) {
         self.id = id
         self.stateType = stateType
         self.nodes = nodes
     }
 }
 
-// MARK: - Realm DSL Functions
+// MARK: - Land DSL Functions
 
-/// Create a Realm definition
+/// Create a Land definition
 /// 
-/// This is the main function for defining a Realm using DSL syntax.
+/// This is the main function for defining a Land using DSL syntax.
 /// 
 /// Example:
 /// ```swift
-/// let matchRealm = Realm("match-3", using: GameStateTree.self) {
+/// let matchLand = Land("match-3", using: GameStateTree.self) {
 ///     Config {
 ///         MaxPlayers(4)
 ///         Tick(every: .milliseconds(100))
@@ -276,21 +276,21 @@ public struct RealmDefinition<State: StateNodeProtocol>: Sendable {
 /// ```
 /// 
 /// - Parameters:
-///   - id: Realm identifier
-///   - stateType: State type for this realm (must conform to StateNodeProtocol)
+///   - id: Land identifier
+///   - stateType: State type for this land (must conform to StateNodeProtocol)
 ///   - content: DSL content block
-/// - Returns: RealmDefinition instance
-public func Realm<State: StateNodeProtocol>(
+/// - Returns: LandDefinition instance
+public func Land<State: StateNodeProtocol>(
     _ id: String,
     using stateType: State.Type,
-    @RealmDSL _ content: () -> [RealmNode]
-) -> RealmDefinition<State> {
-    RealmDefinition(id: id, stateType: stateType, nodes: content())
+    @LandDSL _ content: () -> [LandNode]
+) -> LandDefinition<State> {
+    LandDefinition(id: id, stateType: stateType, nodes: content())
 }
 
 // MARK: - Semantic Aliases
 
-// Note: Semantic aliases are defined after the Realm function to avoid forward reference issues
+// Note: Semantic aliases are defined after the Land function to avoid forward reference issues
 
 // MARK: - Action DSL Functions
 
@@ -311,7 +311,7 @@ public func Realm<State: StateNodeProtocol>(
 /// ```
 public func Action<State: StateNodeProtocol, Action: Codable & Sendable>(
     _ actionType: Action.Type,
-    handler: @escaping @Sendable (inout State, Action, RealmContext) async -> ActionResult
+    handler: @escaping @Sendable (inout State, Action, LandContext) async -> ActionResult
 ) -> ActionHandlerNode<State, Action> {
     ActionHandlerNode(handler: handler)
 }
@@ -335,7 +335,7 @@ public func Action<State: StateNodeProtocol, Action: Codable & Sendable>(
 /// ```
 public func On<State: StateNodeProtocol, Event: Sendable>(
     _ eventType: Event.Type,
-    handler: @escaping @Sendable (inout State, Event, RealmContext) async -> Void
+    handler: @escaping @Sendable (inout State, Event, LandContext) async -> Void
 ) -> OnEventNode<State, Event> {
     OnEventNode(handler: handler)
 }
@@ -353,7 +353,7 @@ public func On<State: StateNodeProtocol, Event: Sendable>(
 /// }
 /// ```
 public func OnTick<State: StateNodeProtocol>(
-    handler: @escaping @Sendable (inout State, RealmContext) async -> Void
+    handler: @escaping @Sendable (inout State, LandContext) async -> Void
 ) -> OnTickNode<State> {
     OnTickNode(handler: handler)
 }
@@ -362,7 +362,7 @@ public func OnTick<State: StateNodeProtocol>(
 
 /// Create an allowed client events node
 /// 
-/// Restricts which client events are allowed in the realm.
+/// Restricts which client events are allowed in the land.
 /// 
 /// Example:
 /// ```swift
@@ -372,7 +372,7 @@ public func OnTick<State: StateNodeProtocol>(
 /// ```
 /// 
 /// Note: This is a simplified version. Full implementation will require
-/// proper type checking at runtime in RealmActor.
+/// proper type checking at runtime in LandActor.
 /// Users should pass concrete event types, not protocol types.
 @resultBuilder
 public enum AllowedClientEventsBuilder {
@@ -391,9 +391,9 @@ public func AllowedClientEvents(@AllowedClientEventsBuilder _ content: () -> All
 
 // MARK: - Semantic Aliases
 
-/// Semantic alias for Realm (App scenario)
+/// Semantic alias for Land (App scenario)
 /// 
-/// `App` is a function alias for `Realm`, suitable for App scenarios.
+/// `App` is a function alias for `Land`, suitable for App scenarios.
 /// 
 /// Example:
 /// ```swift
@@ -404,14 +404,14 @@ public func AllowedClientEvents(@AllowedClientEventsBuilder _ content: () -> All
 public func App<State: StateNodeProtocol>(
     _ id: String,
     using stateType: State.Type,
-    @RealmDSL _ content: () -> [RealmNode]
-) -> RealmDefinition<State> {
-    Realm(id, using: stateType, content)
+    @LandDSL _ content: () -> [LandNode]
+) -> LandDefinition<State> {
+    Land(id, using: stateType, content)
 }
 
-/// Semantic alias for Realm (Feature scenario)
+/// Semantic alias for Land (Feature scenario)
 /// 
-/// `Feature` is a function alias for `Realm`, suitable for feature module scenarios.
+/// `Feature` is a function alias for `Land`, suitable for feature module scenarios.
 /// 
 /// Example:
 /// ```swift
@@ -422,15 +422,15 @@ public func App<State: StateNodeProtocol>(
 public func Feature<State: StateNodeProtocol>(
     _ id: String,
     using stateType: State.Type,
-    @RealmDSL _ content: () -> [RealmNode]
-) -> RealmDefinition<State> {
-    Realm(id, using: stateType, content)
+    @LandDSL _ content: () -> [LandNode]
+) -> LandDefinition<State> {
+    Land(id, using: stateType, content)
 }
 
 // MARK: - Errors
 
-/// Realm DSL errors
-internal enum RealmDSLError: Error {
+/// Land DSL errors
+internal enum LandDSLError: Error {
     case actionTypeMismatch
     case eventTypeMismatch
     case notImplemented

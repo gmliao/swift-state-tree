@@ -41,7 +41,7 @@
 - **值語義拷貝**：`StateNode` 為 struct 時，可在鎖內 `var snapshot = state` 後解鎖計算；需確保欄位是值語義或 COW（標準 `Array`/`Dictionary`/`Set` 可用），若元素含 class 或非 COW 型別則要深拷。
 - **統一提取快照**：考慮新增 API 讓呼叫端一次產出 broadcast / per-player 快照（dirty/all 模式）後傳入 diff，減少重複序列化並保證同一 state 版本；diff 內仍需保持首次呼叫時用 `.all` 補全 cache 的行為。
 - **型別規範**：在 `StateNode` 模型層要求欄位為值語義 + `Sendable`，必要時以自訂 COW wrapper 或 lint/SwiftSyntax 規則禁止引用型別進入狀態，避免拷貝後仍共享底層資料。
-- **啟動預熱**：可在 Realm/伺服器啟動時先鎖定 state 並生成一次 broadcast/per-player baseline（或至少 broadcast），填入 cache，降低第一位玩家觸發全量 snapshot 的延遲。
+- **啟動預熱**：可在 Land/伺服器啟動時先鎖定 state 並生成一次 broadcast/per-player baseline（或至少 broadcast），填入 cache，降低第一位玩家觸發全量 snapshot 的延遲。
   - 預熱時機要在初始狀態「打理完」後再做，避免把半成品寫進 cache，導致第一個 diff 回傳大批「開門前打掃」的 patch。
 
 ### 已實作的 API（2024-XX-XX）
@@ -99,8 +99,8 @@ let perPlayerSnapshot = try syncEngine.extractPerPlayerSnapshot(for: playerID, f
 
 **單玩家場景**：
 ```swift
-// 在 RealmActor 或類似的外層：
-actor RealmActor {
+// 在 LandActor 或類似的外層：
+actor LandActor {
     private var state: GameState
     private var syncEngine: SyncEngine
     
@@ -121,7 +121,7 @@ actor RealmActor {
 
 **多玩家場景**（推薦，效能更好）：
 ```swift
-actor RealmActor {
+actor LandActor {
     private var state: GameState
     private var syncEngine: SyncEngine
     
@@ -158,7 +158,7 @@ actor RealmActor {
 
 **API**：`SyncEngine.warmupCache(from:)`
 
-在 Realm/伺服器啟動時預熱 broadcast cache，降低第一位玩家觸發全量 snapshot 的延遲。
+在 Land/伺服器啟動時預熱 broadcast cache，降低第一位玩家觸發全量 snapshot 的延遲。
 
 ```swift
 // 在初始狀態完全設置完成後調用

@@ -1,19 +1,19 @@
-// Sources/SwiftStateTree/Realm/RealmContext.swift
+// Sources/SwiftStateTree/Land/LandContext.swift
 
 import Foundation
 
-/// Request-scoped context for Realm handlers
+/// Request-scoped context for Land handlers
 /// 
-/// RealmContext is created for each Action/Event request and released after processing.
+/// LandContext is created for each Action/Event request and released after processing.
 /// It follows the Request-scoped Context pattern (similar to NestJS Request Context).
 /// 
 /// **Key Points:**
-/// - ✅ **Request-level**: A new RealmContext is created for each Action/Event request
+/// - ✅ **Request-level**: A new LandContext is created for each Action/Event request
 /// - ✅ **Non-persistent**: Released after processing, not stored in memory
 /// - ✅ **Information centralization**: Request-related info (playerID, clientID, sessionID) is centralized
 /// - ✅ **Request isolation**: Each request has an independent context, preventing interference
 /// 
-/// **Design Principle**: RealmContext should NOT know about Transport.
+/// **Design Principle**: LandContext should NOT know about Transport.
 /// WebSocket details should not be exposed to the StateTree layer.
 /// 
 /// Example:
@@ -22,12 +22,12 @@ import Foundation
 ///     state.players[id] = PlayerState(name: name, hpCurrent: 100, hpMax: 100)
 ///     await ctx.syncNow()
 ///     await ctx.sendEvent(.fromServer(.gameEvent(.playerJoined(id))), to: .all)
-///     return .success(.joinResult(JoinResponse(realmID: ctx.realmID, state: snapshot)))
+///     return .success(.joinResult(JoinResponse(landID: ctx.landID, state: snapshot)))
 /// }
 /// ```
-public struct RealmContext: Sendable {
-    /// Realm identifier
-    public let realmID: String
+public struct LandContext: Sendable {
+    /// Land identifier
+    public let landID: String
     
     /// Player identifier (account level, user identity)
     public let playerID: PlayerID
@@ -39,7 +39,7 @@ public struct RealmContext: Sendable {
     public let sessionID: SessionID
     
     /// Service abstractions (does not depend on HTTP)
-    public let services: RealmServices
+    public let services: LandServices
     
     /// Send event handler closure (delegates to Runtime layer without exposing Transport)
     private let sendEventHandler: @Sendable (GameEvent, EventTarget) async -> Void
@@ -47,13 +47,13 @@ public struct RealmContext: Sendable {
     /// Sync handler closure (delegates to Runtime layer without exposing Transport)
     private let syncHandler: @Sendable () async -> Void
     
-    /// Internal initializer for creating RealmContext
+    /// Internal initializer for creating LandContext
     /// 
-    /// This initializer is used by the Runtime layer (RealmActor) to create contexts.
+    /// This initializer is used by the Runtime layer (LandActor) to create contexts.
     /// The closures delegate to the Runtime layer, which handles Transport details.
     /// 
     /// - Parameters:
-    ///   - realmID: Realm identifier
+    ///   - landID: Land identifier
     ///   - playerID: Player identifier
     ///   - clientID: Client identifier
     ///   - sessionID: Session identifier
@@ -61,15 +61,15 @@ public struct RealmContext: Sendable {
     ///   - sendEventHandler: Closure for sending events (implemented in Runtime layer)
     ///   - syncHandler: Closure for syncing state (implemented in Runtime layer)
     internal init(
-        realmID: String,
+        landID: String,
         playerID: PlayerID,
         clientID: ClientID,
         sessionID: SessionID,
-        services: RealmServices,
+        services: LandServices,
         sendEventHandler: @escaping @Sendable (GameEvent, EventTarget) async -> Void,
         syncHandler: @escaping @Sendable () async -> Void
     ) {
-        self.realmID = realmID
+        self.landID = landID
         self.playerID = playerID
         self.clientID = clientID
         self.sessionID = sessionID
@@ -83,7 +83,7 @@ public struct RealmContext: Sendable {
     /// Send event to specified target
     /// 
     /// Events are sent through closure delegation, without exposing Transport details.
-    /// The actual implementation is handled by the Runtime layer (RealmActor).
+    /// The actual implementation is handled by the Runtime layer (LandActor).
     /// 
     /// - Parameters:
     ///   - event: GameEvent to send
