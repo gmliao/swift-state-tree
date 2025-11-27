@@ -3,7 +3,7 @@
 import Foundation
 
 /// Filtered state snapshot (JSON-friendly structure).
-public struct StateSnapshot: Equatable, Sendable {
+public struct StateSnapshot: Equatable, Codable, Sendable {
     public var values: [String: SnapshotValue]
 
     public init(values: [String: SnapshotValue] = [:]) {

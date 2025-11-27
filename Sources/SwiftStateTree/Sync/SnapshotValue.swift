@@ -3,7 +3,7 @@
 import Foundation
 
 /// Allowed data types for snapshots, used for JSON-friendly output structures.
-public enum SnapshotValue: Equatable, Sendable {
+public enum SnapshotValue: Equatable, Codable, Sendable {
     case null
     case bool(Bool)
     case int(Int)
