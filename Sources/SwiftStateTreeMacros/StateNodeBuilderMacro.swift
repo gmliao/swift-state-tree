@@ -930,6 +930,8 @@ private struct StateNodeBuilderDiagnostic: DiagnosticMessage, @unchecked Sendabl
 struct SwiftStateTreeMacrosPlugin: CompilerPlugin {
     let providingMacros: [Macro.Type] = [
         StateNodeBuilderMacro.self,
-        SnapshotConvertibleMacro.self
+        SnapshotConvertibleMacro.self,
+        LandMacro.self,
+        GenerateLandEventHandlersMacro.self
     ]
 }

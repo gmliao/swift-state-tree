@@ -111,10 +111,30 @@ protocol GameTransport {
     // 發送 Action 回應
     func sendActionResult(
         requestID: String,
-        response: ActionResult,
+        response: AnyCodable,
         to sessionID: SessionID
     ) async
 }
+
+### 訊息結構
+
+```swift
+public struct ActionEnvelope: Codable, Sendable {
+    public let typeIdentifier: String
+    public let payload: Data
+}
+
+public enum TransportMessage<ClientE, ServerE>: Codable
+where ClientE: ClientEventPayload, ServerE: ServerEventPayload {
+    case action(requestID: String, landID: String, action: ActionEnvelope)
+    case actionResponse(requestID: String, response: AnyCodable)
+    case event(landID: String, event: Event<ClientE, ServerE>)
+}
+```
+
+* `typeIdentifier`：用於對應實際 Action 型別（可由 codegen 產出常數）。
+* `payload`：ActionPayload 經 JSON/MsgPack 編碼後的原始資料。
+* Action 回應以 `AnyCodable` 傳回，客戶端可自行轉型或使用 schema。
 
 // WebSocket Transport 實作
 actor WebSocketTransport: GameTransport {
@@ -193,15 +213,24 @@ actor WebSocketTransport: GameTransport {
         guard let session = clientSessions[sessionID] else { return }
         
         switch message {
-        case .action(let requestID, let landID, let action):
+        case .action(let requestID, let landID, let envelope):
             guard let actor = landActors[landID] else { return }
-            let response = await actor.handleAction(
-                action,
-                from: session.playerID,
-                clientID: session.clientID,
-                sessionID: session.sessionID
-            )
-            await sendActionResult(requestID: requestID, response: response, to: sessionID)
+            do {
+                let action = try actionDecoder.decode(from: envelope)
+                let response = try await actor.handleAction(
+                    action,
+                    from: session.playerID,
+                    clientID: session.clientID,
+                    sessionID: session.sessionID
+                )
+                await sendActionResult(requestID: requestID, response: AnyCodable(response), to: sessionID)
+            } catch {
+                await sendActionResult(
+                    requestID: requestID,
+                    response: AnyCodable(["error": "\(error)"]),
+                    to: sessionID
+                )
+            }
             
         case .event(let landID, let event):
             guard let actor = landActors[landID] else { return }

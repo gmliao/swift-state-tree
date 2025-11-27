@@ -28,6 +28,16 @@
 
 ---
 
+## 0️⃣ 快速導覽：從 DSL 到 Runtime
+
+1. `@Land`（或 `Land(...)`）會把 `AccessControl / Rules / Lifetime` 區塊收集成 `[LandNode]`，交給 `LandBuilder` 組出 `LandDefinition`。
+2. `LandDefinition` 持有 state 型別、事件型別與所有 handler，`LandKeeper` runtime 只需要這份定義就能處理 Action、Event 與 Tick。
+3. Transport 端透過 `ActionEnvelope` 與泛型 `Event` 封包對應型別，詳見 `docs/design/DESIGN_EVENT_ACTION_GENERIC.md`。
+
+> 這個流程確保 DSL 僅描述行為，runtime 與傳輸層實作可以獨立演進。
+
+---
+
 ## 1️⃣ 核心 Protocol 與基礎型別
 
 ### 1.1 Action / Event 基底
@@ -168,14 +178,22 @@ public func Land<
 ```swift
 @Land(GameState.self, client: ClientEvents.self, server: ServerEvents.self)
 struct GameLand {
-    AccessControl { ... }
-    Rules { ... }
-    Lifetime { ... }
+    static var body: some LandDSL {
+        AccessControl { ... }
+        Rules { ... }
+        Lifetime { ... }
+    }
 }
 ```
 
-Macro 展開後會變成一個呼叫 `Land(...)` 的靜態成員，
-大致等價：
+使用規範：
+
+* `struct` 內必須定義 `static var body: some LandDSL`，其中的內容就是 DSL 實體。
+* `@Land` attribute 的參數為 `state`, `client`, `server`，可選填 `id:`。
+  * 有填 `id:` 時，直接採用該值。
+  * 沒填 `id:` 時，macro 會將 struct 名稱去掉尾巴 `Land` 後轉成 kebab-case，例如 `GameLand → game`、`BattleArenaLand → battle-arena`。
+
+Macro 展開後會變成一個呼叫 `Land(...)` 的靜態成員，大致等價：
 
 ```swift
 struct GameLand {
@@ -183,13 +201,13 @@ struct GameLand {
         Land("game", using: GameState.self,
              clientEvents: ClientEvents.self,
              serverEvents: ServerEvents.self) {
-            AccessControl { ... }
-            Rules { ... }
-            Lifetime { ... }
+            Self.body
         }
     }
 }
 ```
+
+> Macro 會在重複命名（例如多個 `OnReady` 定義）或缺少 enum case 時發出編譯錯誤，避免語義化 handler 與 `ClientEvents` 失去同步。
 
 ---
 
@@ -393,7 +411,7 @@ Rules {
 **重點：**
 
 * `some Codable & Sendable` 讓 Swift 自動推論回傳型別。
-* runtime 統一包成 `AnyCodable` 往傳輸層送。
+* runtime 統一包成 `AnyCodable` 往傳輸層送，Transport 端可根據 `ActionEnvelope.typeIdentifier` 反射或 codegen 來解包（詳見 `docs/design/DESIGN_EVENT_ACTION_GENERIC.md` 中的 Transport 章節）。
 
 ---
 
@@ -546,6 +564,12 @@ Rules {
 > 是 macro 事先幫你把 `OnReady` 寫好，
 > builder 只負責收集這些 `LandNode`。
 
+`@GenerateLandEventHandlers` 作用重點：
+
+- 只能套在 `ClientEventPayload` enum 上。
+- 每個 enum case 會對應到一個 `OnXxx` 函式，case 有 payload 時函式簽名會自動帶型別。
+- DSL 內的 `Rules { ... }` 只要 `import SwiftStateTree` 就能直接呼叫這些 `OnXxx`。
+
 ---
 
 ## 6️⃣ Lifetime / Tick Handler
@@ -594,6 +618,7 @@ Lifetime {
 
 LandKeeper 會依 `tickInterval` 建立一個計時 loop，
 每次取 `state` 出來跑 `tickHandler`。
+Tick helper 中以 `guard var state = anyState as? State` 取出具體型別、執行 handler 後再寫回 `anyState`，確保 mutation 會持久化到 LandKeeper 內部 state。
 
 ---
 

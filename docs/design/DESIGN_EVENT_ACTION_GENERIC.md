@@ -3,6 +3,7 @@
 ## Generic Event Payload & Action 設計 v1（Land DSL 優化版）
 
 > 本文件同步 Land DSL v1 規格，描述 **Event（泛型 Payload）** 與 **Action（型別導向 RPC）** 的正式設計，並說明 Transport 端如何與 `@Land` 語法糖協作。
+> 若需 DSL 本體與 builder 流程，請對照 `docs/design/DESIGN_LAND_DSL.md`。
 
 ---
 
@@ -60,6 +61,7 @@ enum ServerEvents: ServerEventPayload {
 
 * `@GenerateLandEventHandlers` 會產出 `OnReady`, `OnMove`, `OnChat` 等語法糖（參見 §6）。
 * 若需要多個 Land，各自定義自己的 `ClientEvents` / `ServerEvents`。
+* Macro 會針對每個 case 生成唯一的 `OnXxx` 函式；若新增、刪除或改名 case，對應 handler API 會同步調整，若同名 case 或手動定義衝突函式會造成編譯錯誤以避免語義不一致。
 
 Alias（可選）：
 
@@ -131,11 +133,18 @@ public func Land<
 ```swift
 @Land(GameState.self, client: ClientEvents.self, server: ServerEvents.self)
 struct GameLand {
-    AccessControl { ... }
-    Rules { ... }
-    Lifetime { ... }
+    static var body: some LandDSL {
+        AccessControl { ... }
+        Rules { ... }
+        Lifetime { ... }
+    }
 }
 ```
+
+規範：
+
+* `struct` 內要有 `static var body: some LandDSL`，macro 會把這段內容餵給 `Land(...)`。
+* `@Land` 參數 `id:` 可選；沒填時會以 struct 名稱推導（去掉尾巴 `Land`，再轉為 kebab-case）。
 
 Macro 會產生 `static var definition: LandDefinition<...>`，且自動呼叫 `Land(...)`。
 
@@ -298,6 +307,25 @@ Rules {
 }
 ```
 
+對於會回傳不同資料型別的 Action（例如 `GetInventory` 回傳 `[Item]`），Transport 端可以透過 schema codegen 或手動 switch `ActionEnvelope.typeIdentifier` 來還原：
+
+```swift
+switch envelope.typeIdentifier {
+case "Game.Join":
+    let payload = try decoder.decode(Join.self, from: envelope.payload)
+    ...
+case "Game.GetInventory":
+    let payload = try decoder.decode(GetInventory.self, from: envelope.payload)
+    let response = try await land.handle(payload)
+    let decoded = response.base as? [Item]
+    ...
+default:
+    throw TransportError.unknownAction
+}
+```
+
+這段流程與 `docs/design/DESIGN_LAND_DSL.md` 的 Rules 區塊相互對應，保證編譯期型別與 runtime 封包一致。
+
 ---
 
 # 8. LandContext（請求級上下文）
@@ -409,6 +437,7 @@ where State: StateNodeProtocol,
 
 * `decodeAction(from:)` 由 Transport 提供，負責把 `ActionEnvelope` 轉成實際 `ActionPayload`。
 * Event handler 無需判斷型別，macro 已經拆好。
+* Tick handler 在 `docs/design/DESIGN_LAND_DSL.md` 的 Lifetime 章節有詳述，包含 copy-back pattern 以確保 `State` mutation 會寫回 `LandKeeper`。
 
 ---
 

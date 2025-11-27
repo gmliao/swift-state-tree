@@ -1,135 +1,66 @@
-// Sources/SwiftStateTree/Land/LandConfig.swift
-
 import Foundation
 
-// MARK: - Land Configuration
+// MARK: - Aggregated Land Configuration
 
-/// Land configuration structure
-/// 
-/// Contains configuration options for land lifecycle, tick interval, and player limits.
-/// Network layer details (baseURL, webSocketURL) are handled at the Transport layer,
-/// not in StateTree/Land layer.
+/// Flattened configuration that the runtime consumes after the DSL is processed.
 public struct LandConfig: Sendable {
-    /// Maximum number of players allowed in the land
+    /// Whether the land can be discovered/joined publicly
+    public var allowPublic: Bool
+    /// Maximum number of players (nil = unlimited, runtime may still enforce transport caps)
     public var maxPlayers: Int?
-    
-    /// Tick interval for periodic updates (Tick-based mode)
-    /// If `nil`, the land operates in Event-driven mode (no automatic ticks)
+    /// Allowed client events enforced at the transport layer
+    public var allowedClientEvents: Set<AllowedEventIdentifier>
+    /// Tick interval requested by Lifetime block
     public var tickInterval: Duration?
-    
-    /// Idle timeout duration before land cleanup
-    public var idleTimeout: Duration?
-    
+    /// Destroy land when empty for the specified duration
+    public var destroyWhenEmptyAfter: Duration?
+    /// Persist snapshot interval
+    public var persistInterval: Duration?
+
+    public init(
+        allowPublic: Bool = true,
+        maxPlayers: Int? = nil,
+        allowedClientEvents: Set<AllowedEventIdentifier> = [],
+        tickInterval: Duration? = nil,
+        destroyWhenEmptyAfter: Duration? = nil,
+        persistInterval: Duration? = nil
+    ) {
+        self.allowPublic = allowPublic
+        self.maxPlayers = maxPlayers
+        self.allowedClientEvents = allowedClientEvents
+        self.tickInterval = tickInterval
+        self.destroyWhenEmptyAfter = destroyWhenEmptyAfter
+        self.persistInterval = persistInterval
+    }
+}
+
+// MARK: - Access Control Configuration
+
+/// Configuration for the `AccessControl { ... }` block.
+public struct AccessControlConfig: Sendable {
+    public var maxPlayers: Int?
+    public var allowPublic: Bool
+
     public init(
         maxPlayers: Int? = nil,
-        tickInterval: Duration? = nil,
-        idleTimeout: Duration? = nil
+        allowPublic: Bool = true
     ) {
         self.maxPlayers = maxPlayers
-        self.tickInterval = tickInterval
-        self.idleTimeout = idleTimeout
-    }
-    
-    /// Mutating method to update max players
-    public mutating func setMaxPlayers(_ value: Int?) {
-        self.maxPlayers = value
-    }
-    
-    /// Mutating method to set tick interval
-    public mutating func setTickInterval(_ value: Duration?) {
-        self.tickInterval = value
-    }
-    
-    /// Mutating method to set idle timeout
-    public mutating func setIdleTimeout(_ value: Duration?) {
-        self.idleTimeout = value
+        self.allowPublic = allowPublic
     }
 }
 
-// MARK: - Config DSL Components
+// MARK: - Allowed Event Identifier
 
-/// Config builder for Land DSL
-/// 
-/// Used within Land DSL to configure land settings.
-/// 
-/// Example:
-/// ```swift
-/// Land("match-3", using: GameStateTree.self) {
-///     Config {
-///         MaxPlayers(4)
-///         Tick(every: .milliseconds(100))
-///         IdleTimeout(.seconds(60))
-///     }
-/// }
-/// ```
-@resultBuilder
-public enum ConfigBuilder {
-    public static func buildBlock(_ components: ConfigComponent...) -> LandConfig {
-        var config = LandConfig()
-        for component in components {
-            component.apply(to: &config)
-        }
-        return config
-    }
-}
+public struct AllowedEventIdentifier: Hashable, @unchecked Sendable {
+    let storage: AnyHashable
 
-/// Protocol for config components
-public protocol ConfigComponent: Sendable {
-    func apply(to config: inout LandConfig)
-}
+    public init<H: Hashable & Sendable>(_ value: H) {
+        self.storage = AnyHashable(value)
+    }
 
-/// MaxPlayers configuration component
-public struct MaxPlayers: ConfigComponent {
-    public let value: Int
-    
-    public init(_ value: Int) {
-        self.value = value
+    init(anyHashable: AnyHashable) {
+        self.storage = anyHashable
     }
-    
-    public func apply(to config: inout LandConfig) {
-        config.setMaxPlayers(value)
-    }
-}
-
-/// Tick configuration component
-public struct Tick: ConfigComponent {
-    public let interval: Duration
-    
-    public init(every interval: Duration) {
-        self.interval = interval
-    }
-    
-    public func apply(to config: inout LandConfig) {
-        config.setTickInterval(interval)
-    }
-}
-
-/// IdleTimeout configuration component
-public struct IdleTimeout: ConfigComponent {
-    public let duration: Duration
-    
-    public init(_ duration: Duration) {
-        self.duration = duration
-    }
-    
-    public func apply(to config: inout LandConfig) {
-        config.setIdleTimeout(duration)
-    }
-}
-
-/// Config function for Land DSL
-/// 
-/// Creates a configuration block using ConfigBuilder.
-/// 
-/// Example:
-/// ```swift
-/// Config {
-///     MaxPlayers(4)
-///     Tick(every: .milliseconds(100))
-///     IdleTimeout(.seconds(60))
-/// }
-/// ```
-public func Config(@ConfigBuilder _ content: () -> LandConfig) -> LandConfig {
-    content()
 }
 

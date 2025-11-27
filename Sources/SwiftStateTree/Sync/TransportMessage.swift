@@ -1,23 +1,30 @@
 import Foundation
 
-/// Generic Transport Message
-///
-/// Wraps action calls, responses, and events.
-public enum TransportMessage<Action, ClientE, ServerE>: Codable
+/// Encoded action payload and metadata used by the transport layer.
+public struct ActionEnvelope: Codable, Sendable {
+    public let typeIdentifier: String
+    public let payload: Data
+
+    public init(typeIdentifier: String, payload: Data) {
+        self.typeIdentifier = typeIdentifier
+        self.payload = payload
+    }
+}
+
+/// Generic Transport Message wrapping action calls, responses, and events.
+public enum TransportMessage<ClientE, ServerE>: Codable
 where
-    Action: ActionPayload,
     ClientE: ClientEventPayload,
-    ServerE: ServerEventPayload
-{
+    ServerE: ServerEventPayload {
     case action(
         requestID: String,
         landID: String,
-        action: Action
+        action: ActionEnvelope
     )
 
     case actionResponse(
         requestID: String,
-        response: Action.Response
+        response: AnyCodable
     )
 
     case event(
