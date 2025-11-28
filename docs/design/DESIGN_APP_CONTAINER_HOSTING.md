@@ -4,7 +4,7 @@
 >
 > **狀態說明**：
 > - ✅ Core / Transport：已實作，使用實際模組命名
-> - 🔄 AppContainer：建議的封裝方式，未來可實作以簡化組裝流程
+- ✅ AppContainer：Demo target 已提供 `AppContainer` 封裝，含 Production/Test 模式
 > - 📅 Persistence：未來規劃，目前未實作
 >
 > 相關文檔：
@@ -24,12 +24,12 @@
 
 - ✅ 可以在 `main.swift` 中組裝整個 server runtime
 - ✅ 單元測試可以單獨測試 Runtime 邏輯和 JSON 編碼
-- 🔄 未來可考慮統一的 `AppContainer`，簡化組裝流程並支援不同環境配置
+- ✅ 已提供統一的 `AppContainer`，簡化組裝流程並支援 Demo / Production / Test
 
 ### 3. Demo / Example 可重用
 
 - ✅ 目前有 Demo 專案展示實際使用方式
-- 🔄 未來 Demo 專案應獨立至 `Examples/` 目錄，保持主專案結構簡潔
+- ✅ Demo 專案已獨立至 `Examples/` 目錄，保持主專案結構簡潔
 
 
 ## 模組/Target 分層
@@ -44,11 +44,11 @@ SwiftStateTree/
 │   ├── SwiftStateTreeTransport/            # ✅ Transport 抽象層
 │   ├── SwiftStateTreeHummingbird/          # ✅ Hummingbird WebSocket 適配器
 │   ├── SwiftStateTreeMacros/               # ✅ Macro 實作
-│   └── SwiftStateTreeHummingbirdDemo/      # 🔄 Demo（建議移至 Examples/）
+│   └── (無 Demo target，僅保留 library/adapter)
 ├── Tests/
 │   └── SwiftStateTreeTests/
-└── Examples/                               # 📅 未來：Demo 專案應獨立至此
-    └── [Demo 專案]/
+└── Examples/                               # ✅ Demo 專案獨立於此
+    └── SwiftStateTreeHummingbirdDemo/
 ```
 
 ### Core（SwiftStateTree）
@@ -233,95 +233,69 @@ public struct GameDomainServices: Sendable {
 
 ## Server 組裝方式
 
-### 目前實作：直接在 main.swift 中組裝
+### 目前實作：AppContainer 封裝
 
-目前 Demo 專案在 `main.swift` 中直接組裝所有組件：
-
-```swift
-// 1. Setup Transport Layer
-let transport = WebSocketTransport()
-
-// 2. Setup LandKeeper with callbacks
-let keeper = LandKeeper<State, ClientE, ServerE>(
-    definition: landDefinition,
-    initialState: DemoGameState(),
-    sendEvent: { event, target in
-        await adapterHolder.adapter?.sendEvent(event, to: target)
-    },
-    syncNow: {
-        await adapterHolder.adapter?.syncNow()
-    }
-)
-
-// 3. Setup TransportAdapter (connects LandKeeper and Transport)
-let transportAdapter = TransportAdapter<State, ClientE, ServerE>(
-    keeper: keeper,
-    transport: transport,
-    landID: landDefinition.id
-)
-
-// 4. Setup Hummingbird Adapter
-let hbAdapter = HummingbirdStateTreeAdapter(transport: transport)
-
-// 5. Setup Hummingbird Router and Application
-let router = Router(context: BasicWebSocketRequestContext.self)
-router.ws("/game") { inbound, outbound, context in
-    await hbAdapter.handle(inbound: inbound, outbound: outbound, context: context)
-}
-
-let app = Application(router: router, configuration: .init(...))
-try await app.runService()
-```
-
-**組裝流程說明**：
-1. 建立 `WebSocketTransport`（Transport 抽象層）
-2. 建立 `LandKeeper`（Runtime），注入 sendEvent 和 syncNow 回調
-3. 建立 `TransportAdapter`（連接 Runtime 和 Transport）
-4. 建立 `HummingbirdStateTreeAdapter`（Hummingbird 適配器）
-5. 設定 Hummingbird router 和 application
-
-### 未來規劃：AppContainer 封裝（🔄 建議）
-
-**AppContainer** = 一個「把整個 server 組裝起來的容器」，負責：
-
-- 建立：
-  - Logger
-  - Runtime（LandKeeper）
-  - Transport 層組件
-  - 未來：DB client、Repository 實作、Domain services
-
-- 提供不同模式：
-  - `makeProduction()`：正式環境
-  - `makeForTest()`：單元/整合測試
-  - `makeDemo()`：Example 用
-
-**未來可能的 AppContainer 結構**（放在 Demo 專案裡）：
+- 位置：`Sources/SwiftStateTreeHummingbirdHosting/AppContainer.swift`（target `SwiftStateTreeHummingbirdHosting`，提供泛用 host pattern，Demo 與測試共用）
+- 功能：
+  - 集中建立 `LandKeeper`、`WebSocketTransport`、`TransportAdapter`、`HummingbirdStateTreeAdapter`、`Router`、`Application`
+  - 提供 `Configuration` 結構統一設定 host、port、路徑與是否顯示啟動訊息
+  - 內建健康檢查路由，並可透過 `configureRouter` 閉包增加額外 endpoint
+  - 具備 `makeServer`（實際 host）與 `makeForTest`（純 transport harness）兩種模式
+- 使用方式：
 
 ```swift
-public struct AppContainer {
-    public let keeper: LandKeeper<State, ClientE, ServerE>
-    public let transport: WebSocketTransport
-    public let transportAdapter: TransportAdapter<State, ClientE, ServerE>
-    public let hbAdapter: HummingbirdStateTreeAdapter
-    // 未來：public let dbClient: DatabaseClient
-    // 未來：public let domain: GameDomainServices
-    
-    // 正式環境組裝
-    public static func makeProduction() async throws -> AppContainer {
-        // 組裝所有組件...
-    }
-    
-    // 測試用組裝
-    public static func makeForTest() -> AppContainerForTest {
-        // 使用測試配置...
+import SwiftStateTreeHummingbirdHosting
+
+@main
+struct HummingbirdDemo {
+    static func main() async throws {
+        typealias DemoAppContainer = AppContainer<DemoGameState, DemoClientEvents, DemoServerEvents>
+        let container = try await DemoAppContainer.makeServer(
+            land: DemoGame.makeLand(),
+            initialState: DemoGameState()
+        )
+        try await container.run()
     }
 }
 ```
 
-**優點**：
-- 統一組裝流程，減少重複程式碼
-- 更容易在不同環境（Production / Test / Demo）間切換
-- 未來加入 Persistence 層時更容易整合
+`run()` 會依設定輸出啟動資訊並呼叫 `Application.runService()`。若需要自訂 port 或路徑：
+
+```swift
+let container = try await DemoAppContainer.makeServer(
+    configuration: .init(host: "0.0.0.0", port: 8081, webSocketPath: "/ws"),
+    land: DemoGame.makeLand(),
+    initialState: DemoGameState()
+) { router in
+    router.get("/metrics") { _, _ in "ok" }
+}
+```
+
+### 測試專用：`AppContainerForTest`
+
+- `AppContainer.makeForTest(land:initialState:)` 會回傳 `AppContainerForTest`
+- 提供 `connect(sessionID:using:)`、`disconnect(sessionID:)`、`send(_:from:)`，方便測試模擬 WebSocket 事件
+- 測試可直接取得：
+  - `keeper`：驗證 state 變化
+  - `transport`：掛上 fake WebSocket 連線
+  - `transportAdapter`：針對 transport 層做進一步驗證
+
+```swift
+let harness = await DemoAppContainer.makeForTest(
+    land: DemoGame.makeLand(),
+    initialState: DemoGameState()
+)
+let connection = RecordingWebSocketConnection()
+let session = SessionID("test-session")
+
+await harness.connect(sessionID: session, using: connection)
+await harness.send(encodedMessage, from: session)
+let state = await harness.keeper.currentState()
+```
+
+### 歷史參考：直接在 main.swift 中組裝
+
+在引入 AppContainer 之前，Demo 會於 `main.swift` 逐步 new 出所有組件。該流程仍記錄於本文件做比較，未來維護者可以對照 AppContainer 前後差異。若新場景需要自訂組裝細節，可在 `AppContainer` 的 `configureRouter` 或 `Configuration` 上擴充，而非回到舊版手動組裝。
 
 
 ## Hosting vs 框架選擇：Hummingbird / Vapor
@@ -357,7 +331,7 @@ public struct AppContainer {
 - 測試 state 變化、sync 邏輯
 - 透過 JSONEncoder 編碼 state patch，驗證 JSON 結構
 
-**未來**：當實作 `AppContainer` 後，可以使用 `AppContainer.makeForTest()` 建立測試環境
+**現狀**：可使用 `AppContainer.makeForTest()` 建立測試環境，重用與實際 host 相同的組裝流程
 
 ### Transport 測試
 
@@ -384,27 +358,20 @@ public protocol WebSocketConnection: Sendable {
 
 ### 當前狀況
 
-目前 Demo 專案位於：
-```
-Sources/SwiftStateTreeHummingbirdDemo/
-  └── main.swift
-```
-
-### 建議結構（未來重構）
-
-Demo 專案應該獨立到 `Examples/` 目錄下：
+目前 Demo 專案已獨立至 `Examples/SwiftStateTreeHummingbirdDemo`：
 
 ```
 Examples/
   SwiftStateTreeHummingbirdDemo/
     ├── Package.swift                    # 獨立的 Package，依賴主專案的 library
     └── Sources/
+        ├── DemoContent/
+        │   └── DemoDefinitions.swift    # Demo 專用 Land DSL / actions / events
         └── SwiftStateTreeHummingbirdDemo/
-            ├── main.swift               # Demo 啟動程式
-            └── AppContainer.swift       # 未來：AppContainer 封裝（可選）
+            └── main.swift               # Demo 啟動程式（呼叫泛用 AppContainer）
 ```
 
-**建議原則**：
+**結構原則**：
 - ✅ Example 專案 **不放在主 `Sources/` 下**，避免與 library target 混淆
 - ✅ Example 擁有自己的 `Package.swift`，依賴根專案的 library
 - ✅ 保持主專案結構簡潔，只包含 library 相關的程式碼
@@ -420,8 +387,8 @@ Examples/
    - ✅ 使用 `LandServices` 注入外部服務到 Runtime
 
 2. **組裝方式**：
-   - 目前在 `main.swift` 中直接組裝所有組件
-   - 🔄 未來可考慮實作 `AppContainer` 封裝以簡化組裝流程
+   - ✅ Demo target 透過 `AppContainer` 統一組裝，`main.swift` 僅負責呼叫
+   - ✅ 測試可透過 `AppContainerForTest` 共用相同 wiring
 
 3. **測試**：
    - ✅ 可以單獨測試 Runtime 邏輯
@@ -433,18 +400,18 @@ Examples/
    - 未來可加入 `SwiftStateTreePersistencePostgres` 模組
    - 實作 Repository 模式，提供資料存取抽象
 
-2. **AppContainer 封裝**（🔄 建議）：
-   - 統一組裝流程，支援 Production / Test / Demo 不同配置
-   - 未來加入 Persistence 層時更容易整合
+2. **AppContainer 擴充**（🔄 建議）：
+   - 待 Persistence/Domain Services 可用時，擴充 `Configuration` 注入對應服務
+   - 視需要提供 Vapor/NIO host 版本的 Container
 
-3. **Demo 專案獨立**（🔄 建議）：
-   - 將 Demo 從 `Sources/` 移至 `Examples/` 目錄
-   - 保持主專案結構簡潔
+3. **Demo 專案獨立**（✅ 已完成）：
+  - Hummingbird Demo 位於 `Examples/SwiftStateTreeHummingbirdDemo`
+  - 主專案 `Sources/` 僅保留 library/transport 程式碼
 
 ### 設計優勢
 
 透過這種分層設計：
 - ✅ 可以在單元測試裡跑真正的 Runtime、產生實際 JSON，再做驗證
 - ✅ Transport 層抽象化，易於替換不同的 web framework
-- 🔄 未來 Example / Demo 可以重用相同的組裝流程，對外展示會更乾淨一致
+- ✅ Example / Demo 已拆出 `Examples/`，可共用 `AppContainer` 作為啟動模板
 

@@ -24,16 +24,16 @@ let package = Package(
             name: "SwiftStateTreeHummingbird",
             targets: ["SwiftStateTreeHummingbird"]
         ),
+        // 🧱 Hummingbird hosting helpers
+        .library(
+            name: "SwiftStateTreeHummingbirdHosting",
+            targets: ["SwiftStateTreeHummingbirdHosting"]
+        ),
         // 🔹 Benchmark executable
         .executable(
             name: "SwiftStateTreeBenchmarks",
             targets: ["SwiftStateTreeBenchmarks"]
         ),
-        // 🕊️ Hummingbird Demo executable
-        .executable(
-            name: "SwiftStateTreeHummingbirdDemo",
-            targets: ["SwiftStateTreeHummingbirdDemo"]
-        )
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-syntax.git", from: "509.0.0"),
@@ -75,6 +75,19 @@ let package = Package(
             path: "Sources/SwiftStateTreeHummingbird"
         ),
         
+        // 🧱 Hummingbird hosting helpers (generic AppContainer)
+        .target(
+            name: "SwiftStateTreeHummingbirdHosting",
+            dependencies: [
+                "SwiftStateTree",
+                "SwiftStateTreeTransport",
+                "SwiftStateTreeHummingbird",
+                .product(name: "Hummingbird", package: "hummingbird"),
+                .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket")
+            ],
+            path: "Sources/SwiftStateTreeHummingbirdHosting"
+        ),
+        
         // 🔹 Macro Implementation: Compile-time macro expansion
         .macro(
             name: "SwiftStateTreeMacros",
@@ -110,6 +123,7 @@ let package = Package(
             name: "SwiftStateTreeHummingbirdTests",
             dependencies: [
                 "SwiftStateTreeHummingbird",
+                "SwiftStateTreeHummingbirdHosting",
                 "SwiftStateTreeTransport",
                 "SwiftStateTree",
                 .product(name: "Hummingbird", package: "hummingbird"),
@@ -140,19 +154,5 @@ let package = Package(
                 "README.md"
             ]
         ),
-        
-        // 🕊️ Hummingbird Demo executable
-        .executableTarget(
-            name: "SwiftStateTreeHummingbirdDemo",
-            dependencies: [
-                "SwiftStateTree",
-                "SwiftStateTreeMacros",
-                "SwiftStateTreeTransport",
-                "SwiftStateTreeHummingbird",
-                .product(name: "Hummingbird", package: "hummingbird"),
-                .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket")
-            ],
-            path: "Sources/SwiftStateTreeHummingbirdDemo"
-        )
     ]
 )
