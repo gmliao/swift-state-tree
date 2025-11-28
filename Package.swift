@@ -6,7 +6,7 @@ import CompilerPluginSupport
 let package = Package(
     name: "SwiftStateTree",
     platforms: [
-        .macOS(.v13)
+        .macOS(.v14)
     ],
     products: [
         // ⭐ Open source library for public use
@@ -19,6 +19,11 @@ let package = Package(
             name: "SwiftStateTreeTransport",
             targets: ["SwiftStateTreeTransport"]
         ),
+        // 🕊️ Hummingbird Transport Adapter
+        .library(
+            name: "SwiftStateTreeHummingbird",
+            targets: ["SwiftStateTreeHummingbird"]
+        ),
         // 🔹 Benchmark executable
         .executable(
             name: "SwiftStateTreeBenchmarks",
@@ -26,7 +31,9 @@ let package = Package(
         )
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-syntax.git", from: "509.0.0")
+        .package(url: "https://github.com/apple/swift-syntax.git", from: "509.0.0"),
+        .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
+        .package(url: "https://github.com/hummingbird-project/hummingbird-websocket.git", from: "2.0.0")
     ],
     targets: [
         // 🔹 Core Library: Pure Swift game logic, no network dependency
@@ -50,6 +57,17 @@ let package = Package(
                 "SwiftStateTree"
             ],
             path: "Sources/SwiftStateTreeTransport"
+        ),
+        
+        // 🕊️ Hummingbird Adapter
+        .target(
+            name: "SwiftStateTreeHummingbird",
+            dependencies: [
+                "SwiftStateTreeTransport",
+                .product(name: "Hummingbird", package: "hummingbird"),
+                .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket")
+            ],
+            path: "Sources/SwiftStateTreeHummingbird"
         ),
         
         // 🔹 Macro Implementation: Compile-time macro expansion
@@ -80,6 +98,19 @@ let package = Package(
                 "SwiftStateTree"
             ],
             path: "Tests/SwiftStateTreeTransportTests"
+        ),
+        
+        // 🕊️ Hummingbird tests
+        .testTarget(
+            name: "SwiftStateTreeHummingbirdTests",
+            dependencies: [
+                "SwiftStateTreeHummingbird",
+                "SwiftStateTreeTransport",
+                "SwiftStateTree",
+                .product(name: "Hummingbird", package: "hummingbird"),
+                .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket")
+            ],
+            path: "Tests/SwiftStateTreeHummingbirdTests"
         ),
         
         // 🔹 Macro tests

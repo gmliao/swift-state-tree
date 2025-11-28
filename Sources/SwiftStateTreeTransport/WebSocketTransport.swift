@@ -12,6 +12,11 @@ public actor WebSocketTransport: Transport {
     private var playerSessions: [PlayerID: Set<SessionID>] = [:]
     
     public init() {}
+
+    /// Set delegate from outside the actor.
+    public func setDelegate(_ delegate: TransportDelegate?) {
+        self.delegate = delegate
+    }
     
     public func start() async throws {
         // In a real implementation, this would start the server or bind to a port.
