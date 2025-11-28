@@ -14,6 +14,11 @@ let package = Package(
             name: "SwiftStateTree",
             targets: ["SwiftStateTree"]
         ),
+        // 🌐 Transport Layer
+        .library(
+            name: "SwiftStateTreeTransport",
+            targets: ["SwiftStateTreeTransport"]
+        ),
         // 🔹 Benchmark executable
         .executable(
             name: "SwiftStateTreeBenchmarks",
@@ -38,6 +43,15 @@ let package = Package(
             ]
         ),
         
+        // 🔹 Transport Layer: Network abstraction
+        .target(
+            name: "SwiftStateTreeTransport",
+            dependencies: [
+                "SwiftStateTree"
+            ],
+            path: "Sources/SwiftStateTreeTransport"
+        ),
+        
         // 🔹 Macro Implementation: Compile-time macro expansion
         .macro(
             name: "SwiftStateTreeMacros",
@@ -56,6 +70,16 @@ let package = Package(
                 "SwiftStateTreeMacros"
             ],
             path: "Tests/SwiftStateTreeTests"
+        ),
+        
+        // 🔹 Transport tests
+        .testTarget(
+            name: "SwiftStateTreeTransportTests",
+            dependencies: [
+                "SwiftStateTreeTransport",
+                "SwiftStateTree"
+            ],
+            path: "Tests/SwiftStateTreeTransportTests"
         ),
         
         // 🔹 Macro tests
