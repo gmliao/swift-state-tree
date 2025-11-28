@@ -18,25 +18,61 @@ where State: StateNodeProtocol,
     private var sessionToPlayer: [SessionID: PlayerID] = [:]
     private var sessionToClient: [SessionID: ClientID] = [:]
     
-    public init(keeper: LandKeeper<State, ClientE, ServerE>, transport: WebSocketTransport, landID: String) {
+    /// Closure to create PlayerSession from sessionID and clientID.
+    /// This allows customizing how playerID, deviceID, and metadata are extracted.
+    /// Default implementation uses sessionID as playerID.
+    public var createPlayerSession: @Sendable (SessionID, ClientID) -> PlayerSession = { sessionID, _ in
+        PlayerSession(playerID: sessionID.rawValue, deviceID: nil, metadata: [:])
+    }
+    
+    public init(
+        keeper: LandKeeper<State, ClientE, ServerE>,
+        transport: WebSocketTransport,
+        landID: String,
+        createPlayerSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil
+    ) {
         self.keeper = keeper
         self.transport = transport
         self.landID = landID
+        if let createPlayerSession = createPlayerSession {
+            self.createPlayerSession = createPlayerSession
+        }
     }
     
     public func onConnect(sessionID: SessionID, clientID: ClientID) async {
-        // Generate playerID from session (in real app, this would come from auth)
-        let playerID = PlayerID("player-\(sessionID.rawValue)")
-        sessionToPlayer[sessionID] = playerID
-        sessionToClient[sessionID] = clientID
+        // Create PlayerSession using the configured closure
+        let playerSession = createPlayerSession(sessionID, clientID)
         
-        // Join the player to the land
-        await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
-        
-        // Send initial snapshot
-        await syncState(for: playerID, sessionID: sessionID)
-        
-        print("Client connected: \(sessionID) -> \(playerID)")
+        // Join using CanJoin handler (if defined) or default join logic
+        do {
+            let decision = try await keeper.join(
+                session: playerSession,
+                clientID: clientID,
+                sessionID: sessionID
+            )
+            
+            guard case .allow(let playerID) = decision else {
+                // Join was denied by CanJoin handler
+                if case .deny(let reason) = decision {
+                    print("Join denied for session \(sessionID): \(reason ?? "no reason provided")")
+                } else {
+                    print("Join denied for session \(sessionID): unknown reason")
+                }
+                return
+            }
+            
+            sessionToPlayer[sessionID] = playerID
+            sessionToClient[sessionID] = clientID
+            
+            // Send initial snapshot
+            await syncState(for: playerID, sessionID: sessionID)
+            
+            print("Client connected: \(sessionID) -> \(playerID) (playerID: \(playerSession.playerID))")
+        } catch {
+            // CanJoin handler threw an error (e.g., JoinError.roomIsFull)
+            print("Join failed for session \(sessionID): \(error)")
+            // Don't proceed with connection if join validation fails
+        }
     }
     
     public func onDisconnect(sessionID: SessionID, clientID: ClientID) async {

@@ -66,16 +66,51 @@ public enum DemoGame {
             }
             
             Rules {
+                /// CanJoin handler validates and determines the playerID for joining players.
+                ///
+                /// This handler receives:
+                /// - `state`: Read-only current state (to check room capacity, etc.)
+                /// - `session`: PlayerSession containing playerID, deviceID, and metadata
+                /// - `ctx`: LandContext (temporary, playerID is "_pending" during validation)
+                ///
+                /// The handler can:
+                /// - Return `.allow(playerID: ...)` to allow join with a specific PlayerID
+                /// - Return `.deny(reason: ...)` to reject the join
+                /// - Throw `JoinError` to reject with a specific error
+                ///
+                /// The PlayerID returned here will be used throughout the player's session.
+                CanJoin { (state: DemoGameState, session: PlayerSession, ctx: LandContext) async throws in
+                    // Check if room is full
+                    guard state.players.count < 10 else {
+                        throw JoinError.roomIsFull
+                    }
+                    
+                    // Use playerID from PlayerSession as the PlayerID
+                    // You can customize this logic (e.g., lookup user in database, validate permissions, etc.)
+                    let playerID = PlayerID(session.playerID)
+                    
+                    // Optional: Log metadata for debugging
+                    if let deviceID = session.deviceID {
+                        print("Player joining: playerID=\(session.playerID), deviceID=\(deviceID)")
+                    }
+                    
+                    return .allow(playerID: playerID)
+                }
+                
                 OnJoin { (state: inout DemoGameState, ctx: LandContext) in
-                    let playerName = state.players[ctx.playerID] ?? "Guest"
-                    await ctx.sendEvent(DemoServerEvents.welcome("Welcome, \(playerName)!"), to: .session(ctx.sessionID))
+                    // Set initial player name as "Guest"
+                    state.players[ctx.playerID] = "Guest"
+                    await ctx.sendEvent(DemoServerEvents.welcome("Welcome, Guest!"), to: .session(ctx.sessionID))
                 }
                 
                 OnLeave { (state: inout DemoGameState, ctx: LandContext) in
+                    // Remove player from state
+                    state.players.removeValue(forKey: ctx.playerID)
                     print("Player \(ctx.playerID) left")
                 }
                 
                 Action(JoinAction.self) { (state: inout DemoGameState, action: JoinAction, ctx: LandContext) in
+                    // Update player name
                     state.players[ctx.playerID] = action.name
                     await ctx.syncNow()
                     return JoinResult(playerID: ctx.playerID.rawValue, message: "Joined as \(action.name)")

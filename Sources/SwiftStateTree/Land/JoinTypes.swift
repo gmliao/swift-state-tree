@@ -20,19 +20,20 @@ public enum JoinDecision: Sendable {
 /// Contains metadata about the joining player that can be used in the CanJoin handler
 /// to make validation decisions (e.g., checking user level, team status, etc.).
 public struct PlayerSession: Sendable {
-    /// The user's unique identifier (e.g., account ID).
-    public let userID: String
+    /// The player's unique identifier (typically derived from account/user ID).
+    /// This will be converted to `PlayerID` in the `CanJoin` handler.
+    public let playerID: String
     /// Optional device identifier.
     public let deviceID: String?
     /// Additional metadata that can be used for validation.
     public let metadata: [String: String]
     
     public init(
-        userID: String,
+        playerID: String,
         deviceID: String? = nil,
         metadata: [String: String] = [:]
     ) {
-        self.userID = userID
+        self.playerID = playerID
         self.deviceID = deviceID
         self.metadata = metadata
     }

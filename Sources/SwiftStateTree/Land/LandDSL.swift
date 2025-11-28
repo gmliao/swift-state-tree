@@ -139,8 +139,8 @@ public struct CanJoinNode<State: StateNodeProtocol>: LandNode {
 ///         throw JoinError.roomIsFull
 ///     }
 ///     
-///     // Query player data
-///     let profile = try await ctx.services.userService?.getUser(by: session.userID)
+    ///     // Query player data
+    ///     let profile = try await ctx.services.userService?.getUser(by: session.playerID)
 ///     guard let profile else {
 ///         throw JoinError.custom("User not found")
 ///     }

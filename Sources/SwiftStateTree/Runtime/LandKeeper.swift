@@ -127,7 +127,7 @@ where State: StateNodeProtocol,
         services: LandServices = LandServices()
     ) async throws -> JoinDecision {
         // Call CanJoin handler if defined
-        var decision: JoinDecision = .allow(playerID: PlayerID(session.userID))
+        var decision: JoinDecision = .allow(playerID: PlayerID(session.playerID))
         
         if let canJoinHandler = definition.lifetimeHandlers.canJoin {
             let ctx = makeContext(
@@ -145,12 +145,23 @@ where State: StateNodeProtocol,
         }
         
         // Proceed with join
-        var playerSession = players[playerID] ?? InternalPlayerSession(services: services)
+        var playerSession = players[playerID] ?? InternalPlayerSession(
+            services: services,
+            deviceID: session.deviceID,
+            metadata: session.metadata
+        )
         let isFirst = playerSession.clients.isEmpty
 
         playerSession.clients.insert(clientID)
         playerSession.lastSessionID = sessionID
         playerSession.services = services
+        // Update deviceID and metadata if provided (for reconnection scenarios)
+        if let deviceID = session.deviceID {
+            playerSession.deviceID = deviceID
+        }
+        if !session.metadata.isEmpty {
+            playerSession.metadata = session.metadata
+        }
         players[playerID] = playerSession
 
         destroyTask?.cancel()
@@ -161,7 +172,9 @@ where State: StateNodeProtocol,
             playerID: playerID,
             clientID: clientID,
             sessionID: sessionID,
-            servicesOverride: services
+            servicesOverride: services,
+            deviceID: session.deviceID,
+            metadata: session.metadata
         )
         await withMutableState { state in
             await handler(&state, ctx)
@@ -183,13 +196,18 @@ where State: StateNodeProtocol,
         session.clients.remove(clientID)
 
         if session.clients.isEmpty {
+            let deviceID = session.deviceID
+            let metadata = session.metadata
             players.removeValue(forKey: playerID)
+            
             if let handler = definition.lifetimeHandlers.onLeave {
                 let ctx = makeContext(
                     playerID: playerID,
                     clientID: clientID,
                     sessionID: session.lastSessionID ?? systemSessionID,
-                    servicesOverride: session.services
+                    servicesOverride: session.services,
+                    deviceID: deviceID,
+                    metadata: metadata
                 )
                 await withMutableState { state in
                     await handler(&state, ctx)
@@ -263,15 +281,20 @@ where State: StateNodeProtocol,
         playerID: PlayerID,
         clientID: ClientID,
         sessionID: SessionID,
-        servicesOverride: LandServices? = nil
+        servicesOverride: LandServices? = nil,
+        deviceID: String? = nil,
+        metadata: [String: String] = [:]
     ) -> LandContext {
         let services = servicesOverride ?? players[playerID]?.services ?? LandServices()
+        let playerSession = players[playerID]
         return LandContext(
             landID: definition.id,
             playerID: playerID,
             clientID: clientID,
             sessionID: sessionID,
             services: services,
+            deviceID: deviceID ?? playerSession?.deviceID,
+            metadata: metadata.isEmpty ? (playerSession?.metadata ?? [:]) : metadata,
             sendEventHandler: sendEventHandler,
             syncHandler: syncNowHandler
         )
@@ -351,5 +374,16 @@ private struct InternalPlayerSession: Sendable {
     var clients: Set<ClientID> = []
     var lastSessionID: SessionID?
     var services: LandServices
+    // PlayerSession info (from join request)
+    var deviceID: String?
+    var metadata: [String: String]
+    
+    init(services: LandServices, deviceID: String? = nil, metadata: [String: String] = [:]) {
+        self.clients = []
+        self.lastSessionID = nil
+        self.services = services
+        self.deviceID = deviceID
+        self.metadata = metadata
+    }
 }
 

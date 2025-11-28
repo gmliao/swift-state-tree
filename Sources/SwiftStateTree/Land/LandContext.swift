@@ -17,6 +17,12 @@ public struct LandContext: Sendable {
     /// Session identifier (connection level, dynamically generated for tracking)
     public let sessionID: SessionID
 
+    /// Device identifier (optional, from PlayerSession)
+    public let deviceID: String?
+
+    /// Additional metadata from PlayerSession (e.g., connectedAt, platform, etc.)
+    public let metadata: [String: String]
+
     /// Service abstractions (does not depend on HTTP)
     ///
     /// Provides access to external services like database, metrics, or logging
@@ -37,6 +43,8 @@ public struct LandContext: Sendable {
         clientID: ClientID,
         sessionID: SessionID,
         services: LandServices,
+        deviceID: String? = nil,
+        metadata: [String: String] = [:],
         sendEventHandler: @escaping @Sendable (any ServerEventPayload, EventTarget) async -> Void,
         syncHandler: @escaping @Sendable () async -> Void
     ) {
@@ -44,6 +52,8 @@ public struct LandContext: Sendable {
         self.playerID = playerID
         self.clientID = clientID
         self.sessionID = sessionID
+        self.deviceID = deviceID
+        self.metadata = metadata
         self.services = services
         self.sendEventHandler = sendEventHandler
         self.syncHandler = syncHandler

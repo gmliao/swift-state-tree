@@ -122,7 +122,7 @@ Land("BattleRoom") {
         }
 
         // 2. 查詢玩家資料（例如從 UserService / DB）
-        let profile = try await ctx.userService.loadProfile(id: session.userID)
+        let profile = try await ctx.userService.loadProfile(id: session.playerID)
 
         guard profile.level >= state.minLevel else {
             throw JoinError.levelTooLow(required: state.minLevel)

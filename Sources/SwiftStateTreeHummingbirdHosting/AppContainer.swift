@@ -105,15 +105,27 @@ public struct AppContainer<State, ClientEvents, ServerEvents> where State: State
     }
     
     /// Assemble a runnable server with Hummingbird hosting.
+    ///
+    /// - Parameters:
+    ///   - configuration: Server configuration (host, port, paths, etc.)
+    ///   - land: The Land definition
+    ///   - initialState: Initial state for the Land
+    ///   - createPlayerSession: Optional closure to create PlayerSession from sessionID and clientID.
+    ///                          This allows customizing how playerID, deviceID, and metadata are extracted
+    ///                          (e.g., from auth headers, JWT tokens, etc.).
+    ///                          Default uses sessionID as playerID.
+    ///   - configureRouter: Optional router configuration closure
     public static func makeServer(
         configuration: Configuration = Configuration(),
         land definition: Land,
         initialState: State,
+        createPlayerSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         configureRouter: ((Router<BasicWebSocketRequestContext>) -> Void)? = nil
     ) async throws -> AppContainer {
         let core = await buildCoreComponents(
             land: definition,
-            initialState: initialState
+            initialState: initialState,
+            createPlayerSession: createPlayerSession
         )
         
         let hbAdapter = HummingbirdStateTreeAdapter(transport: core.transport)
@@ -145,11 +157,13 @@ public struct AppContainer<State, ClientEvents, ServerEvents> where State: State
     
     public static func makeForTest(
         land definition: Land,
-        initialState: State
+        initialState: State,
+        createPlayerSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil
     ) async -> AppContainerForTest {
         let core = await buildCoreComponents(
             land: definition,
-            initialState: initialState
+            initialState: initialState,
+            createPlayerSession: createPlayerSession
         )
         
         return AppContainerForTest(
@@ -171,7 +185,8 @@ public struct AppContainer<State, ClientEvents, ServerEvents> where State: State
     
     private static func buildCoreComponents(
         land definition: Land,
-        initialState: State
+        initialState: State,
+        createPlayerSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil
     ) async -> CoreComponents {
         let transport = WebSocketTransport()
         let adapterHolder = TransportAdapterHolder<State, ClientEvents, ServerEvents>()
@@ -190,7 +205,8 @@ public struct AppContainer<State, ClientEvents, ServerEvents> where State: State
         let transportAdapter = TransportAdapter<State, ClientEvents, ServerEvents>(
             keeper: keeper,
             transport: transport,
-            landID: definition.id
+            landID: definition.id,
+            createPlayerSession: createPlayerSession
         )
         
         await adapterHolder.set(transportAdapter)

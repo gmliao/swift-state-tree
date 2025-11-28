@@ -251,7 +251,7 @@ func testCanJoinAllows() async throws {
                 guard state.players.count < 2 else {
                     throw JoinError.roomIsFull
                 }
-                return .allow(playerID: PlayerID(session.userID))
+                return .allow(playerID: PlayerID(session.playerID))
             }
             
             OnJoin { (state: inout DemoLandState, ctx: LandContext) in
@@ -265,7 +265,7 @@ func testCanJoinAllows() async throws {
         initialState: DemoLandState()
     )
     
-    let session1 = PlayerSession(userID: "user1")
+    let session1 = PlayerSession(playerID: "user1")
     let decision1 = try await keeper.join(
         session: session1,
         clientID: ClientID("client1"),
@@ -296,7 +296,7 @@ func testCanJoinDenies() async throws {
                 guard state.players.count < 1 else {
                     throw JoinError.roomIsFull
                 }
-                return .allow(playerID: PlayerID(session.userID))
+                return .allow(playerID: PlayerID(session.playerID))
             }
             
             OnJoin { (state: inout DemoLandState, ctx: LandContext) in
@@ -311,7 +311,7 @@ func testCanJoinDenies() async throws {
     )
     
     // First join succeeds
-    let session1 = PlayerSession(userID: "user1")
+    let session1 = PlayerSession(playerID: "user1")
     _ = try await keeper.join(
         session: session1,
         clientID: ClientID("client1"),
@@ -319,7 +319,7 @@ func testCanJoinDenies() async throws {
     )
     
     // Second join should fail
-    let session2 = PlayerSession(userID: "user2")
+    let session2 = PlayerSession(playerID: "user2")
     do {
         _ = try await keeper.join(
             session: session2,
