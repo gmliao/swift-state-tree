@@ -44,91 +44,27 @@ public enum EventTarget: Sendable {
     case players([PlayerID])
 }
 
-// MARK: - Common Response Types
-
-/// Join response containing land ID and optional state snapshot for late join
-public struct JoinResponse: Codable, Sendable {
-    public let landID: String
-    public let state: StateSnapshot?
-
-    public init(landID: String, state: StateSnapshot? = nil) {
-        self.landID = landID
-        self.state = state
-    }
-}
-
-/// Land information response
-public struct LandInfo: Codable, Sendable {
-    public let landID: String
-    public let playerCount: Int
-
-    public init(landID: String, playerCount: Int) {
-        self.landID = landID
-        self.playerCount = playerCount
-    }
-}
-
-/// Card placeholder type (users should define their own Card type)
-public struct Card: Codable, Sendable, Hashable {
-    public let id: String
-    public let value: Int
-
-    public init(id: String, value: Int) {
-        self.id = id
-        self.value = value
-    }
-}
-
 // MARK: - Land Services
 
 /// Service abstraction structure (does not depend on HTTP)
 ///
 /// Services are injected at the Transport layer and accessed through LandContext.
 /// This allows Land DSL to use services without knowing transport details.
+///
+/// Currently supports dynamic service registration via type-based lookup.
+/// This is a temporary implementation and may be refined in the future.
 public struct LandServices: Sendable {
-    /// Timeline service (optional)
-    public let timelineService: TimelineService?
-    /// User service (optional)
-    public let userService: UserService?
-
-    public init(
-        timelineService: TimelineService? = nil,
-        userService: UserService? = nil
-    ) {
-        self.timelineService = timelineService
-        self.userService = userService
+    private var services: [ObjectIdentifier: any Sendable] = [:]
+    
+    public init() {}
+    
+    /// Register a service instance with a specific type identifier
+    public mutating func register<Service: Sendable>(_ service: Service, as type: Service.Type) {
+        services[ObjectIdentifier(type)] = service
     }
-}
-
-/// Timeline service protocol (does not depend on HTTP)
-public protocol TimelineService: Sendable {
-    func fetch(page: Int) async throws -> [Post]
-}
-
-/// User service protocol (does not depend on HTTP)
-public protocol UserService: Sendable {
-    func getUser(by id: String) async throws -> User?
-}
-
-/// Placeholder types for services
-/// These are example types - users should define their own types based on their domain
-
-public struct Post: Codable, Sendable {
-    public let id: String
-    public let content: String
-
-    public init(id: String, content: String) {
-        self.id = id
-        self.content = content
-    }
-}
-
-public struct User: Codable, Sendable {
-    public let id: String
-    public let name: String
-
-    public init(id: String, name: String) {
-        self.id = id
-        self.name = name
+    
+    /// Retrieve a service by its type
+    public func get<Service: Sendable>(_ type: Service.Type) -> Service? {
+        return services[ObjectIdentifier(type)] as? Service
     }
 }
