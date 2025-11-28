@@ -41,24 +41,44 @@
             "preLaunchTask": "swift: Build Release SwiftStateTreeMacros"
         },
         {
-            "type": "swift",
+            "type": "lldb",
             "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:swift-state-tree-internal}",
             "name": "Debug SwiftStateTreeBenchmarks",
             "preLaunchTask": "swift: Build Debug SwiftStateTreeBenchmarks",
             "target": "SwiftStateTreeBenchmarks",
-            "configuration": "debug"
+            "configuration": "debug",
+            "program": "${workspaceFolder:swift-state-tree-internal}/.build/debug/SwiftStateTreeBenchmarks"
         },
         {
-            "type": "swift",
+            "type": "lldb",
             "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:swift-state-tree-internal}",
             "name": "Release SwiftStateTreeBenchmarks",
             "preLaunchTask": "swift: Build Release SwiftStateTreeBenchmarks",
             "target": "SwiftStateTreeBenchmarks",
-            "configuration": "release"
+            "configuration": "release",
+            "program": "${workspaceFolder:swift-state-tree-internal}/.build/release/SwiftStateTreeBenchmarks"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:swift-state-tree-internal}",
+            "name": "Debug SwiftStateTreeHummingbirdDemo",
+            "program": "${workspaceFolder:swift-state-tree-internal}/.build/debug/SwiftStateTreeHummingbirdDemo",
+            "preLaunchTask": "swift: Build Debug SwiftStateTreeHummingbirdDemo"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:swift-state-tree-internal}",
+            "name": "Release SwiftStateTreeHummingbirdDemo",
+            "program": "${workspaceFolder:swift-state-tree-internal}/.build/release/SwiftStateTreeHummingbirdDemo",
+            "preLaunchTask": "swift: Build Release SwiftStateTreeHummingbirdDemo"
         }
     ]
 }

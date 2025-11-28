@@ -28,6 +28,11 @@ let package = Package(
         .executable(
             name: "SwiftStateTreeBenchmarks",
             targets: ["SwiftStateTreeBenchmarks"]
+        ),
+        // 🕊️ Hummingbird Demo executable
+        .executable(
+            name: "SwiftStateTreeHummingbirdDemo",
+            targets: ["SwiftStateTreeHummingbirdDemo"]
         )
     ],
     dependencies: [
@@ -134,6 +139,20 @@ let package = Package(
             exclude: [
                 "README.md"
             ]
+        ),
+        
+        // 🕊️ Hummingbird Demo executable
+        .executableTarget(
+            name: "SwiftStateTreeHummingbirdDemo",
+            dependencies: [
+                "SwiftStateTree",
+                "SwiftStateTreeMacros",
+                "SwiftStateTreeTransport",
+                "SwiftStateTreeHummingbird",
+                .product(name: "Hummingbird", package: "hummingbird"),
+                .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket")
+            ],
+            path: "Sources/SwiftStateTreeHummingbirdDemo"
         )
     ]
 )
