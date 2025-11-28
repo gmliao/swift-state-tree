@@ -39,6 +39,7 @@ public struct JoinResult: Codable, Sendable {
 
 // MARK: - Demo Events
 
+@GenerateLandEventHandlers
 public enum DemoClientEvents: ClientEventPayload, Hashable {
     case chat(String)
     case ping
@@ -48,29 +49,6 @@ public enum DemoServerEvents: ServerEventPayload {
     case welcome(String)
     case chatMessage(String, from: String)
     case pong
-}
-
-// Manual event handler helpers (macro cannot be used at global scope in Swift 6)
-public func OnChat<State: StateNodeProtocol>(
-    _ body: @escaping @Sendable (inout State, String, LandContext) async -> Void
-) -> AnyClientEventHandler<State, DemoClientEvents> {
-    On(DemoClientEvents.self) { state, event, ctx in
-        guard case .chat(let message) = event else {
-            return
-        }
-        await body(&state, message, ctx)
-    }
-}
-
-public func OnPing<State: StateNodeProtocol>(
-    _ body: @escaping @Sendable (inout State, LandContext) async -> Void
-) -> AnyClientEventHandler<State, DemoClientEvents> {
-    On(DemoClientEvents.self) { state, event, ctx in
-        guard case .ping = event else {
-            return
-        }
-        await body(&state, ctx)
-    }
 }
 
 
@@ -141,7 +119,7 @@ public enum DemoGame {
                 }
                 
                 
-                OnChat { (state: inout DemoGameState, message: String, ctx: LandContext) in
+                DemoClientEvents.OnChat { (state: inout DemoGameState, message: String, ctx: LandContext) in
                     state.messageCount += 1
                     let playerName = state.players[ctx.playerID] ?? "Unknown"
                     await ctx.sendEvent(
@@ -150,7 +128,7 @@ public enum DemoGame {
                     )
                 }
                 
-                OnPing { (state: inout DemoGameState, ctx: LandContext) in
+                DemoClientEvents.OnPing { (state: inout DemoGameState, ctx: LandContext) in
                     await ctx.sendEvent(DemoServerEvents.pong, to: .session(ctx.sessionID))
                 }
             }
@@ -164,4 +142,3 @@ public enum DemoGame {
         }
     }
 }
-

@@ -49,9 +49,8 @@ public macro Land(
 /// }
 /// // Generates: OnReady, OnMove, OnChat
 /// ```
-@attached(peer, names: arbitrary)
+@attached(member, names: arbitrary)
 public macro GenerateLandEventHandlers() = #externalMacro(
     module: "SwiftStateTreeMacros",
     type: "GenerateLandEventHandlersMacro"
 )
-

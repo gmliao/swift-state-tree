@@ -172,10 +172,10 @@ private extension TypeSyntax {
 
 // MARK: - GenerateLandEventHandlers Macro
 
-public struct GenerateLandEventHandlersMacro: PeerMacro {
+public struct GenerateLandEventHandlersMacro: MemberMacro {
     public static func expansion(
         of attribute: AttributeSyntax,
-        providingPeersOf declaration: some DeclSyntaxProtocol,
+        providingMembersOf declaration: some DeclGroupSyntax,
         in context: some MacroExpansionContext
     ) throws -> [DeclSyntax] {
         guard let enumDecl = declaration.as(EnumDeclSyntax.self) else {
@@ -186,13 +186,12 @@ public struct GenerateLandEventHandlersMacro: PeerMacro {
             )
         }
 
-        let enumName = enumDecl.name.text
         var generated: [DeclSyntax] = []
 
         for member in enumDecl.memberBlock.members {
             guard let caseDecl = member.decl.as(EnumCaseDeclSyntax.self) else { continue }
             for element in caseDecl.elements {
-                let function = try generateHandler(for: element, enumName: enumName)
+                let function = try generateHandler(for: element)
                 generated.append(function)
             }
         }
@@ -201,8 +200,7 @@ public struct GenerateLandEventHandlersMacro: PeerMacro {
     }
 
     private static func generateHandler(
-        for element: EnumCaseElementSyntax,
-        enumName: String
+        for element: EnumCaseElementSyntax
     ) throws -> DeclSyntax {
         let caseName = element.name.text
         let handlerName = "On" + caseName.prefix(1).uppercased() + caseName.dropFirst()
@@ -248,8 +246,8 @@ public struct GenerateLandEventHandlersMacro: PeerMacro {
             """
             public static func \(raw: handlerName)<State: StateNodeProtocol>(
                 _ body: @escaping @Sendable (inout State\(raw: closureTypeTail)) async -> Void
-            ) -> AnyClientEventHandler<State, \(raw: enumName)> {
-                On(\(raw: enumName).self) { state, event, ctx in
+            ) -> AnyClientEventHandler<State, Self> {
+                On(Self.self) { state, event, ctx in
                     guard case \(raw: pattern) = event else {
                         return
                     }
@@ -259,41 +257,6 @@ public struct GenerateLandEventHandlersMacro: PeerMacro {
             """
 
         return functionDecl
-    }
-    
-    private static func generateConvenienceFunction(
-        for element: EnumCaseElementSyntax,
-        enumName: String,
-        namespaceName: String
-    ) throws -> DeclSyntax {
-        let caseName = element.name.text
-        let handlerName = "On" + caseName.prefix(1).uppercased() + caseName.dropFirst()
-
-        let associatedValues = element.parameterClause?.parameters.enumerated().map { index, param -> AssociatedValueInfo in
-            let label = param.firstName?.text
-            let type = param.type.trimmed.description
-            let variableName = label ?? "value\(index)"
-            return AssociatedValueInfo(label: label, type: type, variableName: variableName)
-        } ?? []
-
-        let closureTypeTail: String
-        if associatedValues.isEmpty {
-            closureTypeTail = ", LandContext"
-        } else {
-            let params = associatedValues.map { ", \($0.type)" }.joined()
-            closureTypeTail = "\(params), LandContext"
-        }
-
-        let convenienceFunc: DeclSyntax =
-            """
-            public func \(raw: handlerName)<State: StateNodeProtocol>(
-                _ body: @escaping @Sendable (inout State\(raw: closureTypeTail)) async -> Void
-            ) -> AnyClientEventHandler<State, \(raw: enumName)> {
-                \(raw: namespaceName).\(raw: handlerName)(body)
-            }
-            """
-
-        return convenienceFunc
     }
 }
 
@@ -319,4 +282,3 @@ private enum EventMacroDiagnostics: DiagnosticMessage {
 
     var severity: DiagnosticSeverity { .error }
 }
-

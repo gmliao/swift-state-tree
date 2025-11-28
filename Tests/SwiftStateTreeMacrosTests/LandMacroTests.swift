@@ -54,27 +54,27 @@ final class LandMacroTests {
             enum ClientEvents: ClientEventPayload {
                 case ready
                 case chat(String)
-            }
 
-            public func OnReady<State: StateNodeProtocol>(
-                _ body: @escaping @Sendable (inout State, LandContext) async -> Void
-            ) -> AnyClientEventHandler<State, ClientEvents> {
-                On(ClientEvents.self) { state, event, ctx in
-                    guard case .ready = event else {
-                        return
+                public static func OnReady<State: StateNodeProtocol>(
+                    _ body: @escaping @Sendable (inout State, LandContext) async -> Void
+                ) -> AnyClientEventHandler<State, ClientEvents> {
+                    On(ClientEvents.self) { state, event, ctx in
+                        guard case .ready = event else {
+                            return
+                        }
+                        await body(&state, ctx)
                     }
-                    await body(&state, ctx)
                 }
-            }
 
-            public func OnChat<State: StateNodeProtocol>(
-                _ body: @escaping @Sendable (inout State, String, LandContext) async -> Void
-            ) -> AnyClientEventHandler<State, ClientEvents> {
-                On(ClientEvents.self) { state, event, ctx in
-                    guard case .chat(let value0) = event else {
-                        return
+                public static func OnChat<State: StateNodeProtocol>(
+                    _ body: @escaping @Sendable (inout State, String, LandContext) async -> Void
+                ) -> AnyClientEventHandler<State, ClientEvents> {
+                    On(ClientEvents.self) { state, event, ctx in
+                        guard case .chat(let value0) = event else {
+                            return
+                        }
+                        await body(&state, value0, ctx)
                     }
-                    await body(&state, value0, ctx)
                 }
             }
             """,
@@ -82,4 +82,3 @@ final class LandMacroTests {
         )
     }
 }
-

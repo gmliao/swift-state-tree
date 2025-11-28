@@ -104,7 +104,7 @@ func testTransportAdapterConnectionLifecycle() async throws {
     
     // Assert: Player should be in state
     var state = await keeper.currentState()
-    let playerID = PlayerID("player-\(sessionID.rawValue)")
+    let playerID = PlayerID(sessionID.rawValue)
     #expect(state.players[playerID] == "Joined")
     
     // Act: Disconnect
