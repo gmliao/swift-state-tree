@@ -85,6 +85,7 @@ public struct JSONSchema: Codable, Sendable {
     public var ref: String?
     public var description: String?
     public var additionalProperties: Box<JSONSchema>?
+    public var defaultValue: SnapshotValue?
     
     // Custom extensions
     public var xStateTree: StateTreeMetadata?
@@ -98,6 +99,7 @@ public struct JSONSchema: Codable, Sendable {
         ref: String? = nil,
         description: String? = nil,
         additionalProperties: JSONSchema? = nil,
+        defaultValue: SnapshotValue? = nil,
         xStateTree: StateTreeMetadata? = nil
     ) {
         self.type = type
@@ -108,6 +110,7 @@ public struct JSONSchema: Codable, Sendable {
         self.ref = ref
         self.description = description
         self.additionalProperties = additionalProperties.map { Box($0) }
+        self.defaultValue = defaultValue
         self.xStateTree = xStateTree
     }
     
@@ -120,6 +123,7 @@ public struct JSONSchema: Codable, Sendable {
         case ref = "$ref"
         case description
         case additionalProperties
+        case defaultValue = "default"
         case xStateTree = "x-stateTree"
     }
 }

@@ -149,7 +149,7 @@ func testTransportAdapterSendEvent() async throws {
     
     // Note: In a real test, we would verify the message was sent through the transport
     // For now, we just verify no errors occurred
-    #expect(true)
+    #expect(Bool(true))
 }
 
 @Test("TransportAdapter syncs state")
@@ -183,5 +183,5 @@ func testTransportAdapterSyncNow() async throws {
     
     // Note: In a real test, we would verify the state snapshot was sent
     // For now, we just verify no errors occurred
-    #expect(true)
+    #expect(Bool(true))
 }

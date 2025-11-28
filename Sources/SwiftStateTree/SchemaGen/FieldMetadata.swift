@@ -15,10 +15,20 @@ public struct FieldMetadata: Sendable {
     /// The kind of node this field represents.
     public let nodeKind: NodeKind
     
-    public init(name: String, type: Any.Type, policy: PolicyType? = nil, nodeKind: NodeKind) {
+    /// The default value of the field captured as a snapshot-friendly value.
+    public let defaultValue: SnapshotValue?
+    
+    public init(
+        name: String,
+        type: Any.Type,
+        policy: PolicyType? = nil,
+        nodeKind: NodeKind,
+        defaultValue: SnapshotValue? = nil
+    ) {
         self.name = name
         self.type = type
         self.policy = policy
         self.nodeKind = nodeKind
+        self.defaultValue = defaultValue
     }
 }

@@ -80,10 +80,13 @@ public struct SchemableMacro: MemberMacro {
                     typeName = typeAnnotation.type.description.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
                 
+                let initializer = binding.initializer?.value.description.trimmingCharacters(in: .whitespacesAndNewlines)
+                
                 properties.append(
                     PropertyInfo(
                         name: propertyName,
-                        typeName: typeName
+                        typeName: typeName,
+                        initializer: initializer
                     )
                 )
             }
@@ -99,6 +102,17 @@ public struct SchemableMacro: MemberMacro {
         for (index, property) in properties.enumerated() {
             let typeName = property.typeName ?? "Any"
             
+            let defaultValueExpr: String
+            if let initializer = property.initializer {
+                if initializer == "nil" {
+                    defaultValueExpr = "SnapshotValue.null"
+                } else {
+                    defaultValueExpr = "try? SnapshotValue.make(from: (\(initializer)) as Any)"
+                }
+            } else {
+                defaultValueExpr = "nil"
+            }
+            
             let trailingComma = index < properties.count - 1 ? TokenSyntax.commaToken() : nil
             
             // We use SchemaHelper.determineNodeKind(from: Type.self) to get the node kind at runtime
@@ -109,7 +123,8 @@ public struct SchemableMacro: MemberMacro {
                         name: "\(raw: property.name)",
                         type: \(raw: typeName).self,
                         policy: nil,
-                        nodeKind: SchemaHelper.determineNodeKind(from: \(raw: typeName).self)
+                        nodeKind: SchemaHelper.determineNodeKind(from: \(raw: typeName).self),
+                        defaultValue: \(raw: defaultValueExpr)
                     )
                     """
                 ),
@@ -134,4 +149,5 @@ public struct SchemableMacro: MemberMacro {
 private struct PropertyInfo {
     let name: String
     let typeName: String?
+    let initializer: String?
 }

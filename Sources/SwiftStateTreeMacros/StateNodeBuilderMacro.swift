@@ -126,13 +126,24 @@ public struct StateNodeBuilderMacro: MemberMacro {
                     }
                 }
                 
+                // Capture the initializer expression (if any) for default value extraction
+                // Remove comments from the initializer string
+                var initializer = binding.initializer?.value.description.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let initStr = initializer {
+                    // Remove inline comments (everything after //)
+                    if let commentIndex = initStr.range(of: "//") {
+                        initializer = String(initStr[..<commentIndex.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                }
+                
                 properties.append((
                     PropertyInfo(
                         name: propertyName,
                         hasSync: hasSync,
                         hasInternal: hasInternal,
                         policyType: policyType,
-                        typeName: typeName
+                        typeName: typeName,
+                        initializer: initializer
                     ),
                     Syntax(variableDecl)
                 ))
@@ -474,6 +485,17 @@ public struct StateNodeBuilderMacro: MemberMacro {
             let policyTypeName = policyType.rawValue
             let typeName = property.typeName ?? "Any"
             
+            let defaultValueExpr: String
+            if let initializer = property.initializer {
+                if initializer == "nil" {
+                    defaultValueExpr = "SnapshotValue.null"
+                } else {
+                    defaultValueExpr = "try? SnapshotValue.make(from: (\(initializer)) as Any)"
+                }
+            } else {
+                defaultValueExpr = "nil"
+            }
+            
             let trailingComma = index < syncProperties.count - 1 ? TokenSyntax.commaToken() : nil
             
             // We use SchemaHelper.determineNodeKind(from: Type.self) to get the node kind at runtime
@@ -484,7 +506,8 @@ public struct StateNodeBuilderMacro: MemberMacro {
                         name: "\(raw: property.name)",
                         type: \(raw: typeName).self,
                         policy: .\(raw: policyTypeName),
-                        nodeKind: SchemaHelper.determineNodeKind(from: \(raw: typeName).self)
+                        nodeKind: SchemaHelper.determineNodeKind(from: \(raw: typeName).self),
+                        defaultValue: \(raw: defaultValueExpr)
                     )
                     """
                 ),
@@ -858,6 +881,7 @@ private struct PropertyInfo {
     let hasInternal: Bool
     let policyType: LocalPolicyType?
     let typeName: String?  // Type name for optimization
+    let initializer: String?
 }
 
 /// Container type information

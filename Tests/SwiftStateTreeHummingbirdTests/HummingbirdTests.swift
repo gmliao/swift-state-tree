@@ -110,7 +110,7 @@ func testHummingbirdAdapterConnection() async throws {
     _ = hbAdapter
     
     // Assert: Verify setup completed without errors
-    #expect(true)
+    #expect(Bool(true))
 }
 
 @Test("Hummingbird app can be configured with StateTree")
@@ -163,7 +163,7 @@ func testHummingbirdAppConfiguration() async throws {
     // 4. Verify responses
     // 5. Stop the app
     
-    #expect(true)
+    #expect(Bool(true))
 }
 
 @Test("Hummingbird adapter emits transport JSON after client events")

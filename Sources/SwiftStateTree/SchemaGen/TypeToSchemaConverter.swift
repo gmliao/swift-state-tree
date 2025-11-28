@@ -123,12 +123,16 @@ public struct TypeToSchemaConverter {
         var required: [String] = []
         
         for field in fieldMetadata {
-            let fieldSchema = convert(
+            var fieldSchema = convert(
                 field.type,
                 metadata: field,
                 definitions: &definitions,
                 visitedTypes: &visitedTypes
             )
+            
+            if let defaultValue = field.defaultValue {
+                fieldSchema.defaultValue = defaultValue
+            }
             
             properties[field.name] = fieldSchema
             
@@ -197,12 +201,16 @@ public struct TypeToSchemaConverter {
             var required: [String] = []
             
             for field in fieldMetadata {
-                let fieldSchema = convert(
+                var fieldSchema = convert(
                     field.type,
                     metadata: field,
                     definitions: &definitions,
                     visitedTypes: &visitedTypes
                 )
+                
+                if let defaultValue = field.defaultValue {
+                    fieldSchema.defaultValue = defaultValue
+                }
                 
                 properties[field.name] = fieldSchema
                 required.append(field.name)
@@ -235,4 +243,3 @@ public struct TypeToSchemaConverter {
         return JSONSchema(ref: "#/defs/\(typeName)")
     }
 }
-

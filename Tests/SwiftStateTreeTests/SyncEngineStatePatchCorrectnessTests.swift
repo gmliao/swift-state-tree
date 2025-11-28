@@ -630,5 +630,97 @@ struct SyncEngineStatePatchCorrectnessTests {
             Issue.record("Should return .diff")
         }
     }
+    
+    @Test("Dictionary incremental update: Only modified key generates patch, unchanged keys are not included")
+    func testDictionaryIncrementalUpdate_OnlyModifiedKey_GeneratesPatch() throws {
+        // Arrange
+        var syncEngine = SyncEngine()
+        var state = DiffTestStateRootNode()
+        let alice = PlayerID("alice")
+        let bob = PlayerID("bob")
+        let charlie = PlayerID("charlie")
+        
+        // Initialize dictionary with multiple keys
+        state.players[alice] = "Alice"
+        state.players[bob] = "Bob"
+        state.players[charlie] = "Charlie"
+        _ = try syncEngine.generateDiff(for: alice, from: state)
+        state.clearDirty()
+        
+        // Act - Only modify one key (alice), leave others unchanged
+        state.players[alice] = "Alice Updated"
+        // bob and charlie remain unchanged
+        
+        let update = try syncEngine.generateDiff(for: alice, from: state)
+        
+        // Assert - Should only have patch for the modified key
+        if case .diff(let patches) = update {
+            // Should have exactly one patch for the modified key
+            let alicePatches = patches.filter { $0.path == "/players/alice" || $0.path.hasSuffix("/alice") }
+            #expect(alicePatches.count == 1, "Should have exactly 1 patch for modified key (alice)")
+            
+            // Verify the patch is for alice
+            if let alicePatch = alicePatches.first {
+                if case .set(let value) = alicePatch.operation {
+                    #expect(value.stringValue == "Alice Updated", "Value should be updated string")
+                } else {
+                    Issue.record("Operation should be .set for modified key")
+                }
+            }
+            
+            // Verify no patches for unchanged keys
+            let bobPatches = patches.filter { $0.path == "/players/bob" || $0.path.hasSuffix("/bob") }
+            let charliePatches = patches.filter { $0.path == "/players/charlie" || $0.path.hasSuffix("/charlie") }
+            #expect(bobPatches.isEmpty, "Should NOT have patch for unchanged key (bob)")
+            #expect(charliePatches.isEmpty, "Should NOT have patch for unchanged key (charlie)")
+            
+            // Total patches should be 1 (only for the modified key)
+            #expect(patches.count == 1, "Should have exactly 1 patch total (only for modified key)")
+        } else {
+            Issue.record("Should return .diff with patches")
+        }
+    }
+    
+    @Test("Dictionary incremental update: Multiple keys modified generate multiple patches")
+    func testDictionaryIncrementalUpdate_MultipleKeysModified_GeneratesMultiplePatches() throws {
+        // Arrange
+        var syncEngine = SyncEngine()
+        var state = DiffTestStateRootNode()
+        let alice = PlayerID("alice")
+        let bob = PlayerID("bob")
+        let charlie = PlayerID("charlie")
+        
+        // Initialize dictionary with multiple keys
+        state.players[alice] = "Alice"
+        state.players[bob] = "Bob"
+        state.players[charlie] = "Charlie"
+        _ = try syncEngine.generateDiff(for: alice, from: state)
+        state.clearDirty()
+        
+        // Act - Modify two keys, leave one unchanged
+        state.players[alice] = "Alice Updated"
+        state.players[bob] = "Bob Updated"
+        // charlie remains unchanged
+        
+        let update = try syncEngine.generateDiff(for: alice, from: state)
+        
+        // Assert - Should have patches for both modified keys
+        if case .diff(let patches) = update {
+            // Should have patches for both modified keys
+            let alicePatches = patches.filter { $0.path == "/players/alice" || $0.path.hasSuffix("/alice") }
+            let bobPatches = patches.filter { $0.path == "/players/bob" || $0.path.hasSuffix("/bob") }
+            #expect(alicePatches.count == 1, "Should have patch for modified key (alice)")
+            #expect(bobPatches.count == 1, "Should have patch for modified key (bob)")
+            
+            // Verify no patch for unchanged key
+            let charliePatches = patches.filter { $0.path == "/players/charlie" || $0.path.hasSuffix("/charlie") }
+            #expect(charliePatches.isEmpty, "Should NOT have patch for unchanged key (charlie)")
+            
+            // Total patches should be 2 (one for each modified key)
+            #expect(patches.count == 2, "Should have exactly 2 patches (one for each modified key)")
+        } else {
+            Issue.record("Should return .diff with patches")
+        }
+    }
 }
 
