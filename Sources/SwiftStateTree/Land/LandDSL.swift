@@ -118,6 +118,49 @@ public func OnLeave<State: StateNodeProtocol>(
     OnLeaveNode(handler: body)
 }
 
+public struct CanJoinNode<State: StateNodeProtocol>: LandNode {
+    public let handler: @Sendable (State, PlayerSession, LandContext) async throws -> JoinDecision
+}
+
+/// Registers a handler called before a player joins to validate the join request.
+///
+/// This handler is executed BEFORE the player is added to the authoritative state.
+/// It receives a read-only view of the state and can perform async validation
+/// (e.g., querying databases, checking player levels, etc.).
+///
+/// If the handler throws an error or returns `.deny`, the join is rejected.
+/// If it returns `.allow(playerID)`, the player is added to the Land with that PlayerID.
+///
+/// Example:
+/// ```swift
+/// CanJoin { state, session, ctx async throws in
+///     // Check room capacity
+///     guard state.players.count < 8 else {
+///         throw JoinError.roomIsFull
+///     }
+///     
+///     // Query player data
+///     let profile = try await ctx.services.userService?.getUser(by: session.userID)
+///     guard let profile else {
+///         throw JoinError.custom("User not found")
+///     }
+///     
+///     // Validate player level
+///     guard profile.level >= 5 else {
+///         throw JoinError.levelTooLow(required: 5)
+///     }
+///     
+///     return .allow(playerID: PlayerID(profile.id))
+/// }
+/// ```
+///
+/// - Parameter body: The async closure that validates the join request.
+public func CanJoin<State: StateNodeProtocol>(
+    _ body: @escaping @Sendable (State, PlayerSession, LandContext) async throws -> JoinDecision
+) -> CanJoinNode<State> {
+    CanJoinNode(handler: body)
+}
+
 public struct AllowedClientEventsNode: LandNode {
     public let allowed: Set<AllowedEventIdentifier>
 }
@@ -160,14 +203,18 @@ public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
     public var tickInterval: Duration?
     public var destroyWhenEmptyAfter: Duration?
     public var persistInterval: Duration?
-    public var tickHandler: (@Sendable (inout State, LandContext) async -> Void)?
+    /// Handler called periodically based on `tickInterval`.
+    ///
+    /// **Design Note**: This handler is synchronous to maintain stable tick rates.
+    /// For async operations (e.g., flushing metrics), use `ctx.spawn { await ... }`.
+    public var tickHandler: (@Sendable (inout State, LandContext) -> Void)?
     public var onShutdown: (@Sendable (State) async -> Void)?
 
     public init(
         tickInterval: Duration? = nil,
         destroyWhenEmptyAfter: Duration? = nil,
         persistInterval: Duration? = nil,
-        tickHandler: (@Sendable (inout State, LandContext) async -> Void)? = nil,
+        tickHandler: (@Sendable (inout State, LandContext) -> Void)? = nil,
         onShutdown: (@Sendable (State) async -> Void)? = nil
     ) {
         self.tickInterval = tickInterval
@@ -215,12 +262,28 @@ public func Lifetime<State: StateNodeProtocol>(
 
 /// Configures a periodic tick handler.
 ///
+/// **Design Note**: The tick handler is synchronous to ensure stable and predictable
+/// tick rates. If you need to perform async operations (e.g., flushing metrics to a
+/// remote service), use `ctx.spawn` to execute them in the background without blocking
+/// the tick loop.
+///
+/// Example:
+/// ```swift
+/// Tick(every: .milliseconds(50)) { state, ctx in
+///     state.stepSimulation()  // Synchronous game logic
+///     
+///     ctx.spawn {
+///         await ctx.flushMetricsIfNeeded()  // Async I/O in background
+///     }
+/// }
+/// ```
+///
 /// - Parameters:
 ///   - interval: The duration between ticks.
-///   - body: The handler to execute on each tick.
+///   - body: The synchronous handler to execute on each tick.
 public func Tick<State: StateNodeProtocol>(
     every interval: Duration,
-    _ body: @escaping @Sendable (inout State, LandContext) async -> Void
+    _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     { config in
         config.tickInterval = interval

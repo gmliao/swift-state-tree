@@ -17,7 +17,7 @@ where State: StateNodeProtocol,
     public let definition: LandDefinition<State, ClientE, ServerE>
 
     private var state: State
-    private var players: [PlayerID: PlayerSession] = [:]
+    private var players: [PlayerID: InternalPlayerSession] = [:]
 
     private let sendEventHandler: @Sendable (any ServerEventPayload, EventTarget) async -> Void
     private let syncNowHandler: @Sendable () async -> Void
@@ -69,10 +69,10 @@ where State: StateNodeProtocol,
 
     // MARK: - Player Lifecycle
 
-    /// Handles a player joining the Land.
+    /// Handles a player joining the Land (legacy method for backward compatibility).
     ///
-    /// If this is the player's first connection, the `OnJoin` handler is called.
-    /// Multiple clients/sessions for the same player are tracked.
+    /// This method creates a PlayerSession internally and calls the new join method.
+    /// For new code, consider using the overload that accepts PlayerSession.
     ///
     /// - Parameters:
     ///   - playerID: The player's unique identifier.
@@ -85,7 +85,7 @@ where State: StateNodeProtocol,
         sessionID: SessionID,
         services: LandServices = LandServices()
     ) async {
-        var session = players[playerID] ?? PlayerSession(services: services)
+        var session = players[playerID] ?? InternalPlayerSession(services: services)
         let isFirst = session.clients.isEmpty
 
         session.clients.insert(clientID)
@@ -106,6 +106,68 @@ where State: StateNodeProtocol,
         await withMutableState { state in
             await handler(&state, ctx)
         }
+    }
+
+    /// Handles a player joining the Land with session-based validation.
+    ///
+    /// This method supports the CanJoin handler for pre-validation before adding
+    /// the player to the authoritative state.
+    ///
+    /// - Parameters:
+    ///   - session: The player session information.
+    ///   - clientID: The client instance identifier.
+    ///   - sessionID: The session/connection identifier.
+    ///   - services: Services to inject into the LandContext.
+    /// - Returns: JoinDecision indicating if the join was allowed or denied.
+    /// - Throws: Errors from the CanJoin handler if join validation fails.
+    public func join(
+        session: PlayerSession,
+        clientID: ClientID,
+        sessionID: SessionID,
+        services: LandServices = LandServices()
+    ) async throws -> JoinDecision {
+        // Call CanJoin handler if defined
+        var decision: JoinDecision = .allow(playerID: PlayerID(session.userID))
+        
+        if let canJoinHandler = definition.lifetimeHandlers.canJoin {
+            let ctx = makeContext(
+                playerID: PlayerID("_pending"), // Temporary ID for validation
+                clientID: clientID,
+                sessionID: sessionID,
+                servicesOverride: services
+            )
+            decision = try await canJoinHandler(state, session, ctx)
+        }
+        
+        // If denied, return early
+        guard case .allow(let playerID) = decision else {
+            return decision
+        }
+        
+        // Proceed with join
+        var playerSession = players[playerID] ?? InternalPlayerSession(services: services)
+        let isFirst = playerSession.clients.isEmpty
+
+        playerSession.clients.insert(clientID)
+        playerSession.lastSessionID = sessionID
+        playerSession.services = services
+        players[playerID] = playerSession
+
+        destroyTask?.cancel()
+        destroyTask = nil
+
+        guard isFirst, let handler = definition.lifetimeHandlers.onJoin else { return decision }
+        let ctx = makeContext(
+            playerID: playerID,
+            clientID: clientID,
+            sessionID: sessionID,
+            servicesOverride: services
+        )
+        await withMutableState { state in
+            await handler(&state, ctx)
+        }
+        
+        return decision
     }
 
     /// Handles a player/client leaving the Land.
@@ -231,7 +293,7 @@ where State: StateNodeProtocol,
         tickTask = Task { [weak self] in
             while let self, !Task.isCancelled {
                 try? await Task.sleep(for: interval)
-                await self.runTick()
+                await self.runTick()  // Must use await to cross actor boundary
             }
         }
     }
@@ -244,9 +306,9 @@ where State: StateNodeProtocol,
             sessionID: systemSessionID,
             servicesOverride: LandServices()
         )
-        await withMutableState { state in
-            await handler(&state, ctx)
-        }
+        var copy = state
+        handler(&copy, ctx)  // Handler itself is sync
+        state = copy
     }
 
     private func scheduleDestroyIfNeeded() {
@@ -285,9 +347,8 @@ where State: StateNodeProtocol,
     }
 }
 
-private struct PlayerSession: Sendable {
+private struct InternalPlayerSession: Sendable {
     var clients: Set<ClientID> = []
     var lastSessionID: SessionID?
     var services: LandServices
 }
-

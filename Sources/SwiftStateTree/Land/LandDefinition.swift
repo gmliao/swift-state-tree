@@ -39,6 +39,12 @@ public struct LandDefinition<
 /// These handlers define how the Land reacts to lifecycle events such as players joining/leaving,
 /// periodic ticks, and system shutdown.
 public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
+    /// Handler called before a player joins to validate the join request.
+    ///
+    /// This is called BEFORE the player is added to the state (read-only view).
+    /// Can perform async validation and throw errors to reject the join.
+    public var canJoin: (@Sendable (State, PlayerSession, LandContext) async throws -> JoinDecision)?
+
     /// Handler called when a player successfully joins the Land.
     ///
     /// This is called after the player has been added to the authoritative state.
@@ -56,9 +62,9 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
 
     /// Handler called periodically based on `tickInterval`.
     ///
-    /// Use this for game loop logic, physics simulation, or periodic state updates.
-    /// It is recommended to keep this handler synchronous or fast to maintain a stable tick rate.
-    public var tickHandler: (@Sendable (inout State, LandContext) async -> Void)?
+    /// **Design Note**: This handler is synchronous to maintain stable tick rates.
+    /// For async operations (e.g., metrics, logging), use `ctx.spawn { await ... }`.
+    public var tickHandler: (@Sendable (inout State, LandContext) -> Void)?
 
     /// Duration to wait before destroying the Land when it becomes empty.
     public var destroyWhenEmptyAfter: Duration?
@@ -72,14 +78,16 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
     public var onShutdown: (@Sendable (State) async -> Void)?
 
     public init(
+        canJoin: (@Sendable (State, PlayerSession, LandContext) async throws -> JoinDecision)? = nil,
         onJoin: (@Sendable (inout State, LandContext) async -> Void)? = nil,
         onLeave: (@Sendable (inout State, LandContext) async -> Void)? = nil,
         tickInterval: Duration? = nil,
-        tickHandler: (@Sendable (inout State, LandContext) async -> Void)? = nil,
+        tickHandler: (@Sendable (inout State, LandContext) -> Void)? = nil,
         destroyWhenEmptyAfter: Duration? = nil,
         persistInterval: Duration? = nil,
         onShutdown: (@Sendable (State) async -> Void)? = nil
     ) {
+        self.canJoin = canJoin
         self.onJoin = onJoin
         self.onLeave = onLeave
         self.tickInterval = tickInterval

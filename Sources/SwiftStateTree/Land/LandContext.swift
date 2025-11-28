@@ -67,4 +67,25 @@ public struct LandContext: Sendable {
     public func syncNow() async {
         await syncHandler()
     }
+
+    /// Spawn a background task without blocking the current handler.
+    ///
+    /// This is especially useful in OnTick handlers where you want to maintain
+    /// a stable tick rate but still perform async operations like flushing metrics.
+    ///
+    /// Example:
+    /// ```swift
+    /// OnTick(every: .milliseconds(50)) { state, ctx in
+    ///     state.stepSimulation()  // sync logic
+    ///     
+    ///     ctx.spawn {
+    ///         await ctx.flushMetricsIfNeeded()  // async I/O in background
+    ///     }
+    /// }
+    /// ```
+    public func spawn(_ operation: @escaping @Sendable () async -> Void) {
+        Task {
+            await operation()
+        }
+    }
 }

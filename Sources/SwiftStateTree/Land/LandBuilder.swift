@@ -22,6 +22,7 @@ enum LandBuilder {
         var lifetimeConfig = LifetimeConfig<State>()
         var hasLifetimeConfig = false
 
+        var canJoin: (@Sendable (State, PlayerSession, LandContext) async throws -> JoinDecision)?
         var onJoin: (@Sendable (inout State, LandContext) async -> Void)?
         var onLeave: (@Sendable (inout State, LandContext) async -> Void)?
         var actionHandlers: [AnyActionHandler<State>] = []
@@ -36,6 +37,8 @@ enum LandBuilder {
                     allowedClientEvents.formUnion(allowed.allowed)
                 case let rules as RulesNode:
                     ingest(nodes: rules.nodes)
+                case let canJoinNode as CanJoinNode<State>:
+                    canJoin = canJoinNode.handler
                 case let join as OnJoinNode<State>:
                     onJoin = join.handler
                 case let leave as OnLeaveNode<State>:
@@ -67,6 +70,7 @@ enum LandBuilder {
         )
 
         let lifetimeHandlers = LifetimeHandlers<State>(
+            canJoin: canJoin,
             onJoin: onJoin,
             onLeave: onLeave,
             tickInterval: lifetimeConfig.tickInterval,
