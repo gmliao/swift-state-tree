@@ -1,0 +1,97 @@
+{
+  "defs" : {
+    "DemoGameState" : {
+      "properties" : {
+        "messageCount" : {
+          "type" : "integer"
+        },
+        "players" : {
+          "additionalProperties" : {
+            "type" : "object"
+          },
+          "type" : "object",
+          "x-stateTree" : {
+            "nodeKind" : "map",
+            "sync" : {
+              "policy" : "broadcast"
+            }
+          }
+        },
+        "ticks" : {
+          "type" : "integer"
+        }
+      },
+      "required" : [
+        "players",
+        "messageCount",
+        "ticks"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "object"
+      }
+    },
+    "DemoServerEvents" : {
+      "type" : "object"
+    },
+    "JoinAction" : {
+      "type" : "object"
+    },
+    "StateDiff" : {
+      "properties" : {
+        "patches" : {
+          "items" : {
+            "properties" : {
+              "op" : {
+                "type" : "string"
+              },
+              "path" : {
+                "type" : "string"
+              },
+              "value" : {
+                "type" : "object"
+              }
+            },
+            "required" : [
+              "op",
+              "path"
+            ],
+            "type" : "object"
+          },
+          "type" : "array"
+        }
+      },
+      "required" : [
+        "patches"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    }
+  },
+  "lands" : {
+    "demo-game" : {
+      "actions" : {
+        "join" : {
+          "$ref" : "#\/defs\/JoinAction"
+        }
+      },
+      "events" : {
+        "DemoServerEvents" : {
+          "$ref" : "#\/defs\/DemoServerEvents"
+        }
+      },
+      "stateType" : "DemoGameState",
+      "sync" : {
+        "diff" : {
+          "$ref" : "#\/defs\/StateDiff"
+        },
+        "snapshot" : {
+          "$ref" : "#\/defs\/DemoGameState"
+        }
+      }
+    }
+  },
+  "version" : "0.1.0"
+}

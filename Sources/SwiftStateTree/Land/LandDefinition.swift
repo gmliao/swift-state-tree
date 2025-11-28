@@ -120,6 +120,13 @@ public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
     public func canHandle(_ actionType: Any.Type) -> Bool {
         actionType == type
     }
+    
+    /// Get the action type that this handler can handle.
+    ///
+    /// This is useful for schema generation and introspection.
+    public func getActionType() -> Any.Type {
+        return type
+    }
 
     public func invoke<A: ActionPayload>(
         _ state: inout State,

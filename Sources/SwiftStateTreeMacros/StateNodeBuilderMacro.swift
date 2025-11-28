@@ -59,7 +59,8 @@ public struct StateNodeBuilderMacro: MemberMacro {
             DeclSyntax(broadcastSnapshotMethod),
             DeclSyntax(isDirtyMethod),
             DeclSyntax(getDirtyFieldsMethod),
-            DeclSyntax(clearDirtyMethod)
+            DeclSyntax(clearDirtyMethod),
+            DeclSyntax(try generateGetFieldMetadata(properties: properties))
         ] + containerHelperMethods
     }
     
@@ -462,6 +463,47 @@ public struct StateNodeBuilderMacro: MemberMacro {
         )
     }
     
+    /// Generate getFieldMetadata() method
+    private static func generateGetFieldMetadata(properties: [PropertyInfo]) throws -> FunctionDeclSyntax {
+        let syncProperties = properties.filter { $0.hasSync }
+        
+        var arrayElements: [ArrayElementSyntax] = []
+        
+        for (index, property) in syncProperties.enumerated() {
+            let policyType = property.policyType ?? .unknown
+            let policyTypeName = policyType.rawValue
+            let typeName = property.typeName ?? "Any"
+            
+            let trailingComma = index < syncProperties.count - 1 ? TokenSyntax.commaToken() : nil
+            
+            // We use SchemaHelper.determineNodeKind(from: Type.self) to get the node kind at runtime
+            let element = ArrayElementSyntax(
+                expression: ExprSyntax(
+                    """
+                    FieldMetadata(
+                        name: "\(raw: property.name)",
+                        type: \(raw: typeName).self,
+                        policy: .\(raw: policyTypeName),
+                        nodeKind: SchemaHelper.determineNodeKind(from: \(raw: typeName).self)
+                    )
+                    """
+                ),
+                trailingComma: trailingComma
+            )
+            arrayElements.append(element)
+        }
+        
+        let arrayExpr = ArrayExprSyntax(elements: ArrayElementListSyntax(arrayElements))
+        
+        return try FunctionDeclSyntax(
+            """
+            public static func getFieldMetadata() -> [FieldMetadata] {
+                return \(arrayExpr)
+            }
+            """
+        )
+    }
+
     /// Generate helper methods for container types (Dictionary, Array, Set)
     /// These methods automatically mark the field as dirty when modifying containers
     private static func generateContainerHelperMethods(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> [DeclSyntax] {
@@ -932,6 +974,7 @@ struct SwiftStateTreeMacrosPlugin: CompilerPlugin {
         StateNodeBuilderMacro.self,
         SnapshotConvertibleMacro.self,
         LandMacro.self,
-        GenerateLandEventHandlersMacro.self
+        GenerateLandEventHandlersMacro.self,
+        SchemableMacro.self
     ]
 }

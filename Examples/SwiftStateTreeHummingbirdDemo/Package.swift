@@ -11,6 +11,10 @@ let package = Package(
         .executable(
             name: "SwiftStateTreeHummingbirdDemo",
             targets: ["SwiftStateTreeHummingbirdDemo"]
+        ),
+        .executable(
+            name: "SchemaGen",
+            targets: ["SchemaGen"]
         )
     ],
     dependencies: [
@@ -31,7 +35,14 @@ let package = Package(
                 .product(name: "SwiftStateTreeHummingbirdHosting", package: "SwiftStateTree")
             ],
             path: "Sources/SwiftStateTreeHummingbirdDemo"
+        ),
+        .executableTarget(
+            name: "SchemaGen",
+            dependencies: [
+                "SwiftStateTreeHummingbirdDemoContent",
+                .product(name: "SwiftStateTree", package: "SwiftStateTree")
+            ],
+            path: "Sources/SchemaGen"
         )
     ]
 )
-

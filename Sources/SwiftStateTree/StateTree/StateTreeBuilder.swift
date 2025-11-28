@@ -60,3 +60,22 @@ public macro SnapshotConvertible() = #externalMacro(
     type: "SnapshotConvertibleMacro"
 )
 
+/// Macro that generates `getFieldMetadata()` for Actions and Events.
+///
+/// This macro analyzes the struct's stored properties and generates a `static func getFieldMetadata()`
+/// method that returns metadata for schema generation.
+///
+/// Example:
+/// ```swift
+/// @Schemable
+/// struct MyAction: ActionPayload {
+///     let id: String
+///     let count: Int
+/// }
+/// ```
+@attached(member, names: named(getFieldMetadata))
+public macro Schemable() = #externalMacro(
+    module: "SwiftStateTreeMacros",
+    type: "SchemableMacro"
+)
+
