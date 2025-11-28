@@ -89,11 +89,15 @@ core (swift-state-tree)
 swift-state-tree/
 ├── Sources/
 │   ├── SwiftStateTree/              # core：核心模組
+│   │   ├── Action/                  # ActionPayload protocol
+│   │   ├── Event/                   # EventPayload protocols
+│   │   ├── State/                   # StateProtocol
 │   │   ├── StateTree/               # StateTree 定義
 │   │   ├── Sync/                    # @Sync 同步規則
 │   │   ├── Land/                   # Land DSL
-│   │   ├── Runtime/                 # LandKeeper
-│   │   └── SchemaGen/              # Schema 生成器
+│   │   ├── Runtime/                 # Runtime 執行器（LandKeeper）
+│   │   ├── SchemaGen/              # Schema 生成器
+│   │   └── Support/                # 工具類
 │   ├── SwiftStateTreeTransport/     # transport：網路傳輸模組
 │   ├── SwiftStateTreeServerApp/     # app：Server 應用模組
 │   └── SwiftStateTreeCodeGen/      # codegen：Schema 生成工具

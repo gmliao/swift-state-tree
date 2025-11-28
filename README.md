@@ -98,11 +98,15 @@ swift test
 SwiftStateTree/
 ├── Sources/
 │   ├── SwiftStateTree/              # core：核心模組
+│   │   ├── Action/                  # ActionPayload protocol（核心通訊概念）
+│   │   ├── Event/                   # EventPayload protocols（核心通訊概念）
+│   │   ├── State/                   # StateProtocol（核心狀態概念）
 │   │   ├── StateTree/               # StateTree 定義（StateNode、StateTreeEngine）
 │   │   ├── Sync/                    # @Sync 同步規則（SyncPolicy、SyncEngine）
 │   │   ├── Land/                   # Land DSL（LandDefinition、LandContext）
-│   │   ├── Runtime/                 # LandKeeper（不含 Transport）
-│   │   └── SchemaGen/              # Schema 生成器（JSON Schema）
+│   │   ├── Runtime/                 # Runtime 執行器（LandKeeper）
+│   │   ├── SchemaGen/              # Schema 生成器（JSON Schema）
+│   │   └── Support/                # 工具類（AnyCodable 等）
 │   │
 │   ├── SwiftStateTreeTransport/     # transport：網路傳輸模組
 │   │   ├── Transport/              # Transport 協議（GameTransport）
