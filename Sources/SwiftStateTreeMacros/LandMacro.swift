@@ -246,7 +246,7 @@ public struct GenerateLandEventHandlersMacro: PeerMacro {
 
         let functionDecl: DeclSyntax =
             """
-            public func \(raw: handlerName)<State: StateNodeProtocol>(
+            public static func \(raw: handlerName)<State: StateNodeProtocol>(
                 _ body: @escaping @Sendable (inout State\(raw: closureTypeTail)) async -> Void
             ) -> AnyClientEventHandler<State, \(raw: enumName)> {
                 On(\(raw: enumName).self) { state, event, ctx in
@@ -259,6 +259,41 @@ public struct GenerateLandEventHandlersMacro: PeerMacro {
             """
 
         return functionDecl
+    }
+    
+    private static func generateConvenienceFunction(
+        for element: EnumCaseElementSyntax,
+        enumName: String,
+        namespaceName: String
+    ) throws -> DeclSyntax {
+        let caseName = element.name.text
+        let handlerName = "On" + caseName.prefix(1).uppercased() + caseName.dropFirst()
+
+        let associatedValues = element.parameterClause?.parameters.enumerated().map { index, param -> AssociatedValueInfo in
+            let label = param.firstName?.text
+            let type = param.type.trimmed.description
+            let variableName = label ?? "value\(index)"
+            return AssociatedValueInfo(label: label, type: type, variableName: variableName)
+        } ?? []
+
+        let closureTypeTail: String
+        if associatedValues.isEmpty {
+            closureTypeTail = ", LandContext"
+        } else {
+            let params = associatedValues.map { ", \($0.type)" }.joined()
+            closureTypeTail = "\(params), LandContext"
+        }
+
+        let convenienceFunc: DeclSyntax =
+            """
+            public func \(raw: handlerName)<State: StateNodeProtocol>(
+                _ body: @escaping @Sendable (inout State\(raw: closureTypeTail)) async -> Void
+            ) -> AnyClientEventHandler<State, \(raw: enumName)> {
+                \(raw: namespaceName).\(raw: handlerName)(body)
+            }
+            """
+
+        return convenienceFunc
     }
 }
 

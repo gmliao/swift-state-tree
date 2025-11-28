@@ -50,6 +50,30 @@ public enum DemoServerEvents: ServerEventPayload {
     case pong
 }
 
+// Manual event handler helpers (macro cannot be used at global scope in Swift 6)
+public func OnChat<State: StateNodeProtocol>(
+    _ body: @escaping @Sendable (inout State, String, LandContext) async -> Void
+) -> AnyClientEventHandler<State, DemoClientEvents> {
+    On(DemoClientEvents.self) { state, event, ctx in
+        guard case .chat(let message) = event else {
+            return
+        }
+        await body(&state, message, ctx)
+    }
+}
+
+public func OnPing<State: StateNodeProtocol>(
+    _ body: @escaping @Sendable (inout State, LandContext) async -> Void
+) -> AnyClientEventHandler<State, DemoClientEvents> {
+    On(DemoClientEvents.self) { state, event, ctx in
+        guard case .ping = event else {
+            return
+        }
+        await body(&state, ctx)
+    }
+}
+
+
 // MARK: - Land Definition
 
 public enum DemoGame {
@@ -116,18 +140,18 @@ public enum DemoGame {
                     return JoinResult(playerID: ctx.playerID.rawValue, message: "Joined as \(action.name)")
                 }
                 
-                On(DemoClientEvents.self) { (state: inout DemoGameState, event: DemoClientEvents, ctx: LandContext) in
-                    switch event {
-                    case .chat(let message):
-                        state.messageCount += 1
-                        let playerName = state.players[ctx.playerID] ?? "Unknown"
-                        await ctx.sendEvent(
-                            DemoServerEvents.chatMessage(message, from: playerName),
-                            to: .all
-                        )
-                    case .ping:
-                        await ctx.sendEvent(DemoServerEvents.pong, to: .session(ctx.sessionID))
-                    }
+                
+                OnChat { (state: inout DemoGameState, message: String, ctx: LandContext) in
+                    state.messageCount += 1
+                    let playerName = state.players[ctx.playerID] ?? "Unknown"
+                    await ctx.sendEvent(
+                        DemoServerEvents.chatMessage(message, from: playerName),
+                        to: .all
+                    )
+                }
+                
+                OnPing { (state: inout DemoGameState, ctx: LandContext) in
+                    await ctx.sendEvent(DemoServerEvents.pong, to: .session(ctx.sessionID))
                 }
             }
             

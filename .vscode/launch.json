@@ -41,44 +41,44 @@
             "preLaunchTask": "swift: Build Release SwiftStateTreeMacros"
         },
         {
-            "type": "lldb",
+            "type": "swift",
             "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:swift-state-tree-internal}",
             "name": "Debug SwiftStateTreeBenchmarks",
             "preLaunchTask": "swift: Build Debug SwiftStateTreeBenchmarks",
             "target": "SwiftStateTreeBenchmarks",
-            "configuration": "debug",
-            "program": "${workspaceFolder:swift-state-tree-internal}/.build/debug/SwiftStateTreeBenchmarks"
+            "configuration": "debug"
         },
         {
-            "type": "lldb",
+            "type": "swift",
             "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:swift-state-tree-internal}",
             "name": "Release SwiftStateTreeBenchmarks",
             "preLaunchTask": "swift: Build Release SwiftStateTreeBenchmarks",
             "target": "SwiftStateTreeBenchmarks",
-            "configuration": "release",
-            "program": "${workspaceFolder:swift-state-tree-internal}/.build/release/SwiftStateTreeBenchmarks"
+            "configuration": "release"
         },
         {
-            "type": "lldb",
+            "type": "swift",
             "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:swift-state-tree-internal}",
             "name": "Debug SwiftStateTreeHummingbirdDemo",
-            "program": "${workspaceFolder:swift-state-tree-internal}/.build/debug/SwiftStateTreeHummingbirdDemo",
-            "preLaunchTask": "swift: Build Debug SwiftStateTreeHummingbirdDemo"
+            "preLaunchTask": "swift: Build Debug SwiftStateTreeHummingbirdDemo",
+            "target": "SwiftStateTreeHummingbirdDemo",
+            "configuration": "debug"
         },
         {
-            "type": "lldb",
+            "type": "swift",
             "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:swift-state-tree-internal}",
             "name": "Release SwiftStateTreeHummingbirdDemo",
-            "program": "${workspaceFolder:swift-state-tree-internal}/.build/release/SwiftStateTreeHummingbirdDemo",
-            "preLaunchTask": "swift: Build Release SwiftStateTreeHummingbirdDemo"
+            "preLaunchTask": "swift: Build Release SwiftStateTreeHummingbirdDemo",
+            "target": "SwiftStateTreeHummingbirdDemo",
+            "configuration": "release"
         }
     ]
 }
