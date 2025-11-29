@@ -5,6 +5,7 @@ import Foundation
 /// Protocol for actions (RPC)
 ///
 /// Each action must define its own Response type.
-public protocol ActionPayload: Codable, Sendable {
+/// Action payloads must provide schema metadata via a macro-generated implementation.
+public protocol ActionPayload: Codable, Sendable, SchemaMetadataProvider {
     associatedtype Response: Codable & Sendable
 }

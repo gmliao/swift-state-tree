@@ -18,6 +18,7 @@ public struct DemoGameState: StateNodeProtocol {
 
 // MARK: - Demo Actions
 
+@Payload
 public struct JoinAction: ActionPayload {
     public typealias Response = JoinResult
     public let name: String
@@ -105,4 +106,3 @@ public enum DemoGame {
         }
     }
 }
-

@@ -5,6 +5,11 @@
 
 > 本文件說明 Land DSL 中房間（Room）的生命週期行為、Hook 呼叫順序與責任分界。  
 > v1.1 將 Hook 全面升級為支援 `async/await`，以便整合 DB、Redis、外部服務等 I/O。
+>
+> **相關文檔**：
+> - [DESIGN_MULTI_ROOM_ARCHITECTURE.md](./DESIGN_MULTI_ROOM_ARCHITECTURE.md) - 多房間架構與配對服務設計
+> - [DESIGN_APP_CONTAINER_HOSTING.md](./DESIGN_APP_CONTAINER_HOSTING.md) - AppContainer 與 Hosting 設計
+> - [DESIGN_RUNTIME.md](./DESIGN_RUNTIME.md) - Runtime 結構設計
 
 ---
 
@@ -232,7 +237,10 @@ Land("BattleRoom") {
 ## 7. 未來擴充方向
 
 * `CanSpectate`：支援觀戰模式（允許加入但不列入玩家清單）。
-* Matchmaking 整合：由外部 Matchmaking Service 決定房型與房間，再進入 Land Join 流程。
+* **Matchmaking 整合**：由外部 Matchmaking Service 決定房型與房間，再進入 Land Join 流程。
+  * 詳見 [DESIGN_MULTI_ROOM_ARCHITECTURE.md](./DESIGN_MULTI_ROOM_ARCHITECTURE.md) - 多房間架構與配對服務設計
+* **多房間架構**：支援單一應用管理多個遊戲房間，每個房間有獨立的 `LandKeeper`。
+  * 詳見 [DESIGN_MULTI_ROOM_ARCHITECTURE.md](./DESIGN_MULTI_ROOM_ARCHITECTURE.md)
 * Room Persistence：
 
   * 房間狀態快照（snapshot）

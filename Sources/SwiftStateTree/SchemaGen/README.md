@@ -89,7 +89,7 @@ try SchemaGenCLI.generate(
 
 - Schema Generator 應從 StateTree 定義自動生成 JSON Schema
 - 不應依賴網路或 Transport 層
-- 利用 `@StateNodeBuilder` 和 `@Schemable` macro 生成的 `getFieldMetadata()` 方法
+- 利用 `@StateNodeBuilder` 和 `@Payload` macro 生成的 `getFieldMetadata()` 方法
 - 支援遞迴提取巢狀的 StateNode
 - 符合 [DESIGN_PROTOCOL_SCHEMA.md](../../../docs/design/DESIGN_PROTOCOL_SCHEMA.md) 定義的格式
 
@@ -125,7 +125,6 @@ try SchemaGenCLI.generate(
 
 ## 注意事項
 
-- Action 和 Event 型別需要標記 `@Schemable` macro 以提供 metadata
+- Action 和 Event 型別需要標記 `@Payload` macro 以提供 metadata
 - StateNode 型別需要標記 `@StateNodeBuilder` macro（已自動提供 `getFieldMetadata()`）
 - 目前 Action ID 的生成是基於型別名稱的簡化轉換，未來可以改進為更結構化的方式
-

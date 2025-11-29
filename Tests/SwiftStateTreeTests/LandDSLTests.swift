@@ -17,6 +17,7 @@ struct DemoLandState: StateNodeProtocol {
     var spawnedTaskCount: Int = 0
 }
 
+@Payload
 struct JoinAction: ActionPayload {
     typealias Response = JoinResult
     let name: String

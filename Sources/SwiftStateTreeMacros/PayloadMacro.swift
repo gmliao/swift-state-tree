@@ -1,4 +1,5 @@
 import SwiftCompilerPlugin
+@preconcurrency import SwiftDiagnostics
 import SwiftSyntax
 import SwiftSyntaxBuilder
 import SwiftSyntaxMacros
@@ -10,7 +11,7 @@ import SwiftSyntaxMacros
 ///
 /// Example:
 /// ```swift
-/// @Schemable
+/// @Payload
 /// struct MyAction: ActionPayload {
 ///     let id: String
 ///     let count: Int
@@ -28,7 +29,7 @@ import SwiftSyntaxMacros
 ///     }
 /// }
 /// ```
-public struct SchemableMacro: MemberMacro {
+public struct PayloadMacro: MemberMacro {
     public static func expansion(
         of node: AttributeSyntax,
         providingMembersOf declaration: some DeclGroupSyntax,
@@ -36,12 +37,18 @@ public struct SchemableMacro: MemberMacro {
     ) throws -> [DeclSyntax] {
         // Only support struct declarations
         guard let structDecl = declaration.as(StructDeclSyntax.self) else {
-            // TODO: Add diagnostic
-            return []
+            let error = PayloadDiagnostics.onlyStructsSupported
+            context.diagnose(Diagnostic(node: Syntax(declaration), message: error))
+            throw DiagnosticsError(diagnostics: [Diagnostic(node: Syntax(declaration), message: error)])
         }
         
         // Collect all stored properties
-        let properties = collectStoredProperties(from: structDecl)
+        var diagnostics: [Diagnostic] = []
+        let properties = collectStoredProperties(from: structDecl, diagnostics: &diagnostics)
+        
+        if !diagnostics.isEmpty {
+            throw DiagnosticsError(diagnostics: diagnostics)
+        }
         
         // Generate getFieldMetadata() method
         let getFieldMetadataMethod = try generateGetFieldMetadata(properties: properties)
@@ -50,7 +57,7 @@ public struct SchemableMacro: MemberMacro {
     }
     
     /// Collect all stored properties from a struct declaration
-    private static func collectStoredProperties(from structDecl: StructDeclSyntax) -> [PropertyInfo] {
+    private static func collectStoredProperties(from structDecl: StructDeclSyntax, diagnostics: inout [Diagnostic]) -> [PropertyInfo] {
         var properties: [PropertyInfo] = []
         
         for member in structDecl.memberBlock.members {
@@ -78,6 +85,15 @@ public struct SchemableMacro: MemberMacro {
                 var typeName: String? = nil
                 if let typeAnnotation = binding.typeAnnotation {
                     typeName = typeAnnotation.type.description.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                
+                if let typeName, typeName.contains("?") {
+                    diagnostics.append(
+                        Diagnostic(
+                            node: Syntax(binding.pattern),
+                            message: PayloadDiagnostics.optionalNotSupported(propertyName: propertyName)
+                        )
+                    )
                 }
                 
                 let initializer = binding.initializer?.value.description.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -150,4 +166,24 @@ private struct PropertyInfo {
     let name: String
     let typeName: String?
     let initializer: String?
+}
+
+private struct PayloadDiagnostics: DiagnosticMessage, @unchecked Sendable {
+    let message: String
+    let diagnosticID: MessageID
+    let severity: DiagnosticSeverity
+    
+    static let onlyStructsSupported: PayloadDiagnostics = PayloadDiagnostics(
+        message: "@Payload can only be applied to struct declarations",
+        diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "payloadOnlyStructs"),
+        severity: .error
+    )
+    
+    static func optionalNotSupported(propertyName: String) -> PayloadDiagnostics {
+        PayloadDiagnostics(
+            message: "Payload field '\(propertyName)' cannot be Optional; use a concrete value with a default instead",
+            diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "payloadOptionalNotSupported"),
+            severity: .error
+        )
+    }
 }

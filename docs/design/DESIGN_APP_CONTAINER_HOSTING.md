@@ -377,6 +377,69 @@ Examples/
 - ✅ 保持主專案結構簡潔，只包含 library 相關的程式碼
 
 
+## 多房間架構與命名
+
+### 當前限制
+
+目前的 `AppContainer` 設計假設整個應用只有一個房間：
+- 建立單一的 `LandKeeper` 實例
+- 所有連線的玩家都連到同一個 Land 實例
+- 雖然 `LandKeeper` 是 `actor`（thread-safe），但所有操作都在同一個 actor 上序列化
+
+### 多房間架構規劃
+
+**相關文檔**：詳見 [DESIGN_MULTI_ROOM_ARCHITECTURE.md](./DESIGN_MULTI_ROOM_ARCHITECTURE.md)
+
+**設計方向**：
+
+1. **LandContainer（單一房間容器）**：
+   - 將目前 `AppContainer` 的功能提取為 `LandContainer`
+   - 管理單一房間的完整生命週期
+   - 封裝 `LandKeeper`、`TransportAdapter`、`WebSocketTransport`
+
+2. **LandManager（多房間管理器）**：
+   - 管理多個 `LandContainer` 實例
+   - 提供房間的建立、查詢、銷毀
+   - 路由連線到正確的房間
+   - 每個房間有獨立的 `LandKeeper`（actor isolation），可並行執行
+
+3. **MatchmakingService（配對服務）**：
+   - 獨立於 `LandManager`，負責玩家配對邏輯
+   - 根據規則（等級、區域、遊戲模式等）將玩家分組
+   - 決定要建立新房間或加入現有房間
+
+4. **LobbyContainer（配對大廳）**：
+   - 提供一個固定的「配對大廳」房間
+   - 玩家等待配對時的臨時空間
+   - 顯示配對狀態、等待中的玩家列表
+
+5. **AppContainer（應用層級容器）**：
+   - 管理整個應用的生命週期
+   - 組裝所有服務（MatchmakingService、LandManager、LobbyContainer）
+   - 支援單房間和多房間兩種模式
+   - 提供向後兼容的 API
+
+### 命名建議
+
+| 當前名稱 | 建議名稱 | 說明 |
+|---------|---------|------|
+| `AppContainer` | `LandContainer` | 單一房間容器（目前 `AppContainer` 的功能） |
+| - | `LandManager` | 多房間管理器（新組件） |
+| - | `MatchmakingService` | 配對服務（新組件） |
+| - | `LobbyContainer` | 配對大廳容器（新組件） |
+| - | `AppContainer` | 應用層級容器（管理所有服務） |
+
+### 遷移策略
+
+1. **階段 1：新增新組件**
+   - 實作 `LandContainer`、`LandManager`、`MatchmakingService`、`LobbyContainer`
+   - 保留現有 `AppContainer` 作為單房間模式的便利方法
+
+2. **階段 2：重構現有 API**
+   - 將 `AppContainer` 重構為應用層級容器
+   - 提供 `makeSingleRoomServer()` 作為向後兼容的便利方法
+   - 提供 `makeMultiRoomServer()` 作為新的多房間 API
+
 ## 總結
 
 ### 當前實作狀態
@@ -389,6 +452,7 @@ Examples/
 2. **組裝方式**：
    - ✅ Demo target 透過 `AppContainer` 統一組裝，`main.swift` 僅負責呼叫
    - ✅ 測試可透過 `AppContainerForTest` 共用相同 wiring
+   - ⚠️ 目前僅支援單一房間模式
 
 3. **測試**：
    - ✅ 可以單獨測試 Runtime 邏輯
@@ -396,15 +460,21 @@ Examples/
 
 ### 未來規劃
 
-1. **Persistence 層**（📅 尚未實作）：
+1. **多房間架構**（📅 規劃中）：
+   - 實作 `LandContainer` 和 `LandManager` 支援多房間
+   - 實作 `MatchmakingService` 和 `LobbyContainer` 支援配對
+   - 詳見 [DESIGN_MULTI_ROOM_ARCHITECTURE.md](./DESIGN_MULTI_ROOM_ARCHITECTURE.md)
+
+2. **Persistence 層**（📅 尚未實作）：
    - 未來可加入 `SwiftStateTreePersistencePostgres` 模組
    - 實作 Repository 模式，提供資料存取抽象
 
-2. **AppContainer 擴充**（🔄 建議）：
+3. **AppContainer 擴充**（🔄 建議）：
    - 待 Persistence/Domain Services 可用時，擴充 `Configuration` 注入對應服務
    - 視需要提供 Vapor/NIO host 版本的 Container
+   - 重構為應用層級容器，支援多房間架構
 
-3. **Demo 專案獨立**（✅ 已完成）：
+4. **Demo 專案獨立**（✅ 已完成）：
   - Hummingbird Demo 位於 `Examples/SwiftStateTreeHummingbirdDemo`
   - 主專案 `Sources/` 僅保留 library/transport 程式碼
 
@@ -414,4 +484,5 @@ Examples/
 - ✅ 可以在單元測試裡跑真正的 Runtime、產生實際 JSON，再做驗證
 - ✅ Transport 層抽象化，易於替換不同的 web framework
 - ✅ Example / Demo 已拆出 `Examples/`，可共用 `AppContainer` 作為啟動模板
+- 📅 未來可擴展為多房間架構，支援大型多人遊戲場景
 

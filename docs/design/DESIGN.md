@@ -38,13 +38,18 @@
 - **[DESIGN_COMMUNICATION.md](./DESIGN_COMMUNICATION.md)**：Action 與 Event 通訊模式、WebSocket 傳輸、路由機制
 
 ### Land DSL
-- **[DESIGN_REALM_DSL.md](./DESIGN_REALM_DSL.md)**：領域宣告語法、Action 處理、Event 處理、LandContext
+- **[DESIGN_LAND_DSL.md](./DESIGN_LAND_DSL.md)**：Land DSL 語法、Action 處理、Event 處理、LandContext
+- **[DESIGN_LAND-DSL-ROOM_LIFECYCLE.md](./DESIGN_LAND-DSL-ROOM_LIFECYCLE.md)**：房間生命週期、Hook 呼叫順序、async/await 支援
 
 ### Transport 層
 - **[DESIGN_TRANSPORT.md](./DESIGN_TRANSPORT.md)**：網路傳輸抽象、Transport 協議、服務注入
 
 ### Runtime 結構
 - **[DESIGN_RUNTIME.md](./DESIGN_RUNTIME.md)**：LandKeeper、SyncEngine 的運行時結構
+
+### Server 架構
+- **[DESIGN_APP_CONTAINER_HOSTING.md](./DESIGN_APP_CONTAINER_HOSTING.md)**：AppContainer 與 Hosting 設計、服務組裝
+- **[DESIGN_MULTI_ROOM_ARCHITECTURE.md](./DESIGN_MULTI_ROOM_ARCHITECTURE.md)**：多房間架構、配對服務、房間管理設計
 
 ### 客戶端 SDK 與程式碼生成
 - **[DESIGN_CLIENT_SDK.md](./DESIGN_CLIENT_SDK.md)**：客戶端 SDK 自動生成、Code-gen 架構設計、TypeScript 支援
@@ -135,4 +140,6 @@ swift-state-tree/
 
 ### 架構深入
 - Runtime 運作：參考 [DESIGN_RUNTIME.md](./DESIGN_RUNTIME.md)
+- 多房間架構：參考 [DESIGN_MULTI_ROOM_ARCHITECTURE.md](./DESIGN_MULTI_ROOM_ARCHITECTURE.md)
+- Server 組裝：參考 [DESIGN_APP_CONTAINER_HOSTING.md](./DESIGN_APP_CONTAINER_HOSTING.md)
 - 多伺服器架構：參考 [DESIGN_TRANSPORT.md](./DESIGN_TRANSPORT.md) 的「多伺服器架構設計」章節

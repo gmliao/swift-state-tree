@@ -21,11 +21,11 @@ func stateNodeMetadataIncludesDefaultValues() {
     #expect(tagsField?.defaultValue == .array([.string("alpha"), .string("beta")]))
 }
 
-@Test("Schemable captures default values in FieldMetadata")
-func schemableMetadataIncludesDefaultValues() {
+@Test("Payload captures default values in FieldMetadata")
+func payloadMetadataIncludesDefaultValues() {
     struct EmptyResponse: Codable, Sendable {}
     
-    @Schemable
+    @Payload
     struct ExampleAction: ActionPayload {
         typealias Response = EmptyResponse
         

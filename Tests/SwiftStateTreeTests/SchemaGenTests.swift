@@ -33,8 +33,8 @@ struct TestNestedStateNode: StateNodeProtocol {
     init() {}
 }
 
-/// Test Action with @Schemable
-@Schemable
+/// Test Action with @Payload
+@Payload
 struct TestAction: ActionPayload {
     typealias Response = TestActionResponse
     let id: String
@@ -48,7 +48,7 @@ struct TestActionResponse: Codable, Sendable {
 }
 
 /// Test Event
-@Schemable
+@Payload
 struct TestEvent: ServerEventPayload {
     let type: String
     let data: String
@@ -67,7 +67,7 @@ func testSchemaExtractorBasic() throws {
         init() {}
     }
     
-    @Schemable
+    @Payload
     struct SimpleAction: ActionPayload {
         typealias Response = String
         let input: String
@@ -413,4 +413,3 @@ func testSchemaHelperNodeKind() {
     // Test StateNode
     #expect(SchemaHelper.determineNodeKind(from: TestSchemaStateNode.self) == .object)
 }
-

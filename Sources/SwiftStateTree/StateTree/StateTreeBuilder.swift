@@ -67,15 +67,14 @@ public macro SnapshotConvertible() = #externalMacro(
 ///
 /// Example:
 /// ```swift
-/// @Schemable
+/// @Payload
 /// struct MyAction: ActionPayload {
 ///     let id: String
 ///     let count: Int
 /// }
 /// ```
 @attached(member, names: named(getFieldMetadata))
-public macro Schemable() = #externalMacro(
+public macro Payload() = #externalMacro(
     module: "SwiftStateTreeMacros",
-    type: "SchemableMacro"
+    type: "PayloadMacro"
 )
-
