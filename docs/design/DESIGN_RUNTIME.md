@@ -4,6 +4,7 @@
 > 
 > 相關文檔：
 > - [DESIGN_SYNC_FIRSTSYNC.md](./DESIGN_SYNC_FIRSTSYNC.md) - 首次同步機制（First Sync）
+> - [DESIGN_MULTI_ROOM_ARCHITECTURE.md](./DESIGN_MULTI_ROOM_ARCHITECTURE.md) - 多房間架構與並行執行
 
 
 ## Runtime 大致結構：LandKeeper + SyncEngine
@@ -427,6 +428,47 @@ var hands: [PlayerID: HandState] = [:]      // 每個人看到不同
 //    - 玩家 A：{ players.B.hpCurrent: 90, hands.A.cards: [...] }
 //    - 玩家 B：{ players.B.hpCurrent: 90, hands.B.cards: [...] }
 ```
+
+---
+
+## 並行執行與 Actor 模型
+
+### LandKeeper 的 Actor 隔離
+
+`LandKeeper` 是 `actor`，這意味著：
+
+1. **單一房間內的序列化**：
+   - 同一個 `LandKeeper` 實例內的所有操作會序列化執行
+   - 確保房間狀態的一致性，避免資料競態
+
+2. **不同房間的並行執行**：
+   - 每個房間有獨立的 `LandKeeper` 實例（不同的 actor）
+   - 不同 actor 之間的操作可以並行執行
+   - Swift runtime 會自動管理 thread pool
+
+### 多房間並行處理
+
+在多房間架構中，可以使用 `withTaskGroup` 並行處理多個房間：
+
+```swift
+// ✅ 並行執行所有房間的 tick
+await withTaskGroup(of: Void.self) { group in
+    for room in rooms {
+        group.addTask {
+            // 每個房間的 LandKeeper 是獨立的 actor
+            // 可以並行執行
+            await room.keeper.tick()
+        }
+    }
+}
+```
+
+**關鍵點**：
+- `LandManager` 的操作（取得房間列表）是序列化的，但很快
+- 不同房間的 `LandKeeper` 操作可以並行執行
+- 同一個房間內的操作會序列化（確保一致性）
+
+**詳細說明**：請參考 [DESIGN_MULTI_ROOM_ARCHITECTURE.md](./DESIGN_MULTI_ROOM_ARCHITECTURE.md#並行執行模式)
 
 ---
 

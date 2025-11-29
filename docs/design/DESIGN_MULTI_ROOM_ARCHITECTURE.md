@@ -153,6 +153,50 @@ where State: StateNodeProtocol,
 - 使用 `actor` 確保 thread-safety
 - 支援動態建立和銷毀房間
 - 提供房間查詢和統計功能
+- 支援並行處理多個房間的操作（tick、事件處理等）
+
+**並行執行支援**：
+
+`LandManager` 提供並行處理多個房間的方法：
+
+```swift
+public actor LandManager<State, ClientEvents, ServerEvents> {
+    // ... existing code ...
+    
+    /// Tick all rooms in parallel
+    ///
+    /// All rooms' tick handlers are executed concurrently.
+    /// Each room's LandKeeper is an independent actor, allowing true parallelism.
+    public func tickAllRooms() async {
+        let roomContainers = await getAllRooms()
+        
+        await withTaskGroup(of: Void.self) { group in
+            for (_, container) in roomContainers {
+                group.addTask { [container] in
+                    await container.keeper.tick()
+                }
+            }
+        }
+    }
+    
+    /// Process pending events for all rooms in parallel
+    public func processEventsForAllRooms() async {
+        let roomContainers = await getAllRooms()
+        
+        await withTaskGroup(of: Void.self) { group in
+            for (_, container) in roomContainers {
+                group.addTask { [container] in
+                    await container.processPendingEvents()
+                }
+            }
+        }
+    }
+    
+    private func getAllRooms() async -> [(RoomID, LandContainer<State, ClientEvents, ServerEvents>)] {
+        return Array(rooms)
+    }
+}
+```
 
 ### 3. MatchmakingService（配對服務）
 
@@ -379,6 +423,222 @@ router.ws("/game/:roomID") { inbound, outbound, context in
 }
 ```
 
+## 並行執行模式
+
+### 設計原則
+
+Swift 的 actor 模型提供了天然的並行執行能力：
+- 每個 `LandKeeper` 是獨立的 `actor` 實例
+- 不同 actor 實例之間的操作可以並行執行
+- 同一個 actor 內的操作會序列化（確保 thread-safety）
+
+### 執行模式對比
+
+#### ❌ 模式 1：序列化執行（不推薦）
+
+```swift
+// 這會序列化執行（一個接一個）
+Task {
+    for room in rooms {
+        await room.keeper.tick()        // 等待 Room 1 完成
+        await room.keeper.handleEvent() // 等待 Room 1 完成
+        // 然後才處理 Room 2...
+    }
+}
+```
+
+**問題**：房間會一個接一個處理，無法利用多核心 CPU，效能差。
+
+#### ✅ 模式 2：並行執行（推薦）
+
+使用 `withTaskGroup` 讓所有房間並行執行：
+
+```swift
+// ✅ 所有房間並行執行
+await withTaskGroup(of: Void.self) { group in
+    for room in rooms {
+        group.addTask {
+            // 每個房間在自己的 task 中執行
+            // 因為是不同的 actor，可以並行執行
+            await room.keeper.tick()
+            await room.keeper.handleEvent()
+        }
+    }
+    // 等待所有房間完成
+}
+```
+
+**優勢**：
+- 充分利用多核心 CPU
+- 所有房間同時處理，延遲低
+- Swift runtime 自動管理 thread pool
+
+### 實際應用範例
+
+#### 1. 定期 Tick 所有房間
+
+```swift
+/// Scheduler for periodic room ticks
+actor RoomTickScheduler {
+    private let landManager: LandManager
+    private var tickTask: Task<Void, Never>?
+    
+    init(landManager: LandManager) {
+        self.landManager = landManager
+    }
+    
+    /// Start periodic ticks for all rooms
+    func startPeriodicTicks(interval: Duration) {
+        tickTask?.cancel()
+        tickTask = Task { [weak self] in
+            while let self, !Task.isCancelled {
+                try? await Task.sleep(for: interval)
+                
+                // 並行 tick 所有房間
+                await landManager.tickAllRooms()
+            }
+        }
+    }
+    
+    func stop() {
+        tickTask?.cancel()
+        tickTask = nil
+    }
+}
+```
+
+#### 2. 批次處理房間事件
+
+```swift
+extension LandManager {
+    /// Process events for all rooms in parallel
+    ///
+    /// This method processes pending events for all active rooms concurrently.
+    /// Each room's event handling is independent and can run in parallel.
+    public func processEventsForAllRooms() async {
+        let roomContainers = await getAllRooms()
+        
+        await withTaskGroup(of: Void.self) { group in
+            for (roomID, container) in roomContainers {
+                group.addTask { [container] in
+                    // 處理該房間的待處理事件
+                    await container.processPendingEvents()
+                }
+            }
+        }
+    }
+}
+```
+
+#### 3. 並行執行流程示意圖
+
+```
+時間軸 →
+│
+├─ LandManager.tickAllRooms() 被呼叫
+│  └─ 取得所有房間（序列化，很快）
+│
+├─ withTaskGroup 啟動並行執行
+│  │
+│  ├─ Task 1: Room 1.tick() ──────────────┐
+│  │  └─ LandKeeper actor (Room 1)       │
+│  │                                      │
+│  ├─ Task 2: Room 2.tick() ──────────────┤ 並行執行
+│  │  └─ LandKeeper actor (Room 2)       │ （不同 actor）
+│  │                                      │
+│  ├─ Task 3: Room 3.tick() ──────────────┤
+│  │  └─ LandKeeper actor (Room 3)       │
+│  │                                      │
+│  └─ Task N: Room N.tick() ──────────────┘
+│     └─ LandKeeper actor (Room N)
+│
+└─ 等待所有 task 完成
+```
+
+### 關鍵點
+
+1. **LandManager 的操作是序列化的**：
+   - 取得房間列表的操作會序列化（因為是 actor）
+   - 但這個操作通常很快（只是讀取字典）
+
+2. **不同房間的操作可以並行**：
+   - 每個房間的 `LandKeeper` 是獨立的 actor
+   - 不同 actor 之間的操作可以並行執行
+   - Swift runtime 會自動管理 thread pool
+
+3. **同一個房間內的操作是序列化的**：
+   - 同一個 `LandKeeper` actor 內的操作會序列化
+   - 這確保了房間狀態的一致性
+
+4. **使用 TaskGroup 的最佳實踐**：
+   - 使用 `withTaskGroup` 來並行處理多個房間
+   - 避免使用 `forEach` + `await`（會序列化）
+   - 對於固定數量的房間，也可以使用 `async let`
+
+### 效能考量
+
+- **並行度**：理論上可以同時處理的房間數量等於 CPU 核心數
+- **記憶體**：每個房間的狀態是獨立的，不會互相影響
+- **延遲**：並行執行可以大幅降低整體處理延遲
+- **擴展性**：可以輕鬆處理數百甚至數千個房間（取決於 CPU 核心數）
+
+### 實作注意事項
+
+1. **避免在 TaskGroup 中持有 actor 引用過久**：
+   ```swift
+   // ✅ 正確：在 task 開始時取得 snapshot
+   group.addTask { [container] in
+       await container.keeper.tick()
+   }
+   
+   // ❌ 錯誤：在 task 外部持有引用
+   let container = await landManager.getRoom(roomID)
+   group.addTask {
+       await container.keeper.tick() // container 可能已經過期
+   }
+   ```
+
+2. **處理錯誤**：
+   ```swift
+   await withTaskGroup(of: Result<Void, Error>.self) { group in
+       for room in rooms {
+           group.addTask {
+               do {
+                   await room.keeper.tick()
+                   return .success(())
+               } catch {
+                   return .failure(error)
+               }
+           }
+       }
+       
+       // 收集結果並處理錯誤
+       for await result in group {
+           if case .failure(let error) = result {
+               // 記錄錯誤，但不中斷其他房間的處理
+               logger.error("Room tick failed: \(error)")
+           }
+       }
+   }
+   ```
+
+3. **限制並行度（可選）**：
+   ```swift
+   // 如果需要限制同時處理的房間數量
+   let maxConcurrency = min(rooms.count, ProcessInfo.processInfo.processorCount)
+   await withTaskGroup(of: Void.self) { group in
+       for (index, room) in rooms.enumerated() {
+           if index >= maxConcurrency {
+               // 等待一個任務完成後再添加新的
+               await group.next()
+           }
+           group.addTask {
+               await room.keeper.tick()
+           }
+       }
+   }
+   ```
+
 ## 實作優先順序
 
 ### Phase 1：基礎多房間支援（優先）
@@ -395,6 +655,12 @@ router.ws("/game/:roomID") { inbound, outbound, context in
 3. **房間生命週期**
    - 動態建立和銷毀房間
    - 房間空閒時自動清理
+
+4. **並行執行支援**（✅ 已設計）
+   - 實作 `LandManager.tickAllRooms()` 並行處理所有房間的 tick
+   - 實作 `LandManager.processEventsForAllRooms()` 並行處理所有房間的事件
+   - 使用 `withTaskGroup` 確保真正的並行執行
+   - 提供 `RoomTickScheduler` 定期並行 tick 所有房間
 
 ### Phase 2：配對服務（後續）
 

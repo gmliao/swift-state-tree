@@ -418,6 +418,7 @@ Examples/
    - 組裝所有服務（MatchmakingService、LandManager、LobbyContainer）
    - 支援單房間和多房間兩種模式
    - 提供向後兼容的 API
+   - 支援並行處理多個房間（使用 `withTaskGroup`）
 
 ### 命名建議
 
@@ -463,6 +464,7 @@ Examples/
 1. **多房間架構**（📅 規劃中）：
    - 實作 `LandContainer` 和 `LandManager` 支援多房間
    - 實作 `MatchmakingService` 和 `LobbyContainer` 支援配對
+   - 實作並行執行支援（使用 `withTaskGroup` 並行處理多個房間的 tick 和事件）
    - 詳見 [DESIGN_MULTI_ROOM_ARCHITECTURE.md](./DESIGN_MULTI_ROOM_ARCHITECTURE.md)
 
 2. **Persistence 層**（📅 尚未實作）：
