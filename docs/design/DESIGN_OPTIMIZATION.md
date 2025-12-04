@@ -12,6 +12,350 @@
 
 為了進一步提升效能，特別是針對大型狀態樹和高頻更新場景，我們計劃實施以下優化策略。
 
+---
+
+## 架構層級效能比較：舊 OOP 架構 vs 新 StateTree 架構
+
+> 本章節說明傳統「物件導向 + 全局容器」式伺服器架構與新「StateTree（struct）+ actor + snapshot/diff + TaskGroup」架構的效能差異、並行模型、資料擁有權、可擴展性等核心差別。
+
+### 1. 舊架構的典型模式與效能瓶頸
+
+傳統多人遊戲伺服器常使用下列設計：
+
+```swift
+// 傳統 OOP 架構範例
+class Player {
+    var hp: Int
+    var position: Vec2
+    // ...
+}
+
+class Monster {
+    var hp: Int
+    var position: Vec2
+    // ...
+}
+
+class EntityManager {
+    var objects: Map<EntityID, BaseEntity>
+    
+    func updateAll() {
+        // 遍歷所有 entity，更新狀態
+        // 同時處理同步、廣播、AOI 計算
+    }
+}
+```
+
+**典型特徵**：
+- 每個物件一個 class
+- 全局容器（EntityManager / World）
+- 各物件 methods 裡同時包含資料更新 + 效果觸發 + 廣播 + 計算
+- AOI 可見度邏輯、同步邏輯分散在不同位置
+- Dirty flag 追蹤分散在各個物件中
+
+#### 效能與可擴展性的問題
+
+**1. Pointer Chasing 導致 Cache Miss 嚴重**
+
+每次 tick 需遍歷大量 entity（class），CPU 無法預先載入資料。記憶體布局分散，cache locality 差。
+
+**2. 邏輯與狀態耦合 → 很難多執行緒化**
+
+物件 methods 內常常：
+- 改自己
+- 改別人
+- 發 event
+- 更新 container
+
+導致必須鎖住整個世界，幾乎只能依賴「單一主線程」執行遊戲邏輯。
+
+**3. Diff / AOI / patch 組裝無法並行化**
+
+因為資料一直變、邏輯纏在一起，不能安全丟多執行緒處理。
+
+**4. 想多執行緒，只能把某些小系統獨立出去**
+
+例如：
+- 將 AOI 獨立成 worker thread
+- 但核心的「狀態 → patch」流程仍然是單線程瓶頸
+
+**結論**：舊架構的效能天花板通常被「單線程」綁死。大房間（>50 玩家）、重狀態、10Hz tick → 容易 CPU 爆掉。
+
+---
+
+### 2. SwiftStateTree 新架構的結構性突破
+
+新架構基於：
+- **StateTree**（struct、value semantics）
+- **LandKeeper**（唯一可變的 actor）
+- **snapshot / diff engine**
+- **TaskGroup** 並行 pure-computation
+- **@Sync DSL** 宣告同步策略
+
+讓你得到一個「資料所有權清晰＋計算天然可並行」的執行模型。
+
+#### 2.1 狀態：集中成一棵「可序列化的大 struct」
+
+```swift
+@StateTree
+struct RoomState {
+    @Sync(.broadcast) var world: WorldState
+    @Sync(.perPlayer{...}) var players: [PlayerID: PlayerState]
+    @Sync(.masked) var monsters: [MonsterID: MonsterState]
+}
+```
+
+**優勢**：
+- 統一狀態模型
+- 相對集中、cache friendly
+- snapshot 是不可變的值（或 ARC-shared immutable graph）
+
+#### 2.2 修改權限集中：只有 actor 能修改 RoomState
+
+```swift
+actor LandKeeper {
+    var state: RoomState
+    
+    func tick() {
+        // 修改 state 的唯一入口
+    }
+}
+```
+
+避免並行 data race。
+
+#### 2.3 snapshot → TaskGroup → diff → patch：完美分工
+
+**流程**：
+1. 抽 snapshot（在 actor 內、極短時間 lock）
+2. 離開 actor 後，所有計算皆為「純函式」
+3. TaskGroup 並行化計算 per-player diff / AOI / patch
+
+```swift
+await withTaskGroup { group in
+    for player in players {
+        group.addTask {
+            computePlayerPatch(snapshot, player)
+        }
+    }
+}
+```
+
+這段是最吃 CPU 的部分，也是可以利用多核的地方。
+
+---
+
+### 3. 雙層並行模型：效能倍數提升的來源
+
+架構天然具備「兩層並行」：
+
+#### 3.1 第一層：多房間 → 多 actor → 多核分散
+
+- 每房一個 `LandKeeper` actor
+- Swift runtime 自然將不同 actor 的工作排到不同 thread
+
+**效果**：總 CCU（整機玩家數）提升數倍，不互相阻塞。
+
+#### 3.2 第二層：房內 pure computation → TaskGroup 並行化
+
+每個房間在 tick 時：
+- diff
+- AOI
+- per-player masking
+- patch 組裝
+
+全部都可以拆成 N 個玩家的 N 個獨立工作，丟給 TaskGroup：
+
+**單一房間可容納玩家數，理論上可達多核心加速倍率（2～6 倍）**。
+
+#### 3.3 雙層加乘（不是相加，是乘法）
+
+**範例**：
+- 舊架構：單房 80 人、8 房 → 640 人
+- 新架構（房內 3× 加速）：單房 240 人、8 房 → 1920 人
+
+👉 **整機容量直接變成 3 倍以上**
+
+真正差距不是「微調級」，是一個等級級別。
+
+---
+
+### 4. 為什麼新架構比舊架構「快很多」？
+
+以下是效能差距可能達到 **3～10×** 的主要原因：
+
+#### A. Struct + 整棵 StateTree = Cache 效益比 class pointer 大數倍
+
+- 遞迴地比對 struct → 線性掃描記憶體非常快
+- 舊架構 pointer chasing → cache miss 超多
+
+#### B. snapshot/diff 設計本質是 pure function → 可完美並行
+
+舊架構狀態 mutate 與計算糾纏，無法安全並行。
+
+新架構 snapshot 是「不可變」、「只讀」→ 可以丟 N 個 Task 並行。
+
+#### C. actor 把「可變」與「不可變」分界切得非常乾淨
+
+舊架構需要大量鎖、或根本不敢開 thread。
+
+新架構：
+- actor 保護 mutate
+- TaskGroup 保證 pure compute 可以任意平行
+
+==> **多核吃滿的必要條件具備了**
+
+#### D. @Sync DSL 把同步、mask、perPlayer 遞迴策略集中宣告
+
+舊架構：同步邏輯散在 handler / class method / event bus 四處。
+
+新架構：宣告一次 → diff engine 自動處理 → 防錯 + 快速 + 結構一致。
+
+#### E. 設計就是為了多線程，不是「事後再補」
+
+新設計具備：
+- 寫法簡單（業務邏輯不用管並行）
+- 並行無 race condition（因為資料不可變）
+- 真正 CPU-heavy 部分全部可 TaskGroup 化
+
+這是一開始就為多線程而寫的設計。
+
+不像舊架構是：想多線程 → 卡在資料耦合 → 卡在鎖 → 卡在 race → 最後放棄
+
+---
+
+### 5. Tick 是否需要刻意「岔開」？（房間多的情況）
+
+**簡單答案**：大量房間時，tick 稍微錯開會比較平滑，但不是必須。
+
+#### 可選做法
+
+**方式 1：每房初始化時給一個 random phase**
+
+```swift
+let baseInterval = 100.ms
+let phase = random(in: 0..<baseInterval)
+
+func loop() async {
+    try await Task.sleep(for: phase)
+    while true {
+        await tick()
+        try await Task.sleep(for: baseInterval)
+    }
+}
+```
+
+**效果**：每個房間 tick 的時間不一樣（有點像交錯），整體 CPU / 網路負載比較「平滑」，沒有巨大尖峰。
+
+**方式 2：由 scheduler 做 round-robin**
+
+```swift
+actor RoomScheduler {
+    var rooms: [LandKeeper] = []
+    
+    func runLoop() async {
+        let interval = 100.ms
+        while true {
+            let frameStart = now()
+            for room in rooms {
+                await room.tickIfDue(now: frameStart)
+            }
+            // 自己控制 sleep / 誤差
+        }
+    }
+}
+```
+
+讓每一 frame 不是所有房間都一定 tick，可能這 frame tick 一半房間，下個 frame tick 另一半。
+
+#### 建議
+
+- **小規模（<=50 房）**：通常沒必要
+- **大規模（>500 房）**：建議採用
+
+**實作建議**：
+1. API 設計上保留「房間自己控制 tick」的彈性（例如 `LandKeeper.startTickLoop(interval:phase:)`）
+2. 先做最直覺簡單版（例如每房 `Task.sleep(interval)`）
+3. 真正壓測、房間數量變多時，再加「隨機 phase」就好了
+
+不需要一開始就搞得很複雜，但設計上要知道「之後可以這樣優化」。
+
+---
+
+### 6. 最終結論
+
+舊的 OOP（每物件一個 class + 全局容器）架構，受限於資料分散、邏輯糾纏、共享 mutable state，理論上只能靠單線程執行核心遊戲邏輯。在大房間 / 大狀態 / 固定 tick 中，容易出現 CPU 瓶頸。
+
+**SwiftStateTree 架構透過**：
+- StateTree struct（集中資料、cache friendly）
+- actor（唯一可變點）
+- snapshot / diff（pure computation）
+- TaskGroup（可安全平行化）
+- @Sync DSL（宣告同步策略）
+
+將狀態與計算完全分離，讓整個世界模型天然可拆成多個 Task。
+
+**因此同時具備**：
+- 單房 CPU-bound 計算可達多倍提升（2～6×）
+- 多房間可完整利用多核心（整機 CCU 提升數倍）
+- 整體吞吐量呈倍數成長（3～10×，視 workload 而定）
+
+**這是結構級別的效能優勢，不是微調級的優化。**
+
+---
+
+### 7. 效能提升的理論分析
+
+#### 單核心上的純計算效率
+
+- **舊**：pointer 物件 + 處理流程四散 + branch 混雜
+- **新**：struct 樹 + 資料相對集中 + 演算法更明確（diff / AOI / 遞迴）
+
+在大量 entity / 大量狀態的情況下：**單核純計算，有機會快個 1.5～3 倍是合理的**。
+
+#### 多核心的吃法
+
+- **舊**：幾乎只能 1 條主線程 + 一點 I/O / AOI 分出去，要再切更多會開始撞鎖 / 撞 shared state
+- **新**：
+  - 多房間 → 多 actor 自然分散多核
+  - 單一房間內 → diff / AOI / per-player patch 用 TaskGroup 撐滿多核
+
+如果你有 8 核：理論上 CPU-bound 的那一塊，可以拿到接近 **4～6x 的 speedup**（扣掉排程開銷後）。
+
+#### 混在一起的「整體感受」
+
+整體來看，在「大房 / 多玩家 / 大狀態 / 固定頻率 tick」的遊戲場景：
+
+- **舊架構**：單線程那條 loop 先爆，CPU 一顆吃滿，其他核心很閒
+- **新 StateTree 架構**：
+  - 單核上算法本來就比較快
+  - 再加上可以平行化
+  - 全機 CPU 真的有機會都被用來幫你算「diff + AOI + patch」
+
+**保守估計**：在你那種「多人房、狀態體積大、固定 tick」的場景，從舊架構換到「StateTree + actor + diff + TaskGroup」這套，理論上拿到 **3～10 倍的效能提升是合理期待的範圍**。
+
+當然：
+- 真的是 3 倍、5 倍、還是 8 倍 → 要看你的 AOI、狀態結構、tick 頻率
+- 但絕對不是只在那邊吵 10% 的微調級
+
+---
+
+### 8. 安全性與可維護性的額外優勢
+
+除了效能，新架構還順便解掉以前多執行緒最痛的兩個點：
+
+**1. 誰可以改 state？**
+- 現在答案超清楚：只有 actor 裡可以改。
+
+**2. 可以並行的是哪一段？**
+- 離開 actor、用 snapshot 的那一大段全部都可以平行。
+
+**對比**：
+- **以前**：還沒想清楚所有權、就先亂多執行緒，之後一年都在 debug race condition
+- **現在**：架構一開始就先把可變 / 不可變切乾淨，多執行緒只是「多開 Task 跑純計算」，穩定很多
+
+---
+
 ## 優化目標
 
 1. **減少不必要的計算**：只處理真正改變的欄位
