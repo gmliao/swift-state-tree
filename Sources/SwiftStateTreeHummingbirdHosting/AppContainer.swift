@@ -88,16 +88,22 @@ public struct AppContainer<State, ClientEvents, ServerEvents> where State: State
     private let adapterHolder: TransportAdapterHolder<State, ClientEvents, ServerEvents>
     
     public func run() async throws {
-        let app = Application(
-            router: router,
-            configuration: .init(
-                address: .hostname(configuration.host, port: Int(configuration.port))
-            )
-        )
-        
         let logger = configuration.logger ?? createColoredLogger(
             label: "com.swiftstatetree.hummingbird",
             scope: "AppContainer"
+        )
+
+        let httpConfiguration = ApplicationConfiguration(
+            address: .hostname(configuration.host, port: Int(configuration.port))
+        )
+        
+        let app = Application(
+            router: router,
+            server: .http1WebSocketUpgrade(
+                webSocketRouter: router
+            ),
+            configuration: httpConfiguration,
+            logger: logger
         )
         
         if configuration.logStartupBanner {
@@ -265,4 +271,3 @@ where State: StateNodeProtocol,
         await adapter?.syncNow()
     }
 }
-

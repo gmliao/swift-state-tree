@@ -1,5 +1,5 @@
 import Foundation
-import SwiftStateTreeHummingbirdDemoContent
+import HummingbirdDemoContent
 import SwiftStateTreeHummingbirdHosting
 import SwiftStateTree
 

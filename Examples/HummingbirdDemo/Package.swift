@@ -3,14 +3,14 @@
 import PackageDescription
 
 let package = Package(
-    name: "SwiftStateTreeHummingbirdDemo",
+    name: "HummingbirdDemo",
     platforms: [
         .macOS(.v14)
     ],
     products: [
         .executable(
-            name: "SwiftStateTreeHummingbirdDemo",
-            targets: ["SwiftStateTreeHummingbirdDemo"]
+            name: "HummingbirdDemo",
+            targets: ["HummingbirdDemo"]
         ),
         .executable(
             name: "SchemaGen",
@@ -22,16 +22,16 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "SwiftStateTreeHummingbirdDemoContent",
+            name: "HummingbirdDemoContent",
             dependencies: [
                 .product(name: "SwiftStateTree", package: "SwiftStateTree")
             ],
             path: "Sources/DemoContent"
         ),
         .executableTarget(
-            name: "SwiftStateTreeHummingbirdDemo",
+            name: "HummingbirdDemo",
             dependencies: [
-                "SwiftStateTreeHummingbirdDemoContent",
+                "HummingbirdDemoContent",
                 .product(name: "SwiftStateTreeHummingbirdHosting", package: "SwiftStateTree")
             ],
             path: "Sources/SwiftStateTreeHummingbirdDemo"
@@ -39,7 +39,7 @@ let package = Package(
         .executableTarget(
             name: "SchemaGen",
             dependencies: [
-                "SwiftStateTreeHummingbirdDemoContent",
+                "HummingbirdDemoContent",
                 .product(name: "SwiftStateTree", package: "SwiftStateTree")
             ],
             path: "Sources/SchemaGen"

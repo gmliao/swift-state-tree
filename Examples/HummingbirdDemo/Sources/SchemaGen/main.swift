@@ -2,7 +2,7 @@
 
 import Foundation
 import SwiftStateTree
-import SwiftStateTreeHummingbirdDemoContent
+import HummingbirdDemoContent
 
 @main
 struct SchemaGen {
