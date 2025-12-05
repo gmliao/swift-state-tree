@@ -18,7 +18,9 @@ public typealias AccessControlDirective = (inout AccessControlConfig) -> Void
 
 @resultBuilder
 public enum AccessControlBuilder {
-    public static func buildBlock(_ components: AccessControlDirective...) -> [AccessControlDirective] {
+    public static func buildBlock(_ components: AccessControlDirective...)
+        -> [AccessControlDirective]
+    {
         components
     }
 }
@@ -138,18 +140,18 @@ public struct CanJoinNode<State: StateNodeProtocol>: LandNode {
 ///     guard state.players.count < 8 else {
 ///         throw JoinError.roomIsFull
 ///     }
-///     
-    ///     // Query player data
-    ///     let profile = try await ctx.services.userService?.getUser(by: session.playerID)
+///
+///     // Query player data
+///     let profile = try await ctx.services.userService?.getUser(by: session.playerID)
 ///     guard let profile else {
 ///         throw JoinError.custom("User not found")
 ///     }
-///     
+///
 ///     // Validate player level
 ///     guard profile.level >= 5 else {
 ///         throw JoinError.levelTooLow(required: 5)
 ///     }
-///     
+///
 ///     return .allow(playerID: PlayerID(profile.id))
 /// }
 /// ```
@@ -167,11 +169,15 @@ public struct AllowedClientEventsNode: LandNode {
 
 @resultBuilder
 public enum AllowedClientEventsBuilder {
-    public static func buildBlock(_ components: AllowedEventIdentifier...) -> [AllowedEventIdentifier] {
+    public static func buildBlock(_ components: AllowedEventIdentifier...)
+        -> [AllowedEventIdentifier]
+    {
         components
     }
 
-    public static func buildExpression<E: Hashable & Sendable>(_ expression: E) -> AllowedEventIdentifier {
+    public static func buildExpression<E: Hashable & Sendable>(_ expression: E)
+        -> AllowedEventIdentifier
+    {
         AllowedEventIdentifier(expression)
     }
 }
@@ -225,11 +231,14 @@ public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
     }
 }
 
-public typealias LifetimeDirective<State: StateNodeProtocol> = @Sendable (inout LifetimeConfig<State>) -> Void
+public typealias LifetimeDirective<State: StateNodeProtocol> =
+    @Sendable (inout LifetimeConfig<State>) -> Void
 
 @resultBuilder
 public enum LifetimeBuilder<State: StateNodeProtocol> {
-    public static func buildBlock(_ components: LifetimeDirective<State>...) -> [LifetimeDirective<State>] {
+    public static func buildBlock(_ components: LifetimeDirective<State>...) -> [LifetimeDirective<
+        State
+    >] {
         components
     }
 }
@@ -271,7 +280,7 @@ public func Lifetime<State: StateNodeProtocol>(
 /// ```swift
 /// Tick(every: .milliseconds(50)) { state, ctx in
 ///     state.stepSimulation()  // Synchronous game logic
-///     
+///
 ///     ctx.spawn {
 ///         await ctx.flushMetricsIfNeeded()  // Async I/O in background
 ///     }
@@ -360,7 +369,8 @@ public enum LandDSL {
 /// - Returns: A type-erased `AnyActionHandler`.
 public func Action<State: StateNodeProtocol, A: ActionPayload>(
     _ type: A.Type,
-    _ body: @escaping @Sendable (inout State, A, LandContext) async throws -> some Codable & Sendable
+    _ body:
+        @escaping @Sendable (inout State, A, LandContext) async throws -> some Codable & Sendable
 ) -> AnyActionHandler<State> {
     AnyActionHandler(
         type: type,
@@ -386,8 +396,160 @@ public func Action<State: StateNodeProtocol, A: ActionPayload>(
 public func On<State: StateNodeProtocol, Event: ClientEventPayload>(
     _ type: Event.Type,
     _ body: @escaping @Sendable (inout State, Event, LandContext) async -> Void
-) -> AnyClientEventHandler<State, Event> {
-    AnyClientEventHandler(handler: body)
+) -> AnyClientEventHandler<State> {
+    AnyClientEventHandler(eventType: type, handler: body)
+}
+
+/// Registers an event handler for a specific event payload type.
+///
+/// This is a convenience wrapper around `On` that provides a more symmetric
+/// API with `Action(…)`. It is intended for struct-based event payloads that
+/// conform to `ClientEventPayload`.
+public func HandleEvent<State: StateNodeProtocol, E: ClientEventPayload>(
+    _ type: E.Type,
+    _ body: @escaping @Sendable (inout State, E, LandContext) async -> Void
+) -> AnyClientEventHandler<State> {
+    On(type, body)
+}
+
+// MARK: - Server Event Registration
+
+/// Land node that represents a registered server event payload type.
+/// @deprecated: Use ServerEvents { Register(...) } instead.
+public struct ServerEventNode: LandNode {
+    public let type: Any.Type
+    
+    public init(type: Any.Type) {
+        self.type = type
+    }
+}
+
+/// Register a server event payload type for schema/code generation.
+/// @deprecated: Use ServerEvents { Register(...) } instead.
+///
+/// Example:
+/// ```swift
+/// ServerEvent(DemoServerEvent.self)
+/// ```
+public func ServerEvent<E: ServerEventPayload>(
+    _ type: E.Type
+) -> ServerEventNode {
+    ServerEventNode(type: type)
+}
+
+// MARK: - Server Events Registration DSL
+
+/// Land node that represents a registered server event type.
+public struct ServerEventRegistrationNode: LandNode {
+    public let type: Any.Type
+    
+    public init<E: ServerEventPayload>(type: E.Type) {
+        self.type = type
+    }
+}
+
+/// Register a server event payload type.
+///
+/// Example:
+/// ```swift
+/// ServerEvents {
+///     Register(WelcomeEvent.self)
+///     Register(ChatMessageEvent.self)
+/// }
+/// ```
+public func Register<E: ServerEventPayload>(
+    _ type: E.Type
+) -> ServerEventRegistrationNode {
+    ServerEventRegistrationNode(type: type)
+}
+
+/// Register a client event payload type.
+///
+/// Example:
+/// ```swift
+/// ClientEvents {
+///     Register(ChatEvent.self)
+///     Register(PingEvent.self)
+/// }
+/// ```
+public func Register<E: ClientEventPayload>(
+    _ type: E.Type
+) -> ClientEventRegistrationNode {
+    ClientEventRegistrationNode(type: type)
+}
+
+/// Land node that contains multiple server event registrations.
+public struct ServerEventsNode: LandNode {
+    public let registrations: [ServerEventRegistrationNode]
+    
+    public init(registrations: [ServerEventRegistrationNode]) {
+        self.registrations = registrations
+    }
+}
+
+@resultBuilder
+public enum ServerEventsBuilder {
+    public static func buildBlock(_ components: ServerEventRegistrationNode...) -> [ServerEventRegistrationNode] {
+        components
+    }
+}
+
+/// Register multiple server event types for schema generation and runtime validation.
+///
+/// Example:
+/// ```swift
+/// ServerEvents {
+///     Register(WelcomeEvent.self)
+///     Register(ChatMessageEvent.self)
+///     Register(PongEvent.self)
+/// }
+/// ```
+public func ServerEvents(
+    @ServerEventsBuilder _ content: () -> [ServerEventRegistrationNode]
+) -> ServerEventsNode {
+    ServerEventsNode(registrations: content())
+}
+
+// MARK: - Client Events Registration DSL
+
+/// Land node that represents a registered client event type.
+public struct ClientEventRegistrationNode: LandNode {
+    public let type: Any.Type
+    
+    public init<E: ClientEventPayload>(type: E.Type) {
+        self.type = type
+    }
+}
+
+/// Land node that contains multiple client event registrations.
+public struct ClientEventsNode: LandNode {
+    public let registrations: [ClientEventRegistrationNode]
+    
+    public init(registrations: [ClientEventRegistrationNode]) {
+        self.registrations = registrations
+    }
+}
+
+@resultBuilder
+public enum ClientEventsBuilder {
+    public static func buildBlock(_ components: ClientEventRegistrationNode...) -> [ClientEventRegistrationNode] {
+        components
+    }
+}
+
+/// Register multiple client event types for schema generation and runtime validation.
+///
+/// Example:
+/// ```swift
+/// ClientEvents {
+///     Register(ChatEvent.self)
+///     Register(PingEvent.self)
+/// }
+/// ```
+public func ClientEvents(
+    @ClientEventsBuilder _ content: () -> [ClientEventRegistrationNode]
+) -> ClientEventsNode {
+    ClientEventsNode(registrations: content())
 }
 
 // MARK: - Land Entry Point
@@ -400,26 +562,19 @@ public func On<State: StateNodeProtocol, Event: ClientEventPayload>(
 /// - Parameters:
 ///   - id: The unique identifier for this Land.
 ///   - stateType: The type of the root state node.
-///   - clientEvents: The type of client events.
-///   - serverEvents: The type of server events.
-///   - content: The DSL block containing `AccessControl`, `Rules`, `Lifetime`, etc.
+///   - content: The DSL block containing `AccessControl`, `Rules`, `Lifetime`, `ClientEvents`, `ServerEvents`, etc.
 /// - Returns: A complete `LandDefinition`.
-public func Land<
-    State: StateNodeProtocol,
-    ClientE: ClientEventPayload,
-    ServerE: ServerEventPayload
->(
+///
+/// Client and server events are now registered via the `ClientEvents { Register(...) }` and
+/// `ServerEvents { Register(...) }` DSL blocks instead of being passed as generic parameters.
+public func Land<State: StateNodeProtocol>(
     _ id: String,
     using stateType: State.Type,
-    clientEvents: ClientE.Type,
-    serverEvents: ServerE.Type,
     @LandDSL _ content: () -> [LandNode]
-) -> LandDefinition<State, ClientE, ServerE> {
+) -> LandDefinition<State> {
     LandBuilder.build(
         id: id,
         stateType: stateType,
-        clientEvents: clientEvents,
-        serverEvents: serverEvents,
         nodes: content()
     )
 }

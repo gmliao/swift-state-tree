@@ -30,8 +30,8 @@ public struct LandContext: Sendable {
     public let services: LandServices
 
     /// Send event handler closure (delegates to Runtime layer without exposing Transport)
-    /// Accepts any ServerEventPayload, runtime will verify type.
-    private let sendEventHandler: @Sendable (any ServerEventPayload, EventTarget) async -> Void
+    /// Accepts AnyServerEvent (type-erased root type).
+    private let sendEventHandler: @Sendable (AnyServerEvent, EventTarget) async -> Void
 
     /// Sync handler closure (delegates to Runtime layer without exposing Transport)
     private let syncHandler: @Sendable () async -> Void
@@ -45,7 +45,7 @@ public struct LandContext: Sendable {
         services: LandServices,
         deviceID: String? = nil,
         metadata: [String: String] = [:],
-        sendEventHandler: @escaping @Sendable (any ServerEventPayload, EventTarget) async -> Void,
+        sendEventHandler: @escaping @Sendable (AnyServerEvent, EventTarget) async -> Void,
         syncHandler: @escaping @Sendable () async -> Void
     ) {
         self.landID = landID
@@ -66,11 +66,15 @@ public struct LandContext: Sendable {
     /// Events are sent through closure delegation, without exposing Transport details.
     /// The actual implementation is handled by the Runtime layer (LandKeeper).
     ///
+    /// The event is automatically converted to `AnyServerEvent` using the type name as the event identifier.
+    ///
     /// - Parameters:
     ///   - event: ServerEventPayload to send
     ///   - target: EventTarget specifying recipients
     public func sendEvent(_ event: any ServerEventPayload, to target: EventTarget) async {
-        await sendEventHandler(event, target)
+        // Convert to AnyServerEvent using the type name
+        let anyEvent = AnyServerEvent(event)
+        await sendEventHandler(anyEvent, target)
     }
 
     /// Manually force immediate state synchronization (regardless of Tick configuration)

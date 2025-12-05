@@ -38,34 +38,77 @@ public struct JoinResult: Codable, Sendable {
     }
 }
 
-// MARK: - Demo Events
+// MARK: - Client Events
 
-@GenerateLandEventHandlers
-public enum DemoClientEvents: ClientEventPayload, Hashable {
-    case chat(String)
-    case ping
+/// Chat event sent by a client.
+@Payload
+public struct ChatEvent: ClientEventPayload {
+    public let message: String
+    
+    public init(message: String) {
+        self.message = message
+    }
 }
 
-public enum DemoServerEvents: ServerEventPayload {
-    case welcome(String)
-    case chatMessage(String, from: String)
-    case pong
+/// Ping event sent by a client.
+@Payload
+public struct PingEvent: ClientEventPayload {
+    public init() {}
+}
+
+// MARK: - Server Events
+
+/// Welcome event sent to a player when they join.
+@Payload
+public struct WelcomeEvent: ServerEventPayload {
+    public let message: String
+    
+    public init(message: String) {
+        self.message = message
+    }
+}
+
+/// Chat message event broadcast to all players.
+@Payload
+public struct ChatMessageEvent: ServerEventPayload {
+    public let message: String
+    public let from: String
+    
+    public init(message: String, from: String) {
+        self.message = message
+        self.from = from
+    }
+}
+
+/// Pong event sent in response to a ping.
+@Payload
+public struct PongEvent: ServerEventPayload {
+    public init() {}
 }
 
 
 // MARK: - Land Definition
 
 public enum DemoGame {
-    public static func makeLand() -> LandDefinition<DemoGameState, DemoClientEvents, DemoServerEvents> {
+    public static func makeLand() -> LandDefinition<DemoGameState> {
         Land(
             "demo-game",
-            using: DemoGameState.self,
-            clientEvents: DemoClientEvents.self,
-            serverEvents: DemoServerEvents.self
+            using: DemoGameState.self
         ) {
             AccessControl {
                 AllowPublic(true)
                 MaxPlayers(10)
+            }
+            
+            ClientEvents {
+                Register(ChatEvent.self)
+                Register(PingEvent.self)
+            }
+            
+            ServerEvents {
+                Register(WelcomeEvent.self)
+                Register(ChatMessageEvent.self)
+                Register(PongEvent.self)
             }
             
             Rules {
@@ -103,7 +146,10 @@ public enum DemoGame {
                 OnJoin { (state: inout DemoGameState, ctx: LandContext) in
                     // Set initial player name as "Guest"
                     state.players[ctx.playerID] = "Guest"
-                    await ctx.sendEvent(DemoServerEvents.welcome("Welcome, Guest!"), to: .session(ctx.sessionID))
+                    await ctx.sendEvent(
+                        WelcomeEvent(message: "Welcome, Guest!"),
+                        to: .session(ctx.sessionID)
+                    )
                 }
                 
                 OnLeave { (state: inout DemoGameState, ctx: LandContext) in
@@ -120,17 +166,17 @@ public enum DemoGame {
                 }
                 
                 
-                DemoClientEvents.OnChat { (state: inout DemoGameState, message: String, ctx: LandContext) in
+                On(ChatEvent.self) { (state: inout DemoGameState, event: ChatEvent, ctx: LandContext) in
                     state.messageCount += 1
                     let playerName = state.players[ctx.playerID] ?? "Unknown"
                     await ctx.sendEvent(
-                        DemoServerEvents.chatMessage(message, from: playerName),
+                        ChatMessageEvent(message: event.message, from: playerName),
                         to: .all
                     )
                 }
                 
-                DemoClientEvents.OnPing { (state: inout DemoGameState, ctx: LandContext) in
-                    await ctx.sendEvent(DemoServerEvents.pong, to: .session(ctx.sessionID))
+                On(PingEvent.self) { (state: inout DemoGameState, event: PingEvent, ctx: LandContext) in
+                    await ctx.sendEvent(PongEvent(), to: .session(ctx.sessionID))
                 }
             }
             

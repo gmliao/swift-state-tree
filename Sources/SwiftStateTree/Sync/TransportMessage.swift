@@ -11,11 +11,10 @@ public struct ActionEnvelope: Codable, Sendable {
     }
 }
 
-/// Generic Transport Message wrapping action calls, responses, and events.
-public enum TransportMessage<ClientE, ServerE>: Codable
-where
-    ClientE: ClientEventPayload,
-    ServerE: ServerEventPayload {
+/// Transport Message wrapping action calls, responses, and events.
+///
+/// Uses fixed root types `AnyClientEvent` and `AnyServerEvent` instead of generics.
+public enum TransportMessage: Codable, Sendable {
     case action(
         requestID: String,
         landID: String,
@@ -29,6 +28,12 @@ where
 
     case event(
         landID: String,
-        event: Event<ClientE, ServerE>
+        event: TransportEvent
     )
+}
+
+/// Transport event container using fixed root types.
+public enum TransportEvent: Codable, Sendable {
+    case fromClient(AnyClientEvent)
+    case fromServer(AnyServerEvent)
 }

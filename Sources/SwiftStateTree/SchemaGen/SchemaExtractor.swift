@@ -9,7 +9,7 @@ public struct SchemaExtractor {
     ///   - version: Schema version string (default: "0.1.0").
     /// - Returns: A ProtocolSchema containing all land definitions, actions, events, and state tree schemas.
     public static func extract<State: StateNodeProtocol>(
-        from landDefinition: LandDefinition<State, some ClientEventPayload, some ServerEventPayload>,
+        from landDefinition: LandDefinition<State>,
         version: String = "0.1.0"
     ) -> ProtocolSchema {
         var definitions: [String: JSONSchema] = [:]
@@ -39,11 +39,13 @@ public struct SchemaExtractor {
                 visitedTypes: &visitedTypes
             )
             
-            // Ensure we always have a fully expanded definition for action payloads.
-            // This guarantees defs[ActionType] contains all fields even if other
-            // converters added a placeholder earlier.
-            if let provider = actionType as? any SchemaMetadataProvider.Type {
-                let typeName = String(describing: actionType)
+            // ActionEventExtractor.extractAction already handles SchemaMetadataProvider
+            // and creates the detailed schema in definitions, so we don't need to duplicate that logic here.
+            // However, we ensure the definition is properly stored if it wasn't already.
+            let typeName = String(describing: actionType)
+            if let provider = actionType as? any SchemaMetadataProvider.Type,
+               definitions[typeName] == nil {
+                // If for some reason the definition wasn't created, create it now
                 let fieldMetadata = provider.getFieldMetadata()
                 
                 var properties: [String: JSONSchema] = [:]
@@ -81,18 +83,26 @@ public struct SchemaExtractor {
             actions[actionID] = actionSchema
         }
         
-        // Extract server events
+        // Extract server events from registry
         var events: [String: JSONSchema] = [:]
-        let serverEventSchema = ActionEventExtractor.extractEvent(
-            landDefinition.serverEventType,
-            definitions: &definitions,
-            visitedTypes: &visitedTypes
-        )
-        
-        // For enum-based events, we might want to extract individual cases
-        // For now, we'll add the whole event type
-        let eventTypeName = String(describing: landDefinition.serverEventType)
-        events[eventTypeName] = serverEventSchema
+        for descriptor in landDefinition.serverEventRegistry.registered {
+            // Use ActionEventExtractor.extractEvent which properly handles SchemaMetadataProvider
+            // This will correctly extract fields from @Payload macro via getFieldMetadata()
+            _ = ActionEventExtractor.extractEvent(
+                descriptor.type,
+                definitions: &definitions,
+                visitedTypes: &visitedTypes
+            )
+            
+            // ActionEventExtractor.extractEvent already handles SchemaMetadataProvider
+            // and creates the detailed schema in definitions, so we don't need to duplicate that logic here.
+            let typeName = String(describing: descriptor.type)
+            
+            // Generate event ID from type name (e.g., "WelcomeEvent" -> "welcome")
+            let eventID = generateEventID(from: descriptor.type)
+            // Always use a reference to the definition
+            events[eventID] = JSONSchema(ref: "#/defs/\(typeName)")
+        }
         
         // Create sync schema
         let snapshotSchema = JSONSchema(ref: "#/defs/\(stateTypeName)")
@@ -144,6 +154,21 @@ public struct SchemaExtractor {
         
         // For now, just return the lowercase version
         // In a full implementation, you'd parse camelCase and insert dots
+        return camelCase.lowercased()
+    }
+    
+    /// Generate event ID from server event type.
+    ///
+    /// Mirrors the behavior of `generateActionID` but uses the "Event" suffix.
+    private static func generateEventID(from eventType: Any.Type) -> String {
+        let typeName = String(describing: eventType)
+        
+        var eventID = typeName
+        if eventID.hasSuffix("Event") {
+            eventID = String(eventID.dropLast(5))
+        }
+        
+        let camelCase = eventID.prefix(1).lowercased() + eventID.dropFirst()
         return camelCase.lowercased()
     }
     

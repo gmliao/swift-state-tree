@@ -14,32 +14,52 @@ private struct TestGameState: StateNodeProtocol {
     init() {}
 }
 
-private enum TestClientEvents: ClientEventPayload, Hashable {
-    case ping
-    case chat(String)
+@Payload
+private struct TestPingEvent: ClientEventPayload {
+    public init() {}
 }
 
-private enum TestServerEvents: ServerEventPayload {
-    case pong
-    case chatMessage(String)
+@Payload
+private struct TestChatEvent: ClientEventPayload {
+    let message: String
+    public init(message: String) {
+        self.message = message
+    }
+}
+
+@Payload
+private struct TestPongEvent: ServerEventPayload {
+    public init() {}
+}
+
+@Payload
+private struct TestChatMessageEvent: ServerEventPayload {
+    let message: String
+    public init(message: String) {
+        self.message = message
+    }
 }
 
 private enum TestGame {
-    static let land: LandDefinition<TestGameState, TestClientEvents, TestServerEvents> = Land(
+    static let land: LandDefinition<TestGameState> = Land(
         "test-game",
-        using: TestGameState.self,
-        clientEvents: TestClientEvents.self,
-        serverEvents: TestServerEvents.self
+        using: TestGameState.self
     ) {
+        ClientEvents {
+            Register(TestPingEvent.self)
+            Register(TestChatEvent.self)
+        }
+        ServerEvents {
+            Register(TestPongEvent.self)
+            Register(TestChatMessageEvent.self)
+        }
         Rules {
-            On(TestClientEvents.self) { (state: inout TestGameState, event: TestClientEvents, ctx: LandContext) in
-                switch event {
-                case .ping:
-                    await ctx.sendEvent(TestServerEvents.pong, to: .session(ctx.sessionID))
-                case .chat(let message):
+            On(TestPingEvent.self) { (state: inout TestGameState, event: TestPingEvent, ctx: LandContext) in
+                await ctx.sendEvent(TestPongEvent(), to: .session(ctx.sessionID))
+            }
+            On(TestChatEvent.self) { (state: inout TestGameState, event: TestChatEvent, ctx: LandContext) in
                     state.messageCount += 1
-                    await ctx.sendEvent(TestServerEvents.chatMessage(message), to: .all)
-                }
+                await ctx.sendEvent(TestChatMessageEvent(message: event.message), to: .all)
             }
         }
     }
@@ -48,7 +68,7 @@ private enum TestGame {
 @Test("AppContainerForTest wires transport and runtime")
 func testAppContainerForTestHandlesClientEvents() async throws {
     // Arrange
-    typealias TestAppContainer = AppContainer<TestGameState, TestClientEvents, TestServerEvents>
+    typealias TestAppContainer = AppContainer<TestGameState>
     let harness = await TestAppContainer.makeForTest(
         land: TestGame.land,
         initialState: TestGameState()
@@ -62,17 +82,19 @@ func testAppContainerForTestHandlesClientEvents() async throws {
     let decoder = JSONDecoder()
     
     // Act: send ping event
-    let pingMessage = TransportMessage<TestClientEvents, TestServerEvents>.event(
+    let pingEvent = AnyClientEvent(TestPingEvent())
+    let pingMessage = TransportMessage.event(
         landID: harness.land.id,
-        event: .fromClient(.ping)
+        event: .fromClient(pingEvent)
     )
     let pingData = try encoder.encode(pingMessage)
     await harness.send(pingData, from: sessionID)
     
     // Act: send chat event to mutate state
-    let chatMessage = TransportMessage<TestClientEvents, TestServerEvents>.event(
+    let chatEvent = AnyClientEvent(TestChatEvent(message: "hello"))
+    let chatMessage = TransportMessage.event(
         landID: harness.land.id,
-        event: .fromClient(.chat("hello"))
+        event: .fromClient(chatEvent)
     )
     let chatData = try encoder.encode(chatMessage)
     await harness.send(chatData, from: sessionID)
@@ -82,21 +104,28 @@ func testAppContainerForTestHandlesClientEvents() async throws {
     // Assert: transport echoed server events via adapter
     let outgoing = await connection.recordedMessages()
     let transportMessages = outgoing.compactMap {
-        try? decoder.decode(TransportMessage<TestClientEvents, TestServerEvents>.self, from: $0)
+        try? decoder.decode(TransportMessage.self, from: $0)
     }
     
     #expect(transportMessages.contains(where: { message in
-        if case .event(_, let payload) = message,
-           case .fromServer(.pong) = payload {
+        if case .event(_, let eventWrapper) = message,
+           case .fromServer(let anyEvent) = eventWrapper,
+           anyEvent.type == "TestPongEvent" {
             return true
         }
         return false
     }))
     
     #expect(transportMessages.contains(where: { message in
-        if case .event(_, let payload) = message,
-           case .fromServer(.chatMessage(let text)) = payload {
-            return text == "hello"
+        if case .event(_, let eventWrapper) = message,
+           case .fromServer(let anyEvent) = eventWrapper,
+           anyEvent.type == "TestChatMessageEvent" {
+            // Decode the payload to check message content
+            if let payloadDict = anyEvent.payload.base as? [String: Any],
+               let message = payloadDict["message"] as? String,
+               message == "hello" {
+                return true
+            }
         }
         return false
     }))

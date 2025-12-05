@@ -38,8 +38,8 @@ public struct LandMacro: MemberMacro {
 
         let definitionDecl: DeclSyntax =
             """
-            public static var definition: LandDefinition<\(args.stateType), \(args.clientType), \(args.serverType)> {
-                Land(\(idExpr), using: \(args.stateType).self, clientEvents: \(args.clientType).self, serverEvents: \(args.serverType).self) {
+            public static var definition: LandDefinition<\(args.stateType)> {
+                Land(\(idExpr), using: \(args.stateType).self) {
                     Self.body
                 }
             }
@@ -51,8 +51,6 @@ public struct LandMacro: MemberMacro {
 
 private struct LandAttributeArguments {
     let stateType: TypeSyntax
-    let clientType: TypeSyntax
-    let serverType: TypeSyntax
     let idExpr: ExprSyntax?
 
     static func parse(from attribute: AttributeSyntax) throws -> LandAttributeArguments {
@@ -63,8 +61,6 @@ private struct LandAttributeArguments {
         }
 
         var stateType: TypeSyntax?
-        var clientType: TypeSyntax?
-        var serverType: TypeSyntax?
         var idExpr: ExprSyntax?
 
         for (index, argument) in arguments.enumerated() {
@@ -75,10 +71,6 @@ private struct LandAttributeArguments {
             }
 
             switch label {
-            case "client":
-                clientType = try TypeSyntax.make(from: argument.expression)
-            case "server":
-                serverType = try TypeSyntax.make(from: argument.expression)
             case "id":
                 idExpr = ExprSyntax(argument.expression)
             default:
@@ -86,7 +78,7 @@ private struct LandAttributeArguments {
             }
         }
 
-        guard let stateType, let clientType, let serverType else {
+        guard let stateType else {
             throw DiagnosticsError(diagnostics: [
                 Diagnostic(node: Syntax(attribute), message: LandMacroDiagnostics.missingArguments)
             ])
@@ -94,8 +86,6 @@ private struct LandAttributeArguments {
 
         return LandAttributeArguments(
             stateType: stateType,
-            clientType: clientType,
-            serverType: serverType,
             idExpr: idExpr
         )
     }
@@ -138,7 +128,7 @@ private enum LandMacroDiagnostics: DiagnosticMessage {
         case .missingBody:
             return "@Land struct must declare `static var body: some LandDSL`"
         case .missingArguments:
-            return "@Land requires state, client, and server types"
+            return "@Land requires state type"
         }
     }
 
@@ -170,115 +160,3 @@ private extension TypeSyntax {
     }
 }
 
-// MARK: - GenerateLandEventHandlers Macro
-
-public struct GenerateLandEventHandlersMacro: MemberMacro {
-    public static func expansion(
-        of attribute: AttributeSyntax,
-        providingMembersOf declaration: some DeclGroupSyntax,
-        in context: some MacroExpansionContext
-    ) throws -> [DeclSyntax] {
-        guard let enumDecl = declaration.as(EnumDeclSyntax.self) else {
-            throw DiagnosticsError(
-                diagnostics: [
-                    Diagnostic(node: Syntax(declaration), message: EventMacroDiagnostics.onlyEnums)
-                ]
-            )
-        }
-
-        var generated: [DeclSyntax] = []
-
-        for member in enumDecl.memberBlock.members {
-            guard let caseDecl = member.decl.as(EnumCaseDeclSyntax.self) else { continue }
-            for element in caseDecl.elements {
-                let function = try generateHandler(for: element)
-                generated.append(function)
-            }
-        }
-
-        return generated
-    }
-
-    private static func generateHandler(
-        for element: EnumCaseElementSyntax
-    ) throws -> DeclSyntax {
-        let caseName = element.name.text
-        let handlerName = "On" + caseName.prefix(1).uppercased() + caseName.dropFirst()
-
-        let associatedValues = element.parameterClause?.parameters.enumerated().map { index, param -> AssociatedValueInfo in
-            let label = param.firstName?.text
-            let type = param.type.trimmed.description
-            let variableName = label ?? "value\(index)"
-            return AssociatedValueInfo(label: label, type: type, variableName: variableName)
-        } ?? []
-
-        let closureTypeTail: String
-        if associatedValues.isEmpty {
-            closureTypeTail = ", LandContext"
-        } else {
-            let params = associatedValues.map { ", \($0.type)" }.joined()
-            closureTypeTail = "\(params), LandContext"
-        }
-
-        let pattern: String
-        if associatedValues.isEmpty {
-            pattern = ".\(caseName)"
-        } else {
-            let bindings = associatedValues.map { info -> String in
-                if let label = info.label {
-                    return "\(label): let \(info.variableName)"
-                } else {
-                    return "let \(info.variableName)"
-                }
-            }.joined(separator: ", ")
-            pattern = ".\(caseName)(\(bindings))"
-        }
-
-        let handlerCall: String
-        if associatedValues.isEmpty {
-            handlerCall = "await body(&state, ctx)"
-        } else {
-            let values = associatedValues.map { $0.variableName }.joined(separator: ", ")
-            handlerCall = "await body(&state, \(values), ctx)"
-        }
-
-        let functionDecl: DeclSyntax =
-            """
-            public static func \(raw: handlerName)<State: StateNodeProtocol>(
-                _ body: @escaping @Sendable (inout State\(raw: closureTypeTail)) async -> Void
-            ) -> AnyClientEventHandler<State, Self> {
-                On(Self.self) { state, event, ctx in
-                    guard case \(raw: pattern) = event else {
-                        return
-                    }
-                    \(raw: handlerCall)
-                }
-            }
-            """
-
-        return functionDecl
-    }
-}
-
-private struct AssociatedValueInfo {
-    let label: String?
-    let type: String
-    let variableName: String
-}
-
-private enum EventMacroDiagnostics: DiagnosticMessage {
-    case onlyEnums
-
-    var message: String {
-        switch self {
-        case .onlyEnums:
-            return "@GenerateLandEventHandlers can only be applied to enum declarations"
-        }
-    }
-
-    var diagnosticID: MessageID {
-        MessageID(domain: "SwiftStateTree.EventMacro", id: "\(self)")
-    }
-
-    var severity: DiagnosticSeverity { .error }
-}

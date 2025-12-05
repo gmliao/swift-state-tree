@@ -27,42 +27,55 @@ struct JoinResult: Codable, Sendable {
     let ok: Bool
 }
 
-enum DemoClientEvents: ClientEventPayload, Hashable {
-    case ready
-    case chat(String)
+@Payload
+struct DemoReadyEvent: ClientEventPayload {
+    public init() {}
 }
 
-enum DemoServerEvents: ServerEventPayload {
-    case message(String)
+@Payload
+struct DemoChatEvent: ClientEventPayload {
+    let message: String
+    public init(message: String) {
+        self.message = message
+    }
+}
+
+@Payload
+struct DemoMessageEvent: ServerEventPayload {
+    let message: String
+    public init(message: String) {
+        self.message = message
+    }
 }
 
 @Test("Land builder collects access control and allowed events")
 func testLandBuilderCollectsNodes() {
     let definition = Land(
         "demo",
-        using: DemoLandState.self,
-        clientEvents: DemoClientEvents.self,
-        serverEvents: DemoServerEvents.self
+        using: DemoLandState.self
     ) {
         AccessControl {
             AllowPublic(false)
             MaxPlayers(4)
         }
 
-        Rules {
-            AllowedClientEvents {
-                DemoClientEvents.ready
-            }
+        ClientEvents {
+            Register(DemoReadyEvent.self)
+            Register(DemoChatEvent.self)
+        }
+        
+        ServerEvents {
+            Register(DemoMessageEvent.self)
+        }
 
+        Rules {
             Action(JoinAction.self) { (state: inout DemoLandState, action: JoinAction, ctx: LandContext) in
                 state.players[ctx.playerID] = action.name
                 return JoinResult(ok: true)
             }
 
-            On(DemoClientEvents.self) { (state: inout DemoLandState, event: DemoClientEvents, ctx: LandContext) in
-                if case .ready = event {
+            On(DemoReadyEvent.self) { (state: inout DemoLandState, event: DemoReadyEvent, ctx: LandContext) in
                     state.readyPlayers.insert(ctx.playerID)
-                }
             }
         }
 
@@ -77,7 +90,7 @@ func testLandBuilderCollectsNodes() {
 
     #expect(definition.config.allowPublic == false)
     #expect(definition.config.maxPlayers == 4)
-    #expect(definition.config.allowedClientEvents.count == 1)
+    // Note: AllowedClientEvents is no longer used with registry-based events
     #expect(definition.lifetimeHandlers.tickInterval == .milliseconds(50))
     #expect(definition.lifetimeHandlers.destroyWhenEmptyAfter == .seconds(5))
 }
@@ -86,10 +99,16 @@ func testLandBuilderCollectsNodes() {
 func testLandKeeperLifecycle() async throws {
     let definition = Land(
         "demo-lifecycle",
-        using: DemoLandState.self,
-        clientEvents: DemoClientEvents.self,
-        serverEvents: DemoServerEvents.self
+        using: DemoLandState.self
     ) {
+        ClientEvents {
+            Register(DemoReadyEvent.self)
+        }
+        
+        ServerEvents {
+            Register(DemoMessageEvent.self)
+        }
+        
         Rules {
             OnJoin { (state: inout DemoLandState, ctx: LandContext) in
                 state.players[ctx.playerID] = "Guest"
@@ -104,15 +123,13 @@ func testLandKeeperLifecycle() async throws {
                 return JoinResult(ok: true)
             }
 
-            On(DemoClientEvents.self) { (state: inout DemoLandState, event: DemoClientEvents, ctx: LandContext) in
-                if case .ready = event {
+            On(DemoReadyEvent.self) { (state: inout DemoLandState, event: DemoReadyEvent, ctx: LandContext) in
                     state.readyPlayers.insert(ctx.playerID)
-                }
             }
         }
     }
 
-    let keeper = LandKeeper<DemoLandState, DemoClientEvents, DemoServerEvents>(
+    let keeper = LandKeeper<DemoLandState>(
         definition: definition,
         initialState: DemoLandState()
     )
@@ -132,7 +149,8 @@ func testLandKeeperLifecycle() async throws {
     let result = joinResponse.base as? JoinResult
     #expect(result?.ok == true)
 
-    await keeper.handleClientEvent(DemoClientEvents.ready, playerID: playerID, clientID: clientID, sessionID: sessionID)
+    let readyEvent = AnyClientEvent(DemoReadyEvent())
+    await keeper.handleClientEvent(readyEvent, playerID: playerID, clientID: clientID, sessionID: sessionID)
 
     await keeper.leave(playerID: playerID, clientID: clientID)
 
@@ -152,24 +170,25 @@ func testLandKeeperAllowedEvents() async {
 
     let definition = Land(
         "allowed-events",
-        using: DemoLandState.self,
-        clientEvents: DemoClientEvents.self,
-        serverEvents: DemoServerEvents.self
+        using: DemoLandState.self
     ) {
+        ClientEvents {
+            Register(DemoReadyEvent.self)
+            Register(DemoChatEvent.self)
+        }
+        
+        ServerEvents {
+            Register(DemoMessageEvent.self)
+        }
+        
         Rules {
-            AllowedClientEvents {
-                DemoClientEvents.ready
-            }
-
-            On(DemoClientEvents.self) { (_: inout DemoLandState, event: DemoClientEvents, _: LandContext) in
-                if case .ready = event {
+            On(DemoReadyEvent.self) { (_: inout DemoLandState, event: DemoReadyEvent, _: LandContext) in
                     await counter.increment()
-                }
             }
         }
     }
 
-    let keeper = LandKeeper<DemoLandState, DemoClientEvents, DemoServerEvents>(
+    let keeper = LandKeeper<DemoLandState>(
         definition: definition,
         initialState: DemoLandState()
     )
@@ -179,10 +198,12 @@ func testLandKeeperAllowedEvents() async {
 
     await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
 
-    await keeper.handleClientEvent(DemoClientEvents.chat("hi"), playerID: playerID, clientID: clientID, sessionID: sessionID)
+    let chatEvent = AnyClientEvent(DemoChatEvent(message: "hi"))
+    await keeper.handleClientEvent(chatEvent, playerID: playerID, clientID: clientID, sessionID: sessionID)
     #expect(await counter.current() == 0)
 
-    await keeper.handleClientEvent(DemoClientEvents.ready, playerID: playerID, clientID: clientID, sessionID: sessionID)
+    let readyEvent = AnyClientEvent(DemoReadyEvent())
+    await keeper.handleClientEvent(readyEvent, playerID: playerID, clientID: clientID, sessionID: sessionID)
     #expect(await counter.current() == 1)
 }
 
@@ -211,9 +232,7 @@ func waitFor(
 func testLandKeeperTickHandler() async throws {
     let definition = Land(
         "tick-land",
-        using: DemoLandState.self,
-        clientEvents: DemoClientEvents.self,
-        serverEvents: DemoServerEvents.self
+        using: DemoLandState.self
     ) {
         Rules { }
 
@@ -225,7 +244,7 @@ func testLandKeeperTickHandler() async throws {
         }
     }
 
-    let keeper = LandKeeper<DemoLandState, DemoClientEvents, DemoServerEvents>(
+    let keeper = LandKeeper<DemoLandState>(
         definition: definition,
         initialState: DemoLandState()
     )
@@ -242,9 +261,7 @@ func testLandKeeperTickHandler() async throws {
 func testCanJoinAllows() async throws {
     let definition = Land(
         "can-join-test",
-        using: DemoLandState.self,
-        clientEvents: DemoClientEvents.self,
-        serverEvents: DemoServerEvents.self
+        using: DemoLandState.self
     ) {
         Rules {
             CanJoin { (state: DemoLandState, session: PlayerSession, _: LandContext) async throws in
@@ -261,7 +278,7 @@ func testCanJoinAllows() async throws {
         }
     }
     
-    let keeper = LandKeeper<DemoLandState, DemoClientEvents, DemoServerEvents>(
+    let keeper = LandKeeper<DemoLandState>(
         definition: definition,
         initialState: DemoLandState()
     )
@@ -287,9 +304,7 @@ func testCanJoinAllows() async throws {
 func testCanJoinDenies() async throws {
     let definition = Land(
         "can-join-deny-test",
-        using: DemoLandState.self,
-        clientEvents: DemoClientEvents.self,
-        serverEvents: DemoServerEvents.self
+        using: DemoLandState.self
     ) {
         Rules {
             CanJoin { (state: DemoLandState, session: PlayerSession, _: LandContext) async throws in
@@ -306,7 +321,7 @@ func testCanJoinDenies() async throws {
         }
     }
     
-    let keeper = LandKeeper<DemoLandState, DemoClientEvents, DemoServerEvents>(
+    let keeper = LandKeeper<DemoLandState>(
         definition: definition,
         initialState: DemoLandState()
     )
@@ -349,9 +364,7 @@ func testCtxSpawn() async throws {
     
     let definition = Land(
         "spawn-test",
-        using: DemoLandState.self,
-        clientEvents: DemoClientEvents.self,
-        serverEvents: DemoServerEvents.self
+        using: DemoLandState.self
     ) {
         Lifetime { (config: inout LifetimeConfig<DemoLandState>) in
             config.tickInterval = .milliseconds(10)
@@ -366,7 +379,7 @@ func testCtxSpawn() async throws {
         }
     }
     
-    let keeper = LandKeeper<DemoLandState, DemoClientEvents, DemoServerEvents>(
+    let keeper = LandKeeper<DemoLandState>(
         definition: definition,
         initialState: DemoLandState()
     )
@@ -383,9 +396,7 @@ func testCtxSpawn() async throws {
 func testOnTickSynchronous() async throws {
     let definition = Land(
         "sync-tick-test",
-        using: DemoLandState.self,
-        clientEvents: DemoClientEvents.self,
-        serverEvents: DemoServerEvents.self
+        using: DemoLandState.self
     ) {
         Lifetime { (config: inout LifetimeConfig<DemoLandState>) in
             config.tickInterval = .milliseconds(5)
@@ -396,7 +407,7 @@ func testOnTickSynchronous() async throws {
         }
     }
     
-    let keeper = LandKeeper<DemoLandState, DemoClientEvents, DemoServerEvents>(
+    let keeper = LandKeeper<DemoLandState>(
         definition: definition,
         initialState: DemoLandState()
     )
@@ -405,4 +416,173 @@ func testOnTickSynchronous() async throws {
         let state = await keeper.currentState()
         return state.ticks >= 3
     }
+}
+
+// MARK: - Event Registration Tests
+
+@Test("ClientEvents Register collects event types")
+func testClientEventsRegister() {
+    @Payload
+    struct TestEvent1: ClientEventPayload {
+        let value: Int
+        public init(value: Int) { self.value = value }
+    }
+    
+    @Payload
+    struct TestEvent2: ClientEventPayload {
+        let message: String
+        public init(message: String) { self.message = message }
+    }
+    
+    let definition = Land(
+        "test-register",
+        using: DemoLandState.self
+    ) {
+        ClientEvents {
+            Register(TestEvent1.self)
+            Register(TestEvent2.self)
+        }
+        Rules { }
+    }
+    
+    // Verify client events are registered
+    #expect(definition.clientEventRegistry.registered.count == 2)
+    
+    let eventNames = definition.clientEventRegistry.registered.map { $0.eventName }
+    #expect(eventNames.contains("TestEvent1"))
+    #expect(eventNames.contains("TestEvent2"))
+    
+    // Verify all registered events are client events
+    for descriptor in definition.clientEventRegistry.registered {
+        #expect(descriptor.direction == .client)
+    }
+}
+
+@Test("ServerEvents Register collects event types")
+func testServerEventsRegister() {
+    @Payload
+    struct TestServerEvent1: ServerEventPayload {
+        let value: Int
+        public init(value: Int) { self.value = value }
+    }
+    
+    @Payload
+    struct TestServerEvent2: ServerEventPayload {
+        let message: String
+        public init(message: String) { self.message = message }
+    }
+    
+    let definition = Land(
+        "test-server-register",
+        using: DemoLandState.self
+    ) {
+        ServerEvents {
+            Register(TestServerEvent1.self)
+            Register(TestServerEvent2.self)
+        }
+        Rules { }
+    }
+    
+    // Verify server events are registered
+    #expect(definition.serverEventRegistry.registered.count == 2)
+    
+    let eventNames = definition.serverEventRegistry.registered.map { $0.eventName }
+    #expect(eventNames.contains("TestServerEvent1"))
+    #expect(eventNames.contains("TestServerEvent2"))
+    
+    // Verify all registered events are server events
+    for descriptor in definition.serverEventRegistry.registered {
+        #expect(descriptor.direction == .server)
+    }
+}
+
+@Test("EventRegistry findDescriptor works correctly")
+func testEventRegistryFindDescriptor() {
+    @Payload
+    struct TestFindEvent: ServerEventPayload {
+        let id: String
+        public init(id: String) { self.id = id }
+    }
+    
+    let definition = Land(
+        "test-find",
+        using: DemoLandState.self
+    ) {
+        ServerEvents {
+            Register(TestFindEvent.self)
+        }
+        Rules { }
+    }
+    
+    // Test finding by event name
+    let descriptor = definition.serverEventRegistry.findDescriptor(for: "TestFindEvent")
+    #expect(descriptor != nil)
+    #expect(descriptor?.eventName == "TestFindEvent")
+    #expect(descriptor?.direction == .server)
+    
+    // Test finding non-existent event
+    let notFound = definition.serverEventRegistry.findDescriptor(for: "NonExistentEvent")
+    #expect(notFound == nil)
+}
+
+@Test("EventRegistry isRegistered works correctly")
+func testEventRegistryIsRegistered() {
+    @Payload
+    struct TestRegisteredEvent: ClientEventPayload {
+        public init() {}
+    }
+    
+    @Payload
+    struct TestUnregisteredEvent: ClientEventPayload {
+        public init() {}
+    }
+    
+    let definition = Land(
+        "test-is-registered",
+        using: DemoLandState.self
+    ) {
+        ClientEvents {
+            Register(TestRegisteredEvent.self)
+        }
+        Rules { }
+    }
+    
+    // Test registered event
+    #expect(definition.clientEventRegistry.isRegistered(TestRegisteredEvent.self))
+    
+    // Test unregistered event
+    #expect(definition.clientEventRegistry.isRegistered(TestUnregisteredEvent.self) == false)
+}
+
+@Test("ClientEvents and ServerEvents can be registered together")
+func testBothClientAndServerEvents() {
+    @Payload
+    struct ClientEvent: ClientEventPayload {
+        public init() {}
+    }
+    
+    @Payload
+    struct ServerEvent: ServerEventPayload {
+        public init() {}
+    }
+    
+    let definition = Land(
+        "test-both",
+        using: DemoLandState.self
+    ) {
+        ClientEvents {
+            Register(ClientEvent.self)
+        }
+        ServerEvents {
+            Register(ServerEvent.self)
+        }
+        Rules { }
+    }
+    
+    // Verify both registries are populated
+    #expect(definition.clientEventRegistry.registered.count == 1)
+    #expect(definition.serverEventRegistry.registered.count == 1)
+    
+    #expect(definition.clientEventRegistry.registered.first?.eventName == "ClientEvent")
+    #expect(definition.serverEventRegistry.registered.first?.eventName == "ServerEvent")
 }

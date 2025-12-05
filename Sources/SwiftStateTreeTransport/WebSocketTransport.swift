@@ -46,6 +46,8 @@ public actor WebSocketTransport: Transport {
     }
     
     public func send(_ message: Data, to target: EventTarget) async throws {
+        logOutgoing(message, target: target)
+        
         switch target {
         case .session(let sessionID):
             try await sessions[sessionID]?.send(message)
@@ -91,11 +93,64 @@ public actor WebSocketTransport: Transport {
     }
     
     public func handleIncomingMessage(sessionID: SessionID, data: Data) async {
+        logIncoming(data, from: sessionID)
         await delegate?.onMessage(data, from: sessionID)
     }
     
     public func registerSession(_ sessionID: SessionID, for playerID: PlayerID) {
         playerSessions[playerID, default: []].insert(sessionID)
+    }
+    
+    // MARK: - Logging helpers
+    //
+    /// Logging strategy:
+    /// - `debug` level logs a compact summary (direction, target/session, byte size).
+    /// - `trace` level logs a best‑effort UTF‑8 preview of the full payload.
+    ///
+    /// To see detailed payload logs in your application, configure the logger that is
+    /// passed into `WebSocketTransport` (or `AppContainer`) with `.logLevel = .trace`.
+    
+    private func logIncoming(_ data: Data, from sessionID: SessionID) {
+        let size = data.count
+        let preview = String(data: data, encoding: .utf8) ?? "<non-UTF8 payload>"
+        
+        logger.debug("WS ⇦ receive", metadata: [
+            "session": .string(sessionID.rawValue),
+            "bytes": .string("\(size)")
+        ])
+        
+        logger.trace("WS ⇦ payload", metadata: [
+            "session": .string(sessionID.rawValue),
+            "payload": .string(preview)
+        ])
+    }
+    
+    private func logOutgoing(_ data: Data, target: EventTarget) {
+        let size = data.count
+        let preview = String(data: data, encoding: .utf8) ?? "<non-UTF8 payload>"
+        
+        let targetDescription: String = {
+            switch target {
+            case .session(let id):
+                return "session(\(id.rawValue))"
+            case .player(let id):
+                return "player(\(id.rawValue))"
+            case .broadcast:
+                return "broadcast"
+            case .broadcastExcept(let id):
+                return "broadcastExcept(\(id.rawValue))"
+            }
+        }()
+        
+        logger.debug("WS ⇨ send", metadata: [
+            "target": .string(targetDescription),
+            "bytes": .string("\(size)")
+        ])
+        
+        logger.trace("WS ⇨ payload", metadata: [
+            "target": .string(targetDescription),
+            "payload": .string(preview)
+        ])
     }
 }
 

@@ -13,7 +13,7 @@ public struct AnyLandDefinition: Sendable {
     
     /// Create an AnyLandDefinition from a LandDefinition
     public init<State: StateNodeProtocol>(
-        _ definition: LandDefinition<State, some ClientEventPayload, some ServerEventPayload>
+        _ definition: LandDefinition<State>
     ) {
         self.id = definition.id
         self.stateTypeName = String(describing: State.self)

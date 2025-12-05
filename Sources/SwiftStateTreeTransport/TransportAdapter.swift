@@ -3,12 +3,9 @@ import SwiftStateTree
 import Logging
 
 /// Adapts Transport events to LandKeeper calls.
-public actor TransportAdapter<State, ClientE, ServerE>: TransportDelegate
-where State: StateNodeProtocol,
-      ClientE: ClientEventPayload,
-      ServerE: ServerEventPayload {
+public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     
-    private let keeper: LandKeeper<State, ClientE, ServerE>
+    private let keeper: LandKeeper<State>
     private let transport: WebSocketTransport
     private let landID: String
     private let decoder = JSONDecoder()
@@ -28,7 +25,7 @@ where State: StateNodeProtocol,
     }
     
     public init(
-        keeper: LandKeeper<State, ClientE, ServerE>,
+        keeper: LandKeeper<State>,
         transport: WebSocketTransport,
         landID: String,
         createPlayerSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
@@ -99,7 +96,7 @@ where State: StateNodeProtocol,
     
     public func onMessage(_ message: Data, from sessionID: SessionID) async {
         do {
-            let transportMsg = try decoder.decode(TransportMessage<ClientE, ServerE>.self, from: message)
+            let transportMsg = try decoder.decode(TransportMessage.self, from: message)
             
             guard let playerID = sessionToPlayer[sessionID],
                   let clientID = sessionToClient[sessionID] else {
@@ -117,8 +114,13 @@ where State: StateNodeProtocol,
                 
             case .event(let landID, let eventWrapper):
                 _ = landID
-                if case .fromClient(let clientEvent) = eventWrapper {
-                    await keeper.handleClientEvent(clientEvent, playerID: playerID, clientID: clientID, sessionID: sessionID)
+                if case .fromClient(let anyClientEvent) = eventWrapper {
+                    await keeper.handleClientEvent(
+                        anyClientEvent,
+                        playerID: playerID,
+                        clientID: clientID,
+                        sessionID: sessionID
+                    )
                 }
                 
             case .actionResponse:
@@ -133,17 +135,11 @@ where State: StateNodeProtocol,
     // MARK: - Helper Methods
     
     /// Send server event to specified target
-    public func sendEvent(_ event: any ServerEventPayload, to target: SwiftStateTree.EventTarget) async {
+    public func sendEvent(_ event: AnyServerEvent, to target: SwiftStateTree.EventTarget) async {
         do {
-            // Cast to ServerE type
-            guard let serverEvent = event as? ServerE else {
-                logger.error("Event type mismatch")
-                return
-            }
-            
-            let transportMsg = TransportMessage<ClientE, ServerE>.event(
+            let transportMsg = TransportMessage.event(
                 landID: landID,
-                event: .fromServer(serverEvent)
+                event: .fromServer(event)
             )
             
             let data = try encoder.encode(transportMsg)

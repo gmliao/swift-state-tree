@@ -8,15 +8,12 @@ final class LandMacroTests {
         "Land": LandMacro.self
     ]
 
-    private let eventMacros: [String: Macro.Type] = [
-        "GenerateLandEventHandlers": GenerateLandEventHandlersMacro.self
-    ]
 
     @Test("Land macro generates definition property")
     func testLandMacroExpansion() {
         assertMacroExpansion(
             """
-            @Land(GameState.self, client: ClientEvents.self, server: ServerEvents.self, id: "demo-land")
+            @Land(GameState.self, id: "demo-land")
             struct DemoLand {
                 static var body: some LandDSL {
                     AccessControl { }
@@ -29,8 +26,8 @@ final class LandMacroTests {
                     AccessControl { }
                 }
 
-                public static var definition: LandDefinition<GameState, ClientEvents, ServerEvents> {
-                    Land("demo-land", using: GameState.self, clientEvents: ClientEvents.self, serverEvents: ServerEvents.self) {
+                public static var definition: LandDefinition<GameState> {
+                    Land("demo-land", using: GameState.self) {
                         Self.body
                     }
                 }
@@ -40,45 +37,4 @@ final class LandMacroTests {
         )
     }
 
-    @Test("GenerateLandEventHandlers creates On functions")
-    func testGenerateLandEventHandlersMacro() {
-        assertMacroExpansion(
-            """
-            @GenerateLandEventHandlers
-            enum ClientEvents: ClientEventPayload {
-                case ready
-                case chat(String)
-            }
-            """,
-            expandedSource: """
-            enum ClientEvents: ClientEventPayload {
-                case ready
-                case chat(String)
-
-                public static func OnReady<State: StateNodeProtocol>(
-                    _ body: @escaping @Sendable (inout State, LandContext) async -> Void
-                ) -> AnyClientEventHandler<State, ClientEvents> {
-                    On(ClientEvents.self) { state, event, ctx in
-                        guard case .ready = event else {
-                            return
-                        }
-                        await body(&state, ctx)
-                    }
-                }
-
-                public static func OnChat<State: StateNodeProtocol>(
-                    _ body: @escaping @Sendable (inout State, String, LandContext) async -> Void
-                ) -> AnyClientEventHandler<State, ClientEvents> {
-                    On(ClientEvents.self) { state, event, ctx in
-                        guard case .chat(let value0) = event else {
-                            return
-                        }
-                        await body(&state, value0, ctx)
-                    }
-                }
-            }
-            """,
-            macros: eventMacros
-        )
-    }
 }

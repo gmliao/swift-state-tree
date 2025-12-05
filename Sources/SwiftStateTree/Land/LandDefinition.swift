@@ -9,25 +9,27 @@ import Foundation
 ///
 /// This structure acts as the blueprint for creating a `LandKeeper` actor. It decouples the
 /// declarative DSL from the runtime execution logic.
-public struct LandDefinition<
-    State: StateNodeProtocol,
-    ClientE: ClientEventPayload,
-    ServerE: ServerEventPayload
->: Sendable {
+public struct LandDefinition<State: StateNodeProtocol>: Sendable {
     /// Unique identifier for this Land definition (e.g., "battle-royale", "lobby").
     public let id: String
     /// The type of the root state node managed by this Land.
     public let stateType: State.Type
-    /// The type of client events accepted by this Land.
-    public let clientEventType: ClientE.Type
-    /// The type of server events emitted by this Land.
-    public let serverEventType: ServerE.Type
+    /// Registry of registered client event types.
+    ///
+    /// These are collected via the `ClientEvents { Register(...) }` DSL and are used for
+    /// schema generation and runtime validation (e.g., warnings for unregistered event types).
+    public let clientEventRegistry: EventRegistry<AnyClientEvent>
+    /// Registry of registered server event types.
+    ///
+    /// These are collected via the `ServerEvents { Register(...) }` DSL and are used for
+    /// schema generation and runtime validation (e.g., warnings for unregistered event types).
+    public let serverEventRegistry: EventRegistry<AnyServerEvent>
     /// Aggregated configuration (access control, lifetime, etc.).
     public let config: LandConfig
     /// List of registered action handlers.
     public let actionHandlers: [AnyActionHandler<State>]
-    /// List of registered client event handlers.
-    public let eventHandlers: [AnyClientEventHandler<State, ClientE>]
+    /// List of registered client event handlers (type-erased).
+    public let eventHandlers: [AnyClientEventHandler<State>]
     /// Lifecycle handlers (join, leave, tick, shutdown).
     public let lifetimeHandlers: LifetimeHandlers<State>
 }
@@ -143,18 +145,32 @@ public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
 ///
 /// Wraps a strongly-typed event handler. Unlike actions, event handlers are typically
 /// invoked for all matching events (or specific enum cases if using the generated helpers).
-public struct AnyClientEventHandler<State: StateNodeProtocol, ClientE: ClientEventPayload>: LandNode {
-    private let handler: @Sendable (inout State, ClientE, LandContext) async -> Void
+public struct AnyClientEventHandler<State: StateNodeProtocol>: LandNode {
+    private let eventType: Any.Type
+    private let handler: @Sendable (inout State, AnyClientEvent, LandContext) async -> Void
 
-    public init(
-        handler: @escaping @Sendable (inout State, ClientE, LandContext) async -> Void
+    public init<E: ClientEventPayload>(
+        eventType: E.Type,
+        handler: @escaping @Sendable (inout State, E, LandContext) async -> Void
     ) {
-        self.handler = handler
+        self.eventType = eventType
+        self.handler = { state, anyEvent, ctx in
+            // Decode the event from AnyClientEvent
+            let decoder = JSONDecoder()
+            if let data = try? JSONEncoder().encode(anyEvent.payload),
+               let event = try? decoder.decode(E.self, from: data) {
+                await handler(&state, event, ctx)
+            }
+        }
+    }
+
+    public func canHandle(_ eventType: Any.Type) -> Bool {
+        self.eventType == eventType
     }
 
     public func invoke(
         _ state: inout State,
-        event: ClientE,
+        event: AnyClientEvent,
         ctx: LandContext
     ) async {
         await handler(&state, event, ctx)

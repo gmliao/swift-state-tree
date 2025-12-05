@@ -51,11 +51,24 @@ public struct TypeToSchemaConverter {
         
         // Handle Dictionary/Map types (based on nodeKind from metadata)
         if nodeKind == .map {
-            // For dictionaries, create a schema with additionalProperties
-            // The value type should be extracted from metadata in a full implementation
+            // For dictionaries, create a schema with additionalProperties describing
+            // the value type when possible.
+            let valueSchema: JSONSchema
+            if let valueType = SchemaHelper.dictionaryValueType(from: type) {
+                valueSchema = convert(
+                    valueType,
+                    metadata: nil,
+                    definitions: &definitions,
+                    visitedTypes: &visitedTypes
+                )
+            } else {
+                // Fallback to a generic object
+                valueSchema = JSONSchema(type: .object)
+            }
+            
             return JSONSchema(
                 type: .object,
-                additionalProperties: JSONSchema(type: .object), // Placeholder - should extract from metadata
+                additionalProperties: valueSchema,
                 xStateTree: StateTreeMetadata(
                     nodeKind: .map,
                     sync: metadata?.policy.map { SyncMetadata(policy: $0.rawValue) }

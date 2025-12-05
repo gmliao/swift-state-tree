@@ -10,16 +10,13 @@ import Foundation
 /// - Automatic shutdown when empty
 ///
 /// All state mutations are serialized through the actor, ensuring thread-safety.
-public actor LandKeeper<State, ClientE, ServerE>
-where State: StateNodeProtocol,
-      ClientE: ClientEventPayload,
-      ServerE: ServerEventPayload {
-    public let definition: LandDefinition<State, ClientE, ServerE>
+public actor LandKeeper<State: StateNodeProtocol> {
+    public let definition: LandDefinition<State>
 
     private var state: State
     private var players: [PlayerID: InternalPlayerSession] = [:]
 
-    private let sendEventHandler: @Sendable (any ServerEventPayload, EventTarget) async -> Void
+    private let sendEventHandler: @Sendable (AnyServerEvent, EventTarget) async -> Void
     private let syncNowHandler: @Sendable () async -> Void
 
     private var tickTask: Task<Void, Never>?
@@ -37,14 +34,29 @@ where State: StateNodeProtocol,
     ///   - sendEvent: Closure for sending server events to clients (injected by transport layer).
     ///   - syncNow: Closure for triggering immediate state synchronization (injected by transport layer).
     public init(
-        definition: LandDefinition<State, ClientE, ServerE>,
+        definition: LandDefinition<State>,
         initialState: State,
-        sendEvent: @escaping @Sendable (any ServerEventPayload, EventTarget) async -> Void = { _, _ in },
+        sendEvent: @escaping @Sendable (AnyServerEvent, EventTarget) async -> Void = { _, _ in },
         syncNow: @escaping @Sendable () async -> Void = {}
     ) {
         self.definition = definition
         self.state = initialState
-        self.sendEventHandler = sendEvent
+        self.sendEventHandler = { event, target in
+            #if DEBUG
+            if !definition.serverEventRegistry.registered.isEmpty {
+                // Check if the event type is registered by looking up the event name
+                if definition.serverEventRegistry.findDescriptor(for: event.type) == nil {
+                    print(
+                        "[SwiftStateTree] Warning: ServerEvent type '\(event.type)' was sent but " +
+                        "not registered via ServerEvents { Register(...) } in the Land DSL. " +
+                        "It will not be included in generated schemas."
+                    )
+                }
+            }
+            #endif
+            
+            await sendEvent(event, target)
+        }
         self.syncNowHandler = syncNow
 
         if let interval = definition.lifetimeHandlers.tickInterval,
@@ -253,24 +265,25 @@ where State: StateNodeProtocol,
     /// Checks if the event is allowed, then invokes all registered event handlers.
     ///
     /// - Parameters:
-    ///   - event: The client event payload.
+    ///   - event: The client event (type-erased).
     ///   - playerID: The player sending the event.
     ///   - clientID: The client instance.
     ///   - sessionID: The session identifier.
     public func handleClientEvent(
-        _ event: ClientE,
+        _ event: AnyClientEvent,
         playerID: PlayerID,
         clientID: ClientID,
         sessionID: SessionID
     ) async {
-        guard isEventAllowed(event) else {
-            return
-        }
-
+        // Find handlers that can handle this event type
         let ctx = makeContext(playerID: playerID, clientID: clientID, sessionID: sessionID)
         await withMutableState { state in
             for handler in definition.eventHandlers {
+                // Check if handler can handle this event type by looking up the descriptor
+                if let descriptor = definition.clientEventRegistry.findDescriptor(for: event.type),
+                   handler.canHandle(descriptor.type) {
                 await handler.invoke(&state, event: event, ctx: ctx)
+                }
             }
         }
     }
@@ -295,7 +308,9 @@ where State: StateNodeProtocol,
             services: services,
             deviceID: deviceID ?? playerSession?.deviceID,
             metadata: metadata.isEmpty ? (playerSession?.metadata ?? [:]) : metadata,
-            sendEventHandler: sendEventHandler,
+            sendEventHandler: { anyEvent, target in
+                await self.sendEventHandler(anyEvent, target)
+            },
             syncHandler: syncNowHandler
         )
     }
@@ -357,17 +372,7 @@ where State: StateNodeProtocol,
         tickTask = nil
     }
 
-    private func isEventAllowed(_ event: ClientE) -> Bool {
-        guard !definition.config.allowedClientEvents.isEmpty else {
-            return true
-        }
-        guard let hashableEvent = event as? AnyHashable else {
-            return false
-        }
-        return definition.config.allowedClientEvents.contains(
-            AllowedEventIdentifier(anyHashable: hashableEvent)
-        )
-    }
+    // Note: isEventAllowed is no longer needed as we use registry-based validation
 }
 
 private struct InternalPlayerSession: Sendable {
@@ -386,4 +391,3 @@ private struct InternalPlayerSession: Sendable {
         self.metadata = metadata
     }
 }
-

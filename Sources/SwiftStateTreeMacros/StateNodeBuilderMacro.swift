@@ -998,7 +998,6 @@ struct SwiftStateTreeMacrosPlugin: CompilerPlugin {
         StateNodeBuilderMacro.self,
         SnapshotConvertibleMacro.self,
         LandMacro.self,
-        GenerateLandEventHandlersMacro.self,
         PayloadMacro.self
     ]
 }

@@ -6,7 +6,7 @@ import SwiftStateTree
 @main
 struct HummingbirdDemo {
     static func main() async throws {
-        typealias DemoAppContainer = AppContainer<DemoGameState, DemoClientEvents, DemoServerEvents>
+        typealias DemoAppContainer = AppContainer<DemoGameState>
         
         // Configure how PlayerSession is created from sessionID and clientID
         // This allows you to extract playerID, deviceID, and metadata from:
@@ -43,4 +43,3 @@ struct HummingbirdDemo {
         try await container.run()
     }
 }
-

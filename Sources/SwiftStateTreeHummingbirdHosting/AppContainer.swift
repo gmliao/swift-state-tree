@@ -7,10 +7,8 @@ import SwiftStateTreeHummingbird
 import Logging
 
 /// Bundles runtime, transport, and Hummingbird hosting for any Land definition.
-public struct AppContainer<State, ClientEvents, ServerEvents> where State: StateNodeProtocol,
-                                                                  ClientEvents: ClientEventPayload,
-                                                                  ServerEvents: ServerEventPayload {
-    public typealias Land = LandDefinition<State, ClientEvents, ServerEvents>
+public struct AppContainer<State: StateNodeProtocol> {
+    public typealias Land = LandDefinition<State>
     
     public struct Configuration: Sendable {
         public var host: String
@@ -42,10 +40,10 @@ public struct AppContainer<State, ClientEvents, ServerEvents> where State: State
     
     public struct AppContainerForTest {
         public let land: Land
-        public let keeper: LandKeeper<State, ClientEvents, ServerEvents>
+        public let keeper: LandKeeper<State>
         public let transport: WebSocketTransport
-        public let transportAdapter: TransportAdapter<State, ClientEvents, ServerEvents>
-        fileprivate let adapterHolder: TransportAdapterHolder<State, ClientEvents, ServerEvents>
+        public let transportAdapter: TransportAdapter<State>
+        fileprivate let adapterHolder: TransportAdapterHolder<State>
         
         public func connect(
             sessionID: SessionID,
@@ -64,10 +62,10 @@ public struct AppContainer<State, ClientEvents, ServerEvents> where State: State
         
         fileprivate init(
             land: Land,
-            keeper: LandKeeper<State, ClientEvents, ServerEvents>,
+            keeper: LandKeeper<State>,
             transport: WebSocketTransport,
-            transportAdapter: TransportAdapter<State, ClientEvents, ServerEvents>,
-            adapterHolder: TransportAdapterHolder<State, ClientEvents, ServerEvents>
+            transportAdapter: TransportAdapter<State>,
+            adapterHolder: TransportAdapterHolder<State>
         ) {
             self.land = land
             self.keeper = keeper
@@ -79,13 +77,13 @@ public struct AppContainer<State, ClientEvents, ServerEvents> where State: State
     
     public let configuration: Configuration
     public let land: Land
-    public let keeper: LandKeeper<State, ClientEvents, ServerEvents>
+    public let keeper: LandKeeper<State>
     public let transport: WebSocketTransport
-    public let transportAdapter: TransportAdapter<State, ClientEvents, ServerEvents>
+    public let transportAdapter: TransportAdapter<State>
     public let hbAdapter: HummingbirdStateTreeAdapter
     public let router: Router<BasicWebSocketRequestContext>
     
-    private let adapterHolder: TransportAdapterHolder<State, ClientEvents, ServerEvents>
+    private let adapterHolder: TransportAdapterHolder<State>
     
     public func run() async throws {
         let logger = configuration.logger ?? createColoredLogger(
@@ -203,10 +201,10 @@ public struct AppContainer<State, ClientEvents, ServerEvents> where State: State
     
     private struct CoreComponents {
         let land: Land
-        let keeper: LandKeeper<State, ClientEvents, ServerEvents>
+        let keeper: LandKeeper<State>
         let transport: WebSocketTransport
-        let transportAdapter: TransportAdapter<State, ClientEvents, ServerEvents>
-        let adapterHolder: TransportAdapterHolder<State, ClientEvents, ServerEvents>
+        let transportAdapter: TransportAdapter<State>
+        let adapterHolder: TransportAdapterHolder<State>
     }
     
     private static func buildCoreComponents(
@@ -216,9 +214,9 @@ public struct AppContainer<State, ClientEvents, ServerEvents> where State: State
         logger: Logger
     ) async -> CoreComponents {
         let transport = WebSocketTransport(logger: logger)
-        let adapterHolder = TransportAdapterHolder<State, ClientEvents, ServerEvents>()
+        let adapterHolder = TransportAdapterHolder<State>()
         
-        let keeper = LandKeeper<State, ClientEvents, ServerEvents>(
+        let keeper = LandKeeper<State>(
             definition: definition,
             initialState: initialState,
             sendEvent: { event, target in
@@ -229,7 +227,7 @@ public struct AppContainer<State, ClientEvents, ServerEvents> where State: State
             }
         )
         
-        let transportAdapter = TransportAdapter<State, ClientEvents, ServerEvents>(
+        let transportAdapter = TransportAdapter<State>(
             keeper: keeper,
             transport: transport,
             landID: definition.id,
@@ -250,18 +248,15 @@ public struct AppContainer<State, ClientEvents, ServerEvents> where State: State
     }
 }
 
-private actor TransportAdapterHolder<State, ClientEvents, ServerEvents>
-where State: StateNodeProtocol,
-      ClientEvents: ClientEventPayload,
-      ServerEvents: ServerEventPayload {
-    private var adapter: TransportAdapter<State, ClientEvents, ServerEvents>?
+private actor TransportAdapterHolder<State: StateNodeProtocol> {
+    private var adapter: TransportAdapter<State>?
     
-    func set(_ adapter: TransportAdapter<State, ClientEvents, ServerEvents>) {
+    func set(_ adapter: TransportAdapter<State>) {
         self.adapter = adapter
     }
     
     func forwardSendEvent(
-        _ event: any ServerEventPayload,
+        _ event: AnyServerEvent,
         to target: SwiftStateTree.EventTarget
     ) async {
         await adapter?.sendEvent(event, to: target)

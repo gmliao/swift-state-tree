@@ -1,13 +1,43 @@
 {
   "defs" : {
+    "ChatMessageEvent" : {
+      "properties" : {
+        "from" : {
+          "type" : "string"
+        },
+        "message" : {
+          "type" : "string"
+        }
+      },
+      "required" : [
+        "message",
+        "from"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
     "DemoGameState" : {
       "properties" : {
         "messageCount" : {
+          "default" : {
+            "int" : {
+              "_0" : 0
+            }
+          },
           "type" : "integer"
         },
         "players" : {
           "additionalProperties" : {
-            "type" : "object"
+            "type" : "string"
+          },
+          "default" : {
+            "object" : {
+              "_0" : {
+
+              }
+            }
           },
           "type" : "object",
           "x-stateTree" : {
@@ -18,6 +48,11 @@
           }
         },
         "ticks" : {
+          "default" : {
+            "int" : {
+              "_0" : 0
+            }
+          },
           "type" : "integer"
         }
       },
@@ -31,11 +66,31 @@
         "nodeKind" : "object"
       }
     },
-    "DemoServerEvents" : {
-      "type" : "object"
-    },
     "JoinAction" : {
-      "type" : "object"
+      "properties" : {
+        "name" : {
+          "type" : "string"
+        }
+      },
+      "required" : [
+        "name"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
+    "PongEvent" : {
+      "properties" : {
+
+      },
+      "required" : [
+
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
     },
     "StateDiff" : {
       "properties" : {
@@ -68,6 +123,20 @@
       "x-stateTree" : {
         "nodeKind" : "leaf"
       }
+    },
+    "WelcomeEvent" : {
+      "properties" : {
+        "message" : {
+          "type" : "string"
+        }
+      },
+      "required" : [
+        "message"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
     }
   },
   "lands" : {
@@ -78,8 +147,14 @@
         }
       },
       "events" : {
-        "DemoServerEvents" : {
-          "$ref" : "#\/defs\/DemoServerEvents"
+        "chatmessage" : {
+          "$ref" : "#\/defs\/ChatMessageEvent"
+        },
+        "pong" : {
+          "$ref" : "#\/defs\/PongEvent"
+        },
+        "welcome" : {
+          "$ref" : "#\/defs\/WelcomeEvent"
         }
       },
       "stateType" : "DemoGameState",

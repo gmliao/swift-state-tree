@@ -12,14 +12,30 @@ struct TestState: StateNodeProtocol {
     var players: [PlayerID: String] = [:]
 }
 
-enum TestClientEvent: ClientEventPayload {
-    case increment
-    case chat(String)
+@Payload
+struct TestIncrementEvent: ClientEventPayload {
+    public init() {}
 }
 
-enum TestServerEvent: ServerEventPayload {
-    case pong
-    case message(String)
+@Payload
+struct TestChatEvent: ClientEventPayload {
+    let message: String
+    public init(message: String) {
+        self.message = message
+    }
+}
+
+@Payload
+struct TestPongEvent: ServerEventPayload {
+    public init() {}
+}
+
+@Payload
+struct TestMessageEvent: ServerEventPayload {
+    let message: String
+    public init(message: String) {
+        self.message = message
+    }
 }
 
 // MARK: - TransportAdapter Tests
@@ -29,22 +45,26 @@ func testTransportAdapterForwardsEvents() async throws {
     // Arrange
     let definition = Land(
         "test-land",
-        using: TestState.self,
-        clientEvents: TestClientEvent.self,
-        serverEvents: TestServerEvent.self
+        using: TestState.self
     ) {
+        ClientEvents {
+            Register(TestIncrementEvent.self)
+            Register(TestChatEvent.self)
+        }
+        ServerEvents {
+            Register(TestPongEvent.self)
+            Register(TestMessageEvent.self)
+        }
         Rules {
-            On(TestClientEvent.self) { (state: inout TestState, event: TestClientEvent, _) in
-                if case .increment = event {
+            On(TestIncrementEvent.self) { (state: inout TestState, event: TestIncrementEvent, _) in
                     state.count += 1
-                }
             }
         }
     }
     
     let transport = WebSocketTransport()
-    let keeper = LandKeeper<TestState, TestClientEvent, TestServerEvent>(definition: definition, initialState: TestState())
-    let adapter = TransportAdapter<TestState, TestClientEvent, TestServerEvent>(
+    let keeper = LandKeeper<TestState>(definition: definition, initialState: TestState())
+    let adapter = TransportAdapter<TestState>(
         keeper: keeper,
         transport: transport,
         landID: "test-land"
@@ -57,8 +77,8 @@ func testTransportAdapterForwardsEvents() async throws {
     // Act: Connect and send event
     await adapter.onConnect(sessionID: sessionID, clientID: clientID)
     
-    let event = Event<TestClientEvent, TestServerEvent>.fromClient(.increment)
-    let transportMsg = TransportMessage.event(landID: "test-land", event: event)
+    let incrementEvent = AnyClientEvent(TestIncrementEvent())
+    let transportMsg = TransportMessage.event(landID: "test-land", event: .fromClient(incrementEvent))
     let data = try JSONEncoder().encode(transportMsg)
     
     await adapter.onMessage(data, from: sessionID)
@@ -73,9 +93,7 @@ func testTransportAdapterConnectionLifecycle() async throws {
     // Arrange
     let definition = Land(
         "test-land",
-        using: TestState.self,
-        clientEvents: TestClientEvent.self,
-        serverEvents: TestServerEvent.self
+        using: TestState.self
     ) {
         Rules {
             OnJoin { (state: inout TestState, ctx: LandContext) in
@@ -88,8 +106,8 @@ func testTransportAdapterConnectionLifecycle() async throws {
     }
     
     let transport = WebSocketTransport()
-    let keeper = LandKeeper<TestState, TestClientEvent, TestServerEvent>(definition: definition, initialState: TestState())
-    let adapter = TransportAdapter<TestState, TestClientEvent, TestServerEvent>(
+    let keeper = LandKeeper<TestState>(definition: definition, initialState: TestState())
+    let adapter = TransportAdapter<TestState>(
         keeper: keeper,
         transport: transport,
         landID: "test-land"
@@ -120,16 +138,17 @@ func testTransportAdapterSendEvent() async throws {
     // Arrange
     let definition = Land(
         "test-land",
-        using: TestState.self,
-        clientEvents: TestClientEvent.self,
-        serverEvents: TestServerEvent.self
+        using: TestState.self
     ) {
+        ServerEvents {
+            Register(TestMessageEvent.self)
+        }
         Rules { }
     }
     
     let transport = WebSocketTransport()
-    let keeper = LandKeeper<TestState, TestClientEvent, TestServerEvent>(definition: definition, initialState: TestState())
-    let adapter = TransportAdapter<TestState, TestClientEvent, TestServerEvent>(
+    let keeper = LandKeeper<TestState>(definition: definition, initialState: TestState())
+    let adapter = TransportAdapter<TestState>(
         keeper: keeper,
         transport: transport,
         landID: "test-land"
@@ -145,7 +164,8 @@ func testTransportAdapterSendEvent() async throws {
     await adapter.onConnect(sessionID: sessionID2, clientID: clientID2)
     
     // Act: Send event to specific session
-    await adapter.sendEvent(TestServerEvent.message("Hello"), to: .session(sessionID1))
+    let messageEvent = AnyServerEvent(TestMessageEvent(message: "Hello"))
+    await adapter.sendEvent(messageEvent, to: .session(sessionID1))
     
     // Note: In a real test, we would verify the message was sent through the transport
     // For now, we just verify no errors occurred
@@ -157,16 +177,14 @@ func testTransportAdapterSyncNow() async throws {
     // Arrange
     let definition = Land(
         "test-land",
-        using: TestState.self,
-        clientEvents: TestClientEvent.self,
-        serverEvents: TestServerEvent.self
+        using: TestState.self
     ) {
         Rules { }
     }
     
     let transport = WebSocketTransport()
-    let keeper = LandKeeper<TestState, TestClientEvent, TestServerEvent>(definition: definition, initialState: TestState())
-    let adapter = TransportAdapter<TestState, TestClientEvent, TestServerEvent>(
+    let keeper = LandKeeper<TestState>(definition: definition, initialState: TestState())
+    let adapter = TransportAdapter<TestState>(
         keeper: keeper,
         transport: transport,
         landID: "test-land"

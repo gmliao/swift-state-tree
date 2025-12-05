@@ -15,14 +15,30 @@ struct TestState: StateNodeProtocol {
     var players: [PlayerID: String] = [:]
 }
 
-enum TestClientEvent: ClientEventPayload {
-    case ping
-    case chat(String)
+@Payload
+private struct TestPingEvent: ClientEventPayload {
+    public init() {}
 }
 
-enum TestServerEvent: ServerEventPayload {
-    case pong
-    case message(String)
+@Payload
+private struct TestChatEvent: ClientEventPayload {
+    let message: String
+    public init(message: String) {
+        self.message = message
+    }
+}
+
+@Payload
+private struct TestPongEvent: ServerEventPayload {
+    public init() {}
+}
+
+@Payload
+private struct TestMessageEvent: ServerEventPayload {
+    let message: String
+    public init(message: String) {
+        self.message = message
+    }
 }
 
 // MARK: - Test Doubles
@@ -48,16 +64,22 @@ func testServerSetup() async throws {
     // Arrange
     let definition = Land(
         "hb-test",
-        using: TestState.self,
-        clientEvents: TestClientEvent.self,
-        serverEvents: TestServerEvent.self
+        using: TestState.self
     ) {
+        ClientEvents {
+            Register(TestPingEvent.self)
+            Register(TestChatEvent.self)
+        }
+        ServerEvents {
+            Register(TestPongEvent.self)
+            Register(TestMessageEvent.self)
+        }
         Rules { }
     }
     
     let transport = WebSocketTransport()
-    let keeper = LandKeeper<TestState, TestClientEvent, TestServerEvent>(definition: definition, initialState: TestState())
-    let transportAdapter = TransportAdapter<TestState, TestClientEvent, TestServerEvent>(
+    let keeper = LandKeeper<TestState>(definition: definition, initialState: TestState())
+    let transportAdapter = TransportAdapter<TestState>(
         keeper: keeper,
         transport: transport,
         landID: "hb-test"
@@ -82,9 +104,7 @@ func testHummingbirdAdapterConnection() async throws {
     // Arrange
     let definition = Land(
         "hb-test",
-        using: TestState.self,
-        clientEvents: TestClientEvent.self,
-        serverEvents: TestServerEvent.self
+        using: TestState.self
     ) {
         Rules {
             OnJoin { (state: inout TestState, ctx: LandContext) in
@@ -94,8 +114,8 @@ func testHummingbirdAdapterConnection() async throws {
     }
     
     let transport = WebSocketTransport()
-    let keeper = LandKeeper<TestState, TestClientEvent, TestServerEvent>(definition: definition, initialState: TestState())
-    let transportAdapter = TransportAdapter<TestState, TestClientEvent, TestServerEvent>(
+    let keeper = LandKeeper<TestState>(definition: definition, initialState: TestState())
+    let transportAdapter = TransportAdapter<TestState>(
         keeper: keeper,
         transport: transport,
         landID: "hb-test"
@@ -118,16 +138,14 @@ func testHummingbirdAppConfiguration() async throws {
     // Arrange
     let definition = Land(
         "hb-app-test",
-        using: TestState.self,
-        clientEvents: TestClientEvent.self,
-        serverEvents: TestServerEvent.self
+        using: TestState.self
     ) {
         Rules { }
     }
     
     let transport = WebSocketTransport()
-    let keeper = LandKeeper<TestState, TestClientEvent, TestServerEvent>(definition: definition, initialState: TestState())
-    let transportAdapter = TransportAdapter<TestState, TestClientEvent, TestServerEvent>(
+    let keeper = LandKeeper<TestState>(definition: definition, initialState: TestState())
+    let transportAdapter = TransportAdapter<TestState>(
         keeper: keeper,
         transport: transport,
         landID: "hb-app-test"
@@ -171,19 +189,23 @@ func testHummingbirdAdapterEmitsJSON() async throws {
     // Arrange: Build land that echoes events back to the sender
     let definition = Land(
         "hb-json",
-        using: TestState.self,
-        clientEvents: TestClientEvent.self,
-        serverEvents: TestServerEvent.self
+        using: TestState.self
     ) {
+        ClientEvents {
+            Register(TestPingEvent.self)
+            Register(TestChatEvent.self)
+        }
+        ServerEvents {
+            Register(TestPongEvent.self)
+            Register(TestMessageEvent.self)
+        }
         Rules {
-            On(TestClientEvent.self) { (state: inout TestState, event: TestClientEvent, ctx: LandContext) in
-                switch event {
-                case .ping:
+            On(TestPingEvent.self) { (state: inout TestState, event: TestPingEvent, ctx: LandContext) in
                     state.count += 1
-                    await ctx.sendEvent(TestServerEvent.pong, to: .session(ctx.sessionID))
-                case .chat(let message):
-                    await ctx.sendEvent(TestServerEvent.message(message), to: .session(ctx.sessionID))
+                await ctx.sendEvent(TestPongEvent(), to: .session(ctx.sessionID))
                 }
+            On(TestChatEvent.self) { (state: inout TestState, event: TestChatEvent, ctx: LandContext) in
+                await ctx.sendEvent(TestMessageEvent(message: event.message), to: .session(ctx.sessionID))
             }
         }
     }
@@ -191,16 +213,16 @@ func testHummingbirdAdapterEmitsJSON() async throws {
     let transport = WebSocketTransport()
     
     actor AdapterHolder {
-        var adapter: TransportAdapter<TestState, TestClientEvent, TestServerEvent>?
+        var adapter: TransportAdapter<TestState>?
         
-        func set(_ adapter: TransportAdapter<TestState, TestClientEvent, TestServerEvent>) {
+        func set(_ adapter: TransportAdapter<TestState>) {
             self.adapter = adapter
         }
     }
     
     let adapterHolder = AdapterHolder()
     
-    let keeper = LandKeeper<TestState, TestClientEvent, TestServerEvent>(
+    let keeper = LandKeeper<TestState>(
         definition: definition,
         initialState: TestState(),
         sendEvent: { event, target in
@@ -211,7 +233,7 @@ func testHummingbirdAdapterEmitsJSON() async throws {
         }
     )
     
-    let adapter = TransportAdapter<TestState, TestClientEvent, TestServerEvent>(
+    let adapter = TransportAdapter<TestState>(
         keeper: keeper,
         transport: transport,
         landID: definition.id
@@ -228,16 +250,18 @@ func testHummingbirdAdapterEmitsJSON() async throws {
     let encoder = JSONEncoder()
     let decoder = JSONDecoder()
     
-    let pingMessage = TransportMessage<TestClientEvent, TestServerEvent>.event(
+    let pingEvent = AnyClientEvent(TestPingEvent())
+    let pingMessage = TransportMessage.event(
         landID: definition.id,
-        event: .fromClient(.ping)
+        event: .fromClient(pingEvent)
     )
     let pingData = try encoder.encode(pingMessage)
     await transport.handleIncomingMessage(sessionID: sessionID, data: pingData)
     
-    let chatMessage = TransportMessage<TestClientEvent, TestServerEvent>.event(
+    let chatEvent = AnyClientEvent(TestChatEvent(message: "hello"))
+    let chatMessage = TransportMessage.event(
         landID: definition.id,
-        event: .fromClient(.chat("hello"))
+        event: .fromClient(chatEvent)
     )
     let chatData = try encoder.encode(chatMessage)
     await transport.handleIncomingMessage(sessionID: sessionID, data: chatData)
@@ -246,22 +270,29 @@ func testHummingbirdAdapterEmitsJSON() async throws {
     
     // Assert: Server sent back transport-formatted JSON we can decode on the client
     let outgoing = await connection.recordedMessages()
-    let transportMessages = outgoing.compactMap { try? decoder.decode(TransportMessage<TestClientEvent, TestServerEvent>.self, from: $0) }
+    let transportMessages = outgoing.compactMap { try? decoder.decode(TransportMessage.self, from: $0) }
     
     #expect(transportMessages.contains { message in
-        if case .event(let landID, let event) = message,
+        if case .event(let landID, let eventWrapper) = message,
            landID == definition.id,
-           case .fromServer(.pong) = event {
+           case .fromServer(let anyEvent) = eventWrapper,
+           anyEvent.type == "TestPongEvent" {
             return true
         }
         return false
     })
     
     #expect(transportMessages.contains { message in
-        if case .event(let landID, let event) = message,
+        if case .event(let landID, let eventWrapper) = message,
            landID == definition.id,
-           case .fromServer(.message(let text)) = event {
-            return text == "hello"
+           case .fromServer(let anyEvent) = eventWrapper,
+           anyEvent.type == "TestMessageEvent" {
+            // Decode the payload to check message content
+            if let payloadDict = anyEvent.payload.base as? [String: Any],
+               let message = payloadDict["message"] as? String,
+               message == "hello" {
+                return true
+            }
         }
         return false
     })
