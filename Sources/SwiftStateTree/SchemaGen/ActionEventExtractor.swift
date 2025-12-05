@@ -14,6 +14,8 @@ public struct ActionEventExtractor {
         definitions: inout [String: JSONSchema],
         visitedTypes: inout Set<String>
     ) -> JSONSchema {
+        let typeName = String(describing: type)
+        
         // Check if type conforms to SchemaMetadataProvider
         if let metadataProvider = type as? any SchemaMetadataProvider.Type {
             let fieldMetadata = metadataProvider.getFieldMetadata()
@@ -33,12 +35,16 @@ public struct ActionEventExtractor {
                 required.append(field.name)
             }
             
-            return JSONSchema(
+            let schema = JSONSchema(
                 type: .object,
                 properties: properties,
                 required: required,
                 xStateTree: StateTreeMetadata(nodeKind: .leaf)
             )
+            
+            // Store the detailed schema in definitions and return a $ref
+            definitions[typeName] = schema
+            return JSONSchema(ref: "#/defs/\(typeName)")
         }
         
         // Fallback: use TypeToSchemaConverter
@@ -62,6 +68,8 @@ public struct ActionEventExtractor {
         definitions: inout [String: JSONSchema],
         visitedTypes: inout Set<String>
     ) -> JSONSchema {
+        let typeName = String(describing: type)
+        
         // Check if type conforms to SchemaMetadataProvider
         if let metadataProvider = type as? any SchemaMetadataProvider.Type {
             let fieldMetadata = metadataProvider.getFieldMetadata()
@@ -81,12 +89,16 @@ public struct ActionEventExtractor {
                 required.append(field.name)
             }
             
-            return JSONSchema(
+            let schema = JSONSchema(
                 type: .object,
                 properties: properties,
                 required: required,
                 xStateTree: StateTreeMetadata(nodeKind: .leaf)
             )
+            
+            // Store the detailed schema in definitions and return a $ref
+            definitions[typeName] = schema
+            return JSONSchema(ref: "#/defs/\(typeName)")
         }
         
         // Handle enum types (common for events)
@@ -124,4 +136,3 @@ public struct ActionEventExtractor {
         return nil
     }
 }
-

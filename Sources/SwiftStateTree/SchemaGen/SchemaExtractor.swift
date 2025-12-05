@@ -39,6 +39,42 @@ public struct SchemaExtractor {
                 visitedTypes: &visitedTypes
             )
             
+            // Ensure we always have a fully expanded definition for action payloads.
+            // This guarantees defs[ActionType] contains all fields even if other
+            // converters added a placeholder earlier.
+            if let provider = actionType as? any SchemaMetadataProvider.Type {
+                let typeName = String(describing: actionType)
+                let fieldMetadata = provider.getFieldMetadata()
+                
+                var properties: [String: JSONSchema] = [:]
+                var required: [String] = []
+                
+                for field in fieldMetadata {
+                    var fieldSchema = TypeToSchemaConverter.convert(
+                        field.type,
+                        metadata: field,
+                        definitions: &definitions,
+                        visitedTypes: &visitedTypes
+                    )
+                    
+                    if let defaultValue = field.defaultValue {
+                        fieldSchema.defaultValue = defaultValue
+                    }
+                    
+                    properties[field.name] = fieldSchema
+                    required.append(field.name)
+                }
+                
+                let detailed = JSONSchema(
+                    type: .object,
+                    properties: properties,
+                    required: required,
+                    xStateTree: StateTreeMetadata(nodeKind: .leaf)
+                )
+                
+                definitions[typeName] = detailed
+            }
+            
             // Generate action ID from type name
             // Convert type name to action ID format: "TypeName" -> "typeName" or use a custom mapping
             let actionID = generateActionID(from: actionType)
@@ -143,4 +179,3 @@ public struct SchemaExtractor {
         return JSONSchema(ref: "#/defs/\(diffTypeName)")
     }
 }
-
