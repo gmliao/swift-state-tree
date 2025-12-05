@@ -38,7 +38,8 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/apple/swift-syntax.git", from: "509.0.0"),
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
-        .package(url: "https://github.com/hummingbird-project/hummingbird-websocket.git", from: "2.0.0")
+        .package(url: "https://github.com/hummingbird-project/hummingbird-websocket.git", from: "2.0.0"),
+        .package(url: "https://github.com/apple/swift-log.git", from: "1.6.0")
     ],
     targets: [
         // 🔹 Core Library: Pure Swift game logic, no network dependency
@@ -59,7 +60,8 @@ let package = Package(
         .target(
             name: "SwiftStateTreeTransport",
             dependencies: [
-                "SwiftStateTree"
+                "SwiftStateTree",
+                .product(name: "Logging", package: "swift-log")
             ],
             path: "Sources/SwiftStateTreeTransport"
         ),
@@ -83,7 +85,8 @@ let package = Package(
                 "SwiftStateTreeTransport",
                 "SwiftStateTreeHummingbird",
                 .product(name: "Hummingbird", package: "hummingbird"),
-                .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket")
+                .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket"),
+                .product(name: "Logging", package: "swift-log")
             ],
             path: "Sources/SwiftStateTreeHummingbirdHosting"
         ),

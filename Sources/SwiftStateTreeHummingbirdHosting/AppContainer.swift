@@ -4,6 +4,7 @@ import HummingbirdWebSocket
 import SwiftStateTree
 import SwiftStateTreeTransport
 import SwiftStateTreeHummingbird
+import Logging
 
 /// Bundles runtime, transport, and Hummingbird hosting for any Land definition.
 public struct AppContainer<State, ClientEvents, ServerEvents> where State: StateNodeProtocol,
@@ -18,6 +19,7 @@ public struct AppContainer<State, ClientEvents, ServerEvents> where State: State
         public var healthPath: String
         public var enableHealthRoute: Bool
         public var logStartupBanner: Bool
+        public var logger: Logger?
         
         public init(
             host: String = "localhost",
@@ -25,7 +27,8 @@ public struct AppContainer<State, ClientEvents, ServerEvents> where State: State
             webSocketPath: String = "/game",
             healthPath: String = "/health",
             enableHealthRoute: Bool = true,
-            logStartupBanner: Bool = true
+            logStartupBanner: Bool = true,
+            logger: Logger? = nil
         ) {
             self.host = host
             self.port = port
@@ -33,6 +36,7 @@ public struct AppContainer<State, ClientEvents, ServerEvents> where State: State
             self.healthPath = healthPath
             self.enableHealthRoute = enableHealthRoute
             self.logStartupBanner = logStartupBanner
+            self.logger = logger
         }
     }
     
@@ -91,13 +95,18 @@ public struct AppContainer<State, ClientEvents, ServerEvents> where State: State
             )
         )
         
+        let logger = configuration.logger ?? createColoredLogger(
+            label: "com.swiftstatetree.hummingbird",
+            scope: "AppContainer"
+        )
+        
         if configuration.logStartupBanner {
             let baseURL = "http://\(configuration.host):\(configuration.port)"
             let wsURL = "ws://\(configuration.host):\(configuration.port)\(configuration.webSocketPath)"
-            print("🚀 SwiftStateTree Hummingbird server started at \(baseURL)")
-            print("📡 WebSocket endpoint: \(wsURL)")
+            logger.info("🚀 SwiftStateTree Hummingbird server started at \(baseURL)")
+            logger.info("📡 WebSocket endpoint: \(wsURL)")
             if configuration.enableHealthRoute {
-                print("❤️  Health check: \(baseURL)\(configuration.healthPath)")
+                logger.info("❤️  Health check: \(baseURL)\(configuration.healthPath)")
             }
         }
         
@@ -122,10 +131,15 @@ public struct AppContainer<State, ClientEvents, ServerEvents> where State: State
         createPlayerSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         configureRouter: ((Router<BasicWebSocketRequestContext>) -> Void)? = nil
     ) async throws -> AppContainer {
+        let logger = configuration.logger ?? createColoredLogger(
+            label: "com.swiftstatetree.hummingbird",
+            scope: "AppContainer"
+        )
         let core = await buildCoreComponents(
             land: definition,
             initialState: initialState,
-            createPlayerSession: createPlayerSession
+            createPlayerSession: createPlayerSession,
+            logger: logger
         )
         
         let hbAdapter = HummingbirdStateTreeAdapter(transport: core.transport)
@@ -158,12 +172,18 @@ public struct AppContainer<State, ClientEvents, ServerEvents> where State: State
     public static func makeForTest(
         land definition: Land,
         initialState: State,
-        createPlayerSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil
+        createPlayerSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
+        logger: Logger? = nil
     ) async -> AppContainerForTest {
+        let testLogger = logger ?? createColoredLogger(
+            label: "com.swiftstatetree.test",
+            scope: "Test"
+        )
         let core = await buildCoreComponents(
             land: definition,
             initialState: initialState,
-            createPlayerSession: createPlayerSession
+            createPlayerSession: createPlayerSession,
+            logger: testLogger
         )
         
         return AppContainerForTest(
@@ -186,9 +206,10 @@ public struct AppContainer<State, ClientEvents, ServerEvents> where State: State
     private static func buildCoreComponents(
         land definition: Land,
         initialState: State,
-        createPlayerSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil
+        createPlayerSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
+        logger: Logger
     ) async -> CoreComponents {
-        let transport = WebSocketTransport()
+        let transport = WebSocketTransport(logger: logger)
         let adapterHolder = TransportAdapterHolder<State, ClientEvents, ServerEvents>()
         
         let keeper = LandKeeper<State, ClientEvents, ServerEvents>(
@@ -206,7 +227,8 @@ public struct AppContainer<State, ClientEvents, ServerEvents> where State: State
             keeper: keeper,
             transport: transport,
             landID: definition.id,
-            createPlayerSession: createPlayerSession
+            createPlayerSession: createPlayerSession,
+            logger: logger
         )
         
         await adapterHolder.set(transportAdapter)

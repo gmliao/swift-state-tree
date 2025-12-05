@@ -1,5 +1,6 @@
 import Foundation
 import SwiftStateTree
+import Logging
 
 /// A Transport implementation using WebSockets.
 ///
@@ -10,8 +11,19 @@ public actor WebSocketTransport: Transport {
     
     private var sessions: [SessionID: WebSocketConnection] = [:]
     private var playerSessions: [PlayerID: Set<SessionID>] = [:]
+    private let logger: Logger
     
-    public init() {}
+    public init(logger: Logger? = nil) {
+        // Create logger with scope if not provided
+        if let logger = logger {
+            self.logger = logger.withScope("WebSocketTransport")
+        } else {
+            self.logger = createColoredLogger(
+                label: "com.swiftstatetree.websocket",
+                scope: "WebSocketTransport"
+            )
+        }
+    }
 
     /// Set delegate from outside the actor.
     public func setDelegate(_ delegate: TransportDelegate?) {
@@ -20,7 +32,7 @@ public actor WebSocketTransport: Transport {
     
     public func start() async throws {
         // In a real implementation, this would start the server or bind to a port.
-        print("WebSocketTransport started")
+        logger.info("WebSocketTransport started")
     }
     
     public func stop() async throws {
@@ -30,7 +42,7 @@ public actor WebSocketTransport: Transport {
         }
         sessions.removeAll()
         playerSessions.removeAll()
-        print("WebSocketTransport stopped")
+        logger.info("WebSocketTransport stopped")
     }
     
     public func send(_ message: Data, to target: EventTarget) async throws {

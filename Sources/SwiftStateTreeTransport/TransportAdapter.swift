@@ -1,5 +1,6 @@
 import Foundation
 import SwiftStateTree
+import Logging
 
 /// Adapts Transport events to LandKeeper calls.
 public actor TransportAdapter<State, ClientE, ServerE>: TransportDelegate
@@ -13,6 +14,7 @@ where State: StateNodeProtocol,
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
     private let syncEngine = SyncEngine()
+    private let logger: Logger
     
     // Track session to player mapping
     private var sessionToPlayer: [SessionID: PlayerID] = [:]
@@ -29,11 +31,21 @@ where State: StateNodeProtocol,
         keeper: LandKeeper<State, ClientE, ServerE>,
         transport: WebSocketTransport,
         landID: String,
-        createPlayerSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil
+        createPlayerSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
+        logger: Logger? = nil
     ) {
         self.keeper = keeper
         self.transport = transport
         self.landID = landID
+        // Create logger with scope if not provided
+        if let logger = logger {
+            self.logger = logger.withScope("TransportAdapter")
+        } else {
+            self.logger = createColoredLogger(
+                label: "com.swiftstatetree.transport",
+                scope: "TransportAdapter"
+            )
+        }
         if let createPlayerSession = createPlayerSession {
             self.createPlayerSession = createPlayerSession
         }
@@ -54,9 +66,9 @@ where State: StateNodeProtocol,
             guard case .allow(let playerID) = decision else {
                 // Join was denied by CanJoin handler
                 if case .deny(let reason) = decision {
-                    print("Join denied for session \(sessionID): \(reason ?? "no reason provided")")
+                    logger.warning("Join denied for session \(sessionID.rawValue): \(reason ?? "no reason provided")")
                 } else {
-                    print("Join denied for session \(sessionID): unknown reason")
+                    logger.warning("Join denied for session \(sessionID.rawValue): unknown reason")
                 }
                 return
             }
@@ -67,10 +79,10 @@ where State: StateNodeProtocol,
             // Send initial snapshot
             await syncState(for: playerID, sessionID: sessionID)
             
-            print("Client connected: \(sessionID) -> \(playerID) (playerID: \(playerSession.playerID))")
+            logger.info("Client connected: session=\(sessionID.rawValue), player=\(playerID.rawValue), playerID=\(playerSession.playerID)")
         } catch {
             // CanJoin handler threw an error (e.g., JoinError.roomIsFull)
-            print("Join failed for session \(sessionID): \(error)")
+            logger.error("Join failed for session \(sessionID.rawValue): \(error)")
             // Don't proceed with connection if join validation fails
         }
     }
@@ -82,7 +94,7 @@ where State: StateNodeProtocol,
         sessionToPlayer.removeValue(forKey: sessionID)
         sessionToClient.removeValue(forKey: sessionID)
         
-        print("Client disconnected: \(sessionID) -> \(playerID)")
+        logger.info("Client disconnected: session=\(sessionID.rawValue), player=\(playerID.rawValue)")
     }
     
     public func onMessage(_ message: Data, from sessionID: SessionID) async {
@@ -91,7 +103,7 @@ where State: StateNodeProtocol,
             
             guard let playerID = sessionToPlayer[sessionID],
                   let clientID = sessionToClient[sessionID] else {
-                print("Unknown session: \(sessionID)")
+                logger.warning("Unknown session: \(sessionID.rawValue)")
                 return
             }
             
@@ -99,7 +111,7 @@ where State: StateNodeProtocol,
             case .action(let requestID, let landID, let envelope):
                 // TODO: Decode action based on typeIdentifier
                 // For now, just log it
-                print("Received action: \(envelope.typeIdentifier) from \(playerID)")
+                logger.debug("Received action: type=\(envelope.typeIdentifier), player=\(playerID.rawValue)")
                 _ = requestID
                 _ = landID
                 
@@ -114,7 +126,7 @@ where State: StateNodeProtocol,
                 break
             }
         } catch {
-            print("Failed to decode message: \(error)")
+            logger.error("Failed to decode message: \(error)")
         }
     }
     
@@ -125,7 +137,7 @@ where State: StateNodeProtocol,
         do {
             // Cast to ServerE type
             guard let serverEvent = event as? ServerE else {
-                print("Event type mismatch")
+                logger.error("Event type mismatch")
                 return
             }
             
@@ -148,7 +160,7 @@ where State: StateNodeProtocol,
                 if let sessionID = sessionToClient.first(where: { $0.value == clientID })?.key {
                     transportTarget = .session(sessionID)
                 } else {
-                    print("No session found for client: \(clientID)")
+                    logger.warning("No session found for client: \(clientID.rawValue)")
                     return
                 }
             case .session(let sessionID):
@@ -166,7 +178,7 @@ where State: StateNodeProtocol,
             
             try await transport.send(data, to: transportTarget)
         } catch {
-            print("Failed to send event: \(error)")
+            logger.error("Failed to send event: \(error)")
         }
     }
     
@@ -191,7 +203,7 @@ where State: StateNodeProtocol,
             // For now, send as raw JSON (in production, use StateUpdate format)
             try await transport.send(snapshotData, to: .session(sessionID))
         } catch {
-            print("Failed to sync state: \(error)")
+            logger.error("Failed to sync state: player=\(playerID.rawValue), session=\(sessionID.rawValue), error=\(error)")
         }
     }
 }
