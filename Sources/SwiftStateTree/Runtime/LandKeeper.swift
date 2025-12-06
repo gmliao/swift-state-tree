@@ -18,6 +18,7 @@ public actor LandKeeper<State: StateNodeProtocol> {
 
     private let sendEventHandler: @Sendable (AnyServerEvent, EventTarget) async -> Void
     private let syncNowHandler: @Sendable () async -> Void
+    private let syncBroadcastOnlyHandler: @Sendable () async -> Void
 
     private var tickTask: Task<Void, Never>?
     private var destroyTask: Task<Void, Never>?
@@ -33,11 +34,14 @@ public actor LandKeeper<State: StateNodeProtocol> {
     ///   - initialState: The initial state of the Land.
     ///   - sendEvent: Closure for sending server events to clients (injected by transport layer).
     ///   - syncNow: Closure for triggering immediate state synchronization (injected by transport layer).
+    ///   - syncBroadcastOnly: Closure for syncing only broadcast changes (optimized for player leaving).
+    ///                        If not provided, falls back to `syncNow`.
     public init(
         definition: LandDefinition<State>,
         initialState: State,
         sendEvent: @escaping @Sendable (AnyServerEvent, EventTarget) async -> Void = { _, _ in },
-        syncNow: @escaping @Sendable () async -> Void = {}
+        syncNow: @escaping @Sendable () async -> Void = {},
+        syncBroadcastOnly: (@Sendable () async -> Void)? = nil
     ) {
         self.definition = definition
         self.state = initialState
@@ -58,6 +62,7 @@ public actor LandKeeper<State: StateNodeProtocol> {
             await sendEvent(event, target)
         }
         self.syncNowHandler = syncNow
+        self.syncBroadcastOnlyHandler = syncBroadcastOnly ?? syncNow
 
         if let interval = definition.lifetimeHandlers.tickInterval,
            definition.lifetimeHandlers.tickHandler != nil {
@@ -227,6 +232,14 @@ public actor LandKeeper<State: StateNodeProtocol> {
                 await withMutableState { state in
                     await handler(&state, ctx)
                 }
+                // Trigger sync after OnLeave handler modifies state
+                // Use syncBroadcastOnlyHandler for optimization: only syncs broadcast changes
+                // (e.g., removing player from dictionary) using dirty tracking.
+                // This is more efficient than syncNow() because:
+                // - Only extracts/compares dirty broadcast fields (not entire state)
+                // - Sends same update to all players (no per-player diff needed)
+                // - Updates shared broadcast cache efficiently
+                await syncBroadcastOnlyHandler()
             }
             scheduleDestroyIfNeeded()
         } else {

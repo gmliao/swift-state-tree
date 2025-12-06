@@ -441,9 +441,19 @@ public struct SyncEngine: Sendable {
     // MARK: - Diff Computation with Pre-extracted Snapshots
     
     /// Compute broadcast diff using pre-extracted snapshot.
-    private mutating func computeBroadcastDiffFromSnapshot(
+    ///
+    /// This method is useful when you've already extracted a broadcast snapshot
+    /// and want to compute the diff without re-extracting. The snapshot should
+    /// be extracted using `extractBroadcastSnapshot(from:mode:)` with the same mode.
+    ///
+    /// - Parameters:
+    ///   - currentBroadcast: Pre-extracted broadcast snapshot.
+    ///   - onlyPaths: Optional set of paths to limit diff calculation (JSON Pointer format).
+    ///   - mode: Snapshot generation mode. Should match the mode used to extract the snapshot.
+    /// - Returns: Array of patches representing the changes.
+    public mutating func computeBroadcastDiffFromSnapshot(
         currentBroadcast: StateSnapshot,
-        onlyPaths: Set<String>?,
+        onlyPaths: Set<String>? = nil,
         mode: SnapshotMode = .all
     ) -> [StatePatch] {
         // Check if we have cached broadcast snapshot
@@ -743,6 +753,16 @@ public struct SyncEngine: Sendable {
     public mutating func clearCacheForDisconnectedPlayer(_ playerID: PlayerID) {
         lastPerPlayerSnapshots.removeValue(forKey: playerID)
         hasReceivedFirstSync.remove(playerID)  // Also clear firstSync flag
+    }
+    
+    /// Mark that a player has received initial sync (e.g., via lateJoinSnapshot).
+    ///
+    /// This prevents the next `generateDiff` call from returning `.firstSync` when there are no changes.
+    /// **Important:** Only call after sending initial snapshot to the player.
+    ///
+    /// - Parameter playerID: The player ID that has received initial sync.
+    public mutating func markFirstSyncReceived(for playerID: PlayerID) {
+        hasReceivedFirstSync.insert(playerID)
     }
     
     // MARK: - Cache Population Helper

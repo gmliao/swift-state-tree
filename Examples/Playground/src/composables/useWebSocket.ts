@@ -15,6 +15,7 @@ export interface StateUpdateEntry {
 export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
   const ws = ref<WebSocket | null>(null)
   const isConnected = ref(false)
+  const isJoined = ref(false)
   const currentState = ref<Record<string, any>>({})
   const logs = ref<LogEntry[]>([])
   
@@ -140,7 +141,28 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
 
       ws.value.onopen = () => {
         isConnected.value = true
+        isJoined.value = false
         addLog('✅ WebSocket 連線成功', 'success')
+        
+        // Automatically send join request after connection
+        const requestID = `join-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+        const joinMessage: TransportMessage = {
+          join: {
+            requestID,
+            landID: 'demo-game', // Match the landID from DemoDefinitions.swift
+            playerID: undefined,
+            deviceID: undefined,
+            metadata: undefined
+          }
+        }
+        
+        try {
+          const json = JSON.stringify(joinMessage)
+          ws.value.send(json)
+          addLog('📤 發送 join 請求', 'info')
+        } catch (err) {
+          addLog(`❌ 發送 join 請求失敗: ${err}`, 'error')
+        }
       }
 
       ws.value.onerror = (error) => {
@@ -149,6 +171,7 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
 
       ws.value.onclose = (event) => {
         isConnected.value = false
+        isJoined.value = false
         if (event.code !== 1000) {
           addLog(`🔌 連線關閉 (代碼: ${event.code}, 原因: ${event.reason || '無'})`, 'warning')
         } else {
@@ -159,12 +182,25 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
       ws.value.onmessage = (event) => {
         const raw = event.data
 
-        const handleJsonText = (text: string) => {
-          try {
-            const data = JSON.parse(text) as TransportMessage | StateUpdate | any
+          const handleJsonText = (text: string) => {
+            try {
+              const data = JSON.parse(text) as TransportMessage | StateUpdate | any
 
-            // Check for StateSnapshot format (initial connection - complete snapshot)
-            if (data && typeof data === 'object' && 'values' in data && data.values && typeof data.values === 'object') {
+              // Check for joinResponse
+              if (data && typeof data === 'object' && 'joinResponse' in data) {
+                const joinResponse = (data as any).joinResponse
+                if (joinResponse.success) {
+                  isJoined.value = true
+                  addLog(`✅ Join 成功: playerID=${joinResponse.playerID || 'unknown'}`, 'success')
+                } else {
+                  isJoined.value = false
+                  addLog(`❌ Join 失敗: ${joinResponse.reason || '未知原因'}`, 'error')
+                }
+                return // Don't process further
+              }
+              
+              // Check for StateSnapshot format (initial connection - complete snapshot)
+              if (data && typeof data === 'object' && 'values' in data && data.values && typeof data.values === 'object') {
               // Initial snapshot format (complete state from lateJoinSnapshot)
               // Merge into existing state to preserve UI state (like expanded folders)
               const decodedState: Record<string, any> = {}
@@ -193,9 +229,11 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
               if (stateUpdates.value.length > 100) {
                 stateUpdates.value.shift()
               }
-            } 
+              return // Don't process further
+            }
+            
             // Check for StateUpdate format (new diff/patch format)
-            else if (data && typeof data === 'object' && 'type' in data && ('firstSync' === data.type || 'diff' === data.type || 'noChange' === data.type)) {
+            if (data && typeof data === 'object' && 'type' in data && ('firstSync' === data.type || 'diff' === data.type || 'noChange' === data.type)) {
               const update = data as StateUpdate
               
               if (update.type === 'noChange') {
@@ -388,6 +426,7 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
 
   return {
     isConnected,
+    isJoined,
     currentState,
     logs,
     stateUpdates,

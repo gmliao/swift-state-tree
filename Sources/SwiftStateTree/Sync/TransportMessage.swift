@@ -30,6 +30,21 @@ public enum TransportMessage: Codable, Sendable {
         landID: String,
         event: TransportEvent
     )
+    
+    case join(
+        requestID: String,
+        landID: String,
+        playerID: String?,
+        deviceID: String?,
+        metadata: [String: AnyCodable]?
+    )
+    
+    case joinResponse(
+        requestID: String,
+        success: Bool,
+        playerID: String?,
+        reason: String?
+    )
 }
 
 /// Transport event container using fixed root types.

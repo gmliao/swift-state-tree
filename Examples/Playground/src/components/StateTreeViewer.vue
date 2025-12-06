@@ -356,9 +356,11 @@ const tableData = computed((): TableRow[] => {
         })
         
         for (const patch of relevantPatches) {
+          // Use full path instead of just first-level path for better clarity
+          // But still group by first-level path for filtering
           rows.push({
             updateId: update.id,
-            path: path,
+            path: patch.path, // Use full path instead of just first-level
             op: patch.op,
             value: patch.value,
             time: update.timestamp,
@@ -522,7 +524,11 @@ const getPatchColor = (op: string): string => {
   font-family: monospace;
   color: rgba(255, 255, 255, 0.9);
   font-weight: 500;
-  min-width: 100px;
+  min-width: 150px;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .op-cell {

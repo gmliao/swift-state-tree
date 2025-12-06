@@ -224,6 +224,9 @@ public struct AppContainer<State: StateNodeProtocol> {
             },
             syncNow: {
                 await adapterHolder.forwardSyncNow()
+            },
+            syncBroadcastOnly: {
+                await adapterHolder.forwardSyncBroadcastOnly()
             }
         )
         
@@ -264,5 +267,9 @@ private actor TransportAdapterHolder<State: StateNodeProtocol> {
     
     func forwardSyncNow() async {
         await adapter?.syncNow()
+    }
+    
+    func forwardSyncBroadcastOnly() async {
+        await adapter?.syncBroadcastOnly()
     }
 }

@@ -74,9 +74,24 @@ func testTransportAdapterForwardsEvents() async throws {
     let sessionID = SessionID("sess-1")
     let clientID = ClientID("cli-1")
     
-    // Act: Connect and send event
+    // Act: Connect
     await adapter.onConnect(sessionID: sessionID, clientID: clientID)
     
+    // Act: Join
+    let joinRequest = TransportMessage.join(
+        requestID: "join-1",
+        landID: "test-land",
+        playerID: nil,
+        deviceID: nil,
+        metadata: nil
+    )
+    let joinData = try JSONEncoder().encode(joinRequest)
+    await adapter.onMessage(joinData, from: sessionID)
+    
+    // Wait a bit for join to complete
+    try await Task.sleep(for: .milliseconds(10))
+    
+    // Act: Send event
     let incrementEvent = AnyClientEvent(TestIncrementEvent())
     let transportMsg = TransportMessage.event(landID: "test-land", event: .fromClient(incrementEvent))
     let data = try JSONEncoder().encode(transportMsg)
@@ -119,6 +134,20 @@ func testTransportAdapterConnectionLifecycle() async throws {
     
     // Act: Connect
     await adapter.onConnect(sessionID: sessionID, clientID: clientID)
+    
+    // Act: Join
+    let joinRequest = TransportMessage.join(
+        requestID: "join-1",
+        landID: "test-land",
+        playerID: nil,
+        deviceID: nil,
+        metadata: nil
+    )
+    let joinData = try JSONEncoder().encode(joinRequest)
+    await adapter.onMessage(joinData, from: sessionID)
+    
+    // Wait a bit for join to complete
+    try await Task.sleep(for: .milliseconds(10))
     
     // Assert: Player should be in state
     var state = await keeper.currentState()
@@ -163,6 +192,29 @@ func testTransportAdapterSendEvent() async throws {
     await adapter.onConnect(sessionID: sessionID1, clientID: clientID1)
     await adapter.onConnect(sessionID: sessionID2, clientID: clientID2)
     
+    // Join both sessions
+    let joinRequest1 = TransportMessage.join(
+        requestID: "join-1",
+        landID: "test-land",
+        playerID: nil,
+        deviceID: nil,
+        metadata: nil
+    )
+    let joinRequest2 = TransportMessage.join(
+        requestID: "join-2",
+        landID: "test-land",
+        playerID: nil,
+        deviceID: nil,
+        metadata: nil
+    )
+    let joinData1 = try JSONEncoder().encode(joinRequest1)
+    let joinData2 = try JSONEncoder().encode(joinRequest2)
+    await adapter.onMessage(joinData1, from: sessionID1)
+    await adapter.onMessage(joinData2, from: sessionID2)
+    
+    // Wait a bit for joins to complete
+    try await Task.sleep(for: .milliseconds(10))
+    
     // Act: Send event to specific session
     let messageEvent = AnyServerEvent(TestMessageEvent(message: "Hello"))
     await adapter.sendEvent(messageEvent, to: .session(sessionID1))
@@ -195,6 +247,20 @@ func testTransportAdapterSyncNow() async throws {
     let clientID = ClientID("cli-1")
     
     await adapter.onConnect(sessionID: sessionID, clientID: clientID)
+    
+    // Join
+    let joinRequest = TransportMessage.join(
+        requestID: "join-1",
+        landID: "test-land",
+        playerID: nil,
+        deviceID: nil,
+        metadata: nil
+    )
+    let joinData = try JSONEncoder().encode(joinRequest)
+    await adapter.onMessage(joinData, from: sessionID)
+    
+    // Wait a bit for join to complete
+    try await Task.sleep(for: .milliseconds(10))
     
     // Act: Trigger sync
     await adapter.syncNow()

@@ -20,6 +20,19 @@ export interface TransportMessage {
       fromServer?: any
     }
   }
+  join?: {
+    requestID: string
+    landID: string
+    playerID?: string
+    deviceID?: string
+    metadata?: Record<string, any>
+  }
+  joinResponse?: {
+    requestID: string
+    success: boolean
+    playerID?: string
+    reason?: string
+  }
 }
 
 export interface StatePatch {
