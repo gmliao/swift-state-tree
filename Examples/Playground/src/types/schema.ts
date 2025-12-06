@@ -27,6 +27,7 @@ export interface SchemaProperty {
 
 export interface LandDefinition {
   actions?: Record<string, { $ref: string }>
+  clientEvents?: Record<string, { $ref: string }>
   events?: Record<string, { $ref: string }>
   stateType: string
   sync?: {

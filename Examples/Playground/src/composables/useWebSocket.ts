@@ -1,12 +1,25 @@
-import { ref, Ref, computed } from 'vue'
+import { ref, Ref } from 'vue'
 import type { Schema, TransportMessage } from '@/types'
-import type { LogEntry } from '@/types/transport'
+import type { LogEntry, StateUpdate, StatePatch } from '@/types/transport'
+
+export interface StateUpdateEntry {
+  id: string
+  timestamp: Date
+  type: 'snapshot' | 'firstSync' | 'diff' | 'noChange'
+  patchCount?: number
+  message: string
+  patches?: StatePatch[]  // 保存完整的 patches
+  affectedPaths?: string[]  // 受影響的路徑列表（用於合併和過濾）
+}
 
 export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
   const ws = ref<WebSocket | null>(null)
   const isConnected = ref(false)
   const currentState = ref<Record<string, any>>({})
   const logs = ref<LogEntry[]>([])
+  
+  // Separate state update log (not mixed with general logs)
+  const stateUpdates = ref<StateUpdateEntry[]>([])
 
   const decodeSnapshotValue = (value: any): any => {
     if (value === null || value === undefined) return null
@@ -53,6 +66,50 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
     }
 
     return value
+  }
+
+  // Apply JSON Patch (RFC 6902) to state
+  const applyPatch = (state: Record<string, any>, patch: StatePatch): void => {
+    const path = patch.path
+    if (!path.startsWith('/')) {
+      addLog(`❌ 無效的 patch path: ${path}`, 'error')
+      return
+    }
+
+    const parts = path.split('/').filter(p => p !== '')
+    if (parts.length === 0) {
+      addLog(`❌ 空的 patch path: ${path}`, 'error')
+      return
+    }
+
+    const key = parts[0]
+    const restPath = '/' + parts.slice(1).join('/')
+
+    if (parts.length === 1) {
+      // Top-level property
+      switch (patch.op) {
+        case 'replace':
+        case 'add':
+          state[key] = decodeSnapshotValue(patch.value)
+          break
+        case 'remove':
+          delete state[key]
+          break
+      }
+    } else {
+      // Nested property
+      if (!(key in state) || typeof state[key] !== 'object' || state[key] === null) {
+        state[key] = {}
+      }
+      applyPatch(state[key], { ...patch, path: restPath })
+    }
+  }
+
+  // Apply multiple patches to state
+  const applyPatches = (state: Record<string, any>, patches: StatePatch[]): void => {
+    for (const patch of patches) {
+      applyPatch(state, patch)
+    }
   }
 
   const addLog = (message: string, type: LogEntry['type'] = 'info', data?: any) => {
@@ -104,23 +161,102 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
 
         const handleJsonText = (text: string) => {
           try {
-            const data = JSON.parse(text) as TransportMessage | any
-            addLog('📥 收到訊息', 'server', data)
+            const data = JSON.parse(text) as TransportMessage | StateUpdate | any
 
+            // Check for StateSnapshot format (initial connection - complete snapshot)
             if (data && typeof data === 'object' && 'values' in data && data.values && typeof data.values === 'object') {
+              // Initial snapshot format (complete state from lateJoinSnapshot)
+              // Merge into existing state to preserve UI state (like expanded folders)
               const decodedState: Record<string, any> = {}
               for (const [key, value] of Object.entries(data.values as Record<string, any>)) {
                 decodedState[key] = decodeSnapshotValue(value)
               }
-              currentState.value = decodedState
-              addLog('📊 狀態已更新', 'info', decodedState)
-            } else if (data.event?.event?.fromServer) {
-              const eventData = data.event.event.fromServer
-              addLog(`📨 伺服器事件: ${JSON.stringify(eventData)}`, 'server')
-            } else if (data.actionResponse) {
-              addLog(`✅ Action 回應: ${JSON.stringify(data.actionResponse.response)}`, 'success')
+              
+              // Deep merge to preserve existing state structure and avoid full re-render
+              if (currentState.value && Object.keys(currentState.value).length > 0) {
+                // Merge new values into existing state
+                Object.assign(currentState.value, decodedState)
+              } else {
+                // First time, just assign
+                currentState.value = decodedState
+              }
+              
+              // Add to state updates (separate from general logs)
+              stateUpdates.value.push({
+                id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+                timestamp: new Date(),
+                type: 'snapshot',
+                message: '初始狀態已接收 (完整快照)'
+              })
+              
+              // Keep only last 100 state updates
+              if (stateUpdates.value.length > 100) {
+                stateUpdates.value.shift()
+              }
+            } 
+            // Check for StateUpdate format (new diff/patch format)
+            else if (data && typeof data === 'object' && 'type' in data && ('firstSync' === data.type || 'diff' === data.type || 'noChange' === data.type)) {
+              const update = data as StateUpdate
+              
+              if (update.type === 'noChange') {
+                // Don't log noChange to reduce noise
+                return
+              }
+
+              const patches = update.patches || []
+              
+              // 提取受影響的路徑（頂層 key）
+              const affectedPaths = Array.from(new Set(
+                patches.map(patch => {
+                  const pathParts = patch.path.split('/').filter(part => part !== '')
+                  return pathParts.length > 0 ? pathParts[0] : patch.path
+                })
+              ))
+              
+              if (update.type === 'firstSync') {
+                // First sync: initialize state from patches (if state is empty)
+                if (!currentState.value || Object.keys(currentState.value).length === 0) {
+                  currentState.value = {}
+                }
+                applyPatches(currentState.value, patches)
+              } else if (update.type === 'diff') {
+                // Diff: apply patches to existing state
+                if (!currentState.value || Object.keys(currentState.value).length === 0) {
+                  // If state is empty, treat as first sync
+                  currentState.value = {}
+                }
+                applyPatches(currentState.value, patches)
+              }
+              
+              // Add to state updates (separate from general logs)
+              stateUpdates.value.push({
+                id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+                timestamp: new Date(),
+                type: update.type,
+                patchCount: patches.length,
+                message: update.type === 'firstSync' 
+                  ? `首次同步完成 (${patches.length} 個 patches)`
+                  : `狀態已更新 (${patches.length} 個 patches)`,
+                patches: patches,  // 保存完整的 patches
+                affectedPaths: affectedPaths  // 保存受影響的路徑
+              })
+              
+              // Keep only last 100 state updates
+              if (stateUpdates.value.length > 100) {
+                stateUpdates.value.shift()
+              }
             } else {
-              addLog('ℹ️ 未知訊息格式', 'warning', data)
+              // Other messages (events, actions) go to general logs
+              addLog('📥 收到訊息', 'server', data)
+              
+              if (data.event?.event?.fromServer) {
+                const eventData = data.event.event.fromServer
+                addLog(`📨 伺服器事件: ${JSON.stringify(eventData)}`, 'server')
+              } else if (data.actionResponse) {
+                addLog(`✅ Action 回應: ${JSON.stringify(data.actionResponse.response)}`, 'success')
+              } else {
+                addLog('ℹ️ 未知訊息格式', 'warning', data)
+              }
             }
           } catch (err) {
             addLog(`❌ 解析訊息失敗: ${err}`, 'error', text)
@@ -196,12 +332,52 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
   }
 
   const sendEvent = (eventName: string, payload: any, landID: string): void => {
+    // Get event type name from schema if available (for server events)
+    // Note: Client events are not in schema, so we need to infer the type name
+    let typeName: string | null = null
+    if (schema.value) {
+      const land = schema.value.lands[landID]
+      if (land?.events?.[eventName]) {
+        const ref = land.events[eventName].$ref
+        if (ref) {
+          // Extract type name from $ref like "#/defs/ChatMessageEvent"
+          const match = ref.match(/#\/defs\/(.+)$/)
+          if (match) {
+            typeName = match[1]
+          }
+        }
+      }
+    }
+    
+    // For client events, convert event name to type name
+    // Common patterns:
+    // - "chat" -> "ChatEvent"
+    // - "ping" -> "PingEvent"
+    // - "chatmessage" -> "ChatMessageEvent" (camelCase to PascalCase)
+    if (!typeName) {
+      // Convert camelCase/kebab-case to PascalCase
+      const parts = eventName.split(/[-_]/)
+      const pascalParts = parts.map(part => 
+        part.charAt(0).toUpperCase() + part.slice(1)
+      )
+      typeName = pascalParts.join('') + 'Event'
+    }
+    
+    // Create AnyClientEvent structure: { type: string, payload: AnyCodable }
+    // Note: rawBody is optional and can be omitted
+    const anyClientEvent = {
+      type: typeName,
+      payload: payload || {}
+    }
+    
+    // Swift enum with associated values uses _0, _1, etc. as keys in Codable
+    // TransportEvent.fromClient(AnyClientEvent) encodes as { "fromClient": { "_0": AnyClientEvent } }
     const message: TransportMessage = {
       event: {
         landID,
         event: {
           fromClient: {
-            [eventName]: payload
+            _0: anyClientEvent
           }
         }
       }
@@ -214,6 +390,7 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
     isConnected,
     currentState,
     logs,
+    stateUpdates,
     connect,
     disconnect,
     sendAction,

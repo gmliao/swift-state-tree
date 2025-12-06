@@ -40,7 +40,10 @@ public struct LandSchema: Codable, Sendable {
     /// Action IDs should follow the pattern: `<domain>.<action>` (e.g., "match.join").
     public let actions: [String: JSONSchema]
     
-    /// Server Event ID → Payload Schema reference.
+    /// Client Event ID → Payload Schema reference (Client → Server).
+    public let clientEvents: [String: JSONSchema]
+    
+    /// Server Event ID → Payload Schema reference (Server → Client).
     public let events: [String: JSONSchema]
     
     /// Sync-related payload types.
@@ -49,11 +52,13 @@ public struct LandSchema: Codable, Sendable {
     public init(
         stateType: String,
         actions: [String: JSONSchema] = [:],
+        clientEvents: [String: JSONSchema] = [:],
         events: [String: JSONSchema] = [:],
         sync: SyncSchema
     ) {
         self.stateType = stateType
         self.actions = actions
+        self.clientEvents = clientEvents
         self.events = events
         self.sync = sync
     }

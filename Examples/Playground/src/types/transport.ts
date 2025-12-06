@@ -22,6 +22,17 @@ export interface TransportMessage {
   }
 }
 
+export interface StatePatch {
+  path: string
+  op: 'replace' | 'remove' | 'add'
+  value?: any
+}
+
+export interface StateUpdate {
+  type: 'noChange' | 'firstSync' | 'diff'
+  patches: StatePatch[]
+}
+
 export interface LogEntry {
   id: string
   timestamp: Date

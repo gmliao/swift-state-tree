@@ -33,19 +33,10 @@
                   density="compact"
                 ></v-file-input>
                 
-                <v-textarea
-                  v-model="schemaJson"
-                  label="或直接貼上 JSON Schema"
-                  rows="8"
-                  variant="outlined"
-                  density="compact"
-                  class="mt-4"
-                ></v-textarea>
-                
                 <v-btn
                   color="primary"
                   block
-                  class="mt-2"
+                  class="mt-4"
                   @click="parseSchema"
                   :disabled="!schemaJson"
                 >
@@ -114,6 +105,7 @@
                 <StateTreeViewer
                   :state="currentState"
                   :schema="parsedSchema"
+                  :stateUpdates="stateUpdates"
                 />
               </v-card-text>
             </v-card>
@@ -185,7 +177,6 @@ import EventPanel from './components/EventPanel.vue'
 import LogPanel from './components/LogPanel.vue'
 import { useWebSocket } from './composables/useWebSocket'
 import { useSchema } from './composables/useSchema'
-import type { Schema } from './types'
 
 const tab = ref('actions')
 const schemaFile = ref<File[] | null>(null)
@@ -196,7 +187,8 @@ const { parsedSchema, error: schemaError, parseSchema, loadSchema } = useSchema(
 const { 
   isConnected, 
   currentState, 
-  logs, 
+  logs,
+  stateUpdates,
   connect, 
   disconnect, 
   sendAction, 

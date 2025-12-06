@@ -83,7 +83,25 @@ public struct SchemaExtractor {
             actions[actionID] = actionSchema
         }
         
-        // Extract server events from registry
+        // Extract client events from registry (Client → Server)
+        var clientEvents: [String: JSONSchema] = [:]
+        for descriptor in landDefinition.clientEventRegistry.registered {
+            // Use ActionEventExtractor.extractEvent which properly handles SchemaMetadataProvider
+            _ = ActionEventExtractor.extractEvent(
+                descriptor.type,
+                definitions: &definitions,
+                visitedTypes: &visitedTypes
+            )
+            
+            let typeName = String(describing: descriptor.type)
+            
+            // Generate event ID from type name (e.g., "ChatEvent" -> "chat")
+            let eventID = generateEventID(from: descriptor.type)
+            // Always use a reference to the definition
+            clientEvents[eventID] = JSONSchema(ref: "#/defs/\(typeName)")
+        }
+        
+        // Extract server events from registry (Server → Client)
         var events: [String: JSONSchema] = [:]
         for descriptor in landDefinition.serverEventRegistry.registered {
             // Use ActionEventExtractor.extractEvent which properly handles SchemaMetadataProvider
@@ -119,6 +137,7 @@ public struct SchemaExtractor {
         let landSchema = LandSchema(
             stateType: stateTypeName,
             actions: actions,
+            clientEvents: clientEvents,
             events: events,
             sync: syncSchema
         )

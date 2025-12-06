@@ -61,8 +61,11 @@ public actor LandKeeper<State: StateNodeProtocol> {
 
         if let interval = definition.lifetimeHandlers.tickInterval,
            definition.lifetimeHandlers.tickHandler != nil {
+            // Start tick loop asynchronously after initialization completes
+            // The Task will execute after init returns, so self is fully initialized
             Task { [weak self] in
-                await self?.configureTickLoop(interval: interval)
+                guard let self = self else { return }
+                await self.configureTickLoop(interval: interval)
             }
         }
     }
@@ -326,12 +329,27 @@ public actor LandKeeper<State: StateNodeProtocol> {
 
     // MARK: - Tick & Lifetime
 
-    private func configureTickLoop(interval: Duration) {
+    private func configureTickLoop(interval: Duration) async {
         tickTask?.cancel()
         tickTask = Task { [weak self] in
-            while let self, !Task.isCancelled {
-                try? await Task.sleep(for: interval)
-                await self.runTick()  // Must use await to cross actor boundary
+            guard let self = self else { return }
+            
+            var nextTickTime = ContinuousClock.now
+            
+            while !Task.isCancelled {
+                let now = ContinuousClock.now
+                
+                // If we're already past the scheduled time, execute immediately
+                // Otherwise, sleep until the scheduled time
+                if now < nextTickTime {
+                    try? await Task.sleep(until: nextTickTime, clock: .continuous)
+                }
+                
+                await self.runTick()
+                
+                // Schedule next tick at fixed interval from now
+                // This prevents accumulation of delays when execution takes longer than interval
+                nextTickTime = ContinuousClock.now + interval
             }
         }
     }
@@ -347,6 +365,9 @@ public actor LandKeeper<State: StateNodeProtocol> {
         var copy = state
         handler(&copy, ctx)  // Handler itself is sync
         state = copy
+        
+        // Trigger sync after state changes to send diff/patch to all players
+        await syncNowHandler()
     }
 
     private func scheduleDestroyIfNeeded() {

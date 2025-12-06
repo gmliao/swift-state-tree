@@ -1,5 +1,19 @@
 {
   "defs" : {
+    "ChatEvent" : {
+      "properties" : {
+        "message" : {
+          "type" : "string"
+        }
+      },
+      "required" : [
+        "message"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
     "ChatMessageEvent" : {
       "properties" : {
         "from" : {
@@ -80,6 +94,18 @@
         "nodeKind" : "leaf"
       }
     },
+    "PingEvent" : {
+      "properties" : {
+
+      },
+      "required" : [
+
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
     "PongEvent" : {
       "properties" : {
 
@@ -144,6 +170,14 @@
       "actions" : {
         "join" : {
           "$ref" : "#\/defs\/JoinAction"
+        }
+      },
+      "clientEvents" : {
+        "chat" : {
+          "$ref" : "#\/defs\/ChatEvent"
+        },
+        "ping" : {
+          "$ref" : "#\/defs\/PingEvent"
         }
       },
       "events" : {
