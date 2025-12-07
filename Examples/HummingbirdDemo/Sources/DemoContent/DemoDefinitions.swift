@@ -183,7 +183,7 @@ public enum DemoGame {
             Lifetime { (config: inout LifetimeConfig<DemoGameState>) in
                 config.tickInterval = .seconds(1)
                 config.tickHandler = { (state: inout DemoGameState, _: LandContext) in
-                    state.ticks += 1
+                    // state.ticks += 1
                 }
             }
         }

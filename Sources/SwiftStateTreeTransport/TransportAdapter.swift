@@ -341,10 +341,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///   The caller (e.g., OnLeave handler) should have already removed the player's data
     ///   from broadcast fields, which will trigger `isDirty()`.
     public func syncBroadcastOnly() async {
-        // Early return if no players connected
-        guard !sessionToPlayer.isEmpty else {
-            return
-        }
+        // Note: Even if no players are connected, we still need to update the broadcast cache
+        // This ensures that when a player reconnects, they see the correct state (not stale cache)
+        let hasPlayers = !sessionToPlayer.isEmpty
         
         do {
             let state = await keeper.currentState()
@@ -368,13 +367,22 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             
             // Compute broadcast diff (only compares dirty fields)
             // This updates the shared broadcast cache
+            // IMPORTANT: We always compute the diff to update the cache, even if no players are connected
+            // This ensures the cache reflects the current state when players reconnect
             let broadcastDiff = syncEngine.computeBroadcastDiffFromSnapshot(
                 currentBroadcast: broadcastSnapshot,
                 onlyPaths: nil,
                 mode: broadcastMode
             )
             
-            guard !broadcastDiff.isEmpty else {
+            // If no players are connected, we still update the cache but don't send messages
+            guard hasPlayers && !broadcastDiff.isEmpty else {
+                if !hasPlayers {
+                    logger.debug("📤 Broadcast cache updated (no players connected)", metadata: [
+                        "patches": .string("\(broadcastDiff.count)"),
+                        "mode": .string("\(broadcastMode)")
+                    ])
+                }
                 return
             }
             

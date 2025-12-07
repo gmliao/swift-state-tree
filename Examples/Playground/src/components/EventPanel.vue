@@ -61,9 +61,9 @@
         </div>
 
         <v-textarea
-          v-else
+          v-else-if="showManualPayload"
           v-model="eventPayload"
-          label="Event Payload (JSON 或直接輸入字符串)"
+          label="Event Payload (無 schema 時手動輸入)"
           rows="4"
           variant="outlined"
           density="compact"
@@ -71,17 +71,6 @@
           class="mb-4"
         ></v-textarea>
       </div>
-
-      <v-textarea
-        v-else
-        v-model="eventPayload"
-        label="Event Payload (JSON 或直接輸入字符串)"
-        rows="4"
-        variant="outlined"
-        density="compact"
-        placeholder='{"message": "Hello"} 或直接輸入字串'
-        class="mb-4"
-      ></v-textarea>
 
       <v-btn
         color="primary"
@@ -190,6 +179,11 @@ const eventFields = computed<EventField[]>(() => {
   }))
 })
 
+const showManualPayload = computed(() => {
+  // Show manual input only when we have no schema at all for the selected event
+  return Boolean(selectedEvent.value) && !selectedEventSchema.value
+})
+
 watch(
   () => [selectedEvent.value, activeLand.value, props.schema],
   () => {
@@ -211,7 +205,10 @@ const handleSend = () => {
 
   let payload: any = null
 
-  if (selectedEvent.value && eventFields.value.length > 0) {
+  if (selectedEventSchema.value && eventFields.value.length === 0) {
+    // Schema exists but has no fields (empty object) => send empty object
+    payload = {}
+  } else if (selectedEvent.value && eventFields.value.length > 0) {
     // Use generated fields
     payload = { ...payloadModel.value }
   } else if (eventPayload.value.trim()) {
