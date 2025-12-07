@@ -216,20 +216,14 @@ public struct AppContainer<State: StateNodeProtocol> {
         let transport = WebSocketTransport(logger: logger)
         let adapterHolder = TransportAdapterHolder<State>()
         
+        // Create keeper first (without transport)
         let keeper = LandKeeper<State>(
             definition: definition,
             initialState: initialState,
-            sendEvent: { event, target in
-                await adapterHolder.forwardSendEvent(event, to: target)
-            },
-            syncNow: {
-                await adapterHolder.forwardSyncNow()
-            },
-            syncBroadcastOnly: {
-                await adapterHolder.forwardSyncBroadcastOnly()
-            }
+            logger: logger
         )
         
+        // Create TransportAdapter with keeper
         let transportAdapter = TransportAdapter<State>(
             keeper: keeper,
             transport: transport,
@@ -237,6 +231,9 @@ public struct AppContainer<State: StateNodeProtocol> {
             createPlayerSession: createPlayerSession,
             logger: logger
         )
+        
+        // Set transport adapter as the transport for keeper
+        await keeper.setTransport(transportAdapter)
         
         await adapterHolder.set(transportAdapter)
         await transport.setDelegate(transportAdapter)

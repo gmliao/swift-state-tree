@@ -17,41 +17,12 @@ struct BroadcastOnlyTestState: StateNodeProtocol {
     public init() {}
 }
 
-/// Actor to capture sync calls for testing
-actor SyncCapture {
-    var syncNowCallCount = 0
-    var syncBroadcastOnlyCallCount = 0
-    var receivedUpdates: [StateUpdate] = []
-    var receivedPlayerIDs: [PlayerID] = []
-    
-    func recordSyncNow() {
-        syncNowCallCount += 1
-    }
-    
-    func recordSyncBroadcastOnly() {
-        syncBroadcastOnlyCallCount += 1
-    }
-    
-    func recordUpdate(_ update: StateUpdate, for playerID: PlayerID) {
-        receivedUpdates.append(update)
-        receivedPlayerIDs.append(playerID)
-    }
-    
-    func getUpdates() -> [StateUpdate] {
-        receivedUpdates
-    }
-    
-    func getPlayerIDs() -> [PlayerID] {
-        receivedPlayerIDs
-    }
-}
-
 @Test("OnLeave handler triggers syncBroadcastOnly, not syncNow")
 func testOnLeaveTriggersSyncBroadcastOnly() async throws {
     let alice = PlayerID("alice")
     let bob = PlayerID("bob")
     
-    let syncCapture = SyncCapture()
+    let mockTransport = MockLandKeeperTransport()
     
     let definition = Land(
         "broadcast-only-test",
@@ -71,12 +42,7 @@ func testOnLeaveTriggersSyncBroadcastOnly() async throws {
     let keeper = LandKeeper<BroadcastOnlyTestState>(
         definition: definition,
         initialState: BroadcastOnlyTestState(),
-        syncNow: {
-            await syncCapture.recordSyncNow()
-        },
-        syncBroadcastOnly: {
-            await syncCapture.recordSyncBroadcastOnly()
-        }
+        transport: mockTransport
     )
     
     // Join two players
@@ -88,12 +54,15 @@ func testOnLeaveTriggersSyncBroadcastOnly() async throws {
     #expect(stateAfterJoin.players[alice] == "Guest")
     #expect(stateAfterJoin.players[bob] == "Guest")
     
+    // Reset counters
+    await mockTransport.reset()
+    
     // Alice leaves
     await keeper.leave(playerID: alice, clientID: ClientID("alice-client"))
     
     // Verify syncBroadcastOnly was called, not syncNow
-    let syncNowCount = await syncCapture.syncNowCallCount
-    let syncBroadcastOnlyCount = await syncCapture.syncBroadcastOnlyCallCount
+    let syncNowCount = await mockTransport.syncNowCallCount
+    let syncBroadcastOnlyCount = await mockTransport.syncBroadcastOnlyCallCount
     
     #expect(syncNowCount == 0, "syncNow should not be called on leave")
     #expect(syncBroadcastOnlyCount == 1, "syncBroadcastOnly should be called once on leave")
@@ -109,7 +78,7 @@ func testSyncBroadcastOnlyIsCalledOnLeave() async throws {
     let alice = PlayerID("alice")
     let bob = PlayerID("bob")
     
-    let syncCapture = SyncCapture()
+    let mockTransport = MockLandKeeperTransport()
     
     let definition = Land(
         "broadcast-only-test",
@@ -129,29 +98,24 @@ func testSyncBroadcastOnlyIsCalledOnLeave() async throws {
     let keeper = LandKeeper<BroadcastOnlyTestState>(
         definition: definition,
         initialState: BroadcastOnlyTestState(),
-        syncNow: {
-            await syncCapture.recordSyncNow()
-        },
-        syncBroadcastOnly: {
-            await syncCapture.recordSyncBroadcastOnly()
-        }
+        transport: mockTransport
     )
     
     // Join two players
     await keeper.join(playerID: alice, clientID: ClientID("alice-client"), sessionID: SessionID("alice-session"))
     await keeper.join(playerID: bob, clientID: ClientID("bob-client"), sessionID: SessionID("bob-session"))
     
+    // Reset counters
+    await mockTransport.reset()
+    
     // Alice leaves
     await keeper.leave(playerID: alice, clientID: ClientID("alice-client"))
     
     // Verify syncBroadcastOnly was called
-    let syncBroadcastOnlyCount = await syncCapture.syncBroadcastOnlyCallCount
+    let syncBroadcastOnlyCount = await mockTransport.syncBroadcastOnlyCallCount
     #expect(syncBroadcastOnlyCount == 1, "syncBroadcastOnly should be called once on leave")
     
     // Verify syncNow was NOT called
-    let syncNowCount = await syncCapture.syncNowCallCount
+    let syncNowCount = await mockTransport.syncNowCallCount
     #expect(syncNowCount == 0, "syncNow should not be called on leave")
 }
-
-// Mock transport for testing (simplified, not actually used in these tests)
-

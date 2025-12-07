@@ -657,16 +657,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             try await transport.send(responseData, to: .session(sessionID))
             
             logger.debug("📤 Sent join response", metadata: [
-                "requestID": .string(requestID),
-                "sessionID": .string(sessionID.rawValue),
-                "success": .string("\(success)"),
-                "playerID": .string(playerID ?? "nil")
+                "requestID": "\(requestID)",
+                "sessionID": "\(sessionID.rawValue)",
+                "success": "\(success)",
+                "playerID": "\(playerID ?? "nil")"
             ])
         } catch {
             logger.error("❌ Failed to send join response", metadata: [
-                "requestID": .string(requestID),
-                "sessionID": .string(sessionID.rawValue),
-                "error": .string("\(error)")
+                "requestID": "\(requestID)",
+                "sessionID": "\(sessionID.rawValue)",
+                "error": "\(error)"
             ])
         }
     }

@@ -224,13 +224,7 @@ func testHummingbirdAdapterEmitsJSON() async throws {
     
     let keeper = LandKeeper<TestState>(
         definition: definition,
-        initialState: TestState(),
-        sendEvent: { event, target in
-            await adapterHolder.adapter?.sendEvent(event, to: target)
-        },
-        syncNow: {
-            await adapterHolder.adapter?.syncNow()
-        }
+        initialState: TestState()
     )
     
     let adapter = TransportAdapter<TestState>(
@@ -238,6 +232,10 @@ func testHummingbirdAdapterEmitsJSON() async throws {
         transport: transport,
         landID: definition.id
     )
+    
+    // Set transport adapter as the transport for keeper
+    await keeper.setTransport(adapter)
+    
     await adapterHolder.set(adapter)
     await transport.setDelegate(adapter)
     
@@ -249,6 +247,20 @@ func testHummingbirdAdapterEmitsJSON() async throws {
     
     let encoder = JSONEncoder()
     let decoder = JSONDecoder()
+    
+    // Join first (required for sending events)
+    let joinMessage = TransportMessage.join(
+        requestID: UUID().uuidString,
+        landID: definition.id,
+        playerID: sessionID.rawValue,
+        deviceID: nil,
+        metadata: [:]
+    )
+    let joinData = try encoder.encode(joinMessage)
+    await transport.handleIncomingMessage(sessionID: sessionID, data: joinData)
+    
+    // Wait for join to complete
+    try await Task.sleep(nanoseconds: 10_000_000)
     
     let pingEvent = AnyClientEvent(TestPingEvent())
     let pingMessage = TransportMessage.event(

@@ -75,11 +75,25 @@ func testAppContainerForTestHandlesClientEvents() async throws {
     )
     let connection = RecordingWebSocketConnection()
     let sessionID = SessionID("session-app-container")
+    let clientID = ClientID("client-app-container")
     
     await harness.connect(sessionID: sessionID, using: connection)
     
+    // Join first (required for sending events)
     let encoder = JSONEncoder()
     let decoder = JSONDecoder()
+    let joinMessage = TransportMessage.join(
+        requestID: UUID().uuidString,
+        landID: harness.land.id,
+        playerID: sessionID.rawValue,
+        deviceID: nil,
+        metadata: [:]
+    )
+    let joinData = try encoder.encode(joinMessage)
+    await harness.send(joinData, from: sessionID)
+    
+    // Wait for join to complete
+    try await Task.sleep(nanoseconds: 10_000_000)
     
     // Act: send ping event
     let pingEvent = AnyClientEvent(TestPingEvent())

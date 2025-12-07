@@ -17,11 +17,13 @@ public actor LandKeeper<State: StateNodeProtocol> {
     private var state: State
     private var players: [PlayerID: InternalPlayerSession] = [:]
 
-    private let sendEventHandler: @Sendable (AnyServerEvent, EventTarget) async -> Void
-    private let syncNowHandler: @Sendable () async -> Void
-    private let syncBroadcastOnlyHandler: @Sendable () async -> Void
-    
+    private var transport: LandKeeperTransport?
     private let logger: Logger
+    
+    /// Set the transport interface (called after TransportAdapter is created)
+    public func setTransport(_ transport: LandKeeperTransport?) {
+        self.transport = transport
+    }
 
     private var tickTask: Task<Void, Never>?
     private var destroyTask: Task<Void, Never>?
@@ -35,43 +37,23 @@ public actor LandKeeper<State: StateNodeProtocol> {
     /// - Parameters:
     ///   - definition: The Land definition containing all handlers and configuration.
     ///   - initialState: The initial state of the Land.
-    ///   - sendEvent: Closure for sending server events to clients (injected by transport layer).
-    ///   - syncNow: Closure for triggering immediate state synchronization (injected by transport layer).
-    ///   - syncBroadcastOnly: Closure for syncing only broadcast changes (optimized for player leaving).
-    ///                        If not provided, falls back to `syncNow`.
+    ///   - transport: Optional transport interface for sending events and syncing state.
+    ///                If not provided, operations will be no-ops (useful for testing).
     ///   - logger: Optional logger instance. If not provided, a default logger will be created.
     public init(
         definition: LandDefinition<State>,
         initialState: State,
-        sendEvent: @escaping @Sendable (AnyServerEvent, EventTarget) async -> Void = { _, _ in },
-        syncNow: @escaping @Sendable () async -> Void = {},
-        syncBroadcastOnly: (@Sendable () async -> Void)? = nil,
+        transport: LandKeeperTransport? = nil,
         logger: Logger? = nil
     ) {
         self.definition = definition
         self.state = initialState
+        self.transport = transport
         let resolvedLogger = logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.runtime",
             scope: "LandKeeper"
         )
         self.logger = resolvedLogger
-        self.sendEventHandler = { [resolvedLogger] event, target in
-            #if DEBUG
-            if !definition.serverEventRegistry.registered.isEmpty {
-                // Check if the event type is registered by looking up the event name
-                if definition.serverEventRegistry.findDescriptor(for: event.type) == nil {
-                    resolvedLogger.warning(
-                        "ServerEvent type '\(event.type)' was sent but not registered via ServerEvents { Register(...) } in the Land DSL. It will not be included in generated schemas.",
-                        metadata: ["eventType": .string(event.type)]
-                    )
-                }
-            }
-            #endif
-            
-            await sendEvent(event, target)
-        }
-        self.syncNowHandler = syncNow
-        self.syncBroadcastOnlyHandler = syncBroadcastOnly ?? syncNow
 
         if let interval = definition.lifetimeHandlers.tickInterval,
            definition.lifetimeHandlers.tickHandler != nil {
@@ -248,7 +230,7 @@ public actor LandKeeper<State: StateNodeProtocol> {
                 // - Only extracts/compares dirty broadcast fields (not entire state)
                 // - Sends same update to all players (no per-player diff needed)
                 // - Updates shared broadcast cache efficiently
-                await syncBroadcastOnlyHandler()
+                await transport?.syncBroadcastOnlyFromTransport()
             }
             scheduleDestroyIfNeeded()
         } else {
@@ -333,10 +315,23 @@ public actor LandKeeper<State: StateNodeProtocol> {
             services: services,
             deviceID: deviceID ?? playerSession?.deviceID,
             metadata: metadata.isEmpty ? (playerSession?.metadata ?? [:]) : metadata,
-            sendEventHandler: { anyEvent, target in
-                await self.sendEventHandler(anyEvent, target)
+            sendEventHandler: { [transport, logger, definition] anyEvent, target in
+                #if DEBUG
+                if !definition.serverEventRegistry.registered.isEmpty {
+                    // Check if the event type is registered by looking up the event name
+                    if definition.serverEventRegistry.findDescriptor(for: anyEvent.type) == nil {
+                        logger.warning(
+                            "ServerEvent type '\(anyEvent.type)' was sent but not registered via ServerEvents { Register(...) } in the Land DSL. It will not be included in generated schemas.",
+                            metadata: ["eventType": .string(anyEvent.type)]
+                        )
+                    }
+                }
+                #endif
+                await transport?.sendEventToTransport(anyEvent, to: target)
             },
-            syncHandler: syncNowHandler
+            syncHandler: { [transport] in
+                await transport?.syncNowFromTransport()
+            }
         )
     }
 
@@ -389,7 +384,7 @@ public actor LandKeeper<State: StateNodeProtocol> {
         state = copy
         
         // Trigger sync after state changes to send diff/patch to all players
-        await syncNowHandler()
+        await transport?.syncNowFromTransport()
     }
 
     private func scheduleDestroyIfNeeded() {
