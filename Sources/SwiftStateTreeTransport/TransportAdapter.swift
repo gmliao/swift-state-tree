@@ -124,7 +124,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 
             default:
                 // For other messages, require player to be joined
-                guard let playerID = sessionToPlayer[sessionID],
+            guard let playerID = sessionToPlayer[sessionID],
                   let clientID = sessionToClient[sessionID] else {
                     logger.warning("Message received from session that has not joined: \(sessionID.rawValue)")
                 return
@@ -167,7 +167,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                             "response": .string(responseString)
                         ])
                     }
-                    
+                
             case .event(let landID, let eventWrapper):
                 if case .fromClient(let anyClientEvent) = eventWrapper {
                     logger.info("📥 Received client event", metadata: [
@@ -313,7 +313,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Sync state for all connected players using shared broadcast snapshot
             // Note: syncState() doesn't throw, but transport.send() inside it might fail
             // We handle errors inside syncState() to avoid one failure stopping all updates
-            for (sessionID, playerID) in sessionToPlayer {
+        for (sessionID, playerID) in sessionToPlayer {
                 await syncState(
                     for: playerID,
                     sessionID: sessionID,

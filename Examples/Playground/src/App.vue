@@ -187,7 +187,7 @@ const { parsedSchema, error: schemaError, parseSchema, loadSchema } = useSchema(
 const { 
   isConnected, 
   currentState, 
-  logs,
+  logs, 
   stateUpdates,
   connect, 
   disconnect, 

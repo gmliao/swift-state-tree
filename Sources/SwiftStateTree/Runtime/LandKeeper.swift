@@ -52,7 +52,7 @@ public actor LandKeeper<State: StateNodeProtocol> {
         let resolvedLogger = logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.runtime",
             scope: "LandKeeper"
-        )
+                    )
         self.logger = resolvedLogger
 
         if let interval = definition.lifetimeHandlers.tickInterval,

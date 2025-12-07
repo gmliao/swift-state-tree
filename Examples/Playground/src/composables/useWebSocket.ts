@@ -182,8 +182,8 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
       ws.value.onmessage = (event) => {
         const raw = event.data
 
-          const handleJsonText = (text: string) => {
-            try {
+        const handleJsonText = (text: string) => {
+          try {
               const data = JSON.parse(text) as TransportMessage | StateUpdate | any
 
               // Check for joinResponse
@@ -200,7 +200,7 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
               }
               
               // Check for StateSnapshot format (initial connection - complete snapshot)
-              if (data && typeof data === 'object' && 'values' in data && data.values && typeof data.values === 'object') {
+            if (data && typeof data === 'object' && 'values' in data && data.values && typeof data.values === 'object') {
               // Initial snapshot format (complete state from lateJoinSnapshot)
               // Merge into existing state to preserve UI state (like expanded folders)
               const decodedState: Record<string, any> = {}
@@ -214,7 +214,7 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
                 Object.assign(currentState.value, decodedState)
               } else {
                 // First time, just assign
-                currentState.value = decodedState
+              currentState.value = decodedState
               }
               
               // Add to state updates (separate from general logs)
@@ -287,11 +287,11 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
               // Other messages (events, actions) go to general logs
               if (data.event?.event?.fromServer) {
                 // Server event: only log the event content, not the full message structure
-                const eventData = data.event.event.fromServer
-                addLog(`📨 伺服器事件: ${JSON.stringify(eventData)}`, 'server')
-              } else if (data.actionResponse) {
-                addLog(`✅ Action 回應: ${JSON.stringify(data.actionResponse.response)}`, 'success')
-              } else {
+              const eventData = data.event.event.fromServer
+              addLog(`📨 伺服器事件: ${JSON.stringify(eventData)}`, 'server')
+            } else if (data.actionResponse) {
+              addLog(`✅ Action 回應: ${JSON.stringify(data.actionResponse.response)}`, 'success')
+            } else {
                 // For other message types, log the full message
                 addLog('📥 收到訊息', 'server', data)
               }

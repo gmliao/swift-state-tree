@@ -8,19 +8,19 @@
       等待狀態更新...
     </v-alert>
     <div v-else>
-      <v-treeview
-        :items="treeItems"
+    <v-treeview
+      :items="treeItems"
         :key="treeKey"
-        activatable
-        item-title="name"
-        item-value="id"
-        item-children="children"
-        density="compact"
-      >
-        <template v-slot:prepend="{ item }">
-          <v-icon :icon="getIcon(item.type)" :color="getColor(item.type)"></v-icon>
-        </template>
-      </v-treeview>
+      activatable
+      item-title="name"
+      item-value="id"
+      item-children="children"
+      density="compact"
+    >
+      <template v-slot:prepend="{ item }">
+        <v-icon :icon="getIcon(item.type)" :color="getColor(item.type)"></v-icon>
+      </template>
+    </v-treeview>
       
       <!-- State Update History Panel -->
       <v-divider class="my-2"></v-divider>
