@@ -19,15 +19,10 @@ let package = Package(
             name: "SwiftStateTreeTransport",
             targets: ["SwiftStateTreeTransport"]
         ),
-        // 🕊️ Hummingbird Transport Adapter
+        // 🕊️ Hummingbird integration
         .library(
             name: "SwiftStateTreeHummingbird",
             targets: ["SwiftStateTreeHummingbird"]
-        ),
-        // 🧱 Hummingbird hosting helpers
-        .library(
-            name: "SwiftStateTreeHummingbirdHosting",
-            targets: ["SwiftStateTreeHummingbirdHosting"]
         ),
         // 🔹 Benchmark executable
         .executable(
@@ -67,29 +62,17 @@ let package = Package(
             path: "Sources/SwiftStateTreeTransport"
         ),
         
-        // 🕊️ Hummingbird Adapter
+        // 🕊️ Hummingbird integration
         .target(
             name: "SwiftStateTreeHummingbird",
             dependencies: [
-                "SwiftStateTreeTransport",
-                .product(name: "Hummingbird", package: "hummingbird"),
-                .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket")
-            ],
-            path: "Sources/SwiftStateTreeHummingbird"
-        ),
-        
-        // 🧱 Hummingbird hosting helpers (generic AppContainer)
-        .target(
-            name: "SwiftStateTreeHummingbirdHosting",
-            dependencies: [
                 "SwiftStateTree",
                 "SwiftStateTreeTransport",
-                "SwiftStateTreeHummingbird",
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket"),
                 .product(name: "Logging", package: "swift-log")
             ],
-            path: "Sources/SwiftStateTreeHummingbirdHosting"
+            path: "Sources/SwiftStateTreeHummingbird"
         ),
         
         // 🔹 Macro Implementation: Compile-time macro expansion
@@ -127,7 +110,6 @@ let package = Package(
             name: "SwiftStateTreeHummingbirdTests",
             dependencies: [
                 "SwiftStateTreeHummingbird",
-                "SwiftStateTreeHummingbirdHosting",
                 "SwiftStateTreeTransport",
                 "SwiftStateTree",
                 .product(name: "Hummingbird", package: "hummingbird"),

@@ -1,4 +1,4 @@
-// Examples/SwiftStateTreeHummingbirdDemo/Sources/SchemaGen/main.swift
+// Examples/HummingbirdDemo/Sources/SchemaGen/main.swift
 
 import Foundation
 import SwiftStateTree

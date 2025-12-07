@@ -2,7 +2,7 @@ import Testing
 import Foundation
 import SwiftStateTree
 import SwiftStateTreeTransport
-@testable import SwiftStateTreeHummingbirdHosting
+@testable import SwiftStateTreeHummingbird
 
 // MARK: - Test Fixtures
 

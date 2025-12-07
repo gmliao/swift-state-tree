@@ -42,13 +42,13 @@ SwiftStateTree/
 ├── Sources/
 │   ├── SwiftStateTree/                     # ✅ Core: Land DSL, Runtime, Sync
 │   ├── SwiftStateTreeTransport/            # ✅ Transport 抽象層
-│   ├── SwiftStateTreeHummingbird/          # ✅ Hummingbird WebSocket 適配器
+│   ├── SwiftStateTreeHummingbird/          # ✅ Hummingbird integration
 │   ├── SwiftStateTreeMacros/               # ✅ Macro 實作
 │   └── (無 Demo target，僅保留 library/adapter)
 ├── Tests/
 │   └── SwiftStateTreeTests/
 └── Examples/                               # ✅ Demo 專案獨立於此
-    └── SwiftStateTreeHummingbirdDemo/
+    └── HummingbirdDemo/
 ```
 
 ### Core（SwiftStateTree）
@@ -71,7 +71,7 @@ SwiftStateTree/
 
 ### Transport 層
 
-**Target**：`SwiftStateTreeTransport`（抽象層）+ `SwiftStateTreeHummingbird`（Hummingbird 適配器）
+**Target**：`SwiftStateTreeTransport`（抽象層）+ `SwiftStateTreeHummingbird`（Hummingbird integration）
 
 **架構分層**：
 ```
@@ -244,7 +244,7 @@ public struct GameDomainServices: Sendable {
 - 使用方式：
 
 ```swift
-import SwiftStateTreeHummingbirdHosting
+import SwiftStateTreeHummingbird
 
 @main
 struct HummingbirdDemo {
@@ -358,16 +358,16 @@ public protocol WebSocketConnection: Sendable {
 
 ### 當前狀況
 
-目前 Demo 專案已獨立至 `Examples/SwiftStateTreeHummingbirdDemo`：
+目前 Demo 專案已獨立至 `Examples/HummingbirdDemo`：
 
 ```
 Examples/
-  SwiftStateTreeHummingbirdDemo/
+  HummingbirdDemo/
     ├── Package.swift                    # 獨立的 Package，依賴主專案的 library
     └── Sources/
         ├── DemoContent/
         │   └── DemoDefinitions.swift    # Demo 專用 Land DSL / actions / events
-        └── SwiftStateTreeHummingbirdDemo/
+        └── HummingbirdDemo/
             └── main.swift               # Demo 啟動程式（呼叫泛用 AppContainer）
 ```
 
@@ -477,7 +477,7 @@ Examples/
    - 重構為應用層級容器，支援多房間架構
 
 4. **Demo 專案獨立**（✅ 已完成）：
-  - Hummingbird Demo 位於 `Examples/SwiftStateTreeHummingbirdDemo`
+  - Hummingbird Demo 位於 `Examples/HummingbirdDemo`
   - 主專案 `Sources/` 僅保留 library/transport 程式碼
 
 ### 設計優勢

@@ -32,9 +32,9 @@ let package = Package(
             name: "HummingbirdDemo",
             dependencies: [
                 "HummingbirdDemoContent",
-                .product(name: "SwiftStateTreeHummingbirdHosting", package: "SwiftStateTree")
+                .product(name: "SwiftStateTreeHummingbird", package: "SwiftStateTree")
             ],
-            path: "Sources/SwiftStateTreeHummingbirdDemo"
+            path: "Sources/HummingbirdDemo"
         ),
         .executableTarget(
             name: "SchemaGen",

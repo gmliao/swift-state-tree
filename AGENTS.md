@@ -2,21 +2,22 @@
 
 ## Project Structure & Module Organization
 - `Sources/SwiftStateTree`: core library with game logic; key folders `GameCore` (state, commands, actors) and `StateTree` (tree engine, nodes).
-- `Sources/SwiftStateTreeVaporDemo`: Vapor-based demo server (`main.swift`, `Configure.swift`, `Routes.swift`).
+- `Sources/SwiftStateTreeHummingbird`: Hummingbird integration module (AppContainer, WebSocket adapter).
+- `Examples/HummingbirdDemo`: Demo project using Hummingbird hosting.
 - `Tests/SwiftStateTreeTests`: unit tests for the library.
-- `Package.swift`: SwiftPM manifest; defines products `SwiftStateTree` (library) and `SwiftStateTreeVaporDemo` (executable).
+- `Package.swift`: SwiftPM manifest; defines products `SwiftStateTree` (library) and `SwiftStateTreeHummingbird` (library).
 
 ## Build, Test, and Development Commands
 - `swift build`: compile all targets; use `-c release` for performance checks.
 - `swift test`: run library tests; use `swift test --filter StateTreeTests.testGetSyncFields` for a single case.
-- `swift run SwiftStateTreeVaporDemo`: start the demo server at `http://localhost:8080`.
+- `swift run HummingbirdDemo`: start the demo server (from `Examples/HummingbirdDemo`).
 - `swift package resolve`: refresh dependencies if `Package.resolved` drifts.
 
 ## Coding Style & Naming Conventions
 - Swift 6, macOS 13+; follow Swift API Design Guidelines and prefer `Sendable` on public types.
 - Indent with 4 spaces; keep line length reasonable (~120 chars).
 - Types: `UpperCamelCase`; methods/variables: `lowerCamelCase`; enums use verb-like cases for commands (`.join`, `.attack`).
-- Place new game logic in `Sources/SwiftStateTree/GameCore`; keep demo-only code inside `SwiftStateTreeVaporDemo`.
+- Place new game logic in `Sources/SwiftStateTree/GameCore`; keep demo-only code inside `Examples/HummingbirdDemo`.
 
 ## Testing Guidelines
 - **Framework: Swift Testing** (Swift 6's new testing framework, not XCTest).
