@@ -4,6 +4,7 @@ import HummingbirdWebSocket
 import SwiftStateTree
 import SwiftStateTreeTransport
 import Logging
+import NIOCore
 
 /// Bundles runtime, transport, and Hummingbird hosting for any Land definition.
 public struct AppContainer<State: StateNodeProtocol> {
@@ -147,6 +148,24 @@ public struct AppContainer<State: StateNodeProtocol> {
         
         let hbAdapter = HummingbirdStateTreeAdapter(transport: core.transport)
         let router = Router(context: BasicWebSocketRequestContext.self)
+        let schemaDataResult: Result<Data, Error> = {
+            do {
+                let anyLand = AnyLandDefinition(definition)
+                let schema = anyLand.extractSchema()
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                let jsonData = try encoder.encode(schema)
+                return .success(jsonData)
+            } catch {
+                return .failure(error)
+            }
+        }()
+        @Sendable
+        func addCORSHeaders(_ response: inout Response) {
+            response.headers[.accessControlAllowOrigin] = "*"
+            response.headers[.accessControlAllowMethods] = "GET, OPTIONS"
+            response.headers[.accessControlAllowHeaders] = "Content-Type"
+        }
         
         router.ws(RouterPath(configuration.webSocketPath)) { inbound, outbound, context in
             await hbAdapter.handle(inbound: inbound, outbound: outbound, context: context)
@@ -155,6 +174,35 @@ public struct AppContainer<State: StateNodeProtocol> {
         if configuration.enableHealthRoute {
             router.get(RouterPath(configuration.healthPath)) { _, _ in
                 "OK"
+            }
+        }
+        
+        // Add schema endpoint with CORS support
+        router.on(RouterPath("/schema"), method: .options) { _, _ in
+            var response = Response(status: .noContent)
+            addCORSHeaders(&response)
+            return response
+        }
+        
+        router.get(RouterPath("/schema")) { _, _ in
+            switch schemaDataResult {
+            case let .success(schemaData):
+                var buffer = ByteBufferAllocator().buffer(capacity: schemaData.count)
+                buffer.writeBytes(schemaData)
+                var response = Response(status: .ok, body: .init(byteBuffer: buffer))
+                response.headers[.contentType] = "application/json"
+                response.headers[.cacheControl] = "public, max-age=3600"
+                addCORSHeaders(&response)
+                return response
+            case let .failure(error):
+                logger.error("Failed to generate schema at startup: \(error)")
+                let errorMsg = "Failed to generate schema: \(error)"
+                var buffer = ByteBufferAllocator().buffer(capacity: errorMsg.utf8.count)
+                buffer.writeString(errorMsg)
+                var response = Response(status: .internalServerError, body: .init(byteBuffer: buffer))
+                response.headers[.contentType] = "text/plain"
+                addCORSHeaders(&response)
+                return response
             }
         }
         

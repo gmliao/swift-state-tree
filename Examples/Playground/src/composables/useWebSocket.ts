@@ -172,11 +172,18 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
       ws.value.onclose = (event) => {
         isConnected.value = false
         isJoined.value = false
-        if (event.code !== 1000) {
-          addLog(`🔌 連線關閉 (代碼: ${event.code}, 原因: ${event.reason || '無'})`, 'warning')
-        } else {
-          addLog('🔌 WebSocket 連線已關閉', 'info')
-        }
+        // Clear all data on close
+        currentState.value = {}
+        const closeMessage = event.code !== 1000 
+          ? `🔌 連線關閉 (代碼: ${event.code}, 原因: ${event.reason || '無'})`
+          : '🔌 WebSocket 連線已關閉'
+        logs.value = [{
+          id: Date.now().toString(),
+          timestamp: new Date(),
+          type: event.code !== 1000 ? 'warning' : 'info',
+          message: closeMessage
+        }]
+        stateUpdates.value = []
       }
 
       ws.value.onmessage = (event) => {
@@ -279,10 +286,25 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
                 affectedPaths: affectedPaths  // 保存受影響的路徑
               })
               
-              // Keep only last 100 state updates
-              if (stateUpdates.value.length > 100) {
-                stateUpdates.value.shift()
+              // Keep only last 3 updates per top-level path (newest first) and cap total at 100
+              const byPath: Record<string, StateUpdateEntry[]> = {}
+              for (const entry of [...stateUpdates.value].reverse()) {
+                const paths = entry.patches?.map(p => {
+                  const parts = p.path.split('/').filter(Boolean)
+                  return parts[0] || '/'
+                }) ?? entry.affectedPaths ?? ['/']
+                
+                const uniquePaths = Array.from(new Set(paths))
+                for (const path of uniquePaths) {
+                  byPath[path] = byPath[path] ?? []
+                  if (byPath[path].length < 3) {
+                    byPath[path].push(entry)
+                  }
+                }
               }
+              const merged = Object.values(byPath).flat()
+              merged.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+              stateUpdates.value = merged.slice(0, 100)
             } else {
               // Other messages (events, actions) go to general logs
               if (data.event?.event?.fromServer) {
@@ -331,6 +353,12 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
       ws.value.close(1000, 'User disconnect')
       ws.value = null
     }
+    // Clear all data on disconnect
+    isConnected.value = false
+    isJoined.value = false
+    currentState.value = {}
+    logs.value = []
+    stateUpdates.value = []
   }
 
   const sendMessage = (message: TransportMessage): void => {

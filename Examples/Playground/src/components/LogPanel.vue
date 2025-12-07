@@ -1,39 +1,76 @@
 <template>
-  <v-card-text>
-    <div class="log-container">
-      <div
-        v-for="log in logs"
-        :key="log.id"
-        :class="['log-entry', `log-${log.type}`]"
-      >
-        <div class="log-header">
-          <v-icon :icon="getIcon(log.type)" :color="getColor(log.type)" size="small" class="mr-2"></v-icon>
-          <span class="log-time">{{ formatTime(log.timestamp) }}</span>
-          <v-chip :color="getColor(log.type)" size="x-small" variant="flat" class="ml-2">
-            {{ log.type }}
-          </v-chip>
-        </div>
-        <div class="log-message">{{ log.message }}</div>
-        <v-expansion-panels v-if="log.data" variant="accordion" density="compact" class="mt-2">
-          <v-expansion-panel>
-            <v-expansion-panel-title>查看資料</v-expansion-panel-title>
-            <v-expansion-panel-text>
-              <pre>{{ JSON.stringify(log.data, null, 2) }}</pre>
-            </v-expansion-panel-text>
-          </v-expansion-panel>
-        </v-expansion-panels>
-      </div>
-    </div>
+  <v-card-text style="height: 100%; padding: 4px; display: flex; flex-direction: column; overflow: hidden; min-height: 0; background-color: #ffffff;">
+    <v-data-table
+      :items="logs"
+      :headers="headers"
+      :items-per-page="-1"
+      class="log-table"
+      density="compact"
+      style="flex: 1; min-height: 0; overflow: hidden;"
+      fixed-header
+      hide-default-footer
+    >
+      <template v-slot:item.timestamp="{ item }">
+        <span class="log-time">{{ formatTime(item.timestamp) }}</span>
+      </template>
+      
+      <template v-slot:item.type="{ item }">
+        <v-chip :color="getColor(item.type)" size="small" variant="flat">
+          <v-icon :icon="getIcon(item.type)" size="small" class="mr-1"></v-icon>
+          {{ item.type }}
+        </v-chip>
+      </template>
+      
+      <template v-slot:item.message="{ item }">
+        <div class="log-message">{{ item.message }}</div>
+      </template>
+      
+      <template v-slot:item.data="{ item }">
+        <v-btn
+          v-if="item.data"
+          icon="mdi-eye"
+          size="small"
+          variant="text"
+          @click="showDataDialog(item)"
+        ></v-btn>
+      </template>
+    </v-data-table>
+
+    <!-- Data Dialog -->
+    <v-dialog v-model="dataDialog.show" max-width="800">
+      <v-card>
+        <v-card-title>
+          訊息資料
+          <v-spacer></v-spacer>
+          <v-btn icon="mdi-close" variant="text" @click="dataDialog.show = false"></v-btn>
+        </v-card-title>
+        <v-card-text>
+          <pre class="data-preview">{{ JSON.stringify(dataDialog.data, null, 2) }}</pre>
+        </v-card-text>
+      </v-card>
+    </v-dialog>
   </v-card-text>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { ref, computed } from 'vue'
 import type { LogEntry } from '@/types'
 
 const props = defineProps<{
   logs: LogEntry[]
 }>()
+
+const dataDialog = ref({
+  show: false,
+  data: null as any
+})
+
+const headers = computed(() => [
+  { title: '時間', key: 'timestamp', width: '120px', sortable: true },
+  { title: '類型', key: 'type', width: '100px', sortable: true },
+  { title: '訊息', key: 'message', sortable: false },
+  { title: '資料', key: 'data', width: '80px', sortable: false }
+])
 
 const formatTime = (date: Date): string => {
   return date.toLocaleTimeString('zh-TW', {
@@ -65,65 +102,102 @@ const getColor = (type: LogEntry['type']): string => {
     default: return 'grey'
   }
 }
+
+const showDataDialog = (item: LogEntry) => {
+  dataDialog.value.data = item.data
+  dataDialog.value.show = true
+}
 </script>
 
 <style scoped>
-.log-container {
-  max-height: 600px;
-  overflow-y: auto;
+.log-table {
   font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
-  font-size: 12px;
-}
-
-.log-entry {
-  padding: 8px;
-  margin-bottom: 8px;
-  border-left: 3px solid;
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 4px;
-}
-
-.log-info {
-  border-left-color: #2196F3;
-}
-
-.log-error {
-  border-left-color: #F44336;
-}
-
-.log-warning {
-  border-left-color: #FF9800;
-}
-
-.log-success {
-  border-left-color: #4CAF50;
-}
-
-.log-server {
-  border-left-color: #9C27B0;
-}
-
-.log-header {
-  display: flex;
-  align-items: center;
-  margin-bottom: 4px;
-}
-
-.log-time {
-  color: rgba(255, 255, 255, 0.6);
   font-size: 10px;
 }
 
-.log-message {
-  color: rgba(255, 255, 255, 0.9);
+.log-table :deep(.v-data-table__td) {
+  font-size: 10px;
+  padding: 2px 6px;
+  line-height: 1.2;
 }
 
-pre {
-  background: rgba(0, 0, 0, 0.3);
-  padding: 8px;
+.log-table :deep(.v-data-table__th) {
+  font-size: 10px;
+  padding: 4px 6px;
+  font-weight: 500;
+}
+
+.log-table :deep(.v-data-table__tbody tr) {
+  height: auto;
+  min-height: 24px;
+}
+
+.log-table :deep(.v-data-table) {
+  height: 100% !important;
+  display: flex;
+  flex-direction: column;
+  background-color: #ffffff !important;
+}
+
+.log-table :deep(.v-data-table__wrapper) {
+  background-color: #ffffff !important;
+}
+
+.log-table :deep(.v-data-table__thead) {
+  background-color: #f5f5f5 !important;
+}
+
+.log-table :deep(.v-data-table__tbody) {
+  background-color: #ffffff !important;
+}
+
+.log-table :deep(.v-data-table__tbody tr) {
+  background-color: #ffffff !important;
+}
+
+.log-table :deep(.v-data-table__tbody tr:hover) {
+  background-color: #f5f5f5 !important;
+}
+
+.log-table :deep(.v-data-table__wrapper) {
+  flex: 1;
+  min-height: 0;
+  overflow: auto !important;
+}
+
+.log-table :deep(.v-data-table__td) {
+  color: #212121 !important;
+  background-color: #ffffff !important;
+}
+
+.log-table :deep(.v-data-table__th) {
+  color: #212121 !important;
+  background-color: #f5f5f5 !important;
+  font-weight: 600;
+}
+
+.log-time {
+  color: #212121 !important;
+  font-size: 9px;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.log-message {
+  color: #212121 !important;
+  word-break: break-word;
+  max-width: 400px;
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.data-preview {
+  background: rgba(0, 0, 0, 0.05);
+  padding: 16px;
   border-radius: 4px;
   overflow-x: auto;
-  font-size: 11px;
+  font-size: 12px;
+  max-height: 500px;
+  overflow-y: auto;
 }
 </style>
-

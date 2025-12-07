@@ -5,6 +5,28 @@
             "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:swift-state-tree-internal}",
+            "name": "Debug SwiftStateTreeVaporDemo",
+            "preLaunchTask": "swift: Build Debug SwiftStateTreeVaporDemo",
+            "target": "SwiftStateTreeVaporDemo",
+            "configuration": "debug",
+            "program": "${workspaceFolder:swift-state-tree-internal}/.build/debug/SwiftStateTreeVaporDemo"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:swift-state-tree-internal}",
+            "name": "Release SwiftStateTreeVaporDemo",
+            "preLaunchTask": "swift: Build Release SwiftStateTreeVaporDemo",
+            "target": "SwiftStateTreeVaporDemo",
+            "configuration": "release",
+            "program": "${workspaceFolder:swift-state-tree-internal}/.build/release/SwiftStateTreeVaporDemo"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:swift-state-tree-internal}",
             "name": "Debug SwiftStateTreeMacros",
             "program": "${workspaceFolder:swift-state-tree-internal}/.build/debug/SwiftStateTreeMacros",
             "preLaunchTask": "swift: Build Debug SwiftStateTreeMacros"
@@ -19,26 +41,24 @@
             "preLaunchTask": "swift: Build Release SwiftStateTreeMacros"
         },
         {
-            "type": "lldb",
+            "type": "swift",
             "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:swift-state-tree-internal}",
             "name": "Debug SwiftStateTreeBenchmarks",
             "preLaunchTask": "swift: Build Debug SwiftStateTreeBenchmarks",
             "target": "SwiftStateTreeBenchmarks",
-            "configuration": "debug",
-            "program": "${workspaceFolder:swift-state-tree-internal}/.build/debug/SwiftStateTreeBenchmarks"
+            "configuration": "debug"
         },
         {
-            "type": "lldb",
+            "type": "swift",
             "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:swift-state-tree-internal}",
             "name": "Release SwiftStateTreeBenchmarks",
             "preLaunchTask": "swift: Build Release SwiftStateTreeBenchmarks",
             "target": "SwiftStateTreeBenchmarks",
-            "configuration": "release",
-            "program": "${workspaceFolder:swift-state-tree-internal}/.build/release/SwiftStateTreeBenchmarks"
+            "configuration": "release"
         },
         {
             "type": "swift",
