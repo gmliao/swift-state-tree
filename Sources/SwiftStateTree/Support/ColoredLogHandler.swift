@@ -11,7 +11,7 @@ import Logging
 /// Example usage:
 /// ```swift
 /// let logger = createColoredLogger(
-///     label: "com.swiftstatetree.transport",
+///     loggerIdentifier: "com.swiftstatetree.transport",
 ///     scope: "TransportAdapter"
 /// )
 /// logger.info("Client connected", metadata: ["sessionID": "123"])
@@ -56,18 +56,18 @@ public enum ANSIColor: String {
 
 /// A colored log handler that supports scope/context (similar to NestJS)
 public struct ColoredLogHandler: LogHandler {
-    private let label: String
+    private let loggerIdentifier: String
     private var _metadata: Logger.Metadata = [:]
     private var _logLevel: Logger.Level
     private let useColors: Bool
     private let dateFormatter: DateFormatter
     
     public init(
-        label: String,
+        loggerIdentifier: String,
         logLevel: Logger.Level = .info,
         useColors: Bool = true
     ) {
-        self.label = label
+        self.loggerIdentifier = loggerIdentifier
         self._logLevel = logLevel
         self.useColors = useColors
         
@@ -186,9 +186,9 @@ extension Logger {
     }
     
     /// Create a new logger with scope
-    public static func withScope(_ scope: String, label: String? = nil) -> Logger {
-        let loggerLabel = label ?? "com.swiftstatetree"
-        var logger = Logger(label: loggerLabel)
+    public static func withScope(_ scope: String, loggerIdentifier: String? = nil) -> Logger {
+        let identifier = loggerIdentifier ?? "com.swiftstatetree"
+        var logger = Logger(label: identifier)
         logger[metadataKey: "scope"] = .string(scope)
         return logger
     }
@@ -196,18 +196,18 @@ extension Logger {
 
 /// Helper to create a colored logger with scope
 public func createColoredLogger(
-    label: String,
+    loggerIdentifier: String,
     scope: String? = nil,
     logLevel: Logger.Level = .info,
     useColors: Bool = true
 ) -> Logger {
     let handler = ColoredLogHandler(
-        label: label,
+        loggerIdentifier: loggerIdentifier,
         logLevel: logLevel,
         useColors: useColors
     )
     
-    var logger = Logger(label: label) { _ in handler }
+    var logger = Logger(label: loggerIdentifier) { _ in handler }
     
     if let scope = scope {
         logger[metadataKey: "scope"] = .string(scope)

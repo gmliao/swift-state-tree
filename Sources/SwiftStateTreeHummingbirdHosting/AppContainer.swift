@@ -87,7 +87,7 @@ public struct AppContainer<State: StateNodeProtocol> {
     
     public func run() async throws {
         let logger = configuration.logger ?? createColoredLogger(
-            label: "com.swiftstatetree.hummingbird",
+            loggerIdentifier: "com.swiftstatetree.hummingbird",
             scope: "AppContainer"
         )
 
@@ -136,7 +136,7 @@ public struct AppContainer<State: StateNodeProtocol> {
         configureRouter: ((Router<BasicWebSocketRequestContext>) -> Void)? = nil
     ) async throws -> AppContainer {
         let logger = configuration.logger ?? createColoredLogger(
-            label: "com.swiftstatetree.hummingbird",
+            loggerIdentifier: "com.swiftstatetree.hummingbird",
             scope: "AppContainer"
         )
         let core = await buildCoreComponents(
@@ -180,7 +180,7 @@ public struct AppContainer<State: StateNodeProtocol> {
         logger: Logger? = nil
     ) async -> AppContainerForTest {
         let testLogger = logger ?? createColoredLogger(
-            label: "com.swiftstatetree.test",
+            loggerIdentifier: "com.swiftstatetree.test",
             scope: "Test"
         )
         let core = await buildCoreComponents(

@@ -46,7 +46,8 @@ let package = Package(
         .target(
             name: "SwiftStateTree",
             dependencies: [
-                "SwiftStateTreeMacros"
+                "SwiftStateTreeMacros",
+                .product(name: "Logging", package: "swift-log")
             ],
             path: "Sources/SwiftStateTree",
             exclude: [

@@ -42,7 +42,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             self.logger = logger.withScope("TransportAdapter")
         } else {
             self.logger = createColoredLogger(
-                label: "com.swiftstatetree.transport",
+                loggerIdentifier: "com.swiftstatetree.transport",
                 scope: "TransportAdapter"
             )
         }

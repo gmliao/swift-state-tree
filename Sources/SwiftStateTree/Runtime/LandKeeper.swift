@@ -1,4 +1,5 @@
 import Foundation
+import Logging
 
 /// The runtime executor for a Land instance.
 ///
@@ -19,6 +20,8 @@ public actor LandKeeper<State: StateNodeProtocol> {
     private let sendEventHandler: @Sendable (AnyServerEvent, EventTarget) async -> Void
     private let syncNowHandler: @Sendable () async -> Void
     private let syncBroadcastOnlyHandler: @Sendable () async -> Void
+    
+    private let logger: Logger
 
     private var tickTask: Task<Void, Never>?
     private var destroyTask: Task<Void, Never>?
@@ -36,24 +39,30 @@ public actor LandKeeper<State: StateNodeProtocol> {
     ///   - syncNow: Closure for triggering immediate state synchronization (injected by transport layer).
     ///   - syncBroadcastOnly: Closure for syncing only broadcast changes (optimized for player leaving).
     ///                        If not provided, falls back to `syncNow`.
+    ///   - logger: Optional logger instance. If not provided, a default logger will be created.
     public init(
         definition: LandDefinition<State>,
         initialState: State,
         sendEvent: @escaping @Sendable (AnyServerEvent, EventTarget) async -> Void = { _, _ in },
         syncNow: @escaping @Sendable () async -> Void = {},
-        syncBroadcastOnly: (@Sendable () async -> Void)? = nil
+        syncBroadcastOnly: (@Sendable () async -> Void)? = nil,
+        logger: Logger? = nil
     ) {
         self.definition = definition
         self.state = initialState
-        self.sendEventHandler = { event, target in
+        let resolvedLogger = logger ?? createColoredLogger(
+            loggerIdentifier: "com.swiftstatetree.runtime",
+            scope: "LandKeeper"
+        )
+        self.logger = resolvedLogger
+        self.sendEventHandler = { [resolvedLogger] event, target in
             #if DEBUG
             if !definition.serverEventRegistry.registered.isEmpty {
                 // Check if the event type is registered by looking up the event name
                 if definition.serverEventRegistry.findDescriptor(for: event.type) == nil {
-                    print(
-                        "[SwiftStateTree] Warning: ServerEvent type '\(event.type)' was sent but " +
-                        "not registered via ServerEvents { Register(...) } in the Land DSL. " +
-                        "It will not be included in generated schemas."
+                    resolvedLogger.warning(
+                        "ServerEvent type '\(event.type)' was sent but not registered via ServerEvents { Register(...) } in the Land DSL. It will not be included in generated schemas.",
+                        metadata: ["eventType": .string(event.type)]
                     )
                 }
             }

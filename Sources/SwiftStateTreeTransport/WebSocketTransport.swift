@@ -19,7 +19,7 @@ public actor WebSocketTransport: Transport {
             self.logger = logger.withScope("WebSocketTransport")
         } else {
             self.logger = createColoredLogger(
-                label: "com.swiftstatetree.websocket",
+                loggerIdentifier: "com.swiftstatetree.websocket",
                 scope: "WebSocketTransport"
             )
         }
