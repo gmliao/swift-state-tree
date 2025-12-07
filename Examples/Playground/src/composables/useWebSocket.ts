@@ -285,15 +285,15 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
               }
             } else {
               // Other messages (events, actions) go to general logs
-              addLog('📥 收到訊息', 'server', data)
-              
               if (data.event?.event?.fromServer) {
+                // Server event: only log the event content, not the full message structure
                 const eventData = data.event.event.fromServer
                 addLog(`📨 伺服器事件: ${JSON.stringify(eventData)}`, 'server')
               } else if (data.actionResponse) {
                 addLog(`✅ Action 回應: ${JSON.stringify(data.actionResponse.response)}`, 'success')
               } else {
-                addLog('ℹ️ 未知訊息格式', 'warning', data)
+                // For other message types, log the full message
+                addLog('📥 收到訊息', 'server', data)
               }
             }
           } catch (err) {

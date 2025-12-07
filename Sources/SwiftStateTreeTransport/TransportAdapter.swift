@@ -67,8 +67,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         
         // If player had joined, handle leave
         if let playerID = sessionToPlayer[sessionID] {
-            await keeper.leave(playerID: playerID, clientID: clientID)
+            // Remove from sessionToPlayer BEFORE calling keeper.leave()
+            // This ensures syncBroadcastOnly() only sends to remaining players
             sessionToPlayer.removeValue(forKey: sessionID)
+            
+            // Now call keeper.leave() which will trigger syncBroadcastOnly()
+            // syncBroadcastOnly() will only see remaining players in sessionToPlayer
+            await keeper.leave(playerID: playerID, clientID: clientID)
             
             // Clear syncEngine cache for disconnected player
             // This ensures reconnection behaves like first connection
@@ -306,6 +311,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let broadcastSnapshot = try syncEngine.extractBroadcastSnapshot(from: state)
             
             // Sync state for all connected players using shared broadcast snapshot
+            // Note: syncState() doesn't throw, but transport.send() inside it might fail
+            // We handle errors inside syncState() to avoid one failure stopping all updates
             for (sessionID, playerID) in sessionToPlayer {
                 await syncState(
                     for: playerID,
@@ -384,8 +391,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
             
             // Send to all connected players
+            // Handle each send separately to avoid one failure stopping all updates
             for (sessionID, _) in sessionToPlayer {
-                try await transport.send(updateData, to: .session(sessionID))
+                do {
+                    try await transport.send(updateData, to: .session(sessionID))
+                } catch {
+                    // Log error but continue sending to other players
+                    logger.warning("Failed to send broadcast update to session", metadata: [
+                        "sessionID": .string(sessionID.rawValue),
+                        "error": .string("\(error)")
+                    ])
+                }
             }
         } catch {
             logger.error("❌ Failed to sync broadcast-only", metadata: [
