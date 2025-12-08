@@ -1,7 +1,7 @@
 <template>
   <v-card-text style="height: 100%; padding: 4px; display: flex; flex-direction: column; overflow: hidden; min-height: 0; background-color: #ffffff;">
     <v-data-table
-      :items="logs"
+      :items="filteredLogs"
       :headers="headers"
       :items-per-page="-1"
       class="log-table"
@@ -58,7 +58,22 @@ import type { LogEntry } from '@/types'
 
 const props = defineProps<{
   logs: LogEntry[]
+  filterKeyword?: string
 }>()
+
+const filteredLogs = computed(() => {
+  if (!props.filterKeyword) {
+    return props.logs
+  }
+  
+  const keyword = props.filterKeyword.toLowerCase()
+  return props.logs.filter(log => {
+    const messageMatch = log.message.toLowerCase().includes(keyword)
+    const typeMatch = log.type.toLowerCase().includes(keyword)
+    const dataMatch = log.data && JSON.stringify(log.data).toLowerCase().includes(keyword)
+    return messageMatch || typeMatch || dataMatch
+  })
+})
 
 const dataDialog = ref({
   show: false,
@@ -163,6 +178,15 @@ const showDataDialog = (item: LogEntry) => {
   flex: 1;
   min-height: 0;
   overflow: auto !important;
+  display: flex;
+  flex-direction: column;
+}
+
+.log-table :deep(.v-data-table__thead) {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background-color: #f5f5f5 !important;
 }
 
 .log-table :deep(.v-data-table__td) {
@@ -200,4 +224,5 @@ const showDataDialog = (item: LogEntry) => {
   max-height: 500px;
   overflow-y: auto;
 }
+
 </style>

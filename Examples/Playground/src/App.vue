@@ -1,8 +1,8 @@
 <template>
   <v-app>
     <v-app-bar color="blue-darken-2" prominent>
-      <v-app-bar-title>
-        <v-icon icon="mdi-rocket-launch" class="mr-2"></v-icon>
+      <v-app-bar-title style="font-size: 1.5rem;">
+        <span class="mr-2">🌲</span>
         SwiftStateTree Playground
       </v-app-bar-title>
       <v-spacer></v-spacer>
@@ -182,60 +182,115 @@
         <!-- Testing State: Full Playground -->
         <div v-else class="playground-layout">
           <div class="playground-main">
-            <v-row class="panel-row">
-              <!-- Left Panel: State Tree (Wider) -->
-              <v-col cols="12" md="6" class="panel-col">
-                <div class="state-tree-container">
-                  <div class="state-tree-header">
-                    <v-icon icon="mdi-file-tree" class="mr-2"></v-icon>
-                    <span>狀態樹</span>
+            <!-- Mobile/Tablet: Use tabs -->
+            <div class="playground-mobile">
+              <v-tabs v-model="tab" color="primary" class="playground-tabs">
+                <v-tab value="state">
+                  <v-icon icon="mdi-file-tree" size="small" class="mr-1"></v-icon>
+                  狀態樹
+                </v-tab>
+                <v-tab value="actions">
+                  <v-icon icon="mdi-lightning-bolt" size="small" class="mr-1"></v-icon>
+                  Actions
+                </v-tab>
+                <v-tab value="events">
+                  <v-icon icon="mdi-broadcast" size="small" class="mr-1"></v-icon>
+                  Events
+                </v-tab>
+              </v-tabs>
+              
+              <v-window v-model="tab" class="playground-window">
+                <v-window-item value="state" class="playground-window-item">
+                  <div class="state-tree-container-mobile">
+                    <div class="state-tree-content">
+                      <StateTreeViewer
+                        :state="currentState"
+                        :schema="parsedSchema"
+                      />
+                    </div>
                   </div>
-                  <div class="state-tree-content">
-                    <StateTreeViewer
-                      :state="currentState"
+                </v-window-item>
+                
+                <v-window-item value="actions" class="playground-window-item">
+                  <div class="actions-events-container-mobile">
+                    <ActionPanel
                       :schema="parsedSchema"
+                      :connected="isConnected"
+                      :action-results="actionResults"
+                      @send-action="handleSendAction"
                     />
                   </div>
-                </div>
-              </v-col>
-
-              <!-- Middle Panel: Actions & Events -->
-              <v-col cols="12" md="6" class="panel-col">
-                <div class="actions-events-container">
-                  <v-tabs v-model="tab" color="primary" class="actions-events-tabs">
-                    <v-tab value="actions">
-                      <v-icon icon="mdi-lightning-bolt" class="mr-2"></v-icon>
-                      Actions
-                    </v-tab>
-                    <v-tab value="events">
-                      <v-icon icon="mdi-broadcast" class="mr-2"></v-icon>
-                      Events
-                    </v-tab>
-                  </v-tabs>
-
-                  <div class="actions-events-content">
-                    <v-window v-model="tab" class="actions-events-window">
-                      <v-window-item value="actions" class="actions-events-window-item">
-                        <ActionPanel
-                          :schema="parsedSchema"
-                          :connected="isConnected"
-                          :action-results="actionResults"
-                          @send-action="handleSendAction"
-                        />
-                      </v-window-item>
-
-                      <v-window-item value="events" class="actions-events-window-item">
-                        <EventPanel
-                          :schema="parsedSchema"
-                          :connected="isConnected"
-                          @send-event="handleSendEvent"
-                        />
-                      </v-window-item>
-                    </v-window>
+                </v-window-item>
+                
+                <v-window-item value="events" class="playground-window-item">
+                  <div class="actions-events-container-mobile">
+                    <EventPanel
+                      :schema="parsedSchema"
+                      :connected="isConnected"
+                      @send-event="handleSendEvent"
+                    />
                   </div>
-                </div>
-              </v-col>
-            </v-row>
+                </v-window-item>
+              </v-window>
+            </div>
+            
+            <!-- Desktop: Side by side -->
+            <div class="playground-desktop">
+              <v-row class="panel-row">
+                <!-- Left Panel: State Tree -->
+                <v-col cols="12" md="6" class="panel-col">
+                  <div class="state-tree-container">
+                    <div class="state-tree-header">
+                      <v-icon icon="mdi-file-tree" size="small" class="mr-1"></v-icon>
+                      <span>狀態樹</span>
+                    </div>
+                    <div class="state-tree-content">
+                      <StateTreeViewer
+                        :state="currentState"
+                        :schema="parsedSchema"
+                      />
+                    </div>
+                  </div>
+                </v-col>
+
+                <!-- Right Panel: Actions & Events -->
+                <v-col cols="12" md="6" class="panel-col">
+                  <div class="actions-events-container">
+                    <v-tabs v-model="tab" color="primary" class="actions-events-tabs">
+                      <v-tab value="actions">
+                        <v-icon icon="mdi-lightning-bolt" size="small" class="mr-1"></v-icon>
+                        Actions
+                      </v-tab>
+                      <v-tab value="events">
+                        <v-icon icon="mdi-broadcast" size="small" class="mr-1"></v-icon>
+                        Events
+                      </v-tab>
+                    </v-tabs>
+
+                    <div class="actions-events-content">
+                      <v-window v-model="tab" class="actions-events-window">
+                        <v-window-item value="actions" class="actions-events-window-item">
+                          <ActionPanel
+                            :schema="parsedSchema"
+                            :connected="isConnected"
+                            :action-results="actionResults"
+                            @send-action="handleSendAction"
+                          />
+                        </v-window-item>
+
+                        <v-window-item value="events" class="actions-events-window-item">
+                          <EventPanel
+                            :schema="parsedSchema"
+                            :connected="isConnected"
+                            @send-event="handleSendEvent"
+                          />
+                        </v-window-item>
+                      </v-window>
+                    </div>
+                  </div>
+                </v-col>
+              </v-row>
+            </div>
           </div>
           
           <!-- Bottom Panel: Logs & State Updates (Resizable) -->
@@ -247,6 +302,8 @@
               :stateUpdates="stateUpdates"
               @update:logTab="logTab = $event"
               @update:height="logPanelHeight = $event"
+              @clear-logs="handleClearLogs"
+              @clear-state-updates="handleClearStateUpdates"
             />
           </div>
         </div>
@@ -483,6 +540,23 @@ const handleDisconnect = () => {
   disconnect()
 }
 
+const handleClearLogs = () => {
+  // Clear logs by resetting the logs array
+  // Note: We need to access the logs from useWebSocket
+  // Since logs is a ref from useWebSocket, we need to clear it there
+  // For now, we'll emit an event or directly modify if possible
+  if (logs.value) {
+    logs.value.length = 0
+  }
+}
+
+const handleClearStateUpdates = () => {
+  // Clear state updates
+  if (stateUpdates.value) {
+    stateUpdates.value.length = 0
+  }
+}
+
 const autoFillJWTFields = async () => {
   // 自動生成測試資料
   const randomID = () => Math.random().toString(36).substring(2, 10)
@@ -609,11 +683,93 @@ onMounted(() => {
   overflow: hidden;
 }
 
-.panel-row {
+/* Mobile/Tablet: Show tabs, hide side-by-side */
+.playground-mobile {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.playground-desktop {
+  display: none;
+}
+
+.playground-tabs {
+  flex-shrink: 0;
+  border-bottom: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+}
+
+.playground-tabs :deep(.v-tab) {
+  font-size: 0.875rem;
+  min-height: 48px;
+}
+
+.playground-window {
   flex: 1;
   min-height: 0;
-  margin: 0;
+  display: flex;
+  flex-direction: column;
   height: 100%;
+}
+
+.playground-window-item {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  height: 100%;
+}
+
+.state-tree-container-mobile,
+.actions-events-container-mobile {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.state-tree-container-mobile .state-tree-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+}
+
+.actions-events-container-mobile {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.actions-events-container-mobile :deep(.action-panel),
+.actions-events-container-mobile :deep(.event-panel) {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  height: 100%;
+}
+
+/* Desktop: Show side-by-side, hide tabs */
+@media (min-width: 960px) {
+  .playground-mobile {
+    display: none;
+  }
+  
+  .playground-desktop {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+  }
+  
+  .panel-row {
+    flex: 1;
+    min-height: 0;
+    margin: 0;
+    height: 100%;
+  }
 }
 
 .panel-col {
@@ -650,11 +806,12 @@ onMounted(() => {
 .state-tree-header {
   display: flex;
   align-items: center;
-  padding: 16px;
-  font-size: 1.25rem;
+  padding: 8px 16px;
+  font-size: 0.875rem;
   font-weight: 500;
   border-bottom: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
   flex-shrink: 0;
+  min-height: 48px;
 }
 
 .state-tree-content {
@@ -677,6 +834,11 @@ onMounted(() => {
 .actions-events-tabs {
   flex-shrink: 0;
   border-bottom: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+}
+
+.actions-events-tabs :deep(.v-tab) {
+  font-size: 0.875rem;
+  min-height: 48px;
 }
 
 .actions-events-content {

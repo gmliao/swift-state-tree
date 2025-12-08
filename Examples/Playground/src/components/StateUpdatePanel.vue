@@ -307,6 +307,15 @@ const getValueSegments = (value: any): Array<{ key: string; value: string }> => 
   flex: 1;
   min-height: 0;
   overflow: auto !important;
+  display: flex;
+  flex-direction: column;
+}
+
+.state-update-table :deep(.v-data-table__thead) {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background-color: #f5f5f5 !important;
 }
 
 .state-update-table :deep(.v-data-table__td) {
