@@ -1,6 +1,21 @@
 import Foundation
 import SwiftStateTree
 
+// MARK: - Authenticated Info
+
+/// Authenticated information extracted from JWT or other auth mechanisms
+public struct AuthenticatedInfo: Sendable {
+    public let playerID: String
+    public let deviceID: String?
+    public let metadata: [String: String]
+    
+    public init(playerID: String, deviceID: String? = nil, metadata: [String: String] = [:]) {
+        self.playerID = playerID
+        self.deviceID = deviceID
+        self.metadata = metadata
+    }
+}
+
 // MARK: - Transport Protocol
 
 /// Protocol defining the interface for a network transport layer.
@@ -32,7 +47,11 @@ public protocol Transport: Actor {
 /// Delegate protocol for handling events from the Transport layer.
 public protocol TransportDelegate: Sendable {
     /// Called when a client connects.
-    func onConnect(sessionID: SessionID, clientID: ClientID) async
+    /// - Parameters:
+    ///   - sessionID: The session identifier
+    ///   - clientID: The client identifier
+    ///   - authInfo: Optional authenticated information (e.g., from JWT validation)
+    func onConnect(sessionID: SessionID, clientID: ClientID, authInfo: AuthenticatedInfo?) async
     
     /// Called when a client disconnects.
     func onDisconnect(sessionID: SessionID, clientID: ClientID) async

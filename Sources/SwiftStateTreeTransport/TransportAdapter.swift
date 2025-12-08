@@ -16,22 +16,37 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     // Track session to player mapping
     private var sessionToPlayer: [SessionID: PlayerID] = [:]
     private var sessionToClient: [SessionID: ClientID] = [:]
+    // Track JWT payload information for each session
+    private var sessionToAuthInfo: [SessionID: AuthenticatedInfo] = [:]
     
-    // Track connected sessions (may not have joined yet)
-    private var connectedSessions: Set<SessionID> = []
+    // Computed property: sessions that are connected but not yet joined
+    private var connectedSessions: Set<SessionID> {
+        Set(sessionToClient.keys).subtracting(Set(sessionToPlayer.keys))
+    }
     
-    /// Closure to create PlayerSession from sessionID and clientID.
-    /// This allows customizing how playerID, deviceID, and metadata are extracted.
-    /// Default implementation uses sessionID as playerID.
-    public var createPlayerSession: @Sendable (SessionID, ClientID) -> PlayerSession = { sessionID, _ in
-        PlayerSession(playerID: sessionID.rawValue, deviceID: nil, metadata: [:])
+    // Computed property: sessions that have joined
+    private var joinedSessions: Set<SessionID> {
+        Set(sessionToPlayer.keys)
+    }
+    
+    /// Closure to create PlayerSession for guest users (when JWT validation is enabled but no token is provided).
+    /// Only used when JWT validation is enabled, allowGuestMode is true, and no JWT token is provided.
+    /// Default implementation creates guest session with "guest-{randomID}" as playerID.
+    public var createGuestSession: @Sendable (SessionID, ClientID) -> PlayerSession = { sessionID, clientID in
+        // Generate short random ID (6 characters)
+        let randomID = String(UUID().uuidString.prefix(6))
+        return PlayerSession(
+            playerID: "guest-\(randomID)",
+            deviceID: clientID.rawValue,
+            metadata: ["isGuest": "true"]
+        )
     }
     
     public init(
         keeper: LandKeeper<State>,
         transport: WebSocketTransport,
         landID: String,
-        createPlayerSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
+        createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         logger: Logger? = nil
     ) {
         self.keeper = keeper
@@ -46,24 +61,31 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 scope: "TransportAdapter"
             )
         }
-        if let createPlayerSession = createPlayerSession {
-            self.createPlayerSession = createPlayerSession
+        if let createGuestSession = createGuestSession {
+            self.createGuestSession = createGuestSession
         }
     }
     
-    public func onConnect(sessionID: SessionID, clientID: ClientID) async {
+    public func onConnect(sessionID: SessionID, clientID: ClientID, authInfo: AuthenticatedInfo? = nil) async {
         // Only record connection, don't auto-join
         // Client must send join request explicitly
-        connectedSessions.insert(sessionID)
-            sessionToClient[sessionID] = clientID
-            
-        logger.info("Client connected (not joined yet): session=\(sessionID.rawValue), clientID=\(clientID.rawValue)")
+        sessionToClient[sessionID] = clientID
+        
+        // Store JWT payload information if provided (e.g., from JWT validation)
+        // This will be used during join request to populate PlayerSession
+        if let authInfo = authInfo {
+            sessionToAuthInfo[sessionID] = authInfo
+            logger.info("Client connected (authenticated, not joined yet): session=\(sessionID.rawValue), clientID=\(clientID.rawValue), playerID=\(authInfo.playerID), metadata=\(authInfo.metadata.count) fields")
+        } else {
+            logger.info("Client connected (not joined yet): session=\(sessionID.rawValue), clientID=\(clientID.rawValue)")
+        }
     }
     
     public func onDisconnect(sessionID: SessionID, clientID: ClientID) async {
         // Remove from connected sessions
-        connectedSessions.remove(sessionID)
         sessionToClient.removeValue(forKey: sessionID)
+        // Clear JWT payload information
+        sessionToAuthInfo.removeValue(forKey: sessionID)
         
         // If player had joined, handle leave
         if let playerID = sessionToPlayer[sessionID] {
@@ -561,9 +583,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         deviceID: String?,
         metadata: [String: AnyCodable]?
     ) async {
-        // Verify session is connected
-        guard connectedSessions.contains(sessionID),
-              let clientID = sessionToClient[sessionID] else {
+        // Phase 1: Validation (no state modification)
+        guard let clientID = sessionToClient[sessionID] else {
             logger.warning("Join request from unknown session: \(sessionID.rawValue)")
             await sendJoinResponse(requestID: requestID, sessionID: sessionID, success: false, reason: "Session not connected")
             return
@@ -583,13 +604,45 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             return
         }
         
-        // Create PlayerSession
-        let playerSession: PlayerSession
+        // Phase 2: Preparation (no state modification)
+        // Create PlayerSession with priority: join message > JWT payload > guest session
+        let jwtAuthInfo = sessionToAuthInfo[sessionID]
+        
+        // Determine playerID: join message > JWT payload > guest session
+        let finalPlayerID: String
         if let requestedPlayerID = requestedPlayerID {
-            // Use requested playerID if provided
-            // Convert AnyCodable metadata to [String: String]
-            // Note: PlayerSession.metadata is [String: String], so we convert values to String
-            let metadataDict: [String: String] = metadata?.reduce(into: [:]) { result, pair in
+            finalPlayerID = requestedPlayerID
+        } else if let jwtPlayerID = jwtAuthInfo?.playerID {
+            finalPlayerID = jwtPlayerID  // Use JWT payload
+        } else {
+            // No JWT payload available, use guest session
+            let guestSession = createGuestSession(sessionID, clientID)
+            finalPlayerID = guestSession.playerID
+        }
+        
+        // Determine deviceID: join message > JWT payload > guest session
+        let finalDeviceID: String?
+        if let joinDeviceID = deviceID {
+            finalDeviceID = joinDeviceID
+        } else if let jwtDeviceID = jwtAuthInfo?.deviceID {
+            finalDeviceID = jwtDeviceID  // Use JWT payload
+        } else {
+            let guestSession = createGuestSession(sessionID, clientID)
+            finalDeviceID = guestSession.deviceID
+        }
+        
+        // Merge metadata: join message metadata > JWT payload metadata > guest session metadata
+        // Join message metadata takes precedence, then JWT payload, then guest session
+        var finalMetadata: [String: String] = [:]
+        
+        // Start with JWT payload metadata (if available)
+        if let jwtMetadata = jwtAuthInfo?.metadata {
+            finalMetadata.merge(jwtMetadata) { (_, new) in new }
+        }
+        
+        // Override with join message metadata (if provided)
+        if let joinMetadata = metadata {
+            let joinMetadataDict: [String: String] = joinMetadata.reduce(into: [:]) { result, pair in
                 // Extract underlying value from AnyCodable and convert to String
                 let value = pair.value.base
                 if let stringValue = value as? String {
@@ -598,20 +651,48 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     // Convert to string representation
                     result[pair.key] = "\(value)"
                 }
-            } ?? [:]
-            
-            playerSession = PlayerSession(
-                playerID: requestedPlayerID,
-                deviceID: deviceID,
-                metadata: metadataDict
-            )
-        } else {
-            // Use createPlayerSession closure (default uses sessionID)
-            playerSession = createPlayerSession(sessionID, clientID)
+            }
+            finalMetadata.merge(joinMetadataDict) { (_, new) in new }
         }
         
-        // Attempt to join
+        // If no metadata from JWT or join message, use guest session metadata
+        if finalMetadata.isEmpty {
+            let guestSession = createGuestSession(sessionID, clientID)
+            finalMetadata = guestSession.metadata
+        }
+        
+        // Create final PlayerSession
+        let playerSession = PlayerSession(
+            playerID: finalPlayerID,
+            deviceID: finalDeviceID,
+            metadata: finalMetadata
+        )
+        
+        // Log metadata sources for debugging
+        if let jwtAuthInfo = jwtAuthInfo {
+            logger.debug("Using JWT payload for join", metadata: [
+                "sessionID": .string(sessionID.rawValue),
+                "jwtPlayerID": .string(jwtAuthInfo.playerID),
+                "jwtMetadataCount": .string("\(jwtAuthInfo.metadata.count)"),
+                "finalPlayerID": .string(finalPlayerID),
+                "finalMetadataCount": .string("\(finalMetadata.count)")
+            ])
+        }
+        
+        // Phase 3: Atomic join operation (with rollback on failure)
+        var joinSucceeded = false
+        var playerID: PlayerID?
+        
+        defer {
+            // Rollback sessionToPlayer if join failed
+            if !joinSucceeded, let pid = playerID {
+                sessionToPlayer.removeValue(forKey: sessionID)
+                logger.warning("Rolled back join state for session \(sessionID.rawValue), player \(pid.rawValue)")
+            }
+        }
+        
         do {
+            // Attempt to join (updates keeper.players)
             let decision = try await keeper.join(
                 session: playerSession,
                 clientID: clientID,
@@ -619,20 +700,22 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             )
             
             switch decision {
-            case .allow(let playerID):
-                // Join successful
-                sessionToPlayer[sessionID] = playerID
+            case .allow(let pid):
+                playerID = pid
                 
-                // Send initial snapshot using lateJoinSnapshot for complete state
-                await syncStateForNewPlayer(for: playerID, sessionID: sessionID)
+                // Update TransportAdapter state (synchronization point)
+                sessionToPlayer[sessionID] = pid
                 
-                // Mark firstSync as received to prevent duplicate firstSync after initial snapshot
-                syncEngine.markFirstSyncReceived(for: playerID)
+                // Send initial snapshot
+                // Note: syncStateForNewPlayer handles errors internally and logs them
+                // If it fails, we still mark join as succeeded since the player is already in keeper.players
+                // The client will receive the join response but may need to retry or handle missing initial state
+                await syncStateForNewPlayer(for: pid, sessionID: sessionID)
+                syncEngine.markFirstSyncReceived(for: pid)
+                joinSucceeded = true
+                await sendJoinResponse(requestID: requestID, sessionID: sessionID, success: true, playerID: pid.rawValue)
                 
-                // Send join response
-                await sendJoinResponse(requestID: requestID, sessionID: sessionID, success: true, playerID: playerID.rawValue)
-                
-                logger.info("Client joined: session=\(sessionID.rawValue), player=\(playerID.rawValue), playerID=\(playerSession.playerID)")
+                logger.info("Client joined: session=\(sessionID.rawValue), player=\(pid.rawValue), playerID=\(playerSession.playerID)")
                 
             case .deny(let reason):
                 // Join denied
@@ -644,6 +727,28 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             logger.error("Join failed for session \(sessionID.rawValue): \(error)")
             await sendJoinResponse(requestID: requestID, sessionID: sessionID, success: false, reason: "\(error)")
         }
+    }
+    
+    // MARK: - State Query Methods
+    
+    /// Check if a session is connected (but may not have joined)
+    public func isConnected(sessionID: SessionID) -> Bool {
+        sessionToClient[sessionID] != nil
+    }
+    
+    /// Check if a session has joined
+    public func isJoined(sessionID: SessionID) -> Bool {
+        sessionToPlayer[sessionID] != nil
+    }
+    
+    /// Get the playerID for a session (if joined)
+    public func getPlayerID(for sessionID: SessionID) -> PlayerID? {
+        sessionToPlayer[sessionID]
+    }
+    
+    /// Get all sessions for a playerID
+    public func getSessions(for playerID: PlayerID) -> [SessionID] {
+        sessionToPlayer.filter { $0.value == playerID }.map { $0.key }
     }
     
     /// Send join response to client

@@ -49,6 +49,12 @@ func testConnectDoesNotAutoJoin() async throws {
     // Act: Connect (should NOT join)
     await adapter.onConnect(sessionID: sessionID, clientID: clientID)
     
+    // Assert: Should be connected but not joined
+    let connected = await adapter.isConnected(sessionID: sessionID)
+    let joined = await adapter.isJoined(sessionID: sessionID)
+    #expect(connected, "Session should be connected")
+    #expect(!joined, "Session should not be joined")
+    
     // Assert: Player should NOT be in state (not joined yet)
     let state = await keeper.currentState()
     let playerID = PlayerID(sessionID.rawValue)
@@ -98,6 +104,12 @@ func testJoinRequestAfterConnect() async throws {
     // Wait a bit for join to complete
     try await Task.sleep(for: .milliseconds(50))
     
+    // Assert: Should be joined
+    let joined = await adapter.isJoined(sessionID: sessionID)
+    let playerIDFromAdapter = await adapter.getPlayerID(for: sessionID)
+    #expect(joined, "Session should be joined")
+    #expect(playerIDFromAdapter != nil, "PlayerID should be set")
+    
     // Assert: Player should be in state (joined)
     let state = await keeper.currentState()
     let playerID = PlayerID(sessionID.rawValue)
@@ -128,6 +140,12 @@ func testMessagesFromNonJoinedSessionRejected() async throws {
     
     // Act: Connect (but don't join)
     await adapter.onConnect(sessionID: sessionID, clientID: clientID)
+    
+    // Assert: Should be connected but not joined
+    let connected = await adapter.isConnected(sessionID: sessionID)
+    let joined = await adapter.isJoined(sessionID: sessionID)
+    #expect(connected, "Session should be connected")
+    #expect(!joined, "Session should not be joined")
     
     // Act: Try to send event (should be rejected)
     let incrementEvent = AnyClientEvent(TestIncrementEvent())
@@ -179,6 +197,10 @@ func testJoinRequestMismatchedLandID() async throws {
     
     // Wait a bit
     try await Task.sleep(for: .milliseconds(10))
+    
+    // Assert: Should not be joined
+    let joined = await adapter.isJoined(sessionID: sessionID)
+    #expect(!joined, "Session should not be joined after rejected join")
     
     // Assert: Player should NOT be in state (join was rejected)
     let state = await keeper.currentState()
@@ -242,6 +264,10 @@ func testMessagesBeforeAndAfterJoin() async throws {
     
     // Wait a bit for join to complete
     try await Task.sleep(for: .milliseconds(50))
+    
+    // Assert: Should be joined
+    let joined = await adapter.isJoined(sessionID: sessionID)
+    #expect(joined, "Session should be joined")
     
     // Act: Send event after join (should work)
     await adapter.onMessage(data, from: sessionID)

@@ -225,15 +225,26 @@ const normalizeValue = (value: any): any => {
 
 const getValueSegments = (value: any): Array<{ key: string; value: string }> => {
   const normalized = normalizeValue(value)
+
+  // For objects with few props, flatten into label/value rows
   if (normalized && typeof normalized === 'object' && !Array.isArray(normalized)) {
     const keys = Object.keys(normalized)
-    if (keys.length > 0 && keys.length <= 4) {
-      return keys.map(key => ({
-        key,
-        value: String(normalized[key])
-      }))
+    if (keys.length > 0 && keys.length <= 6) {
+      return keys.map(key => {
+        const v = normalized[key]
+        const rendered = typeof v === 'object'
+          ? JSON.stringify(v)
+          : String(v)
+        return { key, value: rendered }
+      })
     }
   }
+
+  // For primitives, still show a single segment
+  if (normalized === null || typeof normalized !== 'object') {
+    return [{ key: 'value', value: String(normalized) }]
+  }
+
   return []
 }
 </script>
@@ -356,6 +367,7 @@ const getValueSegments = (value: any): Array<{ key: string; value: string }> => 
 .segment-value {
   color: #0f172a;
   font-weight: 500;
+  word-break: break-all;
 }
 
 .update-value pre {

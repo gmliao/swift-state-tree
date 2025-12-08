@@ -19,6 +19,24 @@ public struct AppContainer<State: StateNodeProtocol> {
         public var logStartupBanner: Bool
         public var logger: Logger?
         
+        // JWT validation configuration
+        /// JWT configuration (if provided, will create DefaultJWTAuthValidator)
+        /// When set, JWT validation will be performed during WebSocket handshake.
+        /// Client must include `token` query parameter in the WebSocket URL: `ws://host:port/path?token=<jwt-token>`
+        public var jwtConfig: JWTConfiguration?
+        /// Custom JWT validator (if provided, takes precedence over jwtConfig)
+        /// When set, JWT validation will be performed during WebSocket handshake.
+        /// Client must include `token` query parameter in the WebSocket URL: `ws://host:port/path?token=<jwt-token>`
+        public var jwtValidator: JWTAuthValidator?
+        
+        /// Enable guest mode (allow connections without JWT token)
+        /// When enabled and JWT validation is enabled:
+        /// - Connections with valid JWT token: use JWT payload for PlayerSession
+        /// - Connections without JWT token: use createGuestSession closure
+        /// When disabled and JWT validation is enabled:
+        /// - All connections must have valid JWT token (connections without token will be rejected)
+        public var allowGuestMode: Bool = false
+        
         public init(
             host: String = "localhost",
             port: UInt16 = 8080,
@@ -26,7 +44,10 @@ public struct AppContainer<State: StateNodeProtocol> {
             healthPath: String = "/health",
             enableHealthRoute: Bool = true,
             logStartupBanner: Bool = true,
-            logger: Logger? = nil
+            logger: Logger? = nil,
+            jwtConfig: JWTConfiguration? = nil,
+            jwtValidator: JWTAuthValidator? = nil,
+            allowGuestMode: Bool = false
         ) {
             self.host = host
             self.port = port
@@ -35,6 +56,9 @@ public struct AppContainer<State: StateNodeProtocol> {
             self.enableHealthRoute = enableHealthRoute
             self.logStartupBanner = logStartupBanner
             self.logger = logger
+            self.jwtConfig = jwtConfig
+            self.jwtValidator = jwtValidator
+            self.allowGuestMode = allowGuestMode
         }
     }
     
@@ -123,30 +147,39 @@ public struct AppContainer<State: StateNodeProtocol> {
     ///   - configuration: Server configuration (host, port, paths, etc.)
     ///   - land: The Land definition
     ///   - initialState: Initial state for the Land
-    ///   - createPlayerSession: Optional closure to create PlayerSession from sessionID and clientID.
-    ///                          This allows customizing how playerID, deviceID, and metadata are extracted
-    ///                          (e.g., from auth headers, JWT tokens, etc.).
-    ///                          Default uses sessionID as playerID.
+    ///   - createGuestSession: Optional closure to create PlayerSession for guest users (when JWT validation is enabled but no token is provided).
+    ///                          Only used when `allowGuestMode` is true and JWT validation is enabled.
+    ///                          Default creates guest session with "guest-{randomID}" as playerID.
     ///   - configureRouter: Optional router configuration closure
     public static func makeServer(
         configuration: Configuration = Configuration(),
         land definition: Land,
         initialState: State,
-        createPlayerSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
+        createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         configureRouter: ((Router<BasicWebSocketRequestContext>) -> Void)? = nil
     ) async throws -> AppContainer {
         let logger = configuration.logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.hummingbird",
             scope: "AppContainer"
         )
+        // Create JWT validator if configured
+        let jwtValidator: JWTAuthValidator? = {
+            if let customValidator = configuration.jwtValidator {
+                return customValidator
+            } else if let jwtConfig = configuration.jwtConfig {
+                return DefaultJWTAuthValidator(config: jwtConfig, logger: logger)
+            }
+            return nil
+        }()
+        
         let core = await buildCoreComponents(
             land: definition,
             initialState: initialState,
-            createPlayerSession: createPlayerSession,
+            createGuestSession: createGuestSession,
             logger: logger
         )
         
-        let hbAdapter = HummingbirdStateTreeAdapter(transport: core.transport)
+        let hbAdapter = HummingbirdStateTreeAdapter(transport: core.transport, jwtValidator: jwtValidator)
         let router = Router(context: BasicWebSocketRequestContext.self)
         let schemaDataResult: Result<Data, Error> = {
             do {
@@ -223,7 +256,7 @@ public struct AppContainer<State: StateNodeProtocol> {
     public static func makeForTest(
         land definition: Land,
         initialState: State,
-        createPlayerSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
+        createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         logger: Logger? = nil
     ) async -> AppContainerForTest {
         let testLogger = logger ?? createColoredLogger(
@@ -233,7 +266,7 @@ public struct AppContainer<State: StateNodeProtocol> {
         let core = await buildCoreComponents(
             land: definition,
             initialState: initialState,
-            createPlayerSession: createPlayerSession,
+            createGuestSession: createGuestSession,
             logger: testLogger
         )
         
@@ -257,7 +290,7 @@ public struct AppContainer<State: StateNodeProtocol> {
     private static func buildCoreComponents(
         land definition: Land,
         initialState: State,
-        createPlayerSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
+        createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         logger: Logger
     ) async -> CoreComponents {
         let transport = WebSocketTransport(logger: logger)
@@ -275,7 +308,7 @@ public struct AppContainer<State: StateNodeProtocol> {
             keeper: keeper,
             transport: transport,
             landID: definition.id,
-            createPlayerSession: createPlayerSession,
+            createGuestSession: createGuestSession,
             logger: logger
         )
         

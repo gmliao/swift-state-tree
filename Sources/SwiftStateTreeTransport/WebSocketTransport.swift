@@ -73,9 +73,11 @@ public actor WebSocketTransport: Transport {
     
     // MARK: - Connection Management (Called by the concrete server integration)
     
-    public func handleConnection(sessionID: SessionID, connection: WebSocketConnection) async {
+    public func handleConnection(sessionID: SessionID, connection: WebSocketConnection, authInfo: AuthenticatedInfo? = nil) async {
         sessions[sessionID] = connection
-        await delegate?.onConnect(sessionID: sessionID, clientID: ClientID("unknown")) // ClientID negotiation needed
+        // Generate short client ID (6 characters) for better identification
+        let clientIDString = String(UUID().uuidString.prefix(6))
+        await delegate?.onConnect(sessionID: sessionID, clientID: ClientID(clientIDString), authInfo: authInfo)
     }
     
     public func handleDisconnection(sessionID: SessionID) async {
@@ -89,7 +91,9 @@ public actor WebSocketTransport: Transport {
                 }
             }
         }
-        await delegate?.onDisconnect(sessionID: sessionID, clientID: ClientID("unknown"))
+        // Note: clientID is not stored, so we use a placeholder for disconnect
+        // In practice, the delegate should track clientID if needed
+        await delegate?.onDisconnect(sessionID: sessionID, clientID: ClientID("disconnected"))
     }
     
     public func handleIncomingMessage(sessionID: SessionID, data: Data) async {
