@@ -115,6 +115,7 @@ func testActionModifiesStateAndSyncs() async throws {
             
             HandleAction(IncrementAction.self) { (state: inout ActionEventSyncTestState, action: IncrementAction, ctx: LandContext) in
                 state.count += action.amount
+                await ctx.syncNow()
                 return IncrementResponse(success: true, newCount: state.count)
             }
         }
@@ -159,7 +160,9 @@ func testActionModifiesStateAndSyncs() async throws {
     #expect(actionResponse?.success == true, "Action should succeed")
     #expect(actionResponse?.newCount == 5, "Response should contain new count")
     
-    // Note: Handlers did not request sync; counts may remain zero by design.
+    let syncNowCount = await mockTransport.syncNowCallCount
+    let syncBroadcastCount = await mockTransport.syncBroadcastOnlyCallCount
+    #expect(syncNowCount > 0 || syncBroadcastCount > 0, "Sync should be called after action modifies state")
 }
 
 @Test("Event execution modifies state and syncs changes")
@@ -181,10 +184,12 @@ func testEventModifiesStateAndSyncs() async throws {
             
             HandleEvent(IncrementEvent.self) { (state: inout ActionEventSyncTestState, event: IncrementEvent, ctx: LandContext) in
                 state.count += event.amount
+                await ctx.syncNow()
             }
             
             HandleEvent(SetMessageEvent.self) { (state: inout ActionEventSyncTestState, event: SetMessageEvent, ctx: LandContext) in
                 state.message = event.message
+                await ctx.syncNow()
             }
         }
     }
@@ -218,7 +223,9 @@ func testEventModifiesStateAndSyncs() async throws {
     var state = await keeper.currentState()
     #expect(state.count == 3, "State count should be 3 after event")
     
-    // Note: Handlers did not request sync; counts may remain zero by design.
+    var syncNowCount = await mockTransport.syncNowCallCount
+    var syncBroadcastCount = await mockTransport.syncBroadcastOnlyCallCount
+    #expect(syncNowCount > 0 || syncBroadcastCount > 0, "Sync should be called after event modifies state")
     
     // Clear and test another event
     await mockTransport.reset()
@@ -234,7 +241,9 @@ func testEventModifiesStateAndSyncs() async throws {
     state = await keeper.currentState()
     #expect(state.message == "Hello World", "State message should be updated")
     
-    // Note: Handlers did not request sync; counts may remain zero by design.
+    syncNowCount = await mockTransport.syncNowCallCount
+    syncBroadcastCount = await mockTransport.syncBroadcastOnlyCallCount
+    #expect(syncNowCount > 0 || syncBroadcastCount > 0, "Sync should be called after second event")
 }
 
 @Test("Multiple actions and events sync correctly")
@@ -255,11 +264,13 @@ func testMultipleActionsAndEventsSync() async throws {
             
             HandleAction(IncrementAction.self) { (state: inout ActionEventSyncTestState, action: IncrementAction, ctx: LandContext) in
                 state.count += action.amount
+                await ctx.syncNow()
                 return IncrementResponse(success: true, newCount: state.count)
             }
             
             HandleEvent(IncrementEvent.self) { (state: inout ActionEventSyncTestState, event: IncrementEvent, ctx: LandContext) in
                 state.count += event.amount
+                await ctx.syncNow()
             }
         }
     }
@@ -301,5 +312,146 @@ func testMultipleActionsAndEventsSync() async throws {
     let state = await keeper.currentState()
     #expect(state.count == 6, "State count should be 6 (2 + 3 + 1)")
     
-    // Note: Handlers did not request sync; counts may remain zero by design.
+    let syncNowCount = await mockTransport.syncNowCallCount
+    let syncBroadcastCount = await mockTransport.syncBroadcastOnlyCallCount
+    let totalSyncCalls = syncNowCount + syncBroadcastCount
+    #expect(totalSyncCalls >= 2, "Sync should be called multiple times (at least 2)")
+}
+
+@Test("handleActionEnvelope correctly decodes action payload with different types")
+func testHandleActionEnvelopeDecodesPayloadTypes() async throws {
+    // Arrange
+    @Payload
+    struct TestActionWithTypes: ActionPayload {
+        typealias Response = TestActionResponse
+        
+        let intValue: Int
+        let stringValue: String
+        let boolValue: Bool
+        let doubleValue: Double
+    }
+    
+    @Payload
+    struct TestActionResponse: ResponsePayload {
+        let success: Bool
+    }
+    
+    let definition = Land(
+        "test-action-decode",
+        using: ActionEventSyncTestState.self
+    ) {
+        Rules {
+            HandleAction(TestActionWithTypes.self) { (state: inout ActionEventSyncTestState, action: TestActionWithTypes, ctx: LandContext) in
+                state.count = action.intValue
+                state.message = action.stringValue
+                return TestActionResponse(success: action.boolValue)
+            }
+        }
+    }
+    
+    let keeper = LandKeeper<ActionEventSyncTestState>(
+        definition: definition,
+        initialState: ActionEventSyncTestState()
+    )
+    
+    let playerID = PlayerID("test-player")
+    let clientID = ClientID("test-client")
+    let sessionID = SessionID("test-session")
+    
+    await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    
+    // Act: Create action envelope with properly typed JSON payload
+    let action = TestActionWithTypes(
+        intValue: 42,
+        stringValue: "test",
+        boolValue: true,
+        doubleValue: 3.14
+    )
+    
+    let encoder = JSONEncoder()
+    let payloadData = try encoder.encode(action)
+    
+    let envelope = ActionEnvelope(
+        typeIdentifier: "TestActionWithTypes",
+        payload: payloadData
+    )
+    
+    // Act: Decode and handle action
+    let response = try await keeper.handleActionEnvelope(
+        envelope,
+        playerID: playerID,
+        clientID: clientID,
+        sessionID: sessionID
+    )
+    
+    // Assert: Verify state was modified
+    let state = await keeper.currentState()
+    #expect(state.count == 42, "Int value should be decoded correctly")
+    #expect(state.message == "test", "String value should be decoded correctly")
+    
+    // Assert: Verify response
+    let actionResponse = response.base as? TestActionResponse
+    #expect(actionResponse?.success == true, "Bool value should be decoded correctly")
+}
+
+@Test("handleActionEnvelope throws error when payload type mismatches")
+func testHandleActionEnvelopeTypeMismatch() async throws {
+    // Arrange
+    @Payload
+    struct IntAction: ActionPayload {
+        typealias Response = TestActionResponse
+        
+        let value: Int
+    }
+    
+    @Payload
+    struct TestActionResponse: ResponsePayload {
+        let success: Bool
+    }
+    
+    let definition = Land(
+        "test-type-mismatch",
+        using: ActionEventSyncTestState.self
+    ) {
+        Rules {
+            HandleAction(IntAction.self) { (state: inout ActionEventSyncTestState, action: IntAction, ctx: LandContext) in
+                return TestActionResponse(success: true)
+            }
+        }
+    }
+    
+    let keeper = LandKeeper<ActionEventSyncTestState>(
+        definition: definition,
+        initialState: ActionEventSyncTestState()
+    )
+    
+    let playerID = PlayerID("test-player")
+    let clientID = ClientID("test-client")
+    let sessionID = SessionID("test-session")
+    
+    await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    
+    // Act: Create action envelope with wrong type (string instead of int)
+    let wrongPayload = ["value": "not-an-int"]  // Should be Int, not String
+    let encoder = JSONEncoder()
+    let payloadData = try encoder.encode(wrongPayload)
+    
+    let envelope = ActionEnvelope(
+        typeIdentifier: "IntAction",
+        payload: payloadData
+    )
+    
+    // Assert: Should throw decoding error
+    do {
+        _ = try await keeper.handleActionEnvelope(
+            envelope,
+            playerID: playerID,
+            clientID: clientID,
+            sessionID: sessionID
+        )
+        Issue.record("Should have thrown decoding error for type mismatch")
+    } catch {
+        // Expected: DecodingError for type mismatch
+        #expect(error is DecodingError, "Should throw DecodingError for type mismatch")
+    }
 }

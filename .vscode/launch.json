@@ -19,26 +19,24 @@
             "program": "${workspaceFolder:swift-state-tree-internal}/Examples/HummingbirdDemo/.build/release/HummingbirdDemo"
         },
         {
-            "type": "lldb",
+            "type": "swift",
             "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:swift-state-tree-internal}",
             "name": "Debug SwiftStateTreeBenchmarks",
             "preLaunchTask": "swift: Build Debug SwiftStateTreeBenchmarks",
             "target": "SwiftStateTreeBenchmarks",
-            "configuration": "debug",
-            "program": "${workspaceFolder:swift-state-tree-internal}/.build/debug/SwiftStateTreeBenchmarks"
+            "configuration": "debug"
         },
         {
-            "type": "lldb",
+            "type": "swift",
             "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:swift-state-tree-internal}",
             "name": "Release SwiftStateTreeBenchmarks",
             "preLaunchTask": "swift: Build Release SwiftStateTreeBenchmarks",
             "target": "SwiftStateTreeBenchmarks",
-            "configuration": "release",
-            "program": "${workspaceFolder:swift-state-tree-internal}/.build/release/SwiftStateTreeBenchmarks"
+            "configuration": "release"
         }
     ]
 }

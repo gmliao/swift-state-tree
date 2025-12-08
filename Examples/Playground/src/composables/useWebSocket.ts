@@ -16,6 +16,7 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
   const ws = ref<WebSocket | null>(null)
   const isConnected = ref(false)
   const isJoined = ref(false)
+  const connectionError = ref<string | null>(null)
   const currentState = ref<Record<string, any>>({})
   const logs = ref<LogEntry[]>([])
   
@@ -145,6 +146,9 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
       return
     }
 
+    // Clear previous error
+    connectionError.value = null
+
     try {
       const urlToUse = customUrl ?? wsUrl.value
       addLog(`正在連線到 ${urlToUse}...`, 'info')
@@ -155,6 +159,7 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
       ws.value.onopen = () => {
         isConnected.value = true
         isJoined.value = false
+        connectionError.value = null
         addLog('✅ WebSocket 連線成功', 'success')
         
         // Automatically send join request after connection
@@ -181,6 +186,8 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
       }
 
       ws.value.onerror = (error) => {
+        const errorMessage = 'WebSocket 連線錯誤：無法連接到伺服器。請檢查 URL 是否正確，以及伺服器是否正在運行。'
+        connectionError.value = errorMessage
         addLog(`❌ WebSocket 錯誤: ${error}`, 'error')
         console.error('WebSocket error:', error)
       }
@@ -190,6 +197,25 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
         isJoined.value = false
         // Clear all data on close
         currentState.value = {}
+        
+        // Set error message if connection was not closed normally
+        if (event.code !== 1000) {
+          let errorMessage = ''
+          if (event.code === 1006) {
+            // Abnormal closure (server not running, network error, etc.)
+            errorMessage = '連線失敗：無法連接到伺服器。請檢查伺服器是否正在運行，以及 WebSocket URL 是否正確。'
+          } else if (event.code === 1008) {
+            // Policy violation (JWT/auth issue)
+            errorMessage = '連線被拒絕：可能是 JWT token 無效或缺失。請檢查 JWT 設定。'
+          } else {
+            errorMessage = `連線關閉 (代碼: ${event.code}${event.reason ? `, 原因: ${event.reason}` : ''})`
+          }
+          connectionError.value = errorMessage
+        } else {
+          // Normal closure
+          connectionError.value = null
+        }
+        
         const closeMessage = event.code !== 1000 
           ? `🔌 連線關閉 (代碼: ${event.code}, 原因: ${event.reason || '無'})`
           : '🔌 WebSocket 連線已關閉'
@@ -385,7 +411,9 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
         }
       }
     } catch (err) {
-      addLog(`❌ 連線失敗: ${err}`, 'error')
+      const errorMessage = `連線失敗: ${err instanceof Error ? err.message : String(err)}`
+      connectionError.value = errorMessage
+      addLog(`❌ ${errorMessage}`, 'error')
     }
   }
 
@@ -514,6 +542,7 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
   return {
     isConnected,
     isJoined,
+    connectionError,
     currentState,
     logs,
     stateUpdates,

@@ -168,9 +168,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     ])
                 }
                 
-                // TODO: Decode action based on typeIdentifier and call keeper
-                _ = requestID
-                _ = landID
+                // Handle action request
+                await handleActionRequest(
+                    requestID: requestID,
+                    landID: landID,
+                    envelope: envelope,
+                    playerID: playerID,
+                    clientID: clientID,
+                    sessionID: sessionID
+                )
                 
                 case .actionResponse(let requestID, let response):
                     logger.info("📥 Received action response", metadata: [
@@ -569,6 +575,80 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "sessionID": .string(sessionID.rawValue),
                 "error": .string("\(error)")
             ])
+        }
+    }
+    
+    /// Handle action request from client
+    private func handleActionRequest(
+        requestID: String,
+        landID: String,
+        envelope: ActionEnvelope,
+        playerID: PlayerID,
+        clientID: ClientID,
+        sessionID: SessionID
+    ) async {
+        do {
+            let typeIdentifier = envelope.typeIdentifier
+            
+            let response = try await keeper.handleActionEnvelope(
+                envelope,
+                playerID: playerID,
+                clientID: clientID,
+                sessionID: sessionID
+            )
+            
+            // Send action response
+            let actionResponse = TransportMessage.actionResponse(
+                requestID: requestID,
+                response: response
+            )
+            let responseData = try encoder.encode(actionResponse)
+            let responseSize = responseData.count
+            
+            logger.info("📤 Sending action response", metadata: [
+                "requestID": .string(requestID),
+                "actionType": .string(typeIdentifier),
+                "playerID": .string(playerID.rawValue),
+                "sessionID": .string(sessionID.rawValue),
+                "bytes": .string("\(responseSize)")
+            ])
+            
+            // Log response payload
+            if let responseString = String(data: responseData, encoding: .utf8) {
+                let preview = responseString.count > 500 
+                    ? String(responseString.prefix(500)) + "..." 
+                    : responseString
+                logger.trace("📤 Action response payload", metadata: [
+                    "requestID": .string(requestID),
+                    "actionType": .string(typeIdentifier),
+                    "response": .string(preview)
+                ])
+            }
+            
+            try await transport.send(responseData, to: .session(sessionID))
+            
+        } catch {
+            logger.error("❌ Failed to handle action", metadata: [
+                "requestID": .string(requestID),
+                "actionType": .string(envelope.typeIdentifier),
+                "playerID": .string(playerID.rawValue),
+                "error": .string("\(error)")
+            ])
+            
+            // Send error response
+            do {
+                let errorResponse = TransportMessage.actionResponse(
+                    requestID: requestID,
+                    response: AnyCodable(["error": "\(error)"])
+                )
+                let errorData = try encoder.encode(errorResponse)
+                try await transport.send(errorData, to: .session(sessionID))
+            } catch {
+                logger.error("❌ Failed to send error response", metadata: [
+                    "requestID": .string(requestID),
+                    "error": .string("\(error)")
+                ])
+            }
         }
     }
     

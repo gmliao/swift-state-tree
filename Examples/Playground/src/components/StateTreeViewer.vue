@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="state-tree-viewer">
     <v-alert
       v-if="!state || Object.keys(state).length === 0"
       type="info"
@@ -312,4 +312,10 @@ const getNodeKindColor = (nodeKind: string): string => {
 </script>
 
 <style scoped>
+.state-tree-viewer {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 </style>

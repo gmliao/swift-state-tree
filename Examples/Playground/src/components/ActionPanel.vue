@@ -1,5 +1,5 @@
 <template>
-  <v-card-text>
+  <v-card-text class="action-panel">
     <v-alert
       v-if="!schema"
       type="info"
@@ -103,13 +103,7 @@
             </div>
             <div v-if="lastActionResult.response" class="mt-2">
               <strong>回應:</strong>
-              <div class="response-display">
-                <ResponseDisplay 
-                  :value="lastActionResult.response" 
-                  :schema="responseSchema"
-                  :defs="schema?.defs"
-                />
-              </div>
+              <pre class="response-json">{{ JSON.stringify(lastActionResult.response, null, 2) }}</pre>
             </div>
             <div v-if="lastActionResult.error" class="mt-2 text-error">
               <strong>錯誤:</strong> {{ lastActionResult.error }}
@@ -122,9 +116,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
-import type { Schema, SchemaDef } from '@/types'
-import ResponseDisplay from './ResponseDisplay.vue'
+import { ref, computed, watch } from 'vue'
+import type { Schema } from '@/types'
 
 interface ActionField {
   name: string
@@ -158,51 +151,6 @@ const lastActionResult = ref<{
   response?: any
   error?: string
 } | null>(null)
-
-// Get Response schema for the selected action
-const responseSchema = computed(() => {
-  if (!props.schema || !selectedAction.value) return null
-  
-  // Find the action schema
-  const actionSchema = selectedActionSchema.value
-  if (!actionSchema) return null
-  
-  // Try to find Response type from action name
-  // Response types are typically named like "AddGoldResponse" for "addgold" action
-  // Convert "addgold" -> "AddGold" -> "AddGoldResponse"
-  const actionName = selectedAction.value
-  const camelCaseName = actionName
-    .split(/(?=[A-Z])|[-_]/)
-    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-    .join('')
-  const responseTypeName = camelCaseName + 'Response'
-  
-  // Check if Response type exists in defs
-  const responseDef = props.schema.defs[responseTypeName]
-  if (responseDef) return responseDef
-  
-  // Fallback: try to find any Response type that matches
-  // Match patterns like "addgold" -> "AddGoldResponse", "updateScore" -> "UpdateScoreResponse"
-  const actionWords = actionName.toLowerCase().split(/(?=[A-Z])|[-_]/).filter(w => w)
-  const responseTypes = Object.keys(props.schema.defs).filter(name => {
-    if (!name.endsWith('Response')) return false
-    const responseWords = name.toLowerCase().replace('response', '').split(/(?=[A-Z])/)
-    // Check if all action words appear in response name
-    return actionWords.every(word => 
-      responseWords.some(rw => rw.includes(word) || word.includes(rw))
-    )
-  })
-  
-  if (responseTypes.length > 0) {
-    // Prefer exact match or closest match
-    const exactMatch = responseTypes.find(name => 
-      name.toLowerCase() === responseTypeName.toLowerCase()
-    )
-    return props.schema.defs[exactMatch || responseTypes[0]]
-  }
-  
-  return null
-})
 
 // Watch for action results
 watch(() => props.actionResults, (results) => {
@@ -306,6 +254,30 @@ watch(
   }
 )
 
+// Convert form values to correct types based on schema
+const convertPayloadValue = (value: any, fieldType: string): any => {
+  if (value === '' || value === null || value === undefined) {
+    return value
+  }
+  
+  switch (fieldType) {
+    case 'integer':
+      const intValue = parseInt(String(value), 10)
+      return isNaN(intValue) ? value : intValue
+    case 'number':
+      const numValue = parseFloat(String(value))
+      return isNaN(numValue) ? value : numValue
+    case 'boolean':
+      if (typeof value === 'string') {
+        return value.toLowerCase() === 'true' || value === '1'
+      }
+      return Boolean(value)
+    case 'string':
+    default:
+      return String(value)
+  }
+}
+
 const handleSend = () => {
   const landID = activeLand.value
   if (!landID || !selectedAction.value) return
@@ -314,9 +286,18 @@ const handleSend = () => {
     let payload: any
 
     if (actionFields.value.length > 0) {
-      payload = { ...payloadModel.value }
+      // Convert form values to correct types based on schema
+      payload = {}
+      for (const field of actionFields.value) {
+        const rawValue = payloadModel.value[field.name]
+        // Only include non-empty values
+        if (rawValue !== '' && rawValue !== null && rawValue !== undefined) {
+          payload[field.name] = convertPayloadValue(rawValue, field.type)
+        }
+      }
     } else {
-      payload = actionPayload.value ? JSON.parse(actionPayload.value) : {}
+      // No fields in schema, send empty object (no need to input JSON)
+      payload = {}
     }
 
     emit('send-action', selectedAction.value, payload, landID)
@@ -337,13 +318,27 @@ const handleSend = () => {
 </script>
 
 <style scoped>
-.response-display {
-  background: rgba(0, 0, 0, 0.02);
-  padding: 12px;
-  border-radius: 4px;
+.action-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: 16px;
+}
+
+.response-json {
   margin-top: 8px;
-  max-height: 400px;
+  padding: 12px;
+  background-color: #f5f5f5;
+  border-radius: 4px;
+  border: 1px solid #e0e0e0;
+  font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 300px;
   overflow-y: auto;
-  border: 1px solid rgba(0, 0, 0, 0.1);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  color: #212121;
 }
 </style>

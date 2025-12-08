@@ -266,6 +266,88 @@ public actor LandKeeper<State: StateNodeProtocol> {
             try await handler.invoke(&state, action: action, ctx: ctx)
         }
     }
+    
+    /// Handles an action envelope by decoding and dispatching to the registered handler.
+    ///
+    /// This is used by transport adapters that receive type-erased `ActionEnvelope` payloads.
+    public func handleActionEnvelope(
+        _ envelope: ActionEnvelope,
+        playerID: PlayerID,
+        clientID: ClientID,
+        sessionID: SessionID,
+        decoder: JSONDecoder = JSONDecoder()
+    ) async throws -> AnyCodable {
+        let typeIdentifier = envelope.typeIdentifier
+        
+        guard let handler = definition.actionHandlers.first(where: { handler in
+            let actionType = handler.getActionType()
+            let actionTypeName = String(describing: actionType)
+            
+            // Direct type name match (e.g., "AddGoldAction" == "AddGoldAction")
+            if actionTypeName == typeIdentifier {
+                return true
+            }
+            
+            // Match last component (e.g., "Module.AddGoldAction" == "AddGoldAction")
+            if actionTypeName.split(separator: ".").last == typeIdentifier.split(separator: ".").last {
+                return true
+            }
+            
+            // Match schema format (camelCase, without "Action" suffix)
+            // e.g., "AddGoldAction" -> "AddGold" matches "AddGold"
+            let schemaActionID = generateActionIDForMatching(from: actionType)
+            if schemaActionID == typeIdentifier {
+                return true
+            }
+            
+            // Also support case-insensitive matching for backward compatibility
+            if schemaActionID.lowercased() == typeIdentifier.lowercased() {
+                return true
+            }
+            
+            return false
+        }) else {
+            throw LandError.actionNotRegistered
+        }
+        
+        let actionType = handler.getActionType()
+        guard let actionPayloadType = actionType as? any ActionPayload.Type else {
+            throw LandError.actionNotRegistered
+        }
+        
+        let decodedAction = try decoder.decode(actionPayloadType, from: envelope.payload)
+        let ctx = makeContext(playerID: playerID, clientID: clientID, sessionID: sessionID)
+        
+        return try await withMutableState { state in
+            try await handler.invokeErased(&state, action: decodedAction, ctx: ctx)
+        }
+    }
+    
+    /// Generate action ID for matching (same format as schema generation).
+    ///
+    /// Converts type name to camelCase action ID format (without "Action" suffix).
+    /// Example: "AddGoldAction" -> "AddGold"
+    private func generateActionIDForMatching(from actionType: Any.Type) -> String {
+        let typeName = String(describing: actionType)
+        
+        // Remove module prefix if present (e.g., "Module.AddGoldAction" -> "AddGoldAction")
+        let baseTypeName: String
+        if let lastComponent = typeName.split(separator: ".").last {
+            baseTypeName = String(lastComponent)
+        } else {
+            baseTypeName = typeName
+        }
+        
+        // Remove "Action" suffix if present, keep camelCase format
+        // Example: "AddGoldAction" -> "AddGold"
+        var actionID = baseTypeName
+        if actionID.hasSuffix("Action") {
+            actionID = String(actionID.dropLast(6))
+        }
+        
+        // Return camelCase format (e.g., "AddGold")
+        return actionID
+    }
 
     /// Handles a client event from a player.
     ///

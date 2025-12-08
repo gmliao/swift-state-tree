@@ -147,6 +147,15 @@ public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
     ) async throws -> AnyCodable {
         try await handler(&state, action, ctx)
     }
+    
+    /// Invoke using an already type-erased action payload.
+    public func invokeErased(
+        _ state: inout State,
+        action: Any,
+        ctx: LandContext
+    ) async throws -> AnyCodable {
+        try await handler(&state, action, ctx)
+    }
 }
 
 // MARK: - Client Event Handler Type Erasure

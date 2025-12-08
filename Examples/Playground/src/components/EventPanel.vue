@@ -1,5 +1,5 @@
 <template>
-  <v-card-text>
+  <v-card-text class="event-panel">
     <v-alert
       v-if="!schema"
       type="info"
@@ -106,7 +106,6 @@ const emit = defineEmits<{
 
 const selectedLand = ref<string>('')
 const selectedEvent = ref<string>('')
-const eventName = ref('')
 const eventPayload = ref('')
 const payloadModel = ref<Record<string, any>>({})
 
@@ -198,6 +197,30 @@ watch(
   }
 )
 
+// Convert form values to correct types based on schema
+const convertPayloadValue = (value: any, fieldType: string): any => {
+  if (value === '' || value === null || value === undefined) {
+    return value
+  }
+  
+  switch (fieldType) {
+    case 'integer':
+      const intValue = parseInt(String(value), 10)
+      return isNaN(intValue) ? value : intValue
+    case 'number':
+      const numValue = parseFloat(String(value))
+      return isNaN(numValue) ? value : numValue
+    case 'boolean':
+      if (typeof value === 'string') {
+        return value.toLowerCase() === 'true' || value === '1'
+      }
+      return Boolean(value)
+    case 'string':
+    default:
+      return String(value)
+  }
+}
+
 const handleSend = () => {
   const landID = activeLand.value
   const finalEventName = selectedEvent.value
@@ -209,8 +232,15 @@ const handleSend = () => {
     // Schema exists but has no fields (empty object) => send empty object
     payload = {}
   } else if (selectedEvent.value && eventFields.value.length > 0) {
-    // Use generated fields
-    payload = { ...payloadModel.value }
+    // Convert form values to correct types based on schema
+    payload = {}
+    for (const field of eventFields.value) {
+      const rawValue = payloadModel.value[field.name]
+      // Only include non-empty values
+      if (rawValue !== '' && rawValue !== null && rawValue !== undefined) {
+        payload[field.name] = convertPayloadValue(rawValue, field.type)
+      }
+    }
   } else if (eventPayload.value.trim()) {
     try {
       // Try to parse as JSON
@@ -235,3 +265,13 @@ const handleSend = () => {
   }
 }
 </script>
+
+<style scoped>
+.event-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: 16px;
+}
+</style>

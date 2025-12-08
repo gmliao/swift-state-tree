@@ -23,7 +23,7 @@
       </v-btn>
     </v-app-bar>
 
-    <v-main style="overflow: hidden; height: calc(100vh - 64px);">
+    <v-main style="height: calc(100vh - 64px); overflow-y: auto;">
       <v-container fluid style="height: 100%; padding: 8px; display: flex; flex-direction: column;">
         <!-- Connection State: Schema & Connection Setup -->
         <div v-if="!isConnected || !isJoined">
@@ -162,6 +162,17 @@
                     <v-icon icon="mdi-link-off" class="mr-2"></v-icon>
                     斷線
                   </v-btn>
+                  
+                  <v-alert
+                    v-if="connectionError"
+                    type="error"
+                    density="compact"
+                    class="mt-2"
+                    closable
+                    @click:close="() => { connectionError = null }"
+                  >
+                    {{ connectionError }}
+                  </v-alert>
                 </v-card-text>
               </v-card>
             </v-col>
@@ -179,7 +190,7 @@
                     <v-icon icon="mdi-file-tree" class="mr-2"></v-icon>
                     狀態樹
                   </v-card-title>
-                  <v-card-text style="flex: 1; overflow: auto;">
+                  <v-card-text class="scroll-area">
                     <StateTreeViewer
                       :state="currentState"
                       :schema="parsedSchema"
@@ -203,21 +214,25 @@
                   </v-tabs>
 
                   <v-window v-model="tab" style="flex: 1; min-height: 0;">
-                    <v-window-item value="actions" style="height: 100%; overflow: auto;">
-                      <ActionPanel
-                        :schema="parsedSchema"
-                        :connected="isConnected"
-                        :action-results="actionResults"
-                        @send-action="handleSendAction"
-                      />
+                    <v-window-item value="actions" style="height: 100%; min-height: 0; overflow: hidden;">
+                      <div class="scroll-area">
+                        <ActionPanel
+                          :schema="parsedSchema"
+                          :connected="isConnected"
+                          :action-results="actionResults"
+                          @send-action="handleSendAction"
+                        />
+                      </div>
                     </v-window-item>
 
-                    <v-window-item value="events" style="height: 100%; overflow: auto;">
-                      <EventPanel
-                        :schema="parsedSchema"
-                        :connected="isConnected"
-                        @send-event="handleSendEvent"
-                      />
+                    <v-window-item value="events" style="height: 100%; min-height: 0; overflow: hidden;">
+                      <div class="scroll-area">
+                        <EventPanel
+                          :schema="parsedSchema"
+                          :connected="isConnected"
+                          @send-event="handleSendEvent"
+                        />
+                      </div>
                     </v-window-item>
                   </v-window>
                 </v-card>
@@ -407,6 +422,7 @@ const schemaError = computed(() => localSchemaError.value || schemaErrorFromComp
 const { 
   isConnected,
   isJoined,
+  connectionError,
   currentState, 
   logs, 
   stateUpdates,
@@ -566,5 +582,13 @@ onMounted(() => {
 .v-application {
   background: #f5f5f5;
   min-height: 100vh;
+}
+
+.scroll-area {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  height: 100%;
+  max-height: 100%;
 }
 </style>

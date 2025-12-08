@@ -1,13 +1,13 @@
 import Foundation
 import HummingbirdDemoContent
-import SwiftStateTreeHummingbird
 import SwiftStateTree
+import SwiftStateTreeHummingbird
 
 @main
 struct HummingbirdDemo {
     static func main() async throws {
         typealias DemoAppContainer = AppContainer<DemoGameState>
-        
+
         // JWT Configuration for demo/testing purposes
         // ⚠️ WARNING: This is a demo secret key. CHANGE THIS IN PRODUCTION!
         // In production, use environment variables or secure key management:
@@ -18,15 +18,25 @@ struct HummingbirdDemo {
             algorithm: .HS256,
             validateExpiration: true
         )
-        
+
+        // Create logger with custom log level
+        // Available levels: .trace, .debug, .info, .notice, .warning, .error, .critical
+        // Use .trace to see all action response payloads (as mentioned in TransportAdapter comments)
+        let logger = createColoredLogger(
+            loggerIdentifier: "com.swiftstatetree.hummingbird",
+            scope: "AppContainer",
+            logLevel: .debug // Change to .info for less verbose, .debug for moderate detail
+        )
+
         let container = try await DemoAppContainer.makeServer(
             configuration: AppContainer.Configuration(
+                logger: logger, // Pass custom logger with desired log level
                 jwtConfig: jwtConfig,
-                allowGuestMode: true  // Enable guest mode: allow connections without JWT token
+                allowGuestMode: true // Enable guest mode: allow connections without JWT token
             ),
             land: DemoGame.makeLand(),
             initialState: DemoGameState(),
-            createGuestSession: { sessionID, clientID in
+            createGuestSession: { _, clientID in
                 // Create PlayerSession for guest users (when JWT validation is enabled but no token is provided)
                 // This is only used when allowGuestMode is true and the client connects without a JWT token
                 //
@@ -43,7 +53,7 @@ struct HummingbirdDemo {
                     metadata: [
                         "isGuest": "true",
                         "connectedAt": ISO8601DateFormatter().string(from: Date()),
-                        "clientID": clientID.rawValue
+                        "clientID": clientID.rawValue,
                     ]
                 )
             }

@@ -1,6 +1,6 @@
 <template>
   <v-card class="resizable-log-panel">
-    <v-tabs v-model="localLogTab" color="blue-darken-2" density="compact">
+    <v-tabs v-model="localLogTab" color="blue-darken-2" density="compact" class="log-tabs">
       <v-tab value="messages">
         <v-icon icon="mdi-text-box" size="small" class="mr-1"></v-icon>
         Message Log
@@ -130,5 +130,9 @@ const startResize = (e: MouseEvent) => {
   overflow: hidden;
   height: 100%;
 }
-</style>
 
+.log-tabs :deep(.v-tab) {
+  font-size: 12px;
+  min-height: 32px;
+}
+</style>

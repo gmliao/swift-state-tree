@@ -167,26 +167,30 @@ public struct SchemaExtractor {
     /// Generate action ID from action type.
     ///
     /// Converts type name to action ID format.
+    /// Example: "AddGoldAction" -> "AddGold" (removes "Action" suffix, keeps camelCase)
     /// In a full implementation, you'd want to:
     /// 1. Require actions to have a static actionID property
     /// 2. Or use a more sophisticated naming convention
     private static func generateActionID(from actionType: Any.Type) -> String {
         let typeName = String(describing: actionType)
         
-        // Simple conversion: "JoinAction" -> "join"
-        // Remove "Action" suffix if present
-        var actionID = typeName
+        // Remove module prefix if present (e.g., "Module.AddGoldAction" -> "AddGoldAction")
+        let baseTypeName: String
+        if let lastComponent = typeName.split(separator: ".").last {
+            baseTypeName = String(lastComponent)
+        } else {
+            baseTypeName = typeName
+        }
+        
+        // Remove "Action" suffix if present, keep camelCase format
+        // Example: "AddGoldAction" -> "AddGold"
+        var actionID = baseTypeName
         if actionID.hasSuffix("Action") {
             actionID = String(actionID.dropLast(6))
         }
         
-        // Convert to lowercase with dots (e.g., "MatchJoin" -> "match.join")
-        // This is a simplified approach - in production, you'd want a more structured mapping
-        let camelCase = actionID.prefix(1).lowercased() + actionID.dropFirst()
-        
-        // For now, just return the lowercase version
-        // In a full implementation, you'd parse camelCase and insert dots
-        return camelCase.lowercased()
+        // Return camelCase format (e.g., "AddGold")
+        return actionID
     }
     
     /// Generate event ID from server event type.
@@ -195,13 +199,23 @@ public struct SchemaExtractor {
     private static func generateEventID(from eventType: Any.Type) -> String {
         let typeName = String(describing: eventType)
         
-        var eventID = typeName
+        // Extract base type name (handle module prefixes)
+        var baseTypeName: String
+        if let lastComponent = typeName.split(separator: ".").last {
+            baseTypeName = String(lastComponent)
+        } else {
+            baseTypeName = typeName
+        }
+        
+        // Remove "Event" suffix if present, keep camelCase format
+        // Example: "ChatEvent" -> "Chat", "PingEvent" -> "Ping"
+        var eventID = baseTypeName
         if eventID.hasSuffix("Event") {
             eventID = String(eventID.dropLast(5))
         }
         
-        let camelCase = eventID.prefix(1).lowercased() + eventID.dropFirst()
-        return camelCase.lowercased()
+        // Return camelCase format (e.g., "Chat", "Ping", "ChatMessage")
+        return eventID
     }
     
     /// Create a diff schema placeholder.

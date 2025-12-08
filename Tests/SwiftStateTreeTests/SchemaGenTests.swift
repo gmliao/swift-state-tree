@@ -663,9 +663,9 @@ struct DemoJoinAction: ActionPayload {
 
     @Payload
     struct DemoJoinResult: ResponsePayload {
-        let playerID: String
-        let message: String
-    }
+    let playerID: String
+    let message: String
+}
 
 /// Test state matching the demo (DemoGameState)
 @StateNodeBuilder
