@@ -97,7 +97,7 @@ const treeItems = computed((): TreeItem[] => {
 
   // Get the root state schema from the first land definition
   const rootStateSchema = getRootStateSchema()
-  
+
   return Object.entries(props.state).map(([key, value]) => {
     const fieldSchema = rootStateSchema?.properties?.[key]
     return buildTreeItem(key, value, 0, '', fieldSchema)

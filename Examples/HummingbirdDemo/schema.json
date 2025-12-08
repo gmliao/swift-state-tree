@@ -14,6 +14,28 @@
         "nodeKind" : "leaf"
       }
     },
+    "AddGoldResponse" : {
+      "properties" : {
+        "newGold" : {
+          "type" : "integer"
+        },
+        "newLevel" : {
+          "type" : "integer"
+        },
+        "success" : {
+          "type" : "boolean"
+        }
+      },
+      "required" : [
+        "success",
+        "newGold",
+        "newLevel"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
     "ChatEvent" : {
       "properties" : {
         "message" : {
@@ -59,7 +81,7 @@
         "playerItems" : {
           "additionalProperties" : {
             "items" : {
-              "type" : "object"
+              "type" : "string"
             },
             "type" : "array",
             "x-stateTree" : {
@@ -211,7 +233,7 @@
             }
           },
           "items" : {
-            "type" : "object"
+            "type" : "string"
           },
           "type" : "array",
           "x-stateTree" : {
@@ -261,6 +283,42 @@
         "nodeKind" : "object"
       }
     },
+    "PlayerPrivateStateResponse" : {
+      "properties" : {
+        "experience" : {
+          "type" : "integer"
+        },
+        "gold" : {
+          "type" : "integer"
+        },
+        "inventory" : {
+          "items" : {
+            "type" : "string"
+          },
+          "type" : "array",
+          "x-stateTree" : {
+            "nodeKind" : "array"
+          }
+        },
+        "level" : {
+          "type" : "integer"
+        },
+        "settings" : {
+          "$ref" : "#\/defs\/PlayerSettingsResponse"
+        }
+      },
+      "required" : [
+        "inventory",
+        "gold",
+        "experience",
+        "level",
+        "settings"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
     "PlayerSettings" : {
       "properties" : {
         "soundEnabled" : {
@@ -290,6 +348,24 @@
         "sync" : {
           "policy" : "broadcast"
         }
+      }
+    },
+    "PlayerSettingsResponse" : {
+      "properties" : {
+        "soundEnabled" : {
+          "type" : "boolean"
+        },
+        "theme" : {
+          "type" : "string"
+        }
+      },
+      "required" : [
+        "theme",
+        "soundEnabled"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
       }
     },
     "PongEvent" : {
@@ -350,6 +426,28 @@
         "nodeKind" : "leaf"
       }
     },
+    "UpdateScoreResponse" : {
+      "properties" : {
+        "newLevel" : {
+          "type" : "integer"
+        },
+        "newScore" : {
+          "type" : "integer"
+        },
+        "success" : {
+          "type" : "boolean"
+        }
+      },
+      "required" : [
+        "success",
+        "newScore",
+        "newLevel"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
     "UpdateSettingsAction" : {
       "properties" : {
         "soundEnabled" : {
@@ -370,6 +468,24 @@
         "soundEnabled",
         "updateTheme",
         "updateSoundEnabled"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
+    "UpdateSettingsResponse" : {
+      "properties" : {
+        "settings" : {
+          "$ref" : "#\/defs\/PlayerSettingsResponse"
+        },
+        "success" : {
+          "type" : "boolean"
+        }
+      },
+      "required" : [
+        "success",
+        "settings"
       ],
       "type" : "object",
       "x-stateTree" : {

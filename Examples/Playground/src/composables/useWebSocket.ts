@@ -21,7 +21,7 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
   
   // Separate state update log (not mixed with general logs)
   const stateUpdates = ref<StateUpdateEntry[]>([])
-  
+
   // Action results for ActionPanel to display
   const actionResults = ref<Array<{
     actionName: string

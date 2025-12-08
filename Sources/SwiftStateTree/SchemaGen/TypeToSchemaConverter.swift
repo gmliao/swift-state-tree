@@ -36,12 +36,31 @@ public struct TypeToSchemaConverter {
         
         // Handle Array types (based on nodeKind from metadata)
         if nodeKind == .array {
-            // For arrays, we need to extract element type from metadata or use a generic approach
-            // Since we have metadata, we can use it, but for now we'll create a generic schema
-            // In a full implementation, you'd extract the element type from the FieldMetadata
+            // Extract element type from the array
+            let elementSchema: JSONSchema
+            if let elementType = SchemaHelper.arrayElementType(from: type) {
+                // Recursively convert the element type, determining its nodeKind
+                let elementNodeKind = SchemaHelper.determineNodeKind(from: elementType)
+                elementSchema = convert(
+                    elementType,
+                    metadata: FieldMetadata(
+                        name: "",
+                        type: elementType,
+                        policy: nil,
+                        nodeKind: elementNodeKind,
+                        defaultValue: nil
+                    ),
+                    definitions: &definitions,
+                    visitedTypes: &visitedTypes
+                )
+            } else {
+                // Fallback to a generic object if we can't extract element type
+                elementSchema = JSONSchema(type: .object)
+            }
+            
             return JSONSchema(
                 type: .array,
-                items: JSONSchema(type: .object), // Placeholder - should extract from metadata
+                items: elementSchema,
                 xStateTree: StateTreeMetadata(
                     nodeKind: .array,
                     sync: metadata?.policy.map { SyncMetadata(policy: $0.rawValue) }
@@ -55,9 +74,17 @@ public struct TypeToSchemaConverter {
             // the value type when possible.
             let valueSchema: JSONSchema
             if let valueType = SchemaHelper.dictionaryValueType(from: type) {
+                // Recursively convert the value type, determining its nodeKind
+                let valueNodeKind = SchemaHelper.determineNodeKind(from: valueType)
                 valueSchema = convert(
                     valueType,
-                    metadata: nil,
+                    metadata: FieldMetadata(
+                        name: "",
+                        type: valueType,
+                        policy: nil,
+                        nodeKind: valueNodeKind,
+                        defaultValue: nil
+                    ),
                     definitions: &definitions,
                     visitedTypes: &visitedTypes
                 )
@@ -240,19 +267,85 @@ public struct TypeToSchemaConverter {
             return JSONSchema(ref: "#/defs/\(typeName)")
         }
         
-        // Fallback: create a basic object schema
-        // In production, you might want to:
-        // 1. Use Codable introspection
-        // 2. Require types to provide metadata via protocol
-        // 3. Use macros to generate schema information
+        // Fallback: use Mirror to extract properties from Codable types
+        // This allows us to extract schema for Response types and other Codable structs
+        // that don't use @Payload macro
+        var properties: [String: JSONSchema] = [:]
+        var required: [String] = []
+        
+        // Try to extract properties using JSONDecoder error information
+        // When decoding fails, Swift's DecodingError contains information about missing keys
+        if let codableType = type as? any Codable.Type {
+            // Alternative: Try to create an instance and use Mirror
+            // This works for types with default initializers or optional properties
+            if let instance = createSampleInstance(of: codableType) {
+                let mirror = Mirror(reflecting: instance)
+                
+                for child in mirror.children {
+                    if let propertyName = child.label {
+                        // Get the type of the property
+                        let propertyType = Swift.type(of: child.value)
+                        
+                        // Convert the property type to schema
+                        let propertySchema = convert(
+                            propertyType,
+                            metadata: FieldMetadata(
+                                name: propertyName,
+                                type: propertyType,
+                                policy: nil,
+                                nodeKind: SchemaHelper.determineNodeKind(from: propertyType),
+                                defaultValue: nil
+                            ),
+                            definitions: &definitions,
+                            visitedTypes: &visitedTypes
+                        )
+                        
+                        properties[propertyName] = propertySchema
+                        required.append(propertyName)
+                    }
+                }
+            } else {
+                // If we can't create an instance, try to extract from CodingKeys using reflection
+                // This is more complex and may not work in all cases
+                // For now, we'll leave properties empty and return a basic object schema
+            }
+        }
         
         let schema = JSONSchema(
             type: .object,
+            properties: properties.isEmpty ? nil : properties,
+            required: required.isEmpty ? nil : required,
             xStateTree: metadata.map { StateTreeMetadata(nodeKind: $0.nodeKind, sync: $0.policy.map { SyncMetadata(policy: $0.rawValue) }) }
         )
         
         definitions[typeName] = schema
         
         return JSONSchema(ref: "#/defs/\(typeName)")
+    }
+    
+    /// Create a sample instance of a Codable type for Mirror inspection.
+    ///
+    /// This is a workaround to extract property information from types
+    /// that don't provide SchemaMetadataProvider.
+    private static func createSampleInstance(of type: any Codable.Type) -> Any? {
+        // Try to decode from an empty JSON object
+        // This will fail for types that require all properties, but we can
+        // extract property names from the error message or CodingKeys
+        let emptyJSON = "{}"
+        guard let data = emptyJSON.data(using: .utf8) else {
+            return nil
+        }
+        
+        do {
+            // Try to decode - if it succeeds, we have an instance
+            return try JSONDecoder().decode(type, from: data)
+        } catch is DecodingError {
+            // If decoding fails, try to extract property information from the error
+            // For now, we'll return nil and handle it differently
+            // In the future, we could parse the error to extract CodingKeys
+            return nil
+        } catch {
+            return nil
+        }
     }
 }

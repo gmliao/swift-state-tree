@@ -53,7 +53,18 @@ public struct PayloadMacro: MemberMacro {
         // Generate getFieldMetadata() method
         let getFieldMetadataMethod = try generateGetFieldMetadata(properties: properties)
         
-        return [DeclSyntax(getFieldMetadataMethod)]
+        var members: [DeclSyntax] = [DeclSyntax(getFieldMetadataMethod)]
+        
+        // Always generate getResponseType() for ActionPayload types
+        // This ensures the macro declaration covers it
+        if conformsToActionPayload(structDecl) {
+            // Always generate the method, even if Response typealias is not found
+            // This satisfies Swift macro system's requirement that all generated symbols are declared
+            let responseTypeMethod = try generateGetResponseTypeOrFallback(from: structDecl)
+            members.append(DeclSyntax(responseTypeMethod))
+        }
+        
+        return members
     }
     
     /// Collect all stored properties from a struct declaration
@@ -109,6 +120,65 @@ public struct PayloadMacro: MemberMacro {
         }
         
         return properties
+    }
+    
+    /// Check if struct conforms to ActionPayload
+    private static func conformsToActionPayload(_ structDecl: StructDeclSyntax) -> Bool {
+        guard let inheritanceClause = structDecl.inheritanceClause else {
+            return false
+        }
+        
+        return inheritanceClause.inheritedTypes.contains { inheritedType in
+            let typeName = inheritedType.type.trimmedDescription
+            if typeName.split(separator: ".").last == "ActionPayload" {
+                return true
+            }
+            
+            if let identifier = inheritedType.type.as(IdentifierTypeSyntax.self)?.name.text {
+                return identifier == "ActionPayload"
+            }
+            
+            return false
+        }
+    }
+    
+    /// Extract Response type from ActionPayload typealias
+    private static func extractResponseType(from structDecl: StructDeclSyntax) -> String? {
+        for member in structDecl.memberBlock.members {
+            // Check for typealias Response = ...
+            if let typeAlias = member.decl.as(TypeAliasDeclSyntax.self) {
+                if typeAlias.name.text == "Response" {
+                    // Extract the type from the initializer
+                    let initializer = typeAlias.initializer
+                    return initializer.value.trimmedDescription
+                }
+            }
+        }
+        return nil
+    }
+    
+    /// Generate getResponseType() method for ActionPayload
+    private static func generateGetResponseTypeOrFallback(from structDecl: StructDeclSyntax) throws -> FunctionDeclSyntax {
+        if let responseTypeName = extractResponseType(from: structDecl) {
+            // Generate implementation with extracted Response type
+            return try FunctionDeclSyntax(
+                """
+                public static func getResponseType() -> Any.Type {
+                    return \(raw: responseTypeName).self
+                }
+                """
+            )
+        } else {
+            // Generate a fallback that throws an error
+            // This ensures the method is always generated for ActionPayload types
+            return try FunctionDeclSyntax(
+                """
+                public static func getResponseType() -> Any.Type {
+                    fatalError("getResponseType() must have a typealias Response = ... in \(raw: structDecl.name.text)")
+                }
+                """
+            )
+        }
     }
     
     /// Generate getFieldMetadata() method

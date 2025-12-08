@@ -39,6 +39,19 @@ public struct SchemaExtractor {
                 visitedTypes: &visitedTypes
             )
             
+            // Extract Response type if available
+            if let responseType = handler.getResponseType() {
+                // Extract Response schema and add to definitions
+                _ = ActionEventExtractor.extractEvent(
+                    responseType,
+                    definitions: &definitions,
+                    visitedTypes: &visitedTypes
+                )
+                
+                // Response type is now in definitions with its type name
+                // The response schema can be referenced via its type name in defs
+            }
+            
             // ActionEventExtractor.extractAction already handles SchemaMetadataProvider
             // and creates the detailed schema in definitions, so we don't need to duplicate that logic here.
             // However, we ensure the definition is properly stored if it wasn't already.

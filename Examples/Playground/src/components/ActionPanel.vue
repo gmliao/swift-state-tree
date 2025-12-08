@@ -103,7 +103,13 @@
             </div>
             <div v-if="lastActionResult.response" class="mt-2">
               <strong>回應:</strong>
-              <pre class="result-preview">{{ formatResponse(lastActionResult.response) }}</pre>
+              <div class="response-display">
+                <ResponseDisplay 
+                  :value="lastActionResult.response" 
+                  :schema="responseSchema"
+                  :defs="schema?.defs"
+                />
+              </div>
             </div>
             <div v-if="lastActionResult.error" class="mt-2 text-error">
               <strong>錯誤:</strong> {{ lastActionResult.error }}
@@ -117,7 +123,8 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
-import type { Schema } from '@/types'
+import type { Schema, SchemaDef } from '@/types'
+import ResponseDisplay from './ResponseDisplay.vue'
 
 interface ActionField {
   name: string
@@ -152,19 +159,50 @@ const lastActionResult = ref<{
   error?: string
 } | null>(null)
 
-const formatResponse = (response: any): string => {
-  if (response === null || response === undefined) {
-    return 'null'
+// Get Response schema for the selected action
+const responseSchema = computed(() => {
+  if (!props.schema || !selectedAction.value) return null
+  
+  // Find the action schema
+  const actionSchema = selectedActionSchema.value
+  if (!actionSchema) return null
+  
+  // Try to find Response type from action name
+  // Response types are typically named like "AddGoldResponse" for "addgold" action
+  // Convert "addgold" -> "AddGold" -> "AddGoldResponse"
+  const actionName = selectedAction.value
+  const camelCaseName = actionName
+    .split(/(?=[A-Z])|[-_]/)
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join('')
+  const responseTypeName = camelCaseName + 'Response'
+  
+  // Check if Response type exists in defs
+  const responseDef = props.schema.defs[responseTypeName]
+  if (responseDef) return responseDef
+  
+  // Fallback: try to find any Response type that matches
+  // Match patterns like "addgold" -> "AddGoldResponse", "updateScore" -> "UpdateScoreResponse"
+  const actionWords = actionName.toLowerCase().split(/(?=[A-Z])|[-_]/).filter(w => w)
+  const responseTypes = Object.keys(props.schema.defs).filter(name => {
+    if (!name.endsWith('Response')) return false
+    const responseWords = name.toLowerCase().replace('response', '').split(/(?=[A-Z])/)
+    // Check if all action words appear in response name
+    return actionWords.every(word => 
+      responseWords.some(rw => rw.includes(word) || word.includes(rw))
+    )
+  })
+  
+  if (responseTypes.length > 0) {
+    // Prefer exact match or closest match
+    const exactMatch = responseTypes.find(name => 
+      name.toLowerCase() === responseTypeName.toLowerCase()
+    )
+    return props.schema.defs[exactMatch || responseTypes[0]]
   }
-  if (typeof response === 'string') {
-    return response
-  }
-  try {
-    return JSON.stringify(response, null, 2)
-  } catch {
-    return String(response)
-  }
-}
+  
+  return null
+})
 
 // Watch for action results
 watch(() => props.actionResults, (results) => {
@@ -299,17 +337,13 @@ const handleSend = () => {
 </script>
 
 <style scoped>
-.result-preview {
-  background: rgba(0, 0, 0, 0.05);
-  padding: 8px;
+.response-display {
+  background: rgba(0, 0, 0, 0.02);
+  padding: 12px;
   border-radius: 4px;
-  overflow-x: auto;
-  font-size: 11px;
-  font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
-  margin-top: 4px;
-  max-height: 200px;
+  margin-top: 8px;
+  max-height: 400px;
   overflow-y: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
+  border: 1px solid rgba(0, 0, 0, 0.1);
 }
 </style>

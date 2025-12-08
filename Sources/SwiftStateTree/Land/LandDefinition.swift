@@ -109,13 +109,16 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
 /// action type.
 public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
     private let type: Any.Type
+    private let responseType: Any.Type?
     private let handler: @Sendable (inout State, Any, LandContext) async throws -> AnyCodable
 
     public init(
         type: Any.Type,
+        responseType: Any.Type? = nil,
         handler: @escaping @Sendable (inout State, Any, LandContext) async throws -> AnyCodable
     ) {
         self.type = type
+        self.responseType = responseType
         self.handler = handler
     }
 
@@ -128,6 +131,13 @@ public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
     /// This is useful for schema generation and introspection.
     public func getActionType() -> Any.Type {
         return type
+    }
+    
+    /// Get the response type for this action handler.
+    ///
+    /// This is useful for schema generation.
+    public func getResponseType() -> Any.Type? {
+        return responseType
     }
 
     public func invoke<A: ActionPayload>(

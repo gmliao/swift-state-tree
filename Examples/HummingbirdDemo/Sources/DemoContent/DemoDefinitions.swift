@@ -111,7 +111,8 @@ public struct GetMyPrivateStateAction: ActionPayload {
     public init() {}
 }
 
-public struct PlayerPrivateStateResponse: Codable, Sendable {
+@Payload
+public struct PlayerPrivateStateResponse: ResponsePayload {
     public let inventory: [String]
     public let gold: Int
     public let experience: Int
@@ -127,7 +128,8 @@ public struct PlayerPrivateStateResponse: Codable, Sendable {
     }
 }
 
-public struct PlayerSettingsResponse: Codable, Sendable {
+@Payload
+public struct PlayerSettingsResponse: ResponsePayload {
     public let theme: String
     public let soundEnabled: Bool
     
@@ -149,7 +151,8 @@ public struct AddGoldAction: ActionPayload {
     }
 }
 
-public struct AddGoldResponse: Codable, Sendable {
+@Payload
+public struct AddGoldResponse: ResponsePayload {
     public let success: Bool
     public let newGold: Int
     public let newLevel: Int
@@ -179,7 +182,8 @@ public struct UpdateSettingsAction: ActionPayload {
     }
 }
 
-public struct UpdateSettingsResponse: Codable, Sendable {
+@Payload
+public struct UpdateSettingsResponse: ResponsePayload {
     public let success: Bool
     public let settings: PlayerSettingsResponse
     
@@ -201,7 +205,8 @@ public struct UpdateScoreAction: ActionPayload {
     }
 }
 
-public struct UpdateScoreResponse: Codable, Sendable {
+@Payload
+public struct UpdateScoreResponse: ResponsePayload {
     public let success: Bool
     public let newScore: Int
     public let newLevel: Int

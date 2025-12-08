@@ -60,10 +60,11 @@ public macro SnapshotConvertible() = #externalMacro(
     type: "SnapshotConvertibleMacro"
 )
 
-/// Macro that generates `getFieldMetadata()` for Actions and Events.
+/// Macro that generates `getFieldMetadata()` for Actions and Events and `getResponseType()` for Actions.
 ///
 /// This macro analyzes the struct's stored properties and generates a `static func getFieldMetadata()`
-/// method that returns metadata for schema generation.
+/// method that returns metadata for schema generation. For types conforming to `ActionPayload`,
+/// it also generates `static func getResponseType()` to surface the associated `Response` type.
 ///
 /// Example:
 /// ```swift
@@ -73,7 +74,7 @@ public macro SnapshotConvertible() = #externalMacro(
 ///     let count: Int
 /// }
 /// ```
-@attached(member, names: named(getFieldMetadata))
+@attached(member, names: named(getFieldMetadata), named(getResponseType))
 public macro Payload() = #externalMacro(
     module: "SwiftStateTreeMacros",
     type: "PayloadMacro"

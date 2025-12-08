@@ -33,6 +33,19 @@ public struct SchemaHelper {
         }
         return _openExistential(dictType, do: extract)
     }
+    
+    /// Attempt to extract the element type from an Array type.
+    ///
+    /// Returns `nil` if the provided type is not an Array.
+    public static func arrayElementType(from type: Any.Type) -> Any.Type? {
+        func extract<T: ArrayProtocol>(_ t: T.Type) -> Any.Type {
+            T.Element.self
+        }
+        guard let arrayType = type as? any ArrayProtocol.Type else {
+            return nil
+        }
+        return _openExistential(arrayType, do: extract)
+    }
 }
 
 // Helper protocols for type checking
@@ -42,5 +55,7 @@ public protocol DictionaryProtocol {
 }
 extension Dictionary: DictionaryProtocol {}
 
-public protocol ArrayProtocol {}
+public protocol ArrayProtocol {
+    associatedtype Element
+}
 extension Array: ArrayProtocol {}

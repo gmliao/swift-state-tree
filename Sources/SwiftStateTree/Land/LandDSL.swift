@@ -372,8 +372,13 @@ public func HandleAction<State: StateNodeProtocol, A: ActionPayload>(
     _ body:
         @escaping @Sendable (inout State, A, LandContext) async throws -> some Codable & Sendable
 ) -> AnyActionHandler<State> {
-    AnyActionHandler(
+    // Extract Response type from ActionPayload using macro-generated method
+    // The @Payload macro generates getResponseType() for ActionPayload types
+    let responseType = A.getResponseType()
+    
+    return AnyActionHandler(
         type: type,
+        responseType: responseType,
         handler: { state, anyAction, ctx in
             guard let action = anyAction as? A else {
                 throw LandError.invalidActionType

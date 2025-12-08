@@ -23,7 +23,8 @@ struct JoinAction: ActionPayload {
     let name: String
 }
 
-struct JoinResult: Codable, Sendable {
+@Payload
+struct JoinResult: ResponsePayload {
     let ok: Bool
 }
 

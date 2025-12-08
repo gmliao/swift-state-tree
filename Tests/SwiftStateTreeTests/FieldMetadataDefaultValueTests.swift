@@ -23,7 +23,8 @@ func stateNodeMetadataIncludesDefaultValues() {
 
 @Test("Payload captures default values in FieldMetadata")
 func payloadMetadataIncludesDefaultValues() {
-    struct EmptyResponse: Codable, Sendable {}
+    @Payload
+    struct EmptyResponse: ResponsePayload {}
     
     @Payload
     struct ExampleAction: ActionPayload {

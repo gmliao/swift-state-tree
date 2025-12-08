@@ -42,7 +42,8 @@ struct TestAction: ActionPayload {
 }
 
 /// Test Action Response
-struct TestActionResponse: Codable, Sendable {
+@Payload
+struct TestActionResponse: ResponsePayload {
     let success: Bool
     let message: String
 }
@@ -68,8 +69,13 @@ func testSchemaExtractorBasic() throws {
     }
     
     @Payload
+    struct SimpleActionResponse: ResponsePayload {
+        let value: String
+    }
+    
+    @Payload
     struct SimpleAction: ActionPayload {
-        typealias Response = String
+        typealias Response = SimpleActionResponse
         let input: String
     }
     
@@ -101,6 +107,17 @@ func testSchemaExtractorBasic() throws {
     
     let landSchema = schema.lands["test-land"]!
     #expect(landSchema.stateType == "SimpleState")
+    
+    // Verify that Response type is included in definitions
+    let responseTypeName = String(describing: SimpleActionResponse.self)
+    #expect(schema.defs[responseTypeName] != nil)
+    
+    // Verify Response schema has correct properties
+    let responseSchema = schema.defs[responseTypeName]!
+    #expect(responseSchema.type == .object)
+    #expect(responseSchema.properties != nil)
+    #expect(responseSchema.properties?["value"] != nil)
+    #expect(responseSchema.properties?["value"]?.type == .string)
 }
 
 @Test("SchemaExtractor includes state type in definitions")
@@ -173,6 +190,21 @@ func testSchemaExtractorActions() throws {
     let landSchema = schema.lands["test"]!
     // Actions should be present (may be empty if action type doesn't conform to SchemaMetadataProvider)
     #expect(landSchema.actions.count >= 0)
+    
+    // Verify that Response type is included in definitions
+    let responseTypeName = String(describing: TestActionResponse.self)
+    #expect(schema.defs[responseTypeName] != nil)
+    
+    // Verify Response schema has correct properties
+    let responseSchema = schema.defs[responseTypeName]!
+    #expect(responseSchema.type == .object)
+    #expect(responseSchema.properties != nil)
+    #expect(responseSchema.properties?["success"] != nil)
+    #expect(responseSchema.properties?["message"] != nil)
+    #expect(responseSchema.properties?["success"]?.type == .boolean)
+    #expect(responseSchema.properties?["message"]?.type == .string)
+    #expect(responseSchema.required?.contains("success") == true)
+    #expect(responseSchema.required?.contains("message") == true)
 }
 
 @Test("SchemaExtractor includes struct server events in definitions")
@@ -629,10 +661,11 @@ struct DemoJoinAction: ActionPayload {
     let name: String
 }
 
-struct DemoJoinResult: Codable, Sendable {
-    let playerID: String
-    let message: String
-}
+    @Payload
+    struct DemoJoinResult: ResponsePayload {
+        let playerID: String
+        let message: String
+    }
 
 /// Test state matching the demo (DemoGameState)
 @StateNodeBuilder
