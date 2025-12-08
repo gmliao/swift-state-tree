@@ -170,7 +170,8 @@ const buildTreeItem = (key: string, value: any, depth: number, path: string = ''
   const stateTreeMeta = fieldSchema?.['x-stateTree']
   const syncPolicy = stateTreeMeta?.sync?.policy
   const nodeKind = stateTreeMeta?.nodeKind
-  const fieldType = fieldSchema?.type || (typeof value === 'object' && value !== null ? (Array.isArray(value) ? 'array' : 'object') : typeof value)
+  // fieldType is available for future use if needed
+// const fieldType = fieldSchema?.type || (typeof value === 'object' && value !== null ? (Array.isArray(value) ? 'array' : 'object') : typeof value)
   
   if (value === null || value === undefined) {
     return {
@@ -316,6 +317,13 @@ const getNodeKindColor = (nodeKind: string): string => {
   height: 100%;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: auto;
+  min-height: 0;
+}
+
+.state-tree-viewer > div {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 </style>

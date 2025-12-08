@@ -72,11 +72,22 @@
         ></v-textarea>
       </div>
 
+      <v-alert
+        v-if="selectedEvent && validationErrors.length > 0"
+        type="warning"
+        density="compact"
+        class="mb-4"
+      >
+        <div v-for="(error, index) in validationErrors" :key="index">
+          {{ error }}
+        </div>
+      </v-alert>
+
       <v-btn
         color="primary"
         block
         @click="handleSend"
-        :disabled="!connected || !selectedEvent || !activeLand"
+        :disabled="!connected || !selectedEvent || !activeLand || !isPayloadValid"
       >
         <v-icon icon="mdi-send" class="mr-2"></v-icon>
         發送 EVENT
@@ -221,10 +232,84 @@ const convertPayloadValue = (value: any, fieldType: string): any => {
   }
 }
 
+// Validate payload value type
+const validatePayloadValue = (value: any, fieldType: string): { valid: boolean; error?: string } => {
+  if (value === '' || value === null || value === undefined) {
+    return { valid: true } // Empty values are handled separately for required check
+  }
+  
+  switch (fieldType) {
+    case 'integer':
+      const intValue = parseInt(String(value), 10)
+      if (isNaN(intValue)) {
+        return { valid: false, error: '必須是整數' }
+      }
+      return { valid: true }
+    case 'number':
+      const numValue = parseFloat(String(value))
+      if (isNaN(numValue)) {
+        return { valid: false, error: '必須是數字' }
+      }
+      return { valid: true }
+    case 'boolean':
+      // Boolean is always valid after conversion
+      return { valid: true }
+    case 'string':
+    default:
+      return { valid: true }
+  }
+}
+
+// Validate all required fields are present and types are correct
+const validationErrors = computed(() => {
+  const errors: string[] = []
+  
+  // Only validate if we have schema-based fields (not manual JSON input)
+  if (!selectedEvent.value || eventFields.value.length === 0) {
+    return errors
+  }
+  
+  for (const field of eventFields.value) {
+    const value = payloadModel.value[field.name]
+    
+    // Check required fields
+    if (field.required) {
+      if (value === '' || value === null || value === undefined) {
+        errors.push(`${field.name} 是必填欄位`)
+        continue
+      }
+    }
+    
+    // Check type validation (only if value is provided)
+    if (value !== '' && value !== null && value !== undefined) {
+      const validation = validatePayloadValue(value, field.type)
+      if (!validation.valid) {
+        errors.push(`${field.name}: ${validation.error}`)
+      }
+    }
+  }
+  
+  return errors
+})
+
+// Check if payload is valid (all required fields filled and types correct)
+const isPayloadValid = computed(() => {
+  // For manual JSON input, always allow (user is responsible for correctness)
+  if (showManualPayload.value) {
+    return true
+  }
+  return validationErrors.value.length === 0
+})
+
 const handleSend = () => {
   const landID = activeLand.value
   const finalEventName = selectedEvent.value
   if (!landID || !finalEventName) return
+
+  // Double-check validation before sending (only for schema-based fields)
+  if (!showManualPayload.value && !isPayloadValid.value) {
+    return
+  }
 
   let payload: any = null
 
@@ -236,9 +321,17 @@ const handleSend = () => {
     payload = {}
     for (const field of eventFields.value) {
       const rawValue = payloadModel.value[field.name]
-      // Only include non-empty values
+      // Include all values (required fields are guaranteed to be present)
       if (rawValue !== '' && rawValue !== null && rawValue !== undefined) {
         payload[field.name] = convertPayloadValue(rawValue, field.type)
+      }
+    }
+    
+    // Ensure all required fields are included
+    for (const field of eventFields.value) {
+      if (field.required && !(field.name in payload)) {
+        // This shouldn't happen if validation passed, but add as safety check
+        throw new Error(`必填欄位 ${field.name} 缺失`)
       }
     }
   } else if (eventPayload.value.trim()) {
@@ -268,10 +361,11 @@ const handleSend = () => {
 
 <style scoped>
 .event-panel {
-  height: 100%;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
   padding-bottom: 16px;
 }
 </style>

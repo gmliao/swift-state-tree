@@ -23,8 +23,8 @@
       </v-btn>
     </v-app-bar>
 
-    <v-main style="height: calc(100vh - 64px); overflow-y: auto;">
-      <v-container fluid style="height: 100%; padding: 8px; display: flex; flex-direction: column;">
+    <v-main style="height: calc(100vh - 64px); overflow: hidden;">
+      <v-container fluid class="app-shell">
         <!-- Connection State: Schema & Connection Setup -->
         <div v-if="!isConnected || !isJoined">
           <v-row justify="center">
@@ -180,29 +180,29 @@
         </div>
 
         <!-- Testing State: Full Playground -->
-        <div v-else style="display: flex; flex-direction: column; flex: 1; min-height: 0;">
-          <div style="flex: 1; min-height: 0; display: flex; flex-direction: column;">
-            <v-row style="flex: 1; min-height: 0; margin: 0;">
+        <div v-else class="playground-layout">
+          <div class="playground-main">
+            <v-row class="panel-row">
               <!-- Left Panel: State Tree (Wider) -->
-              <v-col cols="12" md="6" style="display: flex; flex-direction: column; padding: 8px;">
-                <v-card style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
-                  <v-card-title>
+              <v-col cols="12" md="6" class="panel-col">
+                <div class="state-tree-container">
+                  <div class="state-tree-header">
                     <v-icon icon="mdi-file-tree" class="mr-2"></v-icon>
-                    狀態樹
-                  </v-card-title>
-                  <v-card-text class="scroll-area">
+                    <span>狀態樹</span>
+                  </div>
+                  <div class="state-tree-content">
                     <StateTreeViewer
                       :state="currentState"
                       :schema="parsedSchema"
                     />
-                  </v-card-text>
-                </v-card>
+                  </div>
+                </div>
               </v-col>
 
               <!-- Middle Panel: Actions & Events -->
-              <v-col cols="12" md="6" style="display: flex; flex-direction: column; padding: 8px;">
-                <v-card style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
-                  <v-tabs v-model="tab" color="primary">
+              <v-col cols="12" md="6" class="panel-col">
+                <div class="actions-events-container">
+                  <v-tabs v-model="tab" color="primary" class="actions-events-tabs">
                     <v-tab value="actions">
                       <v-icon icon="mdi-lightning-bolt" class="mr-2"></v-icon>
                       Actions
@@ -213,35 +213,33 @@
                     </v-tab>
                   </v-tabs>
 
-                  <v-window v-model="tab" style="flex: 1; min-height: 0;">
-                    <v-window-item value="actions" style="height: 100%; min-height: 0; overflow: hidden;">
-                      <div class="scroll-area">
+                  <div class="actions-events-content">
+                    <v-window v-model="tab" class="actions-events-window">
+                      <v-window-item value="actions" class="actions-events-window-item">
                         <ActionPanel
                           :schema="parsedSchema"
                           :connected="isConnected"
                           :action-results="actionResults"
                           @send-action="handleSendAction"
                         />
-                      </div>
-                    </v-window-item>
+                      </v-window-item>
 
-                    <v-window-item value="events" style="height: 100%; min-height: 0; overflow: hidden;">
-                      <div class="scroll-area">
+                      <v-window-item value="events" class="actions-events-window-item">
                         <EventPanel
                           :schema="parsedSchema"
                           :connected="isConnected"
                           @send-event="handleSendEvent"
                         />
-                      </div>
-                    </v-window-item>
-                  </v-window>
-                </v-card>
+                      </v-window-item>
+                    </v-window>
+                  </div>
+                </div>
               </v-col>
             </v-row>
           </div>
           
           <!-- Bottom Panel: Logs & State Updates (Resizable) -->
-          <div style="flex-shrink: 0;">
+          <div class="log-panel-wrapper">
             <ResizableLogPanel
               :height="logPanelHeight"
               :logTab="logTab"
@@ -584,11 +582,122 @@ onMounted(() => {
   min-height: 100vh;
 }
 
+.app-shell {
+  height: 100%;
+  max-height: calc(100vh - 64px);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.playground-layout {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  flex: 1;
+  min-height: 0;
+  gap: 12px;
+  height: 100%;
+}
+
+.playground-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.panel-row {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  height: 100%;
+}
+
+.panel-col {
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+  min-height: 0;
+  height: 100%;
+}
+
+
+.log-panel-wrapper {
+  flex-shrink: 0;
+}
+
 .scroll-area {
   flex: 1;
   min-height: 0;
   overflow: auto;
   height: 100%;
   max-height: 100%;
+}
+
+.state-tree-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 4px;
+  background: rgb(var(--v-theme-surface));
+}
+
+.state-tree-header {
+  display: flex;
+  align-items: center;
+  padding: 16px;
+  font-size: 1.25rem;
+  font-weight: 500;
+  border-bottom: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  flex-shrink: 0;
+}
+
+.state-tree-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+}
+
+.actions-events-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 4px;
+  background: rgb(var(--v-theme-surface));
+}
+
+.actions-events-tabs {
+  flex-shrink: 0;
+  border-bottom: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+}
+
+.actions-events-content {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.actions-events-window {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.actions-events-window-item {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
 }
 </style>

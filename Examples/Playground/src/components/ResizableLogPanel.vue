@@ -85,6 +85,7 @@ const startResize = (e: MouseEvent) => {
 .resizable-log-panel {
   position: relative;
   background-color: #ffffff !important;
+  width: 100%;
 }
 
 .resizable-log-panel :deep(.v-card) {
@@ -134,5 +135,9 @@ const startResize = (e: MouseEvent) => {
 .log-tabs :deep(.v-tab) {
   font-size: 12px;
   min-height: 32px;
+}
+
+.resizable-log-panel :deep(.v-card-text) {
+  overflow: hidden;
 }
 </style>
