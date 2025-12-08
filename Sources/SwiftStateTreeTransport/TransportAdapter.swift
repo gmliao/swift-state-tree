@@ -31,12 +31,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     
     /// Closure to create PlayerSession for guest users (when JWT validation is enabled but no token is provided).
     /// Only used when JWT validation is enabled, allowGuestMode is true, and no JWT token is provided.
-    /// Default implementation creates guest session with "guest-{randomID}" as playerID.
+    /// Default implementation uses the sessionID as playerID for deterministic guest identities.
     public var createGuestSession: @Sendable (SessionID, ClientID) -> PlayerSession = { sessionID, clientID in
-        // Generate short random ID (6 characters)
-        let randomID = String(UUID().uuidString.prefix(6))
         return PlayerSession(
-            playerID: "guest-\(randomID)",
+            playerID: sessionID.rawValue,
             deviceID: clientID.rawValue,
             metadata: ["isGuest": "true"]
         )
@@ -607,29 +605,21 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Phase 2: Preparation (no state modification)
         // Create PlayerSession with priority: join message > JWT payload > guest session
         let jwtAuthInfo = sessionToAuthInfo[sessionID]
+        let guestSession: PlayerSession? = (requestedPlayerID == nil && jwtAuthInfo == nil)
+            ? createGuestSession(sessionID, clientID)
+            : nil
         
         // Determine playerID: join message > JWT payload > guest session
-        let finalPlayerID: String
-        if let requestedPlayerID = requestedPlayerID {
-            finalPlayerID = requestedPlayerID
-        } else if let jwtPlayerID = jwtAuthInfo?.playerID {
-            finalPlayerID = jwtPlayerID  // Use JWT payload
-        } else {
-            // No JWT payload available, use guest session
-            let guestSession = createGuestSession(sessionID, clientID)
-            finalPlayerID = guestSession.playerID
-        }
+        let finalPlayerID: String = requestedPlayerID
+            ?? jwtAuthInfo?.playerID
+            ?? guestSession?.playerID
+            ?? sessionID.rawValue
         
         // Determine deviceID: join message > JWT payload > guest session
-        let finalDeviceID: String?
-        if let joinDeviceID = deviceID {
-            finalDeviceID = joinDeviceID
-        } else if let jwtDeviceID = jwtAuthInfo?.deviceID {
-            finalDeviceID = jwtDeviceID  // Use JWT payload
-        } else {
-            let guestSession = createGuestSession(sessionID, clientID)
-            finalDeviceID = guestSession.deviceID
-        }
+        let finalDeviceID: String? = deviceID
+            ?? jwtAuthInfo?.deviceID
+            ?? guestSession?.deviceID
+            ?? clientID.rawValue
         
         // Merge metadata: join message metadata > JWT payload metadata > guest session metadata
         // Join message metadata takes precedence, then JWT payload, then guest session
@@ -655,10 +645,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             finalMetadata.merge(joinMetadataDict) { (_, new) in new }
         }
         
-        // If no metadata from JWT or join message, use guest session metadata
-        if finalMetadata.isEmpty {
-            let guestSession = createGuestSession(sessionID, clientID)
-            finalMetadata = guestSession.metadata
+        // If no metadata from JWT or join message, use guest session metadata when available
+        if finalMetadata.isEmpty, metadata == nil, let guestMetadata = guestSession?.metadata {
+            finalMetadata = guestMetadata
         }
         
         // Create final PlayerSession

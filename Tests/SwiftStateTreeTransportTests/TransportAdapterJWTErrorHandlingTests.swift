@@ -67,13 +67,12 @@ func testJoinFailsWithoutAuthInfoWhenRequired() async throws {
     #expect(joined == true, "Join should succeed using guest session when no authInfo")
     
     let state = await keeper.currentState()
-    // Should have a guest player
-    let guestPlayers = state.players.filter { $0.key.rawValue.hasPrefix("guest-") }
-    #expect(guestPlayers.count == 1, "Should have one guest player")
+    let guestPlayerID = PlayerID(sessionID.rawValue)
+    #expect(state.players[guestPlayerID] == "Joined", "Should have a guest player entry")
 }
 
-@Test("JWT payload is cleared on disconnect")
-func testJWTPayloadClearedOnDisconnect() async throws {
+@Test("JWT payload cleared on disconnect (error handling)")
+func testJWTPayloadClearedOnDisconnectWithReconnect() async throws {
     // Arrange
     let definition = Land(
         "jwt-error-test",
@@ -132,12 +131,12 @@ func testJWTPayloadClearedOnDisconnect() async throws {
     let jwtPlayerID = PlayerID("player-jwt-123")
     #expect(state.players[jwtPlayerID] == nil, "JWT player should not be in state after disconnect")
     
-    let guestPlayers = state.players.filter { $0.key.rawValue.hasPrefix("guest-") }
-    #expect(guestPlayers.count == 1, "Should have one guest player after reconnection")
+    let guestPlayerID = PlayerID(sessionID.rawValue)
+    #expect(state.players[guestPlayerID] != nil, "Should have one guest player after reconnection")
 }
 
-@Test("Join request with mismatched landID is rejected")
-func testJoinRequestMismatchedLandID() async throws {
+@Test("Join request with mismatched landID is rejected (JWT suite)")
+func testJoinRequestMismatchedLandIDInJWTErrorSuite() async throws {
     // Arrange
     let definition = Land(
         "jwt-error-test",
@@ -250,4 +249,3 @@ func testDuplicateJoinRequests() async throws {
     let state = await keeper.currentState()
     #expect(state.players.count == 1, "Should only have one player after duplicate join requests")
 }
-

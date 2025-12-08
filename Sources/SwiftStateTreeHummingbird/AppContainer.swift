@@ -179,7 +179,12 @@ public struct AppContainer<State: StateNodeProtocol> {
             logger: logger
         )
         
-        let hbAdapter = HummingbirdStateTreeAdapter(transport: core.transport, jwtValidator: jwtValidator)
+        let hbAdapter = HummingbirdStateTreeAdapter(
+            transport: core.transport,
+            jwtValidator: jwtValidator,
+            allowGuestMode: configuration.allowGuestMode,
+            logger: logger
+        )
         let router = Router(context: BasicWebSocketRequestContext.self)
         let schemaDataResult: Result<Data, Error> = {
             do {

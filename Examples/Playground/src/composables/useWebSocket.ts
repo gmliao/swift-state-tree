@@ -21,6 +21,18 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
   
   // Separate state update log (not mixed with general logs)
   const stateUpdates = ref<StateUpdateEntry[]>([])
+  
+  // Action results for ActionPanel to display
+  const actionResults = ref<Array<{
+    actionName: string
+    success: boolean
+    response?: any
+    error?: string
+    timestamp: Date
+  }>>([])
+  
+  // Track action requests to match responses
+  const actionRequestMap = ref<Map<string, { actionName: string, timestamp: Date }>>(new Map())
 
   const decodeSnapshotValue = (value: any): any => {
     if (value === null || value === undefined) return null
@@ -127,15 +139,16 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
     }
   }
 
-  const connect = (): void => {
+  const connect = (customUrl?: string): void => {
     if (ws.value?.readyState === WebSocket.OPEN) {
       addLog('已經連線', 'warning')
       return
     }
 
     try {
-      addLog(`正在連線到 ${wsUrl.value}...`, 'info')
-      ws.value = new WebSocket(wsUrl.value)
+      const urlToUse = customUrl ?? wsUrl.value
+      addLog(`正在連線到 ${urlToUse}...`, 'info')
+      ws.value = new WebSocket(urlToUse)
       // We expect the server to send binary frames containing JSON.
       ws.value.binaryType = 'blob'
 
@@ -157,9 +170,11 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
         }
         
         try {
-          const json = JSON.stringify(joinMessage)
-          ws.value.send(json)
-          addLog('📤 發送 join 請求', 'info')
+          if (ws.value) {
+            const json = JSON.stringify(joinMessage)
+            ws.value.send(json)
+            addLog(`📤 發送 join 請求: ${json}`, 'info')
+          }
         } catch (err) {
           addLog(`❌ 發送 join 請求失敗: ${err}`, 'error')
         }
@@ -167,6 +182,7 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
 
       ws.value.onerror = (error) => {
         addLog(`❌ WebSocket 錯誤: ${error}`, 'error')
+        console.error('WebSocket error:', error)
       }
 
       ws.value.onclose = (event) => {
@@ -177,17 +193,18 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
         const closeMessage = event.code !== 1000 
           ? `🔌 連線關閉 (代碼: ${event.code}, 原因: ${event.reason || '無'})`
           : '🔌 WebSocket 連線已關閉'
-        logs.value = [{
-          id: Date.now().toString(),
-          timestamp: new Date(),
-          type: event.code !== 1000 ? 'warning' : 'info',
-          message: closeMessage
-        }]
-        stateUpdates.value = []
+        addLog(closeMessage, event.code !== 1000 ? 'warning' : 'info')
+        console.log('WebSocket closed:', event.code, event.reason)
+        
+        // If connection was closed with policy violation, it might be JWT/auth issue
+        if (event.code === 1008) { // policyViolation
+          addLog('⚠️ 連線被拒絕：可能是 JWT token 無效或缺失。請檢查 JWT 設定。', 'warning')
+        }
       }
 
       ws.value.onmessage = (event) => {
         const raw = event.data
+        addLog(`📥 收到訊息 (類型: ${typeof raw}, 大小: ${raw instanceof Blob ? raw.size : raw instanceof ArrayBuffer ? raw.byteLength : String(raw).length})`, 'info')
 
         const handleJsonText = (text: string) => {
           try {
@@ -312,7 +329,31 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
               const eventData = data.event.event.fromServer
               addLog(`📨 伺服器事件: ${JSON.stringify(eventData)}`, 'server')
             } else if (data.actionResponse) {
-              addLog(`✅ Action 回應: ${JSON.stringify(data.actionResponse.response)}`, 'success')
+              const actionResponse = data.actionResponse
+              const responseData = actionResponse.response
+              const requestID = actionResponse.requestID
+              
+              // Find the action name from request tracking
+              const actionRequest = actionRequestMap.value.get(requestID)
+              const actionName = actionRequest?.actionName || 'unknown'
+              
+              // Remove from tracking map
+              actionRequestMap.value.delete(requestID)
+              
+              addLog(`✅ Action 回應 [${actionName}]: ${JSON.stringify(responseData)}`, 'success')
+              
+              // Store action result for ActionPanel to display
+              actionResults.value.push({
+                actionName,
+                success: true,
+                response: responseData,
+                timestamp: new Date()
+              })
+              
+              // Keep only last 50 action results
+              if (actionResults.value.length > 50) {
+                actionResults.value.shift()
+              }
             } else {
                 // For other message types, log the full message
                 addLog('📥 收到訊息', 'server', data)
@@ -376,8 +417,8 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
     }
   }
 
-  const sendAction = (actionName: string, payload: any, landID: string): void => {
-    const requestID = `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+  const sendAction = (actionName: string, payload: any, landID: string, requestID?: string): void => {
+    const reqID = requestID || `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
     
     // Encode payload as base64
     const payloadJson = JSON.stringify(payload)
@@ -385,7 +426,7 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
 
     const message: TransportMessage = {
       action: {
-        requestID,
+        requestID: reqID,
         landID,
         action: {
           typeIdentifier: actionName,
@@ -452,15 +493,34 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
     sendMessage(message)
   }
 
+  const sendActionWithTracking = (actionName: string, payload: any, landID: string): void => {
+    const requestID = `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+    
+    // Track this action request
+    actionRequestMap.value.set(requestID, {
+      actionName,
+      timestamp: new Date()
+    })
+    
+    // Clean up old entries (keep only last 100)
+    if (actionRequestMap.value.size > 100) {
+      const firstKey = actionRequestMap.value.keys().next().value
+      actionRequestMap.value.delete(firstKey)
+    }
+    
+    sendAction(actionName, payload, landID, requestID)
+  }
+
   return {
     isConnected,
     isJoined,
     currentState,
     logs,
     stateUpdates,
+    actionResults,
     connect,
     disconnect,
-    sendAction,
+    sendAction: sendActionWithTracking,
     sendEvent
   }
 }

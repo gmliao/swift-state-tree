@@ -69,12 +69,12 @@ func testLandBuilderCollectsNodes() {
         }
 
         Rules {
-            Action(JoinAction.self) { (state: inout DemoLandState, action: JoinAction, ctx: LandContext) in
+            HandleAction(JoinAction.self) { (state: inout DemoLandState, action: JoinAction, ctx: LandContext) in
                 state.players[ctx.playerID] = action.name
                 return JoinResult(ok: true)
             }
 
-            On(DemoReadyEvent.self) { (state: inout DemoLandState, event: DemoReadyEvent, ctx: LandContext) in
+            HandleEvent(DemoReadyEvent.self) { (state: inout DemoLandState, event: DemoReadyEvent, ctx: LandContext) in
                     state.readyPlayers.insert(ctx.playerID)
             }
         }
@@ -118,12 +118,12 @@ func testLandKeeperLifecycle() async throws {
                 state.players.removeValue(forKey: ctx.playerID)
             }
 
-            Action(JoinAction.self) { (state: inout DemoLandState, action: JoinAction, ctx: LandContext) in
+            HandleAction(JoinAction.self) { (state: inout DemoLandState, action: JoinAction, ctx: LandContext) in
                 state.players[ctx.playerID] = action.name
                 return JoinResult(ok: true)
             }
 
-            On(DemoReadyEvent.self) { (state: inout DemoLandState, event: DemoReadyEvent, ctx: LandContext) in
+            HandleEvent(DemoReadyEvent.self) { (state: inout DemoLandState, event: DemoReadyEvent, ctx: LandContext) in
                     state.readyPlayers.insert(ctx.playerID)
             }
         }
@@ -182,7 +182,7 @@ func testLandKeeperAllowedEvents() async {
         }
         
         Rules {
-            On(DemoReadyEvent.self) { (_: inout DemoLandState, event: DemoReadyEvent, _: LandContext) in
+            HandleEvent(DemoReadyEvent.self) { (_: inout DemoLandState, event: DemoReadyEvent, _: LandContext) in
                     await counter.increment()
             }
         }

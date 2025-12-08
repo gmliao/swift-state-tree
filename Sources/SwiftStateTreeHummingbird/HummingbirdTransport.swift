@@ -6,6 +6,7 @@ import SwiftStateTree
 import NIOCore
 import NIOFoundationCompat
 import HTTPTypes
+import Logging
 
 /// Adapter to use Hummingbird WebSockets with SwiftStateTreeTransport.
 public struct HummingbirdStateTreeAdapter: Sendable {
@@ -15,15 +16,19 @@ public struct HummingbirdStateTreeAdapter: Sendable {
     public let jwtValidator: JWTAuthValidator?
     /// Whether guest mode is allowed (connections without JWT token)
     public let allowGuestMode: Bool
+    /// Logger for connection events
+    public let logger: Logger
     
     public init(
         transport: WebSocketTransport,
         jwtValidator: JWTAuthValidator? = nil,
-        allowGuestMode: Bool = false
+        allowGuestMode: Bool = false,
+        logger: Logger? = nil
     ) {
         self.transport = transport
         self.jwtValidator = jwtValidator
         self.allowGuestMode = allowGuestMode
+        self.logger = logger ?? Logger(label: "com.swiftstatetree.hummingbird.transport")
     }
     
     /// Handler for Hummingbird WebSocket connection.
@@ -48,6 +53,20 @@ public struct HummingbirdStateTreeAdapter: Sendable {
         outbound: WebSocketOutboundWriter,
         context: some WebSocketContext
     ) async {
+        // Extract URI and query parameters for logging
+        var uriString: String = "unknown"
+        var hasQueryParams: Bool = false
+        
+        if let routerContext = context as? WebSocketRouterContext<BasicWebSocketRequestContext> {
+            uriString = routerContext.request.uri.description
+        }
+        
+        logger.info("🔌 WebSocket connection attempt", metadata: [
+            "uri": .string(uriString),
+            "hasJWTValidator": .string("\(jwtValidator != nil)"),
+            "allowGuestMode": .string("\(allowGuestMode)")
+        ])
+        
         // Extract JWT token from Authorization header if validator is configured
         var authInfo: AuthenticatedInfo? = nil
         
@@ -60,18 +79,28 @@ public struct HummingbirdStateTreeAdapter: Sendable {
                 // Extract token from query parameters
                 let uriString = routerContext.request.uri.description
                 if let urlComponents = URLComponents(string: uriString),
-                   let queryItems = urlComponents.queryItems,
-                   let tokenItem = queryItems.first(where: { $0.name == "token" }),
-                   let tokenValue = tokenItem.value {
-                    token = tokenValue
+                   let queryItems = urlComponents.queryItems {
+                    hasQueryParams = true
+                    if let tokenItem = queryItems.first(where: { $0.name == "token" }),
+                       let tokenValue = tokenItem.value {
+                        token = tokenValue
+                    }
                 }
             }
             
             if let token = token {
                 do {
                     authInfo = try await validator.validate(token: token)
+                    logger.info("✅ JWT token validated successfully", metadata: [
+                        "uri": .string(uriString),
+                        "playerID": .string(authInfo?.playerID ?? "unknown")
+                    ])
                 } catch {
                     // Close connection on auth failure
+                    logger.warning("❌ JWT token validation failed", metadata: [
+                        "uri": .string(uriString),
+                        "error": .string("\(error)")
+                    ])
                     try? await outbound.close(.policyViolation, reason: "Invalid or expired token")
                     return
                 }
@@ -80,16 +109,35 @@ public struct HummingbirdStateTreeAdapter: Sendable {
                 if allowGuestMode {
                     // Allow connection as guest (authInfo remains nil)
                     // Guest session will be created in handleJoinRequest
+                    logger.info("👤 Allowing guest connection (no token provided)", metadata: [
+                        "uri": .string(uriString)
+                    ])
                 } else {
                     // Reject connection if guest mode is disabled
+                    logger.warning("❌ Connection rejected: Missing token query parameter", metadata: [
+                        "uri": .string(uriString),
+                        "hasQueryParams": .string("\(hasQueryParams)")
+                    ])
                     try? await outbound.close(.policyViolation, reason: "Missing token query parameter")
                     return
                 }
             }
+        } else {
+            // No JWT validator configured, allow all connections
+            logger.info("🔓 Allowing connection (no JWT validator configured)", metadata: [
+                "uri": .string(uriString)
+            ])
         }
         
         // Generate a session ID (in a real app, this might come from auth headers or handshake)
         let sessionID = SessionID(UUID().uuidString)
+        
+        logger.info("✅ WebSocket connection established", metadata: [
+            "sessionID": .string(sessionID.rawValue),
+            "uri": .string(uriString),
+            "authenticated": .string(authInfo != nil ? "yes" : "no"),
+            "authMethod": .string(authInfo != nil ? "JWT" : "guest")
+        ])
         
         // Create connection wrapper
         let connection = HummingbirdWebSocketConnection(outbound: outbound)

@@ -200,11 +200,11 @@ func testHummingbirdAdapterEmitsJSON() async throws {
             Register(TestMessageEvent.self)
         }
         Rules {
-            On(TestPingEvent.self) { (state: inout TestState, event: TestPingEvent, ctx: LandContext) in
+            HandleEvent(TestPingEvent.self) { (state: inout TestState, event: TestPingEvent, ctx: LandContext) in
                     state.count += 1
                 await ctx.sendEvent(TestPongEvent(), to: .session(ctx.sessionID))
                 }
-            On(TestChatEvent.self) { (state: inout TestState, event: TestChatEvent, ctx: LandContext) in
+            HandleEvent(TestChatEvent.self) { (state: inout TestState, event: TestChatEvent, ctx: LandContext) in
                 await ctx.sendEvent(TestMessageEvent(message: event.message), to: .session(ctx.sessionID))
             }
         }

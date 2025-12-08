@@ -1,5 +1,19 @@
 {
   "defs" : {
+    "AddGoldAction" : {
+      "properties" : {
+        "amount" : {
+          "type" : "integer"
+        }
+      },
+      "required" : [
+        "amount"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
     "ChatEvent" : {
       "properties" : {
         "message" : {
@@ -42,6 +56,69 @@
           },
           "type" : "integer"
         },
+        "playerItems" : {
+          "additionalProperties" : {
+            "items" : {
+              "type" : "object"
+            },
+            "type" : "array",
+            "x-stateTree" : {
+              "nodeKind" : "array"
+            }
+          },
+          "default" : {
+            "object" : {
+              "_0" : {
+
+              }
+            }
+          },
+          "type" : "object",
+          "x-stateTree" : {
+            "nodeKind" : "map",
+            "sync" : {
+              "policy" : "perPlayerSlice"
+            }
+          }
+        },
+        "playerPrivateStates" : {
+          "additionalProperties" : {
+            "$ref" : "#\/defs\/PlayerPrivateState"
+          },
+          "default" : {
+            "object" : {
+              "_0" : {
+
+              }
+            }
+          },
+          "type" : "object",
+          "x-stateTree" : {
+            "nodeKind" : "map",
+            "sync" : {
+              "policy" : "perPlayerSlice"
+            }
+          }
+        },
+        "playerScores" : {
+          "additionalProperties" : {
+            "type" : "integer"
+          },
+          "default" : {
+            "object" : {
+              "_0" : {
+
+              }
+            }
+          },
+          "type" : "object",
+          "x-stateTree" : {
+            "nodeKind" : "map",
+            "sync" : {
+              "policy" : "perPlayerSlice"
+            }
+          }
+        },
         "players" : {
           "additionalProperties" : {
             "type" : "string"
@@ -73,21 +150,22 @@
       "required" : [
         "players",
         "messageCount",
-        "ticks"
+        "ticks",
+        "playerPrivateStates",
+        "playerScores",
+        "playerItems"
       ],
       "type" : "object",
       "x-stateTree" : {
         "nodeKind" : "object"
       }
     },
-    "JoinAction" : {
+    "GetMyPrivateStateAction" : {
       "properties" : {
-        "name" : {
-          "type" : "string"
-        }
+
       },
       "required" : [
-        "name"
+
       ],
       "type" : "object",
       "x-stateTree" : {
@@ -104,6 +182,114 @@
       "type" : "object",
       "x-stateTree" : {
         "nodeKind" : "leaf"
+      }
+    },
+    "PlayerPrivateState" : {
+      "properties" : {
+        "experience" : {
+          "default" : {
+            "int" : {
+              "_0" : 0
+            }
+          },
+          "type" : "integer"
+        },
+        "gold" : {
+          "default" : {
+            "int" : {
+              "_0" : 0
+            }
+          },
+          "type" : "integer"
+        },
+        "inventory" : {
+          "default" : {
+            "array" : {
+              "_0" : [
+
+              ]
+            }
+          },
+          "items" : {
+            "type" : "object"
+          },
+          "type" : "array",
+          "x-stateTree" : {
+            "nodeKind" : "array",
+            "sync" : {
+              "policy" : "broadcast"
+            }
+          }
+        },
+        "level" : {
+          "default" : {
+            "int" : {
+              "_0" : 1
+            }
+          },
+          "type" : "integer"
+        },
+        "settings" : {
+          "$ref" : "#\/defs\/PlayerSettings",
+          "default" : {
+            "object" : {
+              "_0" : {
+                "soundEnabled" : {
+                  "bool" : {
+                    "_0" : true
+                  }
+                },
+                "theme" : {
+                  "string" : {
+                    "_0" : "default"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "required" : [
+        "inventory",
+        "gold",
+        "experience",
+        "level",
+        "settings"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "object"
+      }
+    },
+    "PlayerSettings" : {
+      "properties" : {
+        "soundEnabled" : {
+          "default" : {
+            "bool" : {
+              "_0" : true
+            }
+          },
+          "type" : "boolean"
+        },
+        "theme" : {
+          "default" : {
+            "string" : {
+              "_0" : "default"
+            }
+          },
+          "type" : "string"
+        }
+      },
+      "required" : [
+        "theme",
+        "soundEnabled"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "object",
+        "sync" : {
+          "policy" : "broadcast"
+        }
       }
     },
     "PongEvent" : {
@@ -150,14 +336,40 @@
         "nodeKind" : "leaf"
       }
     },
-    "WelcomeEvent" : {
+    "UpdateScoreAction" : {
       "properties" : {
-        "message" : {
-          "type" : "string"
+        "points" : {
+          "type" : "integer"
         }
       },
       "required" : [
-        "message"
+        "points"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
+    "UpdateSettingsAction" : {
+      "properties" : {
+        "soundEnabled" : {
+          "type" : "boolean"
+        },
+        "theme" : {
+          "type" : "string"
+        },
+        "updateSoundEnabled" : {
+          "type" : "boolean"
+        },
+        "updateTheme" : {
+          "type" : "boolean"
+        }
+      },
+      "required" : [
+        "theme",
+        "soundEnabled",
+        "updateTheme",
+        "updateSoundEnabled"
       ],
       "type" : "object",
       "x-stateTree" : {
@@ -168,8 +380,17 @@
   "lands" : {
     "demo-game" : {
       "actions" : {
-        "join" : {
-          "$ref" : "#\/defs\/JoinAction"
+        "addgold" : {
+          "$ref" : "#\/defs\/AddGoldAction"
+        },
+        "getmyprivatestate" : {
+          "$ref" : "#\/defs\/GetMyPrivateStateAction"
+        },
+        "updatescore" : {
+          "$ref" : "#\/defs\/UpdateScoreAction"
+        },
+        "updatesettings" : {
+          "$ref" : "#\/defs\/UpdateSettingsAction"
         }
       },
       "clientEvents" : {
@@ -186,9 +407,6 @@
         },
         "pong" : {
           "$ref" : "#\/defs\/PongEvent"
-        },
-        "welcome" : {
-          "$ref" : "#\/defs\/WelcomeEvent"
         }
       },
       "stateType" : "DemoGameState",

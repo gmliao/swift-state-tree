@@ -216,7 +216,7 @@ func testMessagesBeforeAndAfterJoin() async throws {
         using: JoinTestState.self
     ) {
         Rules {
-            On(TestIncrementEvent.self) { (state: inout JoinTestState, event: TestIncrementEvent, _) in
+            HandleEvent(TestIncrementEvent.self) { (state: inout JoinTestState, event: TestIncrementEvent, _) in
                 state.ticks += 1
             }
         }

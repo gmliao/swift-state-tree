@@ -6,23 +6,24 @@ import Foundation
 import Testing
 import Hummingbird
 import HummingbirdWebSocket
+import NIOWebSocket
 @testable import SwiftStateTree
 @testable import SwiftStateTreeTransport
 @testable import SwiftStateTreeHummingbird
 
 // MARK: - Test Doubles
 
-actor MockWebSocketOutbound: WebSocketOutboundWriter {
+actor MockWebSocketOutbound {
     private(set) var closed = false
-    private(set) var closeCode: WebSocketCloseCode?
+    private(set) var closeCode: WebSocketErrorCode?
     private(set) var closeReason: String?
-    private(set) var writtenMessages: [WebSocketFrame] = []
+    private(set) var writtenMessages: [WebSocketOutboundWriter.OutboundFrame] = []
     
-    func write(_ frame: WebSocketFrame) async throws {
+    func write(_ frame: WebSocketOutboundWriter.OutboundFrame) async throws {
         writtenMessages.append(frame)
     }
     
-    func close(_ code: WebSocketCloseCode, reason: String?) async throws {
+    func close(_ code: WebSocketErrorCode, reason: String?) async throws {
         closed = true
         closeCode = code
         closeReason = reason
@@ -53,12 +54,16 @@ struct MockHTTPRequest {
 
 struct MockWebSocketInbound: AsyncSequence {
     typealias Element = WebSocketFrame
+    typealias Failure = any Error
     
     func makeAsyncIterator() -> AsyncIterator {
         AsyncIterator()
     }
     
     struct AsyncIterator: AsyncIteratorProtocol {
+        typealias Element = WebSocketFrame
+        typealias Failure = any Error
+        
         mutating func next() async throws -> WebSocketFrame? {
             return nil  // Empty stream
         }
@@ -130,4 +135,3 @@ func testJWTValidatorRejectsInvalidTokens() async throws {
 // Note: Full HummingbirdStateTreeAdapter tests require actual WebSocketRouterContext
 // which is complex to mock. The adapter logic is tested indirectly through
 // TransportAdapter tests and integration tests.
-

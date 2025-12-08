@@ -16,10 +16,10 @@ struct JWTPayloadTestState: StateNodeProtocol {
     var ticks: Int = 0
     
     @Sync(.broadcast)
-    var players: [PlayerID: PlayerInfo] = [:]
+    var players: [PlayerID: JWTPayloadPlayerInfo] = [:]
 }
 
-struct PlayerInfo: Codable, Sendable {
+struct JWTPayloadPlayerInfo: Codable, Sendable {
     let playerID: String
     let username: String?
     let schoolID: String?
@@ -41,7 +41,7 @@ func testJWTPayloadWithCustomFields() async throws {
                 let username = ctx.metadata["username"]
                 let schoolID = ctx.metadata["schoolid"]
                 
-                state.players[ctx.playerID] = PlayerInfo(
+                state.players[ctx.playerID] = JWTPayloadPlayerInfo(
                     playerID: ctx.playerID.rawValue,
                     username: username,
                     schoolID: schoolID,
@@ -121,7 +121,7 @@ func testJoinMessageMetadataOverridesJWTPayload() async throws {
                 let username = ctx.metadata["username"]
                 let schoolID = ctx.metadata["schoolid"]
                 
-                state.players[ctx.playerID] = PlayerInfo(
+                state.players[ctx.playerID] = JWTPayloadPlayerInfo(
                     playerID: ctx.playerID.rawValue,
                     username: username,
                     schoolID: schoolID,
@@ -164,8 +164,8 @@ func testJoinMessageMetadataOverridesJWTPayload() async throws {
         playerID: nil,
         deviceID: nil,
         metadata: [
-            "username": "bob", // Override JWT payload username
-            "level": "20" // Additional field
+            "username": AnyCodable("bob"), // Override JWT payload username
+            "level": AnyCodable("20") // Additional field
         ]
     )
     let joinData = try JSONEncoder().encode(joinRequest)
@@ -196,7 +196,7 @@ func testJWTPayloadPlayerIDUsedWhenNotProvided() async throws {
     ) {
         Rules {
             OnJoin { (state: inout JWTPayloadTestState, ctx: LandContext) in
-                state.players[ctx.playerID] = PlayerInfo(
+                state.players[ctx.playerID] = JWTPayloadPlayerInfo(
                     playerID: ctx.playerID.rawValue,
                     username: ctx.metadata["username"],
                     schoolID: ctx.metadata["schoolid"],
@@ -262,7 +262,7 @@ func testJoinMessagePlayerIDOverridesJWTPayload() async throws {
     ) {
         Rules {
             OnJoin { (state: inout JWTPayloadTestState, ctx: LandContext) in
-                state.players[ctx.playerID] = PlayerInfo(
+                state.players[ctx.playerID] = JWTPayloadPlayerInfo(
                     playerID: ctx.playerID.rawValue,
                     username: ctx.metadata["username"],
                     schoolID: ctx.metadata["schoolid"],
@@ -323,8 +323,8 @@ func testJoinMessagePlayerIDOverridesJWTPayload() async throws {
     #expect(joinedPlayerID == playerID, "Session should be mapped to join message playerID")
 }
 
-@Test("JWT payload is cleared on disconnect")
-func testJWTPayloadClearedOnDisconnect() async throws {
+@Test("JWT payload cleared on disconnect falls back to guest session")
+func testJWTPayloadClearedOnDisconnectFallsBackToGuest() async throws {
     // Arrange
     let definition = Land(
         "jwt-test",
@@ -332,7 +332,7 @@ func testJWTPayloadClearedOnDisconnect() async throws {
     ) {
         Rules {
             OnJoin { (state: inout JWTPayloadTestState, ctx: LandContext) in
-                state.players[ctx.playerID] = PlayerInfo(
+                state.players[ctx.playerID] = JWTPayloadPlayerInfo(
                     playerID: ctx.playerID.rawValue,
                     username: ctx.metadata["username"],
                     schoolID: ctx.metadata["schoolid"],
@@ -393,4 +393,3 @@ func testJWTPayloadClearedOnDisconnect() async throws {
     let jwtPlayerID = PlayerID("player-123")
     #expect(state.players[jwtPlayerID] == nil, "JWT payload playerID should not be used after disconnect")
 }
-

@@ -12,13 +12,13 @@ import Testing
 @StateNodeBuilder
 struct EndToEndTestState: StateNodeProtocol {
     @Sync(.broadcast)
-    var players: [PlayerID: PlayerInfo] = [:]
+    var players: [PlayerID: EndToEndPlayerInfo] = [:]
     
     @Sync(.broadcast)
     var messageCount: Int = 0
 }
 
-struct PlayerInfo: Codable, Sendable {
+struct EndToEndPlayerInfo: Codable, Sendable {
     let playerID: String
     let isGuest: Bool
     let username: String?
@@ -39,7 +39,7 @@ func testCompleteJWTFlow() async throws {
             OnJoin { (state: inout EndToEndTestState, ctx: LandContext) in
                 let isGuest = ctx.metadata["isGuest"] == "true"
                 let username = ctx.metadata["username"]
-                state.players[ctx.playerID] = PlayerInfo(
+                state.players[ctx.playerID] = EndToEndPlayerInfo(
                     playerID: ctx.playerID.rawValue,
                     isGuest: isGuest,
                     username: username,
@@ -119,7 +119,7 @@ func testCompleteGuestFlow() async throws {
             OnJoin { (state: inout EndToEndTestState, ctx: LandContext) in
                 let isGuest = ctx.metadata["isGuest"] == "true"
                 let username = ctx.metadata["username"]
-                state.players[ctx.playerID] = PlayerInfo(
+                state.players[ctx.playerID] = EndToEndPlayerInfo(
                     playerID: ctx.playerID.rawValue,
                     isGuest: isGuest,
                     username: username,
@@ -165,15 +165,16 @@ func testCompleteGuestFlow() async throws {
     #expect(joined == true, "Guest session should be joined")
     
     let state = await keeper.currentState()
-    let guestPlayers = state.players.filter { $0.key.rawValue.hasPrefix("guest-") }
-    #expect(guestPlayers.count == 1, "Should have one guest player")
-    
-    if let guestPlayer = guestPlayers.first {
-        // Step 4: Verify guest session was used
-        #expect(guestPlayer.value.isGuest == true, "Player should be marked as guest")
-        #expect(guestPlayer.value.deviceID == clientID.rawValue, "Device ID should come from clientID")
-        #expect(guestPlayer.value.metadata["isGuest"] == "true", "Metadata should contain isGuest flag")
+    let guestPlayerID = PlayerID(sessionID.rawValue)
+    guard let guestPlayer = state.players[guestPlayerID] else {
+        Issue.record("Guest player should be present after join")
+        return
     }
+    
+    // Step 4: Verify guest session was used
+    #expect(guestPlayer.isGuest == true, "Player should be marked as guest")
+    #expect(guestPlayer.deviceID == clientID.rawValue, "Device ID should come from clientID")
+    #expect(guestPlayer.metadata["isGuest"] == "true", "Metadata should contain isGuest flag")
 }
 
 @Test("Complete flow: Mixed JWT and guest users")
@@ -187,7 +188,7 @@ func testMixedJWTAndGuestUsers() async throws {
             OnJoin { (state: inout EndToEndTestState, ctx: LandContext) in
                 let isGuest = ctx.metadata["isGuest"] == "true"
                 let username = ctx.metadata["username"]
-                state.players[ctx.playerID] = PlayerInfo(
+                state.players[ctx.playerID] = EndToEndPlayerInfo(
                     playerID: ctx.playerID.rawValue,
                     isGuest: isGuest,
                     username: username,
@@ -258,10 +259,10 @@ func testMixedJWTAndGuestUsers() async throws {
     #expect(jwtPlayer.isGuest == false, "JWT player should not be guest")
     #expect(jwtPlayer.username == "alice", "JWT player should have username")
     
-    let guestPlayers = state.players.filter { $0.key.rawValue.hasPrefix("guest-") }
-    #expect(guestPlayers.count == 1, "Should have one guest player")
-    if let guestPlayer = guestPlayers.first {
-        #expect(guestPlayer.value.isGuest == true, "Guest player should be marked as guest")
+    let guestPlayerID = PlayerID(guestSessionID.rawValue)
+    if let guestPlayer = state.players[guestPlayerID] {
+        #expect(guestPlayer.isGuest == true, "Guest player should be marked as guest")
+    } else {
+        Issue.record("Guest player should be in state")
     }
 }
-

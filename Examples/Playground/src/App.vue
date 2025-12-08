@@ -207,6 +207,7 @@
                       <ActionPanel
                         :schema="parsedSchema"
                         :connected="isConnected"
+                        :action-results="actionResults"
                         @send-action="handleSendAction"
                       />
                     </v-window-item>
@@ -351,7 +352,7 @@
           <v-spacer></v-spacer>
           <v-btn
             color="primary"
-            @click="showJWTDialog = false"
+            @click="handleCloseJWTDialog"
           >
             關閉
           </v-btn>
@@ -362,7 +363,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import StateTreeViewer from './components/StateTreeViewer.vue'
 import ActionPanel from './components/ActionPanel.vue'
 import EventPanel from './components/EventPanel.vue'
@@ -381,6 +382,13 @@ const schemaUrl = ref('http://localhost:8080/schema')
 const wsUrl = ref('ws://localhost:8080/game')
 const loadingSchema = ref(false)
 const schemaSuccess = ref(false)
+const actionResults = ref<Array<{
+  actionName: string
+  success: boolean
+  response?: any
+  error?: string
+  timestamp: Date
+}>>([])
 
 // JWT Configuration (預設使用 demo 的 secret key)
 const jwtSecretKey = ref('demo-secret-key-change-in-production')
@@ -402,11 +410,17 @@ const {
   currentState, 
   logs, 
   stateUpdates,
+  actionResults: actionResultsFromWS,
   connect: connectWebSocket, 
   disconnect, 
   sendAction, 
   sendEvent 
 } = useWebSocket(wsUrl, parsedSchema)
+
+// Sync action results from WebSocket composable
+watch(actionResultsFromWS, (newResults) => {
+  actionResults.value = newResults
+}, { deep: true })
 
 const connect = () => {
   // If JWT token is available, append it to the WebSocket URL as query parameter
@@ -416,14 +430,14 @@ const connect = () => {
   if (jwtToken.value) {
     const separator = url.includes('?') ? '&' : '?'
     url = `${url}${separator}token=${encodeURIComponent(jwtToken.value)}`
+    console.log('🔑 Using JWT token for connection:', jwtToken.value.substring(0, 20) + '...')
+  } else {
+    console.log('⚠️ No JWT token available - connecting without authentication')
   }
+  console.log('🔌 Connecting to:', url)
   
-  // Temporarily update wsUrl to include token
-  const originalUrl = wsUrl.value
-  wsUrl.value = url
-  connectWebSocket()
-  // Restore original URL after connection attempt
-  wsUrl.value = originalUrl
+  // Pass the URL with token directly to connectWebSocket
+  connectWebSocket(url)
 }
 
 const connectionStatus = computed(() => {
@@ -455,7 +469,7 @@ const handleDisconnect = () => {
   disconnect()
 }
 
-const autoFillJWTFields = () => {
+const autoFillJWTFields = async () => {
   // 自動生成測試資料
   const randomID = () => Math.random().toString(36).substring(2, 10)
   const randomNum = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min
@@ -465,6 +479,11 @@ const autoFillJWTFields = () => {
   jwtUsername.value = `user${randomNum(1, 100)}`
   jwtSchoolID.value = `school-${randomNum(1000, 9999)}`
   jwtLevel.value = String(randomNum(1, 50))
+  
+  // 自動生成 token（如果必填欄位都有值）
+  if (jwtSecretKey.value && jwtPlayerID.value) {
+    await generateToken()
+  }
 }
 
 const generateToken = async () => {
@@ -473,12 +492,12 @@ const generateToken = async () => {
   
   if (!jwtSecretKey.value) {
     jwtError.value = '請輸入 JWT Secret Key'
-    return
+    return false
   }
   
   if (!jwtPlayerID.value) {
     jwtError.value = '請輸入 Player ID'
-    return
+    return false
   }
   
   try {
@@ -493,9 +512,19 @@ const generateToken = async () => {
     
     jwtToken.value = await generateJWT(jwtSecretKey.value, payload)
     jwtError.value = ''
+    return true
   } catch (err: any) {
     jwtError.value = `生成 Token 失敗: ${err.message || err}`
+    return false
   }
+}
+
+const handleCloseJWTDialog = async () => {
+  // 如果必填欄位都有值但還沒有 token，自動生成
+  if (jwtSecretKey.value && jwtPlayerID.value && !jwtToken.value) {
+    await generateToken()
+  }
+  showJWTDialog.value = false
 }
 
 const loadSchemaFromServer = async () => {

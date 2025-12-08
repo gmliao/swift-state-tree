@@ -77,16 +77,46 @@
         block
         @click="handleSend"
         :disabled="!connected || !selectedAction || !activeLand"
+        class="mb-4"
       >
         <v-icon icon="mdi-send" class="mr-2"></v-icon>
         發送 Action
       </v-btn>
+      
+      <!-- Action Result Display -->
+      <v-alert
+        v-if="lastActionResult"
+        :type="lastActionResult.success ? 'success' : 'error'"
+        density="compact"
+        class="mb-2"
+        closable
+        @click:close="lastActionResult = null"
+      >
+        <div class="d-flex align-center">
+          <v-icon :icon="lastActionResult.success ? 'mdi-check-circle' : 'mdi-alert-circle'" class="mr-2"></v-icon>
+          <div style="flex: 1;">
+            <div class="font-weight-bold mb-1">
+              {{ lastActionResult.success ? 'Action 成功' : 'Action 失敗' }}
+            </div>
+            <div class="text-caption">
+              <strong>Action:</strong> {{ lastActionResult.actionName }}
+            </div>
+            <div v-if="lastActionResult.response" class="mt-2">
+              <strong>回應:</strong>
+              <pre class="result-preview">{{ formatResponse(lastActionResult.response) }}</pre>
+            </div>
+            <div v-if="lastActionResult.error" class="mt-2 text-error">
+              <strong>錯誤:</strong> {{ lastActionResult.error }}
+            </div>
+          </div>
+        </div>
+      </v-alert>
     </div>
   </v-card-text>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import type { Schema } from '@/types'
 
 interface ActionField {
@@ -98,6 +128,13 @@ interface ActionField {
 const props = defineProps<{
   schema: Schema | null
   connected: boolean
+  actionResults?: Array<{
+    actionName: string
+    success: boolean
+    response?: any
+    error?: string
+    timestamp: Date
+  }>
 }>()
 
 const emit = defineEmits<{
@@ -108,6 +145,48 @@ const selectedLand = ref<string>('')
 const selectedAction = ref<string>('')
 const actionPayload = ref('{}')
 const payloadModel = ref<Record<string, any>>({})
+const lastActionResult = ref<{
+  actionName: string
+  success: boolean
+  response?: any
+  error?: string
+} | null>(null)
+
+const formatResponse = (response: any): string => {
+  if (response === null || response === undefined) {
+    return 'null'
+  }
+  if (typeof response === 'string') {
+    return response
+  }
+  try {
+    return JSON.stringify(response, null, 2)
+  } catch {
+    return String(response)
+  }
+}
+
+// Watch for action results
+watch(() => props.actionResults, (results) => {
+  if (results && results.length > 0) {
+    // Find the latest result for the currently selected action
+    const matchingResults = results.filter(r => r.actionName === selectedAction.value)
+    if (matchingResults.length > 0) {
+      const latest = matchingResults[matchingResults.length - 1]
+      lastActionResult.value = {
+        actionName: latest.actionName,
+        success: latest.success,
+        response: latest.response,
+        error: latest.error
+      }
+    }
+  }
+}, { deep: true, immediate: true })
+
+// Clear result when action changes
+watch(selectedAction, () => {
+  lastActionResult.value = null
+})
 
 const landKeys = computed(() => {
   if (!props.schema) return []
@@ -218,3 +297,19 @@ const handleSend = () => {
   }
 }
 </script>
+
+<style scoped>
+.result-preview {
+  background: rgba(0, 0, 0, 0.05);
+  padding: 8px;
+  border-radius: 4px;
+  overflow-x: auto;
+  font-size: 11px;
+  font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+  margin-top: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+</style>

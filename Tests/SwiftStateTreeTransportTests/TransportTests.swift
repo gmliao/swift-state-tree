@@ -56,7 +56,7 @@ func testTransportAdapterForwardsEvents() async throws {
             Register(TestMessageEvent.self)
         }
         Rules {
-            On(TestIncrementEvent.self) { (state: inout TestState, event: TestIncrementEvent, _) in
+            HandleEvent(TestIncrementEvent.self) { (state: inout TestState, event: TestIncrementEvent, _) in
                     state.count += 1
             }
         }

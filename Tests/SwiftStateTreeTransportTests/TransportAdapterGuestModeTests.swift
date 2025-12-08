@@ -4,6 +4,7 @@
 
 import Foundation
 import Testing
+import Atomics
 @testable import SwiftStateTree
 @testable import SwiftStateTreeTransport
 
@@ -15,10 +16,10 @@ struct GuestModeTestState: StateNodeProtocol {
     var ticks: Int = 0
     
     @Sync(.broadcast)
-    var players: [PlayerID: PlayerInfo] = [:]
+    var players: [PlayerID: GuestPlayerInfo] = [:]
 }
 
-struct PlayerInfo: Codable, Sendable {
+struct GuestPlayerInfo: Codable, Sendable {
     let playerID: String
     let isGuest: Bool
     let deviceID: String?
@@ -37,7 +38,7 @@ func testGuestSessionCreation() async throws {
         Rules {
             OnJoin { (state: inout GuestModeTestState, ctx: LandContext) in
                 let isGuest = ctx.metadata["isGuest"] == "true"
-                state.players[ctx.playerID] = PlayerInfo(
+                state.players[ctx.playerID] = GuestPlayerInfo(
                     playerID: ctx.playerID.rawValue,
                     isGuest: isGuest,
                     deviceID: ctx.deviceID,
@@ -82,15 +83,15 @@ func testGuestSessionCreation() async throws {
     #expect(joined, "Session should be joined")
     
     let state = await keeper.currentState()
-    // Guest playerID should start with "guest-"
-    let guestPlayers = state.players.filter { $0.key.rawValue.hasPrefix("guest-") }
-    #expect(guestPlayers.count == 1, "Should have one guest player")
-    
-    if let guestPlayer = guestPlayers.first {
-        #expect(guestPlayer.value.isGuest == true, "Player should be marked as guest")
-        #expect(guestPlayer.value.deviceID == clientID.rawValue, "Device ID should come from clientID")
-        #expect(guestPlayer.value.metadata["isGuest"] == "true", "Metadata should contain isGuest flag")
+    let guestPlayerID = PlayerID(sessionID.rawValue)
+    guard let guestPlayer = state.players[guestPlayerID] else {
+        Issue.record("Guest player should be stored using sessionID as playerID")
+        return
     }
+    
+    #expect(guestPlayer.isGuest == true, "Player should be marked as guest")
+    #expect(guestPlayer.deviceID == clientID.rawValue, "Device ID should come from clientID")
+    #expect(guestPlayer.metadata["isGuest"] == "true", "Metadata should contain isGuest flag")
 }
 
 @Test("Guest session uses custom createGuestSession closure")
@@ -103,7 +104,7 @@ func testCustomGuestSession() async throws {
         Rules {
             OnJoin { (state: inout GuestModeTestState, ctx: LandContext) in
                 let isGuest = ctx.metadata["isGuest"] == "true"
-                state.players[ctx.playerID] = PlayerInfo(
+                state.players[ctx.playerID] = GuestPlayerInfo(
                     playerID: ctx.playerID.rawValue,
                     isGuest: isGuest,
                     deviceID: ctx.deviceID,
@@ -116,13 +117,13 @@ func testCustomGuestSession() async throws {
     let transport = WebSocketTransport()
     let keeper = LandKeeper<GuestModeTestState>(definition: definition, initialState: GuestModeTestState())
     
-    var customGuestSessionCalled = false
+    let customGuestSessionCalled = ManagedAtomic(false)
     let adapter = TransportAdapter<GuestModeTestState>(
         keeper: keeper,
         transport: transport,
         landID: "guest-test",
         createGuestSession: { sessionID, clientID in
-            customGuestSessionCalled = true
+            customGuestSessionCalled.store(true, ordering: .relaxed)
             return PlayerSession(
                 playerID: "custom-guest-\(sessionID.rawValue.prefix(4))",
                 deviceID: clientID.rawValue,
@@ -157,7 +158,8 @@ func testCustomGuestSession() async throws {
     try await Task.sleep(for: .milliseconds(100))
     
     // Assert: Custom guest session should be used
-    #expect(customGuestSessionCalled, "Custom createGuestSession should be called")
+    let didCallCustomGuestSession = customGuestSessionCalled.load(ordering: .relaxed)
+    #expect(didCallCustomGuestSession, "Custom createGuestSession should be called")
     
     let state = await keeper.currentState()
     let customGuestPlayers = state.players.filter { $0.key.rawValue.hasPrefix("custom-guest-") }
@@ -178,7 +180,7 @@ func testJWTPayloadOverridesGuestSession() async throws {
         Rules {
             OnJoin { (state: inout GuestModeTestState, ctx: LandContext) in
                 let isGuest = ctx.metadata["isGuest"] == "true"
-                state.players[ctx.playerID] = PlayerInfo(
+                state.players[ctx.playerID] = GuestPlayerInfo(
                     playerID: ctx.playerID.rawValue,
                     isGuest: isGuest,
                     deviceID: ctx.deviceID,
@@ -248,7 +250,7 @@ func testJoinMessageOverridesAll() async throws {
         Rules {
             OnJoin { (state: inout GuestModeTestState, ctx: LandContext) in
                 let isGuest = ctx.metadata["isGuest"] == "true"
-                state.players[ctx.playerID] = PlayerInfo(
+                state.players[ctx.playerID] = GuestPlayerInfo(
                     playerID: ctx.playerID.rawValue,
                     isGuest: isGuest,
                     deviceID: ctx.deviceID,
@@ -280,7 +282,7 @@ func testJoinMessageOverridesAll() async throws {
         landID: "guest-test",
         playerID: "override-player-999",  // Override guest session
         deviceID: "override-device-999",  // Override guest session
-        metadata: ["override": "true"]
+        metadata: ["override": AnyCodable("true")]
     )
     let joinData = try JSONEncoder().encode(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
@@ -312,7 +314,7 @@ func testMultipleGuestSessions() async throws {
         Rules {
             OnJoin { (state: inout GuestModeTestState, ctx: LandContext) in
                 let isGuest = ctx.metadata["isGuest"] == "true"
-                state.players[ctx.playerID] = PlayerInfo(
+                state.players[ctx.playerID] = GuestPlayerInfo(
                     playerID: ctx.playerID.rawValue,
                     isGuest: isGuest,
                     deviceID: ctx.deviceID,
@@ -355,11 +357,12 @@ func testMultipleGuestSessions() async throws {
     
     // Assert: All guests should be in state
     let state = await keeper.currentState()
-    let guestPlayers = state.players.filter { $0.key.rawValue.hasPrefix("guest-") }
-    #expect(guestPlayers.count == 3, "Should have three guest players")
-    
-    for (_, playerInfo) in guestPlayers {
+    for i in 1...3 {
+        let playerID = PlayerID("sess-guest-\(i)")
+        guard let playerInfo = state.players[playerID] else {
+            Issue.record("Guest player \(playerID.rawValue) should be in state")
+            continue
+        }
         #expect(playerInfo.isGuest == true, "All should be marked as guests")
     }
 }
-

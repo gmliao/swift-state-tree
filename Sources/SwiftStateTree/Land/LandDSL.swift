@@ -83,7 +83,7 @@ public struct RulesNode: LandNode {
 /// ```swift
 /// Rules {
 ///     OnJoin { ... }
-///     Action(Move.self) { ... }
+///     HandleAction(Move.self) { ... }
 /// }
 /// ```
 public func Rules(@LandDSL _ content: () -> [LandNode]) -> RulesNode {
@@ -367,7 +367,7 @@ public enum LandDSL {
 ///   - body: The handler closure. It receives the state, the action, and the context.
 ///           It must return a `Codable & Sendable` response.
 /// - Returns: A type-erased `AnyActionHandler`.
-public func Action<State: StateNodeProtocol, A: ActionPayload>(
+public func HandleAction<State: StateNodeProtocol, A: ActionPayload>(
     _ type: A.Type,
     _ body:
         @escaping @Sendable (inout State, A, LandContext) async throws -> some Codable & Sendable
@@ -384,7 +384,7 @@ public func Action<State: StateNodeProtocol, A: ActionPayload>(
     )
 }
 
-/// Registers a generic event handler for a specific Client Event type.
+/// Registers an event handler for a specific event payload type.
 ///
 /// This is the base function for event handling. Typically, you might use generated helpers
 /// like `OnReady` or `OnChat` which wrap this function.
@@ -393,23 +393,11 @@ public func Action<State: StateNodeProtocol, A: ActionPayload>(
 ///   - type: The Client Event type to handle.
 ///   - body: The handler closure.
 /// - Returns: A type-erased `AnyClientEventHandler`.
-public func On<State: StateNodeProtocol, Event: ClientEventPayload>(
-    _ type: Event.Type,
-    _ body: @escaping @Sendable (inout State, Event, LandContext) async -> Void
-) -> AnyClientEventHandler<State> {
-    AnyClientEventHandler(eventType: type, handler: body)
-}
-
-/// Registers an event handler for a specific event payload type.
-///
-/// This is a convenience wrapper around `On` that provides a more symmetric
-/// API with `Action(…)`. It is intended for struct-based event payloads that
-/// conform to `ClientEventPayload`.
 public func HandleEvent<State: StateNodeProtocol, E: ClientEventPayload>(
     _ type: E.Type,
     _ body: @escaping @Sendable (inout State, E, LandContext) async -> Void
 ) -> AnyClientEventHandler<State> {
-    On(type, body)
+    AnyClientEventHandler(eventType: type, handler: body)
 }
 
 // MARK: - Server Event Registration

@@ -34,6 +34,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-syntax.git", from: "509.0.0"),
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
         .package(url: "https://github.com/hummingbird-project/hummingbird-websocket.git", from: "2.0.0"),
+        .package(url: "https://github.com/apple/swift-atomics.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.0")
     ],
     targets: [
@@ -100,7 +101,9 @@ let package = Package(
             name: "SwiftStateTreeTransportTests",
             dependencies: [
                 "SwiftStateTreeTransport",
-                "SwiftStateTree"
+                "SwiftStateTree",
+                "SwiftStateTreeHummingbird",
+                .product(name: "Atomics", package: "swift-atomics")
             ],
             path: "Tests/SwiftStateTreeTransportTests"
         ),

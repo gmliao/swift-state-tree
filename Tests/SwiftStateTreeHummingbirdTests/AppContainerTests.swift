@@ -54,10 +54,10 @@ private enum TestGame {
             Register(TestChatMessageEvent.self)
         }
         Rules {
-            On(TestPingEvent.self) { (state: inout TestGameState, event: TestPingEvent, ctx: LandContext) in
+            HandleEvent(TestPingEvent.self) { (state: inout TestGameState, event: TestPingEvent, ctx: LandContext) in
                 await ctx.sendEvent(TestPongEvent(), to: .session(ctx.sessionID))
             }
-            On(TestChatEvent.self) { (state: inout TestGameState, event: TestChatEvent, ctx: LandContext) in
+            HandleEvent(TestChatEvent.self) { (state: inout TestGameState, event: TestChatEvent, ctx: LandContext) in
                     state.messageCount += 1
                 await ctx.sendEvent(TestChatMessageEvent(message: event.message), to: .all)
             }
