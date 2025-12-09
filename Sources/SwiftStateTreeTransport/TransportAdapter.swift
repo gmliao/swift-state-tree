@@ -765,7 +765,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let decision = try await keeper.join(
                 session: playerSession,
                 clientID: clientID,
-                sessionID: sessionID
+                sessionID: sessionID,
+                services: LandServices()
             )
             
             switch decision {

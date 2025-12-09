@@ -11,7 +11,7 @@ import Logging
 /// - Automatic shutdown when empty
 ///
 /// All state mutations are serialized through the actor, ensuring thread-safety.
-public actor LandKeeper<State: StateNodeProtocol> {
+public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     public let definition: LandDefinition<State>
 
     private var state: State
@@ -71,6 +71,13 @@ public actor LandKeeper<State: StateNodeProtocol> {
     /// This is a read-only view of the state. Mutations should be done through action/event handlers.
     public func currentState() -> State {
         state
+    }
+    
+    /// Returns the current number of players in the land.
+    ///
+    /// This counts unique players (not connections), as a player can have multiple connections.
+    public func playerCount() -> Int {
+        players.count
     }
 
     deinit {
@@ -135,7 +142,7 @@ public actor LandKeeper<State: StateNodeProtocol> {
         session: PlayerSession,
         clientID: ClientID,
         sessionID: SessionID,
-        services: LandServices = LandServices()
+        services: LandServices
     ) async throws -> JoinDecision {
         // Call CanJoin handler if defined
         var decision: JoinDecision = .allow(playerID: PlayerID(session.playerID))
@@ -274,9 +281,9 @@ public actor LandKeeper<State: StateNodeProtocol> {
         _ envelope: ActionEnvelope,
         playerID: PlayerID,
         clientID: ClientID,
-        sessionID: SessionID,
-        decoder: JSONDecoder = JSONDecoder()
+        sessionID: SessionID
     ) async throws -> AnyCodable {
+        let decoder = JSONDecoder()
         let typeIdentifier = envelope.typeIdentifier
         
         guard let handler = definition.actionHandlers.first(where: { handler in
