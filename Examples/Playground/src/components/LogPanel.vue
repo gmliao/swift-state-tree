@@ -88,12 +88,13 @@ const headers = computed(() => [
 ])
 
 const formatTime = (date: Date): string => {
-  return date.toLocaleTimeString('zh-TW', {
+  const timeStr = date.toLocaleTimeString('zh-TW', {
     hour: '2-digit',
     minute: '2-digit',
-    second: '2-digit',
-    fractionalSecondDigits: 3
+    second: '2-digit'
   })
+  const milliseconds = date.getMilliseconds().toString().padStart(3, '0')
+  return `${timeStr}.${milliseconds}`
 }
 
 const getIcon = (type: LogEntry['type']): string => {
