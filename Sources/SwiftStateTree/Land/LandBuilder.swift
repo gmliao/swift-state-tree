@@ -23,6 +23,7 @@ enum LandBuilder {
         var eventHandlers: [AnyClientEventHandler<State>] = []
         var clientEventRegistrations: [Any.Type] = []
         var serverEventRegistrations: [Any.Type] = []
+        var clientEventRegistrationSet = Set<ObjectIdentifier>()
 
         func ingest(nodes: [LandNode]) {
             for node in nodes {
@@ -52,6 +53,7 @@ enum LandBuilder {
                     // Collect all registrations from ClientEvents block
                     for registration in clientEvents.registrations {
                         clientEventRegistrations.append(registration.type)
+                        clientEventRegistrationSet.insert(ObjectIdentifier(registration.type))
                     }
                 case let serverEvents as ServerEventsNode:
                     // Collect all registrations from ServerEvents block
@@ -68,6 +70,17 @@ enum LandBuilder {
         }
 
         ingest(nodes: nodes)
+
+        // Auto-register client event types found in handlers to avoid requiring
+        // a duplicate ClientEvents { Register(...) } block for schema generation.
+        for handler in eventHandlers {
+            let type = handler.getEventType()
+            let oid = ObjectIdentifier(type)
+            if !clientEventRegistrationSet.contains(oid) {
+                clientEventRegistrations.append(type)
+                clientEventRegistrationSet.insert(oid)
+            }
+        }
 
         let landConfig = LandConfig(
             allowPublic: accessControl.allowPublic,

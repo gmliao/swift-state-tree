@@ -187,6 +187,14 @@ public struct AnyClientEventHandler<State: StateNodeProtocol>: LandNode {
         self.eventType == eventType
     }
 
+    /// Get the client event type handled by this handler.
+    ///
+    /// Used by schema extraction to auto-register client events without an explicit
+    /// `ClientEvents` block.
+    public func getEventType() -> Any.Type {
+        eventType
+    }
+
     public func invoke(
         _ state: inout State,
         event: AnyClientEvent,

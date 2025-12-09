@@ -1,0 +1,13 @@
+{
+  "name": "swift-state-tree-ts-codegen",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "codegen": "tsx src/gen-schema.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.4.0"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "hummingbird-demo-vue",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "codegen": "tsx ../../sdk/ts-codegen/src/gen-schema.ts ../HummingbirdDemo/schema.json src/generated @sdk-runtime/LandViewRuntime",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@mdi/font": "^7.4.47",
+    "pinia": "^2.1.7",
+    "vue": "^3.4.0",
+    "vuetify": "^3.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.2",
+    "@vitejs/plugin-vue": "^5.0.0",
+    "sass": "^1.75.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.4.0",
+    "vite": "^5.2.0"
+  }
+}

@@ -145,7 +145,7 @@ public struct ActionEventExtractor {
     private static func getGetFieldMetadataMethod(from type: Any.Type) -> (() -> [FieldMetadata])? {
         // Use runtime reflection to check if type has getFieldMetadata() method
         // This is a workaround for types that have the method but don't conform to the protocol
-        let mirror = Mirror(reflecting: type)
+        _ = Mirror(reflecting: type)
         
         // Try to find getFieldMetadata method using type metadata
         // This is a simplified approach - in production you might want to use more sophisticated reflection

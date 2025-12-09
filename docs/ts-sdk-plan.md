@@ -11,6 +11,9 @@
 - `sdk/ts/`:
   - `generated/`: 自動產生的型別、常數、（可選）Zod validators。檔頭標註自動產生。
   - `src/`: 手寫 SDK，依賴 `generated/`，封裝連線、JWT header 握手、typed send/receive。
+    - `runtime/LandViewRuntime.ts`: 通用 WebSocket runtime（send/receive、訂閱、自動套用 diff 更新本地 snapshot）。
+- `sdk/ts/package.json`、`tsconfig.json`: npm 專案腳手架，方便在 SDK 內跑 `tsc`/`vitest`（需要時再裝依賴）。
+- `sdk/ts-codegen/`: codegen 腳本（`src/gen-schema.ts`），輸出到 `../ts/generated`。
 - `sdk/unity/`（或 `sdk/dotnet/`）:
   - `Generated/`: C# 自動產生的型別/常數。
   - `Runtime/`: 手寫 Unity/UPM SDK，封裝連線與 typed API。
@@ -31,11 +34,24 @@
 - `onServerEvent<'pong'>((payload: PongEvent) => void)`, `onStateSnapshot`, `onStateDiff`.
 - 內部使用 generated unions/maps 確保型別安全；若有 Zod，送出前/收到後可驗證。
 
+## Schema 抽取行為補充
+- 客戶端事件（Client → Server）：使用 `HandleEvent(FooEvent.self)` 的型別會自動註冊進 schema，不一定要在 DSL 再寫 `ClientEvents { Register(FooEvent.self) }`。
+- 伺服器事件（Server → Client）：仍需顯式宣告 `ServerEvents { Register(BarEvent.self) }`（或未來的 `Emit` 類似節點）才能出現在 schema，因為伺服器可能在任何 handler/背景任務中送事件，無法自動推導。
+
 ## Workflow
 1) 伺服端透過 `AnyLandDefinition.extractSchema()` 更新 `schema.json`。
-2) 跑 `node scripts/gen-schema.ts` 生成 `sdk/ts/generated`（未來可加 C# 生成）。
+2) 跑 codegen 生成 `sdk/ts/generated`（defs/常數/land 樹狀 client）：
+   `cd sdk/ts-codegen && pnpm|npm|npx tsx src/gen-schema.ts`
+   （預設讀 `Examples/HummingbirdDemo/schema.json`，輸出 `sdk/ts/generated`）。
 3) SDK 僅引用 `generated`，不手改型別；前端/Unity 直接吃 SDK。
 4) CI 可在發佈前自動跑 codegen，再 build/publish npm 包或 UPM。
+
+## 客戶端 Land 樹狀 API（示例）
+- `sdk/ts/src/demoGameClient.ts` 提供 demo-game 專用樹狀 API：
+  - `actions.addGold(...)`、`clientEvents.chat(...)` 直接送出對應 ID（封裝 landId）。
+  - `serverEvents.onChatMessage(handler)`、`serverEvents.onPong(handler)` 訂閱伺服端事件。
+  - `state.onSnapshot(handler)`、`state.onDiff(handler)` 接收同步；`state.getLatest()` 讀緩存（非 reactive，需自行寫入框架狀態）。
+- 內部使用 generated 型別與 schema 中的 action/event ID，wire 格式預期 `{ kind, landId, id?, payload }` 的 JSON over WebSocket；若 wire 格式不同，可在此檔調整封包邏輯。
 
 ## 版本與相容性
 - 以 schema 為核心做版本同步：schema 版本升級 → TS/Unity SDK 主版號同步提升。

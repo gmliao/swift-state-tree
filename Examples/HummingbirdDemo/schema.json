@@ -496,32 +496,32 @@
   "lands" : {
     "demo-game" : {
       "actions" : {
-        "addgold" : {
+        "AddGold" : {
           "$ref" : "#\/defs\/AddGoldAction"
         },
-        "getmyprivatestate" : {
+        "GetMyPrivateState" : {
           "$ref" : "#\/defs\/GetMyPrivateStateAction"
         },
-        "updatescore" : {
+        "UpdateScore" : {
           "$ref" : "#\/defs\/UpdateScoreAction"
         },
-        "updatesettings" : {
+        "UpdateSettings" : {
           "$ref" : "#\/defs\/UpdateSettingsAction"
         }
       },
       "clientEvents" : {
-        "chat" : {
+        "Chat" : {
           "$ref" : "#\/defs\/ChatEvent"
         },
-        "ping" : {
+        "Ping" : {
           "$ref" : "#\/defs\/PingEvent"
         }
       },
       "events" : {
-        "chatmessage" : {
+        "ChatMessage" : {
           "$ref" : "#\/defs\/ChatMessageEvent"
         },
-        "pong" : {
+        "Pong" : {
           "$ref" : "#\/defs\/PongEvent"
         }
       },

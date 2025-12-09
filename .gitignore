@@ -98,3 +98,5 @@ internal/
 .clang_module_cache
 .home
 .DS_Store
+node_modules/
+dist/

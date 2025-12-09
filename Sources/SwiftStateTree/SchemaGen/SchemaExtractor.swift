@@ -189,8 +189,8 @@ public struct SchemaExtractor {
             actionID = String(actionID.dropLast(6))
         }
         
-        // Return camelCase format (e.g., "AddGold")
-        return actionID
+        // Convert to lowerCamelCase (e.g., "AddGold" -> "addGold")
+        return lowerFirst(actionID)
     }
     
     /// Generate event ID from server event type.
@@ -214,8 +214,8 @@ public struct SchemaExtractor {
             eventID = String(eventID.dropLast(5))
         }
         
-        // Return camelCase format (e.g., "Chat", "Ping", "ChatMessage")
-        return eventID
+        // Return lowerCamelCase format (e.g., "ChatMessage" -> "chatMessage")
+        return lowerFirst(eventID)
     }
     
     /// Create a diff schema placeholder.
@@ -248,5 +248,11 @@ public struct SchemaExtractor {
         definitions[diffTypeName] = diffSchema
         
         return JSONSchema(ref: "#/defs/\(diffTypeName)")
+    }
+
+    /// Lowercase the first character of a string (if any).
+    private static func lowerFirst(_ value: String) -> String {
+        guard let first = value.first else { return value }
+        return first.lowercased() + value.dropFirst()
     }
 }
