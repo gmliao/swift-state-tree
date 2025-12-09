@@ -246,14 +246,14 @@ func testSchemaExtractorStructServerEvents() throws {
     #expect(eventSchema.required?.contains("type") == true)
     #expect(eventSchema.required?.contains("data") == true)
     
-    // Verify events map uses generated event ID (e.g., "TestEvent" -> "test")
+    // Verify events map uses generated event ID (e.g., "TestEvent" -> "Test")
     let landSchema = schema.lands["test-events"]!
     let eventKeys = Array(landSchema.events.keys)
-    // Event ID is generated from type name: "TestEvent" -> "test"
-    #expect(eventKeys.contains("test"))
+    // Event ID is generated from type name: "TestEvent" -> "Test" (camelCase, first letter uppercase)
+    #expect(eventKeys.contains("Test"))
     
     // Verify the event reference points to the correct definition
-    let eventRef = landSchema.events["test"]
+    let eventRef = landSchema.events["Test"]
     #expect(eventRef?.ref == "#/defs/\(typeName)")
 }
 

@@ -1,0 +1,186 @@
+import Foundation
+import Hummingbird
+import HummingbirdWebSocket
+import SwiftStateTree
+import SwiftStateTreeTransport
+import Logging
+import NIOCore
+
+/// Admin HTTP routes for managing lands.
+///
+/// Provides endpoints for querying, creating, and managing lands.
+public struct AdminRoutes<State: StateNodeProtocol>: Sendable {
+    public let landManager: LandManager<State>
+    public let adminAuth: AdminAuthMiddleware
+    public let logger: Logger
+    
+    public init(
+        landManager: LandManager<State>,
+        adminAuth: AdminAuthMiddleware,
+        logger: Logger? = nil
+    ) {
+        self.landManager = landManager
+        self.adminAuth = adminAuth
+        self.logger = logger ?? Logger(label: "com.swiftstatetree.admin.routes")
+    }
+    
+    /// Register admin routes to the router.
+    ///
+    /// - Parameter router: The Hummingbird router to register routes on.
+    public func registerRoutes(on router: Router<BasicWebSocketRequestContext>) {
+        // GET /admin/lands - List all lands
+        router.get("/admin/lands") { request, context in
+            guard await self.adminAuth.hasRequiredRole(from: request, requiredRole: .viewer) else {
+                return Response(status: .unauthorized)
+            }
+            
+            // List all lands
+            let landIDs = await self.landManager.listLands()
+            let landList = landIDs.map { $0.stringValue }
+            
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            
+            do {
+                let jsonData = try encoder.encode(landList)
+                var buffer = ByteBufferAllocator().buffer(capacity: jsonData.count)
+                buffer.writeBytes(jsonData)
+                var response = Response(status: .ok, body: .init(byteBuffer: buffer))
+                response.headers[.contentType] = "application/json"
+                return response
+            } catch {
+                self.logger.error("Failed to encode land list: \(error)")
+                return Response(status: .internalServerError)
+            }
+        }
+        
+        // GET /admin/lands/:landID - Get specific land info
+        router.get("/admin/lands/:landID") { request, context in
+            guard await self.adminAuth.hasRequiredRole(from: request, requiredRole: .viewer) else {
+                return Response(status: .unauthorized)
+            }
+            
+            // Extract landID from path
+            let landIDString = context.parameters.get("landID") ?? "unknown"
+            let landID = LandID(landIDString)
+            
+            // Get land stats
+            guard let stats = await self.landManager.getLandStats(landID: landID) else {
+                return Response(status: .notFound)
+            }
+            
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            
+            do {
+                let jsonData = try encoder.encode(stats)
+                var buffer = ByteBufferAllocator().buffer(capacity: jsonData.count)
+                buffer.writeBytes(jsonData)
+                var response = Response(status: .ok, body: .init(byteBuffer: buffer))
+                response.headers[.contentType] = "application/json"
+                return response
+            } catch {
+                self.logger.error("Failed to encode land stats: \(error)")
+                return Response(status: .internalServerError)
+            }
+        }
+        
+        // GET /admin/lands/:landID/stats - Get land statistics (alias for above)
+        router.get("/admin/lands/:landID/stats") { request, context in
+            guard await self.adminAuth.hasRequiredRole(from: request, requiredRole: .viewer) else {
+                return Response(status: .unauthorized)
+            }
+            
+            let landIDString = context.parameters.get("landID") ?? "unknown"
+            let landID = LandID(landIDString)
+            
+            guard let stats = await self.landManager.getLandStats(landID: landID) else {
+                return Response(status: .notFound)
+            }
+            
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            
+            do {
+                let jsonData = try encoder.encode(stats)
+                var buffer = ByteBufferAllocator().buffer(capacity: jsonData.count)
+                buffer.writeBytes(jsonData)
+                var response = Response(status: .ok, body: .init(byteBuffer: buffer))
+                response.headers[.contentType] = "application/json"
+                return response
+            } catch {
+                self.logger.error("Failed to encode land stats: \(error)")
+                return Response(status: .internalServerError)
+            }
+        }
+        
+        // POST /admin/lands - Create a new land (admin only)
+        router.post("/admin/lands") { request, context in
+            guard await self.adminAuth.hasRequiredRole(from: request, requiredRole: .admin) else {
+                return Response(status: .unauthorized)
+            }
+            
+            // Extract landID from request body or generate one
+            // For now, generate a new landID
+            _ = LandID(UUID().uuidString)
+            
+            // Note: This requires definition and initialState, which should come from request body
+            // For now, return not implemented
+            return Response(status: .notImplemented)
+        }
+        
+        // DELETE /admin/lands/:landID - Remove a land (admin only)
+        router.delete("/admin/lands/:landID") { request, context in
+            guard await self.adminAuth.hasRequiredRole(from: request, requiredRole: .admin) else {
+                return Response(status: .unauthorized)
+            }
+            
+            let landIDString = context.parameters.get("landID") ?? "unknown"
+            let landID = LandID(landIDString)
+            
+            await self.landManager.removeLand(landID: landID)
+            
+            return Response(status: .noContent)
+        }
+        
+        // GET /admin/stats - System statistics
+        router.get("/admin/stats") { request, context in
+            guard await self.adminAuth.hasRequiredRole(from: request, requiredRole: .viewer) else {
+                return Response(status: .unauthorized)
+            }
+            
+            // Get system stats
+            let landIDs = await self.landManager.listLands()
+            var totalPlayers = 0
+            
+            for landID in landIDs {
+                if let stats = await self.landManager.getLandStats(landID: landID) {
+                    totalPlayers += stats.playerCount
+                }
+            }
+            
+            let systemStats: [String: AnyCodable] = [
+                "totalLands": AnyCodable(landIDs.count),
+                "totalPlayers": AnyCodable(totalPlayers)
+            ]
+            
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            
+            do {
+                let jsonData = try encoder.encode(systemStats)
+                var buffer = ByteBufferAllocator().buffer(capacity: jsonData.count)
+                buffer.writeBytes(jsonData)
+                var response = Response(status: .ok, body: .init(byteBuffer: buffer))
+                response.headers[.contentType] = "application/json"
+                return response
+            } catch {
+                self.logger.error("Failed to encode system stats: \(error)")
+                return Response(status: .internalServerError)
+            }
+        }
+    }
+}
+

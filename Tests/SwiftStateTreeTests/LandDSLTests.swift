@@ -288,7 +288,8 @@ func testCanJoinAllows() async throws {
     let decision1 = try await keeper.join(
         session: session1,
         clientID: ClientID("client1"),
-        sessionID: SessionID("session1")
+        sessionID: SessionID("session1"),
+        services: LandServices()
     )
     
     guard case .allow(let playerID) = decision1 else {
@@ -332,7 +333,8 @@ func testCanJoinDenies() async throws {
     _ = try await keeper.join(
         session: session1,
         clientID: ClientID("client1"),
-        sessionID: SessionID("session1")
+        sessionID: SessionID("session1"),
+        services: LandServices()
     )
     
     // Second join should fail
@@ -341,7 +343,8 @@ func testCanJoinDenies() async throws {
         _ = try await keeper.join(
             session: session2,
             clientID: ClientID("client2"),
-            sessionID: SessionID("session2")
+            sessionID: SessionID("session2"),
+            services: LandServices()
         )
         Issue.record("Expected join to throw JoinError.roomIsFull")
     } catch JoinError.roomIsFull {

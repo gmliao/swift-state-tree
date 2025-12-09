@@ -217,7 +217,7 @@ public actor MatchmakingService {
     private var waitingPlayers: [PlayerID: MatchmakingRequest] = [:]
     
     public struct MatchmakingPreferences: Sendable {
-        public let gameMode: String
+        public let landType: String
         public let minLevel: Int?
         public let maxLevel: Int?
         public let region: String?
@@ -251,39 +251,57 @@ public actor MatchmakingService {
 
 ### 4. LobbyContainer（配對大廳）
 
+**位置**: `Sources/SwiftStateTreeTransport/LobbyContainer.swift`
+
 **職責**：
-- 提供一個固定的「配對大廳」房間
-- 玩家等待配對時的臨時空間
-- 顯示配對狀態、等待中的玩家列表
-- 處理配對相關的 Action/Event
+- 提供配對大廳功能（大廳是特殊的 Land）
+- 整合 MatchmakingService 進行自動配對
+- 支援客戶端自由創建房間
+- 支援客戶端手動選擇房間加入
+- 追蹤並推送房間列表變化（類似 Colyseus LobbyRoom）
 
 **設計**：
 
 ```swift
-/// Container for the matchmaking lobby (a special fixed room).
-///
-/// All players waiting for matchmaking join this lobby first.
-public struct LobbyContainer {
-    public let container: LandContainer<LobbyState, LobbyClientEvents, LobbyServerEvents>
+/// Container for lobby lands (special lands for matchmaking and room management).
+public struct LobbyContainer<State: StateNodeProtocol, Registry: LandManagerRegistry>: Sendable {
+    public let container: LandContainer<State>
+    private let matchmakingService: MatchmakingService<State, Registry>
+    private let landManagerRegistry: Registry
+    private let landTypeRegistry: LandTypeRegistry<State>
     
-    /// Join the lobby
-    public func join(playerID: PlayerID, sessionID: SessionID, clientID: ClientID) async throws
-    
-    /// Leave the lobby
-    public func leave(playerID: PlayerID, clientID: ClientID) async
-    
-    /// Request matchmaking (via Action)
+    /// Request matchmaking (automatic matching)
     public func requestMatchmaking(
         playerID: PlayerID,
         preferences: MatchmakingPreferences
     ) async throws -> MatchmakingResult
+    
+    /// Create a new game room (client can freely create)
+    public func createRoom(
+        playerID: PlayerID,
+        landType: String,
+        roomName: String? = nil,
+        maxPlayers: Int? = nil
+    ) async throws -> LandID
+    
+    /// Manually join a specific room
+    public func joinRoom(
+        playerID: PlayerID,
+        landID: LandID
+    ) async -> Bool
+    
+    /// Update room list by querying all available game rooms
+    public func updateRoomList() async -> [AvailableRoom]
 }
 ```
 
 **特點**：
-- 是一個特殊的固定房間（不會被銷毀）
-- 使用標準的 `LandContainer`，但狀態和邏輯專門用於配對
-- 可以顯示等待中的玩家、配對進度等資訊
+- 大廳是特殊的 Land，透過 `LandManager` 統一管理
+- 使用 landID 命名約定區分大廳（如 `lobby-asia`、`lobby-europe`）
+- 支援多個大廳模式（每個大廳有獨立的配對隊列）
+- 整合 MatchmakingService 進行自動配對
+- 支援房間列表追蹤和推送（類似 Colyseus LobbyRoom）
+- 結果透過 Server Event 推送給玩家（無需 polling）
 
 ### 5. AppContainer（應用層級容器）
 
@@ -365,61 +383,211 @@ public struct AppContainer {
 
 ## 工作流程範例
 
-### 1. 玩家配對流程
+### 1. 玩家配對流程（自動配對）
 
 ```swift
-// 1. 玩家連線到配對大廳
-let lobby = await appContainer.lobbyContainer
-try await lobby.join(playerID: playerID, sessionID: sessionID, clientID: clientID)
+// === 伺服器端設定 ===
+// 1. 建立 LandManager 和相關服務
+let landManager = LandManager<State>(...)
+let registry = SingleLandManagerRegistry(landManager: landManager)
+let landTypeRegistry = LandTypeRegistry<State>(...)
+let matchmakingService = MatchmakingService(registry: registry, landTypeRegistry: landTypeRegistry)
 
-// 2. 玩家發送配對請求
-let result = try await lobby.requestMatchmaking(
-    playerID: playerID,
-    preferences: MatchmakingPreferences(
-        gameMode: "battle-royale",
-        minLevel: 10,
-        maxLevel: 50
-    )
+// 2. 建立大廳
+let lobbyContainer = await landManager.getOrCreateLand(
+    landID: LandID("lobby-asia"),
+    definition: makeLobbyLandDefinition(...),
+    initialState: LobbyState()
 )
 
-// 3. 配對服務處理
-switch result {
-case .matched(let roomID):
-    // 4. 配對成功，通知玩家
-    await lobby.sendEvent(.matchFound(roomID: roomID), to: .player(playerID))
-    
-    // 5. 玩家連線到遊戲房間
-    let gameRoom = await appContainer.landManager.getOrCreateRoom(roomID: roomID)
-    try await gameRoom.join(playerID: playerID, sessionID: sessionID, clientID: clientID)
-    
-case .queued(let position):
-    // 等待配對中
-    await lobby.sendEvent(.queued(position: position), to: .player(playerID))
-    
-case .failed(let reason):
-    await lobby.sendEvent(.matchmakingFailed(reason: reason), to: .player(playerID))
+// 3. 包裝為 LobbyContainer
+let lobby = LobbyContainer(
+    container: lobbyContainer,
+    matchmakingService: matchmakingService,
+    landManagerRegistry: registry,
+    landTypeRegistry: landTypeRegistry
+)
+
+// === 客戶端流程 ===
+// 1. 玩家連線到大廳 WebSocket
+let lobbyWS = WebSocket("ws://host:port/game/lobby-asia")
+await lobbyWS.connect()
+await lobbyWS.send(JoinMessage(...))
+
+// 2. 玩家發送配對請求（透過 Action）
+await lobbyWS.send(ActionMessage(
+    action: RequestMatchmakingAction(
+        preferences: MatchmakingPreferences(
+            landType: "battle-royale",
+            minLevel: 10,
+            maxLevel: 50
+        )
+    )
+))
+
+// 3. 大廳的 Action handler 呼叫 LobbyContainer.requestMatchmaking()
+// 4. LobbyContainer 呼叫 MatchmakingService.matchmake()
+// 5. 結果透過 Server Event 推送給玩家（無需 polling）
+
+// 6. 客戶端接收配對結果
+lobbyWS.onEvent { event in
+    if case .matched(let landID) = event {
+        // 配對成功，連接到遊戲房間
+        let gameWS = WebSocket("ws://host:port/game/\(landID.stringValue)")
+        await gameWS.connect()
+        await gameWS.send(JoinMessage(...))
+    } else if case .queued(let position) = event {
+        // 還在排隊
+        updateQueuePosition(position)
+    } else if case .failed(let reason) = event {
+        // 配對失敗
+        showError(reason)
+    }
 }
 ```
 
-### 2. 直接加入指定房間
+### 1b. 客戶端創建房間流程
 
 ```swift
-// 玩家知道房間 ID，直接加入
-let roomID = RoomID("room-123")
-let gameRoom = await appContainer.landManager.getOrCreateRoom(roomID: roomID)
-try await gameRoom.join(playerID: playerID, sessionID: sessionID, clientID: clientID)
+// === 客戶端流程 ===
+// 1. 玩家在大廳中發送創建房間請求（透過 Action）
+await lobbyWS.send(ActionMessage(
+    action: CreateRoomAction(
+        landType: "battle-royale",
+        roomName: "My Custom Room",
+        maxPlayers: 8
+    )
+))
+
+// 2. 大廳的 Action handler 呼叫 LobbyContainer.createRoom()
+// 3. LobbyContainer 使用 LandManagerRegistry 創建新房間
+// 4. 房間列表更新並推送給所有大廳玩家（RoomListEvent.roomAdded）
+
+// 5. 客戶端接收房間列表更新
+lobbyWS.onEvent { event in
+    if case .roomAdded(let room) = event {
+        // 新房間已創建
+        addRoomToList(room)
+    }
+}
 ```
 
-### 3. 房間路由
+### 1c. 客戶端手動加入房間流程
 
 ```swift
-// WebSocket 連線時，從 URL 參數或訊息中提取 roomID
-router.ws("/game/:roomID") { inbound, outbound, context in
-    let roomID = RoomID(context.parameters.get("roomID") ?? "default")
-    let gameRoom = await appContainer.landManager.getOrCreateRoom(roomID: roomID)
+// === 客戶端流程 ===
+// 1. 玩家從房間列表中選擇一個房間
+let selectedRoom = availableRooms[0]
+
+// 2. 玩家發送加入房間請求（透過 Action）
+await lobbyWS.send(ActionMessage(
+    action: JoinRoomAction(landID: selectedRoom.landID)
+))
+
+// 3. 大廳的 Action handler 呼叫 LobbyContainer.joinRoom()
+// 4. 驗證房間存在後，返回成功
+
+// 5. 客戶端連接到遊戲房間
+let gameWS = WebSocket("ws://host:port/game/\(selectedRoom.landID.stringValue)")
+await gameWS.connect()
+await gameWS.send(JoinMessage(...))
+```
+
+### 2. 直接加入指定房間（不使用大廳）
+
+```swift
+// 玩家知道房間 ID，直接連接到遊戲房間（跳過大廳）
+let landID = LandID("battle-royale-123")
+let gameWS = WebSocket("ws://host:port/game/\(landID.stringValue)")
+await gameWS.connect()
+await gameWS.send(JoinMessage(...))
+```
+
+### 3. 多個大廳管理
+
+```swift
+// === 伺服器端設定 ===
+// 1. 建立多個大廳
+let container = try await AppContainer.makeMultiRoomServer(
+    configuration: config,
+    landFactory: { landID in ... },
+    initialStateFactory: { landID in ... },
+    lobbyIDs: ["lobby-asia", "lobby-europe", "lobby-casual"] // 預先建立多個大廳
+)
+
+// 2. 取得特定大廳
+let asiaLobby = await container.getLobby(
+    landID: LandID("lobby-asia"),
+    matchmakingService: matchmakingService,
+    landManagerRegistry: registry,
+    landTypeRegistry: landTypeRegistry
+)
+
+// 3. 列出所有大廳
+let allLobbies = await container.landManager?.listLobbies()
+// 返回: [LandID("lobby-asia"), LandID("lobby-europe"), LandID("lobby-casual")]
+```
+
+### 4. 房間路由
+
+```swift
+// WebSocket 連線時，從 URL 參數中提取 landID
+// 路由格式: /game/:landID
+// 例如: /game/lobby-asia, /game/battle-royale-123
+
+router.ws("/game/:landID") { inbound, outbound, context in
+    let landIDString = context.parameters.get("landID") ?? "default"
+    let landID = LandID(landIDString)
     
-    // 路由到對應的房間
-    await gameRoom.handleConnection(inbound: inbound, outbound: outbound, context: context)
+    // 取得或創建對應的 land（可以是大廳或遊戲房間）
+    let definition = landFactory(landID)
+    let initialState = initialStateFactory(landID)
+    let container = await landManager.getOrCreateLand(
+        landID: landID,
+        definition: definition,
+        initialState: initialState
+    )
+    
+    // 路由到對應的 land
+    let hbAdapter = HummingbirdStateTreeAdapter(...)
+    await hbAdapter.handle(inbound: inbound, outbound: outbound, context: context)
+}
+```
+
+### 5. 大廳如何呼叫 MatchmakingService
+
+```swift
+// 在 LobbyContainer 中：
+public func requestMatchmaking(
+    playerID: PlayerID,
+    preferences: MatchmakingPreferences
+) async throws -> MatchmakingResult {
+    // 1. 呼叫 MatchmakingService
+    let result = try await matchmakingService.matchmake(
+        playerID: playerID,
+        preferences: preferences
+    )
+    
+    // 2. 透過 Event 推送結果給玩家
+    await sendMatchmakingResult(playerID: playerID, result: result)
+    
+    return result
+}
+
+// 在 LandDefinition 的 Action handler 中：
+HandleAction(RequestMatchmakingAction.self) { state, action, ctx in
+    // 從 LandServices 取得 LobbyContainer（需要預先註冊）
+    guard let lobbyContainer = ctx.services.get(LobbyContainer.self) else {
+        return MatchmakingResponse(result: .failed(reason: "LobbyContainer not available"))
+    }
+    
+    // 呼叫 LobbyContainer
+    let result = try await lobbyContainer.requestMatchmaking(
+        playerID: ctx.playerID,
+        preferences: action.preferences
+    )
+    
+    return MatchmakingResponse(result: result)
 }
 ```
 

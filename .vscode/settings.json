@@ -3,9 +3,12 @@
         "codegen",
         "FIRSTSYNC",
         "inout",
+        "matchmake",
         "MVVM",
         "preconcurrency",
+        "royale",
         "sess",
+        "swiftstatetree",
         "typealias",
         "uppercased"
     ]

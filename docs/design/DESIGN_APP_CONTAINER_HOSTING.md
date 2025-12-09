@@ -235,7 +235,7 @@ public struct GameDomainServices: Sendable {
 
 ### 目前實作：AppContainer 封裝
 
-- 位置：`Sources/SwiftStateTreeHummingbirdHosting/AppContainer.swift`（target `SwiftStateTreeHummingbirdHosting`，提供泛用 host pattern，Demo 與測試共用）
+- 位置：`Sources/SwiftStateTreeHummingbird/AppContainer.swift`（target `SwiftStateTreeHummingbird`，提供泛用 host pattern，Demo 與測試共用）
 - 功能：
   - 集中建立 `LandKeeper`、`WebSocketTransport`、`TransportAdapter`、`HummingbirdStateTreeAdapter`、`Router`、`Application`
   - 提供 `Configuration` 結構統一設定 host、port、路徑與是否顯示啟動訊息
