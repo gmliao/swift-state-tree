@@ -533,7 +533,9 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
     // Clean up old entries (keep only last 100)
     if (actionRequestMap.value.size > 100) {
       const firstKey = actionRequestMap.value.keys().next().value
-      actionRequestMap.value.delete(firstKey)
+      if (firstKey !== undefined) {
+        actionRequestMap.value.delete(firstKey)
+      }
     }
     
     sendAction(actionName, payload, landID, requestID)
