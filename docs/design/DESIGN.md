@@ -40,6 +40,7 @@
 ### Land DSL
 - **[DESIGN_LAND_DSL.md](./DESIGN_LAND_DSL.md)**：Land DSL 語法、Action 處理、Event 處理、LandContext
 - **[DESIGN_LAND-DSL-ROOM_LIFECYCLE.md](./DESIGN_LAND-DSL-ROOM_LIFECYCLE.md)**：房間生命週期、Hook 呼叫順序、async/await 支援
+- **[DESIGN_STATE_RESOLVE.md](./DESIGN_STATE_RESOLVE.md)**：StateResolve 區塊、Resolver 關聯、填充與持久化策略
 
 ### Transport 層
 - **[DESIGN_TRANSPORT.md](./DESIGN_TRANSPORT.md)**：網路傳輸抽象、Transport 協議、服務注入

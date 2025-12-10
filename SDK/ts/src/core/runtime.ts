@@ -100,7 +100,11 @@ export class StateTreeRuntime {
       metadata: options?.metadata,
       logger: options?.logger,
       onStateUpdate: options?.onStateUpdate,
-      onSnapshot: options?.onSnapshot
+      onSnapshot: options?.onSnapshot,
+      onTransportMessage: options?.onTransportMessage,
+      onStateUpdateMessage: options?.onStateUpdateMessage,
+      onSnapshotMessage: options?.onSnapshotMessage,
+      onError: options?.onError
     })
 
     this.views.set(landID, view)

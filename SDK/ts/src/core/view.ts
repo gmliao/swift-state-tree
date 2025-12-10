@@ -17,8 +17,35 @@ export interface ViewOptions {
   deviceID?: string
   metadata?: Record<string, any>
   logger?: Logger
+  /**
+   * Called when the decoded application state changes.
+   * This receives a plain JavaScript object representing the current state.
+   */
   onStateUpdate?: (state: Record<string, any>) => void
+  /**
+   * Called when a raw StateSnapshot message is received from the server.
+   */
   onSnapshot?: (snapshot: StateSnapshot) => void
+  /**
+   * Called for every raw TransportMessage routed to this view.
+   * Useful for higher‑level logging or inspection.
+   */
+  onTransportMessage?: (message: TransportMessage) => void
+  /**
+   * Called for every raw StateUpdate routed to this view,
+   * before internal patch application.
+   */
+  onStateUpdateMessage?: (update: StateUpdate) => void
+  /**
+   * Called for every raw StateSnapshot routed to this view,
+   * before internal snapshot decoding.
+   */
+  onSnapshotMessage?: (snapshot: StateSnapshot) => void
+  /**
+   * Called when an SDK‑level error occurs that is related to this view
+   * (transport error, action error, join error, etc).
+   */
+  onError?: (error: Error, context?: { code?: string; details?: any; source: string }) => void
 }
 
 /**
@@ -44,6 +71,10 @@ export class StateTreeView {
   private metadata?: Record<string, any>
   private onStateUpdate?: (state: Record<string, any>) => void
   private onSnapshot?: (snapshot: StateSnapshot) => void
+  private onTransportMessageCallback?: (message: TransportMessage) => void
+  private onStateUpdateMessageCallback?: (update: StateUpdate) => void
+  private onSnapshotMessageCallback?: (snapshot: StateSnapshot) => void
+  private onErrorCallback?: (error: Error, context?: { code?: string; details?: any; source: string }) => void
 
   constructor(
     private runtime: StateTreeRuntime,
@@ -57,6 +88,10 @@ export class StateTreeView {
     this.metadata = options?.metadata
     this.onStateUpdate = options?.onStateUpdate
     this.onSnapshot = options?.onSnapshot
+    this.onTransportMessageCallback = options?.onTransportMessage
+    this.onStateUpdateMessageCallback = options?.onStateUpdateMessage
+    this.onSnapshotMessageCallback = options?.onSnapshotMessage
+    this.onErrorCallback = options?.onError
   }
 
   /**
@@ -81,6 +116,10 @@ export class StateTreeView {
         this.logger.info(`Join request sent: landID=${this.landID}`)
       } catch (error) {
         this.logger.error(`Failed to send join message: ${error}`)
+        if (this.onErrorCallback) {
+          const err = new Error(`Failed to send join message: ${String(error)}`)
+          this.onErrorCallback(err, { source: 'join' })
+        }
         resolve({ success: false, reason: `Failed to send: ${error}` })
       }
     })
@@ -119,7 +158,11 @@ export class StateTreeView {
       } catch (error: any) {
         this.actionCallbacks.delete(requestID)
         this.actionRejectCallbacks.delete(requestID)
-        reject(new Error(`Failed to send action: ${error?.message || error}`))
+        const err = new Error(`Failed to send action: ${error?.message || error}`)
+        if (this.onErrorCallback) {
+          this.onErrorCallback(err, { source: 'action' })
+        }
+        reject(err)
       }
     })
   }
@@ -186,6 +229,11 @@ export class StateTreeView {
    * Handle TransportMessage (called by Runtime)
    */
   handleTransportMessage(message: TransportMessage): void {
+    // Surface raw transport message to caller for logging/inspection
+    if (this.onTransportMessageCallback) {
+      this.onTransportMessageCallback(message)
+    }
+
     switch (message.kind) {
       case 'joinResponse': {
         const payloadObj = message.payload as any
@@ -266,6 +314,14 @@ export class StateTreeView {
         
         this.logger.error(`Error [${code}]: ${errorMessage}`, details)
 
+        // Notify higher-level error callback for logging/inspection
+        const baseError = new Error(`Error [${code}]: ${errorMessage}`)
+        ;(baseError as any).code = code
+        ;(baseError as any).details = details
+        if (this.onErrorCallback) {
+          this.onErrorCallback(baseError, { code, details, source: 'transport' })
+        }
+
         // Check if this is an action-related error
         if (requestID) {
           const actionRejectCallback = this.actionRejectCallbacks.get(requestID)
@@ -273,6 +329,9 @@ export class StateTreeView {
             const error = new Error(`Action failed [${code}]: ${errorMessage}`)
             ;(error as any).code = code
             ;(error as any).details = details
+            if (this.onErrorCallback) {
+              this.onErrorCallback(error, { code, details, source: 'action' })
+            }
             actionRejectCallback(error)
             this.actionCallbacks.delete(requestID)
             this.actionRejectCallbacks.delete(requestID)
@@ -314,6 +373,11 @@ export class StateTreeView {
    * Handle StateUpdate (called by Runtime)
    */
   handleStateUpdate(update: StateUpdate): void {
+    // Surface raw StateUpdate to caller for logging/inspection
+    if (this.onStateUpdateMessageCallback) {
+      this.onStateUpdateMessageCallback(update)
+    }
+
     if (update.type === 'noChange') {
       return
     }
@@ -339,6 +403,11 @@ export class StateTreeView {
    * Handle StateSnapshot (called by Runtime)
    */
   handleSnapshot(snapshot: StateSnapshot): void {
+    // Surface raw StateSnapshot to caller for logging/inspection
+    if (this.onSnapshotMessageCallback) {
+      this.onSnapshotMessageCallback(snapshot)
+    }
+
     this.logger.info('Initial snapshot received')
     this.currentState = this.decodeSnapshot(snapshot.values)
 
@@ -488,4 +557,3 @@ export class StateTreeView {
     return this.isJoined
   }
 }
-

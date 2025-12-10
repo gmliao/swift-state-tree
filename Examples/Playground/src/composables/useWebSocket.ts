@@ -75,23 +75,6 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
     const patches = update.patches || []
     const affectedPaths = extractAffectedPaths(patches)
 
-    if (update.type === 'firstSync') {
-      if (!currentState.value || Object.keys(currentState.value).length === 0) {
-        currentState.value = {}
-      }
-      // Apply patches
-      for (const patch of patches) {
-        applyPatch(currentState.value, patch)
-      }
-    } else if (update.type === 'diff') {
-      if (!currentState.value || Object.keys(currentState.value).length === 0) {
-        currentState.value = {}
-      }
-      for (const patch of patches) {
-        applyPatch(currentState.value, patch)
-      }
-    }
-
     // Add to state updates
     stateUpdates.value.push({
       id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
@@ -128,17 +111,6 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
 
   // Handle snapshot from View
   const handleSnapshot = (snapshot: { values: Record<string, any> }) => {
-    const decodedState: Record<string, any> = {}
-    for (const [key, value] of Object.entries(snapshot.values)) {
-      decodedState[key] = decodeSnapshotValue(value)
-    }
-
-    if (currentState.value && Object.keys(currentState.value).length > 0) {
-      Object.assign(currentState.value, decodedState)
-    } else {
-      currentState.value = decodedState
-    }
-
     stateUpdates.value.push({
       id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
       timestamp: new Date(),
@@ -148,82 +120,6 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
 
     if (stateUpdates.value.length > 100) {
       stateUpdates.value.shift()
-    }
-  }
-
-  // Decode SnapshotValue
-  const decodeSnapshotValue = (value: any): any => {
-    if (value === null || value === undefined) return null
-    if (typeof value !== 'object') return value
-
-    if ('type' in value) {
-      const type = value.type
-      if (type === 'null') return null
-      if (!('value' in value)) {
-        throw new Error(`Invalid SnapshotValue: type "${type}" requires "value" field`)
-      }
-      const val = value.value
-
-      switch (type) {
-        case 'bool':
-        case 'int':
-        case 'double':
-        case 'string':
-          return val
-        case 'array':
-          if (Array.isArray(val)) {
-            return val.map((item: any) => decodeSnapshotValue(item))
-          }
-          throw new Error(`Invalid SnapshotValue array: expected array, got ${typeof val}`)
-        case 'object':
-          if (val && typeof val === 'object') {
-            const result: Record<string, any> = {}
-            for (const [key, v] of Object.entries(val as Record<string, any>)) {
-              result[key] = decodeSnapshotValue(v)
-            }
-            return result
-          }
-          throw new Error(`Invalid SnapshotValue object: expected object, got ${typeof val}`)
-        default:
-          throw new Error(`Unknown SnapshotValue type: ${type}`)
-      }
-    }
-
-    throw new Error(`Invalid SnapshotValue format: ${JSON.stringify(value)}`)
-  }
-
-  // Apply patch to state
-  const applyPatch = (state: Record<string, any>, patch: StatePatch): void => {
-    const path = patch.path
-    if (!path.startsWith('/')) {
-      addLog(`❌ 無效的 patch path: ${path}`, 'error')
-      return
-    }
-
-    const parts = path.split('/').filter(p => p !== '')
-    if (parts.length === 0) {
-      addLog(`❌ 空的 patch path: ${path}`, 'error')
-      return
-    }
-
-    const key = parts[0]
-    const restPath = '/' + parts.slice(1).join('/')
-
-    if (parts.length === 1) {
-      switch (patch.op) {
-        case 'replace':
-        case 'add':
-          state[key] = decodeSnapshotValue(patch.value)
-          break
-        case 'remove':
-          delete state[key]
-          break
-      }
-    } else {
-      if (!(key in state) || typeof state[key] !== 'object' || state[key] === null) {
-        state[key] = {}
-      }
-      applyPatch(state[key], { ...patch, path: restPath })
     }
   }
 
@@ -259,6 +155,21 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
         },
         onSnapshot: (snapshot) => {
           handleSnapshot(snapshot)
+        },
+        onStateUpdateMessage: (update) => {
+          // The SDK already applied patches and invoked onStateUpdate.
+          // We only use this callback to record update metadata for the UI.
+          handleStateUpdate(update as StateUpdate)
+        },
+        onTransportMessage: (message) => {
+          addLog(`Transport message [${message.kind}]`, 'server', message)
+        },
+        onError: (error) => {
+          addLog(
+            `SDK error: ${error instanceof Error ? error.message : String(error)}`,
+            'error',
+            error
+          )
         }
       })
 
