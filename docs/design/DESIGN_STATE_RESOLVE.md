@@ -180,6 +180,131 @@ Active / Passive runtime 會依據這些設定運作：
 
 ---
 
+## Action 層級的 Resolver 控制：`.needs()` 與 Eager / Lazy Resolve
+
+### 概念
+
+Resolver 執行有兩種模式：
+
+- **Lazy Resolve（預設）**：resolver 在第一次使用時才執行。
+- **Eager Resolve（`.needs()`）**：resolver 在 Action 執行前提前執行。
+
+這不是為了「能不能取得資料」，而是為了「什麼時機點取得資料」。
+
+### Lazy Resolve（預設行為）
+
+不指定 `.needs()` 時：
+
+```swift
+HandleAction(UpdateCart.self)
+```
+
+- `ctx.resolved.carItem` 是一個 lazy slot。
+- Action 邏輯真正讀取該值時才執行 resolver。
+- 若 Action 未使用該值 → 完全不呼叫 resolver，零成本。
+- 最適合不確定是否需要某資料的情況。
+
+### Eager Resolve（`.needs()` 修飾器）
+
+指定 `.needs()` 時：
+
+```swift
+HandleAction(UpdateCart.self)
+    .needs(CarItemInfo.self)
+    .needs(ProfileInfo.self)
+    .needs(ShopConfigInfo.self)
+```
+
+- Action 執行前就已經 hydrate 所有指定的 resolver。
+- `ctx.resolved.carItemInfo`、`ctx.resolved.profileInfo` 等已有值。
+- Action 使用時不會卡在查資料。
+- **Runtime 可以並行執行這些 resolvers**，提升吞吐量。
+
+### Lazy vs Eager 比較
+
+| 行為            | Lazy（預設）        | Eager（`.needs()`）  |
+| ------------- | --------------- | ------------------ |
+| 何時呼叫 resolver | 第一次存取時          | Action 執行前         |
+| 效能模式          | 按需、快            | 高吞吐、預先準備           |
+| 未使用資料時        | 不呼叫、零成本         | 仍會呼叫（有成本）          |
+| 是否允許並行        | 部分（視 Action 使用） | ✔ 全部 resolvers 可並行 |
+| 適合場景          | 不確定是否會用到        | 一定會用到、且希望提前準備      |
+| DSL 表達語意      | 自動依需求           | 明確宣告依賴關係           |
+
+### `.needs()` 的定義
+
+```swift
+.needs(T.self)
+```
+
+表示該 Action 在執行前一定需要 `T` 的 resolver 被完整執行並完成。若未宣告 `.needs()`，`T` 的 resolver 會以 lazy 方式在 `ctx.resolved.T` 第一次被讀取時才執行。
+
+### 實踐場景
+
+- **一個 Action 需要多個資料來源**時，宣告 `.needs()` 讓 runtime 並行準備，避免串行延遲。
+- **某個 resolver 成本很高或必須提前準備**時，用 `.needs()` 強制執行。
+- **大部分場景下 lazy 就足夠**，除非有性能或邏輯需求才加 `.needs()`。
+
+---
+
+## 完整數據流：Resolver → Action → StateTree → Client
+
+下列圖示展示 Resolver、Action、State 與 Client 的完整互動流程：
+
+```
+ +----------------+
+ |  Resolver(s)   |  --->  外部資料（lazy/eager，由 .needs() 控制）
+ +----------------+
+          |
+          | ctx.resolved.xxx
+          v
+ +----------------+
+ |    Action      |  ---> 根據 resolver + payload 計算 → 決策
+ +----------------+
+          |
+          | state mutation (inout)
+          v
+ +----------------+
+ |   StateTree    |  ---> authoritative state
+ +----------------+
+          |
+          | diff
+          v
+ +----------------+
+ |     Client     |  ---> reactive UI 更新
+ +----------------+
+```
+
+### 流程說明
+
+1. **Resolver（資料來源層）**
+   - 負責從外部系統（DB、Redis、API、檔案等）取得資料。
+   - 由 `.needs()` 決定何時執行（eager）或何時執行（lazy）。
+   - 結果放入 `ctx.resolved.*` 供 Action 使用。
+
+2. **Action（決策層）**
+   - 讀取 `ctx.resolved.xxx` 和 payload 資訊。
+   - 執行業務邏輯，決定如何變更 State。
+   - 直接變更 `state` parameter（`inout`）。
+
+3. **StateTree（權威狀態層）**
+   - Action 完成後，StateTree 包含最新狀態。
+   - 這是「單一信源」(source of truth)。
+   - 會計算與舊狀態的 diff。
+
+4. **Client（UI 層）**
+   - 接收 diff 推送，更新本地狀態。
+   - 重新渲染 reactive UI。
+
+### 關鍵設計特點
+
+- **Resolver 與 Action 分離**：Action 不直接查資料，透過 Resolver 機制取得；支援 lazy 與 eager 兩種模式。
+- **Inout Mutation**：Action 直接修改 State，簡潔且高效。
+- **Diff 推播**：只把變化傳給 client，節省頻寬。
+- **並行化**：多個 `.needs()` resolver 可並行執行，提升吞吐。
+
+---
+
 ## 三個關鍵點一次收斂
 
 下列為可直接摘錄到設計文件或 README 的精簡說明，整合了 Resolver、Lazy/onDemand 與 Active/Passive 的設計要點。
