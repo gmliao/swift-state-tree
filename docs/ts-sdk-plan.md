@@ -1,5 +1,12 @@
 # TS/多平台 Schema Codegen 與 SDK 規劃
 
+> ⚠️ **本文檔已整合到 [TYPESCRIPT_SDK_ARCHITECTURE.md](./guides/TYPESCRIPT_SDK_ARCHITECTURE.md)**
+> 
+> 新的統一文檔包含完整的架構設計、整合方案和實作計劃。
+> 本文檔保留作為歷史參考，新開發請參考 [TYPESCRIPT_SDK_ARCHITECTURE.md](./guides/TYPESCRIPT_SDK_ARCHITECTURE.md)
+
+---
+
 ## 目標
 - 從伺服端輸出的 `schema.json` 產生跨平台 SDK 所需的型別/常數，保持可重現：schema 變更 → 重跑 codegen → 各平台 SDK 自動對齊。
 - 支援至少 TS 與 Unity（.NET）兩種 SDK，未來可再擴充。
@@ -8,7 +15,7 @@
 - `scripts/`: codegen 腳本
   - `gen-schema.ts`：讀 `Examples/HummingbirdDemo/schema.json`，輸出 TS 產物。
   - 未來如需 Unity/.NET，可新增 `gen-schema-csharp.ts` 或共用核心邏輯輸出 C#。
-- `sdk/ts/`:
+- `SDK/ts/`:
   - `generated/`: 自動產生的型別、常數、（可選）Zod validators。檔頭標註自動產生。
   - `src/`: 手寫 SDK，依賴 `generated/`，封裝連線、JWT header 握手、typed send/receive。
 - `sdk/unity/`（或 `sdk/dotnet/`）:
@@ -33,7 +40,7 @@
 
 ## Workflow
 1) 伺服端透過 `AnyLandDefinition.extractSchema()` 更新 `schema.json`。
-2) 跑 `node scripts/gen-schema.ts` 生成 `sdk/ts/generated`（未來可加 C# 生成）。
+2) 跑 `node scripts/gen-schema.ts` 生成 `SDK/ts/generated`（未來可加 C# 生成）。
 3) SDK 僅引用 `generated`，不手改型別；前端/Unity 直接吃 SDK。
 4) CI 可在發佈前自動跑 codegen，再 build/publish npm 包或 UPM。
 

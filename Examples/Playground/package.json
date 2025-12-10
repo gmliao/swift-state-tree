@@ -13,7 +13,8 @@
     "vue": "^3.4.0",
     "vuetify": "^3.5.0",
     "@mdi/font": "^7.4.0",
-    "pinia": "^2.1.7"
+    "pinia": "^2.1.7",
+    "@swiftstatetree/sdk": "file:../../SDK/ts"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.0",

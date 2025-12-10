@@ -1,5 +1,17 @@
 # 客戶端 SDK 與程式碼生成
 
+> ⚠️ **本文檔已整合到 [TYPESCRIPT_SDK_ARCHITECTURE.md](./TYPESCRIPT_SDK_ARCHITECTURE.md)**
+> 
+> 新的統一文檔包含：
+> - CLI 核心作為 SDK 基礎的整合方案
+> - 完整的 Code-gen 機制設計
+> - 與 Playground 的整合方案
+> - 實作計劃和目錄結構
+> 
+> 本文檔保留作為歷史參考，新開發請參考 [TYPESCRIPT_SDK_ARCHITECTURE.md](./TYPESCRIPT_SDK_ARCHITECTURE.md)
+
+---
+
 > 本文檔說明客戶端 SDK 的設計理念、自動生成機制，以及 Code-gen 架構
 
 ## 執行概念

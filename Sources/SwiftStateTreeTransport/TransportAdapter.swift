@@ -122,17 +122,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         do {
             let transportMsg = try decoder.decode(TransportMessage.self, from: message)
             
-            switch transportMsg {
-            case .join(let requestID, let landID, let requestedPlayerID, let deviceID, let metadata):
-                // Handle join request (can be sent before player is joined)
-                await handleJoinRequest(
-                    requestID: requestID,
-                    landID: landID,
-                    sessionID: sessionID,
-                    requestedPlayerID: requestedPlayerID,
-                    deviceID: deviceID,
-                    metadata: metadata
-                )
+            switch transportMsg.kind {
+            case .join:
+                if case .join(let payload) = transportMsg.payload {
+                    // Handle join request (can be sent before player is joined)
+                    await handleJoinRequest(
+                        requestID: payload.requestID,
+                        landID: payload.landID,
+                        sessionID: sessionID,
+                        requestedPlayerID: payload.playerID,
+                        deviceID: payload.deviceID,
+                        metadata: payload.metadata
+                    )
+                }
                 return
                 
             case .joinResponse:
@@ -142,89 +144,102 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 ])
                 return
                 
-            default:
-                // For other messages, require player to be joined
-            guard let playerID = sessionToPlayer[sessionID],
-                  let clientID = sessionToClient[sessionID] else {
-                    logger.warning("Message received from session that has not joined: \(sessionID.rawValue)")
-                return
-            }
-            
-            switch transportMsg {
-            case .action(let requestID, let landID, let envelope):
-                logger.info("📥 Received action", metadata: [
-                    "requestID": .string(requestID),
-                    "landID": .string(landID),
-                    "actionType": .string(envelope.typeIdentifier),
-                    "playerID": .string(playerID.rawValue),
+            case .error:
+                // Server should not receive error from client (errors are server->client)
+                logger.warning("Received error message from client (unexpected)", metadata: [
                     "sessionID": .string(sessionID.rawValue)
                 ])
+                return
                 
-                // Decode action payload if possible
-                if let payloadString = String(data: envelope.payload, encoding: .utf8) {
-                    logger.trace("📥 Action payload", metadata: [
-                        "requestID": .string(requestID),
-                        "payload": .string(payloadString)
-                    ])
+            default:
+                // For other messages, require player to be joined
+                guard let playerID = sessionToPlayer[sessionID],
+                      let clientID = sessionToClient[sessionID] else {
+                    logger.warning("Message received from session that has not joined: \(sessionID.rawValue)")
+                    return
                 }
                 
-                // Handle action request
-                await handleActionRequest(
-                    requestID: requestID,
-                    landID: landID,
-                    envelope: envelope,
-                    playerID: playerID,
-                    clientID: clientID,
-                    sessionID: sessionID
-                )
-                
-                case .actionResponse(let requestID, let response):
-                    logger.info("📥 Received action response", metadata: [
-                        "requestID": .string(requestID),
-                        "playerID": .string(playerID.rawValue),
-                        "sessionID": .string(sessionID.rawValue)
-                    ])
-                    
-                    // Log response payload
-                    if let responseData = try? encoder.encode(response),
-                       let responseString = String(data: responseData, encoding: .utf8) {
-                        logger.trace("📥 Response payload", metadata: [
-                            "requestID": .string(requestID),
-                            "response": .string(responseString)
+                switch transportMsg.kind {
+                case .action:
+                    if case .action(let payload) = transportMsg.payload {
+                        logger.info("📥 Received action", metadata: [
+                            "requestID": .string(payload.requestID),
+                            "landID": .string(payload.landID),
+                            "actionType": .string(payload.action.typeIdentifier),
+                            "playerID": .string(playerID.rawValue),
+                            "sessionID": .string(sessionID.rawValue)
                         ])
-                    }
-                
-            case .event(let landID, let eventWrapper):
-                if case .fromClient(let anyClientEvent) = eventWrapper {
-                    logger.info("📥 Received client event", metadata: [
-                        "landID": .string(landID),
-                        "eventType": .string(anyClientEvent.type),
-                        "playerID": .string(playerID.rawValue),
-                        "sessionID": .string(sessionID.rawValue)
-                    ])
-                    
-                    // Log event payload
-                    if let payloadData = try? encoder.encode(anyClientEvent.payload),
-                       let payloadString = String(data: payloadData, encoding: .utf8) {
-                        logger.trace("📥 Event payload", metadata: [
-                            "eventType": .string(anyClientEvent.type),
-                            "payload": .string(payloadString)
-                        ])
+                        
+                        // Decode action payload if possible
+                        if let payloadString = String(data: payload.action.payload, encoding: .utf8) {
+                            logger.trace("📥 Action payload", metadata: [
+                                "requestID": .string(payload.requestID),
+                                "payload": .string(payloadString)
+                            ])
+                        }
+                        
+                        // Handle action request
+                        await handleActionRequest(
+                            requestID: payload.requestID,
+                            landID: payload.landID,
+                            envelope: payload.action,
+                            playerID: playerID,
+                            clientID: clientID,
+                            sessionID: sessionID
+                        )
                     }
                     
-                    await keeper.handleClientEvent(
-                        anyClientEvent,
-                        playerID: playerID,
-                        clientID: clientID,
-                        sessionID: sessionID
-                    )
-                } else if case .fromServer = eventWrapper {
-                    logger.warning("Received server event from client (unexpected)", metadata: [
-                        "sessionID": .string(sessionID.rawValue)
-                    ])
-                }
-                
-                case .join, .joinResponse:
+                case .actionResponse:
+                    if case .actionResponse(let payload) = transportMsg.payload {
+                        logger.info("📥 Received action response", metadata: [
+                            "requestID": .string(payload.requestID),
+                            "playerID": .string(playerID.rawValue),
+                            "sessionID": .string(sessionID.rawValue)
+                        ])
+                        
+                        // Log response payload
+                        if let responseData = try? encoder.encode(payload.response),
+                           let responseString = String(data: responseData, encoding: .utf8) {
+                            logger.trace("📥 Response payload", metadata: [
+                                "requestID": .string(payload.requestID),
+                                "response": .string(responseString)
+                            ])
+                        }
+                    }
+                    
+                case .event:
+                    if case .event(let payload) = transportMsg.payload {
+                        if case .fromClient(let anyClientEvent) = payload.event {
+                            logger.info("📥 Received client event", metadata: [
+                                "landID": .string(payload.landID),
+                                "eventType": .string(anyClientEvent.type),
+                                "playerID": .string(playerID.rawValue),
+                                "sessionID": .string(sessionID.rawValue)
+                            ])
+                            
+                            // Log event payload
+                            if let payloadData = try? encoder.encode(anyClientEvent.payload),
+                               let payloadString = String(data: payloadData, encoding: .utf8) {
+                                logger.trace("📥 Event payload", metadata: [
+                                    "eventType": .string(anyClientEvent.type),
+                                    "payload": .string(payloadString)
+                                ])
+                            }
+                            
+                            await keeper.handleClientEvent(
+                                anyClientEvent,
+                                playerID: playerID,
+                                clientID: clientID,
+                                sessionID: sessionID
+                            )
+                        } else if case .fromServer = payload.event {
+                            logger.warning("Received server event from client (unexpected)", metadata: [
+                                "sessionID": .string(sessionID.rawValue)
+                            ])
+                        }
+                    }
+                    
+                case .join, .joinResponse, .error:
                     // Already handled above
                     break
                 }
@@ -235,6 +250,26 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "error": .string("\(error)"),
                 "payload": .string(messagePreview)
             ])
+            
+            // Send error message to client using unified error format
+            do {
+                let errorPayload = ErrorPayload(
+                    code: .invalidJSON,
+                    message: "Failed to decode message: \(error)",
+                    details: [
+                        "sessionID": AnyCodable(sessionID.rawValue),
+                        "payloadPreview": AnyCodable(messagePreview)
+                    ]
+                )
+                let errorResponse = TransportMessage.error(errorPayload)
+                let errorData = try encoder.encode(errorResponse)
+                try await transport.send(errorData, to: .session(sessionID))
+            } catch {
+                logger.error("❌ Failed to send decode error to client", metadata: [
+                    "sessionID": .string(sessionID.rawValue),
+                    "error": .string("\(error)")
+                ])
+            }
         }
     }
     
@@ -245,7 +280,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         do {
             let transportMsg = TransportMessage.event(
                 landID: landID,
-                event: .fromServer(event)
+                event: .fromServer(event: event)
             )
             
             let data = try encoder.encode(transportMsg)
@@ -635,12 +670,34 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "error": .string("\(error)")
             ])
             
-            // Send error response
+            // Send error response using unified error format
             do {
-                let errorResponse = TransportMessage.actionResponse(
-                    requestID: requestID,
-                    response: AnyCodable(["error": "\(error)"])
+                let errorCode: ErrorCode
+                let errorMessage: String
+                
+                if let landError = error as? LandError {
+                    switch landError {
+                    case .actionNotRegistered:
+                        errorCode = .actionNotRegistered
+                        errorMessage = "Action not registered: \(envelope.typeIdentifier)"
+                    default:
+                        errorCode = .actionHandlerError
+                        errorMessage = "\(error)"
+                    }
+                } else {
+                    errorCode = .actionHandlerError
+                    errorMessage = "\(error)"
+                }
+                
+                let errorPayload = ErrorPayload(
+                    code: errorCode,
+                    message: errorMessage,
+                    details: [
+                        "requestID": AnyCodable(requestID),
+                        "actionType": AnyCodable(envelope.typeIdentifier)
+                    ]
                 )
+                let errorResponse = TransportMessage.error(errorPayload)
                 let errorData = try encoder.encode(errorResponse)
                 try await transport.send(errorData, to: .session(sessionID))
             } catch {
@@ -664,21 +721,24 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Phase 1: Validation (no state modification)
         guard let clientID = sessionToClient[sessionID] else {
             logger.warning("Join request from unknown session: \(sessionID.rawValue)")
-            await sendJoinResponse(requestID: requestID, sessionID: sessionID, success: false, reason: "Session not connected")
+            await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinSessionNotConnected, message: "Session not connected")
             return
         }
         
         // Check if already joined
         if sessionToPlayer[sessionID] != nil {
             logger.warning("Join request from already joined session: \(sessionID.rawValue)")
-            await sendJoinResponse(requestID: requestID, sessionID: sessionID, success: false, reason: "Already joined")
+            await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinAlreadyJoined, message: "Already joined")
             return
         }
         
         // Verify landID matches
         guard landID == self.landID else {
             logger.warning("Join request with mismatched landID: expected=\(self.landID), received=\(landID)")
-            await sendJoinResponse(requestID: requestID, sessionID: sessionID, success: false, reason: "Land ID mismatch")
+            await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinLandIDMismatch, message: "Land ID mismatch", details: [
+                "expected": AnyCodable(self.landID),
+                "received": AnyCodable(landID)
+            ])
             return
         }
         
@@ -790,12 +850,21 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             case .deny(let reason):
                 // Join denied
                 logger.warning("Join denied for session \(sessionID.rawValue): \(reason ?? "no reason provided")")
-                await sendJoinResponse(requestID: requestID, sessionID: sessionID, success: false, reason: reason)
+                await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinDenied, message: reason ?? "Join denied")
             }
         } catch {
             // Join failed (e.g., JoinError.roomIsFull)
             logger.error("Join failed for session \(sessionID.rawValue): \(error)")
-            await sendJoinResponse(requestID: requestID, sessionID: sessionID, success: false, reason: "\(error)")
+            let errorCode: ErrorCode
+            let errorMessage: String
+            if error.localizedDescription.contains("full") || error.localizedDescription.contains("Full") {
+                errorCode = .joinRoomFull
+                errorMessage = "Room is full"
+            } else {
+                errorCode = .joinDenied
+                errorMessage = "\(error)"
+            }
+            await sendJoinError(requestID: requestID, sessionID: sessionID, code: errorCode, message: errorMessage)
         }
     }
     
@@ -819,6 +888,38 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Get all sessions for a playerID
     public func getSessions(for playerID: PlayerID) -> [SessionID] {
         sessionToPlayer.filter { $0.value == playerID }.map { $0.key }
+    }
+    
+    /// Send join error to client using unified error format
+    private func sendJoinError(
+        requestID: String,
+        sessionID: SessionID,
+        code: ErrorCode,
+        message: String,
+        details: [String: AnyCodable]? = nil
+    ) async {
+        do {
+            var errorDetails = details ?? [:]
+            errorDetails["requestID"] = AnyCodable(requestID)
+            errorDetails["landID"] = AnyCodable(landID)
+            
+            let errorPayload = ErrorPayload(code: code, message: message, details: errorDetails)
+            let errorResponse = TransportMessage.error(errorPayload)
+            let errorData = try encoder.encode(errorResponse)
+            try await transport.send(errorData, to: .session(sessionID))
+            
+            logger.debug("📤 Sent join error", metadata: [
+                "requestID": "\(requestID)",
+                "sessionID": "\(sessionID.rawValue)",
+                "code": "\(code.rawValue)"
+            ])
+        } catch {
+            logger.error("❌ Failed to send join error", metadata: [
+                "requestID": .string(requestID),
+                "sessionID": .string(sessionID.rawValue),
+                "error": .string("\(error)")
+            ])
+        }
     }
     
     /// Send join response to client

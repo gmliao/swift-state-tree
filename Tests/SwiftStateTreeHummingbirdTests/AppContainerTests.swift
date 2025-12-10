@@ -99,7 +99,7 @@ func testAppContainerForTestHandlesClientEvents() async throws {
     let pingEvent = AnyClientEvent(TestPingEvent())
     let pingMessage = TransportMessage.event(
         landID: harness.land.id,
-        event: .fromClient(pingEvent)
+        event: .fromClient(event: pingEvent)
     )
     let pingData = try encoder.encode(pingMessage)
     await harness.send(pingData, from: sessionID)
@@ -108,7 +108,7 @@ func testAppContainerForTestHandlesClientEvents() async throws {
     let chatEvent = AnyClientEvent(TestChatEvent(message: "hello"))
     let chatMessage = TransportMessage.event(
         landID: harness.land.id,
-        event: .fromClient(chatEvent)
+        event: .fromClient(event: chatEvent)
     )
     let chatData = try encoder.encode(chatMessage)
     await harness.send(chatData, from: sessionID)
@@ -122,8 +122,9 @@ func testAppContainerForTestHandlesClientEvents() async throws {
     }
     
     #expect(transportMessages.contains(where: { message in
-        if case .event(_, let eventWrapper) = message,
-           case .fromServer(let anyEvent) = eventWrapper,
+        if message.kind == .event,
+           case .event(let payload) = message.payload,
+           case .fromServer(let anyEvent) = payload.event,
            anyEvent.type == "TestPongEvent" {
             return true
         }
@@ -131,8 +132,9 @@ func testAppContainerForTestHandlesClientEvents() async throws {
     }))
     
     #expect(transportMessages.contains(where: { message in
-        if case .event(_, let eventWrapper) = message,
-           case .fromServer(let anyEvent) = eventWrapper,
+        if message.kind == .event,
+           case .event(let payload) = message.payload,
+           case .fromServer(let anyEvent) = payload.event,
            anyEvent.type == "TestChatMessageEvent" {
             // Decode the payload to check message content
             if let payloadDict = anyEvent.payload.base as? [String: Any],

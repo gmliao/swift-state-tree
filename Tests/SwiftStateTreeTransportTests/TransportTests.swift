@@ -93,7 +93,7 @@ func testTransportAdapterForwardsEvents() async throws {
     
     // Act: Send event
     let incrementEvent = AnyClientEvent(TestIncrementEvent())
-    let transportMsg = TransportMessage.event(landID: "test-land", event: .fromClient(incrementEvent))
+    let transportMsg = TransportMessage.event(landID: "test-land", event: .fromClient(event: incrementEvent))
     let data = try JSONEncoder().encode(transportMsg)
     
     await adapter.onMessage(data, from: sessionID)

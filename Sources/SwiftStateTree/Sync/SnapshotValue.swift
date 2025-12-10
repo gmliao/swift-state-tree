@@ -41,6 +41,75 @@ public enum SnapshotValue: Equatable, Codable, Sendable {
         if case let .bool(value) = self { return value }
         return nil
     }
+    
+    // MARK: - Custom Codable Implementation
+    
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case value
+    }
+    
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        
+        switch self {
+        case .null:
+            try container.encode("null", forKey: .type)
+            // null has no value
+        case .bool(let value):
+            try container.encode("bool", forKey: .type)
+            try container.encode(value, forKey: .value)
+        case .int(let value):
+            try container.encode("int", forKey: .type)
+            try container.encode(value, forKey: .value)
+        case .double(let value):
+            try container.encode("double", forKey: .type)
+            try container.encode(value, forKey: .value)
+        case .string(let value):
+            try container.encode("string", forKey: .type)
+            try container.encode(value, forKey: .value)
+        case .array(let value):
+            try container.encode("array", forKey: .type)
+            try container.encode(value, forKey: .value)
+        case .object(let value):
+            try container.encode("object", forKey: .type)
+            try container.encode(value, forKey: .value)
+        }
+    }
+    
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try container.decode(String.self, forKey: .type)
+        
+        switch type {
+        case "null":
+            self = .null
+        case "bool":
+            let value = try container.decode(Bool.self, forKey: .value)
+            self = .bool(value)
+        case "int":
+            let value = try container.decode(Int.self, forKey: .value)
+            self = .int(value)
+        case "double":
+            let value = try container.decode(Double.self, forKey: .value)
+            self = .double(value)
+        case "string":
+            let value = try container.decode(String.self, forKey: .value)
+            self = .string(value)
+        case "array":
+            let value = try container.decode([SnapshotValue].self, forKey: .value)
+            self = .array(value)
+        case "object":
+            let value = try container.decode([String: SnapshotValue].self, forKey: .value)
+            self = .object(value)
+        default:
+            throw DecodingError.dataCorruptedError(
+                forKey: .type,
+                in: container,
+                debugDescription: "Unknown SnapshotValue type: \(type)"
+            )
+        }
+    }
 }
 
 /// Protocol for types that can efficiently convert themselves to SnapshotValue

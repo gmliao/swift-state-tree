@@ -299,9 +299,12 @@ public enum DemoGame {
                 }
                 
                 OnLeave { (state: inout DemoGameState, ctx: LandContext) in
-                    // Remove player from state
+                    // Remove player from all state dictionaries
                     state.players.removeValue(forKey: ctx.playerID)
-                    print("Player \(ctx.playerID) left")
+                    state.playerPrivateStates.removeValue(forKey: ctx.playerID)
+                    state.playerScores.removeValue(forKey: ctx.playerID)
+                    state.playerItems.removeValue(forKey: ctx.playerID)
+                    print("Player \(ctx.playerID) left - cleaned up all state")
                 }
                 
                 HandleEvent(ChatEvent.self) { (state: inout DemoGameState, event: ChatEvent, ctx: LandContext) in
