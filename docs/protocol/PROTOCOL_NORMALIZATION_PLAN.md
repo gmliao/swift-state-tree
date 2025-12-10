@@ -4,7 +4,8 @@
 
 1. 統一協議格式，消除 `_0` 格式，使 JSON 更簡潔易讀
 2. 加入統一的類型識別欄位（`kind` 或 `type`），提升可維護性
-3. 保持類型安全和向後兼容性（在可能的情況下）
+3. **建立統一的錯誤訊息格式，涵蓋所有錯誤場景**
+4. 保持類型安全和向後兼容性（在可能的情況下）
 
 ## 當前問題
 
@@ -62,7 +63,58 @@
 }
 ```
 
-### 2. SnapshotValue 使用 `_0` 格式
+### 2. 缺少統一的錯誤訊息格式
+
+**目前問題：**
+
+1. **Join 錯誤**：使用 `joinResponse` 的 `reason` 欄位，格式不統一
+   ```json
+   {
+     "joinResponse": {
+       "success": false,
+       "reason": "Session not connected"  // 只是字串，沒有錯誤代碼
+     }
+   }
+   ```
+
+2. **Action 錯誤**：使用 `actionResponse` 的 `response` 欄位，格式不統一
+   ```json
+   {
+     "actionResponse": {
+       "requestID": "req-123",
+       "response": {
+         "error": "actionNotRegistered"  // 只是字串，沒有錯誤代碼和詳細資訊
+       }
+     }
+   }
+   ```
+
+3. **Event 錯誤**：目前沒有錯誤處理機制
+
+4. **協議解析錯誤**：目前只是記錄到日誌，沒有發送錯誤訊息給客戶端
+
+**目標格式：**
+```json
+{
+  "kind": "error",
+  "payload": {
+    "code": "JOIN_FAILED",  // 或 "ACTION_NOT_REGISTERED", "INVALID_MESSAGE_FORMAT"
+    "message": "Session not connected",
+    "details": {  // 可選的詳細資訊
+      "requestID": "req-123",
+      "landID": "demo-game"
+    }
+  }
+}
+```
+
+**優點：**
+- 統一的錯誤格式，易於客戶端處理
+- 錯誤代碼便於國際化和錯誤處理
+- 詳細資訊有助於調試
+- 可以擴展新的錯誤類型
+
+### 3. SnapshotValue 使用 `_0` 格式
 
 **目前格式：**
 ```json
@@ -194,7 +246,77 @@ public enum TransportEvent: Codable, Sendable {
 - `docs/protocol/TRANSPORT_PROTOCOL.md`
 - 相關單元測試
 
-### 方案 2: SnapshotValue 自定義編碼（複雜）
+### 方案 2: 建立統一的錯誤訊息格式（重要）
+
+**新增錯誤訊息類型：**
+```swift
+public enum TransportError: Codable, Sendable {
+    case joinFailed(code: String, message: String, details: [String: AnyCodable]?)
+    case actionFailed(code: String, message: String, requestID: String, details: [String: AnyCodable]?)
+    case invalidMessageFormat(code: String, message: String, details: [String: AnyCodable]?)
+    case eventFailed(code: String, message: String, details: [String: AnyCodable]?)
+}
+
+public struct ErrorPayload: Codable, Sendable {
+    public let code: String
+    public let message: String
+    public let details: [String: AnyCodable]?
+    
+    public init(code: String, message: String, details: [String: AnyCodable]? = nil) {
+        self.code = code
+        self.message = message
+        self.details = details
+    }
+}
+```
+
+**在 TransportMessage 中加入錯誤類型：**
+```swift
+public enum TransportMessage: Codable, Sendable {
+    case action(...)
+    case actionResponse(...)
+    case event(...)
+    case join(...)
+    case joinResponse(...)
+    case error(ErrorPayload)  // 新增
+}
+```
+
+**錯誤代碼定義：**
+```swift
+public enum ErrorCode: String {
+    // Join errors
+    case joinSessionNotConnected = "JOIN_SESSION_NOT_CONNECTED"
+    case joinAlreadyJoined = "JOIN_ALREADY_JOINED"
+    case joinLandIDMismatch = "JOIN_LAND_ID_MISMATCH"
+    case joinDenied = "JOIN_DENIED"
+    case joinRoomFull = "JOIN_ROOM_FULL"
+    
+    // Action errors
+    case actionNotRegistered = "ACTION_NOT_REGISTERED"
+    case actionInvalidPayload = "ACTION_INVALID_PAYLOAD"
+    case actionHandlerError = "ACTION_HANDLER_ERROR"
+    
+    // Message format errors
+    case invalidMessageFormat = "INVALID_MESSAGE_FORMAT"
+    case invalidJSON = "INVALID_JSON"
+    case missingRequiredField = "MISSING_REQUIRED_FIELD"
+    
+    // Event errors
+    case eventNotRegistered = "EVENT_NOT_REGISTERED"
+    case eventInvalidPayload = "EVENT_INVALID_PAYLOAD"
+}
+```
+
+**影響範圍：**
+- `Sources/SwiftStateTree/Sync/TransportMessage.swift`
+- `Sources/SwiftStateTreeTransport/TransportAdapter.swift` (所有錯誤處理)
+- `Examples/Playground/src/types/transport.ts`
+- `Examples/Playground/src/composables/useWebSocket.ts`
+- `docs/protocol/TRANSPORT_PROTOCOL.md`
+- 所有相關單元測試
+
+### 方案 3: SnapshotValue 自定義編碼（複雜）
 
 **選項 A - type + value 格式（推薦）：**
 ```swift
@@ -242,13 +364,14 @@ public enum SnapshotValue: Equatable, Codable, Sendable {
 
 1. ✅ 建立 feature branch
 2. ⏳ **優先：改進 TransportMessage：加入統一的 `kind` 欄位**
-3. ⏳ 改進 TransportEvent：加上 label
-4. ⏳ 改進 SnapshotValue：自定義編碼
-5. ⏳ 更新 TypeScript 類型定義
-6. ⏳ 更新 Playground 客戶端代碼
-7. ⏳ 更新協議文檔
-8. ⏳ 更新單元測試
-9. ⏳ 驗證所有測試通過
+3. ⏳ **優先：建立統一的錯誤訊息格式**
+4. ⏳ 改進 TransportEvent：加上 label
+5. ⏳ 改進 SnapshotValue：自定義編碼
+6. ⏳ 更新 TypeScript 類型定義
+7. ⏳ 更新 Playground 客戶端代碼
+8. ⏳ 更新協議文檔
+9. ⏳ 更新單元測試
+10. ⏳ 驗證所有測試通過
 
 ## 設計決策
 
