@@ -503,7 +503,7 @@ const connect = () => {
     url = `${url}${separator}token=${encodeURIComponent(jwtToken.value)}`
     console.log('🔑 Using JWT token for connection:', jwtToken.value.substring(0, 20) + '...')
   } else {
-    console.log('⚠️ No JWT token available - connecting without authentication')
+    console.log('👤 No JWT token - connecting as guest (server supports guest mode)')
   }
   console.log('🔌 Connecting to:', url)
   

@@ -48,8 +48,9 @@ func testLateJoinSnapshotReturnsCompleteState() async throws {
     let snapshotData = try encoder.encode(snapshot)
     let jsonString = String(data: snapshotData, encoding: .utf8) ?? ""
     
-    // Verify it's NOT a StateUpdate format (should not have "type" or "patches" fields)
-    #expect(!jsonString.contains("\"type\""), "Should not be StateUpdate format")
+        // Verify it's NOT a StateUpdate format (should not have "type" field at root level or "patches" field)
+        // Note: SnapshotValue now uses "type" + "value" format, so we check for "patches" instead
+        #expect(!jsonString.contains("\"patches\""), "Should not be StateUpdate format")
     #expect(!jsonString.contains("\"patches\""), "Should not contain patches")
     #expect(jsonString.contains("\"values\""), "Should contain values field")
 }
@@ -129,9 +130,9 @@ func testInitialSnapshotFormatIsDifferentFromDiff() async throws {
     let updateString = String(data: updateData, encoding: .utf8) ?? ""
     
     // Assert: Snapshot format should be different from StateUpdate format
+    // Note: SnapshotValue now uses "type" + "value" format, so we check for "patches" instead
     #expect(snapshotString.contains("\"values\""), "Snapshot should have 'values' field")
-    #expect(!snapshotString.contains("\"type\""), "Snapshot should NOT have 'type' field")
-    #expect(!snapshotString.contains("\"patches\""), "Snapshot should NOT have 'patches' field")
+    #expect(!snapshotString.contains("\"patches\""), "Snapshot should NOT have 'patches' field (StateUpdate format)")
     
     // Assert: StateUpdate format should have type and patches
     #expect(updateString.contains("\"type\""), "StateUpdate should have 'type' field")

@@ -265,7 +265,7 @@ func testHummingbirdAdapterEmitsJSON() async throws {
     let pingEvent = AnyClientEvent(TestPingEvent())
     let pingMessage = TransportMessage.event(
         landID: definition.id,
-        event: .fromClient(pingEvent)
+        event: .fromClient(event: pingEvent)
     )
     let pingData = try encoder.encode(pingMessage)
     await transport.handleIncomingMessage(sessionID: sessionID, data: pingData)
@@ -273,7 +273,7 @@ func testHummingbirdAdapterEmitsJSON() async throws {
     let chatEvent = AnyClientEvent(TestChatEvent(message: "hello"))
     let chatMessage = TransportMessage.event(
         landID: definition.id,
-        event: .fromClient(chatEvent)
+        event: .fromClient(event: chatEvent)
     )
     let chatData = try encoder.encode(chatMessage)
     await transport.handleIncomingMessage(sessionID: sessionID, data: chatData)
@@ -285,9 +285,10 @@ func testHummingbirdAdapterEmitsJSON() async throws {
     let transportMessages = outgoing.compactMap { try? decoder.decode(TransportMessage.self, from: $0) }
     
     #expect(transportMessages.contains { message in
-        if case .event(let landID, let eventWrapper) = message,
-           landID == definition.id,
-           case .fromServer(let anyEvent) = eventWrapper,
+        if message.kind == .event,
+           case .event(let payload) = message.payload,
+           payload.landID == definition.id,
+           case .fromServer(let anyEvent) = payload.event,
            anyEvent.type == "TestPongEvent" {
             return true
         }
@@ -295,9 +296,10 @@ func testHummingbirdAdapterEmitsJSON() async throws {
     })
     
     #expect(transportMessages.contains { message in
-        if case .event(let landID, let eventWrapper) = message,
-           landID == definition.id,
-           case .fromServer(let anyEvent) = eventWrapper,
+        if message.kind == .event,
+           case .event(let payload) = message.payload,
+           payload.landID == definition.id,
+           case .fromServer(let anyEvent) = payload.event,
            anyEvent.type == "TestMessageEvent" {
             // Decode the payload to check message content
             if let payloadDict = anyEvent.payload.base as? [String: Any],

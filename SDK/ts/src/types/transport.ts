@@ -1,9 +1,10 @@
+// Transport protocol types
+export type MessageKind = 'action' | 'actionResponse' | 'event' | 'join' | 'joinResponse' | 'error'
+
 export interface ActionEnvelope {
   typeIdentifier: string
   payload: string // Base64 encoded
 }
-
-export type MessageKind = 'action' | 'actionResponse' | 'event' | 'join' | 'joinResponse' | 'error'
 
 export interface TransportActionPayload {
   requestID: string
@@ -76,10 +77,7 @@ export interface StateUpdate {
   patches: StatePatch[]
 }
 
-export interface LogEntry {
-  id: string
-  timestamp: Date
-  type: 'info' | 'error' | 'warning' | 'success' | 'server'
-  message: string
-  data?: any
+export interface StateSnapshot {
+  values: Record<string, any>
 }
+

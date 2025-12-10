@@ -1,0 +1,33 @@
+{
+  "steps": [
+    {
+      "type": "log",
+      "message": "Testing events"
+    },
+    {
+      "type": "event",
+      "event": "ChatEvent",
+      "payload": {
+        "message": "Hello from CLI!"
+      }
+    },
+    {
+      "type": "wait",
+      "wait": 1000
+    },
+    {
+      "type": "event",
+      "event": "PingEvent",
+      "payload": {}
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "log",
+      "message": "Events sent"
+    }
+  ]
+}
+

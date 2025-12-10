@@ -1,0 +1,78 @@
+{
+  "steps": [
+    {
+      "type": "log",
+      "message": "Testing game actions - success cases"
+    },
+    {
+      "type": "action",
+      "action": "AddGold",
+      "payload": {
+        "amount": 100
+      }
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "action",
+      "action": "UpdateScore",
+      "payload": {
+        "points": 100
+      }
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "log",
+      "message": "Testing error cases - expected failures"
+    },
+    {
+      "type": "action",
+      "action": "NonExistentAction",
+      "payload": {},
+      "expectError": true,
+      "errorCode": "ACTION_NOT_REGISTERED"
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "action",
+      "action": "SpendGold",
+      "payload": {
+        "amount": 50
+      },
+      "expectError": true,
+      "errorMessage": "not registered"
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "action",
+      "action": "AddGold",
+      "payload": {
+        "invalidField": "test"
+      },
+      "expectError": true
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "log",
+      "message": "Final state check"
+    },
+    {
+      "type": "state"
+    }
+  ]
+}
+
