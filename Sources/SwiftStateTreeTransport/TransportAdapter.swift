@@ -474,6 +474,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         "mode": .string("\(broadcastMode)")
                     ])
                 }
+                await keeper.endSync()
                 return
             }
             
