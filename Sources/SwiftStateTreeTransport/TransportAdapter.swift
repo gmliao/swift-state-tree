@@ -64,6 +64,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
     
+    
     public func onConnect(sessionID: SessionID, clientID: ClientID, authInfo: AuthenticatedInfo? = nil) async {
         // Only record connection, don't auto-join
         // Client must send join request explicitly
@@ -107,18 +108,22 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     
     public func onMessage(_ message: Data, from sessionID: SessionID) async {
         let messageSize = message.count
-        let messagePreview = String(data: message, encoding: .utf8) ?? "<non-UTF8 payload>"
         
         logger.debug("📥 Received message", metadata: [
             "session": .string(sessionID.rawValue),
             "bytes": .string("\(messageSize)")
         ])
         
-        logger.trace("📥 Message payload", metadata: [
-            "session": .string(sessionID.rawValue),
-            "payload": .string(messagePreview)
-        ])
+        // Log message payload - only compute if trace logging is enabled
+        if let messagePreview = logger.safePreview(from: message) {
+            logger.trace("📥 Message payload", metadata: [
+                "session": .string(sessionID.rawValue),
+                "payload": .string(messagePreview)
+            ])
+        }
         
+        // Compute messagePreview for error logging (only if needed)
+        // We compute it lazily in the catch block to avoid unnecessary work
         do {
             let transportMsg = try decoder.decode(TransportMessage.self, from: message)
             
@@ -170,8 +175,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                             "sessionID": .string(sessionID.rawValue)
                         ])
                         
-                        // Decode action payload if possible
-                        if let payloadString = String(data: payload.action.payload, encoding: .utf8) {
+                        // Decode action payload if possible - only compute if trace logging is enabled
+                        if let payloadString = logger.safePreview(from: payload.action.payload) {
                             logger.trace("📥 Action payload", metadata: [
                                 "requestID": .string(payload.requestID),
                                 "payload": .string(payloadString)
@@ -197,9 +202,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                             "sessionID": .string(sessionID.rawValue)
                         ])
                         
-                        // Log response payload
+                        // Log response payload - only compute if trace logging is enabled
                         if let responseData = try? encoder.encode(payload.response),
-                           let responseString = String(data: responseData, encoding: .utf8) {
+                           let responseString = logger.safePreview(from: responseData) {
                             logger.trace("📥 Response payload", metadata: [
                                 "requestID": .string(payload.requestID),
                                 "response": .string(responseString)
@@ -217,21 +222,60 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                                 "sessionID": .string(sessionID.rawValue)
                             ])
                             
-                            // Log event payload
+                            // Log event payload - only compute if trace logging is enabled
                             if let payloadData = try? encoder.encode(anyClientEvent.payload),
-                               let payloadString = String(data: payloadData, encoding: .utf8) {
+                               let payloadString = logger.safePreview(from: payloadData) {
                                 logger.trace("📥 Event payload", metadata: [
                                     "eventType": .string(anyClientEvent.type),
                                     "payload": .string(payloadString)
                                 ])
                             }
                             
-                            await keeper.handleClientEvent(
-                                anyClientEvent,
-                                playerID: playerID,
-                                clientID: clientID,
-                                sessionID: sessionID
-                            )
+                            do {
+                                try await keeper.handleClientEvent(
+                                    anyClientEvent,
+                                    playerID: playerID,
+                                    clientID: clientID,
+                                    sessionID: sessionID
+                                )
+                            } catch {
+                                // Handle event processing errors
+                                logger.error("❌ Event handler error", metadata: [
+                                    "eventType": .string(anyClientEvent.type),
+                                    "playerID": .string(playerID.rawValue),
+                                    "sessionID": .string(sessionID.rawValue),
+                                    "error": .string("\(error)")
+                                ])
+                                
+                                // Determine error code
+                                let errorCode: ErrorCode
+                                let errorMessage: String
+                                
+                                if let resolverError = error as? ResolverExecutionError {
+                                    errorCode = .eventHandlerError
+                                    errorMessage = "Event handler failed: \(resolverError)"
+                                } else if let resolverError = error as? ResolverError {
+                                    errorCode = .eventHandlerError
+                                    errorMessage = "Event handler failed: \(resolverError)"
+                                } else {
+                                    errorCode = .eventHandlerError
+                                    errorMessage = "Event handler error: \(error)"
+                                }
+                                
+                                // Send error to client
+                                let errorPayload = ErrorPayload(
+                                    code: errorCode,
+                                    message: errorMessage,
+                                    details: [
+                                        "eventType": AnyCodable(anyClientEvent.type),
+                                        "landID": AnyCodable(landID)
+                                    ]
+                                )
+                                let errorResponse = TransportMessage.error(errorPayload)
+                                if let errorData = try? encoder.encode(errorResponse) {
+                                    try? await transport.send(errorData, to: .session(sessionID))
+                                }
+                            }
                         } else if case .fromServer = payload.event {
                             logger.warning("Received server event from client (unexpected)", metadata: [
                                 "sessionID": .string(sessionID.rawValue)
@@ -245,6 +289,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 }
             }
         } catch {
+            // Compute messagePreview for error logging (only when error occurs)
+            let messagePreview = String(data: message, encoding: .utf8) ?? "<non-UTF8 payload>"
+            
             logger.error("❌ Failed to decode message", metadata: [
                 "sessionID": .string(sessionID.rawValue),
                 "error": .string("\(error)"),
@@ -333,8 +380,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "bytes": .string("\(dataSize)")
             ])
             
-            // Log event payload
-            if let payloadString = String(data: try encoder.encode(event.payload), encoding: .utf8) {
+            // Log event payload - only compute if trace logging is enabled
+            if let payloadData = try? encoder.encode(event.payload),
+               let payloadString = logger.safePreview(from: payloadData) {
                 logger.trace("📤 Event payload", metadata: [
                     "eventType": .string(event.type),
                     "target": .string(targetDescription),
@@ -576,11 +624,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "bytes": .string("\(updateSize)")
             ])
             
-            // Log update preview (first 500 chars)
-            if let updatePreview = String(data: updateData, encoding: .utf8) {
-                let preview = updatePreview.count > 500 
-                    ? String(updatePreview.prefix(500)) + "..." 
-                    : updatePreview
+            // Log update preview (first 500 chars) - only compute if trace logging is enabled
+            if let preview = logger.safePreview(from: updateData, maxLength: 500) {
                 logger.trace("📤 Update preview", metadata: [
                     "playerID": .string(playerID.rawValue),
                     "type": .string(updateType),
@@ -621,11 +666,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "fields": .string("\(snapshot.values.count)")
             ])
             
-            // Log snapshot preview (first 500 chars)
-            if let snapshotPreview = String(data: snapshotData, encoding: .utf8) {
-                let preview = snapshotPreview.count > 500 
-                    ? String(snapshotPreview.prefix(500)) + "..." 
-                    : snapshotPreview
+            // Log snapshot preview (first 500 chars) - only compute if trace logging is enabled
+            if let preview = logger.safePreview(from: snapshotData, maxLength: 500) {
                 logger.trace("📤 Snapshot preview", metadata: [
                     "playerID": .string(playerID.rawValue),
                     "preview": .string(preview)
@@ -694,11 +736,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "bytes": .string("\(responseSize)")
             ])
             
-            // Log response payload
-            if let responseString = String(data: responseData, encoding: .utf8) {
-                let preview = responseString.count > 500 
-                    ? String(responseString.prefix(500)) + "..." 
-                    : responseString
+            // Log response payload - only compute if trace logging is enabled
+            if let preview = logger.safePreview(from: responseData, maxLength: 500) {
                 logger.trace("📤 Action response payload", metadata: [
                     "requestID": .string(requestID),
                     "actionType": .string(typeIdentifier),

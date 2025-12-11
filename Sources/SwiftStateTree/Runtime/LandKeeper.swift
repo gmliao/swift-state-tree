@@ -337,9 +337,26 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             throw LandError.actionNotRegistered
         }
 
-        let ctx = makeContext(playerID: playerID, clientID: clientID, sessionID: sessionID)
-        return try await withMutableState { state in
-            try await handler.invoke(&state, action: action, ctx: ctx)
+        var ctx = makeContext(playerID: playerID, clientID: clientID, sessionID: sessionID)
+        
+        // Execute resolvers in parallel if any are declared
+        if !handler.resolverExecutors.isEmpty {
+            let resolverContext = ResolverContext(
+                landContext: ctx,
+                actionPayload: action,
+                eventPayload: nil,
+                currentState: state
+            )
+            ctx = try await ResolverExecutor.executeResolvers(
+                executors: handler.resolverExecutors,
+                resolverContext: resolverContext,
+                landContext: ctx
+            )
+        }
+        
+        // Execute handler synchronously (resolvers already executed above)
+        return try await withMutableStateSync { state in
+            try handler.invoke(&state, action: action, ctx: ctx)
         }
     }
     
@@ -392,10 +409,28 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
         
         let decodedAction = try decoder.decode(actionPayloadType, from: envelope.payload)
-        let ctx = makeContext(playerID: playerID, clientID: clientID, sessionID: sessionID)
+        var ctx = makeContext(playerID: playerID, clientID: clientID, sessionID: sessionID)
         
-        return try await withMutableState { state in
-            try await handler.invokeErased(&state, action: decodedAction, ctx: ctx)
+        // Execute resolvers in parallel if any are declared
+        if !handler.resolverExecutors.isEmpty {
+            // ActionPayload already conforms to Sendable, so we can use it directly
+            let actionPayloadAsSendable = decodedAction as (any Sendable)
+            let resolverContext = ResolverContext(
+                landContext: ctx,
+                actionPayload: actionPayloadAsSendable,
+                eventPayload: nil,
+                currentState: state
+            )
+            ctx = try await ResolverExecutor.executeResolvers(
+                executors: handler.resolverExecutors,
+                resolverContext: resolverContext,
+                landContext: ctx
+            )
+        }
+        
+        // Execute handler synchronously (resolvers already executed above)
+        return try await withMutableStateSync { state in
+            try handler.invokeErased(&state, action: decodedAction, ctx: ctx)
         }
     }
     
@@ -434,20 +469,36 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///   - playerID: The player sending the event.
     ///   - clientID: The client instance.
     ///   - sessionID: The session identifier.
+    /// Handles a client event by finding and invoking registered event handlers.
+    ///
+    /// - Parameters:
+    ///   - event: The client event to handle.
+    ///   - playerID: The player sending the event.
+    ///   - clientID: The client instance.
+    ///   - sessionID: The session identifier.
+    /// - Throws: Errors from event handler execution (e.g., resolver failures)
+    ///
+    /// **Error Handling**:
+    /// - If any event handler throws an error, the error is propagated to the caller
+    /// - The caller (TransportAdapter) should send the error to the client
     public func handleClientEvent(
         _ event: AnyClientEvent,
         playerID: PlayerID,
         clientID: ClientID,
         sessionID: SessionID
-    ) async {
+    ) async throws {
         // Find handlers that can handle this event type
         let ctx = makeContext(playerID: playerID, clientID: clientID, sessionID: sessionID)
-        await withMutableState { state in
+        
+        // Note: Event handlers don't currently support resolvers, but we prepare for it
+        // If we add resolver support for events in the future, we would execute them here
+        
+        try await withMutableStateSync { state in
             for handler in definition.eventHandlers {
                 // Check if handler can handle this event type by looking up the descriptor
                 if let descriptor = definition.clientEventRegistry.findDescriptor(for: event.type),
                    handler.canHandle(descriptor.type) {
-                await handler.invoke(&state, event: event, ctx: ctx)
+                    try handler.invoke(&state, event: event, ctx: ctx)
                 }
             }
         }
@@ -513,6 +564,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///
     /// **Error Handling**: If the handler throws an error, the copy is discarded and state
     /// remains unchanged, providing automatic rollback behavior.
+    /// Execute a synchronous closure with mutable state access
+    ///
+    /// Since handlers are now synchronous, we can directly modify state
+    /// without copying (actor isolation is maintained because we're in the actor)
+    private func withMutableStateSync<R>(
+        _ body: (inout State) throws -> R
+    ) async rethrows -> R {
+        return try body(&state)
+    }
+    
+    /// Legacy async version for backward compatibility (used by lifecycle handlers)
     private func withMutableState<R>(
         _ body: (inout State) async throws -> R
     ) async rethrows -> R {

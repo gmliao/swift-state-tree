@@ -1,6 +1,8 @@
 // Tests/SwiftStateTreeTests/ActionEventSyncTests.swift
 //
-// Tests to verify that actions and events modify state and sync changes to clients
+// Tests to verify that actions and events modify state correctly.
+// Note: syncNow() is NOT called automatically after handler completion.
+// Sync must be triggered via tick mechanism (if configured) or manual sync calls.
 
 import Foundation
 import Testing
@@ -101,8 +103,8 @@ actor MockLandKeeperTransport: LandKeeperTransport {
 
 // MARK: - Tests
 
-@Test("Action execution modifies state and syncs changes")
-func testActionModifiesStateAndSyncs() async throws {
+@Test("Action execution modifies state")
+func testActionModifiesState() async throws {
     // Arrange
     let definition = Land(
         "action-sync-test",
@@ -115,7 +117,8 @@ func testActionModifiesStateAndSyncs() async throws {
             
             HandleAction(IncrementAction.self) { (state: inout ActionEventSyncTestState, action: IncrementAction, ctx: LandContext) in
                 state.count += action.amount
-                await ctx.syncNow()
+                // Note: syncNow() is NOT called automatically after handler completes
+                // Sync happens via tick mechanism (if configured) or manual sync calls
                 return IncrementResponse(success: true, newCount: state.count)
             }
         }
@@ -160,13 +163,13 @@ func testActionModifiesStateAndSyncs() async throws {
     #expect(actionResponse?.success == true, "Action should succeed")
     #expect(actionResponse?.newCount == 5, "Response should contain new count")
     
-    let syncNowCount = await mockTransport.syncNowCallCount
-    let syncBroadcastCount = await mockTransport.syncBroadcastOnlyCallCount
-    #expect(syncNowCount > 0 || syncBroadcastCount > 0, "Sync should be called after action modifies state")
+    // Note: syncNow() is NOT called automatically after action/event handlers complete
+    // Sync must be triggered manually (via ctx.syncNow() in spawn) or via tick mechanism
+    // This test verifies state modification, not automatic sync
 }
 
-@Test("Event execution modifies state and syncs changes")
-func testEventModifiesStateAndSyncs() async throws {
+@Test("Event execution modifies state")
+func testEventModifiesState() async throws {
     // Arrange
     let definition = Land(
         "event-sync-test",
@@ -184,12 +187,14 @@ func testEventModifiesStateAndSyncs() async throws {
             
             HandleEvent(IncrementEvent.self) { (state: inout ActionEventSyncTestState, event: IncrementEvent, ctx: LandContext) in
                 state.count += event.amount
-                await ctx.syncNow()
+                // Note: syncNow() is NOT called automatically after handler completes
+                // Sync happens via tick mechanism (if configured) or manual sync calls
             }
             
             HandleEvent(SetMessageEvent.self) { (state: inout ActionEventSyncTestState, event: SetMessageEvent, ctx: LandContext) in
                 state.message = event.message
-                await ctx.syncNow()
+                // Note: syncNow() is NOT called automatically after handler completes
+                // Sync happens via tick mechanism (if configured) or manual sync calls
             }
         }
     }
@@ -214,7 +219,7 @@ func testEventModifiesStateAndSyncs() async throws {
     
     // Act: Send increment event
     let incrementEvent = AnyClientEvent(IncrementEvent(amount: 3))
-    await keeper.handleClientEvent(incrementEvent, playerID: playerID, clientID: clientID, sessionID: sessionID)
+    try await keeper.handleClientEvent(incrementEvent, playerID: playerID, clientID: clientID, sessionID: sessionID)
     
     // Wait a bit for sync to be called
     try await Task.sleep(for: .milliseconds(50))
@@ -223,16 +228,15 @@ func testEventModifiesStateAndSyncs() async throws {
     var state = await keeper.currentState()
     #expect(state.count == 3, "State count should be 3 after event")
     
-    var syncNowCount = await mockTransport.syncNowCallCount
-    var syncBroadcastCount = await mockTransport.syncBroadcastOnlyCallCount
-    #expect(syncNowCount > 0 || syncBroadcastCount > 0, "Sync should be called after event modifies state")
+    // Note: syncNow() is NOT called automatically after action/event handlers complete
+    // Sync must be triggered manually (via ctx.syncNow() in spawn) or via tick mechanism
     
     // Clear and test another event
     await mockTransport.reset()
     
     // Act: Send set message event
     let setMessageEvent = AnyClientEvent(SetMessageEvent(message: "Hello World"))
-    await keeper.handleClientEvent(setMessageEvent, playerID: playerID, clientID: clientID, sessionID: sessionID)
+    try await keeper.handleClientEvent(setMessageEvent, playerID: playerID, clientID: clientID, sessionID: sessionID)
     
     // Wait a bit for sync to be called
     try await Task.sleep(for: .milliseconds(50))
@@ -241,13 +245,12 @@ func testEventModifiesStateAndSyncs() async throws {
     state = await keeper.currentState()
     #expect(state.message == "Hello World", "State message should be updated")
     
-    syncNowCount = await mockTransport.syncNowCallCount
-    syncBroadcastCount = await mockTransport.syncBroadcastOnlyCallCount
-    #expect(syncNowCount > 0 || syncBroadcastCount > 0, "Sync should be called after second event")
+    // Note: syncNow() is NOT called automatically after action/event handlers complete
+    // Sync must be triggered manually (via ctx.syncNow() in spawn) or via tick mechanism
 }
 
-@Test("Multiple actions and events sync correctly")
-func testMultipleActionsAndEventsSync() async throws {
+@Test("Multiple actions and events modify state correctly")
+func testMultipleActionsAndEventsModifyState() async throws {
     // Arrange
     let definition = Land(
         "multi-sync-test",
@@ -264,13 +267,15 @@ func testMultipleActionsAndEventsSync() async throws {
             
             HandleAction(IncrementAction.self) { (state: inout ActionEventSyncTestState, action: IncrementAction, ctx: LandContext) in
                 state.count += action.amount
-                await ctx.syncNow()
+                // Note: syncNow() is NOT called automatically after handler completes
+                // Sync happens via tick mechanism (if configured) or manual sync calls
                 return IncrementResponse(success: true, newCount: state.count)
             }
             
             HandleEvent(IncrementEvent.self) { (state: inout ActionEventSyncTestState, event: IncrementEvent, ctx: LandContext) in
                 state.count += event.amount
-                await ctx.syncNow()
+                // Note: syncNow() is NOT called automatically after handler completes
+                // Sync happens via tick mechanism (if configured) or manual sync calls
             }
         }
     }
@@ -300,7 +305,7 @@ func testMultipleActionsAndEventsSync() async throws {
     
     // Act: Send event
     let event = AnyClientEvent(IncrementEvent(amount: 3))
-    await keeper.handleClientEvent(event, playerID: playerID, clientID: clientID, sessionID: sessionID)
+    try await keeper.handleClientEvent(event, playerID: playerID, clientID: clientID, sessionID: sessionID)
     try await Task.sleep(for: .milliseconds(50))
     
     // Act: Execute another action
@@ -312,10 +317,197 @@ func testMultipleActionsAndEventsSync() async throws {
     let state = await keeper.currentState()
     #expect(state.count == 6, "State count should be 6 (2 + 3 + 1)")
     
+    // Note: syncNow() is NOT called automatically after action/event handlers complete
+    // Sync must be triggered manually (via ctx.syncNow() in spawn) or via tick mechanism
+    // This test verifies state modification, not automatic sync
+}
+
+// MARK: - Sync Mechanism Tests
+
+@Test("Action execution with tick mechanism triggers sync")
+func testActionWithTickTriggersSync() async throws {
+    // Arrange: Configure Land with tick mechanism
+    let definition = Land(
+        "action-tick-sync-test",
+        using: ActionEventSyncTestState.self
+    ) {
+        Rules {
+            OnJoin { (state: inout ActionEventSyncTestState, ctx: LandContext) in
+                state.players[ctx.playerID] = "Joined"
+            }
+            
+            HandleAction(IncrementAction.self) { (state: inout ActionEventSyncTestState, action: IncrementAction, ctx: LandContext) in
+                state.count += action.amount
+                return IncrementResponse(success: true, newCount: state.count)
+            }
+        }
+        
+        Lifetime { (config: inout LifetimeConfig<ActionEventSyncTestState>) in
+            // Configure tick to trigger sync after state changes
+            config.tickInterval = .milliseconds(20)
+            config.tickHandler = { state, _ in
+                // Tick handler will trigger sync automatically
+            }
+        }
+    }
+    
+    let mockTransport = MockLandKeeperTransport()
+    let keeper = LandKeeper<ActionEventSyncTestState>(
+        definition: definition,
+        initialState: ActionEventSyncTestState()
+    )
+    
+    await keeper.setTransport(mockTransport)
+    
+    let playerID = PlayerID("test-player")
+    let clientID = ClientID("test-client")
+    let sessionID = SessionID("test-session")
+    
+    // Join player
+    await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    
+    // Clear sync call counts
+    await mockTransport.reset()
+    
+    // Act: Execute action
+    let action = IncrementAction(amount: 5)
+    _ = try await keeper.handleAction(action, playerID: playerID, clientID: clientID, sessionID: sessionID)
+    
+    // Wait for tick to trigger sync (tick interval is 20ms, wait a bit longer to ensure tick runs)
+    try await Task.sleep(for: .milliseconds(50))
+    
+    // Assert: Verify state was modified
+    let state = await keeper.currentState()
+    #expect(state.count == 5, "State count should be 5 after action")
+    
+    // Assert: Verify sync was called by tick mechanism
     let syncNowCount = await mockTransport.syncNowCallCount
     let syncBroadcastCount = await mockTransport.syncBroadcastOnlyCallCount
-    let totalSyncCalls = syncNowCount + syncBroadcastCount
-    #expect(totalSyncCalls >= 2, "Sync should be called multiple times (at least 2)")
+    #expect(syncNowCount > 0 || syncBroadcastCount > 0, "Sync should be called by tick mechanism after action modifies state")
+}
+
+@Test("Event execution with tick mechanism triggers sync")
+func testEventWithTickTriggersSync() async throws {
+    // Arrange: Configure Land with tick mechanism
+    let definition = Land(
+        "event-tick-sync-test",
+        using: ActionEventSyncTestState.self
+    ) {
+        ClientEvents {
+            Register(IncrementEvent.self)
+        }
+        
+        Rules {
+            OnJoin { (state: inout ActionEventSyncTestState, ctx: LandContext) in
+                state.players[ctx.playerID] = "Joined"
+            }
+            
+            HandleEvent(IncrementEvent.self) { (state: inout ActionEventSyncTestState, event: IncrementEvent, ctx: LandContext) in
+                state.count += event.amount
+            }
+        }
+        
+        Lifetime { (config: inout LifetimeConfig<ActionEventSyncTestState>) in
+            // Configure tick to trigger sync after state changes
+            config.tickInterval = .milliseconds(20)
+            config.tickHandler = { state, _ in
+                // Tick handler will trigger sync automatically
+            }
+        }
+    }
+    
+    let mockTransport = MockLandKeeperTransport()
+    let keeper = LandKeeper<ActionEventSyncTestState>(
+        definition: definition,
+        initialState: ActionEventSyncTestState()
+    )
+    
+    await keeper.setTransport(mockTransport)
+    
+    let playerID = PlayerID("test-player")
+    let clientID = ClientID("test-client")
+    let sessionID = SessionID("test-session")
+    
+    // Join player
+    await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    
+    // Clear sync call counts
+    await mockTransport.reset()
+    
+    // Act: Send event
+    let event = AnyClientEvent(IncrementEvent(amount: 3))
+    try await keeper.handleClientEvent(event, playerID: playerID, clientID: clientID, sessionID: sessionID)
+    
+    // Wait for tick to trigger sync (tick interval is 20ms, wait a bit longer to ensure tick runs)
+    try await Task.sleep(for: .milliseconds(50))
+    
+    // Assert: Verify state was modified
+    let state = await keeper.currentState()
+    #expect(state.count == 3, "State count should be 3 after event")
+    
+    // Assert: Verify sync was called by tick mechanism
+    let syncNowCount = await mockTransport.syncNowCallCount
+    let syncBroadcastCount = await mockTransport.syncBroadcastOnlyCallCount
+    #expect(syncNowCount > 0 || syncBroadcastCount > 0, "Sync should be called by tick mechanism after event modifies state")
+}
+
+@Test("Manual syncNow() in spawn triggers sync")
+func testManualSyncNowInSpawn() async throws {
+    // Arrange
+    let definition = Land(
+        "manual-sync-test",
+        using: ActionEventSyncTestState.self
+    ) {
+        Rules {
+            OnJoin { (state: inout ActionEventSyncTestState, ctx: LandContext) in
+                state.players[ctx.playerID] = "Joined"
+            }
+            
+            HandleAction(IncrementAction.self) { (state: inout ActionEventSyncTestState, action: IncrementAction, ctx: LandContext) in
+                state.count += action.amount
+                
+                // Manually trigger sync in background (does not block handler)
+                ctx.spawn {
+                    await ctx.syncNow()
+                }
+                
+                return IncrementResponse(success: true, newCount: state.count)
+            }
+        }
+    }
+    
+    let mockTransport = MockLandKeeperTransport()
+    let keeper = LandKeeper<ActionEventSyncTestState>(
+        definition: definition,
+        initialState: ActionEventSyncTestState()
+    )
+    
+    await keeper.setTransport(mockTransport)
+    
+    let playerID = PlayerID("test-player")
+    let clientID = ClientID("test-client")
+    let sessionID = SessionID("test-session")
+    
+    // Join player
+    await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    
+    // Clear sync call counts
+    await mockTransport.reset()
+    
+    // Act: Execute action
+    let action = IncrementAction(amount: 7)
+    _ = try await keeper.handleAction(action, playerID: playerID, clientID: clientID, sessionID: sessionID)
+    
+    // Wait for spawn task to complete sync (spawn runs in background)
+    try await Task.sleep(for: .milliseconds(50))
+    
+    // Assert: Verify state was modified
+    let state = await keeper.currentState()
+    #expect(state.count == 7, "State count should be 7 after action")
+    
+    // Assert: Verify sync was called manually
+    let syncNowCount = await mockTransport.syncNowCallCount
+    #expect(syncNowCount > 0, "Sync should be called when ctx.syncNow() is invoked in spawn")
 }
 
 @Test("handleActionEnvelope correctly decodes action payload with different types")
