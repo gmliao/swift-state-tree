@@ -102,12 +102,12 @@ struct BenchmarkConfigurations {
             cardsPerPlayer: 30,
             iterations: 20
         ),
-        BenchmarkConfig(
-            name: "Huge State",
-            playerCount: 5000,
-            cardsPerPlayer: 50,
-            iterations: 10
-        )
+        // BenchmarkConfig(
+        //     name: "Huge State",
+        //     playerCount: 5000,
+        //     cardsPerPlayer: 50,
+        //     iterations: 10
+        // )
     ]
     
     /// Quick configurations for faster testing
