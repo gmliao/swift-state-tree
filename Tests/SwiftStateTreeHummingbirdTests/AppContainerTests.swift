@@ -55,11 +55,15 @@ private enum TestGame {
         }
         Rules {
             HandleEvent(TestPingEvent.self) { (state: inout TestGameState, event: TestPingEvent, ctx: LandContext) in
-                await ctx.sendEvent(TestPongEvent(), to: .session(ctx.sessionID))
+                ctx.spawn {
+                    await ctx.sendEvent(TestPongEvent(), to: .session(ctx.sessionID))
+                }
             }
             HandleEvent(TestChatEvent.self) { (state: inout TestGameState, event: TestChatEvent, ctx: LandContext) in
                     state.messageCount += 1
-                await ctx.sendEvent(TestChatMessageEvent(message: event.message), to: .all)
+                ctx.spawn {
+                    await ctx.sendEvent(TestChatMessageEvent(message: event.message), to: .all)
+                }
             }
         }
     }

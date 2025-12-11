@@ -59,11 +59,12 @@ public protocol LandKeeperProtocol: Actor {
     ///   - playerID: The player sending the event.
     ///   - clientID: The client instance.
     ///   - sessionID: The session identifier.
+    /// - Throws: Errors from event handler execution (e.g., resolver failures)
     func handleClientEvent(
         _ event: AnyClientEvent,
         playerID: PlayerID,
         clientID: ClientID,
         sessionID: SessionID
-    ) async
+    ) async throws
 }
 

@@ -116,22 +116,23 @@ public actor WebSocketTransport: Transport {
     
     private func logIncoming(_ data: Data, from sessionID: SessionID) {
         let size = data.count
-        let preview = String(data: data, encoding: .utf8) ?? "<non-UTF8 payload>"
         
         logger.debug("WS ⇦ receive", metadata: [
             "session": .string(sessionID.rawValue),
             "bytes": .string("\(size)")
         ])
         
-        logger.trace("WS ⇦ payload", metadata: [
-            "session": .string(sessionID.rawValue),
-            "payload": .string(preview)
-        ])
+        // Log payload - only compute if trace logging is enabled
+        if let preview = logger.safePreview(from: data) {
+            logger.trace("WS ⇦ payload", metadata: [
+                "session": .string(sessionID.rawValue),
+                "payload": .string(preview)
+            ])
+        }
     }
     
     private func logOutgoing(_ data: Data, target: EventTarget) {
         let size = data.count
-        let preview = String(data: data, encoding: .utf8) ?? "<non-UTF8 payload>"
         
         let targetDescription: String = {
             switch target {
@@ -151,10 +152,13 @@ public actor WebSocketTransport: Transport {
             "bytes": .string("\(size)")
         ])
         
-        logger.trace("WS ⇨ payload", metadata: [
-            "target": .string(targetDescription),
-            "payload": .string(preview)
-        ])
+        // Log payload - only compute if trace logging is enabled
+        if let preview = logger.safePreview(from: data) {
+            logger.trace("WS ⇨ payload", metadata: [
+                "target": .string(targetDescription),
+                "payload": .string(preview)
+            ])
+        }
     }
 }
 

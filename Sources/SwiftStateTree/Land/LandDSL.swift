@@ -370,7 +370,7 @@ public enum LandDSL {
 public func HandleAction<State: StateNodeProtocol, A: ActionPayload>(
     _ type: A.Type,
     _ body:
-        @escaping @Sendable (inout State, A, LandContext) async throws -> some Codable & Sendable
+        @escaping @Sendable (inout State, A, LandContext) throws -> some Codable & Sendable
 ) -> AnyActionHandler<State> {
     // Extract Response type from ActionPayload using macro-generated method
     // The @Payload macro generates getResponseType() for ActionPayload types
@@ -383,9 +383,81 @@ public func HandleAction<State: StateNodeProtocol, A: ActionPayload>(
             guard let action = anyAction as? A else {
                 throw LandError.invalidActionType
             }
-            let result = try await body(&state, action, ctx)
+            let result = try body(&state, action, ctx)
             return AnyCodable(result)
-        }
+        },
+        resolverExecutors: []
+    )
+}
+
+/// Registers an action handler with resolvers for a specific Action type.
+///
+/// This version allows declaring resolvers that will be executed in parallel before
+/// the action handler runs. Resolver outputs are available synchronously in the handler
+/// via `ctx.resolverOutputName`.
+///
+/// - Parameters:
+///   - type: The Action type to handle.
+///   - resolvers: Variadic list of resolver types to execute before the handler.
+///   - body: The handler closure. It receives the state, the action, and the context.
+///           It must return a `Codable & Sendable` response.
+/// - Returns: A type-erased `AnyActionHandler` with resolver support.
+///
+/// Example:
+/// ```swift
+/// HandleAction(UpdateCart.self, resolvers: ProductInfoResolver.self, UserProfileResolver.self) { state, action, ctx in
+///     let productInfo = ctx.productInfo  // Available synchronously
+///     let userProfile = ctx.userProfile  // Available synchronously
+///     // Use resolver outputs...
+/// }
+/// ```
+public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: ContextResolver>(
+    _ type: A.Type,
+    resolvers: R1.Type,
+    _ body:
+        @escaping @Sendable (inout State, A, LandContext) throws -> some Codable & Sendable
+) -> AnyActionHandler<State> {
+    let responseType = A.getResponseType()
+    let executors = [ResolverExecutor.createExecutor(for: resolvers)]
+    
+    return AnyActionHandler(
+        type: type,
+        responseType: responseType,
+        handler: { state, anyAction, ctx in
+            guard let action = anyAction as? A else {
+                throw LandError.invalidActionType
+            }
+            let result = try body(&state, action, ctx)
+            return AnyCodable(result)
+        },
+        resolverExecutors: executors
+    )
+}
+
+/// Registers an action handler with multiple resolvers.
+public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: ContextResolver, R2: ContextResolver>(
+    _ type: A.Type,
+    resolvers: (R1.Type, R2.Type),
+    _ body:
+        @escaping @Sendable (inout State, A, LandContext) throws -> some Codable & Sendable
+) -> AnyActionHandler<State> {
+    let responseType = A.getResponseType()
+    let executors = [
+        ResolverExecutor.createExecutor(for: resolvers.0),
+        ResolverExecutor.createExecutor(for: resolvers.1)
+    ]
+    
+    return AnyActionHandler(
+        type: type,
+        responseType: responseType,
+        handler: { state, anyAction, ctx in
+            guard let action = anyAction as? A else {
+                throw LandError.invalidActionType
+            }
+            let result = try body(&state, action, ctx)
+            return AnyCodable(result)
+        },
+        resolverExecutors: executors
     )
 }
 
@@ -396,11 +468,15 @@ public func HandleAction<State: StateNodeProtocol, A: ActionPayload>(
 ///
 /// - Parameters:
 ///   - type: The Client Event type to handle.
-///   - body: The handler closure.
+///   - body: The handler closure. Can throw errors (e.g., from resolvers).
 /// - Returns: A type-erased `AnyClientEventHandler`.
+///
+/// **Error Handling**:
+/// - If the handler throws an error, it will be sent to the client as an ErrorPayload
+/// - Event handlers should throw errors when they cannot process the event (e.g., resolver failures)
 public func HandleEvent<State: StateNodeProtocol, E: ClientEventPayload>(
     _ type: E.Type,
-    _ body: @escaping @Sendable (inout State, E, LandContext) async -> Void
+    _ body: @escaping @Sendable (inout State, E, LandContext) throws -> Void
 ) -> AnyClientEventHandler<State> {
     AnyClientEventHandler(eventType: type, handler: body)
 }

@@ -192,6 +192,30 @@ extension Logger {
         logger[metadataKey: "scope"] = .string(scope)
         return logger
     }
+    
+    /// Safely generate a UTF-8 string preview from Data for logging
+    /// Only computes the preview if the specified log level is enabled
+    /// - Parameters:
+    ///   - data: The data to convert to string
+    ///   - level: The log level to check (default: .trace)
+    ///   - maxLength: Maximum length of the preview (default: nil, no limit)
+    /// - Returns: The string preview, or nil if the log level is not enabled
+    public func safePreview(from data: Data, level: Logger.Level = .trace, maxLength: Int? = nil) -> String? {
+        // Only compute preview if the specified log level is enabled
+        guard self.logLevel <= level else {
+            return nil
+        }
+        
+        guard let preview = String(data: data, encoding: .utf8) else {
+            return "<non-UTF8 payload>"
+        }
+        
+        if let maxLength = maxLength, preview.count > maxLength {
+            return String(preview.prefix(maxLength)) + "..."
+        }
+        
+        return preview
+    }
 }
 
 /// Helper to create a colored logger with scope

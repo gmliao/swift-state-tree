@@ -76,7 +76,7 @@ func testLandBuilderCollectsNodes() {
             }
 
             HandleEvent(DemoReadyEvent.self) { (state: inout DemoLandState, event: DemoReadyEvent, ctx: LandContext) in
-                    state.readyPlayers.insert(ctx.playerID)
+                state.readyPlayers.insert(ctx.playerID)
             }
         }
 
@@ -151,7 +151,7 @@ func testLandKeeperLifecycle() async throws {
     #expect(result?.ok == true)
 
     let readyEvent = AnyClientEvent(DemoReadyEvent())
-    await keeper.handleClientEvent(readyEvent, playerID: playerID, clientID: clientID, sessionID: sessionID)
+    try await keeper.handleClientEvent(readyEvent, playerID: playerID, clientID: clientID, sessionID: sessionID)
 
     await keeper.leave(playerID: playerID, clientID: clientID)
 
@@ -183,8 +183,10 @@ func testLandKeeperAllowedEvents() async {
         }
         
         Rules {
-            HandleEvent(DemoReadyEvent.self) { (_: inout DemoLandState, event: DemoReadyEvent, _: LandContext) in
+            HandleEvent(DemoReadyEvent.self) { (_: inout DemoLandState, event: DemoReadyEvent, ctx: LandContext) in
+                ctx.spawn {
                     await counter.increment()
+                }
             }
         }
     }
@@ -200,11 +202,11 @@ func testLandKeeperAllowedEvents() async {
     await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
 
     let chatEvent = AnyClientEvent(DemoChatEvent(message: "hi"))
-    await keeper.handleClientEvent(chatEvent, playerID: playerID, clientID: clientID, sessionID: sessionID)
+    try? await keeper.handleClientEvent(chatEvent, playerID: playerID, clientID: clientID, sessionID: sessionID)
     #expect(await counter.current() == 0)
 
     let readyEvent = AnyClientEvent(DemoReadyEvent())
-    await keeper.handleClientEvent(readyEvent, playerID: playerID, clientID: clientID, sessionID: sessionID)
+    try? await keeper.handleClientEvent(readyEvent, playerID: playerID, clientID: clientID, sessionID: sessionID)
     #expect(await counter.current() == 1)
 }
 

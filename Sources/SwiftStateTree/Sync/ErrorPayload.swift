@@ -22,6 +22,7 @@ public enum ErrorCode: String, Codable, Sendable {
     // Event errors
     case eventNotRegistered = "EVENT_NOT_REGISTERED"
     case eventInvalidPayload = "EVENT_INVALID_PAYLOAD"
+    case eventHandlerError = "EVENT_HANDLER_ERROR"
 }
 
 /// Unified error payload structure for all transport errors.

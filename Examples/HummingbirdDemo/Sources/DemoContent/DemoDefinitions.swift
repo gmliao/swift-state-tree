@@ -310,20 +310,24 @@ public enum DemoGame {
                 HandleEvent(ChatEvent.self) { (state: inout DemoGameState, event: ChatEvent, ctx: LandContext) in
                     state.messageCount += 1
                     let playerName = state.players[ctx.playerID] ?? "Unknown"
-                    await ctx.sendEvent(
-                        ChatMessageEvent(message: event.message, from: playerName),
-                        to: .all
-                    )
+                    ctx.spawn {
+                        await ctx.sendEvent(
+                            ChatMessageEvent(message: event.message, from: playerName),
+                            to: .all
+                        )
+                    }
                 }
                 
                 HandleEvent(PingEvent.self) { (state: inout DemoGameState, event: PingEvent, ctx: LandContext) in
-                    await ctx.sendEvent(PongEvent(), to: .session(ctx.sessionID))
+                    ctx.spawn {
+                        await ctx.sendEvent(PongEvent(), to: .session(ctx.sessionID))
+                    }
                 }
                 
                 // MARK: - Action Handlers
                 
                 /// GetMyPrivateState action handler
-                HandleAction(GetMyPrivateStateAction.self) { (state: inout DemoGameState, action: GetMyPrivateStateAction, ctx: LandContext) async throws -> PlayerPrivateStateResponse in
+                HandleAction(GetMyPrivateStateAction.self) { (state: inout DemoGameState, action: GetMyPrivateStateAction, ctx: LandContext) throws -> PlayerPrivateStateResponse in
                     // Ensure private state exists
                     if state.playerPrivateStates[ctx.playerID] == nil {
                         state.playerPrivateStates[ctx.playerID] = PlayerPrivateState()
@@ -343,7 +347,7 @@ public enum DemoGame {
                 }
                 
                 /// AddGold action handler - modifies perPlayer StateNode
-                HandleAction(AddGoldAction.self) { (state: inout DemoGameState, action: AddGoldAction, ctx: LandContext) async throws -> AddGoldResponse in
+                HandleAction(AddGoldAction.self) { (state: inout DemoGameState, action: AddGoldAction, ctx: LandContext) throws -> AddGoldResponse in
                     // Ensure private state exists
                     if state.playerPrivateStates[ctx.playerID] == nil {
                         state.playerPrivateStates[ctx.playerID] = PlayerPrivateState()
@@ -368,7 +372,7 @@ public enum DemoGame {
                 }
                 
                 /// UpdateSettings action handler - modifies nested nested StateNode
-                HandleAction(UpdateSettingsAction.self) { (state: inout DemoGameState, action: UpdateSettingsAction, ctx: LandContext) async throws -> UpdateSettingsResponse in
+                HandleAction(UpdateSettingsAction.self) { (state: inout DemoGameState, action: UpdateSettingsAction, ctx: LandContext) throws -> UpdateSettingsResponse in
                     // Ensure private state exists
                     if state.playerPrivateStates[ctx.playerID] == nil {
                         state.playerPrivateStates[ctx.playerID] = PlayerPrivateState()
@@ -397,7 +401,7 @@ public enum DemoGame {
                 }
                 
                 /// UpdateScore action handler - modifies perPlayer simple value
-                HandleAction(UpdateScoreAction.self) { (state: inout DemoGameState, action: UpdateScoreAction, ctx: LandContext) async throws -> UpdateScoreResponse in
+                HandleAction(UpdateScoreAction.self) { (state: inout DemoGameState, action: UpdateScoreAction, ctx: LandContext) throws -> UpdateScoreResponse in
                     // Modify perPlayer simple value
                     let currentScore = state.playerScores[ctx.playerID] ?? 0
                     state.playerScores[ctx.playerID] = currentScore + action.points

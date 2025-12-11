@@ -90,7 +90,7 @@ func testSyncUsesSnapshotModel() async throws {
     }
     
     let eventTask = Task {
-        await keeper.handleClientEvent(
+        try await keeper.handleClientEvent(
             AnyClientEvent(IncrementCounterEvent(amount: 5, modifier: "event")),
             playerID: PlayerID("player1"),
             clientID: ClientID("client1"),
@@ -111,7 +111,7 @@ func testSyncUsesSnapshotModel() async throws {
     
     // Wait for both tasks to complete
     let actionResult = try await actionTask.value
-    await eventTask.value
+    try? await eventTask.value  // Event handler can throw, but we ignore errors in this test
     
     // Give a moment for state to be fully updated
     try await Task.sleep(for: .milliseconds(50))

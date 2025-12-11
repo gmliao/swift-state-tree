@@ -110,16 +110,20 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
 public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
     private let type: Any.Type
     private let responseType: Any.Type?
-    private let handler: @Sendable (inout State, Any, LandContext) async throws -> AnyCodable
+    private let handler: @Sendable (inout State, Any, LandContext) throws -> AnyCodable
+    /// Resolver executors for this action handler (empty if no resolvers declared)
+    public let resolverExecutors: [any AnyResolverExecutor]
 
     public init(
         type: Any.Type,
         responseType: Any.Type? = nil,
-        handler: @escaping @Sendable (inout State, Any, LandContext) async throws -> AnyCodable
+        handler: @escaping @Sendable (inout State, Any, LandContext) throws -> AnyCodable,
+        resolverExecutors: [any AnyResolverExecutor] = []
     ) {
         self.type = type
         self.responseType = responseType
         self.handler = handler
+        self.resolverExecutors = resolverExecutors
     }
 
     public func canHandle(_ actionType: Any.Type) -> Bool {
@@ -144,8 +148,8 @@ public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
         _ state: inout State,
         action: A,
         ctx: LandContext
-    ) async throws -> AnyCodable {
-        try await handler(&state, action, ctx)
+    ) throws -> AnyCodable {
+        try handler(&state, action, ctx)
     }
     
     /// Invoke using an already type-erased action payload.
@@ -153,8 +157,8 @@ public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
         _ state: inout State,
         action: Any,
         ctx: LandContext
-    ) async throws -> AnyCodable {
-        try await handler(&state, action, ctx)
+    ) throws -> AnyCodable {
+        try handler(&state, action, ctx)
     }
 }
 
@@ -166,11 +170,11 @@ public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
 /// invoked for all matching events (or specific enum cases if using the generated helpers).
 public struct AnyClientEventHandler<State: StateNodeProtocol>: LandNode {
     private let eventType: Any.Type
-    private let handler: @Sendable (inout State, AnyClientEvent, LandContext) async -> Void
+    private let handler: @Sendable (inout State, AnyClientEvent, LandContext) throws -> Void
 
     public init<E: ClientEventPayload>(
         eventType: E.Type,
-        handler: @escaping @Sendable (inout State, E, LandContext) async -> Void
+        handler: @escaping @Sendable (inout State, E, LandContext) throws -> Void
     ) {
         self.eventType = eventType
         self.handler = { state, anyEvent, ctx in
@@ -178,7 +182,7 @@ public struct AnyClientEventHandler<State: StateNodeProtocol>: LandNode {
             let decoder = JSONDecoder()
             if let data = try? JSONEncoder().encode(anyEvent.payload),
                let event = try? decoder.decode(E.self, from: data) {
-                await handler(&state, event, ctx)
+                try handler(&state, event, ctx)
             }
         }
     }
@@ -191,7 +195,7 @@ public struct AnyClientEventHandler<State: StateNodeProtocol>: LandNode {
         _ state: inout State,
         event: AnyClientEvent,
         ctx: LandContext
-    ) async {
-        await handler(&state, event, ctx)
+    ) throws {
+        try handler(&state, event, ctx)
     }
 }
