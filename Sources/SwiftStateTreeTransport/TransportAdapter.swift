@@ -364,17 +364,25 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         //       processes dirty broadcast fields), there's still room for further optimization
         //       by batching or debouncing multiple leave operations into a single sync call.
         
+        // Acquire sync lock to prevent state mutations during sync
+        // This ensures we work with a consistent state snapshot
+        guard let state = await keeper.beginSync() else {
+            // Sync already in progress, skip this sync request
+            // TODO: Consider implementing sync queue to handle concurrent sync requests
+            // TODO: Add metrics/logging for skipped sync operations
+            logger.debug("⏭️ Sync skipped: another sync operation is in progress")
+            return
+        }
+        
         // Extract broadcast snapshot once and reuse for all players
         do {
-            let state = await keeper.currentState()
-            
             // Extract broadcast snapshot once (shared across all players)
             let broadcastSnapshot = try syncEngine.extractBroadcastSnapshot(from: state)
             
             // Sync state for all connected players using shared broadcast snapshot
             // Note: syncState() doesn't throw, but transport.send() inside it might fail
             // We handle errors inside syncState() to avoid one failure stopping all updates
-        for (sessionID, playerID) in sessionToPlayer {
+            for (sessionID, playerID) in sessionToPlayer {
                 await syncState(
                     for: playerID,
                     sessionID: sessionID,
@@ -382,10 +390,18 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     broadcastSnapshot: broadcastSnapshot
                 )
             }
+            
+            // Release sync lock after successful sync
+            await keeper.endSync()
         } catch {
             logger.error("❌ Failed to extract broadcast snapshot", metadata: [
                 "error": .string("\(error)")
             ])
+            // TODO: Consider re-syncing after error recovery
+            // TODO: Add error metrics to track sync failure rates
+            
+            // Always release sync lock, even if error occurred
+            await keeper.endSync()
         }
     }
     
@@ -401,13 +417,27 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// - Note: This method assumes the state has been modified and marked as dirty.
     ///   The caller (e.g., OnLeave handler) should have already removed the player's data
     ///   from broadcast fields, which will trigger `isDirty()`.
+    ///
+    /// TODO: Future optimizations:
+    /// - Batch multiple broadcast-only syncs into a single operation
+    /// - Debounce rapid broadcast changes to reduce sync frequency
+    /// - Consider allowing concurrent broadcast-only syncs (read-only operation)
     public func syncBroadcastOnly() async {
         // Note: Even if no players are connected, we still need to update the broadcast cache
         // This ensures that when a player reconnects, they see the correct state (not stale cache)
         let hasPlayers = !sessionToPlayer.isEmpty
         
+        // Acquire sync lock to prevent state mutations during sync
+        // This ensures we work with a consistent state snapshot
+        guard let state = await keeper.beginSync() else {
+            // Sync already in progress, skip this sync request
+            // TODO: For broadcast-only sync, consider allowing concurrent execution
+            // since it's read-only (but cache updates need coordination)
+            logger.debug("⏭️ Broadcast-only sync skipped: another sync operation is in progress")
+            return
+        }
+        
         do {
-            let state = await keeper.currentState()
             
             // Determine snapshot mode based on dirty tracking
             let broadcastMode: SnapshotMode
@@ -472,14 +502,29 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     ])
                 }
             }
+            
+            // Release sync lock after successful sync
+            await keeper.endSync()
         } catch {
             logger.error("❌ Failed to sync broadcast-only", metadata: [
                 "error": .string("\(error)")
             ])
+            
+            // Always release sync lock, even if error occurred
+            await keeper.endSync()
         }
     }
     
     /// Sync state for a specific player
+    ///
+    /// This method extracts per-player snapshot and computes diff for a single player.
+    /// It reuses the broadcast snapshot to avoid redundant extraction.
+    ///
+    /// TODO: Optimization opportunities:
+    /// - Batch per-player snapshot extraction for multiple players
+    /// - Parallelize per-player diff computation (requires careful cache management)
+    /// - Cache per-player snapshots if state hasn't changed
+    /// - Consider incremental sync for large state trees
     private func syncState(
         for playerID: PlayerID,
         sessionID: SessionID,

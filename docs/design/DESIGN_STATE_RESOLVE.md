@@ -121,6 +121,96 @@ public enum PersistPolicy {
 
 ---
 
+## 優化項目：同步性分離原則
+
+### 核心原則
+
+**所有會改動 State 的操作必須是同步的，只有 Resolve（資料載入）操作可以是非同步的。**
+
+這是為了確保狀態變更的可預測性、可追蹤性與可回放性。具體規則如下：
+
+### 必須同步的操作（State Mutation）
+
+以下操作**必須是同步的**，不能使用 `async`：
+
+- **Action Handler**：`HandleAction` 內的所有邏輯
+- **Event Handler**：`HandleEvent` 或 `On(ClientEvents)` 內的所有邏輯
+- **Lifetime Handlers**：`OnJoin`、`OnLeave`、`OnTick`、`OnShutdown` 等
+- **Resolver.resolveAction**：處理 action 並變更 state 的邏輯
+
+這些操作的共同特點是**會直接修改 State**，因此必須在單一同步執行緒中完成，確保狀態變更是原子性且可預測的。
+
+### 允許非同步的操作（Data Resolution）
+
+只有以下操作**允許使用 `async`**：
+
+- **Resolver.hydrate**：從外部資料來源（DB、Redis、API）載入資料
+- **Resolver.persist**：將 state 寫回外部儲存層
+- **Context.resolved.xxx**：透過 lazy resolver 存取外部資料時
+
+這些操作屬於**資料 IO**，不直接修改 state，因此可以非同步執行。
+
+### 資料流設計
+
+正確的模式是：
+
+1. **非同步載入資料**（`hydrate` / `ctx.resolved.xxx`）→ 將結果放入 context
+2. **同步處理邏輯**（`HandleAction` / `OnJoin` / `resolveAction`）→ 基於已載入的資料修改 state
+3. **非同步持久化**（`persist`）→ 將變更寫回儲存層
+
+這樣設計的好處：
+
+- **可預測性**：state mutation 是同步的，不會有競態條件
+- **可回放性**：同步的 state mutation 易於重現與除錯
+- **效能**：resolver 可以並行執行（透過 `.needs()`），但 state mutation 保證順序
+
+### 實作範例
+
+```swift
+// ✅ 正確：hydrate 可以 async（資料載入）
+static func hydrate(
+    _ state: inout NodeState,
+    context: HydrateContext
+) async throws {
+    let data = try await fetchFromDatabase()
+    state.value = data
+}
+
+// ✅ 正確：resolveAction 必須 sync（會改動 state）
+static func resolveAction(
+    _ action: AnyActionPayload,
+    state: inout NodeState,
+    context: ActionContext
+) throws -> Bool {
+    // 同步處理邏輯並修改 state
+    state.counter += 1
+    return true
+}
+
+// ✅ 正確：persist 可以 async（資料寫出）
+static func persist(
+    _ state: NodeState,
+    context: PersistContext
+) async throws {
+    try await saveToDatabase(state)
+}
+```
+
+```swift
+// ✅ 正確：HandleAction 必須 sync
+HandleAction(UpdateCart.self) { state, action, ctx in
+    // 同步處理邏輯
+    state.items.append(action.item)
+}
+
+// ❌ 錯誤：HandleAction 不能 async
+HandleAction(UpdateCart.self) { state, action, ctx async in
+    // 這會破壞同步性原則
+}
+```
+
+---
+
 ## 與 StateNodeResolver 的對應
 
 `Resolve(StateType.self, ResolverType.self)` 要求 Resolver 實作下列介面：
@@ -129,17 +219,20 @@ public enum PersistPolicy {
 public protocol StateNodeResolver<NodeState> {
     associatedtype NodeState: Codable & Sendable
 
+    // ✅ 允許 async：資料載入操作
     static func hydrate(
         _ state: inout NodeState,
         context: HydrateContext
     ) async throws
 
+    // ✅ 必須 sync：會直接改動 state 的操作
     static func resolveAction(
         _ action: AnyActionPayload,
         state: inout NodeState,
         context: ActionContext
-    ) async throws -> Bool
+    ) throws -> Bool  // 注意：已移除 async
 
+    // ✅ 允許 async：資料持久化操作
     static func persist(
         _ state: NodeState,
         context: PersistContext
@@ -161,13 +254,14 @@ struct ResolvedNodeConfig {
 Active / Passive runtime 會依據這些設定運作：
 
 - Active（房間 / realtime）：
-  - 初始化時依 `fillPolicy` 決定是否呼叫 `hydrate`
-  - 收到 action 時路由至對應 Resolver 的 `resolveAction`
-  - 關閉或 checkpoint 時依 `persistPolicy` 決定是否呼叫 `persist`
+  - 初始化時依 `fillPolicy` 決定是否呼叫 `hydrate`（async）
+  - 收到 action 時路由至對應 Resolver 的 `resolveAction`（sync，若需外部資料會先透過 resolver hydrate）
+  - 關閉或 checkpoint 時依 `persistPolicy` 決定是否呼叫 `persist`（async）
 
 - Passive（stateless / REST / Redis）：
-  - 每次 HTTP/RPC 請求期間，依 `fillPolicy` 決定是否從 Redis/DB 載回該子樹
-  - 執行 action 後依 `persistPolicy` 決定是否寫回儲存層
+  - 每次 HTTP/RPC 請求期間，依 `fillPolicy` 決定是否從 Redis/DB 載回該子樹（async，透過 `hydrate`）
+  - 執行 action 時，若需外部資料會先透過 resolver 載入，然後同步執行 state mutation
+  - 執行 action 後依 `persistPolicy` 決定是否寫回儲存層（async，透過 `persist`）
 
 ---
 
@@ -200,9 +294,10 @@ HandleAction(UpdateCart.self)
 ```
 
 - `ctx.resolved.carItem` 是一個 lazy slot。
-- Action 邏輯真正讀取該值時才執行 resolver。
+- Action 邏輯真正讀取該值時才執行 resolver 的 `hydrate`（async，但會在存取點 await）。
 - 若 Action 未使用該值 → 完全不呼叫 resolver，零成本。
 - 最適合不確定是否需要某資料的情況。
+- 注意：第一次存取 lazy resolver 時會觸發 async hydrate，之後的值會被快取供 Action 使用。
 
 ### Eager Resolve（`.needs()` 修飾器）
 
@@ -215,9 +310,9 @@ HandleAction(UpdateCart.self)
     .needs(ShopConfigInfo.self)
 ```
 
-- Action 執行前就已經 hydrate 所有指定的 resolver。
-- `ctx.resolved.carItemInfo`、`ctx.resolved.profileInfo` 等已有值。
-- Action 使用時不會卡在查資料。
+- Action 執行前就已經完成所有指定的 resolver 的 `hydrate`（async 操作）。
+- `ctx.resolved.carItemInfo`、`ctx.resolved.profileInfo` 等已有值（資料已準備好）。
+- Action 執行時直接使用已載入的資料，不會卡在查資料（因為 Action 本身是 sync）。
 - **Runtime 可以並行執行這些 resolvers**，提升吞吐量。
 
 ### Lazy vs Eager 比較
@@ -237,7 +332,7 @@ HandleAction(UpdateCart.self)
 .needs(T.self)
 ```
 
-表示該 Action 在執行前一定需要 `T` 的 resolver 被完整執行並完成。若未宣告 `.needs()`，`T` 的 resolver 會以 lazy 方式在 `ctx.resolved.T` 第一次被讀取時才執行。
+表示該 Action 在執行前一定需要 `T` 的 resolver 的 `hydrate` 被完整執行並完成（async 操作會在 Action 執行前完成）。若未宣告 `.needs()`，`T` 的 resolver 會以 lazy 方式在 `ctx.resolved.T` 第一次被讀取時才執行（此時會在存取點 await async hydrate）。無論是 eager 或 lazy，Action 本身的執行都是同步的。
 
 ### 實踐場景
 
@@ -283,8 +378,8 @@ HandleAction(UpdateCart.self)
    - 結果放入 `ctx.resolved.*` 供 Action 使用。
 
 2. **Action（決策層）**
-   - 讀取 `ctx.resolved.xxx` 和 payload 資訊。
-   - 執行業務邏輯，決定如何變更 State。
+   - 讀取 `ctx.resolved.xxx` 和 payload 資訊（資料已在 Action 執行前由 resolver 準備好）。
+   - 執行業務邏輯，決定如何變更 State（**同步執行**）。
    - 直接變更 `state` parameter（`inout`）。
 
 3. **StateTree（權威狀態層）**
@@ -299,9 +394,10 @@ HandleAction(UpdateCart.self)
 ### 關鍵設計特點
 
 - **Resolver 與 Action 分離**：Action 不直接查資料，透過 Resolver 機制取得；支援 lazy 與 eager 兩種模式。
+- **同步性分離**：Resolver（資料載入）可以是 async，但 Action（狀態變更）必須是 sync，確保狀態變更的可預測性。
 - **Inout Mutation**：Action 直接修改 State，簡潔且高效。
 - **Diff 推播**：只把變化傳給 client，節省頻寬。
-- **並行化**：多個 `.needs()` resolver 可並行執行，提升吞吐。
+- **並行化**：多個 `.needs()` resolver 可並行執行，提升吞吐；但 Action 執行本身是同步且順序的。
 
 ---
 

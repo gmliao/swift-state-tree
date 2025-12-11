@@ -9,8 +9,23 @@ import Logging
 /// - Action and event processing
 /// - Periodic ticks
 /// - Automatic shutdown when empty
+/// - State synchronization using snapshot model
 ///
 /// All state mutations are serialized through the actor, ensuring thread-safety.
+/// Sync operations use snapshot model - they take a snapshot at the start and work with it,
+/// allowing mutations to proceed concurrently without blocking.
+///
+/// **Sync Model**: Snapshot-based, non-blocking
+/// - Sync takes a snapshot of state at the start
+/// - Mutations can proceed concurrently (not blocked by sync)
+/// - Each sync gets a consistent snapshot (actor serialization ensures this)
+/// - Sync deduplication prevents redundant concurrent sync operations
+///
+/// TODO: Performance considerations:
+/// - Current `withMutableState` copies entire state tree (O(n) cost)
+/// - When Resolver mechanism is implemented and Action Handlers become synchronous,
+///   we may be able to directly modify state without copying
+/// - Consider sync queue or debouncing for high-frequency sync scenarios
 public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     public let definition: LandDefinition<State>
 
@@ -27,6 +42,21 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     private var tickTask: Task<Void, Never>?
     private var destroyTask: Task<Void, Never>?
+
+    /// Flag to prevent duplicate sync operations (for deduplication only).
+    ///
+    /// **Note**: This flag is used for deduplication, NOT for blocking mutations.
+    /// Sync operations use snapshot model - they take a snapshot of state at the start,
+    /// which naturally provides consistency without blocking mutations.
+    ///
+    /// When sync is in progress, concurrent sync requests are skipped to avoid redundant work.
+    /// Mutations (actions/events) are NOT blocked and can proceed concurrently with sync.
+    ///
+    /// TODO: Future optimizations to consider:
+    /// - Sync queue: Queue sync requests and batch them to reduce overhead
+    /// - Debouncing: Debounce rapid sync requests to reduce frequency
+    /// - Metrics: Track sync frequency and performance
+    private var isSyncing = false
 
     private let systemPlayerID = PlayerID("_system")
     private let systemClientID = ClientID("_system")
@@ -69,8 +99,47 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Returns the current state snapshot.
     ///
     /// This is a read-only view of the state. Mutations should be done through action/event handlers.
+    ///
+    /// Note: This method does not check sync lock. For sync operations, use `beginSync()` instead.
     public func currentState() -> State {
         state
+    }
+    
+    /// Begin a sync operation, taking a snapshot of current state.
+    ///
+    /// **Simplified Model**: Sync uses snapshot model - it takes a snapshot at the start
+    /// and works with that snapshot. Mutations are NOT blocked during sync.
+    ///
+    /// - Returns: The current state snapshot if sync can proceed, `nil` if another sync is already in progress (deduplication).
+    /// - Important: Always call `endSync()` after sync completes, even if an error occurs.
+    ///
+    /// **Why snapshot model works**:
+    /// - Each sync gets a consistent snapshot (actor serialization ensures this)
+    /// - Mutations can proceed concurrently (they'll be included in next sync)
+    /// - No blocking = better performance and simpler code
+    ///
+    /// Example:
+    /// ```swift
+    /// guard let state = await keeper.beginSync() else {
+    ///     // Another sync in progress, skip this one (deduplication)
+    ///     return
+    /// }
+    /// defer { await keeper.endSync() }
+    /// // ... perform sync operations with state snapshot ...
+    /// ```
+    public func beginSync() -> State? {
+        guard !isSyncing else {
+            return nil  // Deduplication: skip concurrent sync requests
+        }
+        isSyncing = true
+        return state  // Direct snapshot - no blocking
+    }
+    
+    /// End a sync operation, releasing the sync flag.
+    ///
+    /// This must be called after `beginSync()` to allow new sync requests.
+    public func endSync() {
+        isSyncing = false
     }
     
     /// Returns the current number of players in the land.
@@ -424,9 +493,35 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         )
     }
 
+    /// Execute a closure with mutable state access.
+    ///
+    /// **Simplified Model**: Mutations are NOT blocked during sync operations.
+    /// Sync uses snapshot model, so mutations can proceed concurrently.
+    ///
+    /// **Note on State Copying**: We must copy state before passing it to the async closure
+    /// because Swift's actor isolation rules prevent passing actor-isolated properties as `inout`
+    /// to async functions. This is because async functions may suspend, which would break
+    /// actor isolation guarantees. The copy ensures isolation is maintained.
+    ///
+    /// **Performance Consideration**: This incurs O(n) copy cost for large state trees.
+    /// Future optimizations could include:
+    /// - Using `nonisolated` state with explicit synchronization (complex, may break actor guarantees)
+    /// - Batching mutations to reduce copy frequency
+    /// - Using copy-on-write (COW) data structures for state
+    /// - When Resolver mechanism is implemented and Action Handlers become synchronous,
+    ///   we may be able to directly modify state without copying
+    ///
+    /// **Error Handling**: If the handler throws an error, the copy is discarded and state
+    /// remains unchanged, providing automatic rollback behavior.
     private func withMutableState<R>(
         _ body: (inout State) async throws -> R
     ) async rethrows -> R {
+        // Simplified: No waiting for sync - mutations proceed immediately
+        // Sync uses snapshot model, so it doesn't need to block mutations
+        
+        // Copy state before passing to async closure (required by Swift actor isolation rules)
+        // Swift prevents passing actor-isolated properties as `inout` to async functions
+        // because async functions may suspend, breaking actor isolation guarantees
         var copy = state
         let result = try await body(&copy)
         state = copy
