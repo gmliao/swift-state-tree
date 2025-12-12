@@ -34,7 +34,8 @@ public protocol LandKeeperProtocol: Actor {
     /// - Parameters:
     ///   - playerID: The player's unique identifier.
     ///   - clientID: The client instance identifier.
-    func leave(playerID: PlayerID, clientID: ClientID) async
+    /// - Throws: Errors from the OnLeave handler (e.g., resolver failures)
+    func leave(playerID: PlayerID, clientID: ClientID) async throws
     
     /// Handles an action from a player.
     ///

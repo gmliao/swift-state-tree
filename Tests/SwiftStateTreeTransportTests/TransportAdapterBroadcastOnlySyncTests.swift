@@ -46,8 +46,8 @@ func testOnLeaveTriggersSyncBroadcastOnly() async throws {
     )
     
     // Join two players
-    await keeper.join(playerID: alice, clientID: ClientID("alice-client"), sessionID: SessionID("alice-session"))
-    await keeper.join(playerID: bob, clientID: ClientID("bob-client"), sessionID: SessionID("bob-session"))
+    try await keeper.join(playerID: alice, clientID: ClientID("alice-client"), sessionID: SessionID("alice-session"))
+    try await keeper.join(playerID: bob, clientID: ClientID("bob-client"), sessionID: SessionID("bob-session"))
     
     // Verify both players are in state
     let stateAfterJoin = await keeper.currentState()
@@ -58,7 +58,7 @@ func testOnLeaveTriggersSyncBroadcastOnly() async throws {
     await mockTransport.reset()
     
     // Alice leaves
-    await keeper.leave(playerID: alice, clientID: ClientID("alice-client"))
+    try await keeper.leave(playerID: alice, clientID: ClientID("alice-client"))
     
     // Verify syncBroadcastOnly was called, not syncNow
     let syncNowCount = await mockTransport.syncNowCallCount
@@ -102,14 +102,14 @@ func testSyncBroadcastOnlyIsCalledOnLeave() async throws {
     )
     
     // Join two players
-    await keeper.join(playerID: alice, clientID: ClientID("alice-client"), sessionID: SessionID("alice-session"))
-    await keeper.join(playerID: bob, clientID: ClientID("bob-client"), sessionID: SessionID("bob-session"))
+    try await keeper.join(playerID: alice, clientID: ClientID("alice-client"), sessionID: SessionID("alice-session"))
+    try await keeper.join(playerID: bob, clientID: ClientID("bob-client"), sessionID: SessionID("bob-session"))
     
     // Reset counters
     await mockTransport.reset()
     
     // Alice leaves
-    await keeper.leave(playerID: alice, clientID: ClientID("alice-client"))
+    try await keeper.leave(playerID: alice, clientID: ClientID("alice-client"))
     
     // Verify syncBroadcastOnly was called
     let syncBroadcastOnlyCount = await mockTransport.syncBroadcastOnlyCallCount

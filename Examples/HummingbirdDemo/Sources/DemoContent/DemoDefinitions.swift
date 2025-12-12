@@ -223,7 +223,7 @@ public struct UpdateScoreResponse: ResponsePayload {
 
 public enum DemoGame {
     public static func makeLand() -> LandDefinition<DemoGameState> {
-        Land(
+        return Land(
             "demo-game",
             using: DemoGameState.self
         ) {
@@ -256,7 +256,7 @@ public enum DemoGame {
                 /// - Throw `JoinError` to reject with a specific error
                 ///
                 /// The PlayerID returned here will be used throughout the player's session.
-                CanJoin { (state: DemoGameState, session: PlayerSession, ctx: LandContext) async throws in
+                CanJoin { (state: DemoGameState, session: PlayerSession, ctx: LandContext) in
                     // Check if room is full
                     guard state.players.count < 10 else {
                         throw JoinError.roomIsFull
@@ -417,10 +417,28 @@ public enum DemoGame {
                 }
             }
             
-            Lifetime { (config: inout LifetimeConfig<DemoGameState>) in
-                config.tickInterval = .seconds(1)
-                config.tickHandler = { (state: inout DemoGameState, _: LandContext) in
+            Lifetime {
+                // Tick configuration
+                Tick(every: .seconds(1)) { (state: inout DemoGameState, _: LandContext) in
                     // state.ticks += 1
+                }
+                
+                // OnInitialize: Called when Land is created (sync, supports resolvers)
+                OnInitialize { (state: inout DemoGameState, ctx: LandContext) in
+                    print("Land initialized - initial players: \(state.players.count)")
+                    // Can use resolvers here to load initial configuration
+                }
+                
+                // OnFinalize: Called before Land is destroyed (sync, supports resolvers)
+                OnFinalize { (state: inout DemoGameState, ctx: LandContext) in
+                    print("Land finalizing - final players: \(state.players.count)")
+                    // Can use resolvers here to save final state
+                }
+                
+                // AfterFinalize: Called after OnFinalize (async cleanup)
+                AfterFinalize { (state: DemoGameState) in
+                    print("Land completely finalized - state: \(state)")
+                    // Use for async cleanup (e.g., closing connections, sending metrics)
                 }
             }
         }

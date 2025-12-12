@@ -88,8 +88,8 @@ func testTickUpdatesBroadcastFields() async throws {
     )
     
     // Join players
-    await keeper.join(playerID: alice, clientID: ClientID("alice-client"), sessionID: SessionID("alice-session"))
-    await keeper.join(playerID: bob, clientID: ClientID("bob-client"), sessionID: SessionID("bob-session"))
+    try await keeper.join(playerID: alice, clientID: ClientID("alice-client"), sessionID: SessionID("alice-session"))
+    try await keeper.join(playerID: bob, clientID: ClientID("bob-client"), sessionID: SessionID("bob-session"))
     
     // Wait for at least 3 ticks
     await waitFor("Ticks should increment", timeout: .seconds(1)) {

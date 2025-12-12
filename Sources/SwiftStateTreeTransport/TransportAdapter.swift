@@ -94,7 +94,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             
             // Now call keeper.leave() which will trigger syncBroadcastOnly()
             // syncBroadcastOnly() will only see remaining players in sessionToPlayer
-            await keeper.leave(playerID: playerID, clientID: clientID)
+            do {
+                try await keeper.leave(playerID: playerID, clientID: clientID)
+            } catch {
+                // Log error but don't block disconnection flow
+                logger.error("❌ OnLeave handler failed", metadata: [
+                    "sessionID": .string(sessionID.rawValue),
+                    "playerID": .string(playerID.rawValue),
+                    "error": .string(String(describing: error))
+                ])
+            }
             
             // Clear syncEngine cache for disconnected player
             // This ensures reconnection behaves like first connection

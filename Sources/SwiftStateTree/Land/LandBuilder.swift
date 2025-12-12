@@ -16,9 +16,12 @@ enum LandBuilder {
         var lifetimeConfig = LifetimeConfig<State>()
         var hasLifetimeConfig = false
 
-        var canJoin: (@Sendable (State, PlayerSession, LandContext) async throws -> JoinDecision)?
-        var onJoin: (@Sendable (inout State, LandContext) async -> Void)?
-        var onLeave: (@Sendable (inout State, LandContext) async -> Void)?
+        var canJoin: (@Sendable (State, PlayerSession, LandContext) throws -> JoinDecision)?
+        var canJoinResolverExecutors: [any AnyResolverExecutor] = []
+        var onJoin: (@Sendable (inout State, LandContext) throws -> Void)?
+        var onJoinResolverExecutors: [any AnyResolverExecutor] = []
+        var onLeave: (@Sendable (inout State, LandContext) throws -> Void)?
+        var onLeaveResolverExecutors: [any AnyResolverExecutor] = []
         var actionHandlers: [AnyActionHandler<State>] = []
         var eventHandlers: [AnyClientEventHandler<State>] = []
         var clientEventRegistrations: [Any.Type] = []
@@ -35,10 +38,13 @@ enum LandBuilder {
                     ingest(nodes: rules.nodes)
                 case let canJoinNode as CanJoinNode<State>:
                     canJoin = canJoinNode.handler
+                    canJoinResolverExecutors = canJoinNode.resolverExecutors
                 case let join as OnJoinNode<State>:
                     onJoin = join.handler
+                    onJoinResolverExecutors = join.resolverExecutors
                 case let leave as OnLeaveNode<State>:
                     onLeave = leave.handler
+                    onLeaveResolverExecutors = leave.resolverExecutors
                 case let action as AnyActionHandler<State>:
                     actionHandlers.append(action)
                 case let handler as AnyClientEventHandler<State>:
@@ -80,12 +86,20 @@ enum LandBuilder {
 
         let lifetimeHandlers = LifetimeHandlers<State>(
             canJoin: canJoin,
+            canJoinResolverExecutors: canJoinResolverExecutors,
             onJoin: onJoin,
+            onJoinResolverExecutors: onJoinResolverExecutors,
             onLeave: onLeave,
+            onLeaveResolverExecutors: onLeaveResolverExecutors,
             tickInterval: lifetimeConfig.tickInterval,
             tickHandler: lifetimeConfig.tickHandler,
             destroyWhenEmptyAfter: lifetimeConfig.destroyWhenEmptyAfter,
             persistInterval: lifetimeConfig.persistInterval,
+            onInitialize: lifetimeConfig.onInitialize,
+            onInitializeResolverExecutors: lifetimeConfig.onInitializeResolverExecutors,
+            onFinalize: lifetimeConfig.onFinalize,
+            onFinalizeResolverExecutors: lifetimeConfig.onFinalizeResolverExecutors,
+            afterFinalize: lifetimeConfig.afterFinalize,
             onShutdown: lifetimeConfig.onShutdown
         )
 

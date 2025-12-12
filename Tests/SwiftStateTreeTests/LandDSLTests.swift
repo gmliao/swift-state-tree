@@ -76,7 +76,7 @@ func testLandBuilderCollectsNodes() {
             }
 
             HandleEvent(DemoReadyEvent.self) { (state: inout DemoLandState, event: DemoReadyEvent, ctx: LandContext) in
-                state.readyPlayers.insert(ctx.playerID)
+                    state.readyPlayers.insert(ctx.playerID)
             }
         }
 
@@ -138,7 +138,7 @@ func testLandKeeperLifecycle() async throws {
     let clientID = ClientID("device-1")
     let sessionID = SessionID("session-1")
 
-    await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
 
     let joinResponse = try await keeper.handleAction(
         JoinAction(name: "Alice"),
@@ -153,7 +153,7 @@ func testLandKeeperLifecycle() async throws {
     let readyEvent = AnyClientEvent(DemoReadyEvent())
     try await keeper.handleClientEvent(readyEvent, playerID: playerID, clientID: clientID, sessionID: sessionID)
 
-    await keeper.leave(playerID: playerID, clientID: clientID)
+    try await keeper.leave(playerID: playerID, clientID: clientID)
 
     let state = await keeper.currentState()
     #expect(state.players[playerID] == nil)
@@ -161,7 +161,7 @@ func testLandKeeperLifecycle() async throws {
 }
 
 @Test("LandKeeper enforces allowed client events")
-func testLandKeeperAllowedEvents() async {
+func testLandKeeperAllowedEvents() async throws {
     actor ReadyCounter {
         var value = 0
         func increment() { value += 1 }
@@ -199,7 +199,7 @@ func testLandKeeperAllowedEvents() async {
     let clientID = ClientID("client")
     let sessionID = SessionID("session")
 
-    await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
 
     let chatEvent = AnyClientEvent(DemoChatEvent(message: "hi"))
     try? await keeper.handleClientEvent(chatEvent, playerID: playerID, clientID: clientID, sessionID: sessionID)
@@ -267,7 +267,7 @@ func testCanJoinAllows() async throws {
         using: DemoLandState.self
     ) {
         Rules {
-            CanJoin { (state: DemoLandState, session: PlayerSession, _: LandContext) async throws in
+            CanJoin { (state: DemoLandState, session: PlayerSession, _: LandContext) in
                 // Allow if room not full
                 guard state.players.count < 2 else {
                     throw JoinError.roomIsFull
@@ -311,7 +311,7 @@ func testCanJoinDenies() async throws {
         using: DemoLandState.self
     ) {
         Rules {
-            CanJoin { (state: DemoLandState, session: PlayerSession, _: LandContext) async throws in
+            CanJoin { (state: DemoLandState, session: PlayerSession, _: LandContext) in
                 // Room full
                 guard state.players.count < 1 else {
                     throw JoinError.roomIsFull
@@ -591,4 +591,295 @@ func testBothClientAndServerEvents() {
     
     #expect(definition.clientEventRegistry.registered.first?.eventName == "ClientEvent")
     #expect(definition.serverEventRegistry.registered.first?.eventName == "ServerEvent")
+}
+
+// MARK: - Lifecycle Handler Tests
+
+@Test("OnInitialize executes when Land is created")
+func testOnInitialize() async throws {
+    actor InitCounter {
+        var count = 0
+        func increment() { count += 1 }
+        func current() -> Int { count }
+    }
+    let counter = InitCounter()
+    
+    let definition = Land(
+        "init-test",
+        using: DemoLandState.self
+    ) {
+        Lifetime {
+            OnInitialize { (state: inout DemoLandState, ctx: LandContext) in
+                state.ticks = 42  // Set initial value
+                ctx.spawn {
+                    await counter.increment()
+                }
+            }
+        }
+    }
+    
+    let keeper = LandKeeper<DemoLandState>(
+        definition: definition,
+        initialState: DemoLandState()
+    )
+    
+    // Wait a bit for OnInitialize to complete
+    try await Task.sleep(nanoseconds: 50_000_000) // 50ms
+    
+    let state = await keeper.currentState()
+    #expect(state.ticks == 42, "OnInitialize should set ticks to 42")
+    #expect(await counter.current() == 1, "OnInitialize should be called once")
+}
+
+@Test("OnInitialize with resolver loads data before handler executes")
+func testOnInitializeWithResolver() async throws {
+    struct ConfigInfo: ResolverOutput {
+        let maxPlayers: Int
+        let gameMode: String
+    }
+    
+    struct ConfigResolver: ContextResolver {
+        typealias Output = ConfigInfo
+        
+        static func resolve(ctx: ResolverContext) async throws -> ConfigInfo {
+            try await Task.sleep(nanoseconds: 10_000_000) // 10ms
+            return ConfigInfo(maxPlayers: 8, gameMode: "battle-royale")
+        }
+    }
+    
+    let definition = Land(
+        "init-resolver-test",
+        using: DemoLandState.self
+    ) {
+        Lifetime {
+            OnInitialize(resolvers: ConfigResolver.self) { (state: inout DemoLandState, ctx: LandContext) in
+                // Access resolver output (ConfigResolver -> config)
+                if let config: ConfigInfo = ctx.config {
+                    state.ticks = config.maxPlayers
+                }
+            }
+        }
+    }
+    
+    let keeper = LandKeeper<DemoLandState>(
+        definition: definition,
+        initialState: DemoLandState()
+    )
+    
+    // Wait for OnInitialize with resolver to complete
+    try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+    
+    let state = await keeper.currentState()
+    #expect(state.ticks == 8, "OnInitialize should use resolver output to set ticks to 8")
+}
+
+@Test("OnFinalize executes before Land is destroyed")
+func testOnFinalize() async throws {
+    actor FinalizeCounter {
+        var count = 0
+        func increment() { count += 1 }
+        func current() -> Int { count }
+    }
+    let counter = FinalizeCounter()
+    
+    let definition = Land(
+        "finalize-test",
+        using: DemoLandState.self
+    ) {
+        Lifetime { (config: inout LifetimeConfig<DemoLandState>) in
+            config.onFinalize = { (state: inout DemoLandState, ctx: LandContext) in
+                state.ticks = 999  // Set final value
+                ctx.spawn {
+                    await counter.increment()
+                }
+            }
+            config.destroyWhenEmptyAfter = .milliseconds(10)
+        }
+    }
+    
+    let keeper = LandKeeper<DemoLandState>(
+        definition: definition,
+        initialState: DemoLandState()
+    )
+    
+    // Join and then leave to trigger shutdown
+    let playerID = PlayerID("test-player")
+    let clientID = ClientID("test-client")
+    let sessionID = SessionID("test-session")
+    
+    try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    try await keeper.leave(playerID: playerID, clientID: clientID)
+    
+    // Wait for destroy timer and OnFinalize to execute
+    try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+    
+    let state = await keeper.currentState()
+    #expect(state.ticks == 999, "OnFinalize should set ticks to 999")
+    #expect(await counter.current() == 1, "OnFinalize should be called once")
+}
+
+@Test("AfterFinalize executes after OnFinalize")
+func testAfterFinalize() async throws {
+    actor FinalizeOrder {
+        var onFinalizeCalled = false
+        var afterFinalizeCalled = false
+        func markOnFinalize() { onFinalizeCalled = true }
+        func markAfterFinalize() { afterFinalizeCalled = true }
+        func getStatus() -> (onFinalize: Bool, afterFinalize: Bool) {
+            (onFinalize: onFinalizeCalled, afterFinalize: afterFinalizeCalled)
+        }
+    }
+    let order = FinalizeOrder()
+    
+    let definition = Land(
+        "after-finalize-test",
+        using: DemoLandState.self
+    ) {
+        Lifetime { (config: inout LifetimeConfig<DemoLandState>) in
+            config.onFinalize = { (state: inout DemoLandState, ctx: LandContext) in
+                // OnFinalize is sync, mark it immediately
+                state.ticks = 100  // Mark that OnFinalize ran
+                ctx.spawn {
+                    await order.markOnFinalize()
+                }
+            }
+            config.afterFinalize = { (state: DemoLandState) in
+                // Verify OnFinalize already ran (state.ticks should be 100)
+                #expect(state.ticks == 100, "OnFinalize should have set ticks to 100")
+                await order.markAfterFinalize()
+            }
+            config.destroyWhenEmptyAfter = .milliseconds(10)
+        }
+    }
+    
+    let keeper = LandKeeper<DemoLandState>(
+        definition: definition,
+        initialState: DemoLandState()
+    )
+    
+    // Join and then leave to trigger shutdown
+    let playerID = PlayerID("test-player")
+    let clientID = ClientID("test-client")
+    let sessionID = SessionID("test-session")
+    
+    try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    try await keeper.leave(playerID: playerID, clientID: clientID)
+    
+    // Wait for destroy timer and finalize handlers to execute
+    try await Task.sleep(nanoseconds: 200_000_000) // 200ms
+    
+    let status = await order.getStatus()
+    #expect(status.onFinalize, "OnFinalize should be called")
+    #expect(status.afterFinalize, "AfterFinalize should be called")
+    
+    // Verify state was modified by OnFinalize
+    let finalState = await keeper.currentState()
+    #expect(finalState.ticks == 100, "OnFinalize should have modified state")
+}
+
+@Test("CanJoin with resolver loads data before validation")
+func testCanJoinWithResolver() async throws {
+    struct UserLevelInfo: ResolverOutput {
+        let userID: String
+        let level: Int
+    }
+    
+    struct UserLevelResolver: ContextResolver {
+        typealias Output = UserLevelInfo
+        
+        static func resolve(ctx: ResolverContext) async throws -> UserLevelInfo {
+            // Extract userID from session via actionPayload (in this case, we'll use playerID from context)
+            let userID = ctx.playerID.rawValue
+            // Simulate async lookup
+            try await Task.sleep(nanoseconds: 10_000_000) // 10ms
+            return UserLevelInfo(userID: userID, level: 5)
+        }
+    }
+    
+    let definition = Land(
+        "canjoin-resolver-test",
+        using: DemoLandState.self
+    ) {
+        Rules {
+            CanJoin(resolvers: UserLevelResolver.self) { (state: DemoLandState, session: PlayerSession, ctx: LandContext) in
+                // Check resolver output (UserLevelResolver -> userLevel)
+                guard let userLevel: UserLevelInfo = ctx.userLevel else {
+                    throw JoinError.custom("Failed to load user level")
+                }
+                
+                // Only allow level 5+ users
+                guard userLevel.level >= 5 else {
+                    throw JoinError.custom("Level too low")
+                }
+                
+                return .allow(playerID: PlayerID(session.playerID))
+            }
+            
+            OnJoin { (state: inout DemoLandState, ctx: LandContext) in
+                state.players[ctx.playerID] = "Player"
+            }
+        }
+    }
+    
+    let keeper = LandKeeper<DemoLandState>(
+        definition: definition,
+        initialState: DemoLandState()
+    )
+    
+    let session = PlayerSession(playerID: "user1")
+    let decision = try await keeper.join(
+        session: session,
+        clientID: ClientID("client1"),
+        sessionID: SessionID("session1"),
+        services: LandServices()
+    )
+    
+    guard case .allow(let playerID) = decision else {
+        Issue.record("Expected join to be allowed")
+        return
+    }
+    
+    #expect(playerID.rawValue == "user1")
+    let state = await keeper.currentState()
+    #expect(state.players.count == 1)
+}
+
+@Test("OnInitialize completes before tick starts")
+func testOnInitializeBeforeTick() async throws {
+    let definition = Land(
+        "init-tick-order-test",
+        using: DemoLandState.self
+    ) {
+        Lifetime {
+            OnInitialize { (state: inout DemoLandState, ctx: LandContext) in
+                // Mark initialization complete - this happens synchronously
+                // If tick had started, ticks would be > 0, but we set it to -1 to mark init
+                state.ticks = -1  // Special marker value
+            }
+            
+            Tick(every: .milliseconds(100)) { (state: inout DemoLandState, ctx: LandContext) in
+                // Tick should only increment if OnInitialize already set ticks to -1
+                // If ticks is still 0, it means tick started before OnInitialize
+                if state.ticks == -1 {
+                    state.ticks = 1  // First tick after init
+                } else {
+                    state.ticks += 1
+                }
+            }
+        }
+    }
+    
+    let keeper = LandKeeper<DemoLandState>(
+        definition: definition,
+        initialState: DemoLandState()
+    )
+    
+    // Wait for initialization and first tick
+    try await Task.sleep(nanoseconds: 200_000_000) // 200ms
+    
+    let state = await keeper.currentState()
+    // If OnInitialize ran first, ticks should be >= 1 (was set to -1, then tick set it to 1)
+    // If tick ran first, ticks would be > 0 but we wouldn't have the -1 marker
+    #expect(state.ticks >= 1, "OnInitialize should set ticks to -1, then tick should increment it")
+    #expect(state.ticks != 0, "Tick should have executed after OnInitialize")
 }

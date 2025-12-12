@@ -137,7 +137,7 @@ func testActionModifiesState() async throws {
     let sessionID = SessionID("test-session")
     
     // Join player
-    await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
     
     // Clear sync call counts
     await mockTransport.reset()
@@ -212,7 +212,7 @@ func testEventModifiesState() async throws {
     let sessionID = SessionID("test-session")
     
     // Join player
-    await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
     
     // Clear sync call counts
     await mockTransport.reset()
@@ -293,7 +293,7 @@ func testMultipleActionsAndEventsModifyState() async throws {
     let sessionID = SessionID("test-session")
     
     // Join player
-    await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
     
     // Clear sync call counts
     await mockTransport.reset()
@@ -364,7 +364,7 @@ func testActionWithTickTriggersSync() async throws {
     let sessionID = SessionID("test-session")
     
     // Join player
-    await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
     
     // Clear sync call counts
     await mockTransport.reset()
@@ -429,7 +429,7 @@ func testEventWithTickTriggersSync() async throws {
     let sessionID = SessionID("test-session")
     
     // Join player
-    await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
     
     // Clear sync call counts
     await mockTransport.reset()
@@ -489,7 +489,7 @@ func testManualSyncNowInSpawn() async throws {
     let sessionID = SessionID("test-session")
     
     // Join player
-    await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
     
     // Clear sync call counts
     await mockTransport.reset()
@@ -550,7 +550,7 @@ func testHandleActionEnvelopeDecodesPayloadTypes() async throws {
     let clientID = ClientID("test-client")
     let sessionID = SessionID("test-session")
     
-    await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
     
     // Act: Create action envelope with properly typed JSON payload
     let action = TestActionWithTypes(
@@ -621,7 +621,7 @@ func testHandleActionEnvelopeTypeMismatch() async throws {
     let clientID = ClientID("test-client")
     let sessionID = SessionID("test-session")
     
-    await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
     
     // Act: Create action envelope with wrong type (string instead of int)
     let wrongPayload = ["value": "not-an-int"]  // Should be Int, not String
