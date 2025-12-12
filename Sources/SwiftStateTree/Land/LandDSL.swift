@@ -91,76 +91,230 @@ public func Rules(@LandDSL _ content: () -> [LandNode]) -> RulesNode {
 }
 
 public struct OnJoinNode<State: StateNodeProtocol>: LandNode {
-    public let handler: @Sendable (inout State, LandContext) async -> Void
+    public let handler: @Sendable (inout State, LandContext) throws -> Void
+    public let resolverExecutors: [any AnyResolverExecutor]
+    
+    public init(
+        handler: @escaping @Sendable (inout State, LandContext) throws -> Void,
+        resolverExecutors: [any AnyResolverExecutor] = []
+    ) {
+        self.handler = handler
+        self.resolverExecutors = resolverExecutors
+    }
 }
 
 /// Registers a handler called when a player joins the Land.
 ///
 /// This handler is executed after the player is added to the state.
 ///
-/// - Parameter body: The async closure to execute.
+/// - Parameter body: The synchronous closure to execute.
 public func OnJoin<State: StateNodeProtocol>(
-    _ body: @escaping @Sendable (inout State, LandContext) async -> Void
+    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
 ) -> OnJoinNode<State> {
     OnJoinNode(handler: body)
 }
 
+/// Registers a handler called when a player joins the Land with resolvers.
+///
+/// This handler is executed after the player is added to the state.
+/// Resolvers are executed in parallel before the handler runs.
+///
+/// - Parameters:
+///   - resolvers: One or more resolver types to execute before the handler.
+///   - body: The synchronous closure to execute with resolved data available via `ctx`.
+public func OnJoin<State: StateNodeProtocol, R1: ContextResolver>(
+    resolvers: R1.Type,
+    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+) -> OnJoinNode<State> {
+    OnJoinNode(
+        handler: body,
+        resolverExecutors: [ResolverExecutorWrapper<R1>()]
+    )
+}
+
+/// Registers a handler called when a player joins the Land with multiple resolvers.
+public func OnJoin<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver>(
+    resolvers: (R1.Type, R2.Type),
+    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+) -> OnJoinNode<State> {
+    OnJoinNode(
+        handler: body,
+        resolverExecutors: [ResolverExecutorWrapper<R1>(), ResolverExecutorWrapper<R2>()]
+    )
+}
+
+/// Registers a handler called when a player joins the Land with multiple resolvers.
+public func OnJoin<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver>(
+    resolvers: (R1.Type, R2.Type, R3.Type),
+    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+) -> OnJoinNode<State> {
+    OnJoinNode(
+        handler: body,
+        resolverExecutors: [
+            ResolverExecutorWrapper<R1>(),
+            ResolverExecutorWrapper<R2>(),
+            ResolverExecutorWrapper<R3>()
+        ]
+    )
+}
+
 public struct OnLeaveNode<State: StateNodeProtocol>: LandNode {
-    public let handler: @Sendable (inout State, LandContext) async -> Void
+    public let handler: @Sendable (inout State, LandContext) throws -> Void
+    public let resolverExecutors: [any AnyResolverExecutor]
+    
+    public init(
+        handler: @escaping @Sendable (inout State, LandContext) throws -> Void,
+        resolverExecutors: [any AnyResolverExecutor] = []
+    ) {
+        self.handler = handler
+        self.resolverExecutors = resolverExecutors
+    }
 }
 
 /// Registers a handler called when a player leaves the Land.
 ///
 /// This handler is executed just before the player is removed from the state.
 ///
-/// - Parameter body: The async closure to execute.
+/// - Parameter body: The synchronous closure to execute.
 public func OnLeave<State: StateNodeProtocol>(
-    _ body: @escaping @Sendable (inout State, LandContext) async -> Void
+    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
 ) -> OnLeaveNode<State> {
     OnLeaveNode(handler: body)
 }
 
+/// Registers a handler called when a player leaves the Land with resolvers.
+///
+/// This handler is executed just before the player is removed from the state.
+/// Resolvers are executed in parallel before the handler runs.
+///
+/// - Parameters:
+///   - resolvers: One or more resolver types to execute before the handler.
+///   - body: The synchronous closure to execute with resolved data available via `ctx`.
+public func OnLeave<State: StateNodeProtocol, R1: ContextResolver>(
+    resolvers: R1.Type,
+    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+) -> OnLeaveNode<State> {
+    OnLeaveNode(
+        handler: body,
+        resolverExecutors: [ResolverExecutorWrapper<R1>()]
+    )
+}
+
+/// Registers a handler called when a player leaves the Land with multiple resolvers.
+public func OnLeave<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver>(
+    resolvers: (R1.Type, R2.Type),
+    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+) -> OnLeaveNode<State> {
+    OnLeaveNode(
+        handler: body,
+        resolverExecutors: [ResolverExecutorWrapper<R1>(), ResolverExecutorWrapper<R2>()]
+    )
+}
+
+/// Registers a handler called when a player leaves the Land with multiple resolvers.
+public func OnLeave<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver>(
+    resolvers: (R1.Type, R2.Type, R3.Type),
+    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+) -> OnLeaveNode<State> {
+    OnLeaveNode(
+        handler: body,
+        resolverExecutors: [
+            ResolverExecutorWrapper<R1>(),
+            ResolverExecutorWrapper<R2>(),
+            ResolverExecutorWrapper<R3>()
+        ]
+    )
+}
+
 public struct CanJoinNode<State: StateNodeProtocol>: LandNode {
-    public let handler: @Sendable (State, PlayerSession, LandContext) async throws -> JoinDecision
+    public let handler: @Sendable (State, PlayerSession, LandContext) throws -> JoinDecision
+    public let resolverExecutors: [any AnyResolverExecutor]
+    
+    public init(
+        handler: @escaping @Sendable (State, PlayerSession, LandContext) throws -> JoinDecision,
+        resolverExecutors: [any AnyResolverExecutor] = []
+    ) {
+        self.handler = handler
+        self.resolverExecutors = resolverExecutors
+    }
 }
 
 /// Registers a handler called before a player joins to validate the join request.
 ///
 /// This handler is executed BEFORE the player is added to the authoritative state.
-/// It receives a read-only view of the state and can perform async validation
-/// (e.g., querying databases, checking player levels, etc.).
+/// It receives a read-only view of the state and can use resolvers to load data.
 ///
 /// If the handler throws an error or returns `.deny`, the join is rejected.
 /// If it returns `.allow(playerID)`, the player is added to the Land with that PlayerID.
 ///
 /// Example:
 /// ```swift
-/// CanJoin { state, session, ctx async throws in
+/// CanJoin { state, session, ctx in
 ///     // Check room capacity
 ///     guard state.players.count < 8 else {
 ///         throw JoinError.roomIsFull
 ///     }
-///
-///     // Query player data
-///     let profile = try await ctx.services.userService?.getUser(by: session.playerID)
-///     guard let profile else {
-///         throw JoinError.custom("User not found")
+///     
+///     // Use resolver output (e.g., userProfile from UserProfileResolver)
+///     if let profile = ctx.userProfile {
+///         guard profile.level >= 5 else {
+///             throw JoinError.levelTooLow(required: 5)
+///         }
 ///     }
 ///
-///     // Validate player level
-///     guard profile.level >= 5 else {
-///         throw JoinError.levelTooLow(required: 5)
-///     }
-///
-///     return .allow(playerID: PlayerID(profile.id))
+///     return .allow(playerID: PlayerID(session.playerID))
 /// }
 /// ```
 ///
-/// - Parameter body: The async closure that validates the join request.
+/// - Parameter body: The synchronous closure that validates the join request.
 public func CanJoin<State: StateNodeProtocol>(
-    _ body: @escaping @Sendable (State, PlayerSession, LandContext) async throws -> JoinDecision
+    _ body: @escaping @Sendable (State, PlayerSession, LandContext) throws -> JoinDecision
 ) -> CanJoinNode<State> {
     CanJoinNode(handler: body)
+}
+
+/// Registers a handler called before a player joins with resolvers.
+///
+/// - Parameters:
+///   - resolvers: One or more resolver types to execute before the handler.
+///   - body: The synchronous closure that validates the join request with resolved data available via `ctx`.
+public func CanJoin<State: StateNodeProtocol, R1: ContextResolver>(
+    resolvers: R1.Type,
+    _ body: @escaping @Sendable (State, PlayerSession, LandContext) throws -> JoinDecision
+) -> CanJoinNode<State> {
+    CanJoinNode(
+        handler: body,
+        resolverExecutors: [ResolverExecutor.createExecutor(for: resolvers)]
+    )
+}
+
+/// Registers a handler called before a player joins with multiple resolvers.
+public func CanJoin<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver>(
+    resolvers: (R1.Type, R2.Type),
+    _ body: @escaping @Sendable (State, PlayerSession, LandContext) throws -> JoinDecision
+) -> CanJoinNode<State> {
+    CanJoinNode(
+        handler: body,
+        resolverExecutors: [
+            ResolverExecutor.createExecutor(for: resolvers.0),
+            ResolverExecutor.createExecutor(for: resolvers.1)
+        ]
+    )
+}
+
+/// Registers a handler called before a player joins with multiple resolvers.
+public func CanJoin<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver>(
+    resolvers: (R1.Type, R2.Type, R3.Type),
+    _ body: @escaping @Sendable (State, PlayerSession, LandContext) throws -> JoinDecision
+) -> CanJoinNode<State> {
+    CanJoinNode(
+        handler: body,
+        resolverExecutors: [
+            ResolverExecutor.createExecutor(for: resolvers.0),
+            ResolverExecutor.createExecutor(for: resolvers.1),
+            ResolverExecutor.createExecutor(for: resolvers.2)
+        ]
+    )
 }
 
 public struct AllowedClientEventsNode: LandNode {
@@ -214,6 +368,23 @@ public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
     /// **Design Note**: This handler is synchronous to maintain stable tick rates.
     /// For async operations (e.g., flushing metrics), use `ctx.spawn { await ... }`.
     public var tickHandler: (@Sendable (inout State, LandContext) -> Void)?
+    
+    /// Handler called when the Land is initialized (on creation).
+    public var onInitialize: (@Sendable (inout State, LandContext) throws -> Void)?
+    /// Resolver executors for the onInitialize handler.
+    public var onInitializeResolverExecutors: [any AnyResolverExecutor] = []
+    
+    /// Handler called when the Land is finalizing (before shutdown).
+    public var onFinalize: (@Sendable (inout State, LandContext) throws -> Void)?
+    /// Resolver executors for the onFinalize handler.
+    public var onFinalizeResolverExecutors: [any AnyResolverExecutor] = []
+    
+    /// Handler called after the Land is completely finalized (async cleanup).
+    public var afterFinalize: (@Sendable (State) async -> Void)?
+    
+    /// Handler called when the Land is shutting down.
+    ///
+    /// **Deprecated**: Use `OnFinalize` (sync, supports resolvers) and `AfterFinalize` (async) instead.
     public var onShutdown: (@Sendable (State) async -> Void)?
 
     public init(
@@ -322,7 +493,145 @@ public func PersistSnapshot<State: StateNodeProtocol>(
     }
 }
 
+/// Registers a handler called when the Land is initialized (on creation).
+///
+/// This handler is executed once when the Land is created, before any players join.
+/// It can use resolvers to load initial configuration or setup data.
+///
+/// - Parameter body: The synchronous closure to execute.
+public func OnInitialize<State: StateNodeProtocol>(
+    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+) -> LifetimeDirective<State> {
+    { config in
+        config.onInitialize = body
+    }
+}
+
+/// Registers a handler called when the Land is initialized with resolvers.
+///
+/// - Parameters:
+///   - resolvers: One or more resolver types to execute before the handler.
+///   - body: The synchronous closure to execute with resolved data available via `ctx`.
+public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver>(
+    resolvers: R1.Type,
+    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+) -> LifetimeDirective<State> {
+    let executors = [ResolverExecutor.createExecutor(for: resolvers)]
+    return { config in
+        config.onInitialize = body
+        config.onInitializeResolverExecutors = executors
+    }
+}
+
+/// Registers a handler called when the Land is initialized with multiple resolvers.
+public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver>(
+    resolvers: (R1.Type, R2.Type),
+    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+) -> LifetimeDirective<State> {
+    let executors = [
+        ResolverExecutor.createExecutor(for: resolvers.0),
+        ResolverExecutor.createExecutor(for: resolvers.1)
+    ]
+    return { config in
+        config.onInitialize = body
+        config.onInitializeResolverExecutors = executors
+    }
+}
+
+/// Registers a handler called when the Land is initialized with multiple resolvers.
+public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver>(
+    resolvers: (R1.Type, R2.Type, R3.Type),
+    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+) -> LifetimeDirective<State> {
+    let executors = [
+        ResolverExecutor.createExecutor(for: resolvers.0),
+        ResolverExecutor.createExecutor(for: resolvers.1),
+        ResolverExecutor.createExecutor(for: resolvers.2)
+    ]
+    return { config in
+        config.onInitialize = body
+        config.onInitializeResolverExecutors = executors
+    }
+}
+
+/// Registers a handler called when the Land is finalizing (before shutdown).
+///
+/// This handler is executed before the Land is destroyed, while state is still mutable.
+/// It can use resolvers to save final state or perform cleanup.
+///
+/// - Parameter body: The synchronous closure to execute.
+public func OnFinalize<State: StateNodeProtocol>(
+    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+) -> LifetimeDirective<State> {
+    { config in
+        config.onFinalize = body
+    }
+}
+
+/// Registers a handler called when the Land is finalizing with resolvers.
+///
+/// - Parameters:
+///   - resolvers: One or more resolver types to execute before the handler.
+///   - body: The synchronous closure to execute with resolved data available via `ctx`.
+public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver>(
+    resolvers: R1.Type,
+    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+) -> LifetimeDirective<State> {
+    let executors = [ResolverExecutor.createExecutor(for: resolvers)]
+    return { config in
+        config.onFinalize = body
+        config.onFinalizeResolverExecutors = executors
+    }
+}
+
+/// Registers a handler called when the Land is finalizing with multiple resolvers.
+public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver>(
+    resolvers: (R1.Type, R2.Type),
+    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+) -> LifetimeDirective<State> {
+    let executors = [
+        ResolverExecutor.createExecutor(for: resolvers.0),
+        ResolverExecutor.createExecutor(for: resolvers.1)
+    ]
+    return { config in
+        config.onFinalize = body
+        config.onFinalizeResolverExecutors = executors
+    }
+}
+
+/// Registers a handler called when the Land is finalizing with multiple resolvers.
+public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver>(
+    resolvers: (R1.Type, R2.Type, R3.Type),
+    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+) -> LifetimeDirective<State> {
+    let executors = [
+        ResolverExecutor.createExecutor(for: resolvers.0),
+        ResolverExecutor.createExecutor(for: resolvers.1),
+        ResolverExecutor.createExecutor(for: resolvers.2)
+    ]
+    return { config in
+        config.onFinalize = body
+        config.onFinalizeResolverExecutors = executors
+    }
+}
+
+/// Registers a handler called after the Land is completely finalized.
+///
+/// This handler is executed after OnFinalize, when state is no longer mutable.
+/// Use this for async cleanup operations (e.g., closing database connections, sending metrics).
+///
+/// - Parameter body: The async closure to execute.
+public func AfterFinalize<State: StateNodeProtocol>(
+    _ body: @escaping @Sendable (State) async -> Void
+) -> LifetimeDirective<State> {
+    { config in
+        config.afterFinalize = body
+    }
+}
+
 /// Registers a handler called when the Land is shutting down.
+///
+/// **Deprecated**: Use `OnFinalize` (sync, supports resolvers) and `AfterFinalize` (async) instead.
 ///
 /// - Parameter body: The async closure to execute.
 public func OnShutdown<State: StateNodeProtocol>(

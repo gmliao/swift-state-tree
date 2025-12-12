@@ -85,14 +85,60 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     )
         self.logger = resolvedLogger
 
-        if let interval = definition.lifetimeHandlers.tickInterval,
-           definition.lifetimeHandlers.tickHandler != nil {
-            // Start tick loop asynchronously after initialization completes
-            // The Task will execute after init returns, so self is fully initialized
-            Task { [weak self] in
-                guard let self = self else { return }
+        // Execute OnInitialize handler and then start tick loop
+        // Both are async, so we use a single Task to ensure proper sequencing
+        Task { [weak self] in
+            guard let self = self else { return }
+            
+            // First, execute OnInitialize if defined
+            if let onInitializeHandler = definition.lifetimeHandlers.onInitialize {
+                await self.executeOnInitialize(handler: onInitializeHandler)
+            }
+            
+            // Then, start tick loop if configured (only after OnInitialize completes)
+            if let interval = definition.lifetimeHandlers.tickInterval,
+               definition.lifetimeHandlers.tickHandler != nil {
                 await self.configureTickLoop(interval: interval)
             }
+        }
+    }
+    
+    /// Execute OnInitialize handler with resolvers if needed
+    private func executeOnInitialize(
+        handler: @Sendable (inout State, LandContext) throws -> Void
+    ) async {
+        let ctx = makeContext(
+            playerID: systemPlayerID,
+            clientID: systemClientID,
+            sessionID: systemSessionID
+        )
+        
+        do {
+            var updatedCtx = ctx
+            
+            // Execute resolvers in parallel if any are declared
+            if !definition.lifetimeHandlers.onInitializeResolverExecutors.isEmpty {
+                let resolverContext = ResolverContext(
+                    landContext: ctx,
+                    actionPayload: nil,
+                    eventPayload: nil,
+                    currentState: state
+                )
+                updatedCtx = try await ResolverExecutor.executeResolvers(
+                    executors: definition.lifetimeHandlers.onInitializeResolverExecutors,
+                    resolverContext: resolverContext,
+                    landContext: ctx
+                )
+            }
+            
+            // Execute handler synchronously (resolvers already executed above)
+            try withMutableStateSync { state in
+                try handler(&state, updatedCtx)
+            }
+        } catch {
+            logger.error("❌ OnInitialize handler failed", metadata: [
+                "error": .string(String(describing: error))
+            ])
         }
     }
 
@@ -171,7 +217,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         clientID: ClientID,
         sessionID: SessionID,
         services: LandServices = LandServices()
-    ) async {
+    ) async throws {
         var session = players[playerID] ?? InternalPlayerSession(services: services)
         let isFirst = session.clients.isEmpty
 
@@ -184,14 +230,32 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         destroyTask = nil
 
         guard isFirst, let handler = definition.lifetimeHandlers.onJoin else { return }
-        let ctx = makeContext(
+        var ctx = makeContext(
             playerID: playerID,
             clientID: clientID,
             sessionID: sessionID,
             servicesOverride: services
         )
-        await withMutableState { state in
-            await handler(&state, ctx)
+        
+        // Execute resolvers in parallel if any are declared
+        if !definition.lifetimeHandlers.onJoinResolverExecutors.isEmpty {
+            let resolverContext = ResolverContext(
+                landContext: ctx,
+                actionPayload: nil,
+                eventPayload: nil,
+                currentState: state
+            )
+            ctx = try await ResolverExecutor.executeResolvers(
+                executors: definition.lifetimeHandlers.onJoinResolverExecutors,
+                resolverContext: resolverContext,
+                landContext: ctx
+            )
+        }
+        
+        // Execute handler synchronously (resolvers already executed above)
+        // withMutableStateSync is now synchronous - no await needed
+        try withMutableStateSync { state in
+            try handler(&state, ctx)
         }
     }
 
@@ -217,13 +281,30 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         var decision: JoinDecision = .allow(playerID: PlayerID(session.playerID))
         
         if let canJoinHandler = definition.lifetimeHandlers.canJoin {
-            let ctx = makeContext(
+            var ctx = makeContext(
                 playerID: PlayerID("_pending"), // Temporary ID for validation
                 clientID: clientID,
                 sessionID: sessionID,
                 servicesOverride: services
             )
-            decision = try await canJoinHandler(state, session, ctx)
+            
+            // Execute resolvers in parallel if any are declared
+            if !definition.lifetimeHandlers.canJoinResolverExecutors.isEmpty {
+                let resolverContext = ResolverContext(
+                    landContext: ctx,
+                    actionPayload: nil,
+                    eventPayload: nil,
+                    currentState: state
+                )
+                ctx = try await ResolverExecutor.executeResolvers(
+                    executors: definition.lifetimeHandlers.canJoinResolverExecutors,
+                    resolverContext: resolverContext,
+                    landContext: ctx
+                )
+            }
+            
+            // Execute handler synchronously (resolvers already executed above)
+            decision = try canJoinHandler(state, session, ctx)
         }
         
         // If denied, return early
@@ -255,7 +336,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         destroyTask = nil
 
         guard isFirst, let handler = definition.lifetimeHandlers.onJoin else { return decision }
-        let ctx = makeContext(
+        var ctx = makeContext(
             playerID: playerID,
             clientID: clientID,
             sessionID: sessionID,
@@ -263,8 +344,26 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             deviceID: session.deviceID,
             metadata: session.metadata
         )
-        await withMutableState { state in
-            await handler(&state, ctx)
+        
+        // Execute resolvers in parallel if any are declared
+        if !definition.lifetimeHandlers.onJoinResolverExecutors.isEmpty {
+            let resolverContext = ResolverContext(
+                landContext: ctx,
+                actionPayload: nil,
+                eventPayload: nil,
+                currentState: state
+            )
+            ctx = try await ResolverExecutor.executeResolvers(
+                executors: definition.lifetimeHandlers.onJoinResolverExecutors,
+                resolverContext: resolverContext,
+                landContext: ctx
+            )
+        }
+        
+        // Execute handler synchronously (resolvers already executed above)
+        // withMutableStateSync is now synchronous - no await needed
+        try withMutableStateSync { state in
+            try handler(&state, ctx)
         }
         
         return decision
@@ -278,7 +377,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// - Parameters:
     ///   - playerID: The player's unique identifier.
     ///   - clientID: The client instance identifier.
-    public func leave(playerID: PlayerID, clientID: ClientID) async {
+    public func leave(playerID: PlayerID, clientID: ClientID) async throws {
         guard var session = players[playerID] else { return }
         session.clients.remove(clientID)
 
@@ -288,7 +387,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             players.removeValue(forKey: playerID)
             
             if let handler = definition.lifetimeHandlers.onLeave {
-                let ctx = makeContext(
+                var ctx = makeContext(
                     playerID: playerID,
                     clientID: clientID,
                     sessionID: session.lastSessionID ?? systemSessionID,
@@ -296,8 +395,26 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     deviceID: deviceID,
                     metadata: metadata
                 )
-                await withMutableState { state in
-                    await handler(&state, ctx)
+                
+                // Execute resolvers in parallel if any are declared
+                if !definition.lifetimeHandlers.onLeaveResolverExecutors.isEmpty {
+                    let resolverContext = ResolverContext(
+                        landContext: ctx,
+                        actionPayload: nil,
+                        eventPayload: nil,
+                        currentState: state
+                    )
+                    ctx = try await ResolverExecutor.executeResolvers(
+                        executors: definition.lifetimeHandlers.onLeaveResolverExecutors,
+                        resolverContext: resolverContext,
+                        landContext: ctx
+                    )
+                }
+                
+                // Execute handler synchronously (resolvers already executed above)
+                // withMutableStateSync is now synchronous - no await needed
+                try withMutableStateSync { state in
+                    try handler(&state, ctx)
                 }
                 // Trigger sync after OnLeave handler modifies state
                 // Use syncBroadcastOnlyHandler for optimization: only syncs broadcast changes
@@ -355,7 +472,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
         
         // Execute handler synchronously (resolvers already executed above)
-        return try await withMutableStateSync { state in
+        // withMutableStateSync is now synchronous - no await needed
+        return try withMutableStateSync { state in
             try handler.invoke(&state, action: action, ctx: ctx)
         }
     }
@@ -429,7 +547,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
         
         // Execute handler synchronously (resolvers already executed above)
-        return try await withMutableStateSync { state in
+        // withMutableStateSync is now synchronous - no await needed
+        return try withMutableStateSync { state in
             try handler.invokeErased(&state, action: decodedAction, ctx: ctx)
         }
     }
@@ -493,7 +612,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Note: Event handlers don't currently support resolvers, but we prepare for it
         // If we add resolver support for events in the future, we would execute them here
         
-        try await withMutableStateSync { state in
+        // withMutableStateSync is now synchronous - no await needed
+        try withMutableStateSync { state in
             for handler in definition.eventHandlers {
                 // Check if handler can handle this event type by looking up the descriptor
                 if let descriptor = definition.clientEventRegistry.findDescriptor(for: event.type),
@@ -544,7 +664,24 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         )
     }
 
-    /// Execute a closure with mutable state access.
+    /// Execute a synchronous closure with mutable state access.
+    ///
+    /// Since handlers are now synchronous, we can directly modify state
+    /// without copying (actor isolation is maintained because we're in the actor).
+    ///
+    /// **Optimization**: This function is synchronous because the body closure is synchronous.
+    /// No async/await overhead is needed - we directly modify the actor-isolated state.
+    ///
+    /// **Performance**: No state copying is required since the closure is synchronous and
+    /// cannot suspend, maintaining actor isolation guarantees without copying overhead.
+    private func withMutableStateSync<R>(
+        _ body: (inout State) throws -> R
+    ) rethrows -> R {
+        // Directly execute synchronous body - no copying, no async overhead
+        return try body(&state)
+    }
+    
+    /// Execute an async closure with mutable state access (legacy version for lifecycle handlers).
     ///
     /// **Simplified Model**: Mutations are NOT blocked during sync operations.
     /// Sync uses snapshot model, so mutations can proceed concurrently.
@@ -559,22 +696,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// - Using `nonisolated` state with explicit synchronization (complex, may break actor guarantees)
     /// - Batching mutations to reduce copy frequency
     /// - Using copy-on-write (COW) data structures for state
-    /// - When Resolver mechanism is implemented and Action Handlers become synchronous,
-    ///   we may be able to directly modify state without copying
     ///
     /// **Error Handling**: If the handler throws an error, the copy is discarded and state
     /// remains unchanged, providing automatic rollback behavior.
-    /// Execute a synchronous closure with mutable state access
     ///
-    /// Since handlers are now synchronous, we can directly modify state
-    /// without copying (actor isolation is maintained because we're in the actor)
-    private func withMutableStateSync<R>(
-        _ body: (inout State) throws -> R
-    ) async rethrows -> R {
-        return try body(&state)
-    }
-    
-    /// Legacy async version for backward compatibility (used by lifecycle handlers)
+    /// **Usage**: This is the legacy async version, primarily used by lifecycle handlers
+    /// (OnEnter, OnLeave, etc.) that still need async capabilities. Action and Event handlers
+    /// should use `withMutableStateSync` instead for better performance.
     private func withMutableState<R>(
         _ body: (inout State) async throws -> R
     ) async rethrows -> R {
@@ -647,6 +775,50 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         destroyTask?.cancel()
         destroyTask = nil
 
+        // Execute OnFinalize handler (sync, supports resolvers)
+        if let onFinalizeHandler = definition.lifetimeHandlers.onFinalize {
+            let ctx = makeContext(
+                playerID: systemPlayerID,
+                clientID: systemClientID,
+                sessionID: systemSessionID
+            )
+            
+            do {
+                var updatedCtx = ctx
+                
+                // Execute resolvers in parallel if any are declared
+                if !definition.lifetimeHandlers.onFinalizeResolverExecutors.isEmpty {
+                    let resolverContext = ResolverContext(
+                        landContext: ctx,
+                        actionPayload: nil,
+                        eventPayload: nil,
+                        currentState: state
+                    )
+                    updatedCtx = try await ResolverExecutor.executeResolvers(
+                        executors: definition.lifetimeHandlers.onFinalizeResolverExecutors,
+                        resolverContext: resolverContext,
+                        landContext: ctx
+                    )
+                }
+                
+                // Execute handler synchronously (resolvers already executed above)
+                try withMutableStateSync { state in
+                    try onFinalizeHandler(&state, updatedCtx)
+                }
+            } catch {
+                logger.error("❌ OnFinalize handler failed", metadata: [
+                    "error": .string(String(describing: error))
+                ])
+            }
+        }
+        
+        // Execute AfterFinalize handler (async cleanup)
+        if let afterFinalizeHandler = definition.lifetimeHandlers.afterFinalize {
+            let snapshot = state
+            await afterFinalizeHandler(snapshot)
+        }
+        
+        // Legacy OnShutdown handler (deprecated)
         if let handler = definition.lifetimeHandlers.onShutdown {
             let snapshot = state
             await handler(snapshot)
