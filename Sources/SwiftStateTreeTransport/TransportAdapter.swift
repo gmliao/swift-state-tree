@@ -904,7 +904,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
         }
         
-        // Phase 3: Atomic join operation (with rollback on failure)
+        // Phase 3: Check for duplicate playerID and kick old session (Kick Old strategy)
+        let targetPlayerID = PlayerID(finalPlayerID)
+        let existingSessions = getSessions(for: targetPlayerID)
+        if let oldSessionID = existingSessions.first {
+            logger.info("Duplicate playerID login detected: \(finalPlayerID), kicking old session: \(oldSessionID.rawValue)")
+            // Get old clientID before disconnecting
+            if let oldClientID = sessionToClient[oldSessionID] {
+                // Disconnect old session (this will call keeper.leave() and clean up state)
+                await onDisconnect(sessionID: oldSessionID, clientID: oldClientID)
+            }
+        }
+        
+        // Phase 4: Atomic join operation (with rollback on failure)
         var joinSucceeded = false
         var playerID: PlayerID?
         
