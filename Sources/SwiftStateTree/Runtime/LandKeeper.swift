@@ -378,13 +378,22 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///   - playerID: The player's unique identifier.
     ///   - clientID: The client instance identifier.
     public func leave(playerID: PlayerID, clientID: ClientID) async throws {
-        guard var session = players[playerID] else { return }
+        guard var session = players[playerID] else {
+            logger.debug("Leave called for player \(playerID.rawValue) but not found in players dictionary")
+            return
+        }
+        let clientCountBefore = session.clients.count
         session.clients.remove(clientID)
+        let clientCountAfter = session.clients.count
+
+        logger.debug("Player \(playerID.rawValue) leave: clientID=\(clientID.rawValue), clients: \(clientCountBefore) -> \(clientCountAfter)")
 
         if session.clients.isEmpty {
             let deviceID = session.deviceID
             let metadata = session.metadata
             players.removeValue(forKey: playerID)
+            
+            logger.info("Player \(playerID.rawValue) has no more clients, calling OnLeave handler")
             
             if let handler = definition.lifetimeHandlers.onLeave {
                 var ctx = makeContext(

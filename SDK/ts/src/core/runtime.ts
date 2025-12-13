@@ -221,6 +221,11 @@ export class StateTreeRuntime {
       landID = payload.joinResponse.landID
     } else if (payload.event?.landID) {
       landID = payload.event.landID
+    } else if (message.kind === 'error') {
+      // For error messages, try to extract landID from error details
+      const errorPayload = payload.error || payload
+      const details = errorPayload.details || {}
+      landID = details.landID
     }
 
     if (landID) {
@@ -228,24 +233,40 @@ export class StateTreeRuntime {
       if (view) {
         view.handleTransportMessage(message)
       } else {
-        this.logger.warn(`No view found for landID: ${landID}`)
+        this.logger.warn(`No view found for landID: ${landID} (available views: ${Array.from(this.views.keys()).join(', ') || 'none'})`)
+        // For error messages without matching view, still try to route to all views as fallback
+        if (message.kind === 'error' && this.views.size > 0) {
+          this.logger.debug(`Routing error to all views as fallback`)
+          for (const view of this.views.values()) {
+            view.handleTransportMessage(message)
+          }
+        }
       }
     } else {
       // No landID in message, try to route to all views or handle globally
-      // For error messages, try to route based on requestID if available
+      // For error messages, always route to all views so they can handle errors
+      // even if requestID extraction fails
       if (message.kind === 'error') {
         const errorPayload = message.payload as any
-        const requestID = errorPayload.details?.requestID || errorPayload.requestID
-        
-        if (requestID) {
-          // Try to find view by checking pending requests
-          // For now, route to all views and let them handle it
+        // Always route error messages to all views
+        // This ensures errors are properly handled even if requestID extraction fails
+        if (this.views.size > 0) {
           for (const view of this.views.values()) {
             view.handleTransportMessage(message)
           }
         } else {
-          // Global error, log it
-          this.logger.error(`Global error: ${JSON.stringify(errorPayload)}`)
+          // Log as global error only if no views exist (for debugging)
+          // This can happen if error occurs before view is created
+          this.logger.error(`Global error (no views): ${JSON.stringify(errorPayload)}`)
+          
+          // Try to extract requestID and see if we can match it to a pending action
+          // This is a fallback for errors that occur before view creation
+          const nestedError = errorPayload.error || errorPayload
+          const details = nestedError.details || {}
+          const requestID = details.requestID
+          if (requestID) {
+            this.logger.warn(`Error has requestID but no views exist: ${requestID}`)
+          }
         }
       } else {
         // Unknown message without landID, route to all views

@@ -88,6 +88,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         
         // If player had joined, handle leave
         if let playerID = sessionToPlayer[sessionID] {
+            logger.debug("Player \(playerID.rawValue) disconnecting: session=\(sessionID.rawValue), clientID=\(clientID.rawValue)")
+            
             // Remove from sessionToPlayer BEFORE calling keeper.leave()
             // This ensures syncBroadcastOnly() only sends to remaining players
             sessionToPlayer.removeValue(forKey: sessionID)
@@ -96,6 +98,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // syncBroadcastOnly() will only see remaining players in sessionToPlayer
             do {
                 try await keeper.leave(playerID: playerID, clientID: clientID)
+                logger.debug("Successfully called keeper.leave() for player \(playerID.rawValue)")
             } catch {
                 // Log error but don't block disconnection flow
                 logger.error("❌ OnLeave handler failed", metadata: [
@@ -109,7 +112,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // This ensures reconnection behaves like first connection
             syncEngine.clearCacheForDisconnectedPlayer(playerID)
         
-        logger.info("Client disconnected: session=\(sessionID.rawValue), player=\(playerID.rawValue)")
+            logger.info("Client disconnected: session=\(sessionID.rawValue), player=\(playerID.rawValue)")
         } else {
             logger.info("Client disconnected (was not joined): session=\(sessionID.rawValue)")
         }

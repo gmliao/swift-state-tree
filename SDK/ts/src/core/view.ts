@@ -299,6 +299,10 @@ export class StateTreeView {
       case 'error': {
         const payload = message.payload as any
         let errorPayload: ErrorPayload
+        
+        // Handle multiple error formats:
+        // 1. Direct: {code: "...", message: "...", details: {...}}
+        // 2. Nested: {error: {code: "...", message: "...", details: {...}}}
         if (payload && 'code' in payload && 'message' in payload) {
           errorPayload = payload as ErrorPayload
         } else if (payload && typeof payload === 'object' && 'error' in payload) {
@@ -307,11 +311,15 @@ export class StateTreeView {
           errorPayload = { code: 'UNKNOWN_ERROR', message: 'Unknown error format' }
         }
 
+        // Extract error details - handle nested structure
+        // Swift sends: {error: {code: "...", message: "...", details: {requestID: "..."}}}
         const code = errorPayload.code || 'UNKNOWN_ERROR'
         const errorMessage = errorPayload.message || 'Unknown error occurred'
         const details = errorPayload.details || {}
         const requestID = details.requestID as string | undefined
         
+        // Debug: log error details to help diagnose routing issues
+        this.logger.debug(`Processing error: code=${code}, requestID=${requestID || 'none'}, callbacks=${this.actionRejectCallbacks.size}`)
         this.logger.error(`Error [${code}]: ${errorMessage}`, details)
 
         // Notify higher-level error callback for logging/inspection
@@ -336,12 +344,19 @@ export class StateTreeView {
             this.actionCallbacks.delete(requestID)
             this.actionRejectCallbacks.delete(requestID)
             return
+          } else {
+            // Log warning if requestID exists but no callback found
+            this.logger.warn(`Error with requestID but no callback found: ${requestID}`)
           }
+        } else {
+          // Log warning if no requestID found in error
+          this.logger.warn(`Error without requestID: code=${code}, message=${errorMessage}`)
         }
 
         // Check if this is a join-related error
-        if (code.startsWith('JOIN_') || requestID) {
-          // Try to find matching join callback by requestID or use first one
+        // JOIN_ errors should always try to resolve join callbacks
+        if (code.startsWith('JOIN_')) {
+          // Try to find matching join callback by requestID first
           if (requestID) {
             const callback = this.joinCallbacks.get(requestID)
             if (callback) {
@@ -351,14 +366,26 @@ export class StateTreeView {
             }
           }
           
-          // Fallback: use first callback if available
+          // Fallback: use first callback if available (for cases where requestID doesn't match)
           if (this.joinCallbacks.size > 0) {
             const firstEntry = this.joinCallbacks.entries().next().value
             if (firstEntry) {
               const [requestID, callback] = firstEntry
               callback({ success: false, reason: errorMessage })
               this.joinCallbacks.delete(requestID)
+              return
             }
+          }
+          
+          // Log warning if no callback found for join error
+          this.logger.warn(`Join error [${code}] but no callback found: ${errorMessage}`)
+        } else if (requestID && this.joinCallbacks.has(requestID)) {
+          // If requestID matches a join callback, treat it as join error
+          const callback = this.joinCallbacks.get(requestID)
+          if (callback) {
+            callback({ success: false, reason: errorMessage })
+            this.joinCallbacks.delete(requestID)
+            return
           }
         }
         break
