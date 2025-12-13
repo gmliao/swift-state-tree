@@ -75,13 +75,19 @@ function generateOrGetClientID(): string {
     return clientID;
 }
 
-// 使用
-const clientID = generateOrGetClientID();
-const client = new StateTreeClient({
-    websocketURL: 'wss://api.example.com/ws',
+// 使用（以 repo 現況的 TS SDK Core API 為例）
+import { StateTreeRuntime } from '@swiftstatetree/sdk/core'
+
+const clientID = generateOrGetClientID()
+const runtime = new StateTreeRuntime()
+await runtime.connect('wss://api.example.com/ws')
+
+const view = runtime.createView('demo-game', {
     playerID: 'user-123',
-    clientID: clientID  // 應用端提供
-});
+    deviceID: clientID
+})
+
+await view.join()
 ```
 
 ### Transport 協議
@@ -364,4 +370,3 @@ func configure(_ app: Application) throws {
 ```
 
 ---
-
