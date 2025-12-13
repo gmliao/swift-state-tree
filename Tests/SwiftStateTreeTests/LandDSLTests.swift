@@ -207,6 +207,10 @@ func testLandKeeperAllowedEvents() async throws {
 
     let readyEvent = AnyClientEvent(DemoReadyEvent())
     try? await keeper.handleClientEvent(readyEvent, playerID: playerID, clientID: clientID, sessionID: sessionID)
+    // ctx.spawn executes asynchronously, so we need to wait for the spawned task to complete
+    await waitFor("counter to increment after spawn", condition: {
+        await counter.current() == 1
+    })
     #expect(await counter.current() == 1)
 }
 
