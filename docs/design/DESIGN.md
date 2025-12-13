@@ -53,7 +53,7 @@
 - **[DESIGN_MULTI_ROOM_ARCHITECTURE.md](./DESIGN_MULTI_ROOM_ARCHITECTURE.md)**：多房間架構、配對服務、房間管理設計
 
 ### 客戶端 SDK 與程式碼生成
-- **[TYPESCRIPT_SDK_ARCHITECTURE.md](../guides/TYPESCRIPT_SDK_ARCHITECTURE.md)**：TypeScript SDK 完整架構設計（整合了舊版 SDK 設計和 Code-gen 計劃）
+- **[DESIGN_TYPESCRIPT_SDK.md](./DESIGN_TYPESCRIPT_SDK.md)**：TypeScript SDK 現況 + schema codegen 規劃（含 `StateTree` class、Vue/React 對接、function actions/events）
 
 ### 範例與速查
 - **[DESIGN_EXAMPLES.md](./DESIGN_EXAMPLES.md)**：端到端範例、語法速查表、命名說明、設計決策、**專案目錄結構**
@@ -136,7 +136,7 @@ swift-state-tree/
 - 定義 StateTree：參考 [DESIGN_CORE.md](./DESIGN_CORE.md) 的「StateTree：狀態樹結構」和「同步規則 DSL」
 - 定義 Land：參考 [DESIGN_REALM_DSL.md](./DESIGN_REALM_DSL.md)
 - 設定 Transport：參考 [DESIGN_TRANSPORT.md](./DESIGN_TRANSPORT.md)
-- 生成客戶端 SDK：參考 [TYPESCRIPT_SDK_ARCHITECTURE.md](../guides/TYPESCRIPT_SDK_ARCHITECTURE.md)
+- 生成客戶端 SDK：參考 [DESIGN_TYPESCRIPT_SDK.md](./DESIGN_TYPESCRIPT_SDK.md)
 - 語法速查：參考 [DESIGN_EXAMPLES.md](./DESIGN_EXAMPLES.md) 的「語法速查表」
 
 ### 架構深入
