@@ -218,10 +218,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         sessionID: SessionID,
         services: LandServices = LandServices()
     ) async throws {
+        // Check for duplicate playerID login (Kick Old strategy)
+        if let existingSession = players[playerID], let oldClientID = existingSession.clientID {
+            logger.info("Duplicate playerID login detected: \(playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
+            // Kick old connection by calling leave
+            // This will call OnLeave handler and clean up state
+            try await leave(playerID: playerID, clientID: oldClientID)
+        }
+        
         var session = players[playerID] ?? InternalPlayerSession(services: services)
-        let isFirst = session.clients.isEmpty
+        let isFirst = session.clientID == nil
 
-        session.clients.insert(clientID)
+        session.clientID = clientID
         session.lastSessionID = sessionID
         session.services = services
         players[playerID] = session
@@ -312,15 +320,23 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             return decision
         }
         
+        // Check for duplicate playerID login (Kick Old strategy)
+        if let existingSession = players[playerID], let oldClientID = existingSession.clientID {
+            logger.info("Duplicate playerID login detected: \(playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
+            // Kick old connection by calling leave
+            // This will call OnLeave handler and clean up state
+            try await leave(playerID: playerID, clientID: oldClientID)
+        }
+        
         // Proceed with join
         var playerSession = players[playerID] ?? InternalPlayerSession(
             services: services,
             deviceID: session.deviceID,
             metadata: session.metadata
         )
-        let isFirst = playerSession.clients.isEmpty
+        let isFirst = playerSession.clientID == nil
 
-        playerSession.clients.insert(clientID)
+        playerSession.clientID = clientID
         playerSession.lastSessionID = sessionID
         playerSession.services = services
         // Update deviceID and metadata if provided (for reconnection scenarios)
@@ -378,66 +394,66 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///   - playerID: The player's unique identifier.
     ///   - clientID: The client instance identifier.
     public func leave(playerID: PlayerID, clientID: ClientID) async throws {
-        guard var session = players[playerID] else {
+        guard let session = players[playerID] else {
             logger.debug("Leave called for player \(playerID.rawValue) but not found in players dictionary")
             return
         }
-        let clientCountBefore = session.clients.count
-        session.clients.remove(clientID)
-        let clientCountAfter = session.clients.count
-
-        logger.debug("Player \(playerID.rawValue) leave: clientID=\(clientID.rawValue), clients: \(clientCountBefore) -> \(clientCountAfter)")
-
-        if session.clients.isEmpty {
-            let deviceID = session.deviceID
-            let metadata = session.metadata
-            players.removeValue(forKey: playerID)
-            
-            logger.info("Player \(playerID.rawValue) has no more clients, calling OnLeave handler")
-            
-            if let handler = definition.lifetimeHandlers.onLeave {
-                var ctx = makeContext(
-                    playerID: playerID,
-                    clientID: clientID,
-                    sessionID: session.lastSessionID ?? systemSessionID,
-                    servicesOverride: session.services,
-                    deviceID: deviceID,
-                    metadata: metadata
-                )
-                
-                // Execute resolvers in parallel if any are declared
-                if !definition.lifetimeHandlers.onLeaveResolverExecutors.isEmpty {
-                    let resolverContext = ResolverContext(
-                        landContext: ctx,
-                        actionPayload: nil,
-                        eventPayload: nil,
-                        currentState: state
-                    )
-                    ctx = try await ResolverExecutor.executeResolvers(
-                        executors: definition.lifetimeHandlers.onLeaveResolverExecutors,
-                        resolverContext: resolverContext,
-                        landContext: ctx
-                    )
-                }
-                
-                // Execute handler synchronously (resolvers already executed above)
-                // withMutableStateSync is now synchronous - no await needed
-                try withMutableStateSync { state in
-                    try handler(&state, ctx)
-                }
-                // Trigger sync after OnLeave handler modifies state
-                // Use syncBroadcastOnlyHandler for optimization: only syncs broadcast changes
-                // (e.g., removing player from dictionary) using dirty tracking.
-                // This is more efficient than syncNow() because:
-                // - Only extracts/compares dirty broadcast fields (not entire state)
-                // - Sends same update to all players (no per-player diff needed)
-                // - Updates shared broadcast cache efficiently
-                await transport?.syncBroadcastOnlyFromTransport()
-            }
-            scheduleDestroyIfNeeded()
-        } else {
-            players[playerID] = session
+        
+        // Verify this is the correct client (should always match since we only allow one client per playerID)
+        guard session.clientID == clientID else {
+            logger.debug("Leave called for player \(playerID.rawValue) with mismatched clientID: expected=\(session.clientID?.rawValue ?? "nil"), received=\(clientID.rawValue)")
+            return
         }
+        
+        logger.debug("Player \(playerID.rawValue) leave: clientID=\(clientID.rawValue)")
+
+        // Since we only allow one client per playerID, always call OnLeave handler
+        let deviceID = session.deviceID
+        let metadata = session.metadata
+        players.removeValue(forKey: playerID)
+        
+        logger.info("Player \(playerID.rawValue) leaving, calling OnLeave handler")
+        
+        if let handler = definition.lifetimeHandlers.onLeave {
+            var ctx = makeContext(
+                playerID: playerID,
+                clientID: clientID,
+                sessionID: session.lastSessionID ?? systemSessionID,
+                servicesOverride: session.services,
+                deviceID: deviceID,
+                metadata: metadata
+            )
+            
+            // Execute resolvers in parallel if any are declared
+            if !definition.lifetimeHandlers.onLeaveResolverExecutors.isEmpty {
+                let resolverContext = ResolverContext(
+                    landContext: ctx,
+                    actionPayload: nil,
+                    eventPayload: nil,
+                    currentState: state
+                )
+                ctx = try await ResolverExecutor.executeResolvers(
+                    executors: definition.lifetimeHandlers.onLeaveResolverExecutors,
+                    resolverContext: resolverContext,
+                    landContext: ctx
+                )
+            }
+            
+            // Execute handler synchronously (resolvers already executed above)
+            // withMutableStateSync is now synchronous - no await needed
+            try withMutableStateSync { state in
+                try handler(&state, ctx)
+            }
+            // Trigger sync after OnLeave handler modifies state
+            // Use syncBroadcastOnlyHandler for optimization: only syncs broadcast changes
+            // (e.g., removing player from dictionary) using dirty tracking.
+            // This is more efficient than syncNow() because:
+            // - Only extracts/compares dirty broadcast fields (not entire state)
+            // - Sends same update to all players (no per-player diff needed)
+            // - Updates shared broadcast cache efficiently
+            await transport?.syncBroadcastOnlyFromTransport()
+        }
+        scheduleDestroyIfNeeded()
     }
 
     // MARK: - Action & Event Handling
@@ -841,7 +857,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 }
 
 private struct InternalPlayerSession: Sendable {
-    var clients: Set<ClientID> = []
+    var clientID: ClientID?
     var lastSessionID: SessionID?
     var services: LandServices
     // PlayerSession info (from join request)
@@ -849,7 +865,7 @@ private struct InternalPlayerSession: Sendable {
     var metadata: [String: String]
     
     init(services: LandServices, deviceID: String? = nil, metadata: [String: String] = [:]) {
-        self.clients = []
+        self.clientID = nil
         self.lastSessionID = nil
         self.services = services
         self.deviceID = deviceID

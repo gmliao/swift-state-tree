@@ -18,6 +18,34 @@ struct ConcurrencyTestState: StateNodeProtocol {
     var joinCount: Int = 0
 }
 
+// MARK: - Helper Types
+
+actor ManagedCounter {
+    private var count: Int = 0
+    
+    func increment() {
+        count += 1
+    }
+    
+    var value: Int {
+        count
+    }
+}
+
+actor LeaveTracker {
+    private var called = false
+    private var playerID: PlayerID?
+    
+    func record(playerID: PlayerID) {
+        self.called = true
+        self.playerID = playerID
+    }
+    
+    func getInfo() -> (called: Bool, playerID: PlayerID?) {
+        (called: called, playerID: playerID)
+    }
+}
+
 // MARK: - Tests
 
 @Test("Multiple sessions join in rapid succession")
@@ -90,9 +118,11 @@ func testMultipleSessionsJoinInRapidSuccession() async throws {
     #expect(state.joinCount == 5, "Join count should be 5, got \(state.joinCount)")
 }
 
-@Test("Same playerID with multiple sessions")
-func testSamePlayerIDMultipleSessions() async throws {
+@Test("Duplicate playerID login kicks old session (Kick Old strategy)")
+func testDuplicatePlayerIDKicksOldSession() async throws {
     // Arrange
+    let onLeaveTracker = LeaveTracker()
+    
     let definition = Land(
         "concurrency-test",
         using: ConcurrencyTestState.self
@@ -101,6 +131,13 @@ func testSamePlayerIDMultipleSessions() async throws {
             OnJoin { (state: inout ConcurrencyTestState, ctx: LandContext) in
                 state.players[ctx.playerID] = "Joined"
                 state.joinCount += 1
+            }
+            
+            OnLeave { (state: inout ConcurrencyTestState, ctx: LandContext) in
+                state.players.removeValue(forKey: ctx.playerID)
+                Task {
+                    await onLeaveTracker.record(playerID: ctx.playerID)
+                }
             }
         }
     }
@@ -128,7 +165,7 @@ func testSamePlayerIDMultipleSessions() async throws {
     await adapter.onConnect(sessionID: session1, clientID: client1)
     await adapter.onConnect(sessionID: session2, clientID: client2)
     
-    // Act: Join both with same playerID
+    // Act: Join first session with playerID
     let joinRequest1 = TransportMessage.join(
         requestID: "join-1",
         landID: "concurrency-test",
@@ -139,6 +176,13 @@ func testSamePlayerIDMultipleSessions() async throws {
     let joinData1 = try JSONEncoder().encode(joinRequest1)
     await adapter.onMessage(joinData1, from: session1)
     
+    try await Task.sleep(for: .milliseconds(50))
+    
+    // Assert: First session should be joined
+    let joined1 = await adapter.isJoined(sessionID: session1)
+    #expect(joined1, "Session 1 should be joined")
+    
+    // Act: Join second session with same playerID (should kick first session)
     let joinRequest2 = TransportMessage.join(
         requestID: "join-2",
         landID: "concurrency-test",
@@ -151,31 +195,36 @@ func testSamePlayerIDMultipleSessions() async throws {
     
     try await Task.sleep(for: .milliseconds(100))
     
-    // Assert: Both sessions should be joined
-    let joined1 = await adapter.isJoined(sessionID: session1)
+    // Assert: First session should be kicked (not joined)
+    let joined1After = await adapter.isJoined(sessionID: session1)
+    #expect(!joined1After, "Session 1 should be kicked after duplicate login")
+    
+    // Assert: Second session should be joined
     let joined2 = await adapter.isJoined(sessionID: session2)
-    #expect(joined1, "Session 1 should be joined")
     #expect(joined2, "Session 2 should be joined")
     
-    // Assert: Both should map to same playerID
+    // Assert: OnLeave should be called for the old session
+    let leaveInfo = await onLeaveTracker.getInfo()
+    #expect(leaveInfo.called, "OnLeave should be called when old session is kicked")
+    #expect(leaveInfo.playerID?.rawValue == sharedPlayerID, "OnLeave should be called with correct playerID")
+    
+    // Assert: Only second session should map to playerID
     let playerID1 = await adapter.getPlayerID(for: session1)
     let playerID2 = await adapter.getPlayerID(for: session2)
-    #expect(playerID1 == playerID2, "Both sessions should map to same playerID")
-    #expect(playerID1?.rawValue == sharedPlayerID, "PlayerID should match requested")
+    #expect(playerID1 == nil, "Session 1 should not map to playerID after being kicked")
+    #expect(playerID2?.rawValue == sharedPlayerID, "Session 2 should map to playerID")
     
-    // Assert: getSessions should return both sessions
-    if let pid = playerID1 {
-        let sessions = await adapter.getSessions(for: pid)
-        #expect(sessions.count == 2, "PlayerID should map to 2 sessions")
-        #expect(sessions.contains(session1), "Sessions should include session1")
-        #expect(sessions.contains(session2), "Sessions should include session2")
-    }
-    
-    // Assert: State should have the player (only once, as it's the same playerID)
-    let state = await keeper.currentState()
+    // Assert: getSessions should return only second session
     let playerID = PlayerID(sharedPlayerID)
+    let sessions = await adapter.getSessions(for: playerID)
+    #expect(sessions.count == 1, "PlayerID should map to 1 session")
+    #expect(sessions.contains(session2), "Sessions should include session2")
+    #expect(!sessions.contains(session1), "Sessions should not include session1")
+    
+    // Assert: State should have the player (only once)
+    let state = await keeper.currentState()
     #expect(state.players[playerID] == "Joined", "Player should be in state")
-    #expect(state.joinCount == 1, "Join count should be 1 (same playerID)")
+    #expect(state.joinCount == 2, "Join count should be 2 (first join + second join)")
 }
 
 @Test("Rapid connect and disconnect maintains state consistency")
@@ -240,6 +289,179 @@ func testRapidConnectDisconnect() async throws {
         
         // Verify not joined
         let notJoined = await adapter.isJoined(sessionID: session1)
+        #expect(!notJoined, "Session should not be joined after disconnect in iteration \(iteration)")
+    }
+    
+    // Final state check
+    let state = await keeper.currentState()
+    #expect(state.players.isEmpty, "State should be empty after all disconnects")
+}
+
+@Test("Join during leave maintains state consistency")
+func testJoinDuringLeave() async throws {
+    // Arrange
+    let onJoinCallCount = ManagedCounter()
+    let onLeaveCallCount = ManagedCounter()
+    
+    let definition = Land(
+        "concurrency-test",
+        using: ConcurrencyTestState.self
+    ) {
+        Rules {
+            OnJoin { (state: inout ConcurrencyTestState, ctx: LandContext) in
+                state.players[ctx.playerID] = "Joined"
+                state.joinCount += 1
+                Task {
+                    await onJoinCallCount.increment()
+                }
+            }
+            
+            OnLeave { (state: inout ConcurrencyTestState, ctx: LandContext) in
+                state.players.removeValue(forKey: ctx.playerID)
+                Task {
+                    await onLeaveCallCount.increment()
+                }
+            }
+        }
+    }
+    
+    let transport = WebSocketTransport()
+    let keeper = LandKeeper<ConcurrencyTestState>(
+        definition: definition,
+        initialState: ConcurrencyTestState()
+    )
+    let adapter = TransportAdapter<ConcurrencyTestState>(
+        keeper: keeper,
+        transport: transport,
+        landID: "concurrency-test"
+    )
+    await keeper.setTransport(adapter)
+    await transport.setDelegate(adapter)
+    
+    let playerID = "player-1"
+    let session1 = SessionID("sess-1")
+    let session2 = SessionID("sess-2")
+    let client1 = ClientID("cli-1")
+    let client2 = ClientID("cli-2")
+    
+    // Act: Connect and join first session
+    await adapter.onConnect(sessionID: session1, clientID: client1)
+    let joinRequest1 = TransportMessage.join(
+        requestID: "join-1",
+        landID: "concurrency-test",
+        playerID: playerID,
+        deviceID: nil,
+        metadata: nil
+    )
+    let joinData1 = try JSONEncoder().encode(joinRequest1)
+    await adapter.onMessage(joinData1, from: session1)
+    try await Task.sleep(for: .milliseconds(50))
+    
+    // Act: Start leave, then immediately try to join with same playerID
+    // Since LandKeeper is an actor, operations are serialized, so leave will complete before join
+    let leaveTask = Task {
+        await adapter.onDisconnect(sessionID: session1, clientID: client1)
+    }
+    
+    // Immediately try to join with same playerID (should wait for leave to complete)
+    await adapter.onConnect(sessionID: session2, clientID: client2)
+    let joinRequest2 = TransportMessage.join(
+        requestID: "join-2",
+        landID: "concurrency-test",
+        playerID: playerID,
+        deviceID: nil,
+        metadata: nil
+    )
+    let joinData2 = try JSONEncoder().encode(joinRequest2)
+    await adapter.onMessage(joinData2, from: session2)
+    
+    await leaveTask.value
+    try await Task.sleep(for: .milliseconds(100))
+    
+    // Assert: First session should be disconnected
+    let joined1After = await adapter.isJoined(sessionID: session1)
+    #expect(!joined1After, "Session 1 should not be joined")
+    
+    // Assert: Second session should be joined
+    let joined2 = await adapter.isJoined(sessionID: session2)
+    #expect(joined2, "Session 2 should be joined")
+    
+    // Assert: OnLeave should be called
+    #expect(await onLeaveCallCount.value == 1, "OnLeave should be called once")
+    
+    // Assert: OnJoin should be called twice (first join + second join)
+    #expect(await onJoinCallCount.value == 2, "OnJoin should be called twice")
+    
+    // Assert: State should have player (only one)
+    let state = await keeper.currentState()
+    let pid = PlayerID(playerID)
+    #expect(state.players[pid] == "Joined", "Player should be in state")
+    #expect(state.players.count == 1, "State should have exactly 1 player")
+}
+
+@Test("Rapid leave and join maintains state consistency")
+func testRapidLeaveAndJoin() async throws {
+    // Arrange
+    let definition = Land(
+        "concurrency-test",
+        using: ConcurrencyTestState.self
+    ) {
+        Rules {
+            OnJoin { (state: inout ConcurrencyTestState, ctx: LandContext) in
+                state.players[ctx.playerID] = "Joined"
+                state.joinCount += 1
+            }
+            
+            OnLeave { (state: inout ConcurrencyTestState, ctx: LandContext) in
+                state.players.removeValue(forKey: ctx.playerID)
+            }
+        }
+    }
+    
+    let transport = WebSocketTransport()
+    let keeper = LandKeeper<ConcurrencyTestState>(
+        definition: definition,
+        initialState: ConcurrencyTestState()
+    )
+    let adapter = TransportAdapter<ConcurrencyTestState>(
+        keeper: keeper,
+        transport: transport,
+        landID: "concurrency-test"
+    )
+    await keeper.setTransport(adapter)
+    await transport.setDelegate(adapter)
+    
+    let playerID = "player-1"
+    let session = SessionID("sess-1")
+    let client = ClientID("cli-1")
+    
+    // Act: Rapidly leave and join multiple times
+    for iteration in 1...3 {
+        // Connect
+        await adapter.onConnect(sessionID: session, clientID: client)
+        
+        // Join
+        let joinRequest = TransportMessage.join(
+            requestID: "join-\(iteration)",
+            landID: "concurrency-test",
+            playerID: playerID,
+            deviceID: nil,
+            metadata: nil
+        )
+        let joinData = try JSONEncoder().encode(joinRequest)
+        await adapter.onMessage(joinData, from: session)
+        try await Task.sleep(for: .milliseconds(20))
+        
+        // Verify joined
+        let joined = await adapter.isJoined(sessionID: session)
+        #expect(joined, "Session should be joined in iteration \(iteration)")
+        
+        // Disconnect
+        await adapter.onDisconnect(sessionID: session, clientID: client)
+        try await Task.sleep(for: .milliseconds(20))
+        
+        // Verify not joined
+        let notJoined = await adapter.isJoined(sessionID: session)
         #expect(!notJoined, "Session should not be joined after disconnect in iteration \(iteration)")
     }
     
