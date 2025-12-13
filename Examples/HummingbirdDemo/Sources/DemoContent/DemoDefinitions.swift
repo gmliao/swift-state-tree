@@ -258,7 +258,14 @@ public enum DemoGame {
                 /// The PlayerID returned here will be used throughout the player's session.
                 CanJoin { (state: DemoGameState, session: PlayerSession, ctx: LandContext) in
                     // Check if room is full
-                    guard state.players.count < 10 else {
+                    let currentPlayerCount = state.players.count
+                    let maxPlayers = 10
+                    
+                    // Debug logging to help diagnose room capacity issues
+                    print("CanJoin check: currentPlayers=\(currentPlayerCount), maxPlayers=\(maxPlayers), players=\(Array(state.players.keys))")
+                    
+                    guard currentPlayerCount < maxPlayers else {
+                        print("⚠️ Join rejected: Room is full (currentPlayers=\(currentPlayerCount), maxPlayers=\(maxPlayers))")
                         throw JoinError.roomIsFull
                     }
                     
@@ -268,7 +275,7 @@ public enum DemoGame {
                     
                     // Optional: Log metadata for debugging
                     if let deviceID = session.deviceID {
-                        print("Player joining: playerID=\(session.playerID), deviceID=\(deviceID)")
+                        print("✅ Player joining: playerID=\(session.playerID), deviceID=\(deviceID), currentPlayers=\(currentPlayerCount)")
                     }
                     
                     return .allow(playerID: playerID)
@@ -300,11 +307,14 @@ public enum DemoGame {
                 
                 OnLeave { (state: inout DemoGameState, ctx: LandContext) in
                     // Remove player from all state dictionaries
-                    state.players.removeValue(forKey: ctx.playerID)
-                    state.playerPrivateStates.removeValue(forKey: ctx.playerID)
-                    state.playerScores.removeValue(forKey: ctx.playerID)
-                    state.playerItems.removeValue(forKey: ctx.playerID)
-                    print("Player \(ctx.playerID) left - cleaned up all state")
+                    let playerID = ctx.playerID
+                    let beforeCount = state.players.count
+                    state.players.removeValue(forKey: playerID)
+                    state.playerPrivateStates.removeValue(forKey: playerID)
+                    state.playerScores.removeValue(forKey: playerID)
+                    state.playerItems.removeValue(forKey: playerID)
+                    let afterCount = state.players.count
+                    print("👋 Player \(playerID) left - cleaned up all state (players: \(beforeCount) -> \(afterCount), remaining: \(Array(state.players.keys)))")
                 }
                 
                 HandleEvent(ChatEvent.self) { (state: inout DemoGameState, event: ChatEvent, ctx: LandContext) in
