@@ -1,6 +1,10 @@
 import Foundation
 import SwiftStateTree
+import SwiftStateTreeTransport
 import Logging
+
+// Note: MatchmakingStrategy protocol is in SwiftStateTreeTransport (MatchmakingStrategyProtocol.swift)
+// MatchmakingPreferences and MatchmakingRequest are in SwiftStateTreeMatchmaking (MatchmakingTypes.swift)
 
 /// Matchmaking service for user/player matching and land assignment.
 ///
@@ -23,19 +27,26 @@ public actor MatchmakingService<State: StateNodeProtocol, Registry: LandManagerR
     
     private let logger: Logger
     
+    /// Factory for creating matchmaking strategies for different land types.
+    /// Each land type can have its own matching rules.
+    private let strategyFactory: @Sendable (String) -> any MatchmakingStrategy
+    
     /// Initialize MatchmakingService.
     ///
     /// - Parameters:
     ///   - registry: The land manager registry to use for creating/querying lands.
     ///   - landTypeRegistry: Registry for land types and their configurations.
+    ///   - strategyFactory: Factory function that returns a MatchmakingStrategy for a given landType.
     ///   - logger: Optional logger instance.
     public init(
         registry: Registry,
         landTypeRegistry: LandTypeRegistry<State>,
+        strategyFactory: @escaping @Sendable (String) -> any MatchmakingStrategy,
         logger: Logger? = nil
     ) {
         self.registry = registry
         self.landTypeRegistry = landTypeRegistry
+        self.strategyFactory = strategyFactory
         self.logger = logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.matchmaking",
             scope: "MatchmakingService"
@@ -55,7 +66,7 @@ public actor MatchmakingService<State: StateNodeProtocol, Registry: LandManagerR
         let landType = preferences.landType
         
         // Get strategy for this land type
-        let strategy = landTypeRegistry.strategyFactory(landType)
+        let strategy = strategyFactory(landType)
         
         // Get or create queue for this land type
         if waitingPlayersByLandType[landType] == nil {

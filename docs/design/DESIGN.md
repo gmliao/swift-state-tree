@@ -70,7 +70,7 @@
 | 模組 | 簡寫 | 完整名稱 | 說明 |
 |------|------|---------|------|
 | **core** | `SwiftStateTree` | `swift-state-tree` | 核心模組（不相依網路） |
-| **transport** | `SwiftStateTreeTransport` | `swift-state-tree-transport` | 網路傳輸模組 |
+| **transport** | `SwiftStateTreeTransport` | `swift-state-tree-transport` | 抽象的 Transport 層架構（傳輸 + 服務抽象） |
 | **app** | `SwiftStateTreeServerApp` | `swift-state-tree-server-app` | Server 應用啟動模組 |
 | **codegen** | `SwiftStateTreeCodeGen` | `swift-state-tree-codegen` | Schema 生成工具 |
 
@@ -105,7 +105,7 @@ swift-state-tree/
 │   │   ├── Runtime/                 # Runtime 執行器（LandKeeper）
 │   │   ├── SchemaGen/              # Schema 生成器
 │   │   └── Support/                # 工具類
-│   ├── SwiftStateTreeTransport/     # transport：網路傳輸模組
+│   ├── SwiftStateTreeTransport/     # transport：抽象的 Transport 層架構
 │   ├── SwiftStateTreeServerApp/     # app：Server 應用模組
 │   └── SwiftStateTreeCodeGen/      # codegen：Schema 生成工具
 ├── Tests/                           # 各模組的測試

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftStateTree
+import SwiftStateTreeTransport
 import Logging
 
 /// Container for lobby lands (special lands for matchmaking and room management).

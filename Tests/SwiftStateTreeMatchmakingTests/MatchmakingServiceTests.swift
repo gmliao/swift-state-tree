@@ -6,6 +6,7 @@ import Foundation
 import Testing
 @testable import SwiftStateTree
 @testable import SwiftStateTreeTransport
+@testable import SwiftStateTreeMatchmaking
 
 // MARK: - Test State
 
@@ -46,15 +47,15 @@ func testMatchmakingServiceQueuePlayers() async throws {
         initialStateFactory: { _, _ in
             MatchmakingTestState()
         },
-        strategyFactory: { _ in
-            // Use minPlayersToStart = 2 so players will be queued instead of auto-creating lands
-            DefaultMatchmakingStrategy(maxPlayersPerLand: 10, minPlayersToStart: 2)
-        }
     )
     
     let service = MatchmakingService<MatchmakingTestState, SingleLandManagerRegistry<MatchmakingTestState>>(
         registry: registry,
-        landTypeRegistry: landTypeRegistry
+        landTypeRegistry: landTypeRegistry,
+        strategyFactory: { _ in
+            // Use minPlayersToStart = 2 so players will be queued instead of auto-creating lands
+            DefaultMatchmakingStrategy(maxPlayersPerLand: 10, minPlayersToStart: 2)
+        }
     )
     
     let playerID1 = PlayerID("player-1")
@@ -115,15 +116,15 @@ func testMatchmakingServiceCancel() async throws {
         initialStateFactory: { _, _ in
             MatchmakingTestState()
         },
-        strategyFactory: { _ in
-            // Use minPlayersToStart = 2 so players will be queued instead of auto-creating lands
-            DefaultMatchmakingStrategy(maxPlayersPerLand: 10, minPlayersToStart: 2)
-        }
     )
     
     let service = MatchmakingService<MatchmakingTestState, SingleLandManagerRegistry<MatchmakingTestState>>(
         registry: registry,
-        landTypeRegistry: landTypeRegistry
+        landTypeRegistry: landTypeRegistry,
+        strategyFactory: { _ in
+            // Use minPlayersToStart = 2 so players will be queued instead of auto-creating lands
+            DefaultMatchmakingStrategy(maxPlayersPerLand: 10, minPlayersToStart: 2)
+        }
     )
     
     let playerID = PlayerID("player-1")
@@ -168,15 +169,15 @@ func testMatchmakingServiceGetStatus() async throws {
         initialStateFactory: { _, _ in
             MatchmakingTestState()
         },
-        strategyFactory: { _ in
-            // Use minPlayersToStart = 2 so players will be queued instead of auto-creating lands
-            DefaultMatchmakingStrategy(maxPlayersPerLand: 10, minPlayersToStart: 2)
-        }
     )
     
     let service = MatchmakingService<MatchmakingTestState, SingleLandManagerRegistry<MatchmakingTestState>>(
         registry: registry,
-        landTypeRegistry: landTypeRegistry
+        landTypeRegistry: landTypeRegistry,
+        strategyFactory: { _ in
+            // Use minPlayersToStart = 2 so players will be queued instead of auto-creating lands
+            DefaultMatchmakingStrategy(maxPlayersPerLand: 10, minPlayersToStart: 2)
+        }
     )
     
     let playerID = PlayerID("player-1")
@@ -229,15 +230,15 @@ func testMatchmakingServiceStatusForNonQueuedPlayer() async throws {
         initialStateFactory: { _, _ in
             MatchmakingTestState()
         },
-        strategyFactory: { _ in
-            // Use minPlayersToStart = 2 so players will be queued instead of auto-creating lands
-            DefaultMatchmakingStrategy(maxPlayersPerLand: 10, minPlayersToStart: 2)
-        }
     )
     
     let service = MatchmakingService<MatchmakingTestState, SingleLandManagerRegistry<MatchmakingTestState>>(
         registry: registry,
-        landTypeRegistry: landTypeRegistry
+        landTypeRegistry: landTypeRegistry,
+        strategyFactory: { _ in
+            // Use minPlayersToStart = 2 so players will be queued instead of auto-creating lands
+            DefaultMatchmakingStrategy(maxPlayersPerLand: 10, minPlayersToStart: 2)
+        }
     )
     
     let playerID = PlayerID("non-queued-player")
@@ -280,15 +281,13 @@ func testMatchmakingServiceStrategyFullThenNext() async throws {
         },
         initialStateFactory: { _, _ in
             MatchmakingTestState()
-        },
-        strategyFactory: { _ in
-            strategy
         }
     )
     
     let service = MatchmakingService<MatchmakingTestState, SingleLandManagerRegistry<MatchmakingTestState>>(
         registry: registry,
-        landTypeRegistry: landTypeRegistry
+        landTypeRegistry: landTypeRegistry,
+        strategyFactory: { _ in strategy }
     )
     
     let preferences = MatchmakingPreferences(landType: "standard")

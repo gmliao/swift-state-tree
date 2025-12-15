@@ -712,7 +712,7 @@ swift-state-tree/
 │   │   ├── SchemaGen/              # Schema 生成器（JSON Schema）
 │   │   └── Support/                # 工具類（AnyCodable 等）
 │   │
-│   ├── SwiftStateTreeTransport/     # transport：網路傳輸模組
+│   ├── SwiftStateTreeTransport/     # transport：抽象的 Transport 層架構
 │   │   ├── Transport/              # Transport 協議（GameTransport）
 │   │   ├── WebSocket/              # WebSocket 實作（WebSocketTransport）
 │   │   └── Connection/             # 連接管理（三層識別）
