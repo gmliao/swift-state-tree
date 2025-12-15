@@ -3,12 +3,14 @@
 > 本文檔說明 SwiftStateTree 的多房間架構設計、房間管理、配對服務，以及相關的命名與職責分界。
 >
 > **狀態說明**：
-> - 📅 多房間架構：規劃中，目前 `AppContainer` 僅支援單一房間
-> - 📅 配對服務：規劃中，尚未實作
-> - 📅 配對大廳：規劃中，尚未實作
+> - ✅ 多房間架構：已部分實作，`LandManager`、`LandRouter`、`LandContainer` 已實作
+> - ✅ `AppContainer`（未來 `LandServer`）：已支援單房間和多房間兩種模式
+> - 📅 配對服務：規劃中，`MatchmakingService` 已實作但功能仍在擴展
+> - 📅 配對大廳：規劃中，`LobbyContainer` 已實作但功能仍在擴展
 >
 > 相關文檔：
 > - [DESIGN_APP_CONTAINER_HOSTING.md](./DESIGN_APP_CONTAINER_HOSTING.md) - AppContainer 與 Hosting 設計
+> - [DESIGN_STATE_BINDING_AND_INITIALIZATION.md](./DESIGN_STATE_BINDING_AND_INITIALIZATION.md) - State 綁定與初始化設計（包含 LandRealm）
 > - [DESIGN_LAND-DSL-ROOM_LIFECYCLE.md](./DESIGN_LAND-DSL-ROOM_LIFECYCLE.md) - 房間生命週期設計
 
 ## 設計目標
@@ -38,7 +40,8 @@
 
 ```
 ┌─────────────────────────────────────────┐
-│  AppContainer (應用層級)                  │
+│  LandServer<State> (應用層級)             │
+│  (原 AppContainer<State>)                │
 │  - 管理整個應用的生命週期                  │
 │  - 路由配置                               │
 │  - 服務組裝                               │
@@ -80,28 +83,23 @@
 ```swift
 /// Container for a single Land instance.
 ///
-/// Manages the complete lifecycle of one game room, including:
+/// Manages the complete lifecycle of one land, including:
 /// - LandKeeper (state management)
 /// - Transport layer (WebSocket connections)
 /// - State synchronization
-public struct LandContainer<State, ClientEvents, ServerEvents> 
-where State: StateNodeProtocol,
-      ClientEvents: ClientEventPayload,
-      ServerEvents: ServerEventPayload {
-    
-    public let roomID: RoomID
-    public let keeper: LandKeeper<State, ClientEvents, ServerEvents>
+///
+/// **Note**: This is a value type that holds references to the actor-based components.
+public struct LandContainer<State: StateNodeProtocol>: Sendable {
+    public let landID: LandID
+    public let keeper: LandKeeper<State>
     public let transport: WebSocketTransport
-    public let transportAdapter: TransportAdapter<State, ClientEvents, ServerEvents>
+    public let transportAdapter: TransportAdapter<State>
     
-    // Room lifecycle management
-    public func join(playerID: PlayerID, sessionID: SessionID, clientID: ClientID) async throws -> JoinDecision
-    public func leave(playerID: PlayerID, clientID: ClientID) async
-    public func handleAction<A: ActionPayload>(_ action: A, from playerID: PlayerID, sessionID: SessionID) async throws -> AnyCodable
-    public func handleEvent(_ event: ClientEvents, from playerID: PlayerID, sessionID: SessionID) async
-    
-    // State access
+    /// Get the current state of the land.
     public func currentState() async -> State
+    
+    /// Get statistics about this land.
+    public func getStats(createdAt: Date) async -> LandStats
 }
 ```
 
@@ -120,32 +118,35 @@ where State: StateNodeProtocol,
 **設計**：
 
 ```swift
-/// Manager for multiple game rooms.
+/// Manager for multiple game lands.
 ///
-/// Handles room lifecycle, routing, and provides access to individual rooms.
-public actor LandManager<State, ClientEvents, ServerEvents>
-where State: StateNodeProtocol,
-      ClientEvents: ClientEventPayload,
-      ServerEvents: ServerEventPayload {
+/// Handles land lifecycle, routing, and provides access to individual lands.
+/// All operations are thread-safe through actor isolation.
+///
+/// Supports parallel execution of operations across multiple lands using TaskGroup.
+public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol {
+    private var lands: [LandID: LandContainer<State>] = [:]
+    private let landFactory: (LandID) -> LandDefinition<State>
+    private let initialStateFactory: (LandID) -> State
     
-    private var rooms: [RoomID: LandContainer<State, ClientEvents, ServerEvents>] = [:]
-    private let landFactory: (RoomID) -> LandDefinition<State, ClientEvents, ServerEvents>
-    private let initialStateFactory: (RoomID) -> State
+    /// Get or create a land with the specified ID.
+    public func getOrCreateLand(
+        landID: LandID,
+        definition: LandDefinition<State>,
+        initialState: State
+    ) async -> LandContainer<State>
     
-    /// Get or create a room
-    public func getOrCreateRoom(roomID: RoomID) async -> LandContainer<State, ClientEvents, ServerEvents>
+    /// Get existing land (returns nil if not exists)
+    public func getLand(landID: LandID) async -> LandContainer<State>?
     
-    /// Get existing room (returns nil if not exists)
-    public func getRoom(roomID: RoomID) async -> LandContainer<State, ClientEvents, ServerEvents>?
+    /// Remove a land
+    public func removeLand(landID: LandID) async
     
-    /// Remove a room
-    public func removeRoom(roomID: RoomID) async
+    /// List all active lands
+    public func listLands() async -> [LandID]
     
-    /// List all active rooms
-    public func listRooms() async -> [RoomID]
-    
-    /// Get room statistics
-    public func getRoomStats(roomID: RoomID) async -> RoomStats?
+    /// Get land statistics
+    public func getLandStats(landID: LandID) async -> LandStats?
 }
 ```
 
@@ -160,18 +161,18 @@ where State: StateNodeProtocol,
 `LandManager` 提供並行處理多個房間的方法：
 
 ```swift
-public actor LandManager<State, ClientEvents, ServerEvents> {
+public actor LandManager<State: StateNodeProtocol> {
     // ... existing code ...
     
-    /// Tick all rooms in parallel
+    /// Tick all lands in parallel
     ///
-    /// All rooms' tick handlers are executed concurrently.
-    /// Each room's LandKeeper is an independent actor, allowing true parallelism.
-    public func tickAllRooms() async {
-        let roomContainers = await getAllRooms()
+    /// All lands' tick handlers are executed concurrently.
+    /// Each land's LandKeeper is an independent actor, allowing true parallelism.
+    public func tickAllLands() async {
+        let landContainers = await getAllLands()
         
         await withTaskGroup(of: Void.self) { group in
-            for (_, container) in roomContainers {
+            for (_, container) in landContainers {
                 group.addTask { [container] in
                     await container.keeper.tick()
                 }
@@ -179,21 +180,22 @@ public actor LandManager<State, ClientEvents, ServerEvents> {
         }
     }
     
-    /// Process pending events for all rooms in parallel
-    public func processEventsForAllRooms() async {
-        let roomContainers = await getAllRooms()
+    /// Process pending events for all lands in parallel
+    public func processEventsForAllLands() async {
+        let landContainers = await getAllLands()
         
         await withTaskGroup(of: Void.self) { group in
-            for (_, container) in roomContainers {
+            for (_, container) in landContainers {
                 group.addTask { [container] in
-                    await container.processPendingEvents()
+                    // Process events through TransportAdapter
+                    // (Implementation depends on TransportAdapter API)
                 }
             }
         }
     }
     
-    private func getAllRooms() async -> [(RoomID, LandContainer<State, ClientEvents, ServerEvents>)] {
-        return Array(rooms)
+    private func getAllLands() async -> [(LandID, LandContainer<State>)] {
+        return Array(lands)
     }
 }
 ```
@@ -209,9 +211,9 @@ public actor LandManager<State, ClientEvents, ServerEvents> {
 **設計**：
 
 ```swift
-/// Matchmaking service for player matching and room assignment.
+/// Matchmaking service for player matching and land assignment.
 ///
-/// Independent from room management, focuses on matching logic.
+/// Independent from land management, focuses on matching logic.
 public actor MatchmakingService {
     private let landManager: LandManager
     private var waitingPlayers: [PlayerID: MatchmakingRequest] = [:]
@@ -225,7 +227,7 @@ public actor MatchmakingService {
     }
     
     public enum MatchmakingResult: Sendable {
-        case matched(roomID: RoomID)
+        case matched(landID: LandID)
         case queued(position: Int)
         case failed(reason: String)
     }
@@ -258,7 +260,7 @@ public actor MatchmakingService {
 - 整合 MatchmakingService 進行自動配對
 - 支援客戶端自由創建房間
 - 支援客戶端手動選擇房間加入
-- 追蹤並推送房間列表變化（類似 Colyseus LobbyRoom）
+- 追蹤並推送 land 列表變化（類似 Colyseus LobbyRoom）
 
 **設計**：
 
@@ -276,22 +278,22 @@ public struct LobbyContainer<State: StateNodeProtocol, Registry: LandManagerRegi
         preferences: MatchmakingPreferences
     ) async throws -> MatchmakingResult
     
-    /// Create a new game room (client can freely create)
-    public func createRoom(
+    /// Create a new land (client can freely create)
+    public func createLand(
         playerID: PlayerID,
         landType: String,
-        roomName: String? = nil,
+        landName: String? = nil,
         maxPlayers: Int? = nil
     ) async throws -> LandID
     
-    /// Manually join a specific room
-    public func joinRoom(
+    /// Manually join a specific land
+    public func joinLand(
         playerID: PlayerID,
         landID: LandID
     ) async -> Bool
     
-    /// Update room list by querying all available game rooms
-    public func updateRoomList() async -> [AvailableRoom]
+    /// Update land list by querying all available lands
+    public func updateLandList() async -> [AvailableLand]
 }
 ```
 
@@ -300,86 +302,115 @@ public struct LobbyContainer<State: StateNodeProtocol, Registry: LandManagerRegi
 - 使用 landID 命名約定區分大廳（如 `lobby-asia`、`lobby-europe`）
 - 支援多個大廳模式（每個大廳有獨立的配對隊列）
 - 整合 MatchmakingService 進行自動配對
-- 支援房間列表追蹤和推送（類似 Colyseus LobbyRoom）
+- 支援 land 列表追蹤和推送（類似 Colyseus LobbyRoom）
 - 結果透過 Server Event 推送給玩家（無需 polling）
 
-### 5. AppContainer（應用層級容器）
+### 5. LandServer（應用層級容器）
 
 **職責**：
 - 管理整個應用的生命週期
-- 組裝所有服務（MatchmakingService、LandManager、LobbyContainer）
+- 組裝所有服務（MatchmakingService、LandManager、LobbyContainer、LandRouter）
 - 配置路由和 HTTP/WebSocket endpoints
 - 提供統一的啟動和關閉介面
 
 **設計**：
 
 ```swift
-/// Application-level container managing all services.
+/// Application-level server managing all services for a specific State type.
 ///
-/// Coordinates MatchmakingService, LandManager, LobbyContainer, and routing.
-public struct AppContainer {
-    public let matchmakingService: MatchmakingService
-    public let landManager: LandManager
-    public let lobbyContainer: LobbyContainer
+/// Coordinates LandManager, LandRouter, and routing.
+/// Supports both single-room and multi-room modes.
+///
+/// **Note**: `AppContainer<State>` is an alias for `LandServer<State>`.
+/// The naming migration is in progress (see DESIGN_STATE_BINDING_AND_INITIALIZATION.md).
+public struct LandServer<State: StateNodeProtocol> {
+    public let landManager: LandManager<State>?
+    public let landRouter: LandRouter<State>?
     public let router: Router
     public let configuration: Configuration
     
     /// Create a multi-room server
     public static func makeMultiRoomServer(
         configuration: Configuration,
-        landFactory: @escaping (RoomID) -> LandDefinition,
-        initialStateFactory: @escaping (RoomID) -> State,
+        landFactory: @escaping @Sendable (LandID) -> LandDefinition<State>,
+        initialStateFactory: @escaping @Sendable (LandID) -> State,
         // ... other parameters
-    ) async throws -> AppContainer
+    ) async throws -> LandServer
     
-    /// Create a single-room server (backward compatibility)
-    public static func makeSingleRoomServer(
+    /// Create a single-room server
+    public static func makeServer(
         configuration: Configuration,
-        land: LandDefinition,
+        land: LandDefinition<State>,
         initialState: State,
         // ... other parameters
-    ) async throws -> AppContainer
+    ) async throws -> LandServer
     
     /// Run the server
     public func run() async throws
 }
+
+// AppContainer is an alias for LandServer (migration in progress)
+public typealias AppContainer<State> = LandServer<State>
 ```
 
 **特點**：
-- 支援單房間和多房間兩種模式
+- ✅ **支援單房間和多房間兩種模式**
+  - 單房間模式：使用 `makeServer`，固定一個 land 實例
+  - 多房間模式：使用 `makeMultiRoomServer`，動態創建多個 land
+- ✅ **已實作**：`LandManager`、`LandRouter`、`LandContainer` 已實作
 - 向後兼容現有的單房間 API
 - 提供統一的服務管理
 
 ## 命名規範
 
-### 當前命名問題
+### 命名層級
 
-目前 `AppContainer` 的名稱暗示是「整個 App 的容器」，但實際上只管理一個房間。這在多房間架構下會造成混淆。
+SwiftStateTree 採用統一的 "Land" 命名概念，從底層到上層保持一致：
 
-### 建議的命名
+```
+LandRealm                  → 應用層級（管理所有 land types 和 State 類型，統一入口）
+    ↓
+LandServer<State>          → 遊戲類型層級（服務一個 State 類型的所有 lands，可跨機器）
+    ↓
+LandManager<State>         → 房間管理層級（管理多個房間，distributed actor）
+    ↓
+LandRouter<State>          → 路由層級（路由連線到正確的房間）
+    ↓
+LandContainer<State>       → 房間層級（單一房間容器）
+    ↓
+LandKeeper<State>          → 狀態管理層級（單一房間的狀態，distributed actor）
+    ↓
+Land (LandDefinition)      → 規則定義層級（遊戲規則）
+```
 
-| 當前名稱 | 建議名稱 | 說明 |
-|---------|---------|------|
-| `AppContainer` | `LandContainer` | 單一房間容器（目前 `AppContainer` 的功能） |
-| - | `LandManager` | 多房間管理器（新組件） |
-| - | `MatchmakingService` | 配對服務（新組件） |
-| - | `LobbyContainer` | 配對大廳容器（新組件） |
-| - | `AppContainer` | 應用層級容器（管理所有服務） |
+### 命名遷移策略
 
-### 遷移策略
+為了保持向後兼容，`AppContainer<State>` 將作為 `LandServer<State>` 的別名：
 
-1. **階段 1：新增新組件**
-   - 實作 `LandContainer`、`LandManager`、`MatchmakingService`、`LobbyContainer`
-   - 保留現有 `AppContainer` 作為單房間模式的便利方法
+```swift
+// 階段 1：新增 LandServer，保留 AppContainer 作為別名
+public typealias AppContainer<State> = LandServer<State>
 
-2. **階段 2：重構現有 API**
-   - 將 `AppContainer` 重構為應用層級容器
-   - 提供 `makeSingleRoomServer()` 作為向後兼容的便利方法
-   - 提供 `makeMultiRoomServer()` 作為新的多房間 API
+// 階段 2：標記 AppContainer 為 deprecated
+@available(*, deprecated, renamed: "LandServer", message: "Use LandServer instead. AppContainer will be removed in a future version.")
+public typealias AppContainer<State> = LandServer<State>
 
-3. **階段 3：標記為 deprecated（可選）**
-   - 如果決定完全移除單房間模式，可以標記為 deprecated
-   - 提供遷移指南
+// 階段 3：移除 AppContainer（未來版本）
+// AppContainer 將被完全移除，只保留 LandServer
+```
+
+**遷移時間表**：
+- ✅ **當前**：`AppContainer<State>` 作為主要類型（已實作）
+- 📅 **階段 1**：引入 `LandServer<State>`，`AppContainer` 作為別名
+- 📅 **階段 2**：標記 `AppContainer` 為 deprecated，建議使用 `LandServer`
+- 📅 **階段 3**：移除 `AppContainer`，只保留 `LandServer`
+
+**建議**：
+- 新代碼應該直接使用 `LandServer<State>`
+- 現有代碼可以繼續使用 `AppContainer<State>`，但會收到 deprecation 警告
+- 在未來版本中，`AppContainer` 將被完全移除
+
+詳細說明請參考 [DESIGN_STATE_BINDING_AND_INITIALIZATION.md](./DESIGN_STATE_BINDING_AND_INITIALIZATION.md)。
 
 ## 工作流程範例
 
@@ -388,7 +419,10 @@ public struct AppContainer {
 ```swift
 // === 伺服器端設定 ===
 // 1. 建立 LandManager 和相關服務
-let landManager = LandManager<State>(...)
+let landManager = LandManager<State>(
+    landFactory: { landID in ... },
+    initialStateFactory: { landID in ... }
+)
 let registry = SingleLandManagerRegistry(landManager: landManager)
 let landTypeRegistry = LandTypeRegistry<State>(...)
 let matchmakingService = MatchmakingService(registry: registry, landTypeRegistry: landTypeRegistry)
@@ -459,15 +493,15 @@ await lobbyWS.send(ActionMessage(
     )
 ))
 
-// 2. 大廳的 Action handler 呼叫 LobbyContainer.createRoom()
-// 3. LobbyContainer 使用 LandManagerRegistry 創建新房間
-// 4. 房間列表更新並推送給所有大廳玩家（RoomListEvent.roomAdded）
+// 2. 大廳的 Action handler 呼叫 LobbyContainer.createLand()
+// 3. LobbyContainer 使用 LandManagerRegistry 創建新 land
+// 4. land 列表更新並推送給所有大廳玩家（LandListEvent.landAdded）
 
-// 5. 客戶端接收房間列表更新
+// 5. 客戶端接收 land 列表更新
 lobbyWS.onEvent { event in
-    if case .roomAdded(let room) = event {
-        // 新房間已創建
-        addRoomToList(room)
+    if case .landAdded(let land) = event {
+        // 新 land 已創建
+        addLandToList(land)
     }
 }
 ```
@@ -476,27 +510,27 @@ lobbyWS.onEvent { event in
 
 ```swift
 // === 客戶端流程 ===
-// 1. 玩家從房間列表中選擇一個房間
-let selectedRoom = availableRooms[0]
+// 1. 玩家從 land 列表中選擇一個 land
+let selectedLand = availableLands[0]
 
-// 2. 玩家發送加入房間請求（透過 Action）
+// 2. 玩家發送加入 land 請求（透過 Action）
 await lobbyWS.send(ActionMessage(
-    action: JoinRoomAction(landID: selectedRoom.landID)
+    action: JoinLandAction(landID: selectedLand.landID)
 ))
 
-// 3. 大廳的 Action handler 呼叫 LobbyContainer.joinRoom()
-// 4. 驗證房間存在後，返回成功
+// 3. 大廳的 Action handler 呼叫 LobbyContainer.joinLand()
+// 4. 驗證 land 存在後，返回成功
 
-// 5. 客戶端連接到遊戲房間
-let gameWS = WebSocket("ws://host:port/game/\(selectedRoom.landID.stringValue)")
+// 5. 客戶端連接到遊戲 land
+let gameWS = WebSocket("ws://host:port/game/\(selectedLand.landID.stringValue)")
 await gameWS.connect()
 await gameWS.send(JoinMessage(...))
 ```
 
-### 2. 直接加入指定房間（不使用大廳）
+### 2. 直接加入指定 land（不使用大廳）
 
 ```swift
-// 玩家知道房間 ID，直接連接到遊戲房間（跳過大廳）
+// 玩家知道 land ID，直接連接到遊戲 land（跳過大廳）
 let landID = LandID("battle-royale-123")
 let gameWS = WebSocket("ws://host:port/game/\(landID.stringValue)")
 await gameWS.connect()
@@ -508,7 +542,7 @@ await gameWS.send(JoinMessage(...))
 ```swift
 // === 伺服器端設定 ===
 // 1. 建立多個大廳
-let container = try await AppContainer.makeMultiRoomServer(
+let container = try await LandServer<State>.makeMultiRoomServer(
     configuration: config,
     landFactory: { landID in ... },
     initialStateFactory: { landID in ... },
@@ -523,36 +557,32 @@ let asiaLobby = await container.getLobby(
     landTypeRegistry: landTypeRegistry
 )
 
-// 3. 列出所有大廳
-let allLobbies = await container.landManager?.listLobbies()
+// 3. 列出所有大廳（需要從 LandManager 獲取）
+let allLobbies = await container.landManager?.listLands()
 // 返回: [LandID("lobby-asia"), LandID("lobby-europe"), LandID("lobby-casual")]
 ```
 
 ### 4. 房間路由
 
-```swift
-// WebSocket 連線時，從 URL 參數中提取 landID
-// 路由格式: /game/:landID
-// 例如: /game/lobby-asia, /game/battle-royale-123
+**注意**：實際路由由 `LandRouter<State>` 處理，不需要手動路由。
 
-router.ws("/game/:landID") { inbound, outbound, context in
-    let landIDString = context.parameters.get("landID") ?? "default"
-    let landID = LandID(landIDString)
-    
-    // 取得或創建對應的 land（可以是大廳或遊戲房間）
-    let definition = landFactory(landID)
-    let initialState = initialStateFactory(landID)
-    let container = await landManager.getOrCreateLand(
-        landID: landID,
-        definition: definition,
-        initialState: initialState
-    )
-    
-    // 路由到對應的 land
-    let hbAdapter = HummingbirdStateTreeAdapter(...)
-    await hbAdapter.handle(inbound: inbound, outbound: outbound, context: context)
-}
+```swift
+// 在 LandServer.makeMultiRoomServer 中，LandRouter 自動處理路由
+// WebSocket 連線時，LandRouter 從 Join 訊息中提取 landType 和 landInstanceId
+// 路由格式: /game (統一 endpoint)
+// Join 訊息格式: { "kind": "join", "payload": { "join": { "landType": "...", "landInstanceId": "..." } } }
+
+// LandRouter 自動處理：
+// 1. 接收 WebSocket 連接
+// 2. 接收 Join 訊息
+// 3. 根據 landType 和 landInstanceId 路由到對應的 land
+// 4. 如果 landInstanceId 為 null，創建新的 land
 ```
+
+**實際實作**（在 `LandRouter` 中）：
+- `LandRouter` 使用 `LandTypeRegistry` 根據 `landType` 創建新的 land
+- `LandRouter` 使用 `LandManager` 管理現有的 land
+- 所有路由邏輯都在 `LandRouter` 內部處理，無需手動配置
 
 ### 5. 大廳如何呼叫 MatchmakingService
 
@@ -607,32 +637,30 @@ Swift 的 actor 模型提供了天然的並行執行能力：
 ```swift
 // 這會序列化執行（一個接一個）
 Task {
-    for room in rooms {
-        await room.keeper.tick()        // 等待 Room 1 完成
-        await room.keeper.handleEvent() // 等待 Room 1 完成
-        // 然後才處理 Room 2...
+    for (_, container) in lands {
+        await container.keeper.tick()        // 等待 Land 1 完成
+        // 然後才處理 Land 2...
     }
 }
 ```
 
-**問題**：房間會一個接一個處理，無法利用多核心 CPU，效能差。
+**問題**：land 會一個接一個處理，無法利用多核心 CPU，效能差。
 
 #### ✅ 模式 2：並行執行（推薦）
 
-使用 `withTaskGroup` 讓所有房間並行執行：
+使用 `withTaskGroup` 讓所有 land 並行執行：
 
 ```swift
-// ✅ 所有房間並行執行
+// ✅ 所有 land 並行執行
 await withTaskGroup(of: Void.self) { group in
-    for room in rooms {
-        group.addTask {
-            // 每個房間在自己的 task 中執行
+    for (_, container) in lands {
+        group.addTask { [container] in
+            // 每個 land 在自己的 task 中執行
             // 因為是不同的 actor，可以並行執行
-            await room.keeper.tick()
-            await room.keeper.handleEvent()
+            await container.keeper.tick()
         }
     }
-    // 等待所有房間完成
+    // 等待所有 land 完成
 }
 ```
 
@@ -643,27 +671,27 @@ await withTaskGroup(of: Void.self) { group in
 
 ### 實際應用範例
 
-#### 1. 定期 Tick 所有房間
+#### 1. 定期 Tick 所有 land
 
 ```swift
-/// Scheduler for periodic room ticks
-actor RoomTickScheduler {
-    private let landManager: LandManager
+/// Scheduler for periodic land ticks
+actor LandTickScheduler {
+    private let landManager: LandManager<State>
     private var tickTask: Task<Void, Never>?
     
-    init(landManager: LandManager) {
+    init(landManager: LandManager<State>) {
         self.landManager = landManager
     }
     
-    /// Start periodic ticks for all rooms
+    /// Start periodic ticks for all lands
     func startPeriodicTicks(interval: Duration) {
         tickTask?.cancel()
         tickTask = Task { [weak self] in
             while let self, !Task.isCancelled {
                 try? await Task.sleep(for: interval)
                 
-                // 並行 tick 所有房間
-                await landManager.tickAllRooms()
+                // 並行 tick 所有 land
+                await landManager.tickAllLands()
             }
         }
     }
@@ -675,22 +703,22 @@ actor RoomTickScheduler {
 }
 ```
 
-#### 2. 批次處理房間事件
+#### 2. 批次處理 land 事件
 
 ```swift
 extension LandManager {
-    /// Process events for all rooms in parallel
+    /// Process events for all lands in parallel
     ///
-    /// This method processes pending events for all active rooms concurrently.
-    /// Each room's event handling is independent and can run in parallel.
-    public func processEventsForAllRooms() async {
-        let roomContainers = await getAllRooms()
+    /// This method processes pending events for all active lands concurrently.
+    /// Each land's event handling is independent and can run in parallel.
+    public func processEventsForAllLands() async {
+        let landContainers = await getAllLands()
         
         await withTaskGroup(of: Void.self) { group in
-            for (roomID, container) in roomContainers {
+            for (landID, container) in landContainers {
                 group.addTask { [container] in
-                    // 處理該房間的待處理事件
-                    await container.processPendingEvents()
+                    // 處理該 land 的待處理事件
+                    // (Implementation depends on TransportAdapter API)
                 }
             }
         }
@@ -703,22 +731,22 @@ extension LandManager {
 ```
 時間軸 →
 │
-├─ LandManager.tickAllRooms() 被呼叫
-│  └─ 取得所有房間（序列化，很快）
+├─ LandManager.tickAllLands() 被呼叫
+│  └─ 取得所有 lands（序列化，很快）
 │
 ├─ withTaskGroup 啟動並行執行
 │  │
-│  ├─ Task 1: Room 1.tick() ──────────────┐
-│  │  └─ LandKeeper actor (Room 1)       │
+│  ├─ Task 1: Land 1.tick() ──────────────┐
+│  │  └─ LandKeeper actor (Land 1)       │
 │  │                                      │
-│  ├─ Task 2: Room 2.tick() ──────────────┤ 並行執行
-│  │  └─ LandKeeper actor (Room 2)       │ （不同 actor）
+│  ├─ Task 2: Land 2.tick() ──────────────┤ 並行執行
+│  │  └─ LandKeeper actor (Land 2)       │ （不同 actor）
 │  │                                      │
-│  ├─ Task 3: Room 3.tick() ──────────────┤
-│  │  └─ LandKeeper actor (Room 3)       │
+│  ├─ Task 3: Land 3.tick() ──────────────┤
+│  │  └─ LandKeeper actor (Land 3)       │
 │  │                                      │
-│  └─ Task N: Room N.tick() ──────────────┘
-│     └─ LandKeeper actor (Room N)
+│  └─ Task N: Land N.tick() ──────────────┘
+│     └─ LandKeeper actor (Land N)
 │
 └─ 等待所有 task 完成
 ```
@@ -726,29 +754,29 @@ extension LandManager {
 ### 關鍵點
 
 1. **LandManager 的操作是序列化的**：
-   - 取得房間列表的操作會序列化（因為是 actor）
+   - 取得 land 列表的操作會序列化（因為是 actor）
    - 但這個操作通常很快（只是讀取字典）
 
-2. **不同房間的操作可以並行**：
-   - 每個房間的 `LandKeeper` 是獨立的 actor
+2. **不同 land 的操作可以並行**：
+   - 每個 land 的 `LandKeeper` 是獨立的 actor
    - 不同 actor 之間的操作可以並行執行
    - Swift runtime 會自動管理 thread pool
 
-3. **同一個房間內的操作是序列化的**：
+3. **同一個 land 內的操作是序列化的**：
    - 同一個 `LandKeeper` actor 內的操作會序列化
-   - 這確保了房間狀態的一致性
+   - 這確保了 land 狀態的一致性
 
 4. **使用 TaskGroup 的最佳實踐**：
-   - 使用 `withTaskGroup` 來並行處理多個房間
+   - 使用 `withTaskGroup` 來並行處理多個 land
    - 避免使用 `forEach` + `await`（會序列化）
-   - 對於固定數量的房間，也可以使用 `async let`
+   - 對於固定數量的 land，也可以使用 `async let`
 
 ### 效能考量
 
-- **並行度**：理論上可以同時處理的房間數量等於 CPU 核心數
-- **記憶體**：每個房間的狀態是獨立的，不會互相影響
+- **並行度**：理論上可以同時處理的 land 數量等於 CPU 核心數
+- **記憶體**：每個 land 的狀態是獨立的，不會互相影響
 - **延遲**：並行執行可以大幅降低整體處理延遲
-- **擴展性**：可以輕鬆處理數百甚至數千個房間（取決於 CPU 核心數）
+- **擴展性**：可以輕鬆處理數百甚至數千個 land（取決於 CPU 核心數）
 
 ### 實作注意事項
 
@@ -760,7 +788,7 @@ extension LandManager {
    }
    
    // ❌ 錯誤：在 task 外部持有引用
-   let container = await landManager.getRoom(roomID)
+   let container = await landManager.getLand(landID: landID)
    group.addTask {
        await container.keeper.tick() // container 可能已經過期
    }
@@ -769,10 +797,10 @@ extension LandManager {
 2. **處理錯誤**：
    ```swift
    await withTaskGroup(of: Result<Void, Error>.self) { group in
-       for room in rooms {
-           group.addTask {
+       for (_, container) in lands {
+           group.addTask { [container] in
                do {
-                   await room.keeper.tick()
+                   await container.keeper.tick()
                    return .success(())
                } catch {
                    return .failure(error)
@@ -783,8 +811,8 @@ extension LandManager {
        // 收集結果並處理錯誤
        for await result in group {
            if case .failure(let error) = result {
-               // 記錄錯誤，但不中斷其他房間的處理
-               logger.error("Room tick failed: \(error)")
+               // 記錄錯誤，但不中斷其他 land 的處理
+               logger.error("Land tick failed: \(error)")
            }
        }
    }
@@ -792,16 +820,16 @@ extension LandManager {
 
 3. **限制並行度（可選）**：
    ```swift
-   // 如果需要限制同時處理的房間數量
-   let maxConcurrency = min(rooms.count, ProcessInfo.processInfo.processorCount)
+   // 如果需要限制同時處理的 land 數量
+   let maxConcurrency = min(lands.count, ProcessInfo.processInfo.processorCount)
    await withTaskGroup(of: Void.self) { group in
-       for (index, room) in rooms.enumerated() {
+       for (index, (_, container)) in lands.enumerated() {
            if index >= maxConcurrency {
                // 等待一個任務完成後再添加新的
                await group.next()
            }
-           group.addTask {
-               await room.keeper.tick()
+           group.addTask { [container] in
+               await container.keeper.tick()
            }
        }
    }
@@ -809,26 +837,31 @@ extension LandManager {
 
 ## 實作優先順序
 
-### Phase 1：基礎多房間支援（優先）
+### Phase 1：基礎多房間支援（✅ 已部分實作）
 
-1. **重構 `AppContainer`**
-   - 將現有功能提取為 `LandContainer`
-   - 實作 `LandManager` 管理多個 `LandContainer`
-   - 提供向後兼容的 API
+1. **`LandContainer` 已實作** ✅
+   - 封裝 `LandKeeper`、`TransportAdapter`、`WebSocketTransport`
+   - 管理單一 land 的完整生命週期
 
-2. **房間路由**
-   - 支援從 URL 參數或訊息中提取 `roomID`
-   - 路由連線到正確的房間
+2. **`LandManager` 已實作** ✅
+   - 管理多個 `LandContainer` 實例
+   - 支援動態建立和銷毀 land
+   - 提供 land 查詢和統計功能
 
-3. **房間生命週期**
-   - 動態建立和銷毀房間
-   - 房間空閒時自動清理
+3. **`LandRouter` 已實作** ✅
+   - 路由連線到正確的 land
+   - 支援從 Join 訊息中提取 `landType` 和 `landInstanceId`
+   - 使用 `LandTypeRegistry` 根據 `landType` 創建新的 land
 
-4. **並行執行支援**（✅ 已設計）
-   - 實作 `LandManager.tickAllRooms()` 並行處理所有房間的 tick
-   - 實作 `LandManager.processEventsForAllRooms()` 並行處理所有房間的事件
+4. **`LandServer`（原 `AppContainer`）已實作** ✅
+   - 支援單房間模式（`makeServer`）
+   - 支援多房間模式（`makeMultiRoomServer`）
+   - 提供統一的服務管理
+
+5. **並行執行支援**（✅ 已設計）
+   - `LandManager` 可以並行處理多個 land
    - 使用 `withTaskGroup` 確保真正的並行執行
-   - 提供 `RoomTickScheduler` 定期並行 tick 所有房間
+   - 每個 `LandKeeper` 是獨立的 actor，可以並行執行
 
 ### Phase 2：配對服務（後續）
 
@@ -876,15 +909,22 @@ extension LandManager {
 
 ### 當前狀態
 
-- 📅 **多房間架構**：規劃中，需要實作 `LandContainer` 和 `LandManager`
-- 📅 **配對服務**：規劃中，需要實作 `MatchmakingService`
-- 📅 **配對大廳**：規劃中，需要實作 `LobbyContainer`
-- ✅ **單房間模式**：已實作，透過 `AppContainer` 提供
+- ✅ **多房間架構**：已部分實作
+  - ✅ `LandContainer`：已實作
+  - ✅ `LandManager`：已實作
+  - ✅ `LandRouter`：已實作
+  - ✅ `LandServer`（原 `AppContainer`）：已實作，支援單房間和多房間兩種模式
+- ✅ **配對服務**：`MatchmakingService` 已實作，功能仍在擴展
+- ✅ **配對大廳**：`LobbyContainer` 已實作，功能仍在擴展
+- ✅ **單房間模式**：已實作，透過 `LandServer.makeServer` 提供
+- ✅ **多房間模式**：已實作，透過 `LandServer.makeMultiRoomServer` 提供
 
 ### 下一步
 
-1. 實作 `LandContainer` 提取現有 `AppContainer` 的功能
-2. 實作 `LandManager` 管理多個房間
-3. 更新 `AppContainer` 支援多房間模式
-4. 提供向後兼容的 API
+1. ✅ 實作 `LandContainer`、`LandManager`、`LandRouter`（已完成）
+2. ✅ 更新 `LandServer`（原 `AppContainer`）支援多房間模式（已完成）
+3. 📅 擴展 `MatchmakingService` 功能
+4. 📅 擴展 `LobbyContainer` 功能
+5. 📅 實作 `LandRealm` 統一管理多個不同 State 類型的 `LandServer`（見 DESIGN_STATE_BINDING_AND_INITIALIZATION.md）
+6. 📅 分布式架構支援（跨伺服器協調）
 

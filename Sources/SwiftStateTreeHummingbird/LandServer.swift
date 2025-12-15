@@ -7,7 +7,13 @@ import Logging
 import NIOCore
 
 /// Bundles runtime, transport, and Hummingbird hosting for any Land definition.
-public struct AppContainer<State: StateNodeProtocol> {
+///
+/// **Note**: This is the Hummingbird-specific implementation of `LandServerProtocol`.
+/// For framework-agnostic usage, use the `LandServerProtocol` protocol.
+///
+/// **Migration Note**: `AppContainer<State>` is an alias for `LandServer<State>`.
+/// New code should use `LandServer<State>` directly.
+public struct LandServer<State: StateNodeProtocol> {
     public typealias Land = LandDefinition<State>
     
     public struct Configuration: Sendable {
@@ -72,7 +78,7 @@ public struct AppContainer<State: StateNodeProtocol> {
         }
     }
     
-    public struct AppContainerForTest {
+    public struct LandServerForTest {
         public let land: Land
         public let keeper: LandKeeper<State>
         public let transport: WebSocketTransport
@@ -206,7 +212,7 @@ public struct AppContainer<State: StateNodeProtocol> {
     public func run() async throws {
         let logger = configuration.logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.hummingbird",
-            scope: "AppContainer"
+            scope: "LandServer"
         )
 
         let httpConfiguration = ApplicationConfiguration(
@@ -251,10 +257,10 @@ public struct AppContainer<State: StateNodeProtocol> {
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         lobbyIDs: [String] = [],
         configureRouter: ((Router<BasicWebSocketRequestContext>) -> Void)? = nil
-    ) async throws -> AppContainer {
+    ) async throws -> LandServer {
         let logger = configuration.logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.hummingbird",
-            scope: "AppContainer"
+            scope: "LandServer"
         )
         
         // Create JWT validator if configured
@@ -346,7 +352,7 @@ public struct AppContainer<State: StateNodeProtocol> {
         
         configureRouter?(router)
         
-        return AppContainer(
+        return LandServer(
             configuration: configuration,
             router: router,
             landManager: landManager,
@@ -372,10 +378,10 @@ public struct AppContainer<State: StateNodeProtocol> {
         initialState: State,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         configureRouter: ((Router<BasicWebSocketRequestContext>) -> Void)? = nil
-    ) async throws -> AppContainer {
+    ) async throws -> LandServer {
         let logger = configuration.logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.hummingbird",
-            scope: "AppContainer"
+            scope: "LandServer"
         )
         // Create JWT validator if configured
         let jwtValidator: JWTAuthValidator? = {
@@ -461,7 +467,7 @@ public struct AppContainer<State: StateNodeProtocol> {
         
         configureRouter?(router)
         
-        return AppContainer(
+        return LandServer(
             configuration: configuration,
             land: definition,
             keeper: core.keeper,
@@ -479,7 +485,7 @@ public struct AppContainer<State: StateNodeProtocol> {
         initialState: State,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         logger: Logger? = nil
-    ) async -> AppContainerForTest {
+    ) async -> LandServerForTest {
         let testLogger = logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.test",
             scope: "Test"
@@ -491,7 +497,7 @@ public struct AppContainer<State: StateNodeProtocol> {
             logger: testLogger
         )
         
-        return AppContainerForTest(
+        return LandServerForTest(
             land: definition,
             keeper: core.keeper,
             transport: core.transport,
@@ -572,3 +578,25 @@ private actor TransportAdapterHolder<State: StateNodeProtocol> {
         await adapter?.syncBroadcastOnly()
     }
 }
+
+// MARK: - Type Aliases
+
+/// AppContainer is an alias for LandServer (migration in progress).
+///
+/// **Migration Note**: 
+/// - Phase 1 (current): `AppContainer<State>` is an alias for `LandServer<State>`
+/// - Phase 2 (future): `AppContainer` will be marked as deprecated
+/// - Phase 3 (future): `AppContainer` will be removed
+///
+/// **Recommendation**: New code should use `LandServer<State>` directly.
+public typealias AppContainer<State: StateNodeProtocol> = LandServer<State>
+
+/// AppContainerForTest is an alias for LandServerForTest (migration in progress).
+///
+/// **Migration Note**: 
+/// - Phase 1 (current): `AppContainerForTest<State>` is an alias for `LandServer<State>.LandServerForTest`
+/// - Phase 2 (future): `AppContainerForTest` will be marked as deprecated
+/// - Phase 3 (future): `AppContainerForTest` will be removed
+///
+/// **Recommendation**: New code should use `LandServer<State>.LandServerForTest` directly.
+public typealias AppContainerForTest<State: StateNodeProtocol> = LandServer<State>.LandServerForTest
