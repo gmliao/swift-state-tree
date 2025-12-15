@@ -77,7 +77,7 @@ func testMatchmakingServiceQueuePlayers() async throws {
     // Second player should match with first player (enough players to start)
     switch result2 {
     case .matched(let landID):
-        #expect(landID.stringValue.hasPrefix("standard-"))
+        #expect(landID.stringValue.hasPrefix("standard:"))
     case .queued:
         // Also acceptable if they're both queued (depending on timing)
         break
@@ -312,7 +312,7 @@ func testMatchmakingServiceStrategyFullThenNext() async throws {
     // With minPlayersToStart = 1, first player will create a new land immediately
     switch result1 {
     case .matched(let landID):
-        #expect(landID.stringValue.hasPrefix("standard-"))
+        #expect(landID.stringValue.hasPrefix("standard:"))
     case .queued:
         // Also acceptable if queued (depending on timing)
         break
@@ -323,7 +323,7 @@ func testMatchmakingServiceStrategyFullThenNext() async throws {
     // Second player should match to the existing land or create a new one
     switch result2 {
     case .matched(let landID):
-        #expect(landID.stringValue.hasPrefix("standard-") || landID.stringValue == "land-1")
+        #expect(landID.stringValue.hasPrefix("standard:") || landID.stringValue == "land-1")
     case .queued:
         // Also acceptable if queued
         break

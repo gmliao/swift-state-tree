@@ -67,7 +67,8 @@ func testTransportAdapterForwardsEvents() async throws {
     let adapter = TransportAdapter<TestState>(
         keeper: keeper,
         transport: transport,
-        landID: "test-land"
+        landID: "test-land",
+        enableLegacyJoin: true
     )
     await transport.setDelegate(adapter)
     
@@ -125,7 +126,8 @@ func testTransportAdapterConnectionLifecycle() async throws {
     let adapter = TransportAdapter<TestState>(
         keeper: keeper,
         transport: transport,
-        landID: "test-land"
+        landID: "test-land",
+        enableLegacyJoin: true
     )
     await transport.setDelegate(adapter)
     
@@ -180,7 +182,8 @@ func testTransportAdapterSendEvent() async throws {
     let adapter = TransportAdapter<TestState>(
         keeper: keeper,
         transport: transport,
-        landID: "test-land"
+        landID: "test-land",
+        enableLegacyJoin: true
     )
     await transport.setDelegate(adapter)
     
@@ -239,7 +242,8 @@ func testTransportAdapterSyncNow() async throws {
     let adapter = TransportAdapter<TestState>(
         keeper: keeper,
         transport: transport,
-        landID: "test-land"
+        landID: "test-land",
+        enableLegacyJoin: true
     )
     await transport.setDelegate(adapter)
     

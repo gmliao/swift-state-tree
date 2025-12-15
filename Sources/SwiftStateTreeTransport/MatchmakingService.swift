@@ -122,8 +122,8 @@ public actor MatchmakingService<State: StateNodeProtocol, Registry: LandManagerR
             matchingPlayers: allMatchingPlayers,
             preferences: preferences
         ) {
-            // Create new land for this land type
-            let newLandID = LandID("\(landType)-\(UUID().uuidString)")
+            // Create new land for this land type using structured LandID format
+            let newLandID = LandID.generate(landType: landType)
             
             // Use landTypeRegistry to get the correct LandDefinition for this landType
             let definition = landTypeRegistry.getLandDefinition(

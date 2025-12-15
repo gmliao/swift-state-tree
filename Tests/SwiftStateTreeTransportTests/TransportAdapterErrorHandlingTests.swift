@@ -51,7 +51,8 @@ func testJoinFailureRollback() async throws {
     let adapter = TransportAdapter<ErrorHandlingTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "error-handling-test"
+        landID: "error-handling-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -139,7 +140,8 @@ func testDuplicateJoinRequest() async throws {
     let adapter = TransportAdapter<ErrorHandlingTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "error-handling-test"
+        landID: "error-handling-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -207,7 +209,8 @@ func testJoinAfterDisconnect() async throws {
     let adapter = TransportAdapter<ErrorHandlingTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "error-handling-test"
+        landID: "error-handling-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -285,7 +288,8 @@ func testJoinRequestWithMismatchedLandID() async throws {
     let adapter = TransportAdapter<ErrorHandlingTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "error-handling-test"
+        landID: "error-handling-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)

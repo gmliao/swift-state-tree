@@ -8,6 +8,8 @@ public enum ErrorCode: String, Codable, Sendable {
     case joinLandIDMismatch = "JOIN_LAND_ID_MISMATCH"
     case joinDenied = "JOIN_DENIED"
     case joinRoomFull = "JOIN_ROOM_FULL"
+    case joinRoomNotFound = "JOIN_ROOM_NOT_FOUND"
+    case joinLandTypeNotFound = "JOIN_LAND_TYPE_NOT_FOUND"
     
     // Action errors
     case actionNotRegistered = "ACTION_NOT_REGISTERED"

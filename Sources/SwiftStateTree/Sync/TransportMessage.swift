@@ -119,16 +119,31 @@ public struct TransportEventPayload: Codable, Sendable {
 }
 
 /// Join request payload for transport layer.
+///
+/// Uses `landType` (required) and `landInstanceId` (optional) instead of `landID`.
+/// - If `landInstanceId` is provided: Join an existing room
+/// - If `landInstanceId` is nil: Create a new room and return the generated instanceId
 public struct TransportJoinPayload: Codable, Sendable {
     public let requestID: String
-    public let landID: String
+    /// The type of Land to join (required)
+    public let landType: String
+    /// The specific instance to join (optional, if nil a new room will be created)
+    public let landInstanceId: String?
     public let playerID: String?
     public let deviceID: String?
     public let metadata: [String: AnyCodable]?
     
-    public init(requestID: String, landID: String, playerID: String?, deviceID: String?, metadata: [String: AnyCodable]?) {
+    public init(
+        requestID: String,
+        landType: String,
+        landInstanceId: String? = nil,
+        playerID: String? = nil,
+        deviceID: String? = nil,
+        metadata: [String: AnyCodable]? = nil
+    ) {
         self.requestID = requestID
-        self.landID = landID
+        self.landType = landType
+        self.landInstanceId = landInstanceId
         self.playerID = playerID
         self.deviceID = deviceID
         self.metadata = metadata
@@ -139,12 +154,29 @@ public struct TransportJoinPayload: Codable, Sendable {
 public struct TransportJoinResponsePayload: Codable, Sendable {
     public let requestID: String
     public let success: Bool
+    /// The type of Land joined
+    public let landType: String?
+    /// The instance ID of the Land joined
+    public let landInstanceId: String?
+    /// The complete landID (landType:instanceId)
+    public let landID: String?
     public let playerID: String?
     public let reason: String?
     
-    public init(requestID: String, success: Bool, playerID: String?, reason: String?) {
+    public init(
+        requestID: String,
+        success: Bool,
+        landType: String? = nil,
+        landInstanceId: String? = nil,
+        landID: String? = nil,
+        playerID: String? = nil,
+        reason: String? = nil
+    ) {
         self.requestID = requestID
         self.success = success
+        self.landType = landType
+        self.landInstanceId = landInstanceId
+        self.landID = landID
         self.playerID = playerID
         self.reason = reason
     }
@@ -185,17 +217,71 @@ public struct TransportMessage: Codable, Sendable {
         )
     }
     
-    public static func join(requestID: String, landID: String, playerID: String?, deviceID: String?, metadata: [String: AnyCodable]?) -> TransportMessage {
+    public static func join(
+        requestID: String,
+        landType: String,
+        landInstanceId: String? = nil,
+        playerID: String? = nil,
+        deviceID: String? = nil,
+        metadata: [String: AnyCodable]? = nil
+    ) -> TransportMessage {
         return TransportMessage(
             kind: .join,
-            payload: .join(TransportJoinPayload(requestID: requestID, landID: landID, playerID: playerID, deviceID: deviceID, metadata: metadata))
+            payload: .join(TransportJoinPayload(
+                requestID: requestID,
+                landType: landType,
+                landInstanceId: landInstanceId,
+                playerID: playerID,
+                deviceID: deviceID,
+                metadata: metadata
+            ))
         )
     }
     
-    public static func joinResponse(requestID: String, success: Bool, playerID: String?, reason: String?) -> TransportMessage {
+    /// Backward compatible join message using legacy landID format.
+    ///
+    /// Parses landID as "landType:instanceId" or treats entire string as landType if no colon.
+    /// - Note: This is provided for backward compatibility and testing migration.
+    @available(*, deprecated, message: "Use join(requestID:landType:landInstanceId:...) instead")
+    public static func join(
+        requestID: String,
+        landID: String,
+        playerID: String?,
+        deviceID: String?,
+        metadata: [String: AnyCodable]?
+    ) -> TransportMessage {
+        // Parse landID as landType:instanceId
+        let parsed = LandID(landID)
+        return join(
+            requestID: requestID,
+            landType: parsed.landType.isEmpty ? landID : parsed.landType,
+            landInstanceId: parsed.landType.isEmpty ? nil : parsed.instanceId,
+            playerID: playerID,
+            deviceID: deviceID,
+            metadata: metadata
+        )
+    }
+    
+    public static func joinResponse(
+        requestID: String,
+        success: Bool,
+        landType: String? = nil,
+        landInstanceId: String? = nil,
+        landID: String? = nil,
+        playerID: String? = nil,
+        reason: String? = nil
+    ) -> TransportMessage {
         return TransportMessage(
             kind: .joinResponse,
-            payload: .joinResponse(TransportJoinResponsePayload(requestID: requestID, success: success, playerID: playerID, reason: reason))
+            payload: .joinResponse(TransportJoinResponsePayload(
+                requestID: requestID,
+                success: success,
+                landType: landType,
+                landInstanceId: landInstanceId,
+                landID: landID,
+                playerID: playerID,
+                reason: reason
+            ))
         )
     }
     

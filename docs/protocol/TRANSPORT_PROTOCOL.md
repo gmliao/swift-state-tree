@@ -73,7 +73,10 @@ export interface TransportEventPayload {
 
 export interface TransportJoinPayload {
   requestID: string
-  landID: string
+  /// The type of Land to join (required)
+  landType: string
+  /// The specific instance to join (optional, if null a new room will be created)
+  landInstanceId?: string | null
   playerID?: string
   deviceID?: string
   metadata?: Record<string, any>
@@ -82,6 +85,12 @@ export interface TransportJoinPayload {
 export interface TransportJoinResponsePayload {
   requestID: string
   success: boolean
+  /// The type of Land joined
+  landType?: string | null
+  /// The instance ID of the Land joined
+  landInstanceId?: string | null
+  /// The complete landID (landType:instanceId)
+  landID?: string | null
   playerID?: string
   reason?: string
 }
@@ -117,6 +126,36 @@ public enum MessagePayload: Codable, Sendable {
     case join(TransportJoinPayload)
     case joinResponse(TransportJoinResponsePayload)
     case error(ErrorPayload)
+}
+
+/// Join request payload for transport layer.
+///
+/// Uses `landType` (required) and `landInstanceId` (optional) instead of `landID`.
+/// - If `landInstanceId` is provided: Join an existing room
+/// - If `landInstanceId` is nil: Create a new room and return the generated instanceId
+public struct TransportJoinPayload: Codable, Sendable {
+    public let requestID: String
+    /// The type of Land to join (required)
+    public let landType: String
+    /// The specific instance to join (optional, if nil a new room will be created)
+    public let landInstanceId: String?
+    public let playerID: String?
+    public let deviceID: String?
+    public let metadata: [String: AnyCodable]?
+}
+
+/// Join response payload for transport layer.
+public struct TransportJoinResponsePayload: Codable, Sendable {
+    public let requestID: String
+    public let success: Bool
+    /// The type of Land joined
+    public let landType: String?
+    /// The instance ID of the Land joined
+    public let landInstanceId: String?
+    /// The complete landID (landType:instanceId)
+    public let landID: String?
+    public let playerID: String?
+    public let reason: String?
 }
 ```
 
@@ -384,13 +423,16 @@ const message: TransportMessage = {
 {
   "kind": "join",
   "payload": {
-    "requestID": "join-1234567890-abc",
-    "landID": "demo-game",
-    "playerID": "player-123",
-    "deviceID": "device-456",
-    "metadata": {
-      "platform": "iOS",
-      "version": "1.0.0"
+    "join": {
+      "requestID": "join-1234567890-abc",
+      "landType": "demo-game",
+      "landInstanceId": null,
+      "playerID": "player-123",
+      "deviceID": "device-456",
+      "metadata": {
+        "platform": "iOS",
+        "version": "1.0.0"
+      }
     }
   }
 }
@@ -399,10 +441,19 @@ const message: TransportMessage = {
 **欄位說明：**
 
 - `requestID`: 唯一請求識別符（客戶端生成）
-- `landID`: 要加入的 Land ID
+- `landType`: 要加入的 Land 類型（必填）
+- `landInstanceId`: 要加入的具體實例 ID（可選，如果為 `null` 則創建新房間）
+  - **單房間模式**：通常為 `null`，使用 `landType` 作為固定 land
+  - **多房間模式**：可以為 `null`（創建新房間）或指定實例 ID（加入現有房間）
 - `playerID`: 可選的玩家 ID（如果未提供，伺服器會生成）
 - `deviceID`: 可選的設備 ID
 - `metadata`: 可選的元資料字典
+
+**向後兼容性：**
+
+客戶端 SDK 支援自動解析 `landID` 格式：
+- `"demo-game"` → `landType: "demo-game"`, `landInstanceId: null`（單房間模式）
+- `"chess:room-123"` → `landType: "chess"`, `landInstanceId: "room-123"`（多房間模式）
 
 ### Join 回應（伺服器 → 客戶端）
 
@@ -412,10 +463,15 @@ const message: TransportMessage = {
 {
   "kind": "joinResponse",
   "payload": {
-    "requestID": "join-1234567890-abc",
-    "success": true,
-    "playerID": "player-123",
-    "reason": null
+    "joinResponse": {
+      "requestID": "join-1234567890-abc",
+      "success": true,
+      "landType": "demo-game",
+      "landInstanceId": null,
+      "landID": "demo-game",
+      "playerID": "player-123",
+      "reason": null
+    }
   }
 }
 ```
@@ -426,11 +482,14 @@ const message: TransportMessage = {
 {
   "kind": "error",
   "payload": {
-    "code": "JOIN_DENIED",
-    "message": "Room is full",
-    "details": {
-      "requestID": "join-1234567890-abc",
-      "landID": "demo-game"
+    "error": {
+      "code": "JOIN_DENIED",
+      "message": "Room is full",
+      "details": {
+        "requestID": "join-1234567890-abc",
+        "landType": "demo-game",
+        "landInstanceId": "room-123"
+      }
     }
   }
 }
@@ -440,6 +499,9 @@ const message: TransportMessage = {
 
 - `requestID`: 對應的請求 ID
 - `success`: 是否成功
+- `landType`: 成功時返回加入的 Land 類型
+- `landInstanceId`: 成功時返回加入的實例 ID（單房間模式通常為 `null`）
+- `landID`: 成功時返回完整的 landID（格式：`landType:instanceId` 或 `landType`）
 - `playerID`: 成功時返回玩家 ID
 - `reason`: 失敗時返回原因字串
 
@@ -869,12 +931,15 @@ enum TransportEvent {
 {
   "kind": "join",
   "payload": {
-    "requestID": "join-1234567890-abc",
-    "landID": "demo-game",
-    "playerID": "player-123",
-    "deviceID": "device-456",
-    "metadata": {
-      "platform": "iOS"
+    "join": {
+      "requestID": "join-1234567890-abc",
+      "landType": "demo-game",
+      "landInstanceId": null,
+      "playerID": "player-123",
+      "deviceID": "device-456",
+      "metadata": {
+        "platform": "iOS"
+      }
     }
   }
 }
@@ -883,9 +948,14 @@ enum TransportEvent {
 {
   "kind": "joinResponse",
   "payload": {
-    "requestID": "join-1234567890-abc",
-    "success": true,
-    "playerID": "player-123"
+    "joinResponse": {
+      "requestID": "join-1234567890-abc",
+      "success": true,
+      "landType": "demo-game",
+      "landInstanceId": null,
+      "landID": "demo-game",
+      "playerID": "player-123"
+    }
   }
 }
 

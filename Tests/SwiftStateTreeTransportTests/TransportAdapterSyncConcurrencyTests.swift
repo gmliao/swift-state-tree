@@ -54,15 +54,13 @@ struct TransportAdapterSyncConcurrencyTests {
         
         // Join a player so sync has someone to sync to
         await adapter.onConnect(sessionID: SessionID("alice-session"), clientID: ClientID("alice-client"))
-        let joinRequest = TransportMessage.join(
-            requestID: "join-1",
-            landID: "sync-concurrency-test",
-            playerID: nil,
-            deviceID: nil,
-            metadata: nil
+        try await simulateRouterJoin(
+            adapter: adapter,
+            keeper: keeper,
+            sessionID: SessionID("alice-session"),
+            clientID: ClientID("alice-client"),
+            playerID: PlayerID("alice-player")
         )
-        let joinData = try JSONEncoder().encode(joinRequest)
-        await adapter.onMessage(joinData, from: SessionID("alice-session"))
         try await Task.sleep(for: .milliseconds(50))
         
         // Act: Start two syncNow operations concurrently
@@ -118,28 +116,24 @@ struct TransportAdapterSyncConcurrencyTests {
         await transport.setDelegate(adapter)
         
         // Join two players
+        // Join two players
         await adapter.onConnect(sessionID: SessionID("alice-session"), clientID: ClientID("alice-client"))
+        try await simulateRouterJoin(
+            adapter: adapter,
+            keeper: keeper,
+            sessionID: SessionID("alice-session"),
+            clientID: ClientID("alice-client"),
+            playerID: PlayerID("alice-player")
+        )
+
         await adapter.onConnect(sessionID: SessionID("bob-session"), clientID: ClientID("bob-client"))
-        
-        let joinRequest1 = TransportMessage.join(
-            requestID: "join-1",
-            landID: "sync-concurrency-test",
-            playerID: nil,
-            deviceID: nil,
-            metadata: nil
+        try await simulateRouterJoin(
+            adapter: adapter,
+            keeper: keeper,
+            sessionID: SessionID("bob-session"),
+            clientID: ClientID("bob-client"),
+            playerID: PlayerID("bob-player")
         )
-        let joinData1 = try JSONEncoder().encode(joinRequest1)
-        await adapter.onMessage(joinData1, from: SessionID("alice-session"))
-        
-        let joinRequest2 = TransportMessage.join(
-            requestID: "join-2",
-            landID: "sync-concurrency-test",
-            playerID: nil,
-            deviceID: nil,
-            metadata: nil
-        )
-        let joinData2 = try JSONEncoder().encode(joinRequest2)
-        await adapter.onMessage(joinData2, from: SessionID("bob-session"))
         
         try await Task.sleep(for: .milliseconds(50))
         
@@ -197,27 +191,22 @@ struct TransportAdapterSyncConcurrencyTests {
         
         // Join two players
         await adapter.onConnect(sessionID: SessionID("alice-session"), clientID: ClientID("alice-client"))
+        try await simulateRouterJoin(
+            adapter: adapter,
+            keeper: keeper,
+            sessionID: SessionID("alice-session"),
+            clientID: ClientID("alice-client"),
+            playerID: PlayerID("alice-player")
+        )
+        
         await adapter.onConnect(sessionID: SessionID("bob-session"), clientID: ClientID("bob-client"))
-        
-        let joinRequest1 = TransportMessage.join(
-            requestID: "join-1",
-            landID: "sync-concurrency-test",
-            playerID: nil,
-            deviceID: nil,
-            metadata: nil
+        try await simulateRouterJoin(
+            adapter: adapter,
+            keeper: keeper,
+            sessionID: SessionID("bob-session"),
+            clientID: ClientID("bob-client"),
+            playerID: PlayerID("bob-player")
         )
-        let joinData1 = try JSONEncoder().encode(joinRequest1)
-        await adapter.onMessage(joinData1, from: SessionID("alice-session"))
-        
-        let joinRequest2 = TransportMessage.join(
-            requestID: "join-2",
-            landID: "sync-concurrency-test",
-            playerID: nil,
-            deviceID: nil,
-            metadata: nil
-        )
-        let joinData2 = try JSONEncoder().encode(joinRequest2)
-        await adapter.onMessage(joinData2, from: SessionID("bob-session"))
         
         try await Task.sleep(for: .milliseconds(50))
         
@@ -277,15 +266,13 @@ struct TransportAdapterSyncConcurrencyTests {
         
         // Join a player
         await adapter.onConnect(sessionID: SessionID("alice-session"), clientID: ClientID("alice-client"))
-        let joinRequest = TransportMessage.join(
-            requestID: "join-1",
-            landID: "sync-concurrency-test",
-            playerID: nil,
-            deviceID: nil,
-            metadata: nil
+        try await simulateRouterJoin(
+            adapter: adapter,
+            keeper: keeper,
+            sessionID: SessionID("alice-session"),
+            clientID: ClientID("alice-client"),
+            playerID: PlayerID("alice-player")
         )
-        let joinData = try JSONEncoder().encode(joinRequest)
-        await adapter.onMessage(joinData, from: SessionID("alice-session"))
         try await Task.sleep(for: .milliseconds(50))
         
         // Act: Start sync, then modify state, then start another sync

@@ -36,7 +36,8 @@ func testJoinFailsWithoutAuthInfoWhenRequired() async throws {
     let adapter = TransportAdapter<JWTErrorTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "jwt-error-test"
+        landID: "jwt-error-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -90,7 +91,8 @@ func testJWTPayloadClearedOnDisconnectWithReconnect() async throws {
     let adapter = TransportAdapter<JWTErrorTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "jwt-error-test"
+        landID: "jwt-error-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -154,7 +156,8 @@ func testJoinRequestMismatchedLandIDInJWTErrorSuite() async throws {
     let adapter = TransportAdapter<JWTErrorTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "jwt-error-test"
+        landID: "jwt-error-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -206,7 +209,8 @@ func testDuplicateJoinRequests() async throws {
     let adapter = TransportAdapter<JWTErrorTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "jwt-error-test"
+        landID: "jwt-error-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)

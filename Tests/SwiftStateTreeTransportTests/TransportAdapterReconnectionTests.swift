@@ -317,16 +317,14 @@ func testSinglePlayerReconnectNoPreviousLeaveRecords() async throws {
     // Act 1: Connect
     await adapter.onConnect(sessionID: sessionID, clientID: clientID)
     
-    // Act 2: Join
-    let joinRequest = TransportMessage.join(
-        requestID: "join-1",
-        landID: "single-player-reconnect-test",
-        playerID: nil,
-        deviceID: nil,
-        metadata: nil
+    // Act 2: Join by router simulation
+    try await simulateRouterJoin(
+        adapter: adapter,
+        keeper: keeper,
+        sessionID: sessionID,
+        clientID: clientID,
+        playerID: playerID
     )
-    let joinData = try encoder.encode(joinRequest)
-    await adapter.onMessage(joinData, from: sessionID)
     
     // Wait for join to complete
     try await Task.sleep(for: .milliseconds(100))
@@ -348,16 +346,14 @@ func testSinglePlayerReconnectNoPreviousLeaveRecords() async throws {
     // Act 4: Reconnect
     await adapter.onConnect(sessionID: sessionID, clientID: clientID)
     
-    // Act 5: Rejoin
-    let rejoinRequest = TransportMessage.join(
-        requestID: "join-2",
-        landID: "single-player-reconnect-test",
-        playerID: nil,
-        deviceID: nil,
-        metadata: nil
+    // Act 5: Rejoin by router simulation
+    try await simulateRouterJoin(
+        adapter: adapter,
+        keeper: keeper,
+        sessionID: sessionID,
+        clientID: clientID,
+        playerID: playerID
     )
-    let rejoinData = try encoder.encode(rejoinRequest)
-    await adapter.onMessage(rejoinData, from: sessionID)
     
     // Wait for rejoin to complete
     try await Task.sleep(for: .milliseconds(100))

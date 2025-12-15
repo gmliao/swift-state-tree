@@ -12,6 +12,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private let encoder = JSONEncoder()
     private var syncEngine = SyncEngine()
     private let logger: Logger
+    private let enableLegacyJoin: Bool
     
     // Track session to player mapping
     private var sessionToPlayer: [SessionID: PlayerID] = [:]
@@ -45,11 +46,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         transport: WebSocketTransport,
         landID: String,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
+        enableLegacyJoin: Bool = false,
         logger: Logger? = nil
     ) {
         self.keeper = keeper
         self.transport = transport
         self.landID = landID
+        self.enableLegacyJoin = enableLegacyJoin
         // Create logger with scope if not provided
         if let logger = logger {
             self.logger = logger.withScope("TransportAdapter")
@@ -118,6 +121,26 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
     
+    /// Register a session that has been authenticated and joined via LandRouter.
+    /// This bypasses the internal join handshake logic of TransportAdapter.
+    public func registerSession(
+        sessionID: SessionID,
+        clientID: ClientID,
+        playerID: PlayerID,
+        authInfo: AuthenticatedInfo?
+    ) async {
+        sessionToClient[sessionID] = clientID
+        sessionToPlayer[sessionID] = playerID
+        if let authInfo = authInfo {
+            sessionToAuthInfo[sessionID] = authInfo
+        }
+        
+        // Register with transport for player-based targeting
+        await transport.registerSession(sessionID, for: playerID)
+        
+        logger.info("Session registered via Router: session=\(sessionID.rawValue), player=\(playerID.rawValue)")
+    }
+    
     public func onMessage(_ message: Data, from sessionID: SessionID) async {
         let messageSize = message.count
         
@@ -141,16 +164,32 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             
             switch transportMsg.kind {
             case .join:
-                if case .join(let payload) = transportMsg.payload {
-                    // Handle join request (can be sent before player is joined)
-                    await handleJoinRequest(
-                        requestID: payload.requestID,
-                        landID: payload.landID,
-                        sessionID: sessionID,
-                        requestedPlayerID: payload.playerID,
-                        deviceID: payload.deviceID,
-                        metadata: payload.metadata
-                    )
+                // If legacy join is enabled, handle it directly (for Single Room Mode)
+                if enableLegacyJoin {
+                    if case .join(let payload) = transportMsg.payload {
+                        // Extract landID from payload
+                        // The payload landID might include "standard:..." prefixes if using new client
+                        // But for legacy mode we expect the raw ID or we handle validation inside handleJoinRequest
+                        // Reconstruct landID
+                        let requestLandID: String
+                        if let instance = payload.landInstanceId, !instance.isEmpty {
+                            requestLandID = "\(payload.landType):\(instance)"
+                        } else {
+                            requestLandID = payload.landType
+                        }
+                        
+                        await handleJoinRequest(
+                            requestID: payload.requestID,
+                            landID: requestLandID,
+                            sessionID: sessionID,
+                            requestedPlayerID: payload.playerID,
+                            deviceID: payload.deviceID,
+                            metadata: payload.metadata
+                        )
+                    }
+                } else {
+                    // Join is now handled by LandRouter
+                    logger.warning("Received Join message in TransportAdapter (should be handled by Router)", metadata: ["sessionID": .string(sessionID.rawValue)])
                 }
                 return
                 

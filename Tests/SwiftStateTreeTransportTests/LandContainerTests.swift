@@ -35,7 +35,8 @@ func testLandContainerGetCurrentState() async throws {
     let adapter = TransportAdapter<ContainerTestState>(
         keeper: keeper,
         transport: transport,
-        landID: landID.stringValue
+        landID: landID.stringValue,
+        enableLegacyJoin: true
     )
     
     let container = LandContainer<ContainerTestState>(
@@ -66,7 +67,8 @@ func testLandContainerGetStats() async throws {
     let adapter = TransportAdapter<ContainerTestState>(
         keeper: keeper,
         transport: transport,
-        landID: landID.stringValue
+        landID: landID.stringValue,
+        enableLegacyJoin: true
     )
     
     let container = LandContainer<ContainerTestState>(

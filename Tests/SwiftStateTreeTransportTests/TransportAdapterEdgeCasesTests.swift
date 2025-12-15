@@ -42,7 +42,8 @@ func testJoinWithCustomPlayerID() async throws {
     let adapter = TransportAdapter<EdgeCasesTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "edge-cases-test"
+        landID: "edge-cases-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -99,7 +100,8 @@ func testJoinWithDeviceID() async throws {
     let adapter = TransportAdapter<EdgeCasesTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "edge-cases-test"
+        landID: "edge-cases-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -153,7 +155,8 @@ func testJoinWithMetadata() async throws {
     let adapter = TransportAdapter<EdgeCasesTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "edge-cases-test"
+        landID: "edge-cases-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -211,7 +214,8 @@ func testJoinRequestWithoutConnection() async throws {
     let adapter = TransportAdapter<EdgeCasesTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "edge-cases-test"
+        landID: "edge-cases-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -262,7 +266,8 @@ func testJoinWithEmptyMetadata() async throws {
     let adapter = TransportAdapter<EdgeCasesTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "edge-cases-test"
+        landID: "edge-cases-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)

@@ -80,8 +80,8 @@ public struct LobbyContainer<State: StateNodeProtocol, Registry: LandManagerRegi
         roomName: String? = nil,
         maxPlayers: Int? = nil
     ) async throws -> LandID {
-        // Generate unique landID
-        let landID = LandID("\(landType)-\(UUID().uuidString)")
+        // Generate unique landID using structured format (landType:instanceId)
+        let landID = LandID.generate(landType: landType)
         
         // Get LandDefinition and initial state from registry
         let definition = landTypeRegistry.getLandDefinition(
@@ -229,20 +229,16 @@ public struct LobbyContainer<State: StateNodeProtocol, Registry: LandManagerRegi
     
     /// Check if a landID represents a lobby.
     ///
-    /// Uses naming convention: landID starting with "lobby-"
+    /// Uses landType property: landType starting with "lobby"
     private func isLobby(landID: LandID) -> Bool {
-        return landID.stringValue.hasPrefix("lobby-")
+        return landID.landType.hasPrefix("lobby")
     }
     
     /// Extract landType from landID.
     ///
-    /// Assumes format: "landType-uuid" or just "landType"
+    /// Uses the structured landType property.
     private func extractLandType(from landID: LandID) -> String {
-        let stringValue = landID.stringValue
-        if let dashIndex = stringValue.firstIndex(of: "-") {
-            return String(stringValue[..<dashIndex])
-        }
-        return stringValue
+        return landID.landType
     }
 }
 

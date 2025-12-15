@@ -34,7 +34,7 @@ struct HummingbirdDemo {
                 jwtConfig: jwtConfig,
                 allowGuestMode: true // Enable guest mode: allow connections without JWT token
             ),
-            land: DemoGame.makeLand(),
+            land: HummingbirdDemoContent.DemoGame.makeLand(),
             initialState: DemoGameState(),
             createGuestSession: { _, clientID in
                 // Create PlayerSession for guest users (when JWT validation is enabled but no token is provided)

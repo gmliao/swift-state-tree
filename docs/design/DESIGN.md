@@ -51,6 +51,7 @@
 ### Server 架構
 - **[DESIGN_APP_CONTAINER_HOSTING.md](./DESIGN_APP_CONTAINER_HOSTING.md)**：AppContainer 與 Hosting 設計、服務組裝
 - **[DESIGN_MULTI_ROOM_ARCHITECTURE.md](./DESIGN_MULTI_ROOM_ARCHITECTURE.md)**：多房間架構、配對服務、房間管理設計
+- **[DESIGN_STATE_BINDING_AND_INITIALIZATION.md](./DESIGN_STATE_BINDING_AND_INITIALIZATION.md)**：State 綁定設計、初始化流程簡化、支援不同 State + Land 組合
 
 ### 客戶端 SDK 與程式碼生成
 - **[DESIGN_TYPESCRIPT_SDK.md](./DESIGN_TYPESCRIPT_SDK.md)**：TypeScript SDK 現況 + schema codegen 規劃（含 `StateTree` class、Vue/React 對接、function actions/events）

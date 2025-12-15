@@ -55,7 +55,8 @@ func testCompleteJWTFlow() async throws {
     let adapter = TransportAdapter<EndToEndTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "e2e-test"
+        landID: "e2e-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -135,7 +136,8 @@ func testCompleteGuestFlow() async throws {
     let adapter = TransportAdapter<EndToEndTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "e2e-test"
+        landID: "e2e-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -204,7 +206,8 @@ func testMixedJWTAndGuestUsers() async throws {
     let adapter = TransportAdapter<EndToEndTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "e2e-test"
+        landID: "e2e-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
