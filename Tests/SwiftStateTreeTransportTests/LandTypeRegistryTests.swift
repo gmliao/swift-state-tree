@@ -32,13 +32,6 @@ func testLandTypeRegistryCreatesLandDefinition() async throws {
         },
         initialStateFactory: { _, _ in
             LandTypeRegistryTestState()
-        },
-        strategyFactory: { (landType: String) in
-            if landType == "battle-royale" {
-                return DefaultMatchmakingStrategy(maxPlayersPerLand: 100, minPlayersToStart: 50)
-            } else {
-                return DefaultMatchmakingStrategy(maxPlayersPerLand: 10, minPlayersToStart: 2)
-            }
         }
     )
     
@@ -66,9 +59,6 @@ func testLandTypeRegistryValidatesLandDefinitionID() async throws {
         },
         initialStateFactory: { _, _ in
             LandTypeRegistryTestState()
-        },
-        strategyFactory: { (landType: String) in
-            DefaultMatchmakingStrategy()
         }
     )
     
@@ -83,75 +73,6 @@ func testLandTypeRegistryValidatesLandDefinitionID() async throws {
     // Note: Testing assertion failure for mismatched IDs is difficult in Swift Testing
     // The assertion in getLandDefinition will catch mismatches in debug builds
     // This test verifies the happy path where IDs match correctly
-}
-
-@Test("LandTypeRegistry provides different strategies for different land types")
-func testLandTypeRegistryDifferentStrategies() async throws {
-    // Arrange
-    let registry = LandTypeRegistry<LandTypeRegistryTestState>(
-        landFactory: { landType, landID in
-            Land(landType, using: LandTypeRegistryTestState.self) {
-                Rules {}
-            }
-        },
-        initialStateFactory: { _, _ in
-            LandTypeRegistryTestState()
-        },
-        strategyFactory: { (landType: String) in
-            switch landType {
-            case "battle-royale":
-                return DefaultMatchmakingStrategy(maxPlayersPerLand: 100, minPlayersToStart: 50)
-            case "1v1":
-                return DefaultMatchmakingStrategy(maxPlayersPerLand: 2, minPlayersToStart: 2)
-            case "lobby":
-                return DefaultMatchmakingStrategy(maxPlayersPerLand: 1000, minPlayersToStart: 1)
-            default:
-                return DefaultMatchmakingStrategy()
-            }
-        }
-    )
-    
-    // Act
-    let battleRoyaleStrategy = registry.strategyFactory("battle-royale")
-    let oneVOneStrategy = registry.strategyFactory("1v1")
-    let lobbyStrategy = registry.strategyFactory("lobby")
-    
-    // Assert - Test that strategies have different configurations
-    let preferences = MatchmakingPreferences(landType: "battle-royale")
-    let emptyStats = LandStats(
-        landID: LandID("test"),
-        playerCount: 0,
-        createdAt: Date(),
-        lastActivityAt: Date()
-    )
-    
-    // Battle Royale: 100 max, 50 min
-    let canMatchBR = await battleRoyaleStrategy.canMatch(
-        playerPreferences: preferences,
-        landStats: emptyStats,
-        waitingPlayers: []
-    )
-    #expect(canMatchBR == true) // Empty land should be matchable
-    
-    let hasEnoughBR = battleRoyaleStrategy.hasEnoughPlayers(
-        matchingPlayers: [],
-        preferences: preferences
-    )
-    #expect(hasEnoughBR == false) // Need 50 players
-    
-    // 1v1: 2 max, 2 min
-    let hasEnough1v1 = oneVOneStrategy.hasEnoughPlayers(
-        matchingPlayers: [],
-        preferences: MatchmakingPreferences(landType: "1v1")
-    )
-    #expect(hasEnough1v1 == false) // Need 2 players
-    
-    // Lobby: 1000 max, 1 min
-    let hasEnoughLobby = lobbyStrategy.hasEnoughPlayers(
-        matchingPlayers: [],
-        preferences: MatchmakingPreferences(landType: "lobby")
-    )
-    #expect(hasEnoughLobby == false) // Need 1 player, but we have 0
 }
 
 @Test("LandTypeRegistry creates initial state for different land types")
@@ -185,9 +106,6 @@ func testLandTypeRegistryCreatesInitialState() async throws {
         initialStateFactory: { landType, landID in
             tracker.append("\(landType)-\(landID.stringValue)")
             return LandTypeRegistryTestState()
-        },
-        strategyFactory: { (landType: String) in
-            DefaultMatchmakingStrategy()
         }
     )
     

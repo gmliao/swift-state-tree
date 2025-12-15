@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import SwiftStateTree
 @testable import SwiftStateTreeTransport
+@testable import SwiftStateTreeMatchmaking
 
 @StateNodeBuilder
 struct LobbyTestState: StateNodeProtocol {
@@ -66,13 +67,13 @@ func testLobbyContainerInitialization() async throws {
                 }
             }
         },
-        initialStateFactory: { _, _ in LobbyTestState() },
-        strategyFactory: { _ in strategy }
+        initialStateFactory: { _, _ in LobbyTestState() }
     )
     
     let matchmakingService = MatchmakingService(
         registry: registry,
-        landTypeRegistry: landTypeRegistry
+        landTypeRegistry: landTypeRegistry,
+        strategyFactory: { _ in strategy }
     )
     
     // Act
@@ -143,13 +144,13 @@ func testLobbyContainerRequestMatchmaking() async throws {
                 }
             }
         },
-        initialStateFactory: { _, _ in initialState },
-        strategyFactory: { _ in strategy }
+        initialStateFactory: { _, _ in initialState }
     )
     
     let matchmakingService = MatchmakingService(
         registry: registry,
-        landTypeRegistry: landTypeRegistry
+        landTypeRegistry: landTypeRegistry,
+        strategyFactory: { _ in strategy }
     )
     
     let lobby = LobbyContainer(
@@ -237,13 +238,13 @@ func testLobbyContainerCreateRoom() async throws {
                 }
             }
         },
-        initialStateFactory: { _, _ in initialState },
-        strategyFactory: { _ in strategy }
+        initialStateFactory: { _, _ in initialState }
     )
     
     let matchmakingService = MatchmakingService(
         registry: registry,
-        landTypeRegistry: landTypeRegistry
+        landTypeRegistry: landTypeRegistry,
+        strategyFactory: { _ in strategy }
     )
     
     let lobby = LobbyContainer(
@@ -335,13 +336,13 @@ func testLobbyContainerJoinRoom() async throws {
                 }
             }
         },
-        initialStateFactory: { _, _ in initialState },
-        strategyFactory: { _ in strategy }
+        initialStateFactory: { _, _ in initialState }
     )
     
     let matchmakingService = MatchmakingService(
         registry: registry,
-        landTypeRegistry: landTypeRegistry
+        landTypeRegistry: landTypeRegistry,
+        strategyFactory: { _ in strategy }
     )
     
     let lobby = LobbyContainer(
@@ -416,13 +417,13 @@ func testLobbyContainerJoinNonExistentRoom() async throws {
                 }
             }
         },
-        initialStateFactory: { _, _ in initialState },
-        strategyFactory: { _ in strategy }
+        initialStateFactory: { _, _ in initialState }
     )
     
     let matchmakingService = MatchmakingService(
         registry: registry,
-        landTypeRegistry: landTypeRegistry
+        landTypeRegistry: landTypeRegistry,
+        strategyFactory: { _ in strategy }
     )
     
     let lobby = LobbyContainer(
@@ -512,13 +513,13 @@ func testLobbyContainerUpdateRoomList() async throws {
                 }
             }
         },
-        initialStateFactory: { _, _ in initialState },
-        strategyFactory: { _ in strategy }
+        initialStateFactory: { _, _ in initialState }
     )
     
     let matchmakingService = MatchmakingService(
         registry: registry,
-        landTypeRegistry: landTypeRegistry
+        landTypeRegistry: landTypeRegistry,
+        strategyFactory: { _ in strategy }
     )
     
     let lobby = LobbyContainer(

@@ -63,8 +63,7 @@ struct LandRouterTests {
         // Setup Registry
         let registry = LandTypeRegistry(
             landFactory: landFactory,
-            initialStateFactory: initialStateFactory,
-            strategyFactory: { _ in DefaultMatchmakingStrategy() }
+            initialStateFactory: initialStateFactory
         )
         
         // Setup LandManager

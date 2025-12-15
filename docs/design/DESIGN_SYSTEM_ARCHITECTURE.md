@@ -302,16 +302,26 @@ SwiftStateTree (核心)
 SwiftStateTreeTransport
     ├── 依賴 SwiftStateTree
     ├── 包含: LandContainer, LandManager, LandManagerProtocol, LandManagerRegistry
-    ├── 包含: MatchmakingService, MatchmakingServiceProtocol, MatchmakingStrategy
+    ├── 包含: LandTypeRegistry, MatchmakingStrategyProtocol (協議)
+    ├── 包含: LandRealm, LandServerProtocol
+    └── 提供: Transport 抽象層、多房間管理
+    ↑
+    │
+SwiftStateTreeMatchmaking
+    ├── 依賴 SwiftStateTree
+    ├── 依賴 SwiftStateTreeTransport
+    ├── 包含: MatchmakingService, MatchmakingServiceProtocol
+    ├── 包含: DefaultMatchmakingStrategy (實作)
     ├── 包含: LobbyContainer, LobbyTypes, LobbyLandFactory
-    ├── 包含: LandTypeRegistry, MatchmakingTypes
-    └── 提供: Transport 抽象層、多房間管理、配對服務
+    ├── 包含: MatchmakingTypes (MatchmakingResult, MatchmakingStatus)
+    └── 提供: 配對服務、大廳功能
     ↑
     │
 SwiftStateTreeHummingbird
     ├── 依賴 SwiftStateTree
     ├── 依賴 SwiftStateTreeTransport
-    ├── 包含: AppContainer, AdminAuth, AdminRoutes
+    ├── 依賴 SwiftStateTreeMatchmaking
+    ├── 包含: LandServer、路由配置
     └── 提供: Hummingbird 整合
 ```
 
@@ -320,14 +330,22 @@ SwiftStateTreeHummingbird
 - **SwiftStateTree**: 核心邏輯，不依賴網路
   - Land DSL、StateTree、Sync、Runtime（LandKeeper）
   
-- **SwiftStateTreeTransport**: 傳輸抽象層
-  - WebSocketTransport、TransportAdapter
-  - 多房間管理（LandManager、LandManagerProtocol、LandContainer、LandManagerRegistry）
-  - 配對服務（MatchmakingService、MatchmakingServiceProtocol、MatchmakingStrategy、LandTypeRegistry）
-  - 大廳功能（LobbyContainer、LobbyTypes、LobbyLandFactory）
+- **SwiftStateTreeTransport**: 抽象的 Transport 層架構（框架無關）
+  - **核心概念**：Transport 不僅是底層網路傳輸，更是「狀態傳輸與服務抽象」的完整架構
+  - **底層傳輸抽象**：Transport 協議、WebSocketTransport、TransportAdapter（網路抽象）
+  - **狀態傳輸管理**：多房間管理（LandManager、LandContainer）、路由（LandRouter）
+  - **框架抽象**：LandRealm、LandServerProtocol（框架無關的伺服器管理）
+  - **配對協議**：MatchmakingStrategy 協議、MatchmakingPreferences、MatchmakingRequest（用於 LandTypeRegistry）
+  - **說明**：這是框架無關的抽象 transport 層，提供從底層傳輸到高層服務的完整抽象
+
+- **SwiftStateTreeMatchmaking**: 配對與大廳服務（可選模組）
+  - **配對服務**：MatchmakingService、MatchmakingServiceProtocol、DefaultMatchmakingStrategy
+  - **大廳功能**：LobbyContainer、LobbyTypes、LobbyLandFactory
+  - **配對類型**：MatchmakingResult、MatchmakingStatus
+  - **說明**：這是可選的配對與大廳服務模組，依賴 SwiftStateTreeTransport
 
 - **SwiftStateTreeHummingbird**: Hummingbird 整合
-  - AppContainer、路由配置
+  - LandServer、路由配置
   - 管理員功能（AdminAuth、AdminRoutes）
 
 ## 使用範例

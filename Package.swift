@@ -14,7 +14,7 @@ let package = Package(
             name: "SwiftStateTree",
             targets: ["SwiftStateTree"]
         ),
-        // 🌐 Transport Layer
+        // 🌐 Transport Layer: Framework-agnostic transport abstraction (network + services)
         .library(
             name: "SwiftStateTreeTransport",
             targets: ["SwiftStateTreeTransport"]
@@ -23,6 +23,11 @@ let package = Package(
         .library(
             name: "SwiftStateTreeHummingbird",
             targets: ["SwiftStateTreeHummingbird"]
+        ),
+        // 🎯 Matchmaking & Lobby: Matchmaking service and lobby functionality
+        .library(
+            name: "SwiftStateTreeMatchmaking",
+            targets: ["SwiftStateTreeMatchmaking"]
         ),
         // 🔹 Benchmark executable
         .executable(
@@ -53,7 +58,7 @@ let package = Package(
             ]
         ),
         
-        // 🔹 Transport Layer: Network abstraction
+        // 🔹 Transport Layer: Framework-agnostic transport abstraction (network + services)
         .target(
             name: "SwiftStateTreeTransport",
             dependencies: [
@@ -69,11 +74,23 @@ let package = Package(
             dependencies: [
                 "SwiftStateTree",
                 "SwiftStateTreeTransport",
+                "SwiftStateTreeMatchmaking",
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket"),
                 .product(name: "Logging", package: "swift-log")
             ],
             path: "Sources/SwiftStateTreeHummingbird"
+        ),
+        
+        // 🎯 Matchmaking & Lobby: Matchmaking service and lobby functionality
+        .target(
+            name: "SwiftStateTreeMatchmaking",
+            dependencies: [
+                "SwiftStateTree",
+                "SwiftStateTreeTransport",
+                .product(name: "Logging", package: "swift-log")
+            ],
+            path: "Sources/SwiftStateTreeMatchmaking"
         ),
         
         // 🔹 Macro Implementation: Compile-time macro expansion
@@ -129,6 +146,18 @@ let package = Package(
                 .product(name: "SwiftSyntaxMacrosTestSupport", package: "swift-syntax")
             ],
             path: "Tests/SwiftStateTreeMacrosTests"
+        ),
+        
+        // 🎯 Matchmaking tests
+        .testTarget(
+            name: "SwiftStateTreeMatchmakingTests",
+            dependencies: [
+                "SwiftStateTreeMatchmaking",
+                "SwiftStateTreeTransport",
+                "SwiftStateTree",
+                .product(name: "Atomics", package: "swift-atomics")
+            ],
+            path: "Tests/SwiftStateTreeMatchmakingTests"
         ),
         
         // 🔹 Benchmark executable

@@ -1,0 +1,95 @@
+import Foundation
+import HummingbirdDemoContent
+import SwiftStateTree
+import SwiftStateTreeHummingbird
+import SwiftStateTreeTransport
+
+/// Hummingbird Demo: Multi-Room Architecture Example
+///
+/// This demo demonstrates the **multi-room mode** using `LandServer.makeMultiRoomServer()`.
+/// Supports dynamic room creation and multiple concurrent rooms.
+///
+/// **Multi-Room Mode Characteristics**:
+/// - Dynamic land/room creation (lands are created on-demand)
+/// - Multiple concurrent lands/rooms can exist simultaneously
+/// - Uses `LandManager` and `LandRouter` for room management
+/// - Suitable for production environments
+///
+/// **Alternative**: You can also use `LandRealm` to manage multiple land types with different State types.
+/// See `DESIGN_STATE_BINDING_AND_INITIALIZATION.md` for more details.
+@main
+struct MultiRoomDemo {
+    static func main() async throws {
+        typealias DemoLandServer = LandServer<DemoGameState>
+
+        // JWT Configuration for demo/testing purposes
+        // ⚠️ WARNING: This is a demo secret key. CHANGE THIS IN PRODUCTION!
+        // In production, use environment variables or secure key management:
+        //   export JWT_SECRET_KEY="your-secure-secret-key-here"
+        let demoJWTSecretKey = "demo-secret-key-change-in-production"
+        let jwtConfig = JWTConfiguration(
+            secretKey: demoJWTSecretKey,
+            algorithm: .HS256,
+            validateExpiration: true
+        )
+
+        // Create logger with custom log level
+        let logger = createColoredLogger(
+            loggerIdentifier: "com.swiftstatetree.hummingbird",
+            scope: "MultiRoomDemo",
+            logLevel: .debug
+        )
+
+        // Multi-room mode: Create a server that supports dynamic room creation
+        // Lands are created on-demand when clients join with a specific landID
+        let server = try await DemoLandServer.makeMultiRoomServer(
+            configuration: DemoLandServer.Configuration(
+                host: "localhost",
+                port: 8080,
+                webSocketPath: "/game",
+                logger: logger,
+                jwtConfig: jwtConfig,
+                allowGuestMode: true // Enable guest mode: allow connections without JWT token
+            ),
+            landFactory: { landID in
+                // Factory function to create LandDefinition for a given LandID
+                // This allows different lands to have different configurations if needed
+                // In this demo, all lands use the same definition
+                HummingbirdDemoContent.DemoGame.makeLand()
+            },
+            initialStateFactory: { landID in
+                // Factory function to create initial state for a given LandID
+                // This allows different lands to have different initial states if needed
+                // In this demo, all lands start with the same initial state
+                DemoGameState()
+            },
+            createGuestSession: { _, clientID in
+                // Create PlayerSession for guest users
+                let randomID = String(UUID().uuidString.prefix(6))
+                return PlayerSession(
+                    playerID: "guest-\(randomID)",
+                    deviceID: clientID.rawValue,
+                    metadata: [
+                        "isGuest": "true",
+                        "connectedAt": ISO8601DateFormatter().string(from: Date()),
+                        "clientID": clientID.rawValue,
+                    ]
+                )
+            },
+            lobbyIDs: [
+                // Pre-create lobby lands (optional)
+                // These lands are created at server startup
+                "lobby-main",
+                "lobby-asia",
+                "lobby-europe"
+            ]
+        )
+        
+        logger.info("🚀 Multi-room server started")
+        logger.info("📡 WebSocket endpoint: ws://localhost:8080/game")
+        logger.info("💡 Connect with different landIDs to create different rooms")
+        logger.info("   Example: ws://localhost:8080/game?token=<jwt>&landID=room-123")
+        
+        try await server.run()
+    }
+}

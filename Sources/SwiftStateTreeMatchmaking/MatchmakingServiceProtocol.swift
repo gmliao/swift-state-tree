@@ -1,5 +1,6 @@
 import Foundation
 import SwiftStateTree
+import SwiftStateTreeTransport
 
 /// Protocol abstraction for MatchmakingService operations.
 ///

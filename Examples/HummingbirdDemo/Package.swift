@@ -9,8 +9,12 @@ let package = Package(
     ],
     products: [
         .executable(
-            name: "HummingbirdDemo",
-            targets: ["HummingbirdDemo"]
+            name: "SingleRoomDemo",
+            targets: ["SingleRoomDemo"]
+        ),
+        .executable(
+            name: "MultiRoomDemo",
+            targets: ["MultiRoomDemo"]
         ),
         .executable(
             name: "SchemaGen",
@@ -29,12 +33,21 @@ let package = Package(
             path: "Sources/DemoContent"
         ),
         .executableTarget(
-            name: "HummingbirdDemo",
+            name: "SingleRoomDemo",
             dependencies: [
                 "HummingbirdDemoContent",
                 .product(name: "SwiftStateTreeHummingbird", package: "SwiftStateTree")
             ],
-            path: "Sources/HummingbirdDemo"
+            path: "Sources/SingleRoomDemo"
+        ),
+        .executableTarget(
+            name: "MultiRoomDemo",
+            dependencies: [
+                "HummingbirdDemoContent",
+                .product(name: "SwiftStateTreeHummingbird", package: "SwiftStateTree"),
+                .product(name: "SwiftStateTreeTransport", package: "SwiftStateTree")
+            ],
+            path: "Sources/MultiRoomDemo"
         ),
         .executableTarget(
             name: "SchemaGen",

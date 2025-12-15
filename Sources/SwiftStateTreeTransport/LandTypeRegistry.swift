@@ -6,10 +6,12 @@ import SwiftStateTree
 /// Maps each landType to:
 /// - LandDefinition factory (how to create the land)
 /// - Initial state factory (how to create initial state)
-/// - Matchmaking strategy (how to match users/players)
 ///
 /// Each land type can have its own independent configuration, allowing different
-/// matching rules, capacity limits, and behaviors for different types of lands.
+/// behaviors for different types of lands.
+///
+/// **Note**: This registry is focused on land creation and does not include matchmaking
+/// strategies. Matchmaking strategies should be managed separately by MatchmakingService.
 public struct LandTypeRegistry<State: StateNodeProtocol>: Sendable {
     /// Factory: (landType, landID) -> LandDefinition
     /// The LandDefinition.id must match the landType.
@@ -18,25 +20,18 @@ public struct LandTypeRegistry<State: StateNodeProtocol>: Sendable {
     /// Factory: (landType, landID) -> State
     public let initialStateFactory: @Sendable (String, LandID) -> State
     
-    /// Factory: landType -> MatchmakingStrategy
-    /// Each land type can have its own matching rules.
-    public let strategyFactory: @Sendable (String) -> any MatchmakingStrategy
-    
     /// Initialize a LandTypeRegistry.
     ///
     /// - Parameters:
     ///   - landFactory: Factory function that creates a LandDefinition for a given landType and landID.
     ///     The returned LandDefinition.id must match the landType parameter.
     ///   - initialStateFactory: Factory function that creates initial state for a given landType and landID.
-    ///   - strategyFactory: Factory function that returns a MatchmakingStrategy for a given landType.
     public init(
         landFactory: @escaping @Sendable (String, LandID) -> LandDefinition<State>,
-        initialStateFactory: @escaping @Sendable (String, LandID) -> State,
-        strategyFactory: @escaping @Sendable (String) -> any MatchmakingStrategy
+        initialStateFactory: @escaping @Sendable (String, LandID) -> State
     ) {
         self.landFactory = landFactory
         self.initialStateFactory = initialStateFactory
-        self.strategyFactory = strategyFactory
     }
     
     /// Get LandDefinition for a land type.

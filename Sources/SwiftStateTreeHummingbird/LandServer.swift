@@ -3,6 +3,7 @@ import Hummingbird
 import HummingbirdWebSocket
 import SwiftStateTree
 import SwiftStateTreeTransport
+import SwiftStateTreeMatchmaking
 import Logging
 import NIOCore
 
@@ -302,8 +303,7 @@ public struct LandServer<State: StateNodeProtocol> {
         // Note: landFactory here expects LandID which needs the 'type' embedded if we pass it directly
         let landTypeRegistry = LandTypeRegistry<State>(
             landFactory: { _, landID in landFactory(landID) },
-            initialStateFactory: { _, landID in initialStateFactory(landID) },
-            strategyFactory: { _ in DefaultMatchmakingStrategy() }
+            initialStateFactory: { _, landID in initialStateFactory(landID) }
         )
         
         // Create LandRouter using the global transport

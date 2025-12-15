@@ -41,7 +41,7 @@ SwiftStateTree/
 ├── Package.swift
 ├── Sources/
 │   ├── SwiftStateTree/                     # ✅ Core: Land DSL, Runtime, Sync
-│   ├── SwiftStateTreeTransport/            # ✅ Transport 抽象層
+│   ├── SwiftStateTreeTransport/            # ✅ 抽象的 Transport 層架構（傳輸 + 服務抽象）
 │   ├── SwiftStateTreeHummingbird/          # ✅ Hummingbird integration
 │   ├── SwiftStateTreeMacros/               # ✅ Macro 實作
 │   └── (無 Demo target，僅保留 library/adapter)
