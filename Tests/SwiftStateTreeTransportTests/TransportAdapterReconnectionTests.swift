@@ -312,7 +312,7 @@ func testSinglePlayerReconnectNoPreviousLeaveRecords() async throws {
     let clientID = ClientID("single-player-client")
     let playerID = PlayerID(sessionID.rawValue)
     
-    let encoder = JSONEncoder()
+    _ = JSONEncoder()
     
     // Act 1: Connect
     await adapter.onConnect(sessionID: sessionID, clientID: clientID)

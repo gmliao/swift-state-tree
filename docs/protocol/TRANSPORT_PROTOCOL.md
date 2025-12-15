@@ -424,14 +424,14 @@ const message: TransportMessage = {
   "kind": "join",
   "payload": {
     "join": {
-      "requestID": "join-1234567890-abc",
+    "requestID": "join-1234567890-abc",
       "landType": "demo-game",
       "landInstanceId": null,
-      "playerID": "player-123",
-      "deviceID": "device-456",
-      "metadata": {
-        "platform": "iOS",
-        "version": "1.0.0"
+    "playerID": "player-123",
+    "deviceID": "device-456",
+    "metadata": {
+      "platform": "iOS",
+      "version": "1.0.0"
       }
     }
   }
@@ -464,13 +464,13 @@ const message: TransportMessage = {
   "kind": "joinResponse",
   "payload": {
     "joinResponse": {
-      "requestID": "join-1234567890-abc",
-      "success": true,
+    "requestID": "join-1234567890-abc",
+    "success": true,
       "landType": "demo-game",
       "landInstanceId": null,
       "landID": "demo-game",
-      "playerID": "player-123",
-      "reason": null
+    "playerID": "player-123",
+    "reason": null
     }
   }
 }
@@ -483,10 +483,10 @@ const message: TransportMessage = {
   "kind": "error",
   "payload": {
     "error": {
-      "code": "JOIN_DENIED",
-      "message": "Room is full",
-      "details": {
-        "requestID": "join-1234567890-abc",
+    "code": "JOIN_DENIED",
+    "message": "Room is full",
+    "details": {
+      "requestID": "join-1234567890-abc",
         "landType": "demo-game",
         "landInstanceId": "room-123"
       }
@@ -932,13 +932,13 @@ enum TransportEvent {
   "kind": "join",
   "payload": {
     "join": {
-      "requestID": "join-1234567890-abc",
+    "requestID": "join-1234567890-abc",
       "landType": "demo-game",
       "landInstanceId": null,
-      "playerID": "player-123",
-      "deviceID": "device-456",
-      "metadata": {
-        "platform": "iOS"
+    "playerID": "player-123",
+    "deviceID": "device-456",
+    "metadata": {
+      "platform": "iOS"
       }
     }
   }
@@ -949,12 +949,12 @@ enum TransportEvent {
   "kind": "joinResponse",
   "payload": {
     "joinResponse": {
-      "requestID": "join-1234567890-abc",
-      "success": true,
+    "requestID": "join-1234567890-abc",
+    "success": true,
       "landType": "demo-game",
       "landInstanceId": null,
       "landID": "demo-game",
-      "playerID": "player-123"
+    "playerID": "player-123"
     }
   }
 }

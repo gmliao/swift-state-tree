@@ -4,8 +4,11 @@
 >
 > **狀態說明**：
 > - ✅ 當前實作：`LandServer<State>` 綁定單一 State 類型（原 `AppContainer<State>`）
-> - 📅 簡化初始化：規劃中
-> - 📅 多 State 支援：規劃中（透過 `LandRealm` 封裝）
+> - ✅ 命名遷移（階段 1）：`LandServer<State>` 作為主要類型，`AppContainer<State>` 作為別名
+> - ✅ 多 State 支援：已實作（透過 `LandRealm` 封裝）
+> - ✅ 框架抽象：已實作（`LandServerProtocol` 協議）
+> - 📅 簡化初始化：規劃中（Builder Pattern）
+> - 📅 命名遷移（階段 2）：規劃中（標記 `AppContainer` 為 deprecated）
 > - 📅 分布式架構：規劃中（支援 distributed actor）
 >
 > 相關文檔：
@@ -56,8 +59,7 @@ public typealias AppContainer<State> = LandServer<State>
 ```
 
 **遷移時間表**：
-- ✅ **當前**：`AppContainer<State>` 作為主要類型（已實作）
-- 📅 **階段 1**：引入 `LandServer<State>`，`AppContainer` 作為別名
+- ✅ **階段 1（已完成）**：`LandServer<State>` 作為主要類型，`AppContainer` 作為別名
 - 📅 **階段 2**：標記 `AppContainer` 為 deprecated，建議使用 `LandServer`
 - 📅 **階段 3**：移除 `AppContainer`，只保留 `LandServer`
 
@@ -770,68 +772,38 @@ let canMatch = await strategy.canMatch(
 
 **注意**：`LandRealm` 使用多房間模式（`makeMultiRoomServer`），因為需要管理多個 land types。
 
-#### 3. LandRealm
+#### 3. LandRealm ✅
 
 統一管理所有 `LandServer` 實例（支援不同 State 類型）：
 
+**實作狀態**：已實作，位於 `SwiftStateTreeTransport` 模組
+
+**關鍵特性**：
+- ✅ 可以管理多個不同 State 類型的 `LandServer` 實例
+- ✅ 使用 `LandServerProtocol` 協議，支援多種 HTTP 框架
+- ✅ 提供生命週期管理（run, shutdown, healthCheck）
+- ✅ 框架無關設計（不依賴 Hummingbird）
+
+**使用方式**：
+
 ```swift
-/// High-level realm that manages all land types and State types.
-///
-/// Automatically creates and manages LandServer instances for different State types.
-/// Developers only need to define State and Land, without directly managing LandServer.
-///
-/// **Key Feature**: Can manage multiple LandServer instances with different State types.
-/// This is the unified entry point for creating all land states.
-///
-/// **Note**: Distributed architecture support (multi-server coordination) is planned for future versions.
-/// Currently, each server creates its own LandRealm instance independently.
-public struct LandRealm {
-    private var servers: [String: any AnyLandServer] = [:]
-    
-    /// Register a land type with its State and Land definitions.
-    ///
-    /// **Key Feature**: Can register LandServer instances with different State types.
-    /// Each land type can have its own State type, allowing complete flexibility.
-    ///
-    /// **Note**: This method does NOT use `LandTypeRegistry` because `LandTypeRegistry<State>`
-    /// is bound to a single State type. Instead, it directly uses `landFactory` and
-    /// `initialStateFactory` to support different State types.
-    ///
-    /// `LandTypeRegistry` is reserved for lower-level components (e.g., `LandRouter<State>`)
-    /// that operate within a single State type context.
-    ///
-    /// - Parameters:
-    ///   - landType: The land type identifier (e.g., "chess", "cardgame", "rpg")
-    ///   - landFactory: Factory function to create LandDefinition for a given LandID
-    ///   - initialStateFactory: Factory function to create initial state for a given LandID
-    ///   - webSocketPath: Optional custom WebSocket path (defaults to "/{landType}")
-    public mutating func register<State: StateNodeProtocol>(
-        landType: String,
-        landFactory: @escaping @Sendable (LandID) -> LandDefinition<State>,
-        initialStateFactory: @escaping @Sendable (LandID) -> State,
-        webSocketPath: String? = nil
-    ) async throws {
-        let path = webSocketPath ?? "/\(landType)"
-        let server = try await LandServer<State>.makeMultiRoomServer(
-            configuration: .init(webSocketPath: path),
-            landFactory: landFactory,
-            initialStateFactory: initialStateFactory
-        )
-        servers[landType] = server
-    }
-    
-    /// Start all registered LandServer instances
-    public func run() async throws {
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            for (landType, server) in servers {
-                group.addTask {
-                    try await server.run()
-                }
-            }
-        }
-    }
-}
+// 框架無關方式（推薦）
+let realm = LandRealm()
+let server = try await LandServer<State>.makeMultiRoomServer(...)
+try await realm.register(landType: "chess", server: server)
+
+// Hummingbird 便利方式
+try await realm.registerWithLandServer(
+    landType: "chess",
+    landFactory: { _ in ChessGame.makeLand() },
+    initialStateFactory: { _ in ChessState() }
+)
 ```
+
+**架構設計**：
+- `LandRealm` 使用 `LandServerProtocol` 協議（框架無關）
+- `LandServer<State>`（Hummingbird 實作）符合 `LandServerProtocol`
+- 未來其他框架（Vapor、Kitura）只需實作 `LandServerProtocol` 即可使用 `LandRealm`
 
 **關鍵特性**：
 - ✅ **可以管理不同 State 類型的 `LandServer`**：每個 land type 可以有自己獨立的 State 類型
@@ -845,28 +817,24 @@ public struct LandRealm {
 
 ```swift
 // 建立 LandRealm（統一入口，可以創建所有的 land state）
-var realm = LandRealm()
+let realm = LandRealm()
 
-// 註冊棋類遊戲（使用 ChessState）
-try await realm.register(
+// 方式 1：使用 Hummingbird 便利方法（推薦用於 Hummingbird）
+try await realm.registerWithLandServer(
     landType: "chess",
     landFactory: { _ in ChessGame.makeLand() },
     initialStateFactory: { _ in ChessState() }
 )
 
-// 註冊卡牌遊戲（使用 CardGameState，不同的 State 類型）
-try await realm.register(
+try await realm.registerWithLandServer(
     landType: "cardgame",
     landFactory: { _ in CardGame.makeLand() },
     initialStateFactory: { _ in CardGameState() }
 )
 
-// 註冊 RPG 遊戲（使用 RPGState，又是不同的 State 類型）
-try await realm.register(
-    landType: "rpg",
-    landFactory: { _ in RPGGame.makeLand() },
-    initialStateFactory: { _ in RPGState() }
-)
+// 方式 2：框架無關方式（適用於所有框架）
+let chessServer = try await LandServer<ChessState>.makeMultiRoomServer(...)
+try await realm.register(landType: "chess", server: chessServer)
 
 // 啟動所有 LandServer 實例
 try await realm.run()
@@ -874,7 +842,6 @@ try await realm.run()
 // 客戶端連接：
 // - ws://host:port/chess/room-123  → 連接到棋類遊戲（ChessState）
 // - ws://host:port/cardgame/room-456 → 連接到卡牌遊戲（CardGameState）
-// - ws://host:port/rpg/room-789 → 連接到 RPG 遊戲（RPGState）
 ```
 
 **關鍵特性**：
@@ -889,24 +856,24 @@ try await realm.run()
 struct LandServerMain {
     static func main() async throws {
         // 使用 LandRealm 統一管理所有不同 State 類型的 LandServer
-        var realm = LandRealm()
+        let realm = LandRealm()
         
         // 註冊棋類遊戲（ChessState）
-        try await realm.register(
+        try await realm.registerWithLandServer(
             landType: "chess",
             landFactory: { _ in ChessGame.makeLand() },
             initialStateFactory: { _ in ChessState() }
         )
         
         // 註冊卡牌遊戲（CardGameState，不同的 State 類型）
-        try await realm.register(
+        try await realm.registerWithLandServer(
             landType: "cardgame",
             landFactory: { _ in CardGame.makeLand() },
             initialStateFactory: { _ in CardGameState() }
         )
         
         // 註冊 RPG 遊戲（RPGState，又是不同的 State 類型）
-        try await realm.register(
+        try await realm.registerWithLandServer(
             landType: "rpg",
             landFactory: { _ in RPGGame.makeLand() },
             initialStateFactory: { _ in RPGState() }
@@ -950,6 +917,10 @@ try await withThrowingTaskGroup(of: Void.self) { group in
 
 **建議**：使用 `LandRealm` 作為統一入口，可以更簡潔地管理所有 land types 和 State 類型。
 
+**注意**：`AppContainer<State>` 是 `LandServer<State>` 的別名，兩種寫法都可以使用：
+- `LandServer<State>.makeMultiRoomServer(...)`（推薦）
+- `AppContainer<State>.makeMultiRoomServer(...)`（向後兼容）
+
 **單房間模式使用範例（僅用於簡單場景或測試）**：
 
 ```swift
@@ -970,6 +941,7 @@ try await server.run()
 - 單房間模式適合測試或簡單場景
 - 生產環境建議使用多房間模式（通過 `LandRealm` 或直接使用 `makeMultiRoomServer`）
 - `LandRealm` 統一使用多房間模式，因為需要管理多個 land types
+- `AppContainer<State>` 是 `LandServer<State>` 的別名，兩種寫法都可以使用
 
 **分布式架構說明**（規劃中）：
 - 每個伺服器都會創建自己的 `LandRealm` 實例
@@ -1012,16 +984,14 @@ client.join('my_room', { /* options */ })
 ### SwiftStateTree 的設計
 
 **當前設計**：
-- 使用泛型綁定 State 類型（編譯時類型安全）
-- 一個 `LandServer<State>` 只能處理一種 State 類型
-- 需要多個 `LandServer` 實例來處理不同的 State
-
-**改進方向**：
-- 使用 `LandRealm` 封裝多個 `LandServer` 實例（支援不同 State 類型）
-- 提供類似 Colyseus 的簡化 API
-- 保持編譯時類型安全
-- **統一入口**：`LandRealm` 可以創建所有的 land state
-- 支援分布式架構（每個伺服器創建自己的 `LandRealm`）
+- ✅ 使用泛型綁定 State 類型（編譯時類型安全）
+- ✅ 一個 `LandServer<State>` 只能處理一種 State 類型
+- ✅ 使用 `LandRealm` 封裝多個 `LandServer` 實例（支援不同 State 類型）
+- ✅ 提供類似 Colyseus 的簡化 API
+- ✅ 保持編譯時類型安全
+- ✅ **統一入口**：`LandRealm` 可以創建所有的 land state
+- ✅ 框架抽象：`LandServerProtocol` 協議支援多種 HTTP 框架
+- 📅 支援分布式架構（每個伺服器創建自己的 `LandRealm`，規劃中）
 
 ## 實作優先順序
 
@@ -1055,11 +1025,13 @@ client.join('my_room', { /* options */ })
      - `LandRealm` 直接使用 `landFactory` 和 `initialStateFactory`，不依賴 `LandTypeRegistry`
      - `LandTypeRegistry` 保留給底層組件（如 `LandRouter<State>`）使用
 
-2. **實作 `LandRealm`**
+2. **實作 `LandRealm`** ✅
    - **關鍵特性**：可以管理多個不同 State 類型的 `LandServer` 實例
    - **統一入口**：可以創建所有的 land state
    - 自動管理多個 `LandServer` 實例
    - 提供統一的啟動介面
+   - 使用 `LandServerProtocol` 協議，支援多種 HTTP 框架
+   - 位於 `SwiftStateTreeTransport` 模組（框架無關）
    - 支援未來分布式架構擴展（規劃中）
 
 3. **更新文檔和範例**
@@ -1078,19 +1050,21 @@ client.join('my_room', { /* options */ })
 
 - ✅ **State 綁定**：已實作，使用泛型綁定單一 State 類型
 - ✅ **命名統一**：所有組件都以 "Land" 開頭，保持命名一致性
-- 📅 **命名遷移**：規劃中，`AppContainer` 將作為 `LandServer` 的過時別名
+- ✅ **命名遷移（階段 1）**：已完成，`LandServer<State>` 作為主要類型，`AppContainer` 作為別名
+- ✅ **多 State 支援**：已實作，`LandRealm` 可以管理不同 State 類型的 `LandServer` 實例
+- ✅ **框架抽象**：已實作，`LandServerProtocol` 協議支援多種 HTTP 框架
 - 📅 **簡化初始化**：規劃中，需要改進 `LandTypeRegistry` 和提供 Builder Pattern
-- 📅 **多 State 支援**：規劃中，需要實作 `LandRealm` 封裝（可以管理不同 State 類型的 `LandServer`）
+- 📅 **命名遷移（階段 2）**：規劃中，標記 `AppContainer` 為 deprecated
 - 📅 **分布式架構**：規劃中，跨伺服器協調和 MatchmakingService 整合仍在設計中
 
 ### 下一步
 
-1. 引入 `LandServer<State>`，`AppContainer` 作為別名
-2. 標記 `AppContainer` 為 deprecated
-3. 改進 `LandTypeRegistry` 支援更靈活的配置
-4. 提供 Builder Pattern 簡化初始化
-5. **實作 `LandRealm` 封裝多個 `LandServer` 實例（支援不同 State 類型）**
-6. **確保 `LandRealm` 可以創建所有的 land state（統一入口）**
-7. 設計分布式架構（包括 MatchmakingService 整合）
-8. 更新文檔和範例
+1. ✅ ~~引入 `LandServer<State>`，`AppContainer` 作為別名~~（已完成）
+2. 📅 標記 `AppContainer` 為 deprecated（階段 2）
+3. 📅 改進 `LandTypeRegistry` 支援更靈活的配置
+4. 📅 提供 Builder Pattern 簡化初始化
+5. ✅ ~~實作 `LandRealm` 封裝多個 `LandServer` 實例（支援不同 State 類型）~~（已完成）
+6. ✅ ~~確保 `LandRealm` 可以創建所有的 land state（統一入口）~~（已完成）
+7. 📅 設計分布式架構（包括 MatchmakingService 整合）
+8. ✅ ~~更新文檔和範例~~（進行中）
 
