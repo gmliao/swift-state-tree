@@ -234,7 +234,8 @@ func testHummingbirdAdapterEmitsJSON() async throws {
     let adapter = TransportAdapter<TestState>(
         keeper: keeper,
         transport: transport,
-        landID: definition.id
+        landID: definition.id,
+        enableLegacyJoin: true
     )
     
     // Set transport adapter as the transport for keeper

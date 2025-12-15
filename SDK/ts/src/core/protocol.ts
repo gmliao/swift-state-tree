@@ -47,10 +47,16 @@ export interface JoinOptions {
 /**
  * Create a join message
  * MessagePayload encodes as { "join": TransportJoinPayload }
+ * 
+ * @param requestID - Unique request identifier
+ * @param landType - The type of Land to join (required)
+ * @param landInstanceId - The specific instance to join (optional, if null a new room will be created)
+ * @param options - Optional join options (playerID, deviceID, metadata)
  */
 export function createJoinMessage(
   requestID: string,
-  landID: string,
+  landType: string,
+  landInstanceId: string | null | undefined,
   options?: JoinOptions
 ): TransportMessage {
   return {
@@ -58,7 +64,8 @@ export function createJoinMessage(
     payload: {
       join: {
         requestID,
-        landID,
+        landType,
+        landInstanceId: landInstanceId ?? null,
         playerID: options?.playerID,
         deviceID: options?.deviceID,
         metadata: options?.metadata

@@ -115,6 +115,7 @@ public struct AppContainer<State: StateNodeProtocol> {
     public let transport: WebSocketTransport?
     public let transportAdapter: TransportAdapter<State>?
     public let hbAdapter: HummingbirdStateTreeAdapter?
+    public let landRouter: LandRouter<State>?
     public let router: Router<BasicWebSocketRequestContext>
     
     // Multi-room mode
@@ -175,6 +176,7 @@ public struct AppContainer<State: StateNodeProtocol> {
         self.transport = transport
         self.transportAdapter = transportAdapter
         self.hbAdapter = hbAdapter
+        self.landRouter = nil
         self.router = router
         self.landManager = landManager
         self.adapterHolder = adapterHolder
@@ -184,14 +186,18 @@ public struct AppContainer<State: StateNodeProtocol> {
     private init(
         configuration: Configuration,
         router: Router<BasicWebSocketRequestContext>,
-        landManager: LandManager<State>
+        landManager: LandManager<State>,
+        transport: WebSocketTransport? = nil,
+        hbAdapter: HummingbirdStateTreeAdapter? = nil,
+        landRouter: LandRouter<State>? = nil
     ) {
         self.configuration = configuration
         self.land = nil
         self.keeper = nil
-        self.transport = nil
+        self.transport = transport
         self.transportAdapter = nil
-        self.hbAdapter = nil
+        self.hbAdapter = hbAdapter
+        self.landRouter = landRouter
         self.router = router
         self.landManager = landManager
         self.adapterHolder = nil
@@ -282,79 +288,43 @@ public struct AppContainer<State: StateNodeProtocol> {
             logger.info("Pre-created lobby: \(lobbyIDString)")
         }
         
-        // Note: MatchmakingService should be created separately by the user
-        // with proper LandManagerRegistry and LandTypeRegistry configuration
-        // Example:
-        // let registry = SingleLandManagerRegistry(landManager: landManager)
-        // let landTypeRegistry = LandTypeRegistry(...)
-        // let matchmakingService = MatchmakingService(registry: registry, landTypeRegistry: landTypeRegistry)
+        // Create global WebSocketTransport
+        // Since we are using LandRouter, all connections go through this single transport
+        let transport = WebSocketTransport(logger: logger)
+        
+        // Create adapter for LandTypeRegistry
+        // Note: landFactory here expects LandID which needs the 'type' embedded if we pass it directly
+        let landTypeRegistry = LandTypeRegistry<State>(
+            landFactory: { _, landID in landFactory(landID) },
+            initialStateFactory: { _, landID in initialStateFactory(landID) },
+            strategyFactory: { _ in DefaultMatchmakingStrategy() }
+        )
+        
+        // Create LandRouter using the global transport
+        let landRouter = LandRouter<State>(
+            landManager: landManager,
+            landTypeRegistry: landTypeRegistry,
+            transport: transport,
+            createGuestSession: createGuestSession,
+            logger: logger
+        )
+        
+        // Set LandRouter as the delegate for the transport to handle events
+        await transport.setDelegate(landRouter)
+        
+        // Create Hummingbird Adapter that feeds the global transport
+        let hbAdapter = HummingbirdStateTreeAdapter(
+            transport: transport,
+            jwtValidator: jwtValidator,
+            allowGuestMode: configuration.allowGuestMode,
+            logger: logger
+        )
         
         let router = Router(context: BasicWebSocketRequestContext.self)
         
-        // WebSocket route with landID parameter
-        router.ws(RouterPath(configuration.webSocketPath + "/:landID")) { inbound, outbound, context in
-            // Extract landID from path parameters or query string
-            let landIDString: String
-            // context is already WebSocketRouterContext<BasicWebSocketRequestContext>
-            let uriString = context.request.uri.description
-            if let urlComponents = URLComponents(string: uriString) {
-                // Check path components for :landID
-                let pathComponents = urlComponents.path.split(separator: "/")
-                if pathComponents.count >= 2 {
-                    // Last component should be the landID
-                    landIDString = String(pathComponents.last ?? "default")
-                } else if let queryItems = urlComponents.queryItems,
-                          let landIDItem = queryItems.first(where: { $0.name == "landID" }),
-                          let landIDValue = landIDItem.value {
-                    landIDString = landIDValue
-                } else {
-                    landIDString = "default"
-                }
-            } else {
-                landIDString = "default"
-            }
-            
-            let landID = LandID(landIDString)
-            
-            // Get or create the land
-            let definition = landFactory(landID)
-            let initialState = initialStateFactory(landID)
-            let container = await landManager.getOrCreateLand(
-                landID: landID,
-                definition: definition,
-                initialState: initialState
-            )
-            
-            // Create adapter for this specific land
-            let hbAdapter = HummingbirdStateTreeAdapter(
-                transport: container.transport,
-                jwtValidator: jwtValidator,
-                allowGuestMode: configuration.allowGuestMode,
-                logger: logger
-            )
-            
-            // Handle connection
-            await hbAdapter.handle(inbound: inbound, outbound: outbound, context: context)
-        }
-        
-        // Also support WebSocket without landID (defaults to "default")
+        // Generic WebSocket route
+        // All Join logic is now handled by sending a Join message after connection
         router.ws(RouterPath(configuration.webSocketPath)) { inbound, outbound, context in
-            let landID = LandID("default")
-            let definition = landFactory(landID)
-            let initialState = initialStateFactory(landID)
-            let container = await landManager.getOrCreateLand(
-                landID: landID,
-                definition: definition,
-                initialState: initialState
-            )
-            
-            let hbAdapter = HummingbirdStateTreeAdapter(
-                transport: container.transport,
-                jwtValidator: jwtValidator,
-                allowGuestMode: configuration.allowGuestMode,
-                logger: logger
-            )
-            
             await hbAdapter.handle(inbound: inbound, outbound: outbound, context: context)
         }
         
@@ -379,7 +349,10 @@ public struct AppContainer<State: StateNodeProtocol> {
         return AppContainer(
             configuration: configuration,
             router: router,
-            landManager: landManager
+            landManager: landManager,
+            transport: transport,
+            hbAdapter: hbAdapter,
+            landRouter: landRouter
         )
     }
     
@@ -557,6 +530,7 @@ public struct AppContainer<State: StateNodeProtocol> {
             transport: transport,
             landID: definition.id,
             createGuestSession: createGuestSession,
+            enableLegacyJoin: true,
             logger: logger
         )
         

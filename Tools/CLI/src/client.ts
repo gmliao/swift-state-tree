@@ -18,7 +18,7 @@ export class SwiftStateTreeClient {
   private currentState: Record<string, any> = {}
   private requestIDCounter = 0
   private actionCallbacks = new Map<string, (response: any) => void>()
-  private joinCallbacks = new Map<string, (result: { success: boolean; playerID?: string; reason?: string }) => void>()
+  private joinCallbacks = new Map<string, (result: { success: boolean; playerID?: string; reason?: string; landType?: string; landInstanceId?: string; landID?: string }) => void>()
 
   constructor(
     private url: string,
@@ -124,7 +124,14 @@ export class SwiftStateTreeClient {
         }
 
         // Call callback if exists - try to find by requestID
-        const result = { success, playerID: payload.playerID, reason: payload.reason }
+        const result = { 
+          success, 
+          playerID: payload.playerID, 
+          reason: payload.reason,
+          landType: payload.landType,
+          landInstanceId: payload.landInstanceId,
+          landID: payload.landID
+        }
         
         if (payload.requestID) {
           const callback = this.joinCallbacks.get(payload.requestID)
@@ -350,20 +357,27 @@ export class SwiftStateTreeClient {
     }
   }
 
-  async join(): Promise<{ success: boolean; playerID?: string; reason?: string }> {
+  async join(): Promise<{ success: boolean; playerID?: string; reason?: string; landType?: string; landInstanceId?: string; landID?: string }> {
     if (!this.isConnected) {
       throw new Error('Not connected')
     }
 
     return new Promise((resolve) => {
       const requestID = `join-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+      
+      // Parse landID as "landType:instanceId" or treat as landType
+      const colonIndex = this.landID.indexOf(':')
+      const landType = colonIndex > 0 ? this.landID.substring(0, colonIndex) : this.landID
+      const landInstanceId = colonIndex > 0 ? this.landID.substring(colonIndex + 1) : null
+      
       // MessagePayload encodes as { "join": TransportJoinPayload }
       const message = {
         kind: 'join',
         payload: {
           join: {
             requestID,
-            landID: this.landID,
+            landType,
+            landInstanceId: landInstanceId ?? null,
             playerID: this.playerID,
             deviceID: this.deviceID,
             metadata: this.metadata
@@ -373,7 +387,7 @@ export class SwiftStateTreeClient {
 
       this.joinCallbacks.set(requestID, resolve)
       this.send(message as any)
-      console.log(chalk.blue(`📤 Join request sent: landID=${this.landID}`))
+      console.log(chalk.blue(`📤 Join request sent: landType=${landType}, landInstanceId=${landInstanceId ?? 'null'}`))
     })
   }
 

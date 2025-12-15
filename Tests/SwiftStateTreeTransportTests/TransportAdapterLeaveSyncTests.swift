@@ -73,28 +73,22 @@ func testPlayerLeaveTriggersSync() async throws {
     await transportAdapter.onConnect(sessionID: aliceSession, clientID: ClientID("alice-client"))
     await transportAdapter.onConnect(sessionID: bobSession, clientID: ClientID("bob-client"))
     
-    // Send join requests
-    let encoder = JSONEncoder()
-    let aliceJoinMsg = TransportMessage.join(
-        requestID: "req-alice",
-        landID: "leave-sync-test",
-        playerID: nil,
-        deviceID: nil,
-        metadata: nil
-    )
-    let bobJoinMsg = TransportMessage.join(
-        requestID: "req-bob",
-        landID: "leave-sync-test",
-        playerID: nil,
-        deviceID: nil,
-        metadata: nil
+    // Simulate routers handling joins
+    try await simulateRouterJoin(
+        adapter: transportAdapter,
+        keeper: keeper,
+        sessionID: aliceSession,
+        clientID: ClientID("alice-client"),
+        playerID: PlayerID(aliceSession.rawValue)
     )
     
-    let aliceJoinData = try encoder.encode(aliceJoinMsg)
-    let bobJoinData = try encoder.encode(bobJoinMsg)
-    
-    await transportAdapter.onMessage(aliceJoinData, from: aliceSession)
-    await transportAdapter.onMessage(bobJoinData, from: bobSession)
+    try await simulateRouterJoin(
+        adapter: transportAdapter,
+        keeper: keeper,
+        sessionID: bobSession,
+        clientID: ClientID("bob-client"),
+        playerID: PlayerID(bobSession.rawValue)
+    )
     
     // Wait a bit for join to complete
     try await Task.sleep(for: .milliseconds(100))
@@ -165,19 +159,30 @@ func testMultiplePlayersLeave() async throws {
     await transportAdapter.onConnect(sessionID: bobSession, clientID: ClientID("bob-client"))
     await transportAdapter.onConnect(sessionID: charlieSession, clientID: ClientID("charlie-client"))
     
-    let encoder = JSONEncoder()
-    let joinMsg = TransportMessage.join(
-        requestID: "req-\(UUID().uuidString)",
-        landID: "leave-sync-test",
-        playerID: nil,
-        deviceID: nil,
-        metadata: nil
+    // Simulate routers handling joins
+    try await simulateRouterJoin(
+        adapter: transportAdapter,
+        keeper: keeper,
+        sessionID: aliceSession,
+        clientID: ClientID("alice-client"),
+        playerID: PlayerID(aliceSession.rawValue)
     )
-    let joinData = try encoder.encode(joinMsg)
     
-    await transportAdapter.onMessage(joinData, from: aliceSession)
-    await transportAdapter.onMessage(joinData, from: bobSession)
-    await transportAdapter.onMessage(joinData, from: charlieSession)
+    try await simulateRouterJoin(
+        adapter: transportAdapter,
+        keeper: keeper,
+        sessionID: bobSession,
+        clientID: ClientID("bob-client"),
+        playerID: PlayerID(bobSession.rawValue)
+    )
+    
+    try await simulateRouterJoin(
+        adapter: transportAdapter,
+        keeper: keeper,
+        sessionID: charlieSession,
+        clientID: ClientID("charlie-client"),
+        playerID: PlayerID(charlieSession.rawValue)
+    )
     
     try await Task.sleep(for: .milliseconds(100))
     

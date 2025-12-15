@@ -56,7 +56,8 @@ func testJWTPayloadWithCustomFields() async throws {
     let adapter = TransportAdapter<JWTPayloadTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "jwt-test"
+        landID: "jwt-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -136,7 +137,8 @@ func testJoinMessageMetadataOverridesJWTPayload() async throws {
     let adapter = TransportAdapter<JWTPayloadTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "jwt-test"
+        landID: "jwt-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -211,7 +213,8 @@ func testJWTPayloadPlayerIDUsedWhenNotProvided() async throws {
     let adapter = TransportAdapter<JWTPayloadTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "jwt-test"
+        landID: "jwt-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -277,7 +280,8 @@ func testJoinMessagePlayerIDOverridesJWTPayload() async throws {
     let adapter = TransportAdapter<JWTPayloadTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "jwt-test"
+        landID: "jwt-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -347,7 +351,8 @@ func testJWTPayloadClearedOnDisconnectFallsBackToGuest() async throws {
     let adapter = TransportAdapter<JWTPayloadTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "jwt-test"
+        landID: "jwt-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)

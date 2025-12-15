@@ -39,7 +39,10 @@ export interface TransportEventPayload {
 
 export interface TransportJoinPayload {
   requestID: string
-  landID: string
+  /// The type of Land to join (required)
+  landType: string
+  /// The specific instance to join (optional, if nil a new room will be created)
+  landInstanceId?: string | null
   playerID?: string
   deviceID?: string
   metadata?: Record<string, any>
@@ -48,6 +51,12 @@ export interface TransportJoinPayload {
 export interface TransportJoinResponsePayload {
   requestID: string
   success: boolean
+  /// The type of Land joined
+  landType?: string | null
+  /// The instance ID of the Land joined
+  landInstanceId?: string | null
+  /// The complete landID (landType:instanceId)
+  landID?: string | null
   playerID?: string
   reason?: string
 }

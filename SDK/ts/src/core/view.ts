@@ -63,7 +63,7 @@ export class StateTreeView {
   private isJoined = false
   private actionCallbacks = new Map<string, (response: any) => void>()
   private actionRejectCallbacks = new Map<string, (error: Error) => void>()
-  private joinCallbacks = new Map<string, (result: { success: boolean; playerID?: string; reason?: string }) => void>()
+  private joinCallbacks = new Map<string, (result: { success: boolean; playerID?: string; reason?: string; landType?: string; landInstanceId?: string; landID?: string }) => void>()
   private eventHandlers = new Map<string, Set<(payload: any) => void>>()
   private logger: Logger
   private playerID?: string
@@ -96,15 +96,25 @@ export class StateTreeView {
 
   /**
    * Join the land
+   * 
+   * Parses landID as "landType:instanceId" or treats entire string as landType if no colon.
+   * For single-room mode: landID is the landType, landInstanceId is null
+   * For multi-room mode: landID format is "landType:instanceId"
    */
-  async join(): Promise<{ success: boolean; playerID?: string; reason?: string }> {
+  async join(): Promise<{ success: boolean; playerID?: string; reason?: string; landType?: string; landInstanceId?: string; landID?: string }> {
     if (!this.runtime.connected) {
       throw new Error('Runtime not connected')
     }
 
     return new Promise((resolve) => {
       const requestID = generateRequestID('join')
-      const message = createJoinMessage(requestID, this.landID, {
+      
+      // Parse landID as "landType:instanceId" or treat as landType
+      const colonIndex = this.landID.indexOf(':')
+      const landType = colonIndex > 0 ? this.landID.substring(0, colonIndex) : this.landID
+      const landInstanceId = colonIndex > 0 ? this.landID.substring(colonIndex + 1) : null
+      
+      const message = createJoinMessage(requestID, landType, landInstanceId, {
         playerID: this.playerID,
         deviceID: this.deviceID,
         metadata: this.metadata
@@ -113,7 +123,7 @@ export class StateTreeView {
       this.joinCallbacks.set(requestID, resolve)
       try {
         this.runtime.sendRawMessage(message)
-        this.logger.info(`Join request sent: landID=${this.landID}`)
+        this.logger.info(`Join request sent: landType=${landType}, landInstanceId=${landInstanceId ?? 'null'}`)
       } catch (error) {
         this.logger.error(`Failed to send join message: ${error}`)
         if (this.onErrorCallback) {
@@ -242,7 +252,14 @@ export class StateTreeView {
         const success = payload.success === true
         this.isJoined = success
 
-        const result = { success, playerID: payload.playerID, reason: payload.reason }
+        const result = { 
+          success, 
+          playerID: payload.playerID, 
+          reason: payload.reason,
+          landType: payload.landType,
+          landInstanceId: payload.landInstanceId,
+          landID: payload.landID
+        }
 
         if (payload.requestID) {
           const callback = this.joinCallbacks.get(payload.requestID)

@@ -39,7 +39,8 @@ func testConnectedToJoinedTransition() async throws {
     let adapter = TransportAdapter<StateTransitionTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "state-transition-test"
+        landID: "state-transition-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -106,7 +107,8 @@ func testJoinedToDisconnectedTransition() async throws {
     let adapter = TransportAdapter<StateTransitionTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "state-transition-test"
+        landID: "state-transition-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -169,7 +171,8 @@ func testConnectedToDisconnectedWithoutJoin() async throws {
     let adapter = TransportAdapter<StateTransitionTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "state-transition-test"
+        landID: "state-transition-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -226,7 +229,8 @@ func testMultipleStateTransitions() async throws {
     let adapter = TransportAdapter<StateTransitionTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "state-transition-test"
+        landID: "state-transition-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)

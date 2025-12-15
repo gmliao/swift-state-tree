@@ -37,7 +37,8 @@ func testLobbyContainerInitialization() async throws {
     let transportAdapter = TransportAdapter<LobbyTestState>(
         keeper: keeper,
         transport: transport,
-        landID: landID.stringValue
+        landID: landID.stringValue,
+        enableLegacyJoin: true
     )
     await keeper.setTransport(transportAdapter)
     await transport.setDelegate(transportAdapter)
@@ -106,7 +107,8 @@ func testLobbyContainerRequestMatchmaking() async throws {
     let transportAdapter = TransportAdapter<LobbyTestState>(
         keeper: keeper,
         transport: transport,
-        landID: landID.stringValue
+        landID: landID.stringValue,
+        enableLegacyJoin: true
     )
     await keeper.setTransport(transportAdapter)
     await transport.setDelegate(transportAdapter)
@@ -199,7 +201,8 @@ func testLobbyContainerCreateRoom() async throws {
     let transportAdapter = TransportAdapter<LobbyTestState>(
         keeper: keeper,
         transport: transport,
-        landID: landID.stringValue
+        landID: landID.stringValue,
+        enableLegacyJoin: true
     )
     await keeper.setTransport(transportAdapter)
     await transport.setDelegate(transportAdapter)
@@ -288,7 +291,8 @@ func testLobbyContainerJoinRoom() async throws {
     let transportAdapter = TransportAdapter<LobbyTestState>(
         keeper: keeper,
         transport: transport,
-        landID: landID.stringValue
+        landID: landID.stringValue,
+        enableLegacyJoin: true
     )
     await keeper.setTransport(transportAdapter)
     await transport.setDelegate(transportAdapter)
@@ -376,7 +380,8 @@ func testLobbyContainerJoinNonExistentRoom() async throws {
     let transportAdapter = TransportAdapter<LobbyTestState>(
         keeper: keeper,
         transport: transport,
-        landID: landID.stringValue
+        landID: landID.stringValue,
+        enableLegacyJoin: true
     )
     await keeper.setTransport(transportAdapter)
     await transport.setDelegate(transportAdapter)
@@ -457,7 +462,8 @@ func testLobbyContainerUpdateRoomList() async throws {
     let transportAdapter = TransportAdapter<LobbyTestState>(
         keeper: keeper,
         transport: transport,
-        landID: landID.stringValue
+        landID: landID.stringValue,
+        enableLegacyJoin: true
     )
     await keeper.setTransport(transportAdapter)
     await transport.setDelegate(transportAdapter)

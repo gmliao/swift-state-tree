@@ -42,7 +42,8 @@ func testConnectedSessionsComputedProperty() async throws {
     let adapter = TransportAdapter<StateManagementTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "state-management-test"
+        landID: "state-management-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -90,7 +91,8 @@ func testJoinedSessionsComputedProperty() async throws {
     let adapter = TransportAdapter<StateManagementTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "state-management-test"
+        landID: "state-management-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -157,7 +159,8 @@ func testSessionToPlayerSyncWithKeeperPlayers() async throws {
     let adapter = TransportAdapter<StateManagementTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "state-management-test"
+        landID: "state-management-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -211,7 +214,8 @@ func testStateQueryMethods() async throws {
     let adapter = TransportAdapter<StateManagementTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "state-management-test"
+        landID: "state-management-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)

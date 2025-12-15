@@ -71,7 +71,8 @@ func testMultipleSessionsJoinInRapidSuccession() async throws {
     let adapter = TransportAdapter<ConcurrencyTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "concurrency-test"
+        landID: "concurrency-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -150,7 +151,8 @@ func testDuplicatePlayerIDKicksOldSession() async throws {
     let adapter = TransportAdapter<ConcurrencyTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "concurrency-test"
+        landID: "concurrency-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -254,7 +256,8 @@ func testRapidConnectDisconnect() async throws {
     let adapter = TransportAdapter<ConcurrencyTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "concurrency-test"
+        landID: "concurrency-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -333,7 +336,8 @@ func testJoinDuringLeave() async throws {
     let adapter = TransportAdapter<ConcurrencyTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "concurrency-test"
+        landID: "concurrency-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -426,7 +430,8 @@ func testRapidLeaveAndJoin() async throws {
     let adapter = TransportAdapter<ConcurrencyTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "concurrency-test"
+        landID: "concurrency-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)

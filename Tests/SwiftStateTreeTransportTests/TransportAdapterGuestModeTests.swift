@@ -53,7 +53,8 @@ func testGuestSessionCreation() async throws {
     let adapter = TransportAdapter<GuestModeTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "guest-test"
+        landID: "guest-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -132,7 +133,8 @@ func testCustomGuestSession() async throws {
                     "custom": "true"
                 ]
             )
-        }
+        },
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -195,7 +197,8 @@ func testJWTPayloadOverridesGuestSession() async throws {
     let adapter = TransportAdapter<GuestModeTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "guest-test"
+        landID: "guest-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -265,7 +268,8 @@ func testJoinMessageOverridesAll() async throws {
     let adapter = TransportAdapter<GuestModeTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "guest-test"
+        landID: "guest-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
@@ -329,7 +333,8 @@ func testMultipleGuestSessions() async throws {
     let adapter = TransportAdapter<GuestModeTestState>(
         keeper: keeper,
         transport: transport,
-        landID: "guest-test"
+        landID: "guest-test",
+        enableLegacyJoin: true
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)

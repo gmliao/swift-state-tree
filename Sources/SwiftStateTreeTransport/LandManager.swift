@@ -12,6 +12,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private var lands: [LandID: LandContainer<State>] = [:]
     private let landFactory: (LandID) -> LandDefinition<State>
     private let initialStateFactory: (LandID) -> State
+    private let sharedTransport: WebSocketTransport?
     private let createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)?
     private let logger: Logger
     
@@ -28,11 +29,13 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     public init(
         landFactory: @escaping @Sendable (LandID) -> LandDefinition<State>,
         initialStateFactory: @escaping @Sendable (LandID) -> State,
+        transport: WebSocketTransport? = nil,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         logger: Logger? = nil
     ) {
         self.landFactory = landFactory
         self.initialStateFactory = initialStateFactory
+        self.sharedTransport = transport
         self.createGuestSession = createGuestSession
         self.logger = logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.runtime",
@@ -61,7 +64,9 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         let landDefinition = definition
         let initial = initialState
         
-        let transport = WebSocketTransport(logger: logger)
+
+        
+        let transport = self.sharedTransport ?? WebSocketTransport(logger: logger)
         let keeper = LandKeeper<State>(
             definition: landDefinition,
             initialState: initial,
@@ -77,7 +82,12 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         )
         
         await keeper.setTransport(transportAdapter)
-        await transport.setDelegate(transportAdapter)
+        
+        // Only set delegate if we created the transport (own it)
+        // If sharedTransport is provided, LandRouter handles delegation
+        if self.sharedTransport == nil {
+            await transport.setDelegate(transportAdapter)
+        }
         
         let container = LandContainer<State>(
             landID: landID,
