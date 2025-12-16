@@ -86,6 +86,12 @@ public struct ColoredLogHandler: LogHandler {
         function: String,
         line: UInt
     ) {
+        // Early return if log level is below threshold
+        // This provides an additional safety check (Swift Logging framework also filters at call site)
+        guard self.logLevel <= level else {
+            return
+        }
+        
         let timestamp = dateFormatter.string(from: Date())
         let levelColor = useColors ? ANSIColor.forLevel(level) : nil
         let reset = useColors ? ANSIColor.reset.rawValue : ""

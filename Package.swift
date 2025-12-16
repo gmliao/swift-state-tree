@@ -166,6 +166,7 @@ let package = Package(
             name: "SwiftStateTreeBenchmarks",
             dependencies: [
                 "SwiftStateTree",
+                "SwiftStateTreeTransport",
                 "SwiftStateTreeMacros"
             ],
             path: "Sources/SwiftStateTreeBenchmarks",

@@ -4,11 +4,19 @@ import Foundation
 import SwiftStateTree
 
 /// Single-threaded benchmark runner
-/// 
+///
 /// **Execution Model**: Sequential execution on main thread
 /// - All iterations run sequentially
 /// - No concurrent operations
 /// - Results are deterministic and reproducible
+///
+/// NOTE: This benchmark tests snapshot generation performance in isolation.
+/// It uses `syncEngine.snapshot()` which generates a full snapshot (broadcast + per-player).
+/// In actual TransportAdapter.syncNow(), snapshots are extracted separately:
+/// - `extractBroadcastSnapshot()` once (shared)
+/// - `extractPerPlayerSnapshot()` per player
+/// This benchmark provides baseline snapshot generation performance but does not
+/// reflect the complete sync workflow used in production.
 struct SingleThreadedRunner: BenchmarkRunner {
     func run(
         config: BenchmarkConfig,

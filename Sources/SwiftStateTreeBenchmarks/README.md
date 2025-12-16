@@ -13,11 +13,10 @@ Benchmark 程式碼已模組化，方便擴展新的測試：
 - **BenchmarkRunner.swift**: Benchmark runner protocol 定義
 
 ### Runner 實作
-- **SingleThreadedRunner.swift**: 單執行緒執行策略
-- **ParallelRunner.swift**: 並行執行策略
-- **MultiPlayerParallelRunner.swift**: 多玩家並行執行策略
+- **SingleThreadedRunner.swift**: 單執行緒執行策略（測試 snapshot 生成基礎性能）
 - **DiffBenchmarkRunner.swift**: Standard vs Optimized Diff 比較
 - **MirrorVsMacroComparisonRunner.swift**: Mirror vs Macro 效能比較
+- **TransportAdapterSyncBenchmarkRunner.swift**: TransportAdapter 完整 sync 流程性能測試
 
 ### 組織檔案
 - **BenchmarkSuite.swift**: Benchmark suite 執行邏輯
@@ -30,11 +29,10 @@ Benchmark 程式碼已模組化，方便擴展新的測試：
 
 Benchmark 支援多種執行模式：
 
-1. **單執行緒執行**：順序執行，確保準確的時間測量
-2. **並行執行**：使用多核心並行生成 snapshot，測試實際加速比
-3. **多玩家並行執行**：模擬真實場景，同時為多個玩家生成 snapshot
-4. **Standard vs Optimized Diff 比較**：比較標準 diff（無 dirty tracking）與優化 diff（有 dirty tracking）的效能差異
-5. **Mirror vs Macro 比較**：比較 runtime reflection 與 compile-time macro 的效能差異
+1. **單執行緒執行**：順序執行，測試 snapshot 生成的基礎性能（注意：這不是完整的 sync 流程）
+2. **Standard vs Optimized Diff 比較**：比較標準 diff（無 dirty tracking）與優化 diff（有 dirty tracking）的效能差異
+3. **Mirror vs Macro 比較**：比較 runtime reflection 與 compile-time macro 的效能差異
+4. **TransportAdapter Sync**：測試完整的 TransportAdapter.syncNow() 流程，最接近實際使用場景
 
 ## 執行方式
 
@@ -54,20 +52,17 @@ swift run -c release SwiftStateTreeBenchmarks
 # 執行單執行緒 benchmark
 swift run SwiftStateTreeBenchmarks single
 
-# 執行並行 benchmark
-swift run SwiftStateTreeBenchmarks parallel
-
-# 執行多玩家並行 benchmark
-swift run SwiftStateTreeBenchmarks multiplayer
-
 # 執行 Standard vs Optimized Diff 比較
 swift run SwiftStateTreeBenchmarks diff
 
 # 執行 Mirror vs Macro 比較
 swift run SwiftStateTreeBenchmarks mirror
 
+# 執行 TransportAdapter Sync 性能測試
+swift run SwiftStateTreeBenchmarks transport-sync
+
 # 執行多個 suite
-swift run SwiftStateTreeBenchmarks single parallel
+swift run SwiftStateTreeBenchmarks single diff mirror
 
 # 執行比較類的 benchmark
 swift run SwiftStateTreeBenchmarks diff mirror
@@ -125,11 +120,10 @@ swift run SwiftStateTreeBenchmarks single -c
 
 | Suite | 說明 |
 |-------|------|
-| `single` | 單執行緒執行 |
-| `parallel` | 並行執行 |
-| `multiplayer` | 多玩家並行執行 |
+| `single` | 單執行緒執行（snapshot 生成基礎性能） |
 | `diff` | Standard vs Optimized Diff 比較 |
 | `mirror` | Mirror vs Macro 比較 |
+| `transport-sync` | TransportAdapter 完整 sync 流程性能測試 |
 | `all` | 執行所有 suite（預設） |
 
 ## 輸出說明
@@ -217,8 +211,8 @@ Name,Players,Cards/Player,PlayerStateFields,Iterations,ExecutionMode,AvgTime(ms)
 
 ## 注意事項
 
-- **單執行緒執行**：單執行緒模式確保準確的時間測量
-- **並行執行**：並行模式測試實際的多核心加速比，可能受記憶體頻寬限制
+- **單執行緒執行**：測試 snapshot 生成的基礎性能，但不是完整的 sync 流程（實際使用中會分開提取 broadcast 和 per-player snapshot）
+- **TransportAdapter Sync**：最接近實際使用場景的 benchmark，測試完整的 sync 流程
 - **Release 模式**：建議使用 `-c release` 進行準確的效能測試（但編譯時間較長）
 - **系統負載**：建議在系統負載較低時執行，以獲得最準確的結果
 - **SwiftSyntax 編譯時間**：第一次編譯 release 模式時，SwiftSyntax 可能需要 2-5 分鐘

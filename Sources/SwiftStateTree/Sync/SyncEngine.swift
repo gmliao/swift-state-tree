@@ -407,7 +407,7 @@ public struct SyncEngine: Sendable {
     }
     
     /// Merge broadcast and per-player patches (per-player takes precedence).
-    private func mergePatches(
+    package func mergePatches(
         _ broadcast: [StatePatch],
         _ perPlayer: [StatePatch]
     ) -> [StatePatch] {
