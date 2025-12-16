@@ -10,6 +10,7 @@ public actor WebSocketTransport: Transport {
     public var delegate: TransportDelegate?
     
     private var sessions: [SessionID: WebSocketConnection] = [:]
+    private var sessionToClientID: [SessionID: ClientID] = [:]
     private var playerSessions: [PlayerID: Set<SessionID>] = [:]
     private var lastMissingSessionLogAt: [SessionID: Date] = [:]
     private var lastMissingPlayerLogAt: [PlayerID: Date] = [:]
@@ -46,6 +47,7 @@ public actor WebSocketTransport: Transport {
             try? await session.close()
         }
         sessions.removeAll()
+        sessionToClientID.removeAll()
         playerSessions.removeAll()
         logger.info("WebSocketTransport stopped")
     }
@@ -91,11 +93,14 @@ public actor WebSocketTransport: Transport {
         lastMissingSessionLogAt.removeValue(forKey: sessionID)
         // Generate short client ID (6 characters) for better identification
         let clientIDString = String(UUID().uuidString.prefix(6))
-        await delegate?.onConnect(sessionID: sessionID, clientID: ClientID(clientIDString), authInfo: authInfo)
+        let clientID = ClientID(clientIDString)
+        sessionToClientID[sessionID] = clientID
+        await delegate?.onConnect(sessionID: sessionID, clientID: clientID, authInfo: authInfo)
     }
     
     public func handleDisconnection(sessionID: SessionID) async {
         sessions.removeValue(forKey: sessionID)
+        let clientID = sessionToClientID.removeValue(forKey: sessionID) ?? ClientID("disconnected")
         // Cleanup player mapping
         for (playerID, sessionIDs) in playerSessions {
             if sessionIDs.contains(sessionID) {
@@ -105,9 +110,7 @@ public actor WebSocketTransport: Transport {
                 }
             }
         }
-        // Note: clientID is not stored, so we use a placeholder for disconnect
-        // In practice, the delegate should track clientID if needed
-        await delegate?.onDisconnect(sessionID: sessionID, clientID: ClientID("disconnected"))
+        await delegate?.onDisconnect(sessionID: sessionID, clientID: clientID)
     }
     
     public func handleIncomingMessage(sessionID: SessionID, data: Data) async {

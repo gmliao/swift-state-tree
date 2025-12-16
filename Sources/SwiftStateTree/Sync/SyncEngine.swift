@@ -614,6 +614,49 @@ public struct SyncEngine: Sendable {
             return .diff(mergedPatches)
         }
     }
+
+    /// Generate a player update using a precomputed broadcast diff.
+    ///
+    /// This is useful when broadcasting the same broadcast diff to multiple players in a single sync cycle.
+    /// It avoids re-computing (and re-applying) broadcast cache updates per player, while still computing
+    /// per-player diffs and maintaining firstSync semantics per player.
+    ///
+    /// - Parameters:
+    ///   - playerID: The player ID.
+    ///   - broadcastDiff: Precomputed broadcast patches (same for all players).
+    ///   - perPlayerSnapshot: Pre-extracted per-player snapshot for this player.
+    ///   - perPlayerMode: Snapshot mode used to extract perPlayerSnapshot (for dirty tracking).
+    ///   - onlyPaths: Optional set of paths to limit diff calculation (JSON Pointer format).
+    /// - Returns: `.firstSync([StatePatch])` on first call, `.diff([StatePatch])` with changes, or `.noChange`.
+    package mutating func generateUpdateFromBroadcastDiff(
+        for playerID: PlayerID,
+        broadcastDiff: [StatePatch],
+        perPlayerSnapshot: StateSnapshot,
+        perPlayerMode: SnapshotMode = .all,
+        onlyPaths: Set<String>? = nil
+    ) -> StateUpdate {
+        let isFirstSyncForPlayer = !hasReceivedFirstSync.contains(playerID)
+        
+        let perPlayerDiff = computePerPlayerDiffFromSnapshot(
+            for: playerID,
+            currentPerPlayer: perPlayerSnapshot,
+            onlyPaths: onlyPaths,
+            mode: perPlayerMode
+        )
+        
+        let mergedPatches = mergePatches(broadcastDiff, perPlayerDiff)
+        
+        if isFirstSyncForPlayer {
+            hasReceivedFirstSync.insert(playerID)
+            return .firstSync(mergedPatches)
+        }
+        
+        if mergedPatches.isEmpty {
+            return .noChange
+        } else {
+            return .diff(mergedPatches)
+        }
+    }
     
     /// Generate a diff update for a specific player.
     ///

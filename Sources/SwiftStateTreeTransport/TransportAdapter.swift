@@ -601,20 +601,54 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             return
         }
         
-        // Extract broadcast snapshot once and reuse for all players
         do {
-            // Extract broadcast snapshot once (shared across all players)
-            let broadcastSnapshot = try syncEngine.extractBroadcastSnapshot(from: state)
+            // Determine snapshot modes based on dirty tracking (same logic as SyncEngine.generateDiffFromSnapshots).
+            let broadcastMode: SnapshotMode
+            let perPlayerMode: SnapshotMode
             
-            // Sync state for all connected players using shared broadcast snapshot
-            // Note: syncState() doesn't throw, but transport.send() inside it might fail
-            // We handle errors inside syncState() to avoid one failure stopping all updates
+            if state.isDirty() {
+                let dirtyFields = state.getDirtyFields()
+                let syncFields = state.getSyncFields()
+                let broadcastFieldNames = Set(syncFields.filter { $0.policyType == .broadcast }.map { $0.name })
+                let perPlayerFieldNames = Set(syncFields.filter { $0.policyType != .broadcast && $0.policyType != .serverOnly }.map { $0.name })
+                
+                let broadcastFields = dirtyFields.intersection(broadcastFieldNames)
+                let perPlayerFields = dirtyFields.intersection(perPlayerFieldNames)
+                
+                // TODO: Optimization (large player counts):
+                // - If `perPlayerFields` is empty, we can skip extracting per-player snapshots and computing per-player diffs
+                //   for all players, and send only the shared `broadcastDiff` (while keeping per-player caches intact).
+                // - If `broadcastFields` is empty, we could avoid comparing the full broadcast snapshot by tracking
+                //   whether any broadcast fields are dirty (already available here) and short-circuit to `broadcastDiff = []`.
+                // - For per-player changes, the current model still checks each player. To avoid O(players) work when
+                //   a per-player mutation affects only a subset, we need higher-level information (e.g. affected PlayerIDs)
+                //   or more granular dirty tracking (e.g. per-player dictionary keys).
+                broadcastMode = broadcastFields.isEmpty ? .all : .dirtyTracking(broadcastFields)
+                perPlayerMode = perPlayerFields.isEmpty ? .all : .dirtyTracking(perPlayerFields)
+            } else {
+                broadcastMode = .all
+                perPlayerMode = .all
+            }
+            
+            // Extract broadcast snapshot once (shared across all players).
+            let broadcastSnapshot = try syncEngine.extractBroadcastSnapshot(from: state, mode: broadcastMode)
+            
+            // Compute broadcast diff ONCE, then reuse for all players.
+            // This avoids updating the broadcast cache per player, which would cause only the first player
+            // to receive broadcast patches.
+            let broadcastDiff = syncEngine.computeBroadcastDiffFromSnapshot(
+                currentBroadcast: broadcastSnapshot,
+                onlyPaths: nil,
+                mode: broadcastMode
+            )
+            
             for (sessionID, playerID) in sessionToPlayer {
                 await syncState(
                     for: playerID,
                     sessionID: sessionID,
                     state: state,
-                    broadcastSnapshot: broadcastSnapshot
+                    broadcastDiff: broadcastDiff,
+                    perPlayerMode: perPlayerMode
                 )
             }
             
@@ -757,19 +791,20 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         for playerID: PlayerID,
         sessionID: SessionID,
         state: State,
-        broadcastSnapshot: StateSnapshot
+        broadcastDiff: [StatePatch],
+        perPlayerMode: SnapshotMode
     ) async {
         do {
             // Extract per-player snapshot (specific to this player)
-            let perPlayerSnapshot = try syncEngine.extractPerPlayerSnapshot(for: playerID, from: state)
+            let perPlayerSnapshot = try syncEngine.extractPerPlayerSnapshot(for: playerID, from: state, mode: perPlayerMode)
             
-            // Use generateDiffFromSnapshots to compute diff/patch with pre-extracted snapshots
-            // This reuses the broadcast snapshot and only extracts per-player snapshot per player
-            let update = try syncEngine.generateDiffFromSnapshots(
+            // Broadcast diff is precomputed once per sync cycle and reused for all players.
+            let update = syncEngine.generateUpdateFromBroadcastDiff(
                 for: playerID,
-                broadcastSnapshot: broadcastSnapshot,
+                broadcastDiff: broadcastDiff,
                 perPlayerSnapshot: perPlayerSnapshot,
-                state: state
+                perPlayerMode: perPlayerMode,
+                onlyPaths: nil
             )
             
             // Skip only if noChange - firstSync should always be sent (even if patches are empty)
@@ -858,21 +893,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             try await transport.send(snapshotData, to: .session(sessionID))
         } catch {
             logger.error("❌ Failed to sync initial state", metadata: [
-                "playerID": .string(playerID.rawValue),
-                "sessionID": .string(sessionID.rawValue),
-                "error": .string("\(error)")
-            ])
-        }
-    }
-    
-    /// Sync state for a specific player (legacy method for backward compatibility)
-    private func syncState(for playerID: PlayerID, sessionID: SessionID) async {
-        do {
-            let state = await keeper.currentState()
-            let broadcastSnapshot = try syncEngine.extractBroadcastSnapshot(from: state)
-            await syncState(for: playerID, sessionID: sessionID, state: state, broadcastSnapshot: broadcastSnapshot)
-        } catch {
-            logger.error("❌ Failed to sync state", metadata: [
                 "playerID": .string(playerID.rawValue),
                 "sessionID": .string(sessionID.rawValue),
                 "error": .string("\(error)")
