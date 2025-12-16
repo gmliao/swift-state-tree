@@ -140,6 +140,14 @@ public struct Sync<Value: Sendable>: Sendable {
     public mutating func markDirty() {
         _isDirty = true
     }
+    
+    /// Update the wrapped value without marking as dirty.
+    /// This is useful for internal operations like recursively clearing nested StateNode dirty flags.
+    /// - Parameter newValue: The new value to set
+    package mutating func updateValueWithoutMarkingDirty(_ newValue: Value) {
+        _wrappedValue = newValue
+        // Note: We intentionally do NOT set _isDirty = true here
+    }
 }
 
 /// Marks a field as server-only internal use, not requiring synchronization or validation.

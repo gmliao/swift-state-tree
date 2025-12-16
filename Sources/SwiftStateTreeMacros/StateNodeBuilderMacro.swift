@@ -443,6 +443,11 @@ public struct StateNodeBuilderMacro: MemberMacro {
     }
     
     /// Generate clearDirty() method
+    /// This method clears dirty flags for all @Sync fields, and recursively clears
+    /// dirty flags for nested StateNodeProtocol instances.
+    /// 
+    /// **Important**: This recursively clears dirty flags in nested StateNode instances
+    /// to prevent unnecessary comparisons in subsequent syncs when nested state hasn't changed.
     private static func generateClearDirtyMethod(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> FunctionDeclSyntax {
         let syncProperties = propertiesWithNodes.filter { $0.0.hasSync }
         
@@ -460,7 +465,26 @@ public struct StateNodeBuilderMacro: MemberMacro {
             let propertyName = property.name
             let storageName = "_\(propertyName)"
             
+            // First, clear the @Sync wrapper's dirty flag
             codeLines.append("\(storageName).clearDirty()")
+            
+            // Then, check if the wrapped value conforms to StateNodeProtocol and recursively clear its dirty flags
+            // This ensures nested StateNode dirty flags are also cleared, preventing unnecessary
+            // comparisons in subsequent syncs when the nested state hasn't changed.
+            // We use runtime type checking since we can't reliably detect StateNodeProtocol types at compile time.
+            // We use updateValueWithoutMarkingDirty to avoid triggering the setter and re-marking as dirty.
+            // Note: We only do this for non-primitive types to avoid unnecessary runtime checks.
+            // PERFORMANCE: Only perform recursive clearing if the wrapper itself is dirty, to avoid
+            // unnecessary runtime type checks and value copying when the field hasn't changed.
+            if let typeName = property.typeName, !isPrimitiveType(typeName) {
+                codeLines.append("// Recursively clear dirty flags for nested StateNode (if applicable)")
+                codeLines.append("// Only check if wrapper is dirty to avoid unnecessary runtime checks")
+                codeLines.append("if \(storageName).isDirty, var nestedState = \(storageName).wrappedValue as? any StateNodeProtocol {")
+                codeLines.append("    nestedState.clearDirty()")
+                codeLines.append("    // Update value without marking as dirty (using internal method)")
+                codeLines.append("    \(storageName).updateValueWithoutMarkingDirty(nestedState as! \(typeName))")
+                codeLines.append("}")
+            }
         }
         
         let body = codeLines.joined(separator: "\n")
@@ -472,6 +496,35 @@ public struct StateNodeBuilderMacro: MemberMacro {
             }
             """
         )
+    }
+    
+    /// Check if a type is a primitive type or collection type that cannot be a StateNodeProtocol
+    /// Returns true for primitive types, arrays, dictionaries, and other non-StateNode types
+    private static func isPrimitiveType(_ typeName: String) -> Bool {
+        let primitiveTypes: Set<String> = [
+            "Int", "Int8", "Int16", "Int32", "Int64",
+            "UInt", "UInt8", "UInt16", "UInt32", "UInt64",
+            "Float", "Double", "Bool", "String",
+            "Character", "Date", "UUID", "PlayerID"
+        ]
+        
+        // Remove optional markers and check base type
+        let baseType = typeName
+            .replacingOccurrences(of: "?", with: "")
+            .replacingOccurrences(of: "!", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        
+        // Check if it's a dictionary or array (these are collections, not StateNodeProtocol)
+        // Collections themselves cannot be StateNodeProtocol, but their elements/values might be
+        if baseType.contains("[") && baseType.contains("]") {
+            // For collections, we consider them as "primitive" (non-StateNode) types
+            // because the collection itself is not a StateNodeProtocol
+            // The recursive clearDirty logic should not apply to collections
+            return true
+        }
+        
+        // Check if base type is in primitive types set
+        return primitiveTypes.contains(baseType)
     }
     
     /// Generate getFieldMetadata() method

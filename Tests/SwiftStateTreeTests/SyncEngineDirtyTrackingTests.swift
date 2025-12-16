@@ -507,5 +507,136 @@ struct SyncEngineDirtyTrackingTests {
     //
     // Future optimization: Track dirty keys within Dictionary fields for even finer
     // granularity (only serialize the modified key, not even the filtered value).
+    
+    // MARK: - Multi-Round Sync Tests
+    
+    @Test("Multiple sync rounds with clearDirty() should keep all dirty flags cleared")
+    func testMultipleSyncRounds_WithClearDirty_KeepsAllFlagsCleared() throws {
+        // Arrange
+        var syncEngine = SyncEngine()
+        var state = DiffTestStateRootNode()
+        let playerID = PlayerID("alice")
+        
+        // Simulate multiple sync rounds
+        for round in 1...10 {
+            // Modify state
+            state.round = round
+            state.players[playerID] = "Alice Round \(round)"
+            
+            // Verify state is dirty
+            #expect(state.isDirty() == true, "State should be dirty after modification (round \(round))")
+            let dirtyFieldsBefore = state.getDirtyFields()
+            #expect(dirtyFieldsBefore.contains("round"), "Should contain 'round' in dirty fields (round \(round))")
+            #expect(dirtyFieldsBefore.contains("players"), "Should contain 'players' in dirty fields (round \(round))")
+            
+            // Sync
+            _ = try syncEngine.generateDiff(for: playerID, from: state)
+            
+            // Clear dirty flags (this should be called after each sync)
+            state.clearDirty()
+            
+            // Verify all dirty flags are cleared
+            #expect(state.isDirty() == false, "State should not be dirty after clearDirty() (round \(round))")
+            #expect(state.getDirtyFields().isEmpty == true, "Should have no dirty fields after clearDirty() (round \(round))")
+        }
+        
+        // Final verification: after 10 rounds, state should still be clean
+        #expect(state.isDirty() == false, "State should still be clean after 10 sync rounds")
+        #expect(state.getDirtyFields().isEmpty == true, "Should have no dirty fields after 10 sync rounds")
+    }
+    
+    @Test("Multiple sync rounds WITHOUT clearDirty() should accumulate dirty flags")
+    func testMultipleSyncRounds_WithoutClearDirty_AccumulatesDirtyFlags() throws {
+        // Arrange
+        var syncEngine = SyncEngine()
+        var state = DiffTestStateRootNode()
+        let playerID = PlayerID("alice")
+        
+        // First sync (cache)
+        state.round = 1
+        state.players[playerID] = "Alice"
+        _ = try syncEngine.generateDiff(for: playerID, from: state)
+        state.clearDirty()
+        
+        // Simulate multiple sync rounds WITHOUT calling clearDirty()
+        for round in 2...5 {
+            // Modify state
+            state.round = round
+            state.players[playerID] = "Alice Round \(round)"
+            
+            // Sync (but don't clear dirty flags)
+            _ = try syncEngine.generateDiff(for: playerID, from: state)
+            // Note: clearDirty() is NOT called here - this simulates a bug
+            
+            // Verify dirty flags accumulate
+            #expect(state.isDirty() == true, "State should remain dirty when clearDirty() is not called (round \(round))")
+            let dirtyFields = state.getDirtyFields()
+            #expect(dirtyFields.contains("round"), "Should contain 'round' in dirty fields (round \(round))")
+            #expect(dirtyFields.contains("players"), "Should contain 'players' in dirty fields (round \(round))")
+        }
+        
+        // After multiple rounds without clearDirty(), all modified fields should still be dirty
+        #expect(state.isDirty() == true, "State should still be dirty after multiple rounds without clearDirty()")
+        let finalDirtyFields = state.getDirtyFields()
+        #expect(finalDirtyFields.contains("round"), "Should contain 'round' in final dirty fields")
+        #expect(finalDirtyFields.contains("players"), "Should contain 'players' in final dirty fields")
+        
+        // Now clear dirty flags and verify they are all cleared
+        state.clearDirty()
+        #expect(state.isDirty() == false, "State should be clean after clearDirty()")
+        #expect(state.getDirtyFields().isEmpty == true, "Should have no dirty fields after clearDirty()")
+    }
+    
+    @Test("Multiple sync rounds with nested StateNode should recursively clear all dirty flags")
+    func testMultipleSyncRounds_WithNestedStateNode_RecursivelyClearsAllFlags() throws {
+        // Arrange
+        @StateNodeBuilder
+        struct NestedTestStateNode: StateNodeProtocol {
+            @Sync(.broadcast)
+            var nestedValue: Int = 0
+        }
+        
+        @StateNodeBuilder
+        struct ParentTestStateNode: StateNodeProtocol {
+            @Sync(.broadcast)
+            var parentValue: Int = 0
+            
+            @Sync(.broadcast)
+            var nested: NestedTestStateNode = NestedTestStateNode()
+        }
+        
+        var syncEngine = SyncEngine()
+        var state = ParentTestStateNode()
+        let playerID = PlayerID("alice")
+        
+        // Simulate multiple sync rounds with nested StateNode modifications
+        for round in 1...5 {
+            // Modify both parent and nested fields
+            state.parentValue = round
+            state.nested.nestedValue = round * 10
+            
+            // Verify both are dirty
+            #expect(state.isDirty() == true, "Parent should be dirty (round \(round))")
+            #expect(state.nested.isDirty() == true, "Nested should be dirty (round \(round))")
+            
+            // Sync
+            _ = try syncEngine.generateDiff(for: playerID, from: state)
+            
+            // Clear dirty flags (should recursively clear nested StateNode)
+            state.clearDirty()
+            
+            // Verify all dirty flags are cleared (including nested)
+            #expect(state.isDirty() == false, "Parent should not be dirty after clearDirty() (round \(round))")
+            #expect(state.getDirtyFields().isEmpty == true, "Parent should have no dirty fields (round \(round))")
+            #expect(state.nested.isDirty() == false, "Nested should not be dirty after clearDirty() (round \(round))")
+            #expect(state.nested.getDirtyFields().isEmpty == true, "Nested should have no dirty fields (round \(round))")
+        }
+        
+        // Final verification: after multiple rounds, all dirty flags should be cleared
+        #expect(state.isDirty() == false, "Parent should still be clean after multiple sync rounds")
+        #expect(state.nested.isDirty() == false, "Nested should still be clean after multiple sync rounds")
+        #expect(state.getDirtyFields().isEmpty == true, "Parent should have no dirty fields after multiple sync rounds")
+        #expect(state.nested.getDirtyFields().isEmpty == true, "Nested should have no dirty fields after multiple sync rounds")
+    }
 }
 

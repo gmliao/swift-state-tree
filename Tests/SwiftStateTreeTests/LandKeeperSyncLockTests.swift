@@ -257,3 +257,262 @@ func testSyncSnapshotRemainsConsistent() async throws {
     // Verify snapshot was consistent (didn't see the mutation - snapshot is immutable)
     #expect(snapshotCounter == 0, "Snapshot should still show original value (snapshots are immutable)")
 }
+
+// MARK: - Dirty Flags Clear Tests
+
+@StateNodeBuilder
+struct DirtyFlagsTestState: StateNodeProtocol {
+    @Sync(.broadcast)
+    var round: Int = 0
+    
+    @Sync(.broadcast)
+    var players: [PlayerID: String] = [:]
+    
+    @Sync(.broadcast)
+    var score: Int = 0
+    
+    public init() {}
+}
+
+@StateNodeBuilder
+struct NestedDirtyFlagsTestState: StateNodeProtocol {
+    @Sync(.broadcast)
+    var nestedValue: Int = 0
+    
+    public init() {}
+}
+
+@StateNodeBuilder
+struct ParentDirtyFlagsTestState: StateNodeProtocol {
+    @Sync(.broadcast)
+    var parentValue: Int = 0
+    
+    @Sync(.broadcast)
+    var nested: NestedDirtyFlagsTestState = NestedDirtyFlagsTestState()
+    
+    public init() {}
+}
+
+@Test("endSync() automatically clears dirty flags after sync")
+func testEndSync_ClearsDirtyFlags() async throws {
+    // Arrange
+    let definition = Land(
+        "dirty-flags-test",
+        using: DirtyFlagsTestState.self
+    ) {
+        Rules {
+            HandleAction(IncrementCounterAction.self) { (state: inout DirtyFlagsTestState, action: IncrementCounterAction, ctx: LandContext) in
+                state.round += action.amount
+                state.players[ctx.playerID] = "Player \(action.amount)"
+                state.score += action.amount * 10
+                return IncrementCounterResponse(success: true, newValue: state.round)
+            }
+        }
+    }
+    
+    let keeper = LandKeeper<DirtyFlagsTestState>(
+        definition: definition,
+        initialState: DirtyFlagsTestState()
+    )
+    
+    // Act: Modify state (marks as dirty)
+    try await keeper.handleAction(
+        IncrementCounterAction(amount: 5, modifier: "test"),
+        playerID: PlayerID("player1"),
+        clientID: ClientID("client1"),
+        sessionID: SessionID("session1")
+    )
+    
+    // Verify state is dirty before sync
+    let stateBeforeSync = await keeper.currentState()
+    #expect(stateBeforeSync.isDirty() == true, "State should be dirty after modification")
+    #expect(stateBeforeSync.getDirtyFields().contains("round"), "Should contain 'round' in dirty fields")
+    #expect(stateBeforeSync.getDirtyFields().contains("players"), "Should contain 'players' in dirty fields")
+    #expect(stateBeforeSync.getDirtyFields().contains("score"), "Should contain 'score' in dirty fields")
+    
+    // Perform sync (beginSync -> endSync)
+    guard let _ = await keeper.beginSync() else {
+        Issue.record("Failed to begin sync")
+        return
+    }
+    
+    // endSync() should automatically clear dirty flags
+    await keeper.endSync()
+    
+    // Verify dirty flags are cleared after endSync()
+    let stateAfterSync = await keeper.currentState()
+    #expect(stateAfterSync.isDirty() == false, "State should not be dirty after endSync()")
+    #expect(stateAfterSync.getDirtyFields().isEmpty == true, "Should have no dirty fields after endSync()")
+}
+
+@Test("Multiple sync rounds with endSync() should keep all dirty flags cleared")
+func testMultipleSyncRounds_EndSync_KeepsAllFlagsCleared() async throws {
+    // Arrange
+    let definition = Land(
+        "dirty-flags-multi-round-test",
+        using: DirtyFlagsTestState.self
+    ) {
+        Rules {
+            HandleAction(IncrementCounterAction.self) { (state: inout DirtyFlagsTestState, action: IncrementCounterAction, ctx: LandContext) in
+                state.round += action.amount
+                state.players[ctx.playerID] = "Player \(state.round)"
+                state.score += action.amount * 10
+                return IncrementCounterResponse(success: true, newValue: state.round)
+            }
+        }
+    }
+    
+    let keeper = LandKeeper<DirtyFlagsTestState>(
+        definition: definition,
+        initialState: DirtyFlagsTestState()
+    )
+    
+    // Act: Simulate multiple sync rounds
+    for round in 1...10 {
+        // Modify state
+        _ = try await keeper.handleAction(
+            IncrementCounterAction(amount: round, modifier: "round\(round)"),
+            playerID: PlayerID("player1"),
+            clientID: ClientID("client1"),
+            sessionID: SessionID("session1")
+        )
+        
+        // Verify state is dirty before sync
+        let stateBeforeSync = await keeper.currentState()
+        #expect(stateBeforeSync.isDirty() == true, "State should be dirty after modification (round \(round))")
+        
+        // Perform sync (beginSync -> endSync)
+        guard let _ = await keeper.beginSync() else {
+            Issue.record("Failed to begin sync (round \(round))")
+            return
+        }
+        
+        // endSync() should automatically clear dirty flags
+        await keeper.endSync()
+        
+        // Verify dirty flags are cleared after endSync()
+        let stateAfterSync = await keeper.currentState()
+        #expect(stateAfterSync.isDirty() == false, "State should not be dirty after endSync() (round \(round))")
+        #expect(stateAfterSync.getDirtyFields().isEmpty == true, "Should have no dirty fields after endSync() (round \(round))")
+    }
+    
+    // Final verification: after 10 rounds, state should still be clean
+    let finalState = await keeper.currentState()
+    #expect(finalState.isDirty() == false, "State should still be clean after 10 sync rounds")
+    #expect(finalState.getDirtyFields().isEmpty == true, "Should have no dirty fields after 10 sync rounds")
+}
+
+@Test("endSync() recursively clears nested StateNode dirty flags")
+func testEndSync_RecursivelyClearsNestedStateNode() async throws {
+    // Arrange
+    let definition = Land(
+        "nested-dirty-flags-test",
+        using: ParentDirtyFlagsTestState.self
+    ) {
+        Rules {
+            HandleAction(IncrementCounterAction.self) { (state: inout ParentDirtyFlagsTestState, action: IncrementCounterAction, ctx: LandContext) in
+                state.parentValue += action.amount
+                state.nested.nestedValue += action.amount * 10
+                return IncrementCounterResponse(success: true, newValue: state.parentValue)
+            }
+        }
+    }
+    
+    let keeper = LandKeeper<ParentDirtyFlagsTestState>(
+        definition: definition,
+        initialState: ParentDirtyFlagsTestState()
+    )
+    
+    // Act: Modify both parent and nested fields
+    try await keeper.handleAction(
+        IncrementCounterAction(amount: 5, modifier: "test"),
+        playerID: PlayerID("player1"),
+        clientID: ClientID("client1"),
+        sessionID: SessionID("session1")
+    )
+    
+    // Verify both are dirty before sync
+    let stateBeforeSync = await keeper.currentState()
+    #expect(stateBeforeSync.isDirty() == true, "Parent should be dirty")
+    #expect(stateBeforeSync.nested.isDirty() == true, "Nested should be dirty")
+    #expect(stateBeforeSync.getDirtyFields().contains("parentValue"), "Parent should contain 'parentValue'")
+    #expect(stateBeforeSync.getDirtyFields().contains("nested"), "Parent should contain 'nested'")
+    #expect(stateBeforeSync.nested.getDirtyFields().contains("nestedValue"), "Nested should contain 'nestedValue'")
+    
+    // Perform sync (beginSync -> endSync)
+    guard let _ = await keeper.beginSync() else {
+        Issue.record("Failed to begin sync")
+        return
+    }
+    
+    // endSync() should automatically clear dirty flags (including nested)
+    await keeper.endSync()
+    
+    // Verify all dirty flags are cleared (including nested)
+    let stateAfterSync = await keeper.currentState()
+    #expect(stateAfterSync.isDirty() == false, "Parent should not be dirty after endSync()")
+    #expect(stateAfterSync.getDirtyFields().isEmpty == true, "Parent should have no dirty fields after endSync()")
+    #expect(stateAfterSync.nested.isDirty() == false, "Nested should not be dirty after endSync()")
+    #expect(stateAfterSync.nested.getDirtyFields().isEmpty == true, "Nested should have no dirty fields after endSync()")
+}
+
+@Test("Multiple sync rounds with nested StateNode should recursively clear all dirty flags")
+func testMultipleSyncRounds_WithNestedStateNode_RecursivelyClearsAllFlags() async throws {
+    // Arrange
+    let definition = Land(
+        "nested-dirty-flags-multi-round-test",
+        using: ParentDirtyFlagsTestState.self
+    ) {
+        Rules {
+            HandleAction(IncrementCounterAction.self) { (state: inout ParentDirtyFlagsTestState, action: IncrementCounterAction, ctx: LandContext) in
+                state.parentValue += action.amount
+                state.nested.nestedValue += action.amount * 10
+                return IncrementCounterResponse(success: true, newValue: state.parentValue)
+            }
+        }
+    }
+    
+    let keeper = LandKeeper<ParentDirtyFlagsTestState>(
+        definition: definition,
+        initialState: ParentDirtyFlagsTestState()
+    )
+    
+    // Act: Simulate multiple sync rounds with nested StateNode modifications
+    for round in 1...5 {
+        // Modify both parent and nested fields
+        _ = try await keeper.handleAction(
+            IncrementCounterAction(amount: round, modifier: "round\(round)"),
+            playerID: PlayerID("player1"),
+            clientID: ClientID("client1"),
+            sessionID: SessionID("session1")
+        )
+        
+        // Verify both are dirty before sync
+        let stateBeforeSync = await keeper.currentState()
+        #expect(stateBeforeSync.isDirty() == true, "Parent should be dirty (round \(round))")
+        #expect(stateBeforeSync.nested.isDirty() == true, "Nested should be dirty (round \(round))")
+        
+        // Perform sync (beginSync -> endSync)
+        guard let _ = await keeper.beginSync() else {
+            Issue.record("Failed to begin sync (round \(round))")
+            return
+        }
+        
+        // endSync() should automatically clear dirty flags (including nested)
+        await keeper.endSync()
+        
+        // Verify all dirty flags are cleared (including nested)
+        let stateAfterSync = await keeper.currentState()
+        #expect(stateAfterSync.isDirty() == false, "Parent should not be dirty after endSync() (round \(round))")
+        #expect(stateAfterSync.getDirtyFields().isEmpty == true, "Parent should have no dirty fields (round \(round))")
+        #expect(stateAfterSync.nested.isDirty() == false, "Nested should not be dirty after endSync() (round \(round))")
+        #expect(stateAfterSync.nested.getDirtyFields().isEmpty == true, "Nested should have no dirty fields (round \(round))")
+    }
+    
+    // Final verification: after multiple rounds, all dirty flags should be cleared
+    let finalState = await keeper.currentState()
+    #expect(finalState.isDirty() == false, "Parent should still be clean after multiple sync rounds")
+    #expect(finalState.nested.isDirty() == false, "Nested should still be clean after multiple sync rounds")
+    #expect(finalState.getDirtyFields().isEmpty == true, "Parent should have no dirty fields after multiple sync rounds")
+    #expect(finalState.nested.getDirtyFields().isEmpty == true, "Nested should have no dirty fields after multiple sync rounds")
+}
