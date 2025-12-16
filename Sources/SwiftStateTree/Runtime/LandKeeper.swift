@@ -180,11 +180,21 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return state  // Direct snapshot - no blocking
     }
     
-    /// End a sync operation, releasing the sync flag.
+    /// End a sync operation, releasing the sync flag and clearing dirty flags.
     ///
     /// This must be called after `beginSync()` to allow new sync requests.
+    /// Automatically clears all dirty flags after sync completes to prevent accumulation
+    /// and maintain dirty tracking optimization effectiveness.
+    ///
+    /// **Performance Note**: `clearDirty()` is optimized to only perform recursive clearing
+    /// for nested StateNodes when the wrapper itself is dirty, minimizing runtime type checks
+    /// and value copying overhead. For primitive and collection types, clearing is O(1).
     public func endSync() {
         isSyncing = false
+        // Clear dirty flags after sync completes to prevent accumulation
+        // This ensures dirty tracking optimization remains effective over time
+        // PERFORMANCE: clearDirty() is optimized to avoid unnecessary work for unchanged fields
+        state.clearDirty()
     }
     
     /// Returns the current number of players in the land.

@@ -1154,6 +1154,8 @@ func testDirtyTracking_WithNestedStateNode() {
     // Clear
     state.clearDirty()
     #expect(state.isDirty() == false, "Should not be dirty after clear")
+    // Verify that nested StateNode's dirty flag is also cleared (recursive clear)
+    #expect(state.nested.isDirty() == false, "Nested StateNode should also be clean after parent clearDirty()")
     
     // Note: Modifying nested StateNode's fields does NOT automatically mark parent as dirty
     // Each StateNode tracks its own dirty state independently
@@ -1167,4 +1169,47 @@ func testDirtyTracking_WithNestedStateNode() {
     // The nested StateNode also has its own dirty tracking
     #expect(state.nested.isDirty() == true, "Nested StateNode should also be dirty")
     #expect(state.nested.getDirtyFields().contains("nestedValue"), "Nested should contain 'nestedValue'")
+}
+
+@Test("StateNode clearDirty() recursively clears nested StateNode dirty flags to prevent unnecessary syncs")
+func testClearDirty_RecursivelyClearsNestedStateNode() {
+    // Arrange
+    @StateNodeBuilder
+    struct NestedTestStateNode: StateNodeProtocol {
+        @Sync(.broadcast)
+        var nestedValue: Int = 0
+    }
+    
+    @StateNodeBuilder
+    struct ParentTestStateNode: StateNodeProtocol {
+        @Sync(.broadcast)
+        var parentValue: Int = 0
+        
+        @Sync(.broadcast)
+        var nested: NestedTestStateNode = NestedTestStateNode()
+    }
+    
+    var state = ParentTestStateNode()
+    
+    // Act: Modify both parent and nested fields
+    state.parentValue = 10
+    state.nested.nestedValue = 20
+    
+    // Assert: Both should be dirty
+    #expect(state.isDirty() == true, "Parent should be dirty")
+    #expect(state.nested.isDirty() == true, "Nested should be dirty")
+    #expect(state.getDirtyFields().contains("parentValue"), "Parent should contain 'parentValue'")
+    #expect(state.getDirtyFields().contains("nested"), "Parent should contain 'nested'")
+    #expect(state.nested.getDirtyFields().contains("nestedValue"), "Nested should contain 'nestedValue'")
+    
+    // Clear parent's dirty flags - this should also recursively clear nested StateNode's dirty flags
+    state.clearDirty()
+    
+    // Assert: Both parent and nested should be clean after clearDirty()
+    // This verifies that clearDirty() recursively clears nested StateNode's internal dirty flags,
+    // preventing unnecessary comparisons in subsequent syncs when nested state hasn't changed.
+    #expect(state.isDirty() == false, "Parent should not be dirty after clearDirty()")
+    #expect(state.getDirtyFields().isEmpty == true, "Parent should have no dirty fields after clearDirty()")
+    #expect(state.nested.isDirty() == false, "Nested StateNode should also be clean (clearDirty recurses)")
+    #expect(state.nested.getDirtyFields().isEmpty == true, "Nested should have no dirty fields after clearDirty()")
 }
