@@ -579,6 +579,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
     
     /// Trigger immediate state synchronization
+    ///
+    /// NOTE: Parallel sync optimization was tested but did not show performance improvements.
+    /// Benchmark results showed that TaskGroup overhead and actor isolation costs exceeded
+    /// the benefits of parallel diff computation, even with 50+ players. The serial version
+    /// remains simpler and performs equally well or better in practice.
+    ///
+    /// Future optimization opportunities:
+    /// - Batch per-player snapshot extraction for multiple players
+    /// - Cache per-player snapshots if state hasn't changed
+    /// - Consider incremental sync for large state trees
     public func syncNow() async {
         // Early return if no players connected (no one to sync to)
         // This avoids unnecessary snapshot extraction when no players are online
@@ -784,9 +794,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///
     /// TODO: Optimization opportunities:
     /// - Batch per-player snapshot extraction for multiple players
-    /// - Parallelize per-player diff computation (requires careful cache management)
     /// - Cache per-player snapshots if state hasn't changed
     /// - Consider incremental sync for large state trees
+    ///
+    /// NOTE: Parallel per-player diff computation was tested but did not show performance improvements.
+    /// TaskGroup overhead and actor isolation costs exceeded the benefits, even with 50+ players.
     private func syncState(
         for playerID: PlayerID,
         sessionID: SessionID,

@@ -67,12 +67,11 @@ struct CommandLineParser {
         Usage: swift run SwiftStateTreeBenchmarks [suite...]
         
         Available benchmark suites:
-          single      - Single-threaded execution
-          parallel    - Parallel execution
-          multiplayer - Multi-player parallel execution
-          diff        - Standard vs Optimized diff comparison
-          mirror      - Mirror vs Macro comparison
-          all         - Run all suites (default)
+          single         - Single-threaded execution
+          diff           - Standard vs Optimized diff comparison
+          mirror         - Mirror vs Macro comparison
+          transport-sync - TransportAdapter Sync Performance
+          all            - Run all suites (default)
         
         Examples:
           swift run SwiftStateTreeBenchmarks

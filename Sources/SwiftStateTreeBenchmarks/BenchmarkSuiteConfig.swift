@@ -6,19 +6,17 @@ import SwiftStateTree
 /// Available benchmark suite types
 enum BenchmarkSuiteType: String, CaseIterable {
     case singleThreaded = "single"
-    case parallel = "parallel"
-    case multiPlayer = "multiplayer"
     case diff = "diff"
     case mirrorVsMacro = "mirror"
+    case transportAdapterSync = "transport-sync"
     case all = "all"
     
     var displayName: String {
         switch self {
         case .singleThreaded: return "Single-threaded Execution"
-        case .parallel: return "Parallel Execution"
-        case .multiPlayer: return "Multi-player Parallel Execution"
         case .diff: return "Standard vs Optimized Diff Comparison"
         case .mirrorVsMacro: return "Mirror vs Macro Performance Comparison"
+        case .transportAdapterSync: return "TransportAdapter Sync Performance"
         case .all: return "All Suites"
         }
     }
@@ -26,10 +24,9 @@ enum BenchmarkSuiteType: String, CaseIterable {
     var description: String {
         switch self {
         case .singleThreaded: return "Sequential execution on main thread"
-        case .parallel: return "Concurrent execution across multiple cores"
-        case .multiPlayer: return "Generate snapshots for multiple players simultaneously"
         case .diff: return "Compare standard diff vs optimized diff (with dirty tracking) performance"
         case .mirrorVsMacro: return "Compare Mirror-based vs Macro-generated code"
+        case .transportAdapterSync: return "TransportAdapter sync performance benchmark"
         case .all: return "Run all benchmark suites"
         }
     }
@@ -54,21 +51,6 @@ struct BenchmarkSuites {
                 configurations: BenchmarkConfigurations.standard
             ),
             BenchmarkSuiteConfig(
-                type: .parallel,
-                name: "Parallel Execution",
-                runner: ParallelRunner(),
-                configurations: BenchmarkConfigurations.standard
-            ),
-            BenchmarkSuiteConfig(
-                type: .multiPlayer,
-                name: "Multi-player Parallel Execution",
-                runner: MultiPlayerParallelRunner(playerCount: 10),
-                configurations: [
-                    BenchmarkConfigurations.standard[2],  // Medium State
-                    BenchmarkConfigurations.standard[3]    // Large State
-                ]
-            ),
-            BenchmarkSuiteConfig(
                 type: .diff,
                 name: "Standard vs Optimized Diff Comparison",
                 runner: DiffBenchmarkRunner(),
@@ -83,6 +65,15 @@ struct BenchmarkSuites {
                 name: "Mirror vs Macro Performance Comparison",
                 runner: MirrorVsMacroComparisonRunner(iterations: 1000),
                 configurations: BenchmarkConfigurations.standard
+            ),
+            BenchmarkSuiteConfig(
+                type: .transportAdapterSync,
+                name: "TransportAdapter Serial vs Parallel Sync",
+                runner: TransportAdapterSyncBenchmarkRunner(playerCounts: [10, 50, 100, 200]),
+                configurations: [
+                    BenchmarkConfigurations.standard[1],  // Small State
+                    BenchmarkConfigurations.standard[2]   // Medium State
+                ]
             )
         ]
     }
