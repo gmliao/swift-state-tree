@@ -37,6 +37,10 @@ struct LandRouterTests {
                         OnJoin { (state: inout RouterTestState, ctx: LandContext) in
                             state.players[ctx.playerID] = "Joined"
                         }
+                        
+                        OnLeave { (state: inout RouterTestState, ctx: LandContext) in
+                            state.players.removeValue(forKey: ctx.playerID)
+                        }
                     }
                 }
              }
@@ -236,5 +240,118 @@ struct LandRouterTests {
         let state = await keeper.currentState()
         let playerID = PlayerID("player-1") // The logic uses provided ID or falls back. We provided it.
         #expect(state.players[playerID] == "Joined")
+    }
+    
+    @Test("Disconnect cleans up session state in LandRouter")
+    func testDisconnectCleansUpSessionState() async throws {
+        let (_, router, _) = try await setupRouter()
+        
+        let sessionID = SessionID("sess-1")
+        let clientID = ClientID("cli-1")
+        
+        // 1. Connect
+        await router.onConnect(sessionID: sessionID, clientID: clientID)
+        
+        // Assert: Should be connected
+        let connectedBefore = await router.isConnected(sessionID: sessionID)
+        #expect(connectedBefore, "Session should be connected")
+        
+        // 2. Disconnect
+        await router.onDisconnect(sessionID: sessionID, clientID: clientID)
+        
+        // Assert: Should not be connected
+        let connectedAfter = await router.isConnected(sessionID: sessionID)
+        #expect(!connectedAfter, "Session should not be connected after disconnect")
+        
+        // Assert: Should not be bound
+        let boundAfter = await router.isBound(sessionID: sessionID)
+        #expect(!boundAfter, "Session should not be bound after disconnect")
+    }
+    
+    @Test("Disconnect after join cleans up both LandRouter and TransportAdapter state")
+    func testDisconnectAfterJoinCleansUpBothStates() async throws {
+        let (_, router, landManager) = try await setupRouter()
+        
+        let sessionID = SessionID("sess-1")
+        let clientID = ClientID("cli-1")
+        
+        // 1. Connect
+        await router.onConnect(sessionID: sessionID, clientID: clientID)
+        
+        // 2. Join
+        let joinMsg = TransportMessage.join(
+            requestID: "req-1",
+            landType: "basic-test",
+            landInstanceId: nil,
+            playerID: "player-1",
+            deviceID: "dev-1",
+            metadata: nil
+        )
+        await router.onMessage(try JSONEncoder().encode(joinMsg), from: sessionID)
+        try await Task.sleep(for: .milliseconds(100))
+        
+        // Assert: Should be bound
+        guard let landID = await router.getBoundLandID(for: sessionID) else {
+            Issue.record("Session should be bound after join")
+            return
+        }
+        
+        // Get TransportAdapter
+        guard let container = await landManager.getLand(landID: landID) else {
+            Issue.record("Container should exist")
+            return
+        }
+        let adapter = container.transportAdapter
+        
+        // Assert: TransportAdapter should have session
+        let joinedBefore = await adapter.isJoined(sessionID: sessionID)
+        #expect(joinedBefore, "TransportAdapter should have session joined")
+        
+        // 3. Disconnect
+        await router.onDisconnect(sessionID: sessionID, clientID: clientID)
+        try await Task.sleep(for: .milliseconds(50))
+        
+        // Assert: LandRouter state should be cleaned up
+        let connectedAfter = await router.isConnected(sessionID: sessionID)
+        let boundAfter = await router.isBound(sessionID: sessionID)
+        #expect(!connectedAfter, "LandRouter: Session should not be connected after disconnect")
+        #expect(!boundAfter, "LandRouter: Session should not be bound after disconnect")
+        
+        // Assert: TransportAdapter state should be cleaned up
+        let joinedAfter = await adapter.isJoined(sessionID: sessionID)
+        let connectedAfterAdapter = await adapter.isConnected(sessionID: sessionID)
+        #expect(!joinedAfter, "TransportAdapter: Session should not be joined after disconnect")
+        #expect(!connectedAfterAdapter, "TransportAdapter: Session should not be connected after disconnect")
+        
+        // Assert: Player should be removed from state (OnLeave was called)
+        let state = await container.keeper.currentState()
+        let playerID = PlayerID("player-1")
+        #expect(state.players[playerID] == nil, "Player should be removed from state after disconnect")
+    }
+    
+    @Test("Disconnect without join only cleans up LandRouter state")
+    func testDisconnectWithoutJoinOnlyCleansUpRouterState() async throws {
+        let (_, router, _) = try await setupRouter()
+        
+        let sessionID = SessionID("sess-1")
+        let clientID = ClientID("cli-1")
+        
+        // 1. Connect (but don't join)
+        await router.onConnect(sessionID: sessionID, clientID: clientID)
+        
+        // Assert: Should be connected
+        let connectedBefore = await router.isConnected(sessionID: sessionID)
+        #expect(connectedBefore, "Session should be connected")
+        
+        // 2. Disconnect
+        await router.onDisconnect(sessionID: sessionID, clientID: clientID)
+        
+        // Assert: LandRouter state should be cleaned up
+        let connectedAfter = await router.isConnected(sessionID: sessionID)
+        let boundAfter = await router.isBound(sessionID: sessionID)
+        #expect(!connectedAfter, "Session should not be connected after disconnect")
+        #expect(!boundAfter, "Session should not be bound after disconnect")
+        
+        // Note: TransportAdapter was never involved, so no need to check it
     }
 }

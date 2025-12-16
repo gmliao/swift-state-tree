@@ -252,13 +252,34 @@ export class StateTreeView {
         const success = payload.success === true
         this.isJoined = success
 
+        // Update landID if server returned a different one (e.g., new room created)
+        // This ensures we track the actual landID the client is connected to
+        if (success && payload.landID) {
+          const serverLandID = payload.landID
+          if (serverLandID !== this.landID) {
+            this.logger.info(`LandID updated: ${this.landID} -> ${serverLandID}`)
+            const oldLandID = this.landID
+            this.landID = serverLandID
+            // Update Runtime's view mapping if needed
+            // This ensures future messages with the new landID can be routed correctly
+            if ((this.runtime as any).views) {
+              const views = (this.runtime as any).views as Map<string, StateTreeView>
+              if (views.has(oldLandID) && !views.has(serverLandID)) {
+                views.delete(oldLandID)
+                views.set(serverLandID, this)
+                this.logger.info(`Updated Runtime view mapping: ${oldLandID} -> ${serverLandID}`)
+              }
+            }
+          }
+        }
+
         const result = { 
           success, 
           playerID: payload.playerID, 
           reason: payload.reason,
           landType: payload.landType,
           landInstanceId: payload.landInstanceId,
-          landID: payload.landID
+          landID: payload.landID || this.landID  // Use server's landID or fallback to current
         }
 
         if (payload.requestID) {
@@ -588,9 +609,22 @@ export class StateTreeView {
   }
 
   /**
-   * Get landID
+   * Get current landID
+   * 
+   * Returns the actual landID the client is connected to.
+   * This may differ from the initial landID if the server created a new room.
    */
   get landId(): string {
+    return this.landID
+  }
+
+  /**
+   * Get current landID (alias for landId getter)
+   * 
+   * Returns the actual landID the client is connected to.
+   * This may differ from the initial landID if the server created a new room.
+   */
+  getCurrentLandID(): string {
     return this.landID
   }
 

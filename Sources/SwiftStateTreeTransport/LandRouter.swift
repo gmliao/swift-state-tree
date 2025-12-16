@@ -176,8 +176,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     
     /// Handle a join request from a client.
     ///
-    /// - Case A (landInstanceId provided): Join existing room
-    /// - Case B (landInstanceId nil): Create new room
+    /// - Case A (landInstanceId provided): Join existing land
+    /// - Case B (landInstanceId nil): Create new land
     private func handleJoinRequest(
         requestID: String,
         landType: String,
@@ -206,7 +206,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 requestID: requestID,
                 sessionID: sessionID,
                 code: .joinAlreadyJoined,
-                message: "Already joined a room"
+                message: "Already joined a land"
             )
             return
         }
@@ -216,25 +216,25 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         let container: LandContainer<State>
         
         if let instanceId = landInstanceId {
-            // Case A: Join existing room
+            // Case A: Join existing land
             landID = LandID(landType: landType, instanceId: instanceId)
             
             guard let existingContainer = await landManager.getLand(landID: landID) else {
-                logger.warning("Room not found: \(landID.rawValue)")
+                logger.warning("Land not found: \(landID.rawValue)")
                 await sendJoinError(
                     requestID: requestID,
                     sessionID: sessionID,
                     code: .joinRoomNotFound,
-                    message: "Room not found: \(landID.rawValue)"
+                    message: "Land not found: \(landID.rawValue)"
                 )
                 return
             }
             
             container = existingContainer
-            logger.info("Join existing room: \(landID.rawValue)")
+            logger.info("Join existing land: \(landID.rawValue)")
             
         } else {
-            // Case B: Create new room
+            // Case B: Create new land
             landID = LandID.generate(landType: landType)
             
             let definition = landTypeRegistry.getLandDefinition(landType: landType, landID: landID)
@@ -246,73 +246,40 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 initialState: initialState
             )
             
-            logger.info("Created new room: \(landID.rawValue)")
+            // Note: LandManager already logs "Created new land", so we just log the join context here
+            logger.info("New land created and joined", metadata: [
+                "landID": .string(landID.rawValue),
+                "landType": .string(landType),
+                "sessionID": .string(sessionID.rawValue)
+            ])
         }
         
         // Bind session to landID
         sessionToBoundLandID[sessionID] = landID
         
-        // Prepare PlayerSession
+        // Prepare PlayerSession using shared helper from TransportAdapter
         let jwtAuthInfo = sessionToAuthInfo[sessionID]
-        let guestSession: PlayerSession? = (requestedPlayerID == nil && jwtAuthInfo == nil)
-            ? createGuestSession?(sessionID, clientID)
-            : nil
-        
-        let finalPlayerID = requestedPlayerID
-            ?? jwtAuthInfo?.playerID
-            ?? guestSession?.playerID
-            ?? sessionID.rawValue
-        
-        let finalDeviceID = deviceID
-            ?? jwtAuthInfo?.deviceID
-            ?? guestSession?.deviceID
-            ?? clientID.rawValue
-        
-        var finalMetadata: [String: String] = [:]
-        if let jwtMetadata = jwtAuthInfo?.metadata {
-            finalMetadata.merge(jwtMetadata) { (_, new) in new }
-        }
-        if let joinMetadata = metadata {
-            let joinMetadataDict: [String: String] = joinMetadata.reduce(into: [:]) { result, pair in
-                let value = pair.value.base
-                if let stringValue = value as? String {
-                    result[pair.key] = stringValue
-                } else {
-                    result[pair.key] = "\(value)"
-                }
-            }
-            finalMetadata.merge(joinMetadataDict) { (_, new) in new }
-        }
-        if finalMetadata.isEmpty, metadata == nil, let guestMetadata = guestSession?.metadata {
-            finalMetadata = guestMetadata
-        }
-        
-        let playerSession = PlayerSession(
-            playerID: finalPlayerID,
-            deviceID: finalDeviceID,
-            metadata: finalMetadata
+        let playerSession = await container.transportAdapter.preparePlayerSession(
+            sessionID: sessionID,
+            clientID: clientID,
+            requestedPlayerID: requestedPlayerID,
+            deviceID: deviceID,
+            metadata: metadata,
+            authInfo: jwtAuthInfo
         )
         
-        // Forward to TransportAdapter for CanJoin/OnJoin handling
+        // Forward to TransportAdapter for CanJoin/OnJoin handling using shared performJoin
         do {
-            let decision = try await container.keeper.join(
-                session: playerSession,
+            if let joinResult = try await container.transportAdapter.performJoin(
+                playerSession: playerSession,
                 clientID: clientID,
                 sessionID: sessionID,
-                services: LandServices()
-            )
-            
-            switch decision {
-            case .allow(let playerID):
-                // Notify TransportAdapter of the new session
-                await container.transportAdapter.registerSession(
-                    sessionID: sessionID, 
-                    clientID: clientID, 
-                    playerID: playerID, 
-                    authInfo: jwtAuthInfo
-                )
+                authInfo: jwtAuthInfo
+            ) {
+                // IMPORTANT: Send JoinResponse FIRST, then StateSnapshot
+                // This ensures client knows join succeeded before receiving state
                 
-                // Send join response with landType and instanceId
+                // 1. Send join response with landType and instanceId
                 await sendJoinResponse(
                     requestID: requestID,
                     sessionID: sessionID,
@@ -320,23 +287,25 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                     landType: landID.landType,
                     landInstanceId: landID.instanceId,
                     landID: landID.rawValue,
-                    playerID: playerID.rawValue
+                    playerID: joinResult.playerID.rawValue
                 )
                 
-                logger.info("Join successful: session=\(sessionID.rawValue), landID=\(landID.rawValue), playerID=\(playerID.rawValue)")
+                // 2. Send initial state snapshot AFTER JoinResponse
+                await container.transportAdapter.sendInitialSnapshot(for: joinResult)
                 
-            case .deny(let reason):
-                // Unbind session since join was denied
+                logger.info("Join successful: session=\(sessionID.rawValue), landID=\(landID.rawValue), playerID=\(joinResult.playerID.rawValue)")
+            } else {
+                // Join denied
                 sessionToBoundLandID.removeValue(forKey: sessionID)
                 
                 await sendJoinError(
                     requestID: requestID,
                     sessionID: sessionID,
                     code: .joinDenied,
-                    message: reason ?? "Join denied"
+                    message: "Join denied"
                 )
                 
-                logger.warning("Join denied: session=\(sessionID.rawValue), reason=\(reason ?? "unknown")")
+                logger.warning("Join denied: session=\(sessionID.rawValue)")
             }
         } catch {
             // Unbind session since join failed
@@ -349,13 +318,13 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 switch joinError {
                 case .roomIsFull:
                     errorCode = .joinRoomFull
-                    errorMessage = "Room is full"
+                    errorMessage = "Land is full"
                 case .levelTooLow(let required):
                     errorCode = .joinDenied
                     errorMessage = "Level too low (required: \(required))"
                 case .banned:
                     errorCode = .joinDenied
-                    errorMessage = "You are banned from this room"
+                    errorMessage = "You are banned from this land"
                 case .custom(let message):
                     errorCode = .joinDenied
                     errorMessage = message
@@ -389,7 +358,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             await sendError(
                 to: sessionID,
                 code: .joinSessionNotConnected,
-                message: "Not joined to any room. Send a join request first."
+                message: "Not joined to any land. Send a join request first."
             )
             return
         }
@@ -399,7 +368,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             await sendError(
                 to: sessionID,
                 code: .joinRoomNotFound,
-                message: "Room no longer exists"
+                message: "Land no longer exists"
             )
             
             // Clean up stale binding

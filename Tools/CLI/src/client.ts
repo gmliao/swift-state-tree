@@ -117,7 +117,14 @@ export class SwiftStateTreeClient {
         const success = payload.success === true // Explicitly check for true
         if (success) {
           this.isJoined = true
-          console.log(chalk.green(`✅ Join successful: playerID=${payload.playerID || 'unknown'}`))
+          
+          // Update landID if server returned a different one (e.g., new room created)
+          if (payload.landID && payload.landID !== this.landID) {
+            console.log(chalk.yellow(`ℹ️  LandID updated: ${this.landID} -> ${payload.landID}`))
+            this.landID = payload.landID
+          }
+          
+          console.log(chalk.green(`✅ Join successful: playerID=${payload.playerID || 'unknown'}, landID=${this.landID}`))
         } else {
           this.isJoined = false
           console.log(chalk.red(`❌ Join failed: ${payload.reason || 'unknown reason'}`))
@@ -130,7 +137,7 @@ export class SwiftStateTreeClient {
           reason: payload.reason,
           landType: payload.landType,
           landInstanceId: payload.landInstanceId,
-          landID: payload.landID
+          landID: payload.landID || this.landID  // Use server's landID or fallback to current
         }
         
         if (payload.requestID) {
@@ -460,6 +467,16 @@ export class SwiftStateTreeClient {
 
   getState(): Record<string, any> {
     return { ...this.currentState }
+  }
+
+  /**
+   * Get current landID
+   * 
+   * Returns the actual landID the client is connected to.
+   * This may differ from the initial landID if the server created a new room.
+   */
+  getCurrentLandID(): string {
+    return this.landID
   }
 
   disconnect() {

@@ -40,12 +40,24 @@ struct MultiRoomDemo {
             logLevel: .debug
         )
 
+        let port: UInt16 = {
+            guard
+                let raw = ProcessInfo.processInfo.environment["PORT"],
+                let value = Int(raw),
+                value >= 0,
+                value <= Int(UInt16.max)
+            else {
+                return 8080
+            }
+            return UInt16(value)
+        }()
+
         // Multi-room mode: Create a server that supports dynamic room creation
         // Lands are created on-demand when clients join with a specific landID
         let server = try await DemoLandServer.makeMultiRoomServer(
             configuration: DemoLandServer.Configuration(
                 host: "localhost",
-                port: 8080,
+                port: port,
                 webSocketPath: "/game",
                 logger: logger,
                 jwtConfig: jwtConfig,
@@ -75,20 +87,13 @@ struct MultiRoomDemo {
                         "clientID": clientID.rawValue,
                     ]
                 )
-            },
-            lobbyIDs: [
-                // Pre-create lobby lands (optional)
-                // These lands are created at server startup
-                "lobby-main",
-                "lobby-asia",
-                "lobby-europe"
-            ]
+            }
         )
         
         logger.info("🚀 Multi-room server started")
-        logger.info("📡 WebSocket endpoint: ws://localhost:8080/game")
+        logger.info("📡 WebSocket endpoint: ws://localhost:\(port)/game")
         logger.info("💡 Connect with different landIDs to create different rooms")
-        logger.info("   Example: ws://localhost:8080/game?token=<jwt>&landID=room-123")
+        logger.info("   Example: ws://localhost:\(port)/game?token=<jwt>&landID=room-123")
         
         try await server.run()
     }

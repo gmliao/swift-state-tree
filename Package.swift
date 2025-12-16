@@ -54,7 +54,8 @@ let package = Package(
             exclude: [
                 "Land/README.md",
                 "Runtime/README.md",
-                "SchemaGen/README.md"
+                "SchemaGen/README.md",
+                "Resolver/README.md"
             ]
         ),
         

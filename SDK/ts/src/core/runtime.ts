@@ -90,10 +90,27 @@ export class StateTreeRuntime {
    * Create a View for a specific land
    */
   createView(landID: string, options?: ViewOptions): StateTreeView {
-    if (this.views.has(landID)) {
+    // Check if a view with the same landType already exists
+    // In multiroom mode, we might create view with "demo-game" but server returns "demo-game:instanceId"
+    const landType = landID.split(':')[0]
+    for (const [existingLandID, existingView] of this.views.entries()) {
+      const existingLandType = existingLandID.split(':')[0]
+      if (existingLandType === landType) {
+        // Update the existing view's landID if it's just the landType
+        if (existingLandID === landType && landID !== landType) {
+          // Server returned a full landID, update the view
+          this.views.delete(existingLandID)
+          this.views.set(landID, existingView)
+          ;(existingView as any).landID = landID
+          this.logger.info(`Updated existing view landID: ${existingLandID} -> ${landID}`)
+          return existingView
+        } else if (existingLandID === landID) {
       throw new Error(`View for land ${landID} already exists`)
+        }
+      }
     }
 
+    // No existing view found, create new one
     const view = new StateTreeView(this, landID, {
       playerID: options?.playerID,
       deviceID: options?.deviceID,
@@ -168,9 +185,13 @@ export class StateTreeRuntime {
 
       const decoded = decodeMessage(text)
 
+      // Debug: log raw message structure
+      this.logger.debug(`Received message: keys=${Object.keys(decoded).join(',')}, preview=${JSON.stringify(decoded).substring(0, 200)}`)
+
       // Route TransportMessage to appropriate View
       if ('kind' in decoded) {
         const message = decoded as TransportMessage
+        this.logger.debug(`Routing as TransportMessage: kind=${message.kind}`)
         this.routeTransportMessage(message)
         return
       }
@@ -178,6 +199,7 @@ export class StateTreeRuntime {
       // Route StateUpdate to appropriate View
       if ('type' in decoded && 'patches' in decoded) {
         const update = decoded as StateUpdate
+        this.logger.info(`📥 Received StateUpdate: type=${update.type}, patches=${update.patches.length}`)
         // StateUpdate doesn't have landID, so we need to route to all views
         // or find a way to determine which view it belongs to
         // For now, route to all views (they will ignore if not relevant)
@@ -190,6 +212,7 @@ export class StateTreeRuntime {
       // Route StateSnapshot to appropriate View
       if ('values' in decoded) {
         const snapshot = decoded as StateSnapshot
+        this.logger.info(`📥 Received StateSnapshot: fields=${Object.keys(snapshot.values).length}`)
         // StateSnapshot doesn't have landID, route to all views
         for (const view of this.views.values()) {
           view.handleSnapshot(snapshot)
@@ -229,17 +252,42 @@ export class StateTreeRuntime {
     }
 
     if (landID) {
-      const view = this.views.get(landID)
+      let view = this.views.get(landID)
+      
+      // If exact match not found, try to match by landType (for multiroom mode)
+      // e.g., if landID is "demo-game:abc123" and we have view for "demo-game"
+      if (!view && this.views.size > 0) {
+        const landType = landID.split(':')[0]
+        for (const [viewLandID, candidateView] of this.views.entries()) {
+          const viewLandType = viewLandID.split(':')[0]
+          if (viewLandType === landType) {
+            view = candidateView
+            // Update view's internal landID to match server's actual landID
+            if (view && (view as any).landID !== landID) {
+              (view as any).landID = landID
+              // Update the views map to use the new landID as key
+              this.views.delete(viewLandID)
+              this.views.set(landID, view)
+              this.logger.info(`Updated view landID mapping: ${viewLandID} -> ${landID}`)
+            }
+            break
+          }
+        }
+      }
+      
       if (view) {
         view.handleTransportMessage(message)
       } else {
-        this.logger.warn(`No view found for landID: ${landID} (available views: ${Array.from(this.views.keys()).join(', ') || 'none'})`)
-        // For error messages without matching view, still try to route to all views as fallback
-        if (message.kind === 'error' && this.views.size > 0) {
-          this.logger.debug(`Routing error to all views as fallback`)
+        // Fallback: route to all views if no exact or landType match found
+        // This ensures messages are not lost and CLI doesn't hang
+        if (this.views.size > 0) {
+          // Only log as debug to avoid noise, but always route to prevent message loss
+          this.logger.debug(`No exact view match for landID: ${landID}, routing to all views (${this.views.size}) as fallback`)
           for (const view of this.views.values()) {
             view.handleTransportMessage(message)
           }
+        } else {
+          this.logger.warn(`No view found for landID: ${landID} (no views available)`)
         }
       }
     } else {
