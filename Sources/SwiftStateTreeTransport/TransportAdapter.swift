@@ -141,6 +141,134 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         logger.info("Session registered via Router: session=\(sessionID.rawValue), player=\(playerID.rawValue)")
     }
     
+    // MARK: - Join Helpers (Shared Logic)
+    
+    /// Prepare PlayerSession from join request parameters.
+    /// Handles priority: join message > JWT payload > guest session.
+    ///
+    /// This is shared logic used by both LandRouter and TransportAdapter.handleJoinRequest.
+    public func preparePlayerSession(
+        sessionID: SessionID,
+        clientID: ClientID,
+        requestedPlayerID: String?,
+        deviceID: String?,
+        metadata: [String: AnyCodable]?,
+        authInfo: AuthenticatedInfo?
+    ) -> PlayerSession {
+        let jwtAuthInfo = authInfo ?? sessionToAuthInfo[sessionID]
+        let guestSession: PlayerSession? = (requestedPlayerID == nil && jwtAuthInfo == nil)
+            ? createGuestSession(sessionID, clientID)
+            : nil
+        
+        // Determine playerID: join message > JWT payload > guest session
+        let finalPlayerID: String = requestedPlayerID
+            ?? jwtAuthInfo?.playerID
+            ?? guestSession?.playerID
+            ?? sessionID.rawValue
+        
+        // Determine deviceID: join message > JWT payload > guest session
+        let finalDeviceID: String? = deviceID
+            ?? jwtAuthInfo?.deviceID
+            ?? guestSession?.deviceID
+            ?? clientID.rawValue
+        
+        // Merge metadata: join message metadata > JWT payload metadata > guest session metadata
+        var finalMetadata: [String: String] = [:]
+        
+        // Start with JWT payload metadata (if available)
+        if let jwtMetadata = jwtAuthInfo?.metadata {
+            finalMetadata.merge(jwtMetadata) { (_, new) in new }
+        }
+        
+        // Override with join message metadata (if provided)
+        if let joinMetadata = metadata {
+            let joinMetadataDict: [String: String] = joinMetadata.reduce(into: [:]) { result, pair in
+                // Extract underlying value from AnyCodable and convert to String
+                let value = pair.value.base
+                if let stringValue = value as? String {
+                    result[pair.key] = stringValue
+                } else {
+                    // Convert to string representation
+                    result[pair.key] = "\(value)"
+                }
+            }
+            finalMetadata.merge(joinMetadataDict) { (_, new) in new }
+        }
+        
+        // If no metadata from JWT or join message, use guest session metadata when available
+        if finalMetadata.isEmpty, metadata == nil, let guestMetadata = guestSession?.metadata {
+            finalMetadata = guestMetadata
+        }
+        
+        return PlayerSession(
+            playerID: finalPlayerID,
+            deviceID: finalDeviceID,
+            metadata: finalMetadata
+        )
+    }
+    
+    /// Perform the core join operation: keeper.join, registerSession, and syncStateForNewPlayer.
+    /// This is shared logic used by both LandRouter and TransportAdapter.handleJoinRequest.
+    ///
+    /// - Parameters:
+    ///   - playerSession: The PlayerSession to join with
+    ///   - clientID: The client ID
+    ///   - sessionID: The session ID
+    ///   - authInfo: Optional authentication info
+    /// - Returns: The final PlayerID if join succeeded, nil if denied
+    /// Join result containing the playerID if successful
+    public struct JoinResult: Sendable {
+        public let playerID: PlayerID
+        public let sessionID: SessionID
+    }
+    
+    public func performJoin(
+        playerSession: PlayerSession,
+        clientID: ClientID,
+        sessionID: SessionID,
+        authInfo: AuthenticatedInfo?
+    ) async throws -> JoinResult? {
+        // Attempt to join (updates keeper.players)
+        let decision = try await keeper.join(
+            session: playerSession,
+            clientID: clientID,
+            sessionID: sessionID,
+            services: LandServices()
+        )
+        
+        switch decision {
+        case .allow(let playerID):
+            // Update TransportAdapter state (synchronization point)
+            sessionToPlayer[sessionID] = playerID
+            
+            // Register session
+            await registerSession(
+                sessionID: sessionID,
+                clientID: clientID,
+                playerID: playerID,
+                authInfo: authInfo
+            )
+            
+            // NOTE: Initial state snapshot is NOT sent here anymore.
+            // The caller should:
+            // 1. First send JoinResponse to client
+            // 2. Then call sendInitialSnapshot() to send the state
+            // This ensures client knows join succeeded before receiving state.
+            
+            return JoinResult(playerID: playerID, sessionID: sessionID)
+            
+        case .deny:
+            return nil
+        }
+    }
+    
+    /// Send initial state snapshot for a newly joined player.
+    /// Call this AFTER sending JoinResponse to ensure correct message order.
+    public func sendInitialSnapshot(for result: JoinResult) async {
+        await syncStateForNewPlayer(playerID: result.playerID, sessionID: result.sessionID)
+        syncEngine.markFirstSyncReceived(for: result.playerID)
+    }
+    
     public func onMessage(_ message: Data, from sessionID: SessionID) async {
         let messageSize = message.count
         
@@ -697,7 +825,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Sync state for a new player (first connection) using lateJoinSnapshot
     /// This sends the complete initial state as a snapshot (not as patches)
     /// Does NOT mark firstSync as received - that will happen on first actual sync
-    private func syncStateForNewPlayer(for playerID: PlayerID, sessionID: SessionID) async {
+    public func syncStateForNewPlayer(playerID: PlayerID, sessionID: SessionID) async {
         do {
             let state = await keeper.currentState()
             
@@ -879,58 +1007,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         
         // Phase 2: Preparation (no state modification)
-        // Create PlayerSession with priority: join message > JWT payload > guest session
+        // Use shared helper to prepare PlayerSession
         let jwtAuthInfo = sessionToAuthInfo[sessionID]
-        let guestSession: PlayerSession? = (requestedPlayerID == nil && jwtAuthInfo == nil)
-            ? createGuestSession(sessionID, clientID)
-            : nil
-        
-        // Determine playerID: join message > JWT payload > guest session
-        let finalPlayerID: String = requestedPlayerID
-            ?? jwtAuthInfo?.playerID
-            ?? guestSession?.playerID
-            ?? sessionID.rawValue
-        
-        // Determine deviceID: join message > JWT payload > guest session
-        let finalDeviceID: String? = deviceID
-            ?? jwtAuthInfo?.deviceID
-            ?? guestSession?.deviceID
-            ?? clientID.rawValue
-        
-        // Merge metadata: join message metadata > JWT payload metadata > guest session metadata
-        // Join message metadata takes precedence, then JWT payload, then guest session
-        var finalMetadata: [String: String] = [:]
-        
-        // Start with JWT payload metadata (if available)
-        if let jwtMetadata = jwtAuthInfo?.metadata {
-            finalMetadata.merge(jwtMetadata) { (_, new) in new }
-        }
-        
-        // Override with join message metadata (if provided)
-        if let joinMetadata = metadata {
-            let joinMetadataDict: [String: String] = joinMetadata.reduce(into: [:]) { result, pair in
-                // Extract underlying value from AnyCodable and convert to String
-                let value = pair.value.base
-                if let stringValue = value as? String {
-                    result[pair.key] = stringValue
-                } else {
-                    // Convert to string representation
-                    result[pair.key] = "\(value)"
-                }
-            }
-            finalMetadata.merge(joinMetadataDict) { (_, new) in new }
-        }
-        
-        // If no metadata from JWT or join message, use guest session metadata when available
-        if finalMetadata.isEmpty, metadata == nil, let guestMetadata = guestSession?.metadata {
-            finalMetadata = guestMetadata
-        }
-        
-        // Create final PlayerSession
-        let playerSession = PlayerSession(
-            playerID: finalPlayerID,
-            deviceID: finalDeviceID,
-            metadata: finalMetadata
+        let playerSession = preparePlayerSession(
+            sessionID: sessionID,
+            clientID: clientID,
+            requestedPlayerID: requestedPlayerID,
+            deviceID: deviceID,
+            metadata: metadata,
+            authInfo: jwtAuthInfo
         )
         
         // Log metadata sources for debugging
@@ -939,16 +1024,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "sessionID": .string(sessionID.rawValue),
                 "jwtPlayerID": .string(jwtAuthInfo.playerID),
                 "jwtMetadataCount": .string("\(jwtAuthInfo.metadata.count)"),
-                "finalPlayerID": .string(finalPlayerID),
-                "finalMetadataCount": .string("\(finalMetadata.count)")
+                "finalPlayerID": .string(playerSession.playerID),
+                "finalMetadataCount": .string("\(playerSession.metadata.count)")
             ])
         }
         
         // Phase 3: Check for duplicate playerID and kick old session (Kick Old strategy)
-        let targetPlayerID = PlayerID(finalPlayerID)
+        let targetPlayerID = PlayerID(playerSession.playerID)
         let existingSessions = getSessions(for: targetPlayerID)
         if let oldSessionID = existingSessions.first {
-            logger.info("Duplicate playerID login detected: \(finalPlayerID), kicking old session: \(oldSessionID.rawValue)")
+            logger.info("Duplicate playerID login detected: \(playerSession.playerID), kicking old session: \(oldSessionID.rawValue)")
             // Get old clientID before disconnecting
             if let oldClientID = sessionToClient[oldSessionID] {
                 // Disconnect old session (this will call keeper.leave() and clean up state)
@@ -969,36 +1054,30 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         
         do {
-            // Attempt to join (updates keeper.players)
-            let decision = try await keeper.join(
-                session: playerSession,
+            // Use shared helper to perform join
+            if let joinResult = try await performJoin(
+                playerSession: playerSession,
                 clientID: clientID,
                 sessionID: sessionID,
-                services: LandServices()
-            )
-            
-            switch decision {
-            case .allow(let pid):
-                playerID = pid
-                
-                // Update TransportAdapter state (synchronization point)
-                sessionToPlayer[sessionID] = pid
-                
-                // Send initial snapshot
-                // Note: syncStateForNewPlayer handles errors internally and logs them
-                // If it fails, we still mark join as succeeded since the player is already in keeper.players
-                // The client will receive the join response but may need to retry or handle missing initial state
-                await syncStateForNewPlayer(for: pid, sessionID: sessionID)
-                syncEngine.markFirstSyncReceived(for: pid)
+                authInfo: jwtAuthInfo
+            ) {
+                playerID = joinResult.playerID
                 joinSucceeded = true
-                await sendJoinResponse(requestID: requestID, sessionID: sessionID, success: true, playerID: pid.rawValue)
                 
-                logger.info("Client joined: session=\(sessionID.rawValue), player=\(pid.rawValue), playerID=\(playerSession.playerID)")
+                // IMPORTANT: Send JoinResponse FIRST, then StateSnapshot
+                // This ensures client knows join succeeded before receiving state
                 
-            case .deny(let reason):
+                // 1. Send join response
+                await sendJoinResponse(requestID: requestID, sessionID: sessionID, success: true, playerID: joinResult.playerID.rawValue)
+                
+                // 2. Send initial state snapshot AFTER JoinResponse
+                await sendInitialSnapshot(for: joinResult)
+                
+                logger.info("Client joined: session=\(sessionID.rawValue), player=\(joinResult.playerID.rawValue), playerID=\(playerSession.playerID)")
+            } else {
                 // Join denied
-                logger.warning("Join denied for session \(sessionID.rawValue): \(reason ?? "no reason provided")")
-                await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinDenied, message: reason ?? "Join denied")
+                logger.warning("Join denied for session \(sessionID.rawValue)")
+                await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinDenied, message: "Join denied")
             }
         } catch {
             // Join failed (e.g., JoinError.roomIsFull)

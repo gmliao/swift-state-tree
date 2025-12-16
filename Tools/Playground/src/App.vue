@@ -10,6 +10,26 @@
         <v-icon :icon="connectionStatus.icon" class="mr-1"></v-icon>
         {{ connectionStatus.text }}
       </v-chip>
+      <v-chip
+        v-if="isJoined && currentLandID"
+        color="info"
+        variant="flat"
+        size="small"
+        class="mr-2"
+      >
+        <v-icon icon="mdi-map-marker" size="small" class="mr-1"></v-icon>
+        Land: {{ currentLandID }}
+      </v-chip>
+      <v-chip
+        v-if="isJoined && currentPlayerID"
+        color="secondary"
+        variant="flat"
+        size="small"
+        class="mr-2"
+      >
+        <v-icon icon="mdi-account" size="small" class="mr-1"></v-icon>
+        Player: {{ currentPlayerID }}
+      </v-chip>
       <v-btn
         v-if="isConnected"
         color="error"
@@ -202,6 +222,20 @@
               <v-window v-model="tab" class="playground-window">
                 <v-window-item value="state" class="playground-window-item">
                   <div class="state-tree-container-mobile">
+                    <div class="state-tree-header" style="padding: 8px; border-bottom: 1px solid rgba(0,0,0,0.12); display: flex; align-items: center;">
+                      <v-icon icon="mdi-file-tree" size="small" class="mr-1"></v-icon>
+                      <span>狀態樹</span>
+                      <v-spacer></v-spacer>
+                      <v-chip
+                        v-if="isJoined && currentLandID"
+                        color="info"
+                        variant="outlined"
+                        size="x-small"
+                        class="ml-2"
+                      >
+                        {{ currentLandID }}
+                      </v-chip>
+                    </div>
                     <div class="state-tree-content">
                       <StateTreeViewer
                         :state="currentState"
@@ -243,6 +277,16 @@
                     <div class="state-tree-header">
                       <v-icon icon="mdi-file-tree" size="small" class="mr-1"></v-icon>
                       <span>狀態樹</span>
+                      <v-spacer></v-spacer>
+                      <v-chip
+                        v-if="isJoined && currentLandID"
+                        color="info"
+                        variant="outlined"
+                        size="x-small"
+                        class="ml-2"
+                      >
+                        {{ currentLandID }}
+                      </v-chip>
                     </div>
                     <div class="state-tree-content">
                       <StateTreeViewer
@@ -479,6 +523,8 @@ const {
   isJoined,
   connectionError,
   currentState, 
+  currentLandID,
+  currentPlayerID,
   logs, 
   stateUpdates,
   actionResults: actionResultsFromWS,

@@ -100,7 +100,11 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         lands[landID] = container
         landCreatedAt[landID] = Date()
         
-        logger.info("Created new land: \(landID.stringValue)")
+        logger.info("Created new land", metadata: [
+            "landID": .string(landID.stringValue),
+            "landType": .string(landID.landType),
+            "instanceId": .string(landID.instanceId)
+        ])
         
         return container
     }

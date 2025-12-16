@@ -31,6 +31,10 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
     timestamp: Date
   }>>([])
 
+  // Track current landID (may be updated after join if server returns different one)
+  const currentLandID = ref<string>(LAND_ID)
+  const currentPlayerID = ref<string | null>(null)
+
   // Track action requests to match responses
   const actionRequestMap = ref<Map<string, { actionName: string, timestamp: Date }>>(new Map())
 
@@ -181,7 +185,23 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
         const joinResult = await view.join()
         if (joinResult.success) {
           isJoined.value = true
-          addLog(`✅ Join 成功: playerID=${joinResult.playerID || 'unknown'}`, 'success')
+          
+          // Update current landID from join result or view's current landID
+          // The view automatically updates its landID if server returns a different one
+          const actualLandID = joinResult.landID || view.getCurrentLandID() || currentLandID.value
+          if (actualLandID !== currentLandID.value) {
+            currentLandID.value = actualLandID
+            if (actualLandID !== LAND_ID) {
+              addLog(`ℹ️  LandID 已更新: ${LAND_ID} -> ${actualLandID}`, 'info')
+            }
+          }
+          
+          // Update current playerID
+          if (joinResult.playerID) {
+            currentPlayerID.value = joinResult.playerID
+          }
+          
+          addLog(`✅ Join 成功: playerID=${joinResult.playerID || 'unknown'}, landID=${actualLandID}`, 'success')
         } else {
           isJoined.value = false
           addLog(`❌ Join 失敗: ${joinResult.reason || '未知原因'}`, 'error')
@@ -212,6 +232,8 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
     currentState.value = {}
     logs.value = []
     stateUpdates.value = []
+    currentLandID.value = LAND_ID  // Reset to initial value
+    currentPlayerID.value = null
   }
 
   const sendAction = (actionName: string, payload: any, landID: string = LAND_ID, requestID?: string): void => {
@@ -278,6 +300,8 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
     isJoined,
     connectionError,
     currentState,
+    currentLandID,
+    currentPlayerID,
     logs,
     stateUpdates,
     actionResults,
