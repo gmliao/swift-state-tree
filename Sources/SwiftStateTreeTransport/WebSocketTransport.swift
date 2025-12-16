@@ -11,7 +11,12 @@ public actor WebSocketTransport: Transport {
     
     private var sessions: [SessionID: WebSocketConnection] = [:]
     private var playerSessions: [PlayerID: Set<SessionID>] = [:]
+    private var lastMissingSessionLogAt: [SessionID: Date] = [:]
+    private var lastMissingPlayerLogAt: [PlayerID: Date] = [:]
     private let logger: Logger
+    
+    private static let missingTargetLogIntervalSeconds: TimeInterval = 2.0
+    private static let missingTargetLogMapSoftLimit: Int = 5_000
     
     public init(logger: Logger? = nil) {
         // Create logger with scope if not provided
@@ -50,9 +55,17 @@ public actor WebSocketTransport: Transport {
         
         switch target {
         case .session(let sessionID):
+            if sessions[sessionID] == nil {
+                logDropMissingSession(sessionID: sessionID, bytes: message.count)
+                return
+            }
             try await sessions[sessionID]?.send(message)
             
         case .player(let playerID):
+            if playerSessions[playerID] == nil {
+                logDropMissingPlayer(playerID: playerID, bytes: message.count)
+                return
+            }
             if let sessionIDs = playerSessions[playerID] {
                 for sessionID in sessionIDs {
                     try await sessions[sessionID]?.send(message)
@@ -75,6 +88,7 @@ public actor WebSocketTransport: Transport {
     
     public func handleConnection(sessionID: SessionID, connection: WebSocketConnection, authInfo: AuthenticatedInfo? = nil) async {
         sessions[sessionID] = connection
+        lastMissingSessionLogAt.removeValue(forKey: sessionID)
         // Generate short client ID (6 characters) for better identification
         let clientIDString = String(UUID().uuidString.prefix(6))
         await delegate?.onConnect(sessionID: sessionID, clientID: ClientID(clientIDString), authInfo: authInfo)
@@ -103,6 +117,7 @@ public actor WebSocketTransport: Transport {
     
     public func registerSession(_ sessionID: SessionID, for playerID: PlayerID) {
         playerSessions[playerID, default: []].insert(sessionID)
+        lastMissingPlayerLogAt.removeValue(forKey: playerID)
     }
     
     // MARK: - Logging helpers
@@ -159,6 +174,42 @@ public actor WebSocketTransport: Transport {
                 "payload": .string(preview)
             ])
         }
+    }
+    
+    private func logDropMissingSession(sessionID: SessionID, bytes: Int) {
+        if lastMissingSessionLogAt.count > Self.missingTargetLogMapSoftLimit {
+            lastMissingSessionLogAt.removeAll()
+        }
+        
+        let now = Date()
+        if let last = lastMissingSessionLogAt[sessionID],
+           now.timeIntervalSince(last) < Self.missingTargetLogIntervalSeconds {
+            return
+        }
+        lastMissingSessionLogAt[sessionID] = now
+        
+        logger.debug("WS ⇨ drop (session not found)", metadata: [
+            "session": .string(sessionID.rawValue),
+            "bytes": .string("\(bytes)")
+        ])
+    }
+    
+    private func logDropMissingPlayer(playerID: PlayerID, bytes: Int) {
+        if lastMissingPlayerLogAt.count > Self.missingTargetLogMapSoftLimit {
+            lastMissingPlayerLogAt.removeAll()
+        }
+        
+        let now = Date()
+        if let last = lastMissingPlayerLogAt[playerID],
+           now.timeIntervalSince(last) < Self.missingTargetLogIntervalSeconds {
+            return
+        }
+        lastMissingPlayerLogAt[playerID] = now
+        
+        logger.debug("WS ⇨ drop (player has no sessions)", metadata: [
+            "player": .string(playerID.rawValue),
+            "bytes": .string("\(bytes)")
+        ])
     }
 }
 
