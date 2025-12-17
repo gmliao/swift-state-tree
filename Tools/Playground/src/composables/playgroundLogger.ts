@@ -24,10 +24,22 @@ export function createPlaygroundLogger(
 
   const loggerImpl: Logger = {
     debug(message: string, data?: any): void {
-      console.log('[SDK DEBUG]', message, data)
-      addLog(`[DEBUG] ${message}`, 'info', data)
+      // Debug messages from SDK (e.g. every state update) are very noisy.
+      // We keep them in the browser console for troubleshooting, but do not
+      // push them into the playground log panel.
+      console.debug('[SDK DEBUG]', message, data)
     },
     info(message: string, data?: any): void {
+      // Filter out high‑frequency state update logs – we already have a
+      // dedicated StateUpdate panel for visualizing these.
+      if (
+        message.startsWith('📥 Received StateUpdate') ||
+        message.startsWith('State update [') ||
+        message.startsWith('📥 Received StateSnapshot')
+      ) {
+        console.debug('[SDK INFO]', message, data)
+        return
+      }
       console.log('[SDK INFO]', message, data)
       addLog(message, 'info', data)
     },

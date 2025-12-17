@@ -37,7 +37,7 @@ extension LandRealm {
         }
         
         // Check for duplicate
-        if await isRegistered(landType: landType) {
+        if self.isRegistered(landType: landType) {
             throw LandRealmError.duplicateLandType(landType)
         }
         

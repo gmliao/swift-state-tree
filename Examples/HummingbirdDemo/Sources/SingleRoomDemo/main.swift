@@ -18,7 +18,7 @@ import SwiftStateTreeHummingbird
 @main
 struct SingleRoomDemo {
     static func main() async throws {
-        typealias DemoAppContainer = AppContainer<DemoGameState>
+        typealias DemoAppContainer = AppContainer<CookieGameState>
 
         // JWT Configuration for demo/testing purposes
         // ⚠️ WARNING: This is a demo secret key. CHANGE THIS IN PRODUCTION!
@@ -48,8 +48,8 @@ struct SingleRoomDemo {
                 jwtConfig: jwtConfig,
                 allowGuestMode: true // Enable guest mode: allow connections without JWT token
             ),
-            land: HummingbirdDemoContent.DemoGame.makeLand(),
-            initialState: DemoGameState(),
+            land: HummingbirdDemoContent.CookieGame.makeLand(),
+            initialState: CookieGameState(),
             createGuestSession: { _, clientID in
                 // Create PlayerSession for guest users (when JWT validation is enabled but no token is provided)
                 // This is only used when allowGuestMode is true and the client connects without a JWT token
