@@ -27,7 +27,26 @@ struct BenchmarkSuite: @unchecked Sendable {
             } else {
                 displayConfig = config
             }
-            print("\n[\(index + 1)/\(configurations.count)] Running: \(displayConfig.description)")
+
+            // Custom description for TransportAdapter sync benchmarks:
+            // config.playerCount 表示「基礎 state 大小」，實際測試的玩家數
+            // 則由 TransportAdapterSyncBenchmarkRunner.playerCounts 控制，因此額外標註。
+            let headerDescription: String
+            if let syncRunner = runner as? TransportAdapterSyncBenchmarkRunner {
+                let dynamicPlayers = syncRunner.playerCounts.map(String.init).joined(separator: ", ")
+                let broadcastRatioLabel: String
+                if syncRunner.broadcastPlayerRatio > 0.0 {
+                    let percent = Int((syncRunner.broadcastPlayerRatio * 100.0).rounded())
+                    broadcastRatioLabel = ", BroadcastPlayers: ~\(percent)%"
+                } else {
+                    broadcastRatioLabel = ""
+                }
+                headerDescription = "\(config.name) (Dynamic Players: [\(dynamicPlayers)], Cards/Player: \(config.cardsPerPlayer), Iterations: \(config.iterations)\(broadcastRatioLabel))"
+            } else {
+                headerDescription = displayConfig.description
+            }
+            
+            print("\n[\(index + 1)/\(configurations.count)] Running: \(headerDescription)")
             print("  Generating test state...", terminator: "")
             
             let state = generateTestState(
@@ -41,7 +60,13 @@ struct BenchmarkSuite: @unchecked Sendable {
             let result = await runner.run(config: config, state: state, playerID: playerID)
             results.append(result)
             
-            print(result.formattedOutput)
+            // For most benchmarks我們輸出詳細表格方便觀察。
+            // 但對 TransportAdapter sync 壓力測試來說，runner 內部已經印出
+            // 「Testing with X players... Average: Y ms」這類摘要，
+            // 再印一個表格噪音比較大，所以這裡特別略過。
+            if !(runner is TransportAdapterSyncBenchmarkRunner) {
+                print(result.formattedOutput)
+            }
         }
         
         return results
@@ -62,4 +87,3 @@ struct BenchmarkSuite: @unchecked Sendable {
         print("")
     }
 }
-

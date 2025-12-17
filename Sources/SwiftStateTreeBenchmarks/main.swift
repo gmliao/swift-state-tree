@@ -6,19 +6,7 @@ import SwiftStateTree
 // MARK: - Main
 
 @MainActor
-func main() async {
-    let parser = CommandLineParser()
-
-    if parser.showHelp {
-        CommandLineParser.printUsage()
-        return
-    }
-
-    if parser.hasError {
-        parser.printError()
-        exit(1)
-    }
-
+func main(parser: CommandLineParser) async {
     var allResults: [BenchmarkResult] = []
 
     // Get suite configurations based on command line arguments
@@ -32,7 +20,13 @@ func main() async {
         printBox(title: "SwiftStateTree Snapshot Generation Benchmark")
     }
 
-    let suiteConfigs = suiteTypes.flatMap { BenchmarkSuites.get(suiteType: $0) }
+    let suiteConfigs = suiteTypes.flatMap {
+        BenchmarkSuites.get(
+            suiteType: $0,
+            transportDirtyTrackingOverride: parser.transportDirtyTrackingOverride,
+            dirtyRatioOverride: parser.transportDirtyRatioOverride
+        )
+    }
 
     // Run selected benchmark suites
     for suiteConfig in suiteConfigs {
@@ -67,9 +61,25 @@ private func printBox(title: String) {
 
 // Run main function
 Task { @MainActor in
-    print("Press Enter to start the benchmark...")
-    _ = readLine() // 這行會卡住，等你在 Terminal 按 Enter
-    await main()
+    let parser = CommandLineParser()
+    
+    if parser.showHelp {
+        CommandLineParser.printUsage()
+        exit(0)
+    }
+    
+    if parser.hasError {
+        parser.printError()
+        exit(1)
+    }
+    
+    // Allow skipping the "Press Enter" prompt via CLI flag when doing automated runs
+    if !parser.skipWaitForEnter {
+        print("Press Enter to start the benchmark...")
+        _ = readLine() // 這行會卡住，等你在 Terminal 按 Enter
+    }
+    
+    await main(parser: parser)
     exit(0)
 }
 

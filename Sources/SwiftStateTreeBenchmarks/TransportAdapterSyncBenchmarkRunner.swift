@@ -29,8 +29,40 @@ struct BenchmarkStateForSync: StateNodeProtocol {
 struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
     let playerCounts: [Int]
     
-    init(playerCounts: [Int] = [10, 50, 100, 200]) {
+    /// Approximate ratio of players to modify per tick (0.0 ... 1.0).
+    ///
+    /// This controls how "hot" the state is:
+    /// - ~0.05  (5%)   : low activity,少數玩家有變動
+    /// - ~0.20  (20%)  : medium activity（預設），接近一般即時遊戲中等頻率變更
+    /// - ~0.80  (80%)  : high activity / 壓力測試，接近「幾乎每個玩家每 tick 都在變」
+    ///
+    /// NOTE: 這是「玩家數量比例」的近似，實際變動欄位數還會依 state 結構而定。
+    let dirtyPlayerRatio: Double
+    
+    /// Approximate ratio of broadcast player entries to modify per tick (0.0 ... 1.0).
+    ///
+    /// When `0.0`, the benchmark preserves the original behavior: it only modifies a small
+    /// broadcast scalar field (`round`) plus some per-player fields (`hands`).
+    ///
+    /// When greater than `0.0`, it also mutates `players` (a broadcast dictionary). This is
+    /// closer to real-world games where public player state (position/HP/etc.) changes often.
+    let broadcastPlayerRatio: Double
+    
+    /// Whether to enable dirty tracking in TransportAdapter during this benchmark.
+    /// - true : use optimized dirty-tracking diff (default)
+    /// - false: always generate full diffs and skip clearDirty()
+    let enableDirtyTracking: Bool
+    
+    init(
+        playerCounts: [Int] = [4, 10, 20, 30, 50],
+        dirtyPlayerRatio: Double = 0.20,
+        broadcastPlayerRatio: Double = 0.0,
+        enableDirtyTracking: Bool = true
+    ) {
         self.playerCounts = playerCounts
+        self.dirtyPlayerRatio = dirtyPlayerRatio
+        self.broadcastPlayerRatio = broadcastPlayerRatio
+        self.enableDirtyTracking = enableDirtyTracking
     }
     
     func run(
@@ -104,6 +136,10 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
         
         // Create minimal land definition with tick handler to modify state
         // This ensures we have actual state changes to trigger diff computation
+        // Clamp dirty ratio to [0, 1] to avoid invalid values
+        let clampedDirtyRatio = max(0.0, min(dirtyPlayerRatio, 1.0))
+        let clampedBroadcastRatio = max(0.0, min(broadcastPlayerRatio, 1.0))
+        
         let definition = Land("benchmark-sync", using: BenchmarkStateForSync.self) {
             Rules {}
             
@@ -118,18 +154,41 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
                     let allPlayerIDs = Array(state.hands.keys)
                     guard !allPlayerIDs.isEmpty else { return }
                     
-                    let numPlayersToModify = min(3, allPlayerIDs.count)
-                    let randomIndices = (0..<numPlayersToModify).map { _ in Int.random(in: 0..<allPlayerIDs.count) }
-                    for index in randomIndices {
-                        if index < allPlayerIDs.count {
-                            let playerID = allPlayerIDs[index]
-                            if var hand = state.hands[playerID] {
-                                hand.cards.append(BenchmarkCard(
-                                    id: hand.cards.count,
-                                    suit: Int.random(in: 0..<4),
-                                    rank: Int.random(in: 0..<13)
-                                ))
-                                state.hands[playerID] = hand
+                    // Approximate number of players to modify based on configured ratio.
+                    // Always modify at least 1 player to ensure有實際 per-player diff。
+                    let rawCount = Int(Double(allPlayerIDs.count) * clampedDirtyRatio)
+                    let numPlayersToModify = max(1, min(rawCount, allPlayerIDs.count))
+                    
+                    // Randomly pick distinct players to modify
+                    let selectedPlayers = allPlayerIDs.shuffled().prefix(numPlayersToModify)
+                    for playerID in selectedPlayers {
+                        // IMPORTANT: keep hand size stable; only mutate existing cards,
+                        // do NOT append new ones, so state size stays roughly constant
+                        if var hand = state.hands[playerID], !hand.cards.isEmpty {
+                            let index = Int.random(in: 0..<hand.cards.count)
+                            let oldCard = hand.cards[index]
+                            hand.cards[index] = BenchmarkCard(
+                                id: oldCard.id,
+                                suit: Int.random(in: 0..<4),
+                                rank: Int.random(in: 0..<13)
+                            )
+                            state.hands[playerID] = hand
+                        }
+                    }
+                    
+                    // Optionally mutate broadcast player state to simulate public player updates.
+                    // This typically makes sync cost dominated by the broadcast `players` dictionary.
+                    if clampedBroadcastRatio > 0.0 {
+                        let rawBroadcastCount = Int(Double(allPlayerIDs.count) * clampedBroadcastRatio)
+                        let numBroadcastPlayersToModify = max(1, min(rawBroadcastCount, allPlayerIDs.count))
+                        
+                        let selectedBroadcastPlayers = allPlayerIDs.shuffled().prefix(numBroadcastPlayersToModify)
+                        for playerID in selectedBroadcastPlayers {
+                            if var player = state.players[playerID] {
+                                // Keep payload size stable: only mutate scalar fields.
+                                let delta = (state.round % 3) - 1 // -1, 0, 1
+                                player.hpCurrent = max(0, min(player.hpMax, player.hpCurrent + delta))
+                                state.players[playerID] = player
                             }
                         }
                     }
@@ -159,6 +218,9 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
             keeper: keeper,
             transport: mockTransport,
             landID: "benchmark-land",
+            createGuestSession: nil,
+            enableLegacyJoin: false,
+            enableDirtyTracking: enableDirtyTracking,
             logger: benchmarkLogger
         )
         await keeper.setTransport(adapter)
@@ -217,6 +279,9 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
         let averageTime = actualSyncTime / Double(iterations)
         let throughput = Double(iterations) / actualSyncTime
         
+        let modeLabel = enableDirtyTracking ? "Serial Sync (DirtyTracking: On)"
+                                            : "Serial Sync (DirtyTracking: Off)"
+        
         return BenchmarkResult(
             config: BenchmarkConfig(
                 name: "Sync",
@@ -229,9 +294,8 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
             maxTime: averageTime,
             snapshotSize: 0,
             throughput: throughput,
-            executionMode: "Serial Sync"
+            executionMode: modeLabel
         )
     }
 }
-
 

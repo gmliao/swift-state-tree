@@ -14,6 +14,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private let logger: Logger
     private let enableLegacyJoin: Bool
     
+    // Dirty tracking toggle - default is enabled.
+    //
+    // When disabled, sync will:
+    // - Always use `.all` snapshot mode (no dirty-field filtering)
+    // - Skip `clearDirty()` in `LandKeeper.endSync(clearDirtyFlags:)` to避免遞迴重置成本
+    //
+    // PERFORMANCE NOTE:
+    // - 高更新比例（幾乎每幀都在改大部分欄位）時，關閉 dirty tracking 可能更快
+    // - 中低更新比例（多數遊戲實際情境）時，建議保持開啟以節省序列化與 diff 成本
+    private var enableDirtyTracking: Bool
+    
     // Track session to player mapping
     private var sessionToPlayer: [SessionID: PlayerID] = [:]
     private var sessionToClient: [SessionID: ClientID] = [:]
@@ -47,12 +58,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         landID: String,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         enableLegacyJoin: Bool = false,
+        enableDirtyTracking: Bool = true,
         logger: Logger? = nil
     ) {
         self.keeper = keeper
         self.transport = transport
         self.landID = landID
         self.enableLegacyJoin = enableLegacyJoin
+        self.enableDirtyTracking = enableDirtyTracking
         // Create logger with scope if not provided
         if let logger = logger {
             self.logger = logger.withScope("TransportAdapter")
@@ -65,6 +78,21 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         if let createGuestSession = createGuestSession {
             self.createGuestSession = createGuestSession
         }
+    }
+    
+    // MARK: - Dirty Tracking Configuration
+    
+    /// Check whether dirty tracking optimization is currently enabled.
+    public func isDirtyTrackingEnabled() -> Bool {
+        enableDirtyTracking
+    }
+    
+    /// Enable or disable dirty tracking at runtime.
+    ///
+    /// - Parameter enabled: `true` to enable dirty tracking (default behavior),
+    ///   `false` to disable and always generate full diffs.
+    public func setDirtyTrackingEnabled(_ enabled: Bool) {
+        enableDirtyTracking = enabled
     }
     
     
@@ -616,7 +644,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let broadcastMode: SnapshotMode
             let perPlayerMode: SnapshotMode
             
-            if state.isDirty() {
+            if enableDirtyTracking && state.isDirty() {
                 let dirtyFields = state.getDirtyFields()
                 let syncFields = state.getSyncFields()
                 let broadcastFieldNames = Set(syncFields.filter { $0.policyType == .broadcast }.map { $0.name })
@@ -636,6 +664,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 broadcastMode = broadcastFields.isEmpty ? .all : .dirtyTracking(broadcastFields)
                 perPlayerMode = perPlayerFields.isEmpty ? .all : .dirtyTracking(perPlayerFields)
             } else {
+                // Dirty tracking disabled or state not dirty: always use .all mode
                 broadcastMode = .all
                 perPlayerMode = .all
             }
@@ -663,7 +692,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
             
             // Release sync lock after successful sync
-            await keeper.endSync()
+            // Only clear dirty flags if dirty tracking is enabled
+            await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
         } catch {
             logger.error("❌ Failed to extract broadcast snapshot", metadata: [
                 "error": .string("\(error)")
@@ -672,7 +702,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // TODO: Add error metrics to track sync failure rates
             
             // Always release sync lock, even if error occurred
-            await keeper.endSync()
+            // Only clear dirty flags if dirty tracking is enabled
+            await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
         }
     }
     
@@ -712,7 +743,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             
             // Determine snapshot mode based on dirty tracking
             let broadcastMode: SnapshotMode
-            if state.isDirty() {
+            if enableDirtyTracking && state.isDirty() {
                 let dirtyFields = state.getDirtyFields()
                 let syncFields = state.getSyncFields()
                 let broadcastFieldNames = Set(syncFields.filter { $0.policyType == .broadcast }.map { $0.name })
@@ -721,6 +752,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 // Only extract and compare dirty broadcast fields
                 broadcastMode = broadcastFields.isEmpty ? .all : .dirtyTracking(broadcastFields)
             } else {
+                // Dirty tracking disabled or state not dirty: always use .all mode
                 broadcastMode = .all
             }
             
@@ -745,7 +777,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         "mode": .string("\(broadcastMode)")
                     ])
                 }
-                await keeper.endSync()
+                await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
                 return
             }
             
@@ -776,14 +808,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
             
             // Release sync lock after successful sync
-            await keeper.endSync()
+            // Only clear dirty flags if dirty tracking is enabled
+            await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
         } catch {
             logger.error("❌ Failed to sync broadcast-only", metadata: [
                 "error": .string("\(error)")
             ])
             
             // Always release sync lock, even if error occurred
-            await keeper.endSync()
+            // Only clear dirty flags if dirty tracking is enabled
+            await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
         }
     }
     

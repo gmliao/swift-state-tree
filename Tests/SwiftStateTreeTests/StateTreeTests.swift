@@ -1213,3 +1213,86 @@ func testClearDirty_RecursivelyClearsNestedStateNode() {
     #expect(state.nested.isDirty() == false, "Nested StateNode should also be clean (clearDirty recurses)")
     #expect(state.nested.getDirtyFields().isEmpty == true, "Nested should have no dirty fields after clearDirty()")
 }
+
+@Test("StateNode isDirty() detects changes in three-level nested StateNode")
+func testIsDirty_ThreeLevelNestedStateNode() {
+    // Arrange: Create three-level nested StateNode structure
+    @StateNodeBuilder
+    struct DeepNestedStateNode: StateNodeProtocol {
+        @Sync(.broadcast)
+        var deepValue: Int = 0
+    }
+    
+    @StateNodeBuilder
+    struct NestedStateNode: StateNodeProtocol {
+        @Sync(.broadcast)
+        var nestedValue: Int = 0
+        
+        @Sync(.broadcast)
+        var deepNested: DeepNestedStateNode = DeepNestedStateNode()
+    }
+    
+    @StateNodeBuilder
+    struct ParentStateNode: StateNodeProtocol {
+        @Sync(.broadcast)
+        var parentValue: Int = 0
+        
+        @Sync(.broadcast)
+        var nested: NestedStateNode = NestedStateNode()
+    }
+    
+    var state = ParentStateNode()
+    
+    // Verify initial state is clean
+    #expect(state.isDirty() == false, "Initial state should not be dirty")
+    #expect(state.nested.isDirty() == false, "Initial nested should not be dirty")
+    #expect(state.nested.deepNested.isDirty() == false, "Initial deepNested should not be dirty")
+    
+    // Act: Modify the deepest level (three levels deep)
+    state.nested.deepNested.deepValue = 30
+    
+    // Assert: Parent should detect the change (because nested value changed, triggering parent wrapper)
+    // NOTE: isDirty() only checks one level (wrapper.isDirty), but modifying nested StateNode
+    // triggers value assignment which marks the parent wrapper as dirty
+    #expect(state.isDirty() == true, "Parent should be dirty after modifying deep nested field")
+    #expect(state.getDirtyFields().contains("nested"), "Should contain 'nested' in dirty fields")
+    
+    // Verify all levels are dirty
+    #expect(state.nested.isDirty() == true, "Nested should be dirty")
+    #expect(state.nested.getDirtyFields().contains("deepNested"), "Nested should contain 'deepNested' in dirty fields")
+    #expect(state.nested.deepNested.isDirty() == true, "DeepNested should be dirty")
+    #expect(state.nested.deepNested.getDirtyFields().contains("deepValue"), "DeepNested should contain 'deepValue' in dirty fields")
+    
+    // Test: Modify middle level
+    state.clearDirty()
+    state.nested.nestedValue = 40
+    
+    #expect(state.isDirty() == true, "Parent should be dirty after modifying nested field")
+    #expect(state.getDirtyFields().contains("nested"), "Should contain 'nested' in dirty fields")
+    #expect(state.nested.isDirty() == true, "Nested should be dirty")
+    #expect(state.nested.getDirtyFields().contains("nestedValue"), "Nested should contain 'nestedValue' in dirty fields")
+    
+    // Test: Modify parent level only
+    state.clearDirty()
+    // Verify everything is clean after clear (clearDirty should recursively clear nested StateNodes)
+    #expect(state.isDirty() == false, "Parent should be clean after clearDirty()")
+    // NOTE: clearDirty() recursively clears nested StateNodes, so nested should also be clean
+    // However, if clearDirty() didn't work correctly, nested might still be dirty
+    // This test verifies that clearDirty() works correctly for three-level nesting
+    let nestedIsClean = state.nested.isDirty() == false
+    let deepNestedIsClean = state.nested.deepNested.isDirty() == false
+    
+    // If clearDirty() worked correctly, both should be clean
+    // If not, this test will fail and expose the issue
+    #expect(nestedIsClean, "Nested should be clean after clearDirty() (recursive clear)")
+    #expect(deepNestedIsClean, "DeepNested should be clean after clearDirty() (recursive clear)")
+    
+    // Now modify only parent field
+    state.parentValue = 50
+    
+    #expect(state.isDirty() == true, "Parent should be dirty after modifying parent field")
+    #expect(state.getDirtyFields().contains("parentValue"), "Should contain 'parentValue' in dirty fields")
+    // Only parentValue should be dirty, nested should not be dirty (we didn't modify it)
+    #expect(state.getDirtyFields().contains("nested") == false, "Should not contain 'nested' (only parentValue changed)")
+}
+
