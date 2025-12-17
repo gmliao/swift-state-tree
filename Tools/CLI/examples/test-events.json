@@ -2,23 +2,25 @@
   "steps": [
     {
       "type": "log",
-      "message": "Testing events"
+      "message": "Testing cookie events"
     },
     {
       "type": "event",
-      "event": "ChatEvent",
+      "event": "ClickCookieEvent",
       "payload": {
-        "message": "Hello from CLI!"
+        "amount": 1
       }
     },
     {
       "type": "wait",
-      "wait": 1000
+      "wait": 500
     },
     {
       "type": "event",
-      "event": "PingEvent",
-      "payload": {}
+      "event": "ClickCookieEvent",
+      "payload": {
+        "amount": 10
+      }
     },
     {
       "type": "wait",

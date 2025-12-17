@@ -20,7 +20,7 @@ import SwiftStateTreeTransport
 @main
 struct MultiRoomDemo {
     static func main() async throws {
-        typealias DemoLandServer = LandServer<DemoGameState>
+        typealias DemoLandServer = LandServer<CookieGameState>
 
         // JWT Configuration for demo/testing purposes
         // ⚠️ WARNING: This is a demo secret key. CHANGE THIS IN PRODUCTION!
@@ -65,15 +65,15 @@ struct MultiRoomDemo {
             ),
             landFactory: { landID in
                 // Factory function to create LandDefinition for a given LandID
-                // This allows different lands to have different configurations if needed
-                // In this demo, all lands use the same definition
-                HummingbirdDemoContent.DemoGame.makeLand()
+                // This allows different lands to have different configurations if needed.
+                // In this demo, all lands use the same cookie-clicker definition.
+                HummingbirdDemoContent.CookieGame.makeLand()
             },
             initialStateFactory: { landID in
                 // Factory function to create initial state for a given LandID
-                // This allows different lands to have different initial states if needed
-                // In this demo, all lands start with the same initial state
-                DemoGameState()
+                // This allows different lands to have different initial states if needed.
+                // In this demo, all lands start with the same initial cookie state.
+                CookieGameState()
             },
             createGuestSession: { _, clientID in
                 // Create PlayerSession for guest users

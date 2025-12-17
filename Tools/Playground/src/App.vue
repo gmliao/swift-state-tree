@@ -67,10 +67,10 @@
                         label="Schema URL"
                         prepend-icon="mdi-link"
                         variant="outlined"
-                        density="compact"
                         hint="例如: http://localhost:8080/schema"
                         persistent-hint
                         class="mb-2"
+                        style="margin-top: 8px;"
                       ></v-text-field>
                       
                       <v-btn
@@ -140,7 +140,6 @@
                     label="WebSocket URL"
                     prepend-icon="mdi-link"
                     variant="outlined"
-                    density="compact"
                     class="mb-2"
                   ></v-text-field>
                   

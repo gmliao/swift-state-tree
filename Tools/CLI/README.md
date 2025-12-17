@@ -43,7 +43,7 @@ npm run dev connect -u ws://localhost:8080/game -l demo-game -t "your-jwt-token"
 
 ### Execute Script
 
-Create a script file (JSON format):
+Create a script file (JSON format), for example a simple Cookie demo script:
 
 ```json
 {
@@ -54,9 +54,9 @@ Create a script file (JSON format):
     },
     {
       "type": "action",
-      "action": "AddGold",
+      "action": "BuyUpgradeAction",
       "payload": {
-        "amount": 100
+        "upgradeID": "cursor"
       }
     },
     {
@@ -65,9 +65,9 @@ Create a script file (JSON format):
     },
     {
       "type": "event",
-      "event": "ChatEvent",
+      "event": "ClickCookieEvent",
       "payload": {
-        "message": "Hello from CLI!"
+        "amount": 1
       }
     },
     {
@@ -149,20 +149,20 @@ Script files are JSON with a `steps` array. Each step can be:
 
 ## Examples
 
-### Example Script: Test Game Actions
+### Example Script: Test Cookie Game Actions
 
 ```json
 {
   "steps": [
     {
       "type": "log",
-      "message": "Testing game actions"
+      "message": "Testing cookie game actions"
     },
     {
       "type": "action",
-      "action": "AddGold",
+      "action": "BuyUpgradeAction",
       "payload": {
-        "amount": 100
+        "upgradeID": "cursor"
       }
     },
     {
@@ -171,9 +171,9 @@ Script files are JSON with a `steps` array. Each step can be:
     },
     {
       "type": "action",
-      "action": "SpendGold",
+      "action": "BuyUpgradeAction",
       "payload": {
-        "amount": 50
+        "upgradeID": "grandma"
       }
     },
     {
@@ -187,30 +187,32 @@ Script files are JSON with a `steps` array. Each step can be:
 }
 ```
 
-### Example Script: Test Events
+### Example Script: Test Cookie Events
 
 ```json
 {
   "steps": [
     {
       "type": "log",
-      "message": "Testing events"
+      "message": "Testing cookie events"
     },
     {
       "type": "event",
-      "event": "ChatEvent",
+      "event": "ClickCookieEvent",
       "payload": {
-        "message": "Hello!"
+        "amount": 1
       }
     },
     {
       "type": "wait",
-      "wait": 1000
+      "wait": 500
     },
     {
       "type": "event",
-      "event": "PingEvent",
-      "payload": {}
+      "event": "ClickCookieEvent",
+      "payload": {
+        "amount": 10
+      }
     }
   ]
 }
@@ -342,9 +344,10 @@ The CLI uses the TypeScript SDK which automatically routes errors to the correct
     },
     {
       "type": "action",
-      "action": "AddGold",
+      "action": "BuyUpgradeAction",
       "payload": {
-        "invalidField": "test"
+        "upgradeID": "cursor",
+        "extraField": "test"
       },
       "expectError": true
     }
