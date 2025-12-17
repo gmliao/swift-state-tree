@@ -465,21 +465,17 @@ public struct StateNodeBuilderMacro: MemberMacro {
             let propertyName = property.name
             let storageName = "_\(propertyName)"
             
-            // First, clear the @Sync wrapper's dirty flag
+            // Clear the @Sync wrapper's dirty flag first
             codeLines.append("\(storageName).clearDirty()")
             
-            // Then, check if the wrapped value conforms to StateNodeProtocol and recursively clear its dirty flags
-            // This ensures nested StateNode dirty flags are also cleared, preventing unnecessary
-            // comparisons in subsequent syncs when the nested state hasn't changed.
-            // We use runtime type checking since we can't reliably detect StateNodeProtocol types at compile time.
-            // We use updateValueWithoutMarkingDirty to avoid triggering the setter and re-marking as dirty.
-            // Note: We only do this for non-primitive types to avoid unnecessary runtime checks.
-            // PERFORMANCE: Only perform recursive clearing if the wrapper itself is dirty, to avoid
-            // unnecessary runtime type checks and value copying when the field hasn't changed.
+            // Then, recursively clear nested StateNode's dirty flags (if it's a StateNodeProtocol)
+            // NOTE: We always attempt recursive clear for non-primitive types, regardless of wrapper's dirty state,
+            // because nested StateNode might have internal dirty flags even if wrapper wasn't dirty.
+            // This ensures all nested dirty flags are cleared, preventing accumulation.
             if let typeName = property.typeName, !isPrimitiveType(typeName) {
                 codeLines.append("// Recursively clear dirty flags for nested StateNode (if applicable)")
-                codeLines.append("// Only check if wrapper is dirty to avoid unnecessary runtime checks")
-                codeLines.append("if \(storageName).isDirty, var nestedState = \(storageName).wrappedValue as? any StateNodeProtocol {")
+                codeLines.append("// Always attempt recursive clear for non-primitive types to ensure nested dirty flags are cleared")
+                codeLines.append("if var nestedState = \(storageName).wrappedValue as? any StateNodeProtocol {")
                 codeLines.append("    nestedState.clearDirty()")
                 codeLines.append("    // Update value without marking as dirty (using internal method)")
                 codeLines.append("    \(storageName).updateValueWithoutMarkingDirty(nestedState as! \(typeName))")

@@ -1,191 +1,120 @@
-# 8 核心 CPU 承載能力估算（30 人房間）
+# 8 核心 CPU 承載能力估算（以 30 人房間為例）
 
-## 測試環境
+本文件的目標是把「TransportAdapter.syncNow() 的 benchmark 數據」轉成可用的容量估算方式，並把不同情境（dirty ratio / 公開狀態是否每 tick 都在變）分開說清楚。
+
+## 測試環境與測到的是什麼
 
 - **硬體**：MacBook Air M2（Apple Silicon）
-- **CPU**：8 核心（4 效能核心 + 4 效率核心）
-- **編譯模式**：Release 模式
+- **CPU**：8 核心（4P + 4E）
+- **編譯模式**：Release
+- **測量內容**：`TransportAdapter.syncNow()` 的 CPU 時間（含 snapshot/diff/JSON encode + mock transport send）
+- **不包含**：真實網路（TCP/TLS/WebSocket）、封包排隊、Client 端處理、跨機器延遲
 
-**注意**：性能數據基於 M2 晶片的測試結果，不同硬體環境可能會有差異。
+> 結論用法：把這裡的結果當成「server 端同步邏輯的 CPU 基準」，真實環境請用你自己的 state/tick/action 重新跑一次 benchmark 再估算。
 
-## 基準數據（來自 Benchmark）
+## 這次更新的 benchmark 檔案
 
-### Small State (10 players, 5 cards)
-- 10 players: **2.6491ms**
-- 50 players: **2.5281ms**
-- 100 players: **2.4939ms**
-- 200 players: **2.4533ms**
+- **原始情境（players 通常不變）**
+  - dirty on：`docs/performance/transport-sync-dirty-on.txt`
+  - dirty off：`docs/performance/transport-sync-dirty-off.txt`
+- **更貼近實務（公開 players 也會每 tick 變動）**
+  - dirty on：`docs/performance/transport-sync-players-dirty-on.txt`
+  - dirty off：`docs/performance/transport-sync-players-dirty-off.txt`
 
-### Medium State (100 players, 10 cards)
-- 10 players: **2.5550ms**
-- 50 players: **3.0269ms** ⭐
-- 100 players: **2.8533ms**
-- 200 players: **7.8557ms**
+執行方式（Release）：
 
-### 30 人房間估算
-基於 Medium State 的數據：
-- 10 players: 2.5550ms
-- 50 players: 3.0269ms
-- **30 players（線性插值）**: ~**2.8ms** ⚡ **超快！**
-
-**關鍵發現**：50 人僅需 3ms，這是非常優秀的性能表現！
-
-## 計算假設
-
-### 1. Sync 頻率（Tick Rate）
-- **高頻率遊戲**（動作遊戲）：50ms/tick = 20 sync/秒
-- **中頻率遊戲**（策略遊戲）：100ms/tick = 10 sync/秒
-- **低頻率遊戲**（回合制）：500ms/tick = 2 sync/秒
-
-### 2. CPU 使用率
-- **每次 sync（30 人）**: 2.8ms ⚡
-- **其他開銷**（遊戲邏輯、網絡 I/O、系統開銷）：假設為 sync 時間的 50% = 1.4ms
-- **總計每次 tick**: 2.8ms + 1.4ms = **4.2ms**
-
-### 3. 8 核心 CPU 容量
-- **理論最大**：8 核心 × 1000ms = 8000ms CPU 時間/秒
-- **實際可用**（考慮系統開銷、調度損失）：假設 80% 利用率 = **6400ms CPU 時間/秒**
-
-## 承載能力計算
-
-### 場景 1：高頻率遊戲（50ms/tick = 20 sync/秒）
-```
-每個房間每秒 CPU 使用 = 4.2ms × 20 = 84ms/秒
-可承載房間數 = 6400ms / 84ms = ~76 個房間
+```bash
+bash Tools/CLI/run-transport-sync-benchmarks.sh
 ```
 
-### 場景 2：中頻率遊戲（100ms/tick = 10 sync/秒）
+## Benchmark 模型（你在估算時要知道的假設）
+
+### State 結構（精簡）
+
+`TransportAdapterSyncBenchmarkRunner` 目前用的狀態是：
+
+- broadcast：`round`、`players: [PlayerID: BenchmarkPlayerState]`
+- per-player：`hands: [PlayerID: BenchmarkHandState]`
+
+### 兩種情境差異
+
+- `transport-sync`：每 tick **一定改 `round`**，另外改一部分玩家的 `hands`（依 dirty ratio），但 **通常不改 `players`**。
+- `transport-sync-players`：在上述基礎上，另外每 tick **也會改 `players`（預設 ~100% 玩家）**，模擬「位置/HP/狀態等公開資訊常常更新」。
+
+### dirty ratio 的意思
+
+這裡的 Low/Medium/High 是「每 tick 會被挑中去改 per-player hands 的玩家比例（約略）」：
+
+- Low：~5%
+- Medium：~20%
+- High：~80%
+
+> 注意：目前 dirty tracking 是「欄位名」粒度，像 `hands` 只要任何玩家改到，實作上仍會對所有玩家做 per-player snapshot/diff（只是比對範圍縮小到 `hands` 欄位本身）。因此玩家數上升時仍會看到 O(players) 的成本。
+
+## 最新數據（建議用 Medium State 估算）
+
+下面列的是 **Medium State（Cards/Player: 10）**，取 **30 人房間** 與 **50 人房間** 的平均時間（100 iterations）。
+
+### 情境 A：`transport-sync`（players 通常不變）
+
+| Dirty Ratio | 30 人（dirty on） | 30 人（dirty off） | 50 人（dirty on） | 50 人（dirty off） |
+| --- | ---: | ---: | ---: | ---: |
+| Low ~5% | 1.0236ms | 1.2403ms | 1.3125ms | 1.5122ms |
+| Medium ~20% | 2.6569ms | 4.3845ms | 3.6410ms | 6.1370ms |
+| High ~80% | 7.8179ms | 11.2919ms | 11.0818ms | 15.1113ms |
+
+### 情境 B：`transport-sync-players`（公開 players 也會變）
+
+| Dirty Ratio | 30 人（dirty on） | 30 人（dirty off） | 50 人（dirty on） | 50 人（dirty off） |
+| --- | ---: | ---: | ---: | ---: |
+| Low hands ~5% | 1.1023ms | 1.2832ms | 1.5308ms | 1.7293ms |
+| Medium hands ~20% | 6.8705ms | 8.1062ms | 9.7098ms | 14.3067ms |
+| High hands ~80% | 20.5187ms | 21.1264ms | 24.1068ms | 29.2436ms |
+
+> 解讀：當 `players` 也變動時（情境 B），sync 成本會明顯上升，而且 dirty tracking 的優勢通常會縮小（因為最大的 broadcast payload 變成「每 tick 都是 dirty」）。
+
+## 容量估算方式（8 核心 / 80% 可用 CPU）
+
+### 基本變數
+
+- `syncMs`：benchmark 的 `syncNow()` 平均時間（毫秒）
+- `tickHz`：每秒同步次數（例如 20Hz = 50ms/tick）
+- `overheadFactor`：除 sync 以外的 server 開銷比例（遊戲邏輯、action/event、排程、logging、真實 I/O…）
+  - 例如 `0.5` 代表其他開銷約等於 sync 的 50%
+- `cpuBudgetMsPerSec`：CPU 每秒可用時間
+  - 8 核心 × 1000ms × 0.8 ≈ **6400ms/秒**
+
+估算公式：
+
 ```
-每個房間每秒 CPU 使用 = 4.2ms × 10 = 42ms/秒
-可承載房間數 = 6400ms / 42ms = ~152 個房間
+roomCpuPerSec = syncMs * (1 + overheadFactor) * tickHz
+rooms = cpuBudgetMsPerSec / roomCpuPerSec
 ```
 
-### 場景 3：低頻率遊戲（500ms/tick = 2 sync/秒）
-```
-每個房間每秒 CPU 使用 = 4.2ms × 2 = 8.4ms/秒
-可承載房間數 = 6400ms / 8.4ms = ~760 個房間
-```
+### 用情境 B（公開 players 也會變）做 30 人房間示例
 
-## 保守估算（考慮安全邊際）
+以 **Medium State / 30 人 / dirty on** 為例：
 
-### 建議配置（30 人房間）
-- **高頻率遊戲**（50ms/tick）：**55-65 個房間**（預留 20-30% 緩衝）
-- **中頻率遊戲**（100ms/tick）：**110-130 個房間**（預留 20-30% 緩衝）
-- **低頻率遊戲**（500ms/tick）：**550-650 個房間**（預留 20-30% 緩衝）
+- Low hands ~5%：`syncMs = 1.1023`
+- Medium hands ~20%：`syncMs = 6.8705`
+- High hands ~80%：`syncMs = 20.5187`
 
-### 性能亮點 ⚡
-- **30 人房間僅需 2.8ms** - 這是**超快**的性能！
-- **50 人房間僅需 3ms** - 即使是大房間也表現優秀
-- 可以輕鬆支持高頻率遊戲（20fps+）
+假設 `overheadFactor = 0.5`：
 
-## 影響因素
+- **20Hz（50ms/tick）**
+  - Low：`rooms ≈ 6400 / (1.1023 * 1.5 * 20) ≈ 193`
+  - Medium：`rooms ≈ 6400 / (6.8705 * 1.5 * 20) ≈ 31`
+  - High：`rooms ≈ 6400 / (20.5187 * 1.5 * 20) ≈ 10`
+- **10Hz（100ms/tick）**
+  - Low：約 386
+  - Medium：約 62
+  - High：約 21
 
-### 會降低承載能力的因素：
-1. **更複雜的遊戲邏輯**：tick handler 執行時間更長
-2. **更多玩家操作**：action/event 處理增加 CPU 使用
-3. **網絡 I/O 阻塞**：如果網絡發送是同步的
-4. **狀態大小增加**：更多數據需要序列化
+> 這個範圍差很大是正常的：同步成本主要由「每 tick 你到底改了多少東西」決定。
 
-### 會提高承載能力的因素：
-1. **Dirty Tracking 優化**：只同步變化的字段（已實現）
-2. **批次處理**：多個操作合併處理
-3. **異步 I/O**：網絡發送不阻塞（已實現）
-4. **更高效的編碼**：減少序列化開銷
+## 實務建議
 
-## 實際建議
-
-### 生產環境配置
-- **目標 CPU 使用率**：60-70%（預留緩衝應對峰值）
-- **監控指標**：
-  - 每個房間的平均 CPU 時間
-  - Sync 延遲（從 tick 到發送完成的時間）
-  - 房間數量 vs CPU 使用率
-
-### 擴展策略
-1. **水平擴展**：多個 8 核心實例，使用負載均衡
-2. **垂直擴展**：升級到 16 核心或更高
-3. **優化**：減少 tick 頻率、優化遊戲邏輯、使用更高效的序列化
-
-## 性能等級評估
-
-### Sync 延遲（30 人：2.8ms，50 人：3ms）
-- **等級**：⭐⭐⭐⭐⭐ **超快（Ultra Fast）** ⚡
-- **業界標準**：
-  - < 5ms：優秀（適合高頻率遊戲）
-  - 5-10ms：良好（適合中頻率遊戲）
-  - 10-20ms：一般（適合低頻率遊戲）
-  - > 20ms：需要優化
-- **評價**：
-  - **30 人房間 2.8ms** - 超快！可以支持 30fps+ 的高頻率遊戲
-  - **50 人房間 3ms** - 即使是大房間也表現優秀
-  - 這是非常頂級的性能表現，遠超一般框架
-
-### 吞吐量（房間數/核心，30 人房間）
-- **等級**：⭐⭐⭐⭐⭐ **優秀（Excellent）**
-- **8 核心承載能力**：
-  - 高頻率（50ms tick）：55-65 房間 = **~7-8 房間/核心**
-  - 中頻率（100ms tick）：110-130 房間 = **~14-16 房間/核心**
-  - 低頻率（500ms tick）：550-650 房間 = **~69-81 房間/核心**
-- **評價**：即使是大房間（30 人），吞吐量依然優秀，與頂級框架相當
-
-### 性能特點
-
-**關鍵數據**：
-- ✅ **30 人房間 sync 延遲**：2.8ms ⚡
-- ✅ **50 人房間 sync 延遲**：3ms
-- ✅ **吞吐量**：14-16 房間/核心（中頻率遊戲）
-
-**性能優勢**：
-- ✅ **編譯型語言**：Swift 使用 LLVM 編譯，性能接近 C/C++
-- ✅ **零成本抽象**：Actor 模型在編譯時優化，運行時開銷極小
-- ✅ **現代並發**：結構化並發模型，自動處理線程安全
-- ✅ **類型安全**：編譯時檢查，減少運行時開銷
-- ✅ **優化策略**：Dirty Tracking、快照模型等優化技術
-
-**注意**：實際性能會因以下因素而變化：
-- 狀態大小和複雜度
-- 網絡 I/O 實現方式
-- 序列化方法（JSON vs Binary）
-- 系統配置和優化程度
-- 硬體環境（不同 CPU 架構可能會有差異）
-
-### 綜合評價
-
-**總體等級**：⭐⭐⭐⭐⭐ **優秀（Excellent）** - **已達到 Go 的頂級性能水準** ✅
-
-**優勢**：
-1. ✅ **極低的 sync 延遲**（2.8ms，30人），適合高頻率遊戲
-2. ✅ **優秀的吞吐量**（14-16 房間/核心），表現優異
-3. ✅ **類型安全**（Swift），減少運行時錯誤，編譯時優化
-4. ✅ **現代並發模型**（Actor），自動處理線程安全
-5. ✅ **Dirty Tracking 優化**，只同步變化的字段
-6. ✅ **編譯型語言**（LLVM），性能接近 C/C++
-
-**可改進空間**：
-1. 🔄 可考慮二進制序列化（MessagePack/Protobuf）進一步降低延遲
-2. 🔄 可考慮批量處理多個房間的 sync 操作
-3. 🔄 可考慮更激進的緩存策略
-
-### 適用場景
-
-**非常適合**：
-- ✅ 實時多人遊戲（動作、競技）
-- ✅ 策略遊戲（MOBA、RTS）
-- ✅ 社交遊戲（需要頻繁狀態同步）
-
-**適合**：
-- ✅ 回合制遊戲（性能綽綽有餘）
-- ✅ 大型多人在線遊戲（需要水平擴展）
-
-**不適合**：
-- ❌ 超大型 MMO（需要專門的架構）
-- ❌ 純靜態內容（不需要實時同步）
-
-## 驗證方法
-
-建議在生產環境中：
-1. 逐步增加房間數量，監控 CPU 使用率
-2. 測量實際的 sync 時間（可能與 benchmark 有差異）
-3. 觀察延遲和吞吐量指標
-4. 根據實際數據調整估算
+1. **如果你的遊戲每 tick 都會刷新大多數玩家的公開狀態**（位置/速度/HP…），請以 `transport-sync-players-*.txt` 作為估算基準。
+2. **Dirty tracking 是否要開**：在 Medium/High 變動的情境下，dirty on 通常更划算；但在「接近全量變動」且 state 結構特殊時，dirty off 可能接近甚至略快（請用你的 state 實測）。
+3. **下一個瓶頸通常是 O(players) per-player diff**：目前只知道「hands 欄位 dirty」，不知道「哪些 PlayerID 的 hands 改了」，所以玩家數大時仍會線性成長；要再往下壓，需要 key-level dirty（例如 `ReactiveDictionary.dirtyKeys`）或回傳受影響 PlayerIDs。
 
