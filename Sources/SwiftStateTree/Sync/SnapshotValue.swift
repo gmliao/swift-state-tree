@@ -41,74 +41,140 @@ public enum SnapshotValue: Equatable, Codable, Sendable {
         if case let .bool(value) = self { return value }
         return nil
     }
-    
+
     // MARK: - Custom Codable Implementation
-    
-    private enum CodingKeys: String, CodingKey {
-        case type
-        case value
+
+    private struct DynamicCodingKey: CodingKey {
+        var stringValue: String
+        var intValue: Int?
+
+        init?(stringValue: String) {
+            self.stringValue = stringValue
+            self.intValue = nil
+        }
+
+        init?(intValue: Int) {
+            self.stringValue = String(intValue)
+            self.intValue = intValue
+        }
     }
-    
+
     public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        
         switch self {
         case .null:
-            try container.encode("null", forKey: .type)
-            // null has no value
+            var container = encoder.singleValueContainer()
+            try container.encodeNil()
         case .bool(let value):
-            try container.encode("bool", forKey: .type)
-            try container.encode(value, forKey: .value)
+            var container = encoder.singleValueContainer()
+            try container.encode(value)
         case .int(let value):
-            try container.encode("int", forKey: .type)
-            try container.encode(value, forKey: .value)
+            var container = encoder.singleValueContainer()
+            try container.encode(value)
         case .double(let value):
-            try container.encode("double", forKey: .type)
-            try container.encode(value, forKey: .value)
+            var container = encoder.singleValueContainer()
+            try container.encode(value)
         case .string(let value):
-            try container.encode("string", forKey: .type)
-            try container.encode(value, forKey: .value)
-        case .array(let value):
-            try container.encode("array", forKey: .type)
-            try container.encode(value, forKey: .value)
-        case .object(let value):
-            try container.encode("object", forKey: .type)
-            try container.encode(value, forKey: .value)
+            var container = encoder.singleValueContainer()
+            try container.encode(value)
+        case .array(let values):
+            var container = encoder.unkeyedContainer()
+            for element in values {
+                try container.encode(element)
+            }
+        case .object(let values):
+            var container = encoder.container(keyedBy: DynamicCodingKey.self)
+            for (key, value) in values {
+                guard let codingKey = DynamicCodingKey(stringValue: key) else { continue }
+                try container.encode(value, forKey: codingKey)
+            }
         }
     }
-    
+
     public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let type = try container.decode(String.self, forKey: .type)
-        
-        switch type {
-        case "null":
+        let singleValueContainer = try decoder.singleValueContainer()
+
+        if singleValueContainer.decodeNil() {
             self = .null
-        case "bool":
-            let value = try container.decode(Bool.self, forKey: .value)
-            self = .bool(value)
-        case "int":
-            let value = try container.decode(Int.self, forKey: .value)
-            self = .int(value)
-        case "double":
-            let value = try container.decode(Double.self, forKey: .value)
-            self = .double(value)
-        case "string":
-            let value = try container.decode(String.self, forKey: .value)
-            self = .string(value)
-        case "array":
-            let value = try container.decode([SnapshotValue].self, forKey: .value)
-            self = .array(value)
-        case "object":
-            let value = try container.decode([String: SnapshotValue].self, forKey: .value)
-            self = .object(value)
-        default:
-            throw DecodingError.dataCorruptedError(
-                forKey: .type,
-                in: container,
-                debugDescription: "Unknown SnapshotValue type: \(type)"
-            )
+            return
         }
+        if let boolValue = try? singleValueContainer.decode(Bool.self) {
+            self = .bool(boolValue)
+            return
+        }
+        if let intValue = try? singleValueContainer.decode(Int.self) {
+            self = .int(intValue)
+            return
+        }
+        if let doubleValue = try? singleValueContainer.decode(Double.self) {
+            self = .double(doubleValue)
+            return
+        }
+        if let stringValue = try? singleValueContainer.decode(String.self) {
+            self = .string(stringValue)
+            return
+        }
+        if let arrayValue = try? singleValueContainer.decode([SnapshotValue].self) {
+            self = .array(arrayValue)
+            return
+        }
+        if let objectValue = try? singleValueContainer.decode([String: SnapshotValue].self) {
+            if
+                let legacyType = objectValue["type"]?.stringValue,
+                objectValue.count <= 2
+            {
+                switch legacyType {
+                case "null":
+                    self = .null
+                    return
+                case "bool":
+                    guard let legacyValue = objectValue["value"]?.boolValue else {
+                        break
+                    }
+                    self = .bool(legacyValue)
+                    return
+                case "int":
+                    guard let legacyValue = objectValue["value"]?.intValue else {
+                        break
+                    }
+                    self = .int(legacyValue)
+                    return
+                case "double":
+                    guard let legacyValue = objectValue["value"]?.doubleValue else {
+                        break
+                    }
+                    self = .double(legacyValue)
+                    return
+                case "string":
+                    guard let legacyValue = objectValue["value"]?.stringValue else {
+                        break
+                    }
+                    self = .string(legacyValue)
+                    return
+                case "array":
+                    guard let legacyValue = objectValue["value"]?.arrayValue else {
+                        break
+                    }
+                    self = .array(legacyValue)
+                    return
+                case "object":
+                    guard let legacyValue = objectValue["value"]?.objectValue else {
+                        break
+                    }
+                    self = .object(legacyValue)
+                    return
+                default:
+                    break
+                }
+            }
+
+            self = .object(objectValue)
+            return
+        }
+
+        throw DecodingError.dataCorruptedError(
+            in: singleValueContainer,
+            debugDescription: "Unsupported SnapshotValue payload"
+        )
     }
 }
 

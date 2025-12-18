@@ -114,38 +114,22 @@
 - 詳細資訊有助於調試
 - 可以擴展新的錯誤類型
 
-### 3. SnapshotValue 使用 `_0` 格式
+### 3. SnapshotValue 使用原生 JSON 形狀
 
-**目前格式：**
-```json
-{
-  "int": {
-    "_0": 80
-  }
-}
-```
-
-**目標格式（選項 A - type + value）：**
-```json
-{
-  "type": "int",
-  "value": 80
-}
-```
-
-**目標格式（選項 B - 直接值，但會失去類型區分）：**
+**目前格式（已採用）：**
 ```json
 80
 ```
 
-**目標格式（選項 C - 加上 label）：**
-```json
-{
-  "int": {
-    "value": 80
-  }
-}
-```
+**說明：**
+- `.null` → `null`
+- `.bool` → `true` / `false`
+- `.int` / `.double` → `number`
+- `.string` → `string`
+- `.array` → `[]`（元素為 SnapshotValue）
+- `.object` → `{}`（value 為 SnapshotValue）
+
+此格式移除 `type + value` 包裝，直接對應 JSON 原生類型，並在解碼時保留向後相容的 `type + value` 兼容處理。
 
 ## 改進方案
 
@@ -316,39 +300,15 @@ public enum ErrorCode: String {
 - `docs/protocol/TRANSPORT_PROTOCOL.md`
 - 所有相關單元測試
 
-### 方案 3: SnapshotValue 自定義編碼（複雜）
+### 方案 3: SnapshotValue 原生編碼（已採用）
 
-**選項 A - type + value 格式（推薦）：**
-```swift
-public enum SnapshotValue: Equatable, Codable, Sendable {
-    case null
-    case bool(Bool)
-    case int(Int)
-    // ...
-    
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        switch self {
-        case .null:
-            try container.encode("null", forKey: .type)
-        case .bool(let value):
-            try container.encode("bool", forKey: .type)
-            try container.encode(value, forKey: .value)
-        case .int(let value):
-            try container.encode("int", forKey: .type)
-            try container.encode(value, forKey: .value)
-        // ...
-        }
-    }
-}
-```
+**實作重點：**
+- 直接使用 JSON 原生類型表示 SnapshotValue（`null/bool/number/string/array/object`）。
+- 編碼不包裝 `type + value`；解碼時仍支援舊版 `type + value` 以保持相容。
 
-**編碼結果：**
+**範例：**
 ```json
-{
-  "type": "int",
-  "value": 80
-}
+80
 ```
 
 **影響範圍：**
@@ -399,4 +359,3 @@ public enum SnapshotValue: Equatable, Codable, Sendable {
 1. 單元測試：確保所有 Codable 編碼/解碼測試通過
 2. 整合測試：確保 Playground 能正確解析新格式
 3. 文檔測試：確保所有範例都反映新格式
-
