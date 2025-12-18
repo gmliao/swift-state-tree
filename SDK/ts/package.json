@@ -19,9 +19,13 @@
       "types": "./dist/types/index.d.ts"
     }
   },
+  "bin": {
+    "@swiftstatetree/sdk": "./dist/cli.js"
+  },
   "scripts": {
     "build": "tsc",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "codegen": "node ./dist/cli.js codegen --input ./schema.json --output ./src/generated"
   },
   "dependencies": {},
   "devDependencies": {

@@ -134,8 +134,10 @@ export class StateTreeRuntime {
   removeView(landID: string): void {
     const view = this.views.get(landID)
     if (view) {
-      view.destroy()
+      // Remove from map first to prevent infinite recursion
       this.views.delete(landID)
+      // Then destroy the view (which won't call removeView again)
+      view.destroy()
     }
   }
 
