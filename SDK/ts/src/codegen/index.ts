@@ -5,6 +5,8 @@ import { generateDefsTs } from './generateDefsFile.js'
 import { generateStateTreeFiles } from './generateStateTreeFiles.js'
 import { writeFileRecursive } from './writeFile.js'
 
+export type Framework = 'vue' | 'react'
+
 export interface CodegenOptions {
   /**
    * Input schema source. Can be a file path or an HTTP(S) URL.
@@ -15,6 +17,14 @@ export interface CodegenOptions {
    * Typically something like "./src/generated".
    */
   outputDir: string
+  /**
+   * Optional framework-specific helper generation.
+   * If specified, generates framework-specific composable/hook helpers.
+   * - 'vue': Generates Vue composable (useDemoGame.ts)
+   * - 'react': Generates React hook (useDemoGame.ts) - future support
+   * - undefined: Only generates framework-agnostic StateTree class
+   */
+  framework?: Framework
 }
 
 export async function runCodegen(options: CodegenOptions): Promise<void> {
@@ -34,6 +44,6 @@ export async function runCodegen(options: CodegenOptions): Promise<void> {
   await writeFileRecursive(defsPath, defsTs)
 
   // Per-land wrappers
-  await generateStateTreeFiles(schema, outputDir)
+  await generateStateTreeFiles(schema, outputDir, options.framework)
 }
 
