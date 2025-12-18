@@ -729,29 +729,26 @@ public struct SyncMetadata: Codable, Sendable {
 
 ## 預設值格式
 
-預設值使用 `SnapshotValue` 格式編碼，採用 `type + value` 結構：
+預設值使用 `SnapshotValue` 的原生 JSON 表示：
 
 ```json
 {
   "type": "integer",
-  "default": {
-    "type": "int",
-    "value": 0
-  }
+  "default": 0
 }
 ```
 
 ### SnapshotValue 編碼格式
 
-預設值遵循 `SnapshotValue` 的自定義編碼格式（`type + value`）：
+預設值遵循 `SnapshotValue` 的原生 JSON 編碼：
 
-- **null**: `{ "type": "null" }`（沒有 value 欄位）
-- **bool**: `{ "type": "bool", "value": true }`
-- **int**: `{ "type": "int", "value": 100 }`
-- **double**: `{ "type": "double", "value": 3.14 }`
-- **string**: `{ "type": "string", "value": "hello" }`
-- **array**: `{ "type": "array", "value": [...] }`
-- **object**: `{ "type": "object", "value": {...} }`
+- **null**: `null`
+- **bool**: `true` / `false`
+- **int**: `100`
+- **double**: `3.14`
+- **string**: `"hello"`
+- **array**: `[...]`
+- **object**: `{ ... }`
 
 **範例：**
 
@@ -759,29 +756,20 @@ public struct SyncMetadata: Codable, Sendable {
 {
   "type": "object",
   "properties": {
-    "gold": {
-      "type": "integer",
-      "default": {
-        "type": "int",
-        "value": 0
-      }
-    },
-    "name": {
-      "type": "string",
-      "default": {
-        "type": "string",
-        "value": "Player"
-      }
-    },
+        "gold": {
+          "type": "integer",
+          "default": 0
+        },
+        "name": {
+          "type": "string",
+          "default": "Player"
+        },
     "items": {
       "type": "array",
       "items": {
         "type": "string"
       },
-      "default": {
-        "type": "array",
-        "value": []
-      }
+      "default": []
     }
   }
 }
@@ -855,4 +843,3 @@ const events = generateEvents(schema.lands)
 - [JSON Schema Specification](https://json-schema.org/)
 - [SwiftStateTree Protocol Schema 設計](./DESIGN_PROTOCOL_SCHEMA.md)
 - [Transport Protocol](./TRANSPORT_PROTOCOL.md)
-

@@ -257,39 +257,52 @@ export class SwiftStateTreeClient {
 
   private decodeSnapshotValue(value: any): any {
     if (value === null || value === undefined) return null
-    if (typeof value !== 'object') return value
+    if (typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string') {
+      return value
+    }
+    if (Array.isArray(value)) {
+      return value.map((item: any) => this.decodeSnapshotValue(item))
+    }
+    if (value && typeof value === 'object') {
+      const keys = Object.keys(value)
+      const isLegacySnapshotValue =
+        typeof (value as any).type === 'string' &&
+        keys.every(key => key === 'type' || key === 'value')
 
-    if ('type' in value) {
-      const type = value.type
-      if (type === 'null') return null
-      if (!('value' in value)) {
-        throw new Error(`Invalid SnapshotValue: type "${type}" requires "value" field`)
-      }
-      const val = value.value
-
-      switch (type) {
-        case 'bool':
-        case 'int':
-        case 'double':
-        case 'string':
-          return val
-        case 'array':
-          if (Array.isArray(val)) {
-            return val.map((item: any) => this.decodeSnapshotValue(item))
-          }
-          throw new Error(`Invalid SnapshotValue array: expected array, got ${typeof val}`)
-        case 'object':
-          if (val && typeof val === 'object') {
-            const result: Record<string, any> = {}
-            for (const [key, v] of Object.entries(val)) {
-              result[key] = this.decodeSnapshotValue(v)
+      if (isLegacySnapshotValue) {
+        const type = (value as any).type
+        const legacyValue = (value as any).value
+        switch (type) {
+          case 'null':
+            return null
+          case 'bool':
+          case 'int':
+          case 'double':
+          case 'string':
+            return legacyValue
+          case 'array':
+            return Array.isArray(legacyValue)
+              ? legacyValue.map((item: any) => this.decodeSnapshotValue(item))
+              : legacyValue
+          case 'object':
+            if (legacyValue && typeof legacyValue === 'object') {
+              const result: Record<string, any> = {}
+              for (const [key, v] of Object.entries(legacyValue)) {
+                result[key] = this.decodeSnapshotValue(v)
+              }
+              return result
             }
-            return result
-          }
-          throw new Error(`Invalid SnapshotValue object: expected object, got ${typeof val}`)
-        default:
-          throw new Error(`Unknown SnapshotValue type: ${type}`)
+            return legacyValue
+          default:
+            throw new Error(`Unknown SnapshotValue type: ${type}`)
+        }
       }
+
+      const result: Record<string, any> = {}
+      for (const [key, v] of Object.entries(value)) {
+        result[key] = this.decodeSnapshotValue(v)
+      }
+      return result
     }
 
     throw new Error(`Invalid SnapshotValue format: ${JSON.stringify(value)}`)
@@ -488,4 +501,3 @@ export class SwiftStateTreeClient {
     this.isJoined = false
   }
 }
-

@@ -594,10 +594,7 @@ public enum StateUpdate: Equatable, Sendable, Codable {
     {
       "op": "replace",
       "path": "/players/player-1/hpCurrent",
-      "value": {
-        "type": "int",
-        "value": 80
-      }
+      "value": 80
     },
     {
       "op": "remove",
@@ -607,7 +604,7 @@ public enum StateUpdate: Equatable, Sendable, Codable {
 }
 ```
 
-**注意：** `value` 欄位使用 `SnapshotValue` 編碼格式（見下方說明），使用 `type + value` 格式。
+**注意：** `value` 欄位使用 `SnapshotValue` 的原生 JSON 表示（見下方說明），不再有額外包裝。
 
 ### StatePatch 格式
 
@@ -640,10 +637,7 @@ public enum PatchOperation: Equatable, Sendable, Codable {
 {
   "op": "replace",
   "path": "/players/player-1/hpCurrent",
-  "value": {
-    "type": "int",
-    "value": 80
-  }
+  "value": 80
 }
 ```
 
@@ -658,7 +652,7 @@ public enum PatchOperation: Equatable, Sendable, Codable {
 
 **編碼細節：**
 
-`value` 欄位使用 `SnapshotValue` 編碼格式（見下方 `SnapshotValue` 說明），使用 `type + value` 格式而不是 `_0` 格式。
+`value` 欄位使用 `SnapshotValue` 的原生 JSON 表示（見下方 `SnapshotValue` 說明）。
 
 **路徑格式：**
 
@@ -675,34 +669,13 @@ public enum PatchOperation: Equatable, Sendable, Codable {
 ```json
 {
   "values": {
-    "round": {
-      "type": "int",
-      "value": 1
-    },
-    "turn": {
-      "type": "string",
-      "value": "player-1"
-    },
+    "round": 1,
+    "turn": "player-1",
     "players": {
-      "type": "object",
-      "value": {
-        "player-1": {
-          "type": "object",
-          "value": {
-            "name": {
-              "type": "string",
-              "value": "Alice"
-            },
-            "hpCurrent": {
-              "type": "int",
-              "value": 100
-            },
-            "hpMax": {
-              "type": "int",
-              "value": 100
-            }
-          }
-        }
+      "player-1": {
+        "name": "Alice",
+        "hpCurrent": 100,
+        "hpMax": 100
       }
     }
   }
@@ -727,52 +700,25 @@ public struct StateSnapshot: Sendable {
 
 ### SnapshotValue 編碼
 
-`SnapshotValue` 使用自定義編碼格式，統一為 `type + value` 結構：
+`SnapshotValue` 直接使用原生 JSON 形狀進行編碼：
 
-```typescript
-type SnapshotValue =
-  | { type: "null" }
-  | { type: "bool", value: boolean }
-  | { type: "int", value: number }
-  | { type: "double", value: number }
-  | { type: "string", value: string }
-  | { type: "array", value: SnapshotValue[] }
-  | { type: "object", value: Record<string, SnapshotValue> }
-```
-
-**編碼細節：**
-
-`SnapshotValue` 使用自定義 Codable 實現，編碼為 `{ "type": "...", "value": ... }` 格式：
-- `type`: 值類型識別符（"null", "bool", "int", "double", "string", "array", "object"）
-- `value`: 實際值（null 類型沒有 value 欄位）
-
-這種格式比 Swift 默認的 `_0` 格式更簡潔易讀，同時保持類型安全。
+- `.null` → `null`
+- `.bool` → `true` / `false`
+- `.int` / `.double` → `number`
+- `.string` → `string`
+- `.array` → JSON 陣列（元素為 `SnapshotValue`）
+- `.object` → JSON 物件（value 為 `SnapshotValue`）
 
 **範例：**
 
 ```json
 {
   "values": {
-    "round": {
-      "type": "int",
-      "value": 1
-    },
+    "round": 1,
     "players": {
-      "type": "object",
-      "value": {
-        "player-1": {
-          "type": "object",
-          "value": {
-            "name": {
-              "type": "string",
-              "value": "Alice"
-            },
-            "hpCurrent": {
-              "type": "int",
-              "value": 100
-            }
-          }
-        }
+      "player-1": {
+        "name": "Alice",
+        "hpCurrent": 100
       }
     }
   }
@@ -786,48 +732,15 @@ type SnapshotValue =
 ```typescript
 function decodeSnapshotValue(value: any): any {
   if (value === null || value === undefined) return null
-  if (typeof value !== 'object') return value
-
-  // Format: { type: "int", value: 80 }
-  if ('type' in value && 'value' in value) {
-    const type = value.type
-    const val = value.value
-    
-    switch (type) {
-      case 'null':
-        return null
-      case 'bool':
-        return val
-      case 'int':
-        return val
-      case 'double':
-        return val
-      case 'string':
-        return val
-      case 'array':
-        if (Array.isArray(val)) {
-          return val.map(item => decodeSnapshotValue(item))
-        }
-        return val
-      case 'object':
-        if (val && typeof val === 'object') {
-          const result: Record<string, any> = {}
-          for (const [key, v] of Object.entries(val)) {
-            result[key] = decodeSnapshotValue(v)
-          }
-          return result
-        }
-        return val
-      default:
-        throw new Error(`Unknown SnapshotValue type: ${type}`)
+  if (typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string') return value
+  if (Array.isArray(value)) return value.map(item => decodeSnapshotValue(item))
+  if (value && typeof value === 'object') {
+    const result: Record<string, any> = {}
+    for (const [key, v] of Object.entries(value)) {
+      result[key] = decodeSnapshotValue(v)
     }
+    return result
   }
-
-  // Handle null type (no value field)
-  if ('type' in value && value.type === 'null') {
-    return null
-  }
-
   throw new Error(`Invalid SnapshotValue format: ${JSON.stringify(value)}`)
 }
 ```
@@ -868,18 +781,16 @@ const payload = JSON.parse(payloadJson)
 
 **SnapshotValue 編碼：**
 
-`SnapshotValue` 使用自定義 Codable 實現，編碼為 `type + value` 格式：
-- `SnapshotValue.int(80)` → `{ "type": "int", "value": 80 }`
-- `SnapshotValue.string("hello")` → `{ "type": "string", "value": "hello" }`
-- `SnapshotValue.bool(true)` → `{ "type": "bool", "value": true }`
-- `SnapshotValue.null` → `{ "type": "null" }`（沒有 value 欄位）
+`SnapshotValue` 直接對應 JSON 原生類型：
+- `SnapshotValue.int(80)` → `80`
+- `SnapshotValue.string("hello")` → `"hello"`
+- `SnapshotValue.bool(true)` → `true`
+- `SnapshotValue.null` → `null`
 
 **StatePatch 的 value 欄位：**
 
-因為 `PatchOperation.set` 和 `PatchOperation.add` 的 associated value 是 `SnapshotValue` 類型，所以 value 欄位使用 `type + value` 格式：
-- `PatchOperation.set(SnapshotValue.int(80))` → `{ "op": "replace", "path": "...", "value": { "type": "int", "value": 80 } }`
-
-**注意：** 這些格式都是自定義的，不使用 Swift Codable 的默認 `_0` 格式，以提供更簡潔易讀的 JSON。
+因為 `PatchOperation.set` 和 `PatchOperation.add` 的 associated value 是 `SnapshotValue` 類型，所以 value 欄位直接是上述原生 JSON 值：
+- `PatchOperation.set(SnapshotValue.int(80))` → `{ "op": "replace", "path": "...", "value": 80 }`
 
 ### JSON Pointer 路徑
 
@@ -1105,4 +1016,3 @@ enum TransportEvent {
 - [JSON Patch (RFC 6902)](https://tools.ietf.org/html/rfc6902)
 - [JSON Pointer (RFC 6901)](https://tools.ietf.org/html/rfc6901)
 - [WebSocket Protocol (RFC 6455)](https://tools.ietf.org/html/rfc6455)
-
