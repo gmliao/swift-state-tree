@@ -649,17 +649,43 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Find handlers that can handle this event type
         let ctx = makeContext(playerID: playerID, clientID: clientID, sessionID: sessionID)
         
+        // Check if event is registered in the client event registry
+        guard let descriptor = definition.clientEventRegistry.findDescriptor(for: event.type) else {
+            logger.error(
+                "Client event type '\(event.type)' is not registered in ClientEvents { Register(...) }",
+                metadata: [
+                    "eventType": .string(event.type),
+                    "landID": .string(definition.id),
+                    "playerID": .string(playerID.rawValue)
+                ]
+            )
+            throw LandError.eventNotRegistered
+        }
+        
+        // Find handlers that can handle this event type
+        let matchingHandlers = definition.eventHandlers.filter { handler in
+            handler.canHandle(descriptor.type)
+        }
+        
+        guard !matchingHandlers.isEmpty else {
+            logger.error(
+                "No handler found for client event type '\(event.type)'",
+                metadata: [
+                    "eventType": .string(event.type),
+                    "landID": .string(definition.id),
+                    "playerID": .string(playerID.rawValue)
+                ]
+            )
+            throw LandError.eventNotRegistered
+        }
+        
         // Note: Event handlers don't currently support resolvers, but we prepare for it
         // If we add resolver support for events in the future, we would execute them here
         
         // withMutableStateSync is now synchronous - no await needed
         try withMutableStateSync { state in
-            for handler in definition.eventHandlers {
-                // Check if handler can handle this event type by looking up the descriptor
-                if let descriptor = definition.clientEventRegistry.findDescriptor(for: event.type),
-                   handler.canHandle(descriptor.type) {
-                    try handler.invoke(&state, event: event, ctx: ctx)
-                }
+            for handler in matchingHandlers {
+                try handler.invoke(&state, event: event, ctx: ctx)
             }
         }
     }
@@ -682,6 +708,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             clientID: clientID,
             sessionID: sessionID,
             services: services,
+            logger: logger,
             deviceID: deviceID ?? playerSession?.deviceID,
             metadata: metadata.isEmpty ? (playerSession?.metadata ?? [:]) : metadata,
             sendEventHandler: { [transport, logger, definition] anyEvent, target in
