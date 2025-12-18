@@ -2,6 +2,7 @@ import { join } from 'node:path'
 import type { LandDefinition, ProtocolSchema } from './schema.js'
 import { resolveRefName } from './typeMapper.js'
 import { writeFileRecursive } from './writeFile.js'
+import type { Framework } from './index.js'
 
 interface ActionBinding {
   id: string
@@ -24,13 +25,23 @@ function generateHeader(): string {
   ].join('\n')
 }
 
-export async function generateStateTreeFiles(schema: ProtocolSchema, outputDir: string): Promise<void> {
+export async function generateStateTreeFiles(
+  schema: ProtocolSchema,
+  outputDir: string,
+  framework?: Framework
+): Promise<void> {
   for (const [landID, landDef] of Object.entries(schema.lands)) {
-    await generateForLand(schema, landID, landDef, outputDir)
+    await generateForLand(schema, landID, landDef, outputDir, framework)
   }
 }
 
-async function generateForLand(schema: ProtocolSchema, landID: string, landDef: LandDefinition, outputDir: string): Promise<void> {
+async function generateForLand(
+  schema: ProtocolSchema,
+  landID: string,
+  landDef: LandDefinition,
+  outputDir: string,
+  framework?: Framework
+): Promise<void> {
   const landDir = join(outputDir, landID)
   const classBaseName = toPascalCase(landID)
   const className = `${classBaseName}StateTree`
@@ -44,6 +55,21 @@ async function generateForLand(schema: ProtocolSchema, landID: string, landDef: 
 
   await writeFileRecursive(join(landDir, 'bindings.ts'), bindingsSource)
   await writeFileRecursive(join(landDir, 'index.ts'), indexSource)
+
+  // Generate framework-specific helper if requested
+  if (framework === 'vue') {
+    const composableName = `use${classBaseName}`
+    const composableSource = generateVueComposable(
+      landID,
+      className,
+      composableName,
+      classBaseName,
+      actions,
+      clientEvents,
+      landDef.stateType
+    )
+    await writeFileRecursive(join(landDir, `${composableName}.ts`), composableSource)
+  }
 }
 
 function collectActionBindings(schema: ProtocolSchema, landDef: LandDefinition): ActionBinding[] {
@@ -369,6 +395,245 @@ function toCamelFromId(id: string): string {
   if (parts.length === 0) return id
   const [first, ...rest] = parts
   return first.toLowerCase() + rest.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join('')
+}
+
+function generateVueComposable(
+  landID: string,
+  className: string,
+  composableName: string,
+  classBaseName: string,
+  actions: ActionBinding[],
+  clientEvents: EventBinding[],
+  stateType: string
+): string {
+  const lines: string[] = []
+  lines.push(generateHeader())
+
+  lines.push("import { ref, reactive, computed } from 'vue'")
+  lines.push("import type { Ref, ComputedRef } from 'vue'")
+  lines.push("import { StateTreeRuntime } from '@swiftstatetree/sdk/core'")
+  lines.push(`import { ${className} } from './index.js'`)
+  lines.push(`import type { ${stateType} } from '../defs.js'`)
+  
+  // Import action and event payload types, and response types
+  const payloadTypes = new Set<string>()
+  const responseTypes = new Set<string>()
+  for (const action of actions) {
+    payloadTypes.add(action.payloadType)
+    if (action.responseType) {
+      responseTypes.add(action.responseType)
+    }
+  }
+  for (const event of clientEvents) {
+    payloadTypes.add(event.payloadType)
+  }
+  const allTypes = new Set([...payloadTypes, ...responseTypes])
+  if (allTypes.size > 0) {
+    const sortedTypes = [...allTypes].sort()
+    lines.push(`import type { ${sortedTypes.join(', ')} } from '../defs.js'`)
+  }
+  lines.push('')
+
+  lines.push('interface ConnectOptions {')
+  lines.push('  wsUrl: string')
+  lines.push('  playerName?: string')
+  lines.push('  playerID?: string')
+  lines.push('  deviceID?: string')
+  lines.push('  metadata?: Record<string, any>')
+  lines.push('}')
+  lines.push('')
+
+  // Module-level state (singleton pattern)
+  lines.push('const runtime = ref<StateTreeRuntime | null>(null)')
+  lines.push(`const tree = ref<${className} | null>(null)`)
+  lines.push('')
+  lines.push(`const state: Ref<${stateType} | null> = ref<${stateType} | null>(null)`)
+  lines.push('const currentPlayerID = ref<string | null>(null)')
+  lines.push('')
+  lines.push('const isConnecting = ref(false)')
+  lines.push('const isConnected = ref(false)')
+  lines.push('const isJoined = ref(false)')
+  lines.push('const lastError = ref<string | null>(null)')
+  lines.push('')
+
+  // Generate return type interface
+  const returnTypeName = `${classBaseName}ComposableReturn`
+  lines.push(`export interface ${returnTypeName} {`)
+  lines.push(`  state: Ref<${stateType} | null>`)
+  lines.push('  currentPlayerID: Ref<string | null>')
+  lines.push('  isConnecting: Ref<boolean>')
+  lines.push('  isConnected: Ref<boolean>')
+  lines.push('  isJoined: Ref<boolean>')
+  lines.push('  lastError: Ref<string | null>')
+  lines.push('  connect: (opts: ConnectOptions) => Promise<void>')
+  lines.push('  disconnect: () => Promise<void>')
+  
+  // Add action methods
+  for (const action of actions) {
+    const actionName = action.propertyName
+    const payloadType = action.payloadType
+    const responseType = action.responseType ?? 'any'
+    lines.push(`  ${actionName}: (payload: ${payloadType}) => Promise<${responseType}>`)
+  }
+  
+  // Add event methods
+  for (const event of clientEvents) {
+    const eventName = event.propertyName
+    const payloadType = event.payloadType
+    lines.push(`  ${eventName}: (payload: ${payloadType}) => Promise<void>`)
+  }
+  
+  lines.push(`  tree: ComputedRef<${className} | null>`)
+  lines.push('}')
+  lines.push('')
+  
+  lines.push(`export function ${composableName}(): ${returnTypeName} {`)
+  lines.push('')
+  lines.push('  async function connect(opts: ConnectOptions): Promise<void> {')
+  lines.push('    if (isConnecting.value || isConnected.value) return')
+  lines.push('')
+  lines.push('    isConnecting.value = true')
+  lines.push('    lastError.value = null')
+  lines.push('')
+  lines.push('    try {')
+  lines.push('      const r = new StateTreeRuntime()')
+  lines.push('      await r.connect(opts.wsUrl)')
+  lines.push('      runtime.value = r')
+  lines.push('      isConnected.value = true')
+  lines.push('')
+  lines.push('      const metadata: Record<string, any> = opts.metadata ?? {}')
+  lines.push('      if (opts.playerName && opts.playerName.trim().length > 0) {')
+  lines.push('        metadata.username = opts.playerName.trim()')
+  lines.push('      }')
+  lines.push('')
+  lines.push(`      const t = new ${className}(r, {`)
+  lines.push('        playerID: opts.playerID,')
+  lines.push('        deviceID: opts.deviceID,')
+  lines.push('        metadata,')
+  lines.push('        logger: {')
+  lines.push('          debug: () => {},')
+  lines.push('          info: (msg) => console.log(`[StateTree]`, msg),')
+  lines.push('          warn: (msg) => console.warn(`[StateTree]`, msg),')
+  lines.push('          error: (msg) => console.error(`[StateTree]`, msg)')
+  lines.push('        }')
+  lines.push('      })')
+  lines.push('      tree.value = t')
+  lines.push('')
+  lines.push('      const joinResult = await t.join()')
+  lines.push('      if (!joinResult.success) {')
+  lines.push('        throw new Error(joinResult.reason ?? \'Join failed\')')
+  lines.push('      }')
+  lines.push('')
+  lines.push('      currentPlayerID.value = joinResult.playerID ?? null')
+  lines.push('      ')
+  lines.push('      // Make t.state reactive so Vue can track changes directly')
+  lines.push('      // This allows direct access like state.players[playerID].cookies in templates')
+  lines.push(`      const reactiveState = reactive(t.state as ${stateType})`)
+  lines.push('      state.value = reactiveState')
+  lines.push('      ')
+  lines.push('      // Override t.state to point to reactiveState so syncInto updates it directly')
+  lines.push('      // This way syncInto will update the reactive object and Vue tracks it automatically')
+  lines.push('      Object.defineProperty(t, \'state\', {')
+  lines.push('        get: () => reactiveState,')
+  lines.push('        enumerable: true,')
+  lines.push('        configurable: true')
+  lines.push('      })')
+  lines.push('      ')
+  lines.push('      isJoined.value = true')
+  lines.push('    } catch (error) {')
+  lines.push('      const message = (error as Error).message ?? String(error)')
+  lines.push('      lastError.value = message')
+  lines.push('      console.error(\'Connect/join failed:\', error)')
+  lines.push('      await disconnect()')
+  lines.push('    } finally {')
+  lines.push('      isConnecting.value = false')
+  lines.push('    }')
+  lines.push('  }')
+  lines.push('')
+  lines.push('  async function disconnect(): Promise<void> {')
+  lines.push('    if (tree.value) {')
+  lines.push('      tree.value.destroy()')
+  lines.push('    }')
+  lines.push('    if (runtime.value && \'disconnect\' in runtime.value && typeof runtime.value.disconnect === \'function\') {')
+  lines.push('      runtime.value.disconnect()')
+  lines.push('    }')
+  lines.push('    runtime.value = null')
+  lines.push('    tree.value = null')
+  lines.push('    state.value = null')
+  lines.push('    currentPlayerID.value = null')
+  lines.push('    isConnected.value = false')
+  lines.push('    isJoined.value = false')
+  lines.push('  }')
+  lines.push('')
+
+  // Generate action wrappers
+  for (const action of actions) {
+    const actionName = action.propertyName
+    const payloadType = action.payloadType
+    const responseType = action.responseType ?? 'any'
+    lines.push(`  async function ${actionName}(payload: ${payloadType}): Promise<${responseType}> {`)
+    lines.push('    if (!tree.value || !isJoined.value) {')
+    lines.push(`      throw new Error('Not connected or not joined')`)
+    lines.push('    }')
+    lines.push('    try {')
+    lines.push(`      const res = await tree.value.actions.${actionName}(payload)`)
+    lines.push('      lastError.value = null')
+    lines.push('      return res')
+    lines.push('    } catch (error) {')
+    lines.push(`      console.error('${actionName} failed:', error)`)
+    lines.push('      lastError.value = (error as Error).message ?? String(error)')
+    lines.push('      throw error')
+    lines.push('    }')
+    lines.push('  }')
+    lines.push('')
+  }
+
+  // Generate event wrappers
+  for (const event of clientEvents) {
+    const eventName = event.propertyName
+    const payloadType = event.payloadType
+    lines.push(`  async function ${eventName}(payload: ${payloadType}): Promise<void> {`)
+    lines.push('    if (!tree.value || !isJoined.value) return')
+    lines.push('    try {')
+    lines.push(`      await tree.value.events.${eventName}(payload)`)
+    lines.push('      lastError.value = null')
+    lines.push('    } catch (error) {')
+    lines.push(`      console.error('${eventName} failed:', error)`)
+    lines.push('      lastError.value = (error as Error).message ?? String(error)')
+    lines.push('    }')
+    lines.push('  }')
+    lines.push('')
+  }
+
+  // Return object
+  lines.push('  return {')
+  lines.push('    state,')
+  lines.push('    currentPlayerID,')
+  lines.push('    isConnecting,')
+  lines.push('    isConnected,')
+  lines.push('    isJoined,')
+  lines.push('    lastError,')
+  lines.push('    connect,')
+  lines.push('    disconnect,')
+
+  // Add action methods
+  for (const action of actions) {
+    lines.push(`    ${action.propertyName},`)
+  }
+
+  // Add event methods
+  for (const event of clientEvents) {
+    lines.push(`    ${event.propertyName},`)
+  }
+
+  // Also expose tree for advanced usage
+  lines.push('    // Advanced: access to underlying tree instance')
+  lines.push(`    tree: computed(() => tree.value) as ComputedRef<${className} | null>`)
+  lines.push('  }')
+  lines.push('}')
+  lines.push('')
+
+  return lines.join('\n')
 }
 
 function inferResponseType(payloadType: string, defNames: Set<string>): string | undefined {

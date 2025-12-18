@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import ConnectionCard from '../components/ConnectionCard.vue'
 import { useRouter } from 'vue-router'
-import { useCookieGameTree } from '../composables/useCookieGameTree'
+import { useDemoGame } from '../generated/demo-game/useDemoGame'
 
 const router = useRouter()
 
@@ -12,7 +12,7 @@ const {
   lastError,
   connect,
   disconnect
-} = useCookieGameTree()
+} = useDemoGame()
 
 async function handleConnect(payload: { wsUrl: string; playerName?: string }) {
   await connect(payload)

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
 import CookieGameView from '../components/CookieGameView.vue'
-import { useCookieGameTree } from '../composables/useCookieGameTree'
+import { useDemoGame } from '../generated/demo-game/useDemoGame'
 
 const router = useRouter()
 
@@ -9,10 +9,18 @@ const {
   state,
   currentPlayerID,
   isJoined,
-  clickCookie,
-  buyUpgrade,
-  disconnect
-} = useCookieGameTree()
+  disconnect,
+  clickCookie: baseClickCookie,
+  buyUpgrade: baseBuyUpgrade
+} = useDemoGame()
+
+async function clickCookie(amount = 1) {
+  await baseClickCookie({ amount })
+}
+
+async function buyUpgrade(id: string) {
+  await baseBuyUpgrade({ upgradeID: id })
+}
 
 async function leaveGame() {
   await disconnect()

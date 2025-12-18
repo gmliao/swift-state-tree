@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview",
-    "codegen": "npx @swiftstatetree/sdk codegen --input http://localhost:8080/schema --output ./src/generated"
+    "codegen": "npx @swiftstatetree/sdk codegen --input http://localhost:8080/schema --output ./src/generated --framework vue"
   },
   "dependencies": {
     "@mdi/font": "^7.4.47",

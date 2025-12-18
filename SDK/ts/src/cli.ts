@@ -8,11 +8,11 @@ import { runCodegen } from './codegen/index.js'
 function printHelp(): void {
   // Intentionally minimal help text to avoid localization issues.
   console.log('Usage:')
-  console.log('  swiftstatetree-codegen codegen --input <schema.json|url> --output <dir>')
+  console.log('  swiftstatetree-codegen codegen --input <schema.json|url> --output <dir> [--framework vue|react]')
   console.log('')
   console.log('Examples:')
   console.log('  npx @swiftstatetree/sdk codegen --input ./schema.json --output ./src/generated')
-  console.log('  npx @swiftstatetree/sdk codegen --input https://example.com/schema --output ./src/generated')
+  console.log('  npx @swiftstatetree/sdk codegen --input https://example.com/schema --output ./src/generated --framework vue')
 }
 
 async function main(argv: string[]): Promise<void> {
@@ -32,6 +32,7 @@ async function main(argv: string[]): Promise<void> {
 
   let input: string | undefined
   let output: string | undefined
+  let framework: 'vue' | 'react' | undefined
 
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i]
@@ -39,6 +40,15 @@ async function main(argv: string[]): Promise<void> {
       input = rest[++i]
     } else if (arg === '--output' && rest[i + 1]) {
       output = rest[++i]
+    } else if (arg === '--framework' && rest[i + 1]) {
+      const fw = rest[++i]
+      if (fw === 'vue' || fw === 'react') {
+        framework = fw
+      } else {
+        console.error(`Unknown framework: ${fw}. Supported: vue, react`)
+        process.exitCode = 1
+        return
+      }
     }
   }
 
@@ -54,7 +64,8 @@ async function main(argv: string[]): Promise<void> {
   try {
     await runCodegen({
       input,
-      outputDir: resolvedOutput
+      outputDir: resolvedOutput,
+      framework
     })
   } catch (error) {
     console.error('Codegen failed:', (error as Error).message)
