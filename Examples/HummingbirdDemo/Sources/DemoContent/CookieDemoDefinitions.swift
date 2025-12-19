@@ -54,6 +54,52 @@ public struct CookieGameState: StateNodeProtocol {
     var ticks: Int = 0
     
     public init() {}
+    
+    // MARK: - Helper Functions
+    
+    // MARK: Read-only helpers (can be used in resolvers)
+    
+    /// Calculate total cookies from all players (read-only).
+    /// This can be used in resolvers or for validation.
+    func calculateTotalCookies() -> Int {
+        players.values.reduce(0) { $0 + $1.cookies }
+    }
+    
+    /// Get player state if it exists (read-only).
+    /// Returns nil if player doesn't exist.
+    func getPlayerState(playerID: PlayerID) -> (publicState: CookiePlayerPublicState, privateState: CookiePlayerPrivateState)? {
+        guard let publicState = players[playerID],
+              let privateState = privateStates[playerID] else {
+            return nil
+        }
+        return (publicState, privateState)
+    }
+    
+    // MARK: Mutating helpers (only for use in handlers with inout State)
+    
+    /// Recompute total cookies from all players and update the state.
+    /// This helper ensures the aggregate stays in sync with individual player states.
+    mutating func recomputeTotalCookies() {
+        totalCookies = calculateTotalCookies()
+    }
+    
+    /// Ensure player state exists, creating default state if needed.
+    /// Returns the public and private state for the player.
+    mutating func ensurePlayerState(playerID: PlayerID, defaultName: String? = nil) -> (publicState: CookiePlayerPublicState, privateState: CookiePlayerPrivateState) {
+        // Ensure public state exists
+        if players[playerID] == nil {
+            var publicState = CookiePlayerPublicState()
+            publicState.name = defaultName ?? playerID.rawValue
+            players[playerID] = publicState
+        }
+        
+        // Ensure private state exists
+        if privateStates[playerID] == nil {
+            privateStates[playerID] = CookiePlayerPrivateState()
+        }
+        
+        return (players[playerID]!, privateStates[playerID]!)
+    }
 }
 
 // MARK: - Client Events
@@ -128,13 +174,7 @@ public enum CookieGame {
                 // MARK: - Join / Leave
                 
                 CanJoin { (state: CookieGameState, session: PlayerSession, _: LandContext) in
-                    let currentPlayerCount = state.players.count
-                    let maxPlayers = 20
-                    
-                    guard currentPlayerCount < maxPlayers else {
-                        throw JoinError.roomIsFull
-                    }
-                    
+                    // maxPlayers is automatically checked by LandKeeper before this handler is called
                     let playerID = PlayerID(session.playerID)
                     return .allow(playerID: playerID)
                 }
@@ -152,16 +192,15 @@ public enum CookieGame {
                         playerName = playerID.rawValue
                     }
                     
-                    var publicState = CookiePlayerPublicState()
+                    // Use helper to ensure player state exists with custom name
+                    var (publicState, _) = state.ensurePlayerState(playerID: playerID, defaultName: playerName)
                     publicState.name = playerName
                     publicState.cookies = 0
                     publicState.cookiesPerSecond = 0
-                    
                     state.players[playerID] = publicState
-                    state.privateStates[playerID] = CookiePlayerPrivateState()
                     
                     // Recompute total cookies to keep aggregate in sync.
-                    state.totalCookies = state.players.values.reduce(0) { $0 + $1.cookies }
+                    state.recomputeTotalCookies()
                 }
                 
                 OnLeave { (state: inout CookieGameState, ctx: LandContext) in
@@ -170,7 +209,7 @@ public enum CookieGame {
                     state.privateStates.removeValue(forKey: playerID)
                     
                     // Recompute total cookies after player leaves.
-                    state.totalCookies = state.players.values.reduce(0) { $0 + $1.cookies }
+                    state.recomputeTotalCookies()
                 }
                 
                 // MARK: - Client Events
@@ -179,17 +218,7 @@ public enum CookieGame {
                     let playerID = ctx.playerID
                     
                     // Ensure player state exists (should normally be true after OnJoin).
-                    if state.players[playerID] == nil {
-                        var publicState = CookiePlayerPublicState()
-                        publicState.name = playerID.rawValue
-                        state.players[playerID] = publicState
-                    }
-                    if state.privateStates[playerID] == nil {
-                        state.privateStates[playerID] = CookiePlayerPrivateState()
-                    }
-                    
-                    var publicState = state.players[playerID]!
-                    var privateState = state.privateStates[playerID]!
+                    var (publicState, privateState) = state.ensurePlayerState(playerID: playerID)
                     
                     let delta = max(1, event.amount)
                     publicState.cookies += delta
@@ -199,7 +228,7 @@ public enum CookieGame {
                     state.privateStates[playerID] = privateState
                     
                     // Recompute total cookies.
-                    state.totalCookies = state.players.values.reduce(0) { $0 + $1.cookies }
+                    state.recomputeTotalCookies()
                 }
                 
                 // MARK: - Actions
@@ -208,17 +237,7 @@ public enum CookieGame {
                     let playerID = ctx.playerID
                     
                     // Ensure player state exists.
-                    if state.players[playerID] == nil {
-                        var publicState = CookiePlayerPublicState()
-                        publicState.name = playerID.rawValue
-                        state.players[playerID] = publicState
-                    }
-                    if state.privateStates[playerID] == nil {
-                        state.privateStates[playerID] = CookiePlayerPrivateState()
-                    }
-                    
-                    var publicState = state.players[playerID]!
-                    var privateState = state.privateStates[playerID]!
+                    var (publicState, privateState) = state.ensurePlayerState(playerID: playerID)
                     
                     let currentLevel = privateState.upgrades[action.upgradeID] ?? 0
                     
@@ -255,7 +274,7 @@ public enum CookieGame {
                     state.privateStates[playerID] = privateState
                     
                     // Recompute total cookies after purchase.
-                    state.totalCookies = state.players.values.reduce(0) { $0 + $1.cookies }
+                    state.recomputeTotalCookies()
                     
                     return BuyUpgradeResponse(
                         success: true,
