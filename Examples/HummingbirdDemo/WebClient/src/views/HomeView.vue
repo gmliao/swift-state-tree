@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import ConnectionCard from '../components/ConnectionCard.vue'
+import { ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useDemoGame } from '../generated/demo-game/useDemoGame'
 
 const router = useRouter()
+
+const wsUrl = ref('ws://localhost:8080/game')
+const playerName = ref('')
 
 const {
   isConnecting,
@@ -14,11 +17,18 @@ const {
   disconnect
 } = useDemoGame()
 
-async function handleConnect(payload: { wsUrl: string; playerName?: string }) {
-  await connect(payload)
-  if (isJoined.value) {
-    await router.push({ name: 'cookie-game' })
+// Auto redirect to game page when joined
+watch(isJoined, (joined) => {
+  if (joined) {
+    router.push({ name: 'cookie-game' })
   }
+})
+
+async function handleConnect() {
+  await connect({
+    wsUrl: wsUrl.value,
+    playerName: playerName.value || undefined
+  })
 }
 
 async function handleDisconnect() {
@@ -27,52 +37,136 @@ async function handleDisconnect() {
 </script>
 
 <template>
-  <v-app>
-    <v-main>
-      <v-container class="py-6" max-width="900">
-        <v-row>
-          <v-col cols="12">
-            <h2 class="mb-4">
-              CookieGame Demo
-            </h2>
-            <p class="text-body-2 mb-6">
-              這是一個用 SwiftStateTree + TypeScript codegen 建立的 Cookie Clicker 範例。
-              先在下方設定連線資訊，成功加入後會進入遊戲畫面。
-            </p>
-          </v-col>
-        </v-row>
+  <div class="container">
+    <h1>🍪 Cookie Clicker Demo</h1>
 
-        <v-row>
-          <v-col cols="12" md="6">
-            <ConnectionCard
-              :is-connecting="isConnecting"
-              :is-connected="isConnected"
-              :is-joined="isJoined"
-              :last-error="lastError"
-              @connect="handleConnect"
-              @disconnect="handleDisconnect"
-            />
-          </v-col>
-
-          <v-col cols="12" md="6">
-            <v-card>
-              <v-card-title>
-                <v-icon icon="mdi-help-circle" class="mr-2" />
-                說明
-              </v-card-title>
-              <v-card-text>
-                <ul class="text-body-2">
-                  <li>預設會連到 <code>ws://localhost:8080/game</code>。</li>
-                  <li>名稱可以先隨便輸入，或留空讓伺服器決定。</li>
-                  <li>點「連線並加入遊戲」成功後會自動進入 CookieGame 畫面。</li>
-                  <li>之後可以在這個首頁加上更多遊戲入口。</li>
-                </ul>
-              </v-card-text>
-            </v-card>
-          </v-col>
-        </v-row>
-      </v-container>
-    </v-main>
-  </v-app>
+    <div class="section">
+      <h2>Connect to Game</h2>
+      <div class="form">
+        <input
+          v-model="wsUrl"
+          placeholder="WebSocket URL"
+          class="input"
+        />
+        <input
+          v-model="playerName"
+          placeholder="Your name (optional)"
+          class="input"
+        />
+        <button
+          @click="handleConnect"
+          :disabled="isConnecting || isConnected"
+          class="btn btn-primary"
+        >
+          {{ isConnecting ? 'Connecting...' : 'Connect & Join' }}
+        </button>
+        <button
+          v-if="isConnected"
+          @click="handleDisconnect"
+          class="btn btn-secondary"
+        >
+          Disconnect
+        </button>
+      </div>
+      <div v-if="lastError" class="error">{{ lastError }}</div>
+      <div v-if="isConnected && !isJoined" class="info">Connected, joining game...</div>
+      <div v-if="isJoined" class="success">Joined! Redirecting to game...</div>
+    </div>
+  </div>
 </template>
 
+<style scoped>
+.container {
+  max-width: 600px;
+  margin: 0 auto;
+  padding: 40px 20px;
+}
+
+h1 {
+  text-align: center;
+  font-size: 2.5rem;
+  margin-bottom: 2rem;
+}
+
+h2 {
+  font-size: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.section {
+  background: #f9f9f9;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 2rem;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.input {
+  padding: 0.75rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 1rem;
+}
+
+.btn {
+  padding: 0.75rem 1.5rem;
+  border: none;
+  border-radius: 4px;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.btn-primary {
+  background-color: #4CAF50;
+  color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background-color: #45a049;
+}
+
+.btn-primary:disabled {
+  background-color: #ccc;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  background-color: #f44336;
+  color: white;
+}
+
+.btn-secondary:hover {
+  background-color: #da190b;
+}
+
+.error {
+  color: #f44336;
+  padding: 0.75rem;
+  background: #ffebee;
+  border-radius: 4px;
+  margin-top: 1rem;
+}
+
+.info {
+  color: #2196F3;
+  padding: 0.75rem;
+  background: #e3f2fd;
+  border-radius: 4px;
+  margin-top: 1rem;
+}
+
+.success {
+  color: #4CAF50;
+  padding: 0.75rem;
+  background: #e8f5e9;
+  border-radius: 4px;
+  margin-top: 1rem;
+}
+</style>

@@ -335,6 +335,21 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             return decision
         }
         
+        // Check maxPlayers limit after CanJoin handler (using the playerID returned by CanJoin)
+        // Skip check if player is already in the room (reconnection scenario)
+        let isReconnection = players[playerID] != nil
+        
+        if let maxPlayers = definition.config.maxPlayers, !isReconnection {
+            let currentPlayerCount = players.count
+            guard currentPlayerCount < maxPlayers else {
+                logger.info("Join rejected: room is full", metadata: [
+                    "currentPlayers": .stringConvertible(currentPlayerCount),
+                    "maxPlayers": .stringConvertible(maxPlayers)
+                ])
+                throw JoinError.roomIsFull
+            }
+        }
+        
         // Check for duplicate playerID login (Kick Old strategy)
         if let existingSession = players[playerID], let oldClientID = existingSession.clientID {
             logger.info("Duplicate playerID login detected: \(playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
