@@ -218,18 +218,12 @@ describe('StateTreeView', () => {
       const snapshot: StateSnapshot = {
         values: {
           players: {
-            type: 'object',
-            value: {
-              'player-1': {
-                type: 'object',
-                value: {
-                  name: { type: 'string', value: 'Player 1' },
-                  cookies: { type: 'int', value: 100 }
-                }
-              }
+            'player-1': {
+              name: 'Player 1',
+              cookies: 100
             }
           },
-          round: { type: 'int', value: 5 }
+          round: 5
         }
       }
 
@@ -255,14 +249,8 @@ describe('StateTreeView', () => {
       const snapshot: StateSnapshot = {
         values: {
           nested: {
-            type: 'object',
-            value: {
-              deep: {
-                type: 'object',
-                value: {
-                  value: { type: 'string', value: 'test' }
-                }
-              }
+            deep: {
+              value: 'test'
             }
           }
         }
@@ -279,11 +267,8 @@ describe('StateTreeView', () => {
       // Set initial state
       view.handleSnapshot({
         values: {
-          round: { type: 'int', value: 0 },
-          players: {
-            type: 'object',
-            value: {}
-          }
+          round: 0,
+          players: {}
         }
       })
     })
@@ -295,7 +280,7 @@ describe('StateTreeView', () => {
           {
             path: '/round',
             op: 'replace',
-            value: { type: 'int', value: 10 }
+            value: 10
           }
         ]
       }
@@ -304,7 +289,7 @@ describe('StateTreeView', () => {
       const customView = runtime.createView('test-land', { onStateUpdate })
       customView.handleSnapshot({
         values: {
-          round: { type: 'int', value: 0 }
+          round: 0
         }
       })
 
@@ -319,15 +304,9 @@ describe('StateTreeView', () => {
       view.handleSnapshot({
         values: {
           players: {
-            type: 'object',
-            value: {
-              'player-1': {
-                type: 'object',
-                value: {
-                  name: { type: 'string', value: 'Player 1' },
-                  cookies: { type: 'int', value: 0 }
-                }
-              }
+            'player-1': {
+              name: 'Player 1',
+              cookies: 0
             }
           }
         }
@@ -339,7 +318,7 @@ describe('StateTreeView', () => {
           {
             path: '/players/player-1/cookies',
             op: 'replace',
-            value: { type: 'int', value: 100 }
+            value: 100
           }
         ]
       }
@@ -354,14 +333,8 @@ describe('StateTreeView', () => {
       view.handleSnapshot({
         values: {
           players: {
-            type: 'object',
-            value: {
-              'player-1': {
-                type: 'object',
-                value: {
-                  name: { type: 'string', value: 'Player 1' }
-                }
-              }
+            'player-1': {
+              name: 'Player 1'
             }
           }
         }

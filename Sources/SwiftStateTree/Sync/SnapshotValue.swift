@@ -118,55 +118,6 @@ public enum SnapshotValue: Equatable, Codable, Sendable {
             return
         }
         if let objectValue = try? singleValueContainer.decode([String: SnapshotValue].self) {
-            if
-                let legacyType = objectValue["type"]?.stringValue,
-                objectValue.count <= 2
-            {
-                switch legacyType {
-                case "null":
-                    self = .null
-                    return
-                case "bool":
-                    guard let legacyValue = objectValue["value"]?.boolValue else {
-                        break
-                    }
-                    self = .bool(legacyValue)
-                    return
-                case "int":
-                    guard let legacyValue = objectValue["value"]?.intValue else {
-                        break
-                    }
-                    self = .int(legacyValue)
-                    return
-                case "double":
-                    guard let legacyValue = objectValue["value"]?.doubleValue else {
-                        break
-                    }
-                    self = .double(legacyValue)
-                    return
-                case "string":
-                    guard let legacyValue = objectValue["value"]?.stringValue else {
-                        break
-                    }
-                    self = .string(legacyValue)
-                    return
-                case "array":
-                    guard let legacyValue = objectValue["value"]?.arrayValue else {
-                        break
-                    }
-                    self = .array(legacyValue)
-                    return
-                case "object":
-                    guard let legacyValue = objectValue["value"]?.objectValue else {
-                        break
-                    }
-                    self = .object(legacyValue)
-                    return
-                default:
-                    break
-                }
-            }
-
             self = .object(objectValue)
             return
         }

@@ -501,50 +501,31 @@ export class StateTreeView {
 
   /**
    * Decode SnapshotValue
+   * 
+   * Decodes native JSON format:
+   * - null -> JSON null
+   * - bool -> JSON boolean
+   * - int/double -> JSON number
+   * - string -> JSON string
+   * - array -> JSON array
+   * - object -> JSON object
    */
   private decodeSnapshotValue(value: any): any {
+    // Handle null/undefined
     if (value === null || value === undefined) return null
+    
+    // Handle native JSON primitives
     if (typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string') {
       return value
     }
+    
+    // Handle native JSON arrays
     if (Array.isArray(value)) {
       return value.map((item: any) => this.decodeSnapshotValue(item))
     }
+    
+    // Handle native JSON objects: recursively decode all values
     if (value && typeof value === 'object') {
-      const keys = Object.keys(value)
-      const isLegacySnapshotValue =
-        typeof (value as any).type === 'string' &&
-        keys.every(key => key === 'type' || key === 'value')
-
-      if (isLegacySnapshotValue) {
-        const type = (value as any).type
-        const legacyValue = (value as any).value
-        switch (type) {
-          case 'null':
-            return null
-          case 'bool':
-          case 'int':
-          case 'double':
-          case 'string':
-            return legacyValue
-          case 'array':
-            return Array.isArray(legacyValue)
-              ? legacyValue.map((item: any) => this.decodeSnapshotValue(item))
-              : legacyValue
-          case 'object':
-            if (legacyValue && typeof legacyValue === 'object') {
-              const result: Record<string, any> = {}
-              for (const [key, v] of Object.entries(legacyValue)) {
-                result[key] = this.decodeSnapshotValue(v)
-              }
-              return result
-            }
-            return legacyValue
-          default:
-            throw new Error(`Unknown SnapshotValue type: ${type}`)
-        }
-      }
-
       const result: Record<string, any> = {}
       for (const [key, v] of Object.entries(value)) {
         result[key] = this.decodeSnapshotValue(v)

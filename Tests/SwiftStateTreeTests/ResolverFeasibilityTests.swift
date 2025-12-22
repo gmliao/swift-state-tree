@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import Logging
 @testable import SwiftStateTree
 
 // MARK: - Test ResolverOutput Types
@@ -188,6 +189,7 @@ func testContextResolver() async throws {
         clientID: ClientID("client-1"),
         sessionID: SessionID("session-1"),
         services: LandServices(),
+        logger: Logger(label: "test"),
         deviceID: nil,
         metadata: [:],
         sendEventHandler: { _, _ in },
@@ -217,6 +219,7 @@ func testParallelResolverExecutionAsyncLet() async throws {
         clientID: ClientID("client-1"),
         sessionID: SessionID("session-1"),
         services: LandServices(),
+        logger: Logger(label: "test"),
         deviceID: nil,
         metadata: [:],
         sendEventHandler: { _, _ in },
@@ -330,6 +333,7 @@ func testResolverErrorHandlingDirect() async throws {
         clientID: ClientID("client-1"),
         sessionID: SessionID("session-1"),
         services: LandServices(),
+        logger: Logger(label: "test"),
         deviceID: nil,
         metadata: [:],
         sendEventHandler: { _, _ in },
@@ -370,6 +374,7 @@ func testResolverErrorHandlingThroughExecutor() async throws {
         clientID: ClientID("client-1"),
         sessionID: SessionID("session-1"),
         services: LandServices(),
+        logger: Logger(label: "test"),
         deviceID: nil,
         metadata: [:],
         sendEventHandler: { _, _ in },
