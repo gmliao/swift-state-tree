@@ -6,6 +6,7 @@ import { generateStateTreeFiles } from './generateStateTreeFiles.js'
 import { writeFileRecursive } from './writeFile.js'
 
 export type Framework = 'vue' | 'react'
+export type TestFramework = 'vitest' | 'jest'
 
 export interface CodegenOptions {
   /**
@@ -25,6 +26,14 @@ export interface CodegenOptions {
    * - undefined: Only generates framework-agnostic StateTree class
    */
   framework?: Framework
+  /**
+   * Optional test framework for generating test helpers.
+   * If specified, generates test utilities and mock helpers.
+   * - 'vitest': Generates Vitest-compatible test helpers
+   * - 'jest': Generates Jest-compatible test helpers
+   * - undefined: Only generates basic mock utilities (framework-agnostic)
+   */
+  testFramework?: TestFramework
 }
 
 export async function runCodegen(options: CodegenOptions): Promise<void> {
@@ -44,6 +53,6 @@ export async function runCodegen(options: CodegenOptions): Promise<void> {
   await writeFileRecursive(defsPath, defsTs)
 
   // Per-land wrappers
-  await generateStateTreeFiles(schema, outputDir, options.framework)
+  await generateStateTreeFiles(schema, outputDir, options.framework, options.testFramework)
 }
 

@@ -8,11 +8,12 @@ import { runCodegen } from './codegen/index.js'
 function printHelp(): void {
   // Intentionally minimal help text to avoid localization issues.
   console.log('Usage:')
-  console.log('  swiftstatetree-codegen codegen --input <schema.json|url> --output <dir> [--framework vue|react]')
+  console.log('  swiftstatetree-codegen codegen --input <schema.json|url> --output <dir> [--framework vue|react] [--test-framework vitest|jest]')
   console.log('')
   console.log('Examples:')
   console.log('  npx @swiftstatetree/sdk codegen --input ./schema.json --output ./src/generated')
   console.log('  npx @swiftstatetree/sdk codegen --input https://example.com/schema --output ./src/generated --framework vue')
+  console.log('  npx @swiftstatetree/sdk codegen --input https://example.com/schema --output ./src/generated --framework vue --test-framework vitest')
 }
 
 async function main(argv: string[]): Promise<void> {
@@ -33,6 +34,7 @@ async function main(argv: string[]): Promise<void> {
   let input: string | undefined
   let output: string | undefined
   let framework: 'vue' | 'react' | undefined
+  let testFramework: 'vitest' | 'jest' | undefined
 
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i]
@@ -46,6 +48,15 @@ async function main(argv: string[]): Promise<void> {
         framework = fw
       } else {
         console.error(`Unknown framework: ${fw}. Supported: vue, react`)
+        process.exitCode = 1
+        return
+      }
+    } else if (arg === '--test-framework' && rest[i + 1]) {
+      const tf = rest[++i]
+      if (tf === 'vitest' || tf === 'jest') {
+        testFramework = tf
+      } else {
+        console.error(`Unknown test framework: ${tf}. Supported: vitest, jest`)
         process.exitCode = 1
         return
       }
@@ -65,7 +76,8 @@ async function main(argv: string[]): Promise<void> {
     await runCodegen({
       input,
       outputDir: resolvedOutput,
-      framework
+      framework,
+      testFramework
     })
   } catch (error) {
     console.error('Codegen failed:', (error as Error).message)
