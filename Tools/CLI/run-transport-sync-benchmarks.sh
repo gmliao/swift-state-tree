@@ -58,4 +58,3 @@ swift run -c release SwiftStateTreeBenchmarks transport-sync-players \
 echo ""
 echo "All transport-sync benchmarks completed."
 echo "Check generated txt files under: $OUT_DIR/"
-
