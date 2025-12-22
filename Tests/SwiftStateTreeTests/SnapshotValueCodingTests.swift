@@ -23,25 +23,23 @@ func testSnapshotValueEncodesAsNativeJSON() throws {
     #expect(json?["missing"] is NSNull)
 }
 
-@Test("Decodes legacy type/value SnapshotValue format")
-func testSnapshotValueDecodesLegacyFormat() throws {
-    let legacyJSON = """
+@Test("Decodes SnapshotValue using native JSON format")
+func testSnapshotValueDecodesNativeJSON() throws {
+    let nativeJSON = """
     {
-        "type": "object",
-        "value": {
-            "hp": { "type": "int", "value": 7 },
-            "name": { "type": "string", "value": "Bob" },
-            "dead": { "type": "bool", "value": false },
-            "inventory": { "type": "array", "value": [ { "type": "string", "value": "bow" } ] }
-        }
+        "hp": 7,
+        "name": "Bob",
+        "dead": false,
+        "inventory": ["bow"],
+        "missing": null
     }
     """
 
-    let data = Data(legacyJSON.utf8)
+    let data = Data(nativeJSON.utf8)
     let decoded = try JSONDecoder().decode(SnapshotValue.self, from: data)
 
     guard case let .object(object) = decoded else {
-        Issue.record("Expected object SnapshotValue from legacy format")
+        Issue.record("Expected object SnapshotValue from native JSON format")
         return
     }
 
@@ -49,4 +47,5 @@ func testSnapshotValueDecodesLegacyFormat() throws {
     #expect(object["name"] == .string("Bob"))
     #expect(object["dead"] == .bool(false))
     #expect(object["inventory"] == .array([.string("bow")]))
+    #expect(object["missing"] == .null)
 }
