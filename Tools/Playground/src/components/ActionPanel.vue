@@ -389,16 +389,6 @@ const handleSend = () => {
     }
 
     emit('send-action', selectedAction.value, payload, landID)
-
-    if (actionFields.value.length > 0) {
-      const nextPayload: Record<string, any> = {}
-      for (const field of actionFields.value) {
-        nextPayload[field.name] = ''
-      }
-      payloadModel.value = nextPayload
-    } else {
-      actionPayload.value = '{}'
-    }
   } catch (err) {
     alert(`發送失敗: ${err}`)
   }

@@ -20,14 +20,21 @@
     }
   },
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch"
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsc -p tsconfig.build.json --watch",
+    "test": "vitest",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest --coverage",
+    "test:run": "vitest run"
   },
   "dependencies": {},
   "devDependencies": {
     "@types/node": "^20.10.0",
     "@types/ws": "^8.5.10",
-    "typescript": "^5.3.0"
+    "@vitest/coverage-v8": "^2.1.8",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0",
+    "vitest": "^2.1.8"
   },
   "peerDependencies": {
     "ws": "^8.16.0"

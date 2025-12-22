@@ -87,7 +87,7 @@
         color="primary"
         block
         @click="handleSend"
-        :disabled="!connected || !selectedEvent || !activeLand || !isPayloadValid"
+        :disabled="!connected || !selectedEvent || !activeLand"
       >
         <v-icon icon="mdi-send" class="mr-2"></v-icon>
         發送 EVENT
@@ -303,13 +303,7 @@ const isPayloadValid = computed(() => {
 
 const handleSend = () => {
   const landID = activeLand.value
-  const finalEventName = selectedEvent.value
-  if (!landID || !finalEventName) return
-
-  // Double-check validation before sending (only for schema-based fields)
-  if (!showManualPayload.value && !isPayloadValid.value) {
-    return
-  }
+  if (!landID || !selectedEvent.value) return
 
   let payload: any = null
 
@@ -344,18 +338,19 @@ const handleSend = () => {
     }
   }
 
-  emit('send-event', finalEventName, payload, landID)
-  
-  // Reset form
-  if (selectedEvent.value && eventFields.value.length > 0) {
-    const nextPayload: Record<string, any> = {}
-    for (const field of eventFields.value) {
-      nextPayload[field.name] = ''
+  // Prefer using the schema ref's def name (e.g. "ClickCookieEvent") as
+  // the event type identifier sent to the server, so that it matches the
+  // Swift AnyClientEvent type name and EventRegistry naming.
+  let finalEventName = selectedEvent.value
+  const ref = selectedEventSchemaRef.value
+  if (ref) {
+    const match = ref.match(/#\/defs\/(.+)$/)
+    if (match && match[1]) {
+      finalEventName = match[1]
     }
-    payloadModel.value = nextPayload
-  } else {
-    eventPayload.value = ''
   }
+
+  emit('send-event', finalEventName, payload, landID)
 }
 </script>
 

@@ -876,7 +876,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 patchCount = patches.count
             }
             
-            logger.debug("📤 Sending state update", metadata: [
+            // Verbose per-player state update logging can be noisy at debug level,
+            // especially when ticks are running frequently. Use trace instead,
+            // and rely on higher‑level logs for normal operation.
+            logger.trace("📤 Sending state update", metadata: [
                 "playerID": .string(playerID.rawValue),
                 "sessionID": .string(sessionID.rawValue),
                 "type": .string(updateType),

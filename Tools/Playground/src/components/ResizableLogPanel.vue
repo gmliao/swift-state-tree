@@ -21,7 +21,17 @@
             <div class="log-panel-mobile-header">
               <div class="log-panel-header-left">
                 <v-icon icon="mdi-text-box" size="small" class="mr-1"></v-icon>
-                <span>Message Log</span>
+                <span>Log</span>
+                <v-btn
+                  class="log-header-level-btn"
+                  :color="currentLogLevelColor"
+                  variant="text"
+                  size="x-small"
+                  density="comfortable"
+                  @click="cycleLogLevel"
+                >
+                  [{{ currentLogLevelShortLabel }}]
+                </v-btn>
               </div>
               <div class="log-panel-header-right">
                 <v-text-field
@@ -44,7 +54,7 @@
               </div>
             </div>
             <div class="log-panel-mobile-content">
-              <LogPanel :logs="logs" :filter-keyword="logFilterKeyword" />
+              <LogPanel :logs="logs" :filter-keyword="logFilterKeyword" :selected-level="selectedLevel" />
             </div>
           </div>
         </v-window-item>
@@ -80,7 +90,17 @@
         <div class="log-panel-header">
           <div class="log-panel-header-left">
             <v-icon icon="mdi-text-box" size="small" class="mr-1"></v-icon>
-            <span>Message Log</span>
+            <span>Log</span>
+            <v-btn
+              class="log-header-level-btn"
+              :color="currentLogLevelColor"
+              variant="text"
+              size="x-small"
+              density="comfortable"
+              @click="cycleLogLevel"
+            >
+              [{{ currentLogLevelShortLabel }}]
+            </v-btn>
           </div>
           <div class="log-panel-header-right">
             <v-text-field
@@ -103,7 +123,7 @@
           </div>
         </div>
         <div class="log-panel-content">
-          <LogPanel :logs="logs" :filter-keyword="logFilterKeyword" />
+          <LogPanel :logs="logs" :filter-keyword="logFilterKeyword" :selected-level="selectedLevel" />
         </div>
       </div>
       
@@ -134,7 +154,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, withDefaults } from 'vue'
+import { ref, watch, computed } from 'vue'
 import LogPanel from './LogPanel.vue'
 import StateUpdatePanel from './StateUpdatePanel.vue'
 import type { LogEntry } from '@/types'
@@ -156,6 +176,35 @@ const emit = defineEmits<{
 
 const localLogTab = ref(props.logTab)
 const logFilterKeyword = ref('')
+
+type LogLevelFilter = 'all' | 'info' | 'warning' | 'error'
+
+const selectedLevel = ref<LogLevelFilter>('info')
+
+const levelOrder: LogLevelFilter[] = ['all', 'info', 'warning', 'error']
+
+const logLevelShortLabelMap: Record<LogLevelFilter, string> = {
+  all: 'All',
+  info: 'Info',
+  warning: 'Warn',
+  error: 'Error'
+}
+
+const logLevelColorMap: Record<LogLevelFilter, string> = {
+  all: 'grey',
+  info: 'info',
+  warning: 'warning',
+  error: 'error'
+}
+
+const currentLogLevelShortLabel = computed(() => logLevelShortLabelMap[selectedLevel.value])
+const currentLogLevelColor = computed(() => logLevelColorMap[selectedLevel.value])
+
+const cycleLogLevel = () => {
+  const currentIndex = levelOrder.indexOf(selectedLevel.value)
+  const nextIndex = (currentIndex + 1) % levelOrder.length
+  selectedLevel.value = levelOrder[nextIndex]
+}
 
 watch(() => props.logTab, (newVal) => {
   localLogTab.value = newVal
@@ -284,6 +333,14 @@ const startResize = (e: MouseEvent) => {
   flex-direction: column;
 }
 
+.log-header-level-btn {
+  margin-left: 4px;
+  text-transform: none;
+  font-size: 0.75rem;
+  padding: 0 6px;
+  min-width: auto;
+}
+
 /* Desktop: Show side-by-side, hide tabs */
 @media (min-width: 960px) {
   .log-panel-mobile {
@@ -311,6 +368,7 @@ const startResize = (e: MouseEvent) => {
     align-items: center;
     justify-content: space-between;
     padding: 8px 16px;
+    height: 45px;
     font-size: 0.875rem;
     font-weight: 500;
     border-bottom: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));

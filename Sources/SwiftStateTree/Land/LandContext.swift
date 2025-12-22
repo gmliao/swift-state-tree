@@ -1,4 +1,5 @@
 import Foundation
+import Logging
 
 /// Request-scoped context for Land handlers
 ///
@@ -32,6 +33,11 @@ public struct LandContext: Sendable {
     /// Provides access to external services like database, metrics, or logging
     /// in a protocol-agnostic way.
     public let services: LandServices
+    
+    /// Logger instance for logging in handlers
+    ///
+    /// Logger is synchronous and can be used directly in Action/Event handlers.
+    public let logger: Logger
 
     /// Send event handler closure (delegates to Runtime layer without exposing Transport)
     /// Accepts AnyServerEvent (type-erased root type).
@@ -50,6 +56,7 @@ public struct LandContext: Sendable {
         clientID: ClientID,
         sessionID: SessionID,
         services: LandServices,
+        logger: Logger,
         deviceID: String? = nil,
         metadata: [String: String] = [:],
         sendEventHandler: @escaping @Sendable (AnyServerEvent, EventTarget) async -> Void,
@@ -62,6 +69,7 @@ public struct LandContext: Sendable {
         self.deviceID = deviceID
         self.metadata = metadata
         self.services = services
+        self.logger = logger
         self.sendEventHandler = sendEventHandler
         self.syncHandler = syncHandler
     }

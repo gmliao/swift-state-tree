@@ -224,15 +224,27 @@ export class StateTreeView {
 
   /**
    * Destroy the view
+   * Note: This should be called by runtime.removeView(), not directly.
+   * If called directly, it will clean up the view but won't remove it from runtime.
    */
   destroy(): void {
-    this.runtime.removeView(this.landID)
+    // Don't call runtime.removeView() here to avoid infinite recursion
+    // The runtime.removeView() will call this method, so we just clean up
     this.actionCallbacks.clear()
     this.actionRejectCallbacks.clear()
     this.joinCallbacks.clear()
     this.eventHandlers.clear()
     this.currentState = {}
     this.isJoined = false
+  }
+  
+  /**
+   * Internal method to remove this view from runtime
+   * Called by runtime.removeView()
+   */
+  _removeFromRuntime(): void {
+    // This is a no-op now since runtime.removeView() handles the removal
+    // We keep this for potential future use or API compatibility
   }
 
   /**

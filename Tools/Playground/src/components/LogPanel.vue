@@ -56,23 +56,53 @@
 import { ref, computed } from 'vue'
 import type { LogEntry } from '@/types'
 
+const MAX_DISPLAY_LOGS = 200
+
 const props = defineProps<{
   logs: LogEntry[]
   filterKeyword?: string
+  selectedLevel: LogLevelFilter
 }>()
 
+type LogLevelFilter = 'all' | 'info' | 'warning' | 'error'
+
+const levelRank: Record<Exclude<LogLevelFilter, 'all'>, number> = {
+  info: 0,
+  warning: 1,
+  error: 2
+}
+
+const typeRank = (type: LogEntry['type']): number => {
+  switch (type) {
+    case 'error': return 2
+    case 'warning': return 1
+    default: return 0 // info / success / server
+  }
+}
+
 const filteredLogs = computed(() => {
-  if (!props.filterKeyword) {
-    return props.logs
+  let list = props.logs
+
+  // Filter by level
+  if (props.selectedLevel !== 'all') {
+    const minRank = levelRank[props.selectedLevel]
+    list = list.filter(log => typeRank(log.type) >= minRank)
   }
   
-  const keyword = props.filterKeyword.toLowerCase()
-  return props.logs.filter(log => {
-    const messageMatch = log.message.toLowerCase().includes(keyword)
-    const typeMatch = log.type.toLowerCase().includes(keyword)
-    const dataMatch = log.data && JSON.stringify(log.data).toLowerCase().includes(keyword)
-    return messageMatch || typeMatch || dataMatch
-  })
+  // Filter by keyword
+  if (props.filterKeyword) {
+    const keyword = props.filterKeyword.toLowerCase()
+    list = list.filter(log => {
+      const messageMatch = log.message.toLowerCase().includes(keyword)
+      const typeMatch = log.type.toLowerCase().includes(keyword)
+      const dataMatch = log.data && JSON.stringify(log.data).toLowerCase().includes(keyword)
+      return messageMatch || typeMatch || dataMatch
+    })
+  }
+
+  // Keep only the latest N entries to avoid rendering huge tables
+  const start = Math.max(0, list.length - MAX_DISPLAY_LOGS)
+  return list.slice(start)
 })
 
 const dataDialog = ref({
