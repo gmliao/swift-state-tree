@@ -149,3 +149,4 @@ temp/
 
 # OS
 .DS_Store
+generated/

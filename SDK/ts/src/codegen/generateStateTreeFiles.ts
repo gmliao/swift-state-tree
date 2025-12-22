@@ -1,8 +1,8 @@
 import { join } from 'node:path'
-import type { LandDefinition, ProtocolSchema } from './schema.js'
-import { resolveRefName } from './typeMapper.js'
+import type { LandDefinition, ProtocolSchema, SchemaDef, SchemaProperty } from './schema.js'
+import { resolveRefName, mapSchemaDefToTsType, type TypeMapperContext } from './typeMapper.js'
 import { writeFileRecursive } from './writeFile.js'
-import type { Framework } from './index.js'
+import type { Framework, TestFramework } from './index.js'
 
 interface ActionBinding {
   id: string
@@ -28,10 +28,11 @@ function generateHeader(): string {
 export async function generateStateTreeFiles(
   schema: ProtocolSchema,
   outputDir: string,
-  framework?: Framework
+  framework?: Framework,
+  testFramework?: TestFramework
 ): Promise<void> {
   for (const [landID, landDef] of Object.entries(schema.lands)) {
-    await generateForLand(schema, landID, landDef, outputDir, framework)
+    await generateForLand(schema, landID, landDef, outputDir, framework, testFramework)
   }
 }
 
@@ -40,7 +41,8 @@ async function generateForLand(
   landID: string,
   landDef: LandDefinition,
   outputDir: string,
-  framework?: Framework
+  framework?: Framework,
+  testFramework?: TestFramework
 ): Promise<void> {
   const landDir = join(outputDir, landID)
   const classBaseName = toPascalCase(landID)
@@ -57,8 +59,9 @@ async function generateForLand(
   await writeFileRecursive(join(landDir, 'index.ts'), indexSource)
 
   // Generate framework-specific helper if requested
+  let composableName: string | undefined
   if (framework === 'vue') {
-    const composableName = `use${classBaseName}`
+    composableName = `use${classBaseName}`
     const composableSource = generateVueComposable(
       landID,
       className,
@@ -69,6 +72,22 @@ async function generateForLand(
       landDef.stateType
     )
     await writeFileRecursive(join(landDir, `${composableName}.ts`), composableSource)
+  }
+
+  // Generate test helpers (always generate basic mocks, optionally generate framework-specific helpers)
+  const testHelpersSource = generateTestHelpers(
+    schema,
+    landID,
+    landDef,
+    classBaseName,
+    composableName,
+    actions,
+    clientEvents,
+    landDef.stateType,
+    testFramework
+  )
+  if (testHelpersSource) {
+    await writeFileRecursive(join(landDir, 'testHelpers.ts'), testHelpersSource)
   }
 }
 
@@ -656,5 +675,392 @@ function inferResponseType(payloadType: string, defNames: Set<string>): string |
   }
 
   return undefined
+}
+
+/**
+ * Generate test helpers for a land.
+ * This generates mock utilities and test helpers based on the schema structure.
+ */
+function generateTestHelpers(
+  schema: ProtocolSchema,
+  landID: string,
+  landDef: LandDefinition,
+  classBaseName: string,
+  composableName: string | undefined,
+  actions: ActionBinding[],
+  clientEvents: EventBinding[],
+  stateType: string,
+  testFramework?: TestFramework
+): string | null {
+  const lines: string[] = []
+  lines.push(generateHeader())
+  
+  lines.push("import { ref, computed } from 'vue'")
+  lines.push(`import type { ${stateType} } from '../defs.js'`)
+  
+  // Import action and event types
+  const payloadTypes = new Set<string>()
+  const responseTypes = new Set<string>()
+  for (const action of actions) {
+    payloadTypes.add(action.payloadType)
+    if (action.responseType) {
+      responseTypes.add(action.responseType)
+    }
+  }
+  for (const event of clientEvents) {
+    payloadTypes.add(event.payloadType)
+  }
+  const allTypes = new Set([...payloadTypes, ...responseTypes])
+  if (allTypes.size > 0) {
+    const sortedTypes = [...allTypes].sort()
+    lines.push(`import type { ${sortedTypes.join(', ')} } from '../defs.js'`)
+  }
+  
+  // Import test framework if specified
+  if (testFramework === 'vitest') {
+    lines.push("import { vi } from 'vitest'")
+  } else if (testFramework === 'jest') {
+    lines.push("// Jest mocks would go here")
+  }
+  
+  lines.push('')
+  
+  // Generate createMockState function
+  lines.push('/**')
+  lines.push(' * Creates a mock state for testing.')
+  lines.push(' * Automatically generates default values based on the state type structure.')
+  lines.push(' */')
+  lines.push(`export function createMockState(overrides?: Partial<${stateType}>): ${stateType} {`)
+  lines.push('  return {')
+  
+  // Analyze state type structure and generate defaults
+  const stateDef = schema.defs[stateType]
+  if (stateDef && stateDef.properties) {
+    const ctx: TypeMapperContext = { knownDefs: new Set(Object.keys(schema.defs)) }
+    for (const [propName, propSchema] of Object.entries(stateDef.properties)) {
+      const defaultValue = generateDefaultValue(propSchema, ctx, schema)
+      lines.push(`    ${propName}: ${defaultValue},`)
+    }
+  } else {
+    // Fallback: empty object with type assertion
+    lines.push('    // State structure will be inferred from overrides')
+  }
+  
+  lines.push('    ...overrides')
+  lines.push('  }')
+  lines.push('}')
+  lines.push('')
+  
+  // Generate mock composable if composable exists
+  if (composableName) {
+    lines.push('/**')
+    lines.push(' * Creates a mock composable for testing.')
+    lines.push(' * This provides a fully functional mock of the composable with reactive state.')
+    lines.push(' */')
+    lines.push(`export function createMock${classBaseName}(initialState?: ${stateType}) {`)
+    lines.push(`  const state = ref<${stateType} | null>(initialState || createMockState())`)
+    lines.push("  const currentPlayerID = ref<string | null>('test-player-1')")
+    lines.push('  const isConnecting = ref(false)')
+    lines.push('  const isConnected = ref(true)')
+    lines.push('  const isJoined = ref(true)')
+    lines.push('  const lastError = ref<string | null>(null)')
+    lines.push('')
+    
+    // Generate mock functions for client events
+    const mockFn = testFramework === 'vitest' ? 'vi.fn' : testFramework === 'jest' ? 'jest.fn' : '(() => {})'
+    for (const event of clientEvents) {
+      const eventName = event.propertyName
+      const eventPayloadType = event.payloadType
+      lines.push(`  const ${eventName} = ${mockFn}(async (payload: ${eventPayloadType}) => {`)
+      lines.push('    // Mock implementation - customize as needed')
+      lines.push('  })')
+      lines.push('')
+    }
+    
+    // Generate mock functions for actions
+    for (const action of actions) {
+      const actionName = action.propertyName
+      const actionPayloadType = action.payloadType
+      const actionResponseType = action.responseType || 'any'
+      lines.push(`  const ${actionName} = ${mockFn}(async (payload: ${actionPayloadType}): Promise<${actionResponseType}> => {`)
+      lines.push('    // Mock implementation - customize as needed')
+      if (action.responseType) {
+        lines.push(`    return {} as ${actionResponseType}`)
+      } else {
+        lines.push('    return {} as any')
+      }
+      lines.push('  })')
+      lines.push('')
+    }
+    
+    lines.push(`  const disconnect = ${mockFn}(async () => {`)
+    lines.push('    isConnected.value = false')
+    lines.push('    isJoined.value = false')
+    lines.push('    state.value = null')
+    lines.push('  })')
+    lines.push('')
+    
+    lines.push('  return {')
+    lines.push('    state,')
+    lines.push('    currentPlayerID,')
+    lines.push('    isConnecting,')
+    lines.push('    isConnected,')
+    lines.push('    isJoined,')
+    lines.push('    lastError,')
+    
+    // Add all event functions
+    for (const event of clientEvents) {
+      lines.push(`    ${event.propertyName},`)
+    }
+    
+    // Add all action functions
+    for (const action of actions) {
+      lines.push(`    ${action.propertyName},`)
+    }
+    
+    lines.push('    disconnect,')
+    lines.push(`    connect: ${mockFn}(),`)
+    lines.push('    tree: computed(() => null)')
+    lines.push('  }')
+    lines.push('}')
+    lines.push('')
+  }
+  
+  // Generate high-level helpers if test framework is specified
+  if (testFramework === 'vitest' && composableName) {
+    const stateDef = schema.defs[stateType]
+    if (!stateDef?.properties) {
+      return lines.join('\n')
+    }
+    
+    // Find all first-level map properties (objects with additionalProperties)
+    // Generate helper for each map property
+    for (const [mapPropName, mapPropSchema] of Object.entries(stateDef.properties)) {
+      // Only generate helpers for map types (objects with additionalProperties)
+      if (mapPropSchema.type !== 'object' || !mapPropSchema.additionalProperties) {
+        continue
+      }
+      
+      const additionalProps = mapPropSchema.additionalProperties
+      if (typeof additionalProps !== 'object') {
+        continue
+      }
+      
+      // Determine value type
+      let valueType: string | null = null
+      let isPrimitive = false
+      
+      if (additionalProps.type) {
+        const type = additionalProps.type
+        if (type === 'string' || type === 'number' || type === 'boolean' || type === 'integer') {
+          isPrimitive = true
+          valueType = type === 'integer' ? 'number' : type
+        }
+      } else if (additionalProps.$ref) {
+        valueType = resolveRefName(additionalProps.$ref)
+      }
+      
+      if (!valueType) {
+        continue
+      }
+      
+      // Generate helper function name and parameter names
+      // Convert map name to singular (e.g., "players" -> "player", "privateStates" -> "privateState")
+      const singularName = mapPropName.endsWith('s') && mapPropName.length > 1 
+        ? mapPropName.slice(0, -1) 
+        : mapPropName
+      const pascalSingular = toPascalCase(singularName)
+      const camelSingular = lowerFirst(pascalSingular)
+      const itemIDName = camelSingular + 'ID'
+      const itemDataName = camelSingular + 'Data'
+      const itemValueName = camelSingular + 'Value'
+      
+      // Generate helper function
+      lines.push('/**')
+      lines.push(` * High-level test helper for ${mapPropName}.`)
+      lines.push(' * Provides a simple API for setting up component tests.')
+      lines.push(' */')
+      
+      if (isPrimitive) {
+        // If map value is a primitive type, use it directly
+        lines.push(`export function testWith${classBaseName}${pascalSingular}(`)
+        lines.push(`  ${itemIDName}: string,`)
+        lines.push(`  ${itemValueName}?: ${valueType}`)
+        lines.push(') {')
+        lines.push(`  const mockState = createMockState({`)
+        lines.push(`    ${mapPropName}: {`)
+        if (valueType === 'string') {
+          lines.push(`      [${itemIDName}]: ${itemValueName} ?? \`${singularName} \$\{${itemIDName}\}\``)
+        } else {
+          lines.push(`      [${itemIDName}]: ${itemValueName} ?? 0`)
+        }
+        lines.push('    }')
+        lines.push('  })')
+      } else {
+        // If map value is an object, generate defaults for all required properties
+        let itemDefaults: string[] = []
+        const itemTypeDef = schema.defs[valueType]
+        if (itemTypeDef && itemTypeDef.properties) {
+          const ctx: TypeMapperContext = { knownDefs: new Set(Object.keys(schema.defs)) }
+          const requiredProps = new Set(itemTypeDef.required || [])
+          
+          for (const [itemPropName, itemPropSchema] of Object.entries(itemTypeDef.properties)) {
+            const isRequired = requiredProps.has(itemPropName)
+            const defaultValue = generateDefaultValue(itemPropSchema, ctx, schema)
+            
+            if (isRequired) {
+              // Special handling for 'name' property
+              if (itemPropName === 'name') {
+                itemDefaults.push(`${itemPropName}: ${itemDataName}?.${itemPropName} ?? \`${singularName} \$\{${itemIDName}\}\``)
+              } else {
+                itemDefaults.push(`${itemPropName}: ${itemDataName}?.${itemPropName} ?? ${defaultValue}`)
+              }
+            } else {
+              itemDefaults.push(`${itemPropName}: ${itemDataName}?.${itemPropName} !== undefined ? ${itemDataName}.${itemPropName} : ${defaultValue}`)
+            }
+          }
+        }
+        
+        lines.push(`export function testWith${classBaseName}${pascalSingular}(`)
+        lines.push(`  ${itemIDName}: string,`)
+        lines.push(`  ${itemDataName}?: Partial<${stateType}['${mapPropName}'][string]>`)
+        lines.push(') {')
+        lines.push(`  const mockState = createMockState({`)
+        lines.push(`    ${mapPropName}: {`)
+        if (itemDefaults.length > 0) {
+          lines.push(`      [${itemIDName}]: {`)
+          for (const defaultLine of itemDefaults) {
+            lines.push(`        ${defaultLine},`)
+          }
+          lines.push('      } as ' + stateType + `['${mapPropName}'][string]`)
+        } else {
+          // Fallback
+          lines.push(`      [${itemIDName}]: {`)
+          lines.push(`        ...(${itemDataName} as ${stateType}['${mapPropName}'][string]),`)
+          lines.push(`        name: ${itemDataName}?.name ?? \`${singularName} \$\{${itemIDName}\}\``)
+          lines.push('      } as ' + stateType + `['${mapPropName}'][string]`)
+        }
+        lines.push('    }')
+        lines.push('  })')
+      }
+      
+      lines.push(`  const mockComposable = createMock${classBaseName}(mockState)`)
+      // Only set currentPlayerID if this is the 'players' map
+      if (mapPropName === 'players') {
+        lines.push(`  mockComposable.currentPlayerID.value = ${itemIDName}`)
+      }
+      lines.push('  return mockComposable')
+      lines.push('}')
+      lines.push('')
+    }
+  }
+  
+  return lines.join('\n')
+}
+
+/**
+ * Generate a default value for a schema property.
+ * Analyzes the type and generates appropriate default values.
+ */
+function generateDefaultValue(
+  propSchema: SchemaProperty,
+  ctx: TypeMapperContext,
+  schema: ProtocolSchema
+): string {
+  // Handle $ref
+  if (propSchema.$ref) {
+    const refName = resolveRefName(propSchema.$ref)
+    const refDef = schema.defs[refName]
+    if (refDef) {
+      return generateDefaultValueForDef(refDef, ctx, schema)
+    }
+    return '{} as any'
+  }
+  
+  const type = propSchema.type
+  
+  switch (type) {
+    case 'string':
+      return "''"
+    case 'integer':
+    case 'number':
+      return '0'
+    case 'boolean':
+      return 'false'
+    case 'null':
+      return 'null'
+    case 'array':
+      if (propSchema.items) {
+        return '[]'
+      }
+      return '[]'
+    case 'object':
+      if (propSchema.properties) {
+        const props: string[] = []
+        for (const [name, subProp] of Object.entries(propSchema.properties)) {
+          const defaultValue = generateDefaultValue(subProp, ctx, schema)
+          props.push(`${name}: ${defaultValue}`)
+        }
+        return `{ ${props.join(', ')} }`
+      }
+      return '{}'
+    default:
+      return '{} as any'
+  }
+}
+
+/**
+ * Generate default value for a SchemaDef (used for $ref types).
+ */
+function generateDefaultValueForDef(
+  def: SchemaDef,
+  ctx: TypeMapperContext,
+  schema: ProtocolSchema
+): string {
+  if (def.$ref) {
+    const refName = resolveRefName(def.$ref)
+    const refDef = schema.defs[refName]
+    if (refDef) {
+      return generateDefaultValueForDef(refDef, ctx, schema)
+    }
+    return '{} as any'
+  }
+  
+  const type = def.type
+  
+  switch (type) {
+    case 'string':
+      return "''"
+    case 'integer':
+    case 'number':
+      return '0'
+    case 'boolean':
+      return 'false'
+    case 'null':
+      return 'null'
+    case 'array':
+      return '[]'
+    case 'object':
+      if (def.properties) {
+        const props: string[] = []
+        for (const [name, prop] of Object.entries(def.properties)) {
+          const defaultValue = generateDefaultValue(prop, ctx, schema)
+          props.push(`${name}: ${defaultValue}`)
+        }
+        return `{ ${props.join(', ')} }`
+      }
+      // Handle additionalProperties (dictionary)
+      if (def.additionalProperties) {
+        if (def.additionalProperties === true) {
+          return '{}'
+        } else if (typeof def.additionalProperties === 'object') {
+          const valueDefault = generateDefaultValueForDef(def.additionalProperties, ctx, schema)
+          return `{} as Record<string, typeof (${valueDefault})>`
+        }
+      }
+      return '{}'
+    default:
+      return '{} as any'
+  }
 }
 
