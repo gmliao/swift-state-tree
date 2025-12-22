@@ -71,7 +71,7 @@ describe('protocol', () => {
           {
             path: '/players',
             op: 'replace',
-            value: { type: 'object', value: {} }
+            value: {} // Native JSON format (no type wrapper)
           }
         ]
       }

@@ -8,7 +8,8 @@
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview",
     "codegen": "rm -rf ./src/generated && npx @swiftstatetree/sdk codegen --input http://localhost:8080/schema --output ./src/generated --framework vue --test-framework vitest",
-    "test": "vitest",
+    "test": "vitest run",
+    "test:watch": "vitest watch",
     "test:ui": "vitest --ui",
     "test:coverage": "vitest --coverage"
   },

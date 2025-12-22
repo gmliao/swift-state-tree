@@ -32,11 +32,11 @@ export function createMockDemoGame(initialState?: CookieGameState) {
   const isJoined = ref(true)
   const lastError = ref<string | null>(null)
 
-  const clickCookie = vi.fn(async (payload: ClickCookieEvent) => {
+  const clickCookie = vi.fn(async (_payload: ClickCookieEvent) => {
     // Mock implementation - customize as needed
   })
 
-  const buyUpgrade = vi.fn(async (payload: BuyUpgradeAction): Promise<BuyUpgradeResponse> => {
+  const buyUpgrade = vi.fn(async (_payload: BuyUpgradeAction): Promise<BuyUpgradeResponse> => {
     // Mock implementation - customize as needed
     return {} as BuyUpgradeResponse
   })
