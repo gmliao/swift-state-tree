@@ -28,16 +28,17 @@ SwiftStateTree 採用以下核心設計：
 
 | 模組 | 說明 |
 |------|------|
-| **core** | 核心模組（不相依網路） |
-| **macros** | Macro 實作模組（編譯時使用） |
-| **transport** | 網路傳輸模組 |
-| **app** | Server 應用啟動模組 |
-| **codegen** | Schema 生成工具 |
+| **SwiftStateTree** | 核心模組（StateTree、Land DSL、Sync、Runtime、SchemaGen） |
+| **SwiftStateTreeTransport** | Transport 層（WebSocketTransport、TransportAdapter、Land 管理） |
+| **SwiftStateTreeHummingbird** | Hummingbird 整合（LandServer、JWT/Guest、Admin 路由） |
+| **SwiftStateTreeMatchmaking** | Matchmaking 與 Lobby 支援 |
+| **SwiftStateTreeMacros** | 編譯期 Macro（@StateNodeBuilder/@Payload/@SnapshotConvertible） |
+| **SwiftStateTreeBenchmarks** | 基準測試執行檔 |
 
 ## 📦 系統要求
 
 - Swift 6.0+
-- macOS 13.0+
+- macOS 14.0+
 - Xcode 15.0+（推薦）
 
 ## 🚀 安裝
@@ -82,15 +83,16 @@ swift test
 
 ### 模組架構
 
-本專案採用模組化設計，分為五個核心模組：
+本專案採用模組化設計，對外以以下模組組成為主：
 
-| 模組 | 簡寫 | 說明 |
-|------|------|------|
-| **core** | `SwiftStateTree` | 核心模組（不相依網路） |
-| **macros** | `SwiftStateTreeMacros` | Macro 實作模組（編譯時使用） |
-| **transport** | `SwiftStateTreeTransport` | 網路傳輸模組 |
-| **app** | `SwiftStateTreeServerApp` | Server 應用啟動模組 |
-| **codegen** | `SwiftStateTreeCodeGen` | Schema 生成工具 |
+| 模組 | 說明 |
+|------|------|
+| `SwiftStateTree` | 核心模組（StateTree、Land DSL、Sync、Runtime、SchemaGen） |
+| `SwiftStateTreeTransport` | Transport 層（WebSocketTransport、TransportAdapter、Land 管理） |
+| `SwiftStateTreeHummingbird` | Hummingbird 整合（LandServer、JWT/Guest、Admin 路由） |
+| `SwiftStateTreeMatchmaking` | Matchmaking 與 Lobby 支援 |
+| `SwiftStateTreeMacros` | 編譯期 Macro（@StateNodeBuilder/@Payload/@SnapshotConvertible） |
+| `SwiftStateTreeBenchmarks` | 基準測試執行檔 |
 
 ### 目錄結構
 
@@ -105,6 +107,7 @@ SwiftStateTree/
 │   │   ├── Sync/                    # @Sync 同步規則（SyncPolicy、SyncEngine）
 │   │   ├── Land/                   # Land DSL（LandDefinition、LandContext）
 │   │   ├── Runtime/                 # Runtime 執行器（LandKeeper）
+│   │   ├── Resolver/               # Resolver 機制
 │   │   ├── SchemaGen/              # Schema 生成器（JSON Schema）
 │   │   └── Support/                # 工具類（AnyCodable 等）
 │   │
@@ -113,41 +116,37 @@ SwiftStateTree/
 │   │   ├── WebSocket/              # WebSocket 實作（WebSocketTransport）
 │   │   └── Connection/             # 連接管理（三層識別）
 │   │
-│   ├── SwiftStateTreeServerApp/     # app：Server 應用模組
-│   │   ├── Vapor/                  # Vapor 應用端
-│   │   ├── Kestrel/                # Kestrel 應用端（未來）
-│   │   └── Common/                 # 共用應用邏輯
-│   │
-│   └── SwiftStateTreeCodeGen/      # codegen：Schema 生成工具
-│       ├── Extractor/              # Type Extractor（從 Swift 提取型別）
-│       ├── Generator/              # Generator Interface（TypeScript、Kotlin 等）
-│       └── CLI/                    # CLI 工具
+│   ├── SwiftStateTreeHummingbird/   # Hummingbird 整合模組
+│   ├── SwiftStateTreeMatchmaking/  # Matchmaking/Lobby 模組
+│   ├── SwiftStateTreeMacros/       # Macro 實作
+│   └── SwiftStateTreeBenchmarks/   # 基準測試執行檔
 │
 ├── Tests/
 │   ├── SwiftStateTreeTests/        # core 測試
 │   ├── SwiftStateTreeTransportTests/ # transport 測試
-│   └── SwiftStateTreeServerAppTests/ # app 測試
+│   ├── SwiftStateTreeHummingbirdTests/ # Hummingbird 測試
+│   ├── SwiftStateTreeMatchmakingTests/ # Matchmaking 測試
+│   └── SwiftStateTreeMacrosTests/ # Macro 測試
 │
 └── Examples/                        # 範例專案（可選）
-    ├── GameServer/                  # 遊戲伺服器範例
-    └── SNSApp/                      # SNS App 範例
+    └── HummingbirdDemo/             # Hummingbird 範例
 ```
 
-> **注意**：本專案正在重新設計中，目前僅實作 core 模組。詳細的專案結構說明請參考 [DESIGN_EXAMPLES.md](./docs/design/DESIGN_EXAMPLES.md#專案目錄結構建議)。
+> 文件正在整理中，請先參考 `docs/index.md`。舊版文件暫留於 `docs/design`、`docs/guides`、`docs/performance`、`docs/protocol`。
 
 ## 💡 核心概念
 
 ### StateTree：單一權威狀態樹
 
 ```swift
-@StateTreeBuilder
-struct GameStateTree: StateTreeProtocol {
+@StateNodeBuilder
+struct GameStateTree: StateNodeProtocol {
     // 所有玩家的公開狀態（血量、名字等），可以廣播給大家
     @Sync(.broadcast)
     var players: [PlayerID: PlayerState] = [:]
     
     // 手牌：每個玩家只看得到自己的
-    @Sync(.perPlayerDictionaryValue())
+    @Sync(.perPlayerSlice())
     var hands: [PlayerID: HandState] = [:]
     
     // 伺服器內部用，不同步給任何 Client（但仍會被同步引擎知道）
@@ -171,9 +170,10 @@ struct GameStateTree: StateTreeProtocol {
 
 - `.broadcast`：同一份資料同步給所有 client
 - `.serverOnly`：伺服器內部用，不同步給 Client（但仍會被同步引擎知道）
-- `.perPlayerDictionaryValue()`：依玩家 ID 過濾 Dictionary，只同步該玩家的值
-- `.masked((Value) -> Any)`：用 mask function 改寫值
-- `.custom((PlayerID, Value) -> Any?)`：完全客製化
+- `.perPlayer((Value, PlayerID) -> Value?)`：依玩家與值做過濾（回傳相同型別或 nil）
+- `.perPlayerSlice()`：Dictionary 只同步該玩家的 slice（適合 `[PlayerID: Value]`）
+- `.masked((Value) -> Value)`：同型別遮罩（所有玩家同值）
+- `.custom((PlayerID, Value) -> Value?)`：完全客製化（回傳相同型別或 nil）
 
 使用 `@Internal` 標記伺服器內部使用的欄位（不需要同步引擎知道）：
 
@@ -227,20 +227,26 @@ struct PlayerState: Codable {
 
 ```swift
 let matchLand = Land("match-3", using: GameStateTree.self) {
-    Config {
+    AccessControl {
         MaxPlayers(4)
-        Tick(every: .milliseconds(100))
-        IdleTimeout(.seconds(60))
     }
     
-    Action(GameAction.join) { state, (id, name), ctx -> ActionResult in
-        state.players[id] = PlayerState(name: name, hpCurrent: 100, hpMax: 100)
-        await ctx.syncNow()
-        return .success(.joinResult(...))
+    Lifetime {
+        Tick(every: .milliseconds(100)) { state, ctx in
+            state.stepSimulation()
+        }
+        DestroyWhenEmpty(after: .seconds(60))
     }
     
-    On(ClientEvent.heartbeat) { state, timestamp, ctx in
-        state.playerLastActivity[ctx.playerID] = timestamp
+    Rules {
+        HandleAction(JoinAction.self) { state, action, ctx in
+            state.players[action.playerID] = PlayerState(name: action.name, hpCurrent: 100, hpMax: 100)
+            return JoinResponse(status: "ok")
+        }
+        
+        HandleEvent(HeartbeatEvent.self) { state, event, ctx in
+            state.playerLastActivity[ctx.playerID] = event.timestamp
+        }
     }
 }
 ```
@@ -252,12 +258,12 @@ let matchLand = Land("match-3", using: GameStateTree.self) {
 在 `Sources/SwiftStateTree/` 中定義你的狀態樹：
 
 ```swift
-@StateTree
-public struct GameStateTree {
+@StateNodeBuilder
+public struct GameStateTree: StateNodeProtocol {
     @Sync(.broadcast)
     public var players: [PlayerID: PlayerState]
     
-    @Sync(.perPlayer(\.ownerID))
+    @Sync(.perPlayerSlice())
     public var hands: [PlayerID: HandState]
 }
 ```
@@ -268,67 +274,42 @@ public struct GameStateTree {
 
 ```swift
 let gameLand = Land("game-room", using: GameStateTree.self) {
-    Config {
+    AccessControl {
         MaxPlayers(4)
-        Tick(every: .milliseconds(100))
     }
     
-    Action(GameAction.self) { state, action, ctx -> ActionResult in
-        // 處理 Action
+    Lifetime {
+        Tick(every: .milliseconds(100)) { state, ctx in
+            state.stepSimulation()
+        }
     }
     
-    On(ClientEvent.self) { state, event, ctx in
-        // 處理 Event
+    Rules {
+        HandleAction(GameAction.self) { state, action, ctx in
+            // Handle Action
+            return GameActionResponse()
+        }
+        
+        HandleEvent(ClientEvent.self) { state, event, ctx in
+            // Handle Event
+        }
     }
 }
 ```
 
-## 📚 設計文檔
+## 📚 文件
 
-本專案的設計文檔已切分為多個章節：
+整理後的 release 文件集中於 `docs/`：
 
-### 核心概念
-- **[DESIGN_CORE.md](./docs/design/DESIGN_CORE.md)**：整體理念、StateTree 結構、同步規則 DSL
+- `docs/index.md`：文件索引與閱讀順序
+- `docs/overview.md`：專案總覽與模組圖
+- `docs/quickstart.md`：最小可行流程
 
-### 通訊模式
-- **[DESIGN_COMMUNICATION.md](./docs/design/DESIGN_COMMUNICATION.md)**：Action 與 Event 通訊模式、WebSocket 傳輸、路由機制
-
-### Land DSL
-- **[DESIGN_REALM_DSL.md](./docs/design/DESIGN_REALM_DSL.md)**：領域宣告語法、Action 處理、Event 處理、LandContext
-
-### Transport 層
-- **[DESIGN_TRANSPORT.md](./docs/design/DESIGN_TRANSPORT.md)**：網路傳輸抽象、Transport 協議、服務注入
-
-### Runtime 結構
-- **[DESIGN_RUNTIME.md](./docs/design/DESIGN_RUNTIME.md)**：LandKeeper、SyncEngine 的運行時結構
-
-### 客戶端 SDK 與程式碼生成
-- **[DESIGN_CLIENT_SDK.md](./docs/design/DESIGN_CLIENT_SDK.md)**：跨語言客戶端 SDK 架構設計、Code-gen 架構設計（General）
-- **[DESIGN_TYPESCRIPT_SDK.md](./docs/design/DESIGN_TYPESCRIPT_SDK.md)**：TypeScript SDK 設計和實作規劃
-
-### 範例與速查
-- **[DESIGN_EXAMPLES.md](./docs/design/DESIGN_EXAMPLES.md)**：端到端範例、語法速查表、命名說明、設計決策
-
-### 相關文檔
-- **[APP_APPLICATION.md](./docs/guides/APP_APPLICATION.md)**：StateTree 在 App 開發中的應用
-
-### 快速導覽
-
-**新手入門**：
-1. 閱讀 [DESIGN_CORE.md](./docs/design/DESIGN_CORE.md) 了解核心概念
-2. 閱讀 [DESIGN_COMMUNICATION.md](./docs/design/DESIGN_COMMUNICATION.md) 了解通訊模式
-3. 查看 [DESIGN_EXAMPLES.md](./docs/design/DESIGN_EXAMPLES.md) 中的範例
-
-**開發參考**：
-- 定義 StateTree：參考 [DESIGN_CORE.md](./docs/design/DESIGN_CORE.md) 的「StateTree：狀態樹結構」和「同步規則 DSL」
-- 定義 Land：參考 [DESIGN_REALM_DSL.md](./docs/design/DESIGN_REALM_DSL.md)
-- 設定 Transport：參考 [DESIGN_TRANSPORT.md](./docs/design/DESIGN_TRANSPORT.md)
-- 生成客戶端 SDK：參考 [DESIGN_CLIENT_SDK.md](./docs/design/DESIGN_CLIENT_SDK.md)（General）和 [DESIGN_TYPESCRIPT_SDK.md](./docs/design/DESIGN_TYPESCRIPT_SDK.md)（TypeScript）
-- 語法速查：參考 [DESIGN_EXAMPLES.md](./docs/design/DESIGN_EXAMPLES.md) 的「語法速查表」
-
-**架構深入**：
-- Runtime 運作：參考 [DESIGN_RUNTIME.md](./docs/design/DESIGN_RUNTIME.md)
-- 多伺服器架構：參考 [DESIGN_TRANSPORT.md](./docs/design/DESIGN_TRANSPORT.md) 的「多伺服器架構設計」章節
+舊版設計與效能文件暫留於：
+- `Notes/design/`
+- `Notes/guides/`
+- `Notes/performance/`
+- `Notes/protocol/`
 
 ## 🧪 測試
 
