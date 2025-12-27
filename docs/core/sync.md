@@ -12,9 +12,9 @@ StateTree 同步依賴 `@Sync` + `SyncPolicy`，由 SyncEngine 產生 snapshot/d
 
 - `.serverOnly`：不同步給 client
 - `.broadcast`：所有 client 相同資料
-- `.perPlayer((Value, PlayerID) -> Value?)`：依玩家過濾（同型別）
-- `.perPlayerSlice()`：Dictionary 只同步該玩家的 slice
-- `.masked((Value) -> Value)`：同型別遮罩
+- `.perPlayerSlice()`：Dictionary 專用 convenience method，自動切割 `[PlayerID: Element]` 只同步該玩家的 slice（**使用頻率高**，不需要提供 filter）
+- `.perPlayer((Value, PlayerID) -> Value?)`：需要手動提供 filter function，依玩家過濾（適用於任何類型，**使用頻率低**，用於需要自定義過濾邏輯的場景）
+- `.masked((Value) -> Value)`：同型別遮罩（所有玩家看到相同遮罩值）
 - `.custom((PlayerID, Value) -> Value?)`：完全自定義
 
 ## Snapshot 與 Diff

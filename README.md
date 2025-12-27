@@ -1,6 +1,6 @@
 # SwiftStateTree
 
-一個基於 Swift 的狀態樹（State Tree）遊戲引擎庫，採用 **單一 StateTree + 同步規則 + Land DSL** 的設計理念。
+一個基於 Swift 的多人遊戲伺服器框架，採用 **單一 StateTree + 同步規則 + Land DSL** 的設計理念。
 
 ## 🎯 設計理念
 
@@ -10,6 +10,7 @@ SwiftStateTree 採用以下核心設計：
 - 🔄 **同步規則 DSL**：使用 `@Sync` 規則控制伺服器要把哪些資料同步給誰
 - 🏛️ **Land DSL**：定義領域、Action/Event 處理、Tick 設定
 - 💻 **UI 計算交給客戶端**：伺服器只送「邏輯資料」，UI 渲染由客戶端處理
+- 🔧 **自動 Schema 生成**：從伺服器定義自動產生 JSON Schema，支援 TypeScript客戶端 SDK 生成，確保型別安全
 
 ## 📦 模組架構
 
@@ -24,7 +25,6 @@ SwiftStateTree 採用以下核心設計：
 
 - Swift 6.0+
 - macOS 14.0+
-- Xcode 15.0+（推薦）
 
 ## 🚀 安裝
 
@@ -38,11 +38,6 @@ dependencies: [
 ]
 ```
 
-或者在 Xcode 中：
-1. File → Add Packages...
-2. 輸入倉庫 URL
-3. 選擇版本並添加
-
 ## 🏃 快速開始
 
 ### 1. 克隆並構建
@@ -55,10 +50,22 @@ swift build
 
 ### 2. 運行範例
 
+啟動伺服器（單房間模式）：
 ```bash
 cd Examples/HummingbirdDemo
-swift run HummingbirdDemo
+swift run SingleRoomDemo
 ```
+
+伺服器預設運行在 `http://localhost:8080`。
+
+在另一個終端啟動 WebClient：
+```bash
+cd Examples/HummingbirdDemo/WebClient
+npm install  # 首次運行需要安裝依賴
+npm run dev
+```
+
+WebClient 會運行在另一個端口（通常是 `http://localhost:5173`），可在瀏覽器中訪問。
 
 ### 3. 查看詳細文檔
 
@@ -104,7 +111,9 @@ struct GameStateTree: StateNodeProtocol {
 ### 同步規則
 
 - `.broadcast`：廣播給所有 client
-- `.perPlayerSlice()`：Dictionary 只同步該玩家的 slice
+- `.perPlayerSlice()`：Dictionary 專用，自動切割 `[PlayerID: Element]` 只同步該玩家的 slice（使用頻率高）
+- `.perPlayer(...)`：需要手動提供 filter function，依玩家過濾（適用於任何類型，需要自定義邏輯時使用）
+- `.masked(...)`：同型別遮罩（所有玩家看到相同遮罩值）
 - `.serverOnly`：伺服器內部用，不同步給 client
 - `.custom(...)`：完全客製化過濾邏輯
 
