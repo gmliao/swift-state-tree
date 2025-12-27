@@ -45,6 +45,10 @@ dependencies: [
 ```bash
 git clone https://github.com/your-username/SwiftStateTree.git
 cd SwiftStateTree
+
+# Note: The sdk directory uses lowercase to match other directories
+# (Examples, Notes, Sources, Tests, Tools, docs)
+
 swift build
 ```
 
@@ -72,6 +76,107 @@ WebClient 會運行在另一個端口（通常是 `http://localhost:5173`），�
 - 📖 [完整文檔索引](docs/index.md)
 - 🚀 [快速開始指南](docs/quickstart.md)
 - 📐 [架構概觀](docs/overview.md)
+
+### 4. 最簡單範例
+
+以下是一個完整的計數器範例，展示如何建立伺服器和 Vue 客戶端：
+
+#### 伺服器端（Swift）
+
+```swift
+import SwiftStateTree
+import SwiftStateTreeHummingbird
+
+// 1. 定義狀態
+@StateNodeBuilder
+struct CounterState: StateNodeProtocol {
+    @Sync(.broadcast)
+    var count: Int = 0
+}
+
+// 2. 定義 Action
+@Payload
+struct IncrementAction: ActionPayload {
+    typealias Response = IncrementResponse
+}
+
+@Payload
+struct IncrementResponse: ResponsePayload {
+    let newCount: Int
+}
+
+// 3. 定義 Land
+let counterLand = Land("counter", using: CounterState.self) {
+    Rules {
+        HandleAction(IncrementAction.self) { state, action, ctx in
+            state.count += 1
+            return IncrementResponse(newCount: state.count)
+        }
+    }
+}
+
+// 4. 啟動伺服器
+@main
+struct CounterServer {
+    static func main() async throws {
+        let server = try await LandServer.makeServer(
+            configuration: .init(allowGuestMode: true),
+            land: counterLand,
+            initialState: CounterState()
+        )
+        try await server.run()
+    }
+}
+```
+
+#### 客戶端（Vue 3）
+
+```vue
+<script setup lang="ts">
+import { onMounted, onUnmounted } from 'vue'
+import { useCounter } from './generated/counter/useCounter'
+
+// 使用生成的 composable
+const {
+  state,
+  isJoined,
+  connect,
+  disconnect,
+  increment
+} = useCounter()
+
+onMounted(async () => {
+  await connect({
+    wsUrl: 'ws://localhost:8080/game'
+  })
+})
+
+onUnmounted(async () => {
+  await disconnect()
+})
+
+async function handleIncrement() {
+  await increment({})
+}
+</script>
+
+<template>
+  <div>
+    <h1>計數器: {{ state?.count ?? 0 }}</h1>
+    <button @click="handleIncrement" :disabled="!isJoined">
+      +1
+    </button>
+  </div>
+</template>
+```
+
+**關鍵點：**
+- 伺服器使用 `@StateNodeBuilder` 定義狀態樹，`@Sync(.broadcast)` 控制同步策略
+- 客戶端使用生成的 composable（如 `useCounter`），由 schema 自動生成
+- 在 template 中直接使用 `state?.count`，Vue 會自動處理響應式更新
+- 使用 composable 提供的 action 方法（如 `increment`）來發送操作
+
+**注意：** 使用前需要先運行 schema 生成工具來產生 composable 和型別定義。完整流程請參考 `Examples/HummingbirdDemo`。
 
 ## 📁 專案結構
 

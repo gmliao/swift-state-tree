@@ -7,4 +7,7 @@ export type ClickCookieEvent = { amount: number }
 export type CookieGameState = { players: { [key: string]: CookiePlayerPublicState }; privateStates: { [key: string]: CookiePlayerPrivateState }; ticks: number; totalCookies: number }
 export type CookiePlayerPrivateState = { totalClicks: number; upgrades: { [key: string]: number } }
 export type CookiePlayerPublicState = { cookies: number; cookiesPerSecond: number; name: string }
+export type CounterState = { count: number }
+export type IncrementAction = { [key: string]: any }
+export type IncrementResponse = { newCount: number }
 export type StateDiff = { patches: { op: string; path: string; value?: { [key: string]: any } }[] }

@@ -471,6 +471,29 @@ public func Tick<State: StateNodeProtocol>(
     }
 }
 
+/// Configures a periodic tick handler without a handler closure.
+///
+/// This overload allows setting the tick interval without providing a handler.
+/// Useful when you only need to configure the tick rate but don't need to execute
+/// any logic on each tick.
+///
+/// Example:
+/// ```swift
+/// Lifetime {
+///     Tick(every: .milliseconds(100))
+/// }
+/// ```
+///
+/// - Parameter interval: The duration between ticks.
+public func Tick<State: StateNodeProtocol>(
+    every interval: Duration
+) -> LifetimeDirective<State> {
+    { config in
+        config.tickInterval = interval
+        config.tickHandler = nil
+    }
+}
+
 /// Configures the Land to automatically destroy itself when empty.
 ///
 /// - Parameter duration: The duration to wait after the last player leaves before destroying.

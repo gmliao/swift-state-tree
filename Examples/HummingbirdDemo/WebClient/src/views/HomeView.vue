@@ -1,83 +1,42 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { useDemoGame } from '../generated/demo-game/useDemoGame'
 
 const router = useRouter()
 
-const wsUrl = ref('ws://localhost:8080/game')
-const playerName = ref('')
-
-const {
-  isConnecting,
-  isConnected,
-  isJoined,
-  lastError,
-  connect,
-  disconnect
-} = useDemoGame()
-
-// Auto redirect to game page when joined
-watch(isJoined, (joined) => {
-  if (joined) {
-    router.push({ name: 'cookie-game' })
-  }
-})
-
-async function handleConnect() {
-  await connect({
-    wsUrl: wsUrl.value,
-    playerName: playerName.value || undefined
-  })
+function goToCounter() {
+  router.push({ name: 'counter' })
 }
 
-async function handleDisconnect() {
-  await disconnect()
+function goToCookie() {
+  router.push({ name: 'cookie-game' })
 }
 </script>
 
 <template>
   <div class="container">
-    <h1>🍪 Cookie Clicker Demo</h1>
+    <h1>SwiftStateTree Demos</h1>
 
-    <div class="section">
-      <h2>Connect to Game</h2>
-      <div class="form">
-        <input
-          v-model="wsUrl"
-          placeholder="WebSocket URL"
-          class="input"
-        />
-        <input
-          v-model="playerName"
-          placeholder="Your name (optional)"
-          class="input"
-        />
-        <button
-          @click="handleConnect"
-          :disabled="isConnecting || isConnected"
-          class="btn btn-primary"
-        >
-          {{ isConnecting ? 'Connecting...' : 'Connect & Join' }}
-        </button>
-        <button
-          v-if="isConnected"
-          @click="handleDisconnect"
-          class="btn btn-secondary"
-        >
-          Disconnect
-        </button>
+    <div class="demos">
+      <div class="demo-card" @click="goToCounter">
+        <h2>🔢 Counter Demo</h2>
+        <p>The simplest example: a shared counter that increments on click.</p>
+        <p class="demo-note">Perfect for understanding the basics!</p>
+        <button class="btn btn-primary">Try Counter Demo</button>
       </div>
-      <div v-if="lastError" class="error">{{ lastError }}</div>
-      <div v-if="isConnected && !isJoined" class="info">Connected, joining game...</div>
-      <div v-if="isJoined" class="success">Joined! Redirecting to game...</div>
+
+      <div class="demo-card" @click="goToCookie">
+        <h2>🍪 Cookie Clicker</h2>
+        <p>A full multiplayer game with upgrades, private state, and tick-based logic.</p>
+        <p class="demo-note">Advanced example with multiple features.</p>
+        <button class="btn btn-primary">Try Cookie Clicker</button>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
 .container {
-  max-width: 600px;
+  max-width: 1000px;
   margin: 0 auto;
   padding: 40px 20px;
 }
@@ -85,33 +44,48 @@ async function handleDisconnect() {
 h1 {
   text-align: center;
   font-size: 2.5rem;
-  margin-bottom: 2rem;
+  margin-bottom: 3rem;
 }
 
-h2 {
-  font-size: 1.5rem;
-  margin-bottom: 1rem;
+.demos {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 2rem;
 }
 
-.section {
+.demo-card {
   background: #f9f9f9;
-  border: 1px solid #ddd;
-  border-radius: 8px;
+  border: 2px solid #ddd;
+  border-radius: 12px;
   padding: 2rem;
+  cursor: pointer;
+  transition: all 0.3s;
+  text-align: center;
 }
 
-.form {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
+.demo-card:hover {
+  border-color: #4CAF50;
+  transform: translateY(-4px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.demo-card h2 {
+  font-size: 1.8rem;
   margin-bottom: 1rem;
+  color: #333;
 }
 
-.input {
-  padding: 0.75rem;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  font-size: 1rem;
+.demo-card p {
+  color: #666;
+  line-height: 1.6;
+  margin-bottom: 0.5rem;
+}
+
+.demo-note {
+  font-style: italic;
+  color: #999;
+  font-size: 0.9rem;
+  margin-bottom: 1.5rem !important;
 }
 
 .btn {
@@ -121,6 +95,7 @@ h2 {
   font-size: 1rem;
   cursor: pointer;
   transition: background-color 0.2s;
+  width: 100%;
 }
 
 .btn-primary {
@@ -128,45 +103,13 @@ h2 {
   color: white;
 }
 
-.btn-primary:hover:not(:disabled) {
+.btn-primary:hover {
   background-color: #45a049;
 }
 
-.btn-primary:disabled {
-  background-color: #ccc;
-  cursor: not-allowed;
-}
-
-.btn-secondary {
-  background-color: #f44336;
-  color: white;
-}
-
-.btn-secondary:hover {
-  background-color: #da190b;
-}
-
-.error {
-  color: #f44336;
-  padding: 0.75rem;
-  background: #ffebee;
-  border-radius: 4px;
-  margin-top: 1rem;
-}
-
-.info {
-  color: #2196F3;
-  padding: 0.75rem;
-  background: #e3f2fd;
-  border-radius: 4px;
-  margin-top: 1rem;
-}
-
-.success {
-  color: #4CAF50;
-  padding: 0.75rem;
-  background: #e8f5e9;
-  border-radius: 4px;
-  margin-top: 1rem;
+@media (max-width: 768px) {
+  .demos {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

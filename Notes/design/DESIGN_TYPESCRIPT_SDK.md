@@ -10,7 +10,7 @@
 >   - 生成器介面、模板引擎等通用設計
 >
 > **本文檔分成兩層**：
-> - **已落地（以 repo 現況為準）**：`SDK/ts/src/core` + `SDK/ts/src/types`（Runtime/View/Protocol/WebSocket 抽象）
+> - **已落地（以 repo 現況為準）**：`sdk/ts/src/core` + `sdk/ts/src/types`（Runtime/View/Protocol/WebSocket 抽象）
 > - **Roadmap（接下來要做）**：TypeScript 版 schema codegen，產生「每個 land 一個 `StateTree` 類別」，提供有型別資訊的樹狀 state，以及 function-based 的 actions / events，適合 Vue、React 等前端框架使用
 
 ## 目標
@@ -38,11 +38,11 @@
 
 ## 現況（repo 已有的 TS SDK Core）
 
-目前 `SDK/ts` 已是一個可用的 npm package：`@swiftstatetree/sdk`，重點在「協議層 + 同步」。
+目前 `sdk/ts` 已是一個可用的 npm package：`@swiftstatetree/sdk`，重點在「協議層 + 同步」。
 
 **核心類別**
-- `SDK/ts/src/core/runtime.ts`：`StateTreeRuntime`（管理單一 WebSocket、解碼/路由訊息）
-- `SDK/ts/src/core/view.ts`：`StateTreeView`（綁定 land，負責 join、state snapshot/update/patch、sendAction/sendEvent/onServerEvent）
+- `sdk/ts/src/core/runtime.ts`：`StateTreeRuntime`（管理單一 WebSocket、解碼/路由訊息）
+- `sdk/ts/src/core/view.ts`：`StateTreeView`（綁定 land，負責 join、state snapshot/update/patch、sendAction/sendEvent/onServerEvent）
 
 **現況 API（已可用）**
 
@@ -200,7 +200,7 @@ state.playerPrivateStates['p1']?.gold  // 型別：number | undefined
 
 Codegen 工具放在 TS SDK package 內，作為可執行的 CLI：
 
-- Codegen 工具位置：`SDK/ts/codegen/` 或 `SDK/ts/src/codegen/`
+- Codegen 工具位置：`sdk/ts/codegen/` 或 `sdk/ts/src/codegen/`
 - 可透過 npm script 或直接執行：`npx @swiftstatetree/sdk codegen --input schema.json --output ./src/generated`
 
 ### 生成檔案位置（由使用者指定）
@@ -260,7 +260,7 @@ Schema 裡常見是 `PascalCase`（如 `AddGold`, `ChatMessage`），但在 TS �
 ## Workflow
 
 ### 現況（已可用）
-1. `SDK/ts` 提供協議層核心，`Tools/CLI` / `Tools/Playground` 直接依賴 `@swiftstatetree/sdk` 共用實作。
+1. `sdk/ts` 提供協議層核心，`Tools/CLI` / `Tools/Playground` 直接依賴 `@swiftstatetree/sdk` 共用實作。
 
 ### Roadmap（codegen）
 1. 伺服端透過 `SchemaGen` 生成 `schema.json`
@@ -300,7 +300,7 @@ Schema 裡常見是 `PascalCase`（如 `AddGold`, `ChatMessage`），但在 TS �
    - ✅ `tree.actions.* / tree.events.* / tree.on.*`（已確認採用此方式）
 
 5. **Codegen 工具位置：**
-   - ✅ 放在 `SDK/ts/codegen/` 或 `SDK/ts/src/codegen/`（而不是 `scripts/`）
+   - ✅ 放在 `sdk/ts/codegen/` 或 `sdk/ts/src/codegen/`（而不是 `scripts/`）
 
 6. **生成檔案位置：**
    - ✅ 由呼叫者自行指定，通常生成到 Vue/React 專案的原始碼目錄（例如 `src/generated/`）

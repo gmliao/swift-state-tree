@@ -17,6 +17,10 @@ let package = Package(
             targets: ["MultiRoomDemo"]
         ),
         .executable(
+            name: "CounterDemo",
+            targets: ["CounterDemo"]
+        ),
+        .executable(
             name: "SchemaGen",
             targets: ["SchemaGen"]
         )
@@ -48,6 +52,14 @@ let package = Package(
                 .product(name: "SwiftStateTreeTransport", package: "SwiftStateTree")
             ],
             path: "Sources/MultiRoomDemo"
+        ),
+        .executableTarget(
+            name: "CounterDemo",
+            dependencies: [
+                "HummingbirdDemoContent",
+                .product(name: "SwiftStateTreeHummingbird", package: "SwiftStateTree")
+            ],
+            path: "Sources/CounterDemo"
         ),
         .executableTarget(
             name: "SchemaGen",

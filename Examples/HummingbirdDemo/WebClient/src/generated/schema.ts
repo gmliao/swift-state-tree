@@ -3,22 +3,25 @@
 
 export const SCHEMA_VERSION = "0.1.0" as const
 
-export const LAND_IDS = ["demo-game"] as const
+export const LAND_IDS = ["counter","demo-game"] as const
 export type LandID = (typeof LAND_IDS)[number]
 
 export const ACTION_IDS = {
+  "counter": ["Increment"] as const,
   "demo-game": ["BuyUpgrade"] as const,
 } as const
 export type AnyActionID = (typeof ACTION_IDS)[LandID][number]
 export type ActionIDFor<L extends LandID> = (typeof ACTION_IDS)[L][number]
 
 export const CLIENT_EVENT_IDS = {
+  "counter": [] as const,
   "demo-game": ["ClickCookie"] as const,
 } as const
 export type AnyClientEventID = (typeof CLIENT_EVENT_IDS)[LandID][number]
 export type ClientEventIDFor<L extends LandID> = (typeof CLIENT_EVENT_IDS)[L][number]
 
 export const SERVER_EVENT_IDS = {
+  "counter": [] as const,
   "demo-game": [] as const,
 } as const
 export type AnyServerEventID = (typeof SERVER_EVENT_IDS)[LandID][number]

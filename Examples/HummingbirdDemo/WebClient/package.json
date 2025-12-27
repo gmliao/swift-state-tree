@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview",
-    "codegen": "rm -rf ./src/generated && npx @swiftstatetree/sdk codegen --input http://localhost:8080/schema --output ./src/generated --framework vue --test-framework vitest",
+    "codegen": "rm -rf ./src/generated && node ../../../sdk/ts/dist/cli.js codegen --input ../schema.json --output ./src/generated --framework vue --test-framework vitest",
+    "codegen:server": "rm -rf ./src/generated && node ../../../sdk/ts/dist/cli.js codegen --input http://localhost:8080/schema --output ./src/generated --framework vue --test-framework vitest",
     "test": "vitest run",
     "test:watch": "vitest watch",
     "test:ui": "vitest --ui",
@@ -15,7 +16,7 @@
   },
   "dependencies": {
     "@mdi/font": "^7.4.47",
-    "@swiftstatetree/sdk": "file:../../../SDK/ts",
+    "@swiftstatetree/sdk": "file:../../../sdk/ts",
     "sass": "^1.97.0",
     "vite-plugin-vuetify": "^2.1.2",
     "vue": "^3.5.24",

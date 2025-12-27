@@ -1,6 +1,5 @@
 // Test setup file for Vitest
 import { vi } from 'vitest'
-import { computed } from 'vue'
 
 // Mock WebSocket for tests
 global.WebSocket = class MockWebSocket {
@@ -22,7 +21,7 @@ global.WebSocket = class MockWebSocket {
     }, 10)
   }
 
-  send(data: string | ArrayBuffer | Blob) {
+  send(_data: string | ArrayBuffer | Blob) {
     // Mock send implementation
   }
 

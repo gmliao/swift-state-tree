@@ -771,7 +771,7 @@ function generateTestHelpers(
     for (const event of clientEvents) {
       const eventName = event.propertyName
       const eventPayloadType = event.payloadType
-      lines.push(`  const ${eventName} = ${mockFn}(async (payload: ${eventPayloadType}) => {`)
+      lines.push(`  const ${eventName} = ${mockFn}(async (_payload: ${eventPayloadType}) => {`)
       lines.push('    // Mock implementation - customize as needed')
       lines.push('  })')
       lines.push('')
@@ -782,7 +782,7 @@ function generateTestHelpers(
       const actionName = action.propertyName
       const actionPayloadType = action.payloadType
       const actionResponseType = action.responseType || 'any'
-      lines.push(`  const ${actionName} = ${mockFn}(async (payload: ${actionPayloadType}): Promise<${actionResponseType}> => {`)
+      lines.push(`  const ${actionName} = ${mockFn}(async (_payload: ${actionPayloadType}): Promise<${actionResponseType}> => {`)
       lines.push('    // Mock implementation - customize as needed')
       if (action.responseType) {
         lines.push(`    return {} as ${actionResponseType}`)

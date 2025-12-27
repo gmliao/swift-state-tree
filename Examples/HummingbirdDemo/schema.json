@@ -61,10 +61,7 @@
             "$ref" : "#\/defs\/CookiePlayerPublicState"
           },
           "default" : {
-            "type" : "object",
-            "value" : {
 
-            }
           },
           "type" : "object",
           "x-stateTree" : {
@@ -79,10 +76,7 @@
             "$ref" : "#\/defs\/CookiePlayerPrivateState"
           },
           "default" : {
-            "type" : "object",
-            "value" : {
 
-            }
           },
           "type" : "object",
           "x-stateTree" : {
@@ -93,17 +87,11 @@
           }
         },
         "ticks" : {
-          "default" : {
-            "type" : "int",
-            "value" : 0
-          },
+          "default" : 0,
           "type" : "integer"
         },
         "totalCookies" : {
-          "default" : {
-            "type" : "int",
-            "value" : 0
-          },
+          "default" : 0,
           "type" : "integer"
         }
       },
@@ -121,10 +109,7 @@
     "CookiePlayerPrivateState" : {
       "properties" : {
         "totalClicks" : {
-          "default" : {
-            "type" : "int",
-            "value" : 0
-          },
+          "default" : 0,
           "type" : "integer"
         },
         "upgrades" : {
@@ -132,10 +117,7 @@
             "type" : "integer"
           },
           "default" : {
-            "type" : "object",
-            "value" : {
 
-            }
           },
           "type" : "object",
           "x-stateTree" : {
@@ -158,24 +140,15 @@
     "CookiePlayerPublicState" : {
       "properties" : {
         "cookies" : {
-          "default" : {
-            "type" : "int",
-            "value" : 0
-          },
+          "default" : 0,
           "type" : "integer"
         },
         "cookiesPerSecond" : {
-          "default" : {
-            "type" : "int",
-            "value" : 0
-          },
+          "default" : 0,
           "type" : "integer"
         },
         "name" : {
-          "default" : {
-            "type" : "string",
-            "value" : ""
-          },
+          "default" : "",
           "type" : "string"
         }
       },
@@ -187,6 +160,47 @@
       "type" : "object",
       "x-stateTree" : {
         "nodeKind" : "object"
+      }
+    },
+    "CounterState" : {
+      "properties" : {
+        "count" : {
+          "default" : 0,
+          "type" : "integer"
+        }
+      },
+      "required" : [
+        "count"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "object"
+      }
+    },
+    "IncrementAction" : {
+      "properties" : {
+
+      },
+      "required" : [
+
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
+    "IncrementResponse" : {
+      "properties" : {
+        "newCount" : {
+          "type" : "integer"
+        }
+      },
+      "required" : [
+        "newCount"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
       }
     },
     "StateDiff" : {
@@ -223,6 +237,28 @@
     }
   },
   "lands" : {
+    "counter" : {
+      "actions" : {
+        "Increment" : {
+          "$ref" : "#\/defs\/IncrementAction"
+        }
+      },
+      "clientEvents" : {
+
+      },
+      "events" : {
+
+      },
+      "stateType" : "CounterState",
+      "sync" : {
+        "diff" : {
+          "$ref" : "#\/defs\/StateDiff"
+        },
+        "snapshot" : {
+          "$ref" : "#\/defs\/CounterState"
+        }
+      }
+    },
     "demo-game" : {
       "actions" : {
         "BuyUpgrade" : {
