@@ -79,7 +79,10 @@ WebClient 會運行在另一個端口（通常是 `http://localhost:5173`），�
 
 ### 4. 最簡單範例
 
-以下是一個完整的計數器範例，展示如何建立伺服器和 Vue 客戶端：
+以下是一個簡化的計數器範例，展示核心概念。完整可運行的原始碼請參考：
+- **伺服器端定義**：[`Examples/HummingbirdDemo/Sources/DemoContent/CounterDemoDefinitions.swift`](Examples/HummingbirdDemo/Sources/DemoContent/CounterDemoDefinitions.swift)
+- **伺服器主程式**：[`Examples/HummingbirdDemo/Sources/CounterDemo/main.swift`](Examples/HummingbirdDemo/Sources/CounterDemo/main.swift)
+- **客戶端 Vue 組件**：[`Examples/HummingbirdDemo/WebClient/src/views/CounterPage.vue`](Examples/HummingbirdDemo/WebClient/src/views/CounterPage.vue)
 
 #### 伺服器端（Swift）
 
@@ -107,6 +110,17 @@ struct IncrementResponse: ResponsePayload {
 
 // 3. 定義 Land
 let counterLand = Land("counter", using: CounterState.self) {
+    AccessControl {
+        AllowPublic(true)
+        MaxPlayers(10)
+    }
+    
+    Lifetime {
+        Tick(every: .milliseconds(100)) { (_: inout CounterState, _: LandContext) in
+            // Empty tick handler
+        }
+    }
+    
     Rules {
         HandleAction(IncrementAction.self) { state, action, ctx in
             state.count += 1
@@ -115,16 +129,16 @@ let counterLand = Land("counter", using: CounterState.self) {
     }
 }
 
-// 4. 啟動伺服器
+// 4. 啟動伺服器（簡化版，完整版請參考原始碼）
 @main
-struct CounterServer {
+struct CounterDemo {
     static func main() async throws {
-        let server = try await LandServer.makeServer(
+        let container = try await AppContainer<CounterState>.makeServer(
             configuration: .init(allowGuestMode: true),
             land: counterLand,
             initialState: CounterState()
         )
-        try await server.run()
+        try await container.run()
     }
 }
 ```
@@ -136,36 +150,22 @@ struct CounterServer {
 import { onMounted, onUnmounted } from 'vue'
 import { useCounter } from './generated/counter/useCounter'
 
-// 使用生成的 composable
-const {
-  state,
-  isJoined,
-  connect,
-  disconnect,
-  increment
-} = useCounter()
+const { state, isJoined, connect, disconnect, increment } = useCounter()
 
 onMounted(async () => {
-  await connect({
-    wsUrl: 'ws://localhost:8080/game'
-  })
+  await connect({ wsUrl: 'ws://localhost:8080/game' })
 })
 
 onUnmounted(async () => {
   await disconnect()
 })
-
-async function handleIncrement() {
-  await increment({})
-}
 </script>
 
 <template>
-  <div>
-    <h1>計數器: {{ state?.count ?? 0 }}</h1>
-    <button @click="handleIncrement" :disabled="!isJoined">
-      +1
-    </button>
+  <div v-if="!isJoined || !state">Connecting...</div>
+  <div v-else>
+    <h2>Count: {{ state.count ?? 0 }}</h2>
+    <button @click="increment({})" :disabled="!isJoined">+1</button>
   </div>
 </template>
 ```
