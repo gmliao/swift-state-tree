@@ -149,3 +149,6 @@ temp/
 
 # OS
 .DS_Store
+
+# Diagram files
+*.dia
