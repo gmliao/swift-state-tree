@@ -131,7 +131,7 @@ public actor WebSocketTransport: Transport {
     /// - `trace` level logs a best‑effort UTF‑8 preview of the full payload.
     ///
     /// To see detailed payload logs in your application, configure the logger that is
-    /// passed into `WebSocketTransport` (or `AppContainer`) with `.logLevel = .trace`.
+    /// passed into `WebSocketTransport` (or `LandServer`) with `.logLevel = .trace`.
 
     private func logIncoming(_ data: Data, from sessionID: SessionID) {
         let size = data.count

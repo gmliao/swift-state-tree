@@ -1,7 +1,7 @@
 // Tests/SwiftStateTreeHummingbirdTests/LandRealmLandServerTests.swift
 //
 // Tests for LandRealm's Hummingbird-specific convenience methods
-// Tests both the new `registerWithLandServer` method and the deprecated `registerWithAppContainer` alias
+// Tests the `registerWithLandServer` method
 
 import Foundation
 import Testing

@@ -15,7 +15,7 @@ import Logging
 ///
 /// **Framework Support**:
 /// - Works with any HTTP framework that implements the `LandServerProtocol` protocol
-/// - Currently supports Hummingbird via `LandServer` (formerly `AppContainer`)
+/// - Currently supports Hummingbird via `LandServer`
 /// - Future frameworks (Vapor, Kitura, etc.) can implement `LandServerProtocol` to work with `LandRealm`
 public actor LandRealm {
     /// Internal storage for server information
@@ -25,6 +25,9 @@ public actor LandRealm {
         nonisolated(unsafe) let runClosure: () async throws -> Void
         nonisolated(unsafe) let shutdownClosure: () async throws -> Void
         nonisolated(unsafe) let healthCheckClosure: () async -> Bool
+        nonisolated(unsafe) let listLandsClosure: () async -> [LandID]
+        nonisolated(unsafe) let getLandStatsClosure: (LandID) async -> LandStats?
+        nonisolated(unsafe) let removeLandClosure: (LandID) async -> Void
         
         init<Server: LandServerProtocol>(
             landType: String,
@@ -46,6 +49,18 @@ public actor LandRealm {
             
             self.healthCheckClosure = {
                 await server.healthCheck()
+            }
+            
+            self.listLandsClosure = {
+                await server.listLands()
+            }
+            
+            self.getLandStatsClosure = { landID in
+                await server.getLandStats(landID: landID)
+            }
+            
+            self.removeLandClosure = { landID in
+                await server.removeLand(landID: landID)
             }
         }
     }
@@ -206,5 +221,93 @@ public actor LandRealm {
     /// - Returns: `true` if the land type is registered, `false` otherwise
     public func isRegistered(landType: String) -> Bool {
         servers[landType] != nil
+    }
+    
+    /// List all lands across all registered servers.
+    ///
+    /// Aggregates lands from all registered LandServer instances, regardless of State type.
+    ///
+    /// - Returns: Array of all land IDs from all registered servers
+    public func listAllLands() async -> [LandID] {
+        let serversToQuery = servers
+        var allLands: [LandID] = []
+        
+        await withTaskGroup(of: [LandID].self) { group in
+            for (_, serverInfo) in serversToQuery {
+                let closure = serverInfo.listLandsClosure
+                group.addTask {
+                    await closure()
+                }
+            }
+            
+            for await lands in group {
+                allLands.append(contentsOf: lands)
+            }
+        }
+        
+        return allLands
+    }
+    
+    /// Get statistics for a specific land across all registered servers.
+    ///
+    /// Searches all registered LandServer instances to find the land.
+    ///
+    /// - Parameter landID: The unique identifier for the land
+    /// - Returns: LandStats if the land exists in any server, nil otherwise
+    public func getLandStats(landID: LandID) async -> LandStats? {
+        let serversToQuery = servers
+        
+        // Try each server in parallel
+        return await withTaskGroup(of: LandStats?.self) { group in
+            for (_, serverInfo) in serversToQuery {
+                let closure = serverInfo.getLandStatsClosure
+                group.addTask {
+                    await closure(landID)
+                }
+            }
+            
+            // Return the first non-nil result
+            for await stats in group {
+                if let stats = stats {
+                    return stats
+                }
+            }
+            
+            return nil
+        }
+    }
+    
+    /// Remove a land from the appropriate server.
+    ///
+    /// Searches all registered LandServer instances to find and remove the land.
+    ///
+    /// - Parameter landID: The unique identifier for the land to remove
+    public func removeLand(landID: LandID) async {
+        let serversToQuery = servers
+        
+        // Try each server in parallel, stop when one succeeds
+        await withTaskGroup(of: Bool.self) { group in
+            for (_, serverInfo) in serversToQuery {
+                let closure = serverInfo.removeLandClosure
+                group.addTask {
+                    // Check if this server has the land first
+                    let lands = await serverInfo.listLandsClosure()
+                    if lands.contains(landID) {
+                        await closure(landID)
+                        return true
+                    }
+                    return false
+                }
+            }
+            
+            // Wait for one to succeed
+            for await removed in group {
+                if removed {
+                    // Cancel remaining tasks
+                    group.cancelAll()
+                    break
+                }
+            }
+        }
     }
 }

@@ -11,11 +11,25 @@ import NIOCore
 ///
 /// **Note**: This is the Hummingbird-specific implementation of `LandServerProtocol`.
 /// For framework-agnostic usage, use the `LandServerProtocol` protocol.
-///
-/// **Migration Note**: `AppContainer<State>` is an alias for `LandServer<State>`.
-/// New code should use `LandServer<State>` directly.
 public struct LandServer<State: StateNodeProtocol> {
     public typealias Land = LandDefinition<State>
+    
+    /// Default implementation for creating guest sessions.
+    ///
+    /// Creates a PlayerSession with:
+    /// - playerID: "guest-{randomID}" format (6-character random ID)
+    /// - deviceID: clientID.rawValue
+    /// - isGuest: true
+    ///
+    /// This is the recommended default for most use cases.
+    public static func defaultCreateGuestSession(_ sessionID: SessionID, clientID: ClientID) -> PlayerSession {
+        let randomID = String(UUID().uuidString.prefix(6))
+        return PlayerSession(
+            playerID: "guest-\(randomID)",
+            deviceID: clientID.rawValue,
+            isGuest: true
+        )
+    }
     
     public struct Configuration: Sendable {
         public var host: String
@@ -127,43 +141,11 @@ public struct LandServer<State: StateNodeProtocol> {
     
     // Multi-room mode
     public let landManager: LandManager<State>?
-    // MatchmakingService is generic and must be created by the user with proper Registry and LandTypeRegistry
-    // For type safety, we don't store it here - users should manage it separately if needed
+    // Note: MatchmakingService and LobbyContainer should be managed separately by users.
+    // To get a lobby, use: landManager.getLobby(landID:) to get LandContainer,
+    // then create LobbyContainer directly with your matchmaking dependencies.
     
     private let adapterHolder: TransportAdapterHolder<State>?
-    
-    /// Get a lobby by landID and wrap it as LobbyContainer.
-    ///
-    /// Note: This requires MatchmakingService and LandTypeRegistry to be provided.
-    /// Users should create LobbyContainer directly if they have these dependencies.
-    ///
-    /// - Parameters:
-    ///   - landID: The lobby landID (e.g., "lobby-asia").
-    ///   - matchmakingService: The matchmaking service instance.
-    ///   - landManagerRegistry: The land manager registry.
-    ///   - landTypeRegistry: The land type registry.
-    /// - Returns: LobbyContainer if the lobby exists, nil otherwise.
-    public func getLobby<Registry: LandManagerRegistry>(
-        landID: LandID,
-        matchmakingService: MatchmakingService<State, Registry>,
-        landManagerRegistry: Registry,
-        landTypeRegistry: LandTypeRegistry<State>
-    ) async -> LobbyContainer<State, Registry>? where Registry.State == State {
-        guard let landManager = landManager else {
-            return nil
-        }
-        
-        guard let container = await landManager.getLobby(landID: landID) else {
-            return nil
-        }
-        
-        return LobbyContainer(
-            container: container,
-            matchmakingService: matchmakingService,
-            landManagerRegistry: landManagerRegistry,
-            landTypeRegistry: landTypeRegistry
-        )
-    }
     
     // Private initializer for single-room mode
     private init(
@@ -265,14 +247,7 @@ public struct LandServer<State: StateNodeProtocol> {
         )
         
         // Create JWT validator if configured
-        let jwtValidator: JWTAuthValidator? = {
-            if let customValidator = configuration.jwtValidator {
-                return customValidator
-            } else if let jwtConfig = configuration.jwtConfig {
-                return DefaultJWTAuthValidator(config: jwtConfig, logger: logger)
-            }
-            return nil
-        }()
+        let jwtValidator = createJWTValidator(configuration: configuration, logger: logger)
         
         // Create global WebSocketTransport
         // Since we are using LandRouter, all connections go through this single transport
@@ -283,7 +258,7 @@ public struct LandServer<State: StateNodeProtocol> {
             landFactory: landFactory,
             initialStateFactory: initialStateFactory,
             transport: transport,
-            createGuestSession: createGuestSession,
+            createGuestSession: createGuestSession ?? defaultCreateGuestSession,
             logger: logger
         )
         
@@ -312,7 +287,7 @@ public struct LandServer<State: StateNodeProtocol> {
             landManager: landManager,
             landTypeRegistry: landTypeRegistry,
             transport: transport,
-            createGuestSession: createGuestSession,
+            createGuestSession: createGuestSession ?? defaultCreateGuestSession,
             logger: logger
         )
         
@@ -333,76 +308,20 @@ public struct LandServer<State: StateNodeProtocol> {
         // Use a dummy LandID to create a sample definition for schema extraction
         let sampleLandID = LandID.generate(landType: "sample")
         let sampleDefinition = landFactory(sampleLandID)
-        let schemaDataResult: Result<Data, Error> = {
-            do {
-                let anyLand = AnyLandDefinition(sampleDefinition)
-                let schema = anyLand.extractSchema()
-                let encoder = JSONEncoder()
-                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-                let jsonData = try encoder.encode(schema)
-                return .success(jsonData)
-            } catch {
-                return .failure(error)
-            }
-        }()
+        let schemaDataResult = generateSchema(from: sampleDefinition)
         
-        @Sendable
-        func addCORSHeaders(_ response: inout Response) {
-            response.headers[.accessControlAllowOrigin] = "*"
-            response.headers[.accessControlAllowMethods] = "GET, OPTIONS"
-            response.headers[.accessControlAllowHeaders] = "Content-Type"
-        }
+        // Register common routes (WebSocket, health, schema)
+        registerCommonRoutes(
+            router: router,
+            configuration: configuration,
+            hbAdapter: hbAdapter,
+            schemaDataResult: schemaDataResult,
+            logger: logger
+        )
         
-        // Generic WebSocket route
-        // All Join logic is now handled by sending a Join message after connection
-        router.ws(RouterPath(configuration.webSocketPath)) { inbound, outbound, context in
-            await hbAdapter.handle(inbound: inbound, outbound: outbound, context: context)
-        }
-        
-        if configuration.enableHealthRoute {
-            router.get(RouterPath(configuration.healthPath)) { _, _ in
-                "OK"
-            }
-        }
-        
-        // Add schema endpoint with CORS support
-        router.on(RouterPath("/schema"), method: .options) { _, _ in
-            var response = Response(status: .noContent)
-            addCORSHeaders(&response)
-            return response
-        }
-        
-        router.get(RouterPath("/schema")) { _, _ in
-            switch schemaDataResult {
-            case let .success(schemaData):
-                var buffer = ByteBufferAllocator().buffer(capacity: schemaData.count)
-                buffer.writeBytes(schemaData)
-                var response = Response(status: .ok, body: .init(byteBuffer: buffer))
-                response.headers[.contentType] = "application/json"
-                response.headers[.cacheControl] = "public, max-age=3600"
-                addCORSHeaders(&response)
-                return response
-            case let .failure(error):
-                logger.error("Failed to generate schema at startup: \(error)")
-                let errorMsg = "Failed to generate schema: \(error)"
-                var buffer = ByteBufferAllocator().buffer(capacity: errorMsg.utf8.count)
-                buffer.writeString(errorMsg)
-                var response = Response(status: .internalServerError, body: .init(byteBuffer: buffer))
-                response.headers[.contentType] = "text/plain"
-                addCORSHeaders(&response)
-                return response
-            }
-        }
-        
-        // Register admin routes if enabled
-        if configuration.enableAdminRoutes, let adminAuth = configuration.adminAuth {
-            let adminRoutes = AdminRoutes<State>(
-                landManager: landManager,
-                adminAuth: adminAuth,
-                logger: logger
-            )
-            adminRoutes.registerRoutes(on: router)
-        }
+        // Note: Admin routes are now registered at LandRealm level when using LandRealm.
+        // If you need admin routes for a standalone LandServer, use LandRealm.registerAdminRoutes.
+        // This keeps admin routes consistent across all land types.
         
         configureRouter?(router)
         
@@ -421,15 +340,15 @@ public struct LandServer<State: StateNodeProtocol> {
     /// - Parameters:
     ///   - configuration: Server configuration (host, port, paths, etc.)
     ///   - land: The Land definition
-    ///   - initialState: Initial state for the Land
+    ///   - initialState: Initial state for the Land (defaults to `State()`)
     ///   - createGuestSession: Optional closure to create PlayerSession for guest users (when JWT validation is enabled but no token is provided).
     ///                          Only used when `allowGuestMode` is true and JWT validation is enabled.
-    ///                          Default creates guest session with "guest-{randomID}" as playerID.
+    ///                          If nil, uses `defaultCreateGuestSession` which creates "guest-{randomID}" format.
     ///   - configureRouter: Optional router configuration closure
     public static func makeServer(
         configuration: Configuration = Configuration(),
         land definition: Land,
-        initialState: State,
+        initialState: State = State(),
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         configureRouter: ((Router<BasicWebSocketRequestContext>) -> Void)? = nil
     ) async throws -> LandServer {
@@ -438,19 +357,12 @@ public struct LandServer<State: StateNodeProtocol> {
             scope: "LandServer"
         )
         // Create JWT validator if configured
-        let jwtValidator: JWTAuthValidator? = {
-            if let customValidator = configuration.jwtValidator {
-                return customValidator
-            } else if let jwtConfig = configuration.jwtConfig {
-                return DefaultJWTAuthValidator(config: jwtConfig, logger: logger)
-            }
-            return nil
-        }()
+        let jwtValidator = createJWTValidator(configuration: configuration, logger: logger)
         
         let core = await buildCoreComponents(
             land: definition,
             initialState: initialState,
-            createGuestSession: createGuestSession,
+            createGuestSession: createGuestSession ?? defaultCreateGuestSession,
             logger: logger
         )
         
@@ -461,63 +373,16 @@ public struct LandServer<State: StateNodeProtocol> {
             logger: logger
         )
         let router = Router(context: BasicWebSocketRequestContext.self)
-        let schemaDataResult: Result<Data, Error> = {
-            do {
-                let anyLand = AnyLandDefinition(definition)
-                let schema = anyLand.extractSchema()
-                let encoder = JSONEncoder()
-                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-                let jsonData = try encoder.encode(schema)
-                return .success(jsonData)
-            } catch {
-                return .failure(error)
-            }
-        }()
-        @Sendable
-        func addCORSHeaders(_ response: inout Response) {
-            response.headers[.accessControlAllowOrigin] = "*"
-            response.headers[.accessControlAllowMethods] = "GET, OPTIONS"
-            response.headers[.accessControlAllowHeaders] = "Content-Type"
-        }
+        let schemaDataResult = generateSchema(from: definition)
         
-        router.ws(RouterPath(configuration.webSocketPath)) { inbound, outbound, context in
-            await hbAdapter.handle(inbound: inbound, outbound: outbound, context: context)
-        }
-        
-        if configuration.enableHealthRoute {
-            router.get(RouterPath(configuration.healthPath)) { _, _ in
-                "OK"
-            }
-        }
-        
-        // Add schema endpoint with CORS support
-        router.on(RouterPath("/schema"), method: .options) { _, _ in
-            var response = Response(status: .noContent)
-            addCORSHeaders(&response)
-            return response
-        }
-        
-        router.get(RouterPath("/schema")) { _, _ in
-            switch schemaDataResult {
-            case let .success(schemaData):
-                var buffer = ByteBufferAllocator().buffer(capacity: schemaData.count)
-                buffer.writeBytes(schemaData)
-                var response = Response(status: .ok, body: .init(byteBuffer: buffer))
-                response.headers[.contentType] = "application/json"
-                response.headers[.cacheControl] = "public, max-age=3600"
-                addCORSHeaders(&response)
-                return response
-            case let .failure(error):
-                logger.error("Failed to generate schema at startup: \(error)")
-                let errorMsg = "Failed to generate schema: \(error)"
-                var buffer = ByteBufferAllocator().buffer(capacity: errorMsg.utf8.count)
-                buffer.writeString(errorMsg)
-                var response = Response(status: .internalServerError, body: .init(byteBuffer: buffer))
-                response.headers[.contentType] = "text/plain"
-                addCORSHeaders(&response)
-                return response
-            }
-        }
+        // Register common routes (WebSocket, health, schema)
+        registerCommonRoutes(
+            router: router,
+            configuration: configuration,
+            hbAdapter: hbAdapter,
+            schemaDataResult: schemaDataResult,
+            logger: logger
+        )
         
         configureRouter?(router)
         
@@ -536,7 +401,7 @@ public struct LandServer<State: StateNodeProtocol> {
     
     public static func makeForTest(
         land definition: Land,
-        initialState: State,
+        initialState: State = State(),
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         logger: Logger? = nil
     ) async -> LandServerForTest {
@@ -566,6 +431,93 @@ public struct LandServer<State: StateNodeProtocol> {
         let transport: WebSocketTransport
         let transportAdapter: TransportAdapter<State>
         let adapterHolder: TransportAdapterHolder<State>
+    }
+    
+    // MARK: - Helper Methods for Server Setup
+    
+    /// Create JWT validator from configuration.
+    private static func createJWTValidator(
+        configuration: Configuration,
+        logger: Logger
+    ) -> JWTAuthValidator? {
+        if let customValidator = configuration.jwtValidator {
+            return customValidator
+        } else if let jwtConfig = configuration.jwtConfig {
+            return DefaultJWTAuthValidator(config: jwtConfig, logger: logger)
+        }
+        return nil
+    }
+    
+    /// Generate schema from a land definition.
+    private static func generateSchema(from definition: LandDefinition<State>) -> Result<Data, Error> {
+        do {
+            let anyLand = AnyLandDefinition(definition)
+            let schema = anyLand.extractSchema()
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let jsonData = try encoder.encode(schema)
+            return .success(jsonData)
+        } catch {
+            return .failure(error)
+        }
+    }
+    
+    /// Add CORS headers to a response.
+    @Sendable
+    private static func addCORSHeaders(_ response: inout Response) {
+        response.headers[.accessControlAllowOrigin] = "*"
+        response.headers[.accessControlAllowMethods] = "GET, OPTIONS"
+        response.headers[.accessControlAllowHeaders] = "Content-Type"
+    }
+    
+    /// Register common routes (WebSocket, health, schema) on the router.
+    private static func registerCommonRoutes(
+        router: Router<BasicWebSocketRequestContext>,
+        configuration: Configuration,
+        hbAdapter: HummingbirdStateTreeAdapter,
+        schemaDataResult: Result<Data, Error>,
+        logger: Logger
+    ) {
+        // WebSocket route
+        router.ws(RouterPath(configuration.webSocketPath)) { inbound, outbound, context in
+            await hbAdapter.handle(inbound: inbound, outbound: outbound, context: context)
+        }
+        
+        // Health route
+        if configuration.enableHealthRoute {
+            router.get(RouterPath(configuration.healthPath)) { _, _ in
+                "OK"
+            }
+        }
+        
+        // Schema endpoint with CORS support
+        router.on(RouterPath("/schema"), method: .options) { _, _ in
+            var response = Response(status: .noContent)
+            addCORSHeaders(&response)
+            return response
+        }
+        
+        router.get(RouterPath("/schema")) { _, _ in
+            switch schemaDataResult {
+            case let .success(schemaData):
+                var buffer = ByteBufferAllocator().buffer(capacity: schemaData.count)
+                buffer.writeBytes(schemaData)
+                var response = Response(status: .ok, body: .init(byteBuffer: buffer))
+                response.headers[.contentType] = "application/json"
+                response.headers[.cacheControl] = "public, max-age=3600"
+                addCORSHeaders(&response)
+                return response
+            case let .failure(error):
+                logger.error("Failed to generate schema at startup: \(error)")
+                let errorMsg = "Failed to generate schema: \(error)"
+                var buffer = ByteBufferAllocator().buffer(capacity: errorMsg.utf8.count)
+                buffer.writeString(errorMsg)
+                var response = Response(status: .internalServerError, body: .init(byteBuffer: buffer))
+                response.headers[.contentType] = "text/plain"
+                addCORSHeaders(&response)
+                return response
+            }
+        }
     }
     
     private static func buildCoreComponents(
@@ -633,24 +585,185 @@ private actor TransportAdapterHolder<State: StateNodeProtocol> {
     }
 }
 
-// MARK: - Type Aliases
 
-/// AppContainer is an alias for LandServer (migration in progress).
-///
-/// **Migration Note**: 
-/// - Phase 1 (current): `AppContainer<State>` is an alias for `LandServer<State>`
-/// - Phase 2 (future): `AppContainer` will be marked as deprecated
-/// - Phase 3 (future): `AppContainer` will be removed
-///
-/// **Recommendation**: New code should use `LandServer<State>` directly.
-public typealias AppContainer<State: StateNodeProtocol> = LandServer<State>
+// MARK: - LandRealm Extension
 
-/// AppContainerForTest is an alias for LandServerForTest (migration in progress).
+/// Convenience extension for LandRealm to work with LandServer (Hummingbird).
 ///
-/// **Migration Note**: 
-/// - Phase 1 (current): `AppContainerForTest<State>` is an alias for `LandServer<State>.LandServerForTest`
-/// - Phase 2 (future): `AppContainerForTest` will be marked as deprecated
-/// - Phase 3 (future): `AppContainerForTest` will be removed
+/// This extension provides a convenient way to register LandServer instances
+/// with LandRealm, making it easier to use LandRealm with Hummingbird.
+extension LandRealm {
+    /// Register a land type with LandServer (Hummingbird-specific convenience method).
+    ///
+    /// This is a convenience method that creates a LandServer and registers it with LandRealm.
+    /// For framework-agnostic usage, use `LandRealm.register(landType:server:)` directly.
+    ///
+    /// - Parameters:
+    ///   - landType: The land type identifier (e.g., "chess", "cardgame", "rpg")
+    ///   - landFactory: Factory function to create LandDefinition for a given LandID
+    ///   - initialStateFactory: Factory function to create initial state for a given LandID
+    ///   - webSocketPath: Optional custom WebSocket path (defaults to "/{landType}")
+    ///   - configuration: Optional LandServer configuration (uses defaults if not provided)
+    /// - Throws: `LandRealmError.duplicateLandType` if the land type is already registered
+    /// - Throws: `LandRealmError.invalidLandType` if the land type is invalid (e.g., empty)
+    public func registerWithLandServer<State: StateNodeProtocol>(
+        landType: String,
+        landFactory: @escaping @Sendable (LandID) -> LandDefinition<State>,
+        initialStateFactory: @escaping @Sendable (LandID) -> State,
+        webSocketPath: String? = nil,
+        configuration: LandServer<State>.Configuration? = nil
+    ) async throws {
+        // Validate landType
+        guard !landType.isEmpty else {
+            throw LandRealmError.invalidLandType(landType)
+        }
+        
+        // Check for duplicate
+        if self.isRegistered(landType: landType) {
+            throw LandRealmError.duplicateLandType(landType)
+        }
+        
+        // Create server
+        let path = webSocketPath ?? "/\(landType)"
+        let finalConfig: LandServer<State>.Configuration
+        if let providedConfig = configuration {
+            var config = providedConfig
+            config.webSocketPath = path
+            finalConfig = config
+        } else {
+            finalConfig = LandServer<State>.Configuration(webSocketPath: path)
+        }
+        
+        let server = try await LandServer<State>.makeMultiRoomServer(
+            configuration: finalConfig,
+            landFactory: landFactory,
+            initialStateFactory: initialStateFactory,
+            createGuestSession: LandServer<State>.defaultCreateGuestSession
+        )
+        
+        // Register using the generic method
+        try await register(landType: landType, server: server)
+    }
+    
+    /// Register admin routes for this LandRealm.
+    ///
+    /// This method creates and registers admin HTTP routes that can manage lands
+    /// across all registered land types in this LandRealm.
+    ///
+    /// **Key Feature**: Unlike the old `AdminRoutes<State>`, this version can manage
+    /// lands across different `State` types by aggregating data from all registered servers.
+    ///
+    /// - Parameters:
+    ///   - router: The Hummingbird router to register routes on
+    ///   - adminAuth: Admin authentication middleware
+    ///   - logger: Optional logger instance
+    public func registerAdminRoutes(
+        on router: Router<BasicWebSocketRequestContext>,
+        adminAuth: AdminAuthMiddleware,
+        logger: Logger? = nil
+    ) {
+        let adminRoutes = AdminRoutes(
+            landRealm: self,
+            adminAuth: adminAuth,
+            logger: logger
+        )
+        adminRoutes.registerRoutes(on: router)
+    }
+}
+
+// MARK: - LandServerProtocol Conformance
+
+/// Extension to make LandServer conform to LandServerProtocol.
 ///
-/// **Recommendation**: New code should use `LandServer<State>.LandServerForTest` directly.
-public typealias AppContainerForTest<State: StateNodeProtocol> = LandServer<State>.LandServerForTest
+/// This allows LandServer to be used with LandRealm and other components
+/// that work with the LandServerProtocol abstraction.
+extension LandServer: LandServerProtocol {
+    /// Gracefully shutdown the server.
+    ///
+    /// Note: Currently, LandServer doesn't have explicit shutdown support.
+    /// This is a placeholder for future implementation.
+    public func shutdown() async throws {
+        // TODO: Implement graceful shutdown for LandServer
+        // This might involve:
+        // - Stopping accepting new connections
+        // - Waiting for existing connections to close
+        // - Cleaning up resources
+    }
+    
+    /// Check the health status of the server.
+    ///
+    /// For now, we consider a server healthy if it exists.
+    /// In a real implementation, we might check if the server is running,
+    /// if it can accept connections, etc.
+    public func healthCheck() async -> Bool {
+        // TODO: Implement actual health check
+        // This might involve:
+        // - Checking if the server is running
+        // - Checking if it can accept connections
+        // - Checking resource usage
+        return true
+    }
+    
+    /// List all lands managed by this server.
+    ///
+    /// For multi-room servers, returns all lands from the LandManager.
+    /// For single-room servers, returns the single land if it exists.
+    public func listLands() async -> [LandID] {
+        if let landManager = landManager {
+            // Multi-room mode: query LandManager
+            return await landManager.listLands()
+        } else if let land = land {
+            // Single-room mode: return the single land
+            return [LandID(land.id)]
+        } else {
+            // No lands
+            return []
+        }
+    }
+    
+    /// Get statistics for a specific land.
+    ///
+    /// - Parameter landID: The unique identifier for the land
+    /// - Returns: LandStats if the land exists, nil otherwise
+    public func getLandStats(landID: LandID) async -> LandStats? {
+        if let landManager = landManager {
+            // Multi-room mode: query LandManager
+            return await landManager.getLandStats(landID: landID)
+        } else if let land = land, let keeper = keeper {
+            // Single-room mode: check if it's the single land
+            guard LandID(land.id) == landID else {
+                return nil
+            }
+            
+            // Get stats from keeper
+            let playerCount = await keeper.playerCount()
+            let createdAt = Date() // TODO: Track creation time for single-room mode
+            let lastActivityAt = Date() // TODO: Track last activity time
+            
+            return LandStats(
+                landID: landID,
+                playerCount: playerCount,
+                createdAt: createdAt,
+                lastActivityAt: lastActivityAt
+            )
+        } else {
+            return nil
+        }
+    }
+    
+    /// Remove a land from the server.
+    ///
+    /// - Parameter landID: The unique identifier for the land to remove
+    public func removeLand(landID: LandID) async {
+        if let landManager = landManager {
+            // Multi-room mode: remove from LandManager
+            await landManager.removeLand(landID: landID)
+        } else if let land = land {
+            // Single-room mode: only allow removal if it's the single land
+            if LandID(land.id) == landID {
+                // TODO: Implement shutdown for single-room server
+                // For now, this is a no-op as single-room servers don't support removal
+            }
+        }
+    }
+}

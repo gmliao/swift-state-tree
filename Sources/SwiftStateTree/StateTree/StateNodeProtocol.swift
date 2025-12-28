@@ -34,6 +34,23 @@
 /// }
 /// ```
 public protocol StateNodeProtocol: Sendable, SchemaMetadataProvider {
+    /// Initialize a new instance of the StateNode.
+    ///
+    /// All StateNode types must provide a parameterless initializer.
+    /// If all stored properties have default values, Swift will automatically generate this initializer.
+    ///
+    /// Example:
+    /// ```swift
+    /// @StateNodeBuilder
+    /// struct GameState: StateNodeProtocol {
+    ///     @Sync(.broadcast)
+    ///     var players: [PlayerID: PlayerState] = [:]  // Default value
+    ///     
+    ///     // Swift automatically generates init() {}
+    /// }
+    /// ```
+    init()
+    
     /// Get all fields marked with @Sync in this StateNode
     /// 
     /// Returns an array of `SyncFieldInfo` containing the name and policy type

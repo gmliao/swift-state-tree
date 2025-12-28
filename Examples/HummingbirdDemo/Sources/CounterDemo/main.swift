@@ -12,45 +12,26 @@ import SwiftStateTreeHummingbird
 @main
 struct CounterDemo {
     static func main() async throws {
-        typealias CounterAppContainer = AppContainer<CounterState>
+        typealias CounterLandServer = LandServer<CounterState>
 
         // JWT Configuration for demo/testing purposes
-        let demoJWTSecretKey = "demo-secret-key-change-in-production"
-        let jwtConfig = JWTConfiguration(
-            secretKey: demoJWTSecretKey,
-            algorithm: .HS256,
-            validateExpiration: true
-        )
+        let jwtConfig = HummingbirdDemoContent.createDemoJWTConfig()
 
         // Create logger
-        let logger = createColoredLogger(
-            loggerIdentifier: "com.swiftstatetree.hummingbird",
+        let logger = HummingbirdDemoContent.createDemoLogger(
             scope: "CounterDemo",
             logLevel: .info
         )
 
         // Single-room mode: Create a fixed land instance
-        let container = try await CounterAppContainer.makeServer(
-            configuration: AppContainer.Configuration(
+        let server = try await CounterLandServer.makeServer(
+            configuration: LandServer.Configuration(
                 logger: logger,
                 jwtConfig: jwtConfig,
                 allowGuestMode: true
             ),
-            land: HummingbirdDemoContent.CounterDemo.makeLand(),
-            initialState: CounterState(),
-            createGuestSession: { _, clientID in
-                let randomID = String(UUID().uuidString.prefix(6))
-                return PlayerSession(
-                    playerID: "guest-\(randomID)",
-                    deviceID: clientID.rawValue,
-                    metadata: [
-                        "isGuest": "true",
-                        "connectedAt": ISO8601DateFormatter().string(from: Date()),
-                        "clientID": clientID.rawValue,
-                    ]
-                )
-            }
+            land: HummingbirdDemoContent.CounterDemo.makeLand()
         )
-        try await container.run()
+        try await server.run()
     }
 }

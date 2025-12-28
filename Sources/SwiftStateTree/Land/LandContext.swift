@@ -25,6 +25,9 @@ public struct LandContext: Sendable {
     /// Device identifier (optional, from PlayerSession)
     public let deviceID: String?
 
+    /// Whether this is a guest session (not authenticated via JWT).
+    public let isGuest: Bool
+
     /// Additional metadata from PlayerSession (e.g., connectedAt, platform, etc.)
     public let metadata: [String: String]
 
@@ -58,6 +61,7 @@ public struct LandContext: Sendable {
         services: LandServices,
         logger: Logger,
         deviceID: String? = nil,
+        isGuest: Bool = false,
         metadata: [String: String] = [:],
         sendEventHandler: @escaping @Sendable (AnyServerEvent, EventTarget) async -> Void,
         syncHandler: @escaping @Sendable () async -> Void
@@ -67,6 +71,7 @@ public struct LandContext: Sendable {
         self.clientID = clientID
         self.sessionID = sessionID
         self.deviceID = deviceID
+        self.isGuest = isGuest
         self.metadata = metadata
         self.services = services
         self.logger = logger

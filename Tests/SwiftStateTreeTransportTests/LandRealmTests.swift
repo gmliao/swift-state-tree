@@ -225,3 +225,139 @@ func testLandRealmChecksRegistration() async throws {
     #expect(await realm.isRegistered(landType: "test") == true)
     #expect(await realm.isRegistered(landType: "other") == false)
 }
+
+// MARK: - Admin Query Tests
+
+@Test("LandRealm lists all lands across all registered servers")
+func testLandRealmListAllLands() async throws {
+    // Arrange
+    let realm = LandRealm()
+    let server1 = MockLandServer(stateType: TestState1.self)
+    let server2 = MockLandServer(stateType: TestState2.self)
+    
+    let land1 = LandID(landType: "type1", instanceId: "id1")
+    let land2 = LandID(landType: "type1", instanceId: "id2")
+    let land3 = LandID(landType: "type2", instanceId: "id3")
+    
+    server1.mockLands = [land1, land2]
+    server2.mockLands = [land3]
+    
+    try await realm.register(landType: "type1", server: server1)
+    try await realm.register(landType: "type2", server: server2)
+    
+    // Act
+    let allLands = await realm.listAllLands()
+    
+    // Assert
+    #expect(allLands.count == 3)
+    #expect(allLands.contains(land1))
+    #expect(allLands.contains(land2))
+    #expect(allLands.contains(land3))
+    #expect(server1.listLandsCallCount == 1)
+    #expect(server2.listLandsCallCount == 1)
+}
+
+@Test("LandRealm returns empty list when no servers are registered")
+func testLandRealmListAllLandsEmpty() async throws {
+    // Arrange
+    let realm = LandRealm()
+    
+    // Act
+    let allLands = await realm.listAllLands()
+    
+    // Assert
+    #expect(allLands.isEmpty)
+}
+
+@Test("LandRealm gets land stats from any registered server")
+func testLandRealmGetLandStats() async throws {
+    // Arrange
+    let realm = LandRealm()
+    let server1 = MockLandServer(stateType: TestState1.self)
+    let server2 = MockLandServer(stateType: TestState2.self)
+    
+    let land1 = LandID(landType: "type1", instanceId: "id1")
+    let land2 = LandID(landType: "type2", instanceId: "id2")
+    
+    let stats1 = LandStats(
+        landID: land1,
+        playerCount: 5,
+        createdAt: Date(),
+        lastActivityAt: Date()
+    )
+    let stats2 = LandStats(
+        landID: land2,
+        playerCount: 3,
+        createdAt: Date(),
+        lastActivityAt: Date()
+    )
+    
+    server1.mockLands = [land1]
+    server1.mockLandStats = [land1: stats1]
+    server2.mockLands = [land2]
+    server2.mockLandStats = [land2: stats2]
+    
+    try await realm.register(landType: "type1", server: server1)
+    try await realm.register(landType: "type2", server: server2)
+    
+    // Act
+    let foundStats1 = await realm.getLandStats(landID: land1)
+    let foundStats2 = await realm.getLandStats(landID: land2)
+    let notFoundStats = await realm.getLandStats(landID: LandID(landType: "type3", instanceId: "id3"))
+    
+    // Assert
+    #expect(foundStats1?.landID == land1)
+    #expect(foundStats1?.playerCount == 5)
+    #expect(foundStats2?.landID == land2)
+    #expect(foundStats2?.playerCount == 3)
+    #expect(notFoundStats == nil)
+    #expect(server1.getLandStatsCallCount >= 1)
+    #expect(server2.getLandStatsCallCount >= 1)
+}
+
+@Test("LandRealm removes land from appropriate server")
+func testLandRealmRemoveLand() async throws {
+    // Arrange
+    let realm = LandRealm()
+    let server1 = MockLandServer(stateType: TestState1.self)
+    let server2 = MockLandServer(stateType: TestState2.self)
+    
+    let land1 = LandID(landType: "type1", instanceId: "id1")
+    let land2 = LandID(landType: "type2", instanceId: "id2")
+    
+    server1.mockLands = [land1]
+    server2.mockLands = [land2]
+    
+    try await realm.register(landType: "type1", server: server1)
+    try await realm.register(landType: "type2", server: server2)
+    
+    // Act
+    await realm.removeLand(landID: land1)
+    
+    // Assert
+    #expect(server1.removeLandCallCount == 1)
+    // server2 should not be called since land1 is not in its lands
+    // Note: The implementation checks which server has the land first
+    let remainingLands = await realm.listAllLands()
+    #expect(remainingLands.contains(land2))
+    // land1 should be removed from server1's mockLands
+    #expect(server1.mockLands.isEmpty)
+}
+
+@Test("LandRealm removeLand handles non-existent land gracefully")
+func testLandRealmRemoveNonExistentLand() async throws {
+    // Arrange
+    let realm = LandRealm()
+    let server1 = MockLandServer(stateType: TestState1.self)
+    
+    try await realm.register(landType: "type1", server: server1)
+    
+    let nonExistentLand = LandID(landType: "type1", instanceId: "non-existent")
+    
+    // Act: Should not throw
+    await realm.removeLand(landID: nonExistentLand)
+    
+    // Assert: Should complete without error
+    // Note: The implementation will check all servers but won't find the land
+    #expect(server1.listLandsCallCount >= 1)
+}
