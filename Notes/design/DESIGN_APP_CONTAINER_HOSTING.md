@@ -233,14 +233,68 @@ public struct GameDomainServices: Sendable {
 
 ## Server 組裝方式
 
-### 目前實作：AppContainer 封裝
+### LandHost：統一 HTTP Server 管理
 
-- 位置：`Sources/SwiftStateTreeHummingbird/AppContainer.swift`（target `SwiftStateTreeHummingbird`，提供泛用 host pattern，Demo 與測試共用）
+**位置**：`Sources/SwiftStateTreeHummingbird/LandHost.swift`
+
+**功能**：
+- 統一管理 Hummingbird `Application` 和 `Router`
+- 支援多個不同 State 類型的 `LandServer` 註冊到同一個 Host
+- 解決多個 `LandServer` 實例端口衝突問題
+- 提供統一的健康檢查路由和啟動日誌
+
+**使用方式**：
+
+```swift
+import SwiftStateTreeHummingbird
+
+// 創建統一的 HTTP Server Host
+let host = LandHost(configuration: .init(
+    host: "localhost",
+    port: 8080,
+    logger: logger
+))
+
+// 註冊多個 LandServer 實例
+let cookieServer = try await LandServer<CookieGameState>.makeMultiRoomServer(
+    configuration: ...,
+    router: host.router  // 使用 host 的 router
+)
+try host.register(
+    landType: "cookie",
+    server: cookieServer,
+    webSocketPath: "/game/cookie"
+)
+
+let counterServer = try await LandServer<CounterState>.makeMultiRoomServer(
+    configuration: ...,
+    router: host.router  // 使用同一個 router
+)
+try host.register(
+    landType: "counter",
+    server: counterServer,
+    webSocketPath: "/game/counter"
+)
+
+// 運行統一的 HTTP Server
+try await host.run()
+```
+
+**與 `LandServer` 的關係**：
+- `LandHost` 負責 HTTP Server 層面的管理（Application、Router）
+- `LandServer` 負責遊戲邏輯層面的管理（LandManager、LandRouter、LandKeeper）
+- `LandServer` 可以獨立運行（創建自己的 Application），也可以註冊到 `LandHost`（使用共享的 Application）
+- 當需要運行多個不同 State 類型的 `LandServer` 時，應該使用 `LandHost` 來避免端口衝突
+
+### 目前實作：LandServer 封裝
+
+- 位置：`Sources/SwiftStateTreeHummingbird/LandServer.swift`（target `SwiftStateTreeHummingbird`，提供泛用 host pattern，Demo 與測試共用）
 - 功能：
   - 集中建立 `LandKeeper`、`WebSocketTransport`、`TransportAdapter`、`HummingbirdStateTreeAdapter`、`Router`、`Application`
   - 提供 `Configuration` 結構統一設定 host、port、路徑與是否顯示啟動訊息
   - 內建健康檢查路由，並可透過 `configureRouter` 閉包增加額外 endpoint
-  - 具備 `makeServer`（實際 host）與 `makeForTest`（純 transport harness）兩種模式
+  - 具備 `makeServer`（單房間模式）與 `makeMultiRoomServer`（多房間模式）兩種模式
+  - 支援外部 router（來自 `LandHost`）或創建自己的 router
 - 使用方式：
 
 ```swift
@@ -249,12 +303,12 @@ import SwiftStateTreeHummingbird
 @main
 struct HummingbirdDemo {
     static func main() async throws {
-        typealias DemoAppContainer = AppContainer<DemoGameState, DemoClientEvents, DemoServerEvents>
-        let container = try await DemoAppContainer.makeServer(
+        typealias DemoLandServer = LandServer<DemoGameState>
+        let server = try await DemoLandServer.makeServer(
             land: DemoGame.makeLand(),
             initialState: DemoGameState()
         )
-        try await container.run()
+        try await server.run()
     }
 }
 ```
@@ -262,13 +316,14 @@ struct HummingbirdDemo {
 `run()` 會依設定輸出啟動資訊並呼叫 `Application.runService()`。若需要自訂 port 或路徑：
 
 ```swift
-let container = try await DemoAppContainer.makeServer(
+let server = try await DemoLandServer.makeServer(
     configuration: .init(host: "0.0.0.0", port: 8081, webSocketPath: "/ws"),
     land: DemoGame.makeLand(),
     initialState: DemoGameState()
 ) { router in
     router.get("/metrics") { _, _ in "ok" }
 }
+try await server.run()
 ```
 
 ### 測試專用：`AppContainerForTest`
@@ -316,6 +371,79 @@ let state = await harness.keeper.currentState()
 - 或額外 Example 專案示範 SwiftStateTree + Vapor + Fluent / REST Admin 介面
 
 **設計優勢**：Transport 層已抽象化，可以很容易替換不同 host，而不影響 Core / Runtime
+
+### 架構圖
+
+#### 使用 LandHost 的架構
+
+```mermaid
+flowchart TD
+    LandHost[LandHost<br/>HTTP Server 層級]
+    LandHost --> Router[Router 統一管理]
+    Router --> App[Application 單一實例]
+    
+    LandHost --> LS1[LandServer Cookie]
+    LandHost --> LS2[LandServer Counter]
+    LandHost --> LR[LandRealm 可選]
+    
+    LS1 --> Router
+    LS2 --> Router
+    LR --> Router
+    
+    LS1 --> LM1[LandManager Cookie]
+    LS2 --> LM2[LandManager Counter]
+    
+    LM1 --> LK1[LandKeeper Cookie]
+    LM2 --> LK2[LandKeeper Counter]
+```
+
+#### 完整層級架構
+
+```mermaid
+flowchart TB
+    subgraph Application["應用層級"]
+        LH[LandHost<br/>HTTP Server]
+        LR[LandRealm<br/>聚合管理]
+    end
+    
+    subgraph GameLogic["遊戲邏輯層級"]
+        LS1[LandServer State1]
+        LS2[LandServer State2]
+    end
+    
+    subgraph RoomMgmt["房間管理層級"]
+        LM1[LandManager State1]
+        LM2[LandManager State2]
+    end
+    
+    subgraph Routing["路由層級"]
+        LR1[LandRouter State1]
+        LR2[LandRouter State2]
+    end
+    
+    subgraph StateMgmt["狀態管理層級"]
+        LK1[LandKeeper State1]
+        LK2[LandKeeper State2]
+    end
+    
+    subgraph Rules["規則定義層級"]
+        LD1[LandDefinition State1]
+        LD2[LandDefinition State2]
+    end
+    
+    LH --> LS1
+    LH --> LS2
+    LR --> LS1
+    LR --> LS2
+    LS1 --> LM1
+    LS2 --> LM2
+    LM1 --> LR1
+    LM2 --> LR2
+    LR1 --> LK1
+    LR2 --> LK2
+    LK1 --> LD1
+    LK2 --> LD2
+```
 
 
 ## 測試策略

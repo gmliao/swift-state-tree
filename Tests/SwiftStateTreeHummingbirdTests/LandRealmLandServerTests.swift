@@ -1,7 +1,7 @@
 // Tests/SwiftStateTreeHummingbirdTests/LandRealmLandServerTests.swift
 //
-// Tests for LandRealm's Hummingbird-specific convenience methods
-// Tests the `registerWithLandServer` method
+// Tests for LandRealm with LandServer (Hummingbird).
+// Tests use LandRealmHost or direct LandRealm.register(landType:server:) instead of the removed registerWithLandServer method.
 
 import Foundation
 import Testing
@@ -50,57 +50,64 @@ private enum CardGame {
 
 // MARK: - Tests
 
-@Test("registerWithLandServer uses default webSocketPath when not provided")
+@Test("LandRealmHost uses default webSocketPath when not provided")
 func testLandRealmDefaultWebSocketPath() async throws {
     // Arrange
-    let realm = LandRealm()
+    var realmHost = LandRealmHost(configuration: LandRealmHost.HostConfiguration(
+        enableHealthRoute: false,
+        logStartupBanner: false
+    ))
     
     // Act: Register without webSocketPath
-    try await realm.registerWithLandServer(
+    try await realmHost.registerWithLandServer(
         landType: "chess",
         landFactory: { _ in ChessGame.makeLand() },
         initialStateFactory: { _ in ChessState() }
     )
     
-    // Assert: Should use default path "/chess"
-    // Note: We verify this indirectly through the server configuration
-    // The actual path is stored in the server's configuration
-    let healthStatus = await realm.healthCheck()
+    // Assert: Should be registered successfully
+    let healthStatus = await realmHost.realm.healthCheck()
     #expect(healthStatus["chess"] == true)
 }
 
-@Test("registerWithLandServer uses custom webSocketPath when provided")
+@Test("LandRealmHost uses custom webSocketPath when provided")
 func testLandRealmCustomWebSocketPath() async throws {
     // Arrange
-    let realm = LandRealm()
+    var realmHost = LandRealmHost(configuration: LandRealmHost.HostConfiguration(
+        enableHealthRoute: false,
+        logStartupBanner: false
+    ))
     
     // Act: Register with custom webSocketPath
-    try await realm.registerWithLandServer(
+    try await realmHost.registerWithLandServer(
         landType: "chess",
         landFactory: { _ in ChessGame.makeLand() },
         initialStateFactory: { _ in ChessState() },
         webSocketPath: "/custom/chess"
     )
     
-    // Assert: Should use custom path
-    let healthStatus = await realm.healthCheck()
+    // Assert: Should be registered successfully
+    let healthStatus = await realmHost.realm.healthCheck()
     #expect(healthStatus["chess"] == true)
 }
 
-@Test("registerWithLandServer can register servers with different configurations")
+@Test("LandRealmHost can register servers with different configurations")
 func testLandRealmDifferentConfigurations() async throws {
     // Arrange
-    let realm = LandRealm()
+    var realmHost = LandRealmHost(configuration: LandRealmHost.HostConfiguration(
+        enableHealthRoute: false,
+        logStartupBanner: false
+    ))
     
     // Act: Register with different configurations
-    try await realm.registerWithLandServer(
+    try await realmHost.registerWithLandServer(
         landType: "chess",
         landFactory: { _ in ChessGame.makeLand() },
         initialStateFactory: { _ in ChessState() },
         webSocketPath: "/game/chess"
     )
     
-    try await realm.registerWithLandServer(
+    try await realmHost.registerWithLandServer(
         landType: "cardgame",
         landFactory: { _ in CardGame.makeLand() },
         initialStateFactory: { _ in CardGameState() },
@@ -108,25 +115,29 @@ func testLandRealmDifferentConfigurations() async throws {
     )
     
     // Assert: Both should be registered successfully
-    let healthStatus = await realm.healthCheck()
+    let healthStatus = await realmHost.realm.healthCheck()
     #expect(healthStatus.count == 2)
     #expect(healthStatus["chess"] == true)
     #expect(healthStatus["cardgame"] == true)
 }
 
-@Test("registerWithLandServer accepts custom configuration")
+@Test("LandRealmHost accepts custom configuration")
 func testLandRealmCustomConfiguration() async throws {
     // Arrange
-    let realm = LandRealm()
+    var realmHost = LandRealmHost(configuration: LandRealmHost.HostConfiguration(
+        enableHealthRoute: false,
+        logStartupBanner: false
+    ))
     let customConfig = LandServer<ChessState>.Configuration(
         host: "0.0.0.0",
         port: 9090,
         webSocketPath: "/custom/chess",
-        enableHealthRoute: false
+        enableHealthRoute: false,
+        logStartupBanner: false
     )
     
     // Act: Register with custom configuration
-    try await realm.registerWithLandServer(
+    try await realmHost.registerWithLandServer(
         landType: "chess",
         landFactory: { _ in ChessGame.makeLand() },
         initialStateFactory: { _ in ChessState() },
@@ -134,18 +145,21 @@ func testLandRealmCustomConfiguration() async throws {
     )
     
     // Assert: Should be registered successfully
-    let healthStatus = await realm.healthCheck()
+    let healthStatus = await realmHost.realm.healthCheck()
     #expect(healthStatus["chess"] == true)
 }
 
-@Test("registerWithLandServer validates landType is not empty")
+@Test("LandRealmHost validates landType is not empty")
 func testLandRealmValidatesLandTypeNotEmpty() async throws {
     // Arrange
-    let realm = LandRealm()
+    var realmHost = LandRealmHost(configuration: LandRealmHost.HostConfiguration(
+        enableHealthRoute: false,
+        logStartupBanner: false
+    ))
     
     // Act & Assert: Try to register with empty landType
     do {
-        try await realm.registerWithLandServer(
+        try await realmHost.registerWithLandServer(
             landType: "",
             landFactory: { _ in ChessGame.makeLand() },
             initialStateFactory: { _ in ChessState() }
@@ -158,13 +172,16 @@ func testLandRealmValidatesLandTypeNotEmpty() async throws {
     }
 }
 
-@Test("registerWithLandServer rejects duplicate landType")
+@Test("LandRealmHost rejects duplicate landType")
 func testLandRealmRejectsDuplicateLandType() async throws {
     // Arrange
-    let realm = LandRealm()
+    var realmHost = LandRealmHost(configuration: LandRealmHost.HostConfiguration(
+        enableHealthRoute: false,
+        logStartupBanner: false
+    ))
     
     // Act: Register first time
-    try await realm.registerWithLandServer(
+    try await realmHost.registerWithLandServer(
         landType: "chess",
         landFactory: { _ in ChessGame.makeLand() },
         initialStateFactory: { _ in ChessState() }
@@ -172,7 +189,7 @@ func testLandRealmRejectsDuplicateLandType() async throws {
     
     // Act & Assert: Try to register duplicate landType
     do {
-        try await realm.registerWithLandServer(
+        try await realmHost.registerWithLandServer(
             landType: "chess",
             landFactory: { _ in ChessGame.makeLand() },
             initialStateFactory: { _ in ChessState() }

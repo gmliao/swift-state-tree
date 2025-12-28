@@ -35,21 +35,28 @@ private enum TestGame {
 @Test("AdminRoutes can list all lands across different land types")
 func testAdminRoutesListAllLands() async throws {
     // Arrange
-    let realm = LandRealm()
     let adminAuth = AdminAuthMiddleware(apiKey: "test-key")
     
-    // Register multiple land types
-    try await realm.registerWithLandServer(
+    // Register multiple land types using LandRealmHost
+    let realmHost = LandRealmHost(configuration: LandRealmHost.HostConfiguration(
+        enableHealthRoute: false,
+        logStartupBanner: false
+    ))
+    
+    try await realmHost.registerWithLandServer(
         landType: "game1",
         landFactory: { _ in TestGame.makeLand() },
         initialStateFactory: { _ in TestGameState() }
     )
     
-    try await realm.registerWithLandServer(
+    try await realmHost.registerWithLandServer(
         landType: "game2",
         landFactory: { _ in TestGame.makeLand() },
         initialStateFactory: { _ in TestGameState() }
     )
+    
+    // Use realm from realmHost for AdminRoutes (actor-isolated, need await)
+    let realm = await realmHost.realm
     
     let adminRoutes = AdminRoutes(
         landRealm: realm,
@@ -98,15 +105,17 @@ func testAdminRoutesWithJWTAuth() async throws {
     #expect(adminRoutes.adminAuth.jwtValidator != nil)
 }
 
-@Test("LandRealm registerAdminRoutes registers routes on router")
-func testLandRealmRegisterAdminRoutes() async throws {
+@Test("LandRealmHost registerAdminRoutes registers routes on router")
+func testLandRealmHostRegisterAdminRoutes() async throws {
     // Arrange
-    let realm = LandRealm()
-    let router = Router(context: BasicWebSocketRequestContext.self)
+    let realmHost = LandRealmHost(configuration: LandRealmHost.HostConfiguration(
+        enableHealthRoute: false,
+        logStartupBanner: false
+    ))
     let adminAuth = AdminAuthMiddleware(apiKey: "test-key")
     
-    // Act: registerAdminRoutes is a nonisolated method on an actor, so we need await
-    await realm.registerAdminRoutes(on: router, adminAuth: adminAuth)
+    // Act: registerAdminRoutes uses the shared router from realmHost
+    await realmHost.registerAdminRoutes(adminAuth: adminAuth)
     
     // Assert: Routes should be registered (we can't easily verify without HTTP server,
     // but the method should complete without error)

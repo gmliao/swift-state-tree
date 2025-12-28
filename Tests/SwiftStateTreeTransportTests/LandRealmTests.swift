@@ -148,25 +148,21 @@ func testLandRealmShutdownWithNoServers() async throws {
     try await realm.shutdown()
 }
 
-@Test("LandRealm handles server failure during run")
-func testLandRealmHandlesServerFailureDuringRun() async throws {
+@Test("LandRealm.run() is deprecated and throws error")
+func testLandRealmRunIsDeprecated() async throws {
     // Arrange
     let realm = LandRealm()
-    let failingServer = MockLandServer(
-        stateType: TestState1.self,
-        shouldFailRun: true,
-        runError: MockLandServerError.runFailed
-    )
+    let server = MockLandServer(stateType: TestState1.self)
     
-    try await realm.register(landType: "failing", server: failingServer)
+    try await realm.register(landType: "test", server: server)
     
-    // Act & Assert: Run should propagate the error
+    // Act & Assert: run() should throw error indicating it's deprecated
     do {
         try await realm.run()
         Issue.record("Expected error to be thrown")
-    } catch LandRealmError.serverFailure(let landType, let underlying) {
-        #expect(landType == "failing")
-        #expect(underlying is MockLandServerError)
+    } catch LandRealmError.httpServerManagementMovedToHost(let message) {
+        #expect(message.contains("LandRealm.run() is no longer supported"))
+        #expect(message.contains("LandHost"))
     } catch {
         Issue.record("Unexpected error type: \(error)")
     }

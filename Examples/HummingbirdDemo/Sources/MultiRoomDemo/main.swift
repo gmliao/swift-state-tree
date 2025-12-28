@@ -4,24 +4,25 @@ import SwiftStateTree
 import SwiftStateTreeHummingbird
 import SwiftStateTreeTransport
 
-/// Hummingbird Demo: Multi-Room Architecture Example
+/// Hummingbird Demo: Multi-Room Architecture Example with Multiple Land Types
 ///
-/// This demo demonstrates the **multi-room mode** using `LandServer.makeMultiRoomServer()`.
-/// Supports dynamic room creation and multiple concurrent rooms.
+/// This demo demonstrates the **multi-room mode** with multiple land types on a single server
+/// using `LandHost` to manage a unified HTTP server.
 ///
 /// **Multi-Room Mode Characteristics**:
 /// - Dynamic land/room creation (lands are created on-demand)
 /// - Multiple concurrent lands/rooms can exist simultaneously
-/// - Uses `LandManager` and `LandRouter` for room management
+/// - Multiple land types with different State types on the same server
+/// - Each land type has its own WebSocket path (e.g., `/game/cookie`, `/game/counter`)
+/// - Uses `LandHost` to manage unified HTTP server and avoid port conflicts
 /// - Suitable for production environments
 ///
-/// **Alternative**: You can also use `LandRealm` to manage multiple land types with different State types.
-/// See `DESIGN_STATE_BINDING_AND_INITIALIZATION.md` for more details.
+/// **Land Types**:
+/// - `cookie`: Cookie Clicker game (CookieGameState) at `/game/cookie`
+/// - `counter`: Simple counter demo (CounterState) at `/game/counter`
 @main
 struct MultiRoomDemo {
     static func main() async throws {
-        typealias DemoLandServer = LandServer<CookieGameState>
-
         // JWT Configuration for demo/testing purposes
         let jwtConfig = HummingbirdDemoContent.createDemoJWTConfig()
 
@@ -34,36 +35,63 @@ struct MultiRoomDemo {
         // Get port from environment variable, default to 8080
         let port = HummingbirdDemoContent.getEnvUInt16(key: "PORT", defaultValue: 8080)
 
-        // Multi-room mode: Create a server that supports dynamic room creation
-        // Lands are created on-demand when clients join with a specific landID
-        let server = try await DemoLandServer.makeMultiRoomServer(
-            configuration: DemoLandServer.Configuration(
-                host: "localhost",
-                port: port,
-                webSocketPath: "/game",
-                logger: logger,
-                jwtConfig: jwtConfig,
-                allowGuestMode: true // Enable guest mode: allow connections without JWT token
-            ),
-            landFactory: { landID in
-                // Factory function to create LandDefinition for a given LandID
-                // This allows different lands to have different configurations if needed.
-                // In this demo, all lands use the same cookie-clicker definition.
+        // Create LandRealmHost to manage both game logic and HTTP server
+        // LandRealmHost combines LandRealm and LandHost functionality
+        let realmHost = LandRealmHost(configuration: LandRealmHost.HostConfiguration(
+            host: "localhost",
+            port: port,
+            logger: logger
+        ))
+
+        // Register Cookie Game server
+        // Router is automatically used from realmHost
+        try await realmHost.registerWithLandServer(
+            landType: "cookie",
+            landFactory: { _ in
                 HummingbirdDemoContent.CookieGame.makeLand()
             },
-            initialStateFactory: { landID in
-                // Factory function to create initial state for a given LandID
-                // This allows different lands to have different initial states if needed.
-                // In this demo, all lands start with the same initial cookie state.
+            initialStateFactory: { _ in
                 CookieGameState()
-            }
+            },
+            webSocketPath: "/game/cookie",
+            configuration: LandServer<CookieGameState>.Configuration(
+                host: "localhost",
+                port: port,
+                webSocketPath: "/game/cookie",
+                logStartupBanner: false, // LandRealmHost will log startup info
+                logger: logger,
+                jwtConfig: jwtConfig,
+                allowGuestMode: true
+            ),
+            allowAutoCreateOnJoin: true
         )
-        
-        logger.info("🚀 Multi-room server started")
-        logger.info("📡 WebSocket endpoint: ws://localhost:\(port)/game")
+
+        // Register Counter Demo server
+        try await realmHost.registerWithLandServer(
+            landType: "counter",
+            landFactory: { _ in
+                HummingbirdDemoContent.CounterDemo.makeLand()
+            },
+            initialStateFactory: { _ in
+                CounterState()
+            },
+            webSocketPath: "/game/counter",
+            configuration: LandServer<CounterState>.Configuration(
+                host: "localhost",
+                port: port,
+                webSocketPath: "/game/counter",
+                logStartupBanner: false, // LandRealmHost will log startup info
+                logger: logger,
+                jwtConfig: jwtConfig,
+                allowGuestMode: true
+            ),
+            allowAutoCreateOnJoin: true
+        )
+
         logger.info("💡 Connect with different landIDs to create different rooms")
-        logger.info("   Example: ws://localhost:\(port)/game?token=<jwt>&landID=room-123")
+        logger.info("   Example: ws://localhost:\(port)/game/cookie?token=<jwt>&landID=cookie:room-123")
         
-        try await server.run()
+        // Run unified server
+        try await realmHost.run()
     }
 }

@@ -33,14 +33,31 @@ struct SingleRoomDemo {
 
         // Single-room mode: Create a fixed land instance
         // All connections will connect to this same land
+        // Use LandHost for unified HTTP server management
+        var host = LandHost(configuration: LandHost.HostConfiguration(
+            host: "localhost",
+            port: 8080,
+            logger: logger
+        ))
+        
         let server = try await DemoSingleRoomServer.makeServer(
             configuration: LandServer.Configuration(
+                logStartupBanner: false, // LandHost will log startup info
                 logger: logger, // Pass custom logger with desired log level
                 jwtConfig: jwtConfig,
                 allowGuestMode: true // Enable guest mode: allow connections without JWT token
             ),
-            land: HummingbirdDemoContent.CookieGame.makeLand()
+            land: HummingbirdDemoContent.CookieGame.makeLand(),
+            router: host.router // Use host's shared router
         )
-        try await server.run()
+        
+        try host.register(
+            landType: "cookie",
+            server: server,
+            webSocketPath: "/game/cookie"
+        )
+        
+        // Run unified server
+        try await host.run()
     }
 }
