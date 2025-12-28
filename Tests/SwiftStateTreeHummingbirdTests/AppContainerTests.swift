@@ -69,11 +69,11 @@ private enum TestGame {
     }
 }
 
-@Test("AppContainerForTest wires transport and runtime")
-func testAppContainerForTestHandlesClientEvents() async throws {
+@Test("LandServerForTest wires transport and runtime")
+func testLandServerForTestHandlesClientEvents() async throws {
     // Arrange
-    typealias TestAppContainer = AppContainer<TestGameState>
-    let harness = await TestAppContainer.makeForTest(
+    typealias TestLandServer = LandServer<TestGameState>
+    let harness = await TestLandServer.makeForTest(
         land: TestGame.land,
         initialState: TestGameState()
     )

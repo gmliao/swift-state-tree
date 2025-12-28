@@ -186,7 +186,7 @@ public enum CookieGame {
                     let playerName: String
                     if let username = ctx.metadata["username"], !username.isEmpty {
                         playerName = username
-                    } else if ctx.metadata["isGuest"] == "true" {
+                    } else if ctx.isGuest {
                         playerName = "Guest"
                     } else {
                         playerName = playerID.rawValue

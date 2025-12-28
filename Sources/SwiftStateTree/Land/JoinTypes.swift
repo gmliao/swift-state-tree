@@ -25,16 +25,20 @@ public struct PlayerSession: Sendable {
     public let playerID: String
     /// Optional device identifier.
     public let deviceID: String?
+    /// Whether this is a guest session (not authenticated via JWT).
+    public let isGuest: Bool
     /// Additional metadata that can be used for validation.
     public let metadata: [String: String]
     
     public init(
         playerID: String,
         deviceID: String? = nil,
+        isGuest: Bool = false,
         metadata: [String: String] = [:]
     ) {
         self.playerID = playerID
         self.deviceID = deviceID
+        self.isGuest = isGuest
         self.metadata = metadata
     }
 }

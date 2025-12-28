@@ -362,6 +362,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         var playerSession = players[playerID] ?? InternalPlayerSession(
             services: services,
             deviceID: session.deviceID,
+            isGuest: session.isGuest,
             metadata: session.metadata
         )
         let isFirst = playerSession.clientID == nil
@@ -369,10 +370,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         playerSession.clientID = clientID
         playerSession.lastSessionID = sessionID
         playerSession.services = services
-        // Update deviceID and metadata if provided (for reconnection scenarios)
+        // Update deviceID, isGuest, and metadata if provided (for reconnection scenarios)
         if let deviceID = session.deviceID {
             playerSession.deviceID = deviceID
         }
+        playerSession.isGuest = session.isGuest
         if !session.metadata.isEmpty {
             playerSession.metadata = session.metadata
         }
@@ -388,6 +390,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             sessionID: sessionID,
             servicesOverride: services,
             deviceID: session.deviceID,
+            isGuest: session.isGuest,
             metadata: session.metadata
         )
         
@@ -439,6 +442,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Since we only allow one client per playerID, always call OnLeave handler
         let deviceID = session.deviceID
+        let isGuest = session.isGuest
         let metadata = session.metadata
         players.removeValue(forKey: playerID)
         
@@ -451,6 +455,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 sessionID: session.lastSessionID ?? systemSessionID,
                 servicesOverride: session.services,
                 deviceID: deviceID,
+                isGuest: isGuest,
                 metadata: metadata
             )
             
@@ -713,6 +718,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         sessionID: SessionID,
         servicesOverride: LandServices? = nil,
         deviceID: String? = nil,
+        isGuest: Bool? = nil,
         metadata: [String: String] = [:]
     ) -> LandContext {
         let services = servicesOverride ?? players[playerID]?.services ?? LandServices()
@@ -725,6 +731,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             services: services,
             logger: logger,
             deviceID: deviceID ?? playerSession?.deviceID,
+            isGuest: isGuest ?? playerSession?.isGuest ?? false,
             metadata: metadata.isEmpty ? (playerSession?.metadata ?? [:]) : metadata,
             sendEventHandler: { [transport, logger, definition] anyEvent, target in
                 #if DEBUG
@@ -882,13 +889,15 @@ private struct InternalPlayerSession: Sendable {
     var services: LandServices
     // PlayerSession info (from join request)
     var deviceID: String?
+    var isGuest: Bool
     var metadata: [String: String]
     
-    init(services: LandServices, deviceID: String? = nil, metadata: [String: String] = [:]) {
+    init(services: LandServices, deviceID: String? = nil, isGuest: Bool = false, metadata: [String: String] = [:]) {
         self.clientID = nil
         self.lastSessionID = nil
         self.services = services
         self.deviceID = deviceID
+        self.isGuest = isGuest
         self.metadata = metadata
     }
 }

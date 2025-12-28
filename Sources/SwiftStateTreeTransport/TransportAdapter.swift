@@ -48,7 +48,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         return PlayerSession(
             playerID: sessionID.rawValue,
             deviceID: clientID.rawValue,
-            metadata: ["isGuest": "true"]
+            isGuest: true
         )
     }
     
@@ -228,9 +228,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             finalMetadata = guestMetadata
         }
         
+        // Determine isGuest: true if this is a guest session (no JWT auth and no requested playerID)
+        let finalIsGuest = (requestedPlayerID == nil && jwtAuthInfo == nil)
+        
         return PlayerSession(
             playerID: finalPlayerID,
             deviceID: finalDeviceID,
+            isGuest: finalIsGuest,
             metadata: finalMetadata
         )
     }

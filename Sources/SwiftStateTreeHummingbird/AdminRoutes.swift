@@ -6,20 +6,25 @@ import SwiftStateTreeTransport
 import Logging
 import NIOCore
 
-/// Admin HTTP routes for managing lands.
+/// Admin HTTP routes for managing lands across all land types.
 ///
 /// Provides endpoints for querying, creating, and managing lands.
-public struct AdminRoutes<State: StateNodeProtocol>: Sendable {
-    public let landManager: LandManager<State>
+/// Works with `LandRealm` to aggregate data from all registered `LandServer` instances,
+/// regardless of their `State` types.
+///
+/// **Key Feature**: Unlike the old `AdminRoutes<State>`, this version can manage
+/// lands across different `State` types when used with `LandRealm`.
+public struct AdminRoutes: Sendable {
+    public let landRealm: LandRealm
     public let adminAuth: AdminAuthMiddleware
     public let logger: Logger
     
     public init(
-        landManager: LandManager<State>,
+        landRealm: LandRealm,
         adminAuth: AdminAuthMiddleware,
         logger: Logger? = nil
     ) {
-        self.landManager = landManager
+        self.landRealm = landRealm
         self.adminAuth = adminAuth
         self.logger = logger ?? Logger(label: "com.swiftstatetree.admin.routes")
     }
@@ -34,8 +39,8 @@ public struct AdminRoutes<State: StateNodeProtocol>: Sendable {
                 return Response(status: .unauthorized)
             }
             
-            // List all lands
-            let landIDs = await self.landManager.listLands()
+            // List all lands across all registered servers
+            let landIDs = await self.landRealm.listAllLands()
             let landList = landIDs.map { $0.stringValue }
             
             let encoder = JSONEncoder()
@@ -64,8 +69,8 @@ public struct AdminRoutes<State: StateNodeProtocol>: Sendable {
             let landIDString = context.parameters.get("landID") ?? "unknown"
             let landID = LandID(landIDString)
             
-            // Get land stats
-            guard let stats = await self.landManager.getLandStats(landID: landID) else {
+            // Get land stats from any registered server
+            guard let stats = await self.landRealm.getLandStats(landID: landID) else {
                 return Response(status: .notFound)
             }
             
@@ -95,7 +100,7 @@ public struct AdminRoutes<State: StateNodeProtocol>: Sendable {
             let landIDString = context.parameters.get("landID") ?? "unknown"
             let landID = LandID(landIDString)
             
-            guard let stats = await self.landManager.getLandStats(landID: landID) else {
+            guard let stats = await self.landRealm.getLandStats(landID: landID) else {
                 return Response(status: .notFound)
             }
             
@@ -140,7 +145,7 @@ public struct AdminRoutes<State: StateNodeProtocol>: Sendable {
             let landIDString = context.parameters.get("landID") ?? "unknown"
             let landID = LandID(landIDString)
             
-            await self.landManager.removeLand(landID: landID)
+            await self.landRealm.removeLand(landID: landID)
             
             return Response(status: .noContent)
         }
@@ -151,12 +156,12 @@ public struct AdminRoutes<State: StateNodeProtocol>: Sendable {
                 return Response(status: .unauthorized)
             }
             
-            // Get system stats
-            let landIDs = await self.landManager.listLands()
+            // Get system stats across all registered servers
+            let landIDs = await self.landRealm.listAllLands()
             var totalPlayers = 0
             
             for landID in landIDs {
-                if let stats = await self.landManager.getLandStats(landID: landID) {
+                if let stats = await self.landRealm.getLandStats(landID: landID) {
                     totalPlayers += stats.playerCount
                 }
             }

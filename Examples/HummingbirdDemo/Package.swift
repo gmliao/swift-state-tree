@@ -32,7 +32,8 @@ let package = Package(
         .target(
             name: "HummingbirdDemoContent",
             dependencies: [
-                .product(name: "SwiftStateTree", package: "SwiftStateTree")
+                .product(name: "SwiftStateTree", package: "SwiftStateTree"),
+                .product(name: "SwiftStateTreeHummingbird", package: "SwiftStateTree")
             ],
             path: "Sources/DemoContent"
         ),

@@ -23,19 +23,10 @@ struct MultiRoomDemo {
         typealias DemoLandServer = LandServer<CookieGameState>
 
         // JWT Configuration for demo/testing purposes
-        // ⚠️ WARNING: This is a demo secret key. CHANGE THIS IN PRODUCTION!
-        // In production, use environment variables or secure key management:
-        //   export JWT_SECRET_KEY="your-secure-secret-key-here"
-        let demoJWTSecretKey = "demo-secret-key-change-in-production"
-        let jwtConfig = JWTConfiguration(
-            secretKey: demoJWTSecretKey,
-            algorithm: .HS256,
-            validateExpiration: true
-        )
+        let jwtConfig = HummingbirdDemoContent.createDemoJWTConfig()
 
         // Create logger with custom log level
-        let logger = createColoredLogger(
-            loggerIdentifier: "com.swiftstatetree.hummingbird",
+        let logger = HummingbirdDemoContent.createDemoLogger(
             scope: "MultiRoomDemo",
             logLevel: .debug
         )
@@ -74,19 +65,6 @@ struct MultiRoomDemo {
                 // This allows different lands to have different initial states if needed.
                 // In this demo, all lands start with the same initial cookie state.
                 CookieGameState()
-            },
-            createGuestSession: { _, clientID in
-                // Create PlayerSession for guest users
-                let randomID = String(UUID().uuidString.prefix(6))
-                return PlayerSession(
-                    playerID: "guest-\(randomID)",
-                    deviceID: clientID.rawValue,
-                    metadata: [
-                        "isGuest": "true",
-                        "connectedAt": ISO8601DateFormatter().string(from: Date()),
-                        "clientID": clientID.rawValue,
-                    ]
-                )
             }
         )
         

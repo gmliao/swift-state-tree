@@ -19,9 +19,14 @@ final class MockLandServer<State: StateNodeProtocol>: @unchecked Sendable, LandS
     var shouldFailRun: Bool = false
     var shouldFailShutdown: Bool = false
     var healthStatus: Bool = true
+    var mockLands: [LandID] = []
+    var mockLandStats: [LandID: LandStats] = [:]
     private let _runCallCount = ManagedAtomic<Int>(0)
     private let _shutdownCallCount = ManagedAtomic<Int>(0)
     private let _healthCheckCallCount = ManagedAtomic<Int>(0)
+    private let _listLandsCallCount = ManagedAtomic<Int>(0)
+    private let _getLandStatsCallCount = ManagedAtomic<Int>(0)
+    private let _removeLandCallCount = ManagedAtomic<Int>(0)
     
     /// Error to throw when run fails
     var runError: Error?
@@ -39,6 +44,18 @@ final class MockLandServer<State: StateNodeProtocol>: @unchecked Sendable, LandS
     
     var healthCheckCallCount: Int {
         _healthCheckCallCount.load(ordering: .relaxed)
+    }
+    
+    var listLandsCallCount: Int {
+        _listLandsCallCount.load(ordering: .relaxed)
+    }
+    
+    var getLandStatsCallCount: Int {
+        _getLandStatsCallCount.load(ordering: .relaxed)
+    }
+    
+    var removeLandCallCount: Int {
+        _removeLandCallCount.load(ordering: .relaxed)
     }
     
     init(
@@ -78,6 +95,22 @@ final class MockLandServer<State: StateNodeProtocol>: @unchecked Sendable, LandS
     func healthCheck() async -> Bool {
         _healthCheckCallCount.wrappingIncrement(ordering: .relaxed)
         return healthStatus
+    }
+    
+    func listLands() async -> [LandID] {
+        _listLandsCallCount.wrappingIncrement(ordering: .relaxed)
+        return mockLands
+    }
+    
+    func getLandStats(landID: LandID) async -> LandStats? {
+        _getLandStatsCallCount.wrappingIncrement(ordering: .relaxed)
+        return mockLandStats[landID]
+    }
+    
+    func removeLand(landID: LandID) async {
+        _removeLandCallCount.wrappingIncrement(ordering: .relaxed)
+        mockLands.removeAll { $0 == landID }
+        mockLandStats.removeValue(forKey: landID)
     }
 }
 

@@ -14,7 +14,7 @@ import SwiftStateTree
 ///
 /// **Implementation Note**:
 /// Each HTTP framework should provide its own implementation of this protocol.
-/// For example, `LandServer` (formerly `AppContainer`) in `SwiftStateTreeHummingbird` implements this protocol.
+/// For example, `LandServer` in `SwiftStateTreeHummingbird` implements this protocol.
 ///
 /// **Note**: The protocol does not require `Sendable` conformance because some
 /// implementations (like `LandServer`) may contain non-Sendable types (e.g., Router).
@@ -43,4 +43,20 @@ public protocol LandServerProtocol<State> {
     
     /// Check the health status of the server
     func healthCheck() async -> Bool
+    
+    /// List all lands managed by this server
+    ///
+    /// Returns all land IDs across all land types managed by this server instance.
+    func listLands() async -> [LandID]
+    
+    /// Get statistics for a specific land
+    ///
+    /// - Parameter landID: The unique identifier for the land
+    /// - Returns: LandStats if the land exists, nil otherwise
+    func getLandStats(landID: LandID) async -> LandStats?
+    
+    /// Remove a land from the server
+    ///
+    /// - Parameter landID: The unique identifier for the land to remove
+    func removeLand(landID: LandID) async
 }
