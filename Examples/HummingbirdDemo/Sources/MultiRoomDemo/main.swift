@@ -31,17 +31,8 @@ struct MultiRoomDemo {
             logLevel: .debug
         )
 
-        let port: UInt16 = {
-            guard
-                let raw = ProcessInfo.processInfo.environment["PORT"],
-                let value = Int(raw),
-                value >= 0,
-                value <= Int(UInt16.max)
-            else {
-                return 8080
-            }
-            return UInt16(value)
-        }()
+        // Get port from environment variable, default to 8080
+        let port = HummingbirdDemoContent.getEnvUInt16(key: "PORT", defaultValue: 8080)
 
         // Multi-room mode: Create a server that supports dynamic room creation
         // Lands are created on-demand when clients join with a specific landID
