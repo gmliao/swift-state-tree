@@ -141,9 +141,6 @@ public struct LandServer<State: StateNodeProtocol> {
     
     // Multi-room mode
     public let landManager: LandManager<State>?
-    // Note: MatchmakingService and LobbyContainer should be managed separately by users.
-    // To get a lobby, use: landManager.getLobby(landID:) to get LandContainer,
-    // then create LobbyContainer directly with your matchmaking dependencies.
     
     private let adapterHolder: TransportAdapterHolder<State>?
     
