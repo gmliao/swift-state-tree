@@ -16,11 +16,11 @@ export interface WebSocketCloseEvent extends WebSocketEvent {
 
 export interface WebSocketMessageEvent extends WebSocketEvent {
   type: 'message'
-  data: string | ArrayBuffer
+  data: string | ArrayBuffer | Blob | Uint8Array
 }
 
 export interface WebSocketConnection {
-  send(data: string | ArrayBuffer): void
+  send(data: string | ArrayBuffer | Uint8Array): void
   close(): void
   onopen: ((event: WebSocketEvent) => void) | null
   onclose: ((event: WebSocketCloseEvent) => void) | null

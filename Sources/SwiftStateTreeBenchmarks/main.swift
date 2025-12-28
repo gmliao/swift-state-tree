@@ -24,7 +24,8 @@ func main(parser: CommandLineParser) async {
         BenchmarkSuites.get(
             suiteType: $0,
             transportDirtyTrackingOverride: parser.transportDirtyTrackingOverride,
-            dirtyRatioOverride: parser.transportDirtyRatioOverride
+            dirtyRatioOverride: parser.transportDirtyRatioOverride,
+            transportEncodingOverride: parser.transportEncodingOverride
         )
     }
 

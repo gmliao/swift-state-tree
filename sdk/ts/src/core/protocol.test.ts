@@ -14,6 +14,7 @@ import {
   generateRequestID
 } from './protocol'
 import type { TransportMessage, StateUpdate, StateSnapshot } from '../types/transport'
+import { encode as encodeMessagePack } from '@msgpack/msgpack'
 
 describe('protocol', () => {
   describe('encodeMessage', () => {
@@ -38,6 +39,28 @@ describe('protocol', () => {
       const decoded = JSON.parse(encoded)
       expect(decoded.kind).toBe('join')
       expect(decoded.payload.join.requestID).toBe('test-123')
+    })
+
+    it('encodes TransportMessage to MessagePack bytes', () => {
+      const message: TransportMessage = {
+        kind: 'join',
+        payload: {
+          join: {
+            requestID: 'test-456',
+            landType: 'demo-game',
+            landInstanceId: null
+          }
+        } as any
+      }
+
+      const encoded = encodeMessage(message, 'messagepack')
+      expect(encoded).toBeInstanceOf(Uint8Array)
+
+      const decoded = decodeMessage(encoded as Uint8Array, 'messagepack')
+      expect(decoded).toHaveProperty('kind', 'join')
+      if ('kind' in decoded) {
+        expect(decoded.kind).toBe('join')
+      }
     })
   })
 
@@ -108,6 +131,26 @@ describe('protocol', () => {
       
       expect(() => decodeMessage(invalid)).toThrow('Unknown message format')
     })
+
+    it('decodes StateUpdate from MessagePack bytes', () => {
+      const update: StateUpdate = {
+        type: 'diff',
+        patches: [
+          {
+            path: '/players',
+            op: 'replace',
+            value: { foo: 'bar' }
+          }
+        ]
+      }
+
+      const encoded = encodeMessagePack(update)
+      const decoded = decodeMessage(encoded, 'messagepack')
+      expect(decoded).toHaveProperty('type', 'diff')
+      if ('type' in decoded && 'patches' in decoded) {
+        expect(decoded.patches.length).toBe(1)
+      }
+    })
   })
 
   describe('createJoinMessage', () => {
@@ -161,6 +204,17 @@ describe('protocol', () => {
       )
       expect(decoded).toEqual(payload)
     })
+
+    it('creates action message with binary payload', () => {
+      const payload = { upgradeID: 'cursor' }
+      const message = createActionMessage('req-790', 'demo-game', 'BuyUpgrade', payload, {
+        payloadEncoding: 'binary'
+      })
+
+      const action = (message.payload as any).action
+      expect(action.action.typeIdentifier).toBe('BuyUpgrade')
+      expect(action.action.payload).toBeInstanceOf(Uint8Array)
+    })
   })
 
   describe('createEventMessage', () => {
@@ -197,4 +251,3 @@ describe('protocol', () => {
     })
   })
 })
-

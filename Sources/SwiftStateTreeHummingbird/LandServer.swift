@@ -25,6 +25,8 @@ public struct LandServer<State: StateNodeProtocol> {
         public var enableHealthRoute: Bool
         public var logStartupBanner: Bool
         public var logger: Logger?
+        /// Transport encoding for WebSocket payloads.
+        public var transportEncoding: TransportEncoding
         
         // JWT validation configuration
         /// JWT configuration (if provided, will create DefaultJWTAuthValidator)
@@ -58,6 +60,7 @@ public struct LandServer<State: StateNodeProtocol> {
             enableHealthRoute: Bool = true,
             logStartupBanner: Bool = true,
             logger: Logger? = nil,
+            transportEncoding: TransportEncoding = .json,
             jwtConfig: JWTConfiguration? = nil,
             jwtValidator: JWTAuthValidator? = nil,
             allowGuestMode: Bool = false,
@@ -71,6 +74,7 @@ public struct LandServer<State: StateNodeProtocol> {
             self.enableHealthRoute = enableHealthRoute
             self.logStartupBanner = logStartupBanner
             self.logger = logger
+            self.transportEncoding = transportEncoding
             self.jwtConfig = jwtConfig
             self.jwtValidator = jwtValidator
             self.allowGuestMode = allowGuestMode
@@ -277,6 +281,7 @@ public struct LandServer<State: StateNodeProtocol> {
         // Create global WebSocketTransport
         // Since we are using LandRouter, all connections go through this single transport
         let transport = WebSocketTransport(logger: logger)
+        let transportCodec = configuration.transportEncoding.makeCodec()
         
         // Create LandManager (must share the same transport so per-land adapters can send snapshots/updates)
         let landManager = LandManager<State>(
@@ -284,6 +289,7 @@ public struct LandServer<State: StateNodeProtocol> {
             initialStateFactory: initialStateFactory,
             transport: transport,
             createGuestSession: createGuestSession,
+            codec: transportCodec,
             logger: logger
         )
         
@@ -313,6 +319,7 @@ public struct LandServer<State: StateNodeProtocol> {
             landTypeRegistry: landTypeRegistry,
             transport: transport,
             createGuestSession: createGuestSession,
+            codec: transportCodec,
             logger: logger
         )
         
@@ -451,6 +458,7 @@ public struct LandServer<State: StateNodeProtocol> {
             land: definition,
             initialState: initialState,
             createGuestSession: createGuestSession,
+            transportCodec: configuration.transportEncoding.makeCodec(),
             logger: logger
         )
         
@@ -538,6 +546,7 @@ public struct LandServer<State: StateNodeProtocol> {
         land definition: Land,
         initialState: State,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
+        transportEncoding: TransportEncoding = .json,
         logger: Logger? = nil
     ) async -> LandServerForTest {
         let testLogger = logger ?? createColoredLogger(
@@ -548,6 +557,7 @@ public struct LandServer<State: StateNodeProtocol> {
             land: definition,
             initialState: initialState,
             createGuestSession: createGuestSession,
+            transportCodec: transportEncoding.makeCodec(),
             logger: testLogger
         )
         
@@ -572,6 +582,7 @@ public struct LandServer<State: StateNodeProtocol> {
         land definition: Land,
         initialState: State,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
+        transportCodec: any TransportCodec = JSONTransportCodec(),
         logger: Logger
     ) async -> CoreComponents {
         let transport = WebSocketTransport(logger: logger)
@@ -591,6 +602,7 @@ public struct LandServer<State: StateNodeProtocol> {
             landID: definition.id,
             createGuestSession: createGuestSession,
             enableLegacyJoin: true,
+            codec: transportCodec,
             logger: logger
         )
         

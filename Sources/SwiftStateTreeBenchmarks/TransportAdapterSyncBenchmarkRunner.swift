@@ -28,6 +28,7 @@ struct BenchmarkStateForSync: StateNodeProtocol {
 /// the benefits of parallel diff computation. The serial version remains the implementation.
 struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
     let playerCounts: [Int]
+    let transportCodec: any TransportCodec
     
     /// Approximate ratio of players to modify per tick (0.0 ... 1.0).
     ///
@@ -57,11 +58,13 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
         playerCounts: [Int] = [4, 10, 20, 30, 50],
         dirtyPlayerRatio: Double = 0.20,
         broadcastPlayerRatio: Double = 0.0,
+        transportCodec: any TransportCodec = JSONTransportCodec(),
         enableDirtyTracking: Bool = true
     ) {
         self.playerCounts = playerCounts
         self.dirtyPlayerRatio = dirtyPlayerRatio
         self.broadcastPlayerRatio = broadcastPlayerRatio
+        self.transportCodec = transportCodec
         self.enableDirtyTracking = enableDirtyTracking
     }
     
@@ -221,6 +224,7 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
             createGuestSession: nil,
             enableLegacyJoin: false,
             enableDirtyTracking: enableDirtyTracking,
+            codec: transportCodec,
             logger: benchmarkLogger
         )
         await keeper.setTransport(adapter)
@@ -298,4 +302,3 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
         )
     }
 }
-

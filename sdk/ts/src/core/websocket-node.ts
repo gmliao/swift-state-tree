@@ -79,7 +79,7 @@ export class NodeWebSocket implements WebSocketConnection {
       }
     })
 
-    this.ws.on('message', (data: Buffer | string) => {
+    this.ws.on('message', (data: Buffer | string | ArrayBuffer) => {
       if (this.onmessage) {
         // Convert Buffer to string or ArrayBuffer
         let processedData: string | ArrayBuffer
@@ -91,6 +91,8 @@ export class NodeWebSocket implements WebSocketConnection {
             view[i] = data[i]
           }
           processedData = arrayBuffer
+        } else if (data instanceof ArrayBuffer) {
+          processedData = data
         } else {
           processedData = data
         }
@@ -107,11 +109,14 @@ export class NodeWebSocket implements WebSocketConnection {
     return this.ws.readyState
   }
 
-  send(data: string | ArrayBuffer): void {
+  send(data: string | ArrayBuffer | Uint8Array): void {
     if (typeof data === 'string') {
       this.ws.send(data)
     } else {
-      this.ws.send(Buffer.from(data))
+      const buffer = data instanceof ArrayBuffer
+        ? Buffer.from(data)
+        : Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+      this.ws.send(buffer)
     }
   }
 
@@ -131,4 +136,3 @@ export class NodeWebSocketFactory {
     return new NodeWebSocket(wsInstance)
   }
 }
-

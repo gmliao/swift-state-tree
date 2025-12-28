@@ -8,8 +8,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private let keeper: LandKeeper<State>
     private let transport: WebSocketTransport
     private let landID: String
-    private let decoder = JSONDecoder()
-    private let encoder = JSONEncoder()
+    private let codec: any TransportCodec
     private var syncEngine = SyncEngine()
     private let logger: Logger
     private let enableLegacyJoin: Bool
@@ -59,6 +58,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         enableLegacyJoin: Bool = false,
         enableDirtyTracking: Bool = true,
+        codec: any TransportCodec = JSONTransportCodec(),
         logger: Logger? = nil
     ) {
         self.keeper = keeper
@@ -66,6 +66,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         self.landID = landID
         self.enableLegacyJoin = enableLegacyJoin
         self.enableDirtyTracking = enableDirtyTracking
+        self.codec = codec
         // Create logger with scope if not provided
         if let logger = logger {
             self.logger = logger.withScope("TransportAdapter")
@@ -316,7 +317,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Compute messagePreview for error logging (only if needed)
         // We compute it lazily in the catch block to avoid unnecessary work
         do {
-            let transportMsg = try decoder.decode(TransportMessage.self, from: message)
+            let transportMsg = try codec.decode(TransportMessage.self, from: message)
             
             switch transportMsg.kind {
             case .join:
@@ -410,7 +411,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         ])
                         
                         // Log response payload - only compute if trace logging is enabled
-                        if let responseData = try? encoder.encode(payload.response),
+                        if let responseData = try? codec.encode(payload.response),
                            let responseString = logger.safePreview(from: responseData) {
                             logger.trace("📥 Response payload", metadata: [
                                 "requestID": .string(payload.requestID),
@@ -430,7 +431,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                             ])
                             
                             // Log event payload - only compute if trace logging is enabled
-                            if let payloadData = try? encoder.encode(anyClientEvent.payload),
+                            if let payloadData = try? codec.encode(anyClientEvent.payload),
                                let payloadString = logger.safePreview(from: payloadData) {
                                 logger.trace("📥 Event payload", metadata: [
                                     "eventType": .string(anyClientEvent.type),
@@ -479,7 +480,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                                     ]
                                 )
                                 let errorResponse = TransportMessage.error(errorPayload)
-                                if let errorData = try? encoder.encode(errorResponse) {
+                                if let errorData = try? codec.encode(errorResponse) {
                                     try? await transport.send(errorData, to: .session(sessionID))
                                 }
                             }
@@ -516,7 +517,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     ]
                 )
                 let errorResponse = TransportMessage.error(errorPayload)
-                let errorData = try encoder.encode(errorResponse)
+                let errorData = try codec.encode(errorResponse)
                 try await transport.send(errorData, to: .session(sessionID))
             } catch {
                 logger.error("❌ Failed to send decode error to client", metadata: [
@@ -537,7 +538,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 event: .fromServer(event: event)
             )
             
-            let data = try encoder.encode(transportMsg)
+            let data = try codec.encode(transportMsg)
             let dataSize = data.count
             
             // Convert SwiftStateTree.EventTarget to SwiftStateTreeTransport.EventTarget
@@ -588,7 +589,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
             
             // Log event payload - only compute if trace logging is enabled
-            if let payloadData = try? encoder.encode(event.payload),
+            if let payloadData = try? codec.encode(event.payload),
                let payloadString = logger.safePreview(from: payloadData) {
                 logger.trace("📤 Event payload", metadata: [
                     "eventType": .string(event.type),
@@ -783,7 +784,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             
             // Encode once (all players get the same broadcast update)
             let update = StateUpdate.diff(broadcastDiff)
-            let updateData = try encoder.encode(update)
+            let updateData = try codec.encode(update)
             let updateSize = updateData.count
             
             logger.debug("📤 Broadcast-only sync", metadata: [
@@ -859,7 +860,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 return
             }
             
-            let updateData = try encoder.encode(update)
+            let updateData = try codec.encode(update)
             let updateSize = updateData.count
             
             let updateType: String
@@ -919,7 +920,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let snapshot = try syncEngine.lateJoinSnapshot(for: playerID, from: state)
             
             // Encode snapshot as JSON and send directly (not as patches)
-            let snapshotData = try encoder.encode(snapshot)
+            let snapshotData = try codec.encode(snapshot)
             let snapshotSize = snapshotData.count
             
             logger.debug("📤 Sending initial snapshot (late join)", metadata: [
@@ -973,7 +974,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 requestID: requestID,
                 response: response
             )
-            let responseData = try encoder.encode(actionResponse)
+            let responseData = try codec.encode(actionResponse)
             let responseSize = responseData.count
             
             logger.info("📤 Sending action response", metadata: [
@@ -1031,7 +1032,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     ]
                 )
                 let errorResponse = TransportMessage.error(errorPayload)
-                let errorData = try encoder.encode(errorResponse)
+                let errorData = try codec.encode(errorResponse)
                 try await transport.send(errorData, to: .session(sessionID))
             } catch {
                 logger.error("❌ Failed to send error response", metadata: [
@@ -1201,7 +1202,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             
             let errorPayload = ErrorPayload(code: code, message: message, details: errorDetails)
             let errorResponse = TransportMessage.error(errorPayload)
-            let errorData = try encoder.encode(errorResponse)
+            let errorData = try codec.encode(errorResponse)
             try await transport.send(errorData, to: .session(sessionID))
             
             logger.debug("📤 Sent join error", metadata: [
@@ -1233,7 +1234,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 playerID: playerID,
                 reason: reason
             )
-            let responseData = try encoder.encode(response)
+            let responseData = try codec.encode(response)
             try await transport.send(responseData, to: .session(sessionID))
             
             logger.debug("📤 Sent join response", metadata: [

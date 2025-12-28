@@ -58,7 +58,7 @@ export class BrowserWebSocket implements WebSocketConnection {
     return this.ws.readyState
   }
 
-  send(data: string | ArrayBuffer): void {
+  send(data: string | ArrayBuffer | Uint8Array): void {
     this.ws.send(data)
   }
 

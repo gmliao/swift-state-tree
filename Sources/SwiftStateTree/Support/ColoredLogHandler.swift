@@ -224,6 +224,51 @@ extension Logger {
     }
 }
 
+public enum LoggerDefaults {
+    private static let lock = NSLock()
+    private static nonisolated(unsafe) var _overrideLogLevel: Logger.Level?
+    private static nonisolated(unsafe) var _overrideUseColors: Bool?
+    private static let isRunningTests: Bool = {
+        let environment = ProcessInfo.processInfo.environment
+        if environment["XCTestConfigurationFilePath"] != nil {
+            return true
+        }
+        if environment["SWIFT_TESTING"] != nil {
+            return true
+        }
+        if environment["SWIFT_TESTING_ENABLED"] != nil {
+            return true
+        }
+        if environment["SWIFTPM_TEST"] != nil {
+            return true
+        }
+        if Bundle.main.bundlePath.hasSuffix(".xctest") {
+            return true
+        }
+        if NSClassFromString("XCTestCase") != nil {
+            return true
+        }
+        return false
+    }()
+
+    public static func setOverrides(logLevel: Logger.Level?, useColors: Bool?) {
+        lock.lock()
+        _overrideLogLevel = logLevel
+        _overrideUseColors = useColors
+        lock.unlock()
+    }
+
+    static func currentOverrides() -> (Logger.Level?, Bool?) {
+        lock.lock()
+        let overrides = (_overrideLogLevel, _overrideUseColors)
+        lock.unlock()
+        if overrides.0 == nil, overrides.1 == nil, isRunningTests {
+            return (.error, false)
+        }
+        return overrides
+    }
+}
+
 /// Helper to create a colored logger with scope
 public func createColoredLogger(
     loggerIdentifier: String,
@@ -231,10 +276,13 @@ public func createColoredLogger(
     logLevel: Logger.Level = .info,
     useColors: Bool = true
 ) -> Logger {
+    let (overrideLogLevel, overrideUseColors) = LoggerDefaults.currentOverrides()
+    let resolvedLogLevel = overrideLogLevel ?? logLevel
+    let resolvedUseColors = overrideUseColors ?? useColors
     let handler = ColoredLogHandler(
         loggerIdentifier: loggerIdentifier,
-        logLevel: logLevel,
-        useColors: useColors
+        logLevel: resolvedLogLevel,
+        useColors: resolvedUseColors
     )
     
     var logger = Logger(label: loggerIdentifier) { _ in handler }
@@ -245,4 +293,3 @@ public func createColoredLogger(
     
     return logger
 }
-

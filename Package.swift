@@ -14,6 +14,11 @@ let package = Package(
             name: "SwiftStateTree",
             targets: ["SwiftStateTree"]
         ),
+        // 📦 MessagePack core codec
+        .library(
+            name: "SwiftStateTreeMessagePack",
+            targets: ["SwiftStateTreeMessagePack"]
+        ),
         // 🌐 Transport Layer: Framework-agnostic transport abstraction (network + services)
         .library(
             name: "SwiftStateTreeTransport",
@@ -64,9 +69,19 @@ let package = Package(
             name: "SwiftStateTreeTransport",
             dependencies: [
                 "SwiftStateTree",
+                "SwiftStateTreeMessagePack",
                 .product(name: "Logging", package: "swift-log")
             ],
             path: "Sources/SwiftStateTreeTransport"
+        ),
+
+        // 📦 MessagePack core codec
+        .target(
+            name: "SwiftStateTreeMessagePack",
+            dependencies: [
+                "SwiftStateTree"
+            ],
+            path: "Sources/SwiftStateTreeMessagePack"
         ),
         
         // 🕊️ Hummingbird integration
@@ -124,6 +139,16 @@ let package = Package(
                 .product(name: "Atomics", package: "swift-atomics")
             ],
             path: "Tests/SwiftStateTreeTransportTests"
+        ),
+
+        // 📦 MessagePack tests
+        .testTarget(
+            name: "SwiftStateTreeMessagePackTests",
+            dependencies: [
+                "SwiftStateTreeMessagePack",
+                "SwiftStateTree"
+            ],
+            path: "Tests/SwiftStateTreeMessagePackTests"
         ),
         
         // 🕊️ Hummingbird tests

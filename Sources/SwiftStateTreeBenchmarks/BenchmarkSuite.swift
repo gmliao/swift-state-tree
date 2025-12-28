@@ -41,7 +41,7 @@ struct BenchmarkSuite: @unchecked Sendable {
                 } else {
                     broadcastRatioLabel = ""
                 }
-                headerDescription = "\(config.name) (Dynamic Players: [\(dynamicPlayers)], Cards/Player: \(config.cardsPerPlayer), Iterations: \(config.iterations)\(broadcastRatioLabel))"
+                headerDescription = "\(config.name) (Dynamic Players: [\(dynamicPlayers)], Cards/Player: \(config.cardsPerPlayer), Iterations: \(config.iterations)\(broadcastRatioLabel), Encoding: \(syncRunner.transportCodec.encoding.rawValue))"
             } else {
                 headerDescription = displayConfig.description
             }

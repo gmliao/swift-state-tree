@@ -145,7 +145,13 @@ export class StateTreeView {
 
     return new Promise((resolve, reject) => {
       const requestID = generateRequestID('action')
-      const message = createActionMessage(requestID, this.landID, actionType, payload)
+      const message = createActionMessage(
+        requestID,
+        this.landID,
+        actionType,
+        payload,
+        { payloadEncoding: this.runtime.encoding === 'messagepack' ? 'binary' : 'base64' }
+      )
 
       // Store resolve callback
       this.actionCallbacks.set(requestID, (response: any) => {

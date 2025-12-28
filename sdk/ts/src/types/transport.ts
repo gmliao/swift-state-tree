@@ -3,7 +3,7 @@ export type MessageKind = 'action' | 'actionResponse' | 'event' | 'join' | 'join
 
 export interface ActionEnvelope {
   typeIdentifier: string
-  payload: string // Base64 encoded
+  payload: string | Uint8Array // Base64 encoded (JSON) or raw bytes (MessagePack)
 }
 
 export interface TransportActionPayload {
@@ -91,4 +91,3 @@ export interface StateUpdate {
 export interface StateSnapshot {
   values: Record<string, any>
 }
-

@@ -14,6 +14,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private let initialStateFactory: (LandID) -> State
     private let sharedTransport: WebSocketTransport?
     private let createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)?
+    private let codec: any TransportCodec
     private let logger: Logger
     
     /// Track creation time for each land
@@ -31,12 +32,14 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         initialStateFactory: @escaping @Sendable (LandID) -> State,
         transport: WebSocketTransport? = nil,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
+        codec: any TransportCodec = JSONTransportCodec(),
         logger: Logger? = nil
     ) {
         self.landFactory = landFactory
         self.initialStateFactory = initialStateFactory
         self.sharedTransport = transport
         self.createGuestSession = createGuestSession
+        self.codec = codec
         self.logger = logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.runtime",
             scope: "LandManager"
@@ -78,6 +81,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             transport: transport,
             landID: landID.stringValue,
             createGuestSession: createGuestSession,
+            codec: codec,
             logger: logger
         )
         
@@ -195,4 +199,3 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         return lands[landID]
     }
 }
-

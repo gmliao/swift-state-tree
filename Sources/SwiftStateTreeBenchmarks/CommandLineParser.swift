@@ -1,6 +1,7 @@
 // Sources/SwiftStateTreeBenchmarks/CommandLineParser.swift
 
 import Foundation
+import SwiftStateTreeTransport
 
 /// Command line argument parser for benchmark tool
 struct CommandLineParser {
@@ -20,6 +21,10 @@ struct CommandLineParser {
     let transportDirtyRatioOverride: Double?
     /// Whether to skip the interactive "Press Enter" prompt before running benchmarks.
     let skipWaitForEnter: Bool
+    /// Optional override for transport encoding in benchmarks.
+    /// - nil: use default JSON
+    /// - json/messagePack: use specified transport encoding
+    let transportEncodingOverride: TransportEncoding?
     
     init() {
         let arguments = CommandLine.arguments.dropFirst()
@@ -30,6 +35,7 @@ struct CommandLineParser {
         var dirtyOverride: Bool? = nil
         var dirtyRatioOverride: Double? = nil
         var skipWaitForEnter = false
+        var transportEncodingOverride: TransportEncoding? = nil
         
         // Parse suite types from arguments (exclude flags)
         var types: [BenchmarkSuiteType] = []
@@ -55,6 +61,23 @@ struct CommandLineParser {
             }
             if arg == "--no-wait" {
                 skipWaitForEnter = true
+                continue
+            }
+            if arg.hasPrefix("--encoding=") {
+                let parts = arg.split(separator: "=", maxSplits: 1)
+                if parts.count == 2 {
+                    let value = parts[1].lowercased()
+                    switch value {
+                    case "json":
+                        transportEncodingOverride = .json
+                    case "messagepack", "msgpack", "message-pack":
+                        transportEncodingOverride = .messagePack
+                    default:
+                        invalidArgs.append(arg)
+                    }
+                } else {
+                    invalidArgs.append(arg)
+                }
                 continue
             }
             if arg.hasPrefix("--dirty-ratio=") {
@@ -85,6 +108,7 @@ struct CommandLineParser {
             self.transportDirtyTrackingOverride = dirtyOverride
             self.transportDirtyRatioOverride = dirtyRatioOverride
             self.skipWaitForEnter = skipWaitForEnter
+            self.transportEncodingOverride = transportEncodingOverride
             return
         }
         
@@ -101,6 +125,7 @@ struct CommandLineParser {
         self.transportDirtyTrackingOverride = dirtyOverride
         self.transportDirtyRatioOverride = dirtyRatioOverride
         self.skipWaitForEnter = skipWaitForEnter
+        self.transportEncodingOverride = transportEncodingOverride
     }
     
     static func printUsage() {
@@ -127,6 +152,7 @@ struct CommandLineParser {
           --dirty-on          - Force enable dirty tracking for TransportAdapter sync benchmarks
           --dirty-off         - Force disable dirty tracking for TransportAdapter sync benchmarks
           --dirty-ratio=VAL   - Override dirty player ratio (0.0–1.0) for TransportAdapter sync benchmarks
+          --encoding=VAL      - Transport encoding: json | messagepack
           --no-wait           - Skip \"Press Enter\" prompt (useful for automated scripts)
         """)
     }

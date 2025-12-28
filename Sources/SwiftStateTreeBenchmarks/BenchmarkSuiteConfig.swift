@@ -2,6 +2,7 @@
 
 import Foundation
 import SwiftStateTree
+import SwiftStateTreeTransport
 
 /// Available benchmark suite types
 enum BenchmarkSuiteType: String, CaseIterable {
@@ -47,7 +48,8 @@ struct BenchmarkSuiteConfig {
 struct BenchmarkSuites {
     static func all(
         transportDirtyTrackingOverride: Bool? = nil,
-        dirtyRatioOverride: Double? = nil
+        dirtyRatioOverride: Double? = nil,
+        transportEncodingOverride: TransportEncoding? = nil
     ) -> [BenchmarkSuiteConfig] {
         // If override provided, clamp to [0, 1] to避免無效值
         let clampedRatio = dirtyRatioOverride.map { max(0.0, min($0, 1.0)) }
@@ -56,6 +58,7 @@ struct BenchmarkSuites {
         let lowRatio = clampedRatio ?? 0.05
         let mediumRatio = clampedRatio ?? 0.20
         let highRatio = clampedRatio ?? 0.80
+        let transportCodec = (transportEncodingOverride ?? .json).makeCodec()
         return [
             BenchmarkSuiteConfig(
                 type: .singleThreaded,
@@ -89,6 +92,7 @@ struct BenchmarkSuites {
                 runner: TransportAdapterSyncBenchmarkRunner(
                     playerCounts: [4, 10, 20, 30, 50],
                     dirtyPlayerRatio: lowRatio,
+                    transportCodec: transportCodec,
                     enableDirtyTracking: transportDirtyTrackingOverride ?? true
                 ),
                 configurations: [
@@ -112,6 +116,7 @@ struct BenchmarkSuites {
                 runner: TransportAdapterSyncBenchmarkRunner(
                     playerCounts: [4, 10, 20, 30, 50],
                     dirtyPlayerRatio: mediumRatio,
+                    transportCodec: transportCodec,
                     enableDirtyTracking: transportDirtyTrackingOverride ?? true
                 ),
                 configurations: [
@@ -135,6 +140,7 @@ struct BenchmarkSuites {
                 runner: TransportAdapterSyncBenchmarkRunner(
                     playerCounts: [4, 10, 20, 30, 50],
                     dirtyPlayerRatio: highRatio,
+                    transportCodec: transportCodec,
                     enableDirtyTracking: transportDirtyTrackingOverride ?? true
                 ),
                 configurations: [
@@ -161,6 +167,7 @@ struct BenchmarkSuites {
                     playerCounts: [4, 10, 20, 30, 50],
                     dirtyPlayerRatio: lowRatio,
                     broadcastPlayerRatio: 1.0,
+                    transportCodec: transportCodec,
                     enableDirtyTracking: transportDirtyTrackingOverride ?? true
                 ),
                 configurations: [
@@ -185,6 +192,7 @@ struct BenchmarkSuites {
                     playerCounts: [4, 10, 20, 30, 50],
                     dirtyPlayerRatio: mediumRatio,
                     broadcastPlayerRatio: 1.0,
+                    transportCodec: transportCodec,
                     enableDirtyTracking: transportDirtyTrackingOverride ?? true
                 ),
                 configurations: [
@@ -209,6 +217,7 @@ struct BenchmarkSuites {
                     playerCounts: [4, 10, 20, 30, 50],
                     dirtyPlayerRatio: highRatio,
                     broadcastPlayerRatio: 1.0,
+                    transportCodec: transportCodec,
                     enableDirtyTracking: transportDirtyTrackingOverride ?? true
                 ),
                 configurations: [
@@ -232,17 +241,20 @@ struct BenchmarkSuites {
     static func get(
         suiteType: BenchmarkSuiteType,
         transportDirtyTrackingOverride: Bool? = nil,
-        dirtyRatioOverride: Double? = nil
+        dirtyRatioOverride: Double? = nil,
+        transportEncodingOverride: TransportEncoding? = nil
     ) -> [BenchmarkSuiteConfig] {
         if suiteType == .all {
             return all(
                 transportDirtyTrackingOverride: transportDirtyTrackingOverride,
-                dirtyRatioOverride: dirtyRatioOverride
+                dirtyRatioOverride: dirtyRatioOverride,
+                transportEncodingOverride: transportEncodingOverride
             )
         }
         return all(
             transportDirtyTrackingOverride: transportDirtyTrackingOverride,
-            dirtyRatioOverride: dirtyRatioOverride
+            dirtyRatioOverride: dirtyRatioOverride,
+            transportEncodingOverride: transportEncodingOverride
         ).filter { $0.type == suiteType }
     }
 }

@@ -38,8 +38,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     private let landTypeRegistry: LandTypeRegistry<State>
     private let transport: WebSocketTransport
     private let logger: Logger
-    private let encoder = JSONEncoder()
-    private let decoder = JSONDecoder()
+    private let codec: any TransportCodec
     
     // MARK: - Session Management
     
@@ -70,12 +69,14 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         landTypeRegistry: LandTypeRegistry<State>,
         transport: WebSocketTransport,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
+        codec: any TransportCodec = JSONTransportCodec(),
         logger: Logger? = nil
     ) {
         self.landManager = landManager
         self.landTypeRegistry = landTypeRegistry
         self.transport = transport
         self.createGuestSession = createGuestSession
+        self.codec = codec
         self.logger = logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.transport",
             scope: "LandRouter"
@@ -139,7 +140,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     ///   - sessionID: The session that sent the message
     public func onMessage(_ message: Data, from sessionID: SessionID) async {
         do {
-            let transportMsg = try decoder.decode(TransportMessage.self, from: message)
+            let transportMsg = try codec.decode(TransportMessage.self, from: message)
             
             switch transportMsg.kind {
             case .join:
@@ -403,7 +404,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 playerID: playerID,
                 reason: reason
             )
-            let responseData = try encoder.encode(response)
+            let responseData = try codec.encode(response)
             try await transport.send(responseData, to: .session(sessionID))
         } catch {
             logger.error("Failed to send join response", metadata: [
@@ -428,7 +429,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             
             let errorPayload = ErrorPayload(code: code, message: message, details: errorDetails)
             let errorResponse = TransportMessage.error(errorPayload)
-            let errorData = try encoder.encode(errorResponse)
+            let errorData = try codec.encode(errorResponse)
             try await transport.send(errorData, to: .session(sessionID))
         } catch {
             logger.error("Failed to send join error", metadata: [
@@ -449,7 +450,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         do {
             let errorPayload = ErrorPayload(code: code, message: message, details: details)
             let errorResponse = TransportMessage.error(errorPayload)
-            let errorData = try encoder.encode(errorResponse)
+            let errorData = try codec.encode(errorResponse)
             try await transport.send(errorData, to: .session(sessionID))
         } catch {
             logger.error("Failed to send error", metadata: [
