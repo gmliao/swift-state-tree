@@ -22,6 +22,8 @@
 SwiftStateTree 採用統一的 "Land" 命名概念，從底層到上層保持一致：
 
 ```
+LandHost                    → HTTP Server 層級（統一管理 Application 和 Router）
+    ↓
 LandRealm                  → 應用層級（管理所有 land types 和 State 類型，統一入口）
     ↓
 LandServer<State>          → 遊戲類型層級（服務一個 State 類型的所有 lands，可跨機器）
@@ -41,6 +43,149 @@ Land (LandDefinition)      → 規則定義層級（遊戲規則）
 - 所有組件都以 "Land" 開頭，保持命名一致性
 - 層級清晰：從規則定義到應用層級
 - 語義明確：每個組件的職責清楚
+
+### LandHost 設計
+
+`LandHost` 是 HTTP Server 層級的組件，負責統一管理 Hummingbird `Application` 和 `Router`。
+
+**設計目標**：
+- 解決多個 `LandServer` 實例端口衝突問題
+- 提供統一的 HTTP Server 管理
+- 支援多個不同 State 類型的 `LandServer` 註冊到同一個 Host
+- 簡化多 land type 的部署流程
+
+**使用範例**：
+
+```swift
+// 創建統一的 HTTP Server Host
+let host = LandHost(configuration: .init(
+    host: "localhost",
+    port: 8080,
+    logger: logger
+))
+
+// 註冊 Cookie Game Server
+let cookieServer = try await LandServer<CookieGameState>.makeMultiRoomServer(
+    configuration: ...,
+    router: host.router  // 使用 host 的 router
+)
+try host.register(
+    landType: "cookie",
+    server: cookieServer,
+    webSocketPath: "/game/cookie"
+)
+
+// 註冊 Counter Demo Server
+let counterServer = try await LandServer<CounterState>.makeMultiRoomServer(
+    configuration: ...,
+    router: host.router  // 使用同一個 router
+)
+try host.register(
+    landType: "counter",
+    server: counterServer,
+    webSocketPath: "/game/counter"
+)
+
+// 運行統一的 HTTP Server
+try await host.run()
+```
+
+**與 `LandRealm` 的關係**：
+
+- `LandHost` 負責 HTTP Server 層面的管理（Application、Router）
+- `LandRealm` 負責遊戲邏輯層面的聚合管理（多個不同 State 類型的 LandServer）
+- `LandRealm` 可以註冊到 `LandHost`，使用 `LandHost` 的 router
+- 兩者可以配合使用，也可以獨立使用
+
+### 架構圖
+
+#### 當前架構問題
+
+在引入 `LandHost` 之前，多個 `LandServer` 實例會各自創建自己的 `Application`，導致端口衝突：
+
+```mermaid
+flowchart TD
+    MultiRoomDemo[MultiRoomDemo<br/>手動管理 router 和 Application]
+    MultiRoomDemo --> LS1[LandServer Cookie]
+    MultiRoomDemo --> LS2[LandServer Counter]
+    MultiRoomDemo --> Router[Router 手動建立]
+    LS1 --> App1[Application 1<br/>port 衝突!]
+    LS2 --> App2[Application 2<br/>port 衝突!]
+    Router --> App3[Application 3<br/>統一管理]
+```
+
+#### 新架構（使用 LandHost）
+
+使用 `LandHost` 後，所有 `LandServer` 實例共享同一個 `Application` 和 `Router`：
+
+```mermaid
+flowchart TD
+    LandHost[LandHost<br/>HTTP Server 層級]
+    LandHost --> Router[Router 統一管理]
+    Router --> App[Application 單一實例]
+    
+    LandHost --> LS1[LandServer Cookie]
+    LandHost --> LS2[LandServer Counter]
+    LandHost --> LR[LandRealm 可選]
+    
+    LS1 --> Router
+    LS2 --> Router
+    LR --> Router
+    
+    LS1 --> LM1[LandManager Cookie]
+    LS2 --> LM2[LandManager Counter]
+    
+    LM1 --> LK1[LandKeeper Cookie]
+    LM2 --> LK2[LandKeeper Counter]
+```
+
+#### 完整層級架構
+
+```mermaid
+flowchart TB
+    subgraph Application["應用層級"]
+        LH[LandHost<br/>HTTP Server]
+        LR[LandRealm<br/>聚合管理]
+    end
+    
+    subgraph GameLogic["遊戲邏輯層級"]
+        LS1[LandServer State1]
+        LS2[LandServer State2]
+    end
+    
+    subgraph RoomMgmt["房間管理層級"]
+        LM1[LandManager State1]
+        LM2[LandManager State2]
+    end
+    
+    subgraph Routing["路由層級"]
+        LR1[LandRouter State1]
+        LR2[LandRouter State2]
+    end
+    
+    subgraph StateMgmt["狀態管理層級"]
+        LK1[LandKeeper State1]
+        LK2[LandKeeper State2]
+    end
+    
+    subgraph Rules["規則定義層級"]
+        LD1[LandDefinition State1]
+        LD2[LandDefinition State2]
+    end
+    
+    LH --> LS1
+    LH --> LS2
+    LR --> LS1
+    LR --> LS2
+    LS1 --> LM1
+    LS2 --> LM2
+    LM1 --> LR1
+    LM2 --> LR2
+    LR1 --> LK1
+    LR2 --> LK2
+    LK1 --> LD1
+    LK2 --> LD2
+```
 
 ### 命名遷移策略
 

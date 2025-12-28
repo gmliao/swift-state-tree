@@ -10,7 +10,10 @@ import SwiftStateTree
 /// **Key Features**:
 /// - Framework-agnostic abstraction
 /// - Supports multiple State types
-/// - Provides lifecycle management (run, shutdown, health check)
+/// - Provides lifecycle management (shutdown, health check)
+///
+/// **Note**: HTTP server lifecycle (run) is managed by framework-specific hosting components
+/// (e.g., `LandHost` for Hummingbird). The protocol no longer includes `run()` method.
 ///
 /// **Implementation Note**:
 /// Each HTTP framework should provide its own implementation of this protocol.
@@ -34,9 +37,6 @@ import SwiftStateTree
 /// ```
 public protocol LandServerProtocol<State> {
     associatedtype State: StateNodeProtocol
-    
-    /// Start the server
-    func run() async throws
     
     /// Gracefully shutdown the server
     func shutdown() async throws

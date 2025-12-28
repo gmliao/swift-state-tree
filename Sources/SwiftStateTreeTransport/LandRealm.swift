@@ -22,7 +22,6 @@ public actor LandRealm {
     private struct ServerInfo {
         let landType: String
         let stateTypeName: String
-        nonisolated(unsafe) let runClosure: () async throws -> Void
         nonisolated(unsafe) let shutdownClosure: () async throws -> Void
         nonisolated(unsafe) let healthCheckClosure: () async -> Bool
         nonisolated(unsafe) let listLandsClosure: () async -> [LandID]
@@ -39,10 +38,6 @@ public actor LandRealm {
             
             // Capture server in closures (server is isolated to this actor, so it's safe)
             // Note: These closures are only used within the actor, so @Sendable is not required
-            self.runClosure = {
-                try await server.run()
-            }
-            
             self.shutdownClosure = {
                 try await server.shutdown()
             }
@@ -119,37 +114,31 @@ public actor LandRealm {
     
     /// Start all registered LandServer instances.
     ///
-    /// This method will start all servers concurrently and wait for them to complete.
-    /// If any server fails, the error will be propagated.
+    /// **Deprecated**: HTTP server lifecycle management has been moved to framework-specific hosting components.
+    /// For Hummingbird, use `LandHost.run()` instead.
     ///
-    /// - Throws: Error if any server fails to start
+    /// **Migration Guide for Hummingbird users**:
+    /// ```swift
+    /// // Old way (deprecated):
+    /// let realm = LandRealm()
+    /// try await realm.register(landType: "myland", server: server)
+    /// try await realm.run()
+    ///
+    /// // New way (recommended):
+    /// var host = LandHost(configuration: ...)
+    /// let server = try await LandServer.makeServer(..., router: host.router)
+    /// try host.register(landType: "myland", server: server, webSocketPath: "/game/myland")
+    /// try await host.run()
+    /// ```
+    ///
+    /// - Throws: `LandRealmError.httpServerManagementMovedToHost` always
+    @available(*, deprecated, message: "HTTP server lifecycle has been moved to framework-specific hosting components (e.g., LandHost for Hummingbird). Use LandHost.run() instead.")
     public func run() async throws {
-        let serversToRun = servers
-        
-        guard !serversToRun.isEmpty else {
-            logger.warning("No servers registered in LandRealm")
-            return
-        }
-        
-        logger.info("Starting \(serversToRun.count) server(s) in LandRealm")
-        
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            for (landType, serverInfo) in serversToRun {
-                let logger = self.logger
-                group.addTask {
-                    do {
-                        logger.info("Starting server for land type: \(landType)")
-                        try await serverInfo.runClosure()
-                    } catch {
-                        logger.error("Server for land type '\(landType)' failed: \(error)")
-                        throw LandRealmError.serverFailure(landType: landType, underlying: error)
-                    }
-                }
-            }
-            
-            // Wait for all tasks to complete
-            try await group.waitForAll()
-        }
+        throw LandRealmError.httpServerManagementMovedToHost(
+            "LandRealm.run() is no longer supported. " +
+            "HTTP server lifecycle management has been moved to framework-specific hosting components. " +
+            "For Hummingbird, use LandHost to manage HTTP server lifecycle."
+        )
     }
     
     /// Gracefully shutdown all registered LandServer instances.
@@ -221,6 +210,14 @@ public actor LandRealm {
     /// - Returns: `true` if the land type is registered, `false` otherwise
     public func isRegistered(landType: String) -> Bool {
         servers[landType] != nil
+    }
+    
+    /// Get the state type name for a registered land type.
+    ///
+    /// - Parameter landType: The land type identifier
+    /// - Returns: The state type name as a string, or nil if not registered
+    public func getStateTypeName(for landType: String) -> String? {
+        return servers[landType]?.stateTypeName
     }
     
     /// List all lands across all registered servers.

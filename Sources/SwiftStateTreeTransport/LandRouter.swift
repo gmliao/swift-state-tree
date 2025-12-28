@@ -55,6 +55,15 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     /// Guest session factory (optional)
     private let createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)?
     
+    // MARK: - Configuration
+    
+    /// Allow auto-creating land when join with instanceId but land doesn't exist.
+    ///
+    /// **Security Note**: When `true`, clients can create rooms by specifying any instanceId.
+    /// This is useful for demo/testing but should be `false` in production.
+    /// Default: `false` (secure: prevent unauthorized room creation)
+    private let allowAutoCreateOnJoin: Bool
+    
     // MARK: - Initialization
     
     /// Initialize a LandRouter.
@@ -64,18 +73,21 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     ///   - landTypeRegistry: Registry for landType → LandDefinition mapping
     ///   - transport: WebSocket transport for sending messages
     ///   - createGuestSession: Optional factory for creating guest sessions
+    ///   - allowAutoCreateOnJoin: Allow auto-creating land when join with instanceId but land doesn't exist (default: false)
     ///   - logger: Optional logger instance
     public init(
         landManager: LandManager<State>,
         landTypeRegistry: LandTypeRegistry<State>,
         transport: WebSocketTransport,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
+        allowAutoCreateOnJoin: Bool = false,
         logger: Logger? = nil
     ) {
         self.landManager = landManager
         self.landTypeRegistry = landTypeRegistry
         self.transport = transport
         self.createGuestSession = createGuestSession
+        self.allowAutoCreateOnJoin = allowAutoCreateOnJoin
         self.logger = logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.transport",
             scope: "LandRouter"
@@ -176,7 +188,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     
     /// Handle a join request from a client.
     ///
-    /// - Case A (landInstanceId provided): Join existing land
+    /// - Case A (landInstanceId provided): Join existing land, or create if allowed and doesn't exist
     /// - Case B (landInstanceId nil): Create new land
     private func handleJoinRequest(
         requestID: String,
@@ -216,10 +228,30 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         let container: LandContainer<State>
         
         if let instanceId = landInstanceId {
-            // Case A: Join existing land
+            // Case A: Join existing land, or create if allowed and doesn't exist
             landID = LandID(landType: landType, instanceId: instanceId)
             
-            guard let existingContainer = await landManager.getLand(landID: landID) else {
+            if let existingContainer = await landManager.getLand(landID: landID) {
+                container = existingContainer
+                logger.info("Join existing land: \(landID.rawValue)")
+            } else if allowAutoCreateOnJoin {
+                // Land doesn't exist, but auto-create is allowed (for demo/testing)
+                let definition = landTypeRegistry.getLandDefinition(landType: landType, landID: landID)
+                let initialState = landTypeRegistry.initialStateFactory(landType, landID)
+                
+                container = await landManager.getOrCreateLand(
+                    landID: landID,
+                    definition: definition,
+                    initialState: initialState
+                )
+                
+                logger.info("Land auto-created and joined (allowAutoCreateOnJoin=true)", metadata: [
+                    "landID": .string(landID.rawValue),
+                    "landType": .string(landType),
+                    "sessionID": .string(sessionID.rawValue)
+                ])
+            } else {
+                // Land doesn't exist and auto-create is not allowed (secure default)
                 logger.warning("Land not found: \(landID.rawValue)")
                 await sendJoinError(
                     requestID: requestID,
@@ -230,11 +262,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 return
             }
             
-            container = existingContainer
-            logger.info("Join existing land: \(landID.rawValue)")
-            
         } else {
-            // Case B: Create new land
+            // Case B: Create new land with auto-generated instanceId
             landID = LandID.generate(landType: landType)
             
             let definition = landTypeRegistry.getLandDefinition(landType: landType, landID: landID)

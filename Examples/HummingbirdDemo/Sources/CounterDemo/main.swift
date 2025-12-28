@@ -24,14 +24,31 @@ struct CounterDemo {
         )
 
         // Single-room mode: Create a fixed land instance
+        // Use LandHost for unified HTTP server management
+        var host = LandHost(configuration: LandHost.HostConfiguration(
+            host: "localhost",
+            port: 8080,
+            logger: logger
+        ))
+        
         let server = try await CounterLandServer.makeServer(
             configuration: LandServer.Configuration(
+                logStartupBanner: false, // LandHost will log startup info
                 logger: logger,
                 jwtConfig: jwtConfig,
                 allowGuestMode: true
             ),
-            land: HummingbirdDemoContent.CounterDemo.makeLand()
+            land: HummingbirdDemoContent.CounterDemo.makeLand(),
+            router: host.router // Use host's shared router
         )
-        try await server.run()
+        
+        try host.register(
+            landType: "counter",
+            server: server,
+            webSocketPath: "/game/counter"
+        )
+        
+        // Run unified server
+        try await host.run()
     }
 }
