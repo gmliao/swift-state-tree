@@ -30,6 +30,10 @@
 - **[Hummingbird 整合](hummingbird/README.md)** - 伺服器設定、單房間/多房間模式
 - **[認證機制](hummingbird/auth.md)** - JWT、Guest 模式、Admin 路由
 
+### 範例
+
+- **[Cookie Clicker 範例](examples/cookie-clicker.md)** - 完整的多玩家遊戲範例，展示進階功能
+
 ### 參考文檔
 
 - **[Schema 生成](schema/README.md)** - JSON Schema 自動生成

@@ -54,22 +54,26 @@ swift build
 
 ### 2. 運行範例
 
-啟動伺服器（單房間模式）：
+啟動 CounterDemo 伺服器（最簡單的範例）：
 ```bash
 cd Examples/HummingbirdDemo
-swift run SingleRoomDemo
+swift run CounterDemo
 ```
 
 伺服器預設運行在 `http://localhost:8080`。
 
-在另一個終端啟動 WebClient：
+在另一個終端生成客戶端代碼並啟動 WebClient：
 ```bash
 cd Examples/HummingbirdDemo/WebClient
 npm install  # 首次運行需要安裝依賴
+npm run codegen  # 生成客戶端代碼
 npm run dev
 ```
 
-WebClient 會運行在另一個端口（通常是 `http://localhost:5173`），可在瀏覽器中訪問。
+WebClient 會運行在另一個端口（通常是 `http://localhost:5173`），可在瀏覽器中訪問並導航到 Counter Demo 頁面。
+
+**其他可用範例：**
+- 🍪 [Cookie Clicker 範例](docs/examples/cookie-clicker.md) - 完整的多玩家遊戲範例，包含私有狀態、升級系統、定期 Tick 處理等進階功能
 
 ### 3. 查看詳細文檔
 
@@ -229,13 +233,32 @@ onUnmounted(async () => {
 </template>
 ```
 
+#### 運行範例
+
+**1. 啟動伺服器：**
+```bash
+cd Examples/HummingbirdDemo
+swift run CounterDemo
+```
+伺服器會在 `http://localhost:8080` 啟動。
+
+**2. 生成客戶端代碼：**
+```bash
+cd WebClient
+npm run codegen
+```
+
+**3. 啟動客戶端：**
+```bash
+npm run dev
+```
+然後在瀏覽器中打開 `http://localhost:5173`，導航到 Counter Demo 頁面。
+
 **關鍵點：**
 - 伺服器使用 `@StateNodeBuilder` 定義狀態樹，`@Sync(.broadcast)` 控制同步策略
 - 客戶端使用生成的 composable（如 `useCounter`），由 schema 自動生成
-- 在 template 中直接使用 `state?.count`，Vue 會自動處理響應式更新
+- 在 template 中直接使用 `state.count`，Vue 會自動處理響應式更新
 - 使用 composable 提供的 action 方法（如 `increment`）來發送操作
-
-**注意：** 使用前需要先運行 schema 生成工具來產生 composable 和型別定義。完整流程請參考 `Examples/HummingbirdDemo`。
 
 ## 📁 專案結構
 
