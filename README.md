@@ -143,13 +143,70 @@ struct CounterDemo {
 }
 ```
 
+#### Codegen 自動生成
+
+所有客戶端代碼都是從伺服器的 schema 自動生成的，整合非常簡單：
+
+```bash
+# 從 schema.json 生成客戶端代碼
+npm run codegen
+
+# 或從運行中的伺服器直接獲取 schema
+npm run codegen:server
+```
+
+**生成的檔案結構：**
+```
+src/generated/
+├── counter/
+│   ├── useCounter.ts      # Vue composable（自動生成）
+│   ├── index.ts           # StateTree 類別
+│   ├── bindings.ts        # 類型綁定
+│   └── testHelpers.ts     # 測試輔助函數
+├── defs.ts                # 共享類型定義（State、Action、Response）
+└── schema.ts              # Schema 元數據
+```
+
+**Codegen 自動生成的內容：**
+
+1. **State 類型定義**：從伺服器的 `CounterState` 自動生成對應的 TypeScript 類型
+   ```typescript
+   // 自動生成：src/generated/defs.ts
+   export interface CounterState {
+     count: number  // 對應伺服器的 @Sync(.broadcast) var count: Int
+   }
+   ```
+
+2. **Action 函數**：每個伺服器的 Action 都會生成對應的客戶端函數
+   ```typescript
+   // 自動生成：src/generated/counter/useCounter.ts
+   export function useCounter() {
+     return {
+       state: Ref<CounterState | null>,      // 響應式狀態
+       increment: (payload: IncrementAction) => Promise<IncrementResponse>,
+       // ... 其他 action 函數
+     }
+   }
+   ```
+
+3. **完整的類型安全**：所有 Action 的 payload 和 response 都有完整的 TypeScript 類型
+
+**優勢：**
+- ✅ **類型安全**：TypeScript 類型完全對應伺服器定義
+- ✅ **零配置**：一次命令生成所有需要的代碼
+- ✅ **自動同步**：伺服器變更後重新執行 codegen 即可更新
+- ✅ **開箱即用**：生成的 composable 可直接在 Vue 組件中使用
+
 #### 客戶端（Vue 3）
+
+使用 codegen 生成的 composable，整合非常簡單：
 
 ```vue
 <script setup lang="ts">
 import { onMounted, onUnmounted } from 'vue'
 import { useCounter } from './generated/counter/useCounter'
 
+// 使用生成的 composable，自動包含 state 和所有 action 函數
 const { state, isJoined, connect, disconnect, increment } = useCounter()
 
 onMounted(async () => {
@@ -164,7 +221,9 @@ onUnmounted(async () => {
 <template>
   <div v-if="!isJoined || !state">Connecting...</div>
   <div v-else>
+    <!-- 直接使用生成的 state，完全類型安全 -->
     <h2>Count: {{ state.count ?? 0 }}</h2>
+    <!-- 使用生成的 action 函數 -->
     <button @click="increment({})" :disabled="!isJoined">+1</button>
   </div>
 </template>
