@@ -16,7 +16,7 @@ const {
 
 onMounted(async () => {
   await connect({
-    wsUrl: 'ws://localhost:8080/game'
+    wsUrl: 'ws://localhost:8080/game/counter'
   })
 })
 

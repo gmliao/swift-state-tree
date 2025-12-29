@@ -115,8 +115,7 @@ func testLandHostRegisterSingleServer() async throws {
             logStartupBanner: false
         ),
         landFactory: { _ in TestGame1.makeLand() },
-        initialStateFactory: { _ in TestState1() },
-        router: host.router
+        initialStateFactory: { _ in TestState1() }
     )
     
     // Act
@@ -147,8 +146,7 @@ func testLandHostRegisterMultipleServers() async throws {
             logStartupBanner: false
         ),
         landFactory: { _ in TestGame1.makeLand() },
-        initialStateFactory: { _ in TestState1() },
-        router: host.router
+        initialStateFactory: { _ in TestState1() }
     )
     try host.register(
         landType: "test1",
@@ -166,8 +164,7 @@ func testLandHostRegisterMultipleServers() async throws {
             logStartupBanner: false
         ),
         landFactory: { _ in TestGame2.makeLand() },
-        initialStateFactory: { _ in TestState2() },
-        router: host.router
+        initialStateFactory: { _ in TestState2() }
     )
     try host.register(
         landType: "test2",
@@ -194,8 +191,7 @@ func testLandHostRegisterWithCustomPaths() async throws {
             logStartupBanner: false
         ),
         landFactory: { _ in TestGame1.makeLand() },
-        initialStateFactory: { _ in TestState1() },
-        router: host.router
+        initialStateFactory: { _ in TestState1() }
     )
     
     // Act
@@ -223,8 +219,7 @@ func testLandHostRejectDuplicateLandType() async throws {
             logStartupBanner: false
         ),
         landFactory: { _ in TestGame1.makeLand() },
-        initialStateFactory: { _ in TestState1() },
-        router: host.router
+        initialStateFactory: { _ in TestState1() }
     )
     
     // Act: Register first time
@@ -244,8 +239,7 @@ func testLandHostRejectDuplicateLandType() async throws {
             logStartupBanner: false
         ),
         landFactory: { _ in TestGame1.makeLand() },
-        initialStateFactory: { _ in TestState1() },
-        router: host.router
+        initialStateFactory: { _ in TestState1() }
     )
     
     do {
@@ -275,8 +269,7 @@ func testLandHostEmptyLandType() async throws {
             logStartupBanner: false
         ),
         landFactory: { _ in TestGame1.makeLand() },
-        initialStateFactory: { _ in TestState1() },
-        router: host.router
+        initialStateFactory: { _ in TestState1() }
     )
     
     // Act & Assert: Try to register with empty landType
@@ -315,8 +308,8 @@ func testLandHostWithLandRealm() async throws {
         enableHealthRoute: false  // Disable to avoid route conflicts in tests
     ))
     
-    // Act: Create a LandServer using host's router, then register it to host
-    // This simulates the pattern: create server with host.router, then register to host
+    // Act: Create a LandServer, then register it to host
+    // The host will handle route registration automatically
     let server = try await LandServer<TestState1>.makeMultiRoomServer(
         configuration: LandServer<TestState1>.Configuration(
             host: "localhost",
@@ -326,8 +319,7 @@ func testLandHostWithLandRealm() async throws {
             logStartupBanner: false
         ),
         landFactory: { _ in TestGame1.makeLand() },
-        initialStateFactory: { _ in TestState1() },
-        router: host.router  // Use host's router
+        initialStateFactory: { _ in TestState1() }
     )
     
     try host.register(
@@ -337,8 +329,7 @@ func testLandHostWithLandRealm() async throws {
     )
     
     // Assert: Registration should succeed
-    // Note: In practice, LandRealm can also use host.router when registering servers
-    // This test verifies that the pattern works correctly
+    // The host handles route registration automatically
 }
 
 @Test("LandHost can register multiple land types on the same host")
@@ -358,8 +349,7 @@ func testLandHostMultipleLandTypes() async throws {
             logStartupBanner: false
         ),
         landFactory: { _ in TestGame1.makeLand() },
-        initialStateFactory: { _ in TestState1() },
-        router: host.router
+        initialStateFactory: { _ in TestState1() }
     )
     try host.register(
         landType: "type1",
@@ -376,8 +366,7 @@ func testLandHostMultipleLandTypes() async throws {
             logStartupBanner: false
         ),
         landFactory: { _ in TestGame2.makeLand() },
-        initialStateFactory: { _ in TestState2() },
-        router: host.router
+        initialStateFactory: { _ in TestState2() }
     )
     try host.register(
         landType: "type2",
@@ -386,5 +375,5 @@ func testLandHostMultipleLandTypes() async throws {
     )
     
     // Assert: Both registrations should succeed
-    // All servers share the same router from host
+    // All servers' routes are registered on the host's shared router
 }

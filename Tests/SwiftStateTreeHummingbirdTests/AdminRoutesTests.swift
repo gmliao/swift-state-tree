@@ -37,26 +37,26 @@ func testAdminRoutesListAllLands() async throws {
     // Arrange
     let adminAuth = AdminAuthMiddleware(apiKey: "test-key")
     
-    // Register multiple land types using LandRealmHost
-    let realmHost = LandRealmHost(configuration: LandRealmHost.HostConfiguration(
+    // Register multiple land types using LandHost
+    let host = LandHost(configuration: LandHost.HostConfiguration(
         enableHealthRoute: false,
         logStartupBanner: false
     ))
     
-    try await realmHost.registerWithLandServer(
+    try await host.registerWithLandServer(
         landType: "game1",
         landFactory: { _ in TestGame.makeLand() },
         initialStateFactory: { _ in TestGameState() }
     )
     
-    try await realmHost.registerWithLandServer(
+    try await host.registerWithLandServer(
         landType: "game2",
         landFactory: { _ in TestGame.makeLand() },
         initialStateFactory: { _ in TestGameState() }
     )
     
-    // Use realm from realmHost for AdminRoutes (actor-isolated, need await)
-    let realm = await realmHost.realm
+    // Use realm from host for AdminRoutes (actor-isolated, need await)
+    let realm = await host.realm
     
     let adminRoutes = AdminRoutes(
         landRealm: realm,
@@ -105,17 +105,17 @@ func testAdminRoutesWithJWTAuth() async throws {
     #expect(adminRoutes.adminAuth.jwtValidator != nil)
 }
 
-@Test("LandRealmHost registerAdminRoutes registers routes on router")
-func testLandRealmHostRegisterAdminRoutes() async throws {
+@Test("LandHost registerAdminRoutes registers routes on router")
+func testLandHostRegisterAdminRoutes() async throws {
     // Arrange
-    let realmHost = LandRealmHost(configuration: LandRealmHost.HostConfiguration(
+    let host = LandHost(configuration: LandHost.HostConfiguration(
         enableHealthRoute: false,
         logStartupBanner: false
     ))
     let adminAuth = AdminAuthMiddleware(apiKey: "test-key")
     
-    // Act: registerAdminRoutes uses the shared router from realmHost
-    await realmHost.registerAdminRoutes(adminAuth: adminAuth)
+    // Act: registerAdminRoutes uses the shared router from host
+    await host.registerAdminRoutes(adminAuth: adminAuth)
     
     // Assert: Routes should be registered (we can't easily verify without HTTP server,
     // but the method should complete without error)

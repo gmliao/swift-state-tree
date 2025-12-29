@@ -63,10 +63,10 @@ const grandmaCost = computed(() => calculateUpgradeCost(grandmaLevel.value, 50))
     <div v-else class="game-grid">
       <!-- Left Column: Player Info & Actions -->
       <div class="left-column">
-        <!-- My Status -->
-        <div v-if="me" class="card">
-          <h2>{{ me.name || 'You' }}</h2>
-          <div class="stats">
+      <!-- My Status -->
+      <div v-if="me" class="card">
+        <h2>{{ me.name || 'You' }}</h2>
+        <div class="stats">
             <div class="stat-item">
               <span class="stat-label">Cookies:</span>
               <span class="stat-value">{{ me.cookies }}</span>
@@ -79,26 +79,26 @@ const grandmaCost = computed(() => calculateUpgradeCost(grandmaLevel.value, 50))
               <span class="stat-label">Total Clicks:</span>
               <span class="stat-value">{{ myPrivate.totalClicks }}</span>
             </div>
-          </div>
         </div>
+      </div>
 
-        <!-- Actions -->
-        <div class="card">
-          <button @click="handleClick" class="btn btn-large btn-cookie">
-            🍪 Click Cookie!
-          </button>
+      <!-- Actions -->
+      <div class="card">
+        <button @click="handleClick" class="btn btn-large btn-cookie">
+          🍪 Click Cookie!
+        </button>
 
-          <div class="upgrades">
-            <div class="upgrade">
-              <h3>Cursor</h3>
+        <div class="upgrades">
+          <div class="upgrade">
+            <h3>Cursor</h3>
               <div class="upgrade-info">
                 <p>Level: <strong>{{ cursorLevel }}</strong></p>
                 <p>Cost: <strong>{{ cursorCost }}</strong> cookies</p>
               </div>
               <button @click="handleBuy('cursor')" class="btn btn-upgrade">Buy</button>
-            </div>
-            <div class="upgrade">
-              <h3>Grandma</h3>
+          </div>
+          <div class="upgrade">
+            <h3>Grandma</h3>
               <div class="upgrade-info">
                 <p>Level: <strong>{{ grandmaLevel }}</strong></p>
                 <p>Cost: <strong>{{ grandmaCost }}</strong> cookies</p>
@@ -111,10 +111,10 @@ const grandmaCost = computed(() => calculateUpgradeCost(grandmaLevel.value, 50))
 
       <!-- Right Column: Room Stats & Other Players -->
       <div class="right-column">
-        <!-- Room Info -->
-        <div class="card">
-          <h2>Room Stats</h2>
-          <div class="stats">
+      <!-- Room Info -->
+      <div class="card">
+        <h2>Room Stats</h2>
+        <div class="stats">
             <div class="stat-item">
               <span class="stat-label">Total Cookies:</span>
               <span class="stat-value">{{ state.totalCookies ?? 0 }}</span>
@@ -127,14 +127,14 @@ const grandmaCost = computed(() => calculateUpgradeCost(grandmaLevel.value, 50))
               <span class="stat-label">Ticks:</span>
               <span class="stat-value">{{ state.ticks ?? 0 }}</span>
             </div>
-          </div>
         </div>
+      </div>
 
-        <!-- Other Players -->
-        <div v-if="others.length > 0" class="card">
-          <h2>Other Players</h2>
+      <!-- Other Players -->
+      <div v-if="others.length > 0" class="card">
+        <h2>Other Players</h2>
           <div class="players-list">
-            <div v-for="p in others" :key="p.id" class="player">
+        <div v-for="p in others" :key="p.id" class="player">
               <div class="player-name">{{ p.name || p.id }}</div>
               <div class="player-stats">
                 <span>{{ p.cookies }} cookies</span>

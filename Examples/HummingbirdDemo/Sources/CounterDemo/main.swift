@@ -2,6 +2,7 @@ import Foundation
 import HummingbirdDemoContent
 import SwiftStateTree
 import SwiftStateTreeHummingbird
+import SwiftStateTreeTransport
 
 /// Hummingbird Demo: Counter Example
 ///
@@ -12,8 +13,6 @@ import SwiftStateTreeHummingbird
 @main
 struct CounterDemo {
     static func main() async throws {
-        typealias CounterLandServer = LandServer<CounterState>
-
         // JWT Configuration for demo/testing purposes
         let jwtConfig = HummingbirdDemoContent.createDemoJWTConfig()
 
@@ -24,28 +23,24 @@ struct CounterDemo {
         )
 
         // Single-room mode: Create a fixed land instance
-        // Use LandHost for unified HTTP server management
-        var host = LandHost(configuration: LandHost.HostConfiguration(
+        // Use LandHost for unified HTTP server and game logic management
+        let host = LandHost(configuration: LandHost.HostConfiguration(
             host: "localhost",
             port: 8080,
             logger: logger
         ))
         
-        let server = try await CounterLandServer.makeServer(
-            configuration: LandServer.Configuration(
-                logStartupBanner: false, // LandHost will log startup info
+        // Register server - LandHost handles route registration automatically
+        try await host.registerWithServer(
+            landType: "counter",
+            land: HummingbirdDemoContent.CounterDemo.makeLand(),
+            initialState: CounterState(),
+            webSocketPath: "/game/counter",
+            configuration: LandServerConfiguration(
                 logger: logger,
                 jwtConfig: jwtConfig,
                 allowGuestMode: true
-            ),
-            land: HummingbirdDemoContent.CounterDemo.makeLand(),
-            router: host.router // Use host's shared router
-        )
-        
-        try host.register(
-            landType: "counter",
-            server: server,
-            webSocketPath: "/game/counter"
+            )
         )
         
         // Run unified server

@@ -7,37 +7,12 @@ import SwiftStateTreeMatchmaking
 import Logging
 import NIOCore
 
-/// Bundles runtime, transport, and Hummingbird hosting for any Land definition.
+/// Configuration for LandServer instances.
 ///
-/// **Note**: This is the Hummingbird-specific implementation of `LandServerProtocol`.
-/// For framework-agnostic usage, use the `LandServerProtocol` protocol.
-public struct LandServer<State: StateNodeProtocol> {
-    public typealias Land = LandDefinition<State>
-    
-    /// Default implementation for creating guest sessions.
-    ///
-    /// Creates a PlayerSession with:
-    /// - playerID: "guest-{randomID}" format (6-character random ID)
-    /// - deviceID: clientID.rawValue
-    /// - isGuest: true
-    ///
-    /// This is the recommended default for most use cases.
-    public static func defaultCreateGuestSession(_ sessionID: SessionID, clientID: ClientID) -> PlayerSession {
-        let randomID = String(UUID().uuidString.prefix(6))
-        return PlayerSession(
-            playerID: "guest-\(randomID)",
-            deviceID: clientID.rawValue,
-            isGuest: true
-        )
-    }
-    
-    public struct Configuration: Sendable {
-        public var host: String
-        public var port: UInt16
-        public var webSocketPath: String
-        public var healthPath: String
-        public var enableHealthRoute: Bool
-        public var logStartupBanner: Bool
+/// This configuration is independent of the State type and can be reused across
+/// different land types. Use `LandServerConfiguration` directly instead of
+/// `LandServer<State>.Configuration` to avoid specifying the State type.
+public struct LandServerConfiguration: Sendable {
         public var logger: Logger?
         
         // JWT validation configuration
@@ -58,39 +33,53 @@ public struct LandServer<State: StateNodeProtocol> {
         /// - All connections must have valid JWT token (connections without token will be rejected)
         public var allowGuestMode: Bool = false
         
-        // Admin API configuration
-        /// Enable admin API routes (default: false)
-        public var enableAdminRoutes: Bool = false
-        /// Admin authentication middleware (required if enableAdminRoutes is true)
-        public var adminAuth: AdminAuthMiddleware?
+        /// Allow auto-creating land when join with instanceId but land doesn't exist (default: false).
+        ///
+        /// **Security Note**: When `true`, clients can create rooms by specifying any instanceId.
+        /// This is useful for demo/testing but should be `false` in production.
+        public var allowAutoCreateOnJoin: Bool = false
         
         public init(
-            host: String = "localhost",
-            port: UInt16 = 8080,
-            webSocketPath: String = "/game",
-            healthPath: String = "/health",
-            enableHealthRoute: Bool = true,
-            logStartupBanner: Bool = true,
             logger: Logger? = nil,
             jwtConfig: JWTConfiguration? = nil,
             jwtValidator: JWTAuthValidator? = nil,
             allowGuestMode: Bool = false,
-            enableAdminRoutes: Bool = false,
-            adminAuth: AdminAuthMiddleware? = nil
+            allowAutoCreateOnJoin: Bool = false
         ) {
-            self.host = host
-            self.port = port
-            self.webSocketPath = webSocketPath
-            self.healthPath = healthPath
-            self.enableHealthRoute = enableHealthRoute
-            self.logStartupBanner = logStartupBanner
             self.logger = logger
             self.jwtConfig = jwtConfig
             self.jwtValidator = jwtValidator
             self.allowGuestMode = allowGuestMode
-            self.enableAdminRoutes = enableAdminRoutes
-            self.adminAuth = adminAuth
+            self.allowAutoCreateOnJoin = allowAutoCreateOnJoin
         }
+}
+
+/// Bundles runtime, transport, and Hummingbird hosting for any Land definition.
+///
+/// **Note**: This is the Hummingbird-specific implementation of `LandServerProtocol`.
+/// For framework-agnostic usage, use the `LandServerProtocol` protocol.
+public struct LandServer<State: StateNodeProtocol> {
+    public typealias Land = LandDefinition<State>
+    
+    /// Configuration type alias for backward compatibility.
+    /// Prefer using `LandServerConfiguration` directly to avoid specifying State type.
+    public typealias Configuration = LandServerConfiguration
+    
+    /// Default implementation for creating guest sessions.
+    ///
+    /// Creates a PlayerSession with:
+    /// - playerID: "guest-{randomID}" format (6-character random ID)
+    /// - deviceID: clientID.rawValue
+    /// - isGuest: true
+    ///
+    /// This is the recommended default for most use cases.
+    public static func defaultCreateGuestSession(_ sessionID: SessionID, clientID: ClientID) -> PlayerSession {
+        let randomID = String(UUID().uuidString.prefix(6))
+        return PlayerSession(
+            playerID: "guest-\(randomID)",
+            deviceID: clientID.rawValue,
+            isGuest: true
+        )
     }
     
     public struct LandServerForTest {
@@ -137,7 +126,6 @@ public struct LandServer<State: StateNodeProtocol> {
     public let transportAdapter: TransportAdapter<State>?
     public let hbAdapter: HummingbirdStateTreeAdapter?
     public let landRouter: LandRouter<State>?
-    public let router: Router<BasicWebSocketRequestContext>
     
     // Multi-room mode
     public let landManager: LandManager<State>?
@@ -152,7 +140,6 @@ public struct LandServer<State: StateNodeProtocol> {
         transport: WebSocketTransport,
         transportAdapter: TransportAdapter<State>,
         hbAdapter: HummingbirdStateTreeAdapter,
-        router: Router<BasicWebSocketRequestContext>,
         landManager: LandManager<State>?,
         adapterHolder: TransportAdapterHolder<State>
     ) {
@@ -163,7 +150,6 @@ public struct LandServer<State: StateNodeProtocol> {
         self.transportAdapter = transportAdapter
         self.hbAdapter = hbAdapter
         self.landRouter = nil
-        self.router = router
         self.landManager = landManager
         self.adapterHolder = adapterHolder
     }
@@ -171,7 +157,6 @@ public struct LandServer<State: StateNodeProtocol> {
     // Private initializer for multi-room mode
     private init(
         configuration: Configuration,
-        router: Router<BasicWebSocketRequestContext>,
         landManager: LandManager<State>,
         transport: WebSocketTransport? = nil,
         hbAdapter: HummingbirdStateTreeAdapter? = nil,
@@ -184,12 +169,14 @@ public struct LandServer<State: StateNodeProtocol> {
         self.transportAdapter = nil
         self.hbAdapter = hbAdapter
         self.landRouter = landRouter
-        self.router = router
         self.landManager = landManager
         self.adapterHolder = nil
     }
     
     /// Assemble a multi-room server with Hummingbird hosting.
+    ///
+    /// **Note**: This method no longer handles router registration. Route registration
+        /// should be handled by the hosting component (e.g., `LandHost`).
     ///
     /// - Parameters:
     ///   - configuration: Server configuration (host, port, paths, etc.)
@@ -197,21 +184,12 @@ public struct LandServer<State: StateNodeProtocol> {
     ///   - initialStateFactory: Factory function to create initial state for a given LandID.
     ///   - createGuestSession: Optional closure to create PlayerSession for guest users.
     ///   - lobbyIDs: Optional array of lobby landIDs to pre-create (e.g., ["lobby-asia", "lobby-europe"]).
-    ///   - allowAutoCreateOnJoin: Allow auto-creating land when join with instanceId but land doesn't exist (default: false).
-    ///                            **Security Note**: When `true`, clients can create rooms by specifying any instanceId.
-    ///                            This is useful for demo/testing but should be `false` in production.
-    ///   - router: Optional external router to use. If provided, routes will be registered on this router instead of creating a new one.
-    ///             This allows multiple land types to share the same Hummingbird Application.
-    ///   - configureRouter: Optional router configuration closure
     public static func makeMultiRoomServer(
-        configuration: Configuration = Configuration(),
+        configuration: Configuration,
         landFactory: @escaping @Sendable (LandID) -> LandDefinition<State>,
         initialStateFactory: @escaping @Sendable (LandID) -> State,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
-        lobbyIDs: [String] = [],
-        allowAutoCreateOnJoin: Bool = false,
-        router: Router<BasicWebSocketRequestContext>? = nil,
-        configureRouter: ((Router<BasicWebSocketRequestContext>) -> Void)? = nil
+        lobbyIDs: [String] = []
     ) async throws -> LandServer {
         let logger = configuration.logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.hummingbird",
@@ -260,7 +238,7 @@ public struct LandServer<State: StateNodeProtocol> {
             landTypeRegistry: landTypeRegistry,
             transport: transport,
             createGuestSession: createGuestSession ?? defaultCreateGuestSession,
-            allowAutoCreateOnJoin: allowAutoCreateOnJoin,
+            allowAutoCreateOnJoin: configuration.allowAutoCreateOnJoin,
             logger: logger
         )
         
@@ -275,38 +253,11 @@ public struct LandServer<State: StateNodeProtocol> {
             logger: logger
         )
 
-        // Use external router if provided, otherwise create a new one
-        let finalRouter = router ?? Router(context: BasicWebSocketRequestContext.self)
-        
-        // Generate schema from a sample land definition
-        // Use a dummy LandID to create a sample definition for schema extraction
-        let sampleLandID = LandID.generate(landType: "sample")
-        let sampleDefinition = landFactory(sampleLandID)
-        let schemaDataResult = generateSchema(from: sampleDefinition)
-        
-        // Register common routes (WebSocket, health, schema)
-        // When using external router (from LandHost), only register WebSocket route.
-        // LandHost manages health check and schema routes centrally.
-        let usingSharedRouter = router != nil
-        registerCommonRoutes(
-            router: finalRouter,
-            configuration: configuration,
-            hbAdapter: hbAdapter,
-            schemaDataResult: schemaDataResult,
-            logger: logger,
-            skipSchemaRoute: usingSharedRouter,
-            skipHealthRoute: usingSharedRouter
-        )
-        
-        // Note: Admin routes are now registered at LandRealm level when using LandRealm.
-        // If you need admin routes, use LandRealmHost.registerAdminRoutes() or create AdminRoutes directly.
-        // This keeps admin routes consistent across all land types.
-        
-        configureRouter?(finalRouter)
+        // Router registration is now handled by the hosting component (LandHost)
+        // LandServer only creates the hbAdapter for route registration
         
         return LandServer(
             configuration: configuration,
-            router: finalRouter,
             landManager: landManager,
             transport: transport,
             hbAdapter: hbAdapter,
@@ -316,6 +267,9 @@ public struct LandServer<State: StateNodeProtocol> {
     
     /// Assemble a runnable server with Hummingbird hosting.
     ///
+    /// **Note**: This method no longer handles router registration. Route registration
+        /// should be handled by the hosting component (e.g., `LandHost`).
+    ///
     /// - Parameters:
     ///   - configuration: Server configuration (host, port, paths, etc.)
     ///   - land: The Land definition
@@ -323,15 +277,11 @@ public struct LandServer<State: StateNodeProtocol> {
     ///   - createGuestSession: Optional closure to create PlayerSession for guest users (when JWT validation is enabled but no token is provided).
     ///                          Only used when `allowGuestMode` is true and JWT validation is enabled.
     ///                          If nil, uses `defaultCreateGuestSession` which creates "guest-{randomID}" format.
-    ///   - router: Optional external router to use (e.g., from `LandHost`). If provided, health and schema routes will be skipped.
-    ///   - configureRouter: Optional router configuration closure
     public static func makeServer(
-        configuration: Configuration = Configuration(),
+        configuration: Configuration,
         land definition: Land,
         initialState: State = State(),
-        createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
-        router: Router<BasicWebSocketRequestContext>? = nil,
-        configureRouter: ((Router<BasicWebSocketRequestContext>) -> Void)? = nil
+        createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil
     ) async throws -> LandServer {
         let logger = configuration.logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.hummingbird",
@@ -354,25 +304,8 @@ public struct LandServer<State: StateNodeProtocol> {
             logger: logger
         )
         
-        // Use external router if provided, otherwise create a new one
-        let finalRouter = router ?? Router(context: BasicWebSocketRequestContext.self)
-        let schemaDataResult = generateSchema(from: definition)
-        
-        // Register common routes (WebSocket, health, schema)
-        // When using external router (from LandHost), only register WebSocket route.
-        // LandHost manages health check and schema routes centrally.
-        let usingSharedRouter = router != nil
-        registerCommonRoutes(
-            router: finalRouter,
-            configuration: configuration,
-            hbAdapter: hbAdapter,
-            schemaDataResult: schemaDataResult,
-            logger: logger,
-            skipSchemaRoute: usingSharedRouter,
-            skipHealthRoute: usingSharedRouter
-        )
-        
-        configureRouter?(finalRouter)
+        // Router registration is now handled by the hosting component (LandHost)
+        // LandServer only creates the hbAdapter for route registration
         
         return LandServer(
             configuration: configuration,
@@ -381,7 +314,6 @@ public struct LandServer<State: StateNodeProtocol> {
             transport: core.transport,
             transportAdapter: core.transportAdapter,
             hbAdapter: hbAdapter,
-            router: finalRouter,
             landManager: nil,
             adapterHolder: core.adapterHolder
         )
@@ -456,72 +388,6 @@ public struct LandServer<State: StateNodeProtocol> {
         response.headers[.accessControlAllowOrigin] = "*"
         response.headers[.accessControlAllowMethods] = "GET, OPTIONS"
         response.headers[.accessControlAllowHeaders] = "Content-Type"
-    }
-    
-    /// Register common routes (WebSocket, health, schema) on the router.
-    ///
-    /// **Note**: When using a shared router (e.g., from `LandHost`), health check and schema
-    /// routes should be skipped as they are managed centrally by `LandHost`.
-    ///
-    /// - Parameters:
-    ///   - router: The router to register routes on
-    ///   - configuration: Server configuration
-    ///   - hbAdapter: Hummingbird adapter for WebSocket handling
-    ///   - schemaDataResult: Schema generation result
-    ///   - logger: Logger instance
-    ///   - skipSchemaRoute: If true, skip schema route registration (when using shared router from LandHost)
-    ///   - skipHealthRoute: If true, skip health route registration (when using shared router from LandHost)
-    private static func registerCommonRoutes(
-        router: Router<BasicWebSocketRequestContext>,
-        configuration: Configuration,
-        hbAdapter: HummingbirdStateTreeAdapter,
-        schemaDataResult: Result<Data, Error>,
-        logger: Logger,
-        skipSchemaRoute: Bool = false,
-        skipHealthRoute: Bool = false
-    ) {
-        // WebSocket route (always registered)
-        router.ws(RouterPath(configuration.webSocketPath)) { inbound, outbound, context in
-            await hbAdapter.handle(inbound: inbound, outbound: outbound, context: context)
-        }
-        
-        // Health route (only when not using shared router - LandHost manages it centrally)
-        if configuration.enableHealthRoute && !skipHealthRoute {
-            router.get(RouterPath(configuration.healthPath)) { _, _ in
-                "OK"
-            }
-        }
-        
-        // Schema endpoint with CORS support (only when not using shared router)
-        if !skipSchemaRoute {
-            router.on(RouterPath("/schema"), method: .options) { _, _ in
-                var response = Response(status: .noContent)
-                addCORSHeaders(&response)
-                return response
-            }
-            
-            router.get(RouterPath("/schema")) { _, _ in
-                switch schemaDataResult {
-                case let .success(schemaData):
-                    var buffer = ByteBufferAllocator().buffer(capacity: schemaData.count)
-                    buffer.writeBytes(schemaData)
-                    var response = Response(status: .ok, body: .init(byteBuffer: buffer))
-                    response.headers[.contentType] = "application/json"
-                    response.headers[.cacheControl] = "public, max-age=3600"
-                    addCORSHeaders(&response)
-                    return response
-                case let .failure(error):
-                    logger.error("Failed to generate schema at startup: \(error)")
-                    let errorMsg = "Failed to generate schema: \(error)"
-                    var buffer = ByteBufferAllocator().buffer(capacity: errorMsg.utf8.count)
-                    buffer.writeString(errorMsg)
-                    var response = Response(status: .internalServerError, body: .init(byteBuffer: buffer))
-                    response.headers[.contentType] = "text/plain"
-                    addCORSHeaders(&response)
-                    return response
-                }
-            }
-        }
     }
     
     private static func buildCoreComponents(

@@ -6,19 +6,18 @@ import SwiftStateTreeTransport
 import Logging
 import NIOCore
 
-/// Unified HTTP Server Host for managing multiple LandServer instances.
+// MARK: - LandHost
+
+/// Unified host that combines LandRealm and HTTP server management.
 ///
-/// `LandHost` provides a single HTTP server (Application) that can host multiple
-/// `LandServer` instances with different State types, all sharing the same Router
-/// and Application. This solves the port conflict issue when running multiple
-/// `LandServer` instances.
+/// `LandHost` provides a complete hosting solution for Hummingbird applications,
+/// integrating game logic management (LandRealm) with HTTP server management in a single API.
 ///
 /// **Key Features**:
-/// - Manages a single `Router` and `Application` instance
-/// - Allows multiple `LandServer` instances with different State types to register
-/// - Each `LandServer` can have its own WebSocket path (e.g., `/game/cookie`, `/game/counter`)
-/// - Supports optional health check route
-/// - Provides unified startup logging
+/// - Combines LandRealm (game logic management) and HTTP server management
+/// - Single unified API for registering land types and running the server
+/// - Automatically manages shared Router and Application
+/// - Supports multiple land types with different State types
 ///
 /// **Usage Example**:
 /// ```swift
@@ -28,33 +27,26 @@ import NIOCore
 ///     logger: logger
 /// ))
 ///
-/// // Register Cookie Game Server
-/// let cookieServer = try await LandServer<CookieGameState>.makeMultiRoomServer(
-///     configuration: ...,
-///     router: host.router  // Use host's router
-/// )
-/// try await host.register(
+/// // Register land types - router is automatically used
+/// try await host.registerWithLandServer(
 ///     landType: "cookie",
-///     server: cookieServer,
+///     landFactory: { _ in CookieGame.makeLand() },
+///     initialStateFactory: { _ in CookieGameState() },
 ///     webSocketPath: "/game/cookie"
 /// )
 ///
-/// // Register Counter Demo Server
-/// let counterServer = try await LandServer<CounterState>.makeMultiRoomServer(
-///     configuration: ...,
-///     router: host.router  // Use same router
-/// )
-/// try await host.register(
+/// try await host.registerWithLandServer(
 ///     landType: "counter",
-///     server: counterServer,
+///     landFactory: { _ in CounterDemo.makeLand() },
+///     initialStateFactory: { _ in CounterState() },
 ///     webSocketPath: "/game/counter"
 /// )
 ///
 /// // Run unified server
 /// try await host.run()
 /// ```
-public struct LandHost {
-    /// Configuration for the LandHost.
+public actor LandHost {
+    /// HTTP server configuration for Hummingbird hosting.
     public struct HostConfiguration: Sendable {
         /// Server host address (default: "localhost")
         public var host: String
@@ -86,87 +78,171 @@ public struct LandHost {
         }
     }
     
+    /// The underlying LandRealm for game logic management.
+    public let realm: LandRealm
+    
     /// The shared Router for all registered LandServer instances.
     ///
-    /// LandServer instances should use this router when registering their routes.
-    /// Marked as nonisolated to allow safe access from actor contexts.
-    nonisolated(unsafe) public let router: Router<BasicWebSocketRequestContext>
+    /// Route registration is handled by LandHost methods (registerWithLandServer, registerWithServer, registerAdminRoutes).
+    let router: Router<BasicWebSocketRequestContext>
     
     /// Host configuration.
     public let configuration: HostConfiguration
     
-    /// Registered servers (landType -> server info)
-    private var registeredServers: [String: RegisteredServerInfo] = [:]
-    
-    /// Internal storage for registered server information.
-    private struct RegisteredServerInfo {
-        let landType: String
-        let webSocketPath: String
-        let stateTypeName: String
-    }
+    /// Registered server paths for startup logging.
+    private var registeredServerPaths: [String: String] = [:]
     
     /// Initialize a new LandHost.
     ///
     /// - Parameter configuration: Host configuration (host, port, logger, etc.)
     public init(configuration: HostConfiguration = HostConfiguration()) {
         self.configuration = configuration
-        self.router = Router(context: BasicWebSocketRequestContext.self)
+        self.realm = LandRealm(logger: configuration.logger)
+        // Create router - all access is serialized through the actor's methods
+        let createdRouter = Router(context: BasicWebSocketRequestContext.self)
+        self.router = createdRouter
         
         // Register health check route if enabled
         if configuration.enableHealthRoute {
-            router.get(RouterPath(configuration.healthPath)) { _, _ in
+            createdRouter.get(RouterPath(configuration.healthPath)) { _, _ in
                 "OK"
             }
         }
     }
     
-    /// Register a LandServer to this host.
+    /// Register a land type with LandServer (multi-room mode).
     ///
-    /// The server's routes will be registered on the shared router. The server
-    /// should be created with `router: host.router` to use the shared router.
-    ///
-    /// **Note**: When using `LandHost`, the server should skip registering
-    /// health check and schema routes, as `LandHost` manages these centrally.
+    /// This method creates a LandServer and registers it with the underlying LandRealm,
+    /// automatically registering WebSocket routes on the shared router.
     ///
     /// - Parameters:
     ///   - landType: The land type identifier (e.g., "cookie", "counter")
-    ///   - server: The LandServer instance to register
-    ///   - webSocketPath: The WebSocket path for this land type (e.g., "/game/cookie")
-    /// - Throws: `LandHostError.duplicateLandType` if the land type is already registered
-    /// - Throws: `LandHostError.invalidLandType` if the land type is invalid (e.g., empty)
-    public mutating func register<Server: LandServerProtocol>(
+    ///   - landFactory: Factory function to create LandDefinition for a given LandID
+    ///   - initialStateFactory: Factory function to create initial state for a given LandID
+    ///   - webSocketPath: Optional custom WebSocket path (defaults to "/{landType}")
+    ///   - configuration: Optional LandServer configuration (uses defaults if not provided)
+    /// - Throws: `LandRealmError.duplicateLandType` if the land type is already registered
+    /// - Throws: `LandRealmError.invalidLandType` if the land type is invalid (e.g., empty)
+    public func registerWithLandServer<State: StateNodeProtocol>(
         landType: String,
-        server: Server,
-        webSocketPath: String
-    ) throws {
+        landFactory: @escaping @Sendable (LandID) -> LandDefinition<State>,
+        initialStateFactory: @escaping @Sendable (LandID) -> State,
+        webSocketPath: String? = nil,
+        configuration: LandServerConfiguration? = nil
+    ) async throws {
         // Validate landType
         guard !landType.isEmpty else {
-            throw LandHostError.invalidLandType(landType)
+            throw LandRealmError.invalidLandType(landType)
         }
         
         // Check for duplicate
-        guard registeredServers[landType] == nil else {
-            throw LandHostError.duplicateLandType(landType)
+        if await realm.isRegistered(landType: landType) {
+            throw LandRealmError.duplicateLandType(landType)
         }
         
-        // Store server info
-        let serverInfo = RegisteredServerInfo(
-            landType: landType,
-            webSocketPath: webSocketPath,
-            stateTypeName: String(describing: Server.State.self)
+        let path = webSocketPath ?? "/\(landType)"
+        
+        // Create server configuration
+        var finalConfig: LandServerConfiguration
+        if let providedConfig = configuration {
+            finalConfig = providedConfig
+        } else {
+            finalConfig = LandServerConfiguration()
+        }
+        
+        // Create server (no router - LandHost handles route registration)
+        // LandServer<State>.Configuration is a typealias of LandServerConfiguration, so we can use it directly
+        let serverConfig: LandServer<State>.Configuration = finalConfig
+        let server = try await LandServer<State>.makeMultiRoomServer(
+            configuration: serverConfig,
+            landFactory: landFactory,
+            initialStateFactory: initialStateFactory,
+            createGuestSession: LandServer<State>.defaultCreateGuestSession
         )
         
-        registeredServers[landType] = serverInfo
+        // Register WebSocket route on shared router
+        guard let hbAdapter = server.hbAdapter else {
+            throw LandHostError.invalidServer("Server does not have hbAdapter")
+        }
         
-        let logger = configuration.logger ?? createColoredLogger(
-            loggerIdentifier: "com.swiftstatetree.hummingbird",
-            scope: "LandHost"
+        // Register WebSocket route
+        registerWebSocketRoute(
+            path: path,
+            hbAdapter: hbAdapter
         )
         
-        logger.info("Registered land type '\(landType)' (State: \(serverInfo.stateTypeName)) at path '\(webSocketPath)'")
+        // Register server with realm (we're in actor context, so this is safe)
+        try await realm.register(landType: landType, server: server)
+        
+        // Store path for startup logging
+        registeredServerPaths[landType] = path
     }
     
-    /// Run the unified Application.
+    /// Register a single-room server with LandHost.
+    ///
+    /// This method creates a LandServer using `makeServer` (single-room mode) and
+    /// registers it with the underlying LandRealm, automatically registering WebSocket
+    /// routes on the shared router.
+    ///
+    /// - Parameters:
+    ///   - landType: The land type identifier (e.g., "counter", "cookie")
+    ///   - land: The Land definition
+    ///   - initialState: Initial state for the Land (defaults to `State()`)
+    ///   - webSocketPath: The WebSocket path for this land type (e.g., "/game/counter")
+    ///   - configuration: Optional LandServer configuration (uses defaults if not provided)
+    ///   - createGuestSession: Optional closure to create PlayerSession for guest users
+    /// - Throws: `LandRealmError.duplicateLandType` if the land type is already registered
+    /// - Throws: `LandRealmError.invalidLandType` if the land type is invalid (e.g., empty)
+    public func registerWithServer<State: StateNodeProtocol>(
+        landType: String,
+        land: LandDefinition<State>,
+        initialState: State = State(),
+        webSocketPath: String,
+        configuration: LandServerConfiguration? = nil,
+        createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil
+    ) async throws {
+        // Validate landType
+        guard !landType.isEmpty else {
+            throw LandRealmError.invalidLandType(landType)
+        }
+        
+        // Check for duplicate
+        if await realm.isRegistered(landType: landType) {
+            throw LandRealmError.duplicateLandType(landType)
+        }
+        
+        // Create server configuration
+        let finalConfig: LandServerConfiguration = configuration ?? LandServerConfiguration()
+        
+        // Create server (no router - LandHost handles route registration)
+        // LandServer<State>.Configuration is a typealias of LandServerConfiguration, so we can use it directly
+        let serverConfig: LandServer<State>.Configuration = finalConfig
+        let server = try await LandServer<State>.makeServer(
+            configuration: serverConfig,
+            land: land,
+            initialState: initialState,
+            createGuestSession: createGuestSession
+        )
+        
+        // Register WebSocket route on shared router
+        guard let hbAdapter = server.hbAdapter else {
+            throw LandHostError.invalidServer("Server does not have hbAdapter")
+        }
+        
+        // Register WebSocket route
+        registerWebSocketRoute(
+            path: webSocketPath,
+            hbAdapter: hbAdapter
+        )
+        
+        // Register server with realm (we're in actor context, so this is safe)
+        try await realm.register(landType: landType, server: server)
+        
+        // Store path for startup logging
+        registeredServerPaths[landType] = webSocketPath
+    }
+    
+    /// Run the unified Hummingbird HTTP server.
     ///
     /// This method creates and runs a single Hummingbird Application with the
     /// shared router that contains all registered LandServer routes.
@@ -200,18 +276,62 @@ public struct LandHost {
             }
             
             logger.info("📡 Registered WebSocket endpoints:")
-            for (landType, serverInfo) in registeredServers.sorted(by: { $0.key < $1.key }) {
-                let wsURL = "ws://\(configuration.host):\(configuration.port)\(serverInfo.webSocketPath)"
-                logger.info("   - \(landType): \(wsURL) (State: \(serverInfo.stateTypeName))")
+            for (landType, path) in registeredServerPaths.sorted(by: { $0.key < $1.key }) {
+                let wsURL = "ws://\(configuration.host):\(configuration.port)\(path)"
+                // Get state type name from realm
+                let stateTypeName = await getStateTypeName(for: landType)
+                logger.info("   - \(landType): \(wsURL) (State: \(stateTypeName))")
             }
         }
         
         try await app.runService()
     }
+    
+    /// Get the state type name for a registered land type (for logging).
+    private func getStateTypeName(for landType: String) async -> String {
+        return await realm.getStateTypeName(for: landType) ?? "Unknown"
+    }
+    
+    /// Register WebSocket route on the router.
+    private func registerWebSocketRoute(
+        path: String,
+        hbAdapter: HummingbirdStateTreeAdapter
+    ) {
+        router.ws(RouterPath(path)) { inbound, outbound, context in
+            await hbAdapter.handle(inbound: inbound, outbound: outbound, context: context)
+        }
+    }
+    
+    /// Register admin routes for this LandHost.
+    ///
+    /// This method creates and registers admin HTTP routes that can manage lands
+    /// across all registered land types in this LandHost.
+    /// The routes are automatically registered on the shared router.
+    ///
+    /// **Key Feature**: Unlike the old `AdminRoutes<State>`, this version can manage
+    /// lands across different `State` types by aggregating data from all registered servers.
+    ///
+    /// - Parameters:
+    ///   - adminAuth: Admin authentication middleware
+    ///   - logger: Optional logger instance
+    public func registerAdminRoutes(
+        adminAuth: AdminAuthMiddleware,
+        logger: Logger? = nil
+    ) {
+        // Create AdminRoutes and register on the shared router
+        let adminRoutes = AdminRoutes(
+            landRealm: realm,
+            adminAuth: adminAuth,
+            logger: logger
+        )
+        adminRoutes.registerRoutes(on: router)
+    }
 }
 
 /// Errors that can be thrown by LandHost.
 public enum LandHostError: Error, Sendable {
+    /// The server does not have a valid hbAdapter.
+    case invalidServer(String)
     /// The land type is already registered.
     case duplicateLandType(String)
     /// The land type is invalid (e.g., empty).
