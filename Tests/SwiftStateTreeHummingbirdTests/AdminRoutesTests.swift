@@ -43,13 +43,13 @@ func testAdminRoutesListAllLands() async throws {
         logStartupBanner: false
     ))
     
-    try await host.registerWithLandServer(
+    try await host.register(
         landType: "game1",
         landFactory: { _ in TestGame.makeLand() },
         initialStateFactory: { _ in TestGameState() }
     )
     
-    try await host.registerWithLandServer(
+    try await host.register(
         landType: "game2",
         landFactory: { _ in TestGame.makeLand() },
         initialStateFactory: { _ in TestGameState() }

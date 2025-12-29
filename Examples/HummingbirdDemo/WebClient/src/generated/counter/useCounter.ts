@@ -5,6 +5,7 @@ import { ref, reactive, computed } from 'vue'
 import type { Ref, ComputedRef } from 'vue'
 import { StateTreeRuntime } from '@swiftstatetree/sdk/core'
 import { CounterStateTree } from './index.js'
+import { LAND_TYPE } from './bindings.js'
 import type { CounterState } from '../defs.js'
 import type { IncrementAction, IncrementResponse } from '../defs.js'
 
@@ -13,6 +14,7 @@ interface ConnectOptions {
   playerName?: string
   playerID?: string
   deviceID?: string
+  landID?: string  // Optional: specify room ID (format: "landType:instanceId" or just "instanceId")
   metadata?: Record<string, any>
 }
 
@@ -59,7 +61,15 @@ export function useCounter(): CounterComposableReturn {
         metadata.username = opts.playerName.trim()
       }
 
+      // Build landID: if provided, use as-is; if it's just instanceId (no colon), prepend landType
+      let landID: string | undefined = opts.landID
+      if (landID && !landID.includes(':')) {
+        // If only instanceId provided (e.g., "room-123"), prepend landType
+        landID = `${LAND_TYPE}:${landID}`
+      }
+
       const t = new CounterStateTree(r, {
+        landID: landID,
         playerID: opts.playerID,
         deviceID: opts.deviceID,
         metadata,

@@ -11,14 +11,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from '../../views/HomeView.vue'
-import { createMockDemoGame } from '../../generated/demo-game/testHelpers'
+import { createMockCookie } from '../../generated/cookie/testHelpers'
 
-// Mock useDemoGame - demonstrates easy mocking
-vi.mock('../../generated/demo-game/useDemoGame', async () => {
-  const actual = await vi.importActual('../../generated/demo-game/useDemoGame')
+// Mock useCookie - demonstrates easy mocking
+vi.mock('../../generated/cookie/useCookie', async () => {
+  const actual = await vi.importActual('../../generated/cookie/useCookie')
   return {
     ...actual,
-    useDemoGame: vi.fn()
+    useCookie: vi.fn()
   }
 })
 
@@ -34,19 +34,19 @@ describe('HomeView', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     // Reset the mock implementation before each test
-    const { useDemoGame } = await import('../../generated/demo-game/useDemoGame')
-    vi.mocked(useDemoGame).mockReset()
+    const { useCookie } = await import('../../generated/cookie/useCookie')
+    vi.mocked(useCookie).mockReset()
   })
 
   it('displays connection form when not connected', async () => {
     // Arrange: Use codegen-generated helper to create proper Vue refs
-    const mockComposable = createMockDemoGame()
+    const mockComposable = createMockCookie()
     mockComposable.isConnected.value = false
     mockComposable.isJoined.value = false
     mockComposable.state.value = null
     
     const { useDemoGame } = await import('../../generated/demo-game/useDemoGame')
-    vi.mocked(useDemoGame).mockReturnValue(mockComposable)
+    vi.mocked(useCookie).mockReturnValue(mockComposable)
 
     // Act
     const wrapper = mount(HomeView, {
@@ -62,7 +62,7 @@ describe('HomeView', () => {
 
   it('has connect button that can be clicked', async () => {
     // Arrange: Use codegen-generated helper
-    const mockComposable = createMockDemoGame()
+    const mockComposable = createMockCookie()
     mockComposable.isConnected.value = false
     mockComposable.isJoined.value = false
     mockComposable.state.value = null
@@ -70,7 +70,7 @@ describe('HomeView', () => {
     mockComposable.connect = mockConnect
     
     const { useDemoGame } = await import('../../generated/demo-game/useDemoGame')
-    vi.mocked(useDemoGame).mockReturnValue(mockComposable)
+    vi.mocked(useCookie).mockReturnValue(mockComposable)
 
     const wrapper = mount(HomeView, {
       global: {
@@ -102,7 +102,7 @@ describe('HomeView', () => {
 
   it('automatically redirects to game page when joined', async () => {
     // Arrange: Use codegen-generated helper
-    const mockComposable = createMockDemoGame()
+    const mockComposable = createMockCookie()
     mockComposable.isConnected.value = true
     mockComposable.isJoined.value = false // Start as not joined
     mockComposable.state.value = null
@@ -111,7 +111,7 @@ describe('HomeView', () => {
     router.push = mockPush
     
     const { useDemoGame } = await import('../../generated/demo-game/useDemoGame')
-    vi.mocked(useDemoGame).mockReturnValue(mockComposable)
+    vi.mocked(useCookie).mockReturnValue(mockComposable)
 
     const wrapper = mount(HomeView, {
       global: {
@@ -138,14 +138,14 @@ describe('HomeView', () => {
 
   it('displays error message when connection fails', async () => {
     // Arrange: Use codegen-generated helper
-    const mockComposable = createMockDemoGame()
+    const mockComposable = createMockCookie()
     mockComposable.isConnected.value = false
     mockComposable.isJoined.value = false
     mockComposable.lastError.value = 'Connection failed'
     mockComposable.state.value = null
     
     const { useDemoGame } = await import('../../generated/demo-game/useDemoGame')
-    vi.mocked(useDemoGame).mockReturnValue(mockComposable)
+    vi.mocked(useCookie).mockReturnValue(mockComposable)
 
     // Act
     const wrapper = mount(HomeView, {

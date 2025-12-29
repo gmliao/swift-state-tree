@@ -237,29 +237,7 @@
     }
   },
   "lands" : {
-    "counter" : {
-      "actions" : {
-        "Increment" : {
-          "$ref" : "#\/defs\/IncrementAction"
-        }
-      },
-      "clientEvents" : {
-
-      },
-      "events" : {
-
-      },
-      "stateType" : "CounterState",
-      "sync" : {
-        "diff" : {
-          "$ref" : "#\/defs\/StateDiff"
-        },
-        "snapshot" : {
-          "$ref" : "#\/defs\/CounterState"
-        }
-      }
-    },
-    "demo-game" : {
+    "cookie" : {
       "actions" : {
         "BuyUpgrade" : {
           "$ref" : "#\/defs\/BuyUpgradeAction"
@@ -280,6 +258,28 @@
         },
         "snapshot" : {
           "$ref" : "#\/defs\/CookieGameState"
+        }
+      }
+    },
+    "counter" : {
+      "actions" : {
+        "Increment" : {
+          "$ref" : "#\/defs\/IncrementAction"
+        }
+      },
+      "clientEvents" : {
+
+      },
+      "events" : {
+
+      },
+      "stateType" : "CounterState",
+      "sync" : {
+        "diff" : {
+          "$ref" : "#\/defs\/StateDiff"
+        },
+        "snapshot" : {
+          "$ref" : "#\/defs\/CounterState"
         }
       }
     }

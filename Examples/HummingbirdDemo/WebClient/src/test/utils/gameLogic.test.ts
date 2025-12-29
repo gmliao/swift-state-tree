@@ -16,7 +16,7 @@ import {
   getCurrentPlayer,
   getCurrentPlayerPrivateState
 } from '../../utils/gameLogic'
-import { createMockState } from '../../generated/demo-game/testHelpers'
+import { createMockState } from '../../generated/cookie/testHelpers'
 import type { CookieGameState } from '../../generated/defs'
 
 describe('gameLogic', () => {

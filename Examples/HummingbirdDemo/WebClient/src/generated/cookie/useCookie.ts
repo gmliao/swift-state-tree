@@ -4,7 +4,8 @@
 import { ref, reactive, computed } from 'vue'
 import type { Ref, ComputedRef } from 'vue'
 import { StateTreeRuntime } from '@swiftstatetree/sdk/core'
-import { DemoGameStateTree } from './index.js'
+import { CookieStateTree } from './index.js'
+import { LAND_TYPE } from './bindings.js'
 import type { CookieGameState } from '../defs.js'
 import type { BuyUpgradeAction, BuyUpgradeResponse, ClickCookieEvent } from '../defs.js'
 
@@ -13,11 +14,12 @@ interface ConnectOptions {
   playerName?: string
   playerID?: string
   deviceID?: string
+  landID?: string  // Optional: specify room ID (format: "landType:instanceId" or just "instanceId")
   metadata?: Record<string, any>
 }
 
 const runtime = ref<StateTreeRuntime | null>(null)
-const tree = ref<DemoGameStateTree | null>(null)
+const tree = ref<CookieStateTree | null>(null)
 
 const state: Ref<CookieGameState | null> = ref<CookieGameState | null>(null)
 const currentPlayerID = ref<string | null>(null)
@@ -27,7 +29,7 @@ const isConnected = ref(false)
 const isJoined = ref(false)
 const lastError = ref<string | null>(null)
 
-export interface DemoGameComposableReturn {
+export interface CookieComposableReturn {
   state: Ref<CookieGameState | null>
   currentPlayerID: Ref<string | null>
   isConnecting: Ref<boolean>
@@ -38,10 +40,10 @@ export interface DemoGameComposableReturn {
   disconnect: () => Promise<void>
   buyUpgrade: (payload: BuyUpgradeAction) => Promise<BuyUpgradeResponse>
   clickCookie: (payload: ClickCookieEvent) => Promise<void>
-  tree: ComputedRef<DemoGameStateTree | null>
+  tree: ComputedRef<CookieStateTree | null>
 }
 
-export function useDemoGame(): DemoGameComposableReturn {
+export function useCookie(): CookieComposableReturn {
 
   async function connect(opts: ConnectOptions): Promise<void> {
     if (isConnecting.value || isConnected.value) return
@@ -60,7 +62,15 @@ export function useDemoGame(): DemoGameComposableReturn {
         metadata.username = opts.playerName.trim()
       }
 
-      const t = new DemoGameStateTree(r, {
+      // Build landID: if provided, use as-is; if it's just instanceId (no colon), prepend landType
+      let landID: string | undefined = opts.landID
+      if (landID && !landID.includes(':')) {
+        // If only instanceId provided (e.g., "room-123"), prepend landType
+        landID = `${LAND_TYPE}:${landID}`
+      }
+
+      const t = new CookieStateTree(r, {
+        landID: landID,
         playerID: opts.playerID,
         deviceID: opts.deviceID,
         metadata,
@@ -157,6 +167,6 @@ export function useDemoGame(): DemoGameComposableReturn {
     buyUpgrade,
     clickCookie,
     // Advanced: access to underlying tree instance
-    tree: computed(() => tree.value) as ComputedRef<DemoGameStateTree | null>
+    tree: computed(() => tree.value) as ComputedRef<CookieStateTree | null>
   }
 }

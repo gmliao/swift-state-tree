@@ -24,7 +24,7 @@ export function createMockState(overrides?: Partial<CookieGameState>): CookieGam
  * Creates a mock composable for testing.
  * This provides a fully functional mock of the composable with reactive state.
  */
-export function createMockDemoGame(initialState?: CookieGameState) {
+export function createMockCookie(initialState?: CookieGameState) {
   const state = ref<CookieGameState | null>(initialState || createMockState())
   const currentPlayerID = ref<string | null>('test-player-1')
   const isConnecting = ref(false)
@@ -66,7 +66,7 @@ export function createMockDemoGame(initialState?: CookieGameState) {
  * High-level test helper for players.
  * Provides a simple API for setting up component tests.
  */
-export function testWithDemoGamePlayer(
+export function testWithCookiePlayer(
   playerID: string,
   playerData?: Partial<CookieGameState['players'][string]>
 ) {
@@ -79,7 +79,7 @@ export function testWithDemoGamePlayer(
       } as CookieGameState['players'][string]
     }
   })
-  const mockComposable = createMockDemoGame(mockState)
+  const mockComposable = createMockCookie(mockState)
   mockComposable.currentPlayerID.value = playerID
   return mockComposable
 }
@@ -88,7 +88,7 @@ export function testWithDemoGamePlayer(
  * High-level test helper for privateStates.
  * Provides a simple API for setting up component tests.
  */
-export function testWithDemoGamePrivateState(
+export function testWithCookiePrivateState(
   privateStateID: string,
   privateStateData?: Partial<CookieGameState['privateStates'][string]>
 ) {
@@ -100,6 +100,6 @@ export function testWithDemoGamePrivateState(
       } as CookieGameState['privateStates'][string]
     }
   })
-  const mockComposable = createMockDemoGame(mockState)
+  const mockComposable = createMockCookie(mockState)
   return mockComposable
 }

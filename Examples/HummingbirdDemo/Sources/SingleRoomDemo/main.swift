@@ -40,7 +40,7 @@ struct SingleRoomDemo {
         ))
         
         // Register server - LandHost handles route registration automatically
-        try await host.registerWithServer(
+        try await host.register(
             landType: "cookie",
             land: HummingbirdDemoContent.CookieGame.makeLand(),
             initialState: CookieGameState(),
@@ -48,7 +48,8 @@ struct SingleRoomDemo {
             configuration: LandServerConfiguration(
                 logger: logger, // Pass custom logger with desired log level
                 jwtConfig: jwtConfig,
-                allowGuestMode: true // Enable guest mode: allow connections without JWT token
+                allowGuestMode: true, // Enable guest mode: allow connections without JWT token
+                allowAutoCreateOnJoin: true // Enable auto-create: clients can create rooms dynamically
             )
         )
         
