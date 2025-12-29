@@ -54,10 +54,10 @@ swift build
 
 ### 2. 運行範例
 
-啟動 CounterDemo 伺服器（最簡單的範例）：
+啟動 DemoServer（包含 Cookie 遊戲和 Counter 範例）：
 ```bash
 cd Examples/HummingbirdDemo
-swift run CounterDemo
+swift run DemoServer
 ```
 
 伺服器預設運行在 `http://localhost:8080`。
@@ -85,7 +85,7 @@ WebClient 會運行在另一個端口（通常是 `http://localhost:5173`），�
 
 以下是一個簡化的計數器範例，展示核心概念。完整可運行的原始碼請參考：
 - **伺服器端定義**：[`Examples/HummingbirdDemo/Sources/DemoContent/CounterDemoDefinitions.swift`](Examples/HummingbirdDemo/Sources/DemoContent/CounterDemoDefinitions.swift)
-- **伺服器主程式**：[`Examples/HummingbirdDemo/Sources/CounterDemo/main.swift`](Examples/HummingbirdDemo/Sources/CounterDemo/main.swift)
+- **伺服器主程式**：[`Examples/HummingbirdDemo/Sources/DemoServer/main.swift`](Examples/HummingbirdDemo/Sources/DemoServer/main.swift)
 - **客戶端 Vue 組件**：[`Examples/HummingbirdDemo/WebClient/src/views/CounterPage.vue`](Examples/HummingbirdDemo/WebClient/src/views/CounterPage.vue)
 
 #### 伺服器端（Swift）
@@ -135,14 +135,28 @@ let counterLand = Land("counter", using: CounterState.self) {
 
 // 4. 啟動伺服器（簡化版，完整版請參考原始碼）
 @main
-struct CounterDemo {
+struct DemoServer {
     static func main() async throws {
-        let container = try await AppContainer<CounterState>.makeServer(
-            configuration: .init(allowGuestMode: true),
+        // Create LandHost to manage HTTP server and game logic
+        let host = LandHost(configuration: LandHost.HostConfiguration(
+            host: "localhost",
+            port: 8080
+        ))
+
+        // Register land type
+        try await host.register(
+            landType: "counter",
             land: counterLand,
-            initialState: CounterState()
+            initialState: CounterState(),
+            webSocketPath: "/game/counter",
+            configuration: LandServerConfiguration(
+                allowGuestMode: true,
+                allowAutoCreateOnJoin: true
+            )
         )
-        try await container.run()
+
+        // Run unified server
+        try await host.run()
     }
 }
 ```
@@ -238,9 +252,11 @@ onUnmounted(async () => {
 **1. 啟動伺服器：**
 ```bash
 cd Examples/HummingbirdDemo
-swift run CounterDemo
+swift run DemoServer
 ```
-伺服器會在 `http://localhost:8080` 啟動。
+伺服器會在 `http://localhost:8080` 啟動，提供兩個遊戲端點：
+- Cookie 遊戲：`ws://localhost:8080/game/cookie`
+- Counter 範例：`ws://localhost:8080/game/counter`
 
 **2. 生成客戶端代碼：**
 ```bash

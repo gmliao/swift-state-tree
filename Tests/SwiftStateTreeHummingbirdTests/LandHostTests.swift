@@ -49,20 +49,21 @@ private enum TestGame2 {
 // MARK: - Tests
 
 @Test("LandHost can be initialized with default configuration")
-func testLandHostInitialization() {
+func testLandHostInitialization() async {
     // Arrange & Act
     let host = LandHost()
     
     // Assert
-    #expect(host.configuration.host == "localhost")
-    #expect(host.configuration.port == 8080)
-    #expect(host.configuration.healthPath == "/health")
-    #expect(host.configuration.enableHealthRoute == true)
-    #expect(host.configuration.logStartupBanner == true)
+    let config = await host.configuration
+    #expect(config.host == "localhost")
+    #expect(config.port == 8080)
+    #expect(config.healthPath == "/health")
+    #expect(config.enableHealthRoute == true)
+    #expect(config.logStartupBanner == true)
 }
 
 @Test("LandHost can be initialized with custom configuration")
-func testLandHostConfiguration() {
+func testLandHostConfiguration() async {
     // Arrange
     let logger = createColoredLogger(
         loggerIdentifier: "test",
@@ -80,24 +81,25 @@ func testLandHostConfiguration() {
     ))
     
     // Assert
-    #expect(host.configuration.host == "0.0.0.0")
-    #expect(host.configuration.port == 9000)
-    #expect(host.configuration.healthPath == "/ping")
-    #expect(host.configuration.enableHealthRoute == false)
-    #expect(host.configuration.logStartupBanner == false)
-    #expect(host.configuration.logger != nil)
+    let config = await host.configuration
+    #expect(config.host == "0.0.0.0")
+    #expect(config.port == 9000)
+    #expect(config.healthPath == "/ping")
+    #expect(config.enableHealthRoute == false)
+    #expect(config.logStartupBanner == false)
+    #expect(config.logger != nil)
 }
 
 @Test("LandHost provides accessible router")
-func testLandHostRouterAccess() {
+func testLandHostRouterAccess() async {
     // Arrange
     let host = LandHost()
     
     // Act & Assert
     // Router should be accessible (router is not optional, so we just verify it exists)
-    let router = host.router
-    // Router is a non-optional property, so it always exists
-    _ = router  // Just verify we can access it
+    // Note: Router is not Sendable, so we can't extract it from actor context
+    // We just verify the host can be created (which requires router initialization)
+    _ = host  // Just verify we can create the host
 }
 
 @Test("LandHost can register a single LandServer")
@@ -112,10 +114,7 @@ func testLandHostRegisterSingleServer() async throws {
         land: TestGame1.makeLand(),
         initialState: TestState1(),
         webSocketPath: "/game/test1",
-        configuration: LandServerConfiguration(
-            enableHealthRoute: false,  // Disable to avoid route conflicts
-            logStartupBanner: false
-        )
+        configuration: LandServerConfiguration()
     )
     
     // Assert: Registration should succeed without error
@@ -135,10 +134,7 @@ func testLandHostRegisterMultipleServers() async throws {
         land: TestGame1.makeLand(),
         initialState: TestState1(),
         webSocketPath: "/game/test1",
-        configuration: LandServerConfiguration(
-            enableHealthRoute: false,  // Disable to avoid route conflicts
-            logStartupBanner: false
-        )
+        configuration: LandServerConfiguration()
     )
     
     // Act: Register second server with different State type
@@ -147,10 +143,7 @@ func testLandHostRegisterMultipleServers() async throws {
         land: TestGame2.makeLand(),
         initialState: TestState2(),
         webSocketPath: "/game/test2",
-        configuration: LandServerConfiguration(
-            enableHealthRoute: false,  // Disable to avoid route conflicts
-            logStartupBanner: false
-        )
+        configuration: LandServerConfiguration()
     )
     
     // Assert: Both registrations should succeed
@@ -169,10 +162,7 @@ func testLandHostRegisterWithCustomPaths() async throws {
         land: TestGame1.makeLand(),
         initialState: TestState1(),
         webSocketPath: "/custom/path",
-        configuration: LandServerConfiguration(
-            enableHealthRoute: false,  // Disable to avoid route conflicts
-            logStartupBanner: false
-        )
+        configuration: LandServerConfiguration()
     )
     
     // Assert: Registration should succeed
@@ -200,8 +190,8 @@ func testLandHostRejectDuplicateLandType() async throws {
             initialState: TestState1(),
             webSocketPath: "/game/test2"
         )
-        Issue.record("Expected LandHostError.duplicateLandType to be thrown")
-    } catch LandHostError.duplicateLandType(let landType) {
+        Issue.record("Expected LandRealmError.duplicateLandType to be thrown")
+    } catch LandRealmError.duplicateLandType(let landType) {
         #expect(landType == "duplicate")
     }
 }
@@ -219,13 +209,10 @@ func testLandHostEmptyLandType() async throws {
             land: TestGame1.makeLand(),
             initialState: TestState1(),
             webSocketPath: "/game/test",
-            configuration: LandServerConfiguration(
-                enableHealthRoute: false,  // Disable to avoid route conflicts
-                logStartupBanner: false
-            )
+            configuration: LandServerConfiguration()
         )
-        Issue.record("Expected LandHostError.invalidLandType to be thrown")
-    } catch LandHostError.invalidLandType(let landType) {
+        Issue.record("Expected LandRealmError.invalidLandType to be thrown")
+    } catch LandRealmError.invalidLandType(let landType) {
         #expect(landType == "")
     }
 }
@@ -258,10 +245,7 @@ func testLandHostWithLandRealm() async throws {
         land: TestGame1.makeLand(),
         initialState: TestState1(),
         webSocketPath: "/game/realm",
-        configuration: LandServerConfiguration(
-            enableHealthRoute: false,  // Disable to avoid route conflicts
-            logStartupBanner: false
-        )
+        configuration: LandServerConfiguration()
     )
     
     // Assert: Registration should succeed
@@ -281,10 +265,7 @@ func testLandHostMultipleLandTypes() async throws {
         land: TestGame1.makeLand(),
         initialState: TestState1(),
         webSocketPath: "/game/type1",
-        configuration: LandServerConfiguration(
-            enableHealthRoute: false,  // Disable to avoid route conflicts
-            logStartupBanner: false
-        )
+        configuration: LandServerConfiguration()
     )
     
     try await host.register(
@@ -292,10 +273,7 @@ func testLandHostMultipleLandTypes() async throws {
         land: TestGame2.makeLand(),
         initialState: TestState2(),
         webSocketPath: "/game/type2",
-        configuration: LandServerConfiguration(
-            enableHealthRoute: false,  // Disable to avoid route conflicts
-            logStartupBanner: false
-        )
+        configuration: LandServerConfiguration()
     )
     
     // Assert: Both registrations should succeed
