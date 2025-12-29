@@ -69,7 +69,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         landTypeRegistry: LandTypeRegistry<State>,
         transport: WebSocketTransport,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
-        codec: any TransportCodec = JSONTransportCodec(),
+        codec: any TransportCodec = MessagePackTransportCodec(),
         logger: Logger? = nil
     ) {
         self.landManager = landManager

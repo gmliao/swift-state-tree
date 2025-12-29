@@ -39,6 +39,11 @@ let package = Package(
             name: "SwiftStateTreeBenchmarks",
             targets: ["SwiftStateTreeBenchmarks"]
         ),
+        // 🧪 Fixture generator for TS MessagePack tests
+        .executable(
+            name: "SwiftStateTreeFixtureGenerator",
+            targets: ["SwiftStateTreeFixtureGenerator"]
+        ),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-syntax.git", from: "509.0.0"),
@@ -198,6 +203,16 @@ let package = Package(
             exclude: [
                 "README.md"
             ]
+        ),
+
+        // 🧪 Fixture generator (MessagePack payloads for TS tests)
+        .executableTarget(
+            name: "SwiftStateTreeFixtureGenerator",
+            dependencies: [
+                "SwiftStateTree",
+                "SwiftStateTreeTransport"
+            ],
+            path: "Sources/SwiftStateTreeFixtureGenerator"
         ),
     ]
 )

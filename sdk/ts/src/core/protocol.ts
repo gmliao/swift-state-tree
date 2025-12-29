@@ -75,7 +75,7 @@ function encodePayloadToBytes(payload: any): Uint8Array {
 /**
  * Encode a TransportMessage to JSON string or MessagePack bytes.
  */
-export function encodeMessage(message: TransportMessage, encoding: TransportEncoding = 'json'): string | Uint8Array {
+export function encodeMessage(message: TransportMessage, encoding: TransportEncoding = 'messagepack'): string | Uint8Array {
   if (encoding === 'messagepack') {
     return encodeMessagePack(message)
   }
@@ -87,7 +87,7 @@ export function encodeMessage(message: TransportMessage, encoding: TransportEnco
  */
 export function decodeMessage(
   data: string | ArrayBuffer | Uint8Array,
-  encoding: TransportEncoding = 'json'
+  encoding: TransportEncoding = 'messagepack'
 ): TransportMessage | StateUpdate | StateSnapshot {
   if (encoding === 'messagepack') {
     if (typeof data === 'string') {

@@ -39,6 +39,24 @@
             "target": "SwiftStateTreeBenchmarks",
             "configuration": "release",
             "program": "${workspaceFolder:swift-state-tree-internal}/.build/release/SwiftStateTreeBenchmarks"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:swift-state-tree-internal-codex}",
+            "name": "Debug SwiftStateTreeFixtureGenerator",
+            "program": "${workspaceFolder:swift-state-tree-internal-codex}/.build/debug/SwiftStateTreeFixtureGenerator",
+            "preLaunchTask": "swift: Build Debug SwiftStateTreeFixtureGenerator"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:swift-state-tree-internal-codex}",
+            "name": "Release SwiftStateTreeFixtureGenerator",
+            "program": "${workspaceFolder:swift-state-tree-internal-codex}/.build/release/SwiftStateTreeFixtureGenerator",
+            "preLaunchTask": "swift: Build Release SwiftStateTreeFixtureGenerator"
         }
     ]
 }

@@ -58,7 +58,7 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
         playerCounts: [Int] = [4, 10, 20, 30, 50],
         dirtyPlayerRatio: Double = 0.20,
         broadcastPlayerRatio: Double = 0.0,
-        transportCodec: any TransportCodec = JSONTransportCodec(),
+        transportCodec: any TransportCodec = MessagePackTransportCodec(),
         enableDirtyTracking: Bool = true
     ) {
         self.playerCounts = playerCounts
@@ -207,7 +207,7 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
             useColors: false
         )
         
-        // Create mock transport (using WebSocketTransport as base, but we'll track messages)
+        // Create mock transport (using WebSocketTransport as base)
         let mockTransport = WebSocketTransport(logger: benchmarkLogger)
         
         // Create keeper and adapter with high log level

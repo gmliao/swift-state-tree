@@ -28,10 +28,10 @@ export class StateTreeRuntime {
   constructor(options?: Logger | StateTreeRuntimeOptions) {
     if (options && ('logger' in options || 'encoding' in options)) {
       this.logger = options.logger || new NoOpLogger()
-      this.transportEncoding = options.encoding ?? 'json'
+      this.transportEncoding = options.encoding ?? 'messagepack'
     } else {
       this.logger = (options as Logger | undefined) || new NoOpLogger()
-      this.transportEncoding = 'json'
+      this.transportEncoding = 'messagepack'
     }
   }
 

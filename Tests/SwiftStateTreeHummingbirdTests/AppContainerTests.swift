@@ -79,21 +79,19 @@ func testAppContainerForTestHandlesClientEvents() async throws {
     )
     let connection = RecordingWebSocketConnection()
     let sessionID = SessionID("session-app-container")
-    let clientID = ClientID("client-app-container")
     
     await harness.connect(sessionID: sessionID, using: connection)
     
     // Join first (required for sending events)
-    let encoder = JSONEncoder()
-    let decoder = JSONDecoder()
     let joinMessage = TransportMessage.join(
         requestID: UUID().uuidString,
-        landID: harness.land.id,
+        landType: harness.land.id,
+        landInstanceId: nil,
         playerID: sessionID.rawValue,
         deviceID: nil,
         metadata: [:]
     )
-    let joinData = try encoder.encode(joinMessage)
+    let joinData = try encodeHummingbirdTransportMessage(joinMessage)
     await harness.send(joinData, from: sessionID)
     
     // Wait for join to complete
@@ -105,7 +103,7 @@ func testAppContainerForTestHandlesClientEvents() async throws {
         landID: harness.land.id,
         event: .fromClient(event: pingEvent)
     )
-    let pingData = try encoder.encode(pingMessage)
+    let pingData = try encodeHummingbirdTransportMessage(pingMessage)
     await harness.send(pingData, from: sessionID)
     
     // Act: send chat event to mutate state
@@ -114,7 +112,7 @@ func testAppContainerForTestHandlesClientEvents() async throws {
         landID: harness.land.id,
         event: .fromClient(event: chatEvent)
     )
-    let chatData = try encoder.encode(chatMessage)
+    let chatData = try encodeHummingbirdTransportMessage(chatMessage)
     await harness.send(chatData, from: sessionID)
     
     try await Task.sleep(nanoseconds: 50_000_000)
@@ -122,7 +120,7 @@ func testAppContainerForTestHandlesClientEvents() async throws {
     // Assert: transport echoed server events via adapter
     let outgoing = await connection.recordedMessages()
     let transportMessages = outgoing.compactMap {
-        try? decoder.decode(TransportMessage.self, from: $0)
+        try? decodeHummingbirdTransportMessage(TransportMessage.self, from: $0)
     }
     
     #expect(transportMessages.contains(where: { message in
@@ -153,4 +151,3 @@ func testAppContainerForTestHandlesClientEvents() async throws {
     let state = await harness.keeper.currentState()
     #expect(state.messageCount == 1)
 }
-

@@ -57,12 +57,10 @@ func testMultiRoomServerSendsInitialSnapshotAfterJoin() async throws {
         deviceID: nil,
         metadata: nil
     )
-    let data = try JSONEncoder().encode(joinMsg)
+    let data = try encodeHummingbirdTransportMessage(joinMsg)
     await transport.handleIncomingMessage(sessionID: sessionID, data: data)
     
     // Wait (with timeout) for async join processing and snapshot send
-    let decoder = JSONDecoder()
-    
     var sawJoinResponse = false
     var sawSnapshot = false
     let deadline = Date().addingTimeInterval(1.0)
@@ -70,13 +68,13 @@ func testMultiRoomServerSendsInitialSnapshotAfterJoin() async throws {
     while Date() < deadline, !(sawJoinResponse && sawSnapshot) {
         let messages = await connection.recordedMessages()
         for msg in messages {
-            if let transportMsg = try? decoder.decode(TransportMessage.self, from: msg) {
+            if let transportMsg = try? decodeHummingbirdTransportMessage(TransportMessage.self, from: msg) {
                 if transportMsg.kind == .joinResponse {
                     sawJoinResponse = true
                 }
                 continue
             }
-            if (try? decoder.decode(StateSnapshot.self, from: msg)) != nil {
+            if (try? decodeHummingbirdTransportMessage(StateSnapshot.self, from: msg)) != nil {
                 sawSnapshot = true
             }
         }

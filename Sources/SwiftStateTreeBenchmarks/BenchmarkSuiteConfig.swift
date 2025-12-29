@@ -58,7 +58,7 @@ struct BenchmarkSuites {
         let lowRatio = clampedRatio ?? 0.05
         let mediumRatio = clampedRatio ?? 0.20
         let highRatio = clampedRatio ?? 0.80
-        let transportCodec = (transportEncodingOverride ?? .json).makeCodec()
+        let transportCodec = (transportEncodingOverride ?? .messagePack).makeCodec()
         return [
             BenchmarkSuiteConfig(
                 type: .singleThreaded,

@@ -82,12 +82,13 @@ func testJWTPayloadWithCustomFields() async throws {
     // Act: Send join request (without playerID, should use JWT payload)
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "jwt-test",
+        landType: "jwt-test",
+        landInstanceId: nil,
         playerID: nil, // Not provided, should use JWT payload
         deviceID: nil, // Not provided, should use JWT payload
         metadata: nil // Not provided, should use JWT payload
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
     
     // Wait a bit for async processing
@@ -162,7 +163,8 @@ func testJoinMessageMetadataOverridesJWTPayload() async throws {
     // Act: Send join request with overriding metadata
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "jwt-test",
+        landType: "jwt-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: [
@@ -170,7 +172,7 @@ func testJoinMessageMetadataOverridesJWTPayload() async throws {
             "level": AnyCodable("20") // Additional field
         ]
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
     
     // Wait a bit for async processing
@@ -235,12 +237,13 @@ func testJWTPayloadPlayerIDUsedWhenNotProvided() async throws {
     // Act: Send join request WITHOUT playerID (should use JWT payload)
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "jwt-test",
+        landType: "jwt-test",
+        landInstanceId: nil,
         playerID: nil, // Not provided, should use JWT payload
         deviceID: nil,
         metadata: nil
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
     
     // Wait a bit for async processing
@@ -302,12 +305,13 @@ func testJoinMessagePlayerIDOverridesJWTPayload() async throws {
     // Act: Send join request WITH playerID (should override JWT payload)
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "jwt-test",
+        landType: "jwt-test",
+        landInstanceId: nil,
         playerID: "join-player-999", // Override JWT payload
         deviceID: nil,
         metadata: nil
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
     
     // Wait a bit for async processing
@@ -379,12 +383,13 @@ func testJWTPayloadClearedOnDisconnectFallsBackToGuest() async throws {
     // Act: Send join request (should use createGuestSession, not JWT payload)
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "jwt-test",
+        landType: "jwt-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
     
     // Wait a bit for async processing

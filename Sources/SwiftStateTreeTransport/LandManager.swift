@@ -32,7 +32,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         initialStateFactory: @escaping @Sendable (LandID) -> State,
         transport: WebSocketTransport? = nil,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
-        codec: any TransportCodec = JSONTransportCodec(),
+        codec: any TransportCodec = MessagePackTransportCodec(),
         logger: Logger? = nil
     ) {
         self.landFactory = landFactory

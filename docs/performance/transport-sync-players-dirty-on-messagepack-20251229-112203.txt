@@ -1,0 +1,154 @@
+
+╔═══════════════════════════════════════════════════════════════╗
+║TransportAdapter Sync (Public Players Hot, Low Hands Dirty ~5%)║
+╚═══════════════════════════════════════════════════════════════╝
+
+
+[1/2] Running: Small State (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 5, Iterations: 100, BroadcastPlayers: ~100%, Encoding: messagePack)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 1.2160ms
+
+  Testing with 10 players...
+    Average: 1.1218ms
+
+  Testing with 20 players...
+    Average: 1.1360ms
+
+  Testing with 30 players...
+    Average: 0.9994ms
+
+  Testing with 50 players...
+    Average: 1.1953ms
+
+[2/2] Running: Medium State (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 10, Iterations: 100, BroadcastPlayers: ~100%, Encoding: messagePack)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 0.5617ms
+
+  Testing with 10 players...
+    Average: 0.6486ms
+
+  Testing with 20 players...
+    Average: 0.9572ms
+
+  Testing with 30 players...
+    Average: 0.9842ms
+
+  Testing with 50 players...
+    Average: 1.2208ms
+
+╔═══════════════════════════════════════════════════════════════╗
+║TransportAdapter Sync (Public Players Hot, Medium Hands Dirty ~20%)║
+╚═══════════════════════════════════════════════════════════════╝
+
+
+[1/2] Running: Small State (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 5, Iterations: 100, BroadcastPlayers: ~100%, Encoding: messagePack)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 0.5673ms
+
+  Testing with 10 players...
+    Average: 0.6966ms
+
+  Testing with 20 players...
+    Average: 1.1740ms
+
+  Testing with 30 players...
+    Average: 1.5453ms
+
+  Testing with 50 players...
+    Average: 2.4739ms
+
+[2/2] Running: Medium State (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 10, Iterations: 100, BroadcastPlayers: ~100%, Encoding: messagePack)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 1.2606ms
+
+  Testing with 10 players...
+    Average: 1.7321ms
+
+  Testing with 20 players...
+    Average: 3.2895ms
+
+  Testing with 30 players...
+    Average: 4.4602ms
+
+  Testing with 50 players...
+    Average: 6.4305ms
+
+╔═══════════════════════════════════════════════════════════════╗
+║TransportAdapter Sync (Public Players Hot, High Hands Dirty ~80%)║
+╚═══════════════════════════════════════════════════════════════╝
+
+
+[1/2] Running: Small State (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 5, Iterations: 100, BroadcastPlayers: ~100%, Encoding: messagePack)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 3.1054ms
+
+  Testing with 10 players...
+    Average: 3.9826ms
+
+  Testing with 20 players...
+    Average: 5.7216ms
+
+  Testing with 30 players...
+    Average: 7.0972ms
+
+  Testing with 50 players...
+    Average: 9.9579ms
+
+[2/2] Running: Medium State (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 10, Iterations: 100, BroadcastPlayers: ~100%, Encoding: messagePack)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 5.1172ms
+
+  Testing with 10 players...
+    Average: 6.1633ms
+
+  Testing with 20 players...
+    Average: 8.7040ms
+
+  Testing with 30 players...
+    Average: 10.8496ms
+
+  Testing with 50 players...
+    Average: 14.9597ms
+
+📄 CSV Output (for analysis):
+-----------------------------------------------------------------
+Name,Players,Cards/Player,PlayerStateFields,Iterations,ExecutionMode,AvgTime(ms),MinTime(ms),MaxTime(ms),Throughput(snapshots/sec),Size(bytes)
+Sync,4,5,8,100,Serial Sync (DirtyTracking: On),1.2159798240661621,1.2159798240661621,1.2159798240661621,822.3820660576927,0
+Sync,4,10,8,100,Serial Sync (DirtyTracking: On),0.5616996383666991,0.5616996383666991,0.5616996383666991,1780.3109200991892,0
+Sync,4,5,8,100,Serial Sync (DirtyTracking: On),0.5673000907897949,0.5673000907897949,0.5673000907897949,1762.7354838032911,0
+Sync,4,10,8,100,Serial Sync (DirtyTracking: On),1.260579595565796,1.260579595565796,1.260579595565796,793.2858849354627,0
+Sync,4,5,8,100,Serial Sync (DirtyTracking: On),3.105449447631836,3.105449447631836,3.105449447631836,322.0145801318979,0
+Sync,4,10,8,100,Serial Sync (DirtyTracking: On),5.117220649719239,5.117220649719239,5.117220649719239,195.41858138457758,0
+
+═════════════════════════════════════════════════════════════════
+Benchmark completed!
+═════════════════════════════════════════════════════════════════
+
+Transport codec size profile (SST_TRANSPORT_SIZE_PROFILE=1)
+messagePack: encode 842267 ops, 885648823 bytes, avg 1051.5 bytes/op
+messagePack: decode 0 ops, 0 bytes, avg 0.0 bytes/op
+

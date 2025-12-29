@@ -60,12 +60,13 @@ func testConnectedToJoinedTransition() async throws {
     // Act: Join
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "state-transition-test",
+        landType: "state-transition-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: session1)
     try await Task.sleep(for: .milliseconds(50))
     
@@ -120,12 +121,13 @@ func testJoinedToDisconnectedTransition() async throws {
     await adapter.onConnect(sessionID: session1, clientID: client1)
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "state-transition-test",
+        landType: "state-transition-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: session1)
     try await Task.sleep(for: .milliseconds(50))
     
@@ -248,12 +250,13 @@ func testMultipleStateTransitions() async throws {
         // Join
         let joinRequest = TransportMessage.join(
             requestID: "join-\(iteration)",
-            landID: "state-transition-test",
+            landType: "state-transition-test",
+            landInstanceId: nil,
             playerID: nil,
             deviceID: nil,
             metadata: nil
         )
-        let joinData = try JSONEncoder().encode(joinRequest)
+        let joinData = try encodeTransportMessage(joinRequest)
         await adapter.onMessage(joinData, from: session1)
         try await Task.sleep(for: .milliseconds(50))
         

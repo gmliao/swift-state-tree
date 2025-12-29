@@ -109,24 +109,26 @@ func testJoinedSessionsComputedProperty() async throws {
     // Join session 1
     let joinRequest1 = TransportMessage.join(
         requestID: "join-1",
-        landID: "state-management-test",
+        landType: "state-management-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData1 = try JSONEncoder().encode(joinRequest1)
+    let joinData1 = try encodeTransportMessage(joinRequest1)
     await adapter.onMessage(joinData1, from: session1)
     try await Task.sleep(for: .milliseconds(50))
     
     // Join session 2
     let joinRequest2 = TransportMessage.join(
         requestID: "join-2",
-        landID: "state-management-test",
+        landType: "state-management-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData2 = try JSONEncoder().encode(joinRequest2)
+    let joinData2 = try encodeTransportMessage(joinRequest2)
     await adapter.onMessage(joinData2, from: session2)
     try await Task.sleep(for: .milliseconds(50))
     
@@ -173,12 +175,13 @@ func testSessionToPlayerSyncWithKeeperPlayers() async throws {
     
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "state-management-test",
+        landType: "state-management-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: session1)
     try await Task.sleep(for: .milliseconds(50))
     
@@ -231,12 +234,13 @@ func testStateQueryMethods() async throws {
     
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "state-management-test",
+        landType: "state-management-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: session1)
     try await Task.sleep(for: .milliseconds(50))
     

@@ -81,12 +81,13 @@ func testTransportAdapterForwardsEvents() async throws {
     // Act: Join
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "test-land",
+        landType: "test-land",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
     
     // Wait a bit for join to complete
@@ -95,7 +96,7 @@ func testTransportAdapterForwardsEvents() async throws {
     // Act: Send event
     let incrementEvent = AnyClientEvent(TestIncrementEvent())
     let transportMsg = TransportMessage.event(landID: "test-land", event: .fromClient(event: incrementEvent))
-    let data = try JSONEncoder().encode(transportMsg)
+    let data = try encodeTransportMessage(transportMsg)
     
     await adapter.onMessage(data, from: sessionID)
     
@@ -140,12 +141,13 @@ func testTransportAdapterConnectionLifecycle() async throws {
     // Act: Join
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "test-land",
+        landType: "test-land",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
     
     // Wait a bit for join to complete
@@ -198,20 +200,22 @@ func testTransportAdapterSendEvent() async throws {
     // Join both sessions
     let joinRequest1 = TransportMessage.join(
         requestID: "join-1",
-        landID: "test-land",
+        landType: "test-land",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
     let joinRequest2 = TransportMessage.join(
         requestID: "join-2",
-        landID: "test-land",
+        landType: "test-land",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData1 = try JSONEncoder().encode(joinRequest1)
-    let joinData2 = try JSONEncoder().encode(joinRequest2)
+    let joinData1 = try encodeTransportMessage(joinRequest1)
+    let joinData2 = try encodeTransportMessage(joinRequest2)
     await adapter.onMessage(joinData1, from: sessionID1)
     await adapter.onMessage(joinData2, from: sessionID2)
     
@@ -255,12 +259,13 @@ func testTransportAdapterSyncNow() async throws {
     // Join
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "test-land",
+        landType: "test-land",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
     
     // Wait a bit for join to complete

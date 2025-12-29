@@ -295,7 +295,7 @@ struct TransportAdapterSyncConcurrencyTests {
             landID: "sync-concurrency-test",
             action: actionEnvelope
         )
-        let actionData = try JSONEncoder().encode(actionRequest)
+        let actionData = try encodeTransportMessage(actionRequest)
         await adapter.onMessage(actionData, from: SessionID("alice-session"))
         
         // Start second sync (should be skipped if first is still in progress)

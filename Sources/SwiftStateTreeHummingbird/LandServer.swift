@@ -60,7 +60,7 @@ public struct LandServer<State: StateNodeProtocol> {
             enableHealthRoute: Bool = true,
             logStartupBanner: Bool = true,
             logger: Logger? = nil,
-            transportEncoding: TransportEncoding = .json,
+            transportEncoding: TransportEncoding = .messagePack,
             jwtConfig: JWTConfiguration? = nil,
             jwtValidator: JWTAuthValidator? = nil,
             allowGuestMode: Bool = false,
@@ -546,7 +546,7 @@ public struct LandServer<State: StateNodeProtocol> {
         land definition: Land,
         initialState: State,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
-        transportEncoding: TransportEncoding = .json,
+        transportEncoding: TransportEncoding = .messagePack,
         logger: Logger? = nil
     ) async -> LandServerForTest {
         let testLogger = logger ?? createColoredLogger(
@@ -582,7 +582,7 @@ public struct LandServer<State: StateNodeProtocol> {
         land definition: Land,
         initialState: State,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
-        transportCodec: any TransportCodec = JSONTransportCodec(),
+        transportCodec: any TransportCodec = MessagePackTransportCodec(),
         logger: Logger
     ) async -> CoreComponents {
         let transport = WebSocketTransport(logger: logger)

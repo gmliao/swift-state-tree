@@ -56,12 +56,13 @@ func testJoinWithCustomPlayerID() async throws {
     await adapter.onConnect(sessionID: session1, clientID: client1)
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "edge-cases-test",
+        landType: "edge-cases-test",
+        landInstanceId: nil,
         playerID: customPlayerID,
         deviceID: nil,
         metadata: nil
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: session1)
     try await Task.sleep(for: .milliseconds(50))
     
@@ -114,12 +115,13 @@ func testJoinWithDeviceID() async throws {
     await adapter.onConnect(sessionID: session1, clientID: client1)
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "edge-cases-test",
+        landType: "edge-cases-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: deviceID,
         metadata: nil
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: session1)
     try await Task.sleep(for: .milliseconds(50))
     
@@ -173,12 +175,13 @@ func testJoinWithMetadata() async throws {
     await adapter.onConnect(sessionID: session1, clientID: client1)
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "edge-cases-test",
+        landType: "edge-cases-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: metadata
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: session1)
     try await Task.sleep(for: .milliseconds(50))
     
@@ -225,12 +228,13 @@ func testJoinRequestWithoutConnection() async throws {
     // Act: Try to join without connecting first
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "edge-cases-test",
+        landType: "edge-cases-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: session1)
     try await Task.sleep(for: .milliseconds(50))
     
@@ -279,12 +283,13 @@ func testJoinWithEmptyMetadata() async throws {
     await adapter.onConnect(sessionID: session1, clientID: client1)
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "edge-cases-test",
+        landType: "edge-cases-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: [:]
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: session1)
     try await Task.sleep(for: .milliseconds(50))
     

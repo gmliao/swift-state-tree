@@ -58,7 +58,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         enableLegacyJoin: Bool = false,
         enableDirtyTracking: Bool = true,
-        codec: any TransportCodec = JSONTransportCodec(),
+        codec: any TransportCodec = MessagePackTransportCodec(),
         logger: Logger? = nil
     ) {
         self.keeper = keeper

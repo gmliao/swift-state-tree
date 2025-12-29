@@ -79,12 +79,13 @@ func testCompleteJWTFlow() async throws {
     // Step 2: Send join request
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "e2e-test",
+        landType: "e2e-test",
+        landInstanceId: nil,
         playerID: nil,  // Use JWT payload
         deviceID: nil,  // Use JWT payload
         metadata: nil  // Use JWT payload
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
     
     // Wait for processing
@@ -151,12 +152,13 @@ func testCompleteGuestFlow() async throws {
     // Step 2: Send join request
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "e2e-test",
+        landType: "e2e-test",
+        landInstanceId: nil,
         playerID: nil,  // Will use guest session
         deviceID: nil,
         metadata: nil
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
     
     // Wait for processing
@@ -224,12 +226,13 @@ func testMixedJWTAndGuestUsers() async throws {
     
     let jwtJoinRequest = TransportMessage.join(
         requestID: "join-jwt-1",
-        landID: "e2e-test",
+        landType: "e2e-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let jwtJoinData = try JSONEncoder().encode(jwtJoinRequest)
+    let jwtJoinData = try encodeTransportMessage(jwtJoinRequest)
     await adapter.onMessage(jwtJoinData, from: jwtSessionID)
     
     // Step 2: Guest user joins
@@ -239,12 +242,13 @@ func testMixedJWTAndGuestUsers() async throws {
     
     let guestJoinRequest = TransportMessage.join(
         requestID: "join-guest-1",
-        landID: "e2e-test",
+        landType: "e2e-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let guestJoinData = try JSONEncoder().encode(guestJoinRequest)
+    let guestJoinData = try encodeTransportMessage(guestJoinRequest)
     await adapter.onMessage(guestJoinData, from: guestSessionID)
     
     // Wait for processing

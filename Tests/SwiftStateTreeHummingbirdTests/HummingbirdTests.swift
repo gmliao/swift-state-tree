@@ -250,18 +250,16 @@ func testHummingbirdAdapterEmitsJSON() async throws {
     // Act: Simulate a WebSocket session and send client events as transport JSON
     await transport.handleConnection(sessionID: sessionID, connection: connection)
     
-    let encoder = JSONEncoder()
-    let decoder = JSONDecoder()
-    
     // Join first (required for sending events)
     let joinMessage = TransportMessage.join(
         requestID: UUID().uuidString,
-        landID: definition.id,
+        landType: definition.id,
+        landInstanceId: nil,
         playerID: sessionID.rawValue,
         deviceID: nil,
         metadata: [:]
     )
-    let joinData = try encoder.encode(joinMessage)
+    let joinData = try encodeHummingbirdTransportMessage(joinMessage)
     await transport.handleIncomingMessage(sessionID: sessionID, data: joinData)
     
     // Wait for join to complete
@@ -272,7 +270,7 @@ func testHummingbirdAdapterEmitsJSON() async throws {
         landID: definition.id,
         event: .fromClient(event: pingEvent)
     )
-    let pingData = try encoder.encode(pingMessage)
+    let pingData = try encodeHummingbirdTransportMessage(pingMessage)
     await transport.handleIncomingMessage(sessionID: sessionID, data: pingData)
     
     let chatEvent = AnyClientEvent(TestChatEvent(message: "hello"))
@@ -280,14 +278,16 @@ func testHummingbirdAdapterEmitsJSON() async throws {
         landID: definition.id,
         event: .fromClient(event: chatEvent)
     )
-    let chatData = try encoder.encode(chatMessage)
+    let chatData = try encodeHummingbirdTransportMessage(chatMessage)
     await transport.handleIncomingMessage(sessionID: sessionID, data: chatData)
     
     try await Task.sleep(nanoseconds: 50_000_000) // Allow async sends to finish
     
     // Assert: Server sent back transport-formatted JSON we can decode on the client
     let outgoing = await connection.recordedMessages()
-    let transportMessages = outgoing.compactMap { try? decoder.decode(TransportMessage.self, from: $0) }
+    let transportMessages = outgoing.compactMap {
+        try? decodeHummingbirdTransportMessage(TransportMessage.self, from: $0)
+    }
     
     #expect(transportMessages.contains { message in
         if message.kind == .event,

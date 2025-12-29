@@ -68,12 +68,13 @@ func testGuestSessionCreation() async throws {
     // Act: Send join request (without playerID, should use guest session)
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "guest-test",
+        landType: "guest-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
     
     // Wait a bit for async processing
@@ -148,12 +149,13 @@ func testCustomGuestSession() async throws {
     // Act: Send join request
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "guest-test",
+        landType: "guest-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
     
     // Wait a bit for async processing
@@ -217,12 +219,13 @@ func testJWTPayloadOverridesGuestSession() async throws {
     // Act: Send join request (without playerID, should use JWT payload, not guest session)
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "guest-test",
+        landType: "guest-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
     
     // Wait a bit for async processing
@@ -283,12 +286,13 @@ func testJoinMessageOverridesAll() async throws {
     // Act: Send join request WITH playerID (should override guest session)
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "guest-test",
+        landType: "guest-test",
+        landInstanceId: nil,
         playerID: "override-player-999",  // Override guest session
         deviceID: "override-device-999",  // Override guest session
         metadata: ["override": AnyCodable("true")]
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
     
     // Wait a bit for async processing
@@ -348,12 +352,13 @@ func testMultipleGuestSessions() async throws {
         
         let joinRequest = TransportMessage.join(
             requestID: "join-\(i)",
-            landID: "guest-test",
+            landType: "guest-test",
+            landInstanceId: nil,
             playerID: nil,
             deviceID: nil,
             metadata: nil
         )
-        let joinData = try JSONEncoder().encode(joinRequest)
+        let joinData = try encodeTransportMessage(joinRequest)
         await adapter.onMessage(joinData, from: sessionID)
     }
     

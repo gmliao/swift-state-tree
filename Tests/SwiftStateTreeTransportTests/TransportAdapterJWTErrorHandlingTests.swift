@@ -51,12 +51,13 @@ func testJoinFailsWithoutAuthInfoWhenRequired() async throws {
     // Act: Send join request
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "jwt-error-test",
+        landType: "jwt-error-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
     
     // Wait a bit for async processing
@@ -117,12 +118,13 @@ func testJWTPayloadClearedOnDisconnectWithReconnect() async throws {
     // Act: Send join request
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "jwt-error-test",
+        landType: "jwt-error-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
     
     // Wait a bit for async processing
@@ -171,12 +173,13 @@ func testJoinRequestMismatchedLandIDInJWTErrorSuite() async throws {
     // Act: Send join request with wrong landID
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "wrong-land-id",  // Mismatched
+        landType: "wrong-land-id",  // Mismatched
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
     
     // Wait a bit for async processing
@@ -224,12 +227,13 @@ func testDuplicateJoinRequests() async throws {
     // Act: Send first join request
     let joinRequest1 = TransportMessage.join(
         requestID: "join-1",
-        landID: "jwt-error-test",
+        landType: "jwt-error-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData1 = try JSONEncoder().encode(joinRequest1)
+    let joinData1 = try encodeTransportMessage(joinRequest1)
     await adapter.onMessage(joinData1, from: sessionID)
     
     // Wait a bit
@@ -238,12 +242,13 @@ func testDuplicateJoinRequests() async throws {
     // Act: Send second join request (duplicate)
     let joinRequest2 = TransportMessage.join(
         requestID: "join-2",
-        landID: "jwt-error-test",
+        landType: "jwt-error-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData2 = try JSONEncoder().encode(joinRequest2)
+    let joinData2 = try encodeTransportMessage(joinRequest2)
     await adapter.onMessage(joinData2, from: sessionID)
     
     // Wait a bit

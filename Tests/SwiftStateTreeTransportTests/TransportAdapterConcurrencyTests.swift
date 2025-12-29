@@ -89,12 +89,13 @@ func testMultipleSessionsJoinInRapidSuccession() async throws {
     for (index, session) in sessions.enumerated() {
         let joinRequest = TransportMessage.join(
             requestID: "join-\(index)",
-            landID: "concurrency-test",
+            landType: "concurrency-test",
+            landInstanceId: nil,
             playerID: "player-\(index)", // Use unique playerID for each session
             deviceID: nil,
             metadata: nil
         )
-        let joinData = try JSONEncoder().encode(joinRequest)
+        let joinData = try encodeTransportMessage(joinRequest)
         await adapter.onMessage(joinData, from: session)
         // Small delay to allow processing
         try await Task.sleep(for: .milliseconds(10))
@@ -170,12 +171,13 @@ func testDuplicatePlayerIDKicksOldSession() async throws {
     // Act: Join first session with playerID
     let joinRequest1 = TransportMessage.join(
         requestID: "join-1",
-        landID: "concurrency-test",
+        landType: "concurrency-test",
+        landInstanceId: nil,
         playerID: sharedPlayerID,
         deviceID: nil,
         metadata: nil
     )
-    let joinData1 = try JSONEncoder().encode(joinRequest1)
+    let joinData1 = try encodeTransportMessage(joinRequest1)
     await adapter.onMessage(joinData1, from: session1)
     
     try await Task.sleep(for: .milliseconds(50))
@@ -187,12 +189,13 @@ func testDuplicatePlayerIDKicksOldSession() async throws {
     // Act: Join second session with same playerID (should kick first session)
     let joinRequest2 = TransportMessage.join(
         requestID: "join-2",
-        landID: "concurrency-test",
+        landType: "concurrency-test",
+        landInstanceId: nil,
         playerID: sharedPlayerID,
         deviceID: nil,
         metadata: nil
     )
-    let joinData2 = try JSONEncoder().encode(joinRequest2)
+    let joinData2 = try encodeTransportMessage(joinRequest2)
     await adapter.onMessage(joinData2, from: session2)
     
     try await Task.sleep(for: .milliseconds(100))
@@ -273,12 +276,13 @@ func testRapidConnectDisconnect() async throws {
         // Join
         let joinRequest = TransportMessage.join(
             requestID: "join-\(iteration)",
-            landID: "concurrency-test",
+            landType: "concurrency-test",
+            landInstanceId: nil,
             playerID: nil,
             deviceID: nil,
             metadata: nil
         )
-        let joinData = try JSONEncoder().encode(joinRequest)
+        let joinData = try encodeTransportMessage(joinRequest)
         await adapter.onMessage(joinData, from: session1)
         try await Task.sleep(for: .milliseconds(20))
         
@@ -352,12 +356,13 @@ func testJoinDuringLeave() async throws {
     await adapter.onConnect(sessionID: session1, clientID: client1)
     let joinRequest1 = TransportMessage.join(
         requestID: "join-1",
-        landID: "concurrency-test",
+        landType: "concurrency-test",
+        landInstanceId: nil,
         playerID: playerID,
         deviceID: nil,
         metadata: nil
     )
-    let joinData1 = try JSONEncoder().encode(joinRequest1)
+    let joinData1 = try encodeTransportMessage(joinRequest1)
     await adapter.onMessage(joinData1, from: session1)
     try await Task.sleep(for: .milliseconds(50))
     
@@ -371,12 +376,13 @@ func testJoinDuringLeave() async throws {
     await adapter.onConnect(sessionID: session2, clientID: client2)
     let joinRequest2 = TransportMessage.join(
         requestID: "join-2",
-        landID: "concurrency-test",
+        landType: "concurrency-test",
+        landInstanceId: nil,
         playerID: playerID,
         deviceID: nil,
         metadata: nil
     )
-    let joinData2 = try JSONEncoder().encode(joinRequest2)
+    let joinData2 = try encodeTransportMessage(joinRequest2)
     await adapter.onMessage(joinData2, from: session2)
     
     await leaveTask.value
@@ -448,12 +454,13 @@ func testRapidLeaveAndJoin() async throws {
         // Join
         let joinRequest = TransportMessage.join(
             requestID: "join-\(iteration)",
-            landID: "concurrency-test",
+            landType: "concurrency-test",
+            landInstanceId: nil,
             playerID: playerID,
             deviceID: nil,
             metadata: nil
         )
-        let joinData = try JSONEncoder().encode(joinRequest)
+        let joinData = try encodeTransportMessage(joinRequest)
         await adapter.onMessage(joinData, from: session)
         try await Task.sleep(for: .milliseconds(20))
         

@@ -179,7 +179,7 @@ struct TransportAdapterInitialSnapshotTests {
             metadata: nil
         )
         
-        let data = try JSONEncoder().encode(joinMsg)
+        let data = try encodeTransportMessage(joinMsg)
         await router.onMessage(data, from: sessionID)
         
         // Wait for async processing

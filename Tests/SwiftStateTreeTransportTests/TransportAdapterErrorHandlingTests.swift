@@ -66,12 +66,13 @@ func testJoinFailureRollback() async throws {
     await adapter.onConnect(sessionID: session1, clientID: client1)
     let joinRequest1 = TransportMessage.join(
         requestID: "join-1",
-        landID: "error-handling-test",
+        landType: "error-handling-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData1 = try JSONEncoder().encode(joinRequest1)
+    let joinData1 = try encodeTransportMessage(joinRequest1)
     await adapter.onMessage(joinData1, from: session1)
     try await Task.sleep(for: .milliseconds(50))
     
@@ -79,12 +80,13 @@ func testJoinFailureRollback() async throws {
     await adapter.onConnect(sessionID: session2, clientID: client2)
     let joinRequest2 = TransportMessage.join(
         requestID: "join-2",
-        landID: "error-handling-test",
+        landType: "error-handling-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData2 = try JSONEncoder().encode(joinRequest2)
+    let joinData2 = try encodeTransportMessage(joinRequest2)
     await adapter.onMessage(joinData2, from: session2)
     try await Task.sleep(for: .milliseconds(50))
     
@@ -94,12 +96,13 @@ func testJoinFailureRollback() async throws {
     await adapter.onConnect(sessionID: session3, clientID: client3)
     let joinRequest3 = TransportMessage.join(
         requestID: "join-3",
-        landID: "error-handling-test",
+        landType: "error-handling-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData3 = try JSONEncoder().encode(joinRequest3)
+    let joinData3 = try encodeTransportMessage(joinRequest3)
     await adapter.onMessage(joinData3, from: session3)
     try await Task.sleep(for: .milliseconds(50))
     
@@ -153,24 +156,26 @@ func testDuplicateJoinRequest() async throws {
     await adapter.onConnect(sessionID: session1, clientID: client1)
     let joinRequest1 = TransportMessage.join(
         requestID: "join-1",
-        landID: "error-handling-test",
+        landType: "error-handling-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData1 = try JSONEncoder().encode(joinRequest1)
+    let joinData1 = try encodeTransportMessage(joinRequest1)
     await adapter.onMessage(joinData1, from: session1)
     try await Task.sleep(for: .milliseconds(50))
     
     // Act: Try to join again (duplicate)
     let joinRequest2 = TransportMessage.join(
         requestID: "join-2",
-        landID: "error-handling-test",
+        landType: "error-handling-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData2 = try JSONEncoder().encode(joinRequest2)
+    let joinData2 = try encodeTransportMessage(joinRequest2)
     await adapter.onMessage(joinData2, from: session1)
     try await Task.sleep(for: .milliseconds(50))
     
@@ -222,12 +227,13 @@ func testJoinAfterDisconnect() async throws {
     await adapter.onConnect(sessionID: session1, clientID: client1)
     let joinRequest1 = TransportMessage.join(
         requestID: "join-1",
-        landID: "error-handling-test",
+        landType: "error-handling-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData1 = try JSONEncoder().encode(joinRequest1)
+    let joinData1 = try encodeTransportMessage(joinRequest1)
     await adapter.onMessage(joinData1, from: session1)
     try await Task.sleep(for: .milliseconds(50))
     
@@ -247,12 +253,13 @@ func testJoinAfterDisconnect() async throws {
     await adapter.onConnect(sessionID: session1, clientID: client1)
     let joinRequest2 = TransportMessage.join(
         requestID: "join-2",
-        landID: "error-handling-test",
+        landType: "error-handling-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData2 = try JSONEncoder().encode(joinRequest2)
+    let joinData2 = try encodeTransportMessage(joinRequest2)
     await adapter.onMessage(joinData2, from: session1)
     try await Task.sleep(for: .milliseconds(50))
     
@@ -303,12 +310,13 @@ func testJoinRequestWithMismatchedLandID() async throws {
     // Act: Try to join with wrong landID
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "wrong-land-id",
+        landType: "wrong-land-id",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
-    let joinData = try JSONEncoder().encode(joinRequest)
+    let joinData = try encodeTransportMessage(joinRequest)
     await adapter.onMessage(joinData, from: session1)
     try await Task.sleep(for: .milliseconds(50))
     

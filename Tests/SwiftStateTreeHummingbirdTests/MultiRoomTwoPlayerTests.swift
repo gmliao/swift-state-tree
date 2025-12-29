@@ -82,8 +82,7 @@ struct MultiRoomTwoPlayerTests {
             initialState: initialStateFactory(sharedLandID)
         )
         
-        let encoder = JSONEncoder()
-        let decoder = JSONDecoder()
+        let jsonEncoder = JSONEncoder()
         
         let connection1 = RecordingWebSocketConnection()
         let connection2 = RecordingWebSocketConnection()
@@ -110,8 +109,8 @@ struct MultiRoomTwoPlayerTests {
             metadata: nil
         )
         
-        let joinData1 = try encoder.encode(join1)
-        let joinData2 = try encoder.encode(join2)
+        let joinData1 = try encodeHummingbirdTransportMessage(join1)
+        let joinData2 = try encodeHummingbirdTransportMessage(join2)
         
         // Act: Join concurrently (simulates near-simultaneous joins).
         await withTaskGroup(of: Void.self) { group in
@@ -123,20 +122,20 @@ struct MultiRoomTwoPlayerTests {
         let messagesAfterJoin1 = await connection1.recordedMessages()
         let messagesAfterJoin2 = await connection2.recordedMessages()
         #expect(
-            containsJoinSuccess(messages: messagesAfterJoin1, decoder: decoder, requestID: "join-1"),
-            "Expected joinResponse(join-1) for session1; summary: \(summarize(messages: messagesAfterJoin1, decoder: decoder))"
+            containsJoinSuccess(messages: messagesAfterJoin1, requestID: "join-1"),
+            "Expected joinResponse(join-1) for session1; summary: \(summarize(messages: messagesAfterJoin1))"
         )
         #expect(
-            containsJoinSuccess(messages: messagesAfterJoin2, decoder: decoder, requestID: "join-2"),
-            "Expected joinResponse(join-2) for session2; summary: \(summarize(messages: messagesAfterJoin2, decoder: decoder))"
+            containsJoinSuccess(messages: messagesAfterJoin2, requestID: "join-2"),
+            "Expected joinResponse(join-2) for session2; summary: \(summarize(messages: messagesAfterJoin2))"
         )
         #expect(
-            containsSnapshot(messages: messagesAfterJoin1, decoder: decoder),
-            "Expected initial StateSnapshot for session1; summary: \(summarize(messages: messagesAfterJoin1, decoder: decoder))"
+            containsSnapshot(messages: messagesAfterJoin1),
+            "Expected initial StateSnapshot for session1; summary: \(summarize(messages: messagesAfterJoin1))"
         )
         #expect(
-            containsSnapshot(messages: messagesAfterJoin2, decoder: decoder),
-            "Expected initial StateSnapshot for session2; summary: \(summarize(messages: messagesAfterJoin2, decoder: decoder))"
+            containsSnapshot(messages: messagesAfterJoin2),
+            "Expected initial StateSnapshot for session2; summary: \(summarize(messages: messagesAfterJoin2))"
         )
         
         let sharedContainerAfterJoin = try #require(await landManager.getLand(landID: sharedLandID))
@@ -145,14 +144,14 @@ struct MultiRoomTwoPlayerTests {
         
         // Act: Send an action from player 1.
         let actionPayload = MultiRoomIncrementAction(amount: 3)
-        let payloadData = try encoder.encode(actionPayload)
+        let payloadData = try jsonEncoder.encode(actionPayload)
         let actionEnvelope = ActionEnvelope(typeIdentifier: "MultiRoomIncrementAction", payload: payloadData)
         let actionRequest = TransportMessage.action(
             requestID: "action-1",
             landID: sharedLandID.rawValue,
             action: actionEnvelope
         )
-        let actionData = try encoder.encode(actionRequest)
+        let actionData = try encodeHummingbirdTransportMessage(actionRequest)
         await transport.handleIncomingMessage(sessionID: session1, data: actionData)
         
         // Sync is not automatic after actions; trigger it explicitly.
@@ -165,12 +164,12 @@ struct MultiRoomTwoPlayerTests {
         let messagesAfterSync1 = await connection1.recordedMessages()
         let messagesAfterSync2 = await connection2.recordedMessages()
         #expect(
-            containsPatch(messages: messagesAfterSync1, decoder: decoder, path: "/count"),
-            "Expected StateUpdate patch for /count on session1; summary: \(summarize(messages: messagesAfterSync1, decoder: decoder))"
+            containsPatch(messages: messagesAfterSync1, path: "/count"),
+            "Expected StateUpdate patch for /count on session1; summary: \(summarize(messages: messagesAfterSync1))"
         )
         #expect(
-            containsPatch(messages: messagesAfterSync2, decoder: decoder, path: "/count"),
-            "Expected StateUpdate patch for /count on session2; summary: \(summarize(messages: messagesAfterSync2, decoder: decoder))"
+            containsPatch(messages: messagesAfterSync2, path: "/count"),
+            "Expected StateUpdate patch for /count on session2; summary: \(summarize(messages: messagesAfterSync2))"
         )
         
         // Act: Disconnect player 1.
@@ -179,18 +178,18 @@ struct MultiRoomTwoPlayerTests {
         // Assert: Remaining player receives a patch removing player-1 from "/players".
         let messagesAfterDisconnect2 = await connection2.recordedMessages()
         #expect(
-            containsPatch(messages: messagesAfterDisconnect2, decoder: decoder, path: "/players/player-1")
-                || containsPatch(messages: messagesAfterDisconnect2, decoder: decoder, path: "/players"),
-            "Expected StateUpdate patch affecting /players on session2; summary: \(summarize(messages: messagesAfterDisconnect2, decoder: decoder))"
+            containsPatch(messages: messagesAfterDisconnect2, path: "/players/player-1")
+                || containsPatch(messages: messagesAfterDisconnect2, path: "/players"),
+            "Expected StateUpdate patch affecting /players on session2; summary: \(summarize(messages: messagesAfterDisconnect2))"
         )
     }
 }
 
 // MARK: - Helpers
 
-private func containsJoinSuccess(messages: [Data], decoder: JSONDecoder, requestID: String) -> Bool {
+private func containsJoinSuccess(messages: [Data], requestID: String) -> Bool {
     for msg in messages {
-        guard let transportMsg = try? decoder.decode(TransportMessage.self, from: msg) else { continue }
+        guard let transportMsg = try? decodeHummingbirdTransportMessage(TransportMessage.self, from: msg) else { continue }
         guard transportMsg.kind == .joinResponse else { continue }
         guard case .joinResponse(let payload) = transportMsg.payload else { continue }
         if payload.requestID == requestID && payload.success == true {
@@ -200,18 +199,18 @@ private func containsJoinSuccess(messages: [Data], decoder: JSONDecoder, request
     return false
 }
 
-private func containsSnapshot(messages: [Data], decoder: JSONDecoder) -> Bool {
+private func containsSnapshot(messages: [Data]) -> Bool {
     for msg in messages {
-        if (try? decoder.decode(StateSnapshot.self, from: msg)) != nil {
+        if (try? decodeHummingbirdTransportMessage(StateSnapshot.self, from: msg)) != nil {
             return true
         }
     }
     return false
 }
 
-private func containsPatch(messages: [Data], decoder: JSONDecoder, path: String) -> Bool {
+private func containsPatch(messages: [Data], path: String) -> Bool {
     for msg in messages {
-        guard let update = try? decoder.decode(StateUpdate.self, from: msg) else { continue }
+        guard let update = try? decodeHummingbirdTransportMessage(StateUpdate.self, from: msg) else { continue }
         let patches: [StatePatch]
         switch update {
         case .noChange:
@@ -226,7 +225,7 @@ private func containsPatch(messages: [Data], decoder: JSONDecoder, path: String)
     return false
 }
 
-private func summarize(messages: [Data], decoder: JSONDecoder) -> String {
+private func summarize(messages: [Data]) -> String {
     var joinResponses = 0
     var actionResponses = 0
     var errors = 0
@@ -235,7 +234,7 @@ private func summarize(messages: [Data], decoder: JSONDecoder) -> String {
     var patchPaths: Set<String> = []
     
     for msg in messages {
-        if let transportMsg = try? decoder.decode(TransportMessage.self, from: msg) {
+        if let transportMsg = try? decodeHummingbirdTransportMessage(TransportMessage.self, from: msg) {
             switch transportMsg.kind {
             case .joinResponse:
                 joinResponses += 1
@@ -249,12 +248,12 @@ private func summarize(messages: [Data], decoder: JSONDecoder) -> String {
             continue
         }
         
-        if let _ = try? decoder.decode(StateSnapshot.self, from: msg) {
+        if let _ = try? decodeHummingbirdTransportMessage(StateSnapshot.self, from: msg) {
             snapshots += 1
             continue
         }
         
-        if let update = try? decoder.decode(StateUpdate.self, from: msg) {
+        if let update = try? decodeHummingbirdTransportMessage(StateUpdate.self, from: msg) {
             stateUpdates += 1
             switch update {
             case .noChange:

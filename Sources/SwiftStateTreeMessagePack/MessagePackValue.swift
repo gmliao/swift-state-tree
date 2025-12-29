@@ -469,7 +469,10 @@ private struct MessagePackUnpacker {
             throw MessagePackError.unexpectedEOF
         }
         let range = (data.startIndex + offset)..<(data.startIndex + offset + size)
-        let value = data[range].withUnsafeBytes { $0.load(as: T.self) }
+        var value = T.zero
+        _ = withUnsafeMutableBytes(of: &value) { buffer in
+            data.copyBytes(to: buffer, from: range)
+        }
         offset += size
         return T(bigEndian: value)
     }

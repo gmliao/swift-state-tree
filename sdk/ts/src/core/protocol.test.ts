@@ -33,7 +33,7 @@ describe('protocol', () => {
         } as any
       }
 
-      const encoded = encodeMessage(message)
+      const encoded = encodeMessage(message, 'json')
       expect(typeof encoded).toBe('string')
       
       const decoded = JSON.parse(encoded)
@@ -79,7 +79,7 @@ describe('protocol', () => {
       }
 
       const encoded = JSON.stringify(message)
-      const decoded = decodeMessage(encoded)
+      const decoded = decodeMessage(encoded, 'json')
 
       expect(decoded).toHaveProperty('kind', 'action')
       if ('kind' in decoded) {
@@ -100,7 +100,7 @@ describe('protocol', () => {
       }
 
       const encoded = JSON.stringify(update)
-      const decoded = decodeMessage(encoded)
+      const decoded = decodeMessage(encoded, 'json')
 
       expect(decoded).toHaveProperty('type', 'diff')
       expect(decoded).toHaveProperty('patches')
@@ -118,7 +118,7 @@ describe('protocol', () => {
       }
 
       const encoded = JSON.stringify(snapshot)
-      const decoded = decodeMessage(encoded)
+      const decoded = decodeMessage(encoded, 'json')
 
       expect(decoded).toHaveProperty('values')
       if ('values' in decoded) {
@@ -129,7 +129,7 @@ describe('protocol', () => {
     it('throws error for unknown message format', () => {
       const invalid = JSON.stringify({ unknown: 'format' })
       
-      expect(() => decodeMessage(invalid)).toThrow('Unknown message format')
+      expect(() => decodeMessage(invalid, 'json')).toThrow('Unknown message format')
     })
 
     it('decodes StateUpdate from MessagePack bytes', () => {

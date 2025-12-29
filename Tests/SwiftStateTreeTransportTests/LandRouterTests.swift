@@ -116,7 +116,7 @@ struct LandRouterTests {
             metadata: nil
         )
         
-        let data = try JSONEncoder().encode(joinMsg)
+        let data = try encodeTransportMessage(joinMsg)
         await router.onMessage(data, from: sessionID)
         
         // Wait for async processing
@@ -146,7 +146,7 @@ struct LandRouterTests {
             deviceID: "dev-1",
             metadata: nil
         )
-        await router.onMessage(try JSONEncoder().encode(join1), from: session1)
+        await router.onMessage(try encodeTransportMessage(join1), from: session1)
         try await Task.sleep(for: .milliseconds(50))
         
         guard let landID = await router.getBoundLandID(for: session1) else {
@@ -168,7 +168,7 @@ struct LandRouterTests {
             deviceID: "dev-2",
             metadata: nil
         )
-        await router.onMessage(try JSONEncoder().encode(join2), from: session2)
+        await router.onMessage(try encodeTransportMessage(join2), from: session2)
         try await Task.sleep(for: .milliseconds(50))
         
         // Assert: Session 2 is bound to same LandID
@@ -197,7 +197,7 @@ struct LandRouterTests {
             metadata: nil
         )
         
-        await router.onMessage(try JSONEncoder().encode(joinMsg), from: sessionID)
+        await router.onMessage(try encodeTransportMessage(joinMsg), from: sessionID)
         try await Task.sleep(for: .milliseconds(50))
         
         // Session should NOT be bound
@@ -221,7 +221,7 @@ struct LandRouterTests {
             deviceID: "dev-1",
             metadata: nil
         )
-        await router.onMessage(try JSONEncoder().encode(joinMsg), from: sessionID)
+        await router.onMessage(try encodeTransportMessage(joinMsg), from: sessionID)
         try await Task.sleep(for: .milliseconds(50))
         
         guard let landID = await router.getBoundLandID(for: sessionID) else {
@@ -287,7 +287,7 @@ struct LandRouterTests {
             deviceID: "dev-1",
             metadata: nil
         )
-        await router.onMessage(try JSONEncoder().encode(joinMsg), from: sessionID)
+        await router.onMessage(try encodeTransportMessage(joinMsg), from: sessionID)
         try await Task.sleep(for: .milliseconds(100))
         
         // Assert: Should be bound
