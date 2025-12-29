@@ -1,7 +1,7 @@
-// Tests/SwiftStateTreeHummingbirdTests/LandRealmLandServerTests.swift
+// Tests/SwiftStateTreeHummingbirdTests/LandHostRegistrationTests.swift
 //
-// Tests for LandRealm with LandServer (Hummingbird).
-// Tests use LandHost.register() to register land types.
+// Tests for LandHost registration functionality.
+// Tests use LandHost.register() to register land types with different configurations.
 
 import Foundation
 import Testing
@@ -51,7 +51,7 @@ private enum CardGame {
 // MARK: - Tests
 
 @Test("LandHost uses default webSocketPath when not provided")
-func testLandRealmDefaultWebSocketPath() async throws {
+func testLandHostDefaultWebSocketPath() async throws {
     // Arrange
     var host = LandHost(configuration: LandHost.HostConfiguration(
         enableHealthRoute: false,
@@ -71,7 +71,7 @@ func testLandRealmDefaultWebSocketPath() async throws {
 }
 
 @Test("LandHost uses custom webSocketPath when provided")
-func testLandRealmCustomWebSocketPath() async throws {
+func testLandHostCustomWebSocketPath() async throws {
     // Arrange
     var host = LandHost(configuration: LandHost.HostConfiguration(
         enableHealthRoute: false,
@@ -92,7 +92,7 @@ func testLandRealmCustomWebSocketPath() async throws {
 }
 
 @Test("LandHost can register servers with different configurations")
-func testLandRealmDifferentConfigurations() async throws {
+func testLandHostDifferentConfigurations() async throws {
     // Arrange
     var host = LandHost(configuration: LandHost.HostConfiguration(
         enableHealthRoute: false,
@@ -122,19 +122,13 @@ func testLandRealmDifferentConfigurations() async throws {
 }
 
 @Test("LandHost accepts custom configuration")
-func testLandRealmCustomConfiguration() async throws {
+func testLandHostCustomConfiguration() async throws {
     // Arrange
     var host = LandHost(configuration: LandHost.HostConfiguration(
         enableHealthRoute: false,
         logStartupBanner: false
     ))
-    let customConfig = LandServer<ChessState>.Configuration(
-        host: "0.0.0.0",
-        port: 9090,
-        webSocketPath: "/custom/chess",
-        enableHealthRoute: false,
-        logStartupBanner: false
-    )
+    let customConfig = LandServerConfiguration()
     
     // Act: Register with custom configuration
     try await host.register(
@@ -150,7 +144,7 @@ func testLandRealmCustomConfiguration() async throws {
 }
 
 @Test("LandHost validates landType is not empty")
-func testLandRealmValidatesLandTypeNotEmpty() async throws {
+func testLandHostValidatesLandTypeNotEmpty() async throws {
     // Arrange
     var host = LandHost(configuration: LandHost.HostConfiguration(
         enableHealthRoute: false,
@@ -173,7 +167,7 @@ func testLandRealmValidatesLandTypeNotEmpty() async throws {
 }
 
 @Test("LandHost rejects duplicate landType")
-func testLandRealmRejectsDuplicateLandType() async throws {
+func testLandHostRejectsDuplicateLandType() async throws {
     // Arrange
     var host = LandHost(configuration: LandHost.HostConfiguration(
         enableHealthRoute: false,

@@ -55,15 +55,8 @@ struct MultiRoomTwoPlayerTests {
             MultiRoomTwoPlayerTestState()
         }
         
-        let server = try await Server.makeMultiRoomServer(
-            configuration: .init(
-                host: "localhost",
-                port: 0,
-                webSocketPath: "/game",
-                enableHealthRoute: false,
-                logStartupBanner: false,
-                jwtConfig: nil,
-                jwtValidator: nil,
+        let server = try await Server.create(
+            configuration: LandServerConfiguration(
                 allowGuestMode: true
             ),
             landFactory: landFactory,
@@ -90,8 +83,8 @@ struct MultiRoomTwoPlayerTests {
         let session1 = SessionID("sess-two-player-1")
         let session2 = SessionID("sess-two-player-2")
         
-        await transport.handleConnection(sessionID: session1, connection: connection1, authInfo: nil)
-        await transport.handleConnection(sessionID: session2, connection: connection2, authInfo: nil)
+        await transport.handleConnection(sessionID: session1, connection: connection1, authInfo: nil as AuthenticatedInfo?)
+        await transport.handleConnection(sessionID: session2, connection: connection2, authInfo: nil as AuthenticatedInfo?)
         
         let join1 = TransportMessage.join(
             requestID: "join-1",

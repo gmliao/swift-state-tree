@@ -154,7 +154,7 @@ public actor LandHost {
         // Create server (no router - LandHost handles route registration)
         // LandServer<State>.Configuration is a typealias of LandServerConfiguration, so we can use it directly
         let serverConfig: LandServer<State>.Configuration = finalConfig
-        let server = try await LandServer<State>.makeMultiRoomServer(
+        let server = try await LandServer<State>.create(
             configuration: serverConfig,
             landFactory: landFactory,
             initialStateFactory: initialStateFactory,

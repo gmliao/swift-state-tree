@@ -15,15 +15,8 @@ func testMultiRoomServerSendsInitialSnapshotAfterJoin() async throws {
     // Arrange
     typealias Server = LandServer<MultiRoomSnapshotTestState>
     
-    let server = try await Server.makeMultiRoomServer(
-        configuration: .init(
-            host: "localhost",
-            port: 0,
-            webSocketPath: "/game",
-            enableHealthRoute: false,
-            logStartupBanner: false,
-            jwtConfig: nil,
-            jwtValidator: nil,
+    let server = try await Server.create(
+        configuration: LandServerConfiguration(
             allowGuestMode: true
         ),
         landFactory: { landID in
@@ -47,7 +40,7 @@ func testMultiRoomServerSendsInitialSnapshotAfterJoin() async throws {
     let sessionID = SessionID("sess-multiroom-1")
     
     // Act: Connect and send join request
-    await transport.handleConnection(sessionID: sessionID, connection: connection, authInfo: nil)
+    await transport.handleConnection(sessionID: sessionID, connection: connection, authInfo: nil as AuthenticatedInfo?)
     
     let joinMsg = TransportMessage.join(
         requestID: "req-join-1",

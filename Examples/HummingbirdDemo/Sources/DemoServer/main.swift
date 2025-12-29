@@ -4,41 +4,53 @@ import SwiftStateTree
 import SwiftStateTreeHummingbird
 import SwiftStateTreeTransport
 
-/// Hummingbird Demo: Multi-Room Architecture Example with Multiple Land Types
+/// Hummingbird Demo Server
 ///
-/// This demo demonstrates the **multi-room mode** with multiple land types on a single server
-/// using `LandHost` to manage unified HTTP server and game logic.
-///
-/// **Multi-Room Mode Characteristics**:
-/// - Dynamic land/room creation (lands are created on-demand)
-/// - Multiple concurrent lands/rooms can exist simultaneously
-/// - Multiple land types with different State types on the same server
-/// - Each land type has its own WebSocket path (e.g., `/game/cookie`, `/game/counter`)
-/// - Uses `LandHost` to manage unified HTTP server and game logic
-/// - Suitable for production environments
+/// A unified demo server that showcases SwiftStateTree capabilities:
+/// - Multiple land types (cookie game and counter demo)
+/// - Multi-room support with dynamic room creation
+/// - Unified HTTP server and game logic management via LandHost
 ///
 /// **Land Types**:
 /// - `cookie`: Cookie Clicker game (CookieGameState) at `/game/cookie`
 /// - `counter`: Simple counter demo (CounterState) at `/game/counter`
+///
+/// **Configuration**:
+/// - Port: Set via `PORT` environment variable (default: 8080)
+/// - Host: Set via `HOST` environment variable (default: "localhost")
+/// - Guest mode: Enabled (allows connections without JWT)
+/// - Auto-create rooms: Enabled (clients can create rooms dynamically)
+///
+/// **Usage**:
+/// ```bash
+/// # Run with default settings (localhost:8080)
+/// swift run DemoServer
+///
+/// # Run on custom port
+/// PORT=3000 swift run DemoServer
+///
+/// # Run on custom host and port
+/// HOST=0.0.0.0 PORT=3000 swift run DemoServer
+/// ```
 @main
-struct MultiRoomDemo {
+struct DemoServer {
     static func main() async throws {
         // JWT Configuration for demo/testing purposes
         let jwtConfig = HummingbirdDemoContent.createDemoJWTConfig()
 
         // Create logger with custom log level
         let logger = HummingbirdDemoContent.createDemoLogger(
-            scope: "MultiRoomDemo",
+            scope: "DemoServer",
             logLevel: .debug
         )
 
-        // Get port from environment variable, default to 8080
+        // Get configuration from environment variables
+        let host = HummingbirdDemoContent.getEnvString(key: "HOST", defaultValue: "localhost")
         let port = HummingbirdDemoContent.getEnvUInt16(key: "PORT", defaultValue: 8080)
 
         // Create LandHost to manage both game logic and HTTP server
-        // LandHost combines LandRealm and HTTP server management
-        let host = LandHost(configuration: LandHost.HostConfiguration(
-            host: "localhost",
+        let landHost = LandHost(configuration: LandHost.HostConfiguration(
+            host: host,
             port: port,
             logger: logger
         ))
@@ -52,8 +64,7 @@ struct MultiRoomDemo {
         )
 
         // Register Cookie Game server
-        // Router is automatically used from host
-        try await host.register(
+        try await landHost.register(
             landType: "cookie",
             land: HummingbirdDemoContent.CookieGame.makeLand(),
             initialState: CookieGameState(),
@@ -62,7 +73,7 @@ struct MultiRoomDemo {
         )
 
         // Register Counter Demo server
-        try await host.register(
+        try await landHost.register(
             landType: "counter",
             land: HummingbirdDemoContent.CounterDemo.makeLand(),
             initialState: CounterState(),
@@ -71,6 +82,6 @@ struct MultiRoomDemo {
         )
 
         // Run unified server (LandHost will automatically print connection info)
-        try await host.run()
+        try await landHost.run()
     }
 }

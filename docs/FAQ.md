@@ -302,23 +302,35 @@ Lifetime {
 
 ### Q: 如何設定 JWT 認證？
 
-A: 在 `LandServer.Configuration` 中設定：
+A: 使用 `LandServerConfiguration` 並通過 `LandHost` 註冊：
 
 ```swift
-let config = LandServer.Configuration(
-    jwtConfig: JWTConfiguration(
-        secretKey: "your-secret-key",
-        algorithm: .HS256,
-        validateExpiration: true
-    ),
-    allowGuestMode: true // 允許 Guest 模式
+// Create JWT configuration
+let jwtConfig = JWTConfiguration(
+    secretKey: "your-secret-key",
+    algorithm: .HS256,
+    validateExpiration: true
 )
 
-let server = try await LandServer.makeServer(
-    configuration: config,
+// Create LandHost
+let host = LandHost(configuration: LandHost.HostConfiguration(
+    host: "localhost",
+    port: 8080
+))
+
+// Register land type with JWT configuration
+try await host.register(
+    landType: "demo",
     land: demoLand,
-    initialState: GameState()
+    initialState: GameState(),
+    webSocketPath: "/game",
+    configuration: LandServerConfiguration(
+        jwtConfig: jwtConfig,
+        allowGuestMode: true // 允許 Guest 模式
+    )
 )
+
+try await host.run()
 ```
 
 詳細說明請參考 [認證機制](hummingbird/auth.md)。

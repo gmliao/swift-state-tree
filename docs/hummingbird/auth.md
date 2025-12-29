@@ -24,17 +24,31 @@ ws://host:port/game?token=<jwt-token>
 ## JWTConfiguration
 
 ```swift
-let config = JWTConfiguration(
+let jwtConfig = JWTConfiguration(
     secretKey: "your-secret-key",
     algorithm: .HS256,
     validateExpiration: true
 )
 
-let server = try await LandServer.makeServer(
-    configuration: .init(jwtConfig: config, allowGuestMode: true),
+// Create LandHost to manage HTTP server and game logic
+let host = LandHost(configuration: LandHost.HostConfiguration(
+    host: "localhost",
+    port: 8080
+))
+
+// Register land type with JWT configuration
+try await host.register(
+    landType: "demo",
     land: demoLand,
-    initialState: GameState()
+    initialState: GameState(),
+    webSocketPath: "/game",
+    configuration: LandServerConfiguration(
+        jwtConfig: jwtConfig,
+        allowGuestMode: true
+    )
 )
+
+try await host.run()
 ```
 
 也可以使用環境變數：
@@ -179,17 +193,25 @@ let jwtConfig = JWTConfiguration(
     expectedAudience: nil
 )
 
-// 建立伺服器
-let server = try await LandServer.makeServer(
-    configuration: .init(
+// Create LandHost
+let host = LandHost(configuration: LandHost.HostConfiguration(
+    host: "localhost",
+    port: 8080
+))
+
+// Register land type with JWT configuration (no guest mode)
+try await host.register(
+    landType: "game",
+    land: gameLand,
+    initialState: GameState(),
+    webSocketPath: "/game",
+    configuration: LandServerConfiguration(
         jwtConfig: jwtConfig,
         allowGuestMode: false  // 不允許 Guest 模式
-    ),
-    land: gameLand,
-    initialState: GameState()
+    )
 )
 
-try await server.run()
+try await host.run()
 ```
 
 ### 使用環境變數
@@ -201,14 +223,25 @@ let jwtConfig = JWTConfiguration.fromEnvironment() ?? JWTConfiguration(
     algorithm: .HS256
 )
 
-let server = try await LandServer.makeServer(
-    configuration: .init(
+// Create LandHost
+let host = LandHost(configuration: LandHost.HostConfiguration(
+    host: "localhost",
+    port: 8080
+))
+
+// Register land type with JWT configuration (allow guest mode as fallback)
+try await host.register(
+    landType: "game",
+    land: gameLand,
+    initialState: GameState(),
+    webSocketPath: "/game",
+    configuration: LandServerConfiguration(
         jwtConfig: jwtConfig,
         allowGuestMode: true  // 允許 Guest 模式作為後備
-    ),
-    land: gameLand,
-    initialState: GameState()
+    )
 )
+
+try await host.run()
 ```
 
 ### 環境變數設定
@@ -234,14 +267,25 @@ Guest 模式適用於以下場景：
 ### Guest 模式設定
 
 ```swift
-let server = try await LandServer.makeServer(
-    configuration: .init(
+// Create LandHost
+let host = LandHost(configuration: LandHost.HostConfiguration(
+    host: "localhost",
+    port: 8080
+))
+
+// Register land type with guest mode enabled
+try await host.register(
+    landType: "game",
+    land: gameLand,
+    initialState: GameState(),
+    webSocketPath: "/game",
+    configuration: LandServerConfiguration(
         jwtConfig: jwtConfig,  // JWT 配置（可選）
         allowGuestMode: true   // 允許 Guest 模式
-    ),
-    land: gameLand,
-    initialState: GameState()
+    )
 )
+
+try await host.run()
 ```
 
 ### Guest Session 處理
@@ -308,15 +352,28 @@ let adminAuth = AdminAuthMiddleware(
     apiKey: "your-admin-api-key"  // 可選：使用 API Key
 )
 
-// 建立伺服器並啟用 Admin 路由
-let server = try await LandServer.makeMultiRoomServer(
-    configuration: .init(
-        enableAdminRoutes: true,
-        adminAuth: adminAuth
-    ),
-    landManager: landManager,
-    landTypeRegistry: landTypeRegistry
+// Create LandHost
+let host = LandHost(configuration: LandHost.HostConfiguration(
+    host: "localhost",
+    port: 8080
+))
+
+// Register admin routes
+try await host.registerAdminRoutes(
+    adminAuth: adminAuth,
+    enableAdminRoutes: true
 )
+
+// Register land types as usual
+try await host.register(
+    landType: "game",
+    land: gameLand,
+    initialState: GameState(),
+    webSocketPath: "/game",
+    configuration: serverConfig
+)
+
+try await host.run()
 ```
 
 ### Admin 角色

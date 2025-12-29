@@ -99,12 +99,26 @@ import SwiftStateTreeHummingbird
 @main
 struct DemoServer {
     static func main() async throws {
-        let server = try await LandServer.makeServer(
-            configuration: .init(),
+        // Create LandHost to manage HTTP server and game logic
+        let host = LandHost(configuration: LandHost.HostConfiguration(
+            host: "localhost",
+            port: 8080
+        ))
+
+        // Register land type
+        try await host.register(
+            landType: "demo",
             land: land,
-            initialState: GameState()
+            initialState: GameState(),
+            webSocketPath: "/game",
+            configuration: LandServerConfiguration(
+                allowGuestMode: true,
+                allowAutoCreateOnJoin: true
+            )
         )
-        try await server.run()
+
+        // Run unified server
+        try await host.run()
     }
 }
 ```
