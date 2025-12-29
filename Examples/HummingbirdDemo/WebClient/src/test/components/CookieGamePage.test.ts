@@ -11,14 +11,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createRouter, createWebHistory } from 'vue-router'
 import CookieGamePage from '../../views/CookieGamePage.vue'
-import { testWithDemoGamePlayer } from '../../generated/demo-game/testHelpers'
+import { testWithCookiePlayer } from '../../generated/cookie/testHelpers'
 
-// Mock useDemoGame - demonstrates how easy it is to mock the composable
-vi.mock('../../generated/demo-game/useDemoGame', async () => {
-  const actual = await vi.importActual('../../generated/demo-game/useDemoGame')
+// Mock useCookie - demonstrates how easy it is to mock the composable
+vi.mock('../../generated/cookie/useCookie', async () => {
+  const actual = await vi.importActual('../../generated/cookie/useCookie')
   return {
     ...actual,
-    useDemoGame: vi.fn()
+    useCookie: vi.fn()
   }
 })
 
@@ -37,7 +37,7 @@ describe('CookieGamePage', () => {
 
   it('displays player information when joined', async () => {
     // Arrange: Use codegen-generated helper to create mock with player
-    const mockComposable = testWithDemoGamePlayer('player-1', {
+    const mockComposable = testWithCookiePlayer('player-1', {
       name: 'Test Player',
       cookies: 100,
       cookiesPerSecond: 5
@@ -53,8 +53,8 @@ describe('CookieGamePage', () => {
       }
     }
     
-    const { useDemoGame } = await import('../../generated/demo-game/useDemoGame')
-    vi.mocked(useDemoGame).mockReturnValue(mockComposable)
+    const { useCookie } = await import('../../generated/cookie/useCookie')
+    vi.mocked(useCookie).mockReturnValue(mockComposable)
 
     // Act: Mount component
     const wrapper = mount(CookieGamePage, {
@@ -72,7 +72,7 @@ describe('CookieGamePage', () => {
 
   it('calls clickCookie when cookie button is clicked', async () => {
     // Arrange: Use codegen-generated helper
-    const mockComposable = testWithDemoGamePlayer('player-1')
+    const mockComposable = testWithCookiePlayer('player-1')
     
     // Add private state
     if (mockComposable.state.value) {
@@ -81,8 +81,8 @@ describe('CookieGamePage', () => {
       }
     }
     
-    const { useDemoGame } = await import('../../generated/demo-game/useDemoGame')
-    vi.mocked(useDemoGame).mockReturnValue(mockComposable)
+    const { useCookie } = await import('../../generated/cookie/useCookie')
+    vi.mocked(useCookie).mockReturnValue(mockComposable)
 
     const wrapper = mount(CookieGamePage, {
       global: {
@@ -100,7 +100,7 @@ describe('CookieGamePage', () => {
 
   it('reactively updates when state changes', async () => {
     // Arrange: Use codegen-generated helper
-    const mockComposable = testWithDemoGamePlayer('player-1', { cookies: 0 })
+    const mockComposable = testWithCookiePlayer('player-1', { cookies: 0 })
     
     // Add private state
     if (mockComposable.state.value) {
@@ -109,8 +109,8 @@ describe('CookieGamePage', () => {
       }
     }
     
-    const { useDemoGame } = await import('../../generated/demo-game/useDemoGame')
-    vi.mocked(useDemoGame).mockReturnValue(mockComposable)
+    const { useCookie } = await import('../../generated/cookie/useCookie')
+    vi.mocked(useCookie).mockReturnValue(mockComposable)
 
     const wrapper = mount(CookieGamePage, {
       global: {

@@ -3,7 +3,7 @@
 
 import type { BuyUpgradeAction, BuyUpgradeResponse, ClickCookieEvent, CookieGameState } from '../defs'
 
-export const LAND_TYPE = "demo-game" as const
+export const LAND_TYPE = "cookie" as const
 
 export type LandState = CookieGameState
 

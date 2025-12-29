@@ -156,9 +156,9 @@ public struct BuyUpgradeResponse: ResponsePayload {
 
 public enum CookieGame {
     public static func makeLand() -> LandDefinition<CookieGameState> {
-        // Keep land identifier "demo-game" so existing clients / schema continue to work.
+        // Use "cookie" as land identifier to match server registration.
         Land(
-            "demo-game",
+            "cookie",
             using: CookieGameState.self
         ) {
             AccessControl {
@@ -289,7 +289,7 @@ public enum CookieGame {
             
             Lifetime {
                 // Tick every second to apply passive cookie generation.
-                Tick(every: .seconds(1)) { (state: inout CookieGameState, _: LandContext) in
+                Tick(every: .milliseconds(300)) { (state: inout CookieGameState, _: LandContext) in
                     state.ticks += 1
                     
                     var total = 0

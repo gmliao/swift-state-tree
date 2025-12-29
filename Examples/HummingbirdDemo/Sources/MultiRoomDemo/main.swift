@@ -43,47 +43,34 @@ struct MultiRoomDemo {
             logger: logger
         ))
 
+        // Shared server configuration for all land types
+        let serverConfig = LandServerConfiguration(
+            logger: logger,
+            jwtConfig: jwtConfig,
+            allowGuestMode: true,
+            allowAutoCreateOnJoin: true
+        )
+
         // Register Cookie Game server
         // Router is automatically used from host
-        try await host.registerWithLandServer(
+        try await host.register(
             landType: "cookie",
-            landFactory: { _ in
-                HummingbirdDemoContent.CookieGame.makeLand()
-            },
-            initialStateFactory: { _ in
-                CookieGameState()
-            },
+            land: HummingbirdDemoContent.CookieGame.makeLand(),
+            initialState: CookieGameState(),
             webSocketPath: "/game/cookie",
-            configuration: LandServerConfiguration(
-                logger: logger,
-                jwtConfig: jwtConfig,
-                allowGuestMode: true,
-                allowAutoCreateOnJoin: true
-            )
+            configuration: serverConfig
         )
 
         // Register Counter Demo server
-        try await host.registerWithLandServer(
+        try await host.register(
             landType: "counter",
-            landFactory: { _ in
-                HummingbirdDemoContent.CounterDemo.makeLand()
-            },
-            initialStateFactory: { _ in
-                CounterState()
-            },
+            land: HummingbirdDemoContent.CounterDemo.makeLand(),
+            initialState: CounterState(),
             webSocketPath: "/game/counter",
-            configuration: LandServerConfiguration(
-                logger: logger,
-                jwtConfig: jwtConfig,
-                allowGuestMode: true,
-                allowAutoCreateOnJoin: true
-            )
+            configuration: serverConfig
         )
 
-        logger.info("💡 Connect with different landIDs to create different rooms")
-        logger.info("   Example: ws://localhost:\(port)/game/cookie?token=<jwt>&landID=cookie:room-123")
-        
-        // Run unified server
+        // Run unified server (LandHost will automatically print connection info)
         try await host.run()
     }
 }

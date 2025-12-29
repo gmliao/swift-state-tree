@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { useRouter } from 'vue-router'
-import { useDemoGame } from '../generated/demo-game/useDemoGame'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
+import { useCookie } from '../generated/cookie/useCookie'
 import {
   filterOtherPlayers,
   getCurrentPlayer,
@@ -11,15 +11,43 @@ import {
 } from '../utils/gameLogic'
 
 const router = useRouter()
+const route = useRoute()
+
+// Room ID from query parameter
+const roomId = ref<string>((route.query.roomId as string) || '')
 
 const {
   state,
   currentPlayerID,
   isJoined,
+  isConnecting,
+  connect,
   disconnect,
   clickCookie,
   buyUpgrade
-} = useDemoGame()
+} = useCookie()
+
+onMounted(async () => {
+  // Auto-connect with room ID from query parameter
+  await handleConnect()
+})
+
+onUnmounted(async () => {
+  await disconnect()
+})
+
+async function handleConnect() {
+  if (isConnecting.value || isJoined.value) return
+  
+  try {
+    await connect({
+      wsUrl: 'ws://localhost:8080/game/cookie',
+      landID: roomId.value.trim() || undefined  // Pass room ID from query parameter
+    })
+  } catch (error) {
+    console.error('Failed to connect:', error)
+  }
+}
 
 // Use extracted logic functions for better testability
 const me = computed(() => getCurrentPlayer(state.value, currentPlayerID.value))
@@ -55,7 +83,11 @@ const grandmaCost = computed(() => calculateUpgradeCost(grandmaLevel.value, 50))
       <button @click="handleLeave" class="btn btn-small">Leave Game</button>
     </div>
 
-    <div v-if="!isJoined || !state" class="section">
+    <div v-if="isConnecting" class="section">
+      <p>Connecting to room...</p>
+    </div>
+
+    <div v-if="!isJoined || !state" class="section" v-show="!isConnecting">
       <p>Not connected. Please go back to home and connect.</p>
       <button @click="handleLeave" class="btn btn-primary">Go Home</button>
     </div>
@@ -361,6 +393,7 @@ h3 {
 p {
   margin: 0.5rem 0;
 }
+
 
 /* Responsive Design */
 @media (max-width: 1024px) {

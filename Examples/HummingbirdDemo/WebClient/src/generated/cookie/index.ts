@@ -14,7 +14,7 @@ export interface StateTreeOptions {
   logger?: Logger
 }
 
-export class DemoGameStateTree {
+export class CookieStateTree {
   readonly landType = LAND_TYPE
   readonly state: LandState
   readonly actions: Actions

@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { useCounter } from '../generated/counter/useCounter'
 
 const router = useRouter()
+const route = useRoute()
+
+// Get room ID from query parameter
+const roomId = (route.query.roomId as string) || ''
 
 // Use generated composable
 const {
@@ -16,7 +20,8 @@ const {
 
 onMounted(async () => {
   await connect({
-    wsUrl: 'ws://localhost:8080/game/counter'
+    wsUrl: 'ws://localhost:8080/game/counter',
+    landID: roomId.trim() || undefined  // Pass room ID if provided
   })
 })
 

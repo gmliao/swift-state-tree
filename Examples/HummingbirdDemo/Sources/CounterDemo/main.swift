@@ -31,7 +31,7 @@ struct CounterDemo {
         ))
         
         // Register server - LandHost handles route registration automatically
-        try await host.registerWithServer(
+        try await host.register(
             landType: "counter",
             land: HummingbirdDemoContent.CounterDemo.makeLand(),
             initialState: CounterState(),

@@ -1,20 +1,44 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 const router = useRouter()
 
+// Room ID input (shared for all games)
+// Default to 'default' room, or set to empty string to create new rooms
+const roomId = ref<string>('default')
+
 function goToCounter() {
-  router.push({ name: 'counter' })
+  router.push({ 
+    name: 'counter',
+    query: roomId.value ? { roomId: roomId.value } : {}
+  })
 }
 
 function goToCookie() {
-  router.push({ name: 'cookie-game' })
+  router.push({ 
+    name: 'cookie-game',
+    query: roomId.value ? { roomId: roomId.value } : {}
+  })
 }
 </script>
 
 <template>
   <div class="container">
     <h1>SwiftStateTree Demos</h1>
+
+    <!-- Room ID Input -->
+    <div class="room-input-section">
+      <label for="roomId">Room ID (optional):</label>
+      <input
+        id="roomId"
+        v-model="roomId"
+        type="text"
+        placeholder="e.g., room-123 (leave empty for new room)"
+        class="room-input"
+      />
+      <p class="room-hint">Leave empty to create a new room, or enter a room ID to join an existing room.</p>
+    </div>
 
     <div class="demos">
       <div class="demo-card" @click="goToCounter">
@@ -44,7 +68,45 @@ function goToCookie() {
 h1 {
   text-align: center;
   font-size: 2.5rem;
-  margin-bottom: 3rem;
+  margin-bottom: 2rem;
+}
+
+.room-input-section {
+  max-width: 600px;
+  margin: 0 auto 3rem;
+  padding: 1.5rem;
+  background: #f9f9f9;
+  border: 2px solid #ddd;
+  border-radius: 8px;
+}
+
+.room-input-section label {
+  display: block;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 0.5rem;
+}
+
+.room-input {
+  width: 100%;
+  padding: 0.75rem;
+  border: 2px solid #ddd;
+  border-radius: 4px;
+  font-size: 1rem;
+  box-sizing: border-box;
+  margin-bottom: 0.5rem;
+}
+
+.room-input:focus {
+  outline: none;
+  border-color: #4CAF50;
+}
+
+.room-hint {
+  font-size: 0.875rem;
+  color: #666;
+  font-style: italic;
+  margin: 0;
 }
 
 .demos {

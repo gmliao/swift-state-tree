@@ -106,23 +106,16 @@ func testLandHostRegisterSingleServer() async throws {
     var host = LandHost(configuration: LandHost.HostConfiguration(
         enableHealthRoute: false  // Disable to avoid route conflicts in tests
     ))
-    let server = try await LandServer<TestState1>.makeMultiRoomServer(
-        configuration: LandServer<TestState1>.Configuration(
-            host: "localhost",
-            port: 8080,
-            webSocketPath: "/game/test1",
+    // Act
+    try await host.register(
+        landType: "test1",
+        land: TestGame1.makeLand(),
+        initialState: TestState1(),
+        webSocketPath: "/game/test1",
+        configuration: LandServerConfiguration(
             enableHealthRoute: false,  // Disable to avoid route conflicts
             logStartupBanner: false
-        ),
-        landFactory: { _ in TestGame1.makeLand() },
-        initialStateFactory: { _ in TestState1() }
-    )
-    
-    // Act
-    try host.register(
-        landType: "test1",
-        server: server,
-        webSocketPath: "/game/test1"
+        )
     )
     
     // Assert: Registration should succeed without error
@@ -137,39 +130,27 @@ func testLandHostRegisterMultipleServers() async throws {
     ))
     
     // Act: Register first server
-    let server1 = try await LandServer<TestState1>.makeMultiRoomServer(
-        configuration: LandServer<TestState1>.Configuration(
-            host: "localhost",
-            port: 8080,
-            webSocketPath: "/game/test1",
+    try await host.register(
+        landType: "test1",
+        land: TestGame1.makeLand(),
+        initialState: TestState1(),
+        webSocketPath: "/game/test1",
+        configuration: LandServerConfiguration(
             enableHealthRoute: false,  // Disable to avoid route conflicts
             logStartupBanner: false
-        ),
-        landFactory: { _ in TestGame1.makeLand() },
-        initialStateFactory: { _ in TestState1() }
-    )
-    try host.register(
-        landType: "test1",
-        server: server1,
-        webSocketPath: "/game/test1"
+        )
     )
     
     // Act: Register second server with different State type
-    let server2 = try await LandServer<TestState2>.makeMultiRoomServer(
-        configuration: LandServer<TestState2>.Configuration(
-            host: "localhost",
-            port: 8080,
-            webSocketPath: "/game/test2",
+    try await host.register(
+        landType: "test2",
+        land: TestGame2.makeLand(),
+        initialState: TestState2(),
+        webSocketPath: "/game/test2",
+        configuration: LandServerConfiguration(
             enableHealthRoute: false,  // Disable to avoid route conflicts
             logStartupBanner: false
-        ),
-        landFactory: { _ in TestGame2.makeLand() },
-        initialStateFactory: { _ in TestState2() }
-    )
-    try host.register(
-        landType: "test2",
-        server: server2,
-        webSocketPath: "/game/test2"
+        )
     )
     
     // Assert: Both registrations should succeed
@@ -182,23 +163,16 @@ func testLandHostRegisterWithCustomPaths() async throws {
     var host = LandHost(configuration: LandHost.HostConfiguration(
         enableHealthRoute: false  // Disable to avoid route conflicts in tests
     ))
-    let server = try await LandServer<TestState1>.makeMultiRoomServer(
-        configuration: LandServer<TestState1>.Configuration(
-            host: "localhost",
-            port: 8080,
-            webSocketPath: "/custom/path",
+    // Act
+    try await host.register(
+        landType: "custom",
+        land: TestGame1.makeLand(),
+        initialState: TestState1(),
+        webSocketPath: "/custom/path",
+        configuration: LandServerConfiguration(
             enableHealthRoute: false,  // Disable to avoid route conflicts
             logStartupBanner: false
-        ),
-        landFactory: { _ in TestGame1.makeLand() },
-        initialStateFactory: { _ in TestState1() }
-    )
-    
-    // Act
-    try host.register(
-        landType: "custom",
-        server: server,
-        webSocketPath: "/custom/path"
+        )
     )
     
     // Assert: Registration should succeed
@@ -210,42 +184,20 @@ func testLandHostRejectDuplicateLandType() async throws {
     var host = LandHost(configuration: LandHost.HostConfiguration(
         enableHealthRoute: false  // Disable to avoid route conflicts in tests
     ))
-    let server1 = try await LandServer<TestState1>.makeMultiRoomServer(
-        configuration: LandServer<TestState1>.Configuration(
-            host: "localhost",
-            port: 8080,
-            webSocketPath: "/game/test",
-            enableHealthRoute: false,  // Disable to avoid route conflicts
-            logStartupBanner: false
-        ),
-        landFactory: { _ in TestGame1.makeLand() },
-        initialStateFactory: { _ in TestState1() }
-    )
-    
     // Act: Register first time
-    try host.register(
+    try await host.register(
         landType: "duplicate",
-        server: server1,
+        land: TestGame1.makeLand(),
+        initialState: TestState1(),
         webSocketPath: "/game/test"
     )
     
     // Act & Assert: Try to register duplicate landType
-    let server2 = try await LandServer<TestState1>.makeMultiRoomServer(
-        configuration: LandServer<TestState1>.Configuration(
-            host: "localhost",
-            port: 8080,
-            webSocketPath: "/game/test2",
-            enableHealthRoute: false,  // Disable to avoid route conflicts
-            logStartupBanner: false
-        ),
-        landFactory: { _ in TestGame1.makeLand() },
-        initialStateFactory: { _ in TestState1() }
-    )
-    
     do {
-        try host.register(
+        try await host.register(
             landType: "duplicate",
-            server: server2,
+            land: TestGame1.makeLand(),
+            initialState: TestState1(),
             webSocketPath: "/game/test2"
         )
         Issue.record("Expected LandHostError.duplicateLandType to be thrown")
@@ -260,24 +212,17 @@ func testLandHostEmptyLandType() async throws {
     var host = LandHost(configuration: LandHost.HostConfiguration(
         enableHealthRoute: false  // Disable to avoid route conflicts in tests
     ))
-    let server = try await LandServer<TestState1>.makeMultiRoomServer(
-        configuration: LandServer<TestState1>.Configuration(
-            host: "localhost",
-            port: 8080,
-            webSocketPath: "/game/test",
-            enableHealthRoute: false,  // Disable to avoid route conflicts
-            logStartupBanner: false
-        ),
-        landFactory: { _ in TestGame1.makeLand() },
-        initialStateFactory: { _ in TestState1() }
-    )
-    
     // Act & Assert: Try to register with empty landType
     do {
-        try host.register(
+        try await host.register(
             landType: "",
-            server: server,
-            webSocketPath: "/game/test"
+            land: TestGame1.makeLand(),
+            initialState: TestState1(),
+            webSocketPath: "/game/test",
+            configuration: LandServerConfiguration(
+                enableHealthRoute: false,  // Disable to avoid route conflicts
+                logStartupBanner: false
+            )
         )
         Issue.record("Expected LandHostError.invalidLandType to be thrown")
     } catch LandHostError.invalidLandType(let landType) {
@@ -296,9 +241,8 @@ func testLandHostHealthRoute() {
     // Assert: Health route should be registered
     // We can't easily verify the route without a full HTTP server,
     // but the router should be accessible
-    let router = host.router
-    // Router is a non-optional property, so it always exists
-    _ = router  // Just verify we can access it
+    // Note: router is now internal, so we can't access it directly
+    // The test just verifies that host can be created with health route enabled
 }
 
 @Test("LandHost can work with LandRealm")
@@ -308,24 +252,16 @@ func testLandHostWithLandRealm() async throws {
         enableHealthRoute: false  // Disable to avoid route conflicts in tests
     ))
     
-    // Act: Create a LandServer, then register it to host
-    // The host will handle route registration automatically
-    let server = try await LandServer<TestState1>.makeMultiRoomServer(
-        configuration: LandServer<TestState1>.Configuration(
-            host: "localhost",
-            port: 8080,
-            webSocketPath: "/game/realm",
+    // Act: Register land type - host will handle route registration automatically
+    try await host.register(
+        landType: "realm-test",
+        land: TestGame1.makeLand(),
+        initialState: TestState1(),
+        webSocketPath: "/game/realm",
+        configuration: LandServerConfiguration(
             enableHealthRoute: false,  // Disable to avoid route conflicts
             logStartupBanner: false
-        ),
-        landFactory: { _ in TestGame1.makeLand() },
-        initialStateFactory: { _ in TestState1() }
-    )
-    
-    try host.register(
-        landType: "realm-test",
-        server: server,
-        webSocketPath: "/game/realm"
+        )
     )
     
     // Assert: Registration should succeed
@@ -340,38 +276,26 @@ func testLandHostMultipleLandTypes() async throws {
     ))
     
     // Act: Register multiple land types
-    let server1 = try await LandServer<TestState1>.makeMultiRoomServer(
-        configuration: LandServer<TestState1>.Configuration(
-            host: "localhost",
-            port: 8080,
-            webSocketPath: "/game/type1",
+    try await host.register(
+        landType: "type1",
+        land: TestGame1.makeLand(),
+        initialState: TestState1(),
+        webSocketPath: "/game/type1",
+        configuration: LandServerConfiguration(
             enableHealthRoute: false,  // Disable to avoid route conflicts
             logStartupBanner: false
-        ),
-        landFactory: { _ in TestGame1.makeLand() },
-        initialStateFactory: { _ in TestState1() }
-    )
-    try host.register(
-        landType: "type1",
-        server: server1,
-        webSocketPath: "/game/type1"
+        )
     )
     
-    let server2 = try await LandServer<TestState2>.makeMultiRoomServer(
-        configuration: LandServer<TestState2>.Configuration(
-            host: "localhost",
-            port: 8080,
-            webSocketPath: "/game/type2",
+    try await host.register(
+        landType: "type2",
+        land: TestGame2.makeLand(),
+        initialState: TestState2(),
+        webSocketPath: "/game/type2",
+        configuration: LandServerConfiguration(
             enableHealthRoute: false,  // Disable to avoid route conflicts
             logStartupBanner: false
-        ),
-        landFactory: { _ in TestGame2.makeLand() },
-        initialStateFactory: { _ in TestState2() }
-    )
-    try host.register(
-        landType: "type2",
-        server: server2,
-        webSocketPath: "/game/type2"
+        )
     )
     
     // Assert: Both registrations should succeed

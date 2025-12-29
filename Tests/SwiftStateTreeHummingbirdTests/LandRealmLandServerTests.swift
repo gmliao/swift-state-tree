@@ -1,7 +1,7 @@
 // Tests/SwiftStateTreeHummingbirdTests/LandRealmLandServerTests.swift
 //
 // Tests for LandRealm with LandServer (Hummingbird).
-// Tests use LandHost or direct LandRealm.register(landType:server:) instead of the removed registerWithLandServer method.
+// Tests use LandHost.register() to register land types.
 
 import Foundation
 import Testing
@@ -59,7 +59,7 @@ func testLandRealmDefaultWebSocketPath() async throws {
     ))
     
     // Act: Register without webSocketPath
-    try await host.registerWithLandServer(
+    try await host.register(
         landType: "chess",
         landFactory: { _ in ChessGame.makeLand() },
         initialStateFactory: { _ in ChessState() }
@@ -79,7 +79,7 @@ func testLandRealmCustomWebSocketPath() async throws {
     ))
     
     // Act: Register with custom webSocketPath
-    try await host.registerWithLandServer(
+    try await host.register(
         landType: "chess",
         landFactory: { _ in ChessGame.makeLand() },
         initialStateFactory: { _ in ChessState() },
@@ -100,14 +100,14 @@ func testLandRealmDifferentConfigurations() async throws {
     ))
     
     // Act: Register with different configurations
-    try await host.registerWithLandServer(
+    try await host.register(
         landType: "chess",
         landFactory: { _ in ChessGame.makeLand() },
         initialStateFactory: { _ in ChessState() },
         webSocketPath: "/game/chess"
     )
     
-    try await host.registerWithLandServer(
+    try await host.register(
         landType: "cardgame",
         landFactory: { _ in CardGame.makeLand() },
         initialStateFactory: { _ in CardGameState() },
@@ -137,7 +137,7 @@ func testLandRealmCustomConfiguration() async throws {
     )
     
     // Act: Register with custom configuration
-    try await host.registerWithLandServer(
+    try await host.register(
         landType: "chess",
         landFactory: { _ in ChessGame.makeLand() },
         initialStateFactory: { _ in ChessState() },
@@ -159,7 +159,7 @@ func testLandRealmValidatesLandTypeNotEmpty() async throws {
     
     // Act & Assert: Try to register with empty landType
     do {
-        try await host.registerWithLandServer(
+        try await host.register(
             landType: "",
             landFactory: { _ in ChessGame.makeLand() },
             initialStateFactory: { _ in ChessState() }
@@ -181,7 +181,7 @@ func testLandRealmRejectsDuplicateLandType() async throws {
     ))
     
     // Act: Register first time
-    try await host.registerWithLandServer(
+    try await host.register(
         landType: "chess",
         landFactory: { _ in ChessGame.makeLand() },
         initialStateFactory: { _ in ChessState() }
@@ -189,7 +189,7 @@ func testLandRealmRejectsDuplicateLandType() async throws {
     
     // Act & Assert: Try to register duplicate landType
     do {
-        try await host.registerWithLandServer(
+        try await host.register(
             landType: "chess",
             landFactory: { _ in ChessGame.makeLand() },
             initialStateFactory: { _ in ChessState() }
