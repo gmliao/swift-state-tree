@@ -126,7 +126,7 @@ public actor LandRealm {
     ///
     /// // New way (recommended):
     /// var host = LandHost(configuration: ...)
-    /// let server = try await LandServer.makeServer(..., router: host.router)
+    /// let server = try await LandServer.makeServer(...)
     /// try host.register(landType: "myland", server: server, webSocketPath: "/game/myland")
     /// try await host.run()
     /// ```

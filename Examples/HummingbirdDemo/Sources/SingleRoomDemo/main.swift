@@ -2,6 +2,7 @@ import Foundation
 import HummingbirdDemoContent
 import SwiftStateTree
 import SwiftStateTreeHummingbird
+import SwiftStateTreeTransport
 
 /// Hummingbird Demo: Single-Room Architecture Example
 ///
@@ -18,8 +19,6 @@ import SwiftStateTreeHummingbird
 @main
 struct SingleRoomDemo {
     static func main() async throws {
-        typealias DemoSingleRoomServer = LandServer<CookieGameState>
-
         // JWT Configuration for demo/testing purposes
         let jwtConfig = HummingbirdDemoContent.createDemoJWTConfig()
 
@@ -33,28 +32,24 @@ struct SingleRoomDemo {
 
         // Single-room mode: Create a fixed land instance
         // All connections will connect to this same land
-        // Use LandHost for unified HTTP server management
-        var host = LandHost(configuration: LandHost.HostConfiguration(
+        // Use LandHost for unified HTTP server and game logic management
+        let host = LandHost(configuration: LandHost.HostConfiguration(
             host: "localhost",
             port: 8080,
             logger: logger
         ))
         
-        let server = try await DemoSingleRoomServer.makeServer(
-            configuration: LandServer.Configuration(
-                logStartupBanner: false, // LandHost will log startup info
+        // Register server - LandHost handles route registration automatically
+        try await host.registerWithServer(
+            landType: "cookie",
+            land: HummingbirdDemoContent.CookieGame.makeLand(),
+            initialState: CookieGameState(),
+            webSocketPath: "/game/cookie",
+            configuration: LandServerConfiguration(
                 logger: logger, // Pass custom logger with desired log level
                 jwtConfig: jwtConfig,
                 allowGuestMode: true // Enable guest mode: allow connections without JWT token
-            ),
-            land: HummingbirdDemoContent.CookieGame.makeLand(),
-            router: host.router // Use host's shared router
-        )
-        
-        try host.register(
-            landType: "cookie",
-            server: server,
-            webSocketPath: "/game/cookie"
+            )
         )
         
         // Run unified server
