@@ -747,7 +747,7 @@ func testAfterFinalize() async throws {
                     await order.markOnFinalize()
                 }
             }
-            config.afterFinalize = { (state: DemoLandState) in
+            config.afterFinalize = { (state: DemoLandState, ctx: LandContext) in
                 // Verify OnFinalize already ran (state.ticks should be 100)
                 #expect(state.ticks == 100, "OnFinalize should have set ticks to 100")
                 await order.markAfterFinalize()
@@ -779,6 +779,243 @@ func testAfterFinalize() async throws {
     // Verify state was modified by OnFinalize
     let finalState = await keeper.currentState()
     #expect(finalState.ticks == 100, "OnFinalize should have modified state")
+}
+
+// MARK: - DestroyWhenEmpty Tests
+
+@Test("DestroyWhenEmpty destroys Land after delay when empty")
+func testDestroyWhenEmptyDestroysAfterDelay() async throws {
+    actor DestroyTracker {
+        var onFinalizeCalled = false
+        var afterFinalizeCalled = false
+        
+        func markOnFinalize() { onFinalizeCalled = true }
+        func markAfterFinalize() { afterFinalizeCalled = true }
+        
+        func getStatus() -> (onFinalize: Bool, afterFinalize: Bool) {
+            (onFinalize: onFinalizeCalled, afterFinalize: afterFinalizeCalled)
+        }
+    }
+    let tracker = DestroyTracker()
+    
+    let definition = Land(
+        "destroy-test",
+        using: DemoLandState.self
+    ) {
+        Lifetime { (config: inout LifetimeConfig<DemoLandState>) in
+            config.onFinalize = { (state: inout DemoLandState, ctx: LandContext) in
+                state.ticks = 999  // Mark that OnFinalize ran
+                ctx.spawn {
+                    await tracker.markOnFinalize()
+                }
+            }
+            config.afterFinalize = { (state: DemoLandState, ctx: LandContext) in
+                // Verify OnFinalize already ran
+                #expect(state.ticks == 999, "OnFinalize should have set ticks to 999")
+                await tracker.markAfterFinalize()
+            }
+            config.destroyWhenEmptyAfter = .milliseconds(50)
+        }
+    }
+    
+    let keeper = LandKeeper<DemoLandState>(
+        definition: definition,
+        initialState: DemoLandState()
+    )
+    
+    // Join and then leave to trigger destroy timer
+    let playerID = PlayerID("test-player")
+    let clientID = ClientID("test-client")
+    let sessionID = SessionID("test-session")
+    
+    try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    try await keeper.leave(playerID: playerID, clientID: clientID)
+    
+    // Wait for destroy timer to expire (50ms + buffer)
+    try await Task.sleep(nanoseconds: 150_000_000) // 150ms
+    
+    let status = await tracker.getStatus()
+    #expect(status.onFinalize, "OnFinalize should be called after destroy delay")
+    #expect(status.afterFinalize, "AfterFinalize should be called after destroy delay")
+    
+    // Verify state was modified by OnFinalize
+    let finalState = await keeper.currentState()
+    #expect(finalState.ticks == 999, "OnFinalize should have modified state")
+}
+
+@Test("DestroyWhenEmpty cancels destroy timer when new player joins")
+func testDestroyWhenEmptyCancelsOnJoin() async throws {
+    actor DestroyTracker {
+        var onFinalizeCalled = false
+        
+        func markOnFinalize() { onFinalizeCalled = true }
+        func getStatus() -> Bool { onFinalizeCalled }
+    }
+    let tracker = DestroyTracker()
+    
+    let definition = Land(
+        "cancel-destroy-test",
+        using: DemoLandState.self
+    ) {
+        Lifetime { (config: inout LifetimeConfig<DemoLandState>) in
+            config.onFinalize = { (state: inout DemoLandState, ctx: LandContext) in
+                state.ticks = 999
+                ctx.spawn {
+                    await tracker.markOnFinalize()
+                }
+            }
+            config.destroyWhenEmptyAfter = .milliseconds(50)
+        }
+        Rules {
+            OnJoin { (state: inout DemoLandState, ctx: LandContext) in
+                state.players[ctx.playerID] = ctx.playerID.rawValue
+            }
+        }
+    }
+    
+    let keeper = LandKeeper<DemoLandState>(
+        definition: definition,
+        initialState: DemoLandState()
+    )
+    
+    let player1ID = PlayerID("player-1")
+    let client1ID = ClientID("client-1")
+    let session1ID = SessionID("session-1")
+    
+    let player2ID = PlayerID("player-2")
+    let client2ID = ClientID("client-2")
+    let session2ID = SessionID("session-2")
+    
+    // Join and leave player 1 to start destroy timer
+    try await keeper.join(playerID: player1ID, clientID: client1ID, sessionID: session1ID)
+    try await keeper.leave(playerID: player1ID, clientID: client1ID)
+    
+    // Wait a bit but not long enough for destroy to happen
+    try await Task.sleep(nanoseconds: 30_000_000) // 30ms (less than 50ms delay)
+    
+    // Join player 2 before destroy timer expires - this should cancel the timer
+    try await keeper.join(playerID: player2ID, clientID: client2ID, sessionID: session2ID)
+    
+    // Wait for the original destroy delay to pass
+    try await Task.sleep(nanoseconds: 100_000_000) // 100ms (more than 50ms delay)
+    
+    // OnFinalize should NOT have been called because player 2 joined
+    let status = await tracker.getStatus()
+    #expect(!status, "OnFinalize should NOT be called when new player joins before destroy delay")
+    
+    // Verify player 2 is still in the land
+    let state = await keeper.currentState()
+    #expect(state.players[player2ID] != nil, "Player 2 should still be in the land")
+}
+
+@Test("DestroyWhenEmpty resets timer when last player leaves again")
+func testDestroyWhenEmptyResetsTimerOnRejoin() async throws {
+    actor DestroyTracker {
+        var destroyCount = 0
+        
+        func increment() { destroyCount += 1 }
+        func getCount() -> Int { destroyCount }
+    }
+    let tracker = DestroyTracker()
+    
+    let definition = Land(
+        "reset-timer-test",
+        using: DemoLandState.self
+    ) {
+        Lifetime { (config: inout LifetimeConfig<DemoLandState>) in
+            config.onFinalize = { (state: inout DemoLandState, ctx: LandContext) in
+                ctx.spawn {
+                    await tracker.increment()
+                }
+            }
+            config.destroyWhenEmptyAfter = .milliseconds(50)
+        }
+    }
+    
+    let keeper = LandKeeper<DemoLandState>(
+        definition: definition,
+        initialState: DemoLandState()
+    )
+    
+    let playerID = PlayerID("test-player")
+    let clientID = ClientID("test-client")
+    let sessionID = SessionID("test-session")
+    
+    // First cycle: join and leave
+    try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    try await keeper.leave(playerID: playerID, clientID: clientID)
+    
+    // Wait a bit but not long enough for destroy
+    try await Task.sleep(nanoseconds: 30_000_000) // 30ms
+    
+    // Rejoin before destroy timer expires
+    try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    
+    // Wait a bit
+    try await Task.sleep(nanoseconds: 20_000_000) // 20ms
+    
+    // Leave again - this should start a new destroy timer
+    try await keeper.leave(playerID: playerID, clientID: clientID)
+    
+    // Wait for the new destroy timer to expire
+    try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+    
+    // OnFinalize should be called only once (after the second leave)
+    let count = await tracker.getCount()
+    #expect(count == 1, "OnFinalize should be called once after the second leave cycle")
+}
+
+@Test("DestroyWhenEmpty does not destroy when players are present")
+func testDestroyWhenEmptyDoesNotDestroyWithPlayers() async throws {
+    actor DestroyTracker {
+        var onFinalizeCalled = false
+        
+        func markOnFinalize() { onFinalizeCalled = true }
+        func getStatus() -> Bool { onFinalizeCalled }
+    }
+    let tracker = DestroyTracker()
+    
+    let definition = Land(
+        "no-destroy-with-players-test",
+        using: DemoLandState.self
+    ) {
+        Lifetime { (config: inout LifetimeConfig<DemoLandState>) in
+            config.onFinalize = { (state: inout DemoLandState, ctx: LandContext) in
+                ctx.spawn {
+                    await tracker.markOnFinalize()
+                }
+            }
+            config.destroyWhenEmptyAfter = .milliseconds(50)
+        }
+        Rules {
+            OnJoin { (state: inout DemoLandState, ctx: LandContext) in
+                state.players[ctx.playerID] = ctx.playerID.rawValue
+            }
+        }
+    }
+    
+    let keeper = LandKeeper<DemoLandState>(
+        definition: definition,
+        initialState: DemoLandState()
+    )
+    
+    let playerID = PlayerID("test-player")
+    let clientID = ClientID("test-client")
+    let sessionID = SessionID("test-session")
+    
+    // Join a player
+    try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    
+    // Wait much longer than the destroy delay
+    try await Task.sleep(nanoseconds: 200_000_000) // 200ms
+    
+    // OnFinalize should NOT be called because player is still present
+    let status = await tracker.getStatus()
+    #expect(!status, "OnFinalize should NOT be called when players are present")
+    
+    // Verify player is still in the land
+    let state = await keeper.currentState()
+    #expect(state.players[playerID] != nil, "Player should still be in the land")
 }
 
 @Test("CanJoin with resolver loads data before validation")

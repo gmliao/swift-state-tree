@@ -8,7 +8,7 @@ public struct CounterState: StateNodeProtocol {
     /// Current count value, broadcast to all clients.
     @Sync(.broadcast)
     var count: Int = 0
-    
+
     public init() {}
 }
 
@@ -18,14 +18,14 @@ public struct CounterState: StateNodeProtocol {
 @Payload
 public struct IncrementAction: ActionPayload {
     public typealias Response = IncrementResponse
-    
+
     public init() {}
 }
 
 @Payload
 public struct IncrementResponse: ResponsePayload {
     public let newCount: Int
-    
+
     public init(newCount: Int) {
         self.newCount = newCount
     }
@@ -48,10 +48,19 @@ public enum CounterDemo {
                 Tick(every: .milliseconds(100)) { (_: inout CounterState, _: LandContext) in
                     // Empty tick handler
                 }
+                DestroyWhenEmpty(after: .seconds(5)) { (_: inout CounterState, ctx: LandContext) in
+                    ctx.logger.info("Land is empty, destroying...")
+                }
+                OnFinalize { (state: inout CounterState, ctx: LandContext) in
+                    ctx.logger.info("Land is finalizing...")
+                }
+                AfterFinalize { (state: CounterState, ctx: LandContext) async in
+                    ctx.logger.info("Land is finalized with final count: \(state.count)")
+                }
             }
-            
+
             Rules {
-                HandleAction(IncrementAction.self) { (state: inout CounterState, action: IncrementAction, ctx: LandContext) in
+                HandleAction(IncrementAction.self) { (state: inout CounterState, _: IncrementAction, _: LandContext) in
                     state.count += 1
                     return IncrementResponse(newCount: state.count)
                 }

@@ -10,6 +10,22 @@ import Logging
 /// Resolver outputs are populated before Action/Event handler execution.
 @dynamicMemberLookup
 public struct LandContext: Sendable {
+    // MARK: - System IDs
+    
+    /// System player ID used for system operations (Tick, OnInitialize, OnFinalize, AfterFinalize).
+    ///
+    /// Use this to identify system-initiated operations in handlers.
+    /// Example: `if ctx.playerID == LandContext.systemPlayerID { ... }`
+    public static let systemPlayerID = PlayerID("_system")
+    
+    /// System client ID used for system operations.
+    public static let systemClientID = ClientID("_system")
+    
+    /// System session ID used for system operations.
+    public static let systemSessionID = SessionID("_system")
+    
+    // MARK: - Instance Properties
+    
     /// Land identifier
     public let landID: String
 

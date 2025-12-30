@@ -292,11 +292,12 @@ func testJoinWithEmptyMetadata() async throws {
     let joined = await adapter.isJoined(sessionID: session1)
     #expect(joined, "Session should be joined")
     
-    // Assert: State should have empty metadata
+    // Assert: State should have metadata with isGuest flag (since this is a guest session)
     let state = await keeper.currentState()
     let playerID = PlayerID(session1.rawValue)
     let storedMetadata = state.metadata[playerID]
     #expect(storedMetadata != nil, "Metadata should exist")
-    #expect(storedMetadata?.isEmpty == true, "Metadata should be empty")
+    // Guest session should have isGuest flag in metadata
+    #expect(storedMetadata?["isGuest"] == "true", "Guest session should have isGuest flag")
 }
 

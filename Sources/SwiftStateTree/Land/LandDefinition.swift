@@ -79,6 +79,16 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
 
     /// Duration to wait before destroying the Land when it becomes empty.
     public var destroyWhenEmptyAfter: Duration?
+    
+    /// Handler called when the Land is being destroyed due to being empty.
+    ///
+    /// This is called specifically when the Land is destroyed because it became empty
+    /// (after the `destroyWhenEmptyAfter` delay). It is executed before `OnFinalize`.
+    /// Use this to perform cleanup actions specific to empty-room destruction.
+    public var onDestroyWhenEmpty: (@Sendable (inout State, LandContext) throws -> Void)?
+    
+    /// Resolver executors for the onDestroyWhenEmpty handler (empty if no resolvers declared).
+    public var onDestroyWhenEmptyResolverExecutors: [any AnyResolverExecutor]
 
     /// Interval at which to persist the state snapshot.
     public var persistInterval: Duration?
@@ -105,7 +115,7 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
     ///
     /// This is called after OnFinalize, when state is no longer mutable.
     /// Use this for async cleanup operations (e.g., closing database connections, sending metrics).
-    public var afterFinalize: (@Sendable (State) async -> Void)?
+    public var afterFinalize: (@Sendable (State, LandContext) async -> Void)?
     
     /// Handler called when the Land is shutting down.
     ///
@@ -122,12 +132,14 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
         tickInterval: Duration? = nil,
         tickHandler: (@Sendable (inout State, LandContext) -> Void)? = nil,
         destroyWhenEmptyAfter: Duration? = nil,
+        onDestroyWhenEmpty: (@Sendable (inout State, LandContext) throws -> Void)? = nil,
+        onDestroyWhenEmptyResolverExecutors: [any AnyResolverExecutor] = [],
         persistInterval: Duration? = nil,
         onInitialize: (@Sendable (inout State, LandContext) throws -> Void)? = nil,
         onInitializeResolverExecutors: [any AnyResolverExecutor] = [],
         onFinalize: (@Sendable (inout State, LandContext) throws -> Void)? = nil,
         onFinalizeResolverExecutors: [any AnyResolverExecutor] = [],
-        afterFinalize: (@Sendable (State) async -> Void)? = nil,
+        afterFinalize: (@Sendable (State, LandContext) async -> Void)? = nil,
         onShutdown: (@Sendable (State) async -> Void)? = nil
     ) {
         self.canJoin = canJoin
@@ -139,6 +151,8 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
         self.tickInterval = tickInterval
         self.tickHandler = tickHandler
         self.destroyWhenEmptyAfter = destroyWhenEmptyAfter
+        self.onDestroyWhenEmpty = onDestroyWhenEmpty
+        self.onDestroyWhenEmptyResolverExecutors = onDestroyWhenEmptyResolverExecutors
         self.persistInterval = persistInterval
         self.onInitialize = onInitialize
         self.onInitializeResolverExecutors = onInitializeResolverExecutors

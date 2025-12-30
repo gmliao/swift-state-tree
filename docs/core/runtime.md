@@ -363,8 +363,10 @@ state.clearDirty()
 
 ```swift
 Lifetime {
-    DestroyWhenEmpty(after: .seconds(60))  // 空房間 60 秒後銷毀
-    DestroyAfter(duration: .hours(1))      // 1 小時後銷毀
+    DestroyWhenEmpty(after: .seconds(60)) { state, ctx in
+        // 空房間 60 秒後銷毀，可在這裡執行清理邏輯
+        ctx.logger.info("Land is empty, destroying...")
+    }
 }
 ```
 
