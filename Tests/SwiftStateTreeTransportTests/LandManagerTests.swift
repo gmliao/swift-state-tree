@@ -213,3 +213,160 @@ func testLandManagerGetOrCreateReturnsSameContainer() async throws {
     #expect(container1.landID == landID)
 }
 
+
+// MARK: - Test State with Counter
+
+@StateNodeBuilder
+struct CounterTestState: StateNodeProtocol {
+    @Sync(.broadcast)
+    var count: Int = 0
+    
+    public init() {}
+}
+
+@Payload
+struct IncrementTestAction: ActionPayload {
+    public typealias Response = IncrementTestResponse
+    let amount: Int
+    
+    public init(amount: Int = 1) {
+        self.amount = amount
+    }
+}
+
+@Payload
+struct IncrementTestResponse: ResponsePayload {
+    let newCount: Int
+    
+    public init(newCount: Int) {
+        self.newCount = newCount
+    }
+}
+
+@Test("LandManager automatically removes land when destroyed")
+func testLandManagerAutoRemovesDestroyedLand() async throws {
+    // Arrange
+    let landFactory: @Sendable (LandID) -> LandDefinition<CounterTestState> = { landID in
+        Land(landID.stringValue, using: CounterTestState.self) {
+            Lifetime {
+                DestroyWhenEmpty(after: .milliseconds(50)) { (_: inout CounterTestState, _: LandContext) in
+                    // Empty handler
+                }
+            }
+            Rules {}
+        }
+    }
+    
+    let initialStateFactory: @Sendable (LandID) -> CounterTestState = { _ in
+        CounterTestState()
+    }
+    
+    let manager = LandManager<CounterTestState>(
+        landFactory: landFactory,
+        initialStateFactory: initialStateFactory
+    )
+    
+    let landID = LandID("auto-remove-test")
+    let playerID1 = PlayerID("player-1")
+    let clientID1 = ClientID("client-1")
+    let sessionID1 = SessionID("session-1")
+    
+    // Act - Create land and join player
+    let definition = landFactory(landID)
+    let initialState = initialStateFactory(landID)
+    let container = await manager.getOrCreateLand(landID: landID, definition: definition, initialState: initialState)
+    
+    // Verify land exists
+    let landBeforeDestroy = await manager.getLand(landID: landID)
+    let landsBeforeDestroy = await manager.listLands()
+    #expect(landBeforeDestroy != nil, "Land should exist before destroy")
+    #expect(landsBeforeDestroy.contains(landID), "Land should be in list before destroy")
+    
+    // Join player
+    _ = try await container.keeper.join(playerID: playerID1, clientID: clientID1, sessionID: sessionID1)
+    
+    // Leave player to trigger destroy
+    try await container.keeper.leave(playerID: playerID1, clientID: clientID1)
+    
+    // Wait for destroy to complete (AfterFinalize is the last handler, then onLandDestroyed is called)
+    try await Task.sleep(for: .milliseconds(150))
+    
+    // Assert - Land should be automatically removed from LandManager
+    let landAfterDestroy = await manager.getLand(landID: landID)
+    let landsAfterDestroy = await manager.listLands()
+    #expect(landAfterDestroy == nil, "Land should be automatically removed from LandManager after destroy")
+    #expect(!landsAfterDestroy.contains(landID), "Land should not be in list after destroy")
+}
+
+@Test("LandManager recreates land with fresh state when destroyed land is removed")
+func testLandManagerRecreatesDestroyedLandWithFreshState() async throws {
+    // Arrange
+    let landFactory: @Sendable (LandID) -> LandDefinition<CounterTestState> = { landID in
+        Land(landID.stringValue, using: CounterTestState.self) {
+            Lifetime {
+                DestroyWhenEmpty(after: .milliseconds(50)) { (_: inout CounterTestState, _: LandContext) in
+                    // Empty handler
+                }
+            }
+            Rules {
+                HandleAction(IncrementTestAction.self) { (state: inout CounterTestState, action: IncrementTestAction, _: LandContext) in
+                    state.count += action.amount
+                    return IncrementTestResponse(newCount: state.count)
+                }
+            }
+        }
+    }
+    
+    let initialStateFactory: @Sendable (LandID) -> CounterTestState = { _ in
+        CounterTestState()
+    }
+    
+    let manager = LandManager<CounterTestState>(
+        landFactory: landFactory,
+        initialStateFactory: initialStateFactory
+    )
+    
+    let landID = LandID("counter-test")
+    let playerID1 = PlayerID("player-1")
+    let clientID1 = ClientID("client-1")
+    let sessionID1 = SessionID("session-1")
+    
+    // Act - Create land and join player
+    let definition = landFactory(landID)
+    let initialState = initialStateFactory(landID)
+    let container1 = await manager.getOrCreateLand(landID: landID, definition: definition, initialState: initialState)
+    
+    // Join player and modify state using action
+    _ = try await container1.keeper.join(playerID: playerID1, clientID: clientID1, sessionID: sessionID1)
+    
+    // Modify state by executing action (increment to 7)
+    let action = IncrementTestAction(amount: 7)
+    _ = try await container1.keeper.handleAction(action, playerID: playerID1, clientID: clientID1, sessionID: sessionID1)
+    
+    // Verify state was modified
+    let stateAfterModification = await container1.keeper.currentState()
+    #expect(stateAfterModification.count == 7, "State should be modified to 7")
+    
+    // Leave player to trigger destroy
+    try await container1.keeper.leave(playerID: playerID1, clientID: clientID1)
+    
+    // Wait for destroy to complete and auto-removal
+    try await Task.sleep(for: .milliseconds(150))
+    
+    // Verify land has been automatically removed
+    let landAfterDestroy = await manager.getLand(landID: landID)
+    #expect(landAfterDestroy == nil, "Land should be automatically removed after destroy")
+    
+    // Recreate land with same landID
+    let newInitialState = initialStateFactory(landID)
+    let container2 = await manager.getOrCreateLand(landID: landID, definition: definition, initialState: newInitialState)
+    
+    // Assert - New land should have fresh initial state (count = 0), not old state (count = 7)
+    let stateAfterRecreate = await container2.keeper.currentState()
+    #expect(stateAfterRecreate.count == 0, "Recreated land should have fresh initial state (count = 0), not old state (count = 7)")
+    #expect(container1.landID == container2.landID, "Should have same landID")
+    
+    // Verify it's actually a new container (different keeper instance)
+    let playerCountAfterRecreate = await container2.keeper.playerCount()
+    #expect(playerCountAfterRecreate == 0, "New land should start with no players")
+}

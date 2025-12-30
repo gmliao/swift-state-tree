@@ -34,9 +34,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private var transport: LandKeeperTransport?
     private let logger: Logger
     
+    /// Actual land instance ID (e.g., "counter:550e8400-...")
+    /// This is different from definition.id which is just the land type (e.g., "counter")
+    private var actualLandID: String?
+    
     /// Set the transport interface (called after TransportAdapter is created)
     public func setTransport(_ transport: LandKeeperTransport?) {
         self.transport = transport
+    }
+    
+    /// Set the actual land instance ID (called after LandKeeper is created)
+    /// This allows LandContext to use the actual instance ID instead of just the land type
+    public func setLandID(_ landID: String) {
+        self.actualLandID = landID
     }
 
     private var tickTask: Task<Void, Never>?
@@ -724,8 +734,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ) -> LandContext {
         let services = servicesOverride ?? players[playerID]?.services ?? LandServices()
         let playerSession = players[playerID]
+        // Use actual land instance ID if available, otherwise fall back to definition.id (land type)
+        let landID = actualLandID ?? definition.id
         return LandContext(
-            landID: definition.id,
+            landID: landID,
             playerID: playerID,
             clientID: clientID,
             sessionID: sessionID,
@@ -799,7 +811,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     private func runTick() async {
+        // Check if task was cancelled before executing tick
+        // This prevents ticks from running after shutdown has started
+        guard !Task.isCancelled else { return }
+        
         guard let handler = definition.lifetimeHandlers.tickHandler else { return }
+        
+        // Double-check: if tickTask is nil, we're in shutdown, don't run
+        guard tickTask != nil else { return }
+        
         let ctx = makeContext(
             playerID: systemPlayerID,
             clientID: systemClientID,
@@ -825,6 +845,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     private func shutdownIfIdle() async {
         guard players.isEmpty else { return }
+        
+        // Cancel tick task FIRST to prevent any new ticks from starting
+        // This must be done before executing destroy handlers to ensure no ticks run after destroy
+        tickTask?.cancel()
+        tickTask = nil
+        
         destroyTask?.cancel()
         destroyTask = nil
 
@@ -920,9 +946,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             let snapshot = state
             await handler(snapshot)
         }
-
-        tickTask?.cancel()
-        tickTask = nil
+        
+        // Notify transport that land has been destroyed
+        // This allows transport layer to perform cleanup (e.g., remove from LandManager)
+        // Note: tickTask was already cancelled at the start of shutdownIfIdle
+        await transport?.onLandDestroyed()
     }
 
     // Note: isEventAllowed is no longer needed as we use registry-based validation

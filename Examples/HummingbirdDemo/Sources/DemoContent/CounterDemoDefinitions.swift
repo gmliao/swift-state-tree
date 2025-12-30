@@ -45,8 +45,8 @@ public enum CounterDemo {
             }
 
             Lifetime {
-                Tick(every: .milliseconds(100)) { (_: inout CounterState, _: LandContext) in
-                    // Empty tick handler
+                Tick(every: .milliseconds(100)) { (state: inout CounterState, ctx: LandContext) in
+                    ctx.logger.info("LandId \(ctx.landID) is ticking...count: \(state.count)")
                 }
                 DestroyWhenEmpty(after: .seconds(5)) { (_: inout CounterState, ctx: LandContext) in
                     ctx.logger.info("Land is empty, destroying...")
