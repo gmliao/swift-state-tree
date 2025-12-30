@@ -17,7 +17,8 @@ func testMultiRoomServerSendsInitialSnapshotAfterJoin() async throws {
     
     let server = try await Server.create(
         configuration: LandServerConfiguration(
-            allowGuestMode: true
+            allowGuestMode: true,
+            allowAutoCreateOnJoin: true
         ),
         landFactory: { landID in
             Land(landID.landType, using: MultiRoomSnapshotTestState.self) {

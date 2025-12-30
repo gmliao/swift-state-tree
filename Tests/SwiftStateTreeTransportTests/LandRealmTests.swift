@@ -7,6 +7,11 @@ import Testing
 import SwiftStateTree
 @testable import SwiftStateTreeTransport
 
+@available(*, deprecated, message: "Used only to exercise deprecated LandRealm.run() in tests.")
+private func callDeprecatedRun(_ realm: LandRealm) async throws {
+    try await realm.run()
+}
+
 // MARK: - Test State Types
 
 @StateNodeBuilder
@@ -149,6 +154,7 @@ func testLandRealmShutdownWithNoServers() async throws {
 }
 
 @Test("LandRealm.run() is deprecated and throws error")
+@available(*, deprecated, message: "Uses deprecated API to verify behavior.")
 func testLandRealmRunIsDeprecated() async throws {
     // Arrange
     let realm = LandRealm()
@@ -158,9 +164,8 @@ func testLandRealmRunIsDeprecated() async throws {
 
     // Act & Assert: run() should throw error indicating it's deprecated
     // Note: Intentionally using deprecated method to test deprecation behavior
-    // This warning is expected and acceptable for this test
     do {
-        try await realm.run()
+        try await callDeprecatedRun(realm)
         Issue.record("Expected error to be thrown")
     } catch LandRealmError.httpServerManagementMovedToHost(let message) {
         #expect(message.contains("LandRealm.run() is no longer supported"))

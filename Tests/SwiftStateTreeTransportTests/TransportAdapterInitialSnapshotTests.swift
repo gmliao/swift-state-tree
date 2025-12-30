@@ -160,7 +160,8 @@ struct TransportAdapterInitialSnapshotTests {
         let router = LandRouter<InitialSnapshotTestState>(
             landManager: landManager,
             landTypeRegistry: registry,
-            transport: transport
+            transport: transport,
+            allowAutoCreateOnJoin: true
         )
         await transport.setDelegate(router)
         

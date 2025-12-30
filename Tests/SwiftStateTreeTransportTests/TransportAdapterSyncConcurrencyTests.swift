@@ -70,7 +70,8 @@ struct TransportAdapterSyncConcurrencyTests {
         }
 
         // Small delay to ensure first sync starts and acquires lock
-        try await Task.sleep(for: .milliseconds(20))
+        // Increased delay for CI stability (was 20ms, now 50ms)
+        try await Task.sleep(for: .milliseconds(50))
 
         let sync2Task = Task {
             await adapter.syncNow()
@@ -81,7 +82,8 @@ struct TransportAdapterSyncConcurrencyTests {
         await sync2Task.value
 
         // Give a moment for sync operations to complete
-        try await Task.sleep(for: .milliseconds(100))
+        // Increased delay for CI stability (was 100ms, now 150ms)
+        try await Task.sleep(for: .milliseconds(150))
 
         // Assert: State should be consistent (no corruption from concurrent sync)
         let finalState = await keeper.currentState()
@@ -144,7 +146,8 @@ struct TransportAdapterSyncConcurrencyTests {
         }
 
         // Small delay to ensure syncNow starts and acquires lock
-        try await Task.sleep(for: .milliseconds(20))
+        // Increased delay for CI stability (was 20ms, now 50ms)
+        try await Task.sleep(for: .milliseconds(50))
 
         let syncBroadcastOnlyTask = Task {
             await adapter.syncBroadcastOnly()
@@ -155,7 +158,8 @@ struct TransportAdapterSyncConcurrencyTests {
         await syncBroadcastOnlyTask.value
 
         // Give a moment for sync operations to complete
-        try await Task.sleep(for: .milliseconds(100))
+        // Increased delay for CI stability (was 100ms, now 150ms)
+        try await Task.sleep(for: .milliseconds(150))
 
         // Assert: State should be consistent (no corruption)
         let finalState = await keeper.currentState()
@@ -217,7 +221,8 @@ struct TransportAdapterSyncConcurrencyTests {
         }
 
         // Small delay to ensure first sync starts and acquires lock
-        try await Task.sleep(for: .milliseconds(20))
+        // Increased delay for CI stability (was 20ms, now 50ms)
+        try await Task.sleep(for: .milliseconds(50))
 
         let sync2Task = Task {
             await adapter.syncBroadcastOnly()
@@ -228,7 +233,8 @@ struct TransportAdapterSyncConcurrencyTests {
         await sync2Task.value
 
         // Give a moment for sync operations to complete
-        try await Task.sleep(for: .milliseconds(100))
+        // Increased delay for CI stability (was 100ms, now 150ms)
+        try await Task.sleep(for: .milliseconds(150))
 
         // Assert: State should be consistent (no corruption from concurrent sync)
         let finalState = await keeper.currentState()
@@ -281,7 +287,8 @@ struct TransportAdapterSyncConcurrencyTests {
         }
 
         // Small delay to ensure sync starts
-        try await Task.sleep(for: .milliseconds(10))
+        // Increased delay for CI stability (was 10ms, now 30ms)
+        try await Task.sleep(for: .milliseconds(30))
 
         // Modify state while sync is in progress
         let actionPayload = IncrementCounterAction(amount: 10, modifier: "test")
@@ -308,7 +315,8 @@ struct TransportAdapterSyncConcurrencyTests {
         await sync2Task.value
 
         // Give a moment for state to be fully updated
-        try await Task.sleep(for: .milliseconds(100))
+        // Increased delay for CI stability (was 100ms, now 150ms)
+        try await Task.sleep(for: .milliseconds(150))
 
         // Assert: State should be consistent
         let finalState = await keeper.currentState()

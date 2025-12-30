@@ -507,7 +507,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
     }
 
     /// Check if a type is a primitive type or collection type that cannot be a StateNodeProtocol
-    /// Returns true for primitive types, arrays, dictionaries, and other non-StateNode types
+    /// Returns true for primitive types, collections, and other non-StateNode types
     private static func isPrimitiveType(_ typeName: String) -> Bool {
         let primitiveTypes: Set<String> = [
             "Int", "Int8", "Int16", "Int32", "Int64",
@@ -517,17 +517,22 @@ public struct StateNodeBuilderMacro: MemberMacro {
         ]
 
         // Remove optional markers and check base type
-        let baseType = typeName
+        var baseType = typeName
             .replacingOccurrences(of: "?", with: "")
             .replacingOccurrences(of: "!", with: "")
             .trimmingCharacters(in: .whitespaces)
 
-        // Check if it's a dictionary or array (these are collections, not StateNodeProtocol)
+        if baseType.hasPrefix("Optional<") && baseType.hasSuffix(">") {
+            baseType = String(baseType.dropFirst("Optional<".count).dropLast())
+        } else if baseType.hasPrefix("Swift.Optional<") && baseType.hasSuffix(">") {
+            baseType = String(baseType.dropFirst("Swift.Optional<".count).dropLast())
+        }
+
         // Collections themselves cannot be StateNodeProtocol, but their elements/values might be
-        if baseType.contains("[") && baseType.contains("]") {
-            // For collections, we consider them as "primitive" (non-StateNode) types
-            // because the collection itself is not a StateNodeProtocol
-            // The recursive clearDirty logic should not apply to collections
+        // The recursive clearDirty logic should not apply to collections
+        if case .none = detectContainerType(from: baseType) {
+            // fall through
+        } else {
             return true
         }
 

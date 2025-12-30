@@ -1,17 +1,35 @@
 {
     "cSpell.words": [
+        "Accio",
         "attoseconds",
         "cardgame",
         "codegen",
+        "cursorrules",
+        "eslintcache",
         "FIRSTSYNC",
+        "HMAC",
+        "hmap",
         "inout",
         "matchmake",
         "MVVM",
+        "nuxt",
+        "pbxuser",
+        "perspectivev",
         "preconcurrency",
         "royale",
         "sess",
+        "swiftpm",
         "swiftstatetree",
         "typealias",
-        "uppercased"
+        "uppercased",
+        "vite",
+        "vitepress",
+        "xccheckout",
+        "xcodeproj",
+        "xcscmblueprint",
+        "xctimeline",
+        "xcuserdata",
+        "xcworkspace",
+        "xcworkspacedata"
     ]
 }

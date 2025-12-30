@@ -6,7 +6,7 @@ import SwiftStateTreeTransport
 // MARK: - JWT Payload
 
 /// Standard JWT Payload structure with custom claims for SwiftStateTree
-/// Automatically captures all unknown fields (e.g., username, schoolid) into metadata
+/// Automatically captures all unknown fields (e.g., username, schoolId) into metadata
 public struct JWTPayload: Codable, Sendable {
     // Standard JWT Claims
     /// Issuer - who issued the token
@@ -30,7 +30,7 @@ public struct JWTPayload: Codable, Sendable {
     /// Additional metadata (explicitly provided in JWT)
     public let metadata: [String: String]?
     
-    /// All custom fields from JWT payload (username, schoolid, etc.)
+    /// All custom fields from JWT payload (username, schoolId, etc.)
     /// This is populated during decoding with any fields not in the standard structure
     private let customFields: [String: String]
     
