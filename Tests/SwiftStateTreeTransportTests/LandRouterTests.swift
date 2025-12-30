@@ -22,7 +22,7 @@ struct RouterTestState: StateNodeProtocol {
 struct LandRouterTests {
 
     // Helper to setup the router stack
-    func setupRouter() async throws -> (
+    func setupRouter(allowAutoCreateOnJoin: Bool = true) async throws -> (
         WebSocketTransport,
         LandRouter<RouterTestState>,
         LandManager<RouterTestState>
@@ -88,7 +88,8 @@ struct LandRouterTests {
         let router = LandRouter<RouterTestState>(
             landManager: landManager,
             landTypeRegistry: registry,
-            transport: transport
+            transport: transport,
+            allowAutoCreateOnJoin: allowAutoCreateOnJoin
         )
 
         await transport.setDelegate(router)
@@ -181,9 +182,9 @@ struct LandRouterTests {
     // Given LandRegistry is just a struct with closures, it can't "check existence" easily unless factory handles it.
     // We will skip this test for now or assume factory handles "basic-test" only.
 
-    @Test("Join non-existent instance returns error")
+    @Test("Join non-existent instance returns error when allowAutoCreateOnJoin is false")
     func testJoinNonExistentInstance() async throws {
-        let (_, router, _) = try await setupRouter()
+        let (_, router, _) = try await setupRouter(allowAutoCreateOnJoin: false)
 
         let sessionID = SessionID("sess-1")
         await router.onConnect(sessionID: sessionID, clientID: ClientID("cli-1"))
@@ -203,6 +204,57 @@ struct LandRouterTests {
         // Session should NOT be bound
         let boundID = await router.getBoundLandID(for: sessionID)
         #expect(boundID == nil)
+    }
+    
+    @Test("Join without instanceId is rejected when allowAutoCreateOnJoin is false")
+    func testJoinWithoutInstanceIdRejectedWhenAutoCreateDisabled() async throws {
+        let (_, router, _) = try await setupRouter(allowAutoCreateOnJoin: false)
+
+        let sessionID = SessionID("sess-1")
+        await router.onConnect(sessionID: sessionID, clientID: ClientID("cli-1"))
+
+        // Case B: Join without instanceId (should be rejected)
+        let joinMsg = TransportMessage.join(
+            requestID: "req-1",
+            landType: "basic-test",
+            landInstanceId: nil, // No instanceId - should be rejected
+            playerID: "player-1",
+            deviceID: "dev-1",
+            metadata: nil
+        )
+
+        await router.onMessage(try JSONEncoder().encode(joinMsg), from: sessionID)
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Session should NOT be bound (join should be rejected)
+        let boundID = await router.getBoundLandID(for: sessionID)
+        #expect(boundID == nil, "Join without instanceId should be rejected when allowAutoCreateOnJoin is false")
+    }
+    
+    @Test("Join without instanceId succeeds when allowAutoCreateOnJoin is true")
+    func testJoinWithoutInstanceIdSucceedsWhenAutoCreateEnabled() async throws {
+        let (_, router, _) = try await setupRouter(allowAutoCreateOnJoin: true)
+
+        let sessionID = SessionID("sess-1")
+        await router.onConnect(sessionID: sessionID, clientID: ClientID("cli-1"))
+
+        // Case B: Join without instanceId (should succeed when allowAutoCreateOnJoin is true)
+        let joinMsg = TransportMessage.join(
+            requestID: "req-1",
+            landType: "basic-test",
+            landInstanceId: nil, // No instanceId - should create new land
+            playerID: "player-1",
+            deviceID: "dev-1",
+            metadata: nil
+        )
+
+        await router.onMessage(try JSONEncoder().encode(joinMsg), from: sessionID)
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Session should be bound (join should succeed)
+        let boundID = await router.getBoundLandID(for: sessionID)
+        #expect(boundID != nil, "Join without instanceId should succeed when allowAutoCreateOnJoin is true")
+        #expect(boundID?.landType == "basic-test")
     }
 
     @Test("Messages are routed to correct land")

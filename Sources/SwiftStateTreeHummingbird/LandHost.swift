@@ -92,6 +92,12 @@ public actor LandHost {
     /// Registered server paths for startup logging.
     private var registeredServerPaths: [String: String] = [:]
     
+    /// Registered land definitions for schema generation.
+    private var registeredLandDefinitions: [AnyLandDefinition] = []
+    
+    /// Cached schema JSON data (computed once, reused for all requests).
+    private var cachedSchemaJSON: Data?
+    
     /// Initialize a new LandHost.
     ///
     /// - Parameter configuration: Host configuration (host, port, logger, etc.)
@@ -107,6 +113,17 @@ public actor LandHost {
             createdRouter.get(RouterPath(configuration.healthPath)) { _, _ in
                 "OK"
             }
+        }
+        
+        // Register schema route (will be populated as lands are registered)
+        createdRouter.get("/schema") { [weak self] _, _ in
+            guard let self = self else {
+                return HTTPResponseHelpers.errorResponse(
+                    message: "Server error",
+                    status: .internalServerError
+                )
+            }
+            return await self.generateSchemaResponse()
         }
     }
     
@@ -177,6 +194,15 @@ public actor LandHost {
         
         // Store path for startup logging
         registeredServerPaths[landType] = path
+        
+        // Store land definition for schema generation
+        // Create a sample LandDefinition to extract schema (using a dummy LandID)
+        let sampleLandID = LandID.generate(landType: landType)
+        let sampleDefinition = landFactory(sampleLandID)
+        registeredLandDefinitions.append(AnyLandDefinition(sampleDefinition))
+        
+        // Invalidate cached schema (will be recomputed on next request)
+        cachedSchemaJSON = nil
     }
     
     /// Register a land type - simplified version.
@@ -242,6 +268,8 @@ public actor LandHost {
             if configuration.enableHealthRoute {
                 logger.info("❤️  Health check: \(baseURL)\(configuration.healthPath)")
             }
+            
+            logger.info("📋 Schema endpoint: \(baseURL)/schema")
             
             logger.info("📡 Registered WebSocket endpoints:")
             for (landType, path) in registeredServerPaths.sorted(by: { $0.key < $1.key }) {
@@ -334,6 +362,52 @@ public actor LandHost {
             logger: logger
         )
         adminRoutes.registerRoutes(on: router)
+    }
+    
+    // MARK: - Schema Generation
+    
+    /// Generate aggregated schema response from all registered lands.
+    ///
+    /// This method uses `SchemaGenCLI` to generate the schema and caches the result
+    /// for subsequent requests. The cache is invalidated when new lands are registered.
+    ///
+    /// - Returns: HTTP response with JSON schema
+    private func generateSchemaResponse() async -> Response {
+        // Return cached schema if available
+        if let cached = cachedSchemaJSON {
+            return HTTPResponseHelpers.jsonResponse(from: cached, status: .ok)
+        }
+        
+        // Generate schema using SchemaGenCLI
+        do {
+            // Use SchemaGenCLI.generateSchema to create aggregated schema
+            let finalSchema = SchemaGenCLI.generateSchema(
+                landDefinitions: registeredLandDefinitions,
+                version: "0.1.0"
+            )
+            
+            // Encode to JSON and cache
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let jsonData = try encoder.encode(finalSchema)
+            
+            // Cache the result
+            cachedSchemaJSON = jsonData
+            
+            // Return response using helper
+            return HTTPResponseHelpers.jsonResponse(from: jsonData, status: .ok)
+        } catch {
+            let logger = configuration.logger ?? createColoredLogger(
+                loggerIdentifier: "com.swiftstatetree.hummingbird",
+                scope: "LandHost"
+            )
+            logger.error("Failed to generate schema: \(error)")
+            
+            return HTTPResponseHelpers.errorResponse(
+                message: "Failed to generate schema",
+                status: .internalServerError
+            )
+        }
     }
 }
 

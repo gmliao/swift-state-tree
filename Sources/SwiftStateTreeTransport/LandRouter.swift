@@ -264,6 +264,21 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             
         } else {
             // Case B: Create new land with auto-generated instanceId
+            // SECURITY: Check allowAutoCreateOnJoin before creating new land
+            guard allowAutoCreateOnJoin else {
+                logger.warning("Join request without instanceId rejected (allowAutoCreateOnJoin=false)", metadata: [
+                    "landType": .string(landType),
+                    "sessionID": .string(sessionID.rawValue)
+                ])
+                await sendJoinError(
+                    requestID: requestID,
+                    sessionID: sessionID,
+                    code: .joinDenied,
+                    message: "Auto-creation of new lands is disabled. Please specify a landInstanceId to join an existing land."
+                )
+                return
+            }
+            
             landID = LandID.generate(landType: landType)
             
             let definition = landTypeRegistry.getLandDefinition(landType: landType, landID: landID)

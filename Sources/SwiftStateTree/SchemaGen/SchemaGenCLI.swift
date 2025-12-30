@@ -2,6 +2,51 @@ import Foundation
 
 /// CLI utility for generating protocol schemas from LandDefinitions.
 public struct SchemaGenCLI {
+    /// Generate aggregated ProtocolSchema from LandDefinitions (without writing to file).
+    ///
+    /// This is a helper method that extracts the schema aggregation logic,
+    /// useful for HTTP endpoints or other programmatic uses.
+    ///
+    /// - Parameters:
+    ///   - landDefinitions: Array of LandDefinitions to generate schema for
+    ///   - version: Schema version string (default: "0.1.0")
+    /// - Returns: Aggregated ProtocolSchema containing all lands and definitions
+    public static func generateSchema(
+        landDefinitions: [AnyLandDefinition],
+        version: String = "0.1.0"
+    ) -> ProtocolSchema {
+        guard !landDefinitions.isEmpty else {
+            return ProtocolSchema(version: version, lands: [:], defs: [:])
+        }
+        
+        // Merge all lands into one schema
+        var allDefinitions: [String: JSONSchema] = [:]
+        var allLands: [String: LandSchema] = [:]
+        
+        for anyDef in landDefinitions {
+            let schema = anyDef.extractSchema()
+            
+            // Merge definitions (avoid duplicates)
+            // If key already exists, keep the first one (they should be identical)
+            for (key, value) in schema.defs {
+                if allDefinitions[key] == nil {
+                    allDefinitions[key] = value
+                }
+            }
+            
+            // Merge lands
+            for (key, value) in schema.lands {
+                allLands[key] = value
+            }
+        }
+        
+        return ProtocolSchema(
+            version: version,
+            lands: allLands,
+            defs: allDefinitions
+        )
+    }
+    
     /// Generate schema from LandDefinitions and write to file or stdout.
     ///
     /// - Parameters:
@@ -19,32 +64,8 @@ public struct SchemaGenCLI {
             return
         }
         
-        // Merge all lands into one schema
-        var allDefinitions: [String: JSONSchema] = [:]
-        var allLands: [String: LandSchema] = [:]
-        
-        for anyDef in landDefinitions {
-            let schema = anyDef.extractSchema()
-            
-            // Merge definitions (avoid duplicates)
-            for (key, value) in schema.defs {
-                // If key already exists, keep the first one (they should be identical)
-                if allDefinitions[key] == nil {
-                    allDefinitions[key] = value
-                }
-            }
-            
-            // Merge lands
-            for (key, value) in schema.lands {
-                allLands[key] = value
-            }
-        }
-        
-        let finalSchema = ProtocolSchema(
-            version: version,
-            lands: allLands,
-            defs: allDefinitions
-        )
+        // Use the shared aggregation logic
+        let finalSchema = generateSchema(landDefinitions: landDefinitions, version: version)
         
         // Encode to JSON
         let encoder = JSONEncoder()
@@ -57,8 +78,8 @@ public struct SchemaGenCLI {
             try jsonData.write(to: outputURL)
             print("✅ Schema generated: \(outputPath)")
             print("   - Version: \(version)")
-            print("   - Lands: \(allLands.count)")
-            print("   - Definitions: \(allDefinitions.count)")
+            print("   - Lands: \(finalSchema.lands.count)")
+            print("   - Definitions: \(finalSchema.defs.count)")
         } else {
             if let jsonString = String(data: jsonData, encoding: .utf8) {
                 print(jsonString)

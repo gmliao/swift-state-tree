@@ -43,19 +43,14 @@ public struct AdminRoutes: Sendable {
             let landIDs = await self.landRealm.listAllLands()
             let landList = landIDs.map { $0.stringValue }
             
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            
             do {
-                let jsonData = try encoder.encode(landList)
-                var buffer = ByteBufferAllocator().buffer(capacity: jsonData.count)
-                buffer.writeBytes(jsonData)
-                var response = Response(status: .ok, body: .init(byteBuffer: buffer))
-                response.headers[.contentType] = "application/json"
-                return response
+                return try HTTPResponseHelpers.jsonResponse(landList, status: .ok)
             } catch {
                 self.logger.error("Failed to encode land list: \(error)")
-                return Response(status: .internalServerError)
+                return HTTPResponseHelpers.errorResponse(
+                    message: "Failed to encode land list",
+                    status: .internalServerError
+                )
             }
         }
         
@@ -79,15 +74,13 @@ public struct AdminRoutes: Sendable {
             encoder.dateEncodingStrategy = .iso8601
             
             do {
-                let jsonData = try encoder.encode(stats)
-                var buffer = ByteBufferAllocator().buffer(capacity: jsonData.count)
-                buffer.writeBytes(jsonData)
-                var response = Response(status: .ok, body: .init(byteBuffer: buffer))
-                response.headers[.contentType] = "application/json"
-                return response
+                return try HTTPResponseHelpers.jsonResponse(stats, status: .ok, encoder: encoder)
             } catch {
                 self.logger.error("Failed to encode land stats: \(error)")
-                return Response(status: .internalServerError)
+                return HTTPResponseHelpers.errorResponse(
+                    message: "Failed to encode land stats",
+                    status: .internalServerError
+                )
             }
         }
         
@@ -109,15 +102,13 @@ public struct AdminRoutes: Sendable {
             encoder.dateEncodingStrategy = .iso8601
             
             do {
-                let jsonData = try encoder.encode(stats)
-                var buffer = ByteBufferAllocator().buffer(capacity: jsonData.count)
-                buffer.writeBytes(jsonData)
-                var response = Response(status: .ok, body: .init(byteBuffer: buffer))
-                response.headers[.contentType] = "application/json"
-                return response
+                return try HTTPResponseHelpers.jsonResponse(stats, status: .ok, encoder: encoder)
             } catch {
                 self.logger.error("Failed to encode land stats: \(error)")
-                return Response(status: .internalServerError)
+                return HTTPResponseHelpers.errorResponse(
+                    message: "Failed to encode land stats",
+                    status: .internalServerError
+                )
             }
         }
         
@@ -171,19 +162,14 @@ public struct AdminRoutes: Sendable {
                 "totalPlayers": AnyCodable(totalPlayers)
             ]
             
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            
             do {
-                let jsonData = try encoder.encode(systemStats)
-                var buffer = ByteBufferAllocator().buffer(capacity: jsonData.count)
-                buffer.writeBytes(jsonData)
-                var response = Response(status: .ok, body: .init(byteBuffer: buffer))
-                response.headers[.contentType] = "application/json"
-                return response
+                return try HTTPResponseHelpers.jsonResponse(systemStats, status: .ok)
             } catch {
                 self.logger.error("Failed to encode system stats: \(error)")
-                return Response(status: .internalServerError)
+                return HTTPResponseHelpers.errorResponse(
+                    message: "Failed to encode system stats",
+                    status: .internalServerError
+                )
             }
         }
     }
