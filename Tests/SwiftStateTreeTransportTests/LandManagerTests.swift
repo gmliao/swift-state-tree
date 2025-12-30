@@ -288,11 +288,22 @@ func testLandManagerAutoRemovesDestroyedLand() async throws {
     // Leave player to trigger destroy
     try await container.keeper.leave(playerID: playerID1, clientID: clientID1)
 
-    // Wait for destroy to complete (AfterFinalize is the last handler, then onLandDestroyed is called)
-    try await Task.sleep(for: .milliseconds(150))
+    // Wait for destroy to complete with retry logic (CI environments may be slower)
+    // DestroyWhenEmpty delay: 50ms + handler execution + onLandDestroyed callback
+    // Use retry loop to handle timing variations in CI environments
+    var landAfterDestroy: LandContainer<CounterTestState>?
+    var attempts = 0
+    let maxAttempts = 20 // 20 * 25ms = 500ms max wait time
+    while attempts < maxAttempts {
+        try await Task.sleep(for: .milliseconds(25))
+        landAfterDestroy = await manager.getLand(landID: landID)
+        if landAfterDestroy == nil {
+            break
+        }
+        attempts += 1
+    }
 
     // Assert - Land should be automatically removed from LandManager
-    let landAfterDestroy = await manager.getLand(landID: landID)
     let landsAfterDestroy = await manager.listLands()
     #expect(landAfterDestroy == nil, "Land should be automatically removed from LandManager after destroy")
     #expect(!landsAfterDestroy.contains(landID), "Land should not be in list after destroy")
@@ -350,11 +361,22 @@ func testLandManagerRecreatesDestroyedLandWithFreshState() async throws {
     // Leave player to trigger destroy
     try await container1.keeper.leave(playerID: playerID1, clientID: clientID1)
 
-    // Wait for destroy to complete and auto-removal
-    try await Task.sleep(for: .milliseconds(150))
+    // Wait for destroy to complete and auto-removal with retry logic (CI environments may be slower)
+    // DestroyWhenEmpty delay: 50ms + handler execution + onLandDestroyed callback
+    // Use retry loop to handle timing variations in CI environments
+    var landAfterDestroy: LandContainer<CounterTestState>?
+    var attempts = 0
+    let maxAttempts = 20 // 20 * 25ms = 500ms max wait time
+    while attempts < maxAttempts {
+        try await Task.sleep(for: .milliseconds(25))
+        landAfterDestroy = await manager.getLand(landID: landID)
+        if landAfterDestroy == nil {
+            break
+        }
+        attempts += 1
+    }
 
     // Verify land has been automatically removed
-    let landAfterDestroy = await manager.getLand(landID: landID)
     #expect(landAfterDestroy == nil, "Land should be automatically removed after destroy")
 
     // Recreate land with same landID
