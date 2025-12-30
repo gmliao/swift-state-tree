@@ -52,11 +52,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         )
     }
     
+    /// Callback to notify when land has been destroyed.
+    /// Called after all destroy handlers (OnFinalize, AfterFinalize) have completed.
+    var onLandDestroyedCallback: (@Sendable () async -> Void)?
+    
     public init(
         keeper: LandKeeper<State>,
         transport: WebSocketTransport,
         landID: String,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
+        onLandDestroyed: (@Sendable () async -> Void)? = nil,
         enableLegacyJoin: Bool = false,
         enableDirtyTracking: Bool = true,
         logger: Logger? = nil
@@ -66,6 +71,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         self.landID = landID
         self.enableLegacyJoin = enableLegacyJoin
         self.enableDirtyTracking = enableDirtyTracking
+        self.onLandDestroyedCallback = onLandDestroyed
         // Create logger with scope if not provided
         if let logger = logger {
             self.logger = logger.withScope("TransportAdapter")

@@ -45,5 +45,12 @@ public protocol LandKeeperTransport: Sendable {
     ///
     /// If not implemented, should fall back to `syncNowFromTransport()`.
     func syncBroadcastOnlyFromTransport() async
+    
+    /// Notify transport that the land has been destroyed.
+    ///
+    /// Called after all destroy handlers (OnFinalize, AfterFinalize) have completed.
+    /// This allows the transport layer to perform cleanup, such as removing the land
+    /// from LandManager's registry.
+    func onLandDestroyed() async
 }
 

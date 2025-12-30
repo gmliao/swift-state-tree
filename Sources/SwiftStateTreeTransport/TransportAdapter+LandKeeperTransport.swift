@@ -19,4 +19,8 @@ extension TransportAdapter: LandKeeperTransport {
     public func syncBroadcastOnlyFromTransport() async {
         await self.syncBroadcastOnly()
     }
+    
+    public func onLandDestroyed() async {
+        await onLandDestroyedCallback?()
+    }
 }

@@ -25,6 +25,10 @@ actor MockLandKeeperTransport: LandKeeperTransport {
         syncBroadcastOnlyCallCount += 1
     }
     
+    func onLandDestroyed() async {
+        // Mock implementation - no-op for testing
+    }
+    
     func reset() {
         sendEventCallCount = 0
         syncNowCallCount = 0

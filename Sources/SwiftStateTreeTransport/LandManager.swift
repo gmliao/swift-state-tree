@@ -57,6 +57,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     ) async -> LandContainer<State> {
         // Check if land already exists
         if let existing = lands[landID] {
+            // Land exists, return it (monitoring task will auto-remove when destroyed)
             return existing
         }
         
@@ -78,10 +79,16 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             transport: transport,
             landID: landID.stringValue,
             createGuestSession: createGuestSession,
+            onLandDestroyed: { [landID] in
+                await self.removeLand(landID: landID)
+            },
             logger: logger
         )
         
         await keeper.setTransport(transportAdapter)
+        
+        // Set the actual land instance ID so LandContext can use it
+        await keeper.setLandID(landID.stringValue)
         
         // Only set delegate if we created the transport (own it)
         // If sharedTransport is provided, LandRouter handles delegation
