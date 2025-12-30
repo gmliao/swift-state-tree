@@ -39,7 +39,12 @@ public struct PlayerSession: Sendable {
         self.playerID = playerID
         self.deviceID = deviceID
         self.isGuest = isGuest
-        self.metadata = metadata
+        // Automatically add isGuest flag to metadata when isGuest is true
+        var finalMetadata = metadata
+        if isGuest {
+            finalMetadata["isGuest"] = "true"
+        }
+        self.metadata = finalMetadata
     }
 }
 

@@ -41,7 +41,7 @@ public func AccessControl(
 ) -> AccessControlNode {
     var config = AccessControlConfig()
     configure(&config)
-    return AccessControlNode(config: config)
+    return AccessControlNode(config: config)  // Multi-line: must include return
 }
 
 /// Defines the access control policy for the Land using a result builder.
@@ -52,21 +52,21 @@ public func AccessControl(
 ) -> AccessControlNode {
     var config = AccessControlConfig()
     content().forEach { $0(&config) }
-    return AccessControlNode(config: config)
+    return AccessControlNode(config: config)  // Multi-line: must include return
 }
 
 /// Sets whether the Land is publicly visible and joinable.
 ///
 /// - Parameter allow: `true` to allow public access, `false` for private. Default is `true`.
 public func AllowPublic(_ allow: Bool = true) -> AccessControlDirective {
-    { $0.allowPublic = allow }
+    { $0.allowPublic = allow }  // Single-expression: omit return
 }
 
 /// Sets the maximum number of players allowed in the Land.
 ///
 /// - Parameter value: The maximum player count.
 public func MaxPlayers(_ value: Int) -> AccessControlDirective {
-    { $0.maxPlayers = value }
+    { $0.maxPlayers = value }  // Single-expression: omit return
 }
 
 // MARK: - Rules
@@ -87,7 +87,7 @@ public struct RulesNode: LandNode {
 /// }
 /// ```
 public func Rules(@LandDSL _ content: () -> [LandNode]) -> RulesNode {
-    RulesNode(nodes: content())
+    RulesNode(nodes: content())  // Single-expression: omit return
 }
 
 public struct OnJoinNode<State: StateNodeProtocol>: LandNode {
@@ -111,7 +111,7 @@ public struct OnJoinNode<State: StateNodeProtocol>: LandNode {
 public func OnJoin<State: StateNodeProtocol>(
     _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
 ) -> OnJoinNode<State> {
-    OnJoinNode(handler: body)
+    OnJoinNode(handler: body)  // Single-expression: omit return
 }
 
 /// Registers a handler called when a player joins the Land with resolvers.
@@ -129,7 +129,7 @@ public func OnJoin<State: StateNodeProtocol, R1: ContextResolver>(
     OnJoinNode(
         handler: body,
         resolverExecutors: [ResolverExecutorWrapper<R1>()]
-    )
+    )  // Single-expression: omit return
 }
 
 /// Registers a handler called when a player joins the Land with multiple resolvers.
@@ -140,7 +140,7 @@ public func OnJoin<State: StateNodeProtocol, R1: ContextResolver, R2: ContextRes
     OnJoinNode(
         handler: body,
         resolverExecutors: [ResolverExecutorWrapper<R1>(), ResolverExecutorWrapper<R2>()]
-    )
+    )  // Single-expression: omit return
 }
 
 /// Registers a handler called when a player joins the Land with multiple resolvers.
@@ -155,7 +155,7 @@ public func OnJoin<State: StateNodeProtocol, R1: ContextResolver, R2: ContextRes
             ResolverExecutorWrapper<R2>(),
             ResolverExecutorWrapper<R3>()
         ]
-    )
+    )  // Single-expression: omit return
 }
 
 public struct OnLeaveNode<State: StateNodeProtocol>: LandNode {
@@ -179,7 +179,7 @@ public struct OnLeaveNode<State: StateNodeProtocol>: LandNode {
 public func OnLeave<State: StateNodeProtocol>(
     _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
 ) -> OnLeaveNode<State> {
-    OnLeaveNode(handler: body)
+    OnLeaveNode(handler: body)  // Single-expression: omit return
 }
 
 /// Registers a handler called when a player leaves the Land with resolvers.
@@ -197,7 +197,7 @@ public func OnLeave<State: StateNodeProtocol, R1: ContextResolver>(
     OnLeaveNode(
         handler: body,
         resolverExecutors: [ResolverExecutorWrapper<R1>()]
-    )
+    )  // Single-expression: omit return
 }
 
 /// Registers a handler called when a player leaves the Land with multiple resolvers.
@@ -208,7 +208,7 @@ public func OnLeave<State: StateNodeProtocol, R1: ContextResolver, R2: ContextRe
     OnLeaveNode(
         handler: body,
         resolverExecutors: [ResolverExecutorWrapper<R1>(), ResolverExecutorWrapper<R2>()]
-    )
+    )  // Single-expression: omit return
 }
 
 /// Registers a handler called when a player leaves the Land with multiple resolvers.
@@ -223,7 +223,7 @@ public func OnLeave<State: StateNodeProtocol, R1: ContextResolver, R2: ContextRe
             ResolverExecutorWrapper<R2>(),
             ResolverExecutorWrapper<R3>()
         ]
-    )
+    )  // Single-expression: omit return
 }
 
 public struct CanJoinNode<State: StateNodeProtocol>: LandNode {
@@ -270,7 +270,7 @@ public struct CanJoinNode<State: StateNodeProtocol>: LandNode {
 public func CanJoin<State: StateNodeProtocol>(
     _ body: @escaping @Sendable (State, PlayerSession, LandContext) throws -> JoinDecision
 ) -> CanJoinNode<State> {
-    CanJoinNode(handler: body)
+    CanJoinNode(handler: body)  // Single-expression: omit return
 }
 
 /// Registers a handler called before a player joins with resolvers.
@@ -285,7 +285,7 @@ public func CanJoin<State: StateNodeProtocol, R1: ContextResolver>(
     CanJoinNode(
         handler: body,
         resolverExecutors: [ResolverExecutor.createExecutor(for: resolvers)]
-    )
+    )  // Single-expression: omit return
 }
 
 /// Registers a handler called before a player joins with multiple resolvers.
@@ -299,7 +299,7 @@ public func CanJoin<State: StateNodeProtocol, R1: ContextResolver, R2: ContextRe
             ResolverExecutor.createExecutor(for: resolvers.0),
             ResolverExecutor.createExecutor(for: resolvers.1)
         ]
-    )
+    )  // Single-expression: omit return
 }
 
 /// Registers a handler called before a player joins with multiple resolvers.
@@ -314,7 +314,7 @@ public func CanJoin<State: StateNodeProtocol, R1: ContextResolver, R2: ContextRe
             ResolverExecutor.createExecutor(for: resolvers.1),
             ResolverExecutor.createExecutor(for: resolvers.2)
         ]
-    )
+    )  // Single-expression: omit return
 }
 
 public struct AllowedClientEventsNode: LandNode {
@@ -350,13 +350,24 @@ public enum AllowedClientEventsBuilder {
 public func AllowedClientEvents(
     @AllowedClientEventsBuilder _ content: () -> [AllowedEventIdentifier]
 ) -> AllowedClientEventsNode {
-    AllowedClientEventsNode(allowed: Set(content()))
+    AllowedClientEventsNode(allowed: Set(content()))  // Single-expression: omit return
 }
 
 // MARK: - Lifetime
 
 public struct LifetimeNode<State: StateNodeProtocol>: LandNode {
     public let configure: @Sendable (inout LifetimeConfig<State>) -> Void
+}
+
+// MARK: - Helper Functions for On* Handlers
+
+/// Helper function to warn when a handler is already defined
+private func warnIfHandlerAlreadyDefined(_ handlerName: String, isDefined: Bool) {
+    guard isDefined else { return }
+    let message = "⚠️ [LandDSL] \(handlerName) handler is already defined. The previous handler will be replaced.\n"
+    if let data = message.data(using: .utf8) {
+        FileHandle.standardError.write(data)
+    }
 }
 
 public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
@@ -380,7 +391,17 @@ public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
     public var onFinalizeResolverExecutors: [any AnyResolverExecutor] = []
     
     /// Handler called after the Land is completely finalized (async cleanup).
-    public var afterFinalize: (@Sendable (State) async -> Void)?
+    public var afterFinalize: (@Sendable (State, LandContext) async -> Void)?
+    
+    /// Handler called when the Land is being destroyed due to being empty.
+    ///
+    /// This is called specifically when the Land is destroyed because it became empty
+    /// (after the `destroyWhenEmptyAfter` delay). It is executed before `OnFinalize`.
+    /// Use this to perform cleanup actions specific to empty-room destruction.
+    public var onDestroyWhenEmpty: (@Sendable (inout State, LandContext) throws -> Void)?
+    
+    /// Resolver executors for the onDestroyWhenEmpty handler.
+    public var onDestroyWhenEmptyResolverExecutors: [any AnyResolverExecutor] = []
     
     /// Handler called when the Land is shutting down.
     ///
@@ -428,7 +449,7 @@ public enum LifetimeBuilder<State: StateNodeProtocol> {
 public func Lifetime<State: StateNodeProtocol>(
     _ configure: @escaping @Sendable (inout LifetimeConfig<State>) -> Void
 ) -> LifetimeNode<State> {
-    LifetimeNode(configure: configure)
+    LifetimeNode(configure: configure)  // Single-expression: omit return
 }
 
 /// Defines the lifetime and periodic behaviors of the Land using a result builder.
@@ -437,7 +458,7 @@ public func Lifetime<State: StateNodeProtocol>(
 ) -> LifetimeNode<State> {
     LifetimeNode { config in
         directives().forEach { $0(&config) }
-    }
+    }  // Single-expression: omit return
 }
 
 /// Configures a periodic tick handler.
@@ -465,7 +486,7 @@ public func Tick<State: StateNodeProtocol>(
     every interval: Duration,
     _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
-    { config in
+    return { config in
         config.tickInterval = interval
         config.tickHandler = body
     }
@@ -488,7 +509,7 @@ public func Tick<State: StateNodeProtocol>(
 public func Tick<State: StateNodeProtocol>(
     every interval: Duration
 ) -> LifetimeDirective<State> {
-    { config in
+    return { config in
         config.tickInterval = interval
         config.tickHandler = nil
     }
@@ -500,10 +521,31 @@ public func Tick<State: StateNodeProtocol>(
 public func DestroyWhenEmpty<State: StateNodeProtocol>(
     after duration: Duration
 ) -> LifetimeDirective<State> {
-    { config in
+    return { config in
         config.destroyWhenEmptyAfter = duration
     }
 }
+
+/// Configures the Land to automatically destroy itself when empty with a cleanup handler.
+///
+/// The handler is executed when the Land is being destroyed due to being empty.
+/// This provides a convenient way to perform cleanup actions specific to empty-room destruction.
+/// The handler is executed before `OnFinalize`, allowing you to distinguish between
+/// different destruction scenarios.
+///
+/// - Parameters:
+///   - duration: The duration to wait after the last player leaves before destroying.
+///   - handler: The cleanup handler to execute before destruction.
+public func DestroyWhenEmpty<State: StateNodeProtocol>(
+    after duration: Duration,
+    _ handler: @escaping @Sendable (inout State, LandContext) throws -> Void
+) -> LifetimeDirective<State> {
+    return { config in
+        config.destroyWhenEmptyAfter = duration
+        config.onDestroyWhenEmpty = handler
+    }
+}
+
 
 /// Configures the interval for persisting state snapshots.
 ///
@@ -511,7 +553,7 @@ public func DestroyWhenEmpty<State: StateNodeProtocol>(
 public func PersistSnapshot<State: StateNodeProtocol>(
     every interval: Duration
 ) -> LifetimeDirective<State> {
-    { config in
+    return { config in
         config.persistInterval = interval
     }
 }
@@ -525,7 +567,8 @@ public func PersistSnapshot<State: StateNodeProtocol>(
 public func OnInitialize<State: StateNodeProtocol>(
     _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
 ) -> LifetimeDirective<State> {
-    { config in
+    return { config in
+        warnIfHandlerAlreadyDefined("OnInitialize", isDefined: config.onInitialize != nil)
         config.onInitialize = body
     }
 }
@@ -541,6 +584,7 @@ public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver>(
 ) -> LifetimeDirective<State> {
     let executors = [ResolverExecutor.createExecutor(for: resolvers)]
     return { config in
+        warnIfHandlerAlreadyDefined("OnInitialize", isDefined: config.onInitialize != nil)
         config.onInitialize = body
         config.onInitializeResolverExecutors = executors
     }
@@ -556,6 +600,7 @@ public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: Cont
         ResolverExecutor.createExecutor(for: resolvers.1)
     ]
     return { config in
+        warnIfHandlerAlreadyDefined("OnInitialize", isDefined: config.onInitialize != nil)
         config.onInitialize = body
         config.onInitializeResolverExecutors = executors
     }
@@ -572,6 +617,7 @@ public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: Cont
         ResolverExecutor.createExecutor(for: resolvers.2)
     ]
     return { config in
+        warnIfHandlerAlreadyDefined("OnInitialize", isDefined: config.onInitialize != nil)
         config.onInitialize = body
         config.onInitializeResolverExecutors = executors
     }
@@ -586,7 +632,8 @@ public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: Cont
 public func OnFinalize<State: StateNodeProtocol>(
     _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
 ) -> LifetimeDirective<State> {
-    { config in
+    return { config in
+        warnIfHandlerAlreadyDefined("OnFinalize", isDefined: config.onFinalize != nil)
         config.onFinalize = body
     }
 }
@@ -602,6 +649,7 @@ public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver>(
 ) -> LifetimeDirective<State> {
     let executors = [ResolverExecutor.createExecutor(for: resolvers)]
     return { config in
+        warnIfHandlerAlreadyDefined("OnFinalize", isDefined: config.onFinalize != nil)
         config.onFinalize = body
         config.onFinalizeResolverExecutors = executors
     }
@@ -617,6 +665,7 @@ public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver, R2: Contex
         ResolverExecutor.createExecutor(for: resolvers.1)
     ]
     return { config in
+        warnIfHandlerAlreadyDefined("OnFinalize", isDefined: config.onFinalize != nil)
         config.onFinalize = body
         config.onFinalizeResolverExecutors = executors
     }
@@ -633,6 +682,7 @@ public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver, R2: Contex
         ResolverExecutor.createExecutor(for: resolvers.2)
     ]
     return { config in
+        warnIfHandlerAlreadyDefined("OnFinalize", isDefined: config.onFinalize != nil)
         config.onFinalize = body
         config.onFinalizeResolverExecutors = executors
     }
@@ -643,11 +693,11 @@ public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver, R2: Contex
 /// This handler is executed after OnFinalize, when state is no longer mutable.
 /// Use this for async cleanup operations (e.g., closing database connections, sending metrics).
 ///
-/// - Parameter body: The async closure to execute.
+/// - Parameter body: The async closure to execute with state snapshot and context.
 public func AfterFinalize<State: StateNodeProtocol>(
-    _ body: @escaping @Sendable (State) async -> Void
+    _ body: @escaping @Sendable (State, LandContext) async -> Void
 ) -> LifetimeDirective<State> {
-    { config in
+    return { config in
         config.afterFinalize = body
     }
 }
@@ -660,7 +710,7 @@ public func AfterFinalize<State: StateNodeProtocol>(
 public func OnShutdown<State: StateNodeProtocol>(
     _ body: @escaping @Sendable (State) async -> Void
 ) -> LifetimeDirective<State> {
-    { config in
+    return { config in
         config.onShutdown = body
     }
 }
@@ -810,7 +860,7 @@ public func HandleEvent<State: StateNodeProtocol, E: ClientEventPayload>(
     _ type: E.Type,
     _ body: @escaping @Sendable (inout State, E, LandContext) throws -> Void
 ) -> AnyClientEventHandler<State> {
-    AnyClientEventHandler(eventType: type, handler: body)
+    AnyClientEventHandler(eventType: type, handler: body)  // Single-expression: omit return
 }
 
 // MARK: - Server Event Registration
@@ -835,7 +885,7 @@ public struct ServerEventNode: LandNode {
 public func ServerEvent<E: ServerEventPayload>(
     _ type: E.Type
 ) -> ServerEventNode {
-    ServerEventNode(type: type)
+    ServerEventNode(type: type)  // Single-expression: omit return
 }
 
 // MARK: - Server Events Registration DSL
@@ -861,7 +911,7 @@ public struct ServerEventRegistrationNode: LandNode {
 public func Register<E: ServerEventPayload>(
     _ type: E.Type
 ) -> ServerEventRegistrationNode {
-    ServerEventRegistrationNode(type: type)
+    ServerEventRegistrationNode(type: type)  // Single-expression: omit return
 }
 
 /// Register a client event payload type.
@@ -876,7 +926,7 @@ public func Register<E: ServerEventPayload>(
 public func Register<E: ClientEventPayload>(
     _ type: E.Type
 ) -> ClientEventRegistrationNode {
-    ClientEventRegistrationNode(type: type)
+    ClientEventRegistrationNode(type: type)  // Single-expression: omit return
 }
 
 /// Land node that contains multiple server event registrations.
@@ -908,7 +958,7 @@ public enum ServerEventsBuilder {
 public func ServerEvents(
     @ServerEventsBuilder _ content: () -> [ServerEventRegistrationNode]
 ) -> ServerEventsNode {
-    ServerEventsNode(registrations: content())
+    ServerEventsNode(registrations: content())  // Single-expression: omit return
 }
 
 // MARK: - Client Events Registration DSL
@@ -950,7 +1000,7 @@ public enum ClientEventsBuilder {
 public func ClientEvents(
     @ClientEventsBuilder _ content: () -> [ClientEventRegistrationNode]
 ) -> ClientEventsNode {
-    ClientEventsNode(registrations: content())
+    ClientEventsNode(registrations: content())  // Single-expression: omit return
 }
 
 // MARK: - Land Entry Point
@@ -977,5 +1027,5 @@ public func Land<State: StateNodeProtocol>(
         id: id,
         stateType: stateType,
         nodes: content()
-    )
+    )  // Single-expression: omit return
 }

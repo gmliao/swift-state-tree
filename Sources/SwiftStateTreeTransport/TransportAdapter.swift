@@ -231,6 +231,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Determine isGuest: true if this is a guest session (no JWT auth and no requested playerID)
         let finalIsGuest = (requestedPlayerID == nil && jwtAuthInfo == nil)
         
+        // PlayerSession.init will automatically add isGuest to metadata when isGuest is true
         return PlayerSession(
             playerID: finalPlayerID,
             deviceID: finalDeviceID,

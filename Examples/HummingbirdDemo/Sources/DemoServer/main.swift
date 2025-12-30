@@ -82,6 +82,13 @@ struct DemoServer {
         )
 
         // Run unified server (LandHost will automatically print connection info)
-        try await landHost.run()
+        do {
+            try await landHost.run()
+        } catch let error as LandHostError {
+            logger.error("❌ Server startup failed: \(error)", metadata: [
+                "error": .string(String(describing: error))
+            ])
+            exit(1)
+        }
     }
 }

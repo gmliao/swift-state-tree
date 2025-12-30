@@ -9,7 +9,7 @@
 
 ```bash
 cd Examples/HummingbirdDemo
-swift run HummingbirdDemo
+swift run DemoServer
 ```
 
 ## 方案 B：最小單房間伺服器
@@ -28,28 +28,17 @@ struct GameState: StateNodeProtocol {
 @SnapshotConvertible
 struct PlayerState: Codable, Sendable {
     var name: String
+    var cookies: Int = 0
 }
 
 @Payload
-struct JoinAction: ActionPayload {
-    typealias Response = JoinResponse
-    let playerID: PlayerID
-    let name: String
-}
-
-@Payload
-struct JoinResponse: ResponsePayload {
-    let status: String
-}
-
-@Payload
-struct PingEvent: ClientEventPayload {
-    let sentAt: Int
-}
-
-@Payload
-struct PongEvent: ServerEventPayload {
-    let sentAt: Int
+struct ClickCookieEvent: ClientEventPayload {
+    /// Number of cookies to add for this click (default is 1)
+    let amount: Int
+    
+    init(amount: Int = 1) {
+        self.amount = amount
+    }
 }
 ```
 
@@ -62,29 +51,31 @@ let land = Land("demo", using: GameState.self) {
     }
 
     ClientEvents {
-        Register(PingEvent.self)
-    }
-
-    ServerEvents {
-        Register(PongEvent.self)
+        Register(ClickCookieEvent.self)
     }
 
     Lifetime {
+        OnJoin { state, ctx in
+            // Initialize player state when they join
+            let playerID = ctx.playerID
+            let playerName = ctx.metadata["username"] as? String ?? "Player"
+            state.players[playerID] = PlayerState(name: playerName, cookies: 0)
+        }
+        
         Tick(every: .milliseconds(100)) { state, ctx in
             // Game logic here
         }
-        DestroyWhenEmpty(after: .seconds(30))
+        DestroyWhenEmpty(after: .seconds(30)) { state, ctx in
+            ctx.logger.info("Land is empty, destroying...")
+        }
     }
 
     Rules {
-        HandleAction(JoinAction.self) { state, action, ctx in
-            state.players[action.playerID] = PlayerState(name: action.name)
-            return JoinResponse(status: "ok")
-        }
-
-        HandleEvent(PingEvent.self) { state, event, ctx in
-            ctx.spawn {
-                await ctx.sendEvent(PongEvent(sentAt: event.sentAt), to: .player(ctx.playerID))
+        HandleEvent(ClickCookieEvent.self) { state, event, ctx in
+            // Add cookies to the player who clicked
+            if var player = state.players[ctx.playerID] {
+                player.cookies += event.amount
+                state.players[ctx.playerID] = player
             }
         }
     }

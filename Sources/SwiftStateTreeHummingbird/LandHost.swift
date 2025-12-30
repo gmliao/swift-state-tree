@@ -257,7 +257,43 @@ public actor LandHost {
             }
         }
         
-        try await app.runService()
+        do {
+            try await app.runService()
+        } catch {
+            // Check for port binding errors (EADDRINUSE = errno 48)
+            let errorDescription = String(describing: error)
+            let errorMessage = "\(error)"
+            let lowercasedError = errorMessage.lowercased()
+            
+            // Check if it's a port binding error (multiple patterns to catch different error formats)
+            let isPortInUse = lowercasedError.contains("address already in use") ||
+                             lowercasedError.contains("errno: 48") ||
+                             lowercasedError.contains("errno 48") ||
+                             lowercasedError.contains("eaddrinuse") ||
+                             errorDescription.contains("Address already in use") ||
+                             errorDescription.contains("errno: 48")
+            
+            if isPortInUse {
+                logger.error("❌ Failed to start server: Port \(configuration.port) is already in use", metadata: [
+                    "host": .string(configuration.host),
+                    "port": .string("\(configuration.port)"),
+                    "error": .string(errorMessage),
+                    "errno": .string("48"),
+                    "errorType": .string("EADDRINUSE"),
+                    "suggestion": .string("Try using a different port or stop the process using this port")
+                ])
+                throw LandHostError.portAlreadyInUse(host: configuration.host, port: configuration.port, underlyingError: errorMessage)
+            } else {
+                // Log other errors
+                logger.error("❌ Failed to start server", metadata: [
+                    "host": .string(configuration.host),
+                    "port": .string("\(configuration.port)"),
+                    "error": .string(errorMessage),
+                    "errorType": .string(String(describing: type(of: error)))
+                ])
+                throw LandHostError.serverStartupFailed(underlyingError: errorMessage)
+            }
+        }
     }
     
     /// Get the state type name for a registered land type (for logging).
@@ -309,4 +345,8 @@ public enum LandHostError: Error, Sendable {
     case duplicateLandType(String)
     /// The land type is invalid (e.g., empty).
     case invalidLandType(String)
+    /// The port is already in use (EADDRINUSE, errno: 48).
+    case portAlreadyInUse(host: String, port: UInt16, underlyingError: String)
+    /// The server failed to start for other reasons.
+    case serverStartupFailed(underlyingError: String)
 }

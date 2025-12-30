@@ -57,9 +57,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// - Metrics: Track sync frequency and performance
     private var isSyncing = false
 
-    private let systemPlayerID = PlayerID("_system")
-    private let systemClientID = ClientID("_system")
-    private let systemSessionID = SessionID("_system")
+    // Use public system IDs from LandContext
+    private let systemPlayerID = LandContext.systemPlayerID
+    private let systemClientID = LandContext.systemClientID
+    private let systemSessionID = LandContext.systemSessionID
 
     /// Initializes a new LandKeeper with the given definition and initial state.
     ///
@@ -827,7 +828,46 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         destroyTask?.cancel()
         destroyTask = nil
 
+        // Execute onDestroyWhenEmpty handler (sync, supports resolvers)
+        // This is called specifically when the Land is destroyed due to being empty
+        if let onDestroyWhenEmptyHandler = definition.lifetimeHandlers.onDestroyWhenEmpty {
+            let ctx = makeContext(
+                playerID: systemPlayerID,
+                clientID: systemClientID,
+                sessionID: systemSessionID
+            )
+            
+            do {
+                var updatedCtx = ctx
+                
+                // Execute resolvers in parallel if any are declared
+                if !definition.lifetimeHandlers.onDestroyWhenEmptyResolverExecutors.isEmpty {
+                    let resolverContext = ResolverContext(
+                        landContext: ctx,
+                        actionPayload: nil,
+                        eventPayload: nil,
+                        currentState: state
+                    )
+                    updatedCtx = try await ResolverExecutor.executeResolvers(
+                        executors: definition.lifetimeHandlers.onDestroyWhenEmptyResolverExecutors,
+                        resolverContext: resolverContext,
+                        landContext: ctx
+                    )
+                }
+                
+                // Execute handler synchronously (resolvers already executed above)
+                try withMutableStateSync { state in
+                    try onDestroyWhenEmptyHandler(&state, updatedCtx)
+                }
+            } catch {
+                logger.error("❌ onDestroyWhenEmpty handler failed", metadata: [
+                    "error": .string(String(describing: error))
+                ])
+            }
+        }
+
         // Execute OnFinalize handler (sync, supports resolvers)
+        // This is called for all destruction scenarios (including empty-room destruction)
         if let onFinalizeHandler = definition.lifetimeHandlers.onFinalize {
             let ctx = makeContext(
                 playerID: systemPlayerID,
@@ -867,7 +907,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Execute AfterFinalize handler (async cleanup)
         if let afterFinalizeHandler = definition.lifetimeHandlers.afterFinalize {
             let snapshot = state
-            await afterFinalizeHandler(snapshot)
+            let ctx = makeContext(
+                playerID: systemPlayerID,
+                clientID: systemClientID,
+                sessionID: systemSessionID
+            )
+            await afterFinalizeHandler(snapshot, ctx)
         }
         
         // Legacy OnShutdown handler (deprecated)

@@ -13,7 +13,7 @@ Cookie Clicker 是一個完整的多玩家遊戲範例，展示了 SwiftStateTre
 **1. 啟動伺服器：**
 ```bash
 cd Examples/HummingbirdDemo
-swift run SingleRoomDemo
+swift run DemoServer
 ```
 
 伺服器會在 `http://localhost:8080` 啟動。
@@ -203,7 +203,7 @@ const {
 
 // 連接並加入遊戲
 onMounted(async () => {
-  await connect({ wsUrl: 'ws://localhost:8080/game' })
+  await connect({ wsUrl: 'ws://localhost:8080/game/cookie' })
 })
 
 // 點擊 cookie（發送 Client Event）
@@ -246,5 +246,5 @@ async function handleBuy(upgradeID: string) {
 ## 完整原始碼
 
 - **伺服器端定義**：[`Examples/HummingbirdDemo/Sources/DemoContent/CookieDemoDefinitions.swift`](../../Examples/HummingbirdDemo/Sources/DemoContent/CookieDemoDefinitions.swift)
-- **伺服器主程式**：[`Examples/HummingbirdDemo/Sources/SingleRoomDemo/main.swift`](../../Examples/HummingbirdDemo/Sources/SingleRoomDemo/main.swift)
+- **伺服器主程式**：[`Examples/HummingbirdDemo/Sources/DemoServer/main.swift`](../../Examples/HummingbirdDemo/Sources/DemoServer/main.swift)
 - **客戶端 Vue 組件**：[`Examples/HummingbirdDemo/WebClient/src/views/CookieGamePage.vue`](../../Examples/HummingbirdDemo/WebClient/src/views/CookieGamePage.vue)

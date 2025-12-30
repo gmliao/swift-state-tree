@@ -1,5 +1,22 @@
 import Foundation
 
+/// Thread-safe queue for warning messages to prevent concurrent write issues.
+private let warningQueue = DispatchQueue(label: "com.swiftstatetree.landbuilder.warnings")
+
+/// Helper function to warn when a handler is already defined (for LandBuilder)
+///
+/// Uses a serial dispatch queue to ensure thread-safe output, as multiple threads
+/// may call `LandBuilder.build` concurrently when creating different lands.
+/// Uses `sync` to ensure warnings are printed immediately and in order.
+private func warnIfHandlerAlreadyDefined(_ handlerName: String, landID: String) {
+    let message = "⚠️ [LandBuilder] \(handlerName) handler is already defined for land '\(landID)'. The previous handler will be replaced.\n"
+    warningQueue.sync {
+        if let data = message.data(using: .utf8) {
+            FileHandle.standardError.write(data)
+        }
+    }
+}
+
 /// Internal builder that processes the DSL nodes and constructs a `LandDefinition`.
 enum LandBuilder {
     /// Builds a `LandDefinition` from a list of `LandNode`s.
@@ -40,9 +57,15 @@ enum LandBuilder {
                     canJoin = canJoinNode.handler
                     canJoinResolverExecutors = canJoinNode.resolverExecutors
                 case let join as OnJoinNode<State>:
+                    if onJoin != nil {
+                        warnIfHandlerAlreadyDefined("OnJoin", landID: id)
+                    }
                     onJoin = join.handler
                     onJoinResolverExecutors = join.resolverExecutors
                 case let leave as OnLeaveNode<State>:
+                    if onLeave != nil {
+                        warnIfHandlerAlreadyDefined("OnLeave", landID: id)
+                    }
                     onLeave = leave.handler
                     onLeaveResolverExecutors = leave.resolverExecutors
                 case let action as AnyActionHandler<State>:
@@ -94,6 +117,8 @@ enum LandBuilder {
             tickInterval: lifetimeConfig.tickInterval,
             tickHandler: lifetimeConfig.tickHandler,
             destroyWhenEmptyAfter: lifetimeConfig.destroyWhenEmptyAfter,
+            onDestroyWhenEmpty: lifetimeConfig.onDestroyWhenEmpty,
+            onDestroyWhenEmptyResolverExecutors: lifetimeConfig.onDestroyWhenEmptyResolverExecutors,
             persistInterval: lifetimeConfig.persistInterval,
             onInitialize: lifetimeConfig.onInitialize,
             onInitializeResolverExecutors: lifetimeConfig.onInitializeResolverExecutors,
