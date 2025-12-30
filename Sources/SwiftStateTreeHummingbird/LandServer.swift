@@ -11,7 +11,7 @@ import SwiftStateTreeTransport
 ///
 /// **Note**: This is the Hummingbird-specific implementation of `LandServerProtocol`.
 /// For framework-agnostic usage, use the `LandServerProtocol` protocol.
-public struct LandServer<State: StateNodeProtocol> {
+public struct LandServer<State: StateNodeProtocol>: Sendable {
     public typealias Land = LandDefinition<State>
 
     /// Configuration type alias for backward compatibility.

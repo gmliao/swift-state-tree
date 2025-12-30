@@ -2,21 +2,21 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "swift: Build Debug HummingbirdDemo",
+            "label": "swift: Build Debug DemoServer",
             "type": "shell",
-            "command": "swift build -c debug --product HummingbirdDemo",
+            "command": "swift build -c debug --product DemoServer",
             "options": {
-                "cwd": "${workspaceFolder:swift-state-tree-internal}/Examples/HummingbirdDemo"
+                "cwd": "${workspaceFolder}/Examples/HummingbirdDemo"
             },
             "group": "build",
             "problemMatcher": []
         },
         {
-            "label": "swift: Build Release HummingbirdDemo",
+            "label": "swift: Build Release DemoServer",
             "type": "shell",
-            "command": "swift build -c release --product HummingbirdDemo",
+            "command": "swift build -c release --product DemoServer",
             "options": {
-                "cwd": "${workspaceFolder:swift-state-tree-internal}/Examples/HummingbirdDemo"
+                "cwd": "${workspaceFolder}/Examples/HummingbirdDemo"
             },
             "group": "build",
             "problemMatcher": []
@@ -26,7 +26,7 @@
             "type": "shell",
             "command": "swift build -c debug --product SwiftStateTreeBenchmarks",
             "options": {
-                "cwd": "${workspaceFolder:swift-state-tree-internal}"
+                "cwd": "${workspaceFolder}"
             },
             "group": "build",
             "problemMatcher": []
@@ -36,7 +36,7 @@
             "type": "shell",
             "command": "swift build -c release --product SwiftStateTreeBenchmarks",
             "options": {
-                "cwd": "${workspaceFolder:swift-state-tree-internal}"
+                "cwd": "${workspaceFolder}"
             },
             "group": "build",
             "problemMatcher": []

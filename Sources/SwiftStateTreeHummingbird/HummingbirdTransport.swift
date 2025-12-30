@@ -4,7 +4,6 @@ import HummingbirdWebSocket
 import SwiftStateTreeTransport
 import SwiftStateTree
 import NIOCore
-import NIOFoundationCompat
 import HTTPTypes
 import Logging
 
@@ -155,10 +154,8 @@ public struct HummingbirdStateTreeAdapter: Sendable {
                         await transport.handleIncomingMessage(sessionID: sessionID, data: data)
                     }
                 case .binary(let buffer):
-                    var mutableBuffer = buffer
-                    if let data = mutableBuffer.readData(length: mutableBuffer.readableBytes) {
-                        await transport.handleIncomingMessage(sessionID: sessionID, data: data)
-                    }
+                    let data = Data(buffer.readableBytesView)
+                    await transport.handleIncomingMessage(sessionID: sessionID, data: data)
                 }
             }
         } catch {

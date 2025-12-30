@@ -1,5 +1,6 @@
 // Sources/SwiftStateTreeMacros/StateNodeBuilderMacro.swift
 
+import Foundation
 @preconcurrency import SwiftCompilerPlugin
 @preconcurrency import SwiftDiagnostics
 import SwiftSyntax
@@ -93,7 +94,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
                 var typeName: String? = nil
                 if let typeAnnotation = binding.typeAnnotation {
                     // Get the type as a string
-                    typeName = typeAnnotation.type.description.trimmingCharacters(in: .whitespacesAndNewlines)
+                    typeName = typeAnnotation.type.description.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
                 }
                 
                 // Check for @Sync or @Internal attribute
@@ -128,11 +129,11 @@ public struct StateNodeBuilderMacro: MemberMacro {
                 
                 // Capture the initializer expression (if any) for default value extraction
                 // Remove comments from the initializer string
-                var initializer = binding.initializer?.value.description.trimmingCharacters(in: .whitespacesAndNewlines)
+                var initializer = binding.initializer?.value.description.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
                 if let initStr = initializer {
                     // Remove inline comments (everything after //)
                     if let commentIndex = initStr.range(of: "//") {
-                        initializer = String(initStr[..<commentIndex.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+                        initializer = String(initStr[..<commentIndex.lowerBound]).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
                     }
                 }
                 
@@ -776,7 +777,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
             }
         }
         
-        let normalizedType = typeName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedType = typeName.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
         
         // Check if it's an Optional type (handle first)
         if normalizedType.hasSuffix("?") {
@@ -951,7 +952,7 @@ private func capitalizeFirst(_ str: String) -> String {
 private func detectContainerType(from typeName: String?) -> ContainerType {
     guard let typeName = typeName else { return .none }
     
-    let normalized = typeName.trimmingCharacters(in: .whitespacesAndNewlines)
+    let normalized = typeName.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
     
     // Check for Dictionary: [Key: Value] or Dictionary<Key, Value>
     if normalized.hasPrefix("[") && normalized.contains(":") && normalized.hasSuffix("]") {
@@ -959,8 +960,8 @@ private func detectContainerType(from typeName: String?) -> ContainerType {
         let content = String(normalized.dropFirst().dropLast()) // Remove [ and ]
         let parts = content.split(separator: ":", maxSplits: 1)
         if parts.count == 2 {
-            let keyType = String(parts[0]).trimmingCharacters(in: .whitespacesAndNewlines)
-            let valueType = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let keyType = String(parts[0]).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            let valueType = String(parts[1]).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
             return .dictionary(keyType: keyType, valueType: valueType)
         }
     } else if normalized.hasPrefix("Dictionary<") && normalized.hasSuffix(">") {
@@ -968,8 +969,8 @@ private func detectContainerType(from typeName: String?) -> ContainerType {
         let content = String(normalized.dropFirst("Dictionary<".count).dropLast())
         let parts = content.split(separator: ",", maxSplits: 1)
         if parts.count == 2 {
-            let keyType = String(parts[0]).trimmingCharacters(in: .whitespacesAndNewlines)
-            let valueType = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let keyType = String(parts[0]).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            let valueType = String(parts[1]).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
             return .dictionary(keyType: keyType, valueType: valueType)
         }
     }
@@ -977,18 +978,18 @@ private func detectContainerType(from typeName: String?) -> ContainerType {
     // Check for Array: [Element] or Array<Element>
     if normalized.hasPrefix("[") && normalized.hasSuffix("]") && !normalized.contains(":") {
         // Format: [Element]
-        let elementType = String(normalized.dropFirst().dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+        let elementType = String(normalized.dropFirst().dropLast()).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
         return .array(elementType: elementType)
     } else if normalized.hasPrefix("Array<") && normalized.hasSuffix(">") {
         // Format: Array<Element>
-        let elementType = String(normalized.dropFirst("Array<".count).dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+        let elementType = String(normalized.dropFirst("Array<".count).dropLast()).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
         return .array(elementType: elementType)
     }
     
     // Check for Set: Set<Element>
     if normalized.hasPrefix("Set<") && normalized.hasSuffix(">") {
         // Format: Set<Element>
-        let elementType = String(normalized.dropFirst("Set<".count).dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+        let elementType = String(normalized.dropFirst("Set<".count).dropLast()).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
         return .set(elementType: elementType)
     }
     

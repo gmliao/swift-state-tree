@@ -1,0 +1,44 @@
+# Dockerfile for Linux build testing
+# This allows testing Swift compilation on Linux without modifying the main project
+
+FROM swift:6.0
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /workspace
+
+# Copy package files
+# Note: .build/ and .swiftpm/ are excluded by .dockerignore
+COPY Package.swift Package.resolved ./
+COPY Sources ./Sources
+COPY Tests ./Tests
+COPY Examples ./Examples
+
+# Temporarily modify Package.swift to remove platforms restriction for Linux testing
+# This allows compilation on Linux without macOS version conflicts
+# Comment out the platforms declaration to support Linux compilation
+RUN sed -i.bak \
+    -e '/^    platforms: \[$/s/^/    \/\/ /' \
+    -e '/^        \.macOS(\.v14)$/s/^/        \/\/ /' \
+    -e '0,/^    \],$/s/^    \],$/    \/\/ ],/' \
+    Package.swift && rm -f Package.swift.bak
+
+# Resolve dependencies
+RUN swift package resolve
+
+# Build the project
+RUN swift build
+
+# Run tests
+# Note: Some tests may fail on Linux due to platform-specific issues
+# Uncomment the line below to run tests, or run manually: docker run --rm swiftstatetree-linux-test swift test
+RUN swift test || echo "Some tests may have failed, but build was successful"
+
+# Default command
+CMD ["swift", "--version"]

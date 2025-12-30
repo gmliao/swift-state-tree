@@ -1,0 +1,31 @@
+# Build artifacts
+.build/
+*.xcodeproj
+*.xcworkspace
+
+# Dependencies
+.swiftpm/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Documentation (optional, comment out if needed)
+# docs/
+# Notes/
+
+# Node modules (for WebClient)
+node_modules/
+**/node_modules/
+
+# Generated files
+**/dist/
+**/generated/

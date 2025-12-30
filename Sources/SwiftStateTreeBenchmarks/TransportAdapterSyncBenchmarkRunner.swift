@@ -261,7 +261,11 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
         // Wait once before starting to ensure state has changed via tick
         try? await Task.sleep(for: .milliseconds(2))
         
-        let startTime = CFAbsoluteTimeGetCurrent()
+        #if canImport(Foundation)
+        let startTime = Date().timeIntervalSince1970
+        #else
+        let startTime = ContinuousClock.now
+        #endif
         
         for _ in 0..<iterations {
             await adapter.syncNow()  // Sync with actual diffs
@@ -272,7 +276,12 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
             }
         }
         
-        let totalTime = CFAbsoluteTimeGetCurrent() - startTime
+        #if canImport(Foundation)
+        let totalTime = Date().timeIntervalSince1970 - startTime
+        #else
+        let endTime = ContinuousClock.now
+        let totalTime = endTime.timeIntervalSince(startTime)
+        #endif
         // Subtract sleep time from total (only for iterations > 1)
         let sleepTime = iterations > 1 ? Double(iterations - 1) * 0.001 : 0.0
         let actualSyncTime = totalTime - sleepTime
