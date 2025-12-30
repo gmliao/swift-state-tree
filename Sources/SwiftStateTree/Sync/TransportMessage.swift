@@ -29,7 +29,7 @@ public enum MessagePayload: Codable, Sendable {
     case join(TransportJoinPayload)
     case joinResponse(TransportJoinResponsePayload)
     case error(ErrorPayload)
-    
+
     private enum CodingKeys: String, CodingKey {
         case action
         case actionResponse
@@ -38,7 +38,7 @@ public enum MessagePayload: Codable, Sendable {
         case joinResponse
         case error
     }
-    
+
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
@@ -56,10 +56,10 @@ public enum MessagePayload: Codable, Sendable {
             try container.encode(payload, forKey: .error)
         }
     }
-    
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        
+
         if let action = try? container.decode(TransportActionPayload.self, forKey: .action) {
             self = .action(action)
         } else if let actionResponse = try? container.decode(TransportActionResponsePayload.self, forKey: .actionResponse) {
@@ -88,7 +88,7 @@ public struct TransportActionPayload: Codable, Sendable {
     public let requestID: String
     public let landID: String
     public let action: ActionEnvelope
-    
+
     public init(requestID: String, landID: String, action: ActionEnvelope) {
         self.requestID = requestID
         self.landID = landID
@@ -100,7 +100,7 @@ public struct TransportActionPayload: Codable, Sendable {
 public struct TransportActionResponsePayload: Codable, Sendable {
     public let requestID: String
     public let response: AnyCodable
-    
+
     public init(requestID: String, response: AnyCodable) {
         self.requestID = requestID
         self.response = response
@@ -111,7 +111,7 @@ public struct TransportActionResponsePayload: Codable, Sendable {
 public struct TransportEventPayload: Codable, Sendable {
     public let landID: String
     public let event: TransportEvent
-    
+
     public init(landID: String, event: TransportEvent) {
         self.landID = landID
         self.event = event
@@ -132,7 +132,7 @@ public struct TransportJoinPayload: Codable, Sendable {
     public let playerID: String?
     public let deviceID: String?
     public let metadata: [String: AnyCodable]?
-    
+
     public init(
         requestID: String,
         landType: String,
@@ -162,7 +162,7 @@ public struct TransportJoinResponsePayload: Codable, Sendable {
     public let landID: String?
     public let playerID: String?
     public let reason: String?
-    
+
     public init(
         requestID: String,
         success: Bool,
@@ -189,12 +189,12 @@ public struct TransportJoinResponsePayload: Codable, Sendable {
 public struct TransportMessage: Codable, Sendable {
     public let kind: MessageKind
     public let payload: MessagePayload
-    
+
     public init(kind: MessageKind, payload: MessagePayload) {
         self.kind = kind
         self.payload = payload
     }
-    
+
     // Convenience initializers
     public static func action(requestID: String, landID: String, action: ActionEnvelope) -> TransportMessage {
         return TransportMessage(
@@ -202,21 +202,21 @@ public struct TransportMessage: Codable, Sendable {
             payload: .action(TransportActionPayload(requestID: requestID, landID: landID, action: action))
         )
     }
-    
+
     public static func actionResponse(requestID: String, response: AnyCodable) -> TransportMessage {
         return TransportMessage(
             kind: .actionResponse,
             payload: .actionResponse(TransportActionResponsePayload(requestID: requestID, response: response))
         )
     }
-    
+
     public static func event(landID: String, event: TransportEvent) -> TransportMessage {
         return TransportMessage(
             kind: .event,
             payload: .event(TransportEventPayload(landID: landID, event: event))
         )
     }
-    
+
     public static func join(
         requestID: String,
         landType: String,
@@ -237,12 +237,11 @@ public struct TransportMessage: Codable, Sendable {
             ))
         )
     }
-    
+
     /// Backward compatible join message using legacy landID format.
     ///
     /// Parses landID as "landType:instanceId" or treats entire string as landType if no colon.
-    /// - Note: This is provided for backward compatibility and testing migration.
-    @available(*, deprecated, message: "Use join(requestID:landType:landInstanceId:...) instead")
+    /// - Note: This is provided for backward compatibility and testing migration
     public static func join(
         requestID: String,
         landID: String,
@@ -261,7 +260,7 @@ public struct TransportMessage: Codable, Sendable {
             metadata: metadata
         )
     }
-    
+
     public static func joinResponse(
         requestID: String,
         success: Bool,
@@ -284,7 +283,7 @@ public struct TransportMessage: Codable, Sendable {
             ))
         )
     }
-    
+
     public static func error(_ errorPayload: ErrorPayload) -> TransportMessage {
         return TransportMessage(
             kind: .error,

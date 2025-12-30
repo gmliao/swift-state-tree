@@ -11,7 +11,7 @@ import Testing
 struct RouterTestState: StateNodeProtocol {
     @Sync(.broadcast)
     var count: Int = 0
-    
+
     @Sync(.broadcast)
     var players: [PlayerID: String] = [:]
 }
@@ -20,7 +20,7 @@ struct RouterTestState: StateNodeProtocol {
 
 @Suite("LandRouter Tests")
 struct LandRouterTests {
-    
+
     // Helper to setup the router stack
     func setupRouter() async throws -> (
         WebSocketTransport,
@@ -28,7 +28,7 @@ struct LandRouterTests {
         LandManager<RouterTestState>
     ) {
         let transport = WebSocketTransport()
-        
+
         // Define Factories
         let landFactory: @Sendable (String, LandID) -> LandDefinition<RouterTestState> = { landType, landID in
              if landType == "basic-test" {
@@ -37,14 +37,14 @@ struct LandRouterTests {
                         OnJoin { (state: inout RouterTestState, ctx: LandContext) in
                             state.players[ctx.playerID] = "Joined"
                         }
-                        
+
                         OnLeave { (state: inout RouterTestState, ctx: LandContext) in
                             state.players.removeValue(forKey: ctx.playerID)
                         }
                     }
                 }
              }
-             // For tests involving invalid types, we might want to throw or trap, 
+             // For tests involving invalid types, we might want to throw or trap,
              // but LandRouter should check landTypeRegistry before calling factory?
              // Actually LandRouter calls registry.getLandDefinition which calls factory.
              // If we crash here, the test crashes.
@@ -59,17 +59,17 @@ struct LandRouterTests {
              // Let's fallback to basic-test for robustness or return a dummy.
              fatalError("Unknown land type: \(landType)")
         }
-        
+
         let initialStateFactory: @Sendable (String, LandID) -> RouterTestState = { _, _ in
              return RouterTestState()
         }
-        
+
         // Setup Registry
         let registry = LandTypeRegistry(
             landFactory: landFactory,
             initialStateFactory: initialStateFactory
         )
-        
+
         // Setup LandManager
         let landManager = LandManager<RouterTestState>(
             landFactory: { landID in
@@ -80,32 +80,32 @@ struct LandRouterTests {
             },
             transport: transport
         )
-        
+
         // Setup LandManagerRegistry
-        let landManagerRegistry = SingleLandManagerRegistry(landManager: landManager)
-        
+        _ = SingleLandManagerRegistry(landManager: landManager)
+
         // Setup Router
         let router = LandRouter<RouterTestState>(
             landManager: landManager,
             landTypeRegistry: registry,
             transport: transport
         )
-        
+
         await transport.setDelegate(router)
-        
+
         return (transport, router, landManager)
     }
-    
+
     @Test("Join with landType creates new land (Case B)")
     func testJoinWithLandType() async throws {
         let (_, router, _) = try await setupRouter()
-        
+
         let sessionID = SessionID("sess-1")
         let clientID = ClientID("cli-1")
-        
+
         // 1. Connect
         await router.onConnect(sessionID: sessionID, clientID: clientID)
-        
+
         // 2. Send Join Request (Case B: Create new room)
         let joinMsg = TransportMessage.join(
             requestID: "req-1",
@@ -115,13 +115,13 @@ struct LandRouterTests {
             deviceID: "dev-1",
             metadata: nil
         )
-        
+
         let data = try JSONEncoder().encode(joinMsg)
         await router.onMessage(data, from: sessionID)
-        
+
         // Wait for async processing
         try await Task.sleep(for: .milliseconds(100))
-        
+
         // 3. Verify Session is Bound
         let boundLandID = await router.getBoundLandID(for: sessionID)
         #expect(boundLandID != nil)
@@ -129,15 +129,15 @@ struct LandRouterTests {
         #expect(boundLandID?.instanceId != nil)
         #expect(boundLandID?.instanceId.isEmpty == false)
     }
-    
+
     @Test("Join existing land with specific ID (Case A)")
     func testJoinExistingLand() async throws {
         let (_, router, _) = try await setupRouter()
-        
+
         // Session 1: Create Land
         let session1 = SessionID("sess-1")
         await router.onConnect(sessionID: session1, clientID: ClientID("cli-1"))
-        
+
         let join1 = TransportMessage.join(
             requestID: "req-1",
             landType: "basic-test",
@@ -148,18 +148,18 @@ struct LandRouterTests {
         )
         await router.onMessage(try JSONEncoder().encode(join1), from: session1)
         try await Task.sleep(for: .milliseconds(50))
-        
+
         guard let landID = await router.getBoundLandID(for: session1) else {
             Issue.record("Failed to create land")
             return
         }
-        
+
         let instanceId = landID.instanceId
-        
+
         // Session 2: Join Same Land
         let session2 = SessionID("sess-2")
         await router.onConnect(sessionID: session2, clientID: ClientID("cli-2"))
-        
+
         let join2 = TransportMessage.join(
             requestID: "req-2",
             landType: "basic-test",
@@ -170,24 +170,24 @@ struct LandRouterTests {
         )
         await router.onMessage(try JSONEncoder().encode(join2), from: session2)
         try await Task.sleep(for: .milliseconds(50))
-        
+
         // Assert: Session 2 is bound to same LandID
         let bound2 = await router.getBoundLandID(for: session2)
         #expect(bound2 == landID)
     }
-    
-    // Note: Invalid Land Type test is risky if factory traps. 
+
+    // Note: Invalid Land Type test is risky if factory traps.
     // We should ensure factory is robust or LandRouter checks existence.
     // Given LandRegistry is just a struct with closures, it can't "check existence" easily unless factory handles it.
     // We will skip this test for now or assume factory handles "basic-test" only.
-    
+
     @Test("Join non-existent instance returns error")
     func testJoinNonExistentInstance() async throws {
         let (_, router, _) = try await setupRouter()
-        
+
         let sessionID = SessionID("sess-1")
         await router.onConnect(sessionID: sessionID, clientID: ClientID("cli-1"))
-        
+
         let joinMsg = TransportMessage.join(
             requestID: "req-1",
             landType: "basic-test",
@@ -196,22 +196,22 @@ struct LandRouterTests {
             deviceID: "dev-1",
             metadata: nil
         )
-        
+
         await router.onMessage(try JSONEncoder().encode(joinMsg), from: sessionID)
         try await Task.sleep(for: .milliseconds(50))
-        
+
         // Session should NOT be bound
         let boundID = await router.getBoundLandID(for: sessionID)
         #expect(boundID == nil)
     }
-    
+
     @Test("Messages are routed to correct land")
     func testMessageRouting() async throws {
         let (_, router, landManager) = try await setupRouter()
-        
+
         let sessionID = SessionID("sess-1")
         await router.onConnect(sessionID: sessionID, clientID: ClientID("cli-1"))
-        
+
         // Create Land
         let joinMsg = TransportMessage.join(
             requestID: "req-1",
@@ -223,61 +223,61 @@ struct LandRouterTests {
         )
         await router.onMessage(try JSONEncoder().encode(joinMsg), from: sessionID)
         try await Task.sleep(for: .milliseconds(50))
-        
+
         guard let landID = await router.getBoundLandID(for: sessionID) else {
             Issue.record("Expected bound land")
             return
         }
-        
+
         // Accessing LandKeeper via LandManager
         guard let container = await landManager.getLand(landID: landID) else {
             Issue.record("Container not found")
             return
         }
         let keeper = container.keeper
-        
+
         // Verify player joined
         let state = await keeper.currentState()
         let playerID = PlayerID("player-1") // The logic uses provided ID or falls back. We provided it.
         #expect(state.players[playerID] == "Joined")
     }
-    
+
     @Test("Disconnect cleans up session state in LandRouter")
     func testDisconnectCleansUpSessionState() async throws {
         let (_, router, _) = try await setupRouter()
-        
+
         let sessionID = SessionID("sess-1")
         let clientID = ClientID("cli-1")
-        
+
         // 1. Connect
         await router.onConnect(sessionID: sessionID, clientID: clientID)
-        
+
         // Assert: Should be connected
         let connectedBefore = await router.isConnected(sessionID: sessionID)
         #expect(connectedBefore, "Session should be connected")
-        
+
         // 2. Disconnect
         await router.onDisconnect(sessionID: sessionID, clientID: clientID)
-        
+
         // Assert: Should not be connected
         let connectedAfter = await router.isConnected(sessionID: sessionID)
         #expect(!connectedAfter, "Session should not be connected after disconnect")
-        
+
         // Assert: Should not be bound
         let boundAfter = await router.isBound(sessionID: sessionID)
         #expect(!boundAfter, "Session should not be bound after disconnect")
     }
-    
+
     @Test("Disconnect after join cleans up both LandRouter and TransportAdapter state")
     func testDisconnectAfterJoinCleansUpBothStates() async throws {
         let (_, router, landManager) = try await setupRouter()
-        
+
         let sessionID = SessionID("sess-1")
         let clientID = ClientID("cli-1")
-        
+
         // 1. Connect
         await router.onConnect(sessionID: sessionID, clientID: clientID)
-        
+
         // 2. Join
         let joinMsg = TransportMessage.join(
             requestID: "req-1",
@@ -289,69 +289,69 @@ struct LandRouterTests {
         )
         await router.onMessage(try JSONEncoder().encode(joinMsg), from: sessionID)
         try await Task.sleep(for: .milliseconds(100))
-        
+
         // Assert: Should be bound
         guard let landID = await router.getBoundLandID(for: sessionID) else {
             Issue.record("Session should be bound after join")
             return
         }
-        
+
         // Get TransportAdapter
         guard let container = await landManager.getLand(landID: landID) else {
             Issue.record("Container should exist")
             return
         }
         let adapter = container.transportAdapter
-        
+
         // Assert: TransportAdapter should have session
         let joinedBefore = await adapter.isJoined(sessionID: sessionID)
         #expect(joinedBefore, "TransportAdapter should have session joined")
-        
+
         // 3. Disconnect
         await router.onDisconnect(sessionID: sessionID, clientID: clientID)
         try await Task.sleep(for: .milliseconds(50))
-        
+
         // Assert: LandRouter state should be cleaned up
         let connectedAfter = await router.isConnected(sessionID: sessionID)
         let boundAfter = await router.isBound(sessionID: sessionID)
         #expect(!connectedAfter, "LandRouter: Session should not be connected after disconnect")
         #expect(!boundAfter, "LandRouter: Session should not be bound after disconnect")
-        
+
         // Assert: TransportAdapter state should be cleaned up
         let joinedAfter = await adapter.isJoined(sessionID: sessionID)
         let connectedAfterAdapter = await adapter.isConnected(sessionID: sessionID)
         #expect(!joinedAfter, "TransportAdapter: Session should not be joined after disconnect")
         #expect(!connectedAfterAdapter, "TransportAdapter: Session should not be connected after disconnect")
-        
+
         // Assert: Player should be removed from state (OnLeave was called)
         let state = await container.keeper.currentState()
         let playerID = PlayerID("player-1")
         #expect(state.players[playerID] == nil, "Player should be removed from state after disconnect")
     }
-    
+
     @Test("Disconnect without join only cleans up LandRouter state")
     func testDisconnectWithoutJoinOnlyCleansUpRouterState() async throws {
         let (_, router, _) = try await setupRouter()
-        
+
         let sessionID = SessionID("sess-1")
         let clientID = ClientID("cli-1")
-        
+
         // 1. Connect (but don't join)
         await router.onConnect(sessionID: sessionID, clientID: clientID)
-        
+
         // Assert: Should be connected
         let connectedBefore = await router.isConnected(sessionID: sessionID)
         #expect(connectedBefore, "Session should be connected")
-        
+
         // 2. Disconnect
         await router.onDisconnect(sessionID: sessionID, clientID: clientID)
-        
+
         // Assert: LandRouter state should be cleaned up
         let connectedAfter = await router.isConnected(sessionID: sessionID)
         let boundAfter = await router.isBound(sessionID: sessionID)
         #expect(!connectedAfter, "Session should not be connected after disconnect")
         #expect(!boundAfter, "Session should not be bound after disconnect")
-        
+
         // Note: TransportAdapter was never involved, so no need to check it
     }
 }

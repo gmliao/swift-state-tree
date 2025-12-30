@@ -175,7 +175,7 @@ func testResolverOutputProtocol() {
     let product = ProductInfo(id: "1", name: "Test", price: 10.0, stock: 5)
     // ProductInfo conforms to ResolverOutput, so this should compile
     let _: ResolverOutput = product
-    
+
     let profile = UserProfileInfo(userID: "1", name: "User", email: "test@test.com", level: 5)
     let _: ResolverOutput = profile
 }
@@ -195,14 +195,14 @@ func testContextResolver() async throws {
         sendEventHandler: { _, _ in },
         syncHandler: {}
     )
-    
+
     let resolverContext = ResolverContext(
         landContext: landContext,
         actionPayload: ResolverTestAction(productID: "product-123"),
         eventPayload: nil,
         currentState: state
     )
-    
+
     let output = try await ProductInfoResolver.resolve(ctx: resolverContext)
     #expect(output.id == "product-123")
     #expect(output.name == "Test Product")
@@ -225,14 +225,14 @@ func testParallelResolverExecutionAsyncLet() async throws {
         sendEventHandler: { _, _ in },
         syncHandler: {}
     )
-    
+
     let resolverContext = ResolverContext(
         landContext: landContext,
         actionPayload: ResolverTestAction(productID: "product-123"),
         eventPayload: nil,
         currentState: state
     )
-    
+
     let startTime = ContinuousClock.now
     let (productInfo, userProfile) = try await executeResolversInParallel(
         ProductInfoResolver.self,
@@ -241,7 +241,7 @@ func testParallelResolverExecutionAsyncLet() async throws {
     )
     let endTime = ContinuousClock.now
     let duration = endTime - startTime
-    
+
     // Both resolvers should complete, and total time should be approximately
     // the max of individual resolver times (not the sum), since they run in parallel
     // ProductInfoResolver: 10ms, UserProfileResolver: 15ms
@@ -254,18 +254,18 @@ func testParallelResolverExecutionAsyncLet() async throws {
     // - Context switching and thread pool management
     // - Swift runtime overhead for async/await
     let durationMs = Double(duration.components.seconds) * 1000.0 + Double(duration.components.attoseconds) / 1_000_000_000_000_000.0
-    
+
     // Lower bound: should be at least as long as the shorter resolver (10ms)
     // Allow some measurement variance
     #expect(durationMs >= 8.0)
-    
+
     // Upper bound: should be less than serial execution time (25ms) with generous overhead
     // This ensures parallel execution is actually happening, not just sequential
     // We use 4x serial time (100ms) to account for system overhead in CI/test environments
     // In ideal conditions, this should be closer to 15-20ms, but test environments
     // (especially CI) can have significant variance
     #expect(durationMs < 100.0) // Should be less than 4x serial time to verify parallelism
-    
+
     #expect(productInfo.id == "product-123")
     #expect(userProfile.userID == "player-1")
 }
@@ -273,18 +273,18 @@ func testParallelResolverExecutionAsyncLet() async throws {
 @Test("Dynamic context storage with @dynamicMemberLookup")
 func testDynamicContextStorage() {
     var ctx = TestResolverContext()
-    
+
     let productInfo = ProductInfo(id: "1", name: "Test", price: 10.0, stock: 5)
     ctx.set(productInfo, for: "ProductInfoResolver")
-    
+
     let userProfile = UserProfileInfo(userID: "1", name: "User", email: "test@test.com", level: 5)
     ctx.set(userProfile, for: "UserProfileResolver")
-    
+
     // Access using dynamic member lookup
     let retrievedProduct: ProductInfo? = ctx.productInfo
     #expect(retrievedProduct?.id == "1")
     #expect(retrievedProduct?.name == "Test")
-    
+
     let retrievedProfile: UserProfileInfo? = ctx.userProfile
     #expect(retrievedProfile?.userID == "1")
     #expect(retrievedProfile?.name == "User")
@@ -294,15 +294,15 @@ func testDynamicContextStorage() {
 func testSynchronousActionHandler() throws {
     // This test verifies that a synchronous handler can access resolver outputs
     // that were pre-resolved before the handler executes
-    
+
     // Pre-resolved outputs (simulating what would happen before handler execution)
     let productInfo = ProductInfo(id: "1", name: "Test Product", price: 99.99, stock: 100)
     let userProfile = UserProfileInfo(userID: "1", name: "Test User", email: "test@test.com", level: 10)
-    
+
     // Simulate synchronous action handler
     var state = TestState()
     let action = ResolverTestAction(productID: "1")
-    
+
     // Synchronous handler that uses pre-resolved data
     func handleActionSync(state: inout TestState, action: ResolverTestAction, productInfo: ProductInfo, userProfile: UserProfileInfo) throws -> ResolverTestResponse {
         // Use resolver outputs synchronously
@@ -310,7 +310,7 @@ func testSynchronousActionHandler() throws {
         // Handler logic here...
         return ResolverTestResponse(success: true)
     }
-    
+
     let response = try handleActionSync(state: &state, action: action, productInfo: productInfo, userProfile: userProfile)
     #expect(response.success == true)
     #expect(state.value == 99) // Int(99.99) = 99
@@ -320,12 +320,12 @@ func testSynchronousActionHandler() throws {
 func testResolverErrorHandlingDirect() async throws {
     struct FailingResolver: ContextResolver {
         typealias Output = ProductInfo
-        
+
         static func resolve(ctx: ResolverContext) async throws -> ProductInfo {
             throw ResolverError.missingParameter("productID")
         }
     }
-    
+
     let state = TestState()
     let landContext = LandContext(
         landID: "test-land",
@@ -339,14 +339,14 @@ func testResolverErrorHandlingDirect() async throws {
         sendEventHandler: { _, _ in },
         syncHandler: {}
     )
-    
+
     let resolverContext = ResolverContext(
         landContext: landContext,
         actionPayload: nil,
         eventPayload: nil,
         currentState: state
     )
-    
+
     do {
         _ = try await FailingResolver.resolve(ctx: resolverContext)
         Issue.record("Expected error was not thrown")
@@ -361,12 +361,12 @@ func testResolverErrorHandlingDirect() async throws {
 func testResolverErrorHandlingThroughExecutor() async throws {
     struct FailingResolver: ContextResolver {
         typealias Output = ProductInfo
-        
+
         static func resolve(ctx: ResolverContext) async throws -> ProductInfo {
             throw ResolverError.dataLoadFailed("Product not found: product-999")
         }
     }
-    
+
     let state = TestState()
     let landContext = LandContext(
         landID: "test-land",
@@ -380,16 +380,16 @@ func testResolverErrorHandlingThroughExecutor() async throws {
         sendEventHandler: { _, _ in },
         syncHandler: {}
     )
-    
+
     let resolverContext = ResolverContext(
         landContext: landContext,
         actionPayload: ResolverTestAction(productID: "product-999"),
         eventPayload: nil,
         currentState: state
     )
-    
+
     let executor = ResolverExecutor.createExecutor(for: FailingResolver.self)
-    
+
     do {
         _ = try await ResolverExecutor.executeResolvers(
             executors: [executor],
@@ -400,7 +400,7 @@ func testResolverErrorHandlingThroughExecutor() async throws {
     } catch ResolverExecutionError.resolverFailed(let name, let underlyingError) {
         // Verify resolver name is captured
         #expect(name.contains("FailingResolver"))
-        
+
         // Verify underlying error is preserved
         if let resolverError = underlyingError as? ResolverError {
             switch resolverError {

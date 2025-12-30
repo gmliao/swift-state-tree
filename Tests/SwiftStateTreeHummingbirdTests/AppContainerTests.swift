@@ -10,7 +10,7 @@ import SwiftStateTreeTransport
 private struct TestGameState: StateNodeProtocol {
     @Sync(.broadcast)
     var messageCount: Int = 0
-    
+
     init() {}
 }
 
@@ -79,26 +79,27 @@ func testLandServerForTestHandlesClientEvents() async throws {
     )
     let connection = RecordingWebSocketConnection()
     let sessionID = SessionID("session-app-container")
-    let clientID = ClientID("client-app-container")
-    
+
     await harness.connect(sessionID: sessionID, using: connection)
-    
+
     // Join first (required for sending events)
     let encoder = JSONEncoder()
     let decoder = JSONDecoder()
+    let landID = LandID(harness.land.id)
     let joinMessage = TransportMessage.join(
         requestID: UUID().uuidString,
-        landID: harness.land.id,
+        landType: landID.landType.isEmpty ? harness.land.id : landID.landType,
+        landInstanceId: landID.landType.isEmpty ? nil : landID.instanceId,
         playerID: sessionID.rawValue,
         deviceID: nil,
         metadata: [:]
     )
     let joinData = try encoder.encode(joinMessage)
     await harness.send(joinData, from: sessionID)
-    
+
     // Wait for join to complete
     try await Task.sleep(nanoseconds: 10_000_000)
-    
+
     // Act: send ping event
     let pingEvent = AnyClientEvent(TestPingEvent())
     let pingMessage = TransportMessage.event(
@@ -107,7 +108,7 @@ func testLandServerForTestHandlesClientEvents() async throws {
     )
     let pingData = try encoder.encode(pingMessage)
     await harness.send(pingData, from: sessionID)
-    
+
     // Act: send chat event to mutate state
     let chatEvent = AnyClientEvent(TestChatEvent(message: "hello"))
     let chatMessage = TransportMessage.event(
@@ -116,15 +117,15 @@ func testLandServerForTestHandlesClientEvents() async throws {
     )
     let chatData = try encoder.encode(chatMessage)
     await harness.send(chatData, from: sessionID)
-    
+
     try await Task.sleep(nanoseconds: 50_000_000)
-    
+
     // Assert: transport echoed server events via adapter
     let outgoing = await connection.recordedMessages()
     let transportMessages = outgoing.compactMap {
         try? decoder.decode(TransportMessage.self, from: $0)
     }
-    
+
     #expect(transportMessages.contains(where: { message in
         if message.kind == .event,
            case .event(let payload) = message.payload,
@@ -134,7 +135,7 @@ func testLandServerForTestHandlesClientEvents() async throws {
         }
         return false
     }))
-    
+
     #expect(transportMessages.contains(where: { message in
         if message.kind == .event,
            case .event(let payload) = message.payload,
@@ -149,7 +150,7 @@ func testLandServerForTestHandlesClientEvents() async throws {
         }
         return false
     }))
-    
+
     let state = await harness.keeper.currentState()
     #expect(state.messageCount == 1)
 }

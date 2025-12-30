@@ -30,7 +30,7 @@ func testJoinFailsWithoutAuthInfoWhenRequired() async throws {
             }
         }
     }
-    
+
     let transport = WebSocketTransport()
     let keeper = LandKeeper<JWTErrorTestState>(definition: definition, initialState: JWTErrorTestState())
     let adapter = TransportAdapter<JWTErrorTestState>(
@@ -41,13 +41,13 @@ func testJoinFailsWithoutAuthInfoWhenRequired() async throws {
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
-    
+
     let sessionID = SessionID("sess-1")
     let clientID = ClientID("cli-1")
-    
+
     // Act: Connect without authInfo (simulating guest mode or no JWT)
     await adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: nil)
-    
+
     // Act: Send join request
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
@@ -58,15 +58,15 @@ func testJoinFailsWithoutAuthInfoWhenRequired() async throws {
     )
     let joinData = try JSONEncoder().encode(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
-    
+
     // Wait a bit for async processing
     try await Task.sleep(for: .milliseconds(100))
-    
+
     // Assert: Should use guest session (not fail)
     // Note: With guest mode, this should succeed using createGuestSession
     let joined = await adapter.isJoined(sessionID: sessionID)
     #expect(joined == true, "Join should succeed using guest session when no authInfo")
-    
+
     let state = await keeper.currentState()
     let guestPlayerID = PlayerID(sessionID.rawValue)
     #expect(state.players[guestPlayerID] == "Joined", "Should have a guest player entry")
@@ -85,7 +85,7 @@ func testJWTPayloadClearedOnDisconnectWithReconnect() async throws {
             }
         }
     }
-    
+
     let transport = WebSocketTransport()
     let keeper = LandKeeper<JWTErrorTestState>(definition: definition, initialState: JWTErrorTestState())
     let adapter = TransportAdapter<JWTErrorTestState>(
@@ -96,10 +96,10 @@ func testJWTPayloadClearedOnDisconnectWithReconnect() async throws {
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
-    
+
     let sessionID = SessionID("sess-1")
     let clientID = ClientID("cli-1")
-    
+
     // Act: Connect with JWT payload
     let authInfo = AuthenticatedInfo(
         playerID: "player-jwt-123",
@@ -107,13 +107,13 @@ func testJWTPayloadClearedOnDisconnectWithReconnect() async throws {
         metadata: ["username": "alice"]
     )
     await adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: authInfo)
-    
+
     // Act: Disconnect
     await adapter.onDisconnect(sessionID: sessionID, clientID: clientID)
-    
+
     // Act: Reconnect without JWT payload
     await adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: nil)
-    
+
     // Act: Send join request
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
@@ -124,15 +124,15 @@ func testJWTPayloadClearedOnDisconnectWithReconnect() async throws {
     )
     let joinData = try JSONEncoder().encode(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
-    
+
     // Wait a bit for async processing
     try await Task.sleep(for: .milliseconds(100))
-    
+
     // Assert: Should use guest session (JWT payload was cleared)
     let state = await keeper.currentState()
     let jwtPlayerID = PlayerID("player-jwt-123")
     #expect(state.players[jwtPlayerID] == nil, "JWT player should not be in state after disconnect")
-    
+
     let guestPlayerID = PlayerID(sessionID.rawValue)
     #expect(state.players[guestPlayerID] != nil, "Should have one guest player after reconnection")
 }
@@ -150,7 +150,7 @@ func testJoinRequestMismatchedLandIDInJWTErrorSuite() async throws {
             }
         }
     }
-    
+
     let transport = WebSocketTransport()
     let keeper = LandKeeper<JWTErrorTestState>(definition: definition, initialState: JWTErrorTestState())
     let adapter = TransportAdapter<JWTErrorTestState>(
@@ -161,31 +161,32 @@ func testJoinRequestMismatchedLandIDInJWTErrorSuite() async throws {
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
-    
+
     let sessionID = SessionID("sess-1")
     let clientID = ClientID("cli-1")
-    
+
     // Act: Connect
     await adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: nil)
-    
+
     // Act: Send join request with wrong landID
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "wrong-land-id",  // Mismatched
+        landType: "wrong-land-id",
+        landInstanceId: nil,  // Mismatched
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
     let joinData = try JSONEncoder().encode(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
-    
+
     // Wait a bit for async processing
     try await Task.sleep(for: .milliseconds(100))
-    
+
     // Assert: Should not be joined
     let joined = await adapter.isJoined(sessionID: sessionID)
     #expect(joined == false, "Join should fail with mismatched landID")
-    
+
     let state = await keeper.currentState()
     #expect(state.players.isEmpty, "No players should be in state after failed join")
 }
@@ -203,7 +204,7 @@ func testDuplicateJoinRequests() async throws {
             }
         }
     }
-    
+
     let transport = WebSocketTransport()
     let keeper = LandKeeper<JWTErrorTestState>(definition: definition, initialState: JWTErrorTestState())
     let adapter = TransportAdapter<JWTErrorTestState>(
@@ -214,13 +215,13 @@ func testDuplicateJoinRequests() async throws {
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
-    
+
     let sessionID = SessionID("sess-1")
     let clientID = ClientID("cli-1")
-    
+
     // Act: Connect
     await adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: nil)
-    
+
     // Act: Send first join request
     let joinRequest1 = TransportMessage.join(
         requestID: "join-1",
@@ -231,10 +232,10 @@ func testDuplicateJoinRequests() async throws {
     )
     let joinData1 = try JSONEncoder().encode(joinRequest1)
     await adapter.onMessage(joinData1, from: sessionID)
-    
+
     // Wait a bit
     try await Task.sleep(for: .milliseconds(100))
-    
+
     // Act: Send second join request (duplicate)
     let joinRequest2 = TransportMessage.join(
         requestID: "join-2",
@@ -245,10 +246,10 @@ func testDuplicateJoinRequests() async throws {
     )
     let joinData2 = try JSONEncoder().encode(joinRequest2)
     await adapter.onMessage(joinData2, from: sessionID)
-    
+
     // Wait a bit
     try await Task.sleep(for: .milliseconds(100))
-    
+
     // Assert: Should only have one player (first join succeeded, second rejected)
     let state = await keeper.currentState()
     #expect(state.players.count == 1, "Should only have one player after duplicate join requests")

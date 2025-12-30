@@ -14,13 +14,13 @@ import Testing
 struct SyncConcurrencyTestState: StateNodeProtocol {
     @Sync(.broadcast)
     var counter: Int = 0
-    
+
     @Sync(.broadcast)
     var lastModifiedBy: String = ""
-    
+
     @Sync(.broadcast)
     var players: [PlayerID: String] = [:]
-    
+
     public init() {}
 }
 
@@ -28,7 +28,7 @@ struct SyncConcurrencyTestState: StateNodeProtocol {
 
 @Suite("TransportAdapter Sync Concurrency Tests")
 struct TransportAdapterSyncConcurrencyTests {
-    
+
     @Test("Concurrent syncNow operations are serialized (only one executes)")
     func testConcurrentSyncNowSerialized() async throws {
         // Arrange
@@ -38,7 +38,7 @@ struct TransportAdapterSyncConcurrencyTests {
         ) {
             Rules { }
         }
-        
+
         let transport = WebSocketTransport()
         let keeper = LandKeeper<SyncConcurrencyTestState>(
             definition: definition,
@@ -51,7 +51,7 @@ struct TransportAdapterSyncConcurrencyTests {
         )
         await keeper.setTransport(adapter)
         await transport.setDelegate(adapter)
-        
+
         // Join a player so sync has someone to sync to
         await adapter.onConnect(sessionID: SessionID("alice-session"), clientID: ClientID("alice-client"))
         try await simulateRouterJoin(
@@ -62,32 +62,32 @@ struct TransportAdapterSyncConcurrencyTests {
             playerID: PlayerID("alice-player")
         )
         try await Task.sleep(for: .milliseconds(50))
-        
+
         // Act: Start two syncNow operations concurrently
         // The second one should be skipped (beginSync returns nil)
         let sync1Task = Task {
             await adapter.syncNow()
         }
-        
+
         // Small delay to ensure first sync starts and acquires lock
         try await Task.sleep(for: .milliseconds(20))
-        
+
         let sync2Task = Task {
             await adapter.syncNow()
         }
-        
+
         // Wait for both to complete
         await sync1Task.value
         await sync2Task.value
-        
+
         // Give a moment for sync operations to complete
         try await Task.sleep(for: .milliseconds(100))
-        
+
         // Assert: State should be consistent (no corruption from concurrent sync)
         let finalState = await keeper.currentState()
         #expect(finalState.counter == 0, "State should remain consistent, counter should be 0")
     }
-    
+
     @Test("syncBroadcastOnly skips when syncNow is in progress")
     func testSyncBroadcastOnlySkipsWhenSyncNowInProgress() async throws {
         // Arrange
@@ -101,7 +101,7 @@ struct TransportAdapterSyncConcurrencyTests {
                 }
             }
         }
-        
+
         let transport = WebSocketTransport()
         let keeper = LandKeeper<SyncConcurrencyTestState>(
             definition: definition,
@@ -114,7 +114,7 @@ struct TransportAdapterSyncConcurrencyTests {
         )
         await keeper.setTransport(adapter)
         await transport.setDelegate(adapter)
-        
+
         // Join two players
         // Join two players
         await adapter.onConnect(sessionID: SessionID("alice-session"), clientID: ClientID("alice-client"))
@@ -134,34 +134,34 @@ struct TransportAdapterSyncConcurrencyTests {
             clientID: ClientID("bob-client"),
             playerID: PlayerID("bob-player")
         )
-        
+
         try await Task.sleep(for: .milliseconds(50))
-        
+
         // Act: Start syncNow, then immediately start syncBroadcastOnly
         // syncBroadcastOnly should be skipped if syncNow is in progress
         let syncNowTask = Task {
             await adapter.syncNow()
         }
-        
+
         // Small delay to ensure syncNow starts and acquires lock
         try await Task.sleep(for: .milliseconds(20))
-        
+
         let syncBroadcastOnlyTask = Task {
             await adapter.syncBroadcastOnly()
         }
-        
+
         // Wait for both to complete
         await syncNowTask.value
         await syncBroadcastOnlyTask.value
-        
+
         // Give a moment for sync operations to complete
         try await Task.sleep(for: .milliseconds(100))
-        
+
         // Assert: State should be consistent (no corruption)
         let finalState = await keeper.currentState()
         #expect(finalState.players.count >= 0, "State should remain consistent")
     }
-    
+
     @Test("Multiple concurrent syncBroadcastOnly operations are serialized")
     func testMultipleSyncBroadcastOnlySerialized() async throws {
         // Arrange
@@ -175,7 +175,7 @@ struct TransportAdapterSyncConcurrencyTests {
                 }
             }
         }
-        
+
         let transport = WebSocketTransport()
         let keeper = LandKeeper<SyncConcurrencyTestState>(
             definition: definition,
@@ -188,7 +188,7 @@ struct TransportAdapterSyncConcurrencyTests {
         )
         await keeper.setTransport(adapter)
         await transport.setDelegate(adapter)
-        
+
         // Join two players
         await adapter.onConnect(sessionID: SessionID("alice-session"), clientID: ClientID("alice-client"))
         try await simulateRouterJoin(
@@ -198,7 +198,7 @@ struct TransportAdapterSyncConcurrencyTests {
             clientID: ClientID("alice-client"),
             playerID: PlayerID("alice-player")
         )
-        
+
         await adapter.onConnect(sessionID: SessionID("bob-session"), clientID: ClientID("bob-client"))
         try await simulateRouterJoin(
             adapter: adapter,
@@ -207,34 +207,34 @@ struct TransportAdapterSyncConcurrencyTests {
             clientID: ClientID("bob-client"),
             playerID: PlayerID("bob-player")
         )
-        
+
         try await Task.sleep(for: .milliseconds(50))
-        
+
         // Act: Start two syncBroadcastOnly operations concurrently
         // Only one should execute, the other should be skipped
         let sync1Task = Task {
             await adapter.syncBroadcastOnly()
         }
-        
+
         // Small delay to ensure first sync starts and acquires lock
         try await Task.sleep(for: .milliseconds(20))
-        
+
         let sync2Task = Task {
             await adapter.syncBroadcastOnly()
         }
-        
+
         // Wait for both to complete
         await sync1Task.value
         await sync2Task.value
-        
+
         // Give a moment for sync operations to complete
         try await Task.sleep(for: .milliseconds(100))
-        
+
         // Assert: State should be consistent (no corruption from concurrent sync)
         let finalState = await keeper.currentState()
         #expect(finalState.players.count >= 0, "State should remain consistent")
     }
-    
+
     @Test("Concurrent sync operations maintain state consistency")
     func testConcurrentSyncMaintainsStateConsistency() async throws {
         // Arrange
@@ -250,7 +250,7 @@ struct TransportAdapterSyncConcurrencyTests {
                 }
             }
         }
-        
+
         let transport = WebSocketTransport()
         let keeper = LandKeeper<SyncConcurrencyTestState>(
             definition: definition,
@@ -263,7 +263,7 @@ struct TransportAdapterSyncConcurrencyTests {
         )
         await keeper.setTransport(adapter)
         await transport.setDelegate(adapter)
-        
+
         // Join a player
         await adapter.onConnect(sessionID: SessionID("alice-session"), clientID: ClientID("alice-client"))
         try await simulateRouterJoin(
@@ -274,15 +274,15 @@ struct TransportAdapterSyncConcurrencyTests {
             playerID: PlayerID("alice-player")
         )
         try await Task.sleep(for: .milliseconds(50))
-        
+
         // Act: Start sync, then modify state, then start another sync
         let sync1Task = Task {
             await adapter.syncNow()
         }
-        
+
         // Small delay to ensure sync starts
         try await Task.sleep(for: .milliseconds(10))
-        
+
         // Modify state while sync is in progress
         let actionPayload = IncrementCounterAction(amount: 10, modifier: "test")
         let payloadData = try JSONEncoder().encode(actionPayload)
@@ -297,19 +297,19 @@ struct TransportAdapterSyncConcurrencyTests {
         )
         let actionData = try JSONEncoder().encode(actionRequest)
         await adapter.onMessage(actionData, from: SessionID("alice-session"))
-        
+
         // Start second sync (should be skipped if first is still in progress)
         let sync2Task = Task {
             await adapter.syncNow()
         }
-        
+
         // Wait for both syncs to complete
         await sync1Task.value
         await sync2Task.value
-        
+
         // Give a moment for state to be fully updated
         try await Task.sleep(for: .milliseconds(100))
-        
+
         // Assert: State should be consistent
         let finalState = await keeper.currentState()
         #expect(finalState.counter == 10, "Counter should be 10, got \(finalState.counter)")
@@ -322,7 +322,7 @@ struct TransportAdapterSyncConcurrencyTests {
 @Payload
 struct IncrementCounterAction: ActionPayload {
     typealias Response = IncrementCounterResponse
-    
+
     let amount: Int
     let modifier: String
 }

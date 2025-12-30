@@ -7,7 +7,7 @@ import Foundation
 struct TestState: StateNodeProtocol {
     @Sync(.broadcast)
     var count: Int = 0
-    
+
     @Sync(.broadcast)
     var players: [PlayerID: String] = [:]
 }
@@ -61,7 +61,7 @@ func testTransportAdapterForwardsEvents() async throws {
             }
         }
     }
-    
+
     let transport = WebSocketTransport()
     let keeper = LandKeeper<TestState>(definition: definition, initialState: TestState())
     let adapter = TransportAdapter<TestState>(
@@ -71,34 +71,35 @@ func testTransportAdapterForwardsEvents() async throws {
         enableLegacyJoin: true
     )
     await transport.setDelegate(adapter)
-    
+
     let sessionID = SessionID("sess-1")
     let clientID = ClientID("cli-1")
-    
+
     // Act: Connect
     await adapter.onConnect(sessionID: sessionID, clientID: clientID)
-    
+
     // Act: Join
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "test-land",
+        landType: "test-land",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
     let joinData = try JSONEncoder().encode(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
-    
+
     // Wait a bit for join to complete
     try await Task.sleep(for: .milliseconds(10))
-    
+
     // Act: Send event
     let incrementEvent = AnyClientEvent(TestIncrementEvent())
     let transportMsg = TransportMessage.event(landID: "test-land", event: .fromClient(event: incrementEvent))
     let data = try JSONEncoder().encode(transportMsg)
-    
+
     await adapter.onMessage(data, from: sessionID)
-    
+
     // Assert
     let state = await keeper.currentState()
     #expect(state.count == 1)
@@ -120,7 +121,7 @@ func testTransportAdapterConnectionLifecycle() async throws {
             }
         }
     }
-    
+
     let transport = WebSocketTransport()
     let keeper = LandKeeper<TestState>(definition: definition, initialState: TestState())
     let adapter = TransportAdapter<TestState>(
@@ -130,35 +131,36 @@ func testTransportAdapterConnectionLifecycle() async throws {
         enableLegacyJoin: true
     )
     await transport.setDelegate(adapter)
-    
+
     let sessionID = SessionID("sess-1")
     let clientID = ClientID("cli-1")
-    
+
     // Act: Connect
     await adapter.onConnect(sessionID: sessionID, clientID: clientID)
-    
+
     // Act: Join
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "test-land",
+        landType: "test-land",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
     let joinData = try JSONEncoder().encode(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
-    
+
     // Wait a bit for join to complete
     try await Task.sleep(for: .milliseconds(10))
-    
+
     // Assert: Player should be in state
     var state = await keeper.currentState()
     let playerID = PlayerID(sessionID.rawValue)
     #expect(state.players[playerID] == "Joined")
-    
+
     // Act: Disconnect
     await adapter.onDisconnect(sessionID: sessionID, clientID: clientID)
-    
+
     // Assert: Player should be removed
     state = await keeper.currentState()
     #expect(state.players[playerID] == nil)
@@ -176,7 +178,7 @@ func testTransportAdapterSendEvent() async throws {
         }
         Rules { }
     }
-    
+
     let transport = WebSocketTransport()
     let keeper = LandKeeper<TestState>(definition: definition, initialState: TestState())
     let adapter = TransportAdapter<TestState>(
@@ -186,26 +188,28 @@ func testTransportAdapterSendEvent() async throws {
         enableLegacyJoin: true
     )
     await transport.setDelegate(adapter)
-    
+
     let sessionID1 = SessionID("sess-1")
     let sessionID2 = SessionID("sess-2")
     let clientID1 = ClientID("cli-1")
     let clientID2 = ClientID("cli-2")
-    
+
     await adapter.onConnect(sessionID: sessionID1, clientID: clientID1)
     await adapter.onConnect(sessionID: sessionID2, clientID: clientID2)
-    
+
     // Join both sessions
     let joinRequest1 = TransportMessage.join(
         requestID: "join-1",
-        landID: "test-land",
+        landType: "test-land",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
     let joinRequest2 = TransportMessage.join(
         requestID: "join-2",
-        landID: "test-land",
+        landType: "test-land",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
@@ -214,14 +218,14 @@ func testTransportAdapterSendEvent() async throws {
     let joinData2 = try JSONEncoder().encode(joinRequest2)
     await adapter.onMessage(joinData1, from: sessionID1)
     await adapter.onMessage(joinData2, from: sessionID2)
-    
+
     // Wait a bit for joins to complete
     try await Task.sleep(for: .milliseconds(10))
-    
+
     // Act: Send event to specific session
     let messageEvent = AnyServerEvent(TestMessageEvent(message: "Hello"))
     await adapter.sendEvent(messageEvent, to: .session(sessionID1))
-    
+
     // Note: In a real test, we would verify the message was sent through the transport
     // For now, we just verify no errors occurred
     #expect(Bool(true))
@@ -236,7 +240,7 @@ func testTransportAdapterSyncNow() async throws {
     ) {
         Rules { }
     }
-    
+
     let transport = WebSocketTransport()
     let keeper = LandKeeper<TestState>(definition: definition, initialState: TestState())
     let adapter = TransportAdapter<TestState>(
@@ -246,29 +250,30 @@ func testTransportAdapterSyncNow() async throws {
         enableLegacyJoin: true
     )
     await transport.setDelegate(adapter)
-    
+
     let sessionID = SessionID("sess-1")
     let clientID = ClientID("cli-1")
-    
+
     await adapter.onConnect(sessionID: sessionID, clientID: clientID)
-    
+
     // Join
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "test-land",
+        landType: "test-land",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
     )
     let joinData = try JSONEncoder().encode(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
-    
+
     // Wait a bit for join to complete
     try await Task.sleep(for: .milliseconds(10))
-    
+
     // Act: Trigger sync
     await adapter.syncNow()
-    
+
     // Note: In a real test, we would verify the state snapshot was sent
     // For now, we just verify no errors occurred
     #expect(Bool(true))
