@@ -140,7 +140,6 @@ coverage/
 .pnp.js
 
 # IDEs and editors
-.vscode/
 .idea/
 
 # Temporary
