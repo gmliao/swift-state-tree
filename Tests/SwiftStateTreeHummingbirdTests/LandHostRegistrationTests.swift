@@ -15,7 +15,7 @@ import SwiftStateTreeTransport
 private struct ChessState: StateNodeProtocol {
     @Sync(.broadcast)
     var board: [[String]] = Array(repeating: Array(repeating: "", count: 8), count: 8)
-    
+
     init() {}
 }
 
@@ -23,10 +23,10 @@ private struct ChessState: StateNodeProtocol {
 private struct CardGameState: StateNodeProtocol {
     @Sync(.broadcast)
     var deck: [String] = []
-    
+
     @Sync(.broadcast)
     var players: [PlayerID: [String]] = [:]
-    
+
     init() {}
 }
 
@@ -53,18 +53,18 @@ private enum CardGame {
 @Test("LandHost uses default webSocketPath when not provided")
 func testLandHostDefaultWebSocketPath() async throws {
     // Arrange
-    var host = LandHost(configuration: LandHost.HostConfiguration(
+    let host = LandHost(configuration: LandHost.HostConfiguration(
         enableHealthRoute: false,
         logStartupBanner: false
     ))
-    
+
     // Act: Register without webSocketPath
     try await host.register(
         landType: "chess",
         landFactory: { _ in ChessGame.makeLand() },
         initialStateFactory: { _ in ChessState() }
     )
-    
+
     // Assert: Should be registered successfully
     let healthStatus = await host.realm.healthCheck()
     #expect(healthStatus["chess"] == true)
@@ -73,11 +73,11 @@ func testLandHostDefaultWebSocketPath() async throws {
 @Test("LandHost uses custom webSocketPath when provided")
 func testLandHostCustomWebSocketPath() async throws {
     // Arrange
-    var host = LandHost(configuration: LandHost.HostConfiguration(
+    let host = LandHost(configuration: LandHost.HostConfiguration(
         enableHealthRoute: false,
         logStartupBanner: false
     ))
-    
+
     // Act: Register with custom webSocketPath
     try await host.register(
         landType: "chess",
@@ -85,7 +85,7 @@ func testLandHostCustomWebSocketPath() async throws {
         initialStateFactory: { _ in ChessState() },
         webSocketPath: "/custom/chess"
     )
-    
+
     // Assert: Should be registered successfully
     let healthStatus = await host.realm.healthCheck()
     #expect(healthStatus["chess"] == true)
@@ -94,11 +94,11 @@ func testLandHostCustomWebSocketPath() async throws {
 @Test("LandHost can register servers with different configurations")
 func testLandHostDifferentConfigurations() async throws {
     // Arrange
-    var host = LandHost(configuration: LandHost.HostConfiguration(
+    let host = LandHost(configuration: LandHost.HostConfiguration(
         enableHealthRoute: false,
         logStartupBanner: false
     ))
-    
+
     // Act: Register with different configurations
     try await host.register(
         landType: "chess",
@@ -106,14 +106,14 @@ func testLandHostDifferentConfigurations() async throws {
         initialStateFactory: { _ in ChessState() },
         webSocketPath: "/game/chess"
     )
-    
+
     try await host.register(
         landType: "cardgame",
         landFactory: { _ in CardGame.makeLand() },
         initialStateFactory: { _ in CardGameState() },
         webSocketPath: "/game/cards"
     )
-    
+
     // Assert: Both should be registered successfully
     let healthStatus = await host.realm.healthCheck()
     #expect(healthStatus.count == 2)
@@ -124,12 +124,12 @@ func testLandHostDifferentConfigurations() async throws {
 @Test("LandHost accepts custom configuration")
 func testLandHostCustomConfiguration() async throws {
     // Arrange
-    var host = LandHost(configuration: LandHost.HostConfiguration(
+    let host = LandHost(configuration: LandHost.HostConfiguration(
         enableHealthRoute: false,
         logStartupBanner: false
     ))
     let customConfig = LandServerConfiguration()
-    
+
     // Act: Register with custom configuration
     try await host.register(
         landType: "chess",
@@ -137,7 +137,7 @@ func testLandHostCustomConfiguration() async throws {
         initialStateFactory: { _ in ChessState() },
         configuration: customConfig
     )
-    
+
     // Assert: Should be registered successfully
     let healthStatus = await host.realm.healthCheck()
     #expect(healthStatus["chess"] == true)
@@ -146,11 +146,11 @@ func testLandHostCustomConfiguration() async throws {
 @Test("LandHost validates landType is not empty")
 func testLandHostValidatesLandTypeNotEmpty() async throws {
     // Arrange
-    var host = LandHost(configuration: LandHost.HostConfiguration(
+    let host = LandHost(configuration: LandHost.HostConfiguration(
         enableHealthRoute: false,
         logStartupBanner: false
     ))
-    
+
     // Act & Assert: Try to register with empty landType
     do {
         try await host.register(
@@ -169,18 +169,18 @@ func testLandHostValidatesLandTypeNotEmpty() async throws {
 @Test("LandHost rejects duplicate landType")
 func testLandHostRejectsDuplicateLandType() async throws {
     // Arrange
-    var host = LandHost(configuration: LandHost.HostConfiguration(
+    let host = LandHost(configuration: LandHost.HostConfiguration(
         enableHealthRoute: false,
         logStartupBanner: false
     ))
-    
+
     // Act: Register first time
     try await host.register(
         landType: "chess",
         landFactory: { _ in ChessGame.makeLand() },
         initialStateFactory: { _ in ChessState() }
     )
-    
+
     // Act & Assert: Try to register duplicate landType
     do {
         try await host.register(

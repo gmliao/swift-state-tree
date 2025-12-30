@@ -13,7 +13,7 @@ import Testing
 struct EndToEndTestState: StateNodeProtocol {
     @Sync(.broadcast)
     var players: [PlayerID: EndToEndPlayerInfo] = [:]
-    
+
     @Sync(.broadcast)
     var messageCount: Int = 0
 }
@@ -49,7 +49,7 @@ func testCompleteJWTFlow() async throws {
             }
         }
     }
-    
+
     let transport = WebSocketTransport()
     let keeper = LandKeeper<EndToEndTestState>(definition: definition, initialState: EndToEndTestState())
     let adapter = TransportAdapter<EndToEndTestState>(
@@ -60,10 +60,10 @@ func testCompleteJWTFlow() async throws {
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
-    
+
     let sessionID = SessionID("sess-jwt-1")
     let clientID = ClientID("cli-1")
-    
+
     // Step 1: Connect with JWT payload
     let authInfo = AuthenticatedInfo(
         playerID: "player-jwt-123",
@@ -75,7 +75,7 @@ func testCompleteJWTFlow() async throws {
         ]
     )
     await adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: authInfo)
-    
+
     // Step 2: Send join request
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
@@ -86,21 +86,21 @@ func testCompleteJWTFlow() async throws {
     )
     let joinData = try JSONEncoder().encode(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
-    
+
     // Wait for processing
     try await Task.sleep(for: .milliseconds(100))
-    
+
     // Step 3: Verify join
     let joined = await adapter.isJoined(sessionID: sessionID)
     #expect(joined == true, "Session should be joined")
-    
+
     let state = await keeper.currentState()
     let playerID = PlayerID("player-jwt-123")
     guard let playerInfo = state.players[playerID] else {
         Issue.record("Player should be in state after join")
         return
     }
-    
+
     // Step 4: Verify JWT payload was used
     #expect(playerInfo.isGuest == false, "Player should not be guest (has JWT)")
     #expect(playerInfo.username == "alice", "Username should come from JWT payload")
@@ -130,7 +130,7 @@ func testCompleteGuestFlow() async throws {
             }
         }
     }
-    
+
     let transport = WebSocketTransport()
     let keeper = LandKeeper<EndToEndTestState>(definition: definition, initialState: EndToEndTestState())
     let adapter = TransportAdapter<EndToEndTestState>(
@@ -141,13 +141,13 @@ func testCompleteGuestFlow() async throws {
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
-    
+
     let sessionID = SessionID("sess-guest-1")
     let clientID = ClientID("cli-guest-1")
-    
+
     // Step 1: Connect without JWT payload (guest mode)
     await adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: nil)
-    
+
     // Step 2: Send join request
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
@@ -158,21 +158,21 @@ func testCompleteGuestFlow() async throws {
     )
     let joinData = try JSONEncoder().encode(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
-    
+
     // Wait for processing
     try await Task.sleep(for: .milliseconds(100))
-    
+
     // Step 3: Verify join
     let joined = await adapter.isJoined(sessionID: sessionID)
     #expect(joined == true, "Guest session should be joined")
-    
+
     let state = await keeper.currentState()
     let guestPlayerID = PlayerID(sessionID.rawValue)
     guard let guestPlayer = state.players[guestPlayerID] else {
         Issue.record("Guest player should be present after join")
         return
     }
-    
+
     // Step 4: Verify guest session was used
     #expect(guestPlayer.isGuest == true, "Player should be marked as guest")
     #expect(guestPlayer.deviceID == clientID.rawValue, "Device ID should come from clientID")
@@ -200,7 +200,7 @@ func testMixedJWTAndGuestUsers() async throws {
             }
         }
     }
-    
+
     let transport = WebSocketTransport()
     let keeper = LandKeeper<EndToEndTestState>(definition: definition, initialState: EndToEndTestState())
     let adapter = TransportAdapter<EndToEndTestState>(
@@ -211,7 +211,7 @@ func testMixedJWTAndGuestUsers() async throws {
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
-    
+
     // Step 1: JWT user joins
     let jwtSessionID = SessionID("sess-jwt-1")
     let jwtClientID = ClientID("cli-jwt-1")
@@ -221,7 +221,7 @@ func testMixedJWTAndGuestUsers() async throws {
         metadata: ["username": "alice"]
     )
     await adapter.onConnect(sessionID: jwtSessionID, clientID: jwtClientID, authInfo: jwtAuthInfo)
-    
+
     let jwtJoinRequest = TransportMessage.join(
         requestID: "join-jwt-1",
         landID: "e2e-test",
@@ -231,12 +231,12 @@ func testMixedJWTAndGuestUsers() async throws {
     )
     let jwtJoinData = try JSONEncoder().encode(jwtJoinRequest)
     await adapter.onMessage(jwtJoinData, from: jwtSessionID)
-    
+
     // Step 2: Guest user joins
     let guestSessionID = SessionID("sess-guest-1")
     let guestClientID = ClientID("cli-guest-1")
     await adapter.onConnect(sessionID: guestSessionID, clientID: guestClientID, authInfo: nil)
-    
+
     let guestJoinRequest = TransportMessage.join(
         requestID: "join-guest-1",
         landID: "e2e-test",
@@ -246,14 +246,14 @@ func testMixedJWTAndGuestUsers() async throws {
     )
     let guestJoinData = try JSONEncoder().encode(guestJoinRequest)
     await adapter.onMessage(guestJoinData, from: guestSessionID)
-    
+
     // Wait for processing
     try await Task.sleep(for: .milliseconds(200))
-    
+
     // Step 3: Verify both users are in state
     let state = await keeper.currentState()
     #expect(state.players.count == 2, "Should have two players (one JWT, one guest)")
-    
+
     let jwtPlayerID = PlayerID("player-jwt-123")
     guard let jwtPlayer = state.players[jwtPlayerID] else {
         Issue.record("JWT player should be in state")
@@ -261,7 +261,7 @@ func testMixedJWTAndGuestUsers() async throws {
     }
     #expect(jwtPlayer.isGuest == false, "JWT player should not be guest")
     #expect(jwtPlayer.username == "alice", "JWT player should have username")
-    
+
     let guestPlayerID = PlayerID(guestSessionID.rawValue)
     if let guestPlayer = state.players[guestPlayerID] {
         #expect(guestPlayer.isGuest == true, "Guest player should be marked as guest")

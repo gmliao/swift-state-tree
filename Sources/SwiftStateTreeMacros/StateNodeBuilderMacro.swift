@@ -25,34 +25,34 @@ public struct StateNodeBuilderMacro: MemberMacro {
             error.diagnose(context: context)
             throw error
         }
-        
+
         // Collect all stored properties
         let propertiesWithNodes = collectStoredProperties(from: structDecl)
         let properties = propertiesWithNodes.map { $0.0 }
-        
+
         // Validate all stored properties have @Sync or @Internal
         try validateProperties(propertiesWithNodes, context: context)
-        
+
         // Generate getSyncFields() method
         let getSyncFieldsMethod = try generateGetSyncFields(properties: properties)
-        
+
         // Generate validateSyncFields() method
         let validateSyncFieldsMethod = try generateValidateSyncFields(properties: properties)
-        
+
         // Generate snapshot(for:) method
         let snapshotMethod = try generateSnapshotMethod(propertiesWithNodes: propertiesWithNodes)
-        
+
         // Generate broadcastSnapshot() method
         let broadcastSnapshotMethod = try generateBroadcastSnapshotMethod(propertiesWithNodes: propertiesWithNodes)
-        
+
         // Generate dirty tracking methods (isDirty, getDirtyFields, clearDirty)
         let isDirtyMethod = try generateIsDirtyMethod(propertiesWithNodes: propertiesWithNodes)
         let getDirtyFieldsMethod = try generateGetDirtyFieldsMethod(propertiesWithNodes: propertiesWithNodes)
         let clearDirtyMethod = try generateClearDirtyMethod(propertiesWithNodes: propertiesWithNodes)
-        
+
         // Generate helper methods for container types (Dictionary, Array, Set)
         let containerHelperMethods = try generateContainerHelperMethods(propertiesWithNodes: propertiesWithNodes)
-        
+
         return [
             DeclSyntax(getSyncFieldsMethod),
             DeclSyntax(validateSyncFieldsMethod),
@@ -64,39 +64,39 @@ public struct StateNodeBuilderMacro: MemberMacro {
             DeclSyntax(try generateGetFieldMetadata(properties: properties))
         ] + containerHelperMethods
     }
-    
+
     /// Collect all stored properties from a struct declaration
     private static func collectStoredProperties(from structDecl: StructDeclSyntax) -> [(PropertyInfo, Syntax)] {
         var properties: [(PropertyInfo, Syntax)] = []
-        
+
         for member in structDecl.memberBlock.members {
             guard let variableDecl = member.decl.as(VariableDeclSyntax.self) else {
                 continue
             }
-            
+
             // Skip computed properties (they don't have bindings with initializers or are marked with get/set)
             let hasComputedProperty = variableDecl.bindings.contains { binding in
                 return binding.accessorBlock != nil
             }
-            
+
             if hasComputedProperty {
                 continue
             }
-            
+
             for binding in variableDecl.bindings {
                 guard let pattern = binding.pattern.as(IdentifierPatternSyntax.self) else {
                     continue
                 }
-                
+
                 let propertyName = pattern.identifier.text
-                
+
                 // Extract type information
                 var typeName: String? = nil
                 if let typeAnnotation = binding.typeAnnotation {
                     // Get the type as a string
                     typeName = typeAnnotation.type.description.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
                 }
-                
+
                 // Check for @Sync or @Internal attribute
                 let hasSync = variableDecl.attributes.contains { attr in
                     if let attribute = attr.as(AttributeSyntax.self) {
@@ -105,7 +105,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
                     }
                     return false
                 }
-                
+
                 let hasInternal = variableDecl.attributes.contains { attr in
                     if let attribute = attr.as(AttributeSyntax.self) {
                         let name = attribute.attributeName.as(IdentifierTypeSyntax.self)?.name.text
@@ -113,7 +113,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
                     }
                     return false
                 }
-                
+
                 // Extract policy type from @Sync attribute
                 var policyType: LocalPolicyType? = nil
                 if hasSync {
@@ -126,7 +126,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
                         policyType = extractPolicyType(from: attribute)
                     }
                 }
-                
+
                 // Capture the initializer expression (if any) for default value extraction
                 // Remove comments from the initializer string
                 var initializer = binding.initializer?.value.description.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
@@ -136,7 +136,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
                         initializer = String(initStr[..<commentIndex.lowerBound]).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
                     }
                 }
-                
+
                 properties.append((
                     PropertyInfo(
                         name: propertyName,
@@ -150,20 +150,20 @@ public struct StateNodeBuilderMacro: MemberMacro {
                 ))
             }
         }
-        
+
         return properties
     }
-    
+
     /// Extract policy type from @Sync attribute
     private static func extractPolicyType(from attribute: AttributeSyntax) -> LocalPolicyType? {
         guard let argument = attribute.arguments?.as(LabeledExprListSyntax.self) else {
             return nil
         }
-        
+
         // Look for the first argument (the policy)
         if let firstArg = argument.first {
             var policyTypeString: String?
-            
+
             // Try to extract the policy type from the argument
             // Examples: .broadcast, .serverOnly, .perPlayerSlice()
             if let memberAccess = firstArg.expression.as(MemberAccessExprSyntax.self) {
@@ -174,16 +174,16 @@ public struct StateNodeBuilderMacro: MemberMacro {
                     policyTypeString = memberAccess.declName.baseName.text
                 }
             }
-            
+
             // Convert string to LocalPolicyType enum
             if let policyString = policyTypeString {
                 return LocalPolicyType(rawValue: policyString) ?? .unknown
             }
         }
-        
+
         return .unknown
     }
-    
+
     /// Validate that all stored properties have @Sync or @Internal markers
     private static func validateProperties(
         _ properties: [(PropertyInfo, Syntax)],
@@ -201,18 +201,18 @@ public struct StateNodeBuilderMacro: MemberMacro {
             }
         }
     }
-    
+
     /// Generate getSyncFields() method
     private static func generateGetSyncFields(properties: [PropertyInfo]) throws -> FunctionDeclSyntax {
         let syncProperties = properties.filter { $0.hasSync }
-        
+
         var arrayElements: [ArrayElementSyntax] = []
-        
+
         for (index, property) in syncProperties.enumerated() {
             let policyType = property.policyType ?? .unknown
             // Use rawValue to get the string representation for code generation
             let policyTypeName = policyType.rawValue
-            
+
             let trailingComma = index < syncProperties.count - 1 ? TokenSyntax.commaToken() : nil
             let element = ArrayElementSyntax(
                 expression: ExprSyntax(
@@ -224,9 +224,9 @@ public struct StateNodeBuilderMacro: MemberMacro {
             )
             arrayElements.append(element)
         }
-        
+
         let arrayExpr = ArrayExprSyntax(elements: ArrayElementListSyntax(arrayElements))
-        
+
         return try FunctionDeclSyntax(
             """
             public func getSyncFields() -> [SyncFieldInfo] {
@@ -235,7 +235,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
             """
         )
     }
-    
+
     /// Generate validateSyncFields() method
     private static func generateValidateSyncFields(properties: [PropertyInfo]) throws -> FunctionDeclSyntax {
         // Since we validate at compile time, this can always return true
@@ -247,12 +247,12 @@ public struct StateNodeBuilderMacro: MemberMacro {
             """
         )
     }
-    
+
     /// Generate snapshot(for:) method
     /// If dirtyFields is provided, only dirty fields are serialized for optimization
     private static func generateSnapshotMethod(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> FunctionDeclSyntax {
         let syncProperties = propertiesWithNodes.filter { $0.0.hasSync }
-        
+
         var codeLines: [String] = []
         // Use var only if there are properties to process, otherwise use let
         if syncProperties.isEmpty {
@@ -261,7 +261,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
             codeLines.append("var result: [String: SnapshotValue] = [:]")
         }
         codeLines.append("")
-        
+
         // Generate code for each @Sync field
         // Note: Property wrappers are stored as _propertyName, but we access them via propertyName
         // The property wrapper itself has .policy and .wrappedValue
@@ -270,12 +270,12 @@ public struct StateNodeBuilderMacro: MemberMacro {
             let fieldName = propertyName
             // Property wrapper storage name (Swift automatically creates _propertyName for @Sync)
             let storageName = "_\(propertyName)"
-            
+
             // Check if field should be included (either no dirtyFields filter, or field is dirty)
             codeLines.append("// Include \(fieldName) if no dirtyFields filter or if field is dirty")
             codeLines.append("if dirtyFields == nil || dirtyFields?.contains(\"\(fieldName)\") == true {")
             codeLines.append("    if let value = self.\(storageName).policy.filteredValue(self.\(storageName).wrappedValue, for: playerID) {")
-            
+
             // Generate optimized conversion code based on type
             // value is Value? from filteredValue (same type as the field), maintaining type safety
             // Pass playerID for recursive filtering support
@@ -290,11 +290,11 @@ public struct StateNodeBuilderMacro: MemberMacro {
             codeLines.append("}")
             codeLines.append("")
         }
-        
+
         codeLines.append("return StateSnapshot(values: result)")
-        
+
         let body = codeLines.joined(separator: "\n")
-        
+
         return try FunctionDeclSyntax(
             """
             public func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>? = nil) throws -> StateSnapshot {
@@ -303,7 +303,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
             """
         )
     }
-    
+
     /// Generate broadcastSnapshot() method
     /// This method generates a snapshot containing only broadcast fields, avoiding runtime reflection
     /// If dirtyFields is provided, only dirty fields are serialized for optimization
@@ -314,7 +314,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
             // We need to check the policy type from the property info
             property.policyType == .broadcast
         }
-        
+
         var codeLines: [String] = []
         if broadcastProperties.isEmpty {
             codeLines.append("let result: [String: SnapshotValue] = [:]")
@@ -322,23 +322,23 @@ public struct StateNodeBuilderMacro: MemberMacro {
             codeLines.append("var result: [String: SnapshotValue] = [:]")
         }
         codeLines.append("")
-        
+
         // Generate code for each broadcast @Sync field
         // Directly access the property wrapper's wrappedValue without filtering
         for (property, _) in broadcastProperties {
             let propertyName = property.name
             let fieldName = propertyName
             let storageName = "_\(propertyName)"
-            
+
             // Check if field should be included (either no dirtyFields filter, or field is dirty)
             codeLines.append("// Include \(fieldName) if no dirtyFields filter or if field is dirty")
             codeLines.append("if dirtyFields == nil || dirtyFields?.contains(\"\(fieldName)\") == true {")
-            
+
             // For broadcast fields, we directly access wrappedValue without filtering
             // wrappedValue is the actual typed value, not Any?
             // Note: generateConversionCode will handle optional type casting to Any
             let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: "self.\(storageName).wrappedValue", isAnyType: false)
-            
+
             if needsTry {
                 // Complex types that may throw - use do-catch
                 codeLines.append("    do {")
@@ -353,11 +353,11 @@ public struct StateNodeBuilderMacro: MemberMacro {
             codeLines.append("}")
             codeLines.append("")
         }
-        
+
         codeLines.append("return StateSnapshot(values: result)")
-        
+
         let body = codeLines.joined(separator: "\n")
-        
+
         return try FunctionDeclSyntax(
             """
             public func broadcastSnapshot(dirtyFields: Set<String>? = nil) throws -> StateSnapshot {
@@ -366,11 +366,11 @@ public struct StateNodeBuilderMacro: MemberMacro {
             """
         )
     }
-    
+
     /// Generate isDirty() method
     private static func generateIsDirtyMethod(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> FunctionDeclSyntax {
         let syncProperties = propertiesWithNodes.filter { $0.0.hasSync }
-        
+
         if syncProperties.isEmpty {
             return try FunctionDeclSyntax(
                 """
@@ -380,19 +380,19 @@ public struct StateNodeBuilderMacro: MemberMacro {
                 """
             )
         }
-        
+
         var codeLines: [String] = []
         var conditions: [String] = []
-        
+
         for (property, _) in syncProperties {
             let storageName = "_\(property.name)"
             conditions.append("\(storageName).isDirty")
         }
-        
+
         codeLines.append("return \(conditions.joined(separator: " || "))")
-        
+
         let body = codeLines.joined(separator: "\n")
-        
+
         return try FunctionDeclSyntax(
             """
             public func isDirty() -> Bool {
@@ -401,11 +401,11 @@ public struct StateNodeBuilderMacro: MemberMacro {
             """
         )
     }
-    
+
     /// Generate getDirtyFields() method
     private static func generateGetDirtyFieldsMethod(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> FunctionDeclSyntax {
         let syncProperties = propertiesWithNodes.filter { $0.0.hasSync }
-        
+
         if syncProperties.isEmpty {
             return try FunctionDeclSyntax(
                 """
@@ -415,25 +415,25 @@ public struct StateNodeBuilderMacro: MemberMacro {
                 """
             )
         }
-        
+
         var codeLines: [String] = []
         codeLines.append("var dirtyFields: Set<String> = []")
         codeLines.append("")
-        
+
         for (property, _) in syncProperties {
             let propertyName = property.name
             let storageName = "_\(propertyName)"
-            
+
             codeLines.append("if \(storageName).isDirty {")
             codeLines.append("    dirtyFields.insert(\"\(propertyName)\")")
             codeLines.append("}")
         }
-        
+
         codeLines.append("")
         codeLines.append("return dirtyFields")
-        
+
         let body = codeLines.joined(separator: "\n")
-        
+
         return try FunctionDeclSyntax(
             """
             public func getDirtyFields() -> Set<String> {
@@ -442,16 +442,16 @@ public struct StateNodeBuilderMacro: MemberMacro {
             """
         )
     }
-    
+
     /// Generate clearDirty() method
     /// This method clears dirty flags for all @Sync fields, and recursively clears
     /// dirty flags for nested StateNodeProtocol instances.
-    /// 
+    ///
     /// **Important**: This recursively clears dirty flags in nested StateNode instances
     /// to prevent unnecessary comparisons in subsequent syncs when nested state hasn't changed.
     private static func generateClearDirtyMethod(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> FunctionDeclSyntax {
         let syncProperties = propertiesWithNodes.filter { $0.0.hasSync }
-        
+
         if syncProperties.isEmpty {
             return try FunctionDeclSyntax(
                 """
@@ -460,32 +460,43 @@ public struct StateNodeBuilderMacro: MemberMacro {
                 """
             )
         }
-        
+
         var codeLines: [String] = []
         for (property, _) in syncProperties {
             let propertyName = property.name
             let storageName = "_\(propertyName)"
-            
+
             // Clear the @Sync wrapper's dirty flag first
             codeLines.append("\(storageName).clearDirty()")
-            
+
             // Then, recursively clear nested StateNode's dirty flags (if it's a StateNodeProtocol)
             // NOTE: We always attempt recursive clear for non-primitive types, regardless of wrapper's dirty state,
             // because nested StateNode might have internal dirty flags even if wrapper wasn't dirty.
             // This ensures all nested dirty flags are cleared, preventing accumulation.
             if let typeName = property.typeName, !isPrimitiveType(typeName) {
+                let normalizedType = typeName.trimmingCharacters(in: .whitespacesAndNewlines)
+                let isOptional = normalizedType.hasSuffix("?") || (normalizedType.hasPrefix("Optional<") && normalizedType.hasSuffix(">"))
+
                 codeLines.append("// Recursively clear dirty flags for nested StateNode (if applicable)")
                 codeLines.append("// Always attempt recursive clear for non-primitive types to ensure nested dirty flags are cleared")
-                codeLines.append("if var nestedState = \(storageName).wrappedValue as? any StateNodeProtocol {")
+
+                if isOptional {
+                    // For optional types, unwrap first then check if it's a StateNodeProtocol
+                    codeLines.append("if let unwrapped = \(storageName).wrappedValue, var nestedState = unwrapped as? any StateNodeProtocol {")
+                } else {
+                    // For non-optional types, directly check if it's a StateNodeProtocol
+                    // Use direct cast since the type should already conform to StateNodeProtocol if it's not primitive
+                    codeLines.append("if var nestedState = \(storageName).wrappedValue as? any StateNodeProtocol {")
+                }
                 codeLines.append("    nestedState.clearDirty()")
                 codeLines.append("    // Update value without marking as dirty (using internal method)")
                 codeLines.append("    \(storageName).updateValueWithoutMarkingDirty(nestedState as! \(typeName))")
                 codeLines.append("}")
             }
         }
-        
+
         let body = codeLines.joined(separator: "\n")
-        
+
         return try FunctionDeclSyntax(
             """
             public mutating func clearDirty() {
@@ -494,7 +505,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
             """
         )
     }
-    
+
     /// Check if a type is a primitive type or collection type that cannot be a StateNodeProtocol
     /// Returns true for primitive types, arrays, dictionaries, and other non-StateNode types
     private static func isPrimitiveType(_ typeName: String) -> Bool {
@@ -504,13 +515,13 @@ public struct StateNodeBuilderMacro: MemberMacro {
             "Float", "Double", "Bool", "String",
             "Character", "Date", "UUID", "PlayerID"
         ]
-        
+
         // Remove optional markers and check base type
         let baseType = typeName
             .replacingOccurrences(of: "?", with: "")
             .replacingOccurrences(of: "!", with: "")
             .trimmingCharacters(in: .whitespaces)
-        
+
         // Check if it's a dictionary or array (these are collections, not StateNodeProtocol)
         // Collections themselves cannot be StateNodeProtocol, but their elements/values might be
         if baseType.contains("[") && baseType.contains("]") {
@@ -519,22 +530,22 @@ public struct StateNodeBuilderMacro: MemberMacro {
             // The recursive clearDirty logic should not apply to collections
             return true
         }
-        
+
         // Check if base type is in primitive types set
         return primitiveTypes.contains(baseType)
     }
-    
+
     /// Generate getFieldMetadata() method
     private static func generateGetFieldMetadata(properties: [PropertyInfo]) throws -> FunctionDeclSyntax {
         let syncProperties = properties.filter { $0.hasSync }
-        
+
         var arrayElements: [ArrayElementSyntax] = []
-        
+
         for (index, property) in syncProperties.enumerated() {
             let policyType = property.policyType ?? .unknown
             let policyTypeName = policyType.rawValue
             let typeName = property.typeName ?? "Any"
-            
+
             let defaultValueExpr: String
             if let initializer = property.initializer {
                 if initializer == "nil" {
@@ -545,9 +556,9 @@ public struct StateNodeBuilderMacro: MemberMacro {
             } else {
                 defaultValueExpr = "nil"
             }
-            
+
             let trailingComma = index < syncProperties.count - 1 ? TokenSyntax.commaToken() : nil
-            
+
             // We use SchemaHelper.determineNodeKind(from: Type.self) to get the node kind at runtime
             let element = ArrayElementSyntax(
                 expression: ExprSyntax(
@@ -565,9 +576,9 @@ public struct StateNodeBuilderMacro: MemberMacro {
             )
             arrayElements.append(element)
         }
-        
+
         let arrayExpr = ArrayExprSyntax(elements: ArrayElementListSyntax(arrayElements))
-        
+
         return try FunctionDeclSyntax(
             """
             public static func getFieldMetadata() -> [FieldMetadata] {
@@ -582,12 +593,12 @@ public struct StateNodeBuilderMacro: MemberMacro {
     private static func generateContainerHelperMethods(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> [DeclSyntax] {
         let syncProperties = propertiesWithNodes.filter { $0.0.hasSync }
         var methods: [DeclSyntax] = []
-        
+
         for (property, _) in syncProperties {
             let propertyName = property.name
             let storageName = "_\(propertyName)"
             let containerType = detectContainerType(from: property.typeName)
-            
+
             switch containerType {
             case .dictionary(let keyType, let valueType):
                 // Generate helper methods for Dictionary
@@ -597,7 +608,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
                     keyType: keyType,
                     valueType: valueType
                 ))
-                
+
             case .array(let elementType):
                 // Generate helper methods for Array
                 methods.append(contentsOf: try generateArrayHelperMethods(
@@ -605,7 +616,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
                     storageName: storageName,
                     elementType: elementType
                 ))
-                
+
             case .set(let elementType):
                 // Generate helper methods for Set
                 methods.append(contentsOf: try generateSetHelperMethods(
@@ -613,16 +624,16 @@ public struct StateNodeBuilderMacro: MemberMacro {
                     storageName: storageName,
                     elementType: elementType
                 ))
-                
+
             case .none:
                 // Not a container type, skip
                 break
             }
         }
-        
+
         return methods
     }
-    
+
     /// Generate helper methods for Dictionary container type
     private static func generateDictionaryHelperMethods(
         propertyName: String,
@@ -631,7 +642,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
         valueType: String
     ) throws -> [DeclSyntax] {
         var methods: [DeclSyntax] = []
-        
+
         // Method: updateValue(_:forKey:) - Update or insert a value
         methods.append(DeclSyntax(try FunctionDeclSyntax(
             """
@@ -643,7 +654,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
             }
             """
         )))
-        
+
         // Method: removeValue(forKey:) - Remove a value
         methods.append(DeclSyntax(try FunctionDeclSyntax(
             """
@@ -657,7 +668,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
             }
             """
         )))
-        
+
         // Method: setValue(_:forKey:) - Alias for updateValue
         methods.append(DeclSyntax(try FunctionDeclSyntax(
             """
@@ -667,10 +678,10 @@ public struct StateNodeBuilderMacro: MemberMacro {
             }
             """
         )))
-        
+
         return methods
     }
-    
+
     /// Generate helper methods for Array container type
     private static func generateArrayHelperMethods(
         propertyName: String,
@@ -678,7 +689,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
         elementType: String
     ) throws -> [DeclSyntax] {
         var methods: [DeclSyntax] = []
-        
+
         // Method: append(_:) - Append an element
         methods.append(DeclSyntax(try FunctionDeclSyntax(
             """
@@ -690,7 +701,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
             }
             """
         )))
-        
+
         // Method: remove(at:) - Remove an element at index
         methods.append(DeclSyntax(try FunctionDeclSyntax(
             """
@@ -704,7 +715,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
             }
             """
         )))
-        
+
         // Method: insert(_:at:) - Insert an element at index
         methods.append(DeclSyntax(try FunctionDeclSyntax(
             """
@@ -716,10 +727,10 @@ public struct StateNodeBuilderMacro: MemberMacro {
             }
             """
         )))
-        
+
         return methods
     }
-    
+
     /// Generate helper methods for Set container type
     private static func generateSetHelperMethods(
         propertyName: String,
@@ -727,7 +738,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
         elementType: String
     ) throws -> [DeclSyntax] {
         var methods: [DeclSyntax] = []
-        
+
         // Method: insert(_:) - Insert an element
         methods.append(DeclSyntax(try FunctionDeclSyntax(
             """
@@ -741,7 +752,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
             }
             """
         )))
-        
+
         // Method: remove(_:) - Remove an element
         methods.append(DeclSyntax(try FunctionDeclSyntax(
             """
@@ -755,10 +766,10 @@ public struct StateNodeBuilderMacro: MemberMacro {
             }
             """
         )))
-        
+
         return methods
     }
-    
+
     /// Generate optimized conversion code based on type
     /// For basic types, generates direct conversion; for complex types, uses make(from:for:)
     /// Returns a tuple: (code, needsTry) where needsTry indicates if the code can throw
@@ -776,9 +787,9 @@ public struct StateNodeBuilderMacro: MemberMacro {
                 return ("SnapshotValue.make(from: \(valueName))", true)
             }
         }
-        
+
         let normalizedType = typeName.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-        
+
         // Check if it's an Optional type (handle first)
         if normalizedType.hasSuffix("?") {
             // Optional type: use make(from:for:) to handle nil properly
@@ -790,7 +801,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
                 return ("SnapshotValue.make(from: \(valueName) as Any)", true)
             }
         }
-        
+
         if normalizedType.hasPrefix("Optional<") && normalizedType.hasSuffix(">") {
             // Optional<Type> format: use make(from:for:) to handle nil properly
             // Explicitly cast to Any to silence implicit coercion warning
@@ -801,7 +812,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
                 return ("SnapshotValue.make(from: \(valueName) as Any)", true)
             }
         }
-        
+
         // Handle basic types with direct conversion (no Mirror needed)
         // If valueName is Any?, we need to cast it first
         switch normalizedType {
@@ -951,9 +962,9 @@ private func capitalizeFirst(_ str: String) -> String {
 /// Detect if a type is a container type and extract its element types
 private func detectContainerType(from typeName: String?) -> ContainerType {
     guard let typeName = typeName else { return .none }
-    
+
     let normalized = typeName.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-    
+
     // Check for Dictionary: [Key: Value] or Dictionary<Key, Value>
     if normalized.hasPrefix("[") && normalized.contains(":") && normalized.hasSuffix("]") {
         // Format: [Key: Value]
@@ -974,7 +985,7 @@ private func detectContainerType(from typeName: String?) -> ContainerType {
             return .dictionary(keyType: keyType, valueType: valueType)
         }
     }
-    
+
     // Check for Array: [Element] or Array<Element>
     if normalized.hasPrefix("[") && normalized.hasSuffix("]") && !normalized.contains(":") {
         // Format: [Element]
@@ -985,14 +996,14 @@ private func detectContainerType(from typeName: String?) -> ContainerType {
         let elementType = String(normalized.dropFirst("Array<".count).dropLast()).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
         return .array(elementType: elementType)
     }
-    
+
     // Check for Set: Set<Element>
     if normalized.hasPrefix("Set<") && normalized.hasSuffix(">") {
         // Format: Set<Element>
         let elementType = String(normalized.dropFirst("Set<".count).dropLast()).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
         return .set(elementType: elementType)
     }
-    
+
     return .none
 }
 
@@ -1000,7 +1011,7 @@ private func detectContainerType(from typeName: String?) -> ContainerType {
 private enum MacroError: Error, @unchecked Sendable {
     case onlyStructsSupported(node: Syntax)
     case missingMarker(propertyName: String, structName: String, node: Syntax)
-    
+
     func diagnose(context: some MacroExpansionContext) {
         switch self {
         case .onlyStructsSupported(let node):
@@ -1026,13 +1037,13 @@ private struct StateNodeBuilderDiagnostic: DiagnosticMessage, @unchecked Sendabl
     let message: String
     let diagnosticID: MessageID
     let severity: DiagnosticSeverity
-    
+
     static let onlyStructsSupported: StateNodeBuilderDiagnostic = StateNodeBuilderDiagnostic(
         message: "@StateNodeBuilder can only be applied to struct declarations",
         diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "onlyStructsSupported"),
         severity: .error
     )
-    
+
     static func missingMarker(propertyName: String, structName: String) -> StateNodeBuilderDiagnostic {
         StateNodeBuilderDiagnostic(
             message: "Stored property '\(propertyName)' in \(structName) must be marked with @Sync or @Internal",

@@ -14,7 +14,7 @@ import Atomics
 struct GuestModeTestState: StateNodeProtocol {
     @Sync(.broadcast)
     var ticks: Int = 0
-    
+
     @Sync(.broadcast)
     var players: [PlayerID: GuestPlayerInfo] = [:]
 }
@@ -47,7 +47,7 @@ func testGuestSessionCreation() async throws {
             }
         }
     }
-    
+
     let transport = WebSocketTransport()
     let keeper = LandKeeper<GuestModeTestState>(definition: definition, initialState: GuestModeTestState())
     let adapter = TransportAdapter<GuestModeTestState>(
@@ -58,13 +58,13 @@ func testGuestSessionCreation() async throws {
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
-    
+
     let sessionID = SessionID("sess-guest-1")
     let clientID = ClientID("cli-1")
-    
+
     // Act: Connect without JWT payload (guest mode)
     await adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: nil)
-    
+
     // Act: Send join request (without playerID, should use guest session)
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
@@ -75,21 +75,21 @@ func testGuestSessionCreation() async throws {
     )
     let joinData = try JSONEncoder().encode(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
-    
+
     // Wait a bit for async processing
     try await Task.sleep(for: .milliseconds(100))
-    
+
     // Assert: Guest session should be created
     let joined = await adapter.isJoined(sessionID: sessionID)
     #expect(joined, "Session should be joined")
-    
+
     let state = await keeper.currentState()
     let guestPlayerID = PlayerID(sessionID.rawValue)
     guard let guestPlayer = state.players[guestPlayerID] else {
         Issue.record("Guest player should be stored using sessionID as playerID")
         return
     }
-    
+
     #expect(guestPlayer.isGuest == true, "Player should be marked as guest")
     #expect(guestPlayer.deviceID == clientID.rawValue, "Device ID should come from clientID")
     #expect(guestPlayer.metadata["isGuest"] == "true", "Metadata should contain isGuest flag")
@@ -114,10 +114,10 @@ func testCustomGuestSession() async throws {
             }
         }
     }
-    
+
     let transport = WebSocketTransport()
     let keeper = LandKeeper<GuestModeTestState>(definition: definition, initialState: GuestModeTestState())
-    
+
     let customGuestSessionCalled = ManagedAtomic(false)
     let adapter = TransportAdapter<GuestModeTestState>(
         keeper: keeper,
@@ -138,13 +138,13 @@ func testCustomGuestSession() async throws {
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
-    
+
     let sessionID = SessionID("sess-guest-2")
     let clientID = ClientID("cli-2")
-    
+
     // Act: Connect without JWT payload
     await adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: nil)
-    
+
     // Act: Send join request
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
@@ -155,18 +155,18 @@ func testCustomGuestSession() async throws {
     )
     let joinData = try JSONEncoder().encode(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
-    
+
     // Wait a bit for async processing
     try await Task.sleep(for: .milliseconds(100))
-    
+
     // Assert: Custom guest session should be used
     let didCallCustomGuestSession = customGuestSessionCalled.load(ordering: .relaxed)
     #expect(didCallCustomGuestSession, "Custom createGuestSession should be called")
-    
+
     let state = await keeper.currentState()
     let customGuestPlayers = state.players.filter { $0.key.rawValue.hasPrefix("custom-guest-") }
     #expect(customGuestPlayers.count == 1, "Should have one custom guest player")
-    
+
     if let guestPlayer = customGuestPlayers.first {
         #expect(guestPlayer.value.metadata["custom"] == "true", "Custom metadata should be present")
     }
@@ -191,7 +191,7 @@ func testJWTPayloadOverridesGuestSession() async throws {
             }
         }
     }
-    
+
     let transport = WebSocketTransport()
     let keeper = LandKeeper<GuestModeTestState>(definition: definition, initialState: GuestModeTestState())
     let adapter = TransportAdapter<GuestModeTestState>(
@@ -202,10 +202,10 @@ func testJWTPayloadOverridesGuestSession() async throws {
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
-    
+
     let sessionID = SessionID("sess-jwt-1")
     let clientID = ClientID("cli-1")
-    
+
     // Act: Connect with JWT payload
     let authInfo = AuthenticatedInfo(
         playerID: "player-jwt-123",
@@ -213,7 +213,7 @@ func testJWTPayloadOverridesGuestSession() async throws {
         metadata: ["username": "alice"]
     )
     await adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: authInfo)
-    
+
     // Act: Send join request (without playerID, should use JWT payload, not guest session)
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
@@ -224,10 +224,10 @@ func testJWTPayloadOverridesGuestSession() async throws {
     )
     let joinData = try JSONEncoder().encode(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
-    
+
     // Wait a bit for async processing
     try await Task.sleep(for: .milliseconds(100))
-    
+
     // Assert: Should use JWT payload, not guest session
     let state = await keeper.currentState()
     let playerID = PlayerID("player-jwt-123")
@@ -235,7 +235,7 @@ func testJWTPayloadOverridesGuestSession() async throws {
         Issue.record("Player should be in state after join")
         return
     }
-    
+
     #expect(playerInfo.isGuest == false, "Player should not be marked as guest (has JWT)")
     #expect(playerInfo.playerID == "player-jwt-123", "Player ID should come from JWT payload")
     #expect(playerInfo.deviceID == "device-jwt-456", "Device ID should come from JWT payload")
@@ -262,7 +262,7 @@ func testJoinMessageOverridesAll() async throws {
             }
         }
     }
-    
+
     let transport = WebSocketTransport()
     let keeper = LandKeeper<GuestModeTestState>(definition: definition, initialState: GuestModeTestState())
     let adapter = TransportAdapter<GuestModeTestState>(
@@ -273,13 +273,13 @@ func testJoinMessageOverridesAll() async throws {
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
-    
+
     let sessionID = SessionID("sess-override-1")
     let clientID = ClientID("cli-1")
-    
+
     // Act: Connect without JWT payload (would normally be guest)
     await adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: nil)
-    
+
     // Act: Send join request WITH playerID (should override guest session)
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
@@ -290,10 +290,10 @@ func testJoinMessageOverridesAll() async throws {
     )
     let joinData = try JSONEncoder().encode(joinRequest)
     await adapter.onMessage(joinData, from: sessionID)
-    
+
     // Wait a bit for async processing
     try await Task.sleep(for: .milliseconds(100))
-    
+
     // Assert: Should use join message values, not guest session
     let state = await keeper.currentState()
     let playerID = PlayerID("override-player-999")
@@ -301,7 +301,7 @@ func testJoinMessageOverridesAll() async throws {
         Issue.record("Player should be in state after join")
         return
     }
-    
+
     #expect(playerInfo.playerID == "override-player-999", "Player ID should come from join message")
     #expect(playerInfo.deviceID == "override-device-999", "Device ID should come from join message")
     #expect(playerInfo.metadata["override"] == "true", "Metadata should come from join message")
@@ -327,7 +327,7 @@ func testMultipleGuestSessions() async throws {
             }
         }
     }
-    
+
     let transport = WebSocketTransport()
     let keeper = LandKeeper<GuestModeTestState>(definition: definition, initialState: GuestModeTestState())
     let adapter = TransportAdapter<GuestModeTestState>(
@@ -338,17 +338,18 @@ func testMultipleGuestSessions() async throws {
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
-    
+
     // Act: Connect and join multiple guests
     for i in 1...3 {
         let sessionID = SessionID("sess-guest-\(i)")
         let clientID = ClientID("cli-\(i)")
-        
+
         await adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: nil)
-        
+
         let joinRequest = TransportMessage.join(
             requestID: "join-\(i)",
-            landID: "guest-test",
+            landType: "guest-test",
+            landInstanceId: nil,
             playerID: nil,
             deviceID: nil,
             metadata: nil
@@ -356,10 +357,10 @@ func testMultipleGuestSessions() async throws {
         let joinData = try JSONEncoder().encode(joinRequest)
         await adapter.onMessage(joinData, from: sessionID)
     }
-    
+
     // Wait a bit for async processing
     try await Task.sleep(for: .milliseconds(200))
-    
+
     // Assert: All guests should be in state
     let state = await keeper.currentState()
     for i in 1...3 {

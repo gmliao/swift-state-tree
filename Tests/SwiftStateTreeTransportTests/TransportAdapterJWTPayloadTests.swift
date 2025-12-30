@@ -82,7 +82,8 @@ func testJWTPayloadWithCustomFields() async throws {
     // Act: Send join request (without playerID, should use JWT payload)
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "jwt-test",
+        landType: "jwt-test",
+        landInstanceId: nil,
         playerID: nil, // Not provided, should use JWT payload
         deviceID: nil, // Not provided, should use JWT payload
         metadata: nil // Not provided, should use JWT payload
@@ -162,7 +163,8 @@ func testJoinMessageMetadataOverridesJWTPayload() async throws {
     // Act: Send join request with overriding metadata
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "jwt-test",
+        landType: "jwt-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: [
@@ -235,7 +237,8 @@ func testJWTPayloadPlayerIDUsedWhenNotProvided() async throws {
     // Act: Send join request WITHOUT playerID (should use JWT payload)
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "jwt-test",
+        landType: "jwt-test",
+        landInstanceId: nil,
         playerID: nil, // Not provided, should use JWT payload
         deviceID: nil,
         metadata: nil
@@ -302,7 +305,8 @@ func testJoinMessagePlayerIDOverridesJWTPayload() async throws {
     // Act: Send join request WITH playerID (should override JWT payload)
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "jwt-test",
+        landType: "jwt-test",
+        landInstanceId: nil,
         playerID: "join-player-999", // Override JWT payload
         deviceID: nil,
         metadata: nil
@@ -379,7 +383,8 @@ func testJWTPayloadClearedOnDisconnectFallsBackToGuest() async throws {
     // Act: Send join request (should use createGuestSession, not JWT payload)
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "jwt-test",
+        landType: "jwt-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil

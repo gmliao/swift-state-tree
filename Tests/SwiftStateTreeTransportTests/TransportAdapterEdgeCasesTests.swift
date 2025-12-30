@@ -13,7 +13,7 @@ import Testing
 struct EdgeCasesTestState: StateNodeProtocol {
     @Sync(.broadcast)
     var players: [PlayerID: String] = [:]
-    
+
     @Sync(.broadcast)
     var metadata: [PlayerID: [String: String]] = [:]
 }
@@ -33,7 +33,7 @@ func testJoinWithCustomPlayerID() async throws {
             }
         }
     }
-    
+
     let transport = WebSocketTransport()
     let keeper = LandKeeper<EdgeCasesTestState>(
         definition: definition,
@@ -47,16 +47,17 @@ func testJoinWithCustomPlayerID() async throws {
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
-    
+
     let session1 = SessionID("sess-1")
     let client1 = ClientID("cli-1")
     let customPlayerID = "custom-player-123"
-    
+
     // Act: Connect and join with custom playerID
     await adapter.onConnect(sessionID: session1, clientID: client1)
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "edge-cases-test",
+        landType: "edge-cases-test",
+        landInstanceId: nil,
         playerID: customPlayerID,
         deviceID: nil,
         metadata: nil
@@ -64,14 +65,14 @@ func testJoinWithCustomPlayerID() async throws {
     let joinData = try JSONEncoder().encode(joinRequest)
     await adapter.onMessage(joinData, from: session1)
     try await Task.sleep(for: .milliseconds(50))
-    
+
     // Assert: Should be joined with custom playerID
     let joined = await adapter.isJoined(sessionID: session1)
     #expect(joined, "Session should be joined")
-    
+
     let playerID = await adapter.getPlayerID(for: session1)
     #expect(playerID?.rawValue == customPlayerID, "PlayerID should match custom value")
-    
+
     // Assert: State should have the custom playerID
     let state = await keeper.currentState()
     let expectedPlayerID = PlayerID(customPlayerID)
@@ -91,7 +92,7 @@ func testJoinWithDeviceID() async throws {
             }
         }
     }
-    
+
     let transport = WebSocketTransport()
     let keeper = LandKeeper<EdgeCasesTestState>(
         definition: definition,
@@ -105,16 +106,17 @@ func testJoinWithDeviceID() async throws {
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
-    
+
     let session1 = SessionID("sess-1")
     let client1 = ClientID("cli-1")
     let deviceID = "device-abc-123"
-    
+
     // Act: Connect and join with deviceID
     await adapter.onConnect(sessionID: session1, clientID: client1)
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "edge-cases-test",
+        landType: "edge-cases-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: deviceID,
         metadata: nil
@@ -122,11 +124,11 @@ func testJoinWithDeviceID() async throws {
     let joinData = try JSONEncoder().encode(joinRequest)
     await adapter.onMessage(joinData, from: session1)
     try await Task.sleep(for: .milliseconds(50))
-    
+
     // Assert: Should be joined (deviceID is accepted even if not stored in state)
     let joined = await adapter.isJoined(sessionID: session1)
     #expect(joined, "Session should be joined with deviceID")
-    
+
     // Assert: Player should be in state
     let state = await keeper.currentState()
     let playerID = PlayerID(session1.rawValue)
@@ -146,7 +148,7 @@ func testJoinWithMetadata() async throws {
             }
         }
     }
-    
+
     let transport = WebSocketTransport()
     let keeper = LandKeeper<EdgeCasesTestState>(
         definition: definition,
@@ -160,7 +162,7 @@ func testJoinWithMetadata() async throws {
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
-    
+
     let session1 = SessionID("sess-1")
     let client1 = ClientID("cli-1")
     let metadata: [String: AnyCodable] = [
@@ -168,12 +170,13 @@ func testJoinWithMetadata() async throws {
         "team": .init("red"),
         "score": .init(1000)
     ]
-    
+
     // Act: Connect and join with metadata
     await adapter.onConnect(sessionID: session1, clientID: client1)
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "edge-cases-test",
+        landType: "edge-cases-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: metadata
@@ -181,11 +184,11 @@ func testJoinWithMetadata() async throws {
     let joinData = try JSONEncoder().encode(joinRequest)
     await adapter.onMessage(joinData, from: session1)
     try await Task.sleep(for: .milliseconds(50))
-    
+
     // Assert: Should be joined (metadata is accepted even if not stored in state)
     let joined = await adapter.isJoined(sessionID: session1)
     #expect(joined, "Session should be joined with metadata")
-    
+
     // Assert: Player should be in state
     let state = await keeper.currentState()
     let playerID = PlayerID(session1.rawValue)
@@ -205,7 +208,7 @@ func testJoinRequestWithoutConnection() async throws {
             }
         }
     }
-    
+
     let transport = WebSocketTransport()
     let keeper = LandKeeper<EdgeCasesTestState>(
         definition: definition,
@@ -219,13 +222,14 @@ func testJoinRequestWithoutConnection() async throws {
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
-    
+
     let session1 = SessionID("sess-1")
-    
+
     // Act: Try to join without connecting first
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "edge-cases-test",
+        landType: "edge-cases-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: nil
@@ -233,11 +237,11 @@ func testJoinRequestWithoutConnection() async throws {
     let joinData = try JSONEncoder().encode(joinRequest)
     await adapter.onMessage(joinData, from: session1)
     try await Task.sleep(for: .milliseconds(50))
-    
+
     // Assert: Should not be joined
     let joined = await adapter.isJoined(sessionID: session1)
     #expect(!joined, "Session should not be joined without connection")
-    
+
     // Assert: State should be empty
     let state = await keeper.currentState()
     #expect(state.players.isEmpty, "State should be empty")
@@ -257,7 +261,7 @@ func testJoinWithEmptyMetadata() async throws {
             }
         }
     }
-    
+
     let transport = WebSocketTransport()
     let keeper = LandKeeper<EdgeCasesTestState>(
         definition: definition,
@@ -271,15 +275,16 @@ func testJoinWithEmptyMetadata() async throws {
     )
     await keeper.setTransport(adapter)
     await transport.setDelegate(adapter)
-    
+
     let session1 = SessionID("sess-1")
     let client1 = ClientID("cli-1")
-    
+
     // Act: Connect and join with empty metadata
     await adapter.onConnect(sessionID: session1, clientID: client1)
     let joinRequest = TransportMessage.join(
         requestID: "join-1",
-        landID: "edge-cases-test",
+        landType: "edge-cases-test",
+        landInstanceId: nil,
         playerID: nil,
         deviceID: nil,
         metadata: [:]
@@ -287,11 +292,11 @@ func testJoinWithEmptyMetadata() async throws {
     let joinData = try JSONEncoder().encode(joinRequest)
     await adapter.onMessage(joinData, from: session1)
     try await Task.sleep(for: .milliseconds(50))
-    
+
     // Assert: Should be joined
     let joined = await adapter.isJoined(sessionID: session1)
     #expect(joined, "Session should be joined")
-    
+
     // Assert: State should have metadata with isGuest flag (since this is a guest session)
     let state = await keeper.currentState()
     let playerID = PlayerID(session1.rawValue)
