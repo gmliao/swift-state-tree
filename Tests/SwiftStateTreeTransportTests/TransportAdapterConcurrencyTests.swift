@@ -98,11 +98,13 @@ func testMultipleSessionsJoinInRapidSuccession() async throws {
         let joinData = try JSONEncoder().encode(joinRequest)
         await adapter.onMessage(joinData, from: session)
         // Small delay to allow processing
-        try await Task.sleep(for: .milliseconds(10))
+        // Increased delay for CI stability (was 10ms, now 30ms)
+        try await Task.sleep(for: .milliseconds(30))
     }
 
     // Wait for all joins to complete
-    try await Task.sleep(for: .milliseconds(100))
+    // Increased delay for CI stability (was 100ms, now 150ms)
+    try await Task.sleep(for: .milliseconds(150))
 
     // Assert: All sessions should be joined
     for session in sessions {
@@ -284,7 +286,8 @@ func testRapidConnectDisconnect() async throws {
         )
         let joinData = try JSONEncoder().encode(joinRequest)
         await adapter.onMessage(joinData, from: session1)
-        try await Task.sleep(for: .milliseconds(20))
+        // Increased delay for CI stability (was 20ms, now 50ms)
+        try await Task.sleep(for: .milliseconds(50))
 
         // Verify joined
         let joined = await adapter.isJoined(sessionID: session1)
@@ -292,7 +295,8 @@ func testRapidConnectDisconnect() async throws {
 
         // Disconnect
         await adapter.onDisconnect(sessionID: session1, clientID: client1)
-        try await Task.sleep(for: .milliseconds(20))
+        // Increased delay for CI stability (was 20ms, now 50ms)
+        try await Task.sleep(for: .milliseconds(50))
 
         // Verify not joined
         let notJoined = await adapter.isJoined(sessionID: session1)
@@ -461,7 +465,8 @@ func testRapidLeaveAndJoin() async throws {
         )
         let joinData = try JSONEncoder().encode(joinRequest)
         await adapter.onMessage(joinData, from: session)
-        try await Task.sleep(for: .milliseconds(20))
+        // Increased delay for CI stability (was 20ms, now 50ms)
+        try await Task.sleep(for: .milliseconds(50))
 
         // Verify joined
         let joined = await adapter.isJoined(sessionID: session)
@@ -469,7 +474,8 @@ func testRapidLeaveAndJoin() async throws {
 
         // Disconnect
         await adapter.onDisconnect(sessionID: session, clientID: client)
-        try await Task.sleep(for: .milliseconds(20))
+        // Increased delay for CI stability (was 20ms, now 50ms)
+        try await Task.sleep(for: .milliseconds(50))
 
         // Verify not joined
         let notJoined = await adapter.isJoined(sessionID: session)

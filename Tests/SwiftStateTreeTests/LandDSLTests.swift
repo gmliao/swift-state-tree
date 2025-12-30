@@ -831,8 +831,12 @@ func testDestroyWhenEmptyDestroysAfterDelay() async throws {
     try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
     try await keeper.leave(playerID: playerID, clientID: clientID)
     
-    // Wait for destroy timer to expire (50ms + buffer)
-    try await Task.sleep(nanoseconds: 150_000_000) // 150ms
+    // Wait for destroy timer to expire and OnFinalize/AfterFinalize to be called
+    // Use polling instead of fixed delay for better CI stability
+    await waitFor("OnFinalize and AfterFinalize to be called", timeout: .seconds(2)) {
+        let status = await tracker.getStatus()
+        return status.onFinalize && status.afterFinalize
+    }
     
     let status = await tracker.getStatus()
     #expect(status.onFinalize, "OnFinalize should be called after destroy delay")
@@ -891,13 +895,15 @@ func testDestroyWhenEmptyCancelsOnJoin() async throws {
     try await keeper.leave(playerID: player1ID, clientID: client1ID)
     
     // Wait a bit but not long enough for destroy to happen
+    // Use a short delay to ensure destroy timer has started
     try await Task.sleep(nanoseconds: 30_000_000) // 30ms (less than 50ms delay)
     
     // Join player 2 before destroy timer expires - this should cancel the timer
     try await keeper.join(playerID: player2ID, clientID: client2ID, sessionID: session2ID)
     
-    // Wait for the original destroy delay to pass
-    try await Task.sleep(nanoseconds: 100_000_000) // 100ms (more than 50ms delay)
+    // Wait for the original destroy delay to pass, then verify OnFinalize was NOT called
+    // Increased delay for CI stability (was 100ms, now 150ms)
+    try await Task.sleep(nanoseconds: 150_000_000) // 150ms (more than 50ms delay)
     
     // OnFinalize should NOT have been called because player 2 joined
     let status = await tracker.getStatus()
@@ -957,8 +963,12 @@ func testDestroyWhenEmptyResetsTimerOnRejoin() async throws {
     // Leave again - this should start a new destroy timer
     try await keeper.leave(playerID: playerID, clientID: clientID)
     
-    // Wait for the new destroy timer to expire
-    try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+    // Wait for the new destroy timer to expire and OnFinalize to be called
+    // Use polling instead of fixed delay for better CI stability
+    await waitFor("OnFinalize to be called after second leave", timeout: .seconds(2)) {
+        let count = await tracker.getCount()
+        return count >= 1
+    }
     
     // OnFinalize should be called only once (after the second leave)
     let count = await tracker.getCount()
@@ -1038,7 +1048,7 @@ func testCanJoinWithResolver() async throws {
     }
     
     let definition = Land(
-        "canjoin-resolver-test",
+        "can-join-resolver-test",
         using: DemoLandState.self
     ) {
         Rules {
