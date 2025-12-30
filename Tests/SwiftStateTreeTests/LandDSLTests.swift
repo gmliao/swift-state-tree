@@ -670,10 +670,18 @@ func testOnInitializeWithResolver() async throws {
         initialState: DemoLandState()
     )
     
-    // Wait for OnInitialize with resolver to complete
-    try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+    // Wait for OnInitialize with resolver to complete with retry logic
+    // Resolver takes 10ms, but CI environments may have additional overhead
+    // Use retry loop to handle timing variations
+    var state = await keeper.currentState()
+    var attempts = 0
+    let maxAttempts = 20 // 20 * 25ms = 500ms max wait time
+    while state.ticks != 8 && attempts < maxAttempts {
+        try await Task.sleep(nanoseconds: 25_000_000) // 25ms
+        state = await keeper.currentState()
+        attempts += 1
+    }
     
-    let state = await keeper.currentState()
     #expect(state.ticks == 8, "OnInitialize should use resolver output to set ticks to 8")
 }
 
@@ -714,12 +722,22 @@ func testOnFinalize() async throws {
     try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
     try await keeper.leave(playerID: playerID, clientID: clientID)
     
-    // Wait for destroy timer and OnFinalize to execute
-    try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+    // Wait for destroy timer and OnFinalize to execute with retry logic
+    // destroyWhenEmptyAfter: 10ms + handler execution time
+    // Use retry loop to handle timing variations in CI environments
+    var state = await keeper.currentState()
+    var counterValue = await counter.current()
+    var attempts = 0
+    let maxAttempts = 20 // 20 * 25ms = 500ms max wait time
+    while (state.ticks != 999 || counterValue != 1) && attempts < maxAttempts {
+        try await Task.sleep(nanoseconds: 25_000_000) // 25ms
+        state = await keeper.currentState()
+        counterValue = await counter.current()
+        attempts += 1
+    }
     
-    let state = await keeper.currentState()
     #expect(state.ticks == 999, "OnFinalize should set ticks to 999")
-    #expect(await counter.current() == 1, "OnFinalize should be called once")
+    #expect(counterValue == 1, "OnFinalize should be called once")
 }
 
 @Test("AfterFinalize executes after OnFinalize")
