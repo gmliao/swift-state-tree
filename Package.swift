@@ -40,7 +40,8 @@ let package = Package(
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
         .package(url: "https://github.com/hummingbird-project/hummingbird-websocket.git", from: "2.0.0"),
         .package(url: "https://github.com/apple/swift-atomics.git", from: "1.3.0"),
-        .package(url: "https://github.com/apple/swift-log.git", from: "1.6.0")
+        .package(url: "https://github.com/apple/swift-log.git", from: "1.6.0"),
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0")
     ],
     targets: [
         // 🔹 Core Library: Pure Swift game logic, no network dependency
@@ -78,7 +79,8 @@ let package = Package(
                 "SwiftStateTreeMatchmaking",
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket"),
-                .product(name: "Logging", package: "swift-log")
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Sources/SwiftStateTreeHummingbird"
         ),
@@ -109,7 +111,8 @@ let package = Package(
             name: "SwiftStateTreeTests",
             dependencies: [
                 "SwiftStateTree",
-                "SwiftStateTreeMacros"
+                "SwiftStateTreeMacros",
+                "SwiftStateTreeTransport"
             ],
             path: "Tests/SwiftStateTreeTests"
         ),

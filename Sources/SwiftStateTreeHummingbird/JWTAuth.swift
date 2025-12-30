@@ -1,5 +1,5 @@
 import Foundation
-import CryptoKit
+import Crypto
 import Logging
 import SwiftStateTreeTransport
 
@@ -315,7 +315,7 @@ public protocol JWTAuthValidator: Sendable {
 
 // MARK: - Default JWT Validator
 
-/// Default implementation of JWT validator using CryptoKit
+/// Default implementation of JWT validator using Crypto (swift-crypto)
 /// Supports HS256, HS384, HS512 algorithms
 public struct DefaultJWTAuthValidator: JWTAuthValidator {
     private let config: JWTConfiguration

@@ -1,15 +1,24 @@
 // Sources/SwiftStateTreeBenchmarks/BenchmarkUtilities.swift
 
+#if canImport(Foundation)
 import Foundation
+#endif
 import SwiftStateTree
 
 // MARK: - Timing Utilities
 
 /// Helper to measure execution time
 func measureTime(_ block: () throws -> Void) rethrows -> TimeInterval {
-    let start = CFAbsoluteTimeGetCurrent()
+    #if canImport(Foundation)
+    let start = Date().timeIntervalSince1970
     try block()
-    return CFAbsoluteTimeGetCurrent() - start
+    return Date().timeIntervalSince1970 - start
+    #else
+    let start = ContinuousClock.now
+    try block()
+    let end = ContinuousClock.now
+    return end.timeIntervalSince(start)
+    #endif
 }
 
 // MARK: - Size Estimation

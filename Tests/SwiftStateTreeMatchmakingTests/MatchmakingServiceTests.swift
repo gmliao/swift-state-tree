@@ -46,7 +46,7 @@ func testMatchmakingServiceQueuePlayers() async throws {
         },
         initialStateFactory: { _, _ in
             MatchmakingTestState()
-        },
+        }
     )
     
     let service = MatchmakingService<MatchmakingTestState, SingleLandManagerRegistry<MatchmakingTestState>>(
@@ -115,7 +115,7 @@ func testMatchmakingServiceCancel() async throws {
         },
         initialStateFactory: { _, _ in
             MatchmakingTestState()
-        },
+        }
     )
     
     let service = MatchmakingService<MatchmakingTestState, SingleLandManagerRegistry<MatchmakingTestState>>(
@@ -168,7 +168,7 @@ func testMatchmakingServiceGetStatus() async throws {
         },
         initialStateFactory: { _, _ in
             MatchmakingTestState()
-        },
+        }
     )
     
     let service = MatchmakingService<MatchmakingTestState, SingleLandManagerRegistry<MatchmakingTestState>>(
@@ -229,7 +229,7 @@ func testMatchmakingServiceStatusForNonQueuedPlayer() async throws {
         },
         initialStateFactory: { _, _ in
             MatchmakingTestState()
-        },
+        }
     )
     
     let service = MatchmakingService<MatchmakingTestState, SingleLandManagerRegistry<MatchmakingTestState>>(
