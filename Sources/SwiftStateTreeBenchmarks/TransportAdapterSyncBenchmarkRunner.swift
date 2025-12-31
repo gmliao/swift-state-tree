@@ -23,9 +23,8 @@ struct BenchmarkStateForSync: StateNodeProtocol {
 /// This benchmark simulates a real-world scenario where multiple players are connected
 /// and the server needs to sync state changes to all players.
 ///
-/// NOTE: A parallel sync version was tested but did not show performance improvements.
-/// Benchmark results showed that TaskGroup overhead and actor isolation costs exceeded
-/// the benefits of parallel diff computation. The serial version remains the implementation.
+/// Supports comparing serial vs parallel encoding modes to evaluate performance benefits
+/// of parallel JSON encoding for multiple players.
 struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
     let playerCounts: [Int]
     
@@ -53,16 +52,28 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
     /// - false: always generate full diffs and skip clearDirty()
     let enableDirtyTracking: Bool
     
+    /// Whether to compare serial vs parallel encoding modes.
+    /// When true, runs benchmark twice (once with parallel encoding enabled, once disabled)
+    /// and compares the results.
+    let compareEncodingModes: Bool
+    
+    /// Explicitly set parallel encoding mode (nil = use default based on codec)
+    let enableParallelEncoding: Bool?
+    
     init(
         playerCounts: [Int] = [4, 10, 20, 30, 50],
         dirtyPlayerRatio: Double = 0.20,
         broadcastPlayerRatio: Double = 0.0,
-        enableDirtyTracking: Bool = true
+        enableDirtyTracking: Bool = true,
+        compareEncodingModes: Bool = false,
+        enableParallelEncoding: Bool? = nil
     ) {
         self.playerCounts = playerCounts
         self.dirtyPlayerRatio = dirtyPlayerRatio
         self.broadcastPlayerRatio = broadcastPlayerRatio
         self.enableDirtyTracking = enableDirtyTracking
+        self.compareEncodingModes = compareEncodingModes
+        self.enableParallelEncoding = enableParallelEncoding
     }
     
     func run(
@@ -73,8 +84,14 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
         // This runner doesn't use the standard config, but we need to conform to the protocol
         // We'll run our own benchmark logic
         
-        print("  TransportAdapter Sync Performance Benchmark")
-        print("  ===========================================")
+        if compareEncodingModes {
+            print("  TransportAdapter Sync Performance Benchmark")
+            print("  Serial vs Parallel Encoding Comparison")
+            print("  ===========================================")
+        } else {
+            print("  TransportAdapter Sync Performance Benchmark")
+            print("  ===========================================")
+        }
         
         var allResults: [BenchmarkResult] = []
         
@@ -98,16 +115,83 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
             }
             testState.round = 1
             
-            // Test sync performance
-            let result = await benchmarkSync(
-                state: testState,
-                playerIDs: testPlayerIDs,
-                iterations: config.iterations
-            )
-            
-            print("    Average: \(String(format: "%.4f", result.averageTime * 1000))ms")
-            
-            allResults.append(result)
+            if compareEncodingModes {
+                // Create a deep copy of testState for serial test to avoid state contamination
+                var serialTestState = BenchmarkStateRootNode()
+                serialTestState.round = testState.round
+                for (pid, player) in testState.players {
+                    serialTestState.players[pid] = BenchmarkPlayerState(
+                        name: player.name,
+                        hpCurrent: player.hpCurrent,
+                        hpMax: player.hpMax
+                    )
+                }
+                for (pid, hand) in testState.hands {
+                    serialTestState.hands[pid] = BenchmarkHandState(
+                        ownerID: hand.ownerID,
+                        cards: hand.cards.map { BenchmarkCard(id: $0.id, suit: $0.suit, rank: $0.rank) }
+                    )
+                }
+                
+                // Run benchmark with parallel encoding disabled (serial)
+                print("    Serial encoding mode...")
+                let serialResult = await benchmarkSync(
+                    state: serialTestState,
+                    playerIDs: testPlayerIDs,
+                    iterations: config.iterations,
+                    enableParallelEncoding: false
+                )
+                
+                // Create a fresh deep copy of testState for parallel test
+                var parallelTestState = BenchmarkStateRootNode()
+                parallelTestState.round = testState.round
+                for (pid, player) in testState.players {
+                    parallelTestState.players[pid] = BenchmarkPlayerState(
+                        name: player.name,
+                        hpCurrent: player.hpCurrent,
+                        hpMax: player.hpMax
+                    )
+                }
+                for (pid, hand) in testState.hands {
+                    parallelTestState.hands[pid] = BenchmarkHandState(
+                        ownerID: hand.ownerID,
+                        cards: hand.cards.map { BenchmarkCard(id: $0.id, suit: $0.suit, rank: $0.rank) }
+                    )
+                }
+                
+                // Run benchmark with parallel encoding enabled
+                print("    Parallel encoding mode...")
+                let parallelResult = await benchmarkSync(
+                    state: parallelTestState,
+                    playerIDs: testPlayerIDs,
+                    iterations: config.iterations,
+                    enableParallelEncoding: true
+                )
+                
+                // Compare results
+                let serialMs = serialResult.averageTime * 1000
+                let parallelMs = parallelResult.averageTime * 1000
+                let speedup = serialMs / max(parallelMs, 0.001)
+                
+                print("    Serial:   \(String(format: "%.4f", serialMs))ms")
+                print("    Parallel: \(String(format: "%.4f", parallelMs))ms")
+                print("    Speedup:  \(String(format: "%.2fx", speedup))")
+                
+                // Use parallel result as the main result (it's the default mode)
+                allResults.append(parallelResult)
+            } else {
+                // Test sync performance with specified encoding mode
+                let result = await benchmarkSync(
+                    state: testState,
+                    playerIDs: testPlayerIDs,
+                    iterations: config.iterations,
+                    enableParallelEncoding: enableParallelEncoding  // Use configured encoding mode
+                )
+                
+                print("    Average: \(String(format: "%.4f", result.averageTime * 1000))ms")
+                
+                allResults.append(result)
+            }
         }
         
         // Return the first result as the protocol requires
@@ -126,7 +210,8 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
     private func benchmarkSync(
         state: BenchmarkStateRootNode,
         playerIDs: [PlayerID],
-        iterations: Int
+        iterations: Int,
+        enableParallelEncoding: Bool? = nil
     ) async -> BenchmarkResult {
         // Convert BenchmarkStateRootNode to BenchmarkStateForSync
         var syncState = BenchmarkStateForSync()
@@ -214,6 +299,7 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
             transport: nil,
             logger: benchmarkLogger
         )
+        // Create adapter with parallel encoding control
         let adapter = TransportAdapter<BenchmarkStateForSync>(
             keeper: keeper,
             transport: mockTransport,
@@ -221,6 +307,8 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
             createGuestSession: nil,
             enableLegacyJoin: false,
             enableDirtyTracking: enableDirtyTracking,
+            codec: JSONTransportCodec(),  // Use JSON codec to enable parallel encoding option
+            enableParallelEncoding: enableParallelEncoding,  // Control parallel encoding via parameter
             logger: benchmarkLogger
         )
         await keeper.setTransport(adapter)
@@ -259,6 +347,7 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
         // Tick is running in background, modifying state periodically
         // We just measure sync performance when state has changed
         // Wait once before starting to ensure state has changed via tick
+        // This wait happens BEFORE measurement starts, so it's not included in the timing
         try? await Task.sleep(for: .milliseconds(2))
         
         #if canImport(Foundation)
@@ -268,9 +357,19 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
         #endif
         
         for _ in 0..<iterations {
+            // Measure syncNow() which includes:
+            // 1. beginSync() - may wait for actor serialization if tick handler is running
+            // 2. Core sync operations (extract snapshot, compute diff, encode, send)
+            // 3. endSync()
+            // 
+            // Note: beginSync() wait time is minimal in practice (tick handlers are fast),
+            // and is necessary to ensure state consistency. The core sync operations
+            // (diff computation, encoding) are the main performance bottleneck.
             await adapter.syncNow()  // Sync with actual diffs
+            
             // Small sleep between iterations to allow tick to modify state for next iteration
             // This sleep is NOT included in the measurement to get accurate sync performance
+            // We subtract this time from the total to measure only core sync time
             if iterations > 1 {
                 try? await Task.sleep(for: .milliseconds(1))
             }
@@ -282,14 +381,23 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
         let endTime = ContinuousClock.now
         let totalTime = endTime.timeIntervalSince(startTime)
         #endif
+        
         // Subtract sleep time from total (only for iterations > 1)
+        // This ensures we only measure the actual sync execution time, not the wait time
+        // between iterations. The sleep time is used to allow tick handler to modify state
+        // for the next iteration, but is not part of the core sync performance.
         let sleepTime = iterations > 1 ? Double(iterations - 1) * 0.001 : 0.0
         let actualSyncTime = totalTime - sleepTime
         let averageTime = actualSyncTime / Double(iterations)
         let throughput = Double(iterations) / actualSyncTime
         
-        let modeLabel = enableDirtyTracking ? "Serial Sync (DirtyTracking: On)"
-                                            : "Serial Sync (DirtyTracking: Off)"
+        // Build mode label
+        var modeLabel = enableDirtyTracking ? "DirtyTracking: On" : "DirtyTracking: Off"
+        if let enableParallel = enableParallelEncoding {
+            modeLabel += ", Encoding: \(enableParallel ? "Parallel" : "Serial")"
+        } else {
+            modeLabel += ", Encoding: Default"
+        }
         
         return BenchmarkResult(
             config: BenchmarkConfig(
