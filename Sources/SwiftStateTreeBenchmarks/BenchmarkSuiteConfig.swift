@@ -225,6 +225,216 @@ struct BenchmarkSuites {
                         iterations: 100
                     )
                 ]
+            ),
+            // Encoding mode comparison: Separate serial and parallel suites
+            // Low activity scenario (少更新情境) - Serial encoding
+            BenchmarkSuiteConfig(
+                type: .transportAdapterSync,
+                name: "TransportAdapter Sync - Serial Encoding (Low Activity ~5%)",
+                runner: TransportAdapterSyncBenchmarkRunner(
+                    playerCounts: [10, 20, 30, 50],
+                    dirtyPlayerRatio: lowRatio,
+                    broadcastPlayerRatio: 0.0,
+                    enableDirtyTracking: transportDirtyTrackingOverride ?? true,
+                    enableParallelEncoding: false
+                ),
+                configurations: [
+                    BenchmarkConfig(
+                        name: "Small State",
+                        playerCount: 10,
+                        cardsPerPlayer: 5,
+                        iterations: 50
+                    ),
+                    BenchmarkConfig(
+                        name: "Medium State",
+                        playerCount: 50,
+                        cardsPerPlayer: 10,
+                        iterations: 50
+                    )
+                ]
+            ),
+            // Low activity scenario - Parallel encoding
+            BenchmarkSuiteConfig(
+                type: .transportAdapterSync,
+                name: "TransportAdapter Sync - Parallel Encoding (Low Activity ~5%)",
+                runner: TransportAdapterSyncBenchmarkRunner(
+                    playerCounts: [10, 20, 30, 50],
+                    dirtyPlayerRatio: lowRatio,
+                    broadcastPlayerRatio: 0.0,
+                    enableDirtyTracking: transportDirtyTrackingOverride ?? true,
+                    enableParallelEncoding: true
+                ),
+                configurations: [
+                    BenchmarkConfig(
+                        name: "Small State",
+                        playerCount: 10,
+                        cardsPerPlayer: 5,
+                        iterations: 50
+                    ),
+                    BenchmarkConfig(
+                        name: "Medium State",
+                        playerCount: 50,
+                        cardsPerPlayer: 10,
+                        iterations: 50
+                    )
+                ]
+            ),
+            // High activity scenario (大量使用者更新情境) - Serial encoding
+            BenchmarkSuiteConfig(
+                type: .transportAdapterSync,
+                name: "TransportAdapter Sync - Serial Encoding (High Activity ~80%)",
+                runner: TransportAdapterSyncBenchmarkRunner(
+                    playerCounts: [10, 20, 30, 50],
+                    dirtyPlayerRatio: highRatio,
+                    broadcastPlayerRatio: 0.0,
+                    enableDirtyTracking: transportDirtyTrackingOverride ?? true,
+                    enableParallelEncoding: false
+                ),
+                configurations: [
+                    BenchmarkConfig(
+                        name: "Small State",
+                        playerCount: 10,
+                        cardsPerPlayer: 5,
+                        iterations: 50
+                    ),
+                    BenchmarkConfig(
+                        name: "Medium State",
+                        playerCount: 50,
+                        cardsPerPlayer: 10,
+                        iterations: 50
+                    )
+                ]
+            ),
+            // High activity scenario - Parallel encoding
+            BenchmarkSuiteConfig(
+                type: .transportAdapterSync,
+                name: "TransportAdapter Sync - Parallel Encoding (High Activity ~80%)",
+                runner: TransportAdapterSyncBenchmarkRunner(
+                    playerCounts: [10, 20, 30, 50],
+                    dirtyPlayerRatio: highRatio,
+                    broadcastPlayerRatio: 0.0,
+                    enableDirtyTracking: transportDirtyTrackingOverride ?? true,
+                    enableParallelEncoding: true
+                ),
+                configurations: [
+                    BenchmarkConfig(
+                        name: "Small State",
+                        playerCount: 10,
+                        cardsPerPlayer: 5,
+                        iterations: 50
+                    ),
+                    BenchmarkConfig(
+                        name: "Medium State",
+                        playerCount: 50,
+                        cardsPerPlayer: 10,
+                        iterations: 50
+                    )
+                ]
+            ),
+            // Encoding mode comparison for transport-sync-players (Public Players Hot)
+            // Low activity scenario - Serial encoding
+            BenchmarkSuiteConfig(
+                type: .transportAdapterSyncPlayers,
+                name: "TransportAdapter Sync (Players Hot) - Serial Encoding (Low Activity ~5%)",
+                runner: TransportAdapterSyncBenchmarkRunner(
+                    playerCounts: [10, 20, 30, 50],
+                    dirtyPlayerRatio: lowRatio,
+                    broadcastPlayerRatio: 1.0,
+                    enableDirtyTracking: transportDirtyTrackingOverride ?? true,
+                    enableParallelEncoding: false
+                ),
+                configurations: [
+                    BenchmarkConfig(
+                        name: "Small State",
+                        playerCount: 10,
+                        cardsPerPlayer: 5,
+                        iterations: 50
+                    ),
+                    BenchmarkConfig(
+                        name: "Medium State",
+                        playerCount: 50,
+                        cardsPerPlayer: 10,
+                        iterations: 50
+                    )
+                ]
+            ),
+            // Low activity scenario - Parallel encoding
+            BenchmarkSuiteConfig(
+                type: .transportAdapterSyncPlayers,
+                name: "TransportAdapter Sync (Players Hot) - Parallel Encoding (Low Activity ~5%)",
+                runner: TransportAdapterSyncBenchmarkRunner(
+                    playerCounts: [10, 20, 30, 50],
+                    dirtyPlayerRatio: lowRatio,
+                    broadcastPlayerRatio: 1.0,
+                    enableDirtyTracking: transportDirtyTrackingOverride ?? true,
+                    enableParallelEncoding: true
+                ),
+                configurations: [
+                    BenchmarkConfig(
+                        name: "Small State",
+                        playerCount: 10,
+                        cardsPerPlayer: 5,
+                        iterations: 50
+                    ),
+                    BenchmarkConfig(
+                        name: "Medium State",
+                        playerCount: 50,
+                        cardsPerPlayer: 10,
+                        iterations: 50
+                    )
+                ]
+            ),
+            // High activity scenario - Serial encoding
+            BenchmarkSuiteConfig(
+                type: .transportAdapterSyncPlayers,
+                name: "TransportAdapter Sync (Players Hot) - Serial Encoding (High Activity ~80%)",
+                runner: TransportAdapterSyncBenchmarkRunner(
+                    playerCounts: [10, 20, 30, 50],
+                    dirtyPlayerRatio: highRatio,
+                    broadcastPlayerRatio: 1.0,
+                    enableDirtyTracking: transportDirtyTrackingOverride ?? true,
+                    enableParallelEncoding: false
+                ),
+                configurations: [
+                    BenchmarkConfig(
+                        name: "Small State",
+                        playerCount: 10,
+                        cardsPerPlayer: 5,
+                        iterations: 50
+                    ),
+                    BenchmarkConfig(
+                        name: "Medium State",
+                        playerCount: 50,
+                        cardsPerPlayer: 10,
+                        iterations: 50
+                    )
+                ]
+            ),
+            // High activity scenario - Parallel encoding
+            BenchmarkSuiteConfig(
+                type: .transportAdapterSyncPlayers,
+                name: "TransportAdapter Sync (Players Hot) - Parallel Encoding (High Activity ~80%)",
+                runner: TransportAdapterSyncBenchmarkRunner(
+                    playerCounts: [10, 20, 30, 50],
+                    dirtyPlayerRatio: highRatio,
+                    broadcastPlayerRatio: 1.0,
+                    enableDirtyTracking: transportDirtyTrackingOverride ?? true,
+                    enableParallelEncoding: true
+                ),
+                configurations: [
+                    BenchmarkConfig(
+                        name: "Small State",
+                        playerCount: 10,
+                        cardsPerPlayer: 5,
+                        iterations: 50
+                    ),
+                    BenchmarkConfig(
+                        name: "Medium State",
+                        playerCount: 50,
+                        cardsPerPlayer: 10,
+                        iterations: 50
+                    )
+                ]
             )
         ]
     }

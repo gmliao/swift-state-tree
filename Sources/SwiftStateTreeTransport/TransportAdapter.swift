@@ -8,8 +8,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private let keeper: LandKeeper<State>
     private let transport: WebSocketTransport
     private let landID: String
-    private let decoder = JSONDecoder()
-    private let encoder = JSONEncoder()
+    private let codec: any TransportCodec
     private var syncEngine = SyncEngine()
     private let logger: Logger
     private let enableLegacyJoin: Bool
@@ -24,6 +23,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     // - 高更新比例（幾乎每幀都在改大部分欄位）時，關閉 dirty tracking 可能更快
     // - 中低更新比例（多數遊戲實際情境）時，建議保持開啟以節省序列化與 diff 成本
     private var enableDirtyTracking: Bool
+    
+    /// Whether to enable parallel encoding for JSON codec.
+    /// When enabled, multiple player updates are encoded in parallel using TaskGroup.
+    /// Only effective when using JSONTransportCodec (thread-safe).
+    /// Default is true for JSON codec, false for other codecs.
+    private var enableParallelEncoding: Bool
     
     // Track session to player mapping
     private var sessionToPlayer: [SessionID: PlayerID] = [:]
@@ -64,14 +69,25 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         onLandDestroyed: (@Sendable () async -> Void)? = nil,
         enableLegacyJoin: Bool = false,
         enableDirtyTracking: Bool = true,
+        codec: any TransportCodec = JSONTransportCodec(),
+        enableParallelEncoding: Bool? = nil,
         logger: Logger? = nil
     ) {
         self.keeper = keeper
         self.transport = transport
         self.landID = landID
+        self.codec = codec
         self.enableLegacyJoin = enableLegacyJoin
         self.enableDirtyTracking = enableDirtyTracking
         self.onLandDestroyedCallback = onLandDestroyed
+        
+        // Default parallel encoding: enabled for JSON codec, disabled for others
+        if let explicitValue = enableParallelEncoding {
+            self.enableParallelEncoding = explicitValue
+        } else {
+            // Auto-detect: enable for JSON codec (thread-safe), disable for others
+            self.enableParallelEncoding = codec is JSONTransportCodec
+        }
         // Create logger with scope if not provided
         if let logger = logger {
             self.logger = logger.withScope("TransportAdapter")
@@ -311,10 +327,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     public func onMessage(_ message: Data, from sessionID: SessionID) async {
         let messageSize = message.count
         
-        logger.debug("📥 Received message", metadata: [
-            "session": .string(sessionID.rawValue),
-            "bytes": .string("\(messageSize)")
-        ])
+        // Only compute logging metadata if debug logging is enabled
+        if logger.logLevel <= .debug {
+            logger.debug("📥 Received message", metadata: [
+                "session": .string(sessionID.rawValue),
+                "bytes": .string("\(messageSize)")
+            ])
+        }
         
         // Log message payload - only compute if trace logging is enabled
         if let messagePreview = logger.safePreview(from: message) {
@@ -327,7 +346,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Compute messagePreview for error logging (only if needed)
         // We compute it lazily in the catch block to avoid unnecessary work
         do {
-            let transportMsg = try decoder.decode(TransportMessage.self, from: message)
+            let transportMsg = try codec.decode(TransportMessage.self, from: message)
             
             switch transportMsg.kind {
             case .join:
@@ -421,7 +440,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         ])
                         
                         // Log response payload - only compute if trace logging is enabled
-                        if let responseData = try? encoder.encode(payload.response),
+                        if let responseData = try? codec.encode(payload.response),
                            let responseString = logger.safePreview(from: responseData) {
                             logger.trace("📥 Response payload", metadata: [
                                 "requestID": .string(payload.requestID),
@@ -441,7 +460,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                             ])
                             
                             // Log event payload - only compute if trace logging is enabled
-                            if let payloadData = try? encoder.encode(anyClientEvent.payload),
+                            if let payloadData = try? codec.encode(anyClientEvent.payload),
                                let payloadString = logger.safePreview(from: payloadData) {
                                 logger.trace("📥 Event payload", metadata: [
                                     "eventType": .string(anyClientEvent.type),
@@ -490,7 +509,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                                     ]
                                 )
                                 let errorResponse = TransportMessage.error(errorPayload)
-                                if let errorData = try? encoder.encode(errorResponse) {
+                                if let errorData = try? codec.encode(errorResponse) {
                                     try? await transport.send(errorData, to: .session(sessionID))
                                 }
                             }
@@ -527,7 +546,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     ]
                 )
                 let errorResponse = TransportMessage.error(errorPayload)
-                let errorData = try encoder.encode(errorResponse)
+                let errorData = try codec.encode(errorResponse)
                 try await transport.send(errorData, to: .session(sessionID))
             } catch {
                 logger.error("❌ Failed to send decode error to client", metadata: [
@@ -548,7 +567,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 event: .fromServer(event: event)
             )
             
-            let data = try encoder.encode(transportMsg)
+            let data = try codec.encode(transportMsg)
             let dataSize = data.count
             
             // Convert SwiftStateTree.EventTarget to SwiftStateTreeTransport.EventTarget
@@ -599,7 +618,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
             
             // Log event payload - only compute if trace logging is enabled
-            if let payloadData = try? encoder.encode(event.payload),
+            if let payloadData = try? codec.encode(event.payload),
                let payloadString = logger.safePreview(from: payloadData) {
                 logger.trace("📤 Event payload", metadata: [
                     "eventType": .string(event.type),
@@ -692,14 +711,69 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 mode: broadcastMode
             )
             
+            // Collect all pending updates first (diff computation is serial, but encoding can be parallelized)
+            var pendingUpdates: [PendingSyncUpdate] = []
+            pendingUpdates.reserveCapacity(sessionToPlayer.count)
+
             for (sessionID, playerID) in sessionToPlayer {
-                await syncState(
+                // Extract per-player snapshot (specific to this player)
+                let perPlayerSnapshot = try syncEngine.extractPerPlayerSnapshot(
                     for: playerID,
-                    sessionID: sessionID,
-                    state: state,
-                    broadcastDiff: broadcastDiff,
-                    perPlayerMode: perPlayerMode
+                    from: state,
+                    mode: perPlayerMode
                 )
+
+                // Broadcast diff is precomputed once per sync cycle and reused for all players.
+                let update = syncEngine.generateUpdateFromBroadcastDiff(
+                    for: playerID,
+                    broadcastDiff: broadcastDiff,
+                    perPlayerSnapshot: perPlayerSnapshot,
+                    perPlayerMode: perPlayerMode,
+                    onlyPaths: nil
+                )
+
+                // Skip only if noChange - firstSync should always be sent (even if patches are empty)
+                if case .noChange = update {
+                    continue
+                }
+
+                let (updateType, patchCount) = describeUpdate(update)
+                pendingUpdates.append(PendingSyncUpdate(
+                    sessionID: sessionID,
+                    playerID: playerID,
+                    update: update,
+                    updateType: updateType,
+                    patchCount: patchCount
+                ))
+            }
+
+            if !pendingUpdates.isEmpty {
+                let encodedUpdates: [EncodedSyncUpdate]
+
+                if shouldParallelEncode {
+                    // JSON encoding is independent per player, so we can parallelize it safely.
+                    encodedUpdates = await encodeUpdatesInParallel(pendingUpdates)
+                } else {
+                    encodedUpdates = encodeUpdatesSerially(pendingUpdates)
+                }
+
+                for encoded in encodedUpdates {
+                    if let payload = encoded.payload {
+                        await sendEncodedUpdate(
+                            sessionID: encoded.sessionID,
+                            playerID: encoded.playerID,
+                            updateType: encoded.updateType,
+                            patchCount: encoded.patchCount,
+                            updateData: payload
+                        )
+                    } else if let errorMessage = encoded.errorMessage {
+                        logger.error("❌ Failed to encode state update", metadata: [
+                            "playerID": .string(encoded.playerID.rawValue),
+                            "sessionID": .string(encoded.sessionID.rawValue),
+                            "error": .string(errorMessage)
+                        ])
+                    }
+                }
             }
             
             // Release sync lock after successful sync
@@ -782,7 +856,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             
             // If no players are connected, we still update the cache but don't send messages
             guard hasPlayers && !broadcastDiff.isEmpty else {
-                if !hasPlayers {
+                if !hasPlayers && logger.logLevel <= .debug {
                     logger.debug("📤 Broadcast cache updated (no players connected)", metadata: [
                         "patches": .string("\(broadcastDiff.count)"),
                         "mode": .string("\(broadcastMode)")
@@ -794,15 +868,18 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             
             // Encode once (all players get the same broadcast update)
             let update = StateUpdate.diff(broadcastDiff)
-            let updateData = try encoder.encode(update)
+            let updateData = try codec.encode(update)
             let updateSize = updateData.count
             
-            logger.debug("📤 Broadcast-only sync", metadata: [
-                "players": .string("\(sessionToPlayer.count)"),
-                "patches": .string("\(broadcastDiff.count)"),
-                "bytes": .string("\(updateSize)"),
-                "mode": .string("\(broadcastMode)")
-            ])
+            // Only compute logging metadata if debug logging is enabled
+            if logger.logLevel <= .debug {
+                logger.debug("📤 Broadcast-only sync", metadata: [
+                    "players": .string("\(sessionToPlayer.count)"),
+                    "patches": .string("\(broadcastDiff.count)"),
+                    "bytes": .string("\(updateSize)"),
+                    "mode": .string("\(broadcastMode)")
+                ])
+            }
             
             // Send to all connected players
             // Handle each send separately to avoid one failure stopping all updates
@@ -829,6 +906,180 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Always release sync lock, even if error occurred
             // Only clear dirty flags if dirty tracking is enabled
             await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
+        }
+    }
+    
+    // MARK: - Parallel Encoding Support
+    
+    /// Pending sync update before encoding
+    private struct PendingSyncUpdate: Sendable {
+        let sessionID: SessionID
+        let playerID: PlayerID
+        let update: StateUpdate
+        let updateType: String
+        let patchCount: Int
+    }
+
+    /// Encoded sync update ready to send
+    private struct EncodedSyncUpdate: Sendable {
+        let sessionID: SessionID
+        let playerID: PlayerID
+        let updateType: String
+        let patchCount: Int
+        let payload: Data?
+        let errorMessage: String?
+    }
+
+    /// Determine if parallel encoding should be used
+    /// Currently only enabled for JSON codec (thread-safe and benefits from parallelization)
+    private var shouldParallelEncode: Bool {
+        // Only enable parallel encoding for JSON codec
+        guard codec is JSONTransportCodec else {
+            return false
+        }
+        
+        // Use the configured value
+        return enableParallelEncoding
+    }
+    
+    /// Enable or disable parallel encoding at runtime.
+    ///
+    /// - Parameter enabled: `true` to enable parallel encoding (only effective for JSON codec),
+    ///   `false` to disable and use serial encoding.
+    public func setParallelEncodingEnabled(_ enabled: Bool) {
+        enableParallelEncoding = enabled
+    }
+    
+    /// Check whether parallel encoding is currently enabled.
+    public func isParallelEncodingEnabled() -> Bool {
+        enableParallelEncoding
+    }
+
+    /// Describe update type and patch count
+    private func describeUpdate(_ update: StateUpdate) -> (String, Int) {
+        switch update {
+        case .noChange:
+            return ("noChange", 0)
+        case .firstSync(let patches):
+            return ("firstSync", patches.count)
+        case .diff(let patches):
+            return ("diff", patches.count)
+        }
+    }
+
+    /// Encode updates serially (fallback when parallel encoding is disabled)
+    private func encodeUpdatesSerially(
+        _ pendingUpdates: [PendingSyncUpdate]
+    ) -> [EncodedSyncUpdate] {
+        pendingUpdates.map { pending in
+            do {
+                let data = try codec.encode(pending.update)
+                return EncodedSyncUpdate(
+                    sessionID: pending.sessionID,
+                    playerID: pending.playerID,
+                    updateType: pending.updateType,
+                    patchCount: pending.patchCount,
+                    payload: data,
+                    errorMessage: nil
+                )
+            } catch {
+                return EncodedSyncUpdate(
+                    sessionID: pending.sessionID,
+                    playerID: pending.playerID,
+                    updateType: pending.updateType,
+                    patchCount: pending.patchCount,
+                    payload: nil,
+                    errorMessage: "\(error)"
+                )
+            }
+        }
+    }
+
+    /// Encode updates in parallel using TaskGroup
+    /// This is safe for JSON codec as JSONEncoder is thread-safe
+    private func encodeUpdatesInParallel(
+        _ pendingUpdates: [PendingSyncUpdate]
+    ) async -> [EncodedSyncUpdate] {
+        // Capture codec once before parallel execution
+        let codec = self.codec
+        
+        return await withTaskGroup(of: EncodedSyncUpdate.self, returning: [EncodedSyncUpdate].self) { group in
+            for pending in pendingUpdates {
+                group.addTask {
+                    do {
+                        // Reuse the same codec instance (JSONTransportCodec is thread-safe)
+                        let data = try codec.encode(pending.update)
+                        return EncodedSyncUpdate(
+                            sessionID: pending.sessionID,
+                            playerID: pending.playerID,
+                            updateType: pending.updateType,
+                            patchCount: pending.patchCount,
+                            payload: data,
+                            errorMessage: nil
+                        )
+                    } catch {
+                        return EncodedSyncUpdate(
+                            sessionID: pending.sessionID,
+                            playerID: pending.playerID,
+                            updateType: pending.updateType,
+                            patchCount: pending.patchCount,
+                            payload: nil,
+                            errorMessage: "\(error)"
+                        )
+                    }
+                }
+            }
+
+            var results: [EncodedSyncUpdate] = []
+            results.reserveCapacity(pendingUpdates.count)
+            for await result in group {
+                results.append(result)
+            }
+            return results
+        }
+    }
+
+    /// Send encoded update to transport
+    private func sendEncodedUpdate(
+        sessionID: SessionID,
+        playerID: PlayerID,
+        updateType: String,
+        patchCount: Int,
+        updateData: Data
+    ) async {
+        let updateSize = updateData.count
+
+        // Verbose per-player state update logging can be noisy at debug level,
+        // especially when ticks are running frequently. Use trace instead,
+        // and rely on higher‑level logs for normal operation.
+        // Only compute logging metadata if trace logging is enabled
+        if logger.logLevel <= .trace {
+            logger.trace("📤 Sending state update", metadata: [
+                "playerID": .string(playerID.rawValue),
+                "sessionID": .string(sessionID.rawValue),
+                "type": .string(updateType),
+                "patches": .string("\(patchCount)"),
+                "bytes": .string("\(updateSize)")
+            ])
+        }
+
+        // Log update preview (first 500 chars) - only compute if trace logging is enabled
+        if let preview = logger.safePreview(from: updateData, maxLength: 500) {
+            logger.trace("📤 Update preview", metadata: [
+                "playerID": .string(playerID.rawValue),
+                "type": .string(updateType),
+                "preview": .string(preview)
+            ])
+        }
+
+        do {
+            try await transport.send(updateData, to: .session(sessionID))
+        } catch {
+            logger.error("❌ Failed to sync state", metadata: [
+                "playerID": .string(playerID.rawValue),
+                "sessionID": .string(sessionID.rawValue),
+                "error": .string("\(error)")
+            ])
         }
     }
     
@@ -870,7 +1121,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 return
             }
             
-            let updateData = try encoder.encode(update)
+            let updateData = try codec.encode(update)
             let updateSize = updateData.count
             
             let updateType: String
@@ -890,13 +1141,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Verbose per-player state update logging can be noisy at debug level,
             // especially when ticks are running frequently. Use trace instead,
             // and rely on higher‑level logs for normal operation.
-            logger.trace("📤 Sending state update", metadata: [
-                "playerID": .string(playerID.rawValue),
-                "sessionID": .string(sessionID.rawValue),
-                "type": .string(updateType),
-                "patches": .string("\(patchCount)"),
-                "bytes": .string("\(updateSize)")
-            ])
+            // Only compute logging metadata if trace logging is enabled
+            if logger.logLevel <= .trace {
+                logger.trace("📤 Sending state update", metadata: [
+                    "playerID": .string(playerID.rawValue),
+                    "sessionID": .string(sessionID.rawValue),
+                    "type": .string(updateType),
+                    "patches": .string("\(patchCount)"),
+                    "bytes": .string("\(updateSize)")
+                ])
+            }
             
             // Log update preview (first 500 chars) - only compute if trace logging is enabled
             if let preview = logger.safePreview(from: updateData, maxLength: 500) {
@@ -930,15 +1184,18 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let snapshot = try syncEngine.lateJoinSnapshot(for: playerID, from: state)
             
             // Encode snapshot as JSON and send directly (not as patches)
-            let snapshotData = try encoder.encode(snapshot)
+            let snapshotData = try codec.encode(snapshot)
             let snapshotSize = snapshotData.count
             
-            logger.debug("📤 Sending initial snapshot (late join)", metadata: [
-                "playerID": .string(playerID.rawValue),
-                "sessionID": .string(sessionID.rawValue),
-                "bytes": .string("\(snapshotSize)"),
-                "fields": .string("\(snapshot.values.count)")
-            ])
+            // Only compute logging metadata if debug logging is enabled
+            if logger.logLevel <= .debug {
+                logger.debug("📤 Sending initial snapshot (late join)", metadata: [
+                    "playerID": .string(playerID.rawValue),
+                    "sessionID": .string(sessionID.rawValue),
+                    "bytes": .string("\(snapshotSize)"),
+                    "fields": .string("\(snapshot.values.count)")
+                ])
+            }
             
             // Log snapshot preview (first 500 chars) - only compute if trace logging is enabled
             if let preview = logger.safePreview(from: snapshotData, maxLength: 500) {
@@ -984,16 +1241,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 requestID: requestID,
                 response: response
             )
-            let responseData = try encoder.encode(actionResponse)
+            let responseData = try codec.encode(actionResponse)
             let responseSize = responseData.count
             
-            logger.info("📤 Sending action response", metadata: [
-                "requestID": .string(requestID),
-                "actionType": .string(typeIdentifier),
-                "playerID": .string(playerID.rawValue),
-                "sessionID": .string(sessionID.rawValue),
-                "bytes": .string("\(responseSize)")
-            ])
+            // Only compute logging metadata if info logging is enabled
+            if logger.logLevel <= .info {
+                logger.info("📤 Sending action response", metadata: [
+                    "requestID": .string(requestID),
+                    "actionType": .string(typeIdentifier),
+                    "playerID": .string(playerID.rawValue),
+                    "sessionID": .string(sessionID.rawValue),
+                    "bytes": .string("\(responseSize)")
+                ])
+            }
             
             // Log response payload - only compute if trace logging is enabled
             if let preview = logger.safePreview(from: responseData, maxLength: 500) {
@@ -1042,7 +1302,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     ]
                 )
                 let errorResponse = TransportMessage.error(errorPayload)
-                let errorData = try encoder.encode(errorResponse)
+                let errorData = try codec.encode(errorResponse)
                 try await transport.send(errorData, to: .session(sessionID))
             } catch {
                 logger.error("❌ Failed to send error response", metadata: [
@@ -1212,7 +1472,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             
             let errorPayload = ErrorPayload(code: code, message: message, details: errorDetails)
             let errorResponse = TransportMessage.error(errorPayload)
-            let errorData = try encoder.encode(errorResponse)
+            let errorData = try codec.encode(errorResponse)
             try await transport.send(errorData, to: .session(sessionID))
             
             logger.debug("📤 Sent join error", metadata: [
@@ -1244,7 +1504,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 playerID: playerID,
                 reason: reason
             )
-            let responseData = try encoder.encode(response)
+            let responseData = try codec.encode(response)
             try await transport.send(responseData, to: .session(sessionID))
             
             logger.debug("📤 Sent join response", metadata: [
