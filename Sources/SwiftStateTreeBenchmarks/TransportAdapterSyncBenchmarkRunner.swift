@@ -89,8 +89,8 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
             print("  Serial vs Parallel Encoding Comparison")
             print("  ===========================================")
         } else {
-            print("  TransportAdapter Sync Performance Benchmark")
-            print("  ===========================================")
+        print("  TransportAdapter Sync Performance Benchmark")
+        print("  ===========================================")
         }
         
         var allResults: [BenchmarkResult] = []
@@ -181,16 +181,16 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
                 allResults.append(parallelResult)
             } else {
                 // Test sync performance with specified encoding mode
-                let result = await benchmarkSync(
-                    state: testState,
-                    playerIDs: testPlayerIDs,
+            let result = await benchmarkSync(
+                state: testState,
+                playerIDs: testPlayerIDs,
                     iterations: config.iterations,
                     enableParallelEncoding: enableParallelEncoding  // Use configured encoding mode
-                )
-                
-                print("    Average: \(String(format: "%.4f", result.averageTime * 1000))ms")
-                
-                allResults.append(result)
+            )
+            
+            print("    Average: \(String(format: "%.4f", result.averageTime * 1000))ms")
+            
+            allResults.append(result)
             }
         }
         

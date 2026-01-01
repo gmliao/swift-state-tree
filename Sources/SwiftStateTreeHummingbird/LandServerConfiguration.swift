@@ -33,17 +33,26 @@ public struct LandServerConfiguration: Sendable {
     /// This is useful for demo/testing but should be `false` in production.
     public var allowAutoCreateOnJoin: Bool = false
     
+    /// Enable parallel encoding for state updates (default: nil, uses codec default).
+    ///
+    /// When `true`, enables parallel JSON encoding for multiple player updates, which can improve
+    /// performance when syncing to many players simultaneously. Only effective for JSON codec.
+    /// When `nil`, uses the default behavior based on codec type.
+    public var enableParallelEncoding: Bool? = nil
+    
     public init(
         logger: Logger? = nil,
         jwtConfig: JWTConfiguration? = nil,
         jwtValidator: JWTAuthValidator? = nil,
         allowGuestMode: Bool = false,
-        allowAutoCreateOnJoin: Bool = false
+        allowAutoCreateOnJoin: Bool = false,
+        enableParallelEncoding: Bool? = nil
     ) {
         self.logger = logger
         self.jwtConfig = jwtConfig
         self.jwtValidator = jwtValidator
         self.allowGuestMode = allowGuestMode
         self.allowAutoCreateOnJoin = allowAutoCreateOnJoin
+        self.enableParallelEncoding = enableParallelEncoding
     }
 }

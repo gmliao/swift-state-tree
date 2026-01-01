@@ -56,11 +56,13 @@ struct DemoServer {
         ))
 
         // Shared server configuration for all land types
+        // Enable parallel encoding for better performance with multiple players
         let serverConfig = LandServerConfiguration(
             logger: logger,
             jwtConfig: jwtConfig,
             allowGuestMode: true,
-            allowAutoCreateOnJoin: true
+            allowAutoCreateOnJoin: true,
+            enableParallelEncoding: true  // Enable parallel JSON encoding for state updates
         )
 
         // Register Cookie Game server
