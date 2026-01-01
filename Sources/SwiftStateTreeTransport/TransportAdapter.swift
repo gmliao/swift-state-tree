@@ -329,10 +329,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         
         // Only compute logging metadata if debug logging is enabled
         if logger.logLevel <= .debug {
-            logger.debug("📥 Received message", metadata: [
-                "session": .string(sessionID.rawValue),
-                "bytes": .string("\(messageSize)")
-            ])
+        logger.debug("📥 Received message", metadata: [
+            "session": .string(sessionID.rawValue),
+            "bytes": .string("\(messageSize)")
+        ])
         }
         
         // Log message payload - only compute if trace logging is enabled
@@ -714,7 +714,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Collect all pending updates first (diff computation is serial, but encoding can be parallelized)
             var pendingUpdates: [PendingSyncUpdate] = []
             pendingUpdates.reserveCapacity(sessionToPlayer.count)
-
+            
             for (sessionID, playerID) in sessionToPlayer {
                 // Extract per-player snapshot (specific to this player)
                 let perPlayerSnapshot = try syncEngine.extractPerPlayerSnapshot(
@@ -873,12 +873,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             
             // Only compute logging metadata if debug logging is enabled
             if logger.logLevel <= .debug {
-                logger.debug("📤 Broadcast-only sync", metadata: [
-                    "players": .string("\(sessionToPlayer.count)"),
-                    "patches": .string("\(broadcastDiff.count)"),
-                    "bytes": .string("\(updateSize)"),
-                    "mode": .string("\(broadcastMode)")
-                ])
+            logger.debug("📤 Broadcast-only sync", metadata: [
+                "players": .string("\(sessionToPlayer.count)"),
+                "patches": .string("\(broadcastDiff.count)"),
+                "bytes": .string("\(updateSize)"),
+                "mode": .string("\(broadcastMode)")
+            ])
             }
             
             // Send to all connected players
@@ -1143,13 +1143,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // and rely on higher‑level logs for normal operation.
             // Only compute logging metadata if trace logging is enabled
             if logger.logLevel <= .trace {
-                logger.trace("📤 Sending state update", metadata: [
-                    "playerID": .string(playerID.rawValue),
-                    "sessionID": .string(sessionID.rawValue),
-                    "type": .string(updateType),
-                    "patches": .string("\(patchCount)"),
-                    "bytes": .string("\(updateSize)")
-                ])
+            logger.trace("📤 Sending state update", metadata: [
+                "playerID": .string(playerID.rawValue),
+                "sessionID": .string(sessionID.rawValue),
+                "type": .string(updateType),
+                "patches": .string("\(patchCount)"),
+                "bytes": .string("\(updateSize)")
+            ])
             }
             
             // Log update preview (first 500 chars) - only compute if trace logging is enabled
@@ -1189,12 +1189,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             
             // Only compute logging metadata if debug logging is enabled
             if logger.logLevel <= .debug {
-                logger.debug("📤 Sending initial snapshot (late join)", metadata: [
-                    "playerID": .string(playerID.rawValue),
-                    "sessionID": .string(sessionID.rawValue),
-                    "bytes": .string("\(snapshotSize)"),
-                    "fields": .string("\(snapshot.values.count)")
-                ])
+            logger.debug("📤 Sending initial snapshot (late join)", metadata: [
+                "playerID": .string(playerID.rawValue),
+                "sessionID": .string(sessionID.rawValue),
+                "bytes": .string("\(snapshotSize)"),
+                "fields": .string("\(snapshot.values.count)")
+            ])
             }
             
             // Log snapshot preview (first 500 chars) - only compute if trace logging is enabled
@@ -1246,13 +1246,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             
             // Only compute logging metadata if info logging is enabled
             if logger.logLevel <= .info {
-                logger.info("📤 Sending action response", metadata: [
-                    "requestID": .string(requestID),
-                    "actionType": .string(typeIdentifier),
-                    "playerID": .string(playerID.rawValue),
-                    "sessionID": .string(sessionID.rawValue),
-                    "bytes": .string("\(responseSize)")
-                ])
+            logger.info("📤 Sending action response", metadata: [
+                "requestID": .string(requestID),
+                "actionType": .string(typeIdentifier),
+                "playerID": .string(playerID.rawValue),
+                "sessionID": .string(sessionID.rawValue),
+                "bytes": .string("\(responseSize)")
+            ])
             }
             
             // Log response payload - only compute if trace logging is enabled

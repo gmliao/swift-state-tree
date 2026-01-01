@@ -89,10 +89,52 @@ struct TransportAdapterParallelEncodingPerformanceTests {
         let parallelMs = Double(parallelDuration.components.seconds) * 1000.0 + 
                         Double(parallelDuration.components.attoseconds) / 1_000_000_000_000_000.0
         
-        // Verify results are the same
+        // Verify results are the same by decoding and comparing the objects
+        // Note: We decode instead of comparing raw bytes because JSON key ordering
+        // can vary between encodings. Also, parallel encoding may produce results
+        // in a different order, so we compare as sets rather than by index.
         #expect(serialResults.count == parallelResults.count)
-        for (serial, parallel) in zip(serialResults, parallelResults) {
-            #expect(serial == parallel)
+        
+        // Decode all results and collect patches by path for comparison
+        var serialPatchesByPath: [String: StatePatch] = [:]
+        var parallelPatchesByPath: [String: StatePatch] = [:]
+        
+        for serialData in serialResults {
+            let decoded = try codec.decode(StateUpdate.self, from: serialData)
+            if case .diff(let patches) = decoded {
+                for patch in patches {
+                    serialPatchesByPath[patch.path] = patch
+                }
+            }
+        }
+        
+        for parallelData in parallelResults {
+            let decoded = try codec.decode(StateUpdate.self, from: parallelData)
+            if case .diff(let patches) = decoded {
+                for patch in patches {
+                    parallelPatchesByPath[patch.path] = patch
+                }
+            }
+        }
+        
+        // Verify we have the same number of patches
+        #expect(serialPatchesByPath.count == parallelPatchesByPath.count)
+        
+        // Compare patches by path (order-independent)
+        for (path, serialPatch) in serialPatchesByPath {
+            guard let parallelPatch = parallelPatchesByPath[path] else {
+                Issue.record("Parallel result missing patch for path: \(path)")
+                continue
+            }
+            
+            #expect(serialPatch.path == parallelPatch.path)
+            switch (serialPatch.operation, parallelPatch.operation) {
+            case (.set(let serialValue), .set(let parallelValue)):
+                #expect(serialValue == parallelValue)
+            default:
+                // For other operation types, just verify they match
+                #expect(serialPatch.operation == parallelPatch.operation)
+            }
         }
         
         // Log performance comparison

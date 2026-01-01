@@ -97,6 +97,7 @@ public struct LandServer<State: StateNodeProtocol>: Sendable {
             initialStateFactory: initialStateFactory,
             transport: transport,
             createGuestSession: createGuestSession ?? defaultCreateGuestSession,
+            enableParallelEncoding: configuration.enableParallelEncoding,
             logger: logger
         )
 
@@ -194,12 +195,15 @@ public struct LandServer<State: StateNodeProtocol>: Sendable {
         )
 
         // Create TransportAdapter with keeper
+        // Note: enableParallelEncoding is not available in buildCoreComponents context
+        // For single-room mode, use LandManager which supports this configuration
         let transportAdapter = TransportAdapter<State>(
             keeper: keeper,
             transport: transport,
             landID: definition.id,
             createGuestSession: createGuestSession,
             enableLegacyJoin: true,
+            enableParallelEncoding: nil,  // Use default (codec-based)
             logger: logger
         )
 

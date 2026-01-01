@@ -19,24 +19,30 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// Track creation time for each land
     private var landCreatedAt: [LandID: Date] = [:]
     
+    private let enableParallelEncoding: Bool?
+    
     /// Initialize a LandManager.
     ///
     /// - Parameters:
     ///   - landFactory: Factory function to create LandDefinition for a given LandID.
     ///   - initialStateFactory: Factory function to create initial state for a given LandID.
+    ///   - transport: Optional shared WebSocketTransport instance.
     ///   - createGuestSession: Optional closure to create PlayerSession for guest users.
+    ///   - enableParallelEncoding: Enable parallel encoding for state updates (default: nil, uses codec default).
     ///   - logger: Optional logger instance.
     public init(
         landFactory: @escaping @Sendable (LandID) -> LandDefinition<State>,
         initialStateFactory: @escaping @Sendable (LandID) -> State,
         transport: WebSocketTransport? = nil,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
+        enableParallelEncoding: Bool? = nil,
         logger: Logger? = nil
     ) {
         self.landFactory = landFactory
         self.initialStateFactory = initialStateFactory
         self.sharedTransport = transport
         self.createGuestSession = createGuestSession
+        self.enableParallelEncoding = enableParallelEncoding
         self.logger = logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.runtime",
             scope: "LandManager"
@@ -82,6 +88,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             onLandDestroyed: { [landID] in
                 await self.removeLand(landID: landID)
             },
+            enableParallelEncoding: enableParallelEncoding,
             logger: logger
         )
         
