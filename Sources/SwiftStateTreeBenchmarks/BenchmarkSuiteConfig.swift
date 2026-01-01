@@ -89,8 +89,7 @@ struct BenchmarkSuites {
             // - Low  (~5%)   : 少量玩家變更，偏靜態或慢速遊戲
             // - Medium (~20%): 一般即時遊戲（預設比例）
             // - High (~80%) : 極端壓力測試，接近所有玩家每 tick 都在變
-            // Default parallel encoding (nil = auto-detect, which is true for JSON codec)
-            // Explicitly named as Parallel to make encoding mode clear
+            // Parallel encoding explicitly enabled for clear comparison
             BenchmarkSuiteConfig(
                 type: .transportAdapterSync,
                 name: "TransportSync-Parallel-Low5%",
@@ -99,7 +98,7 @@ struct BenchmarkSuites {
                     dirtyPlayerRatio: lowRatio,
                     broadcastPlayerRatio: 0.0,
                     enableDirtyTracking: transportDirtyTrackingOverride ?? true,
-                    enableParallelEncoding: nil  // Use default (auto-detect: true for JSON codec)
+                    enableParallelEncoding: true  // Explicitly enable parallel encoding
                 ),
                 configurations: [
                     BenchmarkConfig(
@@ -110,7 +109,7 @@ struct BenchmarkSuites {
                     )
                 ]
             ),
-            // Default parallel encoding (nil = auto-detect, which is true for JSON codec)
+            // Parallel encoding explicitly enabled for clear comparison
             BenchmarkSuiteConfig(
                 type: .transportAdapterSync,
                 name: "TransportSync-Parallel-Medium20%",
@@ -118,7 +117,7 @@ struct BenchmarkSuites {
                     playerCounts: playerCounts,
                     dirtyPlayerRatio: mediumRatio,
                     enableDirtyTracking: transportDirtyTrackingOverride ?? true,
-                    enableParallelEncoding: nil  // Use default (auto-detect: true for JSON codec)
+                    enableParallelEncoding: true  // Explicitly enable parallel encoding
                 ),
                 configurations: [
                     BenchmarkConfig(
@@ -135,7 +134,7 @@ struct BenchmarkSuites {
                     )
                 ]
             ),
-            // Default parallel encoding (nil = auto-detect, which is true for JSON codec)
+            // Parallel encoding explicitly enabled for clear comparison
             BenchmarkSuiteConfig(
                 type: .transportAdapterSync,
                 name: "TransportSync-Parallel-High80%",
@@ -143,7 +142,7 @@ struct BenchmarkSuites {
                     playerCounts: playerCounts,
                     dirtyPlayerRatio: highRatio,
                     enableDirtyTracking: transportDirtyTrackingOverride ?? true,
-                    enableParallelEncoding: nil  // Use default (auto-detect: true for JSON codec)
+                    enableParallelEncoding: true  // Explicitly enable parallel encoding
                 ),
                 configurations: [
                     BenchmarkConfig(
@@ -162,7 +161,7 @@ struct BenchmarkSuites {
             ),
             // TransportAdapter Sync benchmarks where broadcast `players` is also mutated every tick.
             // This is closer to real gameplay where public player state changes frequently.
-            // Default parallel encoding (nil = auto-detect, which is true for JSON codec)
+            // Parallel encoding explicitly enabled for clear comparison
             BenchmarkSuiteConfig(
                 type: .transportAdapterSyncPlayers,
                 name: "TransportSyncPlayers-Hot-Parallel-Low5%",
@@ -171,7 +170,7 @@ struct BenchmarkSuites {
                     dirtyPlayerRatio: lowRatio,
                     broadcastPlayerRatio: 1.0,
                     enableDirtyTracking: transportDirtyTrackingOverride ?? true,
-                    enableParallelEncoding: nil  // Use default (auto-detect: true for JSON codec)
+                    enableParallelEncoding: true  // Explicitly enable parallel encoding
                 ),
                 configurations: [
                     BenchmarkConfig(
@@ -188,7 +187,7 @@ struct BenchmarkSuites {
                     )
                 ]
             ),
-            // Default parallel encoding (nil = auto-detect, which is true for JSON codec)
+            // Parallel encoding explicitly enabled for clear comparison
             BenchmarkSuiteConfig(
                 type: .transportAdapterSyncPlayers,
                 name: "TransportSyncPlayers-Hot-Parallel-Medium20%",
@@ -197,7 +196,7 @@ struct BenchmarkSuites {
                     dirtyPlayerRatio: mediumRatio,
                     broadcastPlayerRatio: 1.0,
                     enableDirtyTracking: transportDirtyTrackingOverride ?? true,
-                    enableParallelEncoding: nil  // Use default (auto-detect: true for JSON codec)
+                    enableParallelEncoding: true  // Explicitly enable parallel encoding
                 ),
                 configurations: [
                     BenchmarkConfig(
@@ -214,7 +213,7 @@ struct BenchmarkSuites {
                     )
                 ]
             ),
-            // Default parallel encoding (nil = auto-detect, which is true for JSON codec)
+            // Parallel encoding explicitly enabled for clear comparison
             BenchmarkSuiteConfig(
                 type: .transportAdapterSyncPlayers,
                 name: "TransportSyncPlayers-Hot-Parallel-High80%",
@@ -223,7 +222,7 @@ struct BenchmarkSuites {
                     dirtyPlayerRatio: highRatio,
                     broadcastPlayerRatio: 1.0,
                     enableDirtyTracking: transportDirtyTrackingOverride ?? true,
-                    enableParallelEncoding: nil  // Use default (auto-detect: true for JSON codec)
+                    enableParallelEncoding: true  // Explicitly enable parallel encoding
                 ),
                 configurations: [
                     BenchmarkConfig(

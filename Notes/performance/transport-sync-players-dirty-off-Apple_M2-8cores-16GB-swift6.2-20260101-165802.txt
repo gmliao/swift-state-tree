@@ -1,0 +1,329 @@
+=== System Information ===
+Timestamp: Thu Jan  1 16:58:55 CST 2026
+
+--- CPU ---
+Model: Apple M2
+Cores: 8
+Architecture: arm64
+
+--- Memory ---
+Total RAM: 16 GB (16384 MB)
+Available RAM: 4 GB (5009 MB) [approximate: free + inactive]
+
+--- System ---
+OS: Darwin
+Kernel: 25.2.0
+Hostname: GuanmingdeMacBook-Air-m2.local
+
+--- Swift ---
+swift-driver version: 1.127.14.1 Apple Swift version 6.2.3 (swiftlang-6.2.3.3.21 clang-1700.6.3.2)
+
+--- Build Configuration ---
+Build Mode: RELEASE
+Swift Package: N/A
+
+=== End System Information ===
+
+=== Benchmark started at: Thu Jan  1 16:58:55 CST 2026 ===
+
+Running suite: TransportSyncPlayers-Hot-Parallel-Low5%
+Building for production...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+Build of product 'SwiftStateTreeBenchmarks' complete! (0.24s)
+
+╔═══════════════════════════════════════════════════════════════╗
+║           TransportSyncPlayers-Hot-Parallel-Low5%           ║
+╚═══════════════════════════════════════════════════════════════╝
+
+
+[1/2] Running: Small-5C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 5, Iterations: 100, BroadcastPlayers: ~100%)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 1.1668ms
+
+  Testing with 10 players...
+    Average: 1.2409ms
+
+  Testing with 20 players...
+    Average: 1.2595ms
+
+  Testing with 30 players...
+    Average: 1.1436ms
+
+  Testing with 50 players...
+    Average: 2.2101ms
+
+[2/2] Running: Medium-10C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 10, Iterations: 100, BroadcastPlayers: ~100%)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 0.8603ms
+
+  Testing with 10 players...
+    Average: 1.0796ms
+
+  Testing with 20 players...
+    Average: 1.8061ms
+
+  Testing with 30 players...
+    Average: 2.0574ms
+
+  Testing with 50 players...
+    Average: 3.8450ms
+
+📄 CSV Output (for analysis):
+-----------------------------------------------------------------
+Name,Players,Cards/Player,PlayerStateFields,Iterations,ExecutionMode,AvgTime(ms),MinTime(ms),MaxTime(ms),Throughput(snapshots/sec),Size(bytes)
+Sync,4,5,8,100,DirtyTracking: Off, Encoding: Parallel,1.1668179130554197,1.1668179130554197,1.1668179130554197,857.031751750715,0
+Sync,4,10,8,100,DirtyTracking: Off, Encoding: Parallel,0.8602593040466308,0.8602593040466308,0.8602593040466308,1162.4402029667492,0
+
+═════════════════════════════════════════════════════════════════
+Benchmark completed!
+═════════════════════════════════════════════════════════════════
+
+Running suite: TransportSyncPlayers-Hot-Parallel-Medium20%
+Building for production...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+Build of product 'SwiftStateTreeBenchmarks' complete! (0.23s)
+
+╔═══════════════════════════════════════════════════════════════╗
+║         TransportSyncPlayers-Hot-Parallel-Medium20%         ║
+╚═══════════════════════════════════════════════════════════════╝
+
+
+[1/2] Running: Small-5C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 5, Iterations: 100, BroadcastPlayers: ~100%)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 1.1555ms
+
+  Testing with 10 players...
+    Average: 1.3545ms
+
+  Testing with 20 players...
+    Average: 1.3083ms
+
+  Testing with 30 players...
+    Average: 1.0865ms
+
+  Testing with 50 players...
+    Average: 2.2335ms
+
+[2/2] Running: Medium-10C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 10, Iterations: 100, BroadcastPlayers: ~100%)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 0.9308ms
+
+  Testing with 10 players...
+    Average: 1.0689ms
+
+  Testing with 20 players...
+    Average: 1.5763ms
+
+  Testing with 30 players...
+    Average: 1.9541ms
+
+  Testing with 50 players...
+    Average: 4.0765ms
+
+📄 CSV Output (for analysis):
+-----------------------------------------------------------------
+Name,Players,Cards/Player,PlayerStateFields,Iterations,ExecutionMode,AvgTime(ms),MinTime(ms),MaxTime(ms),Throughput(snapshots/sec),Size(bytes)
+Sync,4,5,8,100,DirtyTracking: Off, Encoding: Parallel,1.1554811096191406,1.1554811096191406,1.1554811096191406,865.4403708335925,0
+Sync,4,10,8,100,DirtyTracking: Off, Encoding: Parallel,0.9307811355590819,0.9307811355590819,0.9307811355590819,1074.3664238525216,0
+
+═════════════════════════════════════════════════════════════════
+Benchmark completed!
+═════════════════════════════════════════════════════════════════
+
+Running suite: TransportSyncPlayers-Hot-Parallel-High80%
+Building for production...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+Build of product 'SwiftStateTreeBenchmarks' complete! (0.24s)
+
+╔═══════════════════════════════════════════════════════════════╗
+║          TransportSyncPlayers-Hot-Parallel-High80%          ║
+╚═══════════════════════════════════════════════════════════════╝
+
+
+[1/2] Running: Small-5C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 5, Iterations: 100, BroadcastPlayers: ~100%)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 1.1973ms
+
+  Testing with 10 players...
+    Average: 1.4558ms
+
+  Testing with 20 players...
+    Average: 1.3314ms
+
+  Testing with 30 players...
+    Average: 1.2642ms
+
+  Testing with 50 players...
+    Average: 2.4375ms
+
+[2/2] Running: Medium-10C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 10, Iterations: 100, BroadcastPlayers: ~100%)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 1.1202ms
+
+  Testing with 10 players...
+    Average: 1.4368ms
+
+  Testing with 20 players...
+    Average: 1.8786ms
+
+  Testing with 30 players...
+    Average: 2.3206ms
+
+  Testing with 50 players...
+    Average: 4.6133ms
+
+📄 CSV Output (for analysis):
+-----------------------------------------------------------------
+Name,Players,Cards/Player,PlayerStateFields,Iterations,ExecutionMode,AvgTime(ms),MinTime(ms),MaxTime(ms),Throughput(snapshots/sec),Size(bytes)
+Sync,4,5,8,100,DirtyTracking: Off, Encoding: Parallel,1.1973021125793457,1.1973021125793457,1.1973021125793457,835.211087906378,0
+Sync,4,10,8,100,DirtyTracking: Off, Encoding: Parallel,1.1201999282836914,1.1201999282836914,1.1201999282836914,892.6977896991522,0
+
+═════════════════════════════════════════════════════════════════
+Benchmark completed!
+═════════════════════════════════════════════════════════════════
+
+Running suite: TransportSyncPlayers-Hot-Serial-Low5%
+Building for production...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+Build of product 'SwiftStateTreeBenchmarks' complete! (0.25s)
+
+╔═══════════════════════════════════════════════════════════════╗
+║            TransportSyncPlayers-Hot-Serial-Low5%            ║
+╚═══════════════════════════════════════════════════════════════╝
+
+
+[1/2] Running: Small-5C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 5, Iterations: 50, BroadcastPlayers: ~100%)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 1.1360ms
+
+  Testing with 10 players...
+    Average: 1.3336ms
+
+  Testing with 20 players...
+    Average: 1.8943ms
+
+  Testing with 30 players...
+    Average: 2.3912ms
+
+  Testing with 50 players...
+    Average: 4.7616ms
+
+[2/2] Running: Medium-10C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 10, Iterations: 50, BroadcastPlayers: ~100%)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 0.6883ms
+
+  Testing with 10 players...
+    Average: 0.9589ms
+
+  Testing with 20 players...
+    Average: 1.3488ms
+
+  Testing with 30 players...
+    Average: 2.3107ms
+
+  Testing with 50 players...
+    Average: 8.6269ms
+
+📄 CSV Output (for analysis):
+-----------------------------------------------------------------
+Name,Players,Cards/Player,PlayerStateFields,Iterations,ExecutionMode,AvgTime(ms),MinTime(ms),MaxTime(ms),Throughput(snapshots/sec),Size(bytes)
+Sync,4,5,8,50,DirtyTracking: Off, Encoding: Serial,1.1360221099853516,1.1360221099853516,1.1360221099853516,880.2645575383164,0
+Sync,4,10,8,50,DirtyTracking: Off, Encoding: Serial,0.6883435440063476,0.6883435440063476,0.6883435440063476,1452.762953480651,0
+
+═════════════════════════════════════════════════════════════════
+Benchmark completed!
+═════════════════════════════════════════════════════════════════
+
+Running suite: TransportSyncPlayers-Hot-Serial-High80%
+Building for production...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+Build of product 'SwiftStateTreeBenchmarks' complete! (0.24s)
+
+╔═══════════════════════════════════════════════════════════════╗
+║           TransportSyncPlayers-Hot-Serial-High80%           ║
+╚═══════════════════════════════════════════════════════════════╝
+
+
+[1/2] Running: Small-5C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 5, Iterations: 50, BroadcastPlayers: ~100%)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 1.1596ms
+
+  Testing with 10 players...
+    Average: 1.2619ms
+
+  Testing with 20 players...
+    Average: 2.0909ms
+
+  Testing with 30 players...
+    Average: 3.3010ms
+
+  Testing with 50 players...
+    Average: 5.4741ms
+
+[2/2] Running: Medium-10C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 10, Iterations: 50, BroadcastPlayers: ~100%)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 0.7167ms
+
+  Testing with 10 players...
+    Average: 0.9977ms
+
+  Testing with 20 players...
+    Average: 2.1511ms
+
+  Testing with 30 players...
+    Average: 4.2803ms
+
+  Testing with 50 players...
+    Average: 9.6792ms
+
+📄 CSV Output (for analysis):
+-----------------------------------------------------------------
+Name,Players,Cards/Player,PlayerStateFields,Iterations,ExecutionMode,AvgTime(ms),MinTime(ms),MaxTime(ms),Throughput(snapshots/sec),Size(bytes)
+Sync,4,5,8,50,DirtyTracking: Off, Encoding: Serial,1.159582633972168,1.159582633972168,1.159582633972168,862.3792481045398,0
+Sync,4,10,8,50,DirtyTracking: Off, Encoding: Serial,0.7167391967773438,0.7167391967773438,0.7167391967773438,1395.2076354917865,0
+
+═════════════════════════════════════════════════════════════════
+Benchmark completed!
+═════════════════════════════════════════════════════════════════
+
+=== Benchmark completed at: Thu Jan  1 16:59:13 CST 2026 ===
