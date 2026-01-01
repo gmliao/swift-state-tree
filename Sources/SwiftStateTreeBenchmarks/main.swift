@@ -20,12 +20,34 @@ func main(parser: CommandLineParser) async {
         printBox(title: "SwiftStateTree Snapshot Generation Benchmark")
     }
 
-    let suiteConfigs = suiteTypes.flatMap {
+    var suiteConfigs = suiteTypes.flatMap {
         BenchmarkSuites.get(
             suiteType: $0,
             transportDirtyTrackingOverride: parser.transportDirtyTrackingOverride,
-            dirtyRatioOverride: parser.transportDirtyRatioOverride
+            dirtyRatioOverride: parser.transportDirtyRatioOverride,
+            playerCountsOverride: parser.playerCountsOverride
         )
+    }
+
+    // Filter by suite name if specified
+    if let nameFilter = parser.suiteNameFilter {
+        suiteConfigs = suiteConfigs.filter { $0.name == nameFilter }
+        if suiteConfigs.isEmpty {
+            print("Error: No suite found with name '\(nameFilter)'")
+            print("Available suites:")
+            let allConfigs = suiteTypes.flatMap {
+                BenchmarkSuites.get(
+                    suiteType: $0,
+                    transportDirtyTrackingOverride: parser.transportDirtyTrackingOverride,
+                    dirtyRatioOverride: parser.transportDirtyRatioOverride,
+                    playerCountsOverride: parser.playerCountsOverride
+                )
+            }
+            for config in allConfigs {
+                print("  - \(config.name)")
+            }
+            exit(1)
+        }
     }
 
     // Run selected benchmark suites
@@ -62,23 +84,23 @@ private func printBox(title: String) {
 // Run main function
 Task { @MainActor in
     let parser = CommandLineParser()
-    
+
     if parser.showHelp {
         CommandLineParser.printUsage()
         exit(0)
     }
-    
+
     if parser.hasError {
         parser.printError()
         exit(1)
     }
-    
+
     // Allow skipping the "Press Enter" prompt via CLI flag when doing automated runs
     if !parser.skipWaitForEnter {
         print("Press Enter to start the benchmark...")
         _ = readLine() // 這行會卡住，等你在 Terminal 按 Enter
     }
-    
+
     await main(parser: parser)
     exit(0)
 }

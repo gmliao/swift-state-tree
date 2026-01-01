@@ -4,7 +4,7 @@ import Logging
 
 /// Adapts Transport events to LandKeeper calls.
 public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
-    
+
     private let keeper: LandKeeper<State>
     private let transport: WebSocketTransport
     private let landID: String
@@ -12,7 +12,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private var syncEngine = SyncEngine()
     private let logger: Logger
     private let enableLegacyJoin: Bool
-    
+
     // Dirty tracking toggle - default is enabled.
     //
     // When disabled, sync will:
@@ -23,29 +23,29 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     // - 高更新比例（幾乎每幀都在改大部分欄位）時，關閉 dirty tracking 可能更快
     // - 中低更新比例（多數遊戲實際情境）時，建議保持開啟以節省序列化與 diff 成本
     private var enableDirtyTracking: Bool
-    
+
     /// Whether to enable parallel encoding for JSON codec.
     /// When enabled, multiple player updates are encoded in parallel using TaskGroup.
     /// Only effective when using JSONTransportCodec (thread-safe).
     /// Default is true for JSON codec, false for other codecs.
     private var enableParallelEncoding: Bool
-    
+
     // Track session to player mapping
     private var sessionToPlayer: [SessionID: PlayerID] = [:]
     private var sessionToClient: [SessionID: ClientID] = [:]
     // Track JWT payload information for each session
     private var sessionToAuthInfo: [SessionID: AuthenticatedInfo] = [:]
-    
+
     // Computed property: sessions that are connected but not yet joined
     private var connectedSessions: Set<SessionID> {
         Set(sessionToClient.keys).subtracting(Set(sessionToPlayer.keys))
     }
-    
+
     // Computed property: sessions that have joined
     private var joinedSessions: Set<SessionID> {
         Set(sessionToPlayer.keys)
     }
-    
+
     /// Closure to create PlayerSession for guest users (when JWT validation is enabled but no token is provided).
     /// Only used when JWT validation is enabled, allowGuestMode is true, and no JWT token is provided.
     /// Default implementation uses the sessionID as playerID for deterministic guest identities.
@@ -56,11 +56,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             isGuest: true
         )
     }
-    
+
     /// Callback to notify when land has been destroyed.
     /// Called after all destroy handlers (OnFinalize, AfterFinalize) have completed.
     var onLandDestroyedCallback: (@Sendable () async -> Void)?
-    
+
     public init(
         keeper: LandKeeper<State>,
         transport: WebSocketTransport,
@@ -80,7 +80,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         self.enableLegacyJoin = enableLegacyJoin
         self.enableDirtyTracking = enableDirtyTracking
         self.onLandDestroyedCallback = onLandDestroyed
-        
+
         // Default parallel encoding: enabled for JSON codec, disabled for others
         if let explicitValue = enableParallelEncoding {
             self.enableParallelEncoding = explicitValue
@@ -101,14 +101,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             self.createGuestSession = createGuestSession
         }
     }
-    
+
     // MARK: - Dirty Tracking Configuration
-    
+
     /// Check whether dirty tracking optimization is currently enabled.
     public func isDirtyTrackingEnabled() -> Bool {
         enableDirtyTracking
     }
-    
+
     /// Enable or disable dirty tracking at runtime.
     ///
     /// - Parameter enabled: `true` to enable dirty tracking (default behavior),
@@ -116,13 +116,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     public func setDirtyTrackingEnabled(_ enabled: Bool) {
         enableDirtyTracking = enabled
     }
-    
-    
+
+
     public func onConnect(sessionID: SessionID, clientID: ClientID, authInfo: AuthenticatedInfo? = nil) async {
         // Only record connection, don't auto-join
         // Client must send join request explicitly
         sessionToClient[sessionID] = clientID
-        
+
         // Store JWT payload information if provided (e.g., from JWT validation)
         // This will be used during join request to populate PlayerSession
         if let authInfo = authInfo {
@@ -132,21 +132,21 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             logger.info("Client connected (not joined yet): session=\(sessionID.rawValue), clientID=\(clientID.rawValue)")
         }
     }
-    
+
     public func onDisconnect(sessionID: SessionID, clientID: ClientID) async {
         // Remove from connected sessions
         sessionToClient.removeValue(forKey: sessionID)
         // Clear JWT payload information
         sessionToAuthInfo.removeValue(forKey: sessionID)
-        
+
         // If player had joined, handle leave
         if let playerID = sessionToPlayer[sessionID] {
             logger.debug("Player \(playerID.rawValue) disconnecting: session=\(sessionID.rawValue), clientID=\(clientID.rawValue)")
-            
+
             // Remove from sessionToPlayer BEFORE calling keeper.leave()
             // This ensures syncBroadcastOnly() only sends to remaining players
             sessionToPlayer.removeValue(forKey: sessionID)
-            
+
             // Now call keeper.leave() which will trigger syncBroadcastOnly()
             // syncBroadcastOnly() will only see remaining players in sessionToPlayer
             do {
@@ -160,17 +160,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     "error": .string(String(describing: error))
                 ])
             }
-            
+
             // Clear syncEngine cache for disconnected player
             // This ensures reconnection behaves like first connection
             syncEngine.clearCacheForDisconnectedPlayer(playerID)
-        
+
             logger.info("Client disconnected: session=\(sessionID.rawValue), player=\(playerID.rawValue)")
         } else {
             logger.info("Client disconnected (was not joined): session=\(sessionID.rawValue)")
         }
     }
-    
+
     /// Register a session that has been authenticated and joined via LandRouter.
     /// This bypasses the internal join handshake logic of TransportAdapter.
     public func registerSession(
@@ -184,15 +184,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         if let authInfo = authInfo {
             sessionToAuthInfo[sessionID] = authInfo
         }
-        
+
         // Register with transport for player-based targeting
         await transport.registerSession(sessionID, for: playerID)
-        
+
         logger.info("Session registered via Router: session=\(sessionID.rawValue), player=\(playerID.rawValue)")
     }
-    
+
     // MARK: - Join Helpers (Shared Logic)
-    
+
     /// Prepare PlayerSession from join request parameters.
     /// Handles priority: join message > JWT payload > guest session.
     ///
@@ -209,27 +209,27 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let guestSession: PlayerSession? = (requestedPlayerID == nil && jwtAuthInfo == nil)
             ? createGuestSession(sessionID, clientID)
             : nil
-        
+
         // Determine playerID: join message > JWT payload > guest session
         let finalPlayerID: String = requestedPlayerID
             ?? jwtAuthInfo?.playerID
             ?? guestSession?.playerID
             ?? sessionID.rawValue
-        
+
         // Determine deviceID: join message > JWT payload > guest session
         let finalDeviceID: String? = deviceID
             ?? jwtAuthInfo?.deviceID
             ?? guestSession?.deviceID
             ?? clientID.rawValue
-        
+
         // Merge metadata: join message metadata > JWT payload metadata > guest session metadata
         var finalMetadata: [String: String] = [:]
-        
+
         // Start with JWT payload metadata (if available)
         if let jwtMetadata = jwtAuthInfo?.metadata {
             finalMetadata.merge(jwtMetadata) { (_, new) in new }
         }
-        
+
         // Override with join message metadata (if provided)
         if let joinMetadata = metadata {
             let joinMetadataDict: [String: String] = joinMetadata.reduce(into: [:]) { result, pair in
@@ -244,15 +244,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
             finalMetadata.merge(joinMetadataDict) { (_, new) in new }
         }
-        
+
         // If no metadata from JWT or join message, use guest session metadata when available
         if finalMetadata.isEmpty, metadata == nil, let guestMetadata = guestSession?.metadata {
             finalMetadata = guestMetadata
         }
-        
+
         // Determine isGuest: true if this is a guest session (no JWT auth and no requested playerID)
         let finalIsGuest = (requestedPlayerID == nil && jwtAuthInfo == nil)
-        
+
         // PlayerSession.init will automatically add isGuest to metadata when isGuest is true
         return PlayerSession(
             playerID: finalPlayerID,
@@ -261,7 +261,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             metadata: finalMetadata
         )
     }
-    
+
     /// Perform the core join operation: keeper.join, registerSession, and syncStateForNewPlayer.
     /// This is shared logic used by both LandRouter and TransportAdapter.handleJoinRequest.
     ///
@@ -276,7 +276,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         public let playerID: PlayerID
         public let sessionID: SessionID
     }
-    
+
     public func performJoin(
         playerSession: PlayerSession,
         clientID: ClientID,
@@ -290,12 +290,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             sessionID: sessionID,
             services: LandServices()
         )
-        
+
         switch decision {
         case .allow(let playerID):
             // Update TransportAdapter state (synchronization point)
             sessionToPlayer[sessionID] = playerID
-            
+
             // Register session
             await registerSession(
                 sessionID: sessionID,
@@ -303,30 +303,30 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 playerID: playerID,
                 authInfo: authInfo
             )
-            
+
             // NOTE: Initial state snapshot is NOT sent here anymore.
             // The caller should:
             // 1. First send JoinResponse to client
             // 2. Then call sendInitialSnapshot() to send the state
             // This ensures client knows join succeeded before receiving state.
-            
+
             return JoinResult(playerID: playerID, sessionID: sessionID)
-            
+
         case .deny:
             return nil
         }
     }
-    
+
     /// Send initial state snapshot for a newly joined player.
     /// Call this AFTER sending JoinResponse to ensure correct message order.
     public func sendInitialSnapshot(for result: JoinResult) async {
         await syncStateForNewPlayer(playerID: result.playerID, sessionID: result.sessionID)
         syncEngine.markFirstSyncReceived(for: result.playerID)
     }
-    
+
     public func onMessage(_ message: Data, from sessionID: SessionID) async {
         let messageSize = message.count
-        
+
         // Only compute logging metadata if debug logging is enabled
         if logger.logLevel <= .debug {
         logger.debug("📥 Received message", metadata: [
@@ -334,7 +334,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             "bytes": .string("\(messageSize)")
         ])
         }
-        
+
         // Log message payload - only compute if trace logging is enabled
         if let messagePreview = logger.safePreview(from: message) {
             logger.trace("📥 Message payload", metadata: [
@@ -342,12 +342,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "payload": .string(messagePreview)
             ])
         }
-        
+
         // Compute messagePreview for error logging (only if needed)
         // We compute it lazily in the catch block to avoid unnecessary work
         do {
             let transportMsg = try codec.decode(TransportMessage.self, from: message)
-            
+
             switch transportMsg.kind {
             case .join:
                 // If legacy join is enabled, handle it directly (for Single Room Mode)
@@ -363,7 +363,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         } else {
                             requestLandID = payload.landType
                         }
-                        
+
                         await handleJoinRequest(
                             requestID: payload.requestID,
                             landID: requestLandID,
@@ -378,21 +378,21 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     logger.warning("Received Join message in TransportAdapter (should be handled by Router)", metadata: ["sessionID": .string(sessionID.rawValue)])
                 }
                 return
-                
+
             case .joinResponse:
                 // Server should not receive joinResponse from client
                 logger.warning("Received joinResponse from client (unexpected)", metadata: [
                     "sessionID": .string(sessionID.rawValue)
                 ])
                 return
-                
+
             case .error:
                 // Server should not receive error from client (errors are server->client)
                 logger.warning("Received error message from client (unexpected)", metadata: [
                     "sessionID": .string(sessionID.rawValue)
                 ])
                 return
-                
+
             default:
                 // For other messages, require player to be joined
                 guard let playerID = sessionToPlayer[sessionID],
@@ -400,7 +400,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     logger.warning("Message received from session that has not joined: \(sessionID.rawValue)")
                     return
                 }
-                
+
                 switch transportMsg.kind {
                 case .action:
                     if case .action(let payload) = transportMsg.payload {
@@ -411,7 +411,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                             "playerID": .string(playerID.rawValue),
                             "sessionID": .string(sessionID.rawValue)
                         ])
-                        
+
                         // Decode action payload if possible - only compute if trace logging is enabled
                         if let payloadString = logger.safePreview(from: payload.action.payload) {
                             logger.trace("📥 Action payload", metadata: [
@@ -419,7 +419,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                                 "payload": .string(payloadString)
                             ])
                         }
-                        
+
                         // Handle action request
                         await handleActionRequest(
                             requestID: payload.requestID,
@@ -430,7 +430,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                             sessionID: sessionID
                         )
                     }
-                    
+
                 case .actionResponse:
                     if case .actionResponse(let payload) = transportMsg.payload {
                         logger.info("📥 Received action response", metadata: [
@@ -438,7 +438,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                             "playerID": .string(playerID.rawValue),
                             "sessionID": .string(sessionID.rawValue)
                         ])
-                        
+
                         // Log response payload - only compute if trace logging is enabled
                         if let responseData = try? codec.encode(payload.response),
                            let responseString = logger.safePreview(from: responseData) {
@@ -448,7 +448,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                             ])
                         }
                     }
-                    
+
                 case .event:
                     if case .event(let payload) = transportMsg.payload {
                         if case .fromClient(let anyClientEvent) = payload.event {
@@ -458,7 +458,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                                 "playerID": .string(playerID.rawValue),
                                 "sessionID": .string(sessionID.rawValue)
                             ])
-                            
+
                             // Log event payload - only compute if trace logging is enabled
                             if let payloadData = try? codec.encode(anyClientEvent.payload),
                                let payloadString = logger.safePreview(from: payloadData) {
@@ -467,7 +467,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                                     "payload": .string(payloadString)
                                 ])
                             }
-                            
+
                             do {
                                 try await keeper.handleClientEvent(
                                     anyClientEvent,
@@ -483,11 +483,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                                     "sessionID": .string(sessionID.rawValue),
                                     "error": .string("\(error)")
                                 ])
-                                
+
                                 // Determine error code
                                 let errorCode: ErrorCode
                                 let errorMessage: String
-                                
+
                                 if let resolverError = error as? ResolverExecutionError {
                                     errorCode = .eventHandlerError
                                     errorMessage = "Event handler failed: \(resolverError)"
@@ -498,7 +498,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                                     errorCode = .eventHandlerError
                                     errorMessage = "Event handler error: \(error)"
                                 }
-                                
+
                                 // Send error to client
                                 let errorPayload = ErrorPayload(
                                     code: errorCode,
@@ -519,7 +519,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                             ])
                         }
                     }
-                    
+
                 case .join, .joinResponse, .error:
                     // Already handled above
                     break
@@ -528,13 +528,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         } catch {
             // Compute messagePreview for error logging (only when error occurs)
             let messagePreview = String(data: message, encoding: .utf8) ?? "<non-UTF8 payload>"
-            
+
             logger.error("❌ Failed to decode message", metadata: [
                 "sessionID": .string(sessionID.rawValue),
                 "error": .string("\(error)"),
                 "payload": .string(messagePreview)
             ])
-            
+
             // Send error message to client using unified error format
             do {
                 let errorPayload = ErrorPayload(
@@ -556,9 +556,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
         }
     }
-    
+
     // MARK: - Helper Methods
-    
+
     /// Send server event to specified target
     public func sendEvent(_ event: AnyServerEvent, to target: SwiftStateTree.EventTarget) async {
         do {
@@ -566,10 +566,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 landID: landID,
                 event: .fromServer(event: event)
             )
-            
+
             let data = try codec.encode(transportMsg)
             let dataSize = data.count
-            
+
             // Convert SwiftStateTree.EventTarget to SwiftStateTreeTransport.EventTarget
             let transportTarget: EventTarget
             let targetDescription: String
@@ -600,7 +600,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     "playerIDs": .string(playerIDsString),
                     "bytes": .string("\(dataSize)")
                 ])
-                
+
                 for playerID in playerIDs {
                     let sessionIDs = sessionToPlayer.filter({ $0.value == playerID }).map({ $0.key })
                     for sessionID in sessionIDs {
@@ -609,14 +609,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 }
                 return
             }
-            
+
             logger.info("📤 Sending server event", metadata: [
                 "eventType": .string(event.type),
                 "target": .string(targetDescription),
                 "landID": .string(landID),
                 "bytes": .string("\(dataSize)")
             ])
-            
+
             // Log event payload - only compute if trace logging is enabled
             if let payloadData = try? codec.encode(event.payload),
                let payloadString = logger.safePreview(from: payloadData) {
@@ -626,7 +626,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     "payload": .string(payloadString)
                 ])
             }
-            
+
             try await transport.send(data, to: transportTarget)
         } catch {
             logger.error("❌ Failed to send event", metadata: [
@@ -635,7 +635,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
         }
     }
-    
+
     /// Trigger immediate state synchronization
     ///
     /// NOTE: Parallel sync optimization was tested but did not show performance improvements.
@@ -653,12 +653,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         guard !sessionToPlayer.isEmpty else {
             return
         }
-        
+
         // Note: When multiple players leave simultaneously, syncBroadcastOnly() is called
         //       for each leave operation. While this is more efficient than syncNow() (only
         //       processes dirty broadcast fields), there's still room for further optimization
         //       by batching or debouncing multiple leave operations into a single sync call.
-        
+
         // Acquire sync lock to prevent state mutations during sync
         // This ensures we work with a consistent state snapshot
         guard let state = await keeper.beginSync() else {
@@ -668,21 +668,21 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             logger.debug("⏭️ Sync skipped: another sync operation is in progress")
             return
         }
-        
+
         do {
             // Determine snapshot modes based on dirty tracking (same logic as SyncEngine.generateDiffFromSnapshots).
             let broadcastMode: SnapshotMode
             let perPlayerMode: SnapshotMode
-            
+
             if enableDirtyTracking && state.isDirty() {
                 let dirtyFields = state.getDirtyFields()
                 let syncFields = state.getSyncFields()
                 let broadcastFieldNames = Set(syncFields.filter { $0.policyType == .broadcast }.map { $0.name })
                 let perPlayerFieldNames = Set(syncFields.filter { $0.policyType != .broadcast && $0.policyType != .serverOnly }.map { $0.name })
-                
+
                 let broadcastFields = dirtyFields.intersection(broadcastFieldNames)
                 let perPlayerFields = dirtyFields.intersection(perPlayerFieldNames)
-                
+
                 // TODO: Optimization (large player counts):
                 // - If `perPlayerFields` is empty, we can skip extracting per-player snapshots and computing per-player diffs
                 //   for all players, and send only the shared `broadcastDiff` (while keeping per-player caches intact).
@@ -698,10 +698,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 broadcastMode = .all
                 perPlayerMode = .all
             }
-            
+
             // Extract broadcast snapshot once (shared across all players).
             let broadcastSnapshot = try syncEngine.extractBroadcastSnapshot(from: state, mode: broadcastMode)
-            
+
             // Compute broadcast diff ONCE, then reuse for all players.
             // This avoids updating the broadcast cache per player, which would cause only the first player
             // to receive broadcast patches.
@@ -710,11 +710,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 onlyPaths: nil,
                 mode: broadcastMode
             )
-            
+
             // Collect all pending updates first (diff computation is serial, but encoding can be parallelized)
             var pendingUpdates: [PendingSyncUpdate] = []
             pendingUpdates.reserveCapacity(sessionToPlayer.count)
-            
+
             for (sessionID, playerID) in sessionToPlayer {
                 // Extract per-player snapshot (specific to this player)
                 let perPlayerSnapshot = try syncEngine.extractPerPlayerSnapshot(
@@ -749,8 +749,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
             if !pendingUpdates.isEmpty {
                 let encodedUpdates: [EncodedSyncUpdate]
+                let useParallel = shouldParallelEncode
 
-                if shouldParallelEncode {
+                // Debug logging (only in debug builds to avoid performance impact)
+                #if DEBUG
+                if pendingUpdates.count == 10 {
+                    logger.debug("Encoding \(pendingUpdates.count) updates, parallel=\(useParallel), enableParallelEncoding=\(enableParallelEncoding)")
+                }
+                #endif
+
+                if useParallel {
                     // JSON encoding is independent per player, so we can parallelize it safely.
                     encodedUpdates = await encodeUpdatesInParallel(pendingUpdates)
                 } else {
@@ -775,7 +783,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     }
                 }
             }
-            
+
             // Release sync lock after successful sync
             // Only clear dirty flags if dirty tracking is enabled
             await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
@@ -785,13 +793,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
             // TODO: Consider re-syncing after error recovery
             // TODO: Add error metrics to track sync failure rates
-            
+
             // Always release sync lock, even if error occurred
             // Only clear dirty flags if dirty tracking is enabled
             await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
         }
     }
-    
+
     /// Sync only broadcast changes to all connected players.
     ///
     /// Used when state changes only affect broadcast fields (e.g., player leaving).
@@ -813,7 +821,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Note: Even if no players are connected, we still need to update the broadcast cache
         // This ensures that when a player reconnects, they see the correct state (not stale cache)
         let hasPlayers = !sessionToPlayer.isEmpty
-        
+
         // Acquire sync lock to prevent state mutations during sync
         // This ensures we work with a consistent state snapshot
         guard let state = await keeper.beginSync() else {
@@ -823,9 +831,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             logger.debug("⏭️ Broadcast-only sync skipped: another sync operation is in progress")
             return
         }
-        
+
         do {
-            
+
             // Determine snapshot mode based on dirty tracking
             let broadcastMode: SnapshotMode
             if enableDirtyTracking && state.isDirty() {
@@ -833,17 +841,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 let syncFields = state.getSyncFields()
                 let broadcastFieldNames = Set(syncFields.filter { $0.policyType == .broadcast }.map { $0.name })
                 let broadcastFields = dirtyFields.intersection(broadcastFieldNames)
-                
+
                 // Only extract and compare dirty broadcast fields
                 broadcastMode = broadcastFields.isEmpty ? .all : .dirtyTracking(broadcastFields)
             } else {
                 // Dirty tracking disabled or state not dirty: always use .all mode
                 broadcastMode = .all
             }
-            
+
             // Extract broadcast snapshot (only dirty fields if using dirty tracking)
             let broadcastSnapshot = try syncEngine.extractBroadcastSnapshot(from: state, mode: broadcastMode)
-            
+
             // Compute broadcast diff (only compares dirty fields)
             // This updates the shared broadcast cache
             // IMPORTANT: We always compute the diff to update the cache, even if no players are connected
@@ -853,7 +861,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 onlyPaths: nil,
                 mode: broadcastMode
             )
-            
+
             // If no players are connected, we still update the cache but don't send messages
             guard hasPlayers && !broadcastDiff.isEmpty else {
                 if !hasPlayers && logger.logLevel <= .debug {
@@ -865,12 +873,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
                 return
             }
-            
+
             // Encode once (all players get the same broadcast update)
             let update = StateUpdate.diff(broadcastDiff)
             let updateData = try codec.encode(update)
             let updateSize = updateData.count
-            
+
             // Only compute logging metadata if debug logging is enabled
             if logger.logLevel <= .debug {
             logger.debug("📤 Broadcast-only sync", metadata: [
@@ -880,7 +888,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "mode": .string("\(broadcastMode)")
             ])
             }
-            
+
             // Send to all connected players
             // Handle each send separately to avoid one failure stopping all updates
             for (sessionID, _) in sessionToPlayer {
@@ -894,7 +902,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     ])
                 }
             }
-            
+
             // Release sync lock after successful sync
             // Only clear dirty flags if dirty tracking is enabled
             await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
@@ -902,15 +910,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             logger.error("❌ Failed to sync broadcast-only", metadata: [
                 "error": .string("\(error)")
             ])
-            
+
             // Always release sync lock, even if error occurred
             // Only clear dirty flags if dirty tracking is enabled
             await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
         }
     }
-    
+
     // MARK: - Parallel Encoding Support
-    
+
     /// Pending sync update before encoding
     private struct PendingSyncUpdate: Sendable {
         let sessionID: SessionID
@@ -937,11 +945,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         guard codec is JSONTransportCodec else {
             return false
         }
-        
+
         // Use the configured value
         return enableParallelEncoding
     }
-    
+
     /// Enable or disable parallel encoding at runtime.
     ///
     /// - Parameter enabled: `true` to enable parallel encoding (only effective for JSON codec),
@@ -949,7 +957,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     public func setParallelEncodingEnabled(_ enabled: Bool) {
         enableParallelEncoding = enabled
     }
-    
+
     /// Check whether parallel encoding is currently enabled.
     public func isParallelEncodingEnabled() -> Bool {
         enableParallelEncoding
@@ -1002,7 +1010,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ) async -> [EncodedSyncUpdate] {
         // Capture codec once before parallel execution
         let codec = self.codec
-        
+
         return await withTaskGroup(of: EncodedSyncUpdate.self, returning: [EncodedSyncUpdate].self) { group in
             for pending in pendingUpdates {
                 group.addTask {
@@ -1082,7 +1090,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
         }
     }
-    
+
     /// Sync state for a specific player
     ///
     /// This method extracts per-player snapshot and computes diff for a single player.
@@ -1105,7 +1113,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         do {
             // Extract per-player snapshot (specific to this player)
             let perPlayerSnapshot = try syncEngine.extractPerPlayerSnapshot(for: playerID, from: state, mode: perPlayerMode)
-            
+
             // Broadcast diff is precomputed once per sync cycle and reused for all players.
             let update = syncEngine.generateUpdateFromBroadcastDiff(
                 for: playerID,
@@ -1114,16 +1122,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 perPlayerMode: perPlayerMode,
                 onlyPaths: nil
             )
-            
+
             // Skip only if noChange - firstSync should always be sent (even if patches are empty)
             // firstSync is a notification that sync has started, not just a data update
             if case .noChange = update {
                 return
             }
-            
+
             let updateData = try codec.encode(update)
             let updateSize = updateData.count
-            
+
             let updateType: String
             let patchCount: Int
             switch update {
@@ -1137,7 +1145,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 updateType = "diff"
                 patchCount = patches.count
             }
-            
+
             // Verbose per-player state update logging can be noisy at debug level,
             // especially when ticks are running frequently. Use trace instead,
             // and rely on higher‑level logs for normal operation.
@@ -1151,7 +1159,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "bytes": .string("\(updateSize)")
             ])
             }
-            
+
             // Log update preview (first 500 chars) - only compute if trace logging is enabled
             if let preview = logger.safePreview(from: updateData, maxLength: 500) {
                 logger.trace("📤 Update preview", metadata: [
@@ -1160,7 +1168,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     "preview": .string(preview)
                 ])
             }
-            
+
             try await transport.send(updateData, to: .session(sessionID))
         } catch {
             logger.error("❌ Failed to sync state", metadata: [
@@ -1170,23 +1178,23 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
         }
     }
-    
+
     /// Sync state for a new player (first connection) using lateJoinSnapshot
     /// This sends the complete initial state as a snapshot (not as patches)
     /// Does NOT mark firstSync as received - that will happen on first actual sync
     public func syncStateForNewPlayer(playerID: PlayerID, sessionID: SessionID) async {
         do {
             let state = await keeper.currentState()
-            
+
             // Use lateJoinSnapshot to get complete snapshot and populate cache
             // This does NOT mark firstSync as received - that happens on first sync
             // lateJoin only sends complete snapshot, does NOT calculate delta
             let snapshot = try syncEngine.lateJoinSnapshot(for: playerID, from: state)
-            
+
             // Encode snapshot as JSON and send directly (not as patches)
             let snapshotData = try codec.encode(snapshot)
             let snapshotSize = snapshotData.count
-            
+
             // Only compute logging metadata if debug logging is enabled
             if logger.logLevel <= .debug {
             logger.debug("📤 Sending initial snapshot (late join)", metadata: [
@@ -1196,7 +1204,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "fields": .string("\(snapshot.values.count)")
             ])
             }
-            
+
             // Log snapshot preview (first 500 chars) - only compute if trace logging is enabled
             if let preview = logger.safePreview(from: snapshotData, maxLength: 500) {
                 logger.trace("📤 Snapshot preview", metadata: [
@@ -1204,7 +1212,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     "preview": .string(preview)
                 ])
             }
-            
+
             // Send snapshot directly (not as StateUpdate format)
             // Note: Does NOT mark firstSync as received - that will happen on first sync
             try await transport.send(snapshotData, to: .session(sessionID))
@@ -1216,7 +1224,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
         }
     }
-    
+
     /// Handle action request from client
     private func handleActionRequest(
         requestID: String,
@@ -1228,14 +1236,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ) async {
         do {
             let typeIdentifier = envelope.typeIdentifier
-            
+
             let response = try await keeper.handleActionEnvelope(
                 envelope,
                 playerID: playerID,
                 clientID: clientID,
                 sessionID: sessionID
             )
-            
+
             // Send action response
             let actionResponse = TransportMessage.actionResponse(
                 requestID: requestID,
@@ -1243,7 +1251,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             )
             let responseData = try codec.encode(actionResponse)
             let responseSize = responseData.count
-            
+
             // Only compute logging metadata if info logging is enabled
             if logger.logLevel <= .info {
             logger.info("📤 Sending action response", metadata: [
@@ -1254,7 +1262,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "bytes": .string("\(responseSize)")
             ])
             }
-            
+
             // Log response payload - only compute if trace logging is enabled
             if let preview = logger.safePreview(from: responseData, maxLength: 500) {
                 logger.trace("📤 Action response payload", metadata: [
@@ -1263,9 +1271,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     "response": .string(preview)
                 ])
             }
-            
+
             try await transport.send(responseData, to: .session(sessionID))
-            
+
         } catch {
             logger.error("❌ Failed to handle action", metadata: [
                 "requestID": .string(requestID),
@@ -1273,12 +1281,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "playerID": .string(playerID.rawValue),
                 "error": .string("\(error)")
             ])
-            
+
             // Send error response using unified error format
             do {
                 let errorCode: ErrorCode
                 let errorMessage: String
-                
+
                 if let landError = error as? LandError {
                     switch landError {
                     case .actionNotRegistered:
@@ -1292,7 +1300,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     errorCode = .actionHandlerError
                     errorMessage = "\(error)"
                 }
-                
+
                 let errorPayload = ErrorPayload(
                     code: errorCode,
                     message: errorMessage,
@@ -1312,7 +1320,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
         }
     }
-    
+
     /// Handle join request from client
     private func handleJoinRequest(
         requestID: String,
@@ -1328,14 +1336,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinSessionNotConnected, message: "Session not connected")
             return
         }
-        
+
         // Check if already joined
         if sessionToPlayer[sessionID] != nil {
             logger.warning("Join request from already joined session: \(sessionID.rawValue)")
             await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinAlreadyJoined, message: "Already joined")
             return
         }
-        
+
         // Verify landID matches
         guard landID == self.landID else {
             logger.warning("Join request with mismatched landID: expected=\(self.landID), received=\(landID)")
@@ -1345,7 +1353,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
             return
         }
-        
+
         // Phase 2: Preparation (no state modification)
         // Use shared helper to prepare PlayerSession
         let jwtAuthInfo = sessionToAuthInfo[sessionID]
@@ -1357,7 +1365,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             metadata: metadata,
             authInfo: jwtAuthInfo
         )
-        
+
         // Log metadata sources for debugging
         if let jwtAuthInfo = jwtAuthInfo {
             logger.debug("Using JWT payload for join", metadata: [
@@ -1368,7 +1376,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "finalMetadataCount": .string("\(playerSession.metadata.count)")
             ])
         }
-        
+
         // Phase 3: Check for duplicate playerID and kick old session (Kick Old strategy)
         let targetPlayerID = PlayerID(playerSession.playerID)
         let existingSessions = getSessions(for: targetPlayerID)
@@ -1380,11 +1388,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 await onDisconnect(sessionID: oldSessionID, clientID: oldClientID)
             }
         }
-        
+
         // Phase 4: Atomic join operation (with rollback on failure)
         var joinSucceeded = false
         var playerID: PlayerID?
-        
+
         defer {
             // Rollback sessionToPlayer if join failed
             if !joinSucceeded, let pid = playerID {
@@ -1392,7 +1400,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 logger.warning("Rolled back join state for session \(sessionID.rawValue), player \(pid.rawValue)")
             }
         }
-        
+
         do {
             // Use shared helper to perform join
             if let joinResult = try await performJoin(
@@ -1403,16 +1411,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ) {
                 playerID = joinResult.playerID
                 joinSucceeded = true
-                
+
                 // IMPORTANT: Send JoinResponse FIRST, then StateSnapshot
                 // This ensures client knows join succeeded before receiving state
-                
+
                 // 1. Send join response
                 await sendJoinResponse(requestID: requestID, sessionID: sessionID, success: true, playerID: joinResult.playerID.rawValue)
-                
+
                 // 2. Send initial state snapshot AFTER JoinResponse
                 await sendInitialSnapshot(for: joinResult)
-                
+
                 logger.info("Client joined: session=\(sessionID.rawValue), player=\(joinResult.playerID.rawValue), playerID=\(playerSession.playerID)")
             } else {
                 // Join denied
@@ -1434,29 +1442,29 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             await sendJoinError(requestID: requestID, sessionID: sessionID, code: errorCode, message: errorMessage)
         }
     }
-    
+
     // MARK: - State Query Methods
-    
+
     /// Check if a session is connected (but may not have joined)
     public func isConnected(sessionID: SessionID) -> Bool {
         sessionToClient[sessionID] != nil
     }
-    
+
     /// Check if a session has joined
     public func isJoined(sessionID: SessionID) -> Bool {
         sessionToPlayer[sessionID] != nil
     }
-    
+
     /// Get the playerID for a session (if joined)
     public func getPlayerID(for sessionID: SessionID) -> PlayerID? {
         sessionToPlayer[sessionID]
     }
-    
+
     /// Get all sessions for a playerID
     public func getSessions(for playerID: PlayerID) -> [SessionID] {
         sessionToPlayer.filter { $0.value == playerID }.map { $0.key }
     }
-    
+
     /// Send join error to client using unified error format
     private func sendJoinError(
         requestID: String,
@@ -1469,12 +1477,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             var errorDetails = details ?? [:]
             errorDetails["requestID"] = AnyCodable(requestID)
             errorDetails["landID"] = AnyCodable(landID)
-            
+
             let errorPayload = ErrorPayload(code: code, message: message, details: errorDetails)
             let errorResponse = TransportMessage.error(errorPayload)
             let errorData = try codec.encode(errorResponse)
             try await transport.send(errorData, to: .session(sessionID))
-            
+
             logger.debug("📤 Sent join error", metadata: [
                 "requestID": "\(requestID)",
                 "sessionID": "\(sessionID.rawValue)",
@@ -1488,7 +1496,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
         }
     }
-    
+
     /// Send join response to client
     private func sendJoinResponse(
         requestID: String,
@@ -1506,7 +1514,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             )
             let responseData = try codec.encode(response)
             try await transport.send(responseData, to: .session(sessionID))
-            
+
             logger.debug("📤 Sent join response", metadata: [
                 "requestID": "\(requestID)",
                 "sessionID": "\(sessionID.rawValue)",
