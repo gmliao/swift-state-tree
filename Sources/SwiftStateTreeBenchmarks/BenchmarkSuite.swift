@@ -57,8 +57,16 @@ struct BenchmarkSuite: @unchecked Sendable {
             
             print(" ✓")
             
-            let result = await runner.run(config: config, state: state, playerID: playerID)
-            results.append(result)
+            var mutableRunner = runner
+            let result = await mutableRunner.run(config: config, state: state, playerID: playerID)
+            
+            // For TransportAdapterSyncBenchmarkRunner, collect all results from multiple player counts
+            if let syncRunner = mutableRunner as? TransportAdapterSyncBenchmarkRunner {
+                // Use all collected results instead of just the first one
+                results.append(contentsOf: syncRunner.allCollectedResults)
+            } else {
+                results.append(result)
+            }
             
             // For most benchmarks我們輸出詳細表格方便觀察。
             // 但對 TransportAdapter sync 壓力測試來說，runner 內部已經印出

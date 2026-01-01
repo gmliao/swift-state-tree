@@ -7,7 +7,7 @@ import SwiftStateTree
 
 /// Protocol for different benchmark execution strategies
 protocol BenchmarkRunner {
-    func run(
+    mutating func run(
         config: BenchmarkConfig,
         state: BenchmarkStateRootNode,
         playerID: PlayerID
