@@ -1,0 +1,353 @@
+=== System Information ===
+Timestamp: Thu Jan  1 08:20:22 UTC 2026
+
+--- CPU ---
+Model: AMD Ryzen 5 7600X 6-Core Processor
+Cores: 12
+Architecture: x86_64
+
+--- Memory ---
+Total RAM: 15 GB (15865 MB)
+Available RAM: 13 GB (13939 MB)
+
+--- System ---
+OS: Linux
+Kernel: 6.6.87.2-microsoft-standard-WSL2
+Hostname: adcb5cf3c9ce
+
+--- Swift ---
+Swift version 6.0.3 (swift-6.0.3-RELEASE)
+
+--- Build Configuration ---
+Build Mode: RELEASE
+Swift Package: N/A
+
+=== End System Information ===
+
+=== Benchmark started at: Thu Jan  1 08:20:23 UTC 2026 ===
+
+Running suite: TransportSync-Parallel-Low5%
+Building for production...
+[0/2] Write swift-version-24593BA9C3E375BF.txt
+Build of product 'SwiftStateTreeBenchmarks' complete! (1.28s)
+
+╔═══════════════════════════════════════════════════════════════╗
+║                TransportSync-Parallel-Low5%                 ║
+╚═══════════════════════════════════════════════════════════════╝
+
+
+[1/1] Running: Small-5C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 5, Iterations: 50)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 4
+    Average: 0.1668ms
+
+  Testing with 10 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 10
+    Average: 0.2427ms
+
+  Testing with 20 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 20
+    Average: 0.4227ms
+
+  Testing with 30 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 30
+    Average: 0.6596ms
+
+  Testing with 50 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 50
+    Average: 1.2427ms
+
+📄 CSV Output (for analysis):
+-----------------------------------------------------------------
+Name,Players,Cards/Player,PlayerStateFields,Iterations,ExecutionMode,AvgTime(ms),MinTime(ms),MaxTime(ms),Throughput(snapshots/sec),Size(bytes)
+Sync,4,5,8,50,DirtyTracking: Off, Encoding: Default,0.16677429199218746,0.16677429199218746,0.16677429199218746,5996.12798864015,0
+
+═════════════════════════════════════════════════════════════════
+Benchmark completed!
+═════════════════════════════════════════════════════════════════
+
+Running suite: TransportSync-Parallel-Medium20%
+Building for production...
+[0/2] Write swift-version-24593BA9C3E375BF.txt
+Build of product 'SwiftStateTreeBenchmarks' complete! (1.25s)
+
+╔═══════════════════════════════════════════════════════════════╗
+║              TransportSync-Parallel-Medium20%               ║
+╚═══════════════════════════════════════════════════════════════╝
+
+
+[1/2] Running: Small-5C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 5, Iterations: 100)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 4
+    Average: 0.1380ms
+
+  Testing with 10 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 10
+    Average: 0.2527ms
+
+  Testing with 20 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 20
+    Average: 0.4169ms
+
+  Testing with 30 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 30
+    Average: 0.6242ms
+
+  Testing with 50 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 50
+    Average: 1.3265ms
+
+[2/2] Running: Medium-10C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 10, Iterations: 100)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 4
+    Average: 0.1855ms
+
+  Testing with 10 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 10
+    Average: 0.3122ms
+
+  Testing with 20 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 20
+    Average: 0.5818ms
+
+  Testing with 30 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 30
+    Average: 0.7654ms
+
+  Testing with 50 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 50
+    Average: 2.1505ms
+
+📄 CSV Output (for analysis):
+-----------------------------------------------------------------
+Name,Players,Cards/Player,PlayerStateFields,Iterations,ExecutionMode,AvgTime(ms),MinTime(ms),MaxTime(ms),Throughput(snapshots/sec),Size(bytes)
+Sync,4,5,8,100,DirtyTracking: Off, Encoding: Default,0.13804889678955073,0.13804889678955073,0.13804889678955073,7243.810151735254,0
+Sync,4,10,8,100,DirtyTracking: Off, Encoding: Default,0.18552042007446284,0.18552042007446284,0.18552042007446284,5390.242214838815,0
+
+═════════════════════════════════════════════════════════════════
+Benchmark completed!
+═════════════════════════════════════════════════════════════════
+
+Running suite: TransportSync-Parallel-High80%
+Building for production...
+[0/2] Write swift-version-24593BA9C3E375BF.txt
+Build of product 'SwiftStateTreeBenchmarks' complete! (1.23s)
+
+╔═══════════════════════════════════════════════════════════════╗
+║               TransportSync-Parallel-High80%                ║
+╚═══════════════════════════════════════════════════════════════╝
+
+
+[1/2] Running: Small-5C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 5, Iterations: 100)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 4
+    Average: 0.1330ms
+
+  Testing with 10 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 10
+    Average: 0.2263ms
+
+  Testing with 20 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 20
+    Average: 0.4243ms
+
+  Testing with 30 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 30
+    Average: 0.5701ms
+
+  Testing with 50 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 50
+    Average: 1.6562ms
+
+[2/2] Running: Medium-10C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 10, Iterations: 100)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 4
+    Average: 0.2028ms
+
+  Testing with 10 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 10
+    Average: 0.3137ms
+
+  Testing with 20 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 20
+    Average: 0.6063ms
+
+  Testing with 30 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 30
+    Average: 0.9441ms
+
+  Testing with 50 players...
+    [DEBUG] Config: enableParallelEncoding=nil (default), Actual: true, Players: 50
+    Average: 2.8651ms
+
+📄 CSV Output (for analysis):
+-----------------------------------------------------------------
+Name,Players,Cards/Player,PlayerStateFields,Iterations,ExecutionMode,AvgTime(ms),MinTime(ms),MaxTime(ms),Throughput(snapshots/sec),Size(bytes)
+Sync,4,5,8,100,DirtyTracking: Off, Encoding: Default,0.1330230331420898,0.1330230331420898,0.1330230331420898,7517.495101256943,0
+Sync,4,10,8,100,DirtyTracking: Off, Encoding: Default,0.2028033828735351,0.2028033828735351,0.2028033828735351,4930.884218157168,0
+
+═════════════════════════════════════════════════════════════════
+Benchmark completed!
+═════════════════════════════════════════════════════════════════
+
+Running suite: TransportSync-Serial-Low5%
+Building for production...
+[0/2] Write swift-version-24593BA9C3E375BF.txt
+Build of product 'SwiftStateTreeBenchmarks' complete! (1.25s)
+
+╔═══════════════════════════════════════════════════════════════╗
+║                 TransportSync-Serial-Low5%                  ║
+╚═══════════════════════════════════════════════════════════════╝
+
+
+[1/2] Running: Small-5C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 5, Iterations: 50)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    [DEBUG] Config: enableParallelEncoding=false, Actual: false, Players: 4
+    Average: 0.1749ms
+
+  Testing with 10 players...
+    [DEBUG] Config: enableParallelEncoding=false, Actual: false, Players: 10
+    Average: 0.2508ms
+
+  Testing with 20 players...
+    [DEBUG] Config: enableParallelEncoding=false, Actual: false, Players: 20
+    Average: 0.4688ms
+
+  Testing with 30 players...
+    [DEBUG] Config: enableParallelEncoding=false, Actual: false, Players: 30
+    Average: 0.6493ms
+
+  Testing with 50 players...
+    [DEBUG] Config: enableParallelEncoding=false, Actual: false, Players: 50
+    Average: 1.4089ms
+
+[2/2] Running: Medium-10C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 10, Iterations: 50)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    [DEBUG] Config: enableParallelEncoding=false, Actual: false, Players: 4
+    Average: 0.1657ms
+
+  Testing with 10 players...
+    [DEBUG] Config: enableParallelEncoding=false, Actual: false, Players: 10
+    Average: 0.2910ms
+
+  Testing with 20 players...
+    [DEBUG] Config: enableParallelEncoding=false, Actual: false, Players: 20
+    Average: 0.5687ms
+
+  Testing with 30 players...
+    [DEBUG] Config: enableParallelEncoding=false, Actual: false, Players: 30
+    Average: 0.8463ms
+
+  Testing with 50 players...
+    [DEBUG] Config: enableParallelEncoding=false, Actual: false, Players: 50
+    Average: 2.1003ms
+
+📄 CSV Output (for analysis):
+-----------------------------------------------------------------
+Name,Players,Cards/Player,PlayerStateFields,Iterations,ExecutionMode,AvgTime(ms),MinTime(ms),MaxTime(ms),Throughput(snapshots/sec),Size(bytes)
+Sync,4,5,8,50,DirtyTracking: Off, Encoding: Serial,0.17490913391113277,0.17490913391113277,0.17490913391113277,5717.254311647764,0
+Sync,4,10,8,50,DirtyTracking: Off, Encoding: Serial,0.1657252502441406,0.1657252502441406,0.1657252502441406,6034.083511877854,0
+
+═════════════════════════════════════════════════════════════════
+Benchmark completed!
+═════════════════════════════════════════════════════════════════
+
+Running suite: TransportSync-Serial-High80%
+Building for production...
+[0/2] Write swift-version-24593BA9C3E375BF.txt
+Build of product 'SwiftStateTreeBenchmarks' complete! (1.22s)
+
+╔═══════════════════════════════════════════════════════════════╗
+║                TransportSync-Serial-High80%                 ║
+╚═══════════════════════════════════════════════════════════════╝
+
+
+[1/2] Running: Small-5C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 5, Iterations: 50)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    [DEBUG] Config: enableParallelEncoding=false, Actual: false, Players: 4
+    Average: 0.1550ms
+
+  Testing with 10 players...
+    [DEBUG] Config: enableParallelEncoding=false, Actual: false, Players: 10
+    Average: 0.3318ms
+
+  Testing with 20 players...
+    [DEBUG] Config: enableParallelEncoding=false, Actual: false, Players: 20
+    Average: 0.5183ms
+
+  Testing with 30 players...
+    [DEBUG] Config: enableParallelEncoding=false, Actual: false, Players: 30
+    Average: 0.7589ms
+
+  Testing with 50 players...
+    [DEBUG] Config: enableParallelEncoding=false, Actual: false, Players: 50
+    Average: 1.8372ms
+
+[2/2] Running: Medium-10C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 10, Iterations: 50)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    [DEBUG] Config: enableParallelEncoding=false, Actual: false, Players: 4
+    Average: 0.1839ms
+
+  Testing with 10 players...
+    [DEBUG] Config: enableParallelEncoding=false, Actual: false, Players: 10
+    Average: 0.4504ms
+
+  Testing with 20 players...
+    [DEBUG] Config: enableParallelEncoding=false, Actual: false, Players: 20
+    Average: 1.0519ms
+
+  Testing with 30 players...
+    [DEBUG] Config: enableParallelEncoding=false, Actual: false, Players: 30
+    Average: 1.4604ms
+
+  Testing with 50 players...
+    [DEBUG] Config: enableParallelEncoding=false, Actual: false, Players: 50
+    Average: 3.6783ms
+
+📄 CSV Output (for analysis):
+-----------------------------------------------------------------
+Name,Players,Cards/Player,PlayerStateFields,Iterations,ExecutionMode,AvgTime(ms),MinTime(ms),MaxTime(ms),Throughput(snapshots/sec),Size(bytes)
+Sync,4,5,8,50,DirtyTracking: Off, Encoding: Serial,0.15499641418457027,0.15499641418457027,0.15499641418457027,6451.7621601825995,0
+Sync,4,10,8,50,DirtyTracking: Off, Encoding: Serial,0.18392135620117184,0.18392135620117184,0.18392135620117184,5437.106492985009,0
+
+═════════════════════════════════════════════════════════════════
+Benchmark completed!
+═════════════════════════════════════════════════════════════════
+
+=== Benchmark completed at: Thu Jan  1 08:23:29 UTC 2026 ===

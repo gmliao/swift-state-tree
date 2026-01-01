@@ -11,7 +11,7 @@ enum BenchmarkSuiteType: String, CaseIterable {
     case transportAdapterSync = "transport-sync"
     case transportAdapterSyncPlayers = "transport-sync-players"
     case all = "all"
-    
+
     var displayName: String {
         switch self {
         case .singleThreaded: return "Single-threaded Execution"
@@ -22,7 +22,7 @@ enum BenchmarkSuiteType: String, CaseIterable {
         case .all: return "All Suites"
         }
     }
-    
+
     var description: String {
         switch self {
         case .singleThreaded: return "Sequential execution on main thread"
@@ -47,15 +47,21 @@ struct BenchmarkSuiteConfig {
 struct BenchmarkSuites {
     static func all(
         transportDirtyTrackingOverride: Bool? = nil,
-        dirtyRatioOverride: Double? = nil
+        dirtyRatioOverride: Double? = nil,
+        playerCountsOverride: [Int]? = nil
     ) -> [BenchmarkSuiteConfig] {
         // If override provided, clamp to [0, 1] to避免無效值
         let clampedRatio = dirtyRatioOverride.map { max(0.0, min($0, 1.0)) }
-        
+
         // Use override for all tiers if provided; otherwise use各自預設
         let lowRatio = clampedRatio ?? 0.05
         let mediumRatio = clampedRatio ?? 0.20
         let highRatio = clampedRatio ?? 0.80
+
+        // Use player counts override if provided; otherwise use defaults
+        let defaultPlayerCounts = [4, 10, 20, 30, 50]
+        let playerCounts = playerCountsOverride ?? defaultPlayerCounts
+
         return [
             BenchmarkSuiteConfig(
                 type: .singleThreaded,
@@ -83,69 +89,71 @@ struct BenchmarkSuites {
             // - Low  (~5%)   : 少量玩家變更，偏靜態或慢速遊戲
             // - Medium (~20%): 一般即時遊戲（預設比例）
             // - High (~80%) : 極端壓力測試，接近所有玩家每 tick 都在變
+            // Default parallel encoding (nil = auto-detect, which is true for JSON codec)
+            // Explicitly named as Parallel to make encoding mode clear
             BenchmarkSuiteConfig(
                 type: .transportAdapterSync,
-                name: "TransportAdapter Sync (Low Dirty ~5%)",
+                name: "TransportSync-Parallel-Low5%",
                 runner: TransportAdapterSyncBenchmarkRunner(
-                    playerCounts: [4, 10, 20, 30, 50],
+                    playerCounts: playerCounts,  // Test multiple player counts for comprehensive results
                     dirtyPlayerRatio: lowRatio,
-                    enableDirtyTracking: transportDirtyTrackingOverride ?? true
+                    broadcastPlayerRatio: 0.0,
+                    enableDirtyTracking: transportDirtyTrackingOverride ?? true,
+                    enableParallelEncoding: nil  // Use default (auto-detect: true for JSON codec)
                 ),
                 configurations: [
                     BenchmarkConfig(
-                        name: "Small State",
+                        name: "Small-5C",
                         playerCount: 10,
                         cardsPerPlayer: 5,
-                        iterations: 100
-                    ),
-                    BenchmarkConfig(
-                        name: "Medium State",
-                        playerCount: 100,
-                        cardsPerPlayer: 10,
-                        iterations: 100
+                        iterations: 50
                     )
                 ]
             ),
+            // Default parallel encoding (nil = auto-detect, which is true for JSON codec)
             BenchmarkSuiteConfig(
                 type: .transportAdapterSync,
-                name: "TransportAdapter Sync (Medium Dirty ~20%)",
+                name: "TransportSync-Parallel-Medium20%",
                 runner: TransportAdapterSyncBenchmarkRunner(
-                    playerCounts: [4, 10, 20, 30, 50],
+                    playerCounts: playerCounts,
                     dirtyPlayerRatio: mediumRatio,
-                    enableDirtyTracking: transportDirtyTrackingOverride ?? true
+                    enableDirtyTracking: transportDirtyTrackingOverride ?? true,
+                    enableParallelEncoding: nil  // Use default (auto-detect: true for JSON codec)
                 ),
                 configurations: [
                     BenchmarkConfig(
-                        name: "Small State",
+                        name: "Small-5C",
                         playerCount: 10,
                         cardsPerPlayer: 5,
                         iterations: 100
                     ),
                     BenchmarkConfig(
-                        name: "Medium State",
+                        name: "Medium-10C",
                         playerCount: 100,
                         cardsPerPlayer: 10,
                         iterations: 100
                     )
                 ]
             ),
+            // Default parallel encoding (nil = auto-detect, which is true for JSON codec)
             BenchmarkSuiteConfig(
                 type: .transportAdapterSync,
-                name: "TransportAdapter Sync (High Dirty ~80%)",
+                name: "TransportSync-Parallel-High80%",
                 runner: TransportAdapterSyncBenchmarkRunner(
-                    playerCounts: [4, 10, 20, 30, 50],
+                    playerCounts: playerCounts,
                     dirtyPlayerRatio: highRatio,
-                    enableDirtyTracking: transportDirtyTrackingOverride ?? true
+                    enableDirtyTracking: transportDirtyTrackingOverride ?? true,
+                    enableParallelEncoding: nil  // Use default (auto-detect: true for JSON codec)
                 ),
                 configurations: [
                     BenchmarkConfig(
-                        name: "Small State",
+                        name: "Small-5C",
                         playerCount: 10,
                         cardsPerPlayer: 5,
                         iterations: 100
                     ),
                     BenchmarkConfig(
-                        name: "Medium State",
+                        name: "Medium-10C",
                         playerCount: 100,
                         cardsPerPlayer: 10,
                         iterations: 100
@@ -154,72 +162,78 @@ struct BenchmarkSuites {
             ),
             // TransportAdapter Sync benchmarks where broadcast `players` is also mutated every tick.
             // This is closer to real gameplay where public player state changes frequently.
+            // Default parallel encoding (nil = auto-detect, which is true for JSON codec)
             BenchmarkSuiteConfig(
                 type: .transportAdapterSyncPlayers,
-                name: "TransportAdapter Sync (Public Players Hot, Low Hands Dirty ~5%)",
+                name: "TransportSyncPlayers-Hot-Parallel-Low5%",
                 runner: TransportAdapterSyncBenchmarkRunner(
-                    playerCounts: [4, 10, 20, 30, 50],
+                    playerCounts: playerCounts,
                     dirtyPlayerRatio: lowRatio,
                     broadcastPlayerRatio: 1.0,
-                    enableDirtyTracking: transportDirtyTrackingOverride ?? true
+                    enableDirtyTracking: transportDirtyTrackingOverride ?? true,
+                    enableParallelEncoding: nil  // Use default (auto-detect: true for JSON codec)
                 ),
                 configurations: [
                     BenchmarkConfig(
-                        name: "Small State",
+                        name: "Small-5C",
                         playerCount: 10,
                         cardsPerPlayer: 5,
                         iterations: 100
                     ),
                     BenchmarkConfig(
-                        name: "Medium State",
+                        name: "Medium-10C",
                         playerCount: 100,
                         cardsPerPlayer: 10,
                         iterations: 100
                     )
                 ]
             ),
+            // Default parallel encoding (nil = auto-detect, which is true for JSON codec)
             BenchmarkSuiteConfig(
                 type: .transportAdapterSyncPlayers,
-                name: "TransportAdapter Sync (Public Players Hot, Medium Hands Dirty ~20%)",
+                name: "TransportSyncPlayers-Hot-Parallel-Medium20%",
                 runner: TransportAdapterSyncBenchmarkRunner(
-                    playerCounts: [4, 10, 20, 30, 50],
+                    playerCounts: playerCounts,
                     dirtyPlayerRatio: mediumRatio,
                     broadcastPlayerRatio: 1.0,
-                    enableDirtyTracking: transportDirtyTrackingOverride ?? true
+                    enableDirtyTracking: transportDirtyTrackingOverride ?? true,
+                    enableParallelEncoding: nil  // Use default (auto-detect: true for JSON codec)
                 ),
                 configurations: [
                     BenchmarkConfig(
-                        name: "Small State",
+                        name: "Small-5C",
                         playerCount: 10,
                         cardsPerPlayer: 5,
                         iterations: 100
                     ),
                     BenchmarkConfig(
-                        name: "Medium State",
+                        name: "Medium-10C",
                         playerCount: 100,
                         cardsPerPlayer: 10,
                         iterations: 100
                     )
                 ]
             ),
+            // Default parallel encoding (nil = auto-detect, which is true for JSON codec)
             BenchmarkSuiteConfig(
                 type: .transportAdapterSyncPlayers,
-                name: "TransportAdapter Sync (Public Players Hot, High Hands Dirty ~80%)",
+                name: "TransportSyncPlayers-Hot-Parallel-High80%",
                 runner: TransportAdapterSyncBenchmarkRunner(
-                    playerCounts: [4, 10, 20, 30, 50],
+                    playerCounts: playerCounts,
                     dirtyPlayerRatio: highRatio,
                     broadcastPlayerRatio: 1.0,
-                    enableDirtyTracking: transportDirtyTrackingOverride ?? true
+                    enableDirtyTracking: transportDirtyTrackingOverride ?? true,
+                    enableParallelEncoding: nil  // Use default (auto-detect: true for JSON codec)
                 ),
                 configurations: [
                     BenchmarkConfig(
-                        name: "Small State",
+                        name: "Small-5C",
                         playerCount: 10,
                         cardsPerPlayer: 5,
                         iterations: 100
                     ),
                     BenchmarkConfig(
-                        name: "Medium State",
+                        name: "Medium-10C",
                         playerCount: 100,
                         cardsPerPlayer: 10,
                         iterations: 100
@@ -230,9 +244,9 @@ struct BenchmarkSuites {
             // Low activity scenario (少更新情境) - Serial encoding
             BenchmarkSuiteConfig(
                 type: .transportAdapterSync,
-                name: "TransportAdapter Sync - Serial Encoding (Low Activity ~5%)",
+                name: "TransportSync-Serial-Low5%",
                 runner: TransportAdapterSyncBenchmarkRunner(
-                    playerCounts: [10, 20, 30, 50],
+                    playerCounts: playerCounts,
                     dirtyPlayerRatio: lowRatio,
                     broadcastPlayerRatio: 0.0,
                     enableDirtyTracking: transportDirtyTrackingOverride ?? true,
@@ -240,51 +254,28 @@ struct BenchmarkSuites {
                 ),
                 configurations: [
                     BenchmarkConfig(
-                        name: "Small State",
+                        name: "Small-5C",
                         playerCount: 10,
                         cardsPerPlayer: 5,
                         iterations: 50
                     ),
                     BenchmarkConfig(
-                        name: "Medium State",
+                        name: "Medium-10C",
                         playerCount: 50,
                         cardsPerPlayer: 10,
                         iterations: 50
                     )
                 ]
             ),
-            // Low activity scenario - Parallel encoding
-            BenchmarkSuiteConfig(
-                type: .transportAdapterSync,
-                name: "TransportAdapter Sync - Parallel Encoding (Low Activity ~5%)",
-                runner: TransportAdapterSyncBenchmarkRunner(
-                    playerCounts: [10, 20, 30, 50],
-                    dirtyPlayerRatio: lowRatio,
-                    broadcastPlayerRatio: 0.0,
-                    enableDirtyTracking: transportDirtyTrackingOverride ?? true,
-                    enableParallelEncoding: true
-                ),
-                configurations: [
-                    BenchmarkConfig(
-                        name: "Small State",
-                        playerCount: 10,
-                        cardsPerPlayer: 5,
-                        iterations: 50
-                    ),
-                    BenchmarkConfig(
-                        name: "Medium State",
-                        playerCount: 50,
-                        cardsPerPlayer: 10,
-                        iterations: 50
-                    )
-                ]
-            ),
+            // Note: TransportSync-Parallel-Low5% removed because it's identical to TransportSync-Low5%
+            // (nil and true both result in parallel encoding for JSON codec)
+            // We only need Serial vs Parallel comparison, not nil vs true vs false
             // High activity scenario (大量使用者更新情境) - Serial encoding
             BenchmarkSuiteConfig(
                 type: .transportAdapterSync,
-                name: "TransportAdapter Sync - Serial Encoding (High Activity ~80%)",
+                name: "TransportSync-Serial-High80%",
                 runner: TransportAdapterSyncBenchmarkRunner(
-                    playerCounts: [10, 20, 30, 50],
+                    playerCounts: playerCounts,
                     dirtyPlayerRatio: highRatio,
                     broadcastPlayerRatio: 0.0,
                     enableDirtyTracking: transportDirtyTrackingOverride ?? true,
@@ -292,52 +283,29 @@ struct BenchmarkSuites {
                 ),
                 configurations: [
                     BenchmarkConfig(
-                        name: "Small State",
+                        name: "Small-5C",
                         playerCount: 10,
                         cardsPerPlayer: 5,
                         iterations: 50
                     ),
                     BenchmarkConfig(
-                        name: "Medium State",
+                        name: "Medium-10C",
                         playerCount: 50,
                         cardsPerPlayer: 10,
                         iterations: 50
                     )
                 ]
             ),
-            // High activity scenario - Parallel encoding
-            BenchmarkSuiteConfig(
-                type: .transportAdapterSync,
-                name: "TransportAdapter Sync - Parallel Encoding (High Activity ~80%)",
-                runner: TransportAdapterSyncBenchmarkRunner(
-                    playerCounts: [10, 20, 30, 50],
-                    dirtyPlayerRatio: highRatio,
-                    broadcastPlayerRatio: 0.0,
-                    enableDirtyTracking: transportDirtyTrackingOverride ?? true,
-                    enableParallelEncoding: true
-                ),
-                configurations: [
-                    BenchmarkConfig(
-                        name: "Small State",
-                        playerCount: 10,
-                        cardsPerPlayer: 5,
-                        iterations: 50
-                    ),
-                    BenchmarkConfig(
-                        name: "Medium State",
-                        playerCount: 50,
-                        cardsPerPlayer: 10,
-                        iterations: 50
-                    )
-                ]
-            ),
+            // Note: TransportSync-Parallel-High80% removed because it's identical to TransportSync-High80%
+            // (nil and true both result in parallel encoding for JSON codec)
+            // We only need Serial vs Parallel comparison, not nil vs true vs false
             // Encoding mode comparison for transport-sync-players (Public Players Hot)
             // Low activity scenario - Serial encoding
             BenchmarkSuiteConfig(
                 type: .transportAdapterSyncPlayers,
-                name: "TransportAdapter Sync (Players Hot) - Serial Encoding (Low Activity ~5%)",
+                name: "TransportSyncPlayers-Hot-Serial-Low5%",
                 runner: TransportAdapterSyncBenchmarkRunner(
-                    playerCounts: [10, 20, 30, 50],
+                    playerCounts: playerCounts,
                     dirtyPlayerRatio: lowRatio,
                     broadcastPlayerRatio: 1.0,
                     enableDirtyTracking: transportDirtyTrackingOverride ?? true,
@@ -345,51 +313,28 @@ struct BenchmarkSuites {
                 ),
                 configurations: [
                     BenchmarkConfig(
-                        name: "Small State",
+                        name: "Small-5C",
                         playerCount: 10,
                         cardsPerPlayer: 5,
                         iterations: 50
                     ),
                     BenchmarkConfig(
-                        name: "Medium State",
+                        name: "Medium-10C",
                         playerCount: 50,
                         cardsPerPlayer: 10,
                         iterations: 50
                     )
                 ]
             ),
-            // Low activity scenario - Parallel encoding
-            BenchmarkSuiteConfig(
-                type: .transportAdapterSyncPlayers,
-                name: "TransportAdapter Sync (Players Hot) - Parallel Encoding (Low Activity ~5%)",
-                runner: TransportAdapterSyncBenchmarkRunner(
-                    playerCounts: [10, 20, 30, 50],
-                    dirtyPlayerRatio: lowRatio,
-                    broadcastPlayerRatio: 1.0,
-                    enableDirtyTracking: transportDirtyTrackingOverride ?? true,
-                    enableParallelEncoding: true
-                ),
-                configurations: [
-                    BenchmarkConfig(
-                        name: "Small State",
-                        playerCount: 10,
-                        cardsPerPlayer: 5,
-                        iterations: 50
-                    ),
-                    BenchmarkConfig(
-                        name: "Medium State",
-                        playerCount: 50,
-                        cardsPerPlayer: 10,
-                        iterations: 50
-                    )
-                ]
-            ),
+            // Note: TransportSyncPlayers-Hot-Parallel-Low5% (with explicit true) removed because it's identical to TransportSyncPlayers-Hot-Parallel-Low5% above
+            // (nil and true both result in parallel encoding for JSON codec)
+            // We only need Serial vs Parallel comparison, not nil vs true vs false
             // High activity scenario - Serial encoding
             BenchmarkSuiteConfig(
                 type: .transportAdapterSyncPlayers,
-                name: "TransportAdapter Sync (Players Hot) - Serial Encoding (High Activity ~80%)",
+                name: "TransportSyncPlayers-Hot-Serial-High80%",
                 runner: TransportAdapterSyncBenchmarkRunner(
-                    playerCounts: [10, 20, 30, 50],
+                    playerCounts: playerCounts,
                     dirtyPlayerRatio: highRatio,
                     broadcastPlayerRatio: 1.0,
                     enableDirtyTracking: transportDirtyTrackingOverride ?? true,
@@ -397,62 +342,42 @@ struct BenchmarkSuites {
                 ),
                 configurations: [
                     BenchmarkConfig(
-                        name: "Small State",
+                        name: "Small-5C",
                         playerCount: 10,
                         cardsPerPlayer: 5,
                         iterations: 50
                     ),
                     BenchmarkConfig(
-                        name: "Medium State",
-                        playerCount: 50,
-                        cardsPerPlayer: 10,
-                        iterations: 50
-                    )
-                ]
-            ),
-            // High activity scenario - Parallel encoding
-            BenchmarkSuiteConfig(
-                type: .transportAdapterSyncPlayers,
-                name: "TransportAdapter Sync (Players Hot) - Parallel Encoding (High Activity ~80%)",
-                runner: TransportAdapterSyncBenchmarkRunner(
-                    playerCounts: [10, 20, 30, 50],
-                    dirtyPlayerRatio: highRatio,
-                    broadcastPlayerRatio: 1.0,
-                    enableDirtyTracking: transportDirtyTrackingOverride ?? true,
-                    enableParallelEncoding: true
-                ),
-                configurations: [
-                    BenchmarkConfig(
-                        name: "Small State",
-                        playerCount: 10,
-                        cardsPerPlayer: 5,
-                        iterations: 50
-                    ),
-                    BenchmarkConfig(
-                        name: "Medium State",
+                        name: "Medium-10C",
                         playerCount: 50,
                         cardsPerPlayer: 10,
                         iterations: 50
                     )
                 ]
             )
+            // Note: TransportSyncPlayers-Hot-Parallel-High80% (with explicit true) removed because it's identical to TransportSyncPlayers-Hot-Parallel-High80% above
+            // (nil and true both result in parallel encoding for JSON codec)
+            // We only need Serial vs Parallel comparison, not nil vs true vs false
         ]
     }
-    
+
     static func get(
         suiteType: BenchmarkSuiteType,
         transportDirtyTrackingOverride: Bool? = nil,
-        dirtyRatioOverride: Double? = nil
+        dirtyRatioOverride: Double? = nil,
+        playerCountsOverride: [Int]? = nil
     ) -> [BenchmarkSuiteConfig] {
         if suiteType == .all {
             return all(
                 transportDirtyTrackingOverride: transportDirtyTrackingOverride,
-                dirtyRatioOverride: dirtyRatioOverride
+                dirtyRatioOverride: dirtyRatioOverride,
+                playerCountsOverride: playerCountsOverride
             )
         }
         return all(
             transportDirtyTrackingOverride: transportDirtyTrackingOverride,
-            dirtyRatioOverride: dirtyRatioOverride
+            dirtyRatioOverride: dirtyRatioOverride,
+            playerCountsOverride: playerCountsOverride
         ).filter { $0.type == suiteType }
     }
 }

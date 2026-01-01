@@ -20,21 +20,28 @@ struct CommandLineParser {
     let transportDirtyRatioOverride: Double?
     /// Whether to skip the interactive "Press Enter" prompt before running benchmarks.
     let skipWaitForEnter: Bool
-    
+    /// Optional filter to run only a specific suite by name (exact match).
+    let suiteNameFilter: String?
+    /// Optional override for player counts to test (e.g., "4,10,20,30,50").
+    /// If nil, uses each suite's default player counts.
+    let playerCountsOverride: [Int]?
+
     init() {
         let arguments = CommandLine.arguments.dropFirst()
-        
+
         // Default values
         var showHelp = false
         var showCSV = false
         var dirtyOverride: Bool? = nil
         var dirtyRatioOverride: Double? = nil
         var skipWaitForEnter = false
-        
+        var suiteNameFilter: String? = nil
+        var playerCountsOverride: [Int]? = nil
+
         // Parse suite types from arguments (exclude flags)
         var types: [BenchmarkSuiteType] = []
         var invalidArgs: [String] = []
-        
+
         for arg in arguments {
             // Flags that do not consume suite names
             if arg == "--help" || arg == "-h" {
@@ -66,7 +73,31 @@ struct CommandLineParser {
                 }
                 continue
             }
-            
+            if arg.hasPrefix("--suite-name=") {
+                let parts = arg.split(separator: "=", maxSplits: 1)
+                if parts.count == 2 {
+                    suiteNameFilter = String(parts[1])
+                } else {
+                    invalidArgs.append(arg)
+                }
+                continue
+            }
+            if arg.hasPrefix("--player-counts=") {
+                let parts = arg.split(separator: "=", maxSplits: 1)
+                if parts.count == 2 {
+                    let countsString = String(parts[1])
+                    let counts = countsString.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+                    if !counts.isEmpty {
+                        playerCountsOverride = counts
+                    } else {
+                        invalidArgs.append(arg)
+                    }
+                } else {
+                    invalidArgs.append(arg)
+                }
+                continue
+            }
+
             // Suite type argument
             if let suiteType = BenchmarkSuiteType(rawValue: arg.lowercased()) {
                 types.append(suiteType)
@@ -74,7 +105,7 @@ struct CommandLineParser {
                 invalidArgs.append(arg)
             }
         }
-        
+
         // If invalid arguments provided, show error
         if !invalidArgs.isEmpty {
             self.showHelp = false
@@ -85,14 +116,16 @@ struct CommandLineParser {
             self.transportDirtyTrackingOverride = dirtyOverride
             self.transportDirtyRatioOverride = dirtyRatioOverride
             self.skipWaitForEnter = skipWaitForEnter
+            self.suiteNameFilter = suiteNameFilter
+            self.playerCountsOverride = playerCountsOverride
             return
         }
-        
+
         // If no arguments provided, run all
         if types.isEmpty {
             types = [.all]
         }
-        
+
         self.suiteTypes = types
         self.showHelp = showHelp
         self.hasError = false
@@ -101,12 +134,14 @@ struct CommandLineParser {
         self.transportDirtyTrackingOverride = dirtyOverride
         self.transportDirtyRatioOverride = dirtyRatioOverride
         self.skipWaitForEnter = skipWaitForEnter
+        self.suiteNameFilter = suiteNameFilter
+        self.playerCountsOverride = playerCountsOverride
     }
-    
+
     static func printUsage() {
         print("""
         Usage: swift run SwiftStateTreeBenchmarks [suite...]
-        
+
         Available benchmark suites:
           single         - Single-threaded execution
           diff           - Standard vs Optimized diff comparison
@@ -114,23 +149,25 @@ struct CommandLineParser {
           transport-sync - TransportAdapter Sync Performance
           transport-sync-players - TransportAdapter Sync (broadcast players mutated each tick)
           all            - Run all suites (default)
-        
+
         Examples:
           swift run SwiftStateTreeBenchmarks
           swift run SwiftStateTreeBenchmarks single parallel
           swift run SwiftStateTreeBenchmarks diff mirror
           swift run SwiftStateTreeBenchmarks all
-        
+
         Options:
           -h, --help          - Show this help message
           -c, --csv           - Include CSV output in summary
           --dirty-on          - Force enable dirty tracking for TransportAdapter sync benchmarks
           --dirty-off         - Force disable dirty tracking for TransportAdapter sync benchmarks
           --dirty-ratio=VAL   - Override dirty player ratio (0.0–1.0) for TransportAdapter sync benchmarks
+          --suite-name=NAME   - Run only the suite with exact name match (useful for isolated testing)
+          --player-counts=VAL - Override player counts to test (comma-separated, e.g., \"4,10,20,30,50\")
           --no-wait           - Skip \"Press Enter\" prompt (useful for automated scripts)
         """)
     }
-    
+
     func printError() {
         if let errorMessage = errorMessage {
             print("Error: \(errorMessage)")
