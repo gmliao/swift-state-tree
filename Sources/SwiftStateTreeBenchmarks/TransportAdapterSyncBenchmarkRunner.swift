@@ -314,11 +314,6 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
         await keeper.setTransport(adapter)
         await mockTransport.setDelegate(adapter)
 
-        // Log actual encoding mode for debugging
-        let actualEncodingMode = await adapter.isParallelEncodingEnabled()
-        let configValue = enableParallelEncoding?.description ?? "nil (default)"
-        print("    [DEBUG] Config: enableParallelEncoding=\(configValue), Actual: \(actualEncodingMode), Players: \(playerIDs.count)")
-
         // Connect and join all players
         for (index, playerID) in playerIDs.enumerated() {
             let sessionID = SessionID("session-\(index)")
