@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# Fix Windows line endings if present (for Windows Docker compatibility)
+if command -v dos2unix >/dev/null 2>&1; then
+    # Check if file has CRLF line endings
+    if file "$0" 2>/dev/null | grep -q "CRLF"; then
+        dos2unix "$0" 2>/dev/null || true
+    fi
+fi
+
 set -eu
 set -o pipefail
 
@@ -104,7 +112,7 @@ collect_system_info() {
             local total_mem_gb=$((total_mem_bytes / 1024 / 1024 / 1024))
             local total_mem_mb=$((total_mem_bytes / 1024 / 1024))
             echo "Total RAM: ${total_mem_gb} GB (${total_mem_mb} MB)"
-            
+
             # Calculate available memory from vm_stat (approximate)
             # Note: macOS doesn't have a direct "available" metric like Linux
             # We'll use free + inactive memory as an approximation
