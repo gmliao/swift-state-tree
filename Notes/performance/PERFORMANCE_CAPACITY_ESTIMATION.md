@@ -2,6 +2,14 @@
 
 本文件的目標是把「TransportAdapter.syncNow() 的 benchmark 數據」轉成可用的容量估算方式，並把不同情境（dirty ratio / 公開狀態是否每 tick 都在變）分開說清楚。
 
+## TL;DR（可引用結論）
+
+- **推薦估算基準**：AMD / `transport-sync-players` / dirty on / parallel
+- **30 人、Medium State、20Hz**：約 188–231 rooms（**未套 safetyFactor**）
+- **50 人、Medium State、20Hz**：約 91–107 rooms（**未套 safetyFactor**）
+- **10Hz 對應倍增**：30 人約 376–462 rooms，50 人約 182–214 rooms（**未套 safetyFactor**）
+- **safetyFactor 建議**：保守 0.6；一般 0.7
+
 ## 測試環境與測到的是什麼
 
 ### 測試平台對比
@@ -12,6 +20,7 @@
 - **環境**：Linux (WSL2)
 - **Swift 版本**：6.0.3
 - **穩定性**：✅ 數據穩定，適合用於伺服器效能估算
+  - 補充：WSL2 仍可能受 host load 影響；若要最接近 production，建議在 native Linux 或同規格雲端再驗一次
 
 **Apple M2（參考數據）：**
 - **CPU**：8 核心（4P + 4E）
@@ -29,6 +38,7 @@
 
 - **編譯模式**：Release
 - **測量內容**：`TransportAdapter.syncNow()` 的 CPU 時間（含 snapshot/diff/JSON encode + mock transport send）
+- **Payload bytes**：以每次 sync 送出的 encoded `Data.count` 累加計算（總 bytes / iterations，不含 WebSocket/TCP/TLS framing）
 - **不包含**：真實網路（TCP/TLS/WebSocket）、封包排隊、Client 端處理、跨機器延遲
 
 > 結論用法：把這裡的結果當成「server 端同步邏輯的 CPU 基準」，真實環境請用你自己的 state/tick/action 重新跑一次 benchmark 再估算。
@@ -155,47 +165,35 @@ bash Tools/CLI/run-transport-sync-benchmarks.sh
 
 下面列的是 **Medium State（Cards/Player: 10）**，取 **30 人房間** 與 **50 人房間** 的數據。
 
-**格式說明**：表格中顯示 Serial（串行編碼）和 Parallel（平行編碼）兩種模式的時間，括號內為加速比（Parallel 相對 Serial）。
+**格式說明**：表格中顯示 Serial（串行編碼）和 Parallel（平行編碼）兩種模式的時間，括號內為加速比（Serial / Parallel；< 1.0 表示 Parallel 較慢）。
 
 ### 情境 A：`transport-sync`（players 通常不變）
 
 #### Dirty Tracking ON（AMD 數據）
 
-| Dirty Ratio | 30 人（Parallel） | 30 人（Serial） | 50 人（Parallel） | 50 人（Serial） |
-| --- | ---: | ---: | ---: | ---: |
-| Low ~5% | 0.8205ms | 0.7455ms | 1.2597ms | 1.3582ms |
-| Medium ~20% | 0.7402ms | 0.7236ms | 1.3132ms | 1.7207ms |
-| High ~80% | 0.6388ms | 0.8807ms (0.73x) | 1.6941ms | 1.8305ms |
-
-**Medium State (10 Cards/Player) 數據：**
+**Medium State (10 Cards/Player, Serial/Parallel 比較，50 iterations)：**
 
 | Dirty Ratio | 30 人（Parallel） | 30 人（Serial） | 50 人（Parallel） | 50 人（Serial） |
 | --- | ---: | ---: | ---: | ---: |
-| Low ~5% | 0.6984ms | 0.7236ms | 2.3680ms | 1.7207ms |
-| Medium ~20% | 0.6984ms | 0.7236ms | 2.3680ms | 1.7207ms |
-| High ~80% | 1.0116ms | 1.9176ms (0.53x) | 2.7672ms | 3.1291ms (0.88x) |
+| Low ~5% | 0.6984ms (1.04x) | 0.7236ms | 2.3680ms (0.73x) | 1.7207ms |
+| Medium ~20% | 0.6984ms (1.04x) | 0.7236ms | 2.3680ms (0.73x) | 1.7207ms |
+| High ~80% | 1.0116ms (1.90x) | 1.9176ms | 2.7672ms (1.13x) | 3.1291ms |
 
 #### Dirty Tracking OFF（AMD 數據）
 
-| Dirty Ratio | 30 人（Parallel） | 30 人（Serial） | 50 人（Parallel） | 50 人（Serial） |
-| --- | ---: | ---: | ---: | ---: |
-| Low ~5% | 0.6251ms | 0.6401ms | 1.4086ms | 1.4003ms |
-| Medium ~20% | 0.5704ms | 0.7048ms | 1.3578ms | 1.9287ms |
-| High ~80% | 0.5604ms | 0.7413ms | 1.5077ms | 1.8596ms |
-
-**Medium State (10 Cards/Player) 數據：**
+**Medium State (10 Cards/Player, Serial/Parallel 比較，50 iterations)：**
 
 | Dirty Ratio | 30 人（Parallel） | 30 人（Serial） | 50 人（Parallel） | 50 人（Serial） |
 | --- | ---: | ---: | ---: | ---: |
-| Low ~5% | 0.7263ms | 0.7048ms | 2.2472ms | 1.9287ms |
-| Medium ~20% | 0.7263ms | 0.7048ms | 2.2472ms | 1.9287ms |
-| High ~80% | 0.9562ms | 1.7223ms (0.56x) | 2.7294ms | 4.1331ms (0.66x) |
+| Low ~5% | 0.7263ms (0.97x) | 0.7048ms | 2.2472ms (0.86x) | 1.9287ms |
+| Medium ~20% | 0.7263ms (0.97x) | 0.7048ms | 2.2472ms (0.86x) | 1.9287ms |
+| High ~80% | 0.9562ms (1.80x) | 1.7223ms | 2.7294ms (1.51x) | 4.1331ms |
 
 ### 情境 B：`transport-sync-players`（公開 players 也會變）
 
 #### Dirty Tracking ON（AMD 數據）
 
-**默認模式（平行編碼，100 iterations）：**
+**默認模式（平行編碼，Medium State 10 Cards/Player，100 iterations）：**
 
 | Dirty Ratio | 30 人（Parallel） | 50 人（Parallel） |
 | --- | ---: | ---: |
@@ -203,13 +201,13 @@ bash Tools/CLI/run-transport-sync-benchmarks.sh
 | Medium hands ~20% | 0.6394ms | 1.5295ms |
 | High hands ~80% | 0.6184ms | 1.7359ms |
 
-**Medium State (10 Cards/Player) 數據：**
+**Medium State (10 Cards/Player, Serial/Parallel 比較，50 iterations)：**
 
 | Dirty Ratio | 30 人（Parallel） | 30 人（Serial） | 50 人（Parallel） | 50 人（Serial） |
 | --- | ---: | ---: | ---: | ---: |
-| Low hands ~5% | 1.3832ms | 2.4266ms (0.57x) | 2.9873ms | 6.2702ms (0.48x) |
+| Low hands ~5% | 1.3832ms (1.75x) | 2.4266ms | 2.9873ms (2.10x) | 6.2702ms |
 | Medium hands ~20% | 1.4389ms | - | 3.1692ms | - |
-| High hands ~80% | 1.6986ms | 2.4378ms (0.70x) | 3.5335ms | 9.2571ms (0.38x) |
+| High hands ~80% | 1.6986ms (1.44x) | 2.4378ms | 3.5335ms (2.62x) | 9.2571ms |
 
 **編碼比較測試（50 iterations，獨立 process）：**
 
@@ -224,26 +222,19 @@ bash Tools/CLI/run-transport-sync-benchmarks.sh
 > - **建議使用 AMD 數據進行伺服器容量估算**，因為數據更穩定可靠
 
 #### Dirty Tracking OFF（AMD 數據）
+**Medium State (10 Cards/Player, Serial/Parallel 比較，50 iterations)：**
 
 | Dirty Ratio | 30 人（Parallel） | 30 人（Serial） | 50 人（Parallel） | 50 人（Serial） |
 | --- | ---: | ---: | ---: | ---: |
-| Low hands ~5% | 0.5878ms | 1.3973ms (0.42x) | 1.5373ms | 5.3945ms (0.29x) |
-| Medium hands ~20% | 0.6194ms | - | 1.3804ms | - |
-| High hands ~80% | 0.6626ms | 3.1997ms (0.21x) | 1.7311ms | 7.0157ms (0.25x) |
-
-**Medium State (10 Cards/Player) 數據：**
-
-| Dirty Ratio | 30 人（Parallel） | 30 人（Serial） | 50 人（Parallel） | 50 人（Serial） |
-| --- | ---: | ---: | ---: | ---: |
-| Low hands ~5% | 1.3386ms | 2.1799ms (0.61x) | 3.2104ms | 6.3645ms (0.50x) |
+| Low hands ~5% | 1.3386ms (1.63x) | 2.1799ms | 3.2104ms (1.98x) | 6.3645ms |
 | Medium hands ~20% | 1.3931ms | - | 2.9662ms | - |
-| High hands ~80% | 1.7187ms | 2.4550ms (0.70x) | 3.5143ms | 7.4051ms (0.47x) |
+| High hands ~80% | 1.7187ms (1.43x) | 2.4550ms | 3.5143ms (2.11x) | 7.4051ms |
 
 > **解讀**：
 > - 當 `players` 也變動時（情境 B），sync 成本會明顯上升
 > - 平行編碼在 **dirty off** 情境下效果特別明顯（可達 2-5x 提升）
 > - Dirty tracking 在 Medium/High 變動情境下仍有優勢
-> - 括號內數字為平行編碼相對串行編碼的加速比（< 1.0 表示平行更快）
+> - 括號內數字為 Serial / Parallel（> 1.0 表示 Parallel 更快）
 
 ## Mac vs AMD 平台對比
 
@@ -358,24 +349,26 @@ bash Tools/CLI/run-transport-sync-benchmarks.sh
 | --- | ---: | ---: | ---: | ---: |
 | Low ~5% | 1.2226ms | 1.3267ms | 1.9379ms | 2.1126ms |
 | Medium ~20% | 1.1150ms | 1.0707ms | 2.4647ms | 2.2932ms |
-| High ~80% | 1.3409ms | 1.9245ms (0.70x) | 3.1123ms | 3.6702ms (0.85x) |
+| High ~80% | 1.3409ms (1.44x) | 1.9245ms | 3.1123ms (1.18x) | 3.6702ms |
 
 **情境 B：`transport-sync-players`（Medium State, 10 Cards/Player）**
 
 | Dirty Ratio | 30 人（Parallel） | 30 人（Serial） | 50 人（Parallel） | 50 人（Serial） |
 | --- | ---: | ---: | ---: | ---: |
-| Low hands ~5% | 1.9364ms | 2.7638ms (0.70x) | 3.5946ms | 5.8860ms (0.61x) |
+| Low hands ~5% | 1.9364ms (1.43x) | 2.7638ms | 3.5946ms (1.64x) | 5.8860ms |
 | Medium hands ~20% | 2.1873ms | - | 3.8984ms | - |
-| High hands ~80% | 2.3551ms | 3.1783ms (0.74x) | 4.3293ms | 7.7528ms (0.56x) |
+| High hands ~80% | 2.3551ms (1.35x) | 3.1783ms | 4.3293ms (1.79x) | 7.7528ms |
 
 ## 容量估算方式（基於 AMD 數據）
 
 ### 基本變數
 
 - `syncMs`：benchmark 的 `syncNow()` 平均時間（毫秒）
-- `tickHz`：每秒同步次數（例如 20Hz = 50ms/tick）
+- `tickHz`：每秒同步次數（例如 20Hz = 50ms/tick；事件驅動可用「每秒平均同步次數」替代）
 - `overheadFactor`：除 sync 以外的 server 開銷比例（遊戲邏輯、action/event、排程、logging、真實 I/O…）
   - 例如 `0.5` 代表其他開銷約等於 sync 的 50%
+- `safetyFactor`：安全係數，用於吸收未知成本（網路堆疊、GC/allocator 波動、監控、log、尖峰）
+  - 建議值：保守 `0.6`；一般 `0.7`
 - `cpuBudgetMsPerSec`：CPU 每秒可用時間
   - **12 核心（AMD）** × 1000ms × 0.8 ≈ **9600ms/秒**
   - **8 核心（Mac）** × 1000ms × 0.8 ≈ **6400ms/秒**
@@ -384,7 +377,7 @@ bash Tools/CLI/run-transport-sync-benchmarks.sh
 
 ```
 roomCpuPerSec = syncMs * (1 + overheadFactor) * tickHz
-rooms = cpuBudgetMsPerSec / roomCpuPerSec
+rooms = cpuBudgetMsPerSec / roomCpuPerSec * safetyFactor
 ```
 
 ### 用情境 B（公開 players 也會變）做 30 人房間示例（AMD 數據）
@@ -395,7 +388,7 @@ rooms = cpuBudgetMsPerSec / roomCpuPerSec
 - Medium hands ~20%：`syncMs = 1.4389`
 - High hands ~80%：`syncMs = 1.6986`
 
-假設 `overheadFactor = 0.5`，使用 **AMD 12 核心**數據：
+假設 `overheadFactor = 0.5`、`safetyFactor = 1.0`（先不折減），使用 **AMD 12 核心**數據：
 
 - **20Hz（50ms/tick）**
   - Low hands ~5%：`rooms ≈ 9600 / (1.3832 * 1.5 * 20) ≈ 231`
@@ -414,7 +407,7 @@ rooms = cpuBudgetMsPerSec / roomCpuPerSec
 - Medium hands ~20%：`syncMs = 3.1692`
 - High hands ~80%：`syncMs = 3.5335`
 
-假設 `overheadFactor = 0.5`，使用 **AMD 12 核心**數據：
+假設 `overheadFactor = 0.5`、`safetyFactor = 1.0`（先不折減），使用 **AMD 12 核心**數據：
 
 - **20Hz（50ms/tick）**
   - Low hands ~5%：`rooms ≈ 9600 / (2.9873 * 1.5 * 20) ≈ 107`
@@ -445,6 +438,14 @@ rooms = cpuBudgetMsPerSec / roomCpuPerSec
    - 如果使用 Mac 進行測試，建議拆開運行不同的測試套件，避免連續運行導致熱節流
 
 5. **下一個瓶頸通常是 O(players) per-player diff**：目前只知道「hands 欄位 dirty」，不知道「哪些 PlayerID 的 hands 改了」，所以玩家數大時仍會線性成長；要再往下壓，需要 key-level dirty（例如 `ReactiveDictionary.dirtyKeys`）或回傳受影響 PlayerIDs。
+
+## 下一步（頻寬口徑補齊）
+
+1. **Payload bytes 已可量到**：benchmark 會統計每次 sync 送出的 encoded bytes（總和 / iterations），但仍不含 WebSocket/TCP/TLS framing。
+2. **補兩組傳輸口徑**：
+   - mock transport send（純 CPU + encode）
+   - loopback WebSocket send（含協議與系統 call）
+3. **這樣可同時估**：CPU 上限 + 頻寬上限（與 Colyseus/Photon 比較口徑一致）
 
 ## Git 變更記錄
 

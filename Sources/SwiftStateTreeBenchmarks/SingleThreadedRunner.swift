@@ -18,7 +18,7 @@ import SwiftStateTree
 /// This benchmark provides baseline snapshot generation performance but does not
 /// reflect the complete sync workflow used in production.
 struct SingleThreadedRunner: BenchmarkRunner {
-    func run(
+    mutating func run(
         config: BenchmarkConfig,
         state: BenchmarkStateRootNode,
         playerID: PlayerID

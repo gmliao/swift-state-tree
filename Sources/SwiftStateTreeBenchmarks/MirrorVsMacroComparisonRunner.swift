@@ -20,7 +20,7 @@ struct MirrorVsMacroComparisonRunner: BenchmarkRunner {
         self.iterations = iterations
     }
     
-    func run(
+    mutating func run(
         config: BenchmarkConfig,
         state: BenchmarkStateRootNode,
         playerID: PlayerID

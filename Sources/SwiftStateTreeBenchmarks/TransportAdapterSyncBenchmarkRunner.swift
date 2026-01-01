@@ -59,6 +59,9 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
 
     /// Explicitly set parallel encoding mode (nil = use default based on codec)
     let enableParallelEncoding: Bool?
+    
+    /// Store all results for multi-player-count benchmarks
+    var allCollectedResults: [BenchmarkResult] = []
 
     init(
         playerCounts: [Int] = [4, 10, 20, 30, 50],
@@ -76,7 +79,7 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
         self.enableParallelEncoding = enableParallelEncoding
     }
 
-    func run(
+    mutating func run(
         config: BenchmarkConfig,
         state: BenchmarkStateRootNode,
         playerID: PlayerID
@@ -93,6 +96,7 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
         print("  ===========================================")
         }
 
+        allCollectedResults = []  // Reset for this run
         var allResults: [BenchmarkResult] = []
 
         for playerCount in playerCounts {
@@ -175,6 +179,8 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
 
                 print("    Serial:   \(String(format: "%.4f", serialMs))ms")
                 print("    Parallel: \(String(format: "%.4f", parallelMs))ms")
+                print("    Serial payload:   \(serialResult.snapshotSize) bytes")
+                print("    Parallel payload: \(parallelResult.snapshotSize) bytes")
                 print("    Speedup:  \(String(format: "%.2fx", speedup))")
 
                 // Use parallel result as the main result (it's the default mode)
@@ -189,13 +195,17 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
             )
 
             print("    Average: \(String(format: "%.4f", result.averageTime * 1000))ms")
+            print("    Payload: \(result.snapshotSize) bytes")
 
             allResults.append(result)
             }
         }
 
+        // Store all results for access by BenchmarkSuite
+        allCollectedResults = allResults
+        
         // Return the first result as the protocol requires
-        // (The summary will show all results)
+        // (The summary will show all results via allCollectedResults)
         return allResults.first ?? BenchmarkResult(
             config: config,
             averageTime: 0,
@@ -289,8 +299,8 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
             useColors: false
         )
 
-        // Create mock transport (using WebSocketTransport as base, but we'll track messages)
-        let mockTransport = WebSocketTransport(logger: benchmarkLogger)
+        // Create mock transport that counts encoded payload bytes.
+        let mockTransport = CountingTransport()
 
         // Create keeper and adapter with high log level
         let keeper = LandKeeper(
@@ -350,6 +360,8 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
         // This wait happens BEFORE measurement starts, so it's not included in the timing
         try? await Task.sleep(for: .milliseconds(2))
 
+        await mockTransport.resetCounts()
+
         #if canImport(Foundation)
         let startTime = Date().timeIntervalSince1970
         #else
@@ -390,6 +402,8 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
         let actualSyncTime = totalTime - sleepTime
         let averageTime = actualSyncTime / Double(iterations)
         let throughput = Double(iterations) / actualSyncTime
+        let sendCounts = await mockTransport.snapshotCounts()
+        let bytesPerSync = iterations > 0 ? Double(sendCounts.bytes) / Double(iterations) : 0.0
 
         // Build mode label
         var modeLabel = enableDirtyTracking ? "DirtyTracking: On" : "DirtyTracking: Off"
@@ -409,10 +423,9 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
             averageTime: averageTime,
             minTime: averageTime,
             maxTime: averageTime,
-            snapshotSize: 0,
+            snapshotSize: Int(bytesPerSync.rounded()),
             throughput: throughput,
             executionMode: modeLabel
         )
     }
 }
-

@@ -53,7 +53,27 @@ struct BenchmarkResult {
     }
     
     var csvRow: String {
-        "\(config.name),\(config.playerCount),\(config.cardsPerPlayer),8,\(config.iterations),\(executionMode),\(averageTime * 1000),\(minTime * 1000),\(maxTime * 1000),\(throughput),\(snapshotSize)"
+        let avgTimeMs = String(format: "%.4f", averageTime * 1000)
+        let minTimeMs = String(format: "%.4f", minTime * 1000)
+        let maxTimeMs = String(format: "%.4f", maxTime * 1000)
+        let throughputStr = String(format: "%.2f", throughput)
+        return "\(config.name),\(config.playerCount),\(config.cardsPerPlayer),8,\(config.iterations),\(executionMode),\(avgTimeMs),\(minTimeMs),\(maxTimeMs),\(throughputStr),\(snapshotSize)"
+    }
+    
+    /// Formatted values for table display
+    var tableValues: (name: String, players: String, cards: String, iterations: String, mode: String, avgTime: String, minTime: String, maxTime: String, throughput: String, size: String) {
+        (
+            name: config.name,
+            players: "\(config.playerCount)",
+            cards: "\(config.cardsPerPlayer)",
+            iterations: "\(config.iterations)",
+            mode: executionMode,
+            avgTime: String(format: "%.4f", averageTime * 1000),
+            minTime: String(format: "%.4f", minTime * 1000),
+            maxTime: String(format: "%.4f", maxTime * 1000),
+            throughput: String(format: "%.2f", throughput),
+            size: "\(snapshotSize)"
+        )
     }
 }
 

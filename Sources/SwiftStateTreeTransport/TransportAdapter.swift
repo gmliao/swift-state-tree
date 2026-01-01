@@ -6,7 +6,7 @@ import Logging
 public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     private let keeper: LandKeeper<State>
-    private let transport: WebSocketTransport
+    private let transport: any Transport
     private let landID: String
     private let codec: any TransportCodec
     private var syncEngine = SyncEngine()
@@ -63,7 +63,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     public init(
         keeper: LandKeeper<State>,
-        transport: WebSocketTransport,
+        transport: any Transport,
         landID: String,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         onLandDestroyed: (@Sendable () async -> Void)? = nil,
@@ -185,8 +185,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             sessionToAuthInfo[sessionID] = authInfo
         }
 
-        // Register with transport for player-based targeting
-        await transport.registerSession(sessionID, for: playerID)
+        // Register with transport for player-based targeting (if supported)
+        if let webSocketTransport = transport as? WebSocketTransport {
+            await webSocketTransport.registerSession(sessionID, for: playerID)
+        }
 
         logger.info("Session registered via Router: session=\(sessionID.rawValue), player=\(playerID.rawValue)")
     }

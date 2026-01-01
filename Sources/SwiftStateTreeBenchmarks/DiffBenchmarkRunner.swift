@@ -28,7 +28,7 @@ struct DiffBenchmarkRunner: BenchmarkRunner {
         }
     }
     
-    func run(
+    mutating func run(
         config: BenchmarkConfig,
         state: BenchmarkStateRootNode,
         playerID: PlayerID
