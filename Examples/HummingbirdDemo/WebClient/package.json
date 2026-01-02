@@ -4,7 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "predev": "npm run build --prefix ../../../sdk/ts",
     "dev": "vite",
+    "prebuild": "npm run build --prefix ../../../sdk/ts",
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview",
     "codegen": "rm -rf ./src/generated && node ../../../sdk/ts/dist/cli.js codegen --input ../schema.json --output ./src/generated --framework vue --test-framework vitest",

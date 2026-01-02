@@ -1,53 +1,36 @@
 /**
  * Tests for HomeView component
  * 
- * These tests demonstrate:
- * 1. How easy it is to test connection logic
- * 2. How the architecture separates concerns (connection vs game)
- * 3. Auto-redirect functionality
+ * These tests verify:
+ * 1. The demo selection UI is displayed correctly
+ * 2. Room ID input functionality
+ * 3. Navigation to demo pages when clicking demo cards
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from '../../views/HomeView.vue'
-import { createMockCookie } from '../../generated/cookie/testHelpers'
-
-// Mock useCookie - demonstrates easy mocking
-vi.mock('../../generated/cookie/useCookie', async () => {
-  const actual = await vi.importActual('../../generated/cookie/useCookie')
-  return {
-    ...actual,
-    useCookie: vi.fn()
-  }
-})
 
 describe('HomeView', () => {
+  const mockPush = vi.fn().mockResolvedValue(undefined)
   const router = createRouter({
     history: createWebHistory(),
     routes: [
       { path: '/', name: 'home', component: HomeView },
-      { path: '/cookie', name: 'cookie-game', component: { template: '<div>Game</div>' } }
+      { path: '/counter', name: 'counter', component: { template: '<div>Counter</div>' } },
+      { path: '/cookie', name: 'cookie-game', component: { template: '<div>Cookie</div>' } }
     ]
   })
+  
+  // Mock router.push
+  router.push = mockPush
 
-  beforeEach(async () => {
+  beforeEach(() => {
     vi.clearAllMocks()
-    // Reset the mock implementation before each test
-    const { useCookie } = await import('../../generated/cookie/useCookie')
-    vi.mocked(useCookie).mockReset()
   })
 
-  it('displays connection form when not connected', async () => {
-    // Arrange: Use codegen-generated helper to create proper Vue refs
-    const mockComposable = createMockCookie()
-    mockComposable.isConnected.value = false
-    mockComposable.isJoined.value = false
-    mockComposable.state.value = null
-    
-    const { useDemoGame } = await import('../../generated/demo-game/useDemoGame')
-    vi.mocked(useCookie).mockReturnValue(mockComposable)
-
+  it('displays the demo selection page', async () => {
     // Act
     const wrapper = mount(HomeView, {
       global: {
@@ -56,97 +39,102 @@ describe('HomeView', () => {
     })
 
     // Assert
-    expect(wrapper.text()).toContain('Connect to Game')
-    expect(wrapper.find('input[placeholder="WebSocket URL"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('SwiftStateTree Demos')
+    expect(wrapper.text()).toContain('Counter Demo')
+    expect(wrapper.text()).toContain('Cookie Clicker')
+    expect(wrapper.find('input#roomId').exists()).toBe(true)
   })
 
-  it('has connect button that can be clicked', async () => {
-    // Arrange: Use codegen-generated helper
-    const mockComposable = createMockCookie()
-    mockComposable.isConnected.value = false
-    mockComposable.isJoined.value = false
-    mockComposable.state.value = null
-    const mockConnect = vi.fn().mockResolvedValue(undefined)
-    mockComposable.connect = mockConnect
-    
-    const { useDemoGame } = await import('../../generated/demo-game/useDemoGame')
-    vi.mocked(useCookie).mockReturnValue(mockComposable)
-
+  it('displays room ID input with default value', async () => {
+    // Act
     const wrapper = mount(HomeView, {
       global: {
         plugins: [router]
       }
     })
 
-    // Wait for component to be fully mounted
     await wrapper.vm.$nextTick()
 
-    // Act: Find the connect button
-    const connectButton = wrapper.find('button.btn-primary')
-    
-    // Assert: Button exists and is clickable
-    expect(connectButton.exists()).toBe(true)
-    expect(connectButton.text()).toContain('Connect')
-    
-    // Verify button is not disabled when not connected
-    const disabled = connectButton.attributes('disabled')
-    expect(disabled === undefined || disabled === '').toBe(true)
-    
-    // Click the button (this demonstrates the UI interaction)
-    await connectButton.trigger('click')
-    await wrapper.vm.$nextTick()
-    
-    // Note: We're testing the UI behavior, not the actual connect call
-    // The actual connect functionality is tested in integration tests
+    // Assert
+    const roomInput = wrapper.find('input#roomId')
+    expect(roomInput.exists()).toBe(true)
+    expect((roomInput.element as HTMLInputElement).value).toBe('default')
   })
 
-  it('automatically redirects to game page when joined', async () => {
-    // Arrange: Use codegen-generated helper
-    const mockComposable = createMockCookie()
-    mockComposable.isConnected.value = true
-    mockComposable.isJoined.value = false // Start as not joined
-    mockComposable.state.value = null
-    
-    const mockPush = vi.fn().mockResolvedValue(undefined)
-    router.push = mockPush
-    
-    const { useDemoGame } = await import('../../generated/demo-game/useDemoGame')
-    vi.mocked(useCookie).mockReturnValue(mockComposable)
-
+  it('navigates to counter demo when counter card is clicked', async () => {
+    // Act
     const wrapper = mount(HomeView, {
       global: {
         plugins: [router]
       }
     })
 
-    // Wait for component to be fully mounted and watch to be set up
     await wrapper.vm.$nextTick()
-    await new Promise(resolve => setTimeout(resolve, 50))
 
-    // Act: Simulate join by setting isJoined to true
-    // This triggers the watch in HomeView which should redirect
-    mockComposable.isJoined.value = true
+    const counterCard = wrapper.find('.demo-card')
+    await counterCard.trigger('click')
     await wrapper.vm.$nextTick()
-    
-    // Wait for Vue's watch to trigger and router navigation
-    await new Promise(resolve => setTimeout(resolve, 200))
 
-    // Assert: Should redirect to game page
-    // This demonstrates the auto-redirect feature
-    expect(mockPush).toHaveBeenCalledWith({ name: 'cookie-game' })
+    // Assert
+    expect(mockPush).toHaveBeenCalledWith({
+      name: 'counter',
+      query: { roomId: 'default' }
+    })
   })
 
-  it('displays error message when connection fails', async () => {
-    // Arrange: Use codegen-generated helper
-    const mockComposable = createMockCookie()
-    mockComposable.isConnected.value = false
-    mockComposable.isJoined.value = false
-    mockComposable.lastError.value = 'Connection failed'
-    mockComposable.state.value = null
-    
-    const { useDemoGame } = await import('../../generated/demo-game/useDemoGame')
-    vi.mocked(useCookie).mockReturnValue(mockComposable)
+  it('navigates to cookie demo when cookie card is clicked', async () => {
+    // Act
+    const wrapper = mount(HomeView, {
+      global: {
+        plugins: [router]
+      }
+    })
 
+    await wrapper.vm.$nextTick()
+
+    const demoCards = wrapper.findAll('.demo-card')
+    expect(demoCards.length).toBeGreaterThanOrEqual(2)
+    const cookieCard = demoCards[1]
+    if (!cookieCard || !cookieCard.exists()) {
+      throw new Error('Cookie card not found')
+    }
+    await cookieCard.trigger('click')
+    await wrapper.vm.$nextTick()
+
+    // Assert
+    expect(mockPush).toHaveBeenCalledWith({
+      name: 'cookie-game',
+      query: { roomId: 'default' }
+    })
+  })
+
+  it('uses empty query when room ID is empty', async () => {
+    // Act
+    const wrapper = mount(HomeView, {
+      global: {
+        plugins: [router]
+      }
+    })
+
+    await wrapper.vm.$nextTick()
+
+    // Set room ID to empty
+    const roomInput = wrapper.find('input#roomId')
+    await roomInput.setValue('')
+    await wrapper.vm.$nextTick()
+
+    const counterCard = wrapper.find('.demo-card')
+    await counterCard.trigger('click')
+    await wrapper.vm.$nextTick()
+
+    // Assert
+    expect(mockPush).toHaveBeenCalledWith({
+      name: 'counter',
+      query: {}
+    })
+  })
+
+  it('displays demo cards with correct content', async () => {
     // Act
     const wrapper = mount(HomeView, {
       global: {
@@ -155,7 +143,26 @@ describe('HomeView', () => {
     })
 
     // Assert
-    expect(wrapper.text()).toContain('Connection failed')
+    const demoCards = wrapper.findAll('.demo-card')
+    expect(demoCards.length).toBe(2)
+
+    // Check Counter Demo card
+    const counterCard = demoCards[0]
+    if (!counterCard || !counterCard.exists()) {
+      throw new Error('Counter card not found')
+    }
+    expect(counterCard.text()).toContain('Counter Demo')
+    expect(counterCard.text()).toContain('Try Counter Demo')
+    expect(counterCard.text()).toContain('Perfect for understanding the basics!')
+
+    // Check Cookie Clicker card
+    const cookieCard = demoCards[1]
+    if (!cookieCard || !cookieCard.exists()) {
+      throw new Error('Cookie card not found')
+    }
+    expect(cookieCard.text()).toContain('Cookie Clicker')
+    expect(cookieCard.text()).toContain('Try Cookie Clicker')
+    expect(cookieCard.text()).toContain('Advanced example with multiple features')
   })
 })
 
