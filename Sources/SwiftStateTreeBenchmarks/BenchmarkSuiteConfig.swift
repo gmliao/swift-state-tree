@@ -10,6 +10,7 @@ enum BenchmarkSuiteType: String, CaseIterable {
     case mirrorVsMacro = "mirror"
     case transportAdapterSync = "transport-sync"
     case transportAdapterSyncPlayers = "transport-sync-players"
+    case transportAdapterConcurrentStability = "transport-concurrent-stability"
     case all = "all"
 
     var displayName: String {
@@ -19,6 +20,7 @@ enum BenchmarkSuiteType: String, CaseIterable {
         case .mirrorVsMacro: return "Mirror vs Macro Performance Comparison"
         case .transportAdapterSync: return "TransportAdapter Sync Performance"
         case .transportAdapterSyncPlayers: return "TransportAdapter Sync Performance (Broadcast Players)"
+        case .transportAdapterConcurrentStability: return "TransportAdapter Concurrent Sync Stability"
         case .all: return "All Suites"
         }
     }
@@ -30,6 +32,7 @@ enum BenchmarkSuiteType: String, CaseIterable {
         case .mirrorVsMacro: return "Compare Mirror-based vs Macro-generated code"
         case .transportAdapterSync: return "TransportAdapter sync performance benchmark"
         case .transportAdapterSyncPlayers: return "TransportAdapter sync benchmark with broadcast players mutated each tick"
+        case .transportAdapterConcurrentStability: return "TransportAdapter concurrent sync stability and correctness test"
         case .all: return "Run all benchmark suites"
         }
     }
@@ -256,13 +259,13 @@ struct BenchmarkSuites {
                         name: "Small-5C",
                         playerCount: 10,
                         cardsPerPlayer: 5,
-                        iterations: 50
+                        iterations: 100
                     ),
                     BenchmarkConfig(
                         name: "Medium-10C",
                         playerCount: 50,
                         cardsPerPlayer: 10,
-                        iterations: 50
+                        iterations: 100
                     )
                 ]
             ),
@@ -285,13 +288,13 @@ struct BenchmarkSuites {
                         name: "Small-5C",
                         playerCount: 10,
                         cardsPerPlayer: 5,
-                        iterations: 50
+                        iterations: 100
                     ),
                     BenchmarkConfig(
                         name: "Medium-10C",
                         playerCount: 50,
                         cardsPerPlayer: 10,
-                        iterations: 50
+                        iterations: 100
                     )
                 ]
             ),
@@ -315,13 +318,13 @@ struct BenchmarkSuites {
                         name: "Small-5C",
                         playerCount: 10,
                         cardsPerPlayer: 5,
-                        iterations: 50
+                        iterations: 100
                     ),
                     BenchmarkConfig(
                         name: "Medium-10C",
                         playerCount: 50,
                         cardsPerPlayer: 10,
-                        iterations: 50
+                        iterations: 100
                     )
                 ]
             ),
@@ -344,19 +347,89 @@ struct BenchmarkSuites {
                         name: "Small-5C",
                         playerCount: 10,
                         cardsPerPlayer: 5,
-                        iterations: 50
+                        iterations: 100
                     ),
                     BenchmarkConfig(
                         name: "Medium-10C",
                         playerCount: 50,
                         cardsPerPlayer: 10,
+                        iterations: 100
+                    )
+                ]
+            ),
+            // Note: TransportSyncPlayers-Hot-Parallel-High80% (with explicit true) removed because it's identical to TransportSyncPlayers-Hot-Parallel-High80% above
+            // (nil and true both result in parallel encoding for JSON codec)
+            // We only need Serial vs Parallel comparison, not nil vs true vs false
+            // Concurrent stability tests - verify parallel sync operations maintain correctness
+            BenchmarkSuiteConfig(
+                type: .transportAdapterConcurrentStability,
+                name: "ConcurrentStability-Parallel-5Concurrent",
+                runner: TransportAdapterConcurrentStabilityBenchmarkRunner(
+                    playerCounts: playerCounts,
+                    concurrentSyncs: 5,
+                    iterations: 100,
+                    enableDirtyTracking: transportDirtyTrackingOverride ?? true,
+                    enableParallelEncoding: true
+                ),
+                configurations: [
+                    BenchmarkConfig(
+                        name: "Small-5C",
+                        playerCount: 10,
+                        cardsPerPlayer: 5,
+                        iterations: 100
+                    ),
+                    BenchmarkConfig(
+                        name: "Medium-10C",
+                        playerCount: 50,
+                        cardsPerPlayer: 10,
+                        iterations: 100
+                    )
+                ]
+            ),
+            BenchmarkSuiteConfig(
+                type: .transportAdapterConcurrentStability,
+                name: "ConcurrentStability-Serial-5Concurrent",
+                runner: TransportAdapterConcurrentStabilityBenchmarkRunner(
+                    playerCounts: playerCounts,
+                    concurrentSyncs: 5,
+                    iterations: 100,
+                    enableDirtyTracking: transportDirtyTrackingOverride ?? true,
+                    enableParallelEncoding: false
+                ),
+                configurations: [
+                    BenchmarkConfig(
+                        name: "Small-5C",
+                        playerCount: 10,
+                        cardsPerPlayer: 5,
+                        iterations: 100
+                    ),
+                    BenchmarkConfig(
+                        name: "Medium-10C",
+                        playerCount: 50,
+                        cardsPerPlayer: 10,
+                        iterations: 100
+                    )
+                ]
+            ),
+            BenchmarkSuiteConfig(
+                type: .transportAdapterConcurrentStability,
+                name: "ConcurrentStability-Parallel-10Concurrent",
+                runner: TransportAdapterConcurrentStabilityBenchmarkRunner(
+                    playerCounts: playerCounts,
+                    concurrentSyncs: 10,
+                    iterations: 50,
+                    enableDirtyTracking: transportDirtyTrackingOverride ?? true,
+                    enableParallelEncoding: true
+                ),
+                configurations: [
+                    BenchmarkConfig(
+                        name: "Small-5C",
+                        playerCount: 10,
+                        cardsPerPlayer: 5,
                         iterations: 50
                     )
                 ]
             )
-            // Note: TransportSyncPlayers-Hot-Parallel-High80% (with explicit true) removed because it's identical to TransportSyncPlayers-Hot-Parallel-High80% above
-            // (nil and true both result in parallel encoding for JSON codec)
-            // We only need Serial vs Parallel comparison, not nil vs true vs false
         ]
     }
 

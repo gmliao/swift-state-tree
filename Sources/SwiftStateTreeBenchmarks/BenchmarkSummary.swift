@@ -41,24 +41,31 @@ struct BenchmarkSummary {
             print(String(repeating: "-", count: 120))
             
             // Create table with formatted columns
-            var table = TextTable(
-                columns: [
-                    TextTableColumn(header: "Name"),
-                    TextTableColumn(header: "Players"),
-                    TextTableColumn(header: "Cards"),
-                    TextTableColumn(header: "Iters"),
-                    TextTableColumn(header: "Mode"),
-                    TextTableColumn(header: "Avg(ms)"),
-                    TextTableColumn(header: "Min(ms)"),
-                    TextTableColumn(header: "Max(ms)"),
-                    TextTableColumn(header: "Throughput"),
-                    TextTableColumn(header: "Size(bytes)")
-                ]
-            )
+            // Check if any result has bytesPerPlayer to decide whether to show per-player column
+            let hasPerPlayerData = results.contains { $0.bytesPerPlayer != nil }
+            
+            var columns = [
+                TextTableColumn(header: "Name"),
+                TextTableColumn(header: "Players"),
+                TextTableColumn(header: "Cards"),
+                TextTableColumn(header: "Iters"),
+                TextTableColumn(header: "Mode"),
+                TextTableColumn(header: "Avg(ms)"),
+                TextTableColumn(header: "Min(ms)"),
+                TextTableColumn(header: "Max(ms)"),
+                TextTableColumn(header: "Throughput"),
+                TextTableColumn(header: "Total(bytes)")
+            ]
+            
+            if hasPerPlayerData {
+                columns.append(TextTableColumn(header: "PerPlayer(bytes)"))
+            }
+            
+            var table = TextTable(columns: columns)
             
             for result in results {
                 let values = result.tableValues
-                table.addRow(values: [
+                var rowValues = [
                     values.name,
                     values.players,
                     values.cards,
@@ -68,8 +75,14 @@ struct BenchmarkSummary {
                     values.minTime,
                     values.maxTime,
                     values.throughput,
-                    values.size
-                ])
+                    values.totalSize
+                ]
+                
+                if hasPerPlayerData {
+                    rowValues.append(values.sizePerPlayer)
+                }
+                
+                table.addRow(values: rowValues)
             }
             
             print(table.render())

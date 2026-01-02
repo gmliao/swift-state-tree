@@ -61,7 +61,8 @@ struct SingleThreadedRunner: BenchmarkRunner {
             maxTime: max,
             snapshotSize: snapshotSize,
             throughput: throughput,
-            executionMode: "Single-threaded"
+            executionMode: "Single-threaded",
+            bytesPerPlayer: nil
         )
     }
 }
