@@ -12,6 +12,13 @@ func measureTime(_ block: () throws -> Void) rethrows -> TimeInterval {
     return CFAbsoluteTimeGetCurrent() - start
 }
 
+/// Helper to measure execution time for async blocks
+func measureTimeAsync(_ block: () async throws -> Void) async rethrows -> TimeInterval {
+    let start = CFAbsoluteTimeGetCurrent()
+    try await block()
+    return CFAbsoluteTimeGetCurrent() - start
+}
+
 // MARK: - Size Estimation
 
 /// Estimate snapshot size (rough calculation)
@@ -40,4 +47,3 @@ func estimateValueSize(_ value: SnapshotValue) -> Int {
 func estimateSnapshotValueSize(_ value: SnapshotValue) -> Int {
     return estimateValueSize(value)
 }
-

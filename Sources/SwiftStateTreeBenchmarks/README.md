@@ -122,6 +122,8 @@ swift run SwiftStateTreeBenchmarks single -c
 |-------|------|
 | `single` | 單執行緒執行（snapshot 生成基礎性能） |
 | `diff` | Standard vs Optimized Diff 比較 |
+| `parallel-diff` | 多玩家 diff 並行實驗（serial vs TaskGroup） |
+| `parallel-encode` | 多玩家 JSON encode 並行實驗（serial vs TaskGroup） |
 | `mirror` | Mirror vs Macro 比較 |
 | `transport-sync` | TransportAdapter 完整 sync 流程性能測試 |
 | `all` | 執行所有 suite（預設） |
@@ -160,7 +162,8 @@ Benchmark 會自動比較單執行緒和並行執行的效能：
 swift run SwiftStateTreeBenchmarks --csv
 
 # 執行特定 suite 並包含 CSV 輸出
-swift run SwiftStateTreeBenchmarks single parallel --csv
+swift run SwiftStateTreeBenchmarks single parallel-diff --csv
+swift run SwiftStateTreeBenchmarks parallel-encode --csv
 
 # 將 CSV 輸出重定向到檔案
 swift run SwiftStateTreeBenchmarks --csv > benchmark_results.csv
@@ -179,6 +182,24 @@ Name,Players,Cards/Player,PlayerStateFields,Iterations,ExecutionMode,AvgTime(ms)
 - 優化驗證：比較不同實作方式的效能差異
 - 容量規劃：了解不同狀態大小下的效能表現
 - 開發除錯：執行特定 suite 快速驗證變更
+
+## Parallel Diff 參數
+
+`parallel-diff` 可用環境變數調整行為：
+
+- `PARALLEL_DIFF_MODE=serial|parallel|both`：控制只跑序列、並行或兩者（預設 `both`）
+- `PARALLEL_DIFF_CHUNK=VAL`：每個 Task 內處理的 player 數量（預設 `1`）
+- `PARALLEL_DIFF_PROBE=0|1`：是否在 warmup 後做 thread probe（預設 `1`）
+
+建議用 `-c release` 搭配 Instruments（Time Profiler / Swift Concurrency）觀察是否真的有多執行緒運作與加速效果。
+
+## Parallel Encode 參數
+
+`parallel-encode` 可用環境變數調整行為：
+
+- `PARALLEL_ENCODE_MODE=serial|parallel|both`：控制只跑序列、並行或兩者（預設 `both`）
+- `PARALLEL_ENCODE_CHUNK=VAL`：每個 Task 內處理的 update 數量（預設 `1`）
+- `PARALLEL_ENCODE_PROBE=0|1`：是否在 warmup 後做 thread probe（預設 `1`）
 
 ## 擴展新的 Benchmark
 
@@ -213,6 +234,8 @@ Name,Players,Cards/Player,PlayerStateFields,Iterations,ExecutionMode,AvgTime(ms)
 
 - **單執行緒執行**：測試 snapshot 生成的基礎性能，但不是完整的 sync 流程（實際使用中會分開提取 broadcast 和 per-player snapshot）
 - **TransportAdapter Sync**：最接近實際使用場景的 benchmark，測試完整的 sync 流程
+- **Parallel Diff**：只評估 broadcast diff + per-player diff 的序列/並行差異，不含實際傳輸開銷
+- **Parallel Encode**：只評估 JSON encode 的序列/並行差異，不含 diff 計算與傳輸
 - **Release 模式**：建議使用 `-c release` 進行準確的效能測試（但編譯時間較長）
 - **系統負載**：建議在系統負載較低時執行，以獲得最準確的結果
 - **SwiftSyntax 編譯時間**：第一次編譯 release 模式時，SwiftSyntax 可能需要 2-5 分鐘

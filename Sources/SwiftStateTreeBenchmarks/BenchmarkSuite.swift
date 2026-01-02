@@ -42,6 +42,13 @@ struct BenchmarkSuite: @unchecked Sendable {
                     broadcastRatioLabel = ""
                 }
                 headerDescription = "\(config.name) (Dynamic Players: [\(dynamicPlayers)], Cards/Player: \(config.cardsPerPlayer), Iterations: \(config.iterations)\(broadcastRatioLabel), Encoding: \(syncRunner.transportCodec.encoding.rawValue))"
+            } else if let parallelRunner = runner as? ParallelDiffBenchmarkRunner {
+                let dynamicPlayers = parallelRunner.playerCounts.map(String.init).joined(separator: ", ")
+                let dirtyLabel = parallelRunner.enableDirtyTracking ? "DirtyTracking: On" : "DirtyTracking: Off"
+                headerDescription = "\(config.name) (Dynamic Players: [\(dynamicPlayers)], Cards/Player: \(config.cardsPerPlayer), Iterations: \(config.iterations), \(dirtyLabel))"
+            } else if let parallelEncodeRunner = runner as? ParallelEncodeBenchmarkRunner {
+                let dynamicPlayers = parallelEncodeRunner.playerCounts.map(String.init).joined(separator: ", ")
+                headerDescription = "\(config.name) (Dynamic Players: [\(dynamicPlayers)], Cards/Player: \(config.cardsPerPlayer), Iterations: \(config.iterations), Encoding: json)"
             } else {
                 headerDescription = displayConfig.description
             }
@@ -64,7 +71,9 @@ struct BenchmarkSuite: @unchecked Sendable {
             // 但對 TransportAdapter sync 壓力測試來說，runner 內部已經印出
             // 「Testing with X players... Average: Y ms」這類摘要，
             // 再印一個表格噪音比較大，所以這裡特別略過。
-            if !(runner is TransportAdapterSyncBenchmarkRunner) {
+            if !(runner is TransportAdapterSyncBenchmarkRunner)
+                && !(runner is ParallelDiffBenchmarkRunner)
+                && !(runner is ParallelEncodeBenchmarkRunner) {
                 print(result.formattedOutput)
             }
         }

@@ -91,6 +91,14 @@ struct CommandLineParser {
             }
             
             // Suite type argument
+            if arg.lowercased() == "parallel" {
+                types.append(.parallelDiff)
+                continue
+            }
+            if arg.lowercased() == "encode" {
+                types.append(.parallelEncode)
+                continue
+            }
             if let suiteType = BenchmarkSuiteType(rawValue: arg.lowercased()) {
                 types.append(suiteType)
             } else {
@@ -135,6 +143,8 @@ struct CommandLineParser {
         Available benchmark suites:
           single         - Single-threaded execution
           diff           - Standard vs Optimized diff comparison
+          parallel-diff  - Parallel diff experiment (serial vs TaskGroup)
+          parallel-encode - Parallel JSON encode experiment (serial vs TaskGroup)
           mirror         - Mirror vs Macro comparison
           transport-sync - TransportAdapter Sync Performance
           transport-sync-players - TransportAdapter Sync (broadcast players mutated each tick)
@@ -142,7 +152,8 @@ struct CommandLineParser {
         
         Examples:
           swift run SwiftStateTreeBenchmarks
-          swift run SwiftStateTreeBenchmarks single parallel
+          swift run SwiftStateTreeBenchmarks single parallel-diff
+          swift run SwiftStateTreeBenchmarks parallel-encode
           swift run SwiftStateTreeBenchmarks diff mirror
           swift run SwiftStateTreeBenchmarks all
         

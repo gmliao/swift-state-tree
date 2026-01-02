@@ -609,10 +609,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     
     /// Trigger immediate state synchronization
     ///
-    /// NOTE: Parallel sync optimization was tested but did not show performance improvements.
-    /// Benchmark results showed that TaskGroup overhead and actor isolation costs exceeded
-    /// the benefits of parallel diff computation, even with 50+ players. The serial version
-    /// remains simpler and performs equally well or better in practice.
+    /// NOTE: Parallel diff computation was tested but did not show performance improvements.
+    /// TaskGroup overhead and actor isolation costs exceeded the benefits, even with 50+ players.
+    /// We keep diff generation serial and only parallelize JSON encoding (per-player updates).
     ///
     /// Future optimization opportunities:
     /// - Batch per-player snapshot extraction for multiple players
@@ -682,14 +681,69 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 mode: broadcastMode
             )
             
+            var pendingUpdates: [PendingSyncUpdate] = []
+            pendingUpdates.reserveCapacity(sessionToPlayer.count)
+
             for (sessionID, playerID) in sessionToPlayer {
-                await syncState(
+                // Extract per-player snapshot (specific to this player)
+                let perPlayerSnapshot = try syncEngine.extractPerPlayerSnapshot(
                     for: playerID,
-                    sessionID: sessionID,
-                    state: state,
-                    broadcastDiff: broadcastDiff,
-                    perPlayerMode: perPlayerMode
+                    from: state,
+                    mode: perPlayerMode
                 )
+
+                // Broadcast diff is precomputed once per sync cycle and reused for all players.
+                let update = syncEngine.generateUpdateFromBroadcastDiff(
+                    for: playerID,
+                    broadcastDiff: broadcastDiff,
+                    perPlayerSnapshot: perPlayerSnapshot,
+                    perPlayerMode: perPlayerMode,
+                    onlyPaths: nil
+                )
+
+                // Skip only if noChange - firstSync should always be sent (even if patches are empty)
+                if case .noChange = update {
+                    continue
+                }
+
+                let (updateType, patchCount) = describeUpdate(update)
+                pendingUpdates.append(PendingSyncUpdate(
+                    sessionID: sessionID,
+                    playerID: playerID,
+                    update: update,
+                    updateType: updateType,
+                    patchCount: patchCount
+                ))
+            }
+
+            if !pendingUpdates.isEmpty {
+                let codec = self.codec
+                let encodedUpdates: [EncodedSyncUpdate]
+
+                if shouldParallelEncode {
+                    // JSON encoding is independent per player, so we can parallelize it safely.
+                    encodedUpdates = await encodeUpdatesInParallel(pendingUpdates)
+                } else {
+                    encodedUpdates = encodeUpdatesSerially(pendingUpdates, codec: codec)
+                }
+
+                for encoded in encodedUpdates {
+                    if let payload = encoded.payload {
+                        await sendEncodedUpdate(
+                            sessionID: encoded.sessionID,
+                            playerID: encoded.playerID,
+                            updateType: encoded.updateType,
+                            patchCount: encoded.patchCount,
+                            updateData: payload
+                        )
+                    } else if let errorMessage = encoded.errorMessage {
+                        logger.error("❌ Failed to encode state update", metadata: [
+                            "playerID": .string(encoded.playerID.rawValue),
+                            "sessionID": .string(encoded.sessionID.rawValue),
+                            "error": .string(errorMessage)
+                        ])
+                    }
+                }
             }
             
             // Release sync lock after successful sync
@@ -834,6 +888,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///
     /// NOTE: Parallel per-player diff computation was tested but did not show performance improvements.
     /// TaskGroup overhead and actor isolation costs exceeded the benefits, even with 50+ players.
+    ///
+    /// Encoding can be parallelized for JSON payloads because each player update is independent.
     private func syncState(
         for playerID: PlayerID,
         sessionID: SessionID,
@@ -860,9 +916,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 return
             }
             
-            let updateData = try codec.encode(update)
-            let updateSize = updateData.count
-            
             let updateType: String
             let patchCount: Int
             switch update {
@@ -877,26 +930,156 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 patchCount = patches.count
             }
             
-            // Verbose per-player state update logging can be noisy at debug level,
-            // especially when ticks are running frequently. Use trace instead,
-            // and rely on higher‑level logs for normal operation.
-            logger.trace("📤 Sending state update", metadata: [
+            let updateData = try codec.encode(update)
+            await sendEncodedUpdate(
+                sessionID: sessionID,
+                playerID: playerID,
+                updateType: updateType,
+                patchCount: patchCount,
+                updateData: updateData
+            )
+        } catch {
+            logger.error("❌ Failed to sync state", metadata: [
                 "playerID": .string(playerID.rawValue),
                 "sessionID": .string(sessionID.rawValue),
-                "type": .string(updateType),
-                "patches": .string("\(patchCount)"),
-                "bytes": .string("\(updateSize)")
+                "error": .string("\(error)")
             ])
-            
-            // Log update preview (first 500 chars) - only compute if trace logging is enabled
-            if let preview = logger.safePreview(from: updateData, maxLength: 500) {
-                logger.trace("📤 Update preview", metadata: [
-                    "playerID": .string(playerID.rawValue),
-                    "type": .string(updateType),
-                    "preview": .string(preview)
-                ])
+        }
+    }
+
+    private struct PendingSyncUpdate: Sendable {
+        let sessionID: SessionID
+        let playerID: PlayerID
+        let update: StateUpdate
+        let updateType: String
+        let patchCount: Int
+    }
+
+    private struct EncodedSyncUpdate: Sendable {
+        let sessionID: SessionID
+        let playerID: PlayerID
+        let updateType: String
+        let patchCount: Int
+        let payload: Data?
+        let errorMessage: String?
+    }
+
+    private var shouldParallelEncode: Bool {
+        guard codec.encoding == .json, codec is JSONTransportCodec else {
+            return false
+        }
+        let envValue = ProcessInfo.processInfo.environment["SST_SYNC_PARALLEL_ENCODE"]?.lowercased()
+        return envValue != "0" && envValue != "false" && envValue != "off"
+    }
+
+    private func describeUpdate(_ update: StateUpdate) -> (String, Int) {
+        switch update {
+        case .noChange:
+            return ("noChange", 0)
+        case .firstSync(let patches):
+            return ("firstSync", patches.count)
+        case .diff(let patches):
+            return ("diff", patches.count)
+        }
+    }
+
+    private func encodeUpdatesSerially(
+        _ pendingUpdates: [PendingSyncUpdate],
+        codec: any TransportCodec
+    ) -> [EncodedSyncUpdate] {
+        pendingUpdates.map { pending in
+            do {
+                let data = try codec.encode(pending.update)
+                return EncodedSyncUpdate(
+                    sessionID: pending.sessionID,
+                    playerID: pending.playerID,
+                    updateType: pending.updateType,
+                    patchCount: pending.patchCount,
+                    payload: data,
+                    errorMessage: nil
+                )
+            } catch {
+                return EncodedSyncUpdate(
+                    sessionID: pending.sessionID,
+                    playerID: pending.playerID,
+                    updateType: pending.updateType,
+                    patchCount: pending.patchCount,
+                    payload: nil,
+                    errorMessage: "\(error)"
+                )
             }
-            
+        }
+    }
+
+    private func encodeUpdatesInParallel(
+        _ pendingUpdates: [PendingSyncUpdate]
+    ) async -> [EncodedSyncUpdate] {
+        await withTaskGroup(of: EncodedSyncUpdate.self) { group in
+            for pending in pendingUpdates {
+                group.addTask {
+                    do {
+                        let codec = JSONTransportCodec()
+                        let data = try codec.encode(pending.update)
+                        return EncodedSyncUpdate(
+                            sessionID: pending.sessionID,
+                            playerID: pending.playerID,
+                            updateType: pending.updateType,
+                            patchCount: pending.patchCount,
+                            payload: data,
+                            errorMessage: nil
+                        )
+                    } catch {
+                        return EncodedSyncUpdate(
+                            sessionID: pending.sessionID,
+                            playerID: pending.playerID,
+                            updateType: pending.updateType,
+                            patchCount: pending.patchCount,
+                            payload: nil,
+                            errorMessage: "\(error)"
+                        )
+                    }
+                }
+            }
+
+            var results: [EncodedSyncUpdate] = []
+            results.reserveCapacity(pendingUpdates.count)
+            for await result in group {
+                results.append(result)
+            }
+            return results
+        }
+    }
+
+    private func sendEncodedUpdate(
+        sessionID: SessionID,
+        playerID: PlayerID,
+        updateType: String,
+        patchCount: Int,
+        updateData: Data
+    ) async {
+        let updateSize = updateData.count
+
+        // Verbose per-player state update logging can be noisy at debug level,
+        // especially when ticks are running frequently. Use trace instead,
+        // and rely on higher‑level logs for normal operation.
+        logger.trace("📤 Sending state update", metadata: [
+            "playerID": .string(playerID.rawValue),
+            "sessionID": .string(sessionID.rawValue),
+            "type": .string(updateType),
+            "patches": .string("\(patchCount)"),
+            "bytes": .string("\(updateSize)")
+        ])
+
+        // Log update preview (first 500 chars) - only compute if trace logging is enabled
+        if let preview = logger.safePreview(from: updateData, maxLength: 500) {
+            logger.trace("📤 Update preview", metadata: [
+                "playerID": .string(playerID.rawValue),
+                "type": .string(updateType),
+                "preview": .string(preview)
+            ])
+        }
+
+        do {
             try await transport.send(updateData, to: .session(sessionID))
         } catch {
             logger.error("❌ Failed to sync state", metadata: [

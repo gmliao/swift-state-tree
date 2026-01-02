@@ -8,6 +8,8 @@ import SwiftStateTreeTransport
 enum BenchmarkSuiteType: String, CaseIterable {
     case singleThreaded = "single"
     case diff = "diff"
+    case parallelDiff = "parallel-diff"
+    case parallelEncode = "parallel-encode"
     case mirrorVsMacro = "mirror"
     case transportAdapterSync = "transport-sync"
     case transportAdapterSyncPlayers = "transport-sync-players"
@@ -17,6 +19,8 @@ enum BenchmarkSuiteType: String, CaseIterable {
         switch self {
         case .singleThreaded: return "Single-threaded Execution"
         case .diff: return "Standard vs Optimized Diff Comparison"
+        case .parallelDiff: return "Parallel Diff Experiment"
+        case .parallelEncode: return "Parallel Encode Experiment"
         case .mirrorVsMacro: return "Mirror vs Macro Performance Comparison"
         case .transportAdapterSync: return "TransportAdapter Sync Performance"
         case .transportAdapterSyncPlayers: return "TransportAdapter Sync Performance (Broadcast Players)"
@@ -28,6 +32,8 @@ enum BenchmarkSuiteType: String, CaseIterable {
         switch self {
         case .singleThreaded: return "Sequential execution on main thread"
         case .diff: return "Compare standard diff vs optimized diff (with dirty tracking) performance"
+        case .parallelDiff: return "Compare serial vs TaskGroup diff for multi-player sync"
+        case .parallelEncode: return "Compare serial vs TaskGroup JSON encoding for per-player updates"
         case .mirrorVsMacro: return "Compare Mirror-based vs Macro-generated code"
         case .transportAdapterSync: return "TransportAdapter sync performance benchmark"
         case .transportAdapterSyncPlayers: return "TransportAdapter sync benchmark with broadcast players mutated each tick"
@@ -74,6 +80,50 @@ struct BenchmarkSuites {
                     BenchmarkConfigurations.standard[0],  // Tiny State
                     BenchmarkConfigurations.standard[1],  // Small State
                     BenchmarkConfigurations.standard[2]   // Medium State
+                ]
+            ),
+            BenchmarkSuiteConfig(
+                type: .parallelDiff,
+                name: "Parallel Diff Experiment (Hands Dirty ~20%)",
+                runner: ParallelDiffBenchmarkRunner(
+                    playerCounts: [4, 10, 20, 30, 50],
+                    dirtyPlayerRatio: mediumRatio,
+                    enableDirtyTracking: transportDirtyTrackingOverride ?? true
+                ),
+                configurations: [
+                    BenchmarkConfig(
+                        name: "Small State",
+                        playerCount: 10,
+                        cardsPerPlayer: 5,
+                        iterations: 100
+                    ),
+                    BenchmarkConfig(
+                        name: "Medium State",
+                        playerCount: 100,
+                        cardsPerPlayer: 10,
+                        iterations: 100
+                    )
+                ]
+            ),
+            BenchmarkSuiteConfig(
+                type: .parallelEncode,
+                name: "Parallel Encode Experiment (JSON)",
+                runner: ParallelEncodeBenchmarkRunner(
+                    playerCounts: [4, 10, 20, 30, 50]
+                ),
+                configurations: [
+                    BenchmarkConfig(
+                        name: "Small State",
+                        playerCount: 10,
+                        cardsPerPlayer: 5,
+                        iterations: 100
+                    ),
+                    BenchmarkConfig(
+                        name: "Medium State",
+                        playerCount: 100,
+                        cardsPerPlayer: 10,
+                        iterations: 100
+                    )
                 ]
             ),
             BenchmarkSuiteConfig(
