@@ -1,0 +1,434 @@
+=== System Information ===
+Timestamp: Thu Jan  1 22:00:44 CST 2026
+
+--- CPU ---
+Model: Apple M2
+Cores: 8
+Architecture: arm64
+
+--- Memory ---
+Total RAM: 16 GB (16384 MB)
+Available RAM: 4 GB (4247 MB) [approximate: free + inactive]
+
+--- System ---
+OS: Darwin
+Kernel: 25.2.0
+Hostname: GuanmingdeMacBook-Air-m2.local
+
+--- Swift ---
+swift-driver version: 1.127.14.1 Apple Swift version 6.2.3 (swiftlang-6.2.3.3.21 clang-1700.6.3.2)
+
+--- Build Configuration ---
+Build Mode: RELEASE
+Swift Package: N/A
+
+=== End System Information ===
+
+=== Benchmark started at: Thu Jan  1 22:00:44 CST 2026 ===
+
+Running suite: TransportSyncPlayers-Hot-Parallel-Low5%
+Building for production...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+Build of product 'SwiftStateTreeBenchmarks' complete! (0.23s)
+
+╔═══════════════════════════════════════════════════════════════╗
+║           TransportSyncPlayers-Hot-Parallel-Low5%           ║
+╚═══════════════════════════════════════════════════════════════╝
+
+
+[1/2] Running: Small-5C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 5, Iterations: 100, BroadcastPlayers: ~100%)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 0.1505ms
+    Total Payload: 1576 bytes (per player: 394 bytes)
+
+  Testing with 10 players...
+    Average: 0.3224ms
+    Total Payload: 7734 bytes (per player: 773 bytes)
+
+  Testing with 20 players...
+    Average: 0.7201ms
+    Total Payload: 29108 bytes (per player: 1455 bytes)
+
+  Testing with 30 players...
+    Average: 1.2453ms
+    Total Payload: 64316 bytes (per player: 2143 bytes)
+
+  Testing with 50 players...
+    Average: 2.7685ms
+    Total Payload: 176434 bytes (per player: 3528 bytes)
+
+[2/2] Running: Medium-10C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 10, Iterations: 100, BroadcastPlayers: ~100%)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 0.1726ms
+    Total Payload: 1711 bytes (per player: 427 bytes)
+
+  Testing with 10 players...
+    Average: 0.3667ms
+    Total Payload: 7869 bytes (per player: 786 bytes)
+
+  Testing with 20 players...
+    Average: 0.8072ms
+    Total Payload: 29243 bytes (per player: 1462 bytes)
+
+  Testing with 30 players...
+    Average: 1.3680ms
+    Total Payload: 64451 bytes (per player: 2148 bytes)
+
+  Testing with 50 players...
+    Average: 2.9157ms
+    Total Payload: 176704 bytes (per player: 3534 bytes)
+
+📊 Results Table (for analysis):
+------------------------------------------------------------------------------------------------------------------------
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Name │ Players │ Cards │ Iters │ Mode                                  │ Avg(ms) │ Min(ms) │ Max(ms) │ Throughput │ Total(bytes) │ PerPlayer(bytes) │
+├──────┼─────────┼───────┼───────┼───────────────────────────────────────┼─────────┼─────────┼─────────┼────────────┼──────────────┼──────────────────┤
+│ Sync │ 4       │ 5     │ 100   │ DirtyTracking: On, Encoding: Parallel │ 0.1505  │ 0.1505  │ 0.1505  │ 6643.92    │ 1576         │ 394              │
+│ Sync │ 10      │ 5     │ 100   │ DirtyTracking: On, Encoding: Parallel │ 0.3224  │ 0.3224  │ 0.3224  │ 3101.63    │ 7734         │ 773              │
+│ Sync │ 20      │ 5     │ 100   │ DirtyTracking: On, Encoding: Parallel │ 0.7201  │ 0.7201  │ 0.7201  │ 1388.64    │ 29108        │ 1455             │
+│ Sync │ 30      │ 5     │ 100   │ DirtyTracking: On, Encoding: Parallel │ 1.2453  │ 1.2453  │ 1.2453  │ 803.04     │ 64316        │ 2143             │
+│ Sync │ 50      │ 5     │ 100   │ DirtyTracking: On, Encoding: Parallel │ 2.7685  │ 2.7685  │ 2.7685  │ 361.21     │ 176434       │ 3528             │
+│ Sync │ 4       │ 10    │ 100   │ DirtyTracking: On, Encoding: Parallel │ 0.1726  │ 0.1726  │ 0.1726  │ 5793.08    │ 1711         │ 427              │
+│ Sync │ 10      │ 10    │ 100   │ DirtyTracking: On, Encoding: Parallel │ 0.3667  │ 0.3667  │ 0.3667  │ 2726.85    │ 7869         │ 786              │
+│ Sync │ 20      │ 10    │ 100   │ DirtyTracking: On, Encoding: Parallel │ 0.8072  │ 0.8072  │ 0.8072  │ 1238.83    │ 29243        │ 1462             │
+│ Sync │ 30      │ 10    │ 100   │ DirtyTracking: On, Encoding: Parallel │ 1.3680  │ 1.3680  │ 1.3680  │ 730.97     │ 64451        │ 2148             │
+│ Sync │ 50      │ 10    │ 100   │ DirtyTracking: On, Encoding: Parallel │ 2.9157  │ 2.9157  │ 2.9157  │ 342.98     │ 176704       │ 3534             │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+═════════════════════════════════════════════════════════════════
+Benchmark completed!
+═════════════════════════════════════════════════════════════════
+
+Running suite: TransportSyncPlayers-Hot-Parallel-Medium20%
+Building for production...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+Build of product 'SwiftStateTreeBenchmarks' complete! (0.23s)
+
+╔═══════════════════════════════════════════════════════════════╗
+║         TransportSyncPlayers-Hot-Parallel-Medium20%         ║
+╚═══════════════════════════════════════════════════════════════╝
+
+
+[1/2] Running: Small-5C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 5, Iterations: 100, BroadcastPlayers: ~100%)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 0.1518ms
+    Total Payload: 1576 bytes (per player: 394 bytes)
+
+  Testing with 10 players...
+    Average: 0.3415ms
+    Total Payload: 7931 bytes (per player: 793 bytes)
+
+  Testing with 20 players...
+    Average: 0.7724ms
+    Total Payload: 29700 bytes (per player: 1485 bytes)
+
+  Testing with 30 players...
+    Average: 1.4377ms
+    Total Payload: 65305 bytes (per player: 2176 bytes)
+
+  Testing with 50 players...
+    Average: 3.3448ms
+    Total Payload: 178018 bytes (per player: 3560 bytes)
+
+[2/2] Running: Medium-10C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 10, Iterations: 100, BroadcastPlayers: ~100%)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 0.1739ms
+    Total Payload: 1711 bytes (per player: 427 bytes)
+
+  Testing with 10 players...
+    Average: 0.4108ms
+    Total Payload: 8201 bytes (per player: 820 bytes)
+
+  Testing with 20 players...
+    Average: 0.9992ms
+    Total Payload: 30240 bytes (per player: 1512 bytes)
+
+  Testing with 30 players...
+    Average: 1.6957ms
+    Total Payload: 66115 bytes (per player: 2203 bytes)
+
+  Testing with 50 players...
+    Average: 3.2653ms
+    Total Payload: 179369 bytes (per player: 3587 bytes)
+
+📊 Results Table (for analysis):
+------------------------------------------------------------------------------------------------------------------------
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Name │ Players │ Cards │ Iters │ Mode                                  │ Avg(ms) │ Min(ms) │ Max(ms) │ Throughput │ Total(bytes) │ PerPlayer(bytes) │
+├──────┼─────────┼───────┼───────┼───────────────────────────────────────┼─────────┼─────────┼─────────┼────────────┼──────────────┼──────────────────┤
+│ Sync │ 4       │ 5     │ 100   │ DirtyTracking: On, Encoding: Parallel │ 0.1518  │ 0.1518  │ 0.1518  │ 6586.02    │ 1576         │ 394              │
+│ Sync │ 10      │ 5     │ 100   │ DirtyTracking: On, Encoding: Parallel │ 0.3415  │ 0.3415  │ 0.3415  │ 2927.92    │ 7931         │ 793              │
+│ Sync │ 20      │ 5     │ 100   │ DirtyTracking: On, Encoding: Parallel │ 0.7724  │ 0.7724  │ 0.7724  │ 1294.67    │ 29700        │ 1485             │
+│ Sync │ 30      │ 5     │ 100   │ DirtyTracking: On, Encoding: Parallel │ 1.4377  │ 1.4377  │ 1.4377  │ 695.54     │ 65305        │ 2176             │
+│ Sync │ 50      │ 5     │ 100   │ DirtyTracking: On, Encoding: Parallel │ 3.3448  │ 3.3448  │ 3.3448  │ 298.97     │ 178018       │ 3560             │
+│ Sync │ 4       │ 10    │ 100   │ DirtyTracking: On, Encoding: Parallel │ 0.1739  │ 0.1739  │ 0.1739  │ 5750.11    │ 1711         │ 427              │
+│ Sync │ 10      │ 10    │ 100   │ DirtyTracking: On, Encoding: Parallel │ 0.4108  │ 0.4108  │ 0.4108  │ 2434.56    │ 8201         │ 820              │
+│ Sync │ 20      │ 10    │ 100   │ DirtyTracking: On, Encoding: Parallel │ 0.9992  │ 0.9992  │ 0.9992  │ 1000.80    │ 30240        │ 1512             │
+│ Sync │ 30      │ 10    │ 100   │ DirtyTracking: On, Encoding: Parallel │ 1.6957  │ 1.6957  │ 1.6957  │ 589.73     │ 66115        │ 2203             │
+│ Sync │ 50      │ 10    │ 100   │ DirtyTracking: On, Encoding: Parallel │ 3.2653  │ 3.2653  │ 3.2653  │ 306.25     │ 179369       │ 3587             │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+═════════════════════════════════════════════════════════════════
+Benchmark completed!
+═════════════════════════════════════════════════════════════════
+
+Running suite: TransportSyncPlayers-Hot-Parallel-High80%
+Building for production...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+Build of product 'SwiftStateTreeBenchmarks' complete! (0.25s)
+
+╔═══════════════════════════════════════════════════════════════╗
+║          TransportSyncPlayers-Hot-Parallel-High80%          ║
+╚═══════════════════════════════════════════════════════════════╝
+
+
+[1/2] Running: Small-5C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 5, Iterations: 100, BroadcastPlayers: ~100%)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 0.1569ms
+    Total Payload: 1971 bytes (per player: 492 bytes)
+
+  Testing with 10 players...
+    Average: 0.4149ms
+    Total Payload: 9115 bytes (per player: 911 bytes)
+
+  Testing with 20 players...
+    Average: 1.0847ms
+    Total Payload: 32074 bytes (per player: 1603 bytes)
+
+  Testing with 30 players...
+    Average: 1.7426ms
+    Total Payload: 68865 bytes (per player: 2295 bytes)
+
+  Testing with 50 players...
+    Average: 3.2503ms
+    Total Payload: 183958 bytes (per player: 3679 bytes)
+
+[2/2] Running: Medium-10C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 10, Iterations: 100, BroadcastPlayers: ~100%)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 0.2062ms
+    Total Payload: 2375 bytes (per player: 593 bytes)
+
+  Testing with 10 players...
+    Average: 0.5100ms
+    Total Payload: 10195 bytes (per player: 1019 bytes)
+
+  Testing with 20 players...
+    Average: 1.0546ms
+    Total Payload: 34233 bytes (per player: 1711 bytes)
+
+  Testing with 30 players...
+    Average: 1.7395ms
+    Total Payload: 72107 bytes (per player: 2403 bytes)
+
+  Testing with 50 players...
+    Average: 3.5180ms
+    Total Payload: 189359 bytes (per player: 3787 bytes)
+
+📊 Results Table (for analysis):
+------------------------------------------------------------------------------------------------------------------------
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Name │ Players │ Cards │ Iters │ Mode                                  │ Avg(ms) │ Min(ms) │ Max(ms) │ Throughput │ Total(bytes) │ PerPlayer(bytes) │
+├──────┼─────────┼───────┼───────┼───────────────────────────────────────┼─────────┼─────────┼─────────┼────────────┼──────────────┼──────────────────┤
+│ Sync │ 4       │ 5     │ 100   │ DirtyTracking: On, Encoding: Parallel │ 0.1569  │ 0.1569  │ 0.1569  │ 6374.13    │ 1971         │ 492              │
+│ Sync │ 10      │ 5     │ 100   │ DirtyTracking: On, Encoding: Parallel │ 0.4149  │ 0.4149  │ 0.4149  │ 2410.03    │ 9115         │ 911              │
+│ Sync │ 20      │ 5     │ 100   │ DirtyTracking: On, Encoding: Parallel │ 1.0847  │ 1.0847  │ 1.0847  │ 921.91     │ 32074        │ 1603             │
+│ Sync │ 30      │ 5     │ 100   │ DirtyTracking: On, Encoding: Parallel │ 1.7426  │ 1.7426  │ 1.7426  │ 573.86     │ 68865        │ 2295             │
+│ Sync │ 50      │ 5     │ 100   │ DirtyTracking: On, Encoding: Parallel │ 3.2503  │ 3.2503  │ 3.2503  │ 307.66     │ 183958       │ 3679             │
+│ Sync │ 4       │ 10    │ 100   │ DirtyTracking: On, Encoding: Parallel │ 0.2062  │ 0.2062  │ 0.2062  │ 4848.74    │ 2375         │ 593              │
+│ Sync │ 10      │ 10    │ 100   │ DirtyTracking: On, Encoding: Parallel │ 0.5100  │ 0.5100  │ 0.5100  │ 1960.72    │ 10195        │ 1019             │
+│ Sync │ 20      │ 10    │ 100   │ DirtyTracking: On, Encoding: Parallel │ 1.0546  │ 1.0546  │ 1.0546  │ 948.25     │ 34233        │ 1711             │
+│ Sync │ 30      │ 10    │ 100   │ DirtyTracking: On, Encoding: Parallel │ 1.7395  │ 1.7395  │ 1.7395  │ 574.87     │ 72107        │ 2403             │
+│ Sync │ 50      │ 10    │ 100   │ DirtyTracking: On, Encoding: Parallel │ 3.5180  │ 3.5180  │ 3.5180  │ 284.25     │ 189359       │ 3787             │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+═════════════════════════════════════════════════════════════════
+Benchmark completed!
+═════════════════════════════════════════════════════════════════
+
+Running suite: TransportSyncPlayers-Hot-Serial-Low5%
+Building for production...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+Build of product 'SwiftStateTreeBenchmarks' complete! (0.23s)
+
+╔═══════════════════════════════════════════════════════════════╗
+║            TransportSyncPlayers-Hot-Serial-Low5%            ║
+╚═══════════════════════════════════════════════════════════════╝
+
+
+[1/2] Running: Small-5C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 5, Iterations: 100, BroadcastPlayers: ~100%)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 0.1559ms
+    Total Payload: 1576 bytes (per player: 394 bytes)
+
+  Testing with 10 players...
+    Average: 0.4341ms
+    Total Payload: 7734 bytes (per player: 773 bytes)
+
+  Testing with 20 players...
+    Average: 1.1273ms
+    Total Payload: 29108 bytes (per player: 1455 bytes)
+
+  Testing with 30 players...
+    Average: 2.1840ms
+    Total Payload: 64316 bytes (per player: 2143 bytes)
+
+  Testing with 50 players...
+    Average: 5.3715ms
+    Total Payload: 176434 bytes (per player: 3528 bytes)
+
+[2/2] Running: Medium-10C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 10, Iterations: 100, BroadcastPlayers: ~100%)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 0.1696ms
+    Total Payload: 1711 bytes (per player: 427 bytes)
+
+  Testing with 10 players...
+    Average: 0.4614ms
+    Total Payload: 7869 bytes (per player: 786 bytes)
+
+  Testing with 20 players...
+    Average: 1.2191ms
+    Total Payload: 29243 bytes (per player: 1462 bytes)
+
+  Testing with 30 players...
+    Average: 2.3089ms
+    Total Payload: 64451 bytes (per player: 2148 bytes)
+
+  Testing with 50 players...
+    Average: 5.8797ms
+    Total Payload: 176704 bytes (per player: 3534 bytes)
+
+📊 Results Table (for analysis):
+------------------------------------------------------------------------------------------------------------------------
+┌───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Name │ Players │ Cards │ Iters │ Mode                                │ Avg(ms) │ Min(ms) │ Max(ms) │ Throughput │ Total(bytes) │ PerPlayer(bytes) │
+├──────┼─────────┼───────┼───────┼─────────────────────────────────────┼─────────┼─────────┼─────────┼────────────┼──────────────┼──────────────────┤
+│ Sync │ 4       │ 5     │ 100   │ DirtyTracking: On, Encoding: Serial │ 0.1559  │ 0.1559  │ 0.1559  │ 6413.80    │ 1576         │ 394              │
+│ Sync │ 10      │ 5     │ 100   │ DirtyTracking: On, Encoding: Serial │ 0.4341  │ 0.4341  │ 0.4341  │ 2303.79    │ 7734         │ 773              │
+│ Sync │ 20      │ 5     │ 100   │ DirtyTracking: On, Encoding: Serial │ 1.1273  │ 1.1273  │ 1.1273  │ 887.09     │ 29108        │ 1455             │
+│ Sync │ 30      │ 5     │ 100   │ DirtyTracking: On, Encoding: Serial │ 2.1840  │ 2.1840  │ 2.1840  │ 457.88     │ 64316        │ 2143             │
+│ Sync │ 50      │ 5     │ 100   │ DirtyTracking: On, Encoding: Serial │ 5.3715  │ 5.3715  │ 5.3715  │ 186.17     │ 176434       │ 3528             │
+│ Sync │ 4       │ 10    │ 100   │ DirtyTracking: On, Encoding: Serial │ 0.1696  │ 0.1696  │ 0.1696  │ 5895.76    │ 1711         │ 427              │
+│ Sync │ 10      │ 10    │ 100   │ DirtyTracking: On, Encoding: Serial │ 0.4614  │ 0.4614  │ 0.4614  │ 2167.42    │ 7869         │ 786              │
+│ Sync │ 20      │ 10    │ 100   │ DirtyTracking: On, Encoding: Serial │ 1.2191  │ 1.2191  │ 1.2191  │ 820.30     │ 29243        │ 1462             │
+│ Sync │ 30      │ 10    │ 100   │ DirtyTracking: On, Encoding: Serial │ 2.3089  │ 2.3089  │ 2.3089  │ 433.11     │ 64451        │ 2148             │
+│ Sync │ 50      │ 10    │ 100   │ DirtyTracking: On, Encoding: Serial │ 5.8797  │ 5.8797  │ 5.8797  │ 170.08     │ 176704       │ 3534             │
+└───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+═════════════════════════════════════════════════════════════════
+Benchmark completed!
+═════════════════════════════════════════════════════════════════
+
+Running suite: TransportSyncPlayers-Hot-Serial-High80%
+Building for production...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+Build of product 'SwiftStateTreeBenchmarks' complete! (0.23s)
+
+╔═══════════════════════════════════════════════════════════════╗
+║           TransportSyncPlayers-Hot-Serial-High80%           ║
+╚═══════════════════════════════════════════════════════════════╝
+
+
+[1/2] Running: Small-5C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 5, Iterations: 100, BroadcastPlayers: ~100%)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 0.1949ms
+    Total Payload: 1971 bytes (per player: 492 bytes)
+
+  Testing with 10 players...
+    Average: 0.5701ms
+    Total Payload: 9115 bytes (per player: 911 bytes)
+
+  Testing with 20 players...
+    Average: 1.4130ms
+    Total Payload: 32074 bytes (per player: 1603 bytes)
+
+  Testing with 30 players...
+    Average: 2.6657ms
+    Total Payload: 68865 bytes (per player: 2295 bytes)
+
+  Testing with 50 players...
+    Average: 6.2356ms
+    Total Payload: 183958 bytes (per player: 3679 bytes)
+
+[2/2] Running: Medium-10C (Dynamic Players: [4, 10, 20, 30, 50], Cards/Player: 10, Iterations: 100, BroadcastPlayers: ~100%)
+  Generating test state... ✓
+  TransportAdapter Sync Performance Benchmark
+  ===========================================
+
+  Testing with 4 players...
+    Average: 0.2312ms
+    Total Payload: 2375 bytes (per player: 593 bytes)
+
+  Testing with 10 players...
+    Average: 0.6801ms
+    Total Payload: 10195 bytes (per player: 1019 bytes)
+
+  Testing with 20 players...
+    Average: 1.6900ms
+    Total Payload: 34233 bytes (per player: 1711 bytes)
+
+  Testing with 30 players...
+    Average: 3.0315ms
+    Total Payload: 72107 bytes (per player: 2403 bytes)
+
+  Testing with 50 players...
+    Average: 6.7438ms
+    Total Payload: 189359 bytes (per player: 3787 bytes)
+
+📊 Results Table (for analysis):
+------------------------------------------------------------------------------------------------------------------------
+┌───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Name │ Players │ Cards │ Iters │ Mode                                │ Avg(ms) │ Min(ms) │ Max(ms) │ Throughput │ Total(bytes) │ PerPlayer(bytes) │
+├──────┼─────────┼───────┼───────┼─────────────────────────────────────┼─────────┼─────────┼─────────┼────────────┼──────────────┼──────────────────┤
+│ Sync │ 4       │ 5     │ 100   │ DirtyTracking: On, Encoding: Serial │ 0.1949  │ 0.1949  │ 0.1949  │ 5131.90    │ 1971         │ 492              │
+│ Sync │ 10      │ 5     │ 100   │ DirtyTracking: On, Encoding: Serial │ 0.5701  │ 0.5701  │ 0.5701  │ 1754.07    │ 9115         │ 911              │
+│ Sync │ 20      │ 5     │ 100   │ DirtyTracking: On, Encoding: Serial │ 1.4130  │ 1.4130  │ 1.4130  │ 707.73     │ 32074        │ 1603             │
+│ Sync │ 30      │ 5     │ 100   │ DirtyTracking: On, Encoding: Serial │ 2.6657  │ 2.6657  │ 2.6657  │ 375.13     │ 68865        │ 2295             │
+│ Sync │ 50      │ 5     │ 100   │ DirtyTracking: On, Encoding: Serial │ 6.2356  │ 6.2356  │ 6.2356  │ 160.37     │ 183958       │ 3679             │
+│ Sync │ 4       │ 10    │ 100   │ DirtyTracking: On, Encoding: Serial │ 0.2312  │ 0.2312  │ 0.2312  │ 4324.34    │ 2375         │ 593              │
+│ Sync │ 10      │ 10    │ 100   │ DirtyTracking: On, Encoding: Serial │ 0.6801  │ 0.6801  │ 0.6801  │ 1470.39    │ 10195        │ 1019             │
+│ Sync │ 20      │ 10    │ 100   │ DirtyTracking: On, Encoding: Serial │ 1.6900  │ 1.6900  │ 1.6900  │ 591.73     │ 34233        │ 1711             │
+│ Sync │ 30      │ 10    │ 100   │ DirtyTracking: On, Encoding: Serial │ 3.0315  │ 3.0315  │ 3.0315  │ 329.87     │ 72107        │ 2403             │
+│ Sync │ 50      │ 10    │ 100   │ DirtyTracking: On, Encoding: Serial │ 6.7438  │ 6.7438  │ 6.7438  │ 148.28     │ 189359       │ 3787             │
+└───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+═════════════════════════════════════════════════════════════════
+Benchmark completed!
+═════════════════════════════════════════════════════════════════
+
+=== Benchmark completed at: Thu Jan  1 22:00:57 CST 2026 ===

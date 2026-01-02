@@ -87,7 +87,8 @@ struct MirrorVsMacroComparisonRunner: BenchmarkRunner {
             maxTime: macroTimes.max() ?? 0,
             snapshotSize: snapshotSize,
             throughput: 1.0 / macroAverage,
-            executionMode: "Macro Version (vs Mirror: \(String(format: "%.2fx", speedup)) faster)"
+            executionMode: "Macro Version (vs Mirror: \(String(format: "%.2fx", speedup)) faster)",
+            bytesPerPlayer: nil
         )
     }
 }

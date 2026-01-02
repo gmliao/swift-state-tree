@@ -18,6 +18,17 @@ struct BenchmarkStateForSync: StateNodeProtocol {
     var round: Int = 0
 }
 
+@Payload
+struct BenchmarkMutationAction: ActionPayload {
+    typealias Response = BenchmarkMutationResponse
+    let iteration: Int
+}
+
+@Payload
+struct BenchmarkMutationResponse: ResponsePayload {
+    let applied: Bool
+}
+
 /// Benchmark runner for TransportAdapter sync performance.
 ///
 /// This benchmark simulates a real-world scenario where multiple players are connected
@@ -179,8 +190,13 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
 
                 print("    Serial:   \(String(format: "%.4f", serialMs))ms")
                 print("    Parallel: \(String(format: "%.4f", parallelMs))ms")
-                print("    Serial payload:   \(serialResult.snapshotSize) bytes")
-                print("    Parallel payload: \(parallelResult.snapshotSize) bytes")
+                if let serialPerPlayer = serialResult.bytesPerPlayer, let parallelPerPlayer = parallelResult.bytesPerPlayer {
+                    print("    Serial payload:   \(serialResult.snapshotSize) bytes total (per player: \(serialPerPlayer) bytes)")
+                    print("    Parallel payload: \(parallelResult.snapshotSize) bytes total (per player: \(parallelPerPlayer) bytes)")
+                } else {
+                    print("    Serial payload:   \(serialResult.snapshotSize) bytes")
+                    print("    Parallel payload: \(parallelResult.snapshotSize) bytes")
+                }
                 print("    Speedup:  \(String(format: "%.2fx", speedup))")
 
                 // Use parallel result as the main result (it's the default mode)
@@ -195,7 +211,11 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
             )
 
             print("    Average: \(String(format: "%.4f", result.averageTime * 1000))ms")
-            print("    Payload: \(result.snapshotSize) bytes")
+            if let bytesPerPlayer = result.bytesPerPlayer {
+                print("    Total Payload: \(result.snapshotSize) bytes (per player: \(bytesPerPlayer) bytes)")
+            } else {
+                print("    Payload: \(result.snapshotSize) bytes")
+            }
 
             allResults.append(result)
             }
@@ -213,7 +233,8 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
             maxTime: 0,
             snapshotSize: 0,
             throughput: 0,
-            executionMode: "TransportAdapter Sync Comparison"
+            executionMode: "TransportAdapter Sync Comparison",
+            bytesPerPlayer: nil
         )
     }
 
@@ -229,64 +250,69 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
         syncState.hands = state.hands
         syncState.round = state.round
 
-        // Create minimal land definition with tick handler to modify state
-        // This ensures we have actual state changes to trigger diff computation
-        // Clamp dirty ratio to [0, 1] to avoid invalid values
+        // Create minimal land definition with deterministic mutations.
+        // This ensures consistent diffs across serial vs parallel runs.
+        // Clamp dirty ratio to [0, 1] to avoid invalid values.
         let clampedDirtyRatio = max(0.0, min(dirtyPlayerRatio, 1.0))
         let clampedBroadcastRatio = max(0.0, min(broadcastPlayerRatio, 1.0))
 
+        @Sendable func applyDeterministicMutations(
+            state: inout BenchmarkStateForSync,
+            iteration: Int
+        ) {
+            state.round += 1
+
+            let allPlayerIDs = state.hands.keys.sorted { $0.rawValue < $1.rawValue }
+            guard !allPlayerIDs.isEmpty else { return }
+
+            let rawCount = Int(Double(allPlayerIDs.count) * clampedDirtyRatio)
+            let numPlayersToModify = max(1, min(rawCount, allPlayerIDs.count))
+            let startIndex = (iteration * 7) % allPlayerIDs.count
+
+            for offset in 0..<numPlayersToModify {
+                let playerID = allPlayerIDs[(startIndex + offset) % allPlayerIDs.count]
+                guard var hand = state.hands[playerID], !hand.cards.isEmpty else {
+                    continue
+                }
+                let cardIndex = (iteration + offset) % hand.cards.count
+                let oldCard = hand.cards[cardIndex]
+                let suit = (oldCard.suit + 1 + (iteration % 3)) % 4
+                let rank = (oldCard.rank + 1 + (iteration % 7)) % 13
+                hand.cards[cardIndex] = BenchmarkCard(
+                    id: oldCard.id,
+                    suit: suit,
+                    rank: rank
+                )
+                state.hands[playerID] = hand
+            }
+
+            if clampedBroadcastRatio > 0.0 {
+                let rawBroadcastCount = Int(Double(allPlayerIDs.count) * clampedBroadcastRatio)
+                let numBroadcastPlayersToModify = max(1, min(rawBroadcastCount, allPlayerIDs.count))
+                let broadcastStart = (iteration * 3) % allPlayerIDs.count
+
+                for offset in 0..<numBroadcastPlayersToModify {
+                    let playerID = allPlayerIDs[(broadcastStart + offset) % allPlayerIDs.count]
+                    guard var player = state.players[playerID] else {
+                        continue
+                    }
+                    var delta = ((iteration + offset) % 2 == 0) ? 1 : -1
+                    if player.hpCurrent <= 0 {
+                        delta = 1
+                    } else if player.hpCurrent >= player.hpMax {
+                        delta = -1
+                    }
+                    player.hpCurrent = max(0, min(player.hpMax, player.hpCurrent + delta))
+                    state.players[playerID] = player
+                }
+            }
+        }
+
         let definition = Land("benchmark-sync", using: BenchmarkStateForSync.self) {
-            Rules {}
-
-            Lifetime { (config: inout LifetimeConfig<BenchmarkStateForSync>) in
-                config.tickInterval = .milliseconds(1)
-                config.tickHandler = { (state: inout BenchmarkStateForSync, ctx: LandContext) in
-                    // Modify broadcast field to trigger broadcast diff
-                    state.round += 1
-
-                    // Modify per-player fields for a few random players to trigger per-player diffs
-                    // This simulates real-world scenarios where some players' data changes
-                    let allPlayerIDs = Array(state.hands.keys)
-                    guard !allPlayerIDs.isEmpty else { return }
-
-                    // Approximate number of players to modify based on configured ratio.
-                    // Always modify at least 1 player to ensure有實際 per-player diff。
-                    let rawCount = Int(Double(allPlayerIDs.count) * clampedDirtyRatio)
-                    let numPlayersToModify = max(1, min(rawCount, allPlayerIDs.count))
-
-                    // Randomly pick distinct players to modify
-                    let selectedPlayers = allPlayerIDs.shuffled().prefix(numPlayersToModify)
-                    for playerID in selectedPlayers {
-                        // IMPORTANT: keep hand size stable; only mutate existing cards,
-                        // do NOT append new ones, so state size stays roughly constant
-                        if var hand = state.hands[playerID], !hand.cards.isEmpty {
-                            let index = Int.random(in: 0..<hand.cards.count)
-                            let oldCard = hand.cards[index]
-                            hand.cards[index] = BenchmarkCard(
-                                id: oldCard.id,
-                                suit: Int.random(in: 0..<4),
-                                rank: Int.random(in: 0..<13)
-                            )
-                            state.hands[playerID] = hand
-                        }
-                    }
-
-                    // Optionally mutate broadcast player state to simulate public player updates.
-                    // This typically makes sync cost dominated by the broadcast `players` dictionary.
-                    if clampedBroadcastRatio > 0.0 {
-                        let rawBroadcastCount = Int(Double(allPlayerIDs.count) * clampedBroadcastRatio)
-                        let numBroadcastPlayersToModify = max(1, min(rawBroadcastCount, allPlayerIDs.count))
-
-                        let selectedBroadcastPlayers = allPlayerIDs.shuffled().prefix(numBroadcastPlayersToModify)
-                        for playerID in selectedBroadcastPlayers {
-                            if var player = state.players[playerID] {
-                                // Keep payload size stable: only mutate scalar fields.
-                                let delta = (state.round % 3) - 1 // -1, 0, 1
-                                player.hpCurrent = max(0, min(player.hpMax, player.hpCurrent + delta))
-                                state.players[playerID] = player
-                            }
-                        }
-                    }
+            Rules {
+                HandleAction(BenchmarkMutationAction.self) { state, action, _ in
+                    applyDeterministicMutations(state: &state, iteration: action.iteration)
+                    return BenchmarkMutationResponse(applied: true)
                 }
             }
         }
@@ -346,64 +372,59 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
         // Initial sync to populate cache
         await adapter.syncNow()
 
-        // Wait a bit for tick to modify state, then warmup
-        try? await Task.sleep(for: .milliseconds(10))
-        for _ in 0..<min(5, iterations / 10) {
-            try? await Task.sleep(for: .milliseconds(2))  // Let tick modify state
-            await adapter.syncNow()
-        }
+        let actionPlayerID = playerIDs.first ?? PlayerID("player_0")
+        let actionClientID = ClientID("client-0")
+        let actionSessionID = SessionID("session-0")
 
-        // Benchmark: Measure sync performance with state changes
-        // Tick is running in background, modifying state periodically
-        // We just measure sync performance when state has changed
-        // Wait once before starting to ensure state has changed via tick
-        // This wait happens BEFORE measurement starts, so it's not included in the timing
-        try? await Task.sleep(for: .milliseconds(2))
-
-        await mockTransport.resetCounts()
-
-        #if canImport(Foundation)
-        let startTime = Date().timeIntervalSince1970
-        #else
-        let startTime = ContinuousClock.now
-        #endif
-
-        for _ in 0..<iterations {
-            // Measure syncNow() which includes:
-            // 1. beginSync() - may wait for actor serialization if tick handler is running
-            // 2. Core sync operations (extract snapshot, compute diff, encode, send)
-            // 3. endSync()
-            //
-            // Note: beginSync() wait time is minimal in practice (tick handlers are fast),
-            // and is necessary to ensure state consistency. The core sync operations
-            // (diff computation, encoding) are the main performance bottleneck.
-            await adapter.syncNow()  // Sync with actual diffs
-
-            // Small sleep between iterations to allow tick to modify state for next iteration
-            // This sleep is NOT included in the measurement to get accurate sync performance
-            // We subtract this time from the total to measure only core sync time
-            if iterations > 1 {
-                try? await Task.sleep(for: .milliseconds(1))
+        let warmupIterations = min(5, iterations / 10)
+        if warmupIterations > 0 {
+            for i in 0..<warmupIterations {
+                let action = BenchmarkMutationAction(iteration: i)
+                _ = try? await keeper.handleAction(
+                    action,
+                    playerID: actionPlayerID,
+                    clientID: actionClientID,
+                    sessionID: actionSessionID
+                )
+                await adapter.syncNow()
             }
         }
 
-        #if canImport(Foundation)
-        let totalTime = Date().timeIntervalSince1970 - startTime
-        #else
-        let endTime = ContinuousClock.now
-        let totalTime = endTime.timeIntervalSince(startTime)
-        #endif
+        await mockTransport.resetCounts()
 
-        // Subtract sleep time from total (only for iterations > 1)
-        // This ensures we only measure the actual sync execution time, not the wait time
-        // between iterations. The sleep time is used to allow tick handler to modify state
-        // for the next iteration, but is not part of the core sync performance.
-        let sleepTime = iterations > 1 ? Double(iterations - 1) * 0.001 : 0.0
-        let actualSyncTime = totalTime - sleepTime
-        let averageTime = actualSyncTime / Double(iterations)
-        let throughput = Double(iterations) / actualSyncTime
+        var totalSyncTime: TimeInterval = 0
+        for i in 0..<iterations {
+            let iterationIndex = warmupIterations + i
+            let action = BenchmarkMutationAction(iteration: iterationIndex)
+            _ = try? await keeper.handleAction(
+                action,
+                playerID: actionPlayerID,
+                clientID: actionClientID,
+                sessionID: actionSessionID
+            )
+
+            #if canImport(Foundation)
+            let startTime = Date().timeIntervalSince1970
+            #else
+            let startTime = ContinuousClock.now
+            #endif
+
+            await adapter.syncNow()
+
+            #if canImport(Foundation)
+            let endTime = Date().timeIntervalSince1970
+            totalSyncTime += endTime - startTime
+            #else
+            let endTime = ContinuousClock.now
+            totalSyncTime += endTime.timeIntervalSince(startTime)
+            #endif
+        }
+
+        let averageTime = iterations > 0 ? totalSyncTime / Double(iterations) : 0
+        let throughput = totalSyncTime > 0 ? Double(iterations) / totalSyncTime : 0
         let sendCounts = await mockTransport.snapshotCounts()
-        let bytesPerSync = iterations > 0 ? Double(sendCounts.bytes) / Double(iterations) : 0.0
+        let totalBytesPerSync = iterations > 0 ? Double(sendCounts.bytes) / Double(iterations) : 0.0
+        let bytesPerPlayer = playerIDs.count > 0 ? Int(totalBytesPerSync / Double(playerIDs.count)) : nil
 
         // Build mode label
         var modeLabel = enableDirtyTracking ? "DirtyTracking: On" : "DirtyTracking: Off"
@@ -423,9 +444,10 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
             averageTime: averageTime,
             minTime: averageTime,
             maxTime: averageTime,
-            snapshotSize: Int(bytesPerSync.rounded()),
+            snapshotSize: Int(totalBytesPerSync.rounded()),
             throughput: throughput,
-            executionMode: modeLabel
+            executionMode: modeLabel,
+            bytesPerPlayer: bytesPerPlayer
         )
     }
 }

@@ -1,13 +1,13 @@
 # CPU 承載能力估算（以 30 人房間為例）
 
-本文件的目標是把「TransportAdapter.syncNow() 的 benchmark 數據」轉成可用的容量估算方式，並把不同情境（dirty ratio / 公開狀態是否每 tick 都在變）分開說清楚。
+本文件的目標是把「TransportAdapter.syncNow() 的 benchmark 數據」轉成可用的容量估算方式，並把不同情境（dirty ratio / 公開狀態是否每次 sync 前都在變）分開說清楚。
 
 ## TL;DR（可引用結論）
 
 - **推薦估算基準**：AMD / `transport-sync-players` / dirty on / parallel
-- **30 人、Medium State、20Hz**：約 188–231 rooms（**未套 safetyFactor**）
-- **50 人、Medium State、20Hz**：約 91–107 rooms（**未套 safetyFactor**）
-- **10Hz 對應倍增**：30 人約 376–462 rooms，50 人約 182–214 rooms（**未套 safetyFactor**）
+- **30 人、Medium State、20Hz**：約 197–236 rooms（**未套 safetyFactor**）
+- **50 人、Medium State、20Hz**：約 86–116 rooms（**未套 safetyFactor**）
+- **10Hz 對應倍增**：30 人約 394–472 rooms，50 人約 172–233 rooms（**未套 safetyFactor**）
 - **safetyFactor 建議**：保守 0.6；一般 0.7
 
 ## 測試環境與測到的是什麼
@@ -39,6 +39,7 @@
 - **編譯模式**：Release
 - **測量內容**：`TransportAdapter.syncNow()` 的 CPU 時間（含 snapshot/diff/JSON encode + mock transport send）
 - **Payload bytes**：以每次 sync 送出的 encoded `Data.count` 累加計算（總 bytes / iterations，不含 WebSocket/TCP/TLS framing）
+- **狀態變更方式**：每次 iteration 先用 deterministic mutation 更新 state（無背景 tick），mutation 時間不計入 `syncNow()`
 - **不包含**：真實網路（TCP/TLS/WebSocket）、封包排隊、Client 端處理、跨機器延遲
 
 > 結論用法：把這裡的結果當成「server 端同步邏輯的 CPU 基準」，真實環境請用你自己的 state/tick/action 重新跑一次 benchmark 再估算。
@@ -48,20 +49,20 @@
 ### AMD 數據（推薦用於伺服器估算）
 
 - **原始情境（players 通常不變）**
-  - dirty on：`transport-sync-dirty-on-AMD_Ryzen_5_7600X_6_Core_Proce-12cores-15GB-swift6.0-20260101-091359.txt`
-  - dirty off：`transport-sync-dirty-off-AMD_Ryzen_5_7600X_6_Core_Proce-12cores-15GB-swift6.0-20260101-091359.txt`
-- **更貼近實務（公開 players 也會每 tick 變動）**
-  - dirty on：`transport-sync-players-dirty-on-AMD_Ryzen_5_7600X_6_Core_Proce-12cores-15GB-swift6.0-20260101-091359.txt`
-  - dirty off：`transport-sync-players-dirty-off-AMD_Ryzen_5_7600X_6_Core_Proce-12cores-15GB-swift6.0-20260101-091359.txt`
+  - dirty on：`transport-sync-dirty-on-AMD_Ryzen_5_7600X_6_Core_Proce-12cores-15GB-swift6.0-20260101-121509.txt`
+  - dirty off：`transport-sync-dirty-off-AMD_Ryzen_5_7600X_6_Core_Proce-12cores-15GB-swift6.0-20260101-121509.txt`
+- **更貼近實務（公開 players 也會每次 sync 前變動）**
+  - dirty on：`transport-sync-players-dirty-on-AMD_Ryzen_5_7600X_6_Core_Proce-12cores-15GB-swift6.0-20260101-121509.txt`
+  - dirty off：`transport-sync-players-dirty-off-AMD_Ryzen_5_7600X_6_Core_Proce-12cores-15GB-swift6.0-20260101-121509.txt`
 
 ### Mac 數據（參考）
 
 - **原始情境（players 通常不變）**
-  - dirty on：`transport-sync-dirty-on-Apple_M2-8cores-16GB-swift6.2-20260101-165802.txt`
-  - dirty off：`transport-sync-dirty-off-Apple_M2-8cores-16GB-swift6.2-20260101-165802.txt`
-- **更貼近實務（公開 players 也會每 tick 變動）**
-  - dirty on：`transport-sync-players-dirty-on-Apple_M2-8cores-16GB-swift6.2-20260101-165802.txt`
-  - dirty off：`transport-sync-players-dirty-off-Apple_M2-8cores-16GB-swift6.2-20260101-165802.txt`
+  - dirty on：`transport-sync-dirty-on-Apple_M2-8cores-16GB-swift6.2-20260101-215032.txt`
+  - dirty off：`transport-sync-dirty-off-Apple_M2-8cores-16GB-swift6.2-20260101-215032.txt`
+- **更貼近實務（公開 players 也會每次 sync 前變動）**
+  - dirty on：`transport-sync-players-dirty-on-Apple_M2-8cores-16GB-swift6.2-20260101-215032.txt`
+  - dirty off：`transport-sync-players-dirty-off-Apple_M2-8cores-16GB-swift6.2-20260101-215032.txt`
 
 執行方式（Release）：
 
@@ -107,7 +108,7 @@ bash Tools/CLI/run-transport-sync-benchmarks.sh
 4. **測試配置差異影響結果**
    - **發現**：不同 iterations 數量的測試結果差異較大
    - **默認測試**：100 iterations（用於容量估算）
-   - **編碼比較測試**：50 iterations（用於評估相對加速比）
+   - **Serial/Parallel 比較 suite**：50 iterations（用於評估相對加速比）
    - **建議**：不要直接比較不同 iterations 的絕對時間，只比較相對加速比
 
 ### 最佳實踐
@@ -122,7 +123,7 @@ bash Tools/CLI/run-transport-sync-benchmarks.sh
 
 2. **數據解讀時**：
    - ✅ 使用默認測試數據（100 iterations）進行容量估算
-   - ✅ 使用編碼比較測試數據評估相對加速比
+   - ✅ 使用 Serial/Parallel 比較數據評估相對加速比
    - ✅ 優先使用 AMD 數據進行伺服器效能估算
    - ❌ 不要直接比較不同 iterations 或不同平台的絕對時間
 
@@ -134,7 +135,7 @@ bash Tools/CLI/run-transport-sync-benchmarks.sh
 > **注意**：
 > - 新版本已啟用平行 JSON 編碼（Parallel Encoding），預設對 JSON codec 啟用
 > - 默認測試（100 iterations）的數據用於容量估算
-> - 編碼比較測試（50 iterations，獨立 process）用於評估平行編碼的加速比
+> - Serial/Parallel 比較 suite（50 iterations，獨立 process）用於評估平行編碼的加速比
 > - **Mac 用戶建議**：如果發現數據不穩定，可以手動拆開運行不同的測試套件，避免連續運行導致熱節流
 
 ## Benchmark 模型（你在估算時要知道的假設）
@@ -148,12 +149,12 @@ bash Tools/CLI/run-transport-sync-benchmarks.sh
 
 ### 兩種情境差異
 
-- `transport-sync`：每 tick **一定改 `round`**，另外改一部分玩家的 `hands`（依 dirty ratio），但 **通常不改 `players`**。
-- `transport-sync-players`：在上述基礎上，另外每 tick **也會改 `players`（預設 ~100% 玩家）**，模擬「位置/HP/狀態等公開資訊常常更新」。
+- `transport-sync`：每次 sync 前 **一定改 `round`**，另外改一部分玩家的 `hands`（依 dirty ratio），但 **通常不改 `players`**。
+- `transport-sync-players`：在上述基礎上，另外每次 sync 前 **也會改 `players`（預設 ~100% 玩家）**，模擬「位置/HP/狀態等公開資訊常常更新」。
 
 ### dirty ratio 的意思
 
-這裡的 Low/Medium/High 是「每 tick 會被挑中去改 per-player hands 的玩家比例（約略）」：
+這裡的 Low/Medium/High 是「每次 sync 前會被挑中去改 per-player hands 的玩家比例（約略）」：
 
 - Low：~5%
 - Medium：~20%
@@ -163,31 +164,32 @@ bash Tools/CLI/run-transport-sync-benchmarks.sh
 
 ## 最新數據（AMD 平台，建議用於伺服器估算）
 
-下面列的是 **Medium State（Cards/Player: 10）**，取 **30 人房間** 與 **50 人房間** 的數據。
+下面列的是 **Medium State（Cards/Player: 10）**，取 **30 人房間** 與 **50 人房間** 的數據；若某情境只量到 Serial 或 Parallel，表格會以 `-` 標示。
 
-**格式說明**：表格中顯示 Serial（串行編碼）和 Parallel（平行編碼）兩種模式的時間，括號內為加速比（Serial / Parallel；< 1.0 表示 Parallel 較慢）。
+**格式說明**：表格中顯示 Serial（串行編碼）和 Parallel（平行編碼）兩種模式的時間，括號內為加速比（Serial / Parallel；< 1.0 表示 Parallel 較慢），缺值以 `-` 表示。
+**註記**：本次資料的 Serial 數據仍為 50 iterations（尚未以 100 iterations 重跑）。
 
 ### 情境 A：`transport-sync`（players 通常不變）
 
 #### Dirty Tracking ON（AMD 數據）
 
-**Medium State (10 Cards/Player, Serial/Parallel 比較，50 iterations)：**
+**Medium State (10 Cards/Player, Parallel 100 iterations / Serial 50 iterations)：**
 
 | Dirty Ratio | 30 人（Parallel） | 30 人（Serial） | 50 人（Parallel） | 50 人（Serial） |
 | --- | ---: | ---: | ---: | ---: |
-| Low ~5% | 0.6984ms (1.04x) | 0.7236ms | 2.3680ms (0.73x) | 1.7207ms |
-| Medium ~20% | 0.6984ms (1.04x) | 0.7236ms | 2.3680ms (0.73x) | 1.7207ms |
-| High ~80% | 1.0116ms (1.90x) | 1.9176ms | 2.7672ms (1.13x) | 3.1291ms |
+| Low ~5% | - | 0.8406ms | - | 1.5247ms |
+| Medium ~20% | 0.7517ms | - | 2.0515ms | - |
+| High ~80% | 1.0207ms (2.19x) | 2.2405ms | 2.7511ms (1.51x) | 4.1463ms |
 
 #### Dirty Tracking OFF（AMD 數據）
 
-**Medium State (10 Cards/Player, Serial/Parallel 比較，50 iterations)：**
+**Medium State (10 Cards/Player, Parallel 100 iterations / Serial 50 iterations)：**
 
 | Dirty Ratio | 30 人（Parallel） | 30 人（Serial） | 50 人（Parallel） | 50 人（Serial） |
 | --- | ---: | ---: | ---: | ---: |
-| Low ~5% | 0.7263ms (0.97x) | 0.7048ms | 2.2472ms (0.86x) | 1.9287ms |
-| Medium ~20% | 0.7263ms (0.97x) | 0.7048ms | 2.2472ms (0.86x) | 1.9287ms |
-| High ~80% | 0.9562ms (1.80x) | 1.7223ms | 2.7294ms (1.51x) | 4.1331ms |
+| Low ~5% | - | 1.0002ms | - | 2.2786ms |
+| Medium ~20% | 0.9088ms | - | 2.5284ms | - |
+| High ~80% | 0.9841ms (2.13x) | 2.0956ms | 2.8758ms (1.67x) | 4.8067ms |
 
 ### 情境 B：`transport-sync-players`（公開 players 也會變）
 
@@ -197,38 +199,31 @@ bash Tools/CLI/run-transport-sync-benchmarks.sh
 
 | Dirty Ratio | 30 人（Parallel） | 50 人（Parallel） |
 | --- | ---: | ---: |
-| Low hands ~5% | 0.6094ms | 1.4175ms |
-| Medium hands ~20% | 0.6394ms | 1.5295ms |
-| High hands ~80% | 0.6184ms | 1.7359ms |
+| Low hands ~5% | 1.3573ms | 2.7505ms |
+| Medium hands ~20% | 1.6113ms | 3.3467ms |
+| High hands ~80% | 1.6254ms | 3.7188ms |
 
-**Medium State (10 Cards/Player, Serial/Parallel 比較，50 iterations)：**
+**Medium State (10 Cards/Player, Parallel 100 iterations / Serial 50 iterations)：**
 
 | Dirty Ratio | 30 人（Parallel） | 30 人（Serial） | 50 人（Parallel） | 50 人（Serial） |
 | --- | ---: | ---: | ---: | ---: |
-| Low hands ~5% | 1.3832ms (1.75x) | 2.4266ms | 2.9873ms (2.10x) | 6.2702ms |
-| Medium hands ~20% | 1.4389ms | - | 3.1692ms | - |
-| High hands ~80% | 1.6986ms (1.44x) | 2.4378ms | 3.5335ms (2.62x) | 9.2571ms |
-
-**編碼比較測試（50 iterations，獨立 process）：**
-
-| Dirty Ratio | 30 人（Serial） | 30 人（Parallel） | 50 人（Serial） | 50 人（Parallel） |
-| --- | ---: | ---: | ---: | ---: |
-| Low hands ~5% | 1.4104ms | 0.6094ms (2.31x) | 3.7975ms | 1.4175ms (2.68x) |
-| High hands ~80% | 2.7883ms | 0.6184ms (4.51x) | 4.5093ms | 1.7359ms (2.60x) |
+| Low hands ~5% | 1.3573ms (1.77x) | 2.4083ms | 2.7505ms (2.01x) | 5.5315ms |
+| Medium hands ~20% | 1.6113ms | - | 3.3467ms | - |
+| High hands ~80% | 1.6254ms (1.97x) | 3.2030ms | 3.7188ms (2.11x) | 7.8302ms |
 
 > **重要發現**：
-> - AMD 平台上，平行編碼在 **High dirty ratio** 和 **50+ 玩家**時效果非常明顯（可達 2.3-4.5x 提升）
-> - 在 **Low dirty ratio** 時，平行編碼也有明顯優勢（2.3-2.7x）
+> - AMD 平台上，平行編碼在 **High dirty ratio** 和 **50+ 玩家**時提升明顯（約 2.0-3.3x，dirty off 最高）
+> - 在 **Low dirty ratio** 時，平行編碼仍有穩定優勢（約 1.7-2.0x）
 > - **建議使用 AMD 數據進行伺服器容量估算**，因為數據更穩定可靠
 
 #### Dirty Tracking OFF（AMD 數據）
-**Medium State (10 Cards/Player, Serial/Parallel 比較，50 iterations)：**
+**Medium State (10 Cards/Player, Parallel 100 iterations / Serial 50 iterations)：**
 
 | Dirty Ratio | 30 人（Parallel） | 30 人（Serial） | 50 人（Parallel） | 50 人（Serial） |
 | --- | ---: | ---: | ---: | ---: |
-| Low hands ~5% | 1.3386ms (1.63x) | 2.1799ms | 3.2104ms (1.98x) | 6.3645ms |
-| Medium hands ~20% | 1.3931ms | - | 2.9662ms | - |
-| High hands ~80% | 1.7187ms (1.43x) | 2.4550ms | 3.5143ms (2.11x) | 7.4051ms |
+| Low hands ~5% | 1.3338ms (1.70x) | 2.2738ms | 2.8757ms (2.39x) | 6.8735ms |
+| Medium hands ~20% | 1.3072ms | - | 3.0294ms | - |
+| High hands ~80% | 1.6202ms (2.80x) | 4.5318ms | 3.7374ms (3.32x) | 12.3988ms |
 
 > **解讀**：
 > - 當 `players` 也變動時（情境 B），sync 成本會明顯上升
@@ -257,6 +252,7 @@ bash Tools/CLI/run-transport-sync-benchmarks.sh
 ### 對比說明
 
 以下對比舊版 Mac 數據（2025-12-31 之前，未啟用平行編碼優化）與新版 Mac 數據（2026-01-01，已啟用平行編碼優化）。
+此段比較沿用早期 Mac logs（未含 deterministic mutation）；最新數據請以「Mac 數據（參考）」段落為準。
 
 **舊版數據特徵**：
 - 未明確區分 Serial/Parallel 編碼模式
@@ -343,21 +339,21 @@ bash Tools/CLI/run-transport-sync-benchmarks.sh
 
 ### Mac 數據（參考）
 
-**情境 A：`transport-sync`（Medium State, 10 Cards/Player）**
+**情境 A：`transport-sync`（Medium State, 10 Cards/Player, Parallel 100 iterations / Serial 50 iterations）**
 
 | Dirty Ratio | 30 人（Parallel） | 30 人（Serial） | 50 人（Parallel） | 50 人（Serial） |
 | --- | ---: | ---: | ---: | ---: |
-| Low ~5% | 1.2226ms | 1.3267ms | 1.9379ms | 2.1126ms |
-| Medium ~20% | 1.1150ms | 1.0707ms | 2.4647ms | 2.2932ms |
-| High ~80% | 1.3409ms (1.44x) | 1.9245ms | 3.1123ms (1.18x) | 3.6702ms |
+| Low ~5% | - | 0.6262ms | - | 1.0449ms |
+| Medium ~20% | 0.6690ms | - | 1.0608ms | - |
+| High ~80% | 0.9230ms (1.64x) | 1.5118ms | 1.5015ms (1.72x) | 2.5779ms |
 
-**情境 B：`transport-sync-players`（Medium State, 10 Cards/Player）**
+**情境 B：`transport-sync-players`（Medium State, 10 Cards/Player, Parallel 100 iterations / Serial 50 iterations）**
 
 | Dirty Ratio | 30 人（Parallel） | 30 人（Serial） | 50 人（Parallel） | 50 人（Serial） |
 | --- | ---: | ---: | ---: | ---: |
-| Low hands ~5% | 1.9364ms (1.43x) | 2.7638ms | 3.5946ms (1.64x) | 5.8860ms |
-| Medium hands ~20% | 2.1873ms | - | 3.8984ms | - |
-| High hands ~80% | 2.3551ms (1.35x) | 3.1783ms | 4.3293ms (1.79x) | 7.7528ms |
+| Low hands ~5% | 1.3624ms (1.72x) | 2.3482ms | 2.9187ms (1.90x) | 5.5411ms |
+| Medium hands ~20% | 1.4383ms | - | 3.4090ms | - |
+| High hands ~80% | 1.8043ms (1.65x) | 2.9769ms | 3.4807ms (1.90x) | 6.6140ms |
 
 ## 容量估算方式（基於 AMD 數據）
 
@@ -384,41 +380,41 @@ rooms = cpuBudgetMsPerSec / roomCpuPerSec * safetyFactor
 
 以 **Medium State / 30 人 / dirty on / Parallel 編碼** 為例：
 
-- Low hands ~5%：`syncMs = 1.3832`
-- Medium hands ~20%：`syncMs = 1.4389`
-- High hands ~80%：`syncMs = 1.6986`
+- Low hands ~5%：`syncMs = 1.3573`
+- Medium hands ~20%：`syncMs = 1.6113`
+- High hands ~80%：`syncMs = 1.6254`
 
 假設 `overheadFactor = 0.5`、`safetyFactor = 1.0`（先不折減），使用 **AMD 12 核心**數據：
 
 - **20Hz（50ms/tick）**
-  - Low hands ~5%：`rooms ≈ 9600 / (1.3832 * 1.5 * 20) ≈ 231`
-  - Medium hands ~20%：`rooms ≈ 9600 / (1.4389 * 1.5 * 20) ≈ 222`
-  - High hands ~80%：`rooms ≈ 9600 / (1.6986 * 1.5 * 20) ≈ 188`
+  - Low hands ~5%：`rooms ≈ 9600 / (1.3573 * 1.5 * 20) ≈ 236`
+  - Medium hands ~20%：`rooms ≈ 9600 / (1.6113 * 1.5 * 20) ≈ 199`
+  - High hands ~80%：`rooms ≈ 9600 / (1.6254 * 1.5 * 20) ≈ 197`
 - **10Hz（100ms/tick）**
-  - Low hands ~5%：約 462
-  - Medium hands ~20%：約 444
-  - High hands ~80%：約 376
+  - Low hands ~5%：約 472
+  - Medium hands ~20%：約 397
+  - High hands ~80%：約 394
 
 ### 50 人房間示例（AMD 數據）
 
 以 **Medium State / 50 人 / dirty on / Parallel 編碼** 為例：
 
-- Low hands ~5%：`syncMs = 2.9873`
-- Medium hands ~20%：`syncMs = 3.1692`
-- High hands ~80%：`syncMs = 3.5335`
+- Low hands ~5%：`syncMs = 2.7505`
+- Medium hands ~20%：`syncMs = 3.3467`
+- High hands ~80%：`syncMs = 3.7188`
 
 假設 `overheadFactor = 0.5`、`safetyFactor = 1.0`（先不折減），使用 **AMD 12 核心**數據：
 
 - **20Hz（50ms/tick）**
-  - Low hands ~5%：`rooms ≈ 9600 / (2.9873 * 1.5 * 20) ≈ 107`
-  - Medium hands ~20%：`rooms ≈ 9600 / (3.1692 * 1.5 * 20) ≈ 101`
-  - High hands ~80%：`rooms ≈ 9600 / (3.5335 * 1.5 * 20) ≈ 91`
+  - Low hands ~5%：`rooms ≈ 9600 / (2.7505 * 1.5 * 20) ≈ 116`
+  - Medium hands ~20%：`rooms ≈ 9600 / (3.3467 * 1.5 * 20) ≈ 96`
+  - High hands ~80%：`rooms ≈ 9600 / (3.7188 * 1.5 * 20) ≈ 86`
 - **10Hz（100ms/tick）**
-  - Low hands ~5%：約 214
-  - Medium hands ~20%：約 202
-  - High hands ~80%：約 182
+  - Low hands ~5%：約 233
+  - Medium hands ~20%：約 191
+  - High hands ~80%：約 172
 
-> 這個範圍差很大是正常的：同步成本主要由「每 tick 你到底改了多少東西」決定。
+> 這個範圍差很大是正常的：同步成本主要由「每次 sync 前你到底改了多少東西」決定。
 
 ## 實務建議
 
@@ -428,8 +424,8 @@ rooms = cpuBudgetMsPerSec / roomCpuPerSec * safetyFactor
 
 3. **平行編碼效果**：
    - 預設已啟用平行編碼（JSON codec）
-   - 在 **High dirty ratio** 和 **50+ 玩家**時效果最明顯（可達 2-5x 提升）
-   - 在 **Low dirty ratio** 時也有明顯優勢（2-3x）
+   - 在 **High dirty ratio** 和 **50+ 玩家**時效果最明顯（約 2.0-3.3x 提升）
+   - 在 **Low dirty ratio** 時也有穩定優勢（約 1.7-2.0x）
    - 可通過 `TransportAdapter.setParallelEncodingEnabled(false)` 禁用
 
 4. **平台選擇**：
@@ -560,7 +556,7 @@ swift run -c release SwiftStateTreeBenchmarks transport-sync \
 1. **Iterations 數量**
    - 100 iterations 的數據比 50 iterations 更穩定
    - 默認測試（100 iterations）用於容量估算
-   - 編碼比較測試（50 iterations）用於評估相對加速比
+   - Serial/Parallel 比較 suite（50 iterations）用於評估相對加速比
 
 2. **測試順序**
    - 不同測試套件的執行順序可能影響結果（特別是 Mac 平台）
@@ -578,7 +574,7 @@ swift run -c release SwiftStateTreeBenchmarks transport-sync \
 
 2. **測試配置差異**：
    - 不同 iterations 數量的測試結果差異較大
-   - 編碼比較測試（50 iterations）的絕對時間可能與默認測試（100 iterations）差異較大
+   - Serial/Parallel 比較 suite（50 iterations）的絕對時間可能與默認測試（100 iterations）差異較大
 
 3. **系統影響**：
    - 系統負載、背景程序可能影響測試結果

@@ -147,7 +147,8 @@ struct DiffBenchmarkRunner: BenchmarkRunner {
                 maxTime: standardTimes.max() ?? 0,
                 snapshotSize: snapshotSize,
                 throughput: 1.0 / standardAverage,
-                executionMode: "Diff Generation (Standard, \(iterations) iterations)"
+                executionMode: "Diff Generation (Standard, \(iterations) iterations)",
+                bytesPerPlayer: nil
             )
             
         case .optimized:
@@ -164,7 +165,8 @@ struct DiffBenchmarkRunner: BenchmarkRunner {
                 maxTime: optimizedTimes.max() ?? 0,
                 snapshotSize: snapshotSize,
                 throughput: 1.0 / optimizedAverage,
-                executionMode: "Diff Generation (Optimized, \(iterations) iterations)"
+                executionMode: "Diff Generation (Optimized, \(iterations) iterations)",
+                bytesPerPlayer: nil
             )
             
         case .both:
@@ -191,7 +193,8 @@ struct DiffBenchmarkRunner: BenchmarkRunner {
                 maxTime: optimizedTimes.max() ?? 0,
                 snapshotSize: snapshotSize,
                 throughput: 1.0 / optimizedAverage,
-                executionMode: "Diff Generation (Optimized, \(iterations) iterations)"
+                executionMode: "Diff Generation (Optimized, \(iterations) iterations)",
+                bytesPerPlayer: nil
             )
         }
     }

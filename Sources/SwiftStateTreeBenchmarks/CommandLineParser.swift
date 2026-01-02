@@ -148,6 +148,7 @@ struct CommandLineParser {
           mirror         - Mirror vs Macro comparison
           transport-sync - TransportAdapter Sync Performance
           transport-sync-players - TransportAdapter Sync (broadcast players mutated each tick)
+          transport-concurrent-stability - TransportAdapter Concurrent Sync Stability Test
           all            - Run all suites (default)
 
         Examples:

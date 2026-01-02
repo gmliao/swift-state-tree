@@ -22,9 +22,12 @@ struct BenchmarkResult {
     let averageTime: TimeInterval  // in seconds
     let minTime: TimeInterval
     let maxTime: TimeInterval
-    let snapshotSize: Int  // Approximate size in bytes
+    let snapshotSize: Int  // Total bytes sent to all players per sync (for TransportAdapter benchmarks)
     let throughput: Double  // snapshots per second
     let executionMode: String  // "Single-threaded" or "Parallel (N cores)"
+    /// Bytes per player (average). Only meaningful for TransportAdapter benchmarks with multiple players.
+    /// For single-player benchmarks, this equals snapshotSize.
+    let bytesPerPlayer: Int?
     
     var formattedOutput: String {
         var table = TextTable(
@@ -47,7 +50,12 @@ struct BenchmarkResult {
         table.addRow(values: ["Min Time", String(format: "%.4f ms", minTime * 1000)])
         table.addRow(values: ["Max Time", String(format: "%.4f ms", maxTime * 1000)])
         table.addRow(values: ["Throughput", String(format: "%.2f snapshots/sec", throughput)])
-        table.addRow(values: ["Snapshot Size", "\(snapshotSize) bytes (~\(formatBytes(snapshotSize)))"])
+        if let bytesPerPlayer = bytesPerPlayer {
+            table.addRow(values: ["Total Size (all players)", "\(snapshotSize) bytes (~\(formatBytes(snapshotSize)))"])
+            table.addRow(values: ["Size per Player", "\(bytesPerPlayer) bytes (~\(formatBytes(bytesPerPlayer)))"])
+        } else {
+            table.addRow(values: ["Snapshot Size", "\(snapshotSize) bytes (~\(formatBytes(snapshotSize)))"])
+        }
         
         return table.render()
     }
@@ -57,11 +65,12 @@ struct BenchmarkResult {
         let minTimeMs = String(format: "%.4f", minTime * 1000)
         let maxTimeMs = String(format: "%.4f", maxTime * 1000)
         let throughputStr = String(format: "%.2f", throughput)
-        return "\(config.name),\(config.playerCount),\(config.cardsPerPlayer),8,\(config.iterations),\(executionMode),\(avgTimeMs),\(minTimeMs),\(maxTimeMs),\(throughputStr),\(snapshotSize)"
+        let bytesPerPlayerStr = bytesPerPlayer.map { "\($0)" } ?? ""
+        return "\(config.name),\(config.playerCount),\(config.cardsPerPlayer),8,\(config.iterations),\(executionMode),\(avgTimeMs),\(minTimeMs),\(maxTimeMs),\(throughputStr),\(snapshotSize),\(bytesPerPlayerStr)"
     }
     
     /// Formatted values for table display
-    var tableValues: (name: String, players: String, cards: String, iterations: String, mode: String, avgTime: String, minTime: String, maxTime: String, throughput: String, size: String) {
+    var tableValues: (name: String, players: String, cards: String, iterations: String, mode: String, avgTime: String, minTime: String, maxTime: String, throughput: String, totalSize: String, sizePerPlayer: String) {
         (
             name: config.name,
             players: "\(config.playerCount)",
@@ -72,7 +81,8 @@ struct BenchmarkResult {
             minTime: String(format: "%.4f", minTime * 1000),
             maxTime: String(format: "%.4f", maxTime * 1000),
             throughput: String(format: "%.2f", throughput),
-            size: "\(snapshotSize)"
+            totalSize: "\(snapshotSize)",
+            sizePerPlayer: bytesPerPlayer.map { "\($0)" } ?? "-"
         )
     }
 }
