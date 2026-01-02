@@ -13,7 +13,9 @@ set -o pipefail
 # Change to repository root (this script lives in Tools/CLI)
 cd "$(dirname "$0")/../.."
 
+# Ensure OUT_DIR doesn't contain any line endings or whitespace
 OUT_DIR="Notes/performance"
+OUT_DIR=$(echo -n "$OUT_DIR" | tr -d '\r\n' | xargs)
 mkdir -p "$OUT_DIR"
 
 # Generate timestamp for file naming (format: YYYYMMDD-HHMMSS)
