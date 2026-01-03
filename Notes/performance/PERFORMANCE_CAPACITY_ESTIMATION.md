@@ -108,7 +108,7 @@ bash Tools/CLI/run-transport-sync-benchmarks.sh
 4. **測試配置差異影響結果**
    - **發現**：不同 iterations 數量的測試結果差異較大
    - **默認測試**：100 iterations（用於容量估算）
-   - **Serial/Parallel 比較 suite**：50 iterations（用於評估相對加速比）
+- **Serial/Parallel 比較 suite**：100 iterations（用於評估相對加速比）
    - **建議**：不要直接比較不同 iterations 的絕對時間，只比較相對加速比
 
 ### 最佳實踐
@@ -135,7 +135,7 @@ bash Tools/CLI/run-transport-sync-benchmarks.sh
 > **注意**：
 > - 新版本已啟用平行 JSON 編碼（Parallel Encoding），預設對 JSON codec 啟用
 > - 默認測試（100 iterations）的數據用於容量估算
-> - Serial/Parallel 比較 suite（50 iterations，獨立 process）用於評估平行編碼的加速比
+> - Serial/Parallel 比較 suite（100 iterations，獨立 process）用於評估平行編碼的加速比
 > - **Mac 用戶建議**：如果發現數據不穩定，可以手動拆開運行不同的測試套件，避免連續運行導致熱節流
 
 ## Benchmark 模型（你在估算時要知道的假設）
@@ -167,7 +167,7 @@ bash Tools/CLI/run-transport-sync-benchmarks.sh
 下面列的是 **Medium State（Cards/Player: 10）**，取 **30 人房間** 與 **50 人房間** 的數據；若某情境只量到 Serial 或 Parallel，表格會以 `-` 標示。
 
 **格式說明**：表格中顯示 Serial（串行編碼）和 Parallel（平行編碼）兩種模式的時間，括號內為加速比（Serial / Parallel；< 1.0 表示 Parallel 較慢），缺值以 `-` 表示。
-**註記**：本次資料的 Serial 數據仍為 50 iterations（尚未以 100 iterations 重跑）。
+**註記**：最新 Serial 數據已改為 100 iterations（與 Parallel 一致）。
 
 ### 情境 A：`transport-sync`（players 通常不變）
 
@@ -207,9 +207,9 @@ bash Tools/CLI/run-transport-sync-benchmarks.sh
 
 | Dirty Ratio | 30 人（Parallel） | 30 人（Serial） | 50 人（Parallel） | 50 人（Serial） |
 | --- | ---: | ---: | ---: | ---: |
-| Low hands ~5% | 1.3573ms (1.77x) | 2.4083ms | 2.7505ms (2.01x) | 5.5315ms |
-| Medium hands ~20% | 1.6113ms | - | 3.3467ms | - |
-| High hands ~80% | 1.6254ms (1.97x) | 3.2030ms | 3.7188ms (2.11x) | 7.8302ms |
+| Low hands ~5% | 1.3531ms (1.77x) | 2.4083ms | 2.8208ms (2.01x) | 5.5315ms |
+| Medium hands ~20% | 1.4383ms | - | 3.4090ms | - |
+| High hands ~80% | 1.5651ms (1.90x) | 2.9769ms | 3.1434ms (1.90x) | 6.6140ms |
 
 > **重要發現**：
 > - AMD 平台上，平行編碼在 **High dirty ratio** 和 **50+ 玩家**時提升明顯（約 2.0-3.3x，dirty off 最高）
@@ -438,6 +438,7 @@ rooms = cpuBudgetMsPerSec / roomCpuPerSec * safetyFactor
 ## 下一步（頻寬口徑補齊）
 
 1. **Payload bytes 已可量到**：benchmark 會統計每次 sync 送出的 encoded bytes（總和 / iterations），但仍不含 WebSocket/TCP/TLS framing。
+   - 報表同時附帶 per-player 平均 bytes，方便估頻寬/成本
 2. **補兩組傳輸口徑**：
    - mock transport send（純 CPU + encode）
    - loopback WebSocket send（含協議與系統 call）
@@ -556,7 +557,7 @@ swift run -c release SwiftStateTreeBenchmarks transport-sync \
 1. **Iterations 數量**
    - 100 iterations 的數據比 50 iterations 更穩定
    - 默認測試（100 iterations）用於容量估算
-   - Serial/Parallel 比較 suite（50 iterations）用於評估相對加速比
+   - Serial/Parallel 比較 suite（100 iterations）用於評估相對加速比
 
 2. **測試順序**
    - 不同測試套件的執行順序可能影響結果（特別是 Mac 平台）
@@ -574,7 +575,7 @@ swift run -c release SwiftStateTreeBenchmarks transport-sync \
 
 2. **測試配置差異**：
    - 不同 iterations 數量的測試結果差異較大
-   - Serial/Parallel 比較 suite（50 iterations）的絕對時間可能與默認測試（100 iterations）差異較大
+   - Serial/Parallel 比較 suite（100 iterations）的絕對時間可能與默認測試（100 iterations）差異較大
 
 3. **系統影響**：
    - 系統負載、背景程序可能影響測試結果
