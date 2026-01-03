@@ -25,7 +25,11 @@ func main(parser: CommandLineParser) async {
             suiteType: $0,
             transportDirtyTrackingOverride: parser.transportDirtyTrackingOverride,
             dirtyRatioOverride: parser.transportDirtyRatioOverride,
-            playerCountsOverride: parser.playerCountsOverride
+            playerCountsOverride: parser.playerCountsOverride,
+            parallelConcurrencyOverride: parser.parallelConcurrencyOverride,
+            roomCountsOverride: parser.roomCountsOverride,
+            tickModeOverride: parser.tickModeOverride,
+            tickStridesOverride: parser.tickStridesOverride
         )
     }
 
@@ -40,7 +44,11 @@ func main(parser: CommandLineParser) async {
                     suiteType: $0,
                     transportDirtyTrackingOverride: parser.transportDirtyTrackingOverride,
                     dirtyRatioOverride: parser.transportDirtyRatioOverride,
-                    playerCountsOverride: parser.playerCountsOverride
+                    playerCountsOverride: parser.playerCountsOverride,
+                    parallelConcurrencyOverride: parser.parallelConcurrencyOverride,
+                    roomCountsOverride: parser.roomCountsOverride,
+                    tickModeOverride: parser.tickModeOverride,
+                    tickStridesOverride: parser.tickStridesOverride
                 )
             }
             for config in allConfigs {

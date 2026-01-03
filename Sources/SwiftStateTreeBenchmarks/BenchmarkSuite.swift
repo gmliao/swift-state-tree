@@ -42,6 +42,16 @@ struct BenchmarkSuite: @unchecked Sendable {
                     broadcastRatioLabel = ""
                 }
                 headerDescription = "\(config.name) (Dynamic Players: [\(dynamicPlayers)], Cards/Player: \(config.cardsPerPlayer), Iterations: \(config.iterations)\(broadcastRatioLabel))"
+            } else if let tuningRunner = runner as? TransportAdapterParallelEncodingTuningBenchmarkRunner {
+                let dynamicPlayers = tuningRunner.playerCounts.map(String.init).joined(separator: ", ")
+                let concurrencyLevels = tuningRunner.concurrencyLevels.map(String.init).joined(separator: ", ")
+                headerDescription = "\(config.name) (Dynamic Players: [\(dynamicPlayers)], Concurrency: [\(concurrencyLevels)], Cards/Player: \(config.cardsPerPlayer), Iterations: \(config.iterations))"
+            } else if let multiRoomRunner = runner as? TransportAdapterMultiRoomParallelEncodingBenchmarkRunner {
+                let roomCounts = multiRoomRunner.roomCounts.map(String.init).joined(separator: ", ")
+                let players = multiRoomRunner.playerCounts.map(String.init).joined(separator: ", ")
+                let concurrencyLevels = multiRoomRunner.concurrencyLevels.map(String.init).joined(separator: ", ")
+                let tickStrides = multiRoomRunner.tickStrides.map(String.init).joined(separator: ", ")
+                headerDescription = "\(config.name) (Rooms: [\(roomCounts)], Players/Room: [\(players)], Concurrency: [\(concurrencyLevels)], Tick: \(multiRoomRunner.tickMode.rawValue) [\(tickStrides)], Cards/Player: \(config.cardsPerPlayer), Iterations: \(config.iterations))"
             } else {
                 headerDescription = displayConfig.description
             }
@@ -64,6 +74,10 @@ struct BenchmarkSuite: @unchecked Sendable {
             if let syncRunner = mutableRunner as? TransportAdapterSyncBenchmarkRunner {
                 // Use all collected results instead of just the first one
                 results.append(contentsOf: syncRunner.allCollectedResults)
+            } else if let tuningRunner = mutableRunner as? TransportAdapterParallelEncodingTuningBenchmarkRunner {
+                results.append(contentsOf: tuningRunner.allCollectedResults)
+            } else if let multiRoomRunner = mutableRunner as? TransportAdapterMultiRoomParallelEncodingBenchmarkRunner {
+                results.append(contentsOf: multiRoomRunner.allCollectedResults)
             } else {
                 results.append(result)
             }
@@ -72,7 +86,9 @@ struct BenchmarkSuite: @unchecked Sendable {
             // 但對 TransportAdapter sync 壓力測試來說，runner 內部已經印出
             // 「Testing with X players... Average: Y ms」這類摘要，
             // 再印一個表格噪音比較大，所以這裡特別略過。
-            if !(runner is TransportAdapterSyncBenchmarkRunner) {
+            if !(runner is TransportAdapterSyncBenchmarkRunner)
+                && !(runner is TransportAdapterParallelEncodingTuningBenchmarkRunner)
+                && !(runner is TransportAdapterMultiRoomParallelEncodingBenchmarkRunner) {
                 print(result.formattedOutput)
             }
         }
