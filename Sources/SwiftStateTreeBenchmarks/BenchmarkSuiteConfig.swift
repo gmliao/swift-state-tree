@@ -11,6 +11,8 @@ enum BenchmarkSuiteType: String, CaseIterable {
     case transportAdapterSync = "transport-sync"
     case transportAdapterSyncPlayers = "transport-sync-players"
     case transportAdapterConcurrentStability = "transport-concurrent-stability"
+    case transportAdapterParallelTuning = "transport-parallel-tuning"
+    case transportAdapterMultiRoomParallelTuning = "transport-multiroom-parallel-tuning"
     case all = "all"
 
     var displayName: String {
@@ -21,6 +23,8 @@ enum BenchmarkSuiteType: String, CaseIterable {
         case .transportAdapterSync: return "TransportAdapter Sync Performance"
         case .transportAdapterSyncPlayers: return "TransportAdapter Sync Performance (Broadcast Players)"
         case .transportAdapterConcurrentStability: return "TransportAdapter Concurrent Sync Stability"
+        case .transportAdapterParallelTuning: return "TransportAdapter Parallel Encoding Tuning"
+        case .transportAdapterMultiRoomParallelTuning: return "TransportAdapter Multi-Room Parallel Encoding Tuning"
         case .all: return "All Suites"
         }
     }
@@ -33,6 +37,8 @@ enum BenchmarkSuiteType: String, CaseIterable {
         case .transportAdapterSync: return "TransportAdapter sync performance benchmark"
         case .transportAdapterSyncPlayers: return "TransportAdapter sync benchmark with broadcast players mutated each tick"
         case .transportAdapterConcurrentStability: return "TransportAdapter concurrent sync stability and correctness test"
+        case .transportAdapterParallelTuning: return "TransportAdapter parallel encoding tuning benchmark"
+        case .transportAdapterMultiRoomParallelTuning: return "TransportAdapter multi-room parallel encoding benchmark"
         case .all: return "Run all benchmark suites"
         }
     }
@@ -51,7 +57,11 @@ struct BenchmarkSuites {
     static func all(
         transportDirtyTrackingOverride: Bool? = nil,
         dirtyRatioOverride: Double? = nil,
-        playerCountsOverride: [Int]? = nil
+        playerCountsOverride: [Int]? = nil,
+        parallelConcurrencyOverride: [Int]? = nil,
+        roomCountsOverride: [Int]? = nil,
+        tickModeOverride: TransportAdapterMultiRoomParallelEncodingBenchmarkRunner.TickMode? = nil,
+        tickStridesOverride: [Int]? = nil
     ) -> [BenchmarkSuiteConfig] {
         // If override provided, clamp to [0, 1] to避免無效值
         let clampedRatio = dirtyRatioOverride.map { max(0.0, min($0, 1.0)) }
@@ -64,6 +74,14 @@ struct BenchmarkSuites {
         // Use player counts override if provided; otherwise use defaults
         let defaultPlayerCounts = [4, 10, 20, 30, 50]
         let playerCounts = playerCountsOverride ?? defaultPlayerCounts
+        let defaultConcurrencyLevels = [1, 2, 4, 8, 16]
+        let concurrencyLevels = parallelConcurrencyOverride ?? defaultConcurrencyLevels
+        let defaultRoomCounts = [1, 2, 4, 8]
+        let roomCounts = roomCountsOverride ?? defaultRoomCounts
+        let defaultTickMode: TransportAdapterMultiRoomParallelEncodingBenchmarkRunner.TickMode = .staggered
+        let tickMode = tickModeOverride ?? defaultTickMode
+        let defaultTickStrides = [1, 2, 3, 4]
+        let tickStrides = tickStridesOverride ?? defaultTickStrides
 
         return [
             BenchmarkSuiteConfig(
@@ -429,6 +447,55 @@ struct BenchmarkSuites {
                         iterations: 50
                     )
                 ]
+            ),
+            BenchmarkSuiteConfig(
+                type: .transportAdapterParallelTuning,
+                name: "TransportParallelTuning-Medium20%",
+                runner: TransportAdapterParallelEncodingTuningBenchmarkRunner(
+                    playerCounts: playerCounts,
+                    concurrencyLevels: concurrencyLevels,
+                    dirtyPlayerRatio: mediumRatio,
+                    broadcastPlayerRatio: 0.0,
+                    enableDirtyTracking: transportDirtyTrackingOverride ?? true,
+                    includeSerialBaseline: true
+                ),
+                configurations: [
+                    BenchmarkConfig(
+                        name: "Small-5C",
+                        playerCount: 10,
+                        cardsPerPlayer: 5,
+                        iterations: 100
+                    ),
+                    BenchmarkConfig(
+                        name: "Medium-10C",
+                        playerCount: 100,
+                        cardsPerPlayer: 10,
+                        iterations: 100
+                    )
+                ]
+            ),
+            BenchmarkSuiteConfig(
+                type: .transportAdapterMultiRoomParallelTuning,
+                name: "TransportMultiRoomParallelTuning-Medium20%",
+                runner: TransportAdapterMultiRoomParallelEncodingBenchmarkRunner(
+                    roomCounts: roomCounts,
+                    playerCounts: playerCounts,
+                    concurrencyLevels: concurrencyLevels,
+                    tickMode: tickMode,
+                    tickStrides: tickStrides,
+                    dirtyPlayerRatio: mediumRatio,
+                    broadcastPlayerRatio: 0.0,
+                    enableDirtyTracking: transportDirtyTrackingOverride ?? true,
+                    includeSerialBaseline: true
+                ),
+                configurations: [
+                    BenchmarkConfig(
+                        name: "Small-5C",
+                        playerCount: 10,
+                        cardsPerPlayer: 5,
+                        iterations: 50
+                    )
+                ]
             )
         ]
     }
@@ -437,19 +504,31 @@ struct BenchmarkSuites {
         suiteType: BenchmarkSuiteType,
         transportDirtyTrackingOverride: Bool? = nil,
         dirtyRatioOverride: Double? = nil,
-        playerCountsOverride: [Int]? = nil
+        playerCountsOverride: [Int]? = nil,
+        parallelConcurrencyOverride: [Int]? = nil,
+        roomCountsOverride: [Int]? = nil,
+        tickModeOverride: TransportAdapterMultiRoomParallelEncodingBenchmarkRunner.TickMode? = nil,
+        tickStridesOverride: [Int]? = nil
     ) -> [BenchmarkSuiteConfig] {
         if suiteType == .all {
             return all(
                 transportDirtyTrackingOverride: transportDirtyTrackingOverride,
                 dirtyRatioOverride: dirtyRatioOverride,
-                playerCountsOverride: playerCountsOverride
+                playerCountsOverride: playerCountsOverride,
+                parallelConcurrencyOverride: parallelConcurrencyOverride,
+                roomCountsOverride: roomCountsOverride,
+                tickModeOverride: tickModeOverride,
+                tickStridesOverride: tickStridesOverride
             )
         }
         return all(
             transportDirtyTrackingOverride: transportDirtyTrackingOverride,
             dirtyRatioOverride: dirtyRatioOverride,
-            playerCountsOverride: playerCountsOverride
+            playerCountsOverride: playerCountsOverride,
+            parallelConcurrencyOverride: parallelConcurrencyOverride,
+            roomCountsOverride: roomCountsOverride,
+            tickModeOverride: tickModeOverride,
+            tickStridesOverride: tickStridesOverride
         ).filter { $0.type == suiteType }
     }
 }

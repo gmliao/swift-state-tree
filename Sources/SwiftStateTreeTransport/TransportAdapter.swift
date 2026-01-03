@@ -29,6 +29,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Only effective when using JSONTransportCodec (thread-safe).
     /// Default is true for JSON codec, false for other codecs.
     private var enableParallelEncoding: Bool
+    /// Maximum number of concurrent encoding tasks when parallel encoding is enabled.
+    /// This bounds TaskGroup fan-out to avoid one task per player.
+    private var parallelEncodingMaxConcurrency: Int
 
     // Track session to player mapping
     private var sessionToPlayer: [SessionID: PlayerID] = [:]
@@ -88,6 +91,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Auto-detect: enable for JSON codec (thread-safe), disable for others
             self.enableParallelEncoding = codec is JSONTransportCodec
         }
+        self.parallelEncodingMaxConcurrency = max(1, ProcessInfo.processInfo.activeProcessorCount)
         // Create logger with scope if not provided
         if let logger = logger {
             self.logger = logger.withScope("TransportAdapter")
@@ -965,6 +969,18 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         enableParallelEncoding
     }
 
+    /// Set the maximum number of concurrent encoding tasks.
+    ///
+    /// - Parameter maxConcurrency: Values less than 1 are clamped to 1.
+    public func setParallelEncodingMaxConcurrency(_ maxConcurrency: Int) {
+        parallelEncodingMaxConcurrency = max(1, maxConcurrency)
+    }
+
+    /// Get the maximum number of concurrent encoding tasks.
+    public func getParallelEncodingMaxConcurrency() -> Int {
+        parallelEncodingMaxConcurrency
+    }
+
     /// Describe update type and patch count
     private func describeUpdate(_ update: StateUpdate) -> (String, Int) {
         switch update {
@@ -1010,40 +1026,51 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private func encodeUpdatesInParallel(
         _ pendingUpdates: [PendingSyncUpdate]
     ) async -> [EncodedSyncUpdate] {
+        guard !pendingUpdates.isEmpty else {
+            return []
+        }
         // Capture codec once before parallel execution
         let codec = self.codec
+        let maxConcurrency = max(1, parallelEncodingMaxConcurrency)
+        let workerCount = min(maxConcurrency, pendingUpdates.count)
+        let chunkSize = (pendingUpdates.count + workerCount - 1) / workerCount
 
-        return await withTaskGroup(of: EncodedSyncUpdate.self, returning: [EncodedSyncUpdate].self) { group in
-            for pending in pendingUpdates {
+        return await withTaskGroup(of: [EncodedSyncUpdate].self, returning: [EncodedSyncUpdate].self) { group in
+            let encodeUpdate: @Sendable (PendingSyncUpdate) -> EncodedSyncUpdate = { pending in
+                do {
+                    // Reuse the same codec instance (JSONTransportCodec is thread-safe)
+                    let data = try codec.encode(pending.update)
+                    return EncodedSyncUpdate(
+                        sessionID: pending.sessionID,
+                        playerID: pending.playerID,
+                        updateType: pending.updateType,
+                        patchCount: pending.patchCount,
+                        payload: data,
+                        errorMessage: nil
+                    )
+                } catch {
+                    return EncodedSyncUpdate(
+                        sessionID: pending.sessionID,
+                        playerID: pending.playerID,
+                        updateType: pending.updateType,
+                        patchCount: pending.patchCount,
+                        payload: nil,
+                        errorMessage: "\(error)"
+                    )
+                }
+            }
+
+            for startIndex in stride(from: 0, to: pendingUpdates.count, by: chunkSize) {
+                let endIndex = min(startIndex + chunkSize, pendingUpdates.count)
                 group.addTask {
-                    do {
-                        // Reuse the same codec instance (JSONTransportCodec is thread-safe)
-                        let data = try codec.encode(pending.update)
-                        return EncodedSyncUpdate(
-                            sessionID: pending.sessionID,
-                            playerID: pending.playerID,
-                            updateType: pending.updateType,
-                            patchCount: pending.patchCount,
-                            payload: data,
-                            errorMessage: nil
-                        )
-                    } catch {
-                        return EncodedSyncUpdate(
-                            sessionID: pending.sessionID,
-                            playerID: pending.playerID,
-                            updateType: pending.updateType,
-                            patchCount: pending.patchCount,
-                            payload: nil,
-                            errorMessage: "\(error)"
-                        )
-                    }
+                    pendingUpdates[startIndex..<endIndex].map(encodeUpdate)
                 }
             }
 
             var results: [EncodedSyncUpdate] = []
             results.reserveCapacity(pendingUpdates.count)
-            for await result in group {
-                results.append(result)
+            for await chunkResult in group {
+                results.append(contentsOf: chunkResult)
             }
             return results
         }

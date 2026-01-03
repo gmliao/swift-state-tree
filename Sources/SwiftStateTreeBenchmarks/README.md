@@ -17,6 +17,8 @@ Benchmark 程式碼已模組化，方便擴展新的測試：
 - **DiffBenchmarkRunner.swift**: Standard vs Optimized Diff 比較
 - **MirrorVsMacroComparisonRunner.swift**: Mirror vs Macro 效能比較
 - **TransportAdapterSyncBenchmarkRunner.swift**: TransportAdapter 完整 sync 流程性能測試
+- **TransportAdapterParallelEncodingTuningBenchmarkRunner.swift**: TransportAdapter 平行編碼並行度調校測試（比較不同 maxConcurrency）
+- **TransportAdapterMultiRoomParallelEncodingBenchmarkRunner.swift**: TransportAdapter 多房間平行編碼測試（固定每房間人數、掃描房間數與並行度）
 
 ### 組織檔案
 - **BenchmarkSuite.swift**: Benchmark suite 執行邏輯
@@ -60,6 +62,12 @@ swift run SwiftStateTreeBenchmarks mirror
 
 # 執行 TransportAdapter Sync 性能測試
 swift run SwiftStateTreeBenchmarks transport-sync
+
+# 執行 TransportAdapter 平行編碼調校測試
+swift run SwiftStateTreeBenchmarks transport-parallel-tuning
+
+# 執行 TransportAdapter 多房間平行編碼測試
+swift run SwiftStateTreeBenchmarks transport-multiroom-parallel-tuning
 
 # 執行多個 suite
 swift run SwiftStateTreeBenchmarks single diff mirror
@@ -116,6 +124,19 @@ swift run SwiftStateTreeBenchmarks --csv
 swift run SwiftStateTreeBenchmarks single -c
 ```
 
+### 進階參數
+
+- `--dirty-on`: 強制啟用 dirty tracking
+- `--dirty-off`: 強制停用 dirty tracking
+- `--dirty-ratio=VAL`: 覆寫 dirty player ratio（0.0–1.0）
+- `--suite-name=NAME`: 只執行名稱完全匹配的 suite
+- `--player-counts=VAL`: 覆寫測試玩家數（comma-separated，例如 "4,10,20,30,50"）
+- `--parallel-concurrency=VAL`: 覆寫平行編碼並行度（comma-separated，例如 "1,2,4,8"）
+- `--room-counts=VAL`: 覆寫多房間測試的房間數（comma-separated，例如 "1,2,4,8"）
+- `--tick-mode=VAL`: 覆寫多房間 tick 模式（"synchronized" 或 "staggered"）
+- `--tick-strides=VAL`: 覆寫多房間 tick stride（comma-separated，例如 "1,2,3,4"）
+- `--no-wait`: 跳過「Press Enter」提示
+
 ### 可用的 Benchmark Suite
 
 | Suite | 說明 |
@@ -124,6 +145,8 @@ swift run SwiftStateTreeBenchmarks single -c
 | `diff` | Standard vs Optimized Diff 比較 |
 | `mirror` | Mirror vs Macro 比較 |
 | `transport-sync` | TransportAdapter 完整 sync 流程性能測試 |
+| `transport-parallel-tuning` | TransportAdapter 平行編碼並行度調校測試 |
+| `transport-multiroom-parallel-tuning` | TransportAdapter 多房間平行編碼測試 |
 | `all` | 執行所有 suite（預設） |
 
 ## 輸出說明
