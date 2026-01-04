@@ -187,8 +187,19 @@ MACHINE_ID=$(generate_machine_id)
 # Defaults (override via env vars)
 ROOM_COUNTS="${ROOM_COUNTS:-5,10,20,30,50}"
 PLAYER_COUNTS="${PLAYER_COUNTS:-4,10,20,30,50}"
-CONCURRENCY_LEVELS="${CONCURRENCY_LEVELS:-1,2,4,8,16}"
-TICK_MODE="${TICK_MODE:-staggered}"
+# Concurrency levels: This parameter is no longer used in the actual concurrency calculation.
+# The actual per-room concurrency is automatically adjusted based on player count:
+# 
+# Parallel encoding behavior:
+# - Players < 20: parallel encoding disabled (minPlayerCount threshold = 20)
+# - Players >= 20: per-room concurrency is min(perRoomCap, batchWorkers, playerCount)
+#   - perRoomCap: 2 (players < 30) or 4 (players >= 30)
+#   - batchWorkers: ceil(players / 12) where batchSize = 12
+#
+# Note: The concurrency parameter is kept for benchmark compatibility but doesn't affect
+# the actual encoding behavior. Actual concurrency is determined by perRoomCap and batchWorkers.
+CONCURRENCY_LEVELS="${CONCURRENCY_LEVELS:-4,8,16,32}"
+TICK_MODE="${TICK_MODE:-synchronized}"
 TICK_STRIDES="${TICK_STRIDES:-1,2,3,4}"
 DIRTY_RATIO="${DIRTY_RATIO:-}"
 # Whether to run tests in parallel (default: false, run sequentially)
@@ -211,12 +222,32 @@ echo "Machine ID: $MACHINE_ID"
 echo "Suite: $SUITE_NAME"
 echo "Room counts to test: $ROOM_COUNTS"
 echo "Players per room to test: $PLAYER_COUNTS"
-echo "Concurrency levels: $CONCURRENCY_LEVELS"
+echo "Concurrency levels (for benchmark compatibility, not used in actual calculation): $CONCURRENCY_LEVELS"
 echo "Tick mode: $TICK_MODE"
 echo "Tick strides: $TICK_STRIDES"
 if [ -n "$DIRTY_RATIO" ]; then
     echo "Dirty ratio override: $DIRTY_RATIO"
 fi
+echo ""
+echo "════════════════════════════════════════════════════════════════════════════════"
+echo "Parallel Encoding Behavior Information:"
+echo "════════════════════════════════════════════════════════════════════════════════"
+echo "  • Parallel encoding only activates when players >= 20 per room"
+echo "  • Actual per-room concurrency is limited by: min(perRoomCap, batchWorkers, playerCount)"
+echo ""
+echo "  Per-room concurrency calculation:"
+echo "    - perRoomCap: 2 (players < 30) or 4 (players >= 30)"
+echo "    - batchWorkers: ceil(players / 12) where batchSize = 12"
+echo ""
+echo "  Expected behavior:"
+echo "    • Rooms with 4-10 players: Parallel encoding DISABLED (below minPlayerCount=20)"
+echo "    • Rooms with 20-29 players: Per-room concurrency ~2 (limited by perRoomCap=2)"
+echo "    • Rooms with 30+ players: Per-room concurrency ~3-4 (limited by perRoomCap=4)"
+echo ""
+echo "  Note: Swift's TaskGroup automatically manages task queuing, so even if multiple"
+echo "        rooms create many tasks, the system will only run approximately CPU core"
+echo "        count tasks concurrently."
+echo "════════════════════════════════════════════════════════════════════════════════"
 echo "Total test combinations: $TOTAL_TESTS"
 echo "Run mode: $([ "$PARALLEL" = "true" ] && echo "PARALLEL" || echo "SEQUENTIAL")"
 echo "Results will be written to a single merged file."

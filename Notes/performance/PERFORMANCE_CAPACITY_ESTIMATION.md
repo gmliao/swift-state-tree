@@ -44,6 +44,35 @@
 
 > 結論用法：把這裡的結果當成「server 端同步邏輯的 CPU 基準」，真實環境請用你自己的 state/tick/action 重新跑一次 benchmark 再估算。
 
+## Multi-room 平行編碼調校（Staggered Tick）
+
+### 測試說明
+
+- 使用 `transport-multiroom-parallel-tuning` 套件
+- 每個房間一個 `LandKeeper + TransportAdapter`，同一個 process 內並行跑
+- **Tick 模式**：`staggered`（以 stride/offset 模擬錯峰更新，不用 sleep）
+- **目的**：觀察多房間下平行 JSON encode 的實際收益與最佳並行度
+
+### 主要結果（摘要）
+
+- 平行編碼收益 **多數落在 1.0–1.2x**，提升幅度有限
+- 小房間（<=10 人）幾乎沒有收益，甚至可能略慢
+- 20–50 人房間在某些組合有 1.1–1.3x 的小幅提升
+- `maxConcurrency` 沒有單一最佳值，2–4 通常最穩定
+
+### 最新測試檔案（參考）
+
+- AMD：`transport-multiroom-parallel-tuning-dirty-on-AMD_Ryzen_5_7600X_6_Core_Proce-12cores-15GB-swift6.0-20260104-020113.txt`
+- Mac：`transport-multiroom-parallel-tuning-dirty-on-Apple_M2-8cores-16GB-swift6.2-20260103-210541.txt`
+
+### 局限與注意事項
+
+- **仍是合成測試**：沒有真實網路 I/O、tick 排程、玩家輸入分布
+- **單一 process**：沒有跨服務器負載、沒有真實 WebSocket backpressure
+- **Tick 為虛擬錯峰**：雖然模擬不同房間更新頻率，但不等同實際 server 時序
+
+> 結論：平行編碼的收益有限，**真正準確的效能結論仍需要跑真實伺服器**（完整 action/tick/transport/IO）。
+
 ## 最新 Benchmark 檔案（2026-01-01 更新）
 
 ### AMD 數據（推薦用於伺服器估算）

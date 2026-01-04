@@ -27,11 +27,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Whether to enable parallel encoding for JSON codec.
     /// When enabled, multiple player updates are encoded in parallel using TaskGroup.
     /// Only effective when using JSONTransportCodec (thread-safe).
-    /// Default is true for JSON codec, false for other codecs.
+    /// Default is false unless explicitly enabled.
     private var enableParallelEncoding: Bool
-    /// Maximum number of concurrent encoding tasks when parallel encoding is enabled.
-    /// This bounds TaskGroup fan-out to avoid one task per player.
-    private var parallelEncodingMaxConcurrency: Int
+    /// Minimum player count required before parallel encoding is considered.
+    private var parallelEncodingMinPlayerCount: Int
+    /// Target number of players per encoding batch (used to derive worker count).
+    private var parallelEncodingBatchSize: Int
+    /// Player count threshold to increase per-room concurrency cap.
+    private var parallelEncodingHighPlayerThreshold: Int
+    /// Per-room concurrency cap for small rooms.
+    private var parallelEncodingLowConcurrencyCap: Int
+    /// Per-room concurrency cap for larger rooms.
+    private var parallelEncodingHighConcurrencyCap: Int
+    /// Active room count used to derive a per-room concurrency budget.
 
     // Track session to player mapping
     private var sessionToPlayer: [SessionID: PlayerID] = [:]
@@ -84,14 +92,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         self.enableDirtyTracking = enableDirtyTracking
         self.onLandDestroyedCallback = onLandDestroyed
 
-        // Default parallel encoding: enabled for JSON codec, disabled for others
+        // Default parallel encoding: disabled unless explicitly enabled.
         if let explicitValue = enableParallelEncoding {
             self.enableParallelEncoding = explicitValue
         } else {
-            // Auto-detect: enable for JSON codec (thread-safe), disable for others
-            self.enableParallelEncoding = codec is JSONTransportCodec
+            self.enableParallelEncoding = false
         }
-        self.parallelEncodingMaxConcurrency = max(1, ProcessInfo.processInfo.activeProcessorCount)
+        self.parallelEncodingMinPlayerCount = 20
+        self.parallelEncodingBatchSize = 12
+        self.parallelEncodingHighPlayerThreshold = 30
+        self.parallelEncodingLowConcurrencyCap = 2
+        self.parallelEncodingHighConcurrencyCap = 4
         // Create logger with scope if not provided
         if let logger = logger {
             self.logger = logger.withScope("TransportAdapter")
@@ -755,18 +766,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
             if !pendingUpdates.isEmpty {
                 let encodedUpdates: [EncodedSyncUpdate]
-                let useParallel = shouldParallelEncode
+                let decision = parallelEncodingDecision(pendingUpdateCount: pendingUpdates.count)
+                let useParallel = decision.useParallel
 
-                // Debug logging (only in debug builds to avoid performance impact)
-                #if DEBUG
-                if pendingUpdates.count == 10 {
-                    logger.debug("Encoding \(pendingUpdates.count) updates, parallel=\(useParallel), enableParallelEncoding=\(enableParallelEncoding)")
-                }
-                #endif
 
                 if useParallel {
                     // JSON encoding is independent per player, so we can parallelize it safely.
-                    encodedUpdates = await encodeUpdatesInParallel(pendingUpdates)
+                    encodedUpdates = await encodeUpdatesInParallel(
+                        pendingUpdates,
+                        maxConcurrency: decision.maxConcurrency
+                    )
                 } else {
                     encodedUpdates = encodeUpdatesSerially(pendingUpdates)
                 }
@@ -944,16 +953,62 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let errorMessage: String?
     }
 
-    /// Determine if parallel encoding should be used
-    /// Currently only enabled for JSON codec (thread-safe and benefits from parallelization)
-    private var shouldParallelEncode: Bool {
-        // Only enable parallel encoding for JSON codec
+    /// Determine if parallel encoding should be used and compute effective concurrency.
+    /// Decide whether to use parallel encoding and calculate the effective concurrency.
+    ///
+    /// In adaptive mode, the concurrency is calculated as:
+    /// `min(perRoomCap, batchWorkers, roomBudget, pendingUpdateCount)`
+    ///
+    /// - **perRoomCap**: Per-room concurrency cap based on player count
+    ///   - Players < highThreshold (30): lowCap (2)
+    ///   - Players >= highThreshold: highCap (4)
+    /// - **batchWorkers**: Number of workers needed based on batch size
+    ///   - Calculated as: `ceil(pendingUpdateCount / batchSize)`
+    ///   - batchSize defaults to 12
+    /// - **pendingUpdateCount**: Actual number of updates to encode (hard limit)
+    ///
+    /// Note: `maxConcurrency` is not included in the min() calculation because
+    /// `perRoomCap` and `batchWorkers` are typically much smaller, so `maxConcurrency`
+    /// rarely becomes the limiting factor. Each adapter only knows its own room,
+    /// so it can use the full global budget.
+    ///
+    /// - Parameter pendingUpdateCount: Number of player updates to encode
+    /// - Returns: Tuple of (should use parallel encoding, effective concurrency level)
+    private func parallelEncodingDecision(
+        pendingUpdateCount: Int
+    ) -> (useParallel: Bool, maxConcurrency: Int) {
         guard codec is JSONTransportCodec else {
-            return false
+            return (false, 1)
+        }
+        guard enableParallelEncoding else {
+            return (false, 1)
+        }
+        guard pendingUpdateCount > 1 else {
+            return (false, 1)
         }
 
-        // Use the configured value
-        return enableParallelEncoding
+        // Calculate concurrency based on multiple factors (adaptive mode)
+        let minPlayers = max(1, parallelEncodingMinPlayerCount)
+        if pendingUpdateCount < minPlayers {
+            return (false, 1)
+        }
+
+        // Calculate per-room cap based on player count
+        let highThreshold = max(minPlayers, parallelEncodingHighPlayerThreshold)
+        let lowCap = max(1, parallelEncodingLowConcurrencyCap)
+        let highCap = max(lowCap, parallelEncodingHighConcurrencyCap)
+        let perRoomCap = pendingUpdateCount >= highThreshold ? highCap : lowCap
+        
+        // Calculate batch workers based on batch size
+        let batchSize = max(1, parallelEncodingBatchSize)
+        let batchWorkers = max(1, (pendingUpdateCount + batchSize - 1) / batchSize)
+        
+        // Final concurrency is the minimum of all constraints
+        // Note: maxConcurrency is not included here because perRoomCap and batchWorkers
+        // are typically much smaller, so maxConcurrency rarely becomes the limiting factor
+        let concurrency = min(perRoomCap, batchWorkers, pendingUpdateCount)
+
+        return (concurrency > 1, concurrency)
     }
 
     /// Enable or disable parallel encoding at runtime.
@@ -969,16 +1024,26 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         enableParallelEncoding
     }
 
-    /// Set the maximum number of concurrent encoding tasks.
-    ///
-    /// - Parameter maxConcurrency: Values less than 1 are clamped to 1.
-    public func setParallelEncodingMaxConcurrency(_ maxConcurrency: Int) {
-        parallelEncodingMaxConcurrency = max(1, maxConcurrency)
+
+    /// Set the minimum player count required to consider parallel encoding.
+    public func setParallelEncodingMinPlayerCount(_ count: Int) {
+        parallelEncodingMinPlayerCount = max(1, count)
     }
 
-    /// Get the maximum number of concurrent encoding tasks.
-    public func getParallelEncodingMaxConcurrency() -> Int {
-        parallelEncodingMaxConcurrency
+    /// Set the target batch size (players per encoding task).
+    public func setParallelEncodingBatchSize(_ batchSize: Int) {
+        parallelEncodingBatchSize = max(1, batchSize)
+    }
+
+    /// Set the per-room concurrency caps and high-player threshold.
+    public func setParallelEncodingConcurrencyCaps(
+        lowPlayerCap: Int,
+        highPlayerCap: Int,
+        highPlayerThreshold: Int
+    ) {
+        parallelEncodingLowConcurrencyCap = max(1, lowPlayerCap)
+        parallelEncodingHighConcurrencyCap = max(parallelEncodingLowConcurrencyCap, highPlayerCap)
+        parallelEncodingHighPlayerThreshold = max(1, highPlayerThreshold)
     }
 
     /// Describe update type and patch count
@@ -1024,14 +1089,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Encode updates in parallel using TaskGroup
     /// This is safe for JSON codec as JSONEncoder is thread-safe
     private func encodeUpdatesInParallel(
-        _ pendingUpdates: [PendingSyncUpdate]
+        _ pendingUpdates: [PendingSyncUpdate],
+        maxConcurrency: Int
     ) async -> [EncodedSyncUpdate] {
         guard !pendingUpdates.isEmpty else {
             return []
         }
         // Capture codec once before parallel execution
         let codec = self.codec
-        let maxConcurrency = max(1, parallelEncodingMaxConcurrency)
+        let maxConcurrency = max(1, maxConcurrency)
         let workerCount = min(maxConcurrency, pendingUpdates.count)
         let chunkSize = (pendingUpdates.count + workerCount - 1) / workerCount
 
