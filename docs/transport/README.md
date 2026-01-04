@@ -62,9 +62,13 @@ PlayerSession 欄位優先序：
 
 ## 並行編碼（Parallel Encoding）
 
+> **狀態說明**：並行編碼功能已實作並完成測試，但目前效果不明。在合成測試環境中，收益多數落在 1.0–1.2x，提升幅度有限。**目前預設關閉**，後續需要進行機器人真實測試（包含完整 action/tick/transport/IO）才能比較明確定義實際效果。如需啟用，請在創建 `TransportAdapter` 時明確傳入 `enableParallelEncoding: true`。
+
 `TransportAdapter` 支援並行編碼狀態更新，以提升多玩家場景下的效能。
 
 ### 基本模式
+
+> **注意**：並行編碼目前預設關閉。如需啟用，請在創建 `TransportAdapter` 時明確傳入 `enableParallelEncoding: true`。
 
 當啟用並行編碼時，多個玩家的狀態更新會使用 `TaskGroup` 並行編碼：
 
