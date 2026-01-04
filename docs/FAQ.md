@@ -4,17 +4,17 @@
 
 ## 安裝與設定
 
-### Q: 如何安裝 SwiftStateTree？
+### Q: 如何開始使用 SwiftStateTree？
 
-A: 使用 Swift Package Manager 添加依賴：
+A: 目前建議直接 clone 專案來體驗：
 
-```swift
-dependencies: [
-    .package(url: "https://github.com/your-username/SwiftStateTree.git", from: "1.0.0")
-]
+```bash
+git clone https://github.com/your-username/SwiftStateTree.git
+cd SwiftStateTree
+swift build
 ```
 
-詳細說明請參考 [README.md](../README.md#安裝)。
+詳細說明請參考 [README.md](../README.md#快速開始)。
 
 ### Q: 系統要求是什麼？
 
@@ -23,7 +23,7 @@ A:
 - macOS 14.0+（開發環境）
 - 支援 Swift 6 的平台（部署環境）
 
-### Q: 如何確認安裝成功？
+### Q: 如何確認專案可以正常運行？
 
 A: 運行測試：
 
@@ -31,7 +31,12 @@ A: 運行測試：
 swift test
 ```
 
-如果測試通過，表示安裝成功。
+如果測試通過，表示專案可以正常運行。你也可以嘗試運行範例：
+
+```bash
+cd Examples/HummingbirdDemo
+swift run DemoServer
+```
 
 ## StateTree 定義
 
