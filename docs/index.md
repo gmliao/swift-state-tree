@@ -7,7 +7,7 @@
 如果你是第一次接觸 SwiftStateTree，建議按照以下順序閱讀：
 
 1. **[概觀](overview.md)** - 了解系統架構與核心概念
-2. **[架構概念總覽](conceptual-overview.md)** - 深入理解 StateTree 的設計理念與核心概念（可選但推薦）
+2. **[架構概念總覽](programming-model.md)** - 深入理解 StateTree 的設計理念與核心概念（可選但推薦）
 3. **[快速開始](quickstart.md)** - 實作最小可行範例
 4. **[Land DSL](core/land-dsl.md)** - 學習如何定義領域邏輯
 5. **[同步規則](core/sync.md)** - 理解狀態同步機制
@@ -17,7 +17,7 @@
 ### 入門指南
 
 - **[概觀](overview.md)** - 系統架構、模組組成、核心概念
-- **[架構概念總覽](conceptual-overview.md)** - StateTree 架構的完整概念說明（狀態層、動作層、Resolver、語意模型等）
+- **[架構概念總覽](programming-model.md)** - StateTree 架構的完整概念說明（狀態層、動作層、Resolver、語意模型等）
 - **[架構分層](architecture.md)** - 組件分層架構與關係說明
 - **[快速開始](quickstart.md)** - 從零開始建立第一個伺服器
 
