@@ -44,14 +44,12 @@ struct BenchmarkSuite: @unchecked Sendable {
                 headerDescription = "\(config.name) (Dynamic Players: [\(dynamicPlayers)], Cards/Player: \(config.cardsPerPlayer), Iterations: \(config.iterations)\(broadcastRatioLabel))"
             } else if let tuningRunner = runner as? TransportAdapterParallelEncodingTuningBenchmarkRunner {
                 let dynamicPlayers = tuningRunner.playerCounts.map(String.init).joined(separator: ", ")
-                let concurrencyLevels = tuningRunner.concurrencyLevels.map(String.init).joined(separator: ", ")
-                headerDescription = "\(config.name) (Dynamic Players: [\(dynamicPlayers)], Concurrency: [\(concurrencyLevels)], Cards/Player: \(config.cardsPerPlayer), Iterations: \(config.iterations))"
+                headerDescription = "\(config.name) (Dynamic Players: [\(dynamicPlayers)], Auto-configured Concurrency, Cards/Player: \(config.cardsPerPlayer), Iterations: \(config.iterations))"
             } else if let multiRoomRunner = runner as? TransportAdapterMultiRoomParallelEncodingBenchmarkRunner {
                 let roomCounts = multiRoomRunner.roomCounts.map(String.init).joined(separator: ", ")
                 let players = multiRoomRunner.playerCounts.map(String.init).joined(separator: ", ")
-                let concurrencyLevels = multiRoomRunner.concurrencyLevels.map(String.init).joined(separator: ", ")
                 let tickStrides = multiRoomRunner.tickStrides.map(String.init).joined(separator: ", ")
-                headerDescription = "\(config.name) (Rooms: [\(roomCounts)], Players/Room: [\(players)], Concurrency: [\(concurrencyLevels)], Tick: \(multiRoomRunner.tickMode.rawValue) [\(tickStrides)], Cards/Player: \(config.cardsPerPlayer), Iterations: \(config.iterations))"
+                headerDescription = "\(config.name) (Rooms: [\(roomCounts)], Players/Room: [\(players)], Auto-configured Concurrency, Tick: \(multiRoomRunner.tickMode.rawValue) [\(tickStrides)], Cards/Player: \(config.cardsPerPlayer), Iterations: \(config.iterations))"
             } else {
                 headerDescription = displayConfig.description
             }

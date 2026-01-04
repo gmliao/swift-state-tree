@@ -187,18 +187,14 @@ MACHINE_ID=$(generate_machine_id)
 # Defaults (override via env vars)
 ROOM_COUNTS="${ROOM_COUNTS:-5,10,20,30,50}"
 PLAYER_COUNTS="${PLAYER_COUNTS:-4,10,20,30,50}"
-# Concurrency levels: This parameter is no longer used in the actual concurrency calculation.
-# The actual per-room concurrency is automatically adjusted based on player count:
+# Parallel encoding concurrency is now automatically configured based on player count.
+# The actual per-room concurrency is automatically adjusted:
 # 
 # Parallel encoding behavior:
 # - Players < 20: parallel encoding disabled (minPlayerCount threshold = 20)
 # - Players >= 20: per-room concurrency is min(perRoomCap, batchWorkers, playerCount)
 #   - perRoomCap: 2 (players < 30) or 4 (players >= 30)
 #   - batchWorkers: ceil(players / 12) where batchSize = 12
-#
-# Note: The concurrency parameter is kept for benchmark compatibility but doesn't affect
-# the actual encoding behavior. Actual concurrency is determined by perRoomCap and batchWorkers.
-CONCURRENCY_LEVELS="${CONCURRENCY_LEVELS:-4,8,16,32}"
 TICK_MODE="${TICK_MODE:-synchronized}"
 TICK_STRIDES="${TICK_STRIDES:-1,2,3,4}"
 DIRTY_RATIO="${DIRTY_RATIO:-}"
@@ -210,10 +206,9 @@ SUITE_NAME="TransportMultiRoomParallelTuning-Medium20%"
 # Parse comma-separated lists into arrays
 IFS=',' read -ra ROOM_ARRAY <<< "$ROOM_COUNTS"
 IFS=',' read -ra PLAYER_ARRAY <<< "$PLAYER_COUNTS"
-IFS=',' read -ra CONCURRENCY_ARRAY <<< "$CONCURRENCY_LEVELS"
 
-# Calculate total number of test combinations
-TOTAL_TESTS=$((${#ROOM_ARRAY[@]} * ${#PLAYER_ARRAY[@]} * ${#CONCURRENCY_ARRAY[@]}))
+# Calculate total number of test combinations (concurrency is now automatically configured)
+TOTAL_TESTS=$((${#ROOM_ARRAY[@]} * ${#PLAYER_ARRAY[@]}))
 CURRENT_TEST=0
 
 echo "Running TransportAdapter multi-room parallel encoding tuning in RELEASE mode..."
@@ -222,7 +217,6 @@ echo "Machine ID: $MACHINE_ID"
 echo "Suite: $SUITE_NAME"
 echo "Room counts to test: $ROOM_COUNTS"
 echo "Players per room to test: $PLAYER_COUNTS"
-echo "Concurrency levels (for benchmark compatibility, not used in actual calculation): $CONCURRENCY_LEVELS"
 echo "Tick mode: $TICK_MODE"
 echo "Tick strides: $TICK_STRIDES"
 if [ -n "$DIRTY_RATIO" ]; then
@@ -272,30 +266,27 @@ echo ""
     CURRENT_TEST=0
     for room_count in "${ROOM_ARRAY[@]}"; do
         for player_count in "${PLAYER_ARRAY[@]}"; do
-            for concurrency in "${CONCURRENCY_ARRAY[@]}"; do
-                CURRENT_TEST=$((CURRENT_TEST + 1))
-                echo "[$CURRENT_TEST/$TOTAL_TESTS] Running test: rooms=$room_count, players=$player_count, concurrency=$concurrency"
-                echo ""
-                echo "================================================================================"
-                echo "=== Test Configuration: rooms=$room_count, players=$player_count, concurrency=$concurrency ==="
-                echo "=== Benchmark started at: $(date) ==="
-                echo "================================================================================"
-                echo ""
-                swift run -c release SwiftStateTreeBenchmarks transport-multiroom-parallel-tuning \
-                    --dirty-on \
-                    --suite-name="$SUITE_NAME" \
-                    --player-counts="$player_count" \
-                    --room-counts="$room_count" \
-                    --parallel-concurrency="$concurrency" \
-                    --tick-mode="$TICK_MODE" \
-                    --tick-strides="$TICK_STRIDES" \
-                    ${DIRTY_RATIO:+--dirty-ratio="$DIRTY_RATIO"} \
-                    --no-wait \
-                    --csv
-                echo ""
-                echo "=== Benchmark completed at: $(date) ==="
-                echo ""
-            done
+            CURRENT_TEST=$((CURRENT_TEST + 1))
+            echo "[$CURRENT_TEST/$TOTAL_TESTS] Running test: rooms=$room_count, players=$player_count"
+            echo ""
+            echo "================================================================================"
+            echo "=== Test Configuration: rooms=$room_count, players=$player_count (concurrency auto-configured) ==="
+            echo "=== Benchmark started at: $(date) ==="
+            echo "================================================================================"
+            echo ""
+            swift run -c release SwiftStateTreeBenchmarks transport-multiroom-parallel-tuning \
+                --dirty-on \
+                --suite-name="$SUITE_NAME" \
+                --player-counts="$player_count" \
+                --room-counts="$room_count" \
+                --tick-mode="$TICK_MODE" \
+                --tick-strides="$TICK_STRIDES" \
+                ${DIRTY_RATIO:+--dirty-ratio="$DIRTY_RATIO"} \
+                --no-wait \
+                --csv
+            echo ""
+            echo "=== Benchmark completed at: $(date) ==="
+            echo ""
         done
     done
     echo "=== All benchmarks completed at: $(date) ==="

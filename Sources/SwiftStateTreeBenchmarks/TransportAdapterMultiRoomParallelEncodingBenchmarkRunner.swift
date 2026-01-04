@@ -7,7 +7,8 @@ import SwiftStateTreeTransport
 /// Benchmark runner for multi-room parallel encoding behavior in TransportAdapter.
 ///
 /// This runner creates multiple rooms and runs their tick + sync in parallel to
-/// understand how overall throughput scales with room count and encoding concurrency.
+/// understand how overall throughput scales with room count. Parallel encoding
+/// uses automatic concurrency configuration based on player count per room.
 struct TransportAdapterMultiRoomParallelEncodingBenchmarkRunner: BenchmarkRunner {
     enum TickMode: String {
         case synchronized
@@ -16,7 +17,6 @@ struct TransportAdapterMultiRoomParallelEncodingBenchmarkRunner: BenchmarkRunner
 
     let roomCounts: [Int]
     let playerCounts: [Int]
-    let concurrencyLevels: [Int]
     let tickMode: TickMode
     let tickStrides: [Int]
     let dirtyPlayerRatio: Double
@@ -30,7 +30,6 @@ struct TransportAdapterMultiRoomParallelEncodingBenchmarkRunner: BenchmarkRunner
     init(
         roomCounts: [Int] = [1, 2, 4, 8],
         playerCounts: [Int] = [4, 10, 20, 30, 50],
-        concurrencyLevels: [Int] = [1, 2, 4, 8, 16],
         tickMode: TickMode = .staggered,
         tickStrides: [Int] = [1, 2, 3, 4],
         dirtyPlayerRatio: Double = 0.20,
@@ -40,7 +39,6 @@ struct TransportAdapterMultiRoomParallelEncodingBenchmarkRunner: BenchmarkRunner
     ) {
         self.roomCounts = Self.normalizePositive(roomCounts)
         self.playerCounts = Self.normalizePositive(playerCounts)
-        self.concurrencyLevels = Self.normalizePositive(concurrencyLevels)
         self.tickMode = tickMode
         let normalizedStrides = Self.normalizePositive(tickStrides)
         self.tickStrides = normalizedStrides.isEmpty ? [1] : normalizedStrides
@@ -59,7 +57,7 @@ struct TransportAdapterMultiRoomParallelEncodingBenchmarkRunner: BenchmarkRunner
         print("  =======================================================")
         print("  Rooms: \(roomCounts.map(String.init).joined(separator: ", "))")
         print("  Players per room: \(playerCounts.map(String.init).joined(separator: ", "))")
-        print("  Concurrency levels: \(concurrencyLevels.map(String.init).joined(separator: ", "))")
+        print("  Parallel encoding uses automatic concurrency configuration based on player count")
         print("  Tick mode: \(tickMode.rawValue) (strides: \(tickStrides.map(String.init).joined(separator: ", ")))")
         if includeSerialBaseline {
             print("  Baseline: Serial encoding")
@@ -82,31 +80,27 @@ struct TransportAdapterMultiRoomParallelEncodingBenchmarkRunner: BenchmarkRunner
                         playerCount: playerCount,
                         iterations: config.iterations,
                         cardsPerPlayer: config.cardsPerPlayer,
-                        enableParallelEncoding: false,
-                        parallelEncodingMaxConcurrency: nil
+                        enableParallelEncoding: false
                     )
                     baselineResult = serialResult
                     allResults.append(serialResult)
                 }
 
-                for concurrency in concurrencyLevels {
-                    print("      Parallel encoding (maxConcurrency=\(concurrency))...")
-                    let parallelResult = await benchmarkMultiRoomSync(
-                        roomCount: roomCount,
-                        playerCount: playerCount,
-                        iterations: config.iterations,
-                        cardsPerPlayer: config.cardsPerPlayer,
-                        enableParallelEncoding: true,
-                        parallelEncodingMaxConcurrency: concurrency
-                    )
-                    allResults.append(parallelResult)
+                print("      Parallel encoding (auto-configured concurrency)...")
+                let parallelResult = await benchmarkMultiRoomSync(
+                    roomCount: roomCount,
+                    playerCount: playerCount,
+                    iterations: config.iterations,
+                    cardsPerPlayer: config.cardsPerPlayer,
+                    enableParallelEncoding: true
+                )
+                allResults.append(parallelResult)
 
-                    if let baseline = baselineResult {
-                        let serialMs = baseline.averageTime * 1000
-                        let parallelMs = parallelResult.averageTime * 1000
-                        let speedup = serialMs / max(parallelMs, 0.001)
-                        print("      Speedup vs serial: \(String(format: "%.2fx", speedup))")
-                    }
+                if let baseline = baselineResult {
+                    let serialMs = baseline.averageTime * 1000
+                    let parallelMs = parallelResult.averageTime * 1000
+                    let speedup = serialMs / max(parallelMs, 0.001)
+                    print("      Speedup vs serial: \(String(format: "%.2fx", speedup))")
                 }
             }
         }
@@ -152,8 +146,7 @@ struct TransportAdapterMultiRoomParallelEncodingBenchmarkRunner: BenchmarkRunner
         playerCount: Int,
         iterations: Int,
         cardsPerPlayer: Int,
-        enableParallelEncoding: Bool,
-        parallelEncodingMaxConcurrency: Int?
+        enableParallelEncoding: Bool
     ) async -> BenchmarkResult {
         let clampedDirtyRatio = max(0.0, min(dirtyPlayerRatio, 1.0))
         let clampedBroadcastRatio = max(0.0, min(broadcastPlayerRatio, 1.0))
@@ -365,9 +358,6 @@ struct TransportAdapterMultiRoomParallelEncodingBenchmarkRunner: BenchmarkRunner
         modeLabel += ", Encoding: \(enableParallelEncoding ? "Parallel" : "Serial")"
         modeLabel += ", Rooms: \(roomCount)"
         modeLabel += ", Tick: \(tickMode.rawValue)"
-        if enableParallelEncoding, let maxConcurrency = parallelEncodingMaxConcurrency {
-            modeLabel += ", MaxConcurrency: \(maxConcurrency)"
-        }
 
         return BenchmarkResult(
             config: BenchmarkConfig(
