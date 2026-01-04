@@ -1,21 +1,23 @@
-# @SnapshotConvertible 效能優化指南
+[English](snapshot-convertible.md) | [中文版](snapshot-convertible.zh-TW.md)
 
-> `@SnapshotConvertible` macro 自動生成 `SnapshotValueConvertible` 實作，避免使用 runtime reflection（Mirror），大幅提升轉換效能。
+# @SnapshotConvertible Performance Optimization Guide
 
-## 概述
+> `@SnapshotConvertible` macro automatically generates `SnapshotValueConvertible` implementation, avoiding runtime reflection (Mirror), significantly improving conversion performance.
 
-`@SnapshotConvertible` 是 SwiftStateTree 的效能優化 macro，用於標記需要高效能轉換的型別。它會自動生成 `SnapshotValueConvertible` protocol 實作，完全避免使用 runtime reflection。
+## Overview
 
-### 核心優勢
+`@SnapshotConvertible` is SwiftStateTree's performance optimization macro, used to mark types that need high-performance conversion. It automatically generates `SnapshotValueConvertible` protocol implementation, completely avoiding runtime reflection.
 
-- **避免 Mirror**：不使用 runtime reflection，大幅提升效能
-- **編譯期生成**：型別安全，減少執行時錯誤
-- **自動生成**：只需標記，無需手寫程式碼
-- **遞迴優化**：巢狀結構會優先檢查 protocol，完全避免 Mirror
+### Core Advantages
 
-## 基本使用
+- **Avoid Mirror**: Don't use runtime reflection, significantly improve performance
+- **Compile-time generation**: Type-safe, reduce runtime errors
+- **Auto-generation**: Just mark, no need to write code manually
+- **Recursive optimization**: Nested structures prioritize protocol checking, completely avoid Mirror
 
-### 標記型別
+## Basic Usage
+
+### Mark Types
 
 ```swift
 import SwiftStateTree
@@ -35,19 +37,19 @@ struct Position: Codable, Sendable {
 }
 ```
 
-### 生成的程式碼
+### Generated Code
 
-Macro 會自動生成以下 extension：
+Macro automatically generates the following extension:
 
 ```swift
-// 自動生成（簡化版）
+// Auto-generated (simplified)
 extension PlayerState: SnapshotValueConvertible {
     func toSnapshotValue() throws -> SnapshotValue {
         return .object([
             "name": .string(name),
             "hpCurrent": .int(hpCurrent),
             "hpMax": .int(hpMax),
-            "position": try position.toSnapshotValue()  // 遞迴處理巢狀結構
+            "position": try position.toSnapshotValue()  // Recursively process nested structures
         ])
     }
 }
@@ -62,43 +64,43 @@ extension Position: SnapshotValueConvertible {
 }
 ```
 
-## 效能優勢
+## Performance Advantages
 
-### 與 Mirror 的對比
+### Comparison with Mirror
 
-使用 `@SnapshotConvertible` 可以大幅提升轉換效能：
+Using `@SnapshotConvertible` can significantly improve conversion performance:
 
-| 方法 | 轉換時間 | 說明 |
+| Method | Conversion Time | Description |
 |------|---------|------|
-| **@SnapshotConvertible** | ~0.15ms | 編譯期生成，直接轉換 |
-| **Mirror (runtime reflection)** | ~0.38ms | 使用 runtime reflection，較慢 |
+| **@SnapshotConvertible** | ~0.15ms | Compile-time generation, direct conversion |
+| **Mirror (runtime reflection)** | ~0.38ms | Uses runtime reflection, slower |
 
-**效能提升**：約 **2.5x** 的效能提升（根據實際測試）
+**Performance improvement**: Approximately **2.5x** performance improvement (based on actual tests)
 
-### 轉換優先順序
+### Conversion Priority
 
-`SnapshotValue.make(from:)` 會按以下優先順序處理：
+`SnapshotValue.make(from:)` processes in the following priority order:
 
-1. **Priority 1: SnapshotValueConvertible**（最佳效能）
-   - 檢查是否實作 `SnapshotValueConvertible`
-   - 直接呼叫 `toSnapshotValue()`，完全避免 Mirror
+1. **Priority 1: SnapshotValueConvertible** (best performance)
+   - Check if implements `SnapshotValueConvertible`
+   - Directly call `toSnapshotValue()`, completely avoid Mirror
 
-2. **Priority 2: 基本型別**（良好效能）
-   - String、Int、Bool 等基本型別直接轉換
+2. **Priority 2: Basic types** (good performance)
+   - String, Int, Bool, and other basic types convert directly
 
-3. **Priority 3: Mirror fallback**（確保功能完整）
-   - 其他型別使用 Mirror 作為後備方案
+3. **Priority 3: Mirror fallback** (ensures complete functionality)
+   - Other types use Mirror as fallback
 
 ```swift
-// 內部實作（簡化版）
+// Internal implementation (simplified)
 public extension SnapshotValue {
     static func make(from value: Any) throws -> SnapshotValue {
-        // Priority 1: 檢查 protocol（最佳效能）
+        // Priority 1: Check protocol (best performance)
         if let convertible = value as? SnapshotValueConvertible {
-            return try convertible.toSnapshotValue()  // 完全避免 Mirror
+            return try convertible.toSnapshotValue()  // Completely avoid Mirror
         }
         
-        // Priority 2: 處理基本型別
+        // Priority 2: Handle basic types
         if let string = value as? String {
             return .string(string)
         }
@@ -110,23 +112,23 @@ public extension SnapshotValue {
 }
 ```
 
-## 適用場景
+## Applicable Scenarios
 
-### ✅ 建議使用
+### ✅ Recommended Use
 
-1. **頻繁轉換的型別**：在 StateTree 中頻繁使用的巢狀結構
-2. **複雜的巢狀結構**：多層級的巢狀結構
-3. **效能關鍵路徑**：需要高效能轉換的型別
+1. **Frequently converted types**: Nested structures frequently used in StateTree
+2. **Complex nested structures**: Multi-level nested structures
+3. **Performance-critical paths**: Types that need high-performance conversion
 
-### ❌ 不需要使用
+### ❌ Not Needed
 
-1. **基本型別**：String、Int、Bool 等已經優化
-2. **簡單的型別**：只有一兩個欄位的簡單結構可能不需要
-3. **不常轉換的型別**：很少被轉換的型別
+1. **Basic types**: String, Int, Bool, etc. are already optimized
+2. **Simple types**: Simple structures with only one or two fields may not need it
+3. **Rarely converted types**: Types that are rarely converted
 
-## 使用範例
+## Usage Examples
 
-### 範例 1：基本使用
+### Example 1: Basic Usage
 
 ```swift
 @SnapshotConvertible
@@ -136,15 +138,15 @@ struct PlayerState: Codable, Sendable {
     var hpMax: Int
 }
 
-// 在 StateNode 中使用
+// Use in StateNode
 @StateNodeBuilder
 struct GameState: StateNodeProtocol {
     @Sync(.broadcast)
-    var players: [PlayerID: PlayerState] = [:]  // PlayerState 使用 @SnapshotConvertible
+    var players: [PlayerID: PlayerState] = [:]  // PlayerState uses @SnapshotConvertible
 }
 ```
 
-### 範例 2：巢狀結構
+### Example 2: Nested Structures
 
 ```swift
 @SnapshotConvertible
@@ -156,8 +158,8 @@ struct Position: Codable, Sendable {
 @SnapshotConvertible
 struct PlayerState: Codable, Sendable {
     var name: String
-    var position: Position  // 巢狀結構
-    var inventory: [Item]   // 陣列
+    var position: Position  // Nested structure
+    var inventory: [Item]   // Array
 }
 
 @SnapshotConvertible
@@ -168,7 +170,7 @@ struct Item: Codable, Sendable {
 }
 ```
 
-### 範例 3：複雜結構
+### Example 3: Complex Structures
 
 ```swift
 @SnapshotConvertible
@@ -187,16 +189,16 @@ struct Effect: Codable, Sendable {
 
 @SnapshotConvertible
 struct HandState: Codable, Sendable {
-    var cards: [Card]  // 巢狀陣列
+    var cards: [Card]  // Nested array
     var ownerID: PlayerID
 }
 ```
 
-## 生成的轉換邏輯
+## Generated Conversion Logic
 
-### 基本型別
+### Basic Types
 
-對於基本型別，macro 會生成直接轉換：
+For basic types, macro generates direct conversion:
 
 ```swift
 @SnapshotConvertible
@@ -206,21 +208,21 @@ struct SimpleState: Codable {
     var isActive: Bool
 }
 
-// 生成（簡化版）
+// Generated (simplified)
 extension SimpleState: SnapshotValueConvertible {
     func toSnapshotValue() throws -> SnapshotValue {
         return .object([
-            "name": .string(name),        // 直接轉換
-            "count": .int(count),         // 直接轉換
-            "isActive": .bool(isActive)   // 直接轉換
+            "name": .string(name),        // Direct conversion
+            "count": .int(count),         // Direct conversion
+            "isActive": .bool(isActive)   // Direct conversion
         ])
     }
 }
 ```
 
-### 可選型別
+### Optional Types
 
-對於可選型別，使用 `SnapshotValue.make(from:)` 處理：
+For optional types, use `SnapshotValue.make(from:)` to handle:
 
 ```swift
 @SnapshotConvertible
@@ -229,20 +231,20 @@ struct OptionalState: Codable {
     var count: Int?
 }
 
-// 生成（簡化版）
+// Generated (simplified)
 extension OptionalState: SnapshotValueConvertible {
     func toSnapshotValue() throws -> SnapshotValue {
         return .object([
-            "name": try SnapshotValue.make(from: name),   // 處理 nil
-            "count": try SnapshotValue.make(from: count)  // 處理 nil
+            "name": try SnapshotValue.make(from: name),   // Handle nil
+            "count": try SnapshotValue.make(from: count)  // Handle nil
         ])
     }
 }
 ```
 
-### 巢狀結構
+### Nested Structures
 
-對於巢狀結構，會遞迴呼叫 `toSnapshotValue()`：
+For nested structures, recursively call `toSnapshotValue()`:
 
 ```swift
 @SnapshotConvertible
@@ -251,40 +253,40 @@ struct NestedState: Codable {
     var items: [Item]
 }
 
-// 生成（簡化版）
+// Generated (simplified)
 extension NestedState: SnapshotValueConvertible {
     func toSnapshotValue() throws -> SnapshotValue {
         return .object([
-            "position": try position.toSnapshotValue(),  // 遞迴處理
-            "items": try SnapshotValue.make(from: items) // 陣列處理
+            "position": try position.toSnapshotValue(),  // Recursive processing
+            "items": try SnapshotValue.make(from: items) // Array processing
         ])
     }
 }
 ```
 
-## 效能測試結果
+## Performance Test Results
 
-根據實際測試（單核心、100 iterations）：
+Based on actual tests (single core, 100 iterations):
 
-| 場景 | 使用 Mirror | 使用 @SnapshotConvertible | 效能提升 |
+| Scenario | Using Mirror | Using @SnapshotConvertible | Performance Improvement |
 |------|------------|---------------------------|---------|
 | Tiny (5 players, 3 cards) | 0.378ms | 0.154ms | **2.45x** |
 | Small (10 players, 5 cards) | 0.306ms | 0.167ms | **1.83x** |
 | Medium (100 players, 10 cards) | 1.768ms | 0.935ms | **1.89x** |
 
-**結論**：使用 `@SnapshotConvertible` 可以獲得約 **2x** 的效能提升。
+**Conclusion**: Using `@SnapshotConvertible` can achieve approximately **2x** performance improvement.
 
-## 最佳實踐
+## Best Practices
 
-### 1. 標記所有巢狀結構
+### 1. Mark All Nested Structures
 
-確保整個轉換路徑都使用 macro：
+Ensure entire conversion path uses macro:
 
 ```swift
-// ✅ 正確：所有巢狀結構都標記
+// ✅ Correct: All nested structures are marked
 @SnapshotConvertible
 struct PlayerState: Codable {
-    var position: Position  // Position 也標記了 @SnapshotConvertible
+    var position: Position  // Position is also marked with @SnapshotConvertible
 }
 
 @SnapshotConvertible
@@ -294,70 +296,69 @@ struct Position: Codable {
 }
 ```
 
-### 2. 優先使用基本型別
+### 2. Prefer Basic Types
 
-基本型別已經優化，不需要額外標記：
+Basic types are already optimized, no need for additional marking:
 
 ```swift
 @SnapshotConvertible
 struct SimpleState: Codable {
-    var name: String      // ✅ 基本型別，已經優化
-    var count: Int        // ✅ 基本型別，已經優化
-    var isActive: Bool    // ✅ 基本型別，已經優化
+    var name: String      // ✅ Basic type, already optimized
+    var count: Int        // ✅ Basic type, already optimized
+    var isActive: Bool    // ✅ Basic type, already optimized
 }
 ```
 
-### 3. 避免過度使用
+### 3. Avoid Overuse
 
-簡單的型別可能不需要此 macro：
+Simple types may not need this macro:
 
 ```swift
-// ⚠️ 考慮：只有一個欄位的簡單結構
-@SnapshotConvertible  // 可能不需要
+// ⚠️ Consider: Simple structure with only one field
+@SnapshotConvertible  // May not be needed
 struct SimpleWrapper: Codable {
     var value: String
 }
 ```
 
-### 4. 在 StateTree 中頻繁使用的型別
+### 4. Types Frequently Used in StateTree
 
-優先標記在 StateTree 中頻繁使用的型別：
+Prioritize marking types frequently used in StateTree:
 
 ```swift
 @StateNodeBuilder
 struct GameState: StateNodeProtocol {
     @Sync(.broadcast)
-    var players: [PlayerID: PlayerState] = [:]  // PlayerState 應該標記 @SnapshotConvertible
+    var players: [PlayerID: PlayerState] = [:]  // PlayerState should be marked @SnapshotConvertible
     
     @Sync(.broadcast)
-    var items: [ItemID: Item] = [:]  // Item 應該標記 @SnapshotConvertible
+    var items: [ItemID: Item] = [:]  // Item should be marked @SnapshotConvertible
 }
 ```
 
-## 常見問題
+## Common Questions
 
-### Q: 什麼時候應該使用 @SnapshotConvertible？
+### Q: When should @SnapshotConvertible be used?
 
-A: 當型別滿足以下條件時建議使用：
-- 在 StateTree 中頻繁使用
-- 包含多個欄位或巢狀結構
-- 需要高效能轉換
+A: Recommended when types meet the following conditions:
+- Frequently used in StateTree
+- Contains multiple fields or nested structures
+- Needs high-performance conversion
 
-### Q: 不標記會怎樣？
+### Q: What happens if not marked?
 
-A: 不標記的型別會使用 Mirror 作為 fallback，效能較差但功能完整。
+A: Unmarked types will use Mirror as fallback, worse performance but functionally complete.
 
-### Q: 可以手動實作 SnapshotValueConvertible 嗎？
+### Q: Can SnapshotValueConvertible be manually implemented?
 
-A: 可以，但建議使用 macro 自動生成，避免手寫錯誤。
+A: Yes, but recommend using macro auto-generation to avoid manual errors.
 
-### Q: 巢狀結構需要都標記嗎？
+### Q: Do nested structures all need marking?
 
-A: 建議標記所有巢狀結構，確保整個轉換路徑都使用 macro。
+A: Recommend marking all nested structures to ensure entire conversion path uses macro.
 
-## 相關文檔
+## Related Documentation
 
-- [Macros 總覽](README.md) - 了解所有 macro 的使用
-- [StateNode 定義](../core/README.md) - 了解 StateNode 的使用
-- [同步規則](../core/sync.md) - 了解狀態同步機制
-
+- [Macros Overview](README.md) - Understand usage of all macros
+- [StateNode Definition](../core/README.md) - Understand StateNode usage
+- [Sync Rules](../core/sync.md) - Understand state synchronization mechanism

@@ -11,7 +11,7 @@ StateTree is a product that combines state management concepts from frontend fra
 > **Note**
 > StateTree itself is a programming model (semantic model) used to describe how server-side state, behavior, and synchronization are organized. This project is a Swift reference implementation of that model.
 
-For detailed architectural concepts, please refer to [Architecture Overview](docs/programming-model.en.md).
+For detailed architectural concepts, please refer to [Architecture Overview](docs/programming-model.md).
 
 ## 📝 About the Project
 
@@ -103,13 +103,13 @@ npm run dev
 WebClient will run on another port (usually `http://localhost:5173`), accessible in the browser and navigate to the Counter Demo page.
 
 **Other available examples:**
-- 🍪 [Cookie Clicker Example](docs/examples/cookie-clicker.en.md) - A complete multiplayer game example with private state, upgrade system, periodic Tick handling, and other advanced features
+- 🍪 [Cookie Clicker Example](docs/examples/cookie-clicker.md) - A complete multiplayer game example with private state, upgrade system, periodic Tick handling, and other advanced features
 
 ### 3. View Detailed Documentation
 
-- 📖 [Complete Documentation Index](docs/index.en.md)
-- 🚀 [Quick Start Guide](docs/quickstart.en.md)
-- 📐 [Architecture Overview](docs/overview.en.md)
+- 📖 [Complete Documentation Index](docs/index.md)
+- 🚀 [Quick Start Guide](docs/quickstart.md)
+- 📐 [Architecture Overview](docs/overview.md)
 
 ### 4. Simplest Example
 
@@ -324,7 +324,7 @@ SwiftStateTree/
 
 > **Note**: The `Notes/` directory contains development notes and design documents, primarily in Traditional Chinese. These are internal materials that will be archived to `docs/` after review and organization.
 
-For detailed module descriptions, please refer to [docs/overview.en.md](docs/overview.en.md).
+For detailed module descriptions, please refer to [docs/overview.md](docs/overview.md).
 
 ## 💡 Core Concepts
 
@@ -365,20 +365,20 @@ let gameLand = Land("game-room", using: GameStateTree.self) {
 ```
 
 **For detailed information, please refer to:**
-- 📖 [Core Concepts Documentation](docs/core/README.en.md)
-- 🔄 [Sync Rules Details](docs/core/sync.en.md)
-- 🏛️ [Land DSL Guide](docs/core/land-dsl.en.md)
+- 📖 [Core Concepts Documentation](docs/core/README.md)
+- 🔄 [Sync Rules Details](docs/core/sync.md)
+- 🏛️ [Land DSL Guide](docs/core/land-dsl.md)
 
 ## 📚 Documentation
 
-Complete documentation is available at [docs/index.en.md](docs/index.en.md), including:
+Complete documentation is available at [docs/index.md](docs/index.md), including:
 
-- 🚀 [Quick Start](docs/quickstart.en.md) - Minimal viable example
-- 📐 [Architecture Overview](docs/overview.en.md) - System design and module descriptions
-- 🏛️ [Land DSL](docs/core/land-dsl.en.md) - Domain definition guide
-- 🔄 [Sync Rules](docs/core/sync.en.md) - State synchronization details
-- 🌐 [Transport](docs/transport/README.en.md) - Network transport layer
-- 🐦 [Hummingbird](docs/hummingbird/README.en.md) - Server integration
+- 🚀 [Quick Start](docs/quickstart.md) - Minimal viable example
+- 📐 [Architecture Overview](docs/overview.md) - System design and module descriptions
+- 🏛️ [Land DSL](docs/core/land-dsl.md) - Domain definition guide
+- 🔄 [Sync Rules](docs/core/sync.md) - State synchronization details
+- 🌐 [Transport](docs/transport/README.md) - Network transport layer
+- 🐦 [Hummingbird](docs/hummingbird/README.md) - Server integration
 
 Design and development notes are available in the `Notes/` directory.
 

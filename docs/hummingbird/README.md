@@ -1,24 +1,26 @@
+[English](README.md) | [中文版](README.zh-TW.md)
+
 # Hummingbird
 
-Hummingbird 模組提供 WebSocket hosting，主要入口是 `LandHost`。
+Hummingbird module provides WebSocket hosting, with `LandHost` as the main entry point.
 
-## 架構概述
+## Architecture Overview
 
 ### LandHost vs LandServer
 
-`LandHost` 是統一的主機入口，負責管理 HTTP 服務器和所有遊戲邏輯。`LandServer` 則負責單一 land type 的遊戲邏輯實現。
+`LandHost` is the unified host entry point, responsible for managing HTTP server and all game logic. `LandServer` is responsible for game logic implementation of a single land type.
 
-**關係說明**：
+**Relationship Description**:
 
-- **`LandHost`**: 統一管理 HTTP 服務器（Hummingbird Application）、共享 Router、以及 `LandRealm`（遊戲邏輯統一管理）。一個 `LandHost` 可以註冊多個 `LandServer` 實例。
-- **`LandServer`**: 負責單一 land type 的遊戲邏輯，包括 runtime、transport、WebSocket 適配器。不直接管理 HTTP 服務器或 Router，而是由 `LandHost` 統一管理。
-- **`LandRealm`**: 由 `LandHost` 內部管理，負責多個 `LandServer` 的統一管理和協調。
+- **`LandHost`**: Unified management of HTTP server (Hummingbird Application), shared Router, and `LandRealm` (unified game logic management). One `LandHost` can register multiple `LandServer` instances.
+- **`LandServer`**: Responsible for game logic of a single land type, including runtime, transport, WebSocket adapter. Doesn't directly manage HTTP server or Router, but is unified managed by `LandHost`.
+- **`LandRealm`**: Internally managed by `LandHost`, responsible for unified management and coordination of multiple `LandServer`s.
 
-## 快速開始
+## Quick Start
 
-### 基本使用
+### Basic Usage
 
-使用 `LandHost` 建立伺服器並註冊 land type：
+Use `LandHost` to create server and register land type:
 
 ```swift
 import SwiftStateTreeHummingbird
@@ -53,9 +55,9 @@ struct DemoServer {
 }
 ```
 
-### 多 Land Type 支援
+### Multi Land Type Support
 
-在同一個 `LandHost` 中註冊多個遊戲：
+Register multiple games in the same `LandHost`:
 
 ```swift
 let host = LandHost(configuration: .init(
@@ -85,11 +87,11 @@ try await host.register(
 try await host.run()
 ```
 
-## 配置選項
+## Configuration Options
 
 ### LandHost.HostConfiguration
 
-HTTP 服務器層面的配置：
+HTTP server-level configuration:
 
 ```swift
 public struct HostConfiguration: Sendable {
@@ -104,7 +106,7 @@ public struct HostConfiguration: Sendable {
 
 ### LandServerConfiguration
 
-遊戲邏輯層面的配置：
+Game logic-level configuration:
 
 ```swift
 public struct LandServerConfiguration: Sendable {
@@ -116,54 +118,54 @@ public struct LandServerConfiguration: Sendable {
 }
 ```
 
-**重要設定說明**：
+**Important Configuration Notes**:
 
-- `allowGuestMode`: 啟用後允許沒有 JWT token 的連線（使用 guest session）
-- `allowAutoCreateOnJoin`: 啟用後，客戶端可以通過指定 `landID` 自動創建新房間。**注意**：生產環境應設為 `false`，僅在 demo/testing 時啟用。
+- `allowGuestMode`: When enabled, allows connections without JWT token (uses guest session)
+- `allowAutoCreateOnJoin`: When enabled, clients can automatically create new rooms by specifying `landID`. **Note**: Should be set to `false` in production, only enable for demo/testing.
 
-## 內建路由
+## Built-in Routes
 
-`LandHost` 自動提供以下路由：
+`LandHost` automatically provides the following routes:
 
-- **WebSocket**: 由 `webSocketPath` 參數指定（例如 `/game/cookie`、`/game/counter`）
-- **Health Check**: `healthPath`（預設 `/health`，可透過 `enableHealthRoute` 關閉）
-- **Schema**: `/schema`（自動輸出所有已註冊 Land 的 JSON schema，含 CORS 支援）
+- **WebSocket**: Specified by `webSocketPath` parameter (e.g., `/game/cookie`, `/game/counter`)
+- **Health Check**: `healthPath` (default `/health`, can be disabled via `enableHealthRoute`)
+- **Schema**: `/schema` (automatically outputs JSON schema for all registered Lands, with CORS support)
 
-啟動時，`LandHost` 會自動打印連接資訊，包括所有已註冊的 WebSocket 端點。
+On startup, `LandHost` automatically prints connection information, including all registered WebSocket endpoints.
 
-## 房間管理
+## Room Management
 
-### 多房間模式
+### Multi-Room Mode
 
-`LandHost` 預設支援多房間模式：
+`LandHost` supports multi-room mode by default:
 
-- 客戶端可以通過 `JoinRequest` 的 `landID` 參數指定要加入的房間
-- `landID` 格式：`"landType:instanceId"`（例如 `"cookie:room-123"`）
-- 如果只提供 `instanceId`（例如 `"room-123"`），codegen 會自動添加 `landType` 前綴
+- Clients can specify which room to join via `landID` parameter in `JoinRequest`
+- `landID` format: `"landType:instanceId"` (e.g., `"cookie:room-123"`)
+- If only `instanceId` is provided (e.g., `"room-123"`), codegen automatically adds `landType` prefix
 
-### 自動創建房間
+### Auto-Create Rooms
 
-當 `allowAutoCreateOnJoin: true` 時：
+When `allowAutoCreateOnJoin: true`:
 
-- 客戶端可以通過指定不存在的 `landID` 來創建新房間
-- 例如：連接到 `"cookie:my-room"` 會自動創建一個新的 cookie 遊戲房間
+- Clients can create new rooms by specifying non-existent `landID`
+- Example: Connecting to `"cookie:my-room"` automatically creates a new cookie game room
 
-### 單房間行為
+### Single-Room Behavior
 
-即使啟用了多房間模式，也可以通過以下方式實現單房間行為：
+Even with multi-room mode enabled, single-room behavior can be achieved by:
 
-- 客戶端不指定 `landID`（或使用預設值），所有客戶端會連接到同一個房間
-- 或者所有客戶端都指定相同的 `landID`
+- Clients don't specify `landID` (or use default value), all clients connect to the same room
+- Or all clients specify the same `landID`
 
-## 進階用法
+## Advanced Usage
 
-### 自定義路由
+### Custom Routes
 
-`LandHost` 內部管理 Router，如果需要添加自定義路由，可以通過 `LandHost` 的擴展來實現（未來版本可能會提供更直接的 API）。
+`LandHost` internally manages Router. If you need to add custom routes, it can be achieved through `LandHost` extensions (future versions may provide more direct API).
 
 ### Admin Routes
 
-`LandHost` 提供 `registerAdminRoutes` 方法來註冊管理路由：
+`LandHost` provides `registerAdminRoutes` method to register admin routes:
 
 ```swift
 try await host.registerAdminRoutes(
@@ -172,9 +174,9 @@ try await host.registerAdminRoutes(
 )
 ```
 
-## 環境變數配置
+## Environment Variable Configuration
 
-可以通過環境變數配置伺服器：
+Server can be configured via environment variables:
 
 ```bash
 # Set port
@@ -184,8 +186,8 @@ PORT=3000 swift run DemoServer
 HOST=0.0.0.0 PORT=3000 swift run DemoServer
 ```
 
-## 相關文件
+## Related Documentation
 
-- [JWT 與 Guest 模式](auth.md) - 了解認證和授權機制
-- [快速開始](../quickstart.md) - 從零開始建立第一個伺服器
-- [Transport 層](../transport/README.md) - 了解網路傳輸機制
+- [JWT and Guest Mode](auth.md) - Understand authentication and authorization mechanisms
+- [Quick Start](../quickstart.md) - Build your first server from scratch
+- [Transport Layer](../transport/README.md) - Understand network transport mechanisms

@@ -69,12 +69,15 @@
 
 ### Bilingual Documentation
 - **README**: `README.md` (English, default) and `README.zh-TW.md` (Traditional Chinese)
-- **Documentation files**: Chinese versions use original filenames (e.g., `docs/index.md`), English versions use `.en.md` suffix (e.g., `docs/index.en.md`)
+- **Documentation files**: English versions use original filenames (e.g., `docs/index.md`), Chinese versions use `.zh-TW.md` suffix (e.g., `docs/index.zh-TW.md`)
 - **When modifying documentation**: Always check and update both language versions to keep them in sync
   - If adding new content, translate it to both languages
   - If updating existing content, ensure both versions reflect the same changes
   - If fixing errors, apply fixes to both language versions
-- **Language switching**: Each documentation file should include language switching links at the top (e.g., `[English](file.en.md) | [中文版](file.md)`)
+- **Language switching**: Each documentation file should include language switching links at the top (e.g., `[English](file.md) | [中文版](file.zh-TW.md)`)
+- **Internal links**: 
+  - English files should link to other English files (`.md`)
+  - Chinese files should link to other Chinese files (`.zh-TW.md`)
 
 ## Code Comments & Documentation
 - **All code comments must be in English** (including `///` documentation comments and `//` inline comments)

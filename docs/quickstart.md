@@ -1,20 +1,22 @@
-# 快速開始
+[English](quickstart.md) | [中文版](quickstart.zh-TW.md)
 
-## 前置需求
+# Quick Start
+
+## Prerequisites
 
 - Swift 6
 - macOS 14+
 
-## 方案 A：直接跑 Demo
+## Option A: Run Demo Directly
 
 ```bash
 cd Examples/HummingbirdDemo
 swift run DemoServer
 ```
 
-## 方案 B：最小單房間伺服器
+## Option B: Minimal Single-Room Server
 
-### 1) 定義 State 與 Payload
+### 1) Define State and Payload
 
 ```swift
 import SwiftStateTree
@@ -42,7 +44,7 @@ struct ClickCookieEvent: ClientEventPayload {
 }
 ```
 
-### 2) 定義 Land
+### 2) Define Land
 
 ```swift
 let land = Land("demo", using: GameState.self) {
@@ -82,7 +84,7 @@ let land = Land("demo", using: GameState.self) {
 }
 ```
 
-### 3) 使用 Hummingbird Hosting
+### 3) Use Hummingbird Hosting
 
 ```swift
 import SwiftStateTreeHummingbird
@@ -114,16 +116,16 @@ struct DemoServer {
 }
 ```
 
-## 進階範例
+## Advanced Examples
 
-### 範例 1：多玩家互動遊戲
+### Example 1: Multiplayer Interactive Game
 
-這個範例展示如何建立一個支援多玩家互動的簡單遊戲：
+This example demonstrates how to build a simple game that supports multiplayer interactions:
 
 ```swift
 import SwiftStateTree
 
-// State 定義
+// State definition
 @StateNodeBuilder
 struct GameState: StateNodeProtocol {
     @Sync(.broadcast)
@@ -191,7 +193,7 @@ struct GameOverEvent: ServerEventPayload {
     let winnerID: PlayerID
 }
 
-// Land 定義
+// Land definition
 let gameLand = Land("multiplayer-game", using: GameState.self) {
     AccessControl {
         MaxPlayers(4)
@@ -314,9 +316,9 @@ let gameLand = Land("multiplayer-game", using: GameState.self) {
 }
 ```
 
-### 範例 2：完整的事件處理流程
+### Example 2: Complete Event Handling Flow
 
-這個範例展示如何處理雙向事件通訊：
+This example demonstrates how to handle bidirectional event communication:
 
 ```swift
 // Client Events
@@ -447,9 +449,9 @@ let lobbyLand = Land("lobby", using: LobbyState.self) {
 }
 ```
 
-### 範例 3：錯誤處理
+### Example 3: Error Handling
 
-這個範例展示如何處理各種錯誤情況：
+This example demonstrates how to handle various error scenarios:
 
 ```swift
 // Custom errors
@@ -538,9 +540,9 @@ let resourceGameLand = Land("resource-game", using: ResourceGameState.self) {
 }
 ```
 
-### 範例 4：使用 Resolver 載入資料
+### Example 4: Using Resolver to Load Data
 
-這個範例展示如何在 Action handler 中使用 Resolver：
+This example demonstrates how to use Resolver in Action handlers:
 
 ```swift
 // Resolver
@@ -607,9 +609,9 @@ let shopLand = Land("shop", using: ShopState.self) {
 }
 ```
 
-## 相關文檔
+## Related Documentation
 
-- [概觀](overview.md) - 了解系統架構
-- [Land DSL](core/land-dsl.md) - 深入了解 Land DSL
-- [同步規則](core/sync.md) - 了解狀態同步機制
-- [Runtime 運作機制](core/runtime.md) - 了解執行器運作方式
+- [Overview](overview.md) - Understand system architecture
+- [Land DSL](core/land-dsl.md) - Deep dive into Land DSL
+- [Sync Rules](core/sync.md) - Understand state synchronization mechanisms
+- [Runtime Operation](core/runtime.md) - Understand executor operation

@@ -1,56 +1,56 @@
-[English](cookie-clicker.en.md) | [中文版](cookie-clicker.md)
+[English](cookie-clicker.md) | [中文版](cookie-clicker.zh-TW.md)
 
-# Cookie Clicker Example
+# Cookie Clicker 範例
 
-Cookie Clicker is a complete multiplayer game example showcasing SwiftStateTree's advanced features, including:
+Cookie Clicker 是一個完整的多玩家遊戲範例，展示了 SwiftStateTree 的進階功能，包括：
 
-- Multiplayer state management
-- Private state (per-player private state)
-- Periodic Tick processing
-- Client Events handling
-- Actions and Responses
+- 多玩家狀態管理
+- 私有狀態（per-player private state）
+- 定期 Tick 處理
+- Client Events 處理
+- Action 與 Response
 
-## Running the Example
+## 運行範例
 
-**1. Start the server:**
+**1. 啟動伺服器：**
 ```bash
 cd Examples/HummingbirdDemo
 swift run DemoServer
 ```
 
-The server will start on `http://localhost:8080`.
+伺服器會在 `http://localhost:8080` 啟動。
 
-**2. Generate client code:**
+**2. 生成客戶端代碼：**
 ```bash
 cd WebClient
 npm run codegen
 ```
 
-**3. Start the client:**
+**3. 啟動客戶端：**
 ```bash
 npm run dev
 ```
 
-Then open `http://localhost:5173` in your browser and navigate to the Cookie Clicker page.
+然後在瀏覽器中打開 `http://localhost:5173`，導航到 Cookie Clicker 頁面。
 
-## Core Features
+## 核心功能
 
-### 1. Multiplayer State
+### 1. 多玩家狀態
 
-Game state contains public and private information for all players:
+遊戲狀態包含所有玩家的公開資訊和私有資訊：
 
 ```swift
 @StateNodeBuilder
 public struct CookieGameState: StateNodeProtocol {
-    /// Public state for all players (visible to everyone)
+    /// 所有玩家的公開狀態（所有人都能看到）
     @Sync(.broadcast)
     var players: [PlayerID: CookiePlayerPublicState] = [:]
     
-    /// Private state for each player (only visible to that player)
+    /// 每個玩家的私有狀態（只有該玩家能看到）
     @Sync(.perPlayer)
     var privateStates: [PlayerID: CookiePlayerPrivateState] = [:]
     
-    /// Room statistics
+    /// 房間統計資訊
     @Sync(.broadcast)
     var totalCookies: Int = 0
     @Sync(.broadcast)
@@ -58,9 +58,9 @@ public struct CookieGameState: StateNodeProtocol {
 }
 ```
 
-### 2. Private State
+### 2. 私有狀態
 
-Use `@Sync(.perPlayer)` to ensure each player only sees their own private state:
+使用 `@Sync(.perPlayer)` 實現每個玩家只能看到自己的私有狀態：
 
 ```swift
 @StateNodeBuilder
@@ -75,7 +75,7 @@ public struct CookiePlayerPrivateState: StateNodeProtocol {
 
 ### 3. Client Events
 
-Handle events sent from client (no response):
+處理客戶端發送的事件（無回應）：
 
 ```swift
 @Payload
@@ -87,7 +87,7 @@ public struct ClickCookieEvent: ClientEventPayload {
     }
 }
 
-// Handle in Land definition
+// 在 Land 定義中處理
 Rules {
     HandleEvent(ClickCookieEvent.self) { state, event, ctx in
         let (publicState, privateState) = state.ensurePlayerState(
@@ -101,9 +101,9 @@ Rules {
 }
 ```
 
-### 4. Actions and Response
+### 4. Actions 與 Response
 
-Handle operations that require responses:
+處理需要回應的操作：
 
 ```swift
 @Payload
@@ -125,14 +125,14 @@ public struct BuyUpgradeResponse: ResponsePayload {
     public let upgradeLevel: Int
 }
 
-// Handle in Land definition
+// 在 Land 定義中處理
 Rules {
     HandleAction(BuyUpgradeAction.self) { state, action, ctx in
         let (publicState, privateState) = state.ensurePlayerState(
             playerID: ctx.playerID
         )
         
-        // Calculate upgrade cost
+        // 計算升級成本
         let currentLevel = privateState.upgrades[action.upgradeID] ?? 0
         let cost = calculateUpgradeCost(currentLevel, baseCost: 10)
         
@@ -161,16 +161,16 @@ Rules {
 }
 ```
 
-### 5. Periodic Tick Processing
+### 5. 定期 Tick 處理
 
-Use `Lifetime` block to handle periodic logic:
+使用 `Lifetime` 區塊處理定期邏輯：
 
 ```swift
 Lifetime {
     Tick(every: .seconds(1)) { (state: inout CookieGameState, _: LandContext) in
         state.ticks += 1
         
-        // Apply passive cookie generation for each player
+        // 為每個玩家應用被動 cookie 生成
         var total = 0
         for (playerID, _) in state.players {
             let (publicState, privateState) = state.ensurePlayerState(
@@ -186,9 +186,9 @@ Lifetime {
 }
 ```
 
-## Client Usage
+## 客戶端使用
 
-Generated composables provide complete type safety:
+生成的 composable 提供了完整的類型安全：
 
 ```vue
 <script setup lang="ts">
@@ -203,34 +203,34 @@ const {
   buyUpgrade
 } = useDemoGame()
 
-// Connect and join game
+// 連接並加入遊戲
 onMounted(async () => {
   await connect({ wsUrl: 'ws://localhost:8080/game/cookie' })
 })
 
-// Click cookie (send Client Event)
+// 點擊 cookie（發送 Client Event）
 async function handleClick() {
   await clickCookie({ amount: 1 })
 }
 
-// Buy upgrade (send Action)
+// 購買升級（發送 Action）
 async function handleBuy(upgradeID: string) {
   const response = await buyUpgrade({ upgradeID })
   if (response.success) {
-    console.log(`Upgrade successful! Level: ${response.upgradeLevel}`)
+    console.log(`升級成功！等級: ${response.upgradeLevel}`)
   }
 }
 </script>
 
 <template>
   <div v-if="state">
-    <!-- Display own state -->
+    <!-- 顯示自己的狀態 -->
     <div>
-      <h2>My Cookies: {{ state.players[currentPlayerID]?.cookies ?? 0 }}</h2>
-      <button @click="handleClick">Click Cookie</button>
+      <h2>我的 Cookies: {{ state.players[currentPlayerID]?.cookies ?? 0 }}</h2>
+      <button @click="handleClick">點擊 Cookie</button>
     </div>
     
-    <!-- Display other players -->
+    <!-- 顯示其他玩家 -->
     <div v-for="(player, id) in others" :key="id">
       {{ player.name }}: {{ player.cookies }} cookies
     </div>
@@ -238,15 +238,15 @@ async function handleBuy(upgradeID: string) {
 </template>
 ```
 
-## Key Concepts
+## 關鍵概念
 
-1. **Public vs Private State**: Use `@Sync(.broadcast)` and `@Sync(.perPlayer)` to control data visibility
-2. **Client Events**: Used for operations that don't need responses (like clicking)
-3. **Actions**: Used for operations that need server validation and responses (like purchasing)
-4. **Tick Processing**: Periodically execute game logic (like passive cookie generation)
+1. **公開 vs 私有狀態**：使用 `@Sync(.broadcast)` 和 `@Sync(.perPlayer)` 控制資料可見性
+2. **Client Events**：用於不需要回應的操作（如點擊）
+3. **Actions**：用於需要伺服器驗證和回應的操作（如購買）
+4. **Tick 處理**：定期執行遊戲邏輯（如被動生成 cookies）
 
-## Complete Source Code
+## 完整原始碼
 
-- **Server-side definition**: [`Examples/HummingbirdDemo/Sources/DemoContent/CookieDemoDefinitions.swift`](../../Examples/HummingbirdDemo/Sources/DemoContent/CookieDemoDefinitions.swift)
-- **Server main program**: [`Examples/HummingbirdDemo/Sources/DemoServer/main.swift`](../../Examples/HummingbirdDemo/Sources/DemoServer/main.swift)
-- **Client Vue component**: [`Examples/HummingbirdDemo/WebClient/src/views/CookieGamePage.vue`](../../Examples/HummingbirdDemo/WebClient/src/views/CookieGamePage.vue)
+- **伺服器端定義**：[`Examples/HummingbirdDemo/Sources/DemoContent/CookieDemoDefinitions.swift`](../../Examples/HummingbirdDemo/Sources/DemoContent/CookieDemoDefinitions.swift)
+- **伺服器主程式**：[`Examples/HummingbirdDemo/Sources/DemoServer/main.swift`](../../Examples/HummingbirdDemo/Sources/DemoServer/main.swift)
+- **客戶端 Vue 組件**：[`Examples/HummingbirdDemo/WebClient/src/views/CookieGamePage.vue`](../../Examples/HummingbirdDemo/WebClient/src/views/CookieGamePage.vue)
