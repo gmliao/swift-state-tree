@@ -264,6 +264,61 @@ Options:
 - `-m, --metadata <json>`: Metadata as JSON string (optional)
 - `-t, --token <token>`: JWT token for authentication (optional)
 
+### `admin`
+Admin commands for managing lands (requires admin authentication).
+
+#### `admin list`
+List all lands on the server.
+
+```bash
+npm run dev admin list -u http://localhost:8080 -k demo-admin-key
+```
+
+Options:
+- `-u, --url <url>`: Server URL (required, http:// or https://)
+- `-k, --api-key <key>`: Admin API key (required if no token)
+- `-t, --token <token>`: JWT token with admin role (required if no api-key)
+
+#### `admin stats`
+Get system statistics (total lands and players).
+
+```bash
+npm run dev admin stats -u http://localhost:8080 -k demo-admin-key
+```
+
+Options:
+- `-u, --url <url>`: Server URL (required)
+- `-k, --api-key <key>`: Admin API key (required if no token)
+- `-t, --token <token>`: JWT token with admin role (required if no api-key)
+
+#### `admin get`
+Get information about a specific land.
+
+```bash
+npm run dev admin get -u http://localhost:8080 -l cookie:room-123 -k demo-admin-key
+```
+
+Options:
+- `-u, --url <url>`: Server URL (required)
+- `-l, --land <landID>`: Land ID (required)
+- `-k, --api-key <key>`: Admin API key (required if no token)
+- `-t, --token <token>`: JWT token with admin role (required if no api-key)
+
+#### `admin delete`
+Delete a land (requires admin role).
+
+```bash
+npm run dev admin delete -u http://localhost:8080 -l cookie:room-123 -k demo-admin-key
+```
+
+Options:
+- `-u, --url <url>`: Server URL (required)
+- `-l, --land <landID>`: Land ID to delete (required)
+- `-k, --api-key <key>`: Admin API key (required if no token)
+- `-t, --token <token>`: JWT token with admin role (required if no api-key)
+
+**Note**: The demo server uses API key `demo-admin-key` by default. In production, use a secure API key or JWT tokens with admin roles.
+
 ## Testing Notes
 
 ### Starting the Server

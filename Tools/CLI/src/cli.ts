@@ -5,8 +5,9 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import chalk from 'chalk'
 import { StateTreeRuntime, StateTreeView } from '@swiftstatetree/sdk/core'
-import { ChalkLogger } from './logger.js'
-import { fetchSchema, printSchema } from './schema.js'
+import { ChalkLogger } from './logger'
+import { fetchSchema, printSchema } from './schema'
+import * as admin from './admin'
 
 const program = new Command()
 
@@ -306,6 +307,131 @@ async function executeScript(view: StateTreeView, scriptPath: string) {
     throw error
   }
 }
+
+// Admin commands
+const adminCommand = program
+  .command('admin')
+  .description('Admin commands for managing lands (requires admin authentication)')
+
+adminCommand
+  .command('list')
+  .description('List all lands')
+  .requiredOption('-u, --url <url>', 'Server URL (e.g., http://localhost:8080)')
+  .option('-k, --api-key <key>', 'Admin API key')
+  .option('-t, --token <token>', 'JWT token with admin role')
+  .action(async (options) => {
+    try {
+      if (!options.apiKey && !options.token) {
+        console.error(chalk.red('Error: Either --api-key or --token is required'))
+        process.exit(1)
+      }
+
+      console.log(chalk.blue(`📋 Fetching land list from ${options.url}...`))
+      const lands = await admin.listLands({
+        url: options.url,
+        apiKey: options.apiKey,
+        token: options.token,
+      })
+      admin.printLandList(lands)
+    } catch (error: any) {
+      console.error(chalk.red(`Error: ${error.message}`))
+      process.exit(1)
+    }
+  })
+
+adminCommand
+  .command('stats')
+  .description('Get system statistics')
+  .requiredOption('-u, --url <url>', 'Server URL (e.g., http://localhost:8080)')
+  .option('-k, --api-key <key>', 'Admin API key')
+  .option('-t, --token <token>', 'JWT token with admin role')
+  .action(async (options) => {
+    try {
+      if (!options.apiKey && !options.token) {
+        console.error(chalk.red('Error: Either --api-key or --token is required'))
+        process.exit(1)
+      }
+
+      console.log(chalk.blue(`📊 Fetching system statistics from ${options.url}...`))
+      const stats = await admin.getSystemStats({
+        url: options.url,
+        apiKey: options.apiKey,
+        token: options.token,
+      })
+      admin.printSystemStats(stats)
+    } catch (error: any) {
+      console.error(chalk.red(`Error: ${error.message}`))
+      process.exit(1)
+    }
+  })
+
+adminCommand
+  .command('get')
+  .description('Get information about a specific land')
+  .requiredOption('-u, --url <url>', 'Server URL (e.g., http://localhost:8080)')
+  .requiredOption('-l, --land <landID>', 'Land ID')
+  .option('-k, --api-key <key>', 'Admin API key')
+  .option('-t, --token <token>', 'JWT token with admin role')
+  .action(async (options) => {
+    try {
+      if (!options.apiKey && !options.token) {
+        console.error(chalk.red('Error: Either --api-key or --token is required'))
+        process.exit(1)
+      }
+
+      console.log(
+        chalk.blue(
+          `🔍 Fetching land info for ${options.land} from ${options.url}...`
+        )
+      )
+      const stats = await admin.getLandStats({
+        url: options.url,
+        landID: options.land,
+        apiKey: options.apiKey,
+        token: options.token,
+      })
+      if (stats) {
+        admin.printLandStats(stats)
+      } else {
+        console.log(chalk.yellow(`  Land not found: ${options.land}`))
+      }
+    } catch (error: any) {
+      console.error(chalk.red(`Error: ${error.message}`))
+      process.exit(1)
+    }
+  })
+
+adminCommand
+  .command('delete')
+  .description('Delete a land (requires admin role)')
+  .requiredOption('-u, --url <url>', 'Server URL (e.g., http://localhost:8080)')
+  .requiredOption('-l, --land <landID>', 'Land ID to delete')
+  .option('-k, --api-key <key>', 'Admin API key')
+  .option('-t, --token <token>', 'JWT token with admin role')
+  .action(async (options) => {
+    try {
+      if (!options.apiKey && !options.token) {
+        console.error(chalk.red('Error: Either --api-key or --token is required'))
+        process.exit(1)
+      }
+
+      console.log(
+        chalk.yellow(
+          `🗑️  Deleting land ${options.land} from ${options.url}...`
+        )
+      )
+      await admin.deleteLand({
+        url: options.url,
+        landID: options.land,
+        apiKey: options.apiKey,
+        token: options.token,
+      })
+      console.log(chalk.green(`✅ Successfully deleted land: ${options.land}`))
+    } catch (error: any) {
+      console.error(chalk.red(`Error: ${error.message}`))
+      process.exit(1)
+    }
+  })
 
 program.parse()
 

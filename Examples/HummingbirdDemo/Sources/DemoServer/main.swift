@@ -20,6 +20,7 @@ import SwiftStateTreeTransport
 /// - Host: Set via `HOST` environment variable (default: "localhost")
 /// - Guest mode: Enabled (allows connections without JWT)
 /// - Auto-create rooms: Enabled (clients can create rooms dynamically)
+/// - Admin routes: Enabled at `/admin/*` (API Key: `demo-admin-key`)
 ///
 /// **Usage**:
 /// ```bash
@@ -82,6 +83,18 @@ struct DemoServer {
             webSocketPath: "/game/counter",
             configuration: serverConfig
         )
+
+        // Register admin routes for managing lands
+        // Use API key for demo (in production, use JWT with adminRole)
+        let adminAuth = AdminAuthMiddleware(
+            jwtValidator: nil,  // Can use JWT validator if needed
+            apiKey: "demo-admin-key"  // Demo API key (change in production!)
+        )
+        await landHost.registerAdminRoutes(
+            adminAuth: adminAuth,
+            logger: logger
+        )
+        logger.info("✅ Admin routes registered at /admin/* (API Key: demo-admin-key)")
 
         // Run unified server (LandHost will automatically print connection info)
         do {

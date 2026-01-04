@@ -5,6 +5,7 @@ import SwiftStateTree
 import SwiftStateTreeTransport
 import Logging
 import NIOCore
+import HTTPTypes
 
 /// Admin HTTP routes for managing lands across all land types.
 ///
@@ -33,10 +34,29 @@ public struct AdminRoutes: Sendable {
     ///
     /// - Parameter router: The Hummingbird router to register routes on.
     public func registerRoutes(on router: Router<BasicWebSocketRequestContext>) {
+        // Helper function to create CORS response for OPTIONS requests
+        func corsOptionsResponse() -> Response {
+            var response = Response(status: .ok)
+            response.headers[HTTPField.Name("Access-Control-Allow-Origin")!] = "*"
+            response.headers[HTTPField.Name("Access-Control-Allow-Methods")!] = "GET, POST, DELETE, OPTIONS"
+            response.headers[HTTPField.Name("Access-Control-Allow-Headers")!] = "Content-Type, X-API-Key, Authorization"
+            response.headers[HTTPField.Name("Access-Control-Max-Age")!] = "3600"
+            return response
+        }
+        
+        // Register OPTIONS handler for all admin routes to handle CORS preflight
+        // Note: Hummingbird router.on may not support OPTIONS directly, so we'll handle it in each route
+        // For now, we rely on the CORS headers in adminResponse to handle simple requests
+        // OPTIONS preflight will be handled by checking request method in route handlers if needed
+        
         // GET /admin/lands - List all lands
         router.get("/admin/lands") { request, context in
             guard await self.adminAuth.hasRequiredRole(from: request, requiredRole: .viewer) else {
-                return Response(status: .unauthorized)
+                let errorResponse = AdminAPIAnyResponse.error(
+                    code: .unauthorized,
+                    message: "Invalid API key or token"
+                )
+                return try HTTPResponseHelpers.adminResponse(errorResponse, status: .unauthorized)
             }
             
             // List all lands across all registered servers
@@ -44,29 +64,41 @@ public struct AdminRoutes: Sendable {
             let landList = landIDs.map { $0.stringValue }
             
             do {
-                return try HTTPResponseHelpers.jsonResponse(landList, status: .ok)
+                let response = AdminAPIAnyResponse.success(landList)
+                return try HTTPResponseHelpers.adminResponse(response)
             } catch {
                 self.logger.error("Failed to encode land list: \(error)")
-                return HTTPResponseHelpers.errorResponse(
-                    message: "Failed to encode land list",
-                    status: .internalServerError
+                let errorResponse = AdminAPIAnyResponse.error(
+                    code: .internalError,
+                    message: "Failed to encode land list"
                 )
+                return try HTTPResponseHelpers.adminResponse(errorResponse, status: .internalServerError)
             }
         }
         
         // GET /admin/lands/:landID - Get specific land info
         router.get("/admin/lands/:landID") { request, context in
             guard await self.adminAuth.hasRequiredRole(from: request, requiredRole: .viewer) else {
-                return Response(status: .unauthorized)
+                let errorResponse = AdminAPIAnyResponse.error(
+                    code: .unauthorized,
+                    message: "Invalid API key or token"
+                )
+                return try HTTPResponseHelpers.adminResponse(errorResponse, status: .unauthorized)
             }
             
-            // Extract landID from path
+            // Extract landID from path and URL decode
             let landIDString = context.parameters.get("landID") ?? "unknown"
-            let landID = LandID(landIDString)
+            let decodedLandIDString = landIDString.removingPercentEncoding ?? landIDString
+            let landID = LandID(decodedLandIDString)
             
             // Get land stats from any registered server
             guard let stats = await self.landRealm.getLandStats(landID: landID) else {
-                return Response(status: .notFound)
+                let errorResponse = AdminAPIAnyResponse.error(
+                    code: .notFound,
+                    message: "Land not found",
+                    details: ["landID": AnyCodable(landIDString)]
+                )
+                return try HTTPResponseHelpers.adminResponse(errorResponse, status: .notFound)
             }
             
             let encoder = JSONEncoder()
@@ -74,27 +106,39 @@ public struct AdminRoutes: Sendable {
             encoder.dateEncodingStrategy = .iso8601
             
             do {
-                return try HTTPResponseHelpers.jsonResponse(stats, status: .ok, encoder: encoder)
+                let response = AdminAPIAnyResponse.success(stats)
+                return try HTTPResponseHelpers.adminResponse(response, encoder: encoder)
             } catch {
                 self.logger.error("Failed to encode land stats: \(error)")
-                return HTTPResponseHelpers.errorResponse(
-                    message: "Failed to encode land stats",
-                    status: .internalServerError
+                let errorResponse = AdminAPIAnyResponse.error(
+                    code: .internalError,
+                    message: "Failed to encode land stats"
                 )
+                return try HTTPResponseHelpers.adminResponse(errorResponse, status: .internalServerError)
             }
         }
         
         // GET /admin/lands/:landID/stats - Get land statistics (alias for above)
         router.get("/admin/lands/:landID/stats") { request, context in
             guard await self.adminAuth.hasRequiredRole(from: request, requiredRole: .viewer) else {
-                return Response(status: .unauthorized)
+                let errorResponse = AdminAPIAnyResponse.error(
+                    code: .unauthorized,
+                    message: "Invalid API key or token"
+                )
+                return try HTTPResponseHelpers.adminResponse(errorResponse, status: .unauthorized)
             }
             
             let landIDString = context.parameters.get("landID") ?? "unknown"
-            let landID = LandID(landIDString)
+            let decodedLandIDString = landIDString.removingPercentEncoding ?? landIDString
+            let landID = LandID(decodedLandIDString)
             
             guard let stats = await self.landRealm.getLandStats(landID: landID) else {
-                return Response(status: .notFound)
+                let errorResponse = AdminAPIAnyResponse.error(
+                    code: .notFound,
+                    message: "Land not found",
+                    details: ["landID": AnyCodable(decodedLandIDString)]
+                )
+                return try HTTPResponseHelpers.adminResponse(errorResponse, status: .notFound)
             }
             
             let encoder = JSONEncoder()
@@ -102,20 +146,26 @@ public struct AdminRoutes: Sendable {
             encoder.dateEncodingStrategy = .iso8601
             
             do {
-                return try HTTPResponseHelpers.jsonResponse(stats, status: .ok, encoder: encoder)
+                let response = AdminAPIAnyResponse.success(stats)
+                return try HTTPResponseHelpers.adminResponse(response, encoder: encoder)
             } catch {
                 self.logger.error("Failed to encode land stats: \(error)")
-                return HTTPResponseHelpers.errorResponse(
-                    message: "Failed to encode land stats",
-                    status: .internalServerError
+                let errorResponse = AdminAPIAnyResponse.error(
+                    code: .internalError,
+                    message: "Failed to encode land stats"
                 )
+                return try HTTPResponseHelpers.adminResponse(errorResponse, status: .internalServerError)
             }
         }
         
         // POST /admin/lands - Create a new land (admin only)
         router.post("/admin/lands") { request, context in
             guard await self.adminAuth.hasRequiredRole(from: request, requiredRole: .admin) else {
-                return Response(status: .unauthorized)
+                let errorResponse = AdminAPIAnyResponse.error(
+                    code: .unauthorized,
+                    message: "Invalid API key or token"
+                )
+                return try HTTPResponseHelpers.adminResponse(errorResponse, status: .unauthorized)
             }
             
             // Extract landID from request body or generate one
@@ -124,27 +174,42 @@ public struct AdminRoutes: Sendable {
             
             // Note: This requires definition and initialState, which should come from request body
             // For now, return not implemented
-            return Response(status: .notImplemented)
+            let errorResponse = AdminAPIAnyResponse.error(
+                code: .notImplemented,
+                message: "Create land endpoint is not yet implemented"
+            )
+            return try HTTPResponseHelpers.adminResponse(errorResponse, status: .notImplemented)
         }
         
         // DELETE /admin/lands/:landID - Remove a land (admin only)
         router.delete("/admin/lands/:landID") { request, context in
             guard await self.adminAuth.hasRequiredRole(from: request, requiredRole: .admin) else {
-                return Response(status: .unauthorized)
+                let errorResponse = AdminAPIAnyResponse.error(
+                    code: .unauthorized,
+                    message: "Invalid API key or token"
+                )
+                return try HTTPResponseHelpers.adminResponse(errorResponse, status: .unauthorized)
             }
             
             let landIDString = context.parameters.get("landID") ?? "unknown"
-            let landID = LandID(landIDString)
+            let decodedLandIDString = landIDString.removingPercentEncoding ?? landIDString
+            let landID = LandID(decodedLandIDString)
             
             await self.landRealm.removeLand(landID: landID)
             
-            return Response(status: .noContent)
+            // Return success response for DELETE (no content, but with unified format)
+            let response = AdminAPIAnyResponse.success(["message": AnyCodable("Land deleted successfully")])
+            return try HTTPResponseHelpers.adminResponse(response, status: .ok)
         }
         
         // GET /admin/stats - System statistics
         router.get("/admin/stats") { request, context in
             guard await self.adminAuth.hasRequiredRole(from: request, requiredRole: .viewer) else {
-                return Response(status: .unauthorized)
+                let errorResponse = AdminAPIAnyResponse.error(
+                    code: .unauthorized,
+                    message: "Invalid API key or token"
+                )
+                return try HTTPResponseHelpers.adminResponse(errorResponse, status: .unauthorized)
             }
             
             // Get system stats across all registered servers
@@ -163,13 +228,15 @@ public struct AdminRoutes: Sendable {
             ]
             
             do {
-                return try HTTPResponseHelpers.jsonResponse(systemStats, status: .ok)
+                let response = AdminAPIAnyResponse.success(systemStats)
+                return try HTTPResponseHelpers.adminResponse(response)
             } catch {
                 self.logger.error("Failed to encode system stats: \(error)")
-                return HTTPResponseHelpers.errorResponse(
-                    message: "Failed to encode system stats",
-                    status: .internalServerError
+                let errorResponse = AdminAPIAnyResponse.error(
+                    code: .internalError,
+                    message: "Failed to encode system stats"
                 )
+                return try HTTPResponseHelpers.adminResponse(errorResponse, status: .internalServerError)
             }
         }
     }
