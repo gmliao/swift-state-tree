@@ -16,6 +16,7 @@
 ### 入門指南
 
 - **[概觀](overview.md)** - 系統架構、模組組成、核心概念
+- **[架構分層](architecture.md)** - 組件分層架構與關係說明
 - **[快速開始](quickstart.md)** - 從零開始建立第一個伺服器
 
 ### 核心概念
@@ -54,8 +55,9 @@
 
 ### 我想實作多房間架構
 
-1. [Transport 層](transport/README.md) - 多房間管理
-2. [Hummingbird 整合](hummingbird/README.md) - 多房間模式設定
+1. [架構分層](architecture.md) - 了解組件分層與關係
+2. [Transport 層](transport/README.md) - 多房間管理
+3. [Hummingbird 整合](hummingbird/README.md) - 多房間模式設定
 
 ### 我想優化效能
 

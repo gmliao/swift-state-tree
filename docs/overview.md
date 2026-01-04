@@ -255,6 +255,7 @@ graph TD
 ## 文件入口
 
 - **[快速開始](quickstart.md)** - 從零開始建立第一個伺服器
+- **[架構分層](architecture.md)** - 組件分層架構與關係說明
 - **[核心概念](core/README.md)** - StateNode、Sync、Land DSL 詳解
 - **[Transport 層](transport/README.md)** - 網路傳輸與連線管理
 - **[Hummingbird 整合](hummingbird/README.md)** - 伺服器部署指南

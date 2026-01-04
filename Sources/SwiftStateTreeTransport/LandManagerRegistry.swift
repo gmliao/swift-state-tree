@@ -33,7 +33,7 @@ public protocol LandManagerRegistry: Actor {
     ///   - landID: The unique identifier for the land.
     ///   - definition: The Land definition to use.
     ///   - initialState: The initial state for the land.
-    /// - Returns: The LandContainer for the created land.
+    /// - Returns: The LandContainer for the created land (internal implementation detail).
     func createLand(
         landID: LandID,
         definition: LandDefinition<State>,
@@ -43,7 +43,7 @@ public protocol LandManagerRegistry: Actor {
     /// Get a specific land (may be on any LandManager).
     ///
     /// - Parameter landID: The unique identifier for the land.
-    /// - Returns: The LandContainer if the land exists, nil otherwise.
+    /// - Returns: The LandContainer if the land exists, nil otherwise (internal implementation detail).
     func getLand(landID: LandID) async -> LandContainer<State>?
 }
 

@@ -18,7 +18,7 @@ public protocol LandManagerProtocol: Actor {
     ///   - landID: The unique identifier for the land.
     ///   - definition: The Land definition to use if creating a new land.
     ///   - initialState: The initial state for the land if creating a new one.
-    /// - Returns: The LandContainer for the land.
+    /// - Returns: The LandContainer for the land (internal implementation detail).
     func getOrCreateLand(
         landID: LandID,
         definition: LandDefinition<State>,
@@ -28,7 +28,7 @@ public protocol LandManagerProtocol: Actor {
     /// Get an existing land by ID.
     ///
     /// - Parameter landID: The unique identifier for the land.
-    /// - Returns: The LandContainer if the land exists, nil otherwise.
+    /// - Returns: The LandContainer if the land exists, nil otherwise (internal implementation detail).
     func getLand(landID: LandID) async -> LandContainer<State>?
     
     /// Remove a land from the manager.
