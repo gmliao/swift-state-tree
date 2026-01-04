@@ -14,9 +14,7 @@ export interface StateUpdateEntry {
   affectedPaths?: string[]
 }
 
-const LAND_ID = 'demo-game' // Match the landID from DemoDefinitions.swift
-
-export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
+export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, selectedLandID: Ref<string> = ref('')) {
   const isConnected = ref(false)
   const isJoined = ref(false)
   const connectionError = ref<string | null>(null)
@@ -31,9 +29,32 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
     timestamp: Date
   }>>([])
 
+  // Get initial landID from selectedLandID or fallback to first available land
+  const getInitialLandID = (): string => {
+    if (selectedLandID.value) {
+      return selectedLandID.value
+    }
+    // Fallback: use first land from schema if available
+    if (schema.value && schema.value.lands) {
+      const landKeys = Object.keys(schema.value.lands)
+      if (landKeys.length > 0) {
+        return landKeys[0]
+      }
+    }
+    // Final fallback
+    return 'demo-game'
+  }
+  
   // Track current landID (may be updated after join if server returns different one)
-  const currentLandID = ref<string>(LAND_ID)
+  const currentLandID = ref<string>(getInitialLandID())
   const currentPlayerID = ref<string | null>(null)
+  
+  // Update currentLandID when selectedLandID changes
+  watch(selectedLandID, (newLandID) => {
+    if (newLandID) {
+      currentLandID.value = newLandID
+    }
+  })
 
   // Track action requests to match responses
   const actionRequestMap = ref<Map<string, { actionName: string, timestamp: Date }>>(new Map())
@@ -151,8 +172,11 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
       connectionError.value = null
       addLog('✅ WebSocket 連線成功', 'success')
 
+      // Use current landID (from selectedLandID or fallback)
+      const landIDToUse = currentLandID.value || getInitialLandID()
+      
       // Create view with state update callbacks
-      view = runtime.createView(LAND_ID, {
+      view = runtime.createView(landIDToUse, {
         logger,
         onStateUpdate: (state) => {
           currentState.value = state
@@ -191,8 +215,8 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
           const actualLandID = joinResult.landID || view.getCurrentLandID() || currentLandID.value
           if (actualLandID !== currentLandID.value) {
             currentLandID.value = actualLandID
-            if (actualLandID !== LAND_ID) {
-              addLog(`ℹ️  LandID 已更新: ${LAND_ID} -> ${actualLandID}`, 'info')
+            if (actualLandID !== landIDToUse) {
+              addLog(`ℹ️  LandID 已更新: ${landIDToUse} -> ${actualLandID}`, 'info')
             }
           }
           
@@ -232,11 +256,17 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
     currentState.value = {}
     logs.value = []
     stateUpdates.value = []
-    currentLandID.value = LAND_ID  // Reset to initial value
+    currentLandID.value = getInitialLandID()  // Reset to initial value
     currentPlayerID.value = null
   }
 
-  const sendAction = (actionName: string, payload: any, landID: string = LAND_ID, requestID?: string): void => {
+  const sendAction = (actionName: string, payload: any, landID?: string, requestID?: string): void => {
+    const landIDToUse = landID || currentLandID.value || getInitialLandID()
+    
+    if (!view) {
+      addLog('❌ 尚未連線或加入遊戲', 'error')
+      return
+    }
     if (!view || !view.joined) {
       addLog('請先連線並加入 land', 'warning')
       return
@@ -285,7 +315,13 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>) {
       })
   }
 
-  const sendEvent = (eventName: string, payload: any, landID: string = LAND_ID): void => {
+  const sendEvent = (eventName: string, payload: any, landID?: string): void => {
+    const landIDToUse = landID || currentLandID.value || getInitialLandID()
+    
+    if (!view) {
+      addLog('❌ 尚未連線或加入遊戲', 'error')
+      return
+    }
     if (!view || !view.joined) {
       addLog('請先連線並加入 land', 'warning')
       return

@@ -31,7 +31,7 @@
       ></v-select>
 
       <v-alert
-        v-if="selectedLand && availableActions.length === 0"
+        v-if="activeLand && availableActions.length === 0"
         type="warning"
         density="compact"
         class="mb-4"
@@ -139,6 +139,7 @@ interface ActionField {
 const props = defineProps<{
   schema: Schema | null
   connected: boolean
+  selectedLandID?: string
   actionResults?: Array<{
     actionName: string
     success: boolean
@@ -152,7 +153,6 @@ const emit = defineEmits<{
   'send-action': [actionName: string, payload: any, landID: string]
 }>()
 
-const selectedLand = ref<string>('')
 const selectedAction = ref<string>('')
 const actionPayload = ref('{}')
 const payloadModel = ref<Record<string, any>>({})
@@ -190,19 +190,16 @@ const landKeys = computed(() => {
   return Object.keys(props.schema.lands)
 })
 
-const showLandSelector = computed(() => landKeys.value.length > 1)
-
-const landItems = computed(() => {
-  if (!props.schema) return []
-  return landKeys.value.map(key => ({
-    title: key,
-    value: key
-  }))
-})
-
+// Use external selectedLandID if provided, otherwise fallback to first land
 const activeLand = computed(() => {
-  return selectedLand.value || landKeys.value[0] || ''
+  if (props.selectedLandID) {
+    return props.selectedLandID
+  }
+  return landKeys.value[0] || ''
 })
+
+// Hide land selector since we use external selection
+const showLandSelector = computed(() => false)
 
 const availableActions = computed(() => {
   const landID = activeLand.value
