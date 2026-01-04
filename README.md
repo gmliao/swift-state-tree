@@ -1,85 +1,76 @@
+English | [中文版](README.zh-TW.md)
+
 # SwiftStateTree
 
-一個基於 Swift 的多人遊戲伺服器框架，採用 **單一 StateTree + 同步規則 + Land DSL** 的設計理念。
+A Swift-based multiplayer game server framework that adopts the design philosophy of **Single StateTree + Sync Rules + Land DSL**.
 
-## 🌳 什麼是 StateTree？
+## 🌳 What is StateTree?
 
-StateTree 是結合前端框架的狀態管理想法與後端資料過濾經驗的產物。透過狀態樹的方式表達伺服器狀態，可以直接將資料以 reactive 的方式同步給客戶端，讓客戶端能夠自動響應狀態變更。
+StateTree is a product that combines state management concepts from frontend frameworks with backend data filtering experience. By expressing server state through a state tree, data can be synchronized to clients in a reactive manner, allowing clients to automatically respond to state changes.
 
 > **Note**
-> StateTree 本身是一個 programming model（語意模型），用來描述伺服器端狀態、行為與同步的組織方式。本專案是該模型的一個 Swift reference implementation。
+> StateTree itself is a programming model (semantic model) used to describe how server-side state, behavior, and synchronization are organized. This project is a Swift reference implementation of that model.
 
-詳細的架構概念說明請參考 [架構概念總覽](docs/programming-model.md)。
+For detailed architectural concepts, please refer to [Architecture Overview](docs/programming-model.en.md).
 
-## 📝 關於專案
+## 📝 About the Project
 
-### 為什麼是 Swift？
+### Why Swift?
 
-因為 Swift（🐦 雨燕）會停留在樹上（stay on tree）... 所以是 **Swift** + **Stay** + **Tree** = **SwiftStateTree**！😄
+Because Swift (🐦 swift bird) stays on tree... so it's **Swift** + **Stay** + **Tree** = **SwiftStateTree**! 😄
 
-**其他動物呢？**
-- 🐍 **蟒蛇（Python）**：似乎不太停留在樹上
-- 🦀 **螃蟹（Rust）**：也不爬樹
-- 🐹 **地鼠（Go）**：不太喜歡樹上吧
-- 🐘 **大象（PHP）**：你在開玩笑嗎？
+**What about other animals?**
+- 🐍 **Python**: Doesn't seem to stay on trees
+- 🦀 **Rust**: Doesn't climb trees either
+- 🐹 **Go**: Probably doesn't like trees
+- 🐘 **PHP**: Are you kidding me?
 
-**結論：只有 Swift 會停留在 StateTree 上。**
+**Conclusion: Only Swift stays on the StateTree.**
 
-*（這是一個幽默的命名解釋，實際上我一開始命名的時候沒有想到這個雙關，後來才發現...XD 選擇 Swift 是因為其語言特性（DSL、Macro、Struct、Actor）非常適合實現 StateTree 的設計理念。）*
+*(This is a humorous naming explanation. In reality, I didn't think of this pun when I first named it, but discovered it later...XD. Swift was chosen because its language features (DSL, Macro, Struct, Actor) are very suitable for implementing the StateTree design philosophy.)*
 
-本專案為個人興趣嗜好專案，旨在探索和實驗多人遊戲伺服器架構設計。
+This is a personal hobby project aimed at exploring and experimenting with multiplayer game server architecture design.
 
-### 專案動機
+### Project Motivation
 
-最初的想法是建立一個類似 [Colyseus](https://colyseus.io/) 的 schema 同步功能框架。在整理想法之後，決定透過 StateTree 的方式來表達網路同步模型，讓開發者可以透過不同的同步策略來控制不同使用者觀察到的視角。
+The initial idea was to create a schema synchronization framework similar to [Colyseus](https://colyseus.io/). After organizing the ideas, we decided to express the network synchronization model through StateTree, allowing developers to control what different users observe through different synchronization strategies.
 
-在學習 Swift 的過程中，發現 Swift 的幾個特性非常適合實現這個想法：
-- **DSL（Domain-Specific Language）**：可以建立清晰的領域特定語法
-- **Macro**：編譯期代碼生成，提供型別安全和自動化
-- **Struct（值型別）**：適合狀態的快照和不可變性
-- **Actor**：提供並發安全和狀態隔離
+While learning Swift, we discovered several Swift features that are very suitable for implementing this idea:
+- **DSL (Domain-Specific Language)**: Can create clear domain-specific syntax
+- **Macro**: Compile-time code generation, providing type safety and automation
+- **Struct (value types)**: Suitable for state snapshots and immutability
+- **Actor**: Provides concurrency safety and state isolation
 
-雖然歡迎討論和建議，但主要目的在於技術探索和學習。
+While discussions and suggestions are welcome, the main purpose is technical exploration and learning.
 
-## 🎯 設計理念
+## 🎯 Design Philosophy
 
-SwiftStateTree 採用以下核心設計：
+SwiftStateTree adopts the following core design:
 
-- 🌳 **單一權威狀態樹**：用一棵 `StateTree` 表示整個領域的狀態
-- 🔄 **同步規則 DSL**：使用 `@Sync` 規則控制伺服器要把哪些資料同步給誰
-- 🏛️ **Land DSL**：定義領域、Action/Event 處理、Tick 設定
-- 💻 **UI 計算交給客戶端**：伺服器只送「邏輯資料」，UI 渲染由客戶端處理
-- 🔧 **自動 Schema 生成**：從伺服器定義自動產生 JSON Schema，支援 TypeScript客戶端 SDK 生成，確保型別安全
+- 🌳 **Single Authoritative State Tree**: Use one `StateTree` to represent the entire domain state
+- 🔄 **Sync Rules DSL**: Use `@Sync` rules to control which data the server synchronizes to whom
+- 🏛️ **Land DSL**: Define domain logic, Action/Event handling, and Tick settings
+- 💻 **UI Computation on Client**: Server only sends "logical data", UI rendering is handled by the client
+- 🔧 **Automatic Schema Generation**: Automatically generate JSON Schema from server definitions, supporting TypeScript client SDK generation for type safety
 
-## 📦 模組架構
+## 📦 Module Architecture
 
-| 模組 | 說明 |
-|------|------|
-| **SwiftStateTree** | 核心模組（StateTree、Land DSL、Sync、Runtime、SchemaGen） |
-| **SwiftStateTreeTransport** | Transport 層（WebSocketTransport、TransportAdapter、Land 管理） |
-| **SwiftStateTreeHummingbird** | Hummingbird 整合（LandServer、JWT/Guest、Admin 路由） |
-| **SwiftStateTreeBenchmarks** | 基準測試執行檔 |
+| Module | Description |
+|--------|-------------|
+| **SwiftStateTree** | Core module (StateTree, Land DSL, Sync, Runtime, SchemaGen) |
+| **SwiftStateTreeTransport** | Transport layer (WebSocketTransport, TransportAdapter, Land management) |
+| **SwiftStateTreeHummingbird** | Hummingbird integration (LandServer, JWT/Guest, Admin routes) |
+| **SwiftStateTreeBenchmarks** | Benchmark executable |
 
-## 📦 系統要求
+## 📦 System Requirements
 
 - Swift 6.0+
-- macOS 14.0+
+- **macOS** (native development, supports Apple Silicon)
+- **Windows**: Supported via VSCode/Cursor [Dev Containers](https://code.visualstudio.com/docs/devcontainers/containers) (configuration file: `.devcontainer/devcontainer.json`)
 
-## 🚀 安裝
+## 🏃 Quick Start
 
-### Swift Package Manager
-
-在你的 `Package.swift` 中添加依賴：
-
-```swift
-dependencies: [
-    .package(url: "https://github.com/your-username/SwiftStateTree.git", from: "1.0.0")
-]
-```
-
-## 🏃 快速開始
-
-### 1. 克隆並構建
+### 1. Clone and Build
 
 ```bash
 git clone https://github.com/your-username/SwiftStateTree.git
@@ -91,56 +82,56 @@ cd SwiftStateTree
 swift build
 ```
 
-### 2. 運行範例
+### 2. Run Examples
 
-啟動 DemoServer（包含 Cookie 遊戲和 Counter 範例）：
+Start the DemoServer (includes Cookie game and Counter example):
 ```bash
 cd Examples/HummingbirdDemo
 swift run DemoServer
 ```
 
-伺服器預設運行在 `http://localhost:8080`。
+The server runs on `http://localhost:8080` by default.
 
-在另一個終端生成客戶端代碼並啟動 WebClient：
+In another terminal, generate client code and start WebClient:
 ```bash
 cd Examples/HummingbirdDemo/WebClient
-npm install  # 首次運行需要安裝依賴
-npm run codegen  # 生成客戶端代碼
+npm install  # Install dependencies on first run
+npm run codegen  # Generate client code
 npm run dev
 ```
 
-WebClient 會運行在另一個端口（通常是 `http://localhost:5173`），可在瀏覽器中訪問並導航到 Counter Demo 頁面。
+WebClient will run on another port (usually `http://localhost:5173`), accessible in the browser and navigate to the Counter Demo page.
 
-**其他可用範例：**
-- 🍪 [Cookie Clicker 範例](docs/examples/cookie-clicker.md) - 完整的多玩家遊戲範例，包含私有狀態、升級系統、定期 Tick 處理等進階功能
+**Other available examples:**
+- 🍪 [Cookie Clicker Example](docs/examples/cookie-clicker.en.md) - A complete multiplayer game example with private state, upgrade system, periodic Tick handling, and other advanced features
 
-### 3. 查看詳細文檔
+### 3. View Detailed Documentation
 
-- 📖 [完整文檔索引](docs/index.md)
-- 🚀 [快速開始指南](docs/quickstart.md)
-- 📐 [架構概觀](docs/overview.md)
+- 📖 [Complete Documentation Index](docs/index.en.md)
+- 🚀 [Quick Start Guide](docs/quickstart.en.md)
+- 📐 [Architecture Overview](docs/overview.en.md)
 
-### 4. 最簡單範例
+### 4. Simplest Example
 
-以下是一個簡化的計數器範例，展示核心概念。完整可運行的原始碼請參考：
-- **伺服器端定義**：[`Examples/HummingbirdDemo/Sources/DemoContent/CounterDemoDefinitions.swift`](Examples/HummingbirdDemo/Sources/DemoContent/CounterDemoDefinitions.swift)
-- **伺服器主程式**：[`Examples/HummingbirdDemo/Sources/DemoServer/main.swift`](Examples/HummingbirdDemo/Sources/DemoServer/main.swift)
-- **客戶端 Vue 組件**：[`Examples/HummingbirdDemo/WebClient/src/views/CounterPage.vue`](Examples/HummingbirdDemo/WebClient/src/views/CounterPage.vue)
+The following is a simplified counter example demonstrating core concepts. For complete runnable source code, please refer to:
+- **Server-side definition**: [`Examples/HummingbirdDemo/Sources/DemoContent/CounterDemoDefinitions.swift`](Examples/HummingbirdDemo/Sources/DemoContent/CounterDemoDefinitions.swift)
+- **Server main program**: [`Examples/HummingbirdDemo/Sources/DemoServer/main.swift`](Examples/HummingbirdDemo/Sources/DemoServer/main.swift)
+- **Client Vue component**: [`Examples/HummingbirdDemo/WebClient/src/views/CounterPage.vue`](Examples/HummingbirdDemo/WebClient/src/views/CounterPage.vue)
 
-#### 伺服器端（Swift）
+#### Server-side (Swift)
 
 ```swift
 import SwiftStateTree
 import SwiftStateTreeHummingbird
 
-// 1. 定義狀態
+// 1. Define state
 @StateNodeBuilder
 struct CounterState: StateNodeProtocol {
     @Sync(.broadcast)
     var count: Int = 0
 }
 
-// 2. 定義 Action
+// 2. Define Action
 @Payload
 struct IncrementAction: ActionPayload {
     typealias Response = IncrementResponse
@@ -151,7 +142,7 @@ struct IncrementResponse: ResponsePayload {
     let newCount: Int
 }
 
-// 3. 定義 Land
+// 3. Define Land
 let counterLand = Land("counter", using: CounterState.self) {
     AccessControl {
         AllowPublic(true)
@@ -172,7 +163,7 @@ let counterLand = Land("counter", using: CounterState.self) {
     }
 }
 
-// 4. 啟動伺服器（簡化版，完整版請參考原始碼）
+// 4. Start server (simplified version, see source code for full version)
 @main
 struct DemoServer {
     static func main() async throws {
@@ -200,70 +191,70 @@ struct DemoServer {
 }
 ```
 
-#### Codegen 自動生成
+#### Codegen Auto-generation
 
-所有客戶端代碼都是從伺服器的 schema 自動生成的，整合非常簡單：
+All client code is automatically generated from the server's schema, making integration very simple:
 
 ```bash
-# 從 schema.json 生成客戶端代碼
+# Generate client code from schema.json
 npm run codegen
 
-# 或從運行中的伺服器直接獲取 schema
+# Or get schema directly from running server
 npm run codegen:server
 ```
 
-**生成的檔案結構：**
+**Generated file structure:**
 ```
 src/generated/
 ├── counter/
-│   ├── useCounter.ts      # Vue composable（自動生成）
-│   ├── index.ts           # StateTree 類別
-│   ├── bindings.ts        # 類型綁定
-│   └── testHelpers.ts     # 測試輔助函數
-├── defs.ts                # 共享類型定義（State、Action、Response）
-└── schema.ts              # Schema 元數據
+│   ├── useCounter.ts      # Vue composable (auto-generated)
+│   ├── index.ts           # StateTree class
+│   ├── bindings.ts        # Type bindings
+│   └── testHelpers.ts     # Test helpers
+├── defs.ts                # Shared type definitions (State, Action, Response)
+└── schema.ts              # Schema metadata
 ```
 
-**Codegen 自動生成的內容：**
+**Codegen auto-generated content:**
 
-1. **State 類型定義**：從伺服器的 `CounterState` 自動生成對應的 TypeScript 類型
+1. **State type definitions**: Automatically generate corresponding TypeScript types from server's `CounterState`
    ```typescript
-   // 自動生成：src/generated/defs.ts
+   // Auto-generated: src/generated/defs.ts
    export interface CounterState {
-     count: number  // 對應伺服器的 @Sync(.broadcast) var count: Int
+     count: number  // Corresponds to server's @Sync(.broadcast) var count: Int
    }
    ```
 
-2. **Action 函數**：每個伺服器的 Action 都會生成對應的客戶端函數
+2. **Action functions**: Each server Action generates a corresponding client function
    ```typescript
-   // 自動生成：src/generated/counter/useCounter.ts
+   // Auto-generated: src/generated/counter/useCounter.ts
    export function useCounter() {
      return {
-       state: Ref<CounterState | null>,      // 響應式狀態
+       state: Ref<CounterState | null>,      // Reactive state
        increment: (payload: IncrementAction) => Promise<IncrementResponse>,
-       // ... 其他 action 函數
+       // ... other action functions
      }
    }
    ```
 
-3. **完整的類型安全**：所有 Action 的 payload 和 response 都有完整的 TypeScript 類型
+3. **Complete type safety**: All Action payloads and responses have complete TypeScript types
 
-**優勢：**
-- ✅ **類型安全**：TypeScript 類型完全對應伺服器定義
-- ✅ **零配置**：一次命令生成所有需要的代碼
-- ✅ **自動同步**：伺服器變更後重新執行 codegen 即可更新
-- ✅ **開箱即用**：生成的 composable 可直接在 Vue 組件中使用
+**Advantages:**
+- ✅ **Type safety**: TypeScript types fully correspond to server definitions
+- ✅ **Zero configuration**: One command generates all needed code
+- ✅ **Auto-sync**: Re-run codegen after server changes to update
+- ✅ **Ready to use**: Generated composables can be used directly in Vue components
 
-#### 客戶端（Vue 3）
+#### Client (Vue 3)
 
-使用 codegen 生成的 composable，整合非常簡單：
+Using codegen-generated composables, integration is very simple:
 
 ```vue
 <script setup lang="ts">
 import { onMounted, onUnmounted } from 'vue'
 import { useCounter } from './generated/counter/useCounter'
 
-// 使用生成的 composable，自動包含 state 和所有 action 函數
+// Use generated composable, automatically includes state and all action functions
 const { state, isJoined, connect, disconnect, increment } = useCounter()
 
 onMounted(async () => {
@@ -278,66 +269,68 @@ onUnmounted(async () => {
 <template>
   <div v-if="!isJoined || !state">Connecting...</div>
   <div v-else>
-    <!-- 直接使用生成的 state，完全類型安全 -->
+    <!-- Directly use generated state, fully type-safe -->
     <h2>Count: {{ state.count ?? 0 }}</h2>
-    <!-- 使用生成的 action 函數 -->
+    <!-- Use generated action functions -->
     <button @click="increment({})" :disabled="!isJoined">+1</button>
   </div>
 </template>
 ```
 
-#### 運行範例
+#### Running the Example
 
-**1. 啟動伺服器：**
+**1. Start the server:**
 ```bash
 cd Examples/HummingbirdDemo
 swift run DemoServer
 ```
-伺服器會在 `http://localhost:8080` 啟動，提供兩個遊戲端點：
-- Cookie 遊戲：`ws://localhost:8080/game/cookie`
-- Counter 範例：`ws://localhost:8080/game/counter`
+The server will start on `http://localhost:8080`, providing two game endpoints:
+- Cookie game: `ws://localhost:8080/game/cookie`
+- Counter example: `ws://localhost:8080/game/counter`
 
-**2. 生成客戶端代碼：**
+**2. Generate client code:**
 ```bash
 cd WebClient
 npm run codegen
 ```
 
-**3. 啟動客戶端：**
+**3. Start the client:**
 ```bash
 npm run dev
 ```
-然後在瀏覽器中打開 `http://localhost:5173`，導航到 Counter Demo 頁面。
+Then open `http://localhost:5173` in your browser and navigate to the Counter Demo page.
 
-**關鍵點：**
-- 伺服器使用 `@StateNodeBuilder` 定義狀態樹，`@Sync(.broadcast)` 控制同步策略
-- 客戶端使用生成的 composable（如 `useCounter`），由 schema 自動生成
-- 在 template 中直接使用 `state.count`，Vue 會自動處理響應式更新
-- 使用 composable 提供的 action 方法（如 `increment`）來發送操作
+**Key points:**
+- Server uses `@StateNodeBuilder` to define state tree, `@Sync(.broadcast)` controls sync strategy
+- Client uses generated composables (like `useCounter`), auto-generated from schema
+- Directly use `state.count` in template, Vue automatically handles reactive updates
+- Use composable-provided action methods (like `increment`) to send operations
 
-## 📁 專案結構
+## 📁 Project Structure
 
 ```
 SwiftStateTree/
 ├── Sources/
-│   ├── SwiftStateTree/              # 核心模組
-│   ├── SwiftStateTreeTransport/     # Transport 層
-│   ├── SwiftStateTreeHummingbird/   # Hummingbird 整合
-│   └── SwiftStateTreeBenchmarks/    # 基準測試
-├── Tests/                           # 單元測試
-├── Examples/                        # 範例專案
+│   ├── SwiftStateTree/              # Core module
+│   ├── SwiftStateTreeTransport/     # Transport layer
+│   ├── SwiftStateTreeHummingbird/   # Hummingbird integration
+│   └── SwiftStateTreeBenchmarks/    # Benchmarks
+├── Tests/                           # Unit tests
+├── Examples/                        # Example projects
 │   └── HummingbirdDemo/
-├── docs/                            # 正式文檔
-└── Notes/                           # 設計與開發筆記
+├── docs/                            # Official documentation
+└── Notes/                           # Design and development notes
 ```
 
-詳細的模組說明請參考 [docs/overview.md](docs/overview.md)。
+> **Note**: The `Notes/` directory contains development notes and design documents, primarily in Traditional Chinese. These are internal materials that will be archived to `docs/` after review and organization.
 
-## 💡 核心概念
+For detailed module descriptions, please refer to [docs/overview.en.md](docs/overview.en.md).
 
-### StateTree：單一權威狀態樹
+## 💡 Core Concepts
 
-使用 `@StateNodeBuilder` 定義狀態樹，透過 `@Sync` 屬性控制同步策略：
+### StateTree: Single Authoritative State Tree
+
+Use `@StateNodeBuilder` to define the state tree, control sync strategy through `@Sync` attributes:
 
 ```swift
 @StateNodeBuilder
@@ -350,18 +343,18 @@ struct GameStateTree: StateNodeProtocol {
 }
 ```
 
-### 同步規則
+### Sync Rules
 
-- `.broadcast`：廣播給所有 client
-- `.perPlayerSlice()`：Dictionary 專用，自動切割 `[PlayerID: Element]` 只同步該玩家的 slice（使用頻率高）
-- `.perPlayer(...)`：需要手動提供 filter function，依玩家過濾（適用於任何類型，需要自定義邏輯時使用）
-- `.masked(...)`：同型別遮罩（所有玩家看到相同遮罩值）
-- `.serverOnly`：伺服器內部用，不同步給 client
-- `.custom(...)`：完全客製化過濾邏輯
+- `.broadcast`: Broadcast to all clients
+- `.perPlayerSlice()`: Dictionary-specific, automatically slices `[PlayerID: Element]` to sync only that player's slice (high frequency use)
+- `.perPlayer(...)`: Requires manual filter function, filter by player (applicable to any type, use when custom logic is needed)
+- `.masked(...)`: Same-type masking (all players see the same masked value)
+- `.serverOnly`: Server internal use, not synced to clients
+- `.custom(...)`: Fully customized filter logic
 
 ### Land DSL
 
-定義領域邏輯、Action/Event 處理、Tick 設定：
+Define domain logic, Action/Event handling, Tick settings:
 
 ```swift
 let gameLand = Land("game-room", using: GameStateTree.self) {
@@ -371,41 +364,41 @@ let gameLand = Land("game-room", using: GameStateTree.self) {
 }
 ```
 
-**詳細說明請參考：**
-- 📖 [核心概念文檔](docs/core/README.md)
-- 🔄 [同步規則詳解](docs/core/sync.md)
-- 🏛️ [Land DSL 指南](docs/core/land-dsl.md)
+**For detailed information, please refer to:**
+- 📖 [Core Concepts Documentation](docs/core/README.en.md)
+- 🔄 [Sync Rules Details](docs/core/sync.en.md)
+- 🏛️ [Land DSL Guide](docs/core/land-dsl.en.md)
 
-## 📚 文檔
+## 📚 Documentation
 
-完整的文檔請參考 [docs/index.md](docs/index.md)，包含：
+Complete documentation is available at [docs/index.en.md](docs/index.en.md), including:
 
-- 🚀 [快速開始](docs/quickstart.md) - 最小可行範例
-- 📐 [架構概觀](docs/overview.md) - 系統設計與模組說明
-- 🏛️ [Land DSL](docs/core/land-dsl.md) - 領域定義指南
-- 🔄 [同步規則](docs/core/sync.md) - 狀態同步詳解
-- 🌐 [Transport](docs/transport/README.md) - 網路傳輸層
-- 🐦 [Hummingbird](docs/hummingbird/README.md) - 伺服器整合
+- 🚀 [Quick Start](docs/quickstart.en.md) - Minimal viable example
+- 📐 [Architecture Overview](docs/overview.en.md) - System design and module descriptions
+- 🏛️ [Land DSL](docs/core/land-dsl.en.md) - Domain definition guide
+- 🔄 [Sync Rules](docs/core/sync.en.md) - State synchronization details
+- 🌐 [Transport](docs/transport/README.en.md) - Network transport layer
+- 🐦 [Hummingbird](docs/hummingbird/README.en.md) - Server integration
 
-設計與開發筆記請參考 `Notes/` 目錄。
+Design and development notes are available in the `Notes/` directory.
 
-## 🧪 測試
+## 🧪 Testing
 
-本專案使用 **Swift Testing**（Swift 6 的新測試框架）進行單元測試。
+This project uses **Swift Testing** (Swift 6's new testing framework) for unit tests.
 
-### 運行測試
+### Running Tests
 
 ```bash
-# 運行所有測試
+# Run all tests
 swift test
 
-# 運行特定測試
+# Run specific test
 swift test --filter StateTreeTests.testGetSyncFields
 ```
 
-### 編寫測試
+### Writing Tests
 
-使用 `@Test` 屬性和 `#expect()` 進行斷言：
+Use `@Test` attribute and `#expect()` for assertions:
 
 ```swift
 import Testing
@@ -419,37 +412,37 @@ func testYourFeature() throws {
 }
 ```
 
-## 🤝 貢獻
+## 🤝 Contributing
 
-本專案為個人興趣專案，歡迎討論和建議！如果有想法或問題，可以透過 Issue 或 Pull Request 提出。
+This is a personal hobby project, and discussions and suggestions are welcome! If you have ideas or questions, please submit them via Issue or Pull Request.
 
-如果需要提交代碼，請遵循以下步驟：
+If you want to submit code, please follow these steps:
 
-1. Fork 本倉庫
-2. 創建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 開啟 Pull Request
+1. Fork this repository
+2. Create a feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
 
-### 代碼規範
+### Code Standards
 
-- 遵循 Swift API 設計指南
-- 使用 Swift 6 並發特性（Actor、async/await）
-- 確保所有公開 API 符合 `Sendable`
-- 為新功能添加測試用例
-- **所有程式碼註解必須使用英文**（包括 `///` 文檔註解和 `//` 行內註解）
+- Follow Swift API Design Guidelines
+- Use Swift 6 concurrency features (Actor, async/await)
+- Ensure all public APIs conform to `Sendable`
+- Add test cases for new features
+- **All code comments must be in English** (including `///` documentation comments and `//` inline comments)
 
-詳細的開發指南請參考 [AGENTS.md](AGENTS.md)。
+For detailed development guidelines, please refer to [AGENTS.md](AGENTS.md).
 
-## 📄 許可證
+## 📄 License
 
-本專案採用 MIT 許可證。
+This project is licensed under the MIT License.
 
-## 🔗 相關資源
+## 🔗 Related Resources
 
-- [Swift 官方文檔](https://swift.org/documentation/)
+- [Swift Official Documentation](https://swift.org/documentation/)
 - [Swift Concurrency](https://docs.swift.org/swift-book/documentation/the-swift-programming-language/concurrency/)
 
 ---
 
-**注意**：本專案正在積極開發中，API 可能會發生變化。建議在生產環境使用前仔細測試。
+**Note**: This project is under active development, and APIs may change. Please test carefully before using in production.
