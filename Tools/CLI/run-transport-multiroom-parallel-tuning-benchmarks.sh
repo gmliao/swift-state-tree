@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
 # Fix Windows line endings if present (for Windows Docker compatibility)
-if command -v dos2unix >/dev/null 2>&1; then
-    # Check if file has CRLF line endings
-    if file "$0" 2>/dev/null | grep -q "CRLF"; then
-        dos2unix "$0" 2>/dev/null || true
-    fi
+# Re-execute script with CR characters removed if needed (prevents infinite loop)
+# This must be the FIRST thing in the script, before any other commands
+if [ -z "${_CRLF_FIXED:-}" ]; then
+    export _CRLF_FIXED=1
+    export _ORIG_SCRIPT="$0"
+    # Use cat and sed to remove CR characters and re-execute
+    # Read file as binary, remove CR, then pipe to bash
+    exec bash <(cat "$0" | sed 's/\r$//') "$@"
+    exit $?
 fi
 
 set -eu
 set -o pipefail
 
 # Change to repository root (this script lives in Tools/CLI)
-cd "$(dirname "$0")/../.."
+SCRIPT_PATH="${_ORIG_SCRIPT:-$0}"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+cd "$SCRIPT_DIR/../.."
 
 # Ensure OUT_DIR doesn't contain any line endings or whitespace
 OUT_DIR="Notes/performance"
@@ -219,130 +225,62 @@ echo ""
 # Define single output file
 OUTPUT_FILE="$OUT_DIR/transport-multiroom-parallel-tuning-dirty-on-${MACHINE_ID}-$TIMESTAMP.txt"
 
-# Function to run a single benchmark test
-run_single_test() {
-    local room_count=$1
-    local player_count=$2
-    local concurrency=$3
-    local is_first_test=$4
-    
-    CURRENT_TEST=$((CURRENT_TEST + 1))
-    echo "[$CURRENT_TEST/$TOTAL_TESTS] Running test: rooms=$room_count, players=$player_count, concurrency=$concurrency"
-    
-    # Use temporary file for parallel execution to avoid interleaved output
-    local temp_file="${OUTPUT_FILE}.tmp.${room_count}.${player_count}.${concurrency}.$$"
-    
-    {
-        # Only include system info in first test
-        if [ "$is_first_test" = "true" ]; then
-            collect_system_info
-        fi
-        
-        echo ""
-        echo "================================================================================"
-        echo "=== Test Configuration: rooms=$room_count, players=$player_count, concurrency=$concurrency ==="
-        echo "=== Benchmark started at: $(date) ==="
-        echo "================================================================================"
-        echo ""
-        swift run -c release SwiftStateTreeBenchmarks transport-multiroom-parallel-tuning \
-            --dirty-on \
-            --suite-name="$SUITE_NAME" \
-            --player-counts="$player_count" \
-            --room-counts="$room_count" \
-            --parallel-concurrency="$concurrency" \
-            --tick-mode="$TICK_MODE" \
-            --tick-strides="$TICK_STRIDES" \
-            ${DIRTY_RATIO:+--dirty-ratio="$DIRTY_RATIO"} \
-            --no-wait \
-            --csv
-        echo ""
-        echo "=== Benchmark completed at: $(date) ==="
-        echo ""
-    } > "$temp_file" 2>&1
-    
-    local exit_code=$?
-    
-    # Append to main output file
-    # For parallel execution, we'll collect temp files and merge at the end
-    if [ "$PARALLEL" = "true" ]; then
-        # Just keep the temp file, we'll merge later
-        echo "$temp_file" >> "${OUTPUT_FILE}.temp_list"
-    else
-        # Sequential: directly append
-        cat "$temp_file" >> "$OUTPUT_FILE"
-        rm -f "$temp_file"
-    fi
-    
-    if [ $exit_code -eq 0 ]; then
-        echo "  ✓ Completed"
-    else
-        echo "  ✗ Failed (exit code: $exit_code)"
-    fi
-    return $exit_code
-}
-
 ###############################################################################
-# Dirty Tracking ON - Run each test combination in separate process
+# Dirty Tracking ON - Run each test combination
 ###############################################################################
 echo "=== DirtyTracking: ON ==="
 echo ""
 
-# Initialize output file
-> "$OUTPUT_FILE"  # Create/clear the output file
-
-FAILED_TESTS=0
-PIDS=()
-FIRST_TEST=true
-
-# Run all test combinations
-for room_count in "${ROOM_ARRAY[@]}"; do
-    for player_count in "${PLAYER_ARRAY[@]}"; do
-        for concurrency in "${CONCURRENCY_ARRAY[@]}"; do
-            if [ "$PARALLEL" = "true" ]; then
-                # Run in background (parallel)
-                run_single_test "$room_count" "$player_count" "$concurrency" "$FIRST_TEST" &
-                PIDS+=($!)
-                FIRST_TEST=false
-            else
-                # Run sequentially
-                if ! run_single_test "$room_count" "$player_count" "$concurrency" "$FIRST_TEST"; then
-                    FAILED_TESTS=$((FAILED_TESTS + 1))
-                fi
-                FIRST_TEST=false
-            fi
+# Run all test combinations and write to output file
+# Use simple structure like run-transport-sync-benchmarks.sh
+{
+    collect_system_info
+    echo "=== Benchmark started at: $(date) ==="
+    echo ""
+    
+    CURRENT_TEST=0
+    for room_count in "${ROOM_ARRAY[@]}"; do
+        for player_count in "${PLAYER_ARRAY[@]}"; do
+            for concurrency in "${CONCURRENCY_ARRAY[@]}"; do
+                CURRENT_TEST=$((CURRENT_TEST + 1))
+                echo "[$CURRENT_TEST/$TOTAL_TESTS] Running test: rooms=$room_count, players=$player_count, concurrency=$concurrency"
+                echo ""
+                echo "================================================================================"
+                echo "=== Test Configuration: rooms=$room_count, players=$player_count, concurrency=$concurrency ==="
+                echo "=== Benchmark started at: $(date) ==="
+                echo "================================================================================"
+                echo ""
+                swift run -c release SwiftStateTreeBenchmarks transport-multiroom-parallel-tuning \
+                    --dirty-on \
+                    --suite-name="$SUITE_NAME" \
+                    --player-counts="$player_count" \
+                    --room-counts="$room_count" \
+                    --parallel-concurrency="$concurrency" \
+                    --tick-mode="$TICK_MODE" \
+                    --tick-strides="$TICK_STRIDES" \
+                    ${DIRTY_RATIO:+--dirty-ratio="$DIRTY_RATIO"} \
+                    --no-wait \
+                    --csv
+                echo ""
+                echo "=== Benchmark completed at: $(date) ==="
+                echo ""
+            done
         done
     done
-done
-
-# Wait for all background processes if running in parallel
-if [ "$PARALLEL" = "true" ]; then
-    echo ""
-    echo "Waiting for all tests to complete..."
-    for pid in "${PIDS[@]}"; do
-        if ! wait "$pid"; then
-            FAILED_TESTS=$((FAILED_TESTS + 1))
-        fi
-    done
-    
-    # Merge all temp files into main output file
-    echo ""
-    echo "Merging results..."
-    if [ -f "${OUTPUT_FILE}.temp_list" ]; then
-        while IFS= read -r temp_file; do
-            if [ -f "$temp_file" ]; then
-                cat "$temp_file" >> "$OUTPUT_FILE"
-                rm -f "$temp_file"
-            fi
-        done < "${OUTPUT_FILE}.temp_list"
-        rm -f "${OUTPUT_FILE}.temp_list"
-    fi
-fi
+    echo "=== All benchmarks completed at: $(date) ==="
+} > "$OUTPUT_FILE" 2>&1
 
 echo ""
-if [ $FAILED_TESTS -eq 0 ]; then
-    echo "✓ All transport-multiroom-parallel-tuning benchmarks completed successfully."
-else
-    echo "✗ $FAILED_TESTS test(s) failed."
-fi
+echo "✓ All transport-multiroom-parallel-tuning benchmarks completed."
 echo "Results written to: $OUTPUT_FILE"
+if [ -f "$OUTPUT_FILE" ] && [ -s "$OUTPUT_FILE" ]; then
+    FILE_SIZE=$(du -h "$OUTPUT_FILE" 2>/dev/null | cut -f1)
+    if [ -n "$FILE_SIZE" ]; then
+        echo "  File size: $FILE_SIZE"
+    fi
+    echo "  Full path: $(pwd)/$OUTPUT_FILE"
+else
+    echo "⚠ Warning: Output file may be empty or not found"
+fi
+echo ""
 echo "Timestamp: $TIMESTAMP"
