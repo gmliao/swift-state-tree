@@ -1,5 +1,9 @@
 # StateTree: A Reactive Server State Programming Model
 
+> **關於本文件**：本文件整理並定義一套名為 **StateTree** 的 reactive server state programming model。此模型由作者在實務開發與架構設計過程中整理而成，用於描述一種以「單一權威狀態樹」為核心的伺服器端狀態管理與同步思維。
+>
+> 本文件描述的是一個 **programming model（語意模型）**，而非特定框架或語言實作；文中提及的 Swift 實作僅作為參考，並非此模型的唯一或必要實現方式。為避免語意混淆，本文中對 State / Action / Resolver 的定義，皆以本文件為準。
+
 StateTree 是一套以 **狀態機核心（State Machine Core）** 為基礎的 reactive server state programming model。此架構將「狀態（State）」、「動作（Action）」、「資料來源（Resolver）」明確分層，提供一個清晰的伺服器端狀態管理模型。
 
 > 本 programming model 主要是根據 Vue 的 reactive 模式與後端資料過濾實務，發展出的伺服器端 reactive 狀態管理模型。透過狀態樹的方式表達伺服器狀態，可以直接將資料以 reactive 的方式同步給客戶端，實現自動化的狀態同步與更新。在整理過程中，也發現某些設計理念與 Redux 的單一狀態樹（single state tree）概念有相似之處。
