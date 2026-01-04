@@ -9,7 +9,7 @@ import type {
   TransportActionPayload,
   TransportEventPayload,
   ErrorPayload
-} from './types.js'
+} from './types'
 
 export class SwiftStateTreeClient {
   private ws: WebSocket | null = null

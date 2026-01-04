@@ -1,6 +1,7 @@
 import Foundation
 import Hummingbird
 import NIOCore
+import HTTPTypes
 
 // MARK: - JSON Response Helpers
 
@@ -71,5 +72,41 @@ public enum HTTPResponseHelpers {
             buffer.writeString(message)
             return Response(status: status, body: .init(byteBuffer: buffer))
         }
+    }
+    
+    /// Create a unified Admin API response with CORS headers.
+    ///
+    /// - Parameters:
+    ///   - response: AdminAPIAnyResponse to encode
+    ///   - status: HTTP status code (default: `.ok` for success, appropriate code for errors)
+    ///   - encoder: Optional custom JSON encoder
+    /// - Returns: HTTP response with JSON body and CORS headers
+    public static func adminResponse(
+        _ response: AdminAPIAnyResponse,
+        status: HTTPResponse.Status? = nil,
+        encoder: JSONEncoder? = nil
+    ) throws -> Response {
+        // Determine status code if not provided
+        let httpStatus = status ?? (response.success ? .ok : .internalServerError)
+        
+        let jsonEncoder = encoder ?? {
+            let enc = JSONEncoder()
+            enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+            enc.dateEncodingStrategy = .iso8601
+            return enc
+        }()
+        
+        let jsonData = try jsonEncoder.encode(response)
+        var buffer = ByteBufferAllocator().buffer(capacity: jsonData.count)
+        buffer.writeBytes(jsonData)
+        var httpResponse = Response(status: httpStatus, body: .init(byteBuffer: buffer))
+        httpResponse.headers[.contentType] = "application/json"
+        
+        // Add CORS headers
+        httpResponse.headers[HTTPField.Name("Access-Control-Allow-Origin")!] = "*"
+        httpResponse.headers[HTTPField.Name("Access-Control-Allow-Methods")!] = "GET, POST, DELETE, OPTIONS"
+        httpResponse.headers[HTTPField.Name("Access-Control-Allow-Headers")!] = "Content-Type, X-API-Key, Authorization"
+        
+        return httpResponse
     }
 }

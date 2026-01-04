@@ -5,6 +5,7 @@ import SwiftStateTree
 import SwiftStateTreeTransport
 import Logging
 import NIOCore
+import HTTPTypes
 
 // MARK: - LandHost
 
@@ -355,6 +356,47 @@ public actor LandHost {
         adminAuth: AdminAuthMiddleware,
         logger: Logger? = nil
     ) {
+        // Register OPTIONS handler for all admin routes to handle CORS preflight
+        // This must be registered before the specific routes
+        // Create OPTIONS method from string
+        if let optionsMethod = HTTPRequest.Method("OPTIONS") {
+            router.on("/admin/lands", method: optionsMethod) { request, context in
+                var response = Response(status: .ok)
+                response.headers[HTTPField.Name("Access-Control-Allow-Origin")!] = "*"
+                response.headers[HTTPField.Name("Access-Control-Allow-Methods")!] = "GET, POST, DELETE, OPTIONS"
+                response.headers[HTTPField.Name("Access-Control-Allow-Headers")!] = "Content-Type, X-API-Key, Authorization"
+                response.headers[HTTPField.Name("Access-Control-Max-Age")!] = "3600"
+                return response
+            }
+            
+            router.on("/admin/lands/:landID", method: optionsMethod) { request, context in
+                var response = Response(status: .ok)
+                response.headers[HTTPField.Name("Access-Control-Allow-Origin")!] = "*"
+                response.headers[HTTPField.Name("Access-Control-Allow-Methods")!] = "GET, POST, DELETE, OPTIONS"
+                response.headers[HTTPField.Name("Access-Control-Allow-Headers")!] = "Content-Type, X-API-Key, Authorization"
+                response.headers[HTTPField.Name("Access-Control-Max-Age")!] = "3600"
+                return response
+            }
+            
+            router.on("/admin/lands/:landID/stats", method: optionsMethod) { request, context in
+                var response = Response(status: .ok)
+                response.headers[HTTPField.Name("Access-Control-Allow-Origin")!] = "*"
+                response.headers[HTTPField.Name("Access-Control-Allow-Methods")!] = "GET, POST, DELETE, OPTIONS"
+                response.headers[HTTPField.Name("Access-Control-Allow-Headers")!] = "Content-Type, X-API-Key, Authorization"
+                response.headers[HTTPField.Name("Access-Control-Max-Age")!] = "3600"
+                return response
+            }
+            
+            router.on("/admin/stats", method: optionsMethod) { request, context in
+                var response = Response(status: .ok)
+                response.headers[HTTPField.Name("Access-Control-Allow-Origin")!] = "*"
+                response.headers[HTTPField.Name("Access-Control-Allow-Methods")!] = "GET, POST, DELETE, OPTIONS"
+                response.headers[HTTPField.Name("Access-Control-Allow-Headers")!] = "Content-Type, X-API-Key, Authorization"
+                response.headers[HTTPField.Name("Access-Control-Max-Age")!] = "3600"
+                return response
+            }
+        }
+        
         // Create AdminRoutes and register on the shared router
         let adminRoutes = AdminRoutes(
             landRealm: realm,

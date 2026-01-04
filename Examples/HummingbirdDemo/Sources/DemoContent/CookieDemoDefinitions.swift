@@ -319,7 +319,14 @@ public enum CookieGame {
                 }
 
                 AfterFinalize { (state: CookieGameState, ctx: LandContext) async in
-                    ctx.logger.info("Cookie land finalized with final state: \(state)")
+                    ctx.logger.info(
+                        "Cookie land finalized",
+                        metadata: [
+                            "players": .stringConvertible(state.players.count),
+                            "totalCookies": .stringConvertible(state.totalCookies),
+                            "ticks": .stringConvertible(state.ticks)
+                        ]
+                    )
                 }
             }
         }
