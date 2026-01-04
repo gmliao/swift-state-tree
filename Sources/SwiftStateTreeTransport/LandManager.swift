@@ -9,7 +9,75 @@ import Logging
 ///
 /// Supports parallel execution of operations across multiple lands using TaskGroup.
 public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where State: StateNodeProtocol {
-    private var lands: [LandID: LandContainer<State>] = [:]
+    /// Internal container for a single Land instance.
+    ///
+    /// This is an internal implementation detail of `LandManager` and should not be used directly.
+    /// It is exposed in public APIs (e.g., `LandManagerProtocol`) for type compatibility, but
+    /// users should interact with `LandManager` instead.
+    ///
+    /// Manages the complete lifecycle of one game room, including:
+    /// - LandKeeper (state management)
+    /// - Transport layer (WebSocket connections)
+    /// - State synchronization
+    ///
+    /// This is a value type that holds references to the actor-based components.
+    public struct Container: Sendable {
+        public let landID: LandID
+        public let keeper: LandKeeper<State>
+        public let transport: WebSocketTransport
+        public let transportAdapter: TransportAdapter<State>
+        
+        private let logger: Logger
+        
+        /// Initialize a Container with all required components.
+        ///
+        /// - Parameters:
+        ///   - landID: The unique identifier for this land.
+        ///   - keeper: The LandKeeper actor managing the state.
+        ///   - transport: The WebSocketTransport for connections.
+        ///   - transportAdapter: The adapter connecting keeper and transport.
+        ///   - logger: Optional logger instance.
+        public init(
+            landID: LandID,
+            keeper: LandKeeper<State>,
+            transport: WebSocketTransport,
+            transportAdapter: TransportAdapter<State>,
+            logger: Logger? = nil
+        ) {
+            self.landID = landID
+            self.keeper = keeper
+            self.transport = transport
+            self.transportAdapter = transportAdapter
+            self.logger = logger ?? createColoredLogger(
+                loggerIdentifier: "com.swiftstatetree.runtime",
+                scope: "LandContainer"
+            )
+        }
+        
+        /// Get the current state of the land.
+        ///
+        /// - Returns: A snapshot of the current state.
+        public func currentState() async -> State {
+            await keeper.currentState()
+        }
+        
+        /// Get statistics about this land.
+        ///
+        /// - Parameters:
+        ///   - createdAt: The creation time of the land.
+        /// - Returns: LandStats containing player count and activity information.
+        public func getStats(createdAt: Date) async -> LandStats {
+            let playerCount = await keeper.playerCount()
+            return LandStats(
+                landID: landID,
+                playerCount: playerCount,
+                createdAt: createdAt,
+                lastActivityAt: Date()
+            )
+        }
+    }
+    
+    private var lands: [LandID: Container] = [:]
     private let landFactory: (LandID) -> LandDefinition<State>
     private let initialStateFactory: (LandID) -> State
     private let sharedTransport: WebSocketTransport?
@@ -55,7 +123,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     ///   - landID: The unique identifier for the land.
     ///   - definition: The Land definition to use if creating a new land.
     ///   - initialState: The initial state for the land if creating a new one.
-    /// - Returns: The LandContainer for the land.
+    /// - Returns: The LandContainer for the land (internal implementation detail, users should use LandManager methods instead).
     public func getOrCreateLand(
         landID: LandID,
         definition: LandDefinition<State>,
@@ -103,7 +171,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             await transport.setDelegate(transportAdapter)
         }
         
-        let container = LandContainer<State>(
+        let container = Container(
             landID: landID,
             keeper: keeper,
             transport: transport,
@@ -126,7 +194,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// Get an existing land by ID.
     ///
     /// - Parameter landID: The unique identifier for the land.
-    /// - Returns: The LandContainer if the land exists, nil otherwise.
+    /// - Returns: The LandContainer if the land exists, nil otherwise (internal implementation detail).
     public func getLand(landID: LandID) async -> LandContainer<State>? {
         return lands[landID]
     }
@@ -209,4 +277,12 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         return lands[landID]
     }
 }
+
+// MARK: - Typealias for backward compatibility
+
+/// Type alias for `LandManager.Container`.
+///
+/// This typealias provides backward compatibility while `LandContainer` is now
+/// a nested type within `LandManager`.
+public typealias LandContainer<State: StateNodeProtocol> = LandManager<State>.Container
 

@@ -80,7 +80,12 @@ public actor LandHost {
     }
     
     /// The underlying LandRealm for game logic management.
-    public let realm: LandRealm
+    private let _realm: LandRealm
+    
+    /// The underlying LandRealm for game logic management.
+    public var realm: LandRealm {
+        _realm
+    }
     
     /// The shared Router for all registered LandServer instances.
     ///
@@ -104,7 +109,7 @@ public actor LandHost {
     /// - Parameter configuration: Host configuration (host, port, logger, etc.)
     public init(configuration: HostConfiguration = HostConfiguration()) {
         self.configuration = configuration
-        self.realm = LandRealm(logger: configuration.logger)
+        self._realm = LandRealm(logger: configuration.logger)
         // Create router - all access is serialized through the actor's methods
         let createdRouter = Router(context: BasicWebSocketRequestContext.self)
         self.router = createdRouter
