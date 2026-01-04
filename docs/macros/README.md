@@ -1,52 +1,54 @@
+[English](README.md) | [中文版](README.zh-TW.md)
+
 # Macros
 
-SwiftStateTree 提供三個主要 macro，用於產生 metadata 與提升效能。
+SwiftStateTree provides three main macros for generating metadata and improving performance.
 
-## 設計說明
+## Design Notes
 
-Macros 在編譯期執行，提供以下優勢：
+Macros execute at compile time, providing the following advantages:
 
-- **降低 runtime 成本**：編譯期產生 metadata，避免 runtime reflection
-- **提前驗證**：編譯期檢查錯誤，避免 runtime 出錯
-- **型別安全**：編譯期型別檢查，確保正確性
-- **自動生成**：減少手寫程式碼，降低錯誤率
+- **Reduce runtime costs**: Generate metadata at compile time, avoid runtime reflection
+- **Early validation**: Compile-time error checking, avoid runtime errors
+- **Type safety**: Compile-time type checking, ensure correctness
+- **Auto-generation**: Reduce handwritten code, lower error rate
 
 ## @StateNodeBuilder
 
-`@StateNodeBuilder` 用於標記 **StateTree 的節點**（StateNode），自動生成必要的 metadata 和驗證邏輯。
+`@StateNodeBuilder` is used to mark **StateTree nodes** (StateNode), automatically generating necessary metadata and validation logic.
 
-### 功能
+### Functions
 
-- **驗證規則**：確保所有 stored property 都標記為 `@Sync` 或 `@Internal`
-- **生成 sync metadata**：產生 `getSyncFields()` 方法
-- **生成 dirty tracking**：產生 `isDirty()`、`getDirtyFields()`、`clearDirty()` 方法
-- **生成 snapshot 方法**：產生 `snapshot(for:)` 和 `broadcastSnapshot()` 方法
+- **Validation rules**: Ensure all stored properties are marked with `@Sync` or `@Internal`
+- **Generate sync metadata**: Generate `getSyncFields()` method
+- **Generate dirty tracking**: Generate `isDirty()`, `getDirtyFields()`, `clearDirty()` methods
+- **Generate snapshot methods**: Generate `snapshot(for:)` and `broadcastSnapshot()` methods
 
-### 使用場景
+### Use Cases
 
-`@StateNodeBuilder` 用於定義**狀態樹的節點**，這些節點需要：
-- 定義同步規則（哪些欄位同步給哪些玩家）
-- 作為 StateTree 的根節點或子節點
-- 需要 dirty tracking 和 snapshot 功能
+`@StateNodeBuilder` is used to define **state tree nodes**, which need to:
+- Define sync rules (which fields sync to which players)
+- Act as root or child nodes of StateTree
+- Need dirty tracking and snapshot functionality
 
-**範例**：`GameState` 是根狀態，需要定義同步規則
+**Example**: `GameState` is root state, needs to define sync rules
 
 ```swift
 @StateNodeBuilder
 struct GameState: StateNodeProtocol {
-    @Sync(.broadcast)  // 需要定義同步規則
+    @Sync(.broadcast)  // Need to define sync rules
     var players: [PlayerID: PlayerState] = [:]
 }
 ```
 
-### 使用範例
+### Usage Examples
 
 ```swift
 import SwiftStateTree
 
 @StateNodeBuilder
 struct GameState: StateNodeProtocol {
-    // 必須標記 @Sync 或 @Internal
+    // Must mark with @Sync or @Internal
     @Sync(.broadcast)
     var players: [PlayerID: PlayerState] = [:]
     
@@ -59,22 +61,22 @@ struct GameState: StateNodeProtocol {
     @Internal
     var lastProcessedTimestamp: Date = Date()
     
-    // Computed properties 不需要標記
+    // Computed properties don't need marking
     var totalPlayers: Int {
         players.count
     }
 }
 ```
 
-### 驗證規則
+### Validation Rules
 
-- ✅ **Stored properties**：必須標記 `@Sync` 或 `@Internal`
-- ✅ **Computed properties**：自動跳過驗證
-- ❌ **未標記的 stored property**：編譯錯誤
+- ✅ **Stored properties**: Must be marked with `@Sync` or `@Internal`
+- ✅ **Computed properties**: Automatically skip validation
+- ❌ **Unmarked stored properties**: Compile error
 
-### 常見錯誤
+### Common Errors
 
-#### 錯誤 1：忘記標記 stored property
+#### Error 1: Forgot to mark stored property
 
 ```swift
 @StateNodeBuilder
@@ -82,11 +84,11 @@ struct GameState: StateNodeProtocol {
     @Sync(.broadcast)
     var players: [PlayerID: PlayerState] = [:]
     
-    var score: Int = 0  // ❌ 編譯錯誤：必須標記 @Sync 或 @Internal
+    var score: Int = 0  // ❌ Compile error: Must mark with @Sync or @Internal
 }
 ```
 
-**解決方案**：
+**Solution**:
 
 ```swift
 @StateNodeBuilder
@@ -94,39 +96,39 @@ struct GameState: StateNodeProtocol {
     @Sync(.broadcast)
     var players: [PlayerID: PlayerState] = [:]
     
-    @Sync(.broadcast)  // ✅ 正確
+    @Sync(.broadcast)  // ✅ Correct
     var score: Int = 0
 }
 ```
 
-#### 錯誤 2：在 class 上使用
+#### Error 2: Using on class
 
 ```swift
-@StateNodeBuilder  // ❌ 編譯錯誤：只支援 struct
+@StateNodeBuilder  // ❌ Compile error: Only supports struct
 class GameState: StateNodeProtocol {
     // ...
 }
 ```
 
-**解決方案**：使用 `struct` 而非 `class`。
+**Solution**: Use `struct` instead of `class`.
 
-### 最佳實踐
+### Best Practices
 
-1. **明確標記所有 stored properties**：不要遺漏任何欄位
-2. **合理使用 `@Internal`**：內部計算用的欄位使用 `@Internal`
-3. **使用 `@Sync(.serverOnly)` 而非 `@Internal`**：如果需要同步引擎知道但不同步給 client
+1. **Explicitly mark all stored properties**: Don't miss any fields
+2. **Use `@Internal` appropriately**: Use `@Internal` for internal calculation fields
+3. **Use `@Sync(.serverOnly)` instead of `@Internal`**: If sync engine needs to know but not sync to client
 
 ## @Payload
 
-`@Payload` 用於標記 Action、Event 和 Response payload，自動生成 metadata。
+`@Payload` is used to mark Action, Event, and Response payloads, automatically generating metadata.
 
-### 功能
+### Functions
 
-- **生成 field metadata**：產生 `getFieldMetadata()` 方法
-- **生成 response type**：Action payload 會額外產生 `getResponseType()` 方法
-- **Schema 生成**：用於自動生成 JSON Schema
+- **Generate field metadata**: Generate `getFieldMetadata()` method
+- **Generate response type**: Action payloads additionally generate `getResponseType()` method
+- **Schema generation**: Used for automatic JSON Schema generation
 
-### 使用範例
+### Usage Examples
 
 #### Action Payload
 
@@ -165,12 +167,12 @@ struct ChatMessageEvent: ClientEventPayload {
 }
 ```
 
-### 生成的程式碼
+### Generated Code
 
-Macro 會自動生成以下方法：
+Macro automatically generates the following methods:
 
 ```swift
-// 自動生成（簡化版）
+// Auto-generated (simplified)
 extension JoinAction {
     static func getFieldMetadata() -> [FieldMetadata] {
         return [
@@ -186,107 +188,107 @@ extension JoinAction {
 }
 ```
 
-### 常見錯誤
+### Common Errors
 
-#### 錯誤 1：忘記標記 @Payload
+#### Error 1: Forgot to mark @Payload
 
 ```swift
-// ❌ 錯誤：未標記 @Payload
+// ❌ Error: Not marked with @Payload
 struct JoinAction: ActionPayload {
     typealias Response = JoinResponse
     let playerID: PlayerID
 }
 
-// 在 runtime 會 trap
+// Will trap at runtime
 let responseType = JoinAction.getResponseType()  // ❌ Runtime error
 ```
 
-**解決方案**：
+**Solution**:
 
 ```swift
-@Payload  // ✅ 正確
+@Payload  // ✅ Correct
 struct JoinAction: ActionPayload {
     typealias Response = JoinResponse
     let playerID: PlayerID
 }
 ```
 
-#### 錯誤 2：Action 未定義 Response
+#### Error 2: Action didn't define Response
 
 ```swift
 @Payload
 struct JoinAction: ActionPayload {
-    // ❌ 錯誤：ActionPayload 必須定義 Response
+    // ❌ Error: ActionPayload must define Response
     let playerID: PlayerID
 }
 ```
 
-**解決方案**：
+**Solution**:
 
 ```swift
 @Payload
 struct JoinAction: ActionPayload {
-    typealias Response = JoinResponse  // ✅ 正確
+    typealias Response = JoinResponse  // ✅ Correct
     let playerID: PlayerID
 }
 ```
 
-### 最佳實踐
+### Best Practices
 
-1. **所有 Payload 都標記 `@Payload`**：確保 metadata 正確生成
-2. **使用明確的型別**：避免使用 `Any` 或過於泛型的型別
-3. **保持 Payload 簡單**：避免過於複雜的巢狀結構
+1. **Mark all Payloads with `@Payload`**: Ensure metadata is correctly generated
+2. **Use explicit types**: Avoid using `Any` or overly generic types
+3. **Keep Payloads simple**: Avoid overly complex nested structures
 
 ## @SnapshotConvertible
 
-`@SnapshotConvertible` 用於標記**巢狀的資料結構**，自動生成 `SnapshotValueConvertible` 實作，優化轉換效能。
+`@SnapshotConvertible` is used to mark **nested data structures**, automatically generating `SnapshotValueConvertible` implementation to optimize conversion performance.
 
-### 功能
+### Functions
 
-- **自動生成轉換方法**：產生 `toSnapshotValue()` 方法
-- **避免 runtime reflection**：不使用 Mirror，大幅提升效能
-- **支援巢狀結構**：自動處理巢狀的 `@SnapshotConvertible` 型別
+- **Auto-generate conversion methods**: Generate `toSnapshotValue()` method
+- **Avoid runtime reflection**: Don't use Mirror, significantly improve performance
+- **Support nested structures**: Automatically handle nested `@SnapshotConvertible` types
 
-### 使用場景
+### Use Cases
 
-`@SnapshotConvertible` 用於**巢狀在 StateNode 中的值型別**，這些型別：
-- **作為屬性容器**：封裝相關的狀態屬性，組織成有意義的資料結構
-- **不需要同步規則**：同步規則由父層 StateNode 的 `@Sync` 決定
-- **只需要高效能轉換**：優化序列化效能
-- **是值型別**：巢狀在字典、陣列等容器中
+`@SnapshotConvertible` is used for **value types nested in StateNode**, these types:
+- **As property containers**: Encapsulate related state properties, organize into meaningful data structures
+- **Don't need sync rules**: Sync rules are determined by parent StateNode's `@Sync`
+- **Only need high-performance conversion**: Optimize serialization performance
+- **Are value types**: Nested in dictionaries, arrays, and other containers
 
-**範例**：`PlayerState` 是巢狀在 `GameState.players` 字典中的值，作為玩家屬性的容器
+**Example**: `PlayerState` is a value nested in `GameState.players` dictionary, as a container for player properties
 
 ```swift
-// PlayerState 作為玩家屬性的容器
-@SnapshotConvertible  // 不需要 StateNodeProtocol
+// PlayerState as container for player properties
+@SnapshotConvertible  // Doesn't need StateNodeProtocol
 struct PlayerState: Codable, Sendable {
-    var name: String        // 玩家名稱
-    var hpCurrent: Int      // 當前血量
-    var hpMax: Int          // 最大血量
-    var position: Position  // 位置（也是屬性容器）
+    var name: String        // Player name
+    var hpCurrent: Int      // Current HP
+    var hpMax: Int          // Max HP
+    var position: Position  // Position (also a property container)
 }
 
-// Position 作為位置屬性的容器
+// Position as container for position properties
 @SnapshotConvertible
 struct Position: Codable, Sendable {
-    var x: Double  // X 座標
-    var y: Double  // Y 座標
+    var x: Double  // X coordinate
+    var y: Double  // Y coordinate
 }
 ```
 
-**關鍵區別**：
-- `@StateNodeBuilder`：用於**狀態樹節點**，需要定義同步規則
-- `@SnapshotConvertible`：用於**屬性容器/資料結構**，封裝相關屬性，只需要轉換效能優化
+**Key Differences**:
+- `@StateNodeBuilder`: Used for **state tree nodes**, need to define sync rules
+- `@SnapshotConvertible`: Used for **property containers/data structures**, encapsulate related properties, only need conversion performance optimization
 
-**設計理念**：
-- `@SnapshotConvertible` 將相關屬性組織成有意義的容器（如 `PlayerState`、`Position`、`Item`）
-- 這些容器作為值型別，可以巢狀在 StateNode 的字典、陣列等集合中
-- 同步規則由父層 StateNode 的 `@Sync` 統一管理，容器本身不需要定義同步規則
+**Design Philosophy**:
+- `@SnapshotConvertible` organizes related properties into meaningful containers (like `PlayerState`, `Position`, `Item`)
+- These containers as value types can be nested in StateNode's dictionaries, arrays, and other collections
+- Sync rules are unified managed by parent StateNode's `@Sync`, containers themselves don't need to define sync rules
 
-### 使用範例
+### Usage Examples
 
-#### 基本使用
+#### Basic Usage
 
 ```swift
 @SnapshotConvertible
@@ -304,19 +306,19 @@ struct Position: Codable, Sendable {
 }
 ```
 
-#### 在 StateNode 中使用
+#### Using in StateNode
 
 ```swift
 @StateNodeBuilder
 struct GameState: StateNodeProtocol {
     @Sync(.broadcast)
-    var players: [PlayerID: PlayerState] = [:]  // PlayerState 作為屬性容器，使用 @SnapshotConvertible
+    var players: [PlayerID: PlayerState] = [:]  // PlayerState as property container, uses @SnapshotConvertible
     
     @Sync(.broadcast)
-    var items: [ItemID: Item] = [:]  // Item 也是屬性容器
+    var items: [ItemID: Item] = [:]  // Item is also a property container
 }
 
-// PlayerState 作為玩家屬性的容器
+// PlayerState as container for player properties
 @SnapshotConvertible
 struct PlayerState: Codable, Sendable {
     var name: String
@@ -325,7 +327,7 @@ struct PlayerState: Codable, Sendable {
     var position: Position
 }
 
-// Item 作為物品屬性的容器
+// Item as container for item properties
 @SnapshotConvertible
 struct Item: Codable, Sendable {
     var id: String
@@ -334,69 +336,69 @@ struct Item: Codable, Sendable {
 }
 ```
 
-**重要區別**：
+**Important Differences**:
 
-- **`@StateNodeBuilder + StateNodeProtocol`**：用於**狀態樹的節點**（如 `GameState`），需要定義同步規則（`@Sync`）
-- **`@SnapshotConvertible`**：用於**屬性容器/資料結構**（如 `PlayerState`、`Item`），封裝相關屬性，只需要高效能轉換
+- **`@StateNodeBuilder + StateNodeProtocol`**: Used for **state tree nodes** (like `GameState`), need to define sync rules (`@Sync`)
+- **`@SnapshotConvertible`**: Used for **property containers/data structures** (like `PlayerState`, `Item`), encapsulate related properties, only need high-performance conversion
 
-**為什麼 `PlayerState` 不需要 `StateNodeProtocol`？**
+**Why doesn't `PlayerState` need `StateNodeProtocol`?**
 
-1. **它是屬性容器**：`PlayerState` 封裝了玩家的相關屬性（name, hp, position），作為一個值型別容器
-2. **同步規則由父層決定**：`GameState.players` 的 `@Sync(.broadcast)` 決定了整個字典的同步規則
-3. **只需要轉換效能**：作為值型別，只需要高效能序列化，不需要獨立的同步規則
+1. **It's a property container**: `PlayerState` encapsulates player-related properties (name, hp, position), as a value type container
+2. **Sync rules determined by parent**: `GameState.players`'s `@Sync(.broadcast)` determines sync rules for the entire dictionary
+3. **Only need conversion performance**: As a value type, only needs high-performance serialization, doesn't need independent sync rules
 
-### 生成的程式碼
+### Generated Code
 
-Macro 會自動生成：
+Macro automatically generates:
 
 ```swift
-// 自動生成（簡化版）
+// Auto-generated (simplified)
 extension PlayerState: SnapshotValueConvertible {
     func toSnapshotValue() throws -> SnapshotValue {
         return .object([
             "name": .string(name),
             "hpCurrent": .int(hpCurrent),
             "hpMax": .int(hpMax),
-            "position": try position.toSnapshotValue()  // 遞迴處理巢狀結構
+            "position": try position.toSnapshotValue()  // Recursively process nested structures
         ])
     }
 }
 ```
 
-### 效能優勢
+### Performance Advantages
 
-使用 `@SnapshotConvertible` 可以大幅提升轉換效能：
+Using `@SnapshotConvertible` can significantly improve conversion performance:
 
-- **避免 Mirror**：不使用 runtime reflection
-- **編譯期優化**：編譯器可以進行更多優化
-- **型別安全**：編譯期檢查，避免 runtime 錯誤
+- **Avoid Mirror**: Don't use runtime reflection
+- **Compile-time optimization**: Compiler can perform more optimizations
+- **Type safety**: Compile-time checking, avoid runtime errors
 
-### 適用場景
+### Applicable Scenarios
 
-建議在以下場景使用 `@SnapshotConvertible`：
+Recommended to use `@SnapshotConvertible` in the following scenarios:
 
-- ✅ **頻繁轉換的型別**：在 StateTree 中頻繁使用的巢狀結構
-- ✅ **複雜的巢狀結構**：多層級的巢狀結構
-- ✅ **效能關鍵路徑**：需要高效能轉換的型別
+- ✅ **Frequently converted types**: Nested structures frequently used in StateTree
+- ✅ **Complex nested structures**: Multi-level nested structures
+- ✅ **Performance-critical paths**: Types that need high-performance conversion
 
-### 常見錯誤
+### Common Errors
 
-#### 錯誤 1：忘記標記巢狀結構
+#### Error 1: Forgot to mark nested structures
 
 ```swift
 @SnapshotConvertible
 struct PlayerState: Codable {
     var name: String
-    var position: Position  // ❌ Position 未標記 @SnapshotConvertible
+    var position: Position  // ❌ Position not marked with @SnapshotConvertible
 }
 
-struct Position: Codable {  // 會使用 Mirror，效能較差
+struct Position: Codable {  // Will use Mirror, worse performance
     var x: Double
     var y: Double
 }
 ```
 
-**解決方案**：
+**Solution**:
 
 ```swift
 @SnapshotConvertible
@@ -405,54 +407,54 @@ struct PlayerState: Codable {
     var position: Position
 }
 
-@SnapshotConvertible  // ✅ 正確
+@SnapshotConvertible  // ✅ Correct
 struct Position: Codable {
     var x: Double
     var y: Double
 }
 ```
 
-#### 錯誤 2：在 protocol 上使用
+#### Error 2: Using on protocol
 
 ```swift
-@SnapshotConvertible  // ❌ 編譯錯誤：只支援 struct
+@SnapshotConvertible  // ❌ Compile error: Only supports struct
 protocol GameEntity {
     var id: String { get }
 }
 ```
 
-**解決方案**：使用具體的 struct 型別。
+**Solution**: Use concrete struct types.
 
-### 最佳實踐
+### Best Practices
 
-1. **標記所有巢狀結構**：確保整個轉換路徑都使用 macro
-2. **優先使用基本型別**：String、Int、Bool 等基本型別已經優化
-3. **避免過度使用**：簡單的型別可能不需要此 macro
+1. **Mark all nested structures**: Ensure entire conversion path uses macro
+2. **Prefer basic types**: String, Int, Bool, and other basic types are already optimized
+3. **Avoid overuse**: Simple types may not need this macro
 
-## 效能影響
+## Performance Impact
 
 ### @StateNodeBuilder
 
-- **編譯期成本**：增加編譯時間（通常可忽略）
-- **Runtime 成本**：降低 runtime 成本（避免 reflection）
+- **Compile-time cost**: Increases compile time (usually negligible)
+- **Runtime cost**: Reduces runtime cost (avoids reflection)
 
 ### @Payload
 
-- **編譯期成本**：增加編譯時間（通常可忽略）
-- **Runtime 成本**：降低 runtime 成本（避免 reflection）
+- **Compile-time cost**: Increases compile time (usually negligible)
+- **Runtime cost**: Reduces runtime cost (avoids reflection)
 
 ### @SnapshotConvertible
 
-- **編譯期成本**：增加編譯時間（通常可忽略）
-- **Runtime 成本**：大幅降低 runtime 成本（避免 Mirror）
+- **Compile-time cost**: Increases compile time (usually negligible)
+- **Runtime cost**: Significantly reduces runtime cost (avoids Mirror)
 
-**效能測試結果**（參考）：
+**Performance Test Results** (reference):
 
-- 使用 `@SnapshotConvertible`：轉換時間約為使用 Mirror 的 1/10
-- 對於複雜的巢狀結構，效能提升更明顯
+- Using `@SnapshotConvertible`: Conversion time is approximately 1/10 of using Mirror
+- For complex nested structures, performance improvement is more significant
 
-## 相關文檔
+## Related Documentation
 
-- [StateNode 定義](../core/README.md) - 了解 StateNode 的使用
-- [同步規則](../core/sync.md) - 了解 `@Sync` 的使用
-- [Schema 生成](../schema/README.md) - 了解 Schema 生成機制
+- [StateNode Definition](../core/README.md) - Understand StateNode usage
+- [Sync Rules](../core/sync.md) - Understand `@Sync` usage
+- [Schema Generation](../schema/README.md) - Understand schema generation mechanism

@@ -1,21 +1,23 @@
-# @StateNodeBuilder 詳細說明
+[English](state-node-builder.md) | [中文版](state-node-builder.zh-TW.md)
 
-> `@StateNodeBuilder` 是 SwiftStateTree 的核心 macro，用於標記和驗證 StateNode，並自動生成必要的 metadata 和方法。
+# @StateNodeBuilder Detailed Guide
 
-## 概述
+> `@StateNodeBuilder` is SwiftStateTree's core macro, used to mark and validate StateNode, automatically generating necessary metadata and methods.
 
-`@StateNodeBuilder` macro 在編譯期執行以下操作：
+## Overview
 
-1. **驗證規則**：確保所有 stored property 都標記為 `@Sync` 或 `@Internal`
-2. **生成 sync metadata**：產生 `getSyncFields()` 方法
-3. **生成驗證方法**：產生 `validateSyncFields()` 方法
-4. **生成 snapshot 方法**：產生 `snapshot(for:)` 和 `broadcastSnapshot()` 方法
-5. **生成 dirty tracking**：產生 `isDirty()`、`getDirtyFields()`、`clearDirty()` 方法
-6. **生成 field metadata**：產生 `getFieldMetadata()` 方法（用於 schema 生成）
+`@StateNodeBuilder` macro performs the following operations at compile time:
 
-## 基本使用
+1. **Validation rules**: Ensure all stored properties are marked with `@Sync` or `@Internal`
+2. **Generate sync metadata**: Generate `getSyncFields()` method
+3. **Generate validation methods**: Generate `validateSyncFields()` method
+4. **Generate snapshot methods**: Generate `snapshot(for:)` and `broadcastSnapshot()` methods
+5. **Generate dirty tracking**: Generate `isDirty()`, `getDirtyFields()`, `clearDirty()` methods
+6. **Generate field metadata**: Generate `getFieldMetadata()` method (for schema generation)
 
-### 標記 StateNode
+## Basic Usage
+
+### Mark StateNode
 
 ```swift
 import SwiftStateTree
@@ -36,14 +38,14 @@ struct GameState: StateNodeProtocol {
 }
 ```
 
-### 生成的程式碼
+### Generated Code
 
-Macro 會自動生成以下方法（簡化版）：
+Macro automatically generates the following methods (simplified):
 
 ```swift
-// 自動生成的方法
+// Auto-generated methods
 extension GameState {
-    // 取得所有 @Sync 欄位
+    // Get all @Sync fields
     func getSyncFields() -> [SyncFieldInfo] {
         return [
             SyncFieldInfo(name: "players", policyType: "broadcast"),
@@ -52,14 +54,14 @@ extension GameState {
         ]
     }
     
-    // 驗證所有欄位都已標記
+    // Validate all fields are marked
     func validateSyncFields() -> Bool {
-        return true  // 編譯期已驗證
+        return true  // Validated at compile time
     }
     
-    // 生成 snapshot
+    // Generate snapshot
     func snapshot(for playerID: PlayerID?) throws -> StateSnapshot {
-        // 根據 @Sync 策略過濾欄位
+        // Filter fields based on @Sync policy
         // ...
     }
     
@@ -70,30 +72,30 @@ extension GameState {
 }
 ```
 
-## 驗證規則
+## Validation Rules
 
-### 編譯期驗證
+### Compile-Time Validation
 
-`@StateNodeBuilder` 在編譯期執行嚴格驗證：
+`@StateNodeBuilder` performs strict validation at compile time:
 
-#### ✅ 正確的標記
+#### ✅ Correct Marking
 
 ```swift
 @StateNodeBuilder
 struct GameState: StateNodeProtocol {
-    @Sync(.broadcast)      // ✅ 正確
+    @Sync(.broadcast)      // ✅ Correct
     var players: [PlayerID: PlayerState] = [:]
     
-    @Internal              // ✅ 正確
+    @Internal              // ✅ Correct
     var tempData: String = ""
     
-    var totalPlayers: Int {  // ✅ Computed property 自動跳過
+    var totalPlayers: Int {  // ✅ Computed property automatically skipped
         players.count
     }
 }
 ```
 
-#### ❌ 錯誤的標記
+#### ❌ Incorrect Marking
 
 ```swift
 @StateNodeBuilder
@@ -101,30 +103,30 @@ struct GameState: StateNodeProtocol {
     @Sync(.broadcast)
     var players: [PlayerID: PlayerState] = [:]
     
-    var score: Int = 0  // ❌ 編譯錯誤：必須標記 @Sync 或 @Internal
+    var score: Int = 0  // ❌ Compile error: Must mark with @Sync or @Internal
 }
 ```
 
-**編譯錯誤訊息**：
+**Compile error message**:
 ```
 error: Stored property 'score' in GameState must be marked with @Sync or @Internal
 ```
 
-### 驗證規則詳解
+### Validation Rules Explained
 
-1. **Stored properties**：必須明確標記 `@Sync` 或 `@Internal`
-2. **Computed properties**：自動跳過驗證，不需要標記
-3. **未標記的 stored property**：編譯錯誤
+1. **Stored properties**: Must be explicitly marked with `@Sync` or `@Internal`
+2. **Computed properties**: Automatically skip validation, no marking needed
+3. **Unmarked stored properties**: Compile error
 
-## 生成的方法
+## Generated Methods
 
 ### getSyncFields()
 
-取得所有標記為 `@Sync` 的欄位資訊：
+Get information for all fields marked with `@Sync`:
 
 ```swift
 let fields = gameState.getSyncFields()
-// 返回: [
+// Returns: [
 //   SyncFieldInfo(name: "players", policyType: "broadcast"),
 //   SyncFieldInfo(name: "hands", policyType: "perPlayerSlice")
 // ]
@@ -132,79 +134,79 @@ let fields = gameState.getSyncFields()
 
 ### validateSyncFields()
 
-驗證所有 stored properties 都已正確標記：
+Validate all stored properties are correctly marked:
 
 ```swift
 let isValid = gameState.validateSyncFields()
-// 返回: true（編譯期已驗證，總是返回 true）
+// Returns: true (validated at compile time, always returns true)
 ```
 
 ### snapshot(for:)
 
-為特定玩家生成狀態快照：
+Generate state snapshot for specific player:
 
 ```swift
-// 為特定玩家生成 snapshot
+// Generate snapshot for specific player
 let snapshot = try gameState.snapshot(for: playerID)
-// 只包含該玩家可見的欄位（根據 @Sync 策略）
+// Only includes fields visible to that player (based on @Sync policy)
 
-// 只生成 broadcast 欄位
+// Only generate broadcast fields
 let broadcastSnapshot = try gameState.snapshot(for: nil)
 ```
 
 ### broadcastSnapshot(dirtyFields:)
 
-高效能的 broadcast snapshot 生成：
+High-performance broadcast snapshot generation:
 
 ```swift
-// 只生成 dirty 的 broadcast 欄位
+// Only generate dirty broadcast fields
 let dirtyFields = gameState.getDirtyFields()
 let snapshot = try gameState.broadcastSnapshot(dirtyFields: dirtyFields)
 ```
 
 ## Dirty Tracking
 
-### 機制說明
+### Mechanism Description
 
-Dirty tracking 用於追蹤哪些欄位已被修改，優化同步效能：
+Dirty tracking is used to track which fields have been modified, optimizing sync performance:
 
-- **自動標記**：當欄位被修改時自動標記為 dirty
-- **批次清除**：同步完成後可以清除所有 dirty 標記
-- **效能優化**：只同步變更的欄位，減少序列化成本
+- **Auto-marking**: Automatically mark as dirty when fields are modified
+- **Batch clearing**: Can clear all dirty flags after sync completes
+- **Performance optimization**: Only sync changed fields, reduce serialization costs
 
-### 使用方式
+### Usage
 
 ```swift
-// 檢查是否有變更
+// Check if there are changes
 if gameState.isDirty() {
-    // 取得所有 dirty 欄位
+    // Get all dirty fields
     let dirtyFields = gameState.getDirtyFields()
-    // 只同步變更的欄位
+    // Only sync changed fields
     try syncEngine.syncDirtyFields(gameState, dirtyFields: dirtyFields)
     
-    // 清除 dirty 標記
+    // Clear dirty flags
     gameState.clearDirty()
 }
 ```
 
-### 自動標記
+### Auto-Marking
 
-當欄位被修改時，會自動標記為 dirty：
+When fields are modified, they are automatically marked as dirty:
 
 ```swift
-// 修改欄位
-gameState.players[playerID] = newPlayer  // 自動標記 players 為 dirty
+// Modify field
+gameState.players[playerID] = newPlayer  // Automatically mark players as dirty
 
-// 檢查
+// Check
 gameState.isDirty()  // true
 gameState.getDirtyFields()  // Set(["players"])
 ```
 
-## 巢狀結構支援
+## Nested Structure Support
 
-### 遞迴處理
+### Recursive Processing
 
-`@StateNodeBuilder` 支援巢狀的 StateNode：
+`@StateNodeBuilder` supports nested StateNodes:
 
 ```swift
 @StateNodeBuilder
@@ -219,53 +221,52 @@ struct PlayerState: StateNodeProtocol {
 @StateNodeBuilder
 struct GameState: StateNodeProtocol {
     @Sync(.broadcast)
-    var players: [PlayerID: PlayerState] = [:]  // 巢狀 StateNode
+    var players: [PlayerID: PlayerState] = [:]  // Nested StateNode
 }
 ```
 
-當生成 snapshot 時，會遞迴處理巢狀結構：
+When generating snapshots, nested structures are processed recursively:
 
 ```swift
-// 會遞迴處理 players 字典中的每個 PlayerState
+// Will recursively process each PlayerState in players dictionary
 let snapshot = try gameState.snapshot(for: playerID)
 ```
 
-## 常見問題
+## Common Questions
 
-### Q: 為什麼必須標記所有 stored properties？
+### Q: Why must all stored properties be marked?
 
-A: 這是為了確保所有狀態欄位都有明確的同步策略，避免意外洩露敏感資料或浪費頻寬。
+A: This ensures all state fields have explicit sync policies, avoiding accidental data leakage or bandwidth waste.
 
-### Q: Computed properties 需要標記嗎？
+### Q: Do computed properties need marking?
 
-A: 不需要。Computed properties 會自動跳過驗證，因為它們不儲存狀態。
+A: No. Computed properties automatically skip validation because they don't store state.
 
-### Q: 可以在 class 上使用 @StateNodeBuilder 嗎？
+### Q: Can @StateNodeBuilder be used on class?
 
-A: 不可以。`@StateNodeBuilder` 只支援 `struct`，因為 StateNode 必須使用 value semantics。
+A: No. `@StateNodeBuilder` only supports `struct` because StateNode must use value semantics.
 
-### Q: 如何處理可選型別？
+### Q: How to handle optional types?
 
-A: 可選型別可以正常使用，只需要標記 `@Sync` 或 `@Internal`：
+A: Optional types can be used normally, just need to mark with `@Sync` or `@Internal`:
 
 ```swift
 @StateNodeBuilder
 struct GameState: StateNodeProtocol {
     @Sync(.broadcast)
-    var optionalField: String? = nil  // ✅ 正確
+    var optionalField: String? = nil  // ✅ Correct
 }
 ```
 
-## 最佳實踐
+## Best Practices
 
-1. **明確標記所有欄位**：不要遺漏任何 stored property
-2. **合理使用 @Internal**：內部計算用的欄位使用 `@Internal`
-3. **使用 @Sync(.serverOnly) 而非 @Internal**：如果需要同步引擎知道但不同步給 client
-4. **保持結構簡單**：避免過深的巢狀結構，提升效能
+1. **Explicitly mark all fields**: Don't miss any stored properties
+2. **Use @Internal appropriately**: Use `@Internal` for internal calculation fields
+3. **Use @Sync(.serverOnly) instead of @Internal**: If sync engine needs to know but not sync to client
+4. **Keep structure simple**: Avoid overly deep nested structures to improve performance
 
-## 相關文檔
+## Related Documentation
 
-- [Macros 總覽](README.md) - 了解所有 macro 的使用
-- [同步規則](../core/sync.md) - 深入了解 `@Sync` 策略
-- [StateNode 定義](../core/README.md) - 了解 StateNode 的使用
-
+- [Macros Overview](README.md) - Understand usage of all macros
+- [Sync Rules](../core/sync.md) - Deep dive into `@Sync` policies
+- [StateNode Definition](../core/README.md) - Understand StateNode usage

@@ -1,30 +1,32 @@
-# 概觀
+[English](overview.md) | [中文版](overview.zh-TW.md)
 
-SwiftStateTree 是以「單一權威 StateTree + 同步規則 + Land DSL」為核心的伺服器邏輯引擎。
-核心關注點是：把狀態變更集中在伺服器、透過同步規則把必要資料發送給客戶端。
+# Overview
 
-## 模組組成
+SwiftStateTree is a server logic engine centered on "Single Authoritative StateTree + Sync Rules + Land DSL".
+The core focus is: centralizing state changes on the server and sending necessary data to clients through sync rules.
 
-SwiftStateTree 採用模組化設計，各模組職責明確：
+## Module Composition
 
-| 模組 | 說明 | 職責 |
-|------|------|------|
-| **SwiftStateTree** | 核心模組 | StateNode、Sync、Land DSL、Runtime（LandKeeper）、Schema 生成 |
-| **SwiftStateTreeTransport** | Transport 層 | Transport 抽象、WebSocketTransport、Land 管理、多房間路由 |
-| **SwiftStateTreeHummingbird** | Hummingbird 整合 | WebSocket Hosting、JWT/Guest 認證、Admin 路由 |
-| **SwiftStateTreeMatchmaking** | 配對服務 | MatchmakingService、Lobby 支援 |
-| **SwiftStateTreeMacros** | 編譯期工具 | `@StateNodeBuilder`、`@Payload`、`@SnapshotConvertible` |
-| **SwiftStateTreeBenchmarks** | 基準測試 | 效能測試執行檔 |
+SwiftStateTree adopts a modular design with clear responsibilities for each module:
 
-### 模組依賴關係
+| Module | Description | Responsibilities |
+|--------|-------------|------------------|
+| **SwiftStateTree** | Core module | StateNode, Sync, Land DSL, Runtime (LandKeeper), Schema generation |
+| **SwiftStateTreeTransport** | Transport layer | Transport abstraction, WebSocketTransport, Land management, multi-room routing |
+| **SwiftStateTreeHummingbird** | Hummingbird integration | WebSocket Hosting, JWT/Guest authentication, Admin routes |
+| **SwiftStateTreeMatchmaking** | Matchmaking service | MatchmakingService, Lobby support |
+| **SwiftStateTreeMacros** | Compile-time tools | `@StateNodeBuilder`, `@Payload`, `@SnapshotConvertible` |
+| **SwiftStateTreeBenchmarks** | Benchmarks | Performance test executable |
+
+### Module Dependencies
 
 ```mermaid
 graph TD
-    Core[SwiftStateTree<br/>核心模組]
-    Transport[SwiftStateTreeTransport<br/>Transport 層]
-    Matchmaking[SwiftStateTreeMatchmaking<br/>配對服務]
-    Hummingbird[SwiftStateTreeHummingbird<br/>Hummingbird 整合]
-    Macros[SwiftStateTreeMacros<br/>編譯期 Macro]
+    Core[SwiftStateTree<br/>Core Module]
+    Transport[SwiftStateTreeTransport<br/>Transport Layer]
+    Matchmaking[SwiftStateTreeMatchmaking<br/>Matchmaking Service]
+    Hummingbird[SwiftStateTreeHummingbird<br/>Hummingbird Integration]
+    Macros[SwiftStateTreeMacros<br/>Compile-time Macro]
     
     Core --> Transport
     Core --> Macros
@@ -39,16 +41,16 @@ graph TD
     style Macros fill:#fce4ec
 ```
 
-**說明**：
-- **SwiftStateTree** 是核心模組，不依賴網路，提供核心邏輯
-- **SwiftStateTreeTransport** 提供網路抽象和房間管理
-- **SwiftStateTreeMatchmaking** 是可選的配對服務模組
-- **SwiftStateTreeHummingbird** 提供 Hummingbird 框架整合
-- **SwiftStateTreeMacros** 是編譯時依賴，自動生成 metadata
+**Notes**:
+- **SwiftStateTree** is the core module, network-independent, provides core logic
+- **SwiftStateTreeTransport** provides network abstraction and room management
+- **SwiftStateTreeMatchmaking** is an optional matchmaking service module
+- **SwiftStateTreeHummingbird** provides Hummingbird framework integration
+- **SwiftStateTreeMacros** is a compile-time dependency, automatically generates metadata
 
-## 系統資料流
+## System Data Flow
 
-### 高層資料流
+### High-Level Data Flow
 
 ```
 Client
@@ -60,202 +62,202 @@ LandKeeper (Runtime)
 StateNode (StateTree)
 ```
 
-### 詳細資料流程圖
+### Detailed Data Flow Diagram
 
 ```mermaid
 sequenceDiagram
-    participant Client as 客戶端
+    participant Client as Client
     participant WS as WebSocketTransport
     participant Adapter as TransportAdapter
     participant Keeper as LandKeeper<br/>(Runtime)
     participant Sync as SyncEngine
     participant State as StateNode<br/>(StateTree)
     
-    Client->>WS: WebSocket 連線
-    WS->>Adapter: 建立連線
-    Adapter->>Keeper: 處理 Join Request
-    Keeper->>State: 執行 CanJoin/OnJoin
-    State-->>Keeper: Join 結果
-    Keeper->>Sync: 生成 Snapshot
-    Sync->>State: 讀取狀態
-    State-->>Sync: 狀態資料
+    Client->>WS: WebSocket Connection
+    WS->>Adapter: Establish Connection
+    Adapter->>Keeper: Process Join Request
+    Keeper->>State: Execute CanJoin/OnJoin
+    State-->>Keeper: Join Result
+    Keeper->>Sync: Generate Snapshot
+    Sync->>State: Read State
+    State-->>Sync: State Data
     Sync-->>Keeper: Snapshot
     Keeper-->>Adapter: Snapshot
-    Adapter-->>WS: 序列化
-    WS-->>Client: 傳送 Snapshot
+    Adapter-->>WS: Serialize
+    WS-->>Client: Send Snapshot
     
     Client->>WS: Action/Event
-    WS->>Adapter: 解析訊息
-    Adapter->>Keeper: 處理 Action/Event
-    Keeper->>State: 執行 Handler
-    State-->>Keeper: 結果
-    Keeper->>Sync: 生成 Diff
-    Sync->>State: 讀取變更
-    State-->>Sync: 變更資料
+    WS->>Adapter: Parse Message
+    Adapter->>Keeper: Process Action/Event
+    Keeper->>State: Execute Handler
+    State-->>Keeper: Result
+    Keeper->>Sync: Generate Diff
+    Sync->>State: Read Changes
+    State-->>Sync: Change Data
     Sync-->>Keeper: Diff
     Keeper-->>Adapter: Diff
-    Adapter-->>WS: 序列化
-    WS-->>Client: 傳送 Diff
+    Adapter-->>WS: Serialize
+    WS-->>Client: Send Diff
 ```
 
-### 核心組件互動
+### Core Component Interactions
 
-#### 1. 連線建立流程
+#### 1. Connection Establishment Flow
 
 ```mermaid
 graph LR
-    A[Client 連線] --> B[WebSocketTransport<br/>建立 Session]
-    B --> C[TransportAdapter<br/>解析 Join Request]
-    C --> D[LandKeeper<br/>驗證 CanJoin]
-    D --> E[LandKeeper<br/>執行 OnJoin]
-    E --> F[SyncEngine<br/>生成 Snapshot]
-    F --> G[回傳給 Client]
+    A[Client Connects] --> B[WebSocketTransport<br/>Create Session]
+    B --> C[TransportAdapter<br/>Parse Join Request]
+    C --> D[LandKeeper<br/>Validate CanJoin]
+    D --> E[LandKeeper<br/>Execute OnJoin]
+    E --> F[SyncEngine<br/>Generate Snapshot]
+    F --> G[Return to Client]
     
     style A fill:#e3f2fd
     style G fill:#c8e6c9
 ```
 
-#### 2. Action 處理流程
+#### 2. Action Processing Flow
 
 ```mermaid
 graph LR
-    A[Client 發送 Action] --> B[TransportAdapter<br/>解析 Action]
-    B --> C[LandKeeper<br/>執行 Handler]
-    C --> D[StateNode<br/>更新狀態]
-    D --> E[SyncEngine<br/>檢測變更]
-    E --> F[生成 Diff]
-    F --> G[回傳 Response + Diff]
+    A[Client Sends Action] --> B[TransportAdapter<br/>Parse Action]
+    B --> C[LandKeeper<br/>Execute Handler]
+    C --> D[StateNode<br/>Update State]
+    D --> E[SyncEngine<br/>Detect Changes]
+    E --> F[Generate Diff]
+    F --> G[Return Response + Diff]
     
     style A fill:#e3f2fd
     style D fill:#fff9c4
     style G fill:#c8e6c9
 ```
 
-#### 3. 同步機制
+#### 3. Synchronization Mechanism
 
 ```mermaid
 graph TD
-    A[StateNode 變更] --> B{同步策略}
-    B -->|broadcast| C[所有 Client]
-    B -->|perPlayer| D[特定 Client]
-    B -->|serverOnly| E[不同步]
-    C --> F[SyncEngine<br/>生成 Snapshot/Diff]
+    A[StateNode Change] --> B{Sync Strategy}
+    B -->|broadcast| C[All Clients]
+    B -->|perPlayer| D[Specific Client]
+    B -->|serverOnly| E[No Sync]
+    C --> F[SyncEngine<br/>Generate Snapshot/Diff]
     D --> F
-    F --> G[TransportAdapter<br/>序列化]
-    G --> H[WebSocketTransport<br/>傳送]
+    F --> G[TransportAdapter<br/>Serialize]
+    G --> H[WebSocketTransport<br/>Send]
     
     style A fill:#fff9c4
     style F fill:#e1f5ff
     style H fill:#c8e6c9
 ```
 
-## 核心概念
+## Core Concepts
 
-### StateNode（狀態節點）
+### StateNode (State Node)
 
-伺服器權威狀態，使用 `@StateNodeBuilder` 產生必要 metadata。StateNode 是整個系統的單一真相來源。
+Server authoritative state, uses `@StateNodeBuilder` to generate necessary metadata. StateNode is the single source of truth for the entire system.
 
-**特點**：
-- 使用 `@Sync` 屬性標記同步策略
-- 使用 `@Internal` 標記內部欄位（不同步）
-- 支援巢狀結構
-- 所有狀態變更都通過 StateNode
+**Features**:
+- Use `@Sync` attribute to mark sync strategy
+- Use `@Internal` to mark internal fields (not synced)
+- Supports nested structures
+- All state changes go through StateNode
 
-### SyncPolicy（同步策略）
+### SyncPolicy (Sync Strategy)
 
-定義欄位同步策略，控制哪些資料同步給哪些客戶端。
+Defines field sync strategy, controlling which data is synced to which clients.
 
-**策略類型**：
-- `.broadcast`：廣播給所有 client
-- `.perPlayerSlice()`：Dictionary 只同步該玩家的 slice
-- `.perPlayer(...)`：依玩家過濾
-- `.serverOnly`：伺服器內部用，不同步
-- `.custom(...)`：完全自定義過濾
+**Strategy Types**:
+- `.broadcast`: Broadcast to all clients
+- `.perPlayerSlice()`: Dictionary only syncs that player's slice
+- `.perPlayer(...)`: Filter by player
+- `.serverOnly`: Server internal use, not synced
+- `.custom(...)`: Fully custom filter
 
-### Land（領域定義）
+### Land (Domain Definition)
 
-邏輯單位，定義遊戲規則、生命周期和事件處理。
+Logical unit that defines game rules, lifecycle, and event handling.
 
-**組成**：
-- `AccessControl`：存取控制（人數上限、公開性）
-- `Rules`：規則定義（Action/Event 處理、Join/Leave）
-- `Lifetime`：生命周期（Tick、銷毀條件）
-- `ClientEvents` / `ServerEvents`：事件型別註冊
+**Components**:
+- `AccessControl`: Access control (player limit, public/private)
+- `Rules`: Rule definitions (Action/Event handling, Join/Leave)
+- `Lifetime`: Lifecycle (Tick, destroy conditions)
+- `ClientEvents` / `ServerEvents`: Event type registration
 
-### LandKeeper（Runtime 執行器）
+### LandKeeper (Runtime Executor)
 
-負責執行 Land 定義的邏輯，處理所有狀態變更。
+Responsible for executing Land-defined logic and handling all state changes.
 
-**職責**：
-- 處理 join/leave 請求
-- 執行 Action/Event handlers
-- 管理 Tick 定時任務
-- 協調同步機制
-- 建立 request-scoped 的 `LandContext`
+**Responsibilities**:
+- Handle join/leave requests
+- Execute Action/Event handlers
+- Manage Tick scheduled tasks
+- Coordinate sync mechanism
+- Create request-scoped `LandContext`
 
-### TransportAdapter（傳輸適配器）
+### TransportAdapter (Transport Adapter)
 
-將 transport message 轉換為 LandKeeper 呼叫，隔離網路細節。
+Converts transport messages to LandKeeper calls, isolating network details.
 
-**功能**：
-- 解析 WebSocket 訊息
-- 管理連線狀態（session、player、client 三層識別）
-- 序列化/反序列化訊息
-- 協調 SyncEngine 進行狀態同步
+**Functions**:
+- Parse WebSocket messages
+- Manage connection state (session, player, client three-layer identification)
+- Serialize/deserialize messages
+- Coordinate SyncEngine for state synchronization
 
-### SyncEngine（同步引擎）
+### SyncEngine (Sync Engine)
 
-負責生成狀態快照（Snapshot）和差異（Diff），實現高效同步。
+Responsible for generating state snapshots and diffs, implementing efficient synchronization.
 
-**機制**：
-- 維護 broadcast 和 per-player 快取
-- 支援 dirty tracking 優化
-- 生成 path-based patches
-- 支援 firstSync 機制
+**Mechanisms**:
+- Maintains broadcast and per-player caches
+- Supports dirty tracking optimization
+- Generates path-based patches
+- Supports firstSync mechanism
 
-## 核心組件互動說明
+## Core Component Interaction Description
 
-### 請求處理流程
+### Request Processing Flow
 
-1. **連線階段**：
-   - Client 透過 WebSocket 連線
-   - WebSocketTransport 建立 session
-   - TransportAdapter 等待 join request
+1. **Connection Phase**:
+   - Client connects via WebSocket
+   - WebSocketTransport creates session
+   - TransportAdapter waits for join request
 
-2. **加入階段**：
-   - Client 發送 join request
-   - TransportAdapter 解析並呼叫 LandKeeper
-   - LandKeeper 執行 `CanJoin` 驗證
-   - 通過後執行 `OnJoin` handler
-   - SyncEngine 生成初始 Snapshot
-   - 回傳給 Client
+2. **Join Phase**:
+   - Client sends join request
+   - TransportAdapter parses and calls LandKeeper
+   - LandKeeper executes `CanJoin` validation
+   - After passing, executes `OnJoin` handler
+   - SyncEngine generates initial Snapshot
+   - Returns to Client
 
-3. **運行階段**：
-   - Client 發送 Action/Event
-   - TransportAdapter 解析並呼叫對應 handler
-   - LandKeeper 執行 handler，更新 StateNode
-   - SyncEngine 檢測變更，生成 Diff
-   - 回傳 Response 和 Diff 給 Client
+3. **Runtime Phase**:
+   - Client sends Action/Event
+   - TransportAdapter parses and calls corresponding handler
+   - LandKeeper executes handler, updates StateNode
+   - SyncEngine detects changes, generates Diff
+   - Returns Response and Diff to Client
 
-4. **同步機制**：
-   - StateNode 變更時標記 dirty
-   - SyncEngine 根據 `@Sync` 策略過濾資料
-   - 生成 Snapshot（完整狀態）或 Diff（變更）
-   - TransportAdapter 序列化並傳送
+4. **Synchronization Mechanism**:
+   - StateNode changes mark dirty
+   - SyncEngine filters data according to `@Sync` strategy
+   - Generates Snapshot (full state) or Diff (changes)
+   - TransportAdapter serializes and sends
 
-### 多房間架構
+### Multi-Room Architecture
 
-在多房間模式下：
+In multi-room mode:
 
-- `LandManager` 管理所有 Land 實例
-- `LandRouter` 負責路由連線到對應 Land
-- 每個 Land 有獨立的 LandKeeper 和 StateNode
-- TransportAdapter 與特定 Land 綁定
+- `LandManager` manages all Land instances
+- `LandRouter` routes connections to corresponding Land
+- Each Land has independent LandKeeper and StateNode
+- TransportAdapter is bound to specific Land
 
-## 文件入口
+## Documentation Entry Points
 
-- **[快速開始](quickstart.md)** - 從零開始建立第一個伺服器
-- **[架構分層](architecture.md)** - 組件分層架構與關係說明
-- **[核心概念](core/README.md)** - StateNode、Sync、Land DSL 詳解
-- **[Transport 層](transport/README.md)** - 網路傳輸與連線管理
-- **[Hummingbird 整合](hummingbird/README.md)** - 伺服器部署指南
+- **[Quick Start](quickstart.md)** - Build your first server from scratch
+- **[Architecture Layers](architecture.md)** - Component layered architecture and relationship descriptions
+- **[Core Concepts](core/README.md)** - StateNode, Sync, Land DSL details
+- **[Transport Layer](transport/README.md)** - Network transport and connection management
+- **[Hummingbird Integration](hummingbird/README.md)** - Server deployment guide

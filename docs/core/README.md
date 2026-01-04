@@ -1,96 +1,98 @@
+[English](README.md) | [中文版](README.zh-TW.md)
+
 # Core
 
-本區整理 SwiftStateTree 的核心概念與 API：StateNode、Sync、Land DSL、Runtime、Resolver、SchemaGen。
+This section organizes SwiftStateTree's core concepts and APIs: StateNode, Sync, Land DSL, Runtime, Resolver, SchemaGen.
 
-## 核心設計目標
+## Core Design Goals
 
-- 單一權威狀態（StateNode）作為 server 的單一真相
-- 同步邏輯與業務邏輯分離（SyncPolicy + Land DSL）
-- 編譯期產生 metadata（macro）降低 runtime 反射成本
-- Land DSL 不依賴 Transport，維持可移植性
+- Single authoritative state (StateNode) as server's single source of truth
+- Separation of sync logic and business logic (SyncPolicy + Land DSL)
+- Compile-time metadata generation (macro) reduces runtime reflection costs
+- Land DSL doesn't depend on Transport, maintains portability
 
-## 主要組件
+## Main Components
 
 - StateNode + `@StateNodeBuilder`
 - SyncPolicy + `@Sync` / `@Internal`
-- Land DSL（AccessControl / Rules / Lifetime）
-- Runtime：`LandKeeper`
-- Resolver：handler 前置資料取得
-- SchemaGen：輸出 JSON Schema
+- Land DSL (AccessControl / Rules / Lifetime)
+- Runtime: `LandKeeper`
+- Resolver: pre-handler data fetching
+- SchemaGen: Output JSON Schema
 
-## 建議閱讀順序
+## Recommended Reading Order
 
-1. **[Land DSL](land-dsl.md)** - 了解如何定義領域邏輯
-2. **[同步規則](sync.md)** - 理解狀態同步機制
-3. **[Runtime 運作機制](runtime.md)** - 深入了解 LandKeeper 的運作方式
-4. **[Resolver 使用指南](resolver.md)** - 學習如何使用 Resolver 載入資料
+1. **[Land DSL](land-dsl.md)** - Learn how to define domain logic
+2. **[Sync Rules](sync.md)** - Understand state synchronization mechanisms
+3. **[Runtime Operation](runtime.md)** - Deep dive into LandKeeper's operation
+4. **[Resolver Usage Guide](resolver.md)** - Learn how to use Resolver to load data
 
-## Runtime（LandKeeper）
+## Runtime (LandKeeper)
 
-`LandKeeper` 是 SwiftStateTree 的核心運行時執行器，負責管理狀態和執行 handlers。
+`LandKeeper` is SwiftStateTree's core runtime executor, responsible for managing state and executing handlers.
 
-### 核心特性
+### Core Features
 
-- **Actor 序列化**：所有狀態變更通過 actor 序列化，確保線程安全
-- **Snapshot 同步模式**：使用 snapshot 模式進行同步，不阻塞狀態變更
-- **同步去重**：並發的同步請求會被去重，避免重複工作
-- **Request-Scoped Context**：每次請求建立新的 `LandContext`，處理完成後釋放
+- **Actor Serialization**: All state changes go through actor serialization, ensuring thread safety
+- **Snapshot Sync Mode**: Uses snapshot mode for synchronization, doesn't block state changes
+- **Sync Deduplication**: Concurrent sync requests are deduplicated, avoiding duplicate work
+- **Request-Scoped Context**: New `LandContext` created for each request, released after processing
 
-### 主要功能
+### Main Functions
 
-- **玩家生命週期管理**：處理 join/leave，執行 `CanJoin`/`OnJoin`/`OnLeave` handlers
-- **Action/Event 處理**：執行對應的 handler，管理狀態變更
-- **Tick 機制**：管理定時任務，執行 `OnTick` handler
-- **狀態同步**：協調 SyncEngine 進行狀態同步
-- **自動銷毀**：根據條件自動銷毀空房間
+- **Player Lifecycle Management**: Handle join/leave, execute `CanJoin`/`OnJoin`/`OnLeave` handlers
+- **Action/Event Processing**: Execute corresponding handlers, manage state changes
+- **Tick Mechanism**: Manage scheduled tasks, execute `OnTick` handler
+- **State Synchronization**: Coordinate SyncEngine for state synchronization
+- **Auto-Destruction**: Automatically destroy empty rooms based on conditions
 
-### 詳細說明
+### Detailed Description
 
-詳細的運作機制請參考 [Runtime 運作機制](runtime.md)。
+For detailed operation mechanisms, please refer to [Runtime Operation](runtime.md).
 
 ## Resolver
 
-Resolver 機制允許在 Action/Event handler 執行前並行載入外部資料，讓 handler 保持同步。
+Resolver mechanism allows parallel loading of external data before Action/Event handler execution, keeping handlers synchronous.
 
-### 核心特性
+### Core Features
 
-- **並行執行**：多個 resolver 並行執行，提升效能
-- **錯誤處理**：任何 resolver 失敗會中止整個處理流程
-- **型別安全**：透過 `@dynamicMemberLookup` 提供型別安全的存取
-- **資料載入**：從資料庫、Redis、API 等外部來源載入資料
+- **Parallel Execution**: Multiple resolvers execute in parallel, improving performance
+- **Error Handling**: Any resolver failure aborts the entire processing flow
+- **Type Safety**: Provides type-safe access through `@dynamicMemberLookup`
+- **Data Loading**: Load data from external sources like databases, Redis, APIs, etc.
 
-### 使用方式
+### Usage
 
-在 Land DSL 中宣告 resolver：
+Declare resolver in Land DSL:
 
 ```swift
 Rules {
     HandleAction(UpdateCartAction.self, resolvers: ProductInfoResolver.self) { state, action, ctx in
-        // Resolver 已經執行完成，可以直接使用
-        let productInfo = ctx.productInfo  // 型別：ProductInfo?
+        // Resolver has already executed, can use directly
+        let productInfo = ctx.productInfo  // Type: ProductInfo?
         // ...
     }
 }
 ```
 
-### 詳細說明
+### Detailed Description
 
-詳細的使用指南請參考 [Resolver 使用指南](resolver.md)。
+For detailed usage guide, please refer to [Resolver Usage Guide](resolver.md).
 
 ## SchemaGen
 
-SchemaGen 用於從 LandDefinition 和 StateNode 產生 JSON Schema，供客戶端 SDK 生成使用。
+SchemaGen is used to generate JSON Schema from LandDefinition and StateNode for client SDK generation.
 
-### 核心功能
+### Core Functions
 
-- **Metadata 生成**：`@StateNodeBuilder` 與 `@Payload` 產生欄位 metadata
-- **Schema 提取**：`SchemaExtractor` 由 `LandDefinition` 產生完整 JSON schema
-- **自動端點**：Hummingbird 會提供 `/schema` endpoint 輸出 schema
+- **Metadata Generation**: `@StateNodeBuilder` and `@Payload` generate field metadata
+- **Schema Extraction**: `SchemaExtractor` generates complete JSON schema from `LandDefinition`
+- **Auto Endpoint**: Hummingbird provides `/schema` endpoint to output schema
 
-### 使用場景
+### Use Cases
 
-- 客戶端 SDK 生成（TypeScript、Kotlin 等）
-- 版本對齊與工具驗證
-- API 文檔生成
+- Client SDK generation (TypeScript, Kotlin, etc.)
+- Version alignment and tool validation
+- API documentation generation
 
-詳細說明請參考 [Schema 生成](../schema/README.md)。
+For detailed information, please refer to [Schema Generation](../schema/README.md).

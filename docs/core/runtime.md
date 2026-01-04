@@ -1,116 +1,118 @@
-# Runtime 運作機制
+[English](runtime.md) | [中文版](runtime.zh-TW.md)
 
-> LandKeeper 是 SwiftStateTree 的運行時執行器，負責管理狀態、執行 handlers 和協調同步。
+# Runtime Operation Mechanism
 
-## 概述
+> LandKeeper is SwiftStateTree's runtime executor, responsible for managing state, executing handlers, and coordinating synchronization.
 
-`LandKeeper` 是 SwiftStateTree 的核心運行時組件，作為一個 `actor` 管理單一 Land 實例的完整生命週期。它負責：
+## Overview
 
-- 管理權威狀態（StateNode）
-- 執行 Land 定義的 handlers（Action、Event、Tick）
-- 處理玩家加入/離開生命週期
-- 協調狀態同步機制
-- 管理定時任務（Tick）和自動銷毀
+`LandKeeper` is SwiftStateTree's core runtime component, managing the complete lifecycle of a single Land instance as an `actor`. It is responsible for:
 
-## 核心設計
+- Managing authoritative state (StateNode)
+- Executing Land-defined handlers (Action, Event, Tick)
+- Handling player join/leave lifecycle
+- Coordinating state synchronization mechanism
+- Managing scheduled tasks (Tick) and auto-destruction
 
-### Actor 序列化
+## Core Design
 
-`LandKeeper` 是一個 `actor`，這意味著：
+### Actor Serialization
 
-1. **單一房間內的序列化**：同一個 `LandKeeper` 實例內的所有操作會序列化執行，確保狀態一致性
-2. **不同房間的並行執行**：每個房間有獨立的 `LandKeeper` 實例，可以並行執行
+`LandKeeper` is an `actor`, which means:
+
+1. **Serialization within single room**: All operations within the same `LandKeeper` instance are serialized, ensuring state consistency
+2. **Parallel execution across different rooms**: Each room has an independent `LandKeeper` instance and can execute in parallel
 
 ```swift
-// 同一個房間內的操作會序列化
+// Operations within the same room are serialized
 await keeper.handleAction(action, playerID: playerID, ...)
 await keeper.handleEvent(event, playerID: playerID, ...)
 
-// 不同房間的操作可以並行
+// Operations across different rooms can execute in parallel
 await withTaskGroup(of: Void.self) { group in
     for room in rooms {
         group.addTask {
-            await room.keeper.tick() // 並行執行
+            await room.keeper.tick() // Parallel execution
         }
     }
 }
 ```
 
-### Snapshot 同步模式
+### Snapshot Sync Mode
 
-`LandKeeper` 使用 snapshot 模式進行同步，這是一個非阻塞的設計：
+`LandKeeper` uses snapshot mode for synchronization, which is a non-blocking design:
 
-- **同步時取得快照**：同步操作在開始時取得狀態快照
-- **不阻塞變更**：狀態變更可以與同步並行進行
-- **一致性保證**：Actor 序列化確保每個同步都取得一致的快照
-- **去重機制**：並發的同步請求會被去重，避免重複工作
+- **Get snapshot when syncing**: Sync operations get a state snapshot at the start
+- **Don't block changes**: State changes can proceed in parallel with synchronization
+- **Consistency guarantee**: Actor serialization ensures each sync gets a consistent snapshot
+- **Deduplication mechanism**: Concurrent sync requests are deduplicated to avoid duplicate work
 
 ```swift
-// Sync 流程
+// Sync flow
 guard let state = await keeper.beginSync() else {
-    // 另一個同步正在進行，跳過（去重）
+    // Another sync is in progress, skip (deduplication)
     return
 }
 defer { await keeper.endSync() }
 
-// 使用 state 快照進行同步操作
-// 此時狀態變更可以並行進行，不會阻塞
+// Use state snapshot for sync operations
+// State changes can proceed in parallel at this time, won't block
 ```
 
-## 狀態管理
+## State Management
 
-### 狀態變更
+### State Changes
 
-所有狀態變更都必須通過 `LandKeeper` 的方法進行：
+All state changes must go through `LandKeeper` methods:
 
 ```swift
-// 在 handler 中變更狀態
+// Change state in handler
 HandleAction(SomeAction.self) { state, action, ctx in
-    // state 是 inout 參數，可以直接修改
+    // state is inout parameter, can modify directly
     state.someField = action.value
     return SomeResponse()
 }
 ```
 
-`LandKeeper` 使用 `withMutableStateSync` 來確保狀態變更的線程安全：
+`LandKeeper` uses `withMutableStateSync` to ensure thread safety of state changes:
 
 ```swift
-// 內部實作（簡化版）
+// Internal implementation (simplified)
 func withMutableStateSync<T>(_ operation: (inout State) throws -> T) rethrows -> T {
-    // Actor 序列化確保線程安全
+    // Actor serialization ensures thread safety
     return try operation(&state)
 }
 ```
 
-### 狀態讀取
+### State Reading
 
-讀取狀態有兩種方式：
+There are two ways to read state:
 
-1. **當前狀態**：`currentState()` - 取得當前狀態的快照（只讀）
-2. **同步快照**：`beginSync()` - 開始同步操作時取得的快照
+1. **Current state**: `currentState()` - Get snapshot of current state (read-only)
+2. **Sync snapshot**: `beginSync()` - Snapshot obtained when starting sync operation
 
 ```swift
-// 讀取當前狀態（只讀）
+// Read current state (read-only)
 let current = await keeper.currentState()
 
-// 開始同步（取得快照）
+// Start sync (get snapshot)
 guard let snapshot = await keeper.beginSync() else { return }
 defer { await keeper.endSync() }
-// 使用 snapshot 進行同步操作
+// Use snapshot for sync operations
 ```
 
 ## Request-Scoped LandContext
 
-每次 Action/Event 請求都會建立一個新的 `LandContext`，處理完成後釋放。這類似於 NestJS 的 Request Context 設計模式。
+Each Action/Event request creates a new `LandContext`, which is released after processing. This is similar to NestJS's Request Context design pattern.
 
-### LandContext 特性
+### LandContext Features
 
-- **請求級別**：每個請求建立一個新的 `LandContext`
-- **不持久化**：處理完成後釋放，不保留狀態
-- **隔離 Transport**：透過閉包委派，不暴露 Transport 細節
+- **Request-level**: Each request creates a new `LandContext`
+- **Not persistent**: Released after processing, doesn't retain state
+- **Isolated Transport**: Through closure delegation, doesn't expose Transport details
 
 ```swift
-// LandKeeper 內部建立 LandContext
+// LandKeeper internally creates LandContext
 func handleAction<A: ActionPayload>(_ action: A, ...) async throws -> AnyCodable {
     var ctx = makeContext(
         playerID: playerID,
@@ -118,109 +120,109 @@ func handleAction<A: ActionPayload>(_ action: A, ...) async throws -> AnyCodable
         sessionID: sessionID
     )
     
-    // 執行 Resolver（如果有的話）
+    // Execute Resolver (if any)
     if !handler.resolverExecutors.isEmpty {
         ctx = try await ResolverExecutor.executeResolvers(...)
     }
     
-    // 執行 handler
+    // Execute handler
     return try withMutableStateSync { state in
         try handler.invoke(&state, action: action, ctx: ctx)
     }
 }
 ```
 
-### LandContext 功能
+### LandContext Functions
 
-`LandContext` 提供以下功能：
+`LandContext` provides the following functions:
 
-- **識別資訊**：`playerID`、`clientID`、`sessionID`、`landID`
-- **服務存取**：`services` - 外部服務抽象（資料庫、日誌等）
-- **事件發送**：`sendEvent(_:to:)` - 發送事件給指定目標
-- **手動同步**：`syncNow()` - 手動觸發狀態同步
-- **背景任務**：`spawn(_:)` - 執行非同步背景任務
-- **Resolver 輸出**：透過 `@dynamicMemberLookup` 存取 resolver 結果
+- **Identification**: `playerID`, `clientID`, `sessionID`, `landID`
+- **Service access**: `services` - External service abstraction (database, logging, etc.)
+- **Event sending**: `sendEvent(_:to:)` - Send event to specified target
+- **Manual sync**: `syncNow()` - Manually trigger state synchronization
+- **Background tasks**: `spawn(_:)` - Execute asynchronous background tasks
+- **Resolver output**: Access resolver results through `@dynamicMemberLookup`
 
-## Handler 執行流程
+## Handler Execution Flow
 
-### Action Handler 流程
+### Action Handler Flow
 
 ```mermaid
 sequenceDiagram
-    participant Client as 客戶端
+    participant Client as Client
     participant Adapter as TransportAdapter
     participant Keeper as LandKeeper
     participant Resolver as ResolverExecutor
     participant Handler as ActionHandler
     participant State as StateNode
     
-    Client->>Adapter: 發送 Action
+    Client->>Adapter: Send Action
     Adapter->>Keeper: handleAction(action, ...)
     Keeper->>Keeper: makeContext(...)
     Keeper->>Resolver: executeResolvers(...)
-    Resolver-->>Keeper: 更新 ctx
+    Resolver-->>Keeper: Update ctx
     Keeper->>Handler: invoke(&state, action, ctx)
-    Handler->>State: 修改狀態
-    State-->>Handler: 完成
-    Handler-->>Keeper: 返回 Response
+    Handler->>State: Modify state
+    State-->>Handler: Complete
+    Handler-->>Keeper: Return Response
     Keeper-->>Adapter: Response
-    Adapter-->>Client: 回傳 Response
+    Adapter-->>Client: Return Response
 ```
 
-### Event Handler 流程
+### Event Handler Flow
 
-Event handler 的流程類似，但沒有返回值：
+Event handler flow is similar, but has no return value:
 
 ```swift
-// Event handler 執行
+// Event handler execution
 func handleEvent<E: EventPayload>(_ event: E, ...) async {
     var ctx = makeContext(...)
     
-    // 執行 Resolver（如果有的話）
+    // Execute Resolver (if any)
     if !handler.resolverExecutors.isEmpty {
         ctx = try await ResolverExecutor.executeResolvers(...)
     }
     
-    // 執行 handler（無返回值）
+    // Execute handler (no return value)
     try withMutableStateSync { state in
         try handler.invoke(&state, event: event, ctx: ctx)
     }
 }
 ```
 
-## 玩家生命週期
+## Player Lifecycle
 
-### Join 流程
+### Join Flow
 
-玩家加入有兩個階段：
+Player joining has two phases:
 
-1. **CanJoin**：加入前的驗證（可選）
-2. **OnJoin**：加入後的處理
+1. **CanJoin**: Validation before joining (optional)
+2. **OnJoin**: Processing after joining
 
 ```swift
-// Join 流程
+// Join flow
 public func join(session: PlayerSession, ...) async throws -> JoinDecision {
-    // 1. 執行 CanJoin handler（如果定義）
+    // 1. Execute CanJoin handler (if defined)
     if let canJoinHandler = definition.lifetimeHandlers.canJoin {
         decision = try canJoinHandler(state, session, ctx)
     }
     
-    // 2. 如果被拒絕，直接返回
+    // 2. If denied, return directly
     guard case .allow(let playerID) = decision else {
         return decision
     }
     
-    // 3. 檢查人數上限
+    // 3. Check player limit
     if let maxPlayers = definition.config.maxPlayers {
         guard players.count < maxPlayers else {
             throw JoinError.roomIsFull
         }
     }
     
-    // 4. 執行 OnJoin handler（如果定義）
+    // 4. Execute OnJoin handler (if defined)
     if let onJoinHandler = definition.lifetimeHandlers.onJoin {
-        // 執行 Resolver（如果有的話）
-        // 執行 handler
+        // Execute Resolver (if any)
+        // Execute handler
         try withMutableStateSync { state in
             try onJoinHandler(&state, ctx)
         }
@@ -230,55 +232,55 @@ public func join(session: PlayerSession, ...) async throws -> JoinDecision {
 }
 ```
 
-### Leave 流程
+### Leave Flow
 
-玩家離開時會執行 `OnLeave` handler：
+When a player leaves, `OnLeave` handler is executed:
 
 ```swift
 public func leave(playerID: PlayerID, ...) async throws {
-    // 執行 OnLeave handler（如果定義）
+    // Execute OnLeave handler (if defined)
     if let onLeaveHandler = definition.lifetimeHandlers.onLeave {
         try withMutableStateSync { state in
             try onLeaveHandler(&state, ctx)
         }
     }
     
-    // 清理玩家資料
+    // Clean up player data
     players.removeValue(forKey: playerID)
     
-    // 檢查是否需要自動銷毀
+    // Check if auto-destruction is needed
     checkAutoDestroy()
 }
 ```
 
-## Tick 機制
+## Tick Mechanism
 
-### Tick 設定
+### Tick Configuration
 
-在 Land DSL 中定義 Tick：
+Define Tick in Land DSL:
 
 ```swift
 Lifetime {
     Tick(every: .milliseconds(100)) { state, ctx in
-        // 每 100ms 執行一次
+        // Execute every 100ms
         state.stepSimulation()
     }
 }
 ```
 
-### Tick 執行
+### Tick Execution
 
-`LandKeeper` 會自動管理 Tick 任務：
+`LandKeeper` automatically manages Tick tasks:
 
 ```swift
-// 初始化時啟動 Tick
+// Start Tick on initialization
 Task {
-    // 執行 OnInitialize（如果定義）
+    // Execute OnInitialize (if defined)
     if let onInitializeHandler = definition.lifetimeHandlers.onInitialize {
         await executeOnInitialize(handler: onInitializeHandler)
     }
     
-    // 啟動 Tick loop
+    // Start Tick loop
     if let interval = definition.lifetimeHandlers.tickInterval {
         await configureTickLoop(interval: interval)
     }
@@ -290,7 +292,7 @@ private func configureTickLoop(interval: Duration) async {
         while !Task.isCancelled {
             try? await Task.sleep(for: interval)
             
-            // 執行 Tick handler
+            // Execute Tick handler
             if let tickHandler = definition.lifetimeHandlers.tickHandler {
                 try withMutableStateSync { state in
                     try tickHandler(&state, makeContext(...))
@@ -301,107 +303,106 @@ private func configureTickLoop(interval: Duration) async {
 }
 ```
 
-## 同步機制
+## Synchronization Mechanism
 
-### 同步流程
+### Sync Flow
 
-同步使用 snapshot 模式，不阻塞狀態變更：
+Synchronization uses snapshot mode, doesn't block state changes:
 
 ```swift
-// 開始同步
+// Start sync
 public func beginSync() -> State? {
     guard !isSyncing else {
-        return nil  // 去重：跳過並發的同步請求
+        return nil  // Deduplication: skip concurrent sync requests
     }
     isSyncing = true
-    return state  // 直接取得快照，不阻塞
+    return state  // Get snapshot directly, non-blocking
 }
 
-// 結束同步
+// End sync
 public func endSync(clearDirtyFlags: Bool = true) {
     isSyncing = false
     if clearDirtyFlags {
-        state.clearDirty()  // 清除 dirty 標記
+        state.clearDirty()  // Clear dirty flags
     }
 }
 ```
 
-### 同步去重
+### Sync Deduplication
 
-`isSyncing` 標記用於去重，不是用於阻塞：
+`isSyncing` flag is used for deduplication, not for blocking:
 
-- 當同步進行中時，並發的同步請求會被跳過
-- 狀態變更（Action/Event）不會被阻塞，可以並行進行
-- 每個同步都取得一致的快照（actor 序列化保證）
+- When sync is in progress, concurrent sync requests are skipped
+- State changes (Action/Event) are not blocked, can proceed in parallel
+- Each sync gets a consistent snapshot (guaranteed by actor serialization)
 
 ### Dirty Tracking
 
-狀態變更時會自動標記 dirty：
+State changes automatically mark dirty:
 
 ```swift
-// 在 StateNode 中
+// In StateNode
 @Sync(.broadcast)
 var players: [PlayerID: PlayerState] = [:] {
     didSet {
-        markDirty()  // 自動標記 dirty
+        markDirty()  // Automatically mark dirty
     }
 }
 ```
 
-同步完成後可以選擇清除 dirty 標記：
+After sync completes, dirty flags can be cleared:
 
 ```swift
-// 清除所有 dirty 標記
+// Clear all dirty flags
 state.clearDirty()
 ```
 
-## 自動銷毀
+## Auto-Destruction
 
-### 銷毀條件
+### Destruction Conditions
 
-在 Land DSL 中定義銷毀條件：
+Define destruction conditions in Land DSL:
 
 ```swift
 Lifetime {
     DestroyWhenEmpty(after: .seconds(60)) { state, ctx in
-        // 空房間 60 秒後銷毀，可在這裡執行清理邏輯
+        // Destroy empty room after 60 seconds, can execute cleanup logic here
         ctx.logger.info("Land is empty, destroying...")
     }
 }
 ```
 
-### 銷毀檢查
+### Destruction Check
 
-`LandKeeper` 會在適當的時機檢查銷毀條件：
+`LandKeeper` checks destruction conditions at appropriate times:
 
 ```swift
-// 玩家離開時檢查
+// Check when player leaves
 private func checkAutoDestroy() {
     if players.isEmpty {
-        // 啟動銷毀計時器
+        // Start destruction timer
         destroyTask = Task {
             try? await Task.sleep(for: destroyDelay)
-            // 執行銷毀邏輯
+            // Execute destruction logic
         }
     } else {
-        // 有玩家加入，取消銷毀
+        // Player joined, cancel destruction
         destroyTask?.cancel()
         destroyTask = nil
     }
 }
 ```
 
-## 最佳實踐
+## Best Practices
 
-1. **避免長時間運行的 handler**：handler 應該快速執行，長時間操作使用 `ctx.spawn`
-2. **合理使用 Resolver**：將資料載入邏輯放在 Resolver 中，handler 保持同步
-3. **注意狀態變更範圍**：只在 handler 中變更狀態，不要在 Resolver 中變更
-4. **利用 Actor 序列化**：不需要額外的鎖機制，actor 自動保證線程安全
+1. **Avoid long-running handlers**: Handlers should execute quickly, use `ctx.spawn` for long operations
+2. **Use Resolver appropriately**: Put data loading logic in Resolver, keep handlers synchronous
+3. **Pay attention to state change scope**: Only change state in handlers, don't change in Resolver
+4. **Leverage Actor serialization**: No need for additional locking mechanisms, actor automatically ensures thread safety
 
-## 相關文檔
+## Related Documentation
 
-- [核心概念](README.md) - 了解 StateNode 和 Land DSL
-- [同步規則](sync.md) - 深入了解同步機制
-- [Resolver 機制](resolver.md) - Resolver 使用指南
-- [Transport 層](../transport/README.md) - 了解 TransportAdapter 如何與 LandKeeper 互動
-
+- [Core Concepts](README.md) - Understand StateNode and Land DSL
+- [Sync Rules](sync.md) - Deep dive into sync mechanism
+- [Resolver Mechanism](resolver.md) - Resolver usage guide
+- [Transport Layer](../transport/README.md) - Understand how TransportAdapter interacts with LandKeeper

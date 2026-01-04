@@ -1,18 +1,18 @@
-[English](payload.en.md) | [中文版](payload.md)
+[English](payload.md) | [中文版](payload.zh-TW.md)
 
-# @Payload Detailed Guide
+# @Payload 詳細說明
 
-> `@Payload` macro is used to mark Action, Event, and Response payloads, automatically generating field metadata and response type information.
+> `@Payload` macro 用於標記 Action、Event 和 Response payload，自動生成欄位 metadata 和 response type 資訊。
 
-## Overview
+## 概述
 
-`@Payload` macro performs the following operations at compile time:
+`@Payload` macro 在編譯期執行以下操作：
 
-1. **Generate field metadata**: Generate `getFieldMetadata()` method
-2. **Generate response type**: Action payloads additionally generate `getResponseType()` method
-3. **Schema generation support**: Provide metadata for automatic JSON Schema generation
+1. **生成 field metadata**：產生 `getFieldMetadata()` 方法
+2. **生成 response type**：Action payload 會額外產生 `getResponseType()` 方法
+3. **Schema 生成支援**：提供 metadata 用於自動生成 JSON Schema
 
-## Basic Usage
+## 基本使用
 
 ### Action Payload
 
@@ -53,14 +53,14 @@ struct ChatMessageEvent: ClientEventPayload {
 }
 ```
 
-## Generated Code
+## 生成的程式碼
 
 ### getFieldMetadata()
 
-All `@Payload` types generate `getFieldMetadata()` method:
+所有 `@Payload` 型別都會生成 `getFieldMetadata()` 方法：
 
 ```swift
-// Auto-generated (simplified)
+// 自動生成（簡化版）
 extension JoinAction {
     static func getFieldMetadata() -> [FieldMetadata] {
         return [
@@ -92,10 +92,10 @@ extension JoinAction {
 
 ### getResponseType()
 
-Only `ActionPayload` generates `getResponseType()` method:
+只有 `ActionPayload` 會生成 `getResponseType()` 方法：
 
 ```swift
-// Auto-generated (simplified)
+// 自動生成（簡化版）
 extension JoinAction {
     static func getResponseType() -> Any.Type {
         return JoinResponse.self
@@ -103,16 +103,16 @@ extension JoinAction {
 }
 ```
 
-## Payload Types
+## Payload 類型
 
 ### ActionPayload
 
-Action payload must define `Response` typealias:
+Action payload 必須定義 `Response` typealias：
 
 ```swift
 @Payload
 struct PurchaseAction: ActionPayload {
-    typealias Response = PurchaseResponse  // Must define
+    typealias Response = PurchaseResponse  // 必須定義
     let productID: String
     let quantity: Int
 }
@@ -124,14 +124,14 @@ struct PurchaseResponse: ResponsePayload {
 }
 ```
 
-**Features**:
-- Must define `typealias Response`
-- Generates `getResponseType()` method
-- Used for operations that need immediate feedback
+**特點**：
+- 必須定義 `typealias Response`
+- 會生成 `getResponseType()` 方法
+- 用於需要立即回饋的操作
 
 ### ResponsePayload
 
-Response payload doesn't need additional typealias:
+Response payload 不需要額外的 typealias：
 
 ```swift
 @Payload
@@ -142,14 +142,14 @@ struct PurchaseResponse: ResponsePayload {
 }
 ```
 
-**Features**:
-- Doesn't need to define typealias
-- Only generates `getFieldMetadata()` method
-- Used for Action responses
+**特點**：
+- 不需要定義 typealias
+- 只生成 `getFieldMetadata()` 方法
+- 用於 Action 的回應
 
 ### ServerEventPayload
 
-Events sent from Server to Client:
+Server 發送給 Client 的事件：
 
 ```swift
 @Payload
@@ -160,14 +160,14 @@ struct GameStartedEvent: ServerEventPayload {
 }
 ```
 
-**Features**:
-- Doesn't need Response
-- Only generates `getFieldMetadata()` method
-- Used for Server → Client notifications
+**特點**：
+- 不需要 Response
+- 只生成 `getFieldMetadata()` 方法
+- 用於 Server → Client 的通知
 
 ### ClientEventPayload
 
-Events sent from Client to Server:
+Client 發送給 Server 的事件：
 
 ```swift
 @Payload
@@ -177,62 +177,62 @@ struct HeartbeatEvent: ClientEventPayload {
 }
 ```
 
-**Features**:
-- Doesn't need Response
-- Only generates `getFieldMetadata()` method
-- Used for Client → Server notifications
+**特點**：
+- 不需要 Response
+- 只生成 `getFieldMetadata()` 方法
+- 用於 Client → Server 的通知
 
-## Validation Rules
+## 驗證規則
 
-### Compile-Time Validation
+### 編譯期驗證
 
-`@Payload` performs validation at compile time:
+`@Payload` 在編譯期執行驗證：
 
-#### ✅ Correct Usage
+#### ✅ 正確的使用
 
 ```swift
 @Payload
 struct JoinAction: ActionPayload {
-    typealias Response = JoinResponse  // ✅ Correct
+    typealias Response = JoinResponse  // ✅ 正確
     let playerID: PlayerID
     let name: String
 }
 ```
 
-#### ❌ Incorrect Usage
+#### ❌ 錯誤的使用
 
 ```swift
-// ❌ Error 1: ActionPayload didn't define Response
+// ❌ 錯誤 1：ActionPayload 未定義 Response
 @Payload
 struct JoinAction: ActionPayload {
     let playerID: PlayerID
-    // Missing typealias Response
+    // 缺少 typealias Response
 }
 
-// ❌ Error 2: Using on class
-@Payload  // Compile error: Only supports struct
+// ❌ 錯誤 2：在 class 上使用
+@Payload  // 編譯錯誤：只支援 struct
 class JoinAction: ActionPayload {
     // ...
 }
 
-// ❌ Error 3: Optional types (currently not supported)
+// ❌ 錯誤 3：可選型別（目前不支援）
 @Payload
 struct JoinAction: ActionPayload {
     typealias Response = JoinResponse
     let playerID: PlayerID?
-    // Compile error: Optional types not supported
+    // 編譯錯誤：可選型別不支援
 }
 ```
 
-### Limitations
+### 限制
 
-1. **Only supports struct**: Doesn't support class or enum
-2. **Doesn't support optional types**: Fields cannot be optional types (`String?`)
-3. **Must mark @Payload**: Unmarked payloads will trap at runtime
+1. **只支援 struct**：不支援 class 或 enum
+2. **不支援可選型別**：欄位不能是可選型別（`String?`）
+3. **必須標記 @Payload**：未標記的 payload 在 runtime 會 trap
 
-## Use Cases
+## 使用場景
 
-### Use Case 1: Simple Action
+### 場景 1：簡單的 Action
 
 ```swift
 @Payload
@@ -249,7 +249,7 @@ struct PlayerInfoResponse: ResponsePayload {
 }
 ```
 
-### Use Case 2: Complex Action
+### 場景 2：複雜的 Action
 
 ```swift
 @Payload
@@ -270,7 +270,7 @@ struct PurchaseItemResponse: ResponsePayload {
 }
 ```
 
-### Use Case 3: Event Notifications
+### 場景 3：事件通知
 
 ```swift
 @Payload
@@ -282,92 +282,92 @@ struct PlayerLevelUpEvent: ServerEventPayload {
 }
 ```
 
-## Common Errors
+## 常見錯誤
 
-### Error 1: Forgot to Mark @Payload
+### 錯誤 1：忘記標記 @Payload
 
 ```swift
-// ❌ Error: Not marked with @Payload
+// ❌ 錯誤：未標記 @Payload
 struct JoinAction: ActionPayload {
     typealias Response = JoinResponse
     let playerID: PlayerID
 }
 
-// Will trap at runtime
+// 在 runtime 會 trap
 let responseType = JoinAction.getResponseType()  // ❌ Runtime error
 ```
 
-**Solution**:
+**解決方案**：
 
 ```swift
-@Payload  // ✅ Correct
+@Payload  // ✅ 正確
 struct JoinAction: ActionPayload {
     typealias Response = JoinResponse
     let playerID: PlayerID
 }
 ```
 
-### Error 2: Action Didn't Define Response
+### 錯誤 2：Action 未定義 Response
 
 ```swift
 @Payload
 struct JoinAction: ActionPayload {
-    // ❌ Error: Missing typealias Response
+    // ❌ 錯誤：缺少 typealias Response
     let playerID: PlayerID
 }
 ```
 
-**Solution**:
+**解決方案**：
 
 ```swift
 @Payload
 struct JoinAction: ActionPayload {
-    typealias Response = JoinResponse  // ✅ Correct
+    typealias Response = JoinResponse  // ✅ 正確
     let playerID: PlayerID
 }
 ```
 
-### Error 3: Using Optional Types
+### 錯誤 3：使用可選型別
 
 ```swift
 @Payload
 struct JoinAction: ActionPayload {
     typealias Response = JoinResponse
     let playerID: PlayerID?
-    // ❌ Compile error: Optional types not supported
+    // ❌ 編譯錯誤：可選型別不支援
 }
 ```
 
-**Solution**: Use non-optional types, or use default values:
+**解決方案**：使用非可選型別，或使用預設值：
 
 ```swift
 @Payload
 struct JoinAction: ActionPayload {
     typealias Response = JoinResponse
     let playerID: PlayerID
-    let deviceID: String  // Use non-optional, handle empty values in handler
+    let deviceID: String  // 使用非可選，在 handler 中處理空值
 }
 ```
 
-## Best Practices
+## 最佳實踐
 
-### 1. Mark All Payloads with @Payload
+### 1. 所有 Payload 都標記 @Payload
 
-Ensure all Actions, Events, Responses are marked with `@Payload`:
+確保所有 Action、Event、Response 都標記 `@Payload`：
 
 ```swift
-// ✅ Correct: All Payloads are marked
+// ✅ 正確：所有 Payload 都標記
 @Payload struct JoinAction: ActionPayload { ... }
 @Payload struct JoinResponse: ResponsePayload { ... }
 @Payload struct PlayerJoinedEvent: ServerEventPayload { ... }
 ```
 
-### 2. Use Explicit Types
+### 2. 使用明確的型別
 
-Avoid overly generic types:
+避免使用過於泛型的型別：
 
 ```swift
-// ✅ Correct: Explicit types
+// ✅ 正確：明確的型別
 @Payload
 struct PurchaseAction: ActionPayload {
     typealias Response = PurchaseResponse
@@ -375,20 +375,20 @@ struct PurchaseAction: ActionPayload {
     let quantity: Int
 }
 
-// ❌ Wrong: Too generic
+// ❌ 錯誤：過於泛型
 @Payload
 struct GenericAction: ActionPayload {
     typealias Response = GenericResponse
-    let data: [String: Any]  // Too generic
+    let data: [String: Any]  // 太泛型
 }
 ```
 
-### 3. Keep Payloads Simple
+### 3. 保持 Payload 簡單
 
-Avoid overly complex nested structures:
+避免過於複雜的巢狀結構：
 
 ```swift
-// ✅ Correct: Simple structure
+// ✅ 正確：簡單的結構
 @Payload
 struct JoinAction: ActionPayload {
     typealias Response = JoinResponse
@@ -396,20 +396,20 @@ struct JoinAction: ActionPayload {
     let name: String
 }
 
-// ⚠️ Note: Complex nested structures may need additional processing
+// ⚠️ 注意：複雜的巢狀結構可能需要額外處理
 @Payload
 struct ComplexAction: ActionPayload {
     typealias Response = ComplexResponse
-    let nestedData: NestedStructure  // Ensure NestedStructure is also marked with @Payload or @SnapshotConvertible
+    let nestedData: NestedStructure  // 確保 NestedStructure 也標記了 @Payload 或 @SnapshotConvertible
 }
 ```
 
-## Relationship with Schema Generation
+## 與 Schema 生成的關係
 
-`@Payload` generated metadata is used for automatic JSON Schema generation:
+`@Payload` 生成的 metadata 用於自動生成 JSON Schema：
 
 ```swift
-// Payload definition
+// Payload 定義
 @Payload
 struct JoinAction: ActionPayload {
     typealias Response = JoinResponse
@@ -417,7 +417,7 @@ struct JoinAction: ActionPayload {
     let name: String
 }
 
-// Auto-generated Schema (simplified)
+// 自動生成的 Schema（簡化版）
 {
   "defs": {
     "JoinAction": {
@@ -432,8 +432,9 @@ struct JoinAction: ActionPayload {
 }
 ```
 
-## Related Documentation
+## 相關文檔
 
-- [Macros Overview](README.en.md) - Understand usage of all macros
-- [Schema Generation](../schema/README.en.md) - Understand schema generation mechanism
-- [Land DSL](../core/land-dsl.en.md) - Understand how to use Payload in Land DSL
+- [Macros 總覽](README.zh-TW.md) - 了解所有 macro 的使用
+- [Schema 生成](../schema/README.zh-TW.md) - 了解 Schema 生成機制
+- [Land DSL](../core/land-dsl.zh-TW.md) - 了解如何在 Land DSL 中使用 Payload
+

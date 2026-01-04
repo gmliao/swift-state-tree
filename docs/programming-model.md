@@ -1,149 +1,151 @@
+[English](programming-model.md) | [中文版](programming-model.zh-TW.md)
+
 # StateTree: A Reactive Server State Programming Model
 
-> **關於本文件**：本文件整理並定義一套名為 **StateTree** 的 reactive server state programming model。此模型由作者在實務開發與架構設計過程中整理而成，用於描述一種以「單一權威狀態樹」為核心的伺服器端狀態管理與同步思維。
+> **About this document**: This document organizes and defines a reactive server state programming model named **StateTree**. This model was developed by the author through practical development and architectural design, used to describe a server-side state management and synchronization approach centered on a "single authoritative state tree."
 >
-> 本文件描述的是一個 **programming model（語意模型）**，而非特定框架或語言實作；文中提及的 Swift 實作僅作為參考，並非此模型的唯一或必要實現方式。為避免語意混淆，本文中對 State / Action / Resolver 的定義，皆以本文件為準。
+> This document describes a **programming model (semantic model)**, not a specific framework or language implementation; the Swift implementation mentioned in this document is only for reference and is not the only or necessary way to implement this model. To avoid semantic confusion, the definitions of State / Action / Resolver in this document take precedence.
 
-StateTree 是一套以 **狀態機核心（State Machine Core）** 為基礎的 reactive server state programming model。此架構將「狀態（State）」、「動作（Action）」、「資料來源（Resolver）」明確分層，提供一個清晰的伺服器端狀態管理模型。
+StateTree is a reactive server state programming model based on a **State Machine Core**. This architecture clearly separates "State", "Action", and "Data Source (Resolver)", providing a clear server-side state management model.
 
-> 本 programming model 主要是根據 Vue 的 reactive 模式與後端資料過濾實務，發展出的伺服器端 reactive 狀態管理模型。透過狀態樹的方式表達伺服器狀態，可以直接將資料以 reactive 的方式同步給客戶端，實現自動化的狀態同步與更新。在整理過程中，也發現某些設計理念與 Redux 的單一狀態樹（single state tree）概念有相似之處。
+> This programming model was primarily developed based on Vue's reactive pattern and backend data filtering practices, evolving into a server-side reactive state management model. By expressing server state through a state tree, data can be synchronized to clients in a reactive manner, achieving automated state synchronization and updates. During the organization process, it was also discovered that certain design concepts are similar to Redux's single state tree concept.
 
-目前實作採用 **有房間（room-based）** 的即時模式（Active StateTree），狀態持續存在並透過 WebSocket 同步給客戶端。
+The current implementation uses a **room-based** real-time mode (Active StateTree), where state persists and is synchronized to clients via WebSocket.
 
-本文件將以完整架構觀點敘述其核心語意模型與設計理念，並在最後根據設計內容推論出此模型所具備的特性。
-
----
-
-## 1. 狀態層（State Layer）—— StateTree = 唯一真實來源（Single Source of Truth）
-
-StateTree 代表伺服器端的「真實狀態」，以樹狀結構組織狀態資料。
-
-**核心特性**：
-
-* **值類型、快照式（Snapshot-based）**：狀態是值類型，可以產生快照
-* **不可變性原則**：狀態不可直接被外部修改
-* **同步策略標記**：每個狀態屬性需要標記同步策略（哪些資料同步給哪些客戶端）
-* **單一修改入口**：狀態只能透過 Action 修改
-* **自動同步機制**：所有修改會自動產生差異（diff）並同步給客戶端
-
-狀態的完整演化軌跡僅由 Action 控制，這使 StateTree 的可推論性非常高。
+This document will describe its core semantic model and design philosophy from a complete architectural perspective, and at the end, infer the characteristics of this model based on the design content.
 
 ---
 
-## 2. 動作層（Action Layer）—— 唯一修改狀態的入口
+## 1. State Layer (State Layer) —— StateTree = Single Source of Truth
 
-Action 是唯一能修改 StateTree 的地方。
+StateTree represents the "true state" on the server side, organizing state data in a tree structure.
 
-**核心設計**：
+**Core Characteristics**:
 
-* **單一修改入口**：所有狀態變更都必須透過 Action handler
-* **同步執行**：Action handler 本身是同步的，不包含非同步操作
-* **輸入與輸出**：Action handler 接收當下狀態、Action payload、以及 Resolver 提供的上下文，返回 Response
-* **狀態修改方式**：透過引用傳遞（pass by reference）修改狀態
+* **Value type, Snapshot-based**: State is a value type and can generate snapshots
+* **Immutability principle**: State cannot be directly modified externally
+* **Sync strategy marking**: Each state property needs to be marked with a sync strategy (which data syncs to which clients)
+* **Single modification entry**: State can only be modified through Actions
+* **Automatic sync mechanism**: All modifications automatically generate diffs and sync to clients
 
-**設計建議：Deterministic Action（目前未強制）**
+The complete evolution trajectory of state is controlled only by Actions, making StateTree highly inferable.
 
-雖然目前實作未強制，但建議 Action handler 保持 deterministic：
+---
 
-* 避免呼叫 random/time/uuid 等非決定性 API（或使用 seed）
-* Action 依賴：
-  * 當下 State
+## 2. Action Layer (Action Layer) —— The Only Entry Point for Modifying State
+
+Action is the only place that can modify StateTree.
+
+**Core Design**:
+
+* **Single modification entry**: All state changes must go through Action handlers
+* **Synchronous execution**: Action handlers themselves are synchronous and do not contain async operations
+* **Input and output**: Action handlers receive current state, Action payload, and context provided by Resolver, returning a Response
+* **State modification method**: Modify state through pass by reference
+
+**Design Recommendation: Deterministic Action (currently not enforced)**
+
+Although the current implementation does not enforce it, it is recommended that Action handlers remain deterministic:
+
+* Avoid calling non-deterministic APIs like random/time/uuid (or use seeds)
+* Action dependencies:
+  * Current State
   * Action Payload
-  * Resolver 提供的 Context
-* 相同的輸入 → 產生相同的輸出
+  * Context provided by Resolver
+* Same input → produces same output
 
-這讓 StateTree 更具可推論性，對除錯、回放、同步、複製具有極大優勢。
+This makes StateTree more inferable and has great advantages for debugging, replay, synchronization, and replication.
 
-Action 的責任非常單純：
+Action's responsibility is very simple:
 
-> **依照業務邏輯，決定要將哪些資料寫入 StateTree。**
+> **According to business logic, decide which data to write into StateTree.**
 
-Resolver 只是提供輔助資訊（參考資料），不會、也不能直接寫入 StateTree。
+Resolver only provides auxiliary information (reference data) and cannot directly write to StateTree.
 
 ---
 
-## 3. 資料來源層（Resolver Layer）—— Action 的上下文提供者
+## 3. Data Source Layer (Resolver Layer) —— Context Provider for Actions
 
-Resolver 是 StateTree 架構的核心創新之一。
+Resolver is one of the core innovations of the StateTree architecture.
 
-Resolver 的定位如下：
+Resolver's positioning is as follows:
 
-* 提供 Action/Event handler 所需要的「外部來源資料」
-* 僅能讀取外部系統，不得修改 StateTree
-* **並行執行**：所有宣告的 resolver 在 handler 執行前並行執行
-* **執行完成後填入上下文**：Resolver 結果會填充到 handler 的上下文中
-* **不進狀態樹**：Resolver 的輸出資料不會進入 StateTree，也不會被同步或持久化
+* Provides "external source data" needed by Action/Event handlers
+* Can only read external systems, cannot modify StateTree
+* **Parallel execution**: All declared resolvers execute in parallel before handler execution
+* **Fill context after execution**: Resolver results fill the handler's context
+* **Not in state tree**: Resolver output data does not enter StateTree and is not synchronized or persisted
 
-Resolver 的本質角色：
+Resolver's essential role:
 
-> **提供 Action/Event handler 需要的上下文（Context Provider），而非狀態的一部分。**
+> **Provides context needed by Action/Event handlers (Context Provider), not part of state.**
 
-StateNode vs ResolverOutput 的差異：
+Difference between StateNode vs ResolverOutput:
 
-| 類別 | 來源 | 會進 StateTree？ | 可改變同步行為？ |
+| Category | Source | Enters StateTree? | Can change sync behavior? |
 |------|------|----------------|----------------|
-| **StateNode** | server 狀態 | ✔ | ✔（可定義同步策略） |
-| **ResolverOutput** | 外部資料來源 | ✘ | ✘ |
+| **StateNode** | server state | ✔ | ✔ (can define sync strategy) |
+| **ResolverOutput** | external data source | ✘ | ✘ |
 
 ---
 
-## 4. 語意層（Semantic Model）—— StateTree 的核心概念整合
+## 4. Semantic Layer (Semantic Model) —— Core Concept Integration of StateTree
 
-以下是 StateTree 成為「完整 reactive server 架構」的語意基礎。
-
----
-
-### 4.1 Resolver 執行模式
-
-Resolver 採用 **eager 並行執行** 模式：
-
-* 在 Action/Event handler 執行前，所有宣告的 resolver 並行執行
-* Resolver 執行完成後，結果會填充到 handler 的上下文中
-* Handler 可以同步存取 resolver 結果
-* Handler 本身是同步的，不需要處理 async 操作
-
-**並行執行優勢**：
-
-* 多個 resolver 同時執行，減少總執行時間
-* Handler 保持同步，邏輯更清晰
-* 錯誤處理統一：任何 resolver 失敗會中止整個處理流程
+The following is the semantic foundation for StateTree to become a "complete reactive server architecture."
 
 ---
 
-### 4.2 Resolver 與 State 的資料歸屬規則
+### 4.1 Resolver Execution Mode
 
-* **同步要用的資料** → 一定要寫入 StateTree
-* **Action 需要但不需同步的資料** → 放在 ResolverOutput
-* **大量、頻繁變動資料（如股票）** → 不應進入 Tree（會爆 diff），用 Resolver 供應
-* **永續或邏輯核心資料** → 一律進 Tree（需進 sync）
+Resolver uses **eager parallel execution** mode:
 
-ResolverOutput 是上下文，StateNode 是權威狀態。兩者關係不可混淆。
+* Before Action/Event handler execution, all declared resolvers execute in parallel
+* After Resolver execution completes, results fill the handler's context
+* Handler can synchronously access resolver results
+* Handler itself is synchronous and does not need to handle async operations
+
+**Parallel Execution Advantages**:
+
+* Multiple resolvers execute simultaneously, reducing total execution time
+* Handler remains synchronous, logic is clearer
+* Unified error handling: Any resolver failure aborts the entire processing flow
 
 ---
 
-## 5. Runtime Layer——StateTree 的執行流程
+### 4.2 Data Ownership Rules for Resolver and State
 
-完整流程如下：
+* **Data needed for sync** → Must be written into StateTree
+* **Data needed by Action but not for sync** → Place in ResolverOutput
+* **Large, frequently changing data (like stocks)** → Should not enter Tree (would explode diff), supply via Resolver
+* **Persistent or logical core data** → Always enter Tree (needs sync)
+
+ResolverOutput is context, StateNode is authoritative state. The relationship between the two cannot be confused.
+
+---
+
+## 5. Runtime Layer——StateTree Execution Flow
+
+Complete flow is as follows:
 
 ```
 Client → Action(payload)
            |
            v
-   [建立上下文]
+   [Create Context]
            |
            v
-   [並行執行 Resolvers]
-       • 所有宣告的 resolver 並行執行
-       • 載入外部資料（DB、API 等）
-       • 結果填充到上下文
+   [Parallel Execute Resolvers]
+       • All declared resolvers execute in parallel
+       • Load external data (DB, API, etc.)
+       • Results fill context
            |
            v
    [Action Handler Execution]
-       • 讀取 state
-       • 讀取 payload
-       • 讀取 resolver 結果（同步存取）
-       • 修改 state
-       • 返回 Response
+       • Read state
+       • Read payload
+       • Read resolver results (synchronous access)
+       • Modify state
+       • Return Response
            |
            v
        [StateTree Updated → diff]
@@ -152,126 +154,126 @@ Client → Action(payload)
         [Sync Engine]
            |
            v
-       相關 Client 自動收到更新
+       Relevant Clients automatically receive updates
 ```
 
-此流程確保狀態變更能自動同步給所有相關客戶端，實現 reactive 的伺服器狀態管理。
+This flow ensures state changes are automatically synchronized to all relevant clients, achieving reactive server state management.
 
 ---
 
-## 6. 未來擴展方向
+## 6. Future Extension Directions
 
-### 6.1 Replay-Friendly 設計
+### 6.1 Replay-Friendly Design
 
-StateTree 的設計使其具備重播（replay）能力：
+StateTree's design makes it replay-capable:
 
-**設計理念**：
+**Design Philosophy**:
 
-由於 Action handler 建議保持 deterministic（相同輸入產生相同輸出），StateTree 可以：
+Since Action handlers are recommended to remain deterministic (same input produces same output), StateTree can:
 
-* 記錄狀態變更的完整軌跡
-* 透過 Action 序列重建任意時間點的狀態
-* 支援狀態重播與除錯
-* 未來可實現基於狀態的日誌系統（state-based logging）
+* Record complete trajectory of state changes
+* Reconstruct state at any point in time through Action sequences
+* Support state replay and debugging
+* Future implementation of state-based logging systems
 
-**後續規劃**：
+**Future Plans**:
 
-* 添加狀態為主的日誌系統，記錄狀態快照與 Action 序列
-* 支援狀態重播功能，可以從任意快照點重新執行 Action 序列
-* 實現完整的除錯與審計能力
+* Add state-based logging system, recording state snapshots and Action sequences
+* Support state replay functionality, can re-execute Action sequences from any snapshot point
+* Implement complete debugging and auditing capabilities
 
-**注意**：日誌系統與重播功能目前尚未實作，屬於未來規劃方向。
+**Note**: Logging system and replay functionality are currently not implemented and are future planning directions.
 
-### 6.2 Passive StateTree（Stateless API 模式）
+### 6.2 Passive StateTree (Stateless API Mode)
 
-StateTree 架構理論上也可以支援 passive 模式：
+StateTree architecture can theoretically also support passive mode:
 
-1. 每個請求建立一棵臨時 Tree
-2. 透過 Resolver 初始化資料
-3. 執行一個或多個 Action
-4. 回傳結果
-5. 丟棄 Tree（server 保持 stateless）
+1. Each request creates a temporary Tree
+2. Initialize data through Resolver
+3. Execute one or more Actions
+4. Return result
+5. Discard Tree (server remains stateless)
 
-**注意**：此功能目前尚未實作，屬於未來規劃方向。目前所有 StateTree 都是 Active 模式（房間模式，狀態持續存在）。
+**Note**: This functionality is currently not implemented and is a future planning direction. Currently all StateTrees are Active mode (room mode, state persists).
 
 ---
 
-## 7. 設計特性推論
+## 7. Design Characteristics Inference
 
-基於前述的設計內容，StateTree programming model 的核心設計屬性與限制如下：
+Based on the aforementioned design content, the core design attributes and constraints of the StateTree programming model are as follows:
 
-### 核心設計屬性/限制
+### Core Design Attributes/Constraints
 
-1. **單一狀態樹（Single Source of Truth）**：所有狀態集中在 StateTree，沒有分散的狀態來源
-2. **Action 作為唯一修改入口**：狀態只能透過 Action handler 修改，沒有其他修改路徑
-3. **狀態可序列化**：狀態可以 snapshot 形式保存與恢復
-4. **同步策略分離**：同步邏輯（哪些資料同步給誰）與業務邏輯（如何修改狀態）分離
-5. **Resolver 並行執行**：多個 Resolver 可在 handler 執行前並行載入資料
-6. **建議 deterministic Action**：Action handler 建議保持 deterministic（相同輸入產生相同輸出）
+1. **Single State Tree (Single Source of Truth)**: All state is concentrated in StateTree, no scattered state sources
+2. **Action as the only modification entry**: State can only be modified through Action handlers, no other modification paths
+3. **State is serializable**: State can be saved and restored in snapshot form
+4. **Sync strategy separation**: Sync logic (which data syncs to whom) is separated from business logic (how to modify state)
+5. **Resolver parallel execution**: Multiple Resolvers can load data in parallel before handler execution
+6. **Recommended deterministic Action**: Action handlers are recommended to remain deterministic (same input produces same output)
 
-### 從設計屬性/限制推論特性
+### Characteristics Inferred from Design Attributes/Constraints
 
-| 設計屬性/限制 | → | 推論出的特性 |
+| Design Attributes/Constraints | → | Inferred Characteristics |
 |-------------|---|------------|
-| 單一狀態樹<br/>+ Action 作為唯一修改入口<br/>+ 建議 deterministic Action | → | **可預測性（Determinism）**<br/><br/>因為單一狀態樹，所以狀態來源明確，沒有分散狀態造成的歧義；因為 Action 作為唯一修改入口，所以變更路徑單一易於追蹤；因為建議 deterministic Action，所以狀態演化過程可預測。因此有可預測性。 |
-| Action 作為唯一修改入口<br/>+ 狀態可序列化<br/>+ 建議 deterministic Action | → | **可驗證性（Verifiability）**<br/><br/>因為 Action 作為唯一修改入口，所以所有狀態變更都有明確來源，變更軌跡完整；因為狀態可序列化，所以狀態可以 snapshot 形式保存，便於驗證與測試；因為建議 deterministic Action，所以狀態變更可重現。因此有可驗證性。 |
-| 單一狀態樹<br/>+ 同步策略分離 | → | **易同步（Sync-friendly）**<br/><br/>因為單一狀態樹，所以 StateTree 是唯一真實來源，同步邏輯清晰，不需要協調多個狀態來源；因為同步策略分離，所以可以明確定義哪些資料同步給哪些客戶端，同步行為可配置。因此有易同步性。 |
-| Resolver 並行執行<br/>+ 狀態可序列化<br/>+ 單一狀態樹 + Action 唯一修改入口 | → | **高可並行度（Parallelism）**<br/><br/>因為 Resolver 並行執行，所以多個 Resolver 可同時載入資料，減少總執行時間；因為狀態可序列化，所以同步可以 snapshot 模式進行，不阻塞狀態變更；因為單一狀態樹 + Action 唯一修改入口，所以不同房間的 StateTree 可以並行執行（房間隔離）。因此有高可並行度。 |
-| 單一狀態樹 + Action 唯一修改入口<br/>+ 同步策略分離<br/>+ State/Action/Resolver 明確分層 | → | **高可維護性（Maintainability）**<br/><br/>因為單一狀態樹 + Action 唯一修改入口，所以狀態變更集中且路徑明確，易於理解；因為同步策略分離，所以同步邏輯與業務邏輯解耦，職責清晰；因為 State/Action/Resolver 明確分層，所以各層職責清晰，結構清楚。因此有高可維護性。 |
+| Single state tree<br/>+ Action as the only modification entry<br/>+ Recommended deterministic Action | → | **Determinism**<br/><br/>Because of single state tree, state source is clear, no ambiguity from scattered state; because Action is the only modification entry, change path is single and easy to track; because recommended deterministic Action, state evolution process is predictable. Therefore has determinism. |
+| Action as the only modification entry<br/>+ State is serializable<br/>+ Recommended deterministic Action | → | **Verifiability**<br/><br/>Because Action is the only modification entry, all state changes have clear sources, change trajectory is complete; because state is serializable, state can be saved in snapshot form, convenient for verification and testing; because recommended deterministic Action, state changes are reproducible. Therefore has verifiability. |
+| Single state tree<br/>+ Sync strategy separation | → | **Sync-friendly**<br/><br/>Because of single state tree, StateTree is the only source of truth, sync logic is clear, no need to coordinate multiple state sources; because sync strategy is separated, can clearly define which data syncs to which clients, sync behavior is configurable. Therefore has sync-friendliness. |
+| Resolver parallel execution<br/>+ State is serializable<br/>+ Single state tree + Action unique modification entry | → | **High Parallelism**<br/><br/>Because Resolver executes in parallel, multiple Resolvers can load data simultaneously, reducing total execution time; because state is serializable, sync can be done in snapshot mode, not blocking state changes; because single state tree + Action unique modification entry, different rooms' StateTrees can execute in parallel (room isolation). Therefore has high parallelism. |
+| Single state tree + Action unique modification entry<br/>+ Sync strategy separation<br/>+ State/Action/Resolver clear layering | → | **High Maintainability**<br/><br/>Because single state tree + Action unique modification entry, state changes are centralized and path is clear, easy to understand; because sync strategy is separated, sync logic and business logic are decoupled, responsibilities are clear; because State/Action/Resolver are clearly layered, each layer's responsibilities are clear, structure is clear. Therefore has high maintainability. |
 
 ---
 
-## 8. 架構核心總結（最重要的五句話）
+## 8. Architecture Core Summary (The Five Most Important Sentences)
 
-1. **Resolver 提供資料，不提供狀態。**
-2. **Action handler 決定哪些資料要寫入 StateTree。**
-3. **StateTree 是唯一真實來源，所有 sync 來自於它。**
-4. **Resolver 在 handler 執行前並行執行，handler 同步存取結果。**
-5. **建議 Action handler 保持 deterministic，有利於除錯、回放和未來擴展。**
+1. **Resolver provides data, not state.**
+2. **Action handler decides which data to write into StateTree.**
+3. **StateTree is the only source of truth, all sync comes from it.**
+4. **Resolver executes in parallel before handler execution, handler synchronously accesses results.**
+5. **Action handlers are recommended to remain deterministic, beneficial for debugging, replay, and future extensions.**
 
 ---
 
-## 附錄：Swift 實作參考
+## Appendix: Swift Implementation Reference
 
-> 以下章節說明如何在 Swift 中實作 StateTree programming model 的相關概念，供 Swift 開發者參考。概念部分（上述章節）是語言無關的，可獨立閱讀。
+> The following sections explain how to implement StateTree programming model concepts in Swift, for Swift developers' reference. The conceptual parts (above sections) are language-agnostic and can be read independently.
 
-### A.1 StateNode 的 Swift 實作
+### A.1 Swift Implementation of StateNode
 
-StateTree 中的狀態在 Swift 中實作為實作 `StateNodeProtocol` 的 `struct` 類型，並使用 `@StateNodeBuilder` macro 標記：
+State in StateTree is implemented in Swift as a `struct` type implementing `StateNodeProtocol`, marked with `@StateNodeBuilder` macro:
 
-* `StateNodeProtocol`：定義狀態節點的協議
-* `@StateNodeBuilder` macro：在編譯期生成必要的同步 metadata
-* `@Sync`：標記同步策略（如 `.broadcast`、`.perPlayer` 等）
-* `@Internal`：標記內部使用、不同步的欄位
+* `StateNodeProtocol`: Protocol defining state nodes
+* `@StateNodeBuilder` macro: Generates necessary sync metadata at compile time
+* `@Sync`: Marks sync strategy (such as `.broadcast`, `.perPlayer`, etc.)
+* `@Internal`: Marks internal use, non-synced fields
 
-狀態透過 `inout` 參數在 Action handler 中修改。
+State is modified through `inout` parameters in Action handlers.
 
-### A.2 Action Handler 的 Swift 實作
+### A.2 Swift Implementation of Action Handler
 
-Action handler 在 Swift 中的簽名為：
+Action handler signature in Swift is:
 
 ```swift
 (inout State, ActionPayload, LandContext) throws -> Response
 ```
 
-* Action handler 在 `LandKeeper` actor 的隔離上下文中執行
-* Handler 是同步的，但 Resolver 會在執行前並行完成
-* State 透過 `inout` 參數直接修改
+* Action handlers execute in `LandKeeper` actor's isolated context
+* Handler is synchronous, but Resolver completes in parallel before execution
+* State is directly modified through `inout` parameters
 
-### A.3 Resolver 的 Swift 實作
+### A.3 Swift Implementation of Resolver
 
-Resolver 在 Swift 中實作為實作 `ContextResolver` protocol 的類型：
+Resolver is implemented in Swift as a type implementing `ContextResolver` protocol:
 
-* Resolver 的輸出必須實作 `ResolverOutput` protocol
-* 在 handler 中透過 `LandContext` 的 `@dynamicMemberLookup` 特性存取 resolver 結果
-* Resolver 在 handler 執行前並行執行
+* Resolver output must implement `ResolverOutput` protocol
+* Access resolver results in handler through `LandContext`'s `@dynamicMemberLookup` feature
+* Resolver executes in parallel before handler execution
 
-**使用範例**：
+**Usage Example**:
 
 ```swift
 Rules {
     HandleAction(UpdateCartAction.self, resolvers: (ProductInfoResolver.self, UserBalanceResolver.self)) { state, action, ctx in
-        // Resolver 已經並行執行完成，結果可直接使用
+        // Resolver has already executed in parallel, results can be used directly
         let productInfo = ctx.productInfo  // ProductInfo?
         let userBalance = ctx.userBalance  // UserBalance?
         // ...
@@ -279,16 +281,16 @@ Rules {
 }
 ```
 
-### A.4 Runtime 的 Swift 實作
+### A.4 Swift Implementation of Runtime
 
-* `LandKeeper`：作為 actor，管理狀態並執行 handlers
-* `LandContext`：提供 handler 所需的上下文資訊
-* `SyncEngine`：負責生成狀態快照和差異，實現同步機制
+* `LandKeeper`: Acts as actor, manages state and executes handlers
+* `LandContext`: Provides context information needed by handlers
+* `SyncEngine`: Responsible for generating state snapshots and diffs, implementing sync mechanism
 
 ---
 
-**完整的 Swift 實作說明請參考**：
-- [Land DSL 指南](core/land-dsl.md)
-- [同步規則詳解](core/sync.md)
-- [Runtime 運作機制](core/runtime.md)
-- [Resolver 使用指南](core/resolver.md)
+**For complete Swift implementation documentation, please refer to**:
+- [Land DSL Guide](core/land-dsl.md)
+- [Sync Rules Details](core/sync.md)
+- [Runtime Operation Mechanism](core/runtime.md)
+- [Resolver Usage Guide](core/resolver.md)

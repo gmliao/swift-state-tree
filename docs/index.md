@@ -1,85 +1,87 @@
+[English](index.md) | [中文版](index.zh-TW.md)
+
 # Documentation Index
 
-歡迎來到 SwiftStateTree 文檔中心。本頁提供完整的文檔導覽與建議閱讀順序。
+Welcome to the SwiftStateTree documentation center. This page provides complete documentation navigation and recommended reading order.
 
-## 🚀 快速開始
+## 🚀 Quick Start
 
-如果你是第一次接觸 SwiftStateTree，建議按照以下順序閱讀：
+If this is your first time with SwiftStateTree, we recommend reading in the following order:
 
-1. **[概觀](overview.md)** - 了解系統架構與核心概念
-2. **[架構概念總覽](programming-model.md)** - 深入理解 StateTree 的設計理念與核心概念（可選但推薦）
-3. **[快速開始](quickstart.md)** - 實作最小可行範例
-4. **[Land DSL](core/land-dsl.md)** - 學習如何定義領域邏輯
-5. **[同步規則](core/sync.md)** - 理解狀態同步機制
+1. **[Overview](overview.md)** - Understand system architecture and core concepts
+2. **[Architecture Overview](programming-model.md)** - Deep dive into StateTree's design philosophy and core concepts (optional but recommended)
+3. **[Quick Start](quickstart.md)** - Implement a minimal viable example
+4. **[Land DSL](core/land-dsl.md)** - Learn how to define domain logic
+5. **[Sync Rules](core/sync.md)** - Understand state synchronization mechanisms
 
-## 📚 完整文檔目錄
+## 📚 Complete Documentation Directory
 
-### 入門指南
+### Getting Started
 
-- **[概觀](overview.md)** - 系統架構、模組組成、核心概念
-- **[架構概念總覽](programming-model.md)** - StateTree 架構的完整概念說明（狀態層、動作層、Resolver、語意模型等）
-- **[架構分層](architecture.md)** - 組件分層架構與關係說明
-- **[快速開始](quickstart.md)** - 從零開始建立第一個伺服器
+- **[Overview](overview.md)** - System architecture, module composition, core concepts
+- **[Architecture Overview](programming-model.md)** - Complete conceptual explanation of StateTree architecture (state layer, action layer, Resolver, semantic model, etc.)
+- **[Architecture Layers](architecture.md)** - Component layered architecture and relationship descriptions
+- **[Quick Start](quickstart.md)** - Build your first server from scratch
 
-### 核心概念
+### Core Concepts
 
-- **[核心模組](core/README.md)** - StateNode、Sync、Land DSL、Runtime 總覽
-- **[Land DSL](core/land-dsl.md)** - 領域定義、AccessControl、Rules、Lifetime
-- **[同步規則](core/sync.md)** - `@Sync` 策略、`@Internal`、同步引擎
+- **[Core Module](core/README.md)** - StateNode, Sync, Land DSL, Runtime overview
+- **[Land DSL](core/land-dsl.md)** - Domain definition, AccessControl, Rules, Lifetime
+- **[Sync Rules](core/sync.md)** - `@Sync` strategies, `@Internal`, sync engine
 
-### 整合與部署
+### Integration & Deployment
 
-- **[Transport 層](transport/README.md)** - WebSocket、連線管理、多房間支援
-- **[Hummingbird 整合](hummingbird/README.md)** - 伺服器設定、單房間/多房間模式
-- **[認證機制](hummingbird/auth.md)** - JWT、Guest 模式、Admin 路由
+- **[Transport Layer](transport/README.md)** - WebSocket, connection management, multi-room support
+- **[Hummingbird Integration](hummingbird/README.md)** - Server configuration, single-room/multi-room modes
+- **[Authentication](hummingbird/auth.md)** - JWT, Guest mode, Admin routes
 
-### 範例
+### Examples
 
-- **[Cookie Clicker 範例](examples/cookie-clicker.md)** - 完整的多玩家遊戲範例，展示進階功能
+- **[Cookie Clicker Example](examples/cookie-clicker.md)** - Complete multiplayer game example showcasing advanced features
 
-### 參考文檔
+### Reference Documentation
 
-- **[Schema 生成](schema/README.md)** - JSON Schema 自動生成
-- **[Macros](macros/README.md)** - `@StateNodeBuilder`、`@Payload`、`@SnapshotConvertible`
+- **[Schema Generation](schema/README.md)** - JSON Schema auto-generation
+- **[Macros](macros/README.md)** - `@StateNodeBuilder`, `@Payload`, `@SnapshotConvertible`
 
-## 🔍 依使用場景查找
+## 🔍 Find by Use Case
 
-### 我想建立一個遊戲伺服器
+### I want to build a game server
 
-1. [快速開始](quickstart.md) - 基本設定
-2. [Land DSL](core/land-dsl.md) - 定義遊戲邏輯
-3. [Hummingbird 整合](hummingbird/README.md) - 部署伺服器
+1. [Quick Start](quickstart.md) - Basic setup
+2. [Land DSL](core/land-dsl.md) - Define game logic
+3. [Hummingbird Integration](hummingbird/README.md) - Deploy server
 
-### 我想了解狀態同步機制
+### I want to understand state synchronization
 
-1. [同步規則](core/sync.md) - 同步策略詳解
-2. [核心模組](core/README.md) - Runtime 與 SyncEngine
+1. [Sync Rules](core/sync.md) - Sync strategy details
+2. [Core Module](core/README.md) - Runtime and SyncEngine
 
-### 我想實作多房間架構
+### I want to implement multi-room architecture
 
-1. [架構分層](architecture.md) - 了解組件分層與關係
-2. [Transport 層](transport/README.md) - 多房間管理
-3. [Hummingbird 整合](hummingbird/README.md) - 多房間模式設定
+1. [Architecture Layers](architecture.md) - Understand component layers and relationships
+2. [Transport Layer](transport/README.md) - Multi-room management
+3. [Hummingbird Integration](hummingbird/README.md) - Multi-room mode configuration
 
-### 我想優化效能
+### I want to optimize performance
 
-1. [Macros](macros/README.md) - 使用 `@SnapshotConvertible` 提升效能
-2. [核心模組](core/README.md) - 了解 Runtime 運作機制
+1. [Macros](macros/README.md) - Use `@SnapshotConvertible` to improve performance
+2. [Core Module](core/README.md) - Understand Runtime operation mechanisms
 
-## 📝 設計與開發筆記
+## 📝 Design & Development Notes
 
-詳細的設計文檔與開發筆記請參考 [Notes/](../Notes/index.md) 目錄：
+For detailed design documents and development notes, please refer to the [Notes/](../Notes/index.md) directory:
 
-- `Notes/design/` - 系統設計文檔
-- `Notes/guides/` - 開發指南
-- `Notes/performance/` - 效能分析
-- `Notes/protocol/` - 通訊協定規格
+- `Notes/design/` - System design documents
+- `Notes/guides/` - Development guides
+- `Notes/performance/` - Performance analysis
+- `Notes/protocol/` - Communication protocol specifications
 
-## 💡 文檔結構說明
+## 💡 Documentation Structure
 
-- **`docs/`** - 正式發布的文檔，適合對外閱讀
-- **`Notes/`** - 內部設計與開發筆記，可能包含未完成的內容
+- **`docs/`** - Official published documentation, suitable for external reading
+- **`Notes/`** - Internal design and development notes, may contain incomplete content
 
 ---
 
-如有問題或建議，歡迎提交 [Issue](https://github.com/your-username/SwiftStateTree/issues)。
+If you have questions or suggestions, please submit an [Issue](https://github.com/your-username/SwiftStateTree/issues).
