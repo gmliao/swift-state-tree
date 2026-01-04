@@ -59,3 +59,80 @@ PlayerSession 欄位優先序：
 - `LandManager` 管理 Land lifecycle 與查詢
 - `LandRouter` 負責將連線導向對應 land
 - multi-room 模式下 join 會依 landType + instanceId 進行路由
+
+## 並行編碼（Parallel Encoding）
+
+`TransportAdapter` 支援並行編碼狀態更新，以提升多玩家場景下的效能。
+
+### 基本模式
+
+當啟用並行編碼時，多個玩家的狀態更新會使用 `TaskGroup` 並行編碼：
+
+```swift
+let adapter = TransportAdapter(
+    keeper: keeper,
+    transport: transport,
+    landID: landID,
+    enableParallelEncoding: true
+)
+```
+
+### 並行編碼行為
+
+並行編碼會根據玩家數量和房間配置自動調整並行度：
+
+**啟用條件**：
+- 玩家數 >= `minPlayerCount`（預設 20）
+- 使用 JSON codec（thread-safe）
+
+**並行度計算**：
+```swift
+concurrency = min(perRoomCap, batchWorkers, pendingUpdateCount)
+```
+
+其中：
+- **`perRoomCap`**：每房間並行度上限
+  - 玩家數 < 30：`lowCap = 2`
+  - 玩家數 >= 30：`highCap = 4`
+- **`batchWorkers`**：根據批次大小計算
+  - `batchWorkers = ceil(玩家數 / batchSize)`
+  - `batchSize = 12`（預設）
+- **`pendingUpdateCount`**：待處理的更新數量
+
+**注意**：並行度由 `perRoomCap` 和 `batchWorkers` 決定，通常遠小於 CPU 核心數，所以實際並行度不會超過系統能力。Swift 的 `TaskGroup` 會自動管理任務排隊，即使創建大量任務，系統也只會同時運行約等於 CPU 核心數的任務。
+
+**範例**：
+- 30 個玩家：`perRoomCap=4`, `batchWorkers=3` → `concurrency=3`（受 `batchWorkers` 限制）
+- 50 個玩家：`perRoomCap=4`, `batchWorkers=5` → `concurrency=4`（受 `perRoomCap` 限制）
+
+### 多房間場景
+
+在多房間場景下，每個 `TransportAdapter` 實例只管理一個房間，無法自動知道系統中有多少房間。每個房間的並行度由 `perRoomCap` 和 `batchWorkers` 決定，通常遠小於 CPU 核心數。Swift 的 `TaskGroup` 會自動管理任務排隊，即使多個房間同時創建大量任務，系統也只會同時運行約等於 CPU 核心數的任務。
+
+### 配置參數
+
+可以通過以下方法調整並行編碼的參數：
+
+```swift
+// 設置最小玩家數閾值
+await adapter.setParallelEncodingMinPlayerCount(20)
+
+// 設置批次大小
+await adapter.setParallelEncodingBatchSize(12)
+
+// 設置並行度上限
+await adapter.setParallelEncodingConcurrencyCaps(
+    lowPlayerCap: 2,      // 小房間上限
+    highPlayerCap: 4,     // 大房間上限
+    highPlayerThreshold: 30  // 切換閾值
+)
+
+```
+
+### 效能考量
+
+- **小房間（< 20 玩家）**：不會啟用並行編碼（低於閾值）
+- **中等房間（20-30 玩家）**：並行度約 2-3
+- **大房間（30+ 玩家）**：並行度約 3-4（受 `perRoomCap` 限制）
+
+Swift 的 `TaskGroup` 會自動管理任務排隊和調度，即使創建大量任務，系統也只會同時運行約等於 CPU 核心數的任務。

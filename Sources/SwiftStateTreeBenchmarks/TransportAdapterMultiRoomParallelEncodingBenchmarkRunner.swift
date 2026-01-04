@@ -267,9 +267,6 @@ struct TransportAdapterMultiRoomParallelEncodingBenchmarkRunner: BenchmarkRunner
             await keeper.setTransport(adapter)
             await transport.setDelegate(adapter)
 
-            if enableParallelEncoding, let maxConcurrency = parallelEncodingMaxConcurrency {
-                await adapter.setParallelEncodingMaxConcurrency(maxConcurrency)
-            }
 
             for (index, playerID) in playerIDs.enumerated() {
                 let sessionID = SessionID("room\(roomIndex)-session-\(index)")

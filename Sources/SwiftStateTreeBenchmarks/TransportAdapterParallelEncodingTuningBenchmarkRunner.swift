@@ -239,9 +239,6 @@ struct TransportAdapterParallelEncodingTuningBenchmarkRunner: BenchmarkRunner {
         await keeper.setTransport(adapter)
         await mockTransport.setDelegate(adapter)
 
-        if enableParallelEncoding, let maxConcurrency = parallelEncodingMaxConcurrency {
-            await adapter.setParallelEncodingMaxConcurrency(maxConcurrency)
-        }
 
         for (index, playerID) in playerIDs.enumerated() {
             let sessionID = SessionID("session-\(index)")
