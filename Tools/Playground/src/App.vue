@@ -126,6 +126,38 @@
                   >
                     Schema 載入成功
                   </v-alert>
+                  
+                  <!-- Land Selection (when multiple lands available) -->
+                  <v-select
+                    v-if="parsedSchema && availableLands.length > 1"
+                    v-model="selectedLandID"
+                    :items="availableLands"
+                    label="選擇 Land"
+                    prepend-icon="mdi-map-marker"
+                    variant="outlined"
+                    class="mt-4"
+                    hint="此伺服器支援多個遊戲，請選擇要使用的 Land"
+                    persistent-hint
+                  >
+                    <template v-slot:item="{ props, item }">
+                      <v-list-item v-bind="props">
+                        <template v-slot:prepend>
+                          <v-icon icon="mdi-gamepad-variant" class="mr-2"></v-icon>
+                        </template>
+                        <v-list-item-title>{{ item.raw.title }}</v-list-item-title>
+                        <v-list-item-subtitle v-if="item.raw.subtitle">{{ item.raw.subtitle }}</v-list-item-subtitle>
+                      </v-list-item>
+                    </template>
+                  </v-select>
+                  
+                  <v-alert
+                    v-if="parsedSchema && availableLands.length > 1 && !selectedLandID"
+                    type="info"
+                    density="compact"
+                    class="mt-2"
+                  >
+                    請選擇一個 Land 以繼續
+                  </v-alert>
                 </v-card-text>
               </v-card>
 
@@ -166,7 +198,7 @@
                     block
                     class="mb-2"
                     @click="connect"
-                    :disabled="!wsUrl || isConnected"
+                    :disabled="!wsUrl || isConnected || (parsedSchema && availableLands.length > 1 && !selectedLandID)"
                   >
                     <v-icon icon="mdi-link" class="mr-2"></v-icon>
                     連線
@@ -249,6 +281,7 @@
                     <ActionPanel
                       :schema="parsedSchema"
                       :connected="isConnected"
+                      :selected-land-i-d="selectedLandID"
                       :action-results="actionResults"
                       @send-action="handleSendAction"
                     />
@@ -260,6 +293,7 @@
                     <EventPanel
                       :schema="parsedSchema"
                       :connected="isConnected"
+                      :selected-land-i-d="selectedLandID"
                       @send-event="handleSendEvent"
                     />
                   </div>
@@ -316,6 +350,7 @@
                           <ActionPanel
                             :schema="parsedSchema"
                             :connected="isConnected"
+                            :selected-land-i-d="selectedLandID"
                             :action-results="actionResults"
                             @send-action="handleSendAction"
                           />
@@ -325,6 +360,7 @@
                           <EventPanel
                             :schema="parsedSchema"
                             :connected="isConnected"
+                            :selected-land-i-d="selectedLandID"
                             @send-event="handleSendEvent"
                           />
                         </v-window-item>
@@ -495,6 +531,7 @@ const schemaUrl = ref('http://localhost:8080/schema')
 const wsUrl = ref('ws://localhost:8080/game')
 const loadingSchema = ref(false)
 const schemaSuccess = ref(false)
+const selectedLandID = ref<string>('')
 const actionResults = ref<Array<{
   actionName: string
   success: boolean
@@ -517,6 +554,67 @@ const showJWTDialog = ref(false)
 const { parsedSchema, error: schemaErrorFromComposable, parseSchema, loadSchema } = useSchema(schemaJson)
 const localSchemaError = ref<string | null>(null)
 const schemaError = computed(() => localSchemaError.value || schemaErrorFromComposable.value)
+
+// Available lands from schema
+const availableLands = computed(() => {
+  if (!parsedSchema.value || !parsedSchema.value.lands) return []
+  return Object.keys(parsedSchema.value.lands).map(landID => ({
+    title: landID,
+    value: landID,
+    subtitle: parsedSchema.value?.lands[landID]?.stateType || ''
+  }))
+})
+
+// Auto-select first land when schema loads
+watch(parsedSchema, (newSchema) => {
+  if (newSchema && availableLands.value.length > 0 && !selectedLandID.value) {
+    selectedLandID.value = availableLands.value[0].value
+  }
+}, { immediate: true })
+
+// Auto-update WebSocket URL when land is selected
+watch(selectedLandID, (newLandID) => {
+  if (!newLandID) return
+  
+  try {
+    // Parse current WebSocket URL
+    const url = new URL(wsUrl.value)
+    
+    // Extract base URL (protocol + host + port)
+    const baseURL = `${url.protocol}//${url.host}`
+    
+    // Build new path based on current path structure
+    let newPath: string
+    const currentPath = url.pathname
+    
+    if (currentPath === '/' || currentPath === '') {
+      // If path is root, use /game/{landID} format
+      newPath = `/game/${newLandID}`
+    } else if (currentPath === '/game' || currentPath.startsWith('/game/')) {
+      // If path is /game or /game/..., replace with /game/{landID}
+      newPath = `/game/${newLandID}`
+    } else {
+      // Otherwise, append /{landID} to current path
+      newPath = `${currentPath.replace(/\/$/, '')}/${newLandID}`
+    }
+    
+    // Preserve query parameters if any
+    const query = url.search
+    
+    // Update WebSocket URL
+    wsUrl.value = `${baseURL}${newPath}${query}`
+  } catch (error) {
+    // If URL parsing fails, try simple string replacement
+    // This handles cases where wsUrl might not be a valid URL yet
+    const baseMatch = wsUrl.value.match(/^(wss?:\/\/[^\/]+)/)
+    if (baseMatch) {
+      const baseURL = baseMatch[1]
+      // Use /game/{landID} format as default
+      wsUrl.value = `${baseURL}/game/${newLandID}`
+    }
+  }
+})
+
 const { 
   isConnected,
   isJoined,
@@ -531,7 +629,7 @@ const {
   disconnect, 
   sendAction, 
   sendEvent 
-} = useWebSocket(wsUrl, parsedSchema)
+} = useWebSocket(wsUrl, parsedSchema, selectedLandID)
 
 // Sync action results from WebSocket composable
 watch(actionResultsFromWS, (newResults) => {

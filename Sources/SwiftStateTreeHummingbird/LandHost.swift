@@ -126,6 +126,18 @@ public actor LandHost {
             }
             return await self.generateSchemaResponse()
         }
+        
+        // Register OPTIONS handler for schema route to handle CORS preflight
+        if let optionsMethod = HTTPRequest.Method("OPTIONS") {
+            createdRouter.on("/schema", method: optionsMethod) { _, _ in
+                var response = Response(status: .ok)
+                response.headers[HTTPField.Name("Access-Control-Allow-Origin")!] = "*"
+                response.headers[HTTPField.Name("Access-Control-Allow-Methods")!] = "GET, OPTIONS"
+                response.headers[HTTPField.Name("Access-Control-Allow-Headers")!] = "Content-Type"
+                response.headers[HTTPField.Name("Access-Control-Max-Age")!] = "3600"
+                return response
+            }
+        }
     }
     
     /// Register a land type.
@@ -270,7 +282,7 @@ public actor LandHost {
                 logger.info("❤️  Health check: \(baseURL)\(configuration.healthPath)")
             }
             
-            logger.info("📋 Schema endpoint: \(baseURL)/schema")
+            logger.info("📋 Schema endpoint: \(baseURL)/schema (with CORS support)")
             
             logger.info("📡 Registered WebSocket endpoints:")
             for (landType, path) in registeredServerPaths.sorted(by: { $0.key < $1.key }) {
@@ -413,11 +425,13 @@ public actor LandHost {
     /// This method uses `SchemaGenCLI` to generate the schema and caches the result
     /// for subsequent requests. The cache is invalidated when new lands are registered.
     ///
-    /// - Returns: HTTP response with JSON schema
+    /// - Returns: HTTP response with JSON schema and CORS headers
     private func generateSchemaResponse() async -> Response {
         // Return cached schema if available
         if let cached = cachedSchemaJSON {
-            return HTTPResponseHelpers.jsonResponse(from: cached, status: .ok)
+            var response = HTTPResponseHelpers.jsonResponse(from: cached, status: .ok)
+            addCORSHeaders(to: &response)
+            return response
         }
         
         // Generate schema using SchemaGenCLI
@@ -436,8 +450,10 @@ public actor LandHost {
             // Cache the result
             cachedSchemaJSON = jsonData
             
-            // Return response using helper
-            return HTTPResponseHelpers.jsonResponse(from: jsonData, status: .ok)
+            // Return response using helper with CORS headers
+            var response = HTTPResponseHelpers.jsonResponse(from: jsonData, status: .ok)
+            addCORSHeaders(to: &response)
+            return response
         } catch {
             let logger = configuration.logger ?? createColoredLogger(
                 loggerIdentifier: "com.swiftstatetree.hummingbird",
@@ -445,11 +461,22 @@ public actor LandHost {
             )
             logger.error("Failed to generate schema: \(error)")
             
-            return HTTPResponseHelpers.errorResponse(
+            var response = HTTPResponseHelpers.errorResponse(
                 message: "Failed to generate schema",
                 status: .internalServerError
             )
+            addCORSHeaders(to: &response)
+            return response
         }
+    }
+    
+    /// Add CORS headers to a response.
+    ///
+    /// - Parameter response: The response to modify (inout)
+    private func addCORSHeaders(to response: inout Response) {
+        response.headers[HTTPField.Name("Access-Control-Allow-Origin")!] = "*"
+        response.headers[HTTPField.Name("Access-Control-Allow-Methods")!] = "GET, OPTIONS"
+        response.headers[HTTPField.Name("Access-Control-Allow-Headers")!] = "Content-Type"
     }
 }
 
