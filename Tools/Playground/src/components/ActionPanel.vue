@@ -11,16 +11,6 @@
 
     <div v-else>
       <v-select
-        v-if="showLandSelector"
-        v-model="selectedLand"
-        :items="landItems"
-        label="選擇 Land"
-        variant="outlined"
-        density="compact"
-        class="mb-4"
-      ></v-select>
-
-      <v-select
         v-if="activeLand && availableActions.length > 0"
         v-model="selectedAction"
         :items="availableActions"
@@ -198,8 +188,8 @@ const activeLand = computed(() => {
   return landKeys.value[0] || ''
 })
 
-// Hide land selector since we use external selection
-const showLandSelector = computed(() => false)
+// Land selector is hidden since we use external selection
+// const showLandSelector = computed(() => false) // Not used anymore
 
 const availableActions = computed(() => {
   const landID = activeLand.value

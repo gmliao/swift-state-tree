@@ -1,4 +1,4 @@
-import { ref, type Ref } from 'vue'
+import type { Ref } from 'vue'
 import type { LogEntry } from '@/types/transport'
 import type { Logger } from '@swiftstatetree/sdk/core'
 
