@@ -71,7 +71,9 @@
 - **單一 process**：沒有跨服務器負載、沒有真實 WebSocket backpressure
 - **Tick 為虛擬錯峰**：雖然模擬不同房間更新頻率，但不等同實際 server 時序
 
-> 結論：平行編碼的收益有限，**真正準確的效能結論仍需要跑真實伺服器**（完整 action/tick/transport/IO）。
+> **結論**：平行編碼的收益有限，**真正準確的效能結論仍需要跑真實伺服器**（完整 action/tick/transport/IO）。
+> 
+> **當前狀態**：並行編碼功能已實作並完成測試，但在合成測試環境中效果不明（收益多數落在 1.0–1.2x）。**目前預設關閉**，後續需要進行機器人真實測試才能比較明確定義實際效果。
 
 ## 最新 Benchmark 檔案（2026-01-01 更新）
 
@@ -162,10 +164,11 @@ bash Tools/CLI/run-transport-sync-benchmarks.sh
    - ✅ 記錄測試環境和配置信息
 
 > **注意**：
-> - 新版本已啟用平行 JSON 編碼（Parallel Encoding），預設對 JSON codec 啟用
+> - 並行編碼功能已實作並完成測試，但**目前預設關閉**（在合成測試環境中效果不明）
 > - 默認測試（100 iterations）的數據用於容量估算
 > - Serial/Parallel 比較 suite（100 iterations，獨立 process）用於評估平行編碼的加速比
 > - **Mac 用戶建議**：如果發現數據不穩定，可以手動拆開運行不同的測試套件，避免連續運行導致熱節流
+> - **後續計劃**：需要進行機器人真實測試才能比較明確定義並行編碼的實際效果
 
 ## Benchmark 模型（你在估算時要知道的假設）
 
@@ -452,10 +455,11 @@ rooms = cpuBudgetMsPerSec / roomCpuPerSec * safetyFactor
 2. **Dirty tracking 是否要開**：在 Medium/High 變動的情境下，dirty on 通常更划算；但在「接近全量變動」且 state 結構特殊時，dirty off 可能接近甚至略快（請用你的 state 實測）。
 
 3. **平行編碼效果**：
-   - 預設已啟用平行編碼（JSON codec）
-   - 在 **High dirty ratio** 和 **50+ 玩家**時效果最明顯（約 2.0-3.3x 提升）
-   - 在 **Low dirty ratio** 時也有穩定優勢（約 1.7-2.0x）
-   - 可通過 `TransportAdapter.setParallelEncodingEnabled(false)` 禁用
+   - **目前預設關閉**：並行編碼功能已實作並完成測試，但在合成測試環境中效果不明（收益多數落在 1.0–1.2x）
+   - 在合成測試中，**High dirty ratio** 和 **50+ 玩家**時有較明顯提升（約 2.0-3.3x），但這是在單一 process 內的測試結果
+   - **真正準確的效能結論仍需要跑真實伺服器**（完整 action/tick/transport/IO）
+   - 後續需要進行機器人真實測試才能比較明確定義實際效果
+   - 如需啟用，請在創建 `TransportAdapter` 時明確傳入 `enableParallelEncoding: true`
 
 4. **平台選擇**：
    - **推薦使用 AMD 數據進行伺服器效能估算**（更穩定、更接近 Linux 生產環境）
