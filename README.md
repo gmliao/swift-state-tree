@@ -6,9 +6,26 @@
 
 StateTree 是結合前端框架的狀態管理想法與後端資料過濾經驗的產物。透過狀態樹的方式表達伺服器狀態，可以直接將資料以 reactive 的方式同步給客戶端，讓客戶端能夠自動響應狀態變更。
 
+> **Note**
+> StateTree 本身是一個 programming model（語意模型），用來描述伺服器端狀態、行為與同步的組織方式。本專案是該模型的一個 Swift reference implementation。
+
 詳細的架構概念說明請參考 [架構概念總覽](docs/programming-model.md)。
 
 ## 📝 關於專案
+
+### 為什麼是 Swift？
+
+因為 Swift（🐦 雨燕）會停留在樹上（stay on tree）... 所以是 **Swift** + **Stay** + **Tree** = **SwiftStateTree**！😄
+
+**其他動物呢？**
+- 🐍 **蟒蛇（Python）**：似乎不太停留在樹上
+- 🦀 **螃蟹（Rust）**：也不爬樹
+- 🐹 **地鼠（Go）**：不太喜歡樹上吧
+- 🐘 **大象（PHP）**：你在開玩笑嗎？
+
+**結論：只有 Swift 會停留在 StateTree 上。**
+
+*（這是一個幽默的命名解釋，實際上我一開始命名的時候沒有想到這個雙關，後來才發現...XD 選擇 Swift 是因為其語言特性（DSL、Macro、Struct、Actor）非常適合實現 StateTree 的設計理念。）*
 
 本專案為個人興趣嗜好專案，旨在探索和實驗多人遊戲伺服器架構設計。
 
