@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Fix Windows line endings if present (for Windows Docker compatibility)
-if command -v dos2unix >/dev/null 2>&1; then
-    # Check if file has CRLF line endings
-    if file "$0" 2>/dev/null | grep -q "CRLF"; then
-        dos2unix "$0" 2>/dev/null || true
-    fi
+# Re-execute script with CR characters removed if needed
+if [ -z "$_CRLF_FIXED" ]; then
+    export _CRLF_FIXED=1
+    exec bash <(sed 's/\r$//' "$0") "$@"
+    exit $?
 fi
 
 set -eu
