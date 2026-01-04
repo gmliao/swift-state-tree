@@ -4,14 +4,12 @@ import Foundation
 import SwiftStateTree
 import SwiftStateTreeTransport
 
-/// Benchmark runner for tuning parallel encoding concurrency in TransportAdapter.
+/// Benchmark runner for parallel encoding performance in TransportAdapter.
 ///
-/// This runner sweeps multiple `maxConcurrency` values and compares them against
-/// a serial baseline to identify the player-count threshold where parallel encoding
-/// becomes beneficial.
+/// This runner compares parallel encoding (with automatic concurrency configuration)
+/// against serial encoding to measure performance improvements across different player counts.
 struct TransportAdapterParallelEncodingTuningBenchmarkRunner: BenchmarkRunner {
     let playerCounts: [Int]
-    let concurrencyLevels: [Int]
     let dirtyPlayerRatio: Double
     let broadcastPlayerRatio: Double
     let enableDirtyTracking: Bool
@@ -22,14 +20,12 @@ struct TransportAdapterParallelEncodingTuningBenchmarkRunner: BenchmarkRunner {
 
     init(
         playerCounts: [Int] = [4, 10, 20, 30, 50],
-        concurrencyLevels: [Int] = [1, 2, 4, 8, 16],
         dirtyPlayerRatio: Double = 0.20,
         broadcastPlayerRatio: Double = 0.0,
         enableDirtyTracking: Bool = true,
         includeSerialBaseline: Bool = true
     ) {
         self.playerCounts = playerCounts
-        self.concurrencyLevels = Self.normalizeConcurrencyLevels(concurrencyLevels)
         self.dirtyPlayerRatio = dirtyPlayerRatio
         self.broadcastPlayerRatio = broadcastPlayerRatio
         self.enableDirtyTracking = enableDirtyTracking
@@ -41,9 +37,9 @@ struct TransportAdapterParallelEncodingTuningBenchmarkRunner: BenchmarkRunner {
         state: BenchmarkStateRootNode,
         playerID: PlayerID
     ) async -> BenchmarkResult {
-        print("  TransportAdapter Parallel Encoding Tuning Benchmark")
-        print("  ====================================================")
-        print("  Concurrency levels: \(concurrencyLevels.map(String.init).joined(separator: ", "))")
+        print("  TransportAdapter Parallel Encoding Benchmark")
+        print("  ============================================")
+        print("  Parallel encoding uses automatic concurrency configuration based on player count")
         if includeSerialBaseline {
             print("  Baseline: Serial encoding")
         }
@@ -78,33 +74,29 @@ struct TransportAdapterParallelEncodingTuningBenchmarkRunner: BenchmarkRunner {
                     state: testState,
                     playerIDs: testPlayerIDs,
                     iterations: config.iterations,
-                    enableParallelEncoding: false,
-                    parallelEncodingMaxConcurrency: nil
+                    enableParallelEncoding: false
                 )
                 baselineResult = serialResult
                 allResults.append(serialResult)
                 print("    Serial:   \(String(format: "%.4f", serialResult.averageTime * 1000))ms")
             }
 
-            for concurrency in concurrencyLevels {
-                print("    Parallel encoding (maxConcurrency=\(concurrency))...")
-                let parallelResult = await benchmarkSync(
-                    state: testState,
-                    playerIDs: testPlayerIDs,
-                    iterations: config.iterations,
-                    enableParallelEncoding: true,
-                    parallelEncodingMaxConcurrency: concurrency
-                )
-                allResults.append(parallelResult)
+            print("    Parallel encoding (auto-configured concurrency)...")
+            let parallelResult = await benchmarkSync(
+                state: testState,
+                playerIDs: testPlayerIDs,
+                iterations: config.iterations,
+                enableParallelEncoding: true
+            )
+            allResults.append(parallelResult)
 
-                let parallelMs = parallelResult.averageTime * 1000
-                if let baseline = baselineResult {
-                    let serialMs = baseline.averageTime * 1000
-                    let speedup = serialMs / max(parallelMs, 0.001)
-                    print("    Parallel: \(String(format: "%.4f", parallelMs))ms, Speedup: \(String(format: "%.2fx", speedup))")
-                } else {
-                    print("    Parallel: \(String(format: "%.4f", parallelMs))ms")
-                }
+            let parallelMs = parallelResult.averageTime * 1000
+            if let baseline = baselineResult {
+                let serialMs = baseline.averageTime * 1000
+                let speedup = serialMs / max(parallelMs, 0.001)
+                print("    Parallel: \(String(format: "%.4f", parallelMs))ms, Speedup: \(String(format: "%.2fx", speedup))")
+            } else {
+                print("    Parallel: \(String(format: "%.4f", parallelMs))ms")
             }
         }
 
@@ -122,23 +114,11 @@ struct TransportAdapterParallelEncodingTuningBenchmarkRunner: BenchmarkRunner {
         )
     }
 
-    private static func normalizeConcurrencyLevels(_ levels: [Int]) -> [Int] {
-        var seen: Set<Int> = []
-        var normalized: [Int] = []
-        for level in levels where level > 0 {
-            if seen.insert(level).inserted {
-                normalized.append(level)
-            }
-        }
-        return normalized
-    }
-
     private func benchmarkSync(
         state: BenchmarkStateRootNode,
         playerIDs: [PlayerID],
         iterations: Int,
-        enableParallelEncoding: Bool,
-        parallelEncodingMaxConcurrency: Int?
+        enableParallelEncoding: Bool
     ) async -> BenchmarkResult {
         // Convert BenchmarkStateRootNode to BenchmarkStateForSync
         var syncState = BenchmarkStateForSync()
@@ -316,9 +296,6 @@ struct TransportAdapterParallelEncodingTuningBenchmarkRunner: BenchmarkRunner {
 
         var modeLabel = enableDirtyTracking ? "DirtyTracking: On" : "DirtyTracking: Off"
         modeLabel += ", Encoding: \(enableParallelEncoding ? "Parallel" : "Serial")"
-        if enableParallelEncoding, let maxConcurrency = parallelEncodingMaxConcurrency {
-            modeLabel += ", MaxConcurrency: \(maxConcurrency)"
-        }
 
         return BenchmarkResult(
             config: BenchmarkConfig(

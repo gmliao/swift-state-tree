@@ -131,7 +131,6 @@ swift run SwiftStateTreeBenchmarks single -c
 - `--dirty-ratio=VAL`: 覆寫 dirty player ratio（0.0–1.0）
 - `--suite-name=NAME`: 只執行名稱完全匹配的 suite
 - `--player-counts=VAL`: 覆寫測試玩家數（comma-separated，例如 "4,10,20,30,50"）
-- `--parallel-concurrency=VAL`: 覆寫平行編碼並行度（comma-separated，例如 "1,2,4,8"）
 - `--room-counts=VAL`: 覆寫多房間測試的房間數（comma-separated，例如 "1,2,4,8"）
 - `--tick-mode=VAL`: 覆寫多房間 tick 模式（"synchronized" 或 "staggered"）
 - `--tick-strides=VAL`: 覆寫多房間 tick stride（comma-separated，例如 "1,2,3,4"）

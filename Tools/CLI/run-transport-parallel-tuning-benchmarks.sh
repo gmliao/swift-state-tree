@@ -180,7 +180,6 @@ MACHINE_ID=$(generate_machine_id)
 
 # Defaults (override via env vars)
 PLAYER_COUNTS="${PLAYER_COUNTS:-4,10,20,30,50}"
-CONCURRENCY_LEVELS="${CONCURRENCY_LEVELS:-1,2,4,8,16}"
 DIRTY_RATIO="${DIRTY_RATIO:-}"
 
 SUITE_NAME="TransportParallelTuning-Medium20%"
@@ -190,7 +189,6 @@ echo "Timestamp: $TIMESTAMP"
 echo "Machine ID: $MACHINE_ID"
 echo "Suite: $SUITE_NAME"
 echo "Player counts to test: $PLAYER_COUNTS"
-echo "Concurrency levels: $CONCURRENCY_LEVELS"
 if [ -n "$DIRTY_RATIO" ]; then
     echo "Dirty ratio override: $DIRTY_RATIO"
 fi
@@ -212,7 +210,6 @@ echo "=== [1/2] DirtyTracking: ON ==="
     --dirty-on \
     --suite-name="$SUITE_NAME" \
     --player-counts="$PLAYER_COUNTS" \
-    --parallel-concurrency="$CONCURRENCY_LEVELS" \
     ${DIRTY_RATIO:+--dirty-ratio="$DIRTY_RATIO"} \
     --no-wait \
     --csv
@@ -233,7 +230,6 @@ echo "=== [2/2] DirtyTracking: OFF ==="
     --dirty-off \
     --suite-name="$SUITE_NAME" \
     --player-counts="$PLAYER_COUNTS" \
-    --parallel-concurrency="$CONCURRENCY_LEVELS" \
     ${DIRTY_RATIO:+--dirty-ratio="$DIRTY_RATIO"} \
     --no-wait \
     --csv

@@ -58,7 +58,6 @@ struct BenchmarkSuites {
         transportDirtyTrackingOverride: Bool? = nil,
         dirtyRatioOverride: Double? = nil,
         playerCountsOverride: [Int]? = nil,
-        parallelConcurrencyOverride: [Int]? = nil,
         roomCountsOverride: [Int]? = nil,
         tickModeOverride: TransportAdapterMultiRoomParallelEncodingBenchmarkRunner.TickMode? = nil,
         tickStridesOverride: [Int]? = nil
@@ -74,8 +73,6 @@ struct BenchmarkSuites {
         // Use player counts override if provided; otherwise use defaults
         let defaultPlayerCounts = [4, 10, 20, 30, 50]
         let playerCounts = playerCountsOverride ?? defaultPlayerCounts
-        let defaultConcurrencyLevels = [1, 2, 4, 8, 16]
-        let concurrencyLevels = parallelConcurrencyOverride ?? defaultConcurrencyLevels
         let defaultRoomCounts = [1, 2, 4, 8]
         let roomCounts = roomCountsOverride ?? defaultRoomCounts
         let defaultTickMode: TransportAdapterMultiRoomParallelEncodingBenchmarkRunner.TickMode = .staggered
@@ -453,7 +450,6 @@ struct BenchmarkSuites {
                 name: "TransportParallelTuning-Medium20%",
                 runner: TransportAdapterParallelEncodingTuningBenchmarkRunner(
                     playerCounts: playerCounts,
-                    concurrencyLevels: concurrencyLevels,
                     dirtyPlayerRatio: mediumRatio,
                     broadcastPlayerRatio: 0.0,
                     enableDirtyTracking: transportDirtyTrackingOverride ?? true,
@@ -480,7 +476,6 @@ struct BenchmarkSuites {
                 runner: TransportAdapterMultiRoomParallelEncodingBenchmarkRunner(
                     roomCounts: roomCounts,
                     playerCounts: playerCounts,
-                    concurrencyLevels: concurrencyLevels,
                     tickMode: tickMode,
                     tickStrides: tickStrides,
                     dirtyPlayerRatio: mediumRatio,
@@ -505,7 +500,6 @@ struct BenchmarkSuites {
         transportDirtyTrackingOverride: Bool? = nil,
         dirtyRatioOverride: Double? = nil,
         playerCountsOverride: [Int]? = nil,
-        parallelConcurrencyOverride: [Int]? = nil,
         roomCountsOverride: [Int]? = nil,
         tickModeOverride: TransportAdapterMultiRoomParallelEncodingBenchmarkRunner.TickMode? = nil,
         tickStridesOverride: [Int]? = nil
@@ -515,7 +509,6 @@ struct BenchmarkSuites {
                 transportDirtyTrackingOverride: transportDirtyTrackingOverride,
                 dirtyRatioOverride: dirtyRatioOverride,
                 playerCountsOverride: playerCountsOverride,
-                parallelConcurrencyOverride: parallelConcurrencyOverride,
                 roomCountsOverride: roomCountsOverride,
                 tickModeOverride: tickModeOverride,
                 tickStridesOverride: tickStridesOverride
@@ -525,7 +518,6 @@ struct BenchmarkSuites {
             transportDirtyTrackingOverride: transportDirtyTrackingOverride,
             dirtyRatioOverride: dirtyRatioOverride,
             playerCountsOverride: playerCountsOverride,
-            parallelConcurrencyOverride: parallelConcurrencyOverride,
             roomCountsOverride: roomCountsOverride,
             tickModeOverride: tickModeOverride,
             tickStridesOverride: tickStridesOverride

@@ -25,9 +25,6 @@ struct CommandLineParser {
     /// Optional override for player counts to test (e.g., "4,10,20,30,50").
     /// If nil, uses each suite's default player counts.
     let playerCountsOverride: [Int]?
-    /// Optional override for parallel encoding concurrency levels (e.g., "1,2,4,8").
-    /// If nil, uses each suite's default concurrency levels.
-    let parallelConcurrencyOverride: [Int]?
     /// Optional override for room counts in multi-room benchmarks (e.g., "1,2,4,8").
     /// If nil, uses each suite's default room counts.
     let roomCountsOverride: [Int]?
@@ -49,7 +46,6 @@ struct CommandLineParser {
         var skipWaitForEnter = false
         var suiteNameFilter: String? = nil
         var playerCountsOverride: [Int]? = nil
-        var parallelConcurrencyOverride: [Int]? = nil
         var roomCountsOverride: [Int]? = nil
         var tickModeOverride: TransportAdapterMultiRoomParallelEncodingBenchmarkRunner.TickMode? = nil
         var tickStridesOverride: [Int]? = nil
@@ -105,21 +101,6 @@ struct CommandLineParser {
                     let counts = countsString.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
                     if !counts.isEmpty {
                         playerCountsOverride = counts
-                    } else {
-                        invalidArgs.append(arg)
-                    }
-                } else {
-                    invalidArgs.append(arg)
-                }
-                continue
-            }
-            if arg.hasPrefix("--parallel-concurrency=") {
-                let parts = arg.split(separator: "=", maxSplits: 1)
-                if parts.count == 2 {
-                    let levelsString = String(parts[1])
-                    let levels = levelsString.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
-                    if !levels.isEmpty {
-                        parallelConcurrencyOverride = levels
                     } else {
                         invalidArgs.append(arg)
                     }
@@ -193,7 +174,6 @@ struct CommandLineParser {
             self.skipWaitForEnter = skipWaitForEnter
             self.suiteNameFilter = suiteNameFilter
             self.playerCountsOverride = playerCountsOverride
-            self.parallelConcurrencyOverride = parallelConcurrencyOverride
             self.roomCountsOverride = roomCountsOverride
             self.tickModeOverride = tickModeOverride
             self.tickStridesOverride = tickStridesOverride
@@ -215,7 +195,6 @@ struct CommandLineParser {
         self.skipWaitForEnter = skipWaitForEnter
         self.suiteNameFilter = suiteNameFilter
         self.playerCountsOverride = playerCountsOverride
-        self.parallelConcurrencyOverride = parallelConcurrencyOverride
         self.roomCountsOverride = roomCountsOverride
         self.tickModeOverride = tickModeOverride
         self.tickStridesOverride = tickStridesOverride
@@ -250,7 +229,6 @@ struct CommandLineParser {
           --dirty-ratio=VAL   - Override dirty player ratio (0.0–1.0) for TransportAdapter sync benchmarks
           --suite-name=NAME   - Run only the suite with exact name match (useful for isolated testing)
           --player-counts=VAL - Override player counts to test (comma-separated, e.g., \"4,10,20,30,50\")
-          --parallel-concurrency=VAL - Override parallel encoding concurrency levels (comma-separated, e.g., \"1,2,4,8\")
           --room-counts=VAL   - Override room counts for multi-room benchmarks (comma-separated, e.g., \"1,2,4,8\")
           --tick-mode=VAL     - Override tick mode for multi-room benchmarks (\"synchronized\" or \"staggered\")
           --tick-strides=VAL  - Override tick strides for multi-room benchmarks (comma-separated, e.g., \"1,2,3,4\")

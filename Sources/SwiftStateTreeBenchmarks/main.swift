@@ -26,7 +26,6 @@ func main(parser: CommandLineParser) async {
             transportDirtyTrackingOverride: parser.transportDirtyTrackingOverride,
             dirtyRatioOverride: parser.transportDirtyRatioOverride,
             playerCountsOverride: parser.playerCountsOverride,
-            parallelConcurrencyOverride: parser.parallelConcurrencyOverride,
             roomCountsOverride: parser.roomCountsOverride,
             tickModeOverride: parser.tickModeOverride,
             tickStridesOverride: parser.tickStridesOverride
@@ -45,7 +44,6 @@ func main(parser: CommandLineParser) async {
                     transportDirtyTrackingOverride: parser.transportDirtyTrackingOverride,
                     dirtyRatioOverride: parser.transportDirtyRatioOverride,
                     playerCountsOverride: parser.playerCountsOverride,
-                    parallelConcurrencyOverride: parser.parallelConcurrencyOverride,
                     roomCountsOverride: parser.roomCountsOverride,
                     tickModeOverride: parser.tickModeOverride,
                     tickStridesOverride: parser.tickStridesOverride
