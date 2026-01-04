@@ -125,7 +125,7 @@ Rules {
 Rules {
     HandleAction(
         PurchaseAction.self,
-        resolvers: ProductInfoResolver.self, UserBalanceResolver.self
+        resolvers: (ProductInfoResolver.self, UserBalanceResolver.self)
     ) { state, action, ctx in
         // 兩個 resolver 已經並行執行完成
         let productInfo = ctx.productInfo
@@ -313,7 +313,7 @@ guard product.stock > 0 else {
 // ✅ 好的設計：兩個獨立的 resolver 可以並行執行
 HandleAction(
     PurchaseAction.self,
-    resolvers: ProductInfoResolver.self, UserBalanceResolver.self
+    resolvers: (ProductInfoResolver.self, UserBalanceResolver.self)
 ) { state, action, ctx in
     // 兩個 resolver 並行執行，總時間 = max(ProductInfo, UserBalance)
 }
@@ -413,16 +413,14 @@ HandleAction(AdminAction.self, resolvers: UserPermissionResolver.self) { state, 
 // 定義多個 resolver
 struct UserProfileResolver: ContextResolver { ... }
 struct UserInventoryResolver: ContextResolver { ... }
-struct UserStatsResolver: ContextResolver { ... }
 
 // 在 handler 中使用
 HandleAction(
     UpgradeItemAction.self,
-    resolvers: UserProfileResolver.self, UserInventoryResolver.self, UserStatsResolver.self
+    resolvers: (UserProfileResolver.self, UserInventoryResolver.self)
 ) { state, action, ctx in
     let profile = ctx.userProfile
     let inventory = ctx.userInventory
-    let stats = ctx.userStats
     
     // 使用所有 resolver 的結果
     // ...

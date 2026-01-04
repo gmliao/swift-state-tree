@@ -2,6 +2,28 @@
 
 一個基於 Swift 的多人遊戲伺服器框架，採用 **單一 StateTree + 同步規則 + Land DSL** 的設計理念。
 
+## 🌳 什麼是 StateTree？
+
+StateTree 是結合前端框架的狀態管理想法與後端資料過濾經驗的產物。透過狀態樹的方式表達伺服器狀態，可以直接將資料以 reactive 的方式同步給客戶端，讓客戶端能夠自動響應狀態變更。
+
+詳細的架構概念說明請參考 [架構概念總覽](docs/conceptual-overview.md)。
+
+## 📝 關於專案
+
+本專案為個人興趣嗜好專案，旨在探索和實驗多人遊戲伺服器架構設計。
+
+### 專案動機
+
+最初的想法是建立一個類似 [Colyseus](https://colyseus.io/) 的 schema 同步功能框架。在整理想法之後，決定透過 StateTree 的方式來表達網路同步模型，讓開發者可以透過不同的同步策略來控制不同使用者觀察到的視角。
+
+在學習 Swift 的過程中，發現 Swift 的幾個特性非常適合實現這個想法：
+- **DSL（Domain-Specific Language）**：可以建立清晰的領域特定語法
+- **Macro**：編譯期代碼生成，提供型別安全和自動化
+- **Struct（值型別）**：適合狀態的快照和不可變性
+- **Actor**：提供並發安全和狀態隔離
+
+雖然歡迎討論和建議，但主要目的在於技術探索和學習。
+
 ## 🎯 設計理念
 
 SwiftStateTree 採用以下核心設計：
@@ -382,7 +404,9 @@ func testYourFeature() throws {
 
 ## 🤝 貢獻
 
-歡迎貢獻代碼！請遵循以下步驟：
+本專案為個人興趣專案，歡迎討論和建議！如果有想法或問題，可以透過 Issue 或 Pull Request 提出。
+
+如果需要提交代碼，請遵循以下步驟：
 
 1. Fork 本倉庫
 2. 創建特性分支 (`git checkout -b feature/AmazingFeature`)
@@ -402,7 +426,7 @@ func testYourFeature() throws {
 
 ## 📄 許可證
 
-本專案採用 MIT 許可證。詳見 [LICENSE](LICENSE) 文件。
+本專案採用 MIT 許可證。
 
 ## 🔗 相關資源
 
