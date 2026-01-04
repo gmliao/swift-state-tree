@@ -136,7 +136,8 @@
                     prepend-icon="mdi-map-marker"
                     variant="outlined"
                     class="mt-4"
-                    hint="此伺服器支援多個遊戲，請選擇要使用的 Land"
+                    :disabled="isConnected || isJoined"
+                    :hint="isConnected || isJoined ? '請先斷線後再更改 Land 選擇' : '此伺服器支援多個遊戲，請選擇要使用的 Land'"
                     persistent-hint
                   >
                     <template v-slot:item="{ props, item }">
@@ -438,24 +439,6 @@
             class="mb-2"
           ></v-text-field>
           
-          <v-text-field
-            v-model="jwtSchoolID"
-            label="School ID (可選)"
-            prepend-icon="mdi-school"
-            variant="outlined"
-            density="compact"
-            class="mb-2"
-          ></v-text-field>
-          
-          <v-text-field
-            v-model="jwtLevel"
-            label="Level (可選)"
-            prepend-icon="mdi-numeric"
-            variant="outlined"
-            density="compact"
-            class="mb-2"
-          ></v-text-field>
-          
           <v-btn
             color="secondary"
             block
@@ -545,8 +528,6 @@ const jwtSecretKey = ref('demo-secret-key-change-in-production')
 const jwtPlayerID = ref('')
 const jwtDeviceID = ref('')
 const jwtUsername = ref('')
-const jwtSchoolID = ref('')
-const jwtLevel = ref('')
 const jwtToken = ref('')
 const jwtError = ref('')
 const showJWTDialog = ref(false)
@@ -708,8 +689,6 @@ const autoFillJWTFields = async () => {
   jwtPlayerID.value = `player-${randomID()}`
   jwtDeviceID.value = `device-${randomID()}`
   jwtUsername.value = `user${randomNum(1, 100)}`
-  jwtSchoolID.value = `school-${randomNum(1000, 9999)}`
-  jwtLevel.value = String(randomNum(1, 50))
   
   // 自動生成 token（如果必填欄位都有值）
   if (jwtSecretKey.value && jwtPlayerID.value) {
@@ -738,8 +717,6 @@ const generateToken = async () => {
     
     if (jwtDeviceID.value) payload.deviceID = jwtDeviceID.value
     if (jwtUsername.value) payload.username = jwtUsername.value
-    if (jwtSchoolID.value) payload.schoolid = jwtSchoolID.value
-    if (jwtLevel.value) payload.level = jwtLevel.value
     
     jwtToken.value = await generateJWT(jwtSecretKey.value, payload)
     jwtError.value = ''

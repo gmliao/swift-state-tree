@@ -49,13 +49,6 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
   const currentLandID = ref<string>(getInitialLandID())
   const currentPlayerID = ref<string | null>(null)
   
-  // Update currentLandID when selectedLandID changes
-  watch(selectedLandID, (newLandID) => {
-    if (newLandID) {
-      currentLandID.value = newLandID
-    }
-  })
-
   // Track action requests to match responses
   const actionRequestMap = ref<Map<string, { actionName: string, timestamp: Date }>>(new Map())
 
@@ -80,6 +73,26 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
       logs.value.shift()
     }
   }
+  
+  // Update currentLandID when selectedLandID changes
+  // Avoid desync: don't update currentLandID if already connected/joined
+  // The view is bound to the landID used during connect, so changing it
+  // without recreating the view would cause actions/events to target the wrong land
+  watch(selectedLandID, (newLandID) => {
+    if (!newLandID) return
+    
+    // If connected/joined, don't update currentLandID to avoid desync
+    // User should disconnect first before changing land selection
+    if (isConnected.value || isJoined.value) {
+      addLog(
+        `⚠️ 無法更改 Land 選擇：請先斷線後再選擇新的 Land (目前連接至: ${currentLandID.value})`,
+        'warning'
+      )
+      return
+    }
+    
+    currentLandID.value = newLandID
+  })
 
   // Helper to extract affected paths from patches
   const extractAffectedPaths = (patches: StatePatch[]): string[] => {
