@@ -198,7 +198,7 @@
                     block
                     class="mb-2"
                     @click="connect"
-                    :disabled="!wsUrl || isConnected || (parsedSchema && availableLands.length > 1 && !selectedLandID)"
+                    :disabled="!wsUrl || isConnected || Boolean(parsedSchema && availableLands.length > 1 && (!selectedLandID || selectedLandID === ''))"
                   >
                     <v-icon icon="mdi-link" class="mr-2"></v-icon>
                     連線

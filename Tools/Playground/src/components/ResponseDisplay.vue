@@ -10,7 +10,6 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
 import type { SchemaDef } from '@/types'
 import ResponseValue from './ResponseValue.vue'
 

@@ -135,7 +135,7 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
   }
 
   // Handle snapshot from View
-  const handleSnapshot = (snapshot: { values: Record<string, any> }) => {
+  const handleSnapshot = (_snapshot: { values: Record<string, any> }) => {
     stateUpdates.value.push({
       id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
       timestamp: new Date(),
@@ -260,9 +260,7 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
     currentPlayerID.value = null
   }
 
-  const sendAction = (actionName: string, payload: any, landID?: string, requestID?: string): void => {
-    const landIDToUse = landID || currentLandID.value || getInitialLandID()
-    
+  const sendAction = (actionName: string, payload: any, _landID?: string, requestID?: string): void => {
     if (!view) {
       addLog('❌ 尚未連線或加入遊戲', 'error')
       return
@@ -315,9 +313,7 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
       })
   }
 
-  const sendEvent = (eventName: string, payload: any, landID?: string): void => {
-    const landIDToUse = landID || currentLandID.value || getInitialLandID()
-    
+  const sendEvent = (eventName: string, payload: any, _landID?: string): void => {
     if (!view) {
       addLog('❌ 尚未連線或加入遊戲', 'error')
       return

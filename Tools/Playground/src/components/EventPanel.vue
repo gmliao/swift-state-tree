@@ -11,16 +11,6 @@
 
     <div v-else>
       <v-select
-        v-if="showLandSelector"
-        v-model="selectedLand"
-        :items="landItems"
-        label="選擇 Land"
-        variant="outlined"
-        density="compact"
-        class="mb-4"
-      ></v-select>
-
-      <v-select
         v-if="activeLand && availableEvents.length > 0"
         v-model="selectedEvent"
         :items="availableEvents"
@@ -133,8 +123,8 @@ const activeLand = computed(() => {
   return landKeys.value[0] || ''
 })
 
-// Hide land selector since we use external selection
-const showLandSelector = computed(() => false)
+// Land selector is hidden since we use external selection
+// const showLandSelector = computed(() => false) // Not used anymore
 
 const availableEvents = computed(() => {
   const landID = activeLand.value
@@ -287,15 +277,6 @@ const validationErrors = computed(() => {
   }
   
   return errors
-})
-
-// Check if payload is valid (all required fields filled and types correct)
-const isPayloadValid = computed(() => {
-  // For manual JSON input, always allow (user is responsible for correctness)
-  if (showManualPayload.value) {
-    return true
-  }
-  return validationErrors.value.length === 0
 })
 
 const handleSend = () => {
