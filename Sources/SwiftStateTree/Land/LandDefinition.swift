@@ -73,9 +73,26 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
 
     /// Handler called periodically based on `tickInterval`.
     ///
-    /// **Design Note**: This handler is synchronous to maintain stable tick rates.
+    /// **Design Note**: This handler is synchronous and is used for game gameplay logic.
+    /// Use this for game state updates, physics simulation, AI logic, etc.
+    /// The tick handler is the only source of state mutations for replay functionality.
+    /// Network synchronization is handled separately by the `syncInterval` mechanism.
     /// For async operations (e.g., metrics, logging), use `ctx.spawn { await ... }`.
     public var tickHandler: (@Sendable (inout State, LandContext) -> Void)?
+    
+    /// The interval at which network synchronization should be triggered.
+    ///
+    /// **Design Note**: Sync is read-only and does not modify state. It only triggers
+    /// the synchronization mechanism to send state updates to connected clients.
+    /// The optional callback is read-only and can be used for logging, metrics, or other read-only operations.
+    public var syncInterval: Duration?
+    
+    /// Optional read-only callback executed during sync operations.
+    ///
+    /// **Design Note**: This callback is read-only and should NOT modify state.
+    /// The `State` parameter is passed as a value (not `inout`) to emphasize its read-only nature.
+    /// Use this callback for logging, metrics collection, or other read-only operations during sync.
+    public var syncHandler: (@Sendable (State, LandContext) -> Void)?
 
     /// Duration to wait before destroying the Land when it becomes empty.
     public var destroyWhenEmptyAfter: Duration?
@@ -131,6 +148,8 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
         onLeaveResolverExecutors: [any AnyResolverExecutor] = [],
         tickInterval: Duration? = nil,
         tickHandler: (@Sendable (inout State, LandContext) -> Void)? = nil,
+        syncInterval: Duration? = nil,
+        syncHandler: (@Sendable (State, LandContext) -> Void)? = nil,
         destroyWhenEmptyAfter: Duration? = nil,
         onDestroyWhenEmpty: (@Sendable (inout State, LandContext) throws -> Void)? = nil,
         onDestroyWhenEmptyResolverExecutors: [any AnyResolverExecutor] = [],
@@ -150,6 +169,8 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
         self.onLeaveResolverExecutors = onLeaveResolverExecutors
         self.tickInterval = tickInterval
         self.tickHandler = tickHandler
+        self.syncInterval = syncInterval
+        self.syncHandler = syncHandler
         self.destroyWhenEmptyAfter = destroyWhenEmptyAfter
         self.onDestroyWhenEmpty = onDestroyWhenEmpty
         self.onDestroyWhenEmptyResolverExecutors = onDestroyWhenEmptyResolverExecutors

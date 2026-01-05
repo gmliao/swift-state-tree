@@ -376,9 +376,26 @@ public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
     public var persistInterval: Duration?
     /// Handler called periodically based on `tickInterval`.
     ///
-    /// **Design Note**: This handler is synchronous to maintain stable tick rates.
+    /// **Design Note**: This handler is synchronous and is used for game gameplay logic.
+    /// Use this for game state updates, physics simulation, AI logic, etc.
+    /// Unlike `sync`, this handler can modify state and is the only source of state mutations
+    /// for replay functionality. Network synchronization is handled separately by the `sync` mechanism.
     /// For async operations (e.g., flushing metrics), use `ctx.spawn { await ... }`.
     public var tickHandler: (@Sendable (inout State, LandContext) -> Void)?
+    
+    /// The interval at which network synchronization should be triggered.
+    ///
+    /// **Design Note**: Sync is read-only and does not modify state. It only triggers
+    /// the synchronization mechanism to send state updates to connected clients.
+    /// The optional callback is read-only and can be used for logging, metrics, or other read-only operations.
+    public var syncInterval: Duration?
+    
+    /// Optional read-only callback executed during sync operations.
+    ///
+    /// **Design Note**: This callback is read-only and should NOT modify state.
+    /// The `State` parameter is passed as a value (not `inout`) to emphasize its read-only nature.
+    /// Use this callback for logging, metrics collection, or other read-only operations during sync.
+    public var syncHandler: (@Sendable (State, LandContext) -> Void)?
     
     /// Handler called when the Land is initialized (on creation).
     public var onInitialize: (@Sendable (inout State, LandContext) throws -> Void)?
@@ -413,12 +430,16 @@ public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
         destroyWhenEmptyAfter: Duration? = nil,
         persistInterval: Duration? = nil,
         tickHandler: (@Sendable (inout State, LandContext) -> Void)? = nil,
+        syncInterval: Duration? = nil,
+        syncHandler: (@Sendable (State, LandContext) -> Void)? = nil,
         onShutdown: (@Sendable (State) async -> Void)? = nil
     ) {
         self.tickInterval = tickInterval
         self.destroyWhenEmptyAfter = destroyWhenEmptyAfter
         self.persistInterval = persistInterval
         self.tickHandler = tickHandler
+        self.syncInterval = syncInterval
+        self.syncHandler = syncHandler
         self.onShutdown = onShutdown
     }
 }
@@ -461,27 +482,26 @@ public func Lifetime<State: StateNodeProtocol>(
     }  // Single-expression: omit return
 }
 
-/// Configures a periodic tick handler.
+/// Configures a periodic tick handler for game gameplay logic.
 ///
-/// **Design Note**: The tick handler is synchronous to ensure stable and predictable
-/// tick rates. If you need to perform async operations (e.g., flushing metrics to a
-/// remote service), use `ctx.spawn` to execute them in the background without blocking
-/// the tick loop.
+/// **Design Note**: The tick handler is synchronous and is used for game gameplay logic.
+/// Use this for game state updates, physics simulation, AI logic, etc.
+/// The tick handler is the only source of state mutations for replay functionality.
+/// Network synchronization is handled separately by the `Sync` mechanism.
+/// If you need to perform async operations (e.g., flushing metrics), use `ctx.spawn`
+/// to execute them in the background without blocking the tick loop.
 ///
 /// Example:
 /// ```swift
 /// Tick(every: .milliseconds(50)) { state, ctx in
-///     state.stepSimulation()  // Synchronous game logic
-///
-///     ctx.spawn {
-///         await ctx.flushMetricsIfNeeded()  // Async I/O in background
-///     }
+///     state.updatePhysics()  // Game gameplay logic
+///     state.updateAI()       // AI updates
 /// }
 /// ```
 ///
 /// - Parameters:
 ///   - interval: The duration between ticks.
-///   - body: The synchronous handler to execute on each tick.
+///   - body: The synchronous handler to execute on each tick (for gameplay logic).
 public func Tick<State: StateNodeProtocol>(
     every interval: Duration,
     _ body: @escaping @Sendable (inout State, LandContext) -> Void
@@ -512,6 +532,65 @@ public func Tick<State: StateNodeProtocol>(
     return { config in
         config.tickInterval = interval
         config.tickHandler = nil
+    }
+}
+
+/// Configures periodic network synchronization with a read-only callback.
+///
+/// **Design Note**: Network sync is read-only and does not modify state. It only triggers
+/// the synchronization mechanism to send state updates to connected clients.
+/// The callback is read-only and will be called during sync operations.
+/// Use this callback for logging, metrics collection, or other read-only operations.
+/// Use `Tick` for game gameplay logic that modifies state.
+///
+/// Example:
+/// ```swift
+/// Lifetime {
+///     Tick(every: .milliseconds(50)) { state, ctx in
+///         state.updatePhysics()  // Game gameplay logic
+///     }
+///     NetworkSync(every: .milliseconds(100)) { state, ctx in
+///         // Read-only callback - will be called during sync
+///         // Do NOT modify state here - use Tick for state mutations
+///         print("Syncing at tick \(ctx.tickId ?? -1)")
+///     }
+/// }
+/// ```
+///
+/// - Parameters:
+///   - interval: The duration between sync operations.
+///   - body: A read-only callback to execute when sync is triggered.
+public func NetworkSync<State: StateNodeProtocol>(
+    every interval: Duration,
+    _ body: @escaping @Sendable (State, LandContext) -> Void
+) -> LifetimeDirective<State> {
+    return { config in
+        config.syncInterval = interval
+        config.syncHandler = body
+    }
+}
+
+/// Configures periodic network synchronization without a callback.
+///
+/// **Note**: This version requires explicit type specification in some contexts.
+/// For better type inference, use the version with a callback parameter.
+///
+/// Example:
+/// ```swift
+/// Lifetime {
+///     Tick(every: .milliseconds(50)) { state, ctx in
+///         state.updatePhysics()
+///     }
+///     NetworkSync<GameState>(every: .milliseconds(100))  // Explicit type required
+/// }
+/// ```
+///
+/// - Parameter interval: The duration between sync operations.
+public func NetworkSync<State: StateNodeProtocol>(
+    every interval: Duration
+) -> LifetimeDirective<State> {
+    return { config in
+        config.syncInterval = interval
     }
 }
 

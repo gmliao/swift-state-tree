@@ -347,11 +347,12 @@ func testActionWithTickTriggersSync() async throws {
         }
         
         Lifetime { (config: inout LifetimeConfig<ActionEventSyncTestState>) in
-            // Configure tick to trigger sync after state changes
+            // Configure tick for game logic (state mutations)
             config.tickInterval = .milliseconds(20)
             config.tickHandler = { state, _ in
-                // Tick handler will trigger sync automatically
+                // Tick handler for game logic
             }
+            // Sync will be auto-configured to match tick interval (20ms)
         }
     }
     
@@ -370,6 +371,9 @@ func testActionWithTickTriggersSync() async throws {
     // Join player
     try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
     
+    // Wait for OnInitialize and sync loop to start (sync interval is auto-configured to 20ms)
+    try await Task.sleep(for: .milliseconds(100))
+    
     // Clear sync call counts
     await mockTransport.reset()
     
@@ -377,14 +381,14 @@ func testActionWithTickTriggersSync() async throws {
     let action = IncrementAction(amount: 5)
     _ = try await keeper.handleAction(action, playerID: playerID, clientID: clientID, sessionID: sessionID)
     
-    // Wait for tick to trigger sync (tick interval is 20ms, wait a bit longer to ensure tick runs)
+    // Wait for sync to trigger (sync interval is 20ms, wait for at least one sync cycle)
     try await Task.sleep(for: .milliseconds(50))
     
     // Assert: Verify state was modified
     let state = await keeper.currentState()
     #expect(state.count == 5, "State count should be 5 after action")
     
-    // Assert: Verify sync was called by tick mechanism
+    // Assert: Verify sync was called by sync mechanism
     let syncNowCount = await mockTransport.syncNowCallCount
     let syncBroadcastCount = await mockTransport.syncBroadcastOnlyCallCount
     #expect(syncNowCount > 0 || syncBroadcastCount > 0, "Sync should be called by tick mechanism after action modifies state")
@@ -412,11 +416,12 @@ func testEventWithTickTriggersSync() async throws {
         }
         
         Lifetime { (config: inout LifetimeConfig<ActionEventSyncTestState>) in
-            // Configure tick to trigger sync after state changes
+            // Configure tick for game logic (state mutations)
             config.tickInterval = .milliseconds(20)
             config.tickHandler = { state, _ in
-                // Tick handler will trigger sync automatically
+                // Tick handler for game logic
             }
+            // Sync will be auto-configured to match tick interval (20ms)
         }
     }
     
@@ -435,6 +440,9 @@ func testEventWithTickTriggersSync() async throws {
     // Join player
     try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
     
+    // Wait for OnInitialize and sync loop to start (sync interval is auto-configured to 20ms)
+    try await Task.sleep(for: .milliseconds(100))
+    
     // Clear sync call counts
     await mockTransport.reset()
     
@@ -442,14 +450,14 @@ func testEventWithTickTriggersSync() async throws {
     let event = AnyClientEvent(IncrementEvent(amount: 3))
     try await keeper.handleClientEvent(event, playerID: playerID, clientID: clientID, sessionID: sessionID)
     
-    // Wait for tick to trigger sync (tick interval is 20ms, wait a bit longer to ensure tick runs)
+    // Wait for sync to trigger (sync interval is 20ms, wait for at least one sync cycle)
     try await Task.sleep(for: .milliseconds(50))
     
     // Assert: Verify state was modified
     let state = await keeper.currentState()
     #expect(state.count == 3, "State count should be 3 after event")
     
-    // Assert: Verify sync was called by tick mechanism
+    // Assert: Verify sync was called by sync mechanism
     let syncNowCount = await mockTransport.syncNowCallCount
     let syncBroadcastCount = await mockTransport.syncBroadcastOnlyCallCount
     #expect(syncNowCount > 0 || syncBroadcastCount > 0, "Sync should be called by tick mechanism after event modifies state")

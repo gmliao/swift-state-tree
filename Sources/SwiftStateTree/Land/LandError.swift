@@ -16,5 +16,9 @@ public enum LandError: Error {
     case duplicateLifetime
     /// Thrown when an unsupported node type is encountered during DSL processing.
     case unsupportedNode
+    /// Thrown when attempting to mutate state during sync operation.
+    /// This prevents dirty flags from being cleared incorrectly for modifications
+    /// that occurred after beginSync() but before endSync().
+    case syncInProgress
 }
 

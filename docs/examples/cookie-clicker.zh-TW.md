@@ -167,7 +167,8 @@ Rules {
 
 ```swift
 Lifetime {
-    Tick(every: .seconds(1)) { (state: inout CookieGameState, _: LandContext) in
+    // 遊戲邏輯更新（可修改 state）
+    Tick(every: .seconds(1)) { (state: inout CookieGameState, ctx: LandContext) in
         state.ticks += 1
         
         // 為每個玩家應用被動 cookie 生成
@@ -182,6 +183,13 @@ Lifetime {
             total += cps
         }
         state.totalCookies += total
+    }
+    
+    // 網路同步（唯讀 callback 用於類型推斷）
+    NetworkSync(every: .seconds(1)) { (state: CookieGameState, ctx: LandContext) in
+        // 唯讀 callback - 會在 sync 時被調用
+        // 請勿在此修改 state - 使用 Tick 進行 state 變更
+        // 用於日誌記錄、指標收集或其他唯讀操作
     }
 }
 ```
@@ -244,6 +252,7 @@ async function handleBuy(upgradeID: string) {
 2. **Client Events**：用於不需要回應的操作（如點擊）
 3. **Actions**：用於需要伺服器驗證和回應的操作（如購買）
 4. **Tick 處理**：定期執行遊戲邏輯（如被動生成 cookies）
+5. **Sync Interval**：網路同步與遊戲邏輯分離執行，確保狀態更新以固定頻率發送給客戶端
 
 ## 完整原始碼
 

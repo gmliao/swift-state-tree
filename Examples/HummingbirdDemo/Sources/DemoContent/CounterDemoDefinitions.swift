@@ -45,9 +45,18 @@ public enum CounterDemo {
             }
 
             Lifetime {
+                // Game logic updates (can modify state)
                 Tick(every: .milliseconds(100)) { (state: inout CounterState, ctx: LandContext) in
                     // ctx.logger.info("LandId \(ctx.landID) is ticking...count: \(state.count)")
                 }
+
+                // Network synchronization (read-only callback will be called during sync)
+                NetworkSync(every: .milliseconds(100)) { (state: CounterState, ctx: LandContext) in
+                    // Read-only callback - will be called during sync
+                    // Do NOT modify state here - use Tick for state mutations
+                    // Use for logging, metrics, or other read-only operations
+                }
+
                 DestroyWhenEmpty(after: .seconds(5)) { (_: inout CounterState, ctx: LandContext) in
                     ctx.logger.info("Land is empty, destroying...")
                 }

@@ -50,7 +50,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     private var tickTask: Task<Void, Never>?
+    private var syncTask: Task<Void, Never>?
     private var destroyTask: Task<Void, Never>?
+    
+    /// Next tick ID (0-based, increments with each tick) for deterministic replay.
+    /// This represents the ID that will be assigned to the next tick execution.
+    /// Using Int64 for long-running servers and replay compatibility.
+    private var nextTickId: Int64 = 0
+    
+    /// Last committed tick ID (the most recent tick that has completed execution).
+    /// This represents the world state's current committed tick.
+    /// Action/Event handlers should use this to bind to the committed world state.
+    /// Initialized to -1 to indicate no ticks have been committed yet.
+    private var lastCommittedTickId: Int64 = -1
 
     /// Flag to prevent duplicate sync operations (for deduplication only).
     ///
@@ -105,10 +117,37 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 await self.executeOnInitialize(handler: onInitializeHandler)
             }
             
-            // Then, start tick loop if configured (only after OnInitialize completes)
-            if let interval = definition.lifetimeHandlers.tickInterval,
+            // Then, start tick and sync loops if configured (only after OnInitialize completes)
+            let tickInterval = definition.lifetimeHandlers.tickInterval
+            let syncInterval = definition.lifetimeHandlers.syncInterval
+            
+            // Start tick loop if configured
+            if let interval = tickInterval,
                definition.lifetimeHandlers.tickHandler != nil {
                 await self.configureTickLoop(interval: interval)
+            }
+            
+            // Start sync loop: use configured interval, or fallback to tick interval if not configured
+            let effectiveSyncInterval: Duration?
+            if let sync = syncInterval {
+                effectiveSyncInterval = sync
+            } else if let tick = tickInterval {
+                // Auto-configure sync to match tick interval if sync is not explicitly set
+                effectiveSyncInterval = tick
+                self.logger.warning(
+                    "⚠️ Sync interval not configured for land '\(definition.id)'. Auto-configuring sync to match tick interval (\(tick)). Consider explicitly setting NetworkSync(every:) in Lifetime block for better control.",
+                    metadata: [
+                        "landID": .string(definition.id),
+                        "tickInterval": .string("\(tick)"),
+                        "autoSyncInterval": .string("\(tick)")
+                    ]
+                )
+            } else {
+                effectiveSyncInterval = nil
+            }
+            
+            if let interval = effectiveSyncInterval {
+                await self.configureSyncLoop(interval: interval)
             }
         }
     }
@@ -223,6 +262,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     deinit {
         tickTask?.cancel()
+        syncTask?.cancel()
         destroyTask?.cancel()
     }
 
@@ -525,7 +565,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             throw LandError.actionNotRegistered
         }
 
-        var ctx = makeContext(playerID: playerID, clientID: clientID, sessionID: sessionID)
+        // Bind action to lastCommittedTickId for replay logging
+        // This represents the world state's current committed tick (not the next tick)
+        var ctx = makeContext(
+            playerID: playerID,
+            clientID: clientID,
+            sessionID: sessionID,
+            tickId: lastCommittedTickId
+        )
         
         // Execute resolvers in parallel if any are declared
         if !handler.resolverExecutors.isEmpty {
@@ -598,7 +645,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
         
         let decodedAction = try decoder.decode(actionPayloadType, from: envelope.payload)
-        var ctx = makeContext(playerID: playerID, clientID: clientID, sessionID: sessionID)
+        // Bind action to lastCommittedTickId for replay logging
+        // This represents the world state's current committed tick (not the next tick)
+        var ctx = makeContext(
+            playerID: playerID,
+            clientID: clientID,
+            sessionID: sessionID,
+            tickId: lastCommittedTickId
+        )
         
         // Execute resolvers in parallel if any are declared
         if !handler.resolverExecutors.isEmpty {
@@ -677,8 +731,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         clientID: ClientID,
         sessionID: SessionID
     ) async throws {
-        // Find handlers that can handle this event type
-        let ctx = makeContext(playerID: playerID, clientID: clientID, sessionID: sessionID)
+        // Bind event to lastCommittedTickId for replay logging
+        // This represents the world state's current committed tick (not the next tick)
+        let ctx = makeContext(
+            playerID: playerID,
+            clientID: clientID,
+            sessionID: sessionID,
+            tickId: lastCommittedTickId
+        )
         
         // Check if event is registered in the client event registry
         guard let descriptor = definition.clientEventRegistry.findDescriptor(for: event.type) else {
@@ -730,7 +790,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         servicesOverride: LandServices? = nil,
         deviceID: String? = nil,
         isGuest: Bool? = nil,
-        metadata: [String: String] = [:]
+        metadata: [String: String] = [:],
+        tickId: Int64? = nil
     ) -> LandContext {
         let services = servicesOverride ?? players[playerID]?.services ?? LandServices()
         let playerSession = players[playerID]
@@ -746,6 +807,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             deviceID: deviceID ?? playerSession?.deviceID,
             isGuest: isGuest ?? playerSession?.isGuest ?? false,
             metadata: metadata.isEmpty ? (playerSession?.metadata ?? [:]) : metadata,
+            tickId: tickId,
             sendEventHandler: { [transport, logger, definition] anyEvent, target in
                 #if DEBUG
                 if !definition.serverEventRegistry.registered.isEmpty {
@@ -790,7 +852,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         tickTask = Task { [weak self] in
             guard let self = self else { return }
             
-            var nextTickTime = ContinuousClock.now
+            var nextTickTime = ContinuousClock.now + interval
             
             while !Task.isCancelled {
                 let now = ContinuousClock.now
@@ -803,14 +865,21 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 
                 await self.runTick()
                 
-                // Schedule next tick at fixed interval from now
-                // This prevents accumulation of delays when execution takes longer than interval
-                nextTickTime = ContinuousClock.now + interval
+                // Fixed-rate scheduling: calculate next time from the scheduled time, not from now
+                // This maintains a consistent tick rate even if execution takes longer than interval
+                // If execution time exceeds interval, we skip ahead to maintain the rate
+                nextTickTime = nextTickTime + interval
+                
+                // If we're still behind schedule after skipping, continue skipping
+                // This prevents the loop from getting stuck if execution time consistently exceeds interval
+                while nextTickTime <= ContinuousClock.now {
+                    nextTickTime = nextTickTime + interval
+                }
             }
         }
     }
 
-    private func runTick() async {
+    private func runTick() {
         // Check if task was cancelled before executing tick
         // This prevents ticks from running after shutdown has started
         guard !Task.isCancelled else { return }
@@ -820,17 +889,86 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Double-check: if tickTask is nil, we're in shutdown, don't run
         guard tickTask != nil else { return }
         
+        // Use tickId for deterministic replay (increments with each tick)
+        let tickId = nextTickId
+        nextTickId += 1
+        
         let ctx = makeContext(
             playerID: systemPlayerID,
             clientID: systemClientID,
             sessionID: systemSessionID,
-            servicesOverride: LandServices()
+            servicesOverride: LandServices(),
+            tickId: tickId
         )
-        var copy = state
-        handler(&copy, ctx)  // Handler itself is sync
-        state = copy
         
-        // Trigger sync after state changes to send diff/patch to all players
+        // Execute handler synchronously - no copying needed
+        // withMutableStateSync directly modifies state (actor isolation maintained)
+        handler(&state, ctx)
+        
+        // Update lastCommittedTickId after tick execution completes
+        // This represents the world state's current committed tick
+        lastCommittedTickId = tickId
+        
+        // Note: Tick handler does NOT trigger automatic network sync
+        // Network synchronization is handled separately by the sync mechanism
+    }
+
+    private func configureSyncLoop(interval: Duration) async {
+        syncTask?.cancel()
+        syncTask = Task { [weak self] in
+            guard let self = self else { return }
+            
+            var nextSyncTime = ContinuousClock.now + interval
+            
+            while !Task.isCancelled {
+                let now = ContinuousClock.now
+                
+                // If we're already past the scheduled time, execute immediately
+                // Otherwise, sleep until the scheduled time
+                if now < nextSyncTime {
+                    try? await Task.sleep(until: nextSyncTime, clock: .continuous)
+                }
+                
+                await self.runSync()
+                
+                // Fixed-rate scheduling: calculate next time from the scheduled time, not from now
+                // This maintains a consistent sync rate even if execution takes longer than interval
+                // If execution time exceeds interval, we skip ahead to maintain the rate
+                nextSyncTime = nextSyncTime + interval
+                
+                // If we're still behind schedule after skipping, continue skipping
+                // This prevents the loop from getting stuck if execution time consistently exceeds interval
+                while nextSyncTime <= ContinuousClock.now {
+                    nextSyncTime = nextSyncTime + interval
+                }
+            }
+        }
+    }
+
+    private func runSync() async {
+        // Check if task was cancelled before executing sync
+        // This prevents sync from running after shutdown has started
+        guard !Task.isCancelled else { return }
+        
+        // Double-check: if syncTask is nil, we're in shutdown, don't run
+        guard syncTask != nil else { return }
+        
+        // Execute optional read-only callback if provided
+        // This callback is read-only and should NOT modify state
+        if let handler = definition.lifetimeHandlers.syncHandler {
+            let ctx = makeContext(
+                playerID: systemPlayerID,
+                clientID: systemClientID,
+                sessionID: systemSessionID,
+                servicesOverride: LandServices(),
+                tickId: lastCommittedTickId
+            )
+            // Pass state as value (read-only) to emphasize that it should not be modified
+            handler(state, ctx)
+        }
+        
+        // Sync is read-only: only triggers synchronization mechanism
+        // It does not modify state
         await transport?.syncNowFromTransport()
     }
 
@@ -846,10 +984,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func shutdownIfIdle() async {
         guard players.isEmpty else { return }
         
-        // Cancel tick task FIRST to prevent any new ticks from starting
-        // This must be done before executing destroy handlers to ensure no ticks run after destroy
+        // Cancel tick and sync tasks FIRST to prevent any new ticks/syncs from starting
+        // This must be done before executing destroy handlers to ensure no ticks/syncs run after destroy
         tickTask?.cancel()
         tickTask = nil
+        syncTask?.cancel()
+        syncTask = nil
         
         destroyTask?.cancel()
         destroyTask = nil
@@ -949,7 +1089,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         
         // Notify transport that land has been destroyed
         // This allows transport layer to perform cleanup (e.g., remove from LandManager)
-        // Note: tickTask was already cancelled at the start of shutdownIfIdle
+        // Note: tickTask and syncTask were already cancelled at the start of shutdownIfIdle
         await transport?.onLandDestroyed()
     }
 

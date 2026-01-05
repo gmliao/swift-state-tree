@@ -472,3 +472,62 @@ await withTaskGroup(of: Void.self) { group in
 
 ---
 
+## Tick 和 Sync 執行機制
+
+### 架構設計
+
+SwiftStateTree 採用「架構 4：兩個 timer：Sim Tick（唯一寫入）+ Sync Tick（只讀/IO）」：
+
+- **Tick**: 遊戲邏輯更新（20Hz），可修改 state（唯一寫入者）
+- **Sync**: 網路同步（10Hz），只讀取 state，不修改
+
+### Actor 序列化
+
+`LandKeeper` 是 `actor`，所有操作都會序列化執行：
+
+1. **Tick 和 Sync 的執行**：
+   - 兩個獨立的 Task（`tickTask` 和 `syncTask`）
+   - Sleep 時間獨立（可以同時 sleep，不佔用 actor）
+   - 執行時序列化（需要訪問 actor 的 state）
+
+2. **WebSocket 消息處理**：
+   - WebSocket 消息到達時，會立即進入處理流程
+   - 但如果 tick 或 sync 正在執行，會等待（actor 序列化）
+   - 所有操作都是序列化的，執行順序是確定的
+
+3. **執行順序**：
+   ```
+   tick 執行 → action 處理 → sync 執行 → action 處理 → ...
+   ```
+   - 因為 actor 序列化，執行順序是確定的
+   - 這對重播是優勢（確定性執行順序）
+
+### 固定頻率調度
+
+為了避免執行時間變長導致頻率下降，使用固定頻率調度：
+
+```swift
+var nextTickTime = ContinuousClock.now + interval
+
+while !Task.isCancelled {
+    if now < nextTickTime {
+        try? await Task.sleep(until: nextTickTime, clock: .continuous)
+    }
+    
+    await self.runTick()
+    
+    // 固定頻率：從預定時間開始計算，而不是從現在
+    nextTickTime = nextTickTime + interval
+    
+    // 如果執行時間太長，跳過一些更新
+    while nextTickTime <= ContinuousClock.now {
+        nextTickTime = nextTickTime + interval
+    }
+}
+```
+
+**優勢**：
+- 保持固定頻率，即使執行時間變長
+- 如果執行時間持續 > interval，會跳過更新以保持頻率
+
+---

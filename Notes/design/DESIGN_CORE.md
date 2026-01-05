@@ -6,6 +6,19 @@
 > - [DESIGN_SYNC_FIRSTSYNC.md](./DESIGN_SYNC_FIRSTSYNC.md) - 首次同步機制（First Sync）
 > - [DESIGN_POLICY_FILTERING.md](./DESIGN_POLICY_FILTERING.md) - Policy 過濾機制：篩子層層過濾與樹的深度優先遍歷
 
+## 架構驗證
+
+SwiftStateTree 採用「架構 4：兩個 timer：Sim Tick（唯一寫入）+ Sync Tick（只讀/IO）」，完全符合重播系統的需求：
+
+- ✅ **決定性最高**：Mutation 收斂到單一點（只有 `tick` 修改 state）
+- ✅ **log 量最小**：只需要記錄 `tickId` + inputs + seed + snapshots
+- ✅ **落後處理可分別調整**：Sim 和 Sync 可以獨立調整頻率
+- ✅ **網路相容性最好**：serverTick、ACK、baseline 都很清楚
+
+詳細說明請參考 [DESIGN_RUNTIME.md](./DESIGN_RUNTIME.md#tick-和-sync-執行機制)。
+
+---
+
 ## 整體理念與資料流
 
 ### 伺服器只做三件事

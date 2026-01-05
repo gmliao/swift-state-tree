@@ -91,15 +91,33 @@ Resolvers execute in parallel first, then synchronously enter handler after succ
 
 ## Lifetime
 
-- `Tick(every:)`: Fixed frequency tick
+- `Tick(every:)`: Game gameplay logic updates (can modify state)
+- `NetworkSync(every:)`: Network synchronization (read-only callback, will be called)
 - `DestroyWhenEmpty(after:)`: Auto-close empty rooms
 - `PersistSnapshot(every:)`: Snapshot period
 - `OnInitialize` / `OnFinalize` / `AfterFinalize` / `OnShutdown`
 
 ```swift
 Lifetime {
-    Tick(every: .seconds(1)) { state, ctx in
-        // periodic logic
+    // Game logic updates (20Hz)
+    Tick(every: .milliseconds(50)) { (state: inout GameState, ctx: LandContext) in
+        // Use ctx.tickId (Int64) for deterministic, replay-compatible logic
+        if let tickId = ctx.tickId {
+            let tickIntervalSeconds = 0.05  // 50ms = 0.05s
+            let gameTime = Double(tickId) * tickIntervalSeconds
+            state.position += state.velocity * tickIntervalSeconds
+        }
     }
+    
+    // Network synchronization (10Hz)
+    // Callback is read-only and will be called during sync - do NOT modify state
+    NetworkSync(every: .milliseconds(100)) { (state: GameState, ctx: LandContext) in
+        // Read-only callback - will be called during sync
+        // Use for logging, metrics, or other read-only operations
+        // Network sync mechanism triggers network synchronization after callback
+    }
+    // If NetworkSync is not set, it auto-configures to match tick interval
 }
 ```
+
+**Note**: `Tick` is the only source of state mutations for replay functionality. `NetworkSync` only triggers network synchronization and does not modify state. The optional callback is read-only and will be called during sync operations for logging, metrics, or other read-only operations.

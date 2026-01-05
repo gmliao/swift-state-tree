@@ -64,9 +64,18 @@ let land = Land("demo", using: GameState.self) {
             state.players[playerID] = PlayerState(name: playerName, cookies: 0)
         }
         
-        Tick(every: .milliseconds(100)) { state, ctx in
+        // 遊戲邏輯更新（可修改 state）
+        Tick(every: .milliseconds(100)) { (state: inout GameState, ctx: LandContext) in
             // Game logic here
         }
+        
+        // 網路同步（唯讀 callback 用於類型推斷）
+        NetworkSync(every: .milliseconds(100)) { (state: GameState, ctx: LandContext) in
+            // 唯讀 callback - 會在 sync 時被調用
+            // 請勿在此修改 state - 使用 Tick 進行 state 變更
+            // 用於日誌記錄、指標收集或其他唯讀操作
+        }
+        
         DestroyWhenEmpty(after: .seconds(30)) { state, ctx in
             ctx.logger.info("Land is empty, destroying...")
         }
@@ -210,7 +219,7 @@ let gameLand = Land("multiplayer-game", using: GameState.self) {
     }
     
     Lifetime {
-        Tick(every: .milliseconds(100)) { state, ctx in
+        Tick(every: .milliseconds(100)) { (state: inout GameState, ctx: LandContext) in
             // Check if game should start
             if state.gameStatus == "waiting" && state.players.count >= 2 {
                 state.gameStatus = "playing"

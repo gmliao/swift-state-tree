@@ -64,9 +64,18 @@ let land = Land("demo", using: GameState.self) {
             state.players[playerID] = PlayerState(name: playerName, cookies: 0)
         }
         
-        Tick(every: .milliseconds(100)) { state, ctx in
+        // Game logic updates (can modify state)
+        Tick(every: .milliseconds(100)) { (state: inout GameState, ctx: LandContext) in
             // Game logic here
         }
+        
+        // Network synchronization (read-only callback for type inference)
+        NetworkSync(every: .milliseconds(100)) { (state: GameState, ctx: LandContext) in
+            // Read-only callback - will be called during sync
+            // Do NOT modify state here - use Tick for state mutations
+            // Use for logging, metrics, or other read-only operations
+        }
+        
         DestroyWhenEmpty(after: .seconds(30)) { state, ctx in
             ctx.logger.info("Land is empty, destroying...")
         }
@@ -210,7 +219,7 @@ let gameLand = Land("multiplayer-game", using: GameState.self) {
     }
     
     Lifetime {
-        Tick(every: .milliseconds(100)) { state, ctx in
+        Tick(every: .milliseconds(100)) { (state: inout GameState, ctx: LandContext) in
             // Check if game should start
             if state.gameStatus == "waiting" && state.players.count >= 2 {
                 state.gameStatus = "playing"
