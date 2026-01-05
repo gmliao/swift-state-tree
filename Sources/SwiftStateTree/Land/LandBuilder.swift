@@ -116,6 +116,8 @@ enum LandBuilder {
             onLeaveResolverExecutors: onLeaveResolverExecutors,
             tickInterval: lifetimeConfig.tickInterval,
             tickHandler: lifetimeConfig.tickHandler,
+            syncInterval: lifetimeConfig.syncInterval,
+            syncHandler: lifetimeConfig.syncHandler,
             destroyWhenEmptyAfter: lifetimeConfig.destroyWhenEmptyAfter,
             onDestroyWhenEmpty: lifetimeConfig.onDestroyWhenEmpty,
             onDestroyWhenEmptyResolverExecutors: lifetimeConfig.onDestroyWhenEmptyResolverExecutors,

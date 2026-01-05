@@ -58,6 +58,48 @@ public struct LandContext: Sendable {
     /// Logger is synchronous and can be used directly in Action/Event handlers.
     public let logger: Logger
 
+    /// Tick ID for deterministic replay (0-based, increments with each tick).
+    ///
+    /// **In tick handlers**: Represents the current tick number being executed.
+    /// **In action/event handlers**: Represents the last committed tick ID (the most recent
+    /// tick that has completed execution). This represents the world state's current committed
+    /// tick, not the next tick that will execute. This allows actions/events to be bound to
+    /// the committed world state for replay logging.
+    ///
+    /// **Replay logging format**: `tickId:action` or `tickId:event`
+    /// This allows replay systems to record and replay actions/events in tick order.
+    ///
+    /// **Semantic clarity**:
+    /// - Tick handler: `tickId` is the ID of the tick being executed (e.g., tick 100)
+    /// - Action/Event handler: `tickId` is the last committed tick (e.g., tick 100 if executed
+    ///   after tick 100 completes but before tick 101 starts)
+    ///
+    /// **Type**: `Int64` for long-running servers and replay compatibility.
+    /// At 60 Hz, Int64 can run for ~4.9 million years before overflow.
+    ///
+    /// To calculate deterministic time, use: `tickId * tickInterval`
+    ///
+    /// Example in tick handler:
+    /// ```swift
+    /// Tick(every: .milliseconds(50)) { state, ctx in
+    ///     // Use tickId for deterministic logic
+    ///     if let tickId = ctx.tickId {
+    ///         let gameTime = Double(tickId) * 0.05  // 50ms = 0.05s
+    ///         state.position += state.velocity * 0.05  // Deterministic movement
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Example in action handler (for replay logging):
+    /// ```swift
+    /// HandleAction(AttackAction.self) { state, action, ctx in
+    ///     // tickId is available for replay logging
+    ///     // Log format: tickId:action (e.g., "42:AttackAction")
+    ///     state.applyAttack(action, atTick: ctx.tickId)
+    /// }
+    /// ```
+    public let tickId: Int64?
+
     /// Send event handler closure (delegates to Runtime layer without exposing Transport)
     /// Accepts AnyServerEvent (type-erased root type).
     private let sendEventHandler: @Sendable (AnyServerEvent, EventTarget) async -> Void
@@ -79,6 +121,7 @@ public struct LandContext: Sendable {
         deviceID: String? = nil,
         isGuest: Bool = false,
         metadata: [String: String] = [:],
+        tickId: Int64? = nil,
         sendEventHandler: @escaping @Sendable (AnyServerEvent, EventTarget) async -> Void,
         syncHandler: @escaping @Sendable () async -> Void
     ) {
@@ -91,6 +134,7 @@ public struct LandContext: Sendable {
         self.metadata = metadata
         self.services = services
         self.logger = logger
+        self.tickId = tickId
         self.sendEventHandler = sendEventHandler
         self.syncHandler = syncHandler
     }

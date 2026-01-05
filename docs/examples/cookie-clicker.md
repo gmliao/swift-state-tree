@@ -167,7 +167,8 @@ Use `Lifetime` block to handle periodic logic:
 
 ```swift
 Lifetime {
-    Tick(every: .seconds(1)) { (state: inout CookieGameState, _: LandContext) in
+    // Game logic updates (can modify state)
+    Tick(every: .seconds(1)) { (state: inout CookieGameState, ctx: LandContext) in
         state.ticks += 1
         
         // Apply passive cookie generation for each player
@@ -182,6 +183,13 @@ Lifetime {
             total += cps
         }
         state.totalCookies += total
+    }
+    
+    // Network synchronization (read-only callback for type inference)
+    NetworkSync(every: .seconds(1)) { (state: CookieGameState, ctx: LandContext) in
+        // Read-only callback - will be called during sync
+        // Do NOT modify state here - use Tick for state mutations
+        // Use for logging, metrics, or other read-only operations
     }
 }
 ```
@@ -244,6 +252,7 @@ async function handleBuy(upgradeID: string) {
 2. **Client Events**: Used for operations that don't need responses (like clicking)
 3. **Actions**: Used for operations that need server validation and responses (like purchasing)
 4. **Tick Processing**: Periodically execute game logic (like passive cookie generation)
+5. **Sync Interval**: Network synchronization runs separately from game logic, ensuring state updates are sent to clients at a fixed rate
 
 ## Complete Source Code
 

@@ -289,7 +289,7 @@ public enum CookieGame {
             // MARK: - Lifetime
 
             Lifetime {
-                // Tick every second to apply passive cookie generation.
+                // Game logic updates (can modify state)
                 Tick(every: .milliseconds(300)) { (state: inout CookieGameState, _: LandContext) in
                     state.ticks += 1
 
@@ -304,6 +304,13 @@ public enum CookieGame {
                     }
 
                     state.totalCookies = total
+                }
+
+                // Network synchronization (read-only callback will be called during sync)
+                NetworkSync(every: .milliseconds(300)) { (state: CookieGameState, ctx: LandContext) in
+                    // Read-only callback - will be called during sync
+                    // Do NOT modify state here - use Tick for state mutations
+                    // Use for logging, metrics, or other read-only operations
                 }
 
                 DestroyWhenEmpty(after: .seconds(5)) { (_: inout CookieGameState, ctx: LandContext) in
