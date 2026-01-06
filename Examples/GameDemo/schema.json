@@ -1,0 +1,102 @@
+{
+  "defs" : {
+    "HeroDefenseState" : {
+      "properties" : {
+        "score" : {
+          "default" : 0,
+          "type" : "integer"
+        }
+      },
+      "required" : [
+        "score"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "object"
+      }
+    },
+    "PlayAction" : {
+      "properties" : {
+
+      },
+      "required" : [
+
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
+    "PlayResponse" : {
+      "properties" : {
+        "newScore" : {
+          "type" : "integer"
+        }
+      },
+      "required" : [
+        "newScore"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
+    "StateDiff" : {
+      "properties" : {
+        "patches" : {
+          "items" : {
+            "properties" : {
+              "op" : {
+                "type" : "string"
+              },
+              "path" : {
+                "type" : "string"
+              },
+              "value" : {
+                "type" : "object"
+              }
+            },
+            "required" : [
+              "op",
+              "path"
+            ],
+            "type" : "object"
+          },
+          "type" : "array"
+        }
+      },
+      "required" : [
+        "patches"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    }
+  },
+  "lands" : {
+    "hero-defense" : {
+      "actions" : {
+        "Play" : {
+          "$ref" : "#\/defs\/PlayAction"
+        }
+      },
+      "clientEvents" : {
+
+      },
+      "events" : {
+
+      },
+      "stateType" : "HeroDefenseState",
+      "sync" : {
+        "diff" : {
+          "$ref" : "#\/defs\/StateDiff"
+        },
+        "snapshot" : {
+          "$ref" : "#\/defs\/HeroDefenseState"
+        }
+      }
+    }
+  },
+  "version" : "0.1.0"
+}

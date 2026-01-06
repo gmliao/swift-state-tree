@@ -64,9 +64,17 @@ public enum HeroDefense {
             }
             
             Rules {
-                HandleAction(PlayAction.self) { (state: inout HeroDefenseState, _: PlayAction, _: LandContext) in
+                HandleAction(PlayAction.self) { (state: inout HeroDefenseState, action: PlayAction, ctx: LandContext) in
+                    ctx.logger.info("🎮 PlayAction received", metadata: [
+                        "playerID": .string(ctx.playerID.rawValue),
+                        "currentScore": .string("\(state.score)")
+                    ])
                     state.score += 1
-                    return PlayResponse(newScore: state.score)
+                    let newScore = state.score
+                    ctx.logger.info("✅ Score updated", metadata: [
+                        "newScore": .string("\(newScore)")
+                    ])
+                    return PlayResponse(newScore: newScore)
                 }
             }
         }

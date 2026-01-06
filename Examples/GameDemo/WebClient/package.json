@@ -1,0 +1,35 @@
+{
+  "name": "hero-defense-client",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "predev": "npm run build --prefix ../../../sdk/ts && npm run schema:generate && npm run codegen",
+    "dev": "vite",
+    "prebuild": "npm run build --prefix ../../../sdk/ts && npm run schema:generate && npm run codegen",
+    "build": "vue-tsc -b && vite build",
+    "preview": "vite preview",
+    "schema:generate": "cd .. && swift run SchemaGen --output schema.json",
+    "codegen": "rm -rf ./src/generated && node ../../../sdk/ts/dist/cli.js codegen --input ../schema.json --output ./src/generated --framework vue",
+    "codegen:server": "rm -rf ./src/generated && node ../../../sdk/ts/dist/cli.js codegen --input http://localhost:8080/schema --output ./src/generated --framework vue",
+    "generate": "npm run schema:generate && npm run codegen"
+  },
+  "dependencies": {
+    "@mdi/font": "^7.4.47",
+    "@swiftstatetree/sdk": "file:../../../sdk/ts",
+    "phaser": "^3.80.1",
+    "sass": "^1.97.0",
+    "vite-plugin-vuetify": "^2.1.2",
+    "vue": "^3.5.24",
+    "vue-router": "^4.6.4",
+    "vuetify": "^3.11.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@vitejs/plugin-vue": "^6.0.1",
+    "@vue/tsconfig": "^0.8.1",
+    "typescript": "~5.9.3",
+    "vite": "^7.2.4",
+    "vue-tsc": "^3.1.4"
+  }
+}
