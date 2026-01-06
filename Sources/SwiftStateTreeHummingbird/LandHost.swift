@@ -270,10 +270,21 @@ public actor LandHost {
             address: .hostname(configuration.host, port: Int(configuration.port))
         )
         
+        // Create a custom WebSocket router wrapper that provides better error messages
+        // Capture registered paths synchronously before creating the wrapper
+        let registeredPathsSnapshot = registeredServerPaths.values.sorted()
+        let webSocketRouter = WebSocketRouterWithErrorHandling(
+            baseRouter: router,
+            getRegisteredPaths: { registeredPathsSnapshot },
+            host: configuration.host,
+            port: configuration.port,
+            logger: logger
+        )
+        
         let app = Application(
             router: router,
             server: .http1WebSocketUpgrade(
-                webSocketRouter: router
+                webSocketRouter: webSocketRouter
             ),
             configuration: httpConfiguration,
             logger: logger
@@ -352,6 +363,16 @@ public actor LandHost {
         path: String,
         hbAdapter: HummingbirdStateTreeAdapter
     ) {
+        let logger = configuration.logger ?? createColoredLogger(
+            loggerIdentifier: "com.swiftstatetree.hummingbird",
+            scope: "LandHost"
+        )
+        
+        logger.info("📡 Registering WebSocket route", metadata: [
+            "path": .string(path),
+            "fullURL": .string("ws://\(configuration.host):\(configuration.port)\(path)")
+        ])
+        
         router.ws(RouterPath(path)) { inbound, outbound, context in
             await hbAdapter.handle(inbound: inbound, outbound: outbound, context: context)
         }

@@ -54,14 +54,17 @@ public struct HummingbirdStateTreeAdapter: Sendable {
     ) async {
         // Extract URI and query parameters for logging
         var uriString: String = "unknown"
+        var requestedPath: String = "unknown"
         var hasQueryParams: Bool = false
         
         if let routerContext = context as? WebSocketRouterContext<BasicWebSocketRequestContext> {
             uriString = routerContext.request.uri.description
+            requestedPath = routerContext.request.uri.path
         }
         
         logger.info("🔌 WebSocket connection attempt", metadata: [
             "uri": .string(uriString),
+            "path": .string(requestedPath),
             "hasJWTValidator": .string("\(jwtValidator != nil)"),
             "allowGuestMode": .string("\(allowGuestMode)")
         ])
@@ -100,7 +103,13 @@ public struct HummingbirdStateTreeAdapter: Sendable {
                         "uri": .string(uriString),
                         "error": .string("\(error)")
                     ])
-                    try? await outbound.close(.policyViolation, reason: "Invalid or expired token")
+                    // Use consistent error format
+                    let errorPayload = ErrorPayload(
+                        code: .websocketInvalidToken,
+                        message: "Invalid or expired token"
+                    )
+                    let errorMessage = (try? JSONEncoder().encode(errorPayload)).flatMap { String(data: $0, encoding: .utf8) } ?? "WEBSOCKET_INVALID_TOKEN: Invalid or expired token"
+                    try? await outbound.close(.policyViolation, reason: errorMessage)
                     return
                 }
             } else {
@@ -117,7 +126,13 @@ public struct HummingbirdStateTreeAdapter: Sendable {
                         "uri": .string(uriString),
                         "hasQueryParams": .string("\(hasQueryParams)")
                     ])
-                    try? await outbound.close(.policyViolation, reason: "Missing token query parameter")
+                    // Use consistent error format
+                    let errorPayload = ErrorPayload(
+                        code: .websocketMissingToken,
+                        message: "Missing token query parameter"
+                    )
+                    let errorMessage = (try? JSONEncoder().encode(errorPayload)).flatMap { String(data: $0, encoding: .utf8) } ?? "WEBSOCKET_MISSING_TOKEN: Missing token query parameter"
+                    try? await outbound.close(.policyViolation, reason: errorMessage)
                     return
                 }
             }
