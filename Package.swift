@@ -29,6 +29,11 @@ let package = Package(
             name: "SwiftStateTreeMatchmaking",
             targets: ["SwiftStateTreeMatchmaking"]
         ),
+        // 🔢 Deterministic Math: Fixed-point math for server-authoritative games
+        .library(
+            name: "SwiftStateTreeDeterministicMath",
+            targets: ["SwiftStateTreeDeterministicMath"]
+        ),
         // 🔹 Benchmark executable
         .executable(
             name: "SwiftStateTreeBenchmarks",
@@ -94,6 +99,19 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log")
             ],
             path: "Sources/SwiftStateTreeMatchmaking"
+        ),
+        
+        // 🔢 Deterministic Math: Fixed-point math for server-authoritative games
+        .target(
+            name: "SwiftStateTreeDeterministicMath",
+            dependencies: [
+                "SwiftStateTree",
+                "SwiftStateTreeMacros"
+            ],
+            path: "Sources/SwiftStateTreeDeterministicMath",
+            exclude: [
+                "Docs"
+            ]
         ),
         
         // 🔹 Macro Implementation: Compile-time macro expansion
@@ -162,6 +180,16 @@ let package = Package(
                 .product(name: "Atomics", package: "swift-atomics")
             ],
             path: "Tests/SwiftStateTreeMatchmakingTests"
+        ),
+        
+        // 🔢 Deterministic Math tests
+        .testTarget(
+            name: "SwiftStateTreeDeterministicMathTests",
+            dependencies: [
+                "SwiftStateTreeDeterministicMath",
+                "SwiftStateTree"
+            ],
+            path: "Tests/SwiftStateTreeDeterministicMathTests"
         ),
         
         // 🔹 Benchmark executable

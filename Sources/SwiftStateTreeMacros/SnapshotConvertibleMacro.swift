@@ -84,6 +84,14 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
                 continue
             }
             
+            // Skip static properties (they're not part of the instance)
+            let isStatic = variableDecl.modifiers.contains { modifier in
+                modifier.name.text == "static"
+            }
+            if isStatic {
+                continue
+            }
+            
             for binding in variableDecl.bindings {
                 guard let pattern = binding.pattern.as(IdentifierPatternSyntax.self) else {
                     continue
@@ -115,7 +123,7 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
             // Empty struct: return empty object
             return try FunctionDeclSyntax(
                 """
-                func toSnapshotValue() throws -> SnapshotValue {
+                public func toSnapshotValue() throws -> SnapshotValue {
                     return .object([:])
                 }
                 """
@@ -140,7 +148,7 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
         
         return try FunctionDeclSyntax(
             """
-            func toSnapshotValue() throws -> SnapshotValue {
+            public func toSnapshotValue() throws -> SnapshotValue {
                 \(raw: body)
             }
             """
