@@ -39,6 +39,10 @@ If this is your first time with SwiftStateTree, we recommend reading in the foll
 
 - **[Cookie Clicker Example](examples/cookie-clicker.md)** - Complete multiplayer game example showcasing advanced features
 
+### Game Development
+
+- **[Deterministic Math](deterministic-math/README.md)** - Fixed-point arithmetic, collision detection, and vector operations for server-authoritative games
+
 ### Reference Documentation
 
 - **[Schema Generation](schema/README.md)** - JSON Schema auto-generation
@@ -67,6 +71,11 @@ If this is your first time with SwiftStateTree, we recommend reading in the foll
 
 1. [Macros](macros/README.md) - Use `@SnapshotConvertible` to improve performance
 2. [Core Module](core/README.md) - Understand Runtime operation mechanisms
+
+### I want to build a deterministic game
+
+1. [Deterministic Math](deterministic-math/README.md) - Fixed-point math and collision detection
+2. [Core Module](core/README.md) - StateNode and sync mechanisms
 
 ## 📝 Design & Development Notes
 
