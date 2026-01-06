@@ -10,6 +10,8 @@
         "dequantization",
         "Dequantize",
         "dequantized",
+        "EADDRINUSE",
+        "errno",
         "eslintcache",
         "FIRSTSYNC",
         "HMAC",

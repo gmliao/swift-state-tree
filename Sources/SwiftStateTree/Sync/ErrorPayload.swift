@@ -25,6 +25,11 @@ public enum ErrorCode: String, Codable, Sendable {
     case eventNotRegistered = "EVENT_NOT_REGISTERED"
     case eventInvalidPayload = "EVENT_INVALID_PAYLOAD"
     case eventHandlerError = "EVENT_HANDLER_ERROR"
+    
+    // WebSocket connection errors
+    case websocketPathNotFound = "WEBSOCKET_PATH_NOT_FOUND"
+    case websocketInvalidToken = "WEBSOCKET_INVALID_TOKEN"
+    case websocketMissingToken = "WEBSOCKET_MISSING_TOKEN"
 }
 
 /// Unified error payload structure for all transport errors.
