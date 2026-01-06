@@ -3,7 +3,7 @@
 
 import { ref, computed } from 'vue'
 import type { HeroDefenseState } from '../defs.js'
-import type { PlayAction, PlayResponse } from '../defs.js'
+import type { MoveToEvent, PlayAction, PlayResponse } from '../defs.js'
 
 /**
  * Creates a mock state for testing.
@@ -11,6 +11,7 @@ import type { PlayAction, PlayResponse } from '../defs.js'
  */
 export function createMockState(overrides?: Partial<HeroDefenseState>): HeroDefenseState {
   return {
+    players: {},
     score: 0,
     ...overrides
   }
@@ -27,6 +28,10 @@ export function createMockHeroDefense(initialState?: HeroDefenseState) {
   const isConnected = ref(true)
   const isJoined = ref(true)
   const lastError = ref<string | null>(null)
+
+  const moveTo = (() => {})(async (_payload: MoveToEvent) => {
+    // Mock implementation - customize as needed
+  })
 
   const play = (() => {})(async (_payload: PlayAction): Promise<PlayResponse> => {
     // Mock implementation - customize as needed
@@ -46,6 +51,7 @@ export function createMockHeroDefense(initialState?: HeroDefenseState) {
     isConnected,
     isJoined,
     lastError,
+    moveTo,
     play,
     disconnect,
     connect: (() => {})(),

@@ -8,7 +8,7 @@ import { useGameClient } from "../utils/gameClient";
 const router = useRouter();
 const gameRef = ref<HTMLDivElement | null>(null);
 const phaserGame = ref<Phaser.Game | null>(null);
-const { isConnected, isJoined, disconnect, play, tree } = useGameClient();
+const { isConnected, isJoined, disconnect, play, moveTo, tree, currentPlayerID } = useGameClient();
 
 onMounted(async () => {
   // Check if already connected and joined
@@ -20,14 +20,13 @@ onMounted(async () => {
 
   // Initialize Phaser game
   if (gameRef.value && tree.value) {
-    // Get available space (viewport width and height minus toolbar)
-    const availableWidth = Math.min(window.innerWidth, 1280);
-    const availableHeight = Math.min(window.innerHeight - 64, 720);
+    // Get available space from the container element
+    const containerRect = gameRef.value.getBoundingClientRect();
 
     phaserGame.value = new Phaser.Game({
       type: Phaser.AUTO,
-      width: availableWidth,
-      height: availableHeight,
+      width: containerRect.width || 800,
+      height: containerRect.height || 600,
       parent: gameRef.value,
       backgroundColor: "#ffffff",
       scene: [GameScene],
@@ -39,7 +38,7 @@ onMounted(async () => {
         },
       },
       scale: {
-        mode: Phaser.Scale.FIT,
+        mode: Phaser.Scale.RESIZE,
         autoCenter: Phaser.Scale.CENTER_BOTH,
       },
     });
@@ -47,10 +46,17 @@ onMounted(async () => {
     // Wait for scene to be fully initialized, then set game client
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    // Pass tree and play function to scene (direct access to underlying state)
+    // Pass tree, play function, events, and current player ID to scene
     const scene = phaserGame.value.scene.getScene("GameScene") as GameScene;
     if (scene && tree.value) {
-      scene.setGameClient({ tree: tree.value, play });
+      scene.setGameClient({ 
+        tree: tree.value, 
+        play,
+        events: {
+          moveTo
+        },
+        currentPlayerID: currentPlayerID.value
+      });
     }
   }
 });
@@ -64,7 +70,6 @@ onUnmounted(async () => {
 });
 
 async function handleLeave() {
-  // Disconnect before leaving
   await disconnect();
   // Clear session storage
   sessionStorage.removeItem("wsUrl");
@@ -76,58 +81,50 @@ async function handleLeave() {
 </script>
 
 <template>
-  <v-app>
-    <v-app-bar color="primary" prominent app>
-      <v-toolbar-title>
-        <v-icon start>mdi-gamepad-variant</v-icon>
-        Hero Defense
-      </v-toolbar-title>
-
-      <v-spacer />
-
-      <v-chip
-        :color="isConnected ? 'success' : 'error'"
-        variant="flat"
-        class="mr-2"
-      >
-        {{ isConnected ? "已連接" : "未連接" }}
-      </v-chip>
-
-      <v-chip v-if="isJoined" color="info" variant="flat" class="mr-2">
-        已加入
-      </v-chip>
-
-      <v-btn
-        color="error"
-        variant="flat"
-        size="small"
-        class="mr-2"
-        @click="handleLeave"
-      >
-        <v-icon start size="small">mdi-exit-to-app</v-icon>
-        離開
-      </v-btn>
-    </v-app-bar>
-
-    <v-main class="game-main">
-      <!-- Game ready -->
-      <div v-if="isJoined" ref="gameRef" class="phaser-game" />
-
-      <!-- Not joined - redirect to connect -->
-      <div
-        v-else
-        class="d-flex flex-column align-center justify-center fill-height"
-      >
-        <v-progress-circular
-          indeterminate
-          color="primary"
-          size="64"
-          class="mb-4"
-        />
-        <div class="text-h6 text-medium-emphasis">準備中...</div>
+  <v-main class="game-main" style="height: 100vh; overflow: hidden; padding: 0;">
+    <!-- Floating UI overlay -->
+    <div v-if="isJoined" class="game-overlay">
+      <div class="overlay-top">
+        <v-chip
+          :color="isConnected ? 'success' : 'error'"
+          variant="flat"
+          size="small"
+          class="mr-2"
+        >
+          {{ isConnected ? "已連接" : "未連接" }}
+        </v-chip>
+        <v-chip v-if="isJoined" color="info" variant="flat" size="small" class="mr-2">
+          已加入
+        </v-chip>
+        <v-btn
+          color="error"
+          variant="flat"
+          size="small"
+          @click="handleLeave"
+        >
+          <v-icon start size="small">mdi-exit-to-app</v-icon>
+          離開
+        </v-btn>
       </div>
-    </v-main>
-  </v-app>
+    </div>
+
+    <!-- Game ready -->
+    <div v-if="isJoined" ref="gameRef" class="phaser-game" />
+
+    <!-- Not joined - redirect to connect -->
+    <div
+      v-else
+      class="d-flex flex-column align-center justify-center fill-height"
+    >
+      <v-progress-circular
+        indeterminate
+        color="primary"
+        size="64"
+        class="mb-4"
+      />
+      <div class="text-h6 text-medium-emphasis">準備中...</div>
+    </div>
+  </v-main>
 </template>
 
 <style scoped>
@@ -135,7 +132,7 @@ async function handleLeave() {
   padding: 0 !important;
   overflow: hidden;
   background: #f5f5f5;
-  height: 100%;
+  position: relative;
 }
 
 .phaser-game {
@@ -145,6 +142,23 @@ async function handleLeave() {
   align-items: center;
   justify-content: center;
   overflow: hidden;
+}
+
+.game-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  pointer-events: none;
+}
+
+.overlay-top {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 12px 16px;
+  pointer-events: auto;
 }
 
 .fill-height {

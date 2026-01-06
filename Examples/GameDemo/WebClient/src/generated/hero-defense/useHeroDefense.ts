@@ -7,7 +7,7 @@ import { StateTreeRuntime } from '@swiftstatetree/sdk/core'
 import { HeroDefenseStateTree } from './index.js'
 import { LAND_TYPE } from './bindings.js'
 import type { HeroDefenseState } from '../defs.js'
-import type { PlayAction, PlayResponse } from '../defs.js'
+import type { MoveToEvent, PlayAction, PlayResponse } from '../defs.js'
 
 interface ConnectOptions {
   wsUrl: string
@@ -39,6 +39,7 @@ export interface HeroDefenseComposableReturn {
   connect: (opts: ConnectOptions) => Promise<void>
   disconnect: () => Promise<void>
   play: (payload: PlayAction) => Promise<PlayResponse>
+  moveTo: (payload: MoveToEvent) => Promise<void>
   tree: ComputedRef<HeroDefenseStateTree | null>
 }
 
@@ -143,6 +144,17 @@ export function useHeroDefense(): HeroDefenseComposableReturn {
     }
   }
 
+  async function moveTo(payload: MoveToEvent): Promise<void> {
+    if (!tree.value || !isJoined.value) return
+    try {
+      await tree.value.events.moveTo(payload)
+      lastError.value = null
+    } catch (error) {
+      console.error('moveTo failed:', error)
+      lastError.value = (error as Error).message ?? String(error)
+    }
+  }
+
   return {
     state,
     currentPlayerID,
@@ -153,6 +165,7 @@ export function useHeroDefense(): HeroDefenseComposableReturn {
     connect,
     disconnect,
     play,
+    moveTo,
     // Advanced: access to underlying tree instance
     tree: computed(() => tree.value) as ComputedRef<HeroDefenseStateTree | null>
   }

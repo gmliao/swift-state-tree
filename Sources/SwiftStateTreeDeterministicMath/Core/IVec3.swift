@@ -19,7 +19,6 @@ import simd
 /// let v2 = IVec3(x: 500, y: 300, z: 100)
 /// let sum = v1 + v2  // IVec3(x: 1500, y: 2300, z: 3100)
 /// ```
-@SnapshotConvertible
 public struct IVec3: Codable, Equatable, Hashable, Sendable, CustomStringConvertible {
     /// Internal SIMD storage for optimized operations.
     @usableFromInline
@@ -274,6 +273,23 @@ extension IVec3 {
     /// ```
     public var description: String {
         "IVec3(\(floatX), \(floatY), \(floatZ))"
+    }
+}
+
+// MARK: - SnapshotValueConvertible
+
+extension IVec3: SnapshotValueConvertible {
+    /// Converts IVec3 to SnapshotValue using x, y, and z properties.
+    ///
+    /// This implementation directly accesses storage for optimal performance,
+    /// avoiding the computed property indirection while maintaining the same result.
+    @inlinable
+    public func toSnapshotValue() throws -> SnapshotValue {
+        return .object([
+            "x": .int(Int(storage.x)),
+            "y": .int(Int(storage.y)),
+            "z": .int(Int(storage.z))
+        ])
     }
 }
 

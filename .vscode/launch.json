@@ -22,18 +22,18 @@
             "type": "lldb",
             "request": "launch",
             "args": [],
-            "cwd": "${workspaceFolder:swift-state-tree-internal}",
+            "cwd": "${workspaceFolder:swift-state-tree}",
             "name": "Debug SwiftStateTreeBenchmarks",
-            "program": "${workspaceFolder:swift-state-tree-internal}/.build/debug/SwiftStateTreeBenchmarks",
+            "program": "${workspaceFolder:swift-state-tree}/.build/debug/SwiftStateTreeBenchmarks",
             "preLaunchTask": "swift: Build Debug SwiftStateTreeBenchmarks"
         },
         {
             "type": "lldb",
             "request": "launch",
             "args": [],
-            "cwd": "${workspaceFolder:swift-state-tree-internal}",
+            "cwd": "${workspaceFolder:swift-state-tree}",
             "name": "Release SwiftStateTreeBenchmarks",
-            "program": "${workspaceFolder:swift-state-tree-internal}/.build/release/SwiftStateTreeBenchmarks",
+            "program": "${workspaceFolder:swift-state-tree}/.build/release/SwiftStateTreeBenchmarks",
             "preLaunchTask": "swift: Build Release SwiftStateTreeBenchmarks"
         }
     ]

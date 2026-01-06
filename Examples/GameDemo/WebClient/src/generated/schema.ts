@@ -13,7 +13,7 @@ export type AnyActionID = (typeof ACTION_IDS)[LandID][number]
 export type ActionIDFor<L extends LandID> = (typeof ACTION_IDS)[L][number]
 
 export const CLIENT_EVENT_IDS = {
-  "hero-defense": [] as const,
+  "hero-defense": ["MoveTo"] as const,
 } as const
 export type AnyClientEventID = (typeof CLIENT_EVENT_IDS)[LandID][number]
 export type ClientEventIDFor<L extends LandID> = (typeof CLIENT_EVENT_IDS)[L][number]

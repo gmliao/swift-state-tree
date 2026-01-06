@@ -1,0 +1,80 @@
+{
+  "steps": [
+    {
+      "type": "log",
+      "message": "🚀 Starting Hero Defense movement test"
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "log",
+      "message": "📍 Moving player to position (100, 50)"
+    },
+    {
+      "type": "event",
+      "event": "MoveToEvent",
+      "payload": {
+        "target": {
+          "v": {
+            "x": 100000,
+            "y": 50000
+          }
+        }
+      }
+    },
+    {
+      "type": "wait",
+      "wait": 2000
+    },
+    {
+      "type": "log",
+      "message": "📍 Moving player to position (200, 100)"
+    },
+    {
+      "type": "event",
+      "event": "MoveToEvent",
+      "payload": {
+        "target": {
+          "v": {
+            "x": 200000,
+            "y": 100000
+          }
+        }
+      }
+    },
+    {
+      "type": "wait",
+      "wait": 2000
+    },
+    {
+      "type": "log",
+      "message": "📍 Moving player to position (50, 150)"
+    },
+    {
+      "type": "event",
+      "event": "MoveToEvent",
+      "payload": {
+        "target": {
+          "v": {
+            "x": 50000,
+            "y": 150000
+          }
+        }
+      }
+    },
+    {
+      "type": "wait",
+      "wait": 2000
+    },
+    {
+      "type": "state",
+      "message": "✅ Final state after movement tests"
+    },
+    {
+      "type": "log",
+      "message": "✅ Movement test completed"
+    }
+  ]
+}
