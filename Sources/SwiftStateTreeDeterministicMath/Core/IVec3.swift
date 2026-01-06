@@ -277,6 +277,40 @@ extension IVec3 {
     }
 }
 
+// MARK: - SchemaMetadataProvider
+
+extension IVec3: SchemaMetadataProvider {
+    /// Provides metadata for schema generation.
+    ///
+    /// This allows SchemaGen to correctly extract x, y, and z properties
+    /// even though they are computed properties.
+    public static func getFieldMetadata() -> [FieldMetadata] {
+        [
+            FieldMetadata(
+                name: "x",
+                type: Int32.self,
+                policy: nil,
+                nodeKind: .leaf,
+                defaultValue: nil
+            ),
+            FieldMetadata(
+                name: "y",
+                type: Int32.self,
+                policy: nil,
+                nodeKind: .leaf,
+                defaultValue: nil
+            ),
+            FieldMetadata(
+                name: "z",
+                type: Int32.self,
+                policy: nil,
+                nodeKind: .leaf,
+                defaultValue: nil
+            )
+        ]
+    }
+}
+
 // MARK: - Internal Initializers
 
 extension IVec3 {

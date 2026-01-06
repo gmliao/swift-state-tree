@@ -10,6 +10,161 @@ function generateHeader(): string {
 }
 
 /**
+ * Check if a type name is a DeterministicMath type that needs conversion helpers.
+ */
+function isDeterministicMathType(name: string): boolean {
+  return ['IVec2', 'IVec3', 'Position2', 'Velocity2', 'Acceleration2'].includes(name)
+}
+
+/**
+ * Generate conversion helpers for DeterministicMath types.
+ */
+function generateDeterministicMathHelpers(schema: ProtocolSchema): string {
+  const lines: string[] = []
+  
+  // Fixed-point scale (must match Swift FixedPoint.scale)
+  const SCALE = 1000
+  
+  const hasIVec2 = 'IVec2' in schema.defs
+  const hasIVec3 = 'IVec3' in schema.defs
+  const hasPosition2 = 'Position2' in schema.defs
+  const hasVelocity2 = 'Velocity2' in schema.defs
+  const hasAcceleration2 = 'Acceleration2' in schema.defs
+  
+  if (!hasIVec2 && !hasIVec3) {
+    return ''
+  }
+  
+  lines.push('// DeterministicMath conversion helpers')
+  lines.push('// Fixed-point scale factor (matches Swift FixedPoint.scale)')
+  lines.push(`export const FIXED_POINT_SCALE = ${SCALE}`)
+  lines.push('')
+  
+  if (hasIVec2) {
+    lines.push('/**')
+    lines.push(' * Convert IVec2 to Float coordinates.')
+    lines.push(' * @param vec - The fixed-point integer vector')
+    lines.push(' * @returns Object with x and y as float numbers')
+    lines.push(' * @example')
+    lines.push(' * const vec: IVec2 = { x: 1500, y: 2300 }')
+    lines.push(' * const float = IVec2ToFloat(vec) // { x: 1.5, y: 2.3 }')
+    lines.push(' */')
+    lines.push('export function IVec2ToFloat(vec: IVec2): { x: number; y: number } {')
+    lines.push(`  return { x: vec.x / ${SCALE}, y: vec.y / ${SCALE} }`)
+    lines.push('}')
+    lines.push('')
+    
+    lines.push('/**')
+    lines.push(' * Convert Float coordinates to IVec2.')
+    lines.push(' * @param x - X coordinate as float')
+    lines.push(' * @param y - Y coordinate as float')
+    lines.push(' * @returns IVec2 with quantized integer values')
+    lines.push(' * @example')
+    lines.push(' * const vec = FloatToIVec2(1.5, 2.3) // { x: 1500, y: 2300 }')
+    lines.push(' */')
+    lines.push('export function FloatToIVec2(x: number, y: number): IVec2 {')
+    lines.push(`  return { x: Math.round(x * ${SCALE}), y: Math.round(y * ${SCALE}) }`)
+    lines.push('}')
+    lines.push('')
+  }
+  
+  if (hasIVec3) {
+    lines.push('/**')
+    lines.push(' * Convert IVec3 to Float coordinates.')
+    lines.push(' * @param vec - The fixed-point integer vector')
+    lines.push(' * @returns Object with x, y, z as float numbers')
+    lines.push(' */')
+    lines.push('export function IVec3ToFloat(vec: IVec3): { x: number; y: number; z: number } {')
+    lines.push(`  return { x: vec.x / ${SCALE}, y: vec.y / ${SCALE}, z: vec.z / ${SCALE} }`)
+    lines.push('}')
+    lines.push('')
+    
+    lines.push('/**')
+    lines.push(' * Convert Float coordinates to IVec3.')
+    lines.push(' * @param x - X coordinate as float')
+    lines.push(' * @param y - Y coordinate as float')
+    lines.push(' * @param z - Z coordinate as float')
+    lines.push(' * @returns IVec3 with quantized integer values')
+    lines.push(' */')
+    lines.push('export function FloatToIVec3(x: number, y: number, z: number): IVec3 {')
+    lines.push(`  return { x: Math.round(x * ${SCALE}), y: Math.round(y * ${SCALE}), z: Math.round(z * ${SCALE}) }`)
+    lines.push('}')
+    lines.push('')
+  }
+  
+  if (hasPosition2) {
+    lines.push('/**')
+    lines.push(' * Convert Position2 to Float coordinates.')
+    lines.push(' * @param pos - The Position2 value')
+    lines.push(' * @returns Object with x and y as float numbers')
+    lines.push(' */')
+    lines.push('export function Position2ToFloat(pos: Position2): { x: number; y: number } {')
+    lines.push('  return IVec2ToFloat(pos.v)')
+    lines.push('}')
+    lines.push('')
+    
+    lines.push('/**')
+    lines.push(' * Convert Float coordinates to Position2.')
+    lines.push(' * @param x - X coordinate as float')
+    lines.push(' * @param y - Y coordinate as float')
+    lines.push(' * @returns Position2 with quantized integer values')
+    lines.push(' */')
+    lines.push('export function FloatToPosition2(x: number, y: number): Position2 {')
+    lines.push('  return { v: FloatToIVec2(x, y) }')
+    lines.push('}')
+    lines.push('')
+  }
+  
+  if (hasVelocity2) {
+    lines.push('/**')
+    lines.push(' * Convert Velocity2 to Float coordinates.')
+    lines.push(' * @param vel - The Velocity2 value')
+    lines.push(' * @returns Object with x and y as float numbers')
+    lines.push(' */')
+    lines.push('export function Velocity2ToFloat(vel: Velocity2): { x: number; y: number } {')
+    lines.push('  return IVec2ToFloat(vel.v)')
+    lines.push('}')
+    lines.push('')
+    
+    lines.push('/**')
+    lines.push(' * Convert Float coordinates to Velocity2.')
+    lines.push(' * @param x - X coordinate as float')
+    lines.push(' * @param y - Y coordinate as float')
+    lines.push(' * @returns Velocity2 with quantized integer values')
+    lines.push(' */')
+    lines.push('export function FloatToVelocity2(x: number, y: number): Velocity2 {')
+    lines.push('  return { v: FloatToIVec2(x, y) }')
+    lines.push('}')
+    lines.push('')
+  }
+  
+  if (hasAcceleration2) {
+    lines.push('/**')
+    lines.push(' * Convert Acceleration2 to Float coordinates.')
+    lines.push(' * @param accel - The Acceleration2 value')
+    lines.push(' * @returns Object with x and y as float numbers')
+    lines.push(' */')
+    lines.push('export function Acceleration2ToFloat(accel: Acceleration2): { x: number; y: number } {')
+    lines.push('  return IVec2ToFloat(accel.v)')
+    lines.push('}')
+    lines.push('')
+    
+    lines.push('/**')
+    lines.push(' * Convert Float coordinates to Acceleration2.')
+    lines.push(' * @param x - X coordinate as float')
+    lines.push(' * @param y - Y coordinate as float')
+    lines.push(' * @returns Acceleration2 with quantized integer values')
+    lines.push(' */')
+    lines.push('export function FloatToAcceleration2(x: number, y: number): Acceleration2 {')
+    lines.push('  return { v: FloatToIVec2(x, y) }')
+    lines.push('}')
+    lines.push('')
+  }
+  
+  return lines.join('\n')
+}
+
+/**
  * Generate the contents of defs.ts.
  */
 export function generateDefsTs(schema: ProtocolSchema): string {
@@ -24,6 +179,7 @@ export function generateDefsTs(schema: ProtocolSchema): string {
   // Keep output stable by sorting definition names.
   const sortedDefNames = [...defNames].sort()
 
+  // Generate type definitions
   for (const name of sortedDefNames) {
     const def = schema.defs[name]
     const tsType = mapSchemaDefToTsType(def, ctx)
@@ -32,6 +188,12 @@ export function generateDefsTs(schema: ProtocolSchema): string {
 
   if (lines[lines.length - 1] !== '') {
     lines.push('')
+  }
+
+  // Generate conversion helpers for DeterministicMath types
+  const helpers = generateDeterministicMathHelpers(schema)
+  if (helpers) {
+    lines.push(helpers)
   }
 
   return lines.join('\n')

@@ -500,6 +500,66 @@ export class StateTreeView {
   }
 
   /**
+   * Check if an object matches IVec2 structure (has x and y as numbers)
+   */
+  private isIVec2(obj: any): boolean {
+    return (
+      obj &&
+      typeof obj === 'object' &&
+      !Array.isArray(obj) &&
+      typeof obj.x === 'number' &&
+      typeof obj.y === 'number' &&
+      Object.keys(obj).length === 2
+    )
+  }
+
+  /**
+   * Check if an object matches IVec3 structure (has x, y, z as numbers)
+   */
+  private isIVec3(obj: any): boolean {
+    return (
+      obj &&
+      typeof obj === 'object' &&
+      !Array.isArray(obj) &&
+      typeof obj.x === 'number' &&
+      typeof obj.y === 'number' &&
+      typeof obj.z === 'number' &&
+      Object.keys(obj).length === 3
+    )
+  }
+
+  /**
+   * Check if an object matches Position2/Velocity2/Acceleration2 structure (has v property with IVec2)
+   */
+  private isSemantic2(obj: any): boolean {
+    return (
+      obj &&
+      typeof obj === 'object' &&
+      !Array.isArray(obj) &&
+      obj.v &&
+      typeof obj.v === 'object' &&
+      this.isIVec2(obj.v) &&
+      Object.keys(obj).length === 1
+    )
+  }
+
+  /**
+   * Convert IVec2 to float coordinates
+   */
+  private convertIVec2ToFloat(vec: { x: number; y: number }): { x: number; y: number } {
+    const SCALE = 1000
+    return { x: vec.x / SCALE, y: vec.y / SCALE }
+  }
+
+  /**
+   * Convert IVec3 to float coordinates
+   */
+  private convertIVec3ToFloat(vec: { x: number; y: number; z: number }): { x: number; y: number; z: number } {
+    const SCALE = 1000
+    return { x: vec.x / SCALE, y: vec.y / SCALE, z: vec.z / SCALE }
+  }
+
+  /**
    * Decode SnapshotValue
    * 
    * Decodes native JSON format:
@@ -509,6 +569,9 @@ export class StateTreeView {
    * - string -> JSON string
    * - array -> JSON array
    * - object -> JSON object
+   * 
+   * Automatically converts DeterministicMath types (IVec2, IVec3, Position2, Velocity2, Acceleration2)
+   * from fixed-point integers to float values for client-side use.
    */
   private decodeSnapshotValue(value: any): any {
     // Handle null/undefined
@@ -526,6 +589,19 @@ export class StateTreeView {
     
     // Handle native JSON objects: recursively decode all values
     if (value && typeof value === 'object') {
+      // Auto-convert DeterministicMath types to float
+      if (this.isIVec2(value)) {
+        return this.convertIVec2ToFloat(value)
+      }
+      if (this.isIVec3(value)) {
+        return this.convertIVec3ToFloat(value)
+      }
+      if (this.isSemantic2(value)) {
+        // Convert semantic types (Position2, Velocity2, Acceleration2)
+        return { v: this.convertIVec2ToFloat(value.v) }
+      }
+      
+      // Recursively decode nested objects
       const result: Record<string, any> = {}
       for (const [key, v] of Object.entries(value)) {
         result[key] = this.decodeSnapshotValue(v)

@@ -127,3 +127,50 @@ extension Velocity2 {
         Velocity2(v: lhs.v + rhs.v)
     }
 }
+
+// MARK: - SchemaMetadataProvider
+
+extension Position2: SchemaMetadataProvider {
+    /// Provides metadata for schema generation.
+    public static func getFieldMetadata() -> [FieldMetadata] {
+        [
+            FieldMetadata(
+                name: "v",
+                type: IVec2.self,
+                policy: nil,
+                nodeKind: .leaf,
+                defaultValue: nil
+            )
+        ]
+    }
+}
+
+extension Velocity2: SchemaMetadataProvider {
+    /// Provides metadata for schema generation.
+    public static func getFieldMetadata() -> [FieldMetadata] {
+        [
+            FieldMetadata(
+                name: "v",
+                type: IVec2.self,
+                policy: nil,
+                nodeKind: .leaf,
+                defaultValue: nil
+            )
+        ]
+    }
+}
+
+extension Acceleration2: SchemaMetadataProvider {
+    /// Provides metadata for schema generation.
+    public static func getFieldMetadata() -> [FieldMetadata] {
+        [
+            FieldMetadata(
+                name: "v",
+                type: IVec2.self,
+                policy: nil,
+                nodeKind: .leaf,
+                defaultValue: nil
+            )
+        ]
+    }
+}
