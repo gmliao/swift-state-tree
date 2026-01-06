@@ -10,7 +10,8 @@ struct SchemaGen {
         // Collect all LandDefinitions to generate schema for
         let landDefinitions = [
             AnyLandDefinition(CookieGame.makeLand()),
-            AnyLandDefinition(CounterDemo.makeLand())
+            AnyLandDefinition(CounterDemo.makeLand()),
+            AnyLandDefinition(DeterministicMathDemo.makeLand())
             // Add more lands here as needed:
             // AnyLandDefinition(AnotherGame.makeLand()),
         ]

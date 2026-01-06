@@ -395,6 +395,86 @@ extension IVec2 {
         // Rotate -90° (90° CW): (x, y) -> (y, -x)
         IVec2(fixedPointX: storage.y, fixedPointY: -storage.x)
     }
+    
+    /// Computes the 2D cross product (scalar result).
+    ///
+    /// - Parameter other: The other vector.
+    /// - Returns: The cross product as Int64 (x1 * y2 - y1 * x2).
+    ///
+    /// In 2D, the cross product is a scalar representing the signed area
+    /// of the parallelogram formed by the two vectors.
+    ///
+    /// Example:
+    /// ```swift
+    /// let v1 = IVec2(x: 1.0, y: 0.0)
+    /// let v2 = IVec2(x: 0.0, y: 1.0)
+    /// let cross = v1.cross(v2)  // 1000 (positive, counterclockwise)
+    /// ```
+    @inlinable
+    public func cross(_ other: IVec2) -> Int64 {
+        // 2D cross product: x1 * y2 - y1 * x2
+        return Int64(x) * Int64(other.y) - Int64(y) * Int64(other.x)
+    }
+    
+    /// Projects this vector onto another vector.
+    ///
+    /// - Parameter other: The vector to project onto.
+    /// - Returns: The projection vector.
+    ///
+    /// The projection is: (this · other / ||other||^2) * other
+    ///
+    /// Example:
+    /// ```swift
+    /// let v1 = IVec2(x: 1.0, y: 1.0)
+    /// let v2 = IVec2(x: 1.0, y: 0.0)
+    /// let proj = v1.project(onto: v2)  // IVec2(x: 1.0, y: 0.0)
+    /// ```
+    public func project(onto other: IVec2) -> IVec2 {
+        let otherSq = other.magnitudeSquared()
+        if otherSq == 0 {
+            return IVec2(x: 0.0, y: 0.0)  // Can't project onto zero vector
+        }
+        
+        let dot = self.dot(other)
+        let scale = Float(dot) / Float(otherSq) * 1000.0  // Scale factor
+        
+        return IVec2(
+            x: other.floatX * scale / 1000.0,
+            y: other.floatY * scale / 1000.0
+        )
+    }
+    
+    /// Reflects this vector off a surface with the given normal.
+    ///
+    /// - Parameter normal: The surface normal (should be normalized for best results).
+    /// - Returns: The reflected vector.
+    ///
+    /// Reflection formula: reflected = v - 2 * (v · n) * n
+    ///
+    /// Example:
+    /// ```swift
+    /// let velocity = IVec2(x: 1.0, y: -1.0)  // Moving down-right
+    /// let normal = IVec2(x: 0.0, y: 1.0)  // Surface pointing up
+    /// let reflected = velocity.reflect(off: normal)  // Bounces up-right
+    /// ```
+    public func reflect(off normal: IVec2) -> IVec2 {
+        let dot = self.dot(normal)
+        let normalSq = normal.magnitudeSquared()
+        
+        if normalSq == 0 {
+            return self  // Can't reflect off zero normal
+        }
+        
+        // reflected = v - 2 * (v · n / ||n||^2) * n
+        let scale = Float(2 * dot) / Float(normalSq) * 1000.0
+        
+        let scaledNormal = IVec2(
+            x: normal.floatX * scale / 1000.0,
+            y: normal.floatY * scale / 1000.0
+        )
+        
+        return self - scaledNormal
+    }
 }
 
 // MARK: - CustomStringConvertible
@@ -411,6 +491,33 @@ extension IVec2 {
     /// ```
     public var description: String {
         "IVec2(\(floatX), \(floatY))"
+    }
+}
+
+// MARK: - SchemaMetadataProvider
+
+extension IVec2: SchemaMetadataProvider {
+    /// Provides metadata for schema generation.
+    ///
+    /// This allows SchemaGen to correctly extract x and y properties
+    /// even though they are computed properties.
+    public static func getFieldMetadata() -> [FieldMetadata] {
+        [
+            FieldMetadata(
+                name: "x",
+                type: Int32.self,
+                policy: nil,
+                nodeKind: .leaf,
+                defaultValue: nil
+            ),
+            FieldMetadata(
+                name: "y",
+                type: Int32.self,
+                policy: nil,
+                nodeKind: .leaf,
+                defaultValue: nil
+            )
+        ]
     }
 }
 

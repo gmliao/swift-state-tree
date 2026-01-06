@@ -3,12 +3,13 @@
 
 export const SCHEMA_VERSION = "0.1.0" as const
 
-export const LAND_IDS = ["cookie","counter"] as const
+export const LAND_IDS = ["cookie","counter","deterministic-math-demo"] as const
 export type LandID = (typeof LAND_IDS)[number]
 
 export const ACTION_IDS = {
   "cookie": ["BuyUpgrade"] as const,
   "counter": ["Increment"] as const,
+  "deterministic-math-demo": [] as const,
 } as const
 export type AnyActionID = (typeof ACTION_IDS)[LandID][number]
 export type ActionIDFor<L extends LandID> = (typeof ACTION_IDS)[L][number]
@@ -16,6 +17,7 @@ export type ActionIDFor<L extends LandID> = (typeof ACTION_IDS)[L][number]
 export const CLIENT_EVENT_IDS = {
   "cookie": ["ClickCookie"] as const,
   "counter": [] as const,
+  "deterministic-math-demo": [] as const,
 } as const
 export type AnyClientEventID = (typeof CLIENT_EVENT_IDS)[LandID][number]
 export type ClientEventIDFor<L extends LandID> = (typeof CLIENT_EVENT_IDS)[L][number]
@@ -23,6 +25,7 @@ export type ClientEventIDFor<L extends LandID> = (typeof CLIENT_EVENT_IDS)[L][nu
 export const SERVER_EVENT_IDS = {
   "cookie": [] as const,
   "counter": [] as const,
+  "deterministic-math-demo": [] as const,
 } as const
 export type AnyServerEventID = (typeof SERVER_EVENT_IDS)[LandID][number]
 export type ServerEventIDFor<L extends LandID> = (typeof SERVER_EVENT_IDS)[L][number]

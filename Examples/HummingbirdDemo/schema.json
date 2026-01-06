@@ -1,5 +1,19 @@
 {
   "defs" : {
+    "Acceleration2" : {
+      "properties" : {
+        "v" : {
+          "$ref" : "#\/defs\/IVec2"
+        }
+      },
+      "required" : [
+        "v"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
     "BuyUpgradeAction" : {
       "properties" : {
         "upgradeID" : {
@@ -177,6 +191,86 @@
         "nodeKind" : "object"
       }
     },
+    "DeterministicMathDemoState" : {
+      "properties" : {
+        "directVector" : {
+          "$ref" : "#\/defs\/IVec2"
+        },
+        "playerAccelerations" : {
+          "additionalProperties" : {
+            "$ref" : "#\/defs\/Acceleration2"
+          },
+          "default" : {
+
+          },
+          "type" : "object",
+          "x-stateTree" : {
+            "nodeKind" : "map",
+            "sync" : {
+              "policy" : "broadcast"
+            }
+          }
+        },
+        "playerPositions" : {
+          "additionalProperties" : {
+            "$ref" : "#\/defs\/Position2"
+          },
+          "default" : {
+
+          },
+          "type" : "object",
+          "x-stateTree" : {
+            "nodeKind" : "map",
+            "sync" : {
+              "policy" : "broadcast"
+            }
+          }
+        },
+        "playerVelocities" : {
+          "additionalProperties" : {
+            "$ref" : "#\/defs\/Velocity2"
+          },
+          "default" : {
+
+          },
+          "type" : "object",
+          "x-stateTree" : {
+            "nodeKind" : "map",
+            "sync" : {
+              "policy" : "broadcast"
+            }
+          }
+        }
+      },
+      "required" : [
+        "playerPositions",
+        "playerVelocities",
+        "playerAccelerations",
+        "directVector"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "object"
+      }
+    },
+    "IVec2" : {
+      "properties" : {
+        "x" : {
+          "type" : "integer"
+        },
+        "y" : {
+          "type" : "integer"
+        }
+      },
+      "required" : [
+        "x",
+        "y"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
     "IncrementAction" : {
       "properties" : {
 
@@ -197,6 +291,20 @@
       },
       "required" : [
         "newCount"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
+    "Position2" : {
+      "properties" : {
+        "v" : {
+          "$ref" : "#\/defs\/IVec2"
+        }
+      },
+      "required" : [
+        "v"
       ],
       "type" : "object",
       "x-stateTree" : {
@@ -229,6 +337,20 @@
       },
       "required" : [
         "patches"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
+    "Velocity2" : {
+      "properties" : {
+        "v" : {
+          "$ref" : "#\/defs\/IVec2"
+        }
+      },
+      "required" : [
+        "v"
       ],
       "type" : "object",
       "x-stateTree" : {
@@ -280,6 +402,26 @@
         },
         "snapshot" : {
           "$ref" : "#\/defs\/CounterState"
+        }
+      }
+    },
+    "deterministic-math-demo" : {
+      "actions" : {
+
+      },
+      "clientEvents" : {
+
+      },
+      "events" : {
+
+      },
+      "stateType" : "DeterministicMathDemoState",
+      "sync" : {
+        "diff" : {
+          "$ref" : "#\/defs\/StateDiff"
+        },
+        "snapshot" : {
+          "$ref" : "#\/defs\/DeterministicMathDemoState"
         }
       }
     }

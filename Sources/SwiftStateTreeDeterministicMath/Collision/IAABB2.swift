@@ -158,3 +158,27 @@ public struct IAABB2: Codable, Equatable, Sendable {
         return Int64(size.x) * Int64(size.y)
     }
 }
+
+// MARK: - SchemaMetadataProvider
+
+extension IAABB2: SchemaMetadataProvider {
+    /// Provides metadata for schema generation.
+    public static func getFieldMetadata() -> [FieldMetadata] {
+        [
+            FieldMetadata(
+                name: "min",
+                type: IVec2.self,
+                policy: nil,
+                nodeKind: .leaf,
+                defaultValue: nil
+            ),
+            FieldMetadata(
+                name: "max",
+                type: IVec2.self,
+                policy: nil,
+                nodeKind: .leaf,
+                defaultValue: nil
+            )
+        ]
+    }
+}
