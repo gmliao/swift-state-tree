@@ -1,10 +1,10 @@
 import Phaser from 'phaser'
-import type { Ref } from 'vue'
-import type { HeroDefenseState } from '../generated/defs'
+import type { HeroDefenseStateTree } from '../generated/hero-defense/index'
+import type { PlayAction, PlayResponse } from '../generated/defs'
 
 interface GameClient {
-  state: Ref<HeroDefenseState | null>
-  play: (payload: {}) => Promise<any>
+  tree: HeroDefenseStateTree | null
+  play: (payload: PlayAction) => Promise<PlayResponse>
 }
 
 export class GameScene extends Phaser.Scene {
@@ -18,9 +18,7 @@ export class GameScene extends Phaser.Scene {
   }
   
   setGameClient(client: GameClient) {
-    console.log('[GameScene] setGameClient called', client ? 'with client' : 'with null')
     this.gameClient = client
-    console.log('[GameScene] gameClient set, this.gameClient =', this.gameClient ? 'not null' : 'null')
     
     // If scene is already created, update score immediately
     if (this.scoreText) {
@@ -29,8 +27,6 @@ export class GameScene extends Phaser.Scene {
   }
   
   create() {
-    console.log('[GameScene] create() called, gameClient =', this.gameClient ? 'not null' : 'null')
-    
     // Create white background (use scene dimensions)
     const width = this.scale.width
     const height = this.scale.height
@@ -49,7 +45,6 @@ export class GameScene extends Phaser.Scene {
     
     // Add click handler to player - send action to increase score
     this.player.on('pointerdown', () => {
-      console.log('[GameScene] Player clicked! gameClient =', this.gameClient ? 'not null' : 'null')
       this.sendPlayAction()
     })
     
@@ -77,10 +72,7 @@ export class GameScene extends Phaser.Scene {
     
     // Update score when state changes (if gameClient is already set)
     if (this.gameClient) {
-      console.log('[GameScene] gameClient available in create(), updating state')
       this.updateFromState()
-    } else {
-      console.warn('[GameScene] gameClient not available in create(), will be set later')
     }
   }
   
@@ -120,10 +112,10 @@ export class GameScene extends Phaser.Scene {
   }
   
   private updateFromState() {
-    if (!this.gameClient || !this.gameClient.state) return
+    if (!this.gameClient || !this.gameClient.tree) return
     
-    // Access .value to get the current reactive state value
-    const currentState = this.gameClient.state.value
+    // Direct access to underlying state (no Vue reactivity)
+    const currentState = this.gameClient.tree.state as { score?: number }
     if (!currentState) return
     
     // Update score from state
@@ -132,17 +124,12 @@ export class GameScene extends Phaser.Scene {
   }
   
   private async sendPlayAction() {
-    if (!this.gameClient) {
-      console.warn('[GameScene] Cannot send action: gameClient is null')
-      return
-    }
+    if (!this.gameClient) return
     
-    console.log('[GameScene] Sending PlayAction...')
     try {
-      const response = await this.gameClient.play({})
-      console.log('[GameScene] PlayAction response:', response)
+      await this.gameClient.play({})
     } catch (error) {
-      console.error('[GameScene] Failed to send action:', error)
+      console.error('Failed to send action:', error)
     }
   }
 }
