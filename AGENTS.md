@@ -6,6 +6,13 @@
 - `Sources/SwiftStateTreeHummingbird`: Hummingbird integration (LandHost, LandServer, WebSocket adapter).
 - `Sources/SwiftStateTreeMatchmaking`: matchmaking service and lobby functionality.
 - `Sources/SwiftStateTreeMacros`: compile-time macros (`@StateNodeBuilder`, `@Payload`, `@SnapshotConvertible`).
+- `Sources/SwiftStateTreeDeterministicMath`: deterministic math library for server-authoritative games.
+  - `Core/`: Fixed-point arithmetic (`FixedPoint`), integer vectors (`IVec2`, `IVec3`) with SIMD optimization.
+  - `Collision/`: Collision detection (`IAABB2`, `ICircle`, `IRay`, `ILineSegment`) for 2D games.
+  - `Semantic/`: Type-safe semantic types (`Position2`, `Velocity2`, `Acceleration2`).
+  - `Grid/`: Grid-based coordinate conversions (`Grid2`).
+  - `Overflow/`: Overflow handling policies (`OverflowPolicy`).
+  - All operations use Int32 fixed-point arithmetic for deterministic behavior across platforms.
 - `Sources/SwiftStateTreeBenchmarks`: benchmark executable.
 - `Examples/HummingbirdDemo`: demo project with unified `DemoServer` and web client.
 - `Tests/SwiftStateTreeTests`: unit tests for the library.
@@ -39,7 +46,7 @@
 
 ## Testing Guidelines
 - **Framework: Swift Testing** (Swift 6's new testing framework, not XCTest).
-- **Test modules**: `SwiftStateTreeTests` (core), `SwiftStateTreeTransportTests` (transport), `SwiftStateTreeHummingbirdTests` (Hummingbird), `SwiftStateTreeMacrosTests` (macros), `SwiftStateTreeMatchmakingTests` (matchmaking).
+- **Test modules**: `SwiftStateTreeTests` (core), `SwiftStateTreeTransportTests` (transport), `SwiftStateTreeHummingbirdTests` (Hummingbird), `SwiftStateTreeMacrosTests` (macros), `SwiftStateTreeMatchmakingTests` (matchmaking), `SwiftStateTreeDeterministicMathTests` (deterministic math).
 - Add tests under appropriate test module, mirroring the type under test (e.g., `StateTreeTests.swift`).
 - Use `@Test` attribute with descriptive names: `@Test("Description of what is being tested")`.
 - Use `#expect()` for assertions instead of `XCTAssert*`.

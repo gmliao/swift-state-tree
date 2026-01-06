@@ -16,6 +16,7 @@ SwiftStateTree adopts a modular design with clear responsibilities for each modu
 | **SwiftStateTreeHummingbird** | Hummingbird integration | WebSocket Hosting, JWT/Guest authentication, Admin routes |
 | **SwiftStateTreeMatchmaking** | Matchmaking service | MatchmakingService, Lobby support |
 | **SwiftStateTreeMacros** | Compile-time tools | `@StateNodeBuilder`, `@Payload`, `@SnapshotConvertible` |
+| **SwiftStateTreeDeterministicMath** | Deterministic math | Fixed-point arithmetic, collision detection, vector operations for server-authoritative games |
 | **SwiftStateTreeBenchmarks** | Benchmarks | Performance test executable |
 
 ### Module Dependencies

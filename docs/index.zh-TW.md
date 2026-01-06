@@ -39,6 +39,10 @@
 
 - **[Cookie Clicker 範例](examples/cookie-clicker.zh-TW.md)** - 完整的多玩家遊戲範例，展示進階功能
 
+### 遊戲開發
+
+- **[確定性數學運算](deterministic-math/README.zh-TW.md)** - 固定點運算、碰撞檢測和向量運算，用於伺服器權威遊戲
+
 ### 參考文檔
 
 - **[Schema 生成](schema/README.zh-TW.md)** - JSON Schema 自動生成
@@ -67,6 +71,11 @@
 
 1. [Macros](macros/README.zh-TW.md) - 使用 `@SnapshotConvertible` 提升效能
 2. [核心模組](core/README.zh-TW.md) - 了解 Runtime 運作機制
+
+### 我想建立確定性遊戲
+
+1. [確定性數學運算](deterministic-math/README.zh-TW.md) - 固定點運算與碰撞檢測
+2. [核心模組](core/README.zh-TW.md) - StateNode 與同步機制
 
 ## 📝 設計與開發筆記
 
