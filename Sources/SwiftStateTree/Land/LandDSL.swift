@@ -535,9 +535,9 @@ public func Tick<State: StateNodeProtocol>(
     }
 }
 
-/// Configures periodic network synchronization with a read-only callback.
+/// Configures periodic state synchronization with a read-only callback.
 ///
-/// **Design Note**: Network sync is read-only and does not modify state. It only triggers
+/// **Design Note**: State sync is read-only and does not modify state. It only triggers
 /// the synchronization mechanism to send state updates to connected clients.
 /// The callback is read-only and will be called during sync operations.
 /// Use this callback for logging, metrics collection, or other read-only operations.
@@ -549,7 +549,7 @@ public func Tick<State: StateNodeProtocol>(
 ///     Tick(every: .milliseconds(50)) { state, ctx in
 ///         state.updatePhysics()  // Game gameplay logic
 ///     }
-///     NetworkSync(every: .milliseconds(100)) { state, ctx in
+///     StateSync(every: .milliseconds(100)) { state, ctx in
 ///         // Read-only callback - will be called during sync
 ///         // Do NOT modify state here - use Tick for state mutations
 ///         print("Syncing at tick \(ctx.tickId ?? -1)")
@@ -560,7 +560,7 @@ public func Tick<State: StateNodeProtocol>(
 /// - Parameters:
 ///   - interval: The duration between sync operations.
 ///   - body: A read-only callback to execute when sync is triggered.
-public func NetworkSync<State: StateNodeProtocol>(
+public func StateSync<State: StateNodeProtocol>(
     every interval: Duration,
     _ body: @escaping @Sendable (State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
@@ -570,7 +570,7 @@ public func NetworkSync<State: StateNodeProtocol>(
     }
 }
 
-/// Configures periodic network synchronization without a callback.
+/// Configures periodic state synchronization without a callback.
 ///
 /// **Note**: This version requires explicit type specification in some contexts.
 /// For better type inference, use the version with a callback parameter.
@@ -581,12 +581,12 @@ public func NetworkSync<State: StateNodeProtocol>(
 ///     Tick(every: .milliseconds(50)) { state, ctx in
 ///         state.updatePhysics()
 ///     }
-///     NetworkSync<GameState>(every: .milliseconds(100))  // Explicit type required
+///     StateSync<GameState>(every: .milliseconds(100))  // Explicit type required
 /// }
 /// ```
 ///
 /// - Parameter interval: The duration between sync operations.
-public func NetworkSync<State: StateNodeProtocol>(
+public func StateSync<State: StateNodeProtocol>(
     every interval: Duration
 ) -> LifetimeDirective<State> {
     return { config in

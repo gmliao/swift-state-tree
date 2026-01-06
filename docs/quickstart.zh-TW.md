@@ -70,7 +70,7 @@ let land = Land("demo", using: GameState.self) {
         }
         
         // 網路同步（唯讀 callback 用於類型推斷）
-        NetworkSync(every: .milliseconds(100)) { (state: GameState, ctx: LandContext) in
+        StateSync(every: .milliseconds(100)) { (state: GameState, ctx: LandContext) in
             // 唯讀 callback - 會在 sync 時被調用
             // 請勿在此修改 state - 使用 Tick 進行 state 變更
             // 用於日誌記錄、指標收集或其他唯讀操作

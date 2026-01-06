@@ -92,7 +92,7 @@ Resolver 先並行執行，成功後再同步進入 handler。
 ## Lifetime
 
 - `Tick(every:)`：遊戲邏輯更新（可修改 state）
-- `NetworkSync(every:)`：網路同步（只讀 callback，會被調用）
+- `StateSync(every:)`：狀態同步（只讀 callback，會被調用）
 - `DestroyWhenEmpty(after:)`：空房間自動關閉
 - `PersistSnapshot(every:)`：快照週期
 - `OnInitialize` / `OnFinalize` / `AfterFinalize` / `OnShutdown`
@@ -111,13 +111,13 @@ Lifetime {
     
     // 網路同步（10Hz）
     // Callback 是唯讀的，會在 sync 時被調用 - 請勿修改 state
-    NetworkSync(every: .milliseconds(100)) { (state: GameState, ctx: LandContext) in
+    StateSync(every: .milliseconds(100)) { (state: GameState, ctx: LandContext) in
         // 唯讀 callback - 會在 sync 時被調用
         // 用於日誌記錄、指標收集或其他唯讀操作
         // Network sync 機制會在 callback 之後觸發網路同步
     }
-    // 如果未設定 NetworkSync，會自動配置為與 tick interval 相同
+    // 如果未設定 StateSync，會自動配置為與 tick interval 相同
 }
 ```
 
-**注意**：`Tick` 是重播功能中唯一可修改 state 的來源。`NetworkSync` 僅觸發網路同步，不會修改 state。可選的 callback 是唯讀的，會在 sync 操作時被調用，用於日誌記錄、指標收集或其他唯讀操作。
+**注意**：`Tick` 是重播功能中唯一可修改 state 的來源。`StateSync` 僅觸發狀態同步，不會修改 state。可選的 callback 是唯讀的，會在 sync 操作時被調用，用於日誌記錄、指標收集或其他唯讀操作。

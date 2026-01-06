@@ -135,7 +135,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // Auto-configure sync to match tick interval if sync is not explicitly set
                 effectiveSyncInterval = tick
                 self.logger.warning(
-                    "⚠️ Sync interval not configured for land '\(definition.id)'. Auto-configuring sync to match tick interval (\(tick)). Consider explicitly setting NetworkSync(every:) in Lifetime block for better control.",
+                    "⚠️ Sync interval not configured for land '\(definition.id)'. Auto-configuring sync to match tick interval (\(tick)). Consider explicitly setting StateSync(every:) in Lifetime block for better control.",
                     metadata: [
                         "landID": .string(definition.id),
                         "tickInterval": .string("\(tick)"),

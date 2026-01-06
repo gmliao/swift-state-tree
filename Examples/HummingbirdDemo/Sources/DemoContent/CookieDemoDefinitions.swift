@@ -307,7 +307,7 @@ public enum CookieGame {
                 }
 
                 // Network synchronization (read-only callback will be called during sync)
-                NetworkSync(every: .milliseconds(300)) { (state: CookieGameState, ctx: LandContext) in
+                StateSync(every: .milliseconds(300)) { (state: CookieGameState, ctx: LandContext) in
                     // Read-only callback - will be called during sync
                     // Do NOT modify state here - use Tick for state mutations
                     // Use for logging, metrics, or other read-only operations
