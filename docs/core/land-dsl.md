@@ -92,7 +92,7 @@ Resolvers execute in parallel first, then synchronously enter handler after succ
 ## Lifetime
 
 - `Tick(every:)`: Game gameplay logic updates (can modify state)
-- `NetworkSync(every:)`: Network synchronization (read-only callback, will be called)
+- `StateSync(every:)`: State synchronization (read-only callback, will be called)
 - `DestroyWhenEmpty(after:)`: Auto-close empty rooms
 - `PersistSnapshot(every:)`: Snapshot period
 - `OnInitialize` / `OnFinalize` / `AfterFinalize` / `OnShutdown`
@@ -111,13 +111,13 @@ Lifetime {
     
     // Network synchronization (10Hz)
     // Callback is read-only and will be called during sync - do NOT modify state
-    NetworkSync(every: .milliseconds(100)) { (state: GameState, ctx: LandContext) in
+    StateSync(every: .milliseconds(100)) { (state: GameState, ctx: LandContext) in
         // Read-only callback - will be called during sync
         // Use for logging, metrics, or other read-only operations
         // Network sync mechanism triggers network synchronization after callback
     }
-    // If NetworkSync is not set, it auto-configures to match tick interval
+    // If StateSync is not set, it auto-configures to match tick interval
 }
 ```
 
-**Note**: `Tick` is the only source of state mutations for replay functionality. `NetworkSync` only triggers network synchronization and does not modify state. The optional callback is read-only and will be called during sync operations for logging, metrics, or other read-only operations.
+**Note**: `Tick` is the only source of state mutations for replay functionality. `StateSync` only triggers state synchronization and does not modify state. The optional callback is read-only and will be called during sync operations for logging, metrics, or other read-only operations.

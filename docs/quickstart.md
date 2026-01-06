@@ -70,7 +70,7 @@ let land = Land("demo", using: GameState.self) {
         }
         
         // Network synchronization (read-only callback for type inference)
-        NetworkSync(every: .milliseconds(100)) { (state: GameState, ctx: LandContext) in
+        StateSync(every: .milliseconds(100)) { (state: GameState, ctx: LandContext) in
             // Read-only callback - will be called during sync
             // Do NOT modify state here - use Tick for state mutations
             // Use for logging, metrics, or other read-only operations
