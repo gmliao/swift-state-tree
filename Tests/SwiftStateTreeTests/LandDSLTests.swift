@@ -1143,12 +1143,18 @@ func testOnInitializeBeforeTick() async throws {
         initialState: DemoLandState()
     )
     
-    // Wait for initialization and first tick
-    try await Task.sleep(nanoseconds: 200_000_000) // 200ms
+    // Wait for initialization and first tick to execute
+    // Use polling instead of fixed sleep to handle CI timing variations
+    await waitFor("OnInitialize and first tick to complete", timeout: .seconds(2)) {
+        let state = await keeper.currentState()
+        // If OnInitialize ran first, ticks should be >= 1 (was set to -1, then tick set it to 1)
+        // If tick ran first, ticks would be > 0 but we wouldn't have the -1 marker
+        return state.ticks >= 1
+    }
     
     let state = await keeper.currentState()
-    // If OnInitialize ran first, ticks should be >= 1 (was set to -1, then tick set it to 1)
-    // If tick ran first, ticks would be > 0 but we wouldn't have the -1 marker
+    // Verify final state: OnInitialize should have set ticks to -1, then tick should increment it to 1
     #expect(state.ticks >= 1, "OnInitialize should set ticks to -1, then tick should increment it")
     #expect(state.ticks != 0, "Tick should have executed after OnInitialize")
+    #expect(state.ticks != -1, "Tick should have executed and changed ticks from -1")
 }
