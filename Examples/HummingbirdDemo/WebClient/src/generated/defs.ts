@@ -22,6 +22,22 @@ export type Velocity2 = { v: IVec2 }
 export const FIXED_POINT_SCALE = 1000
 
 /**
+ * Round a number using the same rule as Swift's .toNearestOrAwayFromZero
+ * This ensures cross-platform consistency with Swift FixedPoint.quantize()
+ * For negative half values (e.g., -1.5), rounds away from zero (e.g., -2)
+ * For positive half values (e.g., 1.5), rounds away from zero (e.g., 2)
+ * @param value - The number to round
+ * @returns The rounded integer
+ */
+function roundToNearestOrAwayFromZero(value: number): number {
+  if (value >= 0) {
+    return Math.floor(value + 0.5)
+  } else {
+    return Math.ceil(value - 0.5)
+  }
+}
+
+/**
  * Convert IVec2 to Float coordinates.
  * @param vec - The fixed-point integer vector
  * @returns Object with x and y as float numbers
@@ -42,7 +58,7 @@ export function IVec2ToFloat(vec: IVec2): { x: number; y: number } {
  * const vec = FloatToIVec2(1.5, 2.3) // { x: 1500, y: 2300 }
  */
 export function FloatToIVec2(x: number, y: number): IVec2 {
-  return { x: Math.round(x * 1000), y: Math.round(y * 1000) }
+  return { x: roundToNearestOrAwayFromZero(x * 1000), y: roundToNearestOrAwayFromZero(y * 1000) }
 }
 
 /**

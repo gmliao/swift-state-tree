@@ -56,28 +56,27 @@ func testExtremeValues() {
     #expect(quantizedNegative == -1000000000)
 }
 
-@Test("FixedPoint rounding modes work correctly")
-func testRoundingModes() {
-    // Test .toNearestOrAwayFromZero (default)
-    #expect(FixedPoint.quantize(1.5) == 1500)
+@Test("FixedPoint uses .toNearestOrAwayFromZero rounding rule")
+func testRoundingRule() {
+    // Test .toNearestOrAwayFromZero (fixed rounding rule)
+    // Positive values round away from zero
+    #expect(FixedPoint.quantize(1.1) == 1100)
     #expect(FixedPoint.quantize(1.4) == 1400)
+    #expect(FixedPoint.quantize(1.5) == 1500)  // Half value rounds away from zero
     #expect(FixedPoint.quantize(1.6) == 1600)
+    #expect(FixedPoint.quantize(2.5) == 2500)  // Half value rounds away from zero
     
-    // Test .up
-    #expect(FixedPoint.quantize(1.1, rounding: .up) == 1100)
-    #expect(FixedPoint.quantize(1.9, rounding: .up) == 1900)
+    // Negative values round away from zero
+    #expect(FixedPoint.quantize(-1.1) == -1100)
+    #expect(FixedPoint.quantize(-1.4) == -1400)
+    #expect(FixedPoint.quantize(-1.5) == -1500)  // Half value rounds away from zero
+    #expect(FixedPoint.quantize(-1.6) == -1600)
+    #expect(FixedPoint.quantize(-2.5) == -2500)  // Half value rounds away from zero
     
-    // Test .down
-    #expect(FixedPoint.quantize(1.9, rounding: .down) == 1900)
-    #expect(FixedPoint.quantize(1.1, rounding: .down) == 1100)
-    
-    // Test .towardZero
-    #expect(FixedPoint.quantize(1.9, rounding: .towardZero) == 1900)
-    #expect(FixedPoint.quantize(-1.9, rounding: .towardZero) == -1900)
-    
-    // Test .awayFromZero
-    #expect(FixedPoint.quantize(1.1, rounding: .awayFromZero) == 1100)
-    #expect(FixedPoint.quantize(-1.1, rounding: .awayFromZero) == -1100)
+    // Test edge cases
+    #expect(FixedPoint.quantize(0.0) == 0)
+    #expect(FixedPoint.quantize(0.5) == 500)  // Rounds to 500 (away from zero)
+    #expect(FixedPoint.quantize(-0.5) == -500)  // Rounds to -500 (away from zero)
 }
 
 @Test("FixedPoint clampToInt32Range prevents overflow")

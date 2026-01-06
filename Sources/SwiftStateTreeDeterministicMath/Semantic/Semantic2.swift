@@ -61,13 +61,8 @@ public struct Velocity2: Codable, Equatable, Sendable {
     /// - Parameters:
     ///   - x: The x coordinate as Float (will be quantized).
     ///   - y: The y coordinate as Float (will be quantized).
-    ///   - rounding: The rounding rule to apply (default: `.toNearestOrAwayFromZero`).
-    public init(
-        x: Float,
-        y: Float,
-        rounding: FloatingPointRoundingRule = .toNearestOrAwayFromZero
-    ) {
-        self.v = IVec2(x: x, y: y, rounding: rounding)
+    public init(x: Float, y: Float) {
+        self.v = IVec2(x: x, y: y)
     }
 }
 
@@ -92,13 +87,8 @@ public struct Acceleration2: Codable, Equatable, Sendable {
     /// - Parameters:
     ///   - x: The x coordinate as Float (will be quantized).
     ///   - y: The y coordinate as Float (will be quantized).
-    ///   - rounding: The rounding rule to apply (default: `.toNearestOrAwayFromZero`).
-    public init(
-        x: Float,
-        y: Float,
-        rounding: FloatingPointRoundingRule = .toNearestOrAwayFromZero
-    ) {
-        self.v = IVec2(x: x, y: y, rounding: rounding)
+    public init(x: Float, y: Float) {
+        self.v = IVec2(x: x, y: y)
     }
 }
 

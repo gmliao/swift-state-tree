@@ -64,20 +64,15 @@ public struct IVec2: Codable, Equatable, Hashable, Sendable, CustomStringConvert
     /// - Parameters:
     ///   - x: The x coordinate as Float (will be quantized).
     ///   - y: The y coordinate as Float (will be quantized).
-    ///   - rounding: The rounding rule to apply (default: `.toNearestOrAwayFromZero`).
     ///
     /// Example:
     /// ```swift
     /// let v = IVec2(x: 1.5, y: 2.3)  // Quantized to (1500, 2300) with scale 1000
     /// ```
-    public init(
-        x: Float,
-        y: Float,
-        rounding: FloatingPointRoundingRule = .toNearestOrAwayFromZero
-    ) {
+    public init(x: Float, y: Float) {
         self.storage = SIMD2<Int32>(
-            FixedPoint.quantize(x, rounding: rounding),
-            FixedPoint.quantize(y, rounding: rounding)
+            FixedPoint.quantize(x),
+            FixedPoint.quantize(y)
         )
     }
     

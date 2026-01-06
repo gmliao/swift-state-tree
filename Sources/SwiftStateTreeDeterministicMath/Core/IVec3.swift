@@ -73,22 +73,16 @@ public struct IVec3: Codable, Equatable, Hashable, Sendable, CustomStringConvert
     ///   - x: The x coordinate as Float (will be quantized).
     ///   - y: The y coordinate as Float (will be quantized).
     ///   - z: The z coordinate as Float (will be quantized).
-    ///   - rounding: The rounding rule to apply (default: `.toNearestOrAwayFromZero`).
     ///
     /// Example:
     /// ```swift
     /// let v = IVec3(x: 1.5, y: 2.3, z: 3.7)  // Quantized to (1500, 2300, 3700) with scale 1000
     /// ```
-    public init(
-        x: Float,
-        y: Float,
-        z: Float,
-        rounding: FloatingPointRoundingRule = .toNearestOrAwayFromZero
-    ) {
+    public init(x: Float, y: Float, z: Float) {
         self.storage = SIMD3<Int32>(
-            FixedPoint.quantize(x, rounding: rounding),
-            FixedPoint.quantize(y, rounding: rounding),
-            FixedPoint.quantize(z, rounding: rounding)
+            FixedPoint.quantize(x),
+            FixedPoint.quantize(y),
+            FixedPoint.quantize(z)
         )
     }
     

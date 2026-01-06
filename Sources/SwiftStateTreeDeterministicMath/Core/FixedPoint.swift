@@ -19,21 +19,22 @@ public struct FixedPoint: Sendable {
     
     /// Quantize a Float value to Int32 using the fixed scale.
     ///
-    /// - Parameters:
-    ///   - value: The Float value to quantize.
-    ///   - rounding: The rounding rule to apply (default: `.toNearestOrAwayFromZero`).
+    /// Uses `.toNearestOrAwayFromZero` rounding rule for deterministic cross-platform behavior.
+    /// This ensures consistent quantization across Swift server and TypeScript client.
+    ///
+    /// - Parameter value: The Float value to quantize.
     /// - Returns: The quantized Int32 value.
     ///
     /// Example:
     /// ```swift
     /// let quantized = FixedPoint.quantize(1.5)  // Returns 1500
+    /// let quantizedNeg = FixedPoint.quantize(-1.5)  // Returns -1500 (away from zero)
     /// ```
-    public static func quantize(
-        _ value: Float,
-        rounding: FloatingPointRoundingRule = .toNearestOrAwayFromZero
-    ) -> Int32 {
+    public static func quantize(_ value: Float) -> Int32 {
         let scaled = value * Float(scale)
-        let rounded = scaled.rounded(rounding)
+        // Use .toNearestOrAwayFromZero for deterministic cross-platform consistency
+        // This matches TypeScript's roundToNearestOrAwayFromZero implementation
+        let rounded = scaled.rounded(.toNearestOrAwayFromZero)
         return Int32(rounded)
     }
     
