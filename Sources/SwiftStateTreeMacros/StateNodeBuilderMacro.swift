@@ -513,7 +513,9 @@ public struct StateNodeBuilderMacro: MemberMacro {
             "Int", "Int8", "Int16", "Int32", "Int64",
             "UInt", "UInt8", "UInt16", "UInt32", "UInt64",
             "Float", "Double", "Bool", "String",
-            "Character", "Date", "UUID", "PlayerID"
+            "Character", "Date", "UUID", "PlayerID",
+            // DeterministicMath types (Codable structs, not StateNodeProtocol)
+            "IVec2", "IVec3", "Position2", "Velocity2", "Acceleration2", "Angle"
         ]
 
         // Remove optional markers and check base type

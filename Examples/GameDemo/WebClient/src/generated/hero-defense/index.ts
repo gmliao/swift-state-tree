@@ -47,6 +47,7 @@ export class HeroDefenseStateTree {
     } as Actions
 
     this.events = {
+      moveTo: (payload) => this.view.sendEvent("MoveToEvent", payload),
     } as ClientEvents
 
     this.on = {

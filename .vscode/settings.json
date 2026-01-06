@@ -18,6 +18,7 @@
         "hmap",
         "IAABB",
         "inout",
+        "lerp",
         "machdep",
         "matchmake",
         "memsize",
@@ -39,6 +40,7 @@
         "uppercased",
         "vite",
         "vitepress",
+        "vuetify",
         "xccheckout",
         "xcodeproj",
         "xcscmblueprint",
@@ -46,5 +48,5 @@
         "xcuserdata",
         "xcworkspace",
         "xcworkspacedata"
-    ]
+]
 }

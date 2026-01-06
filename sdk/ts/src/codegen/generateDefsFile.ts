@@ -13,7 +13,7 @@ function generateHeader(): string {
  * Check if a type name is a DeterministicMath type that needs conversion helpers.
  */
 function isDeterministicMathType(name: string): boolean {
-  return ['IVec2', 'IVec3', 'Position2', 'Velocity2', 'Acceleration2'].includes(name)
+  return ['IVec2', 'IVec3', 'Position2', 'Velocity2', 'Acceleration2', 'Angle'].includes(name)
 }
 
 /**
@@ -30,8 +30,9 @@ function generateDeterministicMathHelpers(schema: ProtocolSchema): string {
   const hasPosition2 = 'Position2' in schema.defs
   const hasVelocity2 = 'Velocity2' in schema.defs
   const hasAcceleration2 = 'Acceleration2' in schema.defs
+  const hasAngle = 'Angle' in schema.defs
   
-  if (!hasIVec2 && !hasIVec3) {
+  if (!hasIVec2 && !hasIVec3 && !hasAngle) {
     return ''
   }
   
@@ -157,6 +158,59 @@ function generateDeterministicMathHelpers(schema: ProtocolSchema): string {
     lines.push(' */')
     lines.push('export function FloatToAcceleration2(x: number, y: number): Acceleration2 {')
     lines.push('  return { v: FloatToIVec2(x, y) }')
+    lines.push('}')
+    lines.push('')
+  }
+  
+  if (hasAngle) {
+    lines.push('/**')
+    lines.push(' * Convert Angle to radians.')
+    lines.push(' * @param angle - The Angle value (fixed-point degrees: 1000 = 1.0 degree)')
+    lines.push(' * @returns Angle in radians as float')
+    lines.push(' * @example')
+    lines.push(' * const angle: Angle = { degrees: 45000 }')
+    lines.push(' * const rad = AngleToRadians(angle) // ≈ 0.785 (π/4)')
+    lines.push(' */')
+    lines.push('export function AngleToRadians(angle: Angle): number {')
+    lines.push(`  return (angle.degrees / ${SCALE}) * Math.PI / 180`)
+    lines.push('}')
+    lines.push('')
+    
+    lines.push('/**')
+    lines.push(' * Convert Angle to degrees.')
+    lines.push(' * @param angle - The Angle value (fixed-point degrees: 1000 = 1.0 degree)')
+    lines.push(' * @returns Angle in degrees as float')
+    lines.push(' * @example')
+    lines.push(' * const angle: Angle = { degrees: 45000 }')
+    lines.push(' * const deg = AngleToDegrees(angle) // 45.0')
+    lines.push(' */')
+    lines.push('export function AngleToDegrees(angle: Angle): number {')
+    lines.push(`  return angle.degrees / ${SCALE}`)
+    lines.push('}')
+    lines.push('')
+    
+    lines.push('/**')
+    lines.push(' * Convert radians to Angle.')
+    lines.push(' * @param radians - Angle in radians as float')
+    lines.push(' * @returns Angle with quantized integer values')
+    lines.push(' * @example')
+    lines.push(' * const angle = RadiansToAngle(Math.PI / 4) // { degrees: 45000 }')
+    lines.push(' */')
+    lines.push('export function RadiansToAngle(radians: number): Angle {')
+    lines.push('  const degrees = radians * 180 / Math.PI')
+    lines.push(`  return { degrees: Math.round(degrees * ${SCALE}) }`)
+    lines.push('}')
+    lines.push('')
+    
+    lines.push('/**')
+    lines.push(' * Convert degrees to Angle.')
+    lines.push(' * @param degrees - Angle in degrees as float')
+    lines.push(' * @returns Angle with quantized integer values')
+    lines.push(' * @example')
+    lines.push(' * const angle = DegreesToAngle(45.0) // { degrees: 45000 }')
+    lines.push(' */')
+    lines.push('export function DegreesToAngle(degrees: number): Angle {')
+    lines.push(`  return { degrees: Math.round(degrees * ${SCALE}) }`)
     lines.push('}')
     lines.push('')
   }
