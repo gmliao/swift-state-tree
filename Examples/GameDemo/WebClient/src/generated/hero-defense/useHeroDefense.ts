@@ -103,6 +103,17 @@ export function useHeroDefense(): HeroDefenseComposableReturn {
         configurable: true
       })
       
+      // Set up disconnect callback for automatic cleanup
+      r.onDisconnect(() => {
+        if (isConnected.value || isJoined.value) {
+          console.warn('⚠️ WebSocket disconnected, cleaning up...')
+          // Update state immediately so watchers can react
+          isConnected.value = false
+          // disconnect() will set isJoined.value = false, triggering watchers
+          disconnect()
+        }
+      })
+      
       isJoined.value = true
     } catch (error) {
       const message = (error as Error).message ?? String(error)

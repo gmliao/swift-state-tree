@@ -23,3 +23,232 @@ export const SERVER_EVENT_IDS = {
 } as const
 export type AnyServerEventID = (typeof SERVER_EVENT_IDS)[LandID][number]
 export type ServerEventIDFor<L extends LandID> = (typeof SERVER_EVENT_IDS)[L][number]
+
+/**
+ * Full schema definition for runtime type checking.
+ * Use this to pass schema to StateTreeView for accurate type inference.
+ */
+export const SCHEMA = {
+  "defs": {
+    "Angle": {
+      "properties": {
+        "degrees": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "degrees"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf",
+        "sync": {
+          "policy": "broadcast"
+        }
+      }
+    },
+    "HeroDefenseState": {
+      "properties": {
+        "players": {
+          "additionalProperties": {
+            "$ref": "#/defs/PlayerState"
+          },
+          "default": {},
+          "type": "object",
+          "x-stateTree": {
+            "nodeKind": "map",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
+        },
+        "score": {
+          "default": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "players",
+        "score"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "object"
+      }
+    },
+    "IVec2": {
+      "properties": {
+        "x": {
+          "type": "integer"
+        },
+        "y": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "x",
+        "y"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "MoveToEvent": {
+      "properties": {
+        "target": {
+          "$ref": "#/defs/Position2"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "Optional<Position2>": {
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf",
+        "sync": {
+          "policy": "broadcast"
+        }
+      }
+    },
+    "PlayAction": {
+      "properties": {},
+      "required": [],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "PlayResponse": {
+      "properties": {
+        "newScore": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "newScore"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "PlayerState": {
+      "properties": {
+        "position": {
+          "$ref": "#/defs/Position2",
+          "default": {
+            "v": {
+              "x": 0,
+              "y": 0
+            }
+          }
+        },
+        "rotation": {
+          "$ref": "#/defs/Angle",
+          "default": {
+            "degrees": 0
+          }
+        },
+        "targetPosition": {
+          "$ref": "#/defs/Optional<Position2>",
+          "default": null
+        }
+      },
+      "required": [
+        "position",
+        "rotation",
+        "targetPosition"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "object"
+      }
+    },
+    "Position2": {
+      "properties": {
+        "v": {
+          "$ref": "#/defs/IVec2"
+        }
+      },
+      "required": [
+        "v"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf",
+        "sync": {
+          "policy": "broadcast"
+        }
+      }
+    },
+    "StateDiff": {
+      "properties": {
+        "patches": {
+          "items": {
+            "properties": {
+              "op": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "value": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "op",
+              "path"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "patches"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    }
+  },
+  "lands": {
+    "hero-defense": {
+      "actions": {
+        "Play": {
+          "$ref": "#/defs/PlayAction"
+        }
+      },
+      "clientEvents": {
+        "MoveTo": {
+          "$ref": "#/defs/MoveToEvent"
+        }
+      },
+      "events": {},
+      "stateType": "HeroDefenseState",
+      "sync": {
+        "diff": {
+          "$ref": "#/defs/StateDiff"
+        },
+        "snapshot": {
+          "$ref": "#/defs/HeroDefenseState"
+        }
+      }
+    }
+  },
+  "version": "0.1.0"
+} as const
+
+/**
+ * Type helper for the schema constant.
+ */
+export type ProtocolSchema = typeof SCHEMA

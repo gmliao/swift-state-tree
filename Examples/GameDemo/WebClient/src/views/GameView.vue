@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, onMounted, onUnmounted, watch } from "vue";
 import { useRouter } from "vue-router";
 import Phaser from "phaser";
 import { GameScene } from "../scenes/GameScene";
@@ -9,6 +9,17 @@ const router = useRouter();
 const gameRef = ref<HTMLDivElement | null>(null);
 const phaserGame = ref<Phaser.Game | null>(null);
 const { isConnected, isJoined, disconnect, play, moveTo, tree, currentPlayerID } = useGameClient();
+
+// Watch for disconnection and automatically redirect to connect page
+// Watch isJoined: when it changes from true to false, we've been disconnected
+watch(isJoined, (joined, wasJoined) => {
+  // If we were joined but now not joined (disconnected), redirect to connect page
+  if (wasJoined && !joined) {
+    console.warn('⚠️ Server disconnected, redirecting to connect page')
+    // disconnect() has already been called by the callback, just handle UI cleanup and navigation
+    handleDisconnectUI()
+  }
+}, { immediate: false })
 
 onMounted(async () => {
   // Check if already connected and joined
@@ -69,14 +80,43 @@ onUnmounted(async () => {
   await disconnect();
 });
 
-async function handleLeave() {
-  await disconnect();
+async function handleDisconnectUI() {
+  // Clean up Phaser game
+  if (phaserGame.value) {
+    phaserGame.value.destroy(true);
+    phaserGame.value = null;
+  }
+  
   // Clear session storage
   sessionStorage.removeItem("wsUrl");
   sessionStorage.removeItem("playerName");
   sessionStorage.removeItem("roomId");
+  
   // Navigate back to connect page
   router.push({ name: "connect" });
+}
+
+async function handleDisconnect() {
+  // Clean up Phaser game
+  if (phaserGame.value) {
+    phaserGame.value.destroy(true);
+    phaserGame.value = null;
+  }
+  
+  // Disconnect from server
+  await disconnect();
+  
+  // Clear session storage
+  sessionStorage.removeItem("wsUrl");
+  sessionStorage.removeItem("playerName");
+  sessionStorage.removeItem("roomId");
+  
+  // Navigate back to connect page
+  router.push({ name: "connect" });
+}
+
+async function handleLeave() {
+  await handleDisconnect();
 }
 </script>
 

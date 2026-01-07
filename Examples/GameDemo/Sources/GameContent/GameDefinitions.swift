@@ -95,11 +95,13 @@ public enum HeroDefense {
             Lifetime {
                 Tick(every: .milliseconds(50)) { (state: inout HeroDefenseState, ctx: LandContext) in
                     // Update player movement
+                    var updatedCount = 0
                     for (playerID, var player) in state.players {
                         guard let target = player.targetPosition else {
                             continue
                         }
                         
+                        let oldPosition = player.position
                         let current = player.position.v
                         let targetVec = target.v
                         
@@ -134,6 +136,7 @@ public enum HeroDefense {
                                 y: normalized.y * Float(moveDistance) / 1000.0
                             )
                             player.position.v = player.position.v + moveVec
+                            updatedCount += 1
                         }
                         
                         state.players[playerID] = player
@@ -144,6 +147,7 @@ public enum HeroDefense {
                     // Read-only callback - will be called during sync
                     // Do NOT modify state here - use Tick for state mutations
                     // Use for logging, metrics, or other read-only operations
+                    // StateSync callback - read-only operations only
                 }
                 
                 DestroyWhenEmpty(after: .seconds(5)) { (_: inout HeroDefenseState, ctx: LandContext) in
@@ -199,12 +203,22 @@ public enum HeroDefense {
                     
                     // Update player's target position
                     if var player = state.players[playerID] {
+                        let oldTarget = player.targetPosition
                         player.targetPosition = event.target
                         state.players[playerID] = player
-                        ctx.logger.info("MoveToEvent received", metadata: [
+                        ctx.logger.info("📥 MoveToEvent received", metadata: [
                             "playerID": .string(playerID.rawValue),
+                            "currentX": .string("\(player.position.v.floatX)"),
+                            "currentY": .string("\(player.position.v.floatY)"),
                             "targetX": .string("\(event.target.v.floatX)"),
-                            "targetY": .string("\(event.target.v.floatY)")
+                            "targetY": .string("\(event.target.v.floatY)"),
+                            "targetX_raw": .string("\(event.target.v.x)"),
+                            "targetY_raw": .string("\(event.target.v.y)"),
+                            "oldTarget": .string(oldTarget != nil ? "\(oldTarget!.v.floatX),\(oldTarget!.v.floatY)" : "nil")
+                        ])
+                    } else {
+                        ctx.logger.warning("⚠️ MoveToEvent: Player not found", metadata: [
+                            "playerID": .string(playerID.rawValue)
                         ])
                     }
                 }

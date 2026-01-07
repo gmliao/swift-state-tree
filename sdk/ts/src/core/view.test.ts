@@ -13,6 +13,38 @@ import { StateTreeView } from './view'
 import { StateTreeRuntime } from './runtime'
 import type { StateSnapshot, StateUpdate, StatePatch, TransportMessage } from '../types/transport'
 import { NoOpLogger } from './logger'
+import type { ProtocolSchema } from '../codegen/schema'
+
+// Minimal test schema for basic tests
+const testSchema: ProtocolSchema = {
+  version: '0.1.0',
+  defs: {
+    'DemoGameState': {
+      type: 'object',
+      properties: {
+        round: { type: 'integer' },
+        players: {
+          type: 'object',
+          additionalProperties: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              cookies: { type: 'integer' }
+            }
+          }
+        }
+      }
+    }
+  },
+  lands: {
+    'demo-game': {
+      stateType: 'DemoGameState'
+    },
+    'test-land': {
+      stateType: 'DemoGameState'
+    }
+  }
+} as const
 
 // Mock runtime for testing
 class MockRuntime extends StateTreeRuntime {
@@ -43,6 +75,7 @@ describe('StateTreeView', () => {
   beforeEach(() => {
     runtime = new MockRuntime()
     view = runtime.createView('demo-game', {
+      schema: testSchema,
       playerID: 'player-1',
       deviceID: 'device-1'
     })
@@ -57,6 +90,7 @@ describe('StateTreeView', () => {
 
     it('accepts optional parameters', () => {
       const customView = runtime.createView('test-land', {
+        schema: testSchema,
         playerID: 'player-2',
         deviceID: 'device-2',
         metadata: { level: '10' }
@@ -186,7 +220,7 @@ describe('StateTreeView', () => {
     })
 
     it('throws error when not joined', async () => {
-      const newView = runtime.createView('test-land')
+      const newView = runtime.createView('test-land', { schema: testSchema })
       await expect(newView.sendAction('Test', {})).rejects.toThrow('Not joined to land')
     })
 
@@ -230,6 +264,7 @@ describe('StateTreeView', () => {
       const onStateUpdate = vi.fn()
       const onSnapshot = vi.fn()
       const customView = runtime.createView('test-land', {
+        schema: testSchema,
         onStateUpdate,
         onSnapshot
       })
@@ -286,7 +321,7 @@ describe('StateTreeView', () => {
       }
 
       const onStateUpdate = vi.fn()
-      const customView = runtime.createView('test-land', { onStateUpdate })
+      const customView = runtime.createView('test-land', { schema: testSchema, onStateUpdate })
       customView.handleSnapshot({
         values: {
           round: 0
@@ -358,7 +393,7 @@ describe('StateTreeView', () => {
 
     it('ignores noChange updates', () => {
       const onStateUpdate = vi.fn()
-      const customView = runtime.createView('test-land', { onStateUpdate })
+      const customView = runtime.createView('test-land', { schema: testSchema, onStateUpdate })
 
       const update: StateUpdate = {
         type: 'noChange',
