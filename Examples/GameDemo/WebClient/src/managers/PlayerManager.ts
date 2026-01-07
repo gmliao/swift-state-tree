@@ -150,7 +150,7 @@ export class PlayerManager {
   /**
    * Update all players from server state.
    * This is called every frame to update positions/rotations.
-   * Player add/remove is handled by tree.players subscriptions.
+   * Player add/remove is handled by tree.players subscriptions (SDK handles late-join).
    */
   update(playersState: PlayersState): PlayerSprite | null {
     // Reset current player tracking
@@ -159,7 +159,7 @@ export class PlayerManager {
     // Log state update (throttled)
     this.logStateUpdate(playersState)
 
-    // Update existing players
+    // Update existing players and check for new ones
     for (const [playerID, playerState] of Object.entries(playersState)) {
       const player = this.players.get(playerID)
       const isCurrentPlayer = this.currentPlayerID !== null && 
@@ -179,7 +179,7 @@ export class PlayerManager {
           }
         }
       }
-      // Note: Player creation is handled by tree.players.onAdd
+      // Note: Player creation is handled by tree.players.onAdd (SDK handles late-join scenarios)
     }
 
     return this.currentPlayer
