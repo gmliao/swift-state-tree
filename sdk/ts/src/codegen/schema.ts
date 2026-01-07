@@ -15,7 +15,7 @@ export interface LandDefinition {
 export interface SchemaDef {
   type?: string
   properties?: Record<string, SchemaProperty>
-  required?: string[]
+  required?: readonly string[]
   items?: SchemaDef
   additionalProperties?: SchemaDef | boolean
   $ref?: string
@@ -127,4 +127,3 @@ function isProtocolSchema(value: unknown): value is ProtocolSchema {
   const v = value as any
   return typeof v.version === 'string' && typeof v.defs === 'object' && typeof v.lands === 'object'
 }
-

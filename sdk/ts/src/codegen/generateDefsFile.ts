@@ -18,6 +18,8 @@ function isDeterministicMathType(name: string): boolean {
 
 /**
  * Generate conversion helpers for DeterministicMath types.
+ * Note: IVec2/IVec3/Position2/Velocity2/Acceleration2 conversion is handled automatically by SDK.
+ * Only Angle conversion helpers are generated (for degrees/radians conversion).
  */
 function generateDeterministicMathHelpers(schema: ProtocolSchema): string {
   const lines: string[] = []
@@ -25,198 +27,76 @@ function generateDeterministicMathHelpers(schema: ProtocolSchema): string {
   // Fixed-point scale (must match Swift FixedPoint.scale)
   const SCALE = 1000
   
-  const hasIVec2 = 'IVec2' in schema.defs
-  const hasIVec3 = 'IVec3' in schema.defs
-  const hasPosition2 = 'Position2' in schema.defs
-  const hasVelocity2 = 'Velocity2' in schema.defs
-  const hasAcceleration2 = 'Acceleration2' in schema.defs
   const hasAngle = 'Angle' in schema.defs
   
-  if (!hasIVec2 && !hasIVec3 && !hasAngle) {
+  if (!hasAngle) {
     return ''
   }
   
-  lines.push('// DeterministicMath conversion helpers')
-  lines.push('// Fixed-point scale factor (matches Swift FixedPoint.scale)')
-  lines.push(`export const FIXED_POINT_SCALE = ${SCALE}`)
+  lines.push('// Angle conversion helpers (for degrees/radians conversion)')
+  lines.push('// Note: Angle class automatically handles fixed-point to float conversion.')
+  lines.push('// These helpers only convert between degrees and radians.')
   lines.push('')
-  
-  if (hasIVec2) {
-    lines.push('/**')
-    lines.push(' * Convert IVec2 to Float coordinates.')
-    lines.push(' * @param vec - The fixed-point integer vector')
-    lines.push(' * @returns Object with x and y as float numbers')
-    lines.push(' * @example')
-    lines.push(' * const vec: IVec2 = { x: 1500, y: 2300 }')
-    lines.push(' * const float = IVec2ToFloat(vec) // { x: 1.5, y: 2.3 }')
-    lines.push(' */')
-    lines.push('export function IVec2ToFloat(vec: IVec2): { x: number; y: number } {')
-    lines.push(`  return { x: vec.x / ${SCALE}, y: vec.y / ${SCALE} }`)
-    lines.push('}')
-    lines.push('')
-    
-    lines.push('/**')
-    lines.push(' * Convert Float coordinates to IVec2.')
-    lines.push(' * @param x - X coordinate as float')
-    lines.push(' * @param y - Y coordinate as float')
-    lines.push(' * @returns IVec2 with quantized integer values')
-    lines.push(' * @example')
-    lines.push(' * const vec = FloatToIVec2(1.5, 2.3) // { x: 1500, y: 2300 }')
-    lines.push(' */')
-    lines.push('export function FloatToIVec2(x: number, y: number): IVec2 {')
-    lines.push(`  return { x: Math.round(x * ${SCALE}), y: Math.round(y * ${SCALE}) }`)
-    lines.push('}')
-    lines.push('')
-  }
-  
-  if (hasIVec3) {
-    lines.push('/**')
-    lines.push(' * Convert IVec3 to Float coordinates.')
-    lines.push(' * @param vec - The fixed-point integer vector')
-    lines.push(' * @returns Object with x, y, z as float numbers')
-    lines.push(' */')
-    lines.push('export function IVec3ToFloat(vec: IVec3): { x: number; y: number; z: number } {')
-    lines.push(`  return { x: vec.x / ${SCALE}, y: vec.y / ${SCALE}, z: vec.z / ${SCALE} }`)
-    lines.push('}')
-    lines.push('')
-    
-    lines.push('/**')
-    lines.push(' * Convert Float coordinates to IVec3.')
-    lines.push(' * @param x - X coordinate as float')
-    lines.push(' * @param y - Y coordinate as float')
-    lines.push(' * @param z - Z coordinate as float')
-    lines.push(' * @returns IVec3 with quantized integer values')
-    lines.push(' */')
-    lines.push('export function FloatToIVec3(x: number, y: number, z: number): IVec3 {')
-    lines.push(`  return { x: Math.round(x * ${SCALE}), y: Math.round(y * ${SCALE}), z: Math.round(z * ${SCALE}) }`)
-    lines.push('}')
-    lines.push('')
-  }
-  
-  if (hasPosition2) {
-    lines.push('/**')
-    lines.push(' * Convert Position2 to Float coordinates.')
-    lines.push(' * @param pos - The Position2 value')
-    lines.push(' * @returns Object with x and y as float numbers')
-    lines.push(' */')
-    lines.push('export function Position2ToFloat(pos: Position2): { x: number; y: number } {')
-    lines.push('  return IVec2ToFloat(pos.v)')
-    lines.push('}')
-    lines.push('')
-    
-    lines.push('/**')
-    lines.push(' * Convert Float coordinates to Position2.')
-    lines.push(' * @param x - X coordinate as float')
-    lines.push(' * @param y - Y coordinate as float')
-    lines.push(' * @returns Position2 with quantized integer values')
-    lines.push(' */')
-    lines.push('export function FloatToPosition2(x: number, y: number): Position2 {')
-    lines.push('  return { v: FloatToIVec2(x, y) }')
-    lines.push('}')
-    lines.push('')
-  }
-  
-  if (hasVelocity2) {
-    lines.push('/**')
-    lines.push(' * Convert Velocity2 to Float coordinates.')
-    lines.push(' * @param vel - The Velocity2 value')
-    lines.push(' * @returns Object with x and y as float numbers')
-    lines.push(' */')
-    lines.push('export function Velocity2ToFloat(vel: Velocity2): { x: number; y: number } {')
-    lines.push('  return IVec2ToFloat(vel.v)')
-    lines.push('}')
-    lines.push('')
-    
-    lines.push('/**')
-    lines.push(' * Convert Float coordinates to Velocity2.')
-    lines.push(' * @param x - X coordinate as float')
-    lines.push(' * @param y - Y coordinate as float')
-    lines.push(' * @returns Velocity2 with quantized integer values')
-    lines.push(' */')
-    lines.push('export function FloatToVelocity2(x: number, y: number): Velocity2 {')
-    lines.push('  return { v: FloatToIVec2(x, y) }')
-    lines.push('}')
-    lines.push('')
-  }
-  
-  if (hasAcceleration2) {
-    lines.push('/**')
-    lines.push(' * Convert Acceleration2 to Float coordinates.')
-    lines.push(' * @param accel - The Acceleration2 value')
-    lines.push(' * @returns Object with x and y as float numbers')
-    lines.push(' */')
-    lines.push('export function Acceleration2ToFloat(accel: Acceleration2): { x: number; y: number } {')
-    lines.push('  return IVec2ToFloat(accel.v)')
-    lines.push('}')
-    lines.push('')
-    
-    lines.push('/**')
-    lines.push(' * Convert Float coordinates to Acceleration2.')
-    lines.push(' * @param x - X coordinate as float')
-    lines.push(' * @param y - Y coordinate as float')
-    lines.push(' * @returns Acceleration2 with quantized integer values')
-    lines.push(' */')
-    lines.push('export function FloatToAcceleration2(x: number, y: number): Acceleration2 {')
-    lines.push('  return { v: FloatToIVec2(x, y) }')
-    lines.push('}')
-    lines.push('')
-  }
   
   if (hasAngle) {
     lines.push('/**')
     lines.push(' * Convert Angle to radians.')
-    lines.push(' * @param angle - The Angle value (fixed-point degrees: 1000 = 1.0 degree)')
+    lines.push(' * @param angle - The Angle instance (degrees getter automatically returns float)')
     lines.push(' * @returns Angle in radians as float')
     lines.push(' * @example')
-    lines.push(' * const angle: Angle = { degrees: 45000 }')
+    lines.push(' * const angle = new Angle(45000, true) // fixed-point integer')
     lines.push(' * const rad = AngleToRadians(angle) // ≈ 0.785 (π/4)')
     lines.push(' */')
     lines.push('export function AngleToRadians(angle: Angle): number {')
-    lines.push(`  return (angle.degrees / ${SCALE}) * Math.PI / 180`)
+    lines.push('  return angle.degrees * Math.PI / 180')
     lines.push('}')
     lines.push('')
     
     lines.push('/**')
-    lines.push(' * Convert Angle to degrees.')
-    lines.push(' * @param angle - The Angle value (fixed-point degrees: 1000 = 1.0 degree)')
+    lines.push(' * Convert Angle to degrees (float).')
+    lines.push(' * @param angle - The Angle instance (degrees getter automatically returns float)')
     lines.push(' * @returns Angle in degrees as float')
     lines.push(' * @example')
-    lines.push(' * const angle: Angle = { degrees: 45000 }')
+    lines.push(' * const angle = new Angle(45000, true) // fixed-point integer')
     lines.push(' * const deg = AngleToDegrees(angle) // 45.0')
     lines.push(' */')
     lines.push('export function AngleToDegrees(angle: Angle): number {')
-    lines.push(`  return angle.degrees / ${SCALE}`)
+    lines.push('  return angle.degrees')
     lines.push('}')
     lines.push('')
     
     lines.push('/**')
     lines.push(' * Convert radians to Angle.')
     lines.push(' * @param radians - Angle in radians as float')
-    lines.push(' * @returns Angle with quantized integer values')
+    lines.push(' * @returns Angle instance (degrees setter automatically converts to fixed-point)')
     lines.push(' * @example')
-    lines.push(' * const angle = RadiansToAngle(Math.PI / 4) // { degrees: 45000 }')
+    lines.push(' * const angle = RadiansToAngle(Math.PI / 4) // new Angle(45.0, false)')
     lines.push(' */')
     lines.push('export function RadiansToAngle(radians: number): Angle {')
     lines.push('  const degrees = radians * 180 / Math.PI')
-    lines.push(`  return { degrees: Math.round(degrees * ${SCALE}) }`)
+    lines.push('  return new Angle(degrees, false) // false = float input')
     lines.push('}')
     lines.push('')
     
     lines.push('/**')
     lines.push(' * Convert degrees to Angle.')
     lines.push(' * @param degrees - Angle in degrees as float')
-    lines.push(' * @returns Angle with quantized integer values')
+    lines.push(' * @returns Angle instance (degrees setter automatically converts to fixed-point)')
     lines.push(' * @example')
-    lines.push(' * const angle = DegreesToAngle(45.0) // { degrees: 45000 }')
+    lines.push(' * const angle = DegreesToAngle(45.0) // new Angle(45.0, false)')
     lines.push(' */')
     lines.push('export function DegreesToAngle(degrees: number): Angle {')
-    lines.push(`  return { degrees: Math.round(degrees * ${SCALE}) }`)
+    lines.push('  return new Angle(degrees, false) // false = float input')
     lines.push('}')
     lines.push('')
   }
   
   return lines.join('\n')
 }
+
+// Note: DeterministicMath classes (IVec2, IVec3, Angle, Position2, etc.) are now
+// defined in SDK core (sdk/ts/src/core/deterministic-math.ts) and imported from there.
+// This avoids code duplication and ensures consistency.
 
 /**
  * Generate the contents of defs.ts.
@@ -233,10 +113,64 @@ export function generateDefsTs(schema: ProtocolSchema): string {
   // Keep output stable by sorting definition names.
   const sortedDefNames = [...defNames].sort()
 
-  // Generate type definitions
+  // Import DeterministicMath classes from SDK instead of generating them
+  const hasIVec2 = 'IVec2' in schema.defs
+  const hasIVec3 = 'IVec3' in schema.defs
+  const hasAngle = 'Angle' in schema.defs
+  const hasPosition2 = 'Position2' in schema.defs
+  const hasVelocity2 = 'Velocity2' in schema.defs
+  const hasAcceleration2 = 'Acceleration2' in schema.defs
+
+  const imports: string[] = []
+  if (hasIVec2) imports.push('IVec2')
+  if (hasIVec3) imports.push('IVec3')
+  if (hasAngle) imports.push('Angle')
+  if (hasPosition2) imports.push('Position2')
+  if (hasVelocity2) imports.push('Velocity2')
+  if (hasAcceleration2) imports.push('Acceleration2')
+  
+  if (imports.length > 0) {
+    lines.push('// Import DeterministicMath classes from SDK')
+    lines.push('// These classes automatically convert fixed-point integers to floats via getters')
+    // Add @ts-ignore to suppress false positive warnings about unused imports
+    // These classes are used in type definitions below, but TypeScript doesn't recognize them as "used"
+    // when they're only in type positions (which is valid usage)
+    lines.push(`// @ts-ignore - Classes are used in type definitions below`)
+    lines.push(`import { ${imports.join(', ')}, FIXED_POINT_SCALE } from '@swiftstatetree/sdk/core'`)
+    lines.push('')
+    // Re-export the classes so they can be imported from defs.ts
+    // Note: Classes are used both as types (in type definitions) and as values (for instantiation)
+    for (const imp of imports) {
+      lines.push(`export { ${imp} }`)
+    }
+    lines.push('export { FIXED_POINT_SCALE }')
+    lines.push('')
+  } else {
+    // Still export FIXED_POINT_SCALE for Angle helpers
+    lines.push('// Fixed-point scale factor (matches Swift FixedPoint.scale)')
+    lines.push('export const FIXED_POINT_SCALE = 1000')
+    lines.push('')
+  }
+
+  // Generate type definitions for non-DeterministicMath types
   for (const name of sortedDefNames) {
+    // Skip DeterministicMath types - they are classes now
+    if (isDeterministicMathType(name)) {
+      continue
+    }
     const def = schema.defs[name]
     const tsType = mapSchemaDefToTsType(def, ctx)
+    // Add @ts-ignore for types that use DeterministicMath classes in type positions
+    // This suppresses TypeScript's false positive warnings about unused imports
+    // Check if the type definition uses any DeterministicMath class
+    const usedClasses = imports.filter(imp => {
+      // Check if the type string contains the class name (as a type reference)
+      // OR if the type name itself contains the class name (e.g., "Optional<Position2>")
+      return (tsType.includes(imp) && !tsType.includes(`typeof ${imp}`)) || name.includes(imp)
+    })
+    if (usedClasses.length > 0) {
+      lines.push(`// @ts-ignore - DeterministicMath classes (${usedClasses.join(', ')}) are used in type definitions`)
+    }
     lines.push(`export type ${name} = ${tsType}`)
   }
 
@@ -244,7 +178,7 @@ export function generateDefsTs(schema: ProtocolSchema): string {
     lines.push('')
   }
 
-  // Generate conversion helpers for DeterministicMath types
+  // Generate conversion helpers for Angle (degrees/radians conversion)
   const helpers = generateDeterministicMathHelpers(schema)
   if (helpers) {
     lines.push(helpers)

@@ -5,6 +5,7 @@ import type { StateTreeRuntime, Logger } from '@swiftstatetree/sdk/core'
 import { StateTreeView } from '@swiftstatetree/sdk/core'
 import type { LandState, Actions, ClientEvents, ServerEventSubscriptions } from './bindings'
 import { LAND_TYPE } from './bindings'
+import { SCHEMA } from '../schema.js'
 
 export interface StateTreeOptions {
   landID?: string
@@ -30,6 +31,7 @@ export class HeroDefenseStateTree {
     this.state = {} as LandState
 
     this.view = runtime.createView(landID, {
+      schema: SCHEMA,  // Pass schema for accurate type checking
       playerID: options?.playerID,
       deviceID: options?.deviceID,
       metadata: options?.metadata,
@@ -75,6 +77,14 @@ export class HeroDefenseStateTree {
   }
 }
 
+function isPlainObject(value: any): value is Record<string, any> {
+  if (!value || typeof value !== "object") {
+    return false
+  }
+  const proto = Object.getPrototypeOf(value)
+  return proto === Object.prototype || proto === null
+}
+
 function syncInto(target: any, source: any): void {
   if (source == null || typeof source !== "object") {
     return
@@ -103,7 +113,11 @@ function syncInto(target: any, source: any): void {
     }
 
     if (src && typeof src === "object") {
-      if (!dst || typeof dst !== "object" || Array.isArray(dst)) {
+      if (!isPlainObject(src)) {
+        target[key] = src
+        continue
+      }
+      if (!dst || typeof dst !== "object" || Array.isArray(dst) || !isPlainObject(dst)) {
         target[key] = {}
       }
       syncInto(target[key], src)

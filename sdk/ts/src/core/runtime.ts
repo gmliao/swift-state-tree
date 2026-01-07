@@ -18,9 +18,17 @@ export class StateTreeRuntime {
   private isConnected = false
   private views = new Map<string, StateTreeView>()
   private logger: Logger
+  private onDisconnectCallback: (() => void) | null = null
 
   constructor(logger?: Logger) {
     this.logger = logger || new NoOpLogger()
+  }
+
+  /**
+   * Set callback for disconnection events
+   */
+  onDisconnect(callback: () => void): void {
+    this.onDisconnectCallback = callback
   }
 
   /**
@@ -66,6 +74,10 @@ export class StateTreeRuntime {
       this.logger.info('WebSocket closed')
       // Clean up all views
       this.views.clear()
+      // Notify disconnect callback
+      if (this.onDisconnectCallback) {
+        this.onDisconnectCallback()
+      }
     }
 
     this.ws.onmessage = (event) => {
@@ -84,6 +96,8 @@ export class StateTreeRuntime {
     this.isConnected = false
     // Clean up all views
     this.views.clear()
+    // Clear disconnect callback
+    this.onDisconnectCallback = null
   }
 
   /**
@@ -112,6 +126,7 @@ export class StateTreeRuntime {
 
     // No existing view found, create new one
     const view = new StateTreeView(this, landID, {
+      schema: options?.schema,
       playerID: options?.playerID,
       deviceID: options?.deviceID,
       metadata: options?.metadata,

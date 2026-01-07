@@ -64,6 +64,19 @@ export function generateSchemaTs(schema: ProtocolSchema): string {
   lines.push('export type ServerEventIDFor<L extends LandID> = (typeof SERVER_EVENT_IDS)[L][number]')
   lines.push('')
 
+  // Export the full ProtocolSchema object for runtime type checking
+  // Define ProtocolSchema type locally to avoid dependency on codegen module
+  lines.push('/**')
+  lines.push(' * Full schema definition for runtime type checking.')
+  lines.push(' * Use this to pass schema to StateTreeView for accurate type inference.')
+  lines.push(' */')
+  lines.push(`export const SCHEMA = ${JSON.stringify(schema, null, 2)} as const`)
+  lines.push('')
+  lines.push('/**')
+  lines.push(' * Type helper for the schema constant.')
+  lines.push(' */')
+  lines.push('export type ProtocolSchema = typeof SCHEMA')
+
   return lines.join('\n')
 }
 
