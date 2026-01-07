@@ -43,6 +43,10 @@ If this is your first time with SwiftStateTree, we recommend reading in the foll
 
 - **[Deterministic Math](deterministic-math/README.md)** - Fixed-point arithmetic, collision detection, and vector operations for server-authoritative games
 
+### Client SDK
+
+- **[TypeScript SDK](sdk/README.md)** - Client SDK architecture, layers, and framework integration
+
 ### Reference Documentation
 
 - **[Schema Generation](schema/README.md)** - JSON Schema auto-generation
