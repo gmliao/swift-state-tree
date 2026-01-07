@@ -200,9 +200,9 @@ describe('StateTreeView', () => {
       expect(runtime.sentMessages.length).toBe(1)
       const message = runtime.sentMessages[0]
       expect(message.kind).toBe('action')
-      const action = (message.payload as any).action
-      expect(action.action.typeIdentifier).toBe('BuyUpgrade')
-      expect(action.landID).toBe('demo-game')
+      const action = message.payload as any
+      // Simplified structure: fields directly in payload
+      expect(action.typeIdentifier).toBe('BuyUpgrade')
 
       // Resolve the action
       view.handleTransportMessage({
@@ -230,7 +230,7 @@ describe('StateTreeView', () => {
       await new Promise(resolve => setTimeout(resolve, 10))
 
       const message = runtime.sentMessages[0]
-      const action = (message.payload as any).action
+      const action = message.payload as any
 
       // Send error response
       view.handleTransportMessage({
@@ -434,20 +434,13 @@ describe('StateTreeView', () => {
       const handler = vi.fn()
       const unsubscribe = view.onServerEvent('TestEvent', handler)
 
-      // payloadObj.event || payloadObj, then check payload.event?.fromServer
-      // So we need: payload = { event: { fromServer: { event: { ... } } } }
+      // Simplified structure: payload directly contains fromServer
       view.handleTransportMessage({
         kind: 'event',
         payload: {
-          event: {
-            event: {
-              fromServer: {
-                event: {
-                  type: 'TestEvent',
-                  payload: { data: 'test' }
-                }
-              }
-            }
+          fromServer: {
+            type: 'TestEvent',
+            payload: { data: 'test' }
           }
         } as any
       })
@@ -459,15 +452,9 @@ describe('StateTreeView', () => {
       view.handleTransportMessage({
         kind: 'event',
         payload: {
-          event: {
-            event: {
-              fromServer: {
-                event: {
-                  type: 'TestEvent',
-                  payload: { data: 'test2' }
-                }
-              }
-            }
+          fromServer: {
+            type: 'TestEvent',
+            payload: { data: 'test2' }
           }
         } as any
       })

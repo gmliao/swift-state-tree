@@ -11,6 +11,7 @@
       ],
       "type" : "object",
       "x-stateTree" : {
+        "atomic" : true,
         "nodeKind" : "leaf",
         "sync" : {
           "policy" : "broadcast"
@@ -63,6 +64,7 @@
       ],
       "type" : "object",
       "x-stateTree" : {
+        "atomic" : true,
         "nodeKind" : "leaf"
       }
     },
@@ -83,6 +85,7 @@
     "Optional<Position2>" : {
       "type" : "object",
       "x-stateTree" : {
+        "atomic" : true,
         "nodeKind" : "leaf",
         "sync" : {
           "policy" : "broadcast"
@@ -158,6 +161,7 @@
       ],
       "type" : "object",
       "x-stateTree" : {
+        "atomic" : true,
         "nodeKind" : "leaf",
         "sync" : {
           "policy" : "broadcast"

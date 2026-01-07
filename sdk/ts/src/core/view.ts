@@ -176,7 +176,8 @@ export class StateTreeView {
 
     // Extract fixed-point integers from DeterministicMath class instances, or convert float plain objects
     const encodedPayload = this.encodeSnapshotValue(payload)
-    const message = createEventMessage(this.landID, eventType, encodedPayload, true)
+    // landID removed - server identifies land from session mapping
+    const message = createEventMessage(eventType, encodedPayload, true)
     try {
       this.runtime.sendRawMessage(message)
       this.logger.info(`Event sent [${eventType}]: ${JSON.stringify(encodedPayload)}`)
@@ -199,7 +200,8 @@ export class StateTreeView {
       const requestID = generateRequestID('action')
       // Extract fixed-point integers from DeterministicMath class instances, or convert float plain objects
       const encodedPayload = this.encodeSnapshotValue(payload)
-      const message = createActionMessage(requestID, this.landID, actionType, encodedPayload)
+      // landID removed - server identifies land from session mapping
+      const message = createActionMessage(requestID, actionType, encodedPayload)
 
       // Store resolve callback
       this.actionCallbacks.set(requestID, (response: any) => {
@@ -367,17 +369,17 @@ export class StateTreeView {
       }
 
       case 'event': {
-        const payloadObj = message.payload as any
-        const payload = payloadObj.event || payloadObj
-        if (payload.event?.fromServer) {
-          const eventData = payload.event.fromServer.event
+        // Simplified structure: payload directly contains fromClient or fromServer
+        const payload = message.payload as any
+        if (payload.fromServer) {
+          const eventData = payload.fromServer
           const handlers = this.eventHandlers.get(eventData.type)
           if (handlers) {
             handlers.forEach(handler => handler(eventData.payload))
           }
           this.logger.info(`Server event [${eventData.type}]: ${JSON.stringify(eventData.payload)}`)
-        } else if (payload.event?.fromClient) {
-          const eventData = payload.event.fromClient.event
+        } else if (payload.fromClient) {
+          const eventData = payload.fromClient
           this.logger.info(`Client event echo [${eventData.type}]: ${JSON.stringify(eventData.payload)}`)
         }
         break
@@ -748,7 +750,7 @@ export class StateTreeView {
    */
   private getTypeForPath(path: string): string | null {
     // Schema is required (checked in constructor)
-    if (!this.stateTypeName) {
+    if (!this.stateTypeName || !this.schema || !this.schema.defs) {
       return null
     }
 
@@ -783,7 +785,7 @@ export class StateTreeView {
             const refName: string = currentDef.additionalProperties.$ref.startsWith('#/defs/')
               ? currentDef.additionalProperties.$ref.slice('#/defs/'.length)
               : currentDef.additionalProperties.$ref
-            currentDef = this.schema.defs[refName]
+            currentDef = this.schema?.defs?.[refName]
             if (!currentDef) {
               return null
             }
@@ -805,7 +807,7 @@ export class StateTreeView {
             const refName: string = currentDef.additionalProperties.$ref.startsWith('#/defs/')
               ? currentDef.additionalProperties.$ref.slice('#/defs/'.length)
               : currentDef.additionalProperties.$ref
-            currentDef = this.schema.defs[refName]
+            currentDef = this.schema?.defs?.[refName]
             if (!currentDef) {
               return null
             }
@@ -824,7 +826,7 @@ export class StateTreeView {
         const refName: string = prop.$ref.startsWith('#/defs/') 
           ? prop.$ref.slice('#/defs/'.length)
           : prop.$ref
-        currentDef = this.schema.defs[refName]
+        currentDef = this.schema?.defs?.[refName]
         if (!currentDef) {
           return null
         }
@@ -842,7 +844,7 @@ export class StateTreeView {
           const refName: string = additionalProps.$ref.startsWith('#/defs/')
             ? additionalProps.$ref.slice('#/defs/'.length)
             : additionalProps.$ref
-          currentDef = this.schema.defs[refName]
+          currentDef = this.schema?.defs?.[refName]
           if (!currentDef) {
             return null
           }
@@ -902,56 +904,10 @@ export class StateTreeView {
       switch (patch.op) {
         case 'replace':
         case 'add':
-          // If we're updating v/x or v/y, handle specially to create IVec2 instance
-          if ((key === 'x' || key === 'y') && parent && parentKey === 'v') {
-            // We're updating v.x or v.y
-            // obj is the v object itself (should be IVec2 instance)
-            // patch.value is a fixed-point integer (e.g., 65000)
-            // pathPrefix already includes '/v' since parentKey === 'v'
-            
-            // Use schema to verify this should be IVec2
-            // pathPrefix is already the full path to 'v', so we use it directly
-            const vPath = pathPrefix || '/v'
-            const vType = this.getTypeForPath(vPath)
-            const isIVec2 = this.isIVec2Type(vType)
-            
-            if (!isIVec2) {
-              throw new Error(`Expected IVec2 type at path ${vPath} based on schema, but got type: ${vType}`)
-            }
-            
-            // If obj is already an IVec2 instance, update it directly
-            if (obj instanceof IVec2) {
-              // Use raw value to avoid getter conversion
-              if (key === 'x') {
-                (obj as any)._x = patch.value
-              } else {
-                (obj as any)._y = patch.value
-              }
-            } else {
-              // obj is not an IVec2 instance - this should not happen with schema enforcement
-              // But we handle it gracefully by creating the instance
-              if (typeof obj !== 'object' || obj === null) {
-                obj = {}
-              }
-              obj[key] = patch.value
-              
-              // Check if we now have both x and y, then create IVec2 instance
-              if (typeof obj.x === 'number' && typeof obj.y === 'number') {
-                // Create IVec2 instance from the updated values (both are fixed-point integers)
-                const ivec2 = new IVec2(obj.x, obj.y, true) // true = fixed-point integers
-                // Replace parent's v property with the IVec2 instance
-                // parent is the Semantic2 object (Position2, Velocity2, etc.)
-                parent.v = ivec2
-              } else {
-                // Only one coordinate updated so far, keep as plain object temporarily
-                // This will be converted to IVec2 when both x and y are set
-              }
-            }
-          } else {
-            // For other updates, use decodeSnapshotValue to create class instances
-            const updatePath = pathPrefix ? `${pathPrefix}/${key}` : `/${key}`
-            obj[key] = this.decodeSnapshotValue(patch.value, updatePath)
-          }
+          // With atomic types, server always sends whole objects (e.g., entire IVec2, not just x or y)
+          // Use decodeSnapshotValue to create class instances based on schema
+          const updatePath = pathPrefix ? `${pathPrefix}/${key}` : `/${key}`
+          obj[key] = this.decodeSnapshotValue(patch.value, updatePath)
           break
         case 'remove':
           delete obj[key]
@@ -961,56 +917,14 @@ export class StateTreeView {
       const key = parts[0]
       const restPath = '/' + parts.slice(1).join('/')
       
-      // If the next part is 'v' and we're updating 'x' or 'y', we need to ensure 'v' exists as an object
-      const nextKey = parts[1]
-      if (nextKey === 'v' && (parts[2] === 'x' || parts[2] === 'y')) {
-        // We're updating v.x or v.y, ensure v exists as an object
-        if (!(key in obj) || typeof obj[key] !== 'object' || obj[key] === null) {
-          obj[key] = {}
-        }
-        if (!('v' in obj[key]) || typeof obj[key].v !== 'object' || obj[key].v === null) {
-          obj[key].v = {}
-        }
-      } else {
-        // Normal case: ensure the key exists
-        if (!(key in obj) || typeof obj[key] !== 'object' || obj[key] === null) {
-          obj[key] = {}
-        }
+      // Ensure the key exists as an object for nested updates
+      if (!(key in obj) || typeof obj[key] !== 'object' || obj[key] === null) {
+        obj[key] = {}
       }
       
       // Pass current obj as parent, and key as parentKey for the recursive call
       const newPathPrefix = (pathPrefix ? pathPrefix + '/' : '') + key
       this.applyNestedPatch(obj[key], { ...patch, path: restPath }, obj, key, newPathPrefix)
-      
-      // After applying nested patch, if we updated 'v', ensure it's an IVec2 instance
-      // This handles the case where we updated v.x or v.y and need to recreate the IVec2 instance
-      if (key === 'v' && typeof obj.v === 'object' && obj.v !== null && typeof obj.v.x === 'number' && typeof obj.v.y === 'number') {
-        // Check if this is an IVec2 type based on schema
-        const vPath = fullPath.endsWith('/v') ? fullPath : fullPath + '/v'
-        const vType = this.getTypeForPath(vPath)
-        const isIVec2 = this.isIVec2Type(vType)
-        
-        // Schema is required - use schema type information
-        if (isIVec2 && !(obj.v instanceof IVec2)) {
-          // IVec2 is always fixed-point from server
-          obj.v = new IVec2(obj.v.x, obj.v.y, true)
-        }
-      }
-      
-      // Also check if we're inside a Semantic2 type (position, velocity, etc.) and need to ensure v is IVec2
-      // This handles cases where the parent object itself is a Semantic2 type
-      if (parent && parentKey && typeof obj === 'object' && obj !== null && 'v' in obj && typeof obj.v === 'object' && obj.v !== null && typeof obj.v.x === 'number' && typeof obj.v.y === 'number') {
-        // Check if parent object is a Semantic2 type based on schema
-        const parentPath = fullPath.substring(0, fullPath.lastIndexOf('/' + key))
-        const parentType = this.getTypeForPath(parentPath)
-        const isSemantic2 = this.isSemantic2Type(parentType)
-        
-        // Schema is required - use schema type information
-        if (isSemantic2 && !(obj.v instanceof IVec2)) {
-          // IVec2 is always fixed-point from server
-          obj.v = new IVec2(obj.v.x, obj.v.y, true)
-        }
-      }
     }
   }
 

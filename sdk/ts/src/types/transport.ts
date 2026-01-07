@@ -6,36 +6,18 @@ export interface ActionEnvelope {
   payload: string // Base64 encoded
 }
 
-export interface TransportActionPayload {
-  requestID: string
-  landID: string
-  action: ActionEnvelope
-}
+// TransportActionPayload simplified - fields are now directly in MessagePayload
+// For action messages, payload contains: { requestID: string, typeIdentifier: string, payload: string }
 
 export interface TransportActionResponsePayload {
   requestID: string
   response: any
 }
 
-export interface TransportEventPayload {
-  landID: string
-  event: {
-    fromClient?: {
-      event: {
-        type: string
-        payload: any
-        rawBody?: any
-      }
-    }
-    fromServer?: {
-      event: {
-        type: string
-        payload: any
-        rawBody?: any
-      }
-    }
-  }
-}
+// TransportEventPayload removed - simplified to use fromClient/fromServer directly
+// Event payload is now directly in MessagePayload:
+// - fromClient: { type: string, payload: any, rawBody?: any }
+// - fromServer: { type: string, payload: any, rawBody?: any }
 
 export interface TransportJoinPayload {
   requestID: string
@@ -65,6 +47,19 @@ export interface ErrorPayload {
   code: string
   message: string
   details?: Record<string, any>
+}
+
+// Simplified event payload type
+export interface TransportEventPayload {
+  fromClient?: { type: string; payload: any; rawBody?: any }
+  fromServer?: { type: string; payload: any; rawBody?: any }
+}
+
+// Simplified action payload type (fields directly in payload)
+export interface TransportActionPayload {
+  requestID: string
+  typeIdentifier: string
+  payload: string // Base64 encoded
 }
 
 export interface TransportMessage {

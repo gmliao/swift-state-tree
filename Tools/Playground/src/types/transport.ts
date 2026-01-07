@@ -5,10 +5,11 @@ export interface ActionEnvelope {
 
 export type MessageKind = 'action' | 'actionResponse' | 'event' | 'join' | 'joinResponse' | 'error'
 
+// Simplified action payload - fields directly in payload
 export interface TransportActionPayload {
   requestID: string
-  landID: string
-  action: ActionEnvelope
+  typeIdentifier: string
+  payload: string // Base64 encoded
 }
 
 export interface TransportActionResponsePayload {
@@ -16,23 +17,17 @@ export interface TransportActionResponsePayload {
   response: any
 }
 
+// Simplified event payload - directly contains fromClient or fromServer
 export interface TransportEventPayload {
-  landID: string
-  event: {
-    fromClient?: {
-      event: {
-        type: string
-        payload: any
-        rawBody?: any
-      }
-    }
-    fromServer?: {
-      event: {
-        type: string
-        payload: any
-        rawBody?: any
-      }
-    }
+  fromClient?: {
+    type: string
+    payload: any
+    rawBody?: any
+  }
+  fromServer?: {
+    type: string
+    payload: any
+    rawBody?: any
   }
 }
 

@@ -144,20 +144,20 @@ describe('protocol', () => {
   describe('createActionMessage', () => {
     it('creates action message with base64 encoded payload', () => {
       const payload = { upgradeID: 'cursor' }
-      const message = createActionMessage('req-789', 'demo-game', 'BuyUpgrade', payload)
+      const message = createActionMessage('req-789', 'BuyUpgrade', payload)
 
       expect(message.kind).toBe('action')
-      const action = (message.payload as any).action
+      const action = message.payload as any
+      // Simplified structure: fields directly in payload
       expect(action.requestID).toBe('req-789')
-      expect(action.landID).toBe('demo-game')
-      expect(action.action.typeIdentifier).toBe('BuyUpgrade')
-      expect(typeof action.action.payload).toBe('string') // base64 encoded
+      expect(action.typeIdentifier).toBe('BuyUpgrade')
+      expect(typeof action.payload).toBe('string') // base64 encoded
       
       // Decode and verify
       const decoded = JSON.parse(
         typeof Buffer !== 'undefined'
-          ? Buffer.from(action.action.payload, 'base64').toString('utf-8')
-          : decodeURIComponent(escape(atob(action.action.payload)))
+          ? Buffer.from(action.payload, 'base64').toString('utf-8')
+          : decodeURIComponent(escape(atob(action.payload)))
       )
       expect(decoded).toEqual(payload)
     })
@@ -166,14 +166,14 @@ describe('protocol', () => {
   describe('createEventMessage', () => {
     it('creates event message with payload', () => {
       const payload = { amount: 1 }
-      const message = createEventMessage('demo-game', 'ClickCookie', payload, true)
+      const message = createEventMessage('ClickCookie', payload, true)
 
       expect(message.kind).toBe('event')
-      const eventPayload = (message.payload as any).event
-      expect(eventPayload.landID).toBe('demo-game')
-      expect(eventPayload.event.fromClient).toBeDefined()
-      expect(eventPayload.event.fromClient.event.type).toBe('ClickCookie')
-      expect(eventPayload.event.fromClient.event.payload).toEqual(payload)
+      const eventPayload = message.payload as any
+      // Simplified structure: fromClient is directly in payload
+      expect(eventPayload.fromClient).toBeDefined()
+      expect(eventPayload.fromClient.type).toBe('ClickCookie')
+      expect(eventPayload.fromClient.payload).toEqual(payload)
     })
   })
 

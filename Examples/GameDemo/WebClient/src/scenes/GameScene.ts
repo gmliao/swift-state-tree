@@ -1,7 +1,7 @@
 import Phaser from 'phaser'
 import type { HeroDefenseStateTree } from '../generated/hero-defense/index'
-import type { HeroDefenseState, MoveToEvent, PlayAction, PlayResponse, PlayerState, Position2 } from '../generated/defs'
-import { FIXED_POINT_SCALE } from '../generated/defs'
+import type { HeroDefenseState, MoveToEvent, PlayAction, PlayResponse, PlayerState } from '../generated/defs'
+import { Position2, FIXED_POINT_SCALE } from '../generated/defs'
 
 interface GameClient {
   tree: HeroDefenseStateTree | null
@@ -327,8 +327,8 @@ export class GameScene extends Phaser.Scene {
         const worldY = this.cameras.main.getWorldPoint(pointer.x, pointer.y).y
         
         // No clamping - allow negative coordinates
-        // SDK automatically converts float to fixed-point integers, so we can use float directly
-        const target = { v: { x: worldX, y: worldY } } as Position2
+        // Create Position2 instance from float coordinates (false = float values, will be converted to fixed-point)
+        const target = new Position2({ x: worldX, y: worldY }, false)
         
         // Visual feedback: draw a temporary marker at click position
         const marker = this.add.circle(worldX, worldY, 1, 0xff0000, 0.5)

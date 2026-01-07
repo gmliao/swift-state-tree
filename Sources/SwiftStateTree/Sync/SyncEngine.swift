@@ -250,6 +250,16 @@ public struct SyncEngine: Sendable {
         // Handle different types or changed values
         switch (oldValue, newValue) {
         case (.object(let oldObj), .object(let newObj)):
+            // Check if this is an atomic type (DeterministicMath types)
+            // Atomic types should be updated as a whole unit, not field-by-field
+            if isAtomicType(oldObj, newObj) {
+                // Treat as atomic: update the whole object
+                if oldObj != newObj {
+                    patches.append(StatePatch(path: basePath, operation: .set(newValue)))
+                }
+                return patches
+            }
+            
             // Compare objects recursively - check all keys from both objects
             let allKeys = Set(oldObj.keys).union(Set(newObj.keys))
             
@@ -309,6 +319,51 @@ public struct SyncEngine: Sendable {
                 return true
             }
         }
+        return false
+    }
+    
+    /// Check if an object represents an atomic DeterministicMath type.
+    /// Atomic types should be updated as a whole unit, not field-by-field.
+    private func isAtomicType(_ oldObj: [String: SnapshotValue], _ newObj: [String: SnapshotValue]) -> Bool {
+        let allKeys = Set(oldObj.keys).union(Set(newObj.keys))
+        
+        // IVec2: { x: Int, y: Int }
+        if allKeys == ["x", "y"] {
+            if case .int = oldObj["x"], case .int = oldObj["y"],
+               case .int = newObj["x"], case .int = newObj["y"] {
+                return true
+            }
+        }
+        
+        // IVec3: { x: Int, y: Int, z: Int }
+        if allKeys == ["x", "y", "z"] {
+            if case .int = oldObj["x"], case .int = oldObj["y"], case .int = oldObj["z"],
+               case .int = newObj["x"], case .int = newObj["y"], case .int = newObj["z"] {
+                return true
+            }
+        }
+        
+        // Angle: { degrees: Int }
+        if allKeys == ["degrees"] {
+            if case .int = oldObj["degrees"], case .int = newObj["degrees"] {
+                return true
+            }
+        }
+        
+        // Position2/Velocity2/Acceleration2: { v: { x: Int, y: Int } }
+        if allKeys == ["v"] {
+            if case .object(let oldV) = oldObj["v"],
+               case .object(let newV) = newObj["v"] {
+                let vKeys = Set(oldV.keys).union(Set(newV.keys))
+                if vKeys == ["x", "y"] {
+                    if case .int = oldV["x"], case .int = oldV["y"],
+                       case .int = newV["x"], case .int = newV["y"] {
+                        return true
+                    }
+                }
+            }
+        }
+        
         return false
     }
     

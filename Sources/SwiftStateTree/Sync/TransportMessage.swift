@@ -25,7 +25,7 @@ public enum MessageKind: String, Codable, Sendable {
 public enum MessagePayload: Codable, Sendable {
     case action(TransportActionPayload)
     case actionResponse(TransportActionResponsePayload)
-    case event(TransportEventPayload)
+    case event(TransportEvent)
     case join(TransportJoinPayload)
     case joinResponse(TransportJoinResponsePayload)
     case error(ErrorPayload)
@@ -37,17 +37,33 @@ public enum MessagePayload: Codable, Sendable {
         case join
         case joinResponse
         case error
+        // For simplified event structure
+        case fromClient
+        case fromServer
+        // For simplified action structure
+        case requestID
+        case typeIdentifier
+        case payload
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
         case .action(let payload):
-            try container.encode(payload, forKey: .action)
+            // Simplified: encode action fields directly
+            try container.encode(payload.requestID, forKey: .requestID)
+            try container.encode(payload.action.typeIdentifier, forKey: .typeIdentifier)
+            try container.encode(payload.action.payload, forKey: .payload)
         case .actionResponse(let payload):
             try container.encode(payload, forKey: .actionResponse)
-        case .event(let payload):
-            try container.encode(payload, forKey: .event)
+        case .event(let event):
+            // Simplified: encode TransportEvent directly
+            switch event {
+            case .fromClient(let clientEvent):
+                try container.encode(clientEvent, forKey: .fromClient)
+            case .fromServer(let serverEvent):
+                try container.encode(serverEvent, forKey: .fromServer)
+            }
         case .join(let payload):
             try container.encode(payload, forKey: .join)
         case .joinResponse(let payload):
@@ -60,12 +76,19 @@ public enum MessagePayload: Codable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
 
-        if let action = try? container.decode(TransportActionPayload.self, forKey: .action) {
-            self = .action(action)
+        // Simplified: decode action fields directly
+        if let requestID = try? container.decode(String.self, forKey: .requestID),
+           let typeIdentifier = try? container.decode(String.self, forKey: .typeIdentifier),
+           let payload = try? container.decode(Data.self, forKey: .payload) {
+            let actionEnvelope = ActionEnvelope(typeIdentifier: typeIdentifier, payload: payload)
+            let actionPayload = TransportActionPayload(requestID: requestID, action: actionEnvelope)
+            self = .action(actionPayload)
         } else if let actionResponse = try? container.decode(TransportActionResponsePayload.self, forKey: .actionResponse) {
             self = .actionResponse(actionResponse)
-        } else if let event = try? container.decode(TransportEventPayload.self, forKey: .event) {
-            self = .event(event)
+        } else if let fromClient = try? container.decode(AnyClientEvent.self, forKey: .fromClient) {
+            self = .event(.fromClient(event: fromClient))
+        } else if let fromServer = try? container.decode(AnyServerEvent.self, forKey: .fromServer) {
+            self = .event(.fromServer(event: fromServer))
         } else if let join = try? container.decode(TransportJoinPayload.self, forKey: .join) {
             self = .join(join)
         } else if let joinResponse = try? container.decode(TransportJoinResponsePayload.self, forKey: .joinResponse) {
@@ -86,12 +109,11 @@ public enum MessagePayload: Codable, Sendable {
 /// Action request payload for transport layer.
 public struct TransportActionPayload: Codable, Sendable {
     public let requestID: String
-    public let landID: String
+    // landID removed - server identifies land from session mapping
     public let action: ActionEnvelope
-
-    public init(requestID: String, landID: String, action: ActionEnvelope) {
+    
+    public init(requestID: String, action: ActionEnvelope) {
         self.requestID = requestID
-        self.landID = landID
         self.action = action
     }
 }
@@ -107,16 +129,7 @@ public struct TransportActionResponsePayload: Codable, Sendable {
     }
 }
 
-/// Event payload for transport layer.
-public struct TransportEventPayload: Codable, Sendable {
-    public let landID: String
-    public let event: TransportEvent
-
-    public init(landID: String, event: TransportEvent) {
-        self.landID = landID
-        self.event = event
-    }
-}
+// TransportEventPayload removed - TransportEvent is now used directly in MessagePayload
 
 /// Join request payload for transport layer.
 ///
@@ -196,10 +209,10 @@ public struct TransportMessage: Codable, Sendable {
     }
 
     // Convenience initializers
-    public static func action(requestID: String, landID: String, action: ActionEnvelope) -> TransportMessage {
+    public static func action(requestID: String, action: ActionEnvelope) -> TransportMessage {
         return TransportMessage(
             kind: .action,
-            payload: .action(TransportActionPayload(requestID: requestID, landID: landID, action: action))
+            payload: .action(TransportActionPayload(requestID: requestID, action: action))
         )
     }
 
@@ -210,10 +223,10 @@ public struct TransportMessage: Codable, Sendable {
         )
     }
 
-    public static func event(landID: String, event: TransportEvent) -> TransportMessage {
+    public static func event(event: TransportEvent) -> TransportMessage {
         return TransportMessage(
             kind: .event,
-            payload: .event(TransportEventPayload(landID: landID, event: event))
+            payload: .event(event)
         )
     }
 

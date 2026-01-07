@@ -142,7 +142,6 @@ struct MultiRoomTwoPlayerTests {
         let actionEnvelope = ActionEnvelope(typeIdentifier: "MultiRoomIncrementAction", payload: payloadData)
         let actionRequest = TransportMessage.action(
             requestID: "action-1",
-            landID: sharedLandID.rawValue,
             action: actionEnvelope
         )
         let actionData = try encoder.encode(actionRequest)

@@ -270,7 +270,6 @@ func testHummingbirdAdapterEmitsJSON() async throws {
 
     let pingEvent = AnyClientEvent(TestPingEvent())
     let pingMessage = TransportMessage.event(
-        landID: definition.id,
         event: .fromClient(event: pingEvent)
     )
     let pingData = try encoder.encode(pingMessage)
@@ -278,7 +277,6 @@ func testHummingbirdAdapterEmitsJSON() async throws {
 
     let chatEvent = AnyClientEvent(TestChatEvent(message: "hello"))
     let chatMessage = TransportMessage.event(
-        landID: definition.id,
         event: .fromClient(event: chatEvent)
     )
     let chatData = try encoder.encode(chatMessage)
@@ -292,9 +290,8 @@ func testHummingbirdAdapterEmitsJSON() async throws {
 
     #expect(transportMessages.contains { message in
         if message.kind == .event,
-           case .event(let payload) = message.payload,
-           payload.landID == definition.id,
-           case .fromServer(let anyEvent) = payload.event,
+           case .event(let event) = message.payload,
+           case .fromServer(let anyEvent) = event,
            anyEvent.type == "TestPongEvent" {
             return true
         }
@@ -303,9 +300,8 @@ func testHummingbirdAdapterEmitsJSON() async throws {
 
     #expect(transportMessages.contains { message in
         if message.kind == .event,
-           case .event(let payload) = message.payload,
-           payload.landID == definition.id,
-           case .fromServer(let anyEvent) = payload.event,
+           case .event(let event) = message.payload,
+           case .fromServer(let anyEvent) = event,
            anyEvent.type == "TestMessageEvent" {
             // Decode the payload to check message content
             if let payloadDict = anyEvent.payload.base as? [String: Any],

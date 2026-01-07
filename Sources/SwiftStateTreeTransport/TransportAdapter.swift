@@ -423,7 +423,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     if case .action(let payload) = transportMsg.payload {
                         logger.info("📥 Received action", metadata: [
                             "requestID": .string(payload.requestID),
-                            "landID": .string(payload.landID),
+                            "landID": .string(self.landID),
                             "actionType": .string(payload.action.typeIdentifier),
                             "playerID": .string(playerID.rawValue),
                             "sessionID": .string(sessionID.rawValue)
@@ -438,9 +438,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         }
 
                         // Handle action request
+                        // Use self.landID instead of payload.landID (server identifies land from session mapping)
                         await handleActionRequest(
                             requestID: payload.requestID,
-                            landID: payload.landID,
                             envelope: payload.action,
                             playerID: playerID,
                             clientID: clientID,
@@ -467,10 +467,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     }
 
                 case .event:
-                    if case .event(let payload) = transportMsg.payload {
-                        if case .fromClient(let anyClientEvent) = payload.event {
+                    if case .event(let event) = transportMsg.payload {
+                        if case .fromClient(let anyClientEvent) = event {
                             logger.info("📥 Received client event", metadata: [
-                                "landID": .string(payload.landID),
+                                "landID": .string(self.landID),
                                 "eventType": .string(anyClientEvent.type),
                                 "playerID": .string(playerID.rawValue),
                                 "sessionID": .string(sessionID.rawValue)
@@ -530,7 +530,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                                     try? await transport.send(errorData, to: .session(sessionID))
                                 }
                             }
-                        } else if case .fromServer = payload.event {
+                        } else if case .fromServer = event {
                             logger.warning("Received server event from client (unexpected)", metadata: [
                                 "sessionID": .string(sessionID.rawValue)
                             ])
@@ -580,7 +580,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     public func sendEvent(_ event: AnyServerEvent, to target: SwiftStateTree.EventTarget) async {
         do {
             let transportMsg = TransportMessage.event(
-                landID: landID,
                 event: .fromServer(event: event)
             )
 
@@ -1323,7 +1322,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Handle action request from client
     private func handleActionRequest(
         requestID: String,
-        landID: String,
         envelope: ActionEnvelope,
         playerID: PlayerID,
         clientID: ClientID,

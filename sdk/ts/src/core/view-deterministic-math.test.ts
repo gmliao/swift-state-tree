@@ -209,7 +209,7 @@ describe('StateTreeView DeterministicMath Integration', () => {
       view.sendEvent('TestEvent', { vec: state.vec })
       
       const message = runtime.sentMessages[0]
-      const eventPayload = (message.payload as any).event.event.fromClient.event.payload
+      const eventPayload = (message.payload as any).fromClient.payload
       
       expect(eventPayload.vec).toEqual({ x: 64000, y: 36000 })
     })
@@ -229,7 +229,7 @@ describe('StateTreeView DeterministicMath Integration', () => {
       view.sendEvent('TestEvent', { position: state.position })
       
       const message = runtime.sentMessages[0]
-      const eventPayload = (message.payload as any).event.event.fromClient.event.payload
+      const eventPayload = (message.payload as any).fromClient.payload
       
       expect(eventPayload.position).toEqual({ v: { x: 64000, y: 36000 } })
     })
@@ -247,14 +247,14 @@ describe('StateTreeView DeterministicMath Integration', () => {
       view.sendEvent('TestEvent', { rotation: state.rotation })
       
       const message = runtime.sentMessages[0]
-      const eventPayload = (message.payload as any).event.event.fromClient.event.payload
+      const eventPayload = (message.payload as any).fromClient.payload
       
       expect(eventPayload.rotation).toEqual({ degrees: 45000 })
     })
   })
 
   describe('applyNestedPatch - DeterministicMath types', () => {
-    it('handles patch to position.v.x', () => {
+    it('handles patch to entire position.v (atomic update)', () => {
       const snapshot: StateSnapshot = {
         values: {
           player: {
@@ -271,9 +271,9 @@ describe('StateTreeView DeterministicMath Integration', () => {
         type: 'diff',
         patches: [
           {
-            path: '/player/position/v/x',
+            path: '/player/position/v',
             op: 'replace',
-            value: 65000
+            value: { x: 65000, y: 36000 }
           }
         ]
       }
@@ -287,7 +287,7 @@ describe('StateTreeView DeterministicMath Integration', () => {
       expect(state.player.position.v.y).toBe(36.0)
     })
 
-    it('handles patch to position.v/y', () => {
+    it('handles patch to entire position.v with both coordinates updated', () => {
       const snapshot: StateSnapshot = {
         values: {
           player: {
@@ -304,9 +304,9 @@ describe('StateTreeView DeterministicMath Integration', () => {
         type: 'diff',
         patches: [
           {
-            path: '/player/position/v/y',
+            path: '/player/position/v',
             op: 'replace',
-            value: 37000
+            value: { x: 64000, y: 37000 }
           }
         ]
       }
@@ -381,7 +381,7 @@ describe('StateTreeView DeterministicMath Integration', () => {
       expect(player.rotation.degrees).toBe(45.0)
     })
 
-    it('handles position update via patch', () => {
+    it('handles position update via patch (atomic update)', () => {
       const snapshot: StateSnapshot = {
         values: {
           players: {
@@ -403,14 +403,9 @@ describe('StateTreeView DeterministicMath Integration', () => {
         type: 'diff',
         patches: [
           {
-            path: '/players/player-1/position/v/x',
+            path: '/players/player-1/position/v',
             op: 'replace',
-            value: 65000
-          },
-          {
-            path: '/players/player-1/position/v/y',
-            op: 'replace',
-            value: 37000
+            value: { x: 65000, y: 37000 }
           }
         ]
       }
@@ -560,7 +555,7 @@ describe('StateTreeView DeterministicMath Integration', () => {
       expect(player.position.v.y).toBe(36.0)
     })
 
-    it('uses schema to handle patch correctly', () => {
+    it('uses schema to handle patch correctly (atomic update)', () => {
       const schemaRuntime3 = new MockRuntime()
       const schema3: ProtocolSchema = {
         version: '0.1.0',
@@ -623,9 +618,9 @@ describe('StateTreeView DeterministicMath Integration', () => {
         type: 'diff',
         patches: [
           {
-            path: '/player/position/v/x',
+            path: '/player/position/v',
             op: 'replace',
-            value: 65000
+            value: { x: 65000, y: 36000 }
           }
         ]
       }

@@ -148,10 +148,14 @@ public enum SchemaType: String, Codable, Sendable {
 public struct StateTreeMetadata: Codable, Sendable {
     public let nodeKind: NodeKind
     public let sync: SyncMetadata?
+    /// Whether this type should be treated as atomic (not recursively diffed).
+    /// Atomic types are updated as a whole unit, not field-by-field.
+    public let atomic: Bool?
     
-    public init(nodeKind: NodeKind, sync: SyncMetadata? = nil) {
+    public init(nodeKind: NodeKind, sync: SyncMetadata? = nil, atomic: Bool? = nil) {
         self.nodeKind = nodeKind
         self.sync = sync
+        self.atomic = atomic
     }
 }
 

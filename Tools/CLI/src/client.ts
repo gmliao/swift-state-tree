@@ -177,14 +177,13 @@ export class SwiftStateTreeClient {
       }
 
       case 'event': {
-        // MessagePayload encodes as { "event": TransportEventPayload }
-        const payloadObj = message.payload as any
-        const payload = payloadObj.event || payloadObj // Fallback for direct format
-        if (payload.event?.fromServer) {
-          const eventData = payload.event.fromServer.event
+        // Simplified structure: payload directly contains fromClient or fromServer
+        const payload = message.payload as any
+        if (payload.fromServer) {
+          const eventData = payload.fromServer
           console.log(chalk.magenta(`📨 Server event [${eventData.type}]: ${JSON.stringify(eventData.payload)}`))
-        } else if (payload.event?.fromClient) {
-          const eventData = payload.event.fromClient.event
+        } else if (payload.fromClient) {
+          const eventData = payload.fromClient
           console.log(chalk.blue(`📤 Client event echo [${eventData.type}]: ${JSON.stringify(eventData.payload)}`))
         }
         break
@@ -423,18 +422,13 @@ export class SwiftStateTreeClient {
       const payloadJson = JSON.stringify(payload)
       const payloadBase64 = Buffer.from(payloadJson, 'utf-8').toString('base64')
 
-      // MessagePayload encodes as { "action": TransportActionPayload }
+      // Simplified structure: directly use requestID, typeIdentifier, payload in payload
       const message = {
         kind: 'action',
         payload: {
-          action: {
-            requestID,
-            landID: this.landID,
-            action: {
-              typeIdentifier: actionType,
-              payload: payloadBase64
-            }
-          }
+          requestID,
+          typeIdentifier: actionType,
+          payload: payloadBase64
         }
       }
 
@@ -449,20 +443,13 @@ export class SwiftStateTreeClient {
       throw new Error('Not joined to land')
     }
 
-    // MessagePayload encodes as { "event": TransportEventPayload }
+    // Simplified structure: payload directly contains fromClient
     const message = {
       kind: 'event',
       payload: {
-        event: {
-          landID: this.landID,
-          event: {
-            fromClient: {
-              event: {
-                type: eventType,
-                payload: payload || {}
-              }
-            }
-          }
+        fromClient: {
+          type: eventType,
+          payload: payload || {}
         }
       }
     }

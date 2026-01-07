@@ -41,6 +41,7 @@ export const SCHEMA = {
       ],
       "type": "object",
       "x-stateTree": {
+        "atomic": true,
         "nodeKind": "leaf",
         "sync": {
           "policy": "broadcast"
@@ -91,6 +92,7 @@ export const SCHEMA = {
       ],
       "type": "object",
       "x-stateTree": {
+        "atomic": true,
         "nodeKind": "leaf"
       }
     },
@@ -111,6 +113,7 @@ export const SCHEMA = {
     "Optional<Position2>": {
       "type": "object",
       "x-stateTree": {
+        "atomic": true,
         "nodeKind": "leaf",
         "sync": {
           "policy": "broadcast"
@@ -182,6 +185,7 @@ export const SCHEMA = {
       ],
       "type": "object",
       "x-stateTree": {
+        "atomic": true,
         "nodeKind": "leaf",
         "sync": {
           "policy": "broadcast"
