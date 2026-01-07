@@ -37,12 +37,72 @@
           <div
             v-for="field in eventFields"
             :key="field.name"
-            class="mb-2"
+            class="mb-4"
           >
+            <!-- Deterministic Math Types: Special Input UI -->
+            <template v-if="field.isDeterministicMath">
+              <v-card variant="outlined" class="pa-3">
+                <v-card-subtitle class="pa-0 mb-2">
+                  {{ field.name }} <span v-if="field.required" class="text-error">*</span>
+                  <v-chip size="x-small" color="primary" variant="flat" class="ml-2">
+                    {{ field.mathType }}
+                  </v-chip>
+                </v-card-subtitle>
+                
+                <!-- Position2 / IVec2 / Velocity2 / Acceleration2: x, y inputs -->
+                <template v-if="field.mathType === 'Position2' || field.mathType === 'IVec2' || field.mathType === 'Velocity2' || field.mathType === 'Acceleration2'">
+                  <v-row dense>
+                    <v-col cols="6">
+                      <v-text-field
+                        v-model.number="payloadModel[`${field.name}_x`]"
+                        label="X"
+                        type="number"
+                        variant="outlined"
+                        density="compact"
+                        hint="浮點數（會自動轉換為固定點整數）"
+                        persistent-hint
+                      ></v-text-field>
+                    </v-col>
+                    <v-col cols="6">
+                      <v-text-field
+                        v-model.number="payloadModel[`${field.name}_y`]"
+                        label="Y"
+                        type="number"
+                        variant="outlined"
+                        density="compact"
+                        hint="浮點數（會自動轉換為固定點整數）"
+                        persistent-hint
+                      ></v-text-field>
+                    </v-col>
+                  </v-row>
+                  <template v-if="field.mathType === 'Position2'">
+                    <v-alert type="info" density="compact" class="mt-2">
+                      Position2 需要 v 屬性（IVec2），將自動構建
+                    </v-alert>
+                  </template>
+                </template>
+                
+                <!-- Angle: degrees input -->
+                <template v-else-if="field.mathType === 'Angle'">
+                  <v-text-field
+                    v-model.number="payloadModel[`${field.name}_degrees`]"
+                    label="Degrees"
+                    type="number"
+                    variant="outlined"
+                    density="compact"
+                    hint="角度（浮點數，會自動轉換為固定點整數）"
+                    persistent-hint
+                  ></v-text-field>
+                </template>
+              </v-card>
+            </template>
+            
+            <!-- Regular Types: Standard Input -->
             <v-text-field
+              v-else
               v-model="payloadModel[field.name]"
               :label="field.required ? `${field.name} *` : field.name"
-              :hint="`type: ${field.type}`"
+              :hint="`type: ${field.type}${field.$ref ? ` (${field.$ref.replace('#/defs/', '')})` : ''}`"
               variant="outlined"
               density="compact"
               persistent-hint
@@ -50,16 +110,27 @@
           </div>
         </div>
 
+        <!-- Show manual input only when we have no schema at all for the selected event -->
         <v-textarea
           v-else-if="showManualPayload"
           v-model="eventPayload"
-          label="Event Payload (無 schema 時手動輸入)"
+          label="Event Payload (無 schema 時手動輸入 JSON)"
           rows="4"
           variant="outlined"
           density="compact"
           placeholder='{"message": "Hello"} 或直接輸入字串'
           class="mb-4"
         ></v-textarea>
+        
+        <!-- Show info when event has schema but no fields (empty object) -->
+        <v-alert
+          v-else-if="selectedEventSchema && eventFields.length === 0"
+          type="info"
+          density="compact"
+          class="mb-4"
+        >
+          此 Event 不需要參數（空對象）
+        </v-alert>
       </div>
 
       <v-alert
@@ -94,6 +165,9 @@ interface EventField {
   name: string
   type: string
   required: boolean
+  isDeterministicMath?: boolean
+  mathType?: 'Position2' | 'IVec2' | 'Angle' | 'Velocity2' | 'Acceleration2'
+  $ref?: string // For $ref types
 }
 
 const props = defineProps<{
@@ -163,17 +237,37 @@ const selectedEventSchema = computed(() => {
   return props.schema.defs[defName] ?? null
 })
 
+// Helper to check if a $ref is a deterministic math type
+const isDeterministicMathType = (ref: string | undefined): { isMath: boolean; mathType?: string } => {
+  if (!ref) return { isMath: false }
+  const refName = ref.replace('#/defs/', '').replace('defs/', '')
+  const mathTypes = ['Position2', 'IVec2', 'Angle', 'Velocity2', 'Acceleration2', 'Semantic2']
+  if (mathTypes.includes(refName)) {
+    return { isMath: true, mathType: refName }
+  }
+  return { isMath: false }
+}
+
 const eventFields = computed<EventField[]>(() => {
   const schema = selectedEventSchema.value
   if (!schema || schema.type !== 'object' || !schema.properties) return []
 
   const requiredSet = new Set(schema.required ?? [])
 
-  return Object.entries(schema.properties).map(([name, prop]) => ({
-    name,
-    type: prop.type ?? 'string',
-    required: requiredSet.has(name)
-  }))
+  return Object.entries(schema.properties).map(([name, prop]) => {
+    // Check for $ref (deterministic math types)
+    const ref = prop.$ref
+    const mathCheck = isDeterministicMathType(ref)
+    
+    return {
+      name,
+      type: prop.type ?? (ref ? 'object' : 'string'),
+      required: requiredSet.has(name),
+      isDeterministicMath: mathCheck.isMath,
+      mathType: mathCheck.mathType as any,
+      $ref: ref
+    }
+  })
 })
 
 const showManualPayload = computed(() => {
@@ -257,21 +351,64 @@ const validationErrors = computed(() => {
   }
   
   for (const field of eventFields.value) {
-    const value = payloadModel.value[field.name]
-    
     // Check required fields
     if (field.required) {
-      if (value === '' || value === null || value === undefined) {
-        errors.push(`${field.name} 是必填欄位`)
-        continue
+      if (field.isDeterministicMath) {
+        // For deterministic math types, check specific fields
+        if (field.mathType === 'Position2' || field.mathType === 'IVec2' || field.mathType === 'Velocity2' || field.mathType === 'Acceleration2') {
+          const x = payloadModel.value[`${field.name}_x`]
+          const y = payloadModel.value[`${field.name}_y`]
+          if (x === '' || x === null || x === undefined || y === '' || y === null || y === undefined) {
+            errors.push(`${field.name} 是必填欄位（需要 x 和 y）`)
+          }
+        } else if (field.mathType === 'Angle') {
+          const degrees = payloadModel.value[`${field.name}_degrees`]
+          if (degrees === '' || degrees === null || degrees === undefined) {
+            errors.push(`${field.name} 是必填欄位（需要 degrees）`)
+          }
+        }
+      } else {
+        const value = payloadModel.value[field.name]
+        if (value === '' || value === null || value === undefined) {
+          errors.push(`${field.name} 是必填欄位`)
+        }
       }
     }
     
     // Check type validation (only if value is provided)
-    if (value !== '' && value !== null && value !== undefined) {
-      const validation = validatePayloadValue(value, field.type)
-      if (!validation.valid) {
-        errors.push(`${field.name}: ${validation.error}`)
+    if (!field.isDeterministicMath) {
+      const value = payloadModel.value[field.name]
+      if (value !== '' && value !== null && value !== undefined) {
+        const validation = validatePayloadValue(value, field.type)
+        if (!validation.valid) {
+          errors.push(`${field.name}: ${validation.error}`)
+        }
+      }
+    } else {
+      // Validate deterministic math types
+      if (field.mathType === 'Position2' || field.mathType === 'IVec2' || field.mathType === 'Velocity2' || field.mathType === 'Acceleration2') {
+        const x = payloadModel.value[`${field.name}_x`]
+        const y = payloadModel.value[`${field.name}_y`]
+        if (x !== '' && x !== null && x !== undefined) {
+          const numX = parseFloat(String(x))
+          if (isNaN(numX)) {
+            errors.push(`${field.name}.x 必須是數字`)
+          }
+        }
+        if (y !== '' && y !== null && y !== undefined) {
+          const numY = parseFloat(String(y))
+          if (isNaN(numY)) {
+            errors.push(`${field.name}.y 必須是數字`)
+          }
+        }
+      } else if (field.mathType === 'Angle') {
+        const degrees = payloadModel.value[`${field.name}_degrees`]
+        if (degrees !== '' && degrees !== null && degrees !== undefined) {
+          const numDegrees = parseFloat(String(degrees))
+          if (isNaN(numDegrees)) {
+            errors.push(`${field.name}.degrees 必須是數字`)
+          }
+        }
       }
     }
   }
@@ -292,10 +429,44 @@ const handleSend = () => {
     // Convert form values to correct types based on schema
     payload = {}
     for (const field of eventFields.value) {
-      const rawValue = payloadModel.value[field.name]
-      // Include all values (required fields are guaranteed to be present)
-      if (rawValue !== '' && rawValue !== null && rawValue !== undefined) {
-        payload[field.name] = convertPayloadValue(rawValue, field.type)
+      if (field.isDeterministicMath) {
+        // Build deterministic math objects
+        if (field.mathType === 'Position2' || field.mathType === 'IVec2' || field.mathType === 'Velocity2' || field.mathType === 'Acceleration2') {
+          const x = payloadModel.value[`${field.name}_x`]
+          const y = payloadModel.value[`${field.name}_y`]
+          if (x !== '' && x !== null && x !== undefined && y !== '' && y !== null && y !== undefined) {
+            if (field.mathType === 'Position2') {
+              // Position2 needs { v: { x, y } }
+              // Note: SDK will convert float to fixed-point, so we send float values
+              payload[field.name] = {
+                v: {
+                  x: parseFloat(String(x)),
+                  y: parseFloat(String(y))
+                }
+              }
+            } else {
+              // IVec2, Velocity2, Acceleration2 are just { x, y }
+              payload[field.name] = {
+                x: parseFloat(String(x)),
+                y: parseFloat(String(y))
+              }
+            }
+          }
+        } else if (field.mathType === 'Angle') {
+          const degrees = payloadModel.value[`${field.name}_degrees`]
+          if (degrees !== '' && degrees !== null && degrees !== undefined) {
+            payload[field.name] = {
+              degrees: parseFloat(String(degrees))
+            }
+          }
+        }
+      } else {
+        // Regular fields
+        const rawValue = payloadModel.value[field.name]
+        // Include all values (required fields are guaranteed to be present)
+        if (rawValue !== '' && rawValue !== null && rawValue !== undefined) {
+          payload[field.name] = convertPayloadValue(rawValue, field.type)
+        }
       }
     }
     

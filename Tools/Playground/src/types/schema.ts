@@ -17,6 +17,7 @@ export interface SchemaProperty {
   properties?: Record<string, SchemaProperty>
   items?: SchemaDef
   additionalProperties?: SchemaDef | boolean
+  $ref?: string // For $ref types (e.g., deterministic math types)
   'x-stateTree'?: {
     nodeKind?: string
     sync?: {

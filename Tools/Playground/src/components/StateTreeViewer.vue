@@ -204,6 +204,136 @@ const buildTreeItem = (key: string, value: any, depth: number, path: string = ''
   }
 
   if (typeof value === 'object') {
+    // Check if this is a deterministic math type value BEFORE processing as regular object
+    // Deterministic math types are objects with specific structures:
+    // IVec2: { x: number, y: number } (fixed-point integers)
+    // Position2: { v: { x: number, y: number } } (v is IVec2)
+    // Angle: { degrees: number } (fixed-point integer)
+    const isDeterministicMathValue = (val: any, schema?: any): { isMath: boolean; mathType?: string; displayValue?: string } => {
+      if (typeof val !== 'object' || val === null) return { isMath: false }
+      
+      // Check schema for $ref to deterministic math types
+      if (schema?.$ref) {
+        const refName = schema.$ref.replace('#/defs/', '').replace('defs/', '')
+        const mathTypes = ['Position2', 'IVec2', 'Angle', 'Velocity2', 'Acceleration2', 'Semantic2']
+        if (mathTypes.includes(refName)) {
+          // Format display value based on type
+          if (refName === 'IVec2' || refName === 'Velocity2' || refName === 'Acceleration2') {
+            const x = val.x
+            const y = val.y
+            if (typeof x === 'number' && typeof y === 'number') {
+              // Show both fixed-point and float values
+              const floatX = x / 1000
+              const floatY = y / 1000
+              return { isMath: true, mathType: refName, displayValue: `x: ${x} (${floatX.toFixed(3)}), y: ${y} (${floatY.toFixed(3)})` }
+            }
+          } else if (refName === 'Position2') {
+            const v = val.v
+            if (v && typeof v.x === 'number' && typeof v.y === 'number') {
+              const floatX = v.x / 1000
+              const floatY = v.y / 1000
+              return { isMath: true, mathType: refName, displayValue: `v: { x: ${v.x} (${floatX.toFixed(3)}), y: ${v.y} (${floatY.toFixed(3)}) }` }
+            }
+          } else if (refName === 'Angle') {
+            const degrees = val.degrees
+            if (typeof degrees === 'number') {
+              const floatDegrees = degrees / 1000
+              return { isMath: true, mathType: refName, displayValue: `degrees: ${degrees} (${floatDegrees.toFixed(3)}°)` }
+            }
+          }
+          return { isMath: true, mathType: refName }
+        }
+      }
+      
+      // Heuristic check: if it looks like IVec2 structure (only if exactly 2 keys: x and y)
+      if (typeof val.x === 'number' && typeof val.y === 'number' && Object.keys(val).length === 2) {
+        const floatX = val.x / 1000
+        const floatY = val.y / 1000
+        return { isMath: true, mathType: 'IVec2?', displayValue: `x: ${val.x} (${floatX.toFixed(3)}), y: ${val.y} (${floatY.toFixed(3)})` }
+      }
+      
+      // Heuristic check: if it looks like Position2 structure (only if exactly 1 key: v)
+      if (val.v && typeof val.v.x === 'number' && typeof val.v.y === 'number' && Object.keys(val).length === 1) {
+        const floatX = val.v.x / 1000
+        const floatY = val.v.y / 1000
+        return { isMath: true, mathType: 'Position2?', displayValue: `v: { x: ${val.v.x} (${floatX.toFixed(3)}), y: ${val.v.y} (${floatY.toFixed(3)}) }` }
+      }
+      
+      // Heuristic check: if it looks like Angle structure (only if exactly 1 key: degrees)
+      if (typeof val.degrees === 'number' && Object.keys(val).length === 1) {
+        const floatDegrees = val.degrees / 1000
+        return { isMath: true, mathType: 'Angle?', displayValue: `degrees: ${val.degrees} (${floatDegrees.toFixed(3)}°)` }
+      }
+      
+      return { isMath: false }
+    }
+    
+    const mathInfo = isDeterministicMathValue(value, fieldSchema)
+    
+    // If it's a deterministic math type, show special formatting
+    if (mathInfo.isMath) {
+      return {
+        id,
+        name: `${key} (${mathInfo.mathType})${mathInfo.displayValue ? `: ${mathInfo.displayValue}` : ''}`,
+        value,
+        type: 'object',
+        syncPolicy,
+        nodeKind,
+        // Show children for deterministic math types to show internal structure
+        children: typeof value === 'object' && value !== null ? Object.entries(value).map(([k, v]) => {
+          const childPath = `${itemPath}.${k}`
+          // For Position2.v, check if it's IVec2
+          if (k === 'v' && typeof v === 'object' && v !== null && 'x' in v && 'y' in v) {
+            const ivec2Value = v as any
+            const floatX = ivec2Value.x / 1000
+            const floatY = ivec2Value.y / 1000
+            return {
+              id: childPath,
+              name: `v (IVec2): x=${ivec2Value.x} (${floatX.toFixed(3)}), y=${ivec2Value.y} (${floatY.toFixed(3)})`,
+              value: v,
+              type: 'object',
+              children: [
+                {
+                  id: `${childPath}.x`,
+                  name: `x: ${ivec2Value.x} (${floatX.toFixed(3)} float)`,
+                  value: ivec2Value.x,
+                  type: 'number'
+                },
+                {
+                  id: `${childPath}.y`,
+                  name: `y: ${ivec2Value.y} (${floatY.toFixed(3)} float)`,
+                  value: ivec2Value.y,
+                  type: 'number'
+                }
+              ]
+            }
+          }
+          // For Angle.degrees
+          if (k === 'degrees' && typeof v === 'number') {
+            const floatDegrees = v / 1000
+            return {
+              id: childPath,
+              name: `degrees: ${v} (${floatDegrees.toFixed(3)}° float)`,
+              value: v,
+              type: 'number'
+            }
+          }
+          // For IVec2.x, IVec2.y
+          if ((k === 'x' || k === 'y') && typeof v === 'number') {
+            const floatValue = v / 1000
+            return {
+              id: childPath,
+              name: `${k}: ${v} (${floatValue.toFixed(3)} float)`,
+              value: v,
+              type: 'number'
+            }
+          }
+          return buildTreeItem(k, v, depth + 1, itemPath, undefined)
+        }) : undefined
+      }
+    }
+    
+    // Regular object handling (not deterministic math)
     // Check if it's a dictionary (object with string keys)
     const isDictionary = !Array.isArray(value) && Object.keys(value).length > 0 && 
                          Object.keys(value).every(k => typeof k === 'string')
