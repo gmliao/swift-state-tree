@@ -96,24 +96,55 @@ public enum HeroDefense {
                 Tick(every: .milliseconds(50)) { (state: inout HeroDefenseState, ctx: LandContext) in
                     // Update player movement
                     var updatedCount = 0
+                    var playersWithTarget = 0
+                    
                     for (playerID, var player) in state.players {
                         guard let target = player.targetPosition else {
                             continue
                         }
                         
+                        playersWithTarget += 1
                         let oldPosition = player.position
                         let current = player.position.v
                         let targetVec = target.v
                         
                         // Calculate direction vector
                         let direction = targetVec - current
-                        let distSq = direction.magnitudeSquared()
+                        // Use magnitudeSquaredSafe() to prevent Int32 overflow when squaring large values
+                        let distSq = direction.magnitudeSquaredSafe()
+                        
+                        // Log distance calculation details
+                        ctx.logger.debug("📏 Distance calculation", metadata: [
+                            "playerID": .string(playerID.rawValue),
+                            "currentX": .string("\(current.floatX)"),
+                            "currentY": .string("\(current.floatY)"),
+                            "currentX_raw": .string("\(current.x)"),
+                            "currentY_raw": .string("\(current.y)"),
+                            "targetX": .string("\(targetVec.floatX)"),
+                            "targetY": .string("\(targetVec.floatY)"),
+                            "targetX_raw": .string("\(targetVec.x)"),
+                            "targetY_raw": .string("\(targetVec.y)"),
+                            "directionX": .string("\(direction.x)"),
+                            "directionY": .string("\(direction.y)"),
+                            "distSq": .string("\(distSq)"),
+                            "distance": .string("\(sqrt(Double(distSq)) / 1000.0)")
+                        ])
                         
                         // Check if reached target (within 1 unit = 1000 fixed-point)
                         let thresholdSq: Int64 = 1000 * 1000  // 1.0 unit squared
                         if distSq <= thresholdSq {
-                            // Reached target
+                            // Reached target - snap to exact target position for precision
+                            player.position.v = targetVec
                             player.targetPosition = nil
+                            ctx.logger.debug("🎯 Player reached target", metadata: [
+                                "playerID": .string(playerID.rawValue),
+                                "finalX": .string("\(player.position.v.floatX)"),
+                                "finalY": .string("\(player.position.v.floatY)"),
+                                "targetX": .string("\(targetVec.floatX)"),
+                                "targetY": .string("\(targetVec.floatY)"),
+                                "distSq": .string("\(distSq)"),
+                                "thresholdSq": .string("\(thresholdSq)")
+                            ])
                             state.players[playerID] = player
                             continue
                         }
@@ -129,17 +160,68 @@ public enum HeroDefense {
                         let moveDistance = min(moveSpeed, distance)
                         
                         if moveDistance > 0 {
-                            // Normalize direction and scale by move distance
-                            let normalized = direction.normalized()
-                            let moveVec = IVec2(
-                                x: normalized.x * Float(moveDistance) / 1000.0,
-                                y: normalized.y * Float(moveDistance) / 1000.0
-                            )
-                            player.position.v = player.position.v + moveVec
+                            // If remaining distance is less than move speed, snap directly to target
+                            if distance <= moveSpeed {
+                                // Final step - move directly to target for precision
+                                player.position.v = targetVec
+                                player.targetPosition = nil
+                                ctx.logger.debug("🎯 Player reached target (final step)", metadata: [
+                                    "playerID": .string(playerID.rawValue),
+                                    "finalX": .string("\(player.position.v.floatX)"),
+                                    "finalY": .string("\(player.position.v.floatY)")
+                                ])
+                            } else {
+                                // Normalize direction and scale by move distance
+                                let normalized = direction.normalized()
+                                let moveVec = IVec2(
+                                    x: normalized.x * Float(moveDistance) / 1000.0,
+                                    y: normalized.y * Float(moveDistance) / 1000.0
+                                )
+                                let newPosition = player.position.v + moveVec
+                                player.position.v = newPosition
+                            }
                             updatedCount += 1
+                            
+                            // Log movement every tick for first few moves, then every 10 ticks
+                            // Only log if we actually moved (not when we snapped to target)
+                            if (updatedCount <= 3 || updatedCount % 10 == 0) && distance > moveSpeed {
+                                ctx.logger.debug("🚶 Player moving", metadata: [
+                                    "playerID": .string(playerID.rawValue),
+                                    "fromX": .string("\(oldPosition.v.floatX)"),
+                                    "fromY": .string("\(oldPosition.v.floatY)"),
+                                    "fromX_raw": .string("\(oldPosition.v.x)"),
+                                    "fromY_raw": .string("\(oldPosition.v.y)"),
+                                    "toX": .string("\(player.position.v.floatX)"),
+                                    "toY": .string("\(player.position.v.floatY)"),
+                                    "toX_raw": .string("\(player.position.v.x)"),
+                                    "toY_raw": .string("\(player.position.v.y)"),
+                                    "targetX": .string("\(target.v.floatX)"),
+                                    "targetY": .string("\(target.v.floatY)"),
+                                    "targetX_raw": .string("\(target.v.x)"),
+                                    "targetY_raw": .string("\(target.v.y)"),
+                                    "distance": .string("\(sqrt(Double(distSq)) / 1000.0)"),
+                                    "moveDistance": .string("\(moveDistance)")
+                                ])
+                            }
+                        } else {
+                            ctx.logger.debug("⚠️ MoveDistance is 0", metadata: [
+                                "playerID": .string(playerID.rawValue),
+                                "distSq": .string("\(distSq)"),
+                                "distance": .string("\(sqrt(Double(distSq)))"),
+                                "moveSpeed": .string("\(moveSpeed)")
+                            ])
                         }
                         
                         state.players[playerID] = player
+                    }
+                    
+                    // Log tick summary every 20 ticks (every 1 second)
+                    if updatedCount > 0 && (updatedCount % 20 == 0 || playersWithTarget > 0) {
+                        ctx.logger.debug("⏱️ Tick summary", metadata: [
+                            "totalPlayers": .string("\(state.players.count)"),
+                            "playersWithTarget": .string("\(playersWithTarget)"),
+                            "playersMoved": .string("\(updatedCount)")
+                        ])
                     }
                 }
 
@@ -172,8 +254,13 @@ public enum HeroDefense {
                     player.rotation = Angle(degrees: 0.0)
                     player.targetPosition = nil as Position2?
                     state.players[playerID] = player
-                    ctx.logger.info("Player joined", metadata: [
-                        "playerID": .string(playerID.rawValue)
+                    ctx.logger.info("👤 Player joined", metadata: [
+                        "playerID": .string(playerID.rawValue),
+                        "initialX": .string("\(player.position.v.floatX)"),
+                        "initialY": .string("\(player.position.v.floatY)"),
+                        "initialX_raw": .string("\(player.position.v.x)"),
+                        "initialY_raw": .string("\(player.position.v.y)"),
+                        "totalPlayers": .string("\(state.players.count)")
                     ])
                 }
                 
@@ -201,24 +288,36 @@ public enum HeroDefense {
                 HandleEvent(MoveToEvent.self) { (state: inout HeroDefenseState, event: MoveToEvent, ctx: LandContext) in
                     let playerID = ctx.playerID
                     
+                    ctx.logger.debug("🔵 MoveToEvent handler called", metadata: [
+                        "playerID": .string(playerID.rawValue),
+                        "totalPlayers": .string("\(state.players.count)"),
+                        "playerIDs": .string(state.players.keys.map { $0.rawValue }.joined(separator: ", "))
+                    ])
+                    
                     // Update player's target position
                     if var player = state.players[playerID] {
                         let oldTarget = player.targetPosition
+                        let oldPosition = player.position
                         player.targetPosition = event.target
                         state.players[playerID] = player
                         ctx.logger.info("📥 MoveToEvent received", metadata: [
                             "playerID": .string(playerID.rawValue),
                             "currentX": .string("\(player.position.v.floatX)"),
                             "currentY": .string("\(player.position.v.floatY)"),
+                            "currentX_raw": .string("\(player.position.v.x)"),
+                            "currentY_raw": .string("\(player.position.v.y)"),
                             "targetX": .string("\(event.target.v.floatX)"),
                             "targetY": .string("\(event.target.v.floatY)"),
                             "targetX_raw": .string("\(event.target.v.x)"),
                             "targetY_raw": .string("\(event.target.v.y)"),
-                            "oldTarget": .string(oldTarget != nil ? "\(oldTarget!.v.floatX),\(oldTarget!.v.floatY)" : "nil")
+                            "oldTarget": .string(oldTarget != nil ? "\(oldTarget!.v.floatX),\(oldTarget!.v.floatY)" : "nil"),
+                            "targetPositionSet": .string("true")
                         ])
                     } else {
                         ctx.logger.warning("⚠️ MoveToEvent: Player not found", metadata: [
-                            "playerID": .string(playerID.rawValue)
+                            "playerID": .string(playerID.rawValue),
+                            "totalPlayers": .string("\(state.players.count)"),
+                            "availablePlayerIDs": .string(state.players.keys.map { $0.rawValue }.joined(separator: ", "))
                         ])
                     }
                 }

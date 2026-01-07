@@ -51,6 +51,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { Schema } from '@/types'
+import { IVec2, Position2, Angle, FIXED_POINT_SCALE } from '@swiftstatetree/sdk/core'
 
 interface TreeItem {
   id: string
@@ -219,26 +220,49 @@ const buildTreeItem = (key: string, value: any, depth: number, path: string = ''
         if (mathTypes.includes(refName)) {
           // Format display value based on type
           if (refName === 'IVec2' || refName === 'Velocity2' || refName === 'Acceleration2') {
-            const x = val.x
-            const y = val.y
-            if (typeof x === 'number' && typeof y === 'number') {
-              // Show both fixed-point and float values
-              const floatX = x / 1000
-              const floatY = y / 1000
-              return { isMath: true, mathType: refName, displayValue: `x: ${x} (${floatX.toFixed(3)}), y: ${y} (${floatY.toFixed(3)})` }
+            // Check if val is class instance (has rawX/rawY) or plain object
+            if (val instanceof IVec2) {
+              // Class instance: use rawX/rawY for fixed-point, x/y for float
+              const fixedX = val.rawX
+              const fixedY = val.rawY
+              const floatX = val.x
+              const floatY = val.y
+              return { isMath: true, mathType: refName, displayValue: `x: ${fixedX} (${floatX.toFixed(3)}), y: ${fixedY} (${floatY.toFixed(3)})` }
+            } else if (typeof val.x === 'number' && typeof val.y === 'number') {
+              // Plain object: assume fixed-point integers
+              const floatX = val.x / FIXED_POINT_SCALE
+              const floatY = val.y / FIXED_POINT_SCALE
+              return { isMath: true, mathType: refName, displayValue: `x: ${val.x} (${floatX.toFixed(3)}), y: ${val.y} (${floatY.toFixed(3)})` }
             }
           } else if (refName === 'Position2') {
             const v = val.v
-            if (v && typeof v.x === 'number' && typeof v.y === 'number') {
-              const floatX = v.x / 1000
-              const floatY = v.y / 1000
-              return { isMath: true, mathType: refName, displayValue: `v: { x: ${v.x} (${floatX.toFixed(3)}), y: ${v.y} (${floatY.toFixed(3)}) }` }
+            if (v) {
+              // Check if v is IVec2 class instance (has rawX/rawY) or plain object
+              if (v instanceof IVec2) {
+                // Class instance: use rawX/rawY for fixed-point, x/y for float
+                const fixedX = v.rawX
+                const fixedY = v.rawY
+                const floatX = v.x
+                const floatY = v.y
+                return { isMath: true, mathType: refName, displayValue: `v: { x: ${fixedX} (${floatX.toFixed(3)}), y: ${fixedY} (${floatY.toFixed(3)}) }` }
+              } else if (typeof v.x === 'number' && typeof v.y === 'number') {
+                // Plain object: assume fixed-point integers
+                const floatX = v.x / FIXED_POINT_SCALE
+                const floatY = v.y / FIXED_POINT_SCALE
+                return { isMath: true, mathType: refName, displayValue: `v: { x: ${v.x} (${floatX.toFixed(3)}), y: ${v.y} (${floatY.toFixed(3)}) }` }
+              }
             }
           } else if (refName === 'Angle') {
-            const degrees = val.degrees
-            if (typeof degrees === 'number') {
-              const floatDegrees = degrees / 1000
-              return { isMath: true, mathType: refName, displayValue: `degrees: ${degrees} (${floatDegrees.toFixed(3)}°)` }
+            // Check if val is Angle class instance (has rawDegrees) or plain object
+            if (val instanceof Angle) {
+              // Class instance: use rawDegrees for fixed-point, degrees for float
+              const fixedDegrees = val.rawDegrees
+              const floatDegrees = val.degrees
+              return { isMath: true, mathType: refName, displayValue: `degrees: ${fixedDegrees} (${floatDegrees.toFixed(3)}°)` }
+            } else if (typeof val.degrees === 'number') {
+              // Plain object: assume fixed-point integer
+              const floatDegrees = val.degrees / FIXED_POINT_SCALE
+              return { isMath: true, mathType: refName, displayValue: `degrees: ${val.degrees} (${floatDegrees.toFixed(3)}°)` }
             }
           }
           return { isMath: true, mathType: refName }
@@ -246,22 +270,47 @@ const buildTreeItem = (key: string, value: any, depth: number, path: string = ''
       }
       
       // Heuristic check: if it looks like IVec2 structure (only if exactly 2 keys: x and y)
-      if (typeof val.x === 'number' && typeof val.y === 'number' && Object.keys(val).length === 2) {
-        const floatX = val.x / 1000
-        const floatY = val.y / 1000
+      if (val instanceof IVec2) {
+        // Class instance: use rawX/rawY for fixed-point, x/y for float
+        const fixedX = val.rawX
+        const fixedY = val.rawY
+        const floatX = val.x
+        const floatY = val.y
+        return { isMath: true, mathType: 'IVec2?', displayValue: `x: ${fixedX} (${floatX.toFixed(3)}), y: ${fixedY} (${floatY.toFixed(3)})` }
+      } else if (typeof val.x === 'number' && typeof val.y === 'number' && Object.keys(val).length === 2) {
+        // Plain object: assume fixed-point integers
+        const floatX = val.x / FIXED_POINT_SCALE
+        const floatY = val.y / FIXED_POINT_SCALE
         return { isMath: true, mathType: 'IVec2?', displayValue: `x: ${val.x} (${floatX.toFixed(3)}), y: ${val.y} (${floatY.toFixed(3)})` }
       }
       
       // Heuristic check: if it looks like Position2 structure (only if exactly 1 key: v)
-      if (val.v && typeof val.v.x === 'number' && typeof val.v.y === 'number' && Object.keys(val).length === 1) {
-        const floatX = val.v.x / 1000
-        const floatY = val.v.y / 1000
+      if (val instanceof Position2) {
+        // Class instance: use rawX/rawY for fixed-point, x/y for float
+        const v = val.v
+        if (v instanceof IVec2) {
+          const fixedX = v.rawX
+          const fixedY = v.rawY
+          const floatX = v.x
+          const floatY = v.y
+          return { isMath: true, mathType: 'Position2?', displayValue: `v: { x: ${fixedX} (${floatX.toFixed(3)}), y: ${fixedY} (${floatY.toFixed(3)}) }` }
+        }
+      } else if (val.v && typeof val.v.x === 'number' && typeof val.v.y === 'number' && Object.keys(val).length === 1) {
+        // Plain object: assume fixed-point integers
+        const floatX = val.v.x / FIXED_POINT_SCALE
+        const floatY = val.v.y / FIXED_POINT_SCALE
         return { isMath: true, mathType: 'Position2?', displayValue: `v: { x: ${val.v.x} (${floatX.toFixed(3)}), y: ${val.v.y} (${floatY.toFixed(3)}) }` }
       }
       
       // Heuristic check: if it looks like Angle structure (only if exactly 1 key: degrees)
-      if (typeof val.degrees === 'number' && Object.keys(val).length === 1) {
-        const floatDegrees = val.degrees / 1000
+      if (val instanceof Angle) {
+        // Class instance: use rawDegrees for fixed-point, degrees for float
+        const fixedDegrees = val.rawDegrees
+        const floatDegrees = val.degrees
+        return { isMath: true, mathType: 'Angle?', displayValue: `degrees: ${fixedDegrees} (${floatDegrees.toFixed(3)}°)` }
+      } else if (typeof val.degrees === 'number' && Object.keys(val).length === 1) {
+        // Plain object: assume fixed-point integer
+        const floatDegrees = val.degrees / FIXED_POINT_SCALE
         return { isMath: true, mathType: 'Angle?', displayValue: `degrees: ${val.degrees} (${floatDegrees.toFixed(3)}°)` }
       }
       
@@ -282,40 +331,82 @@ const buildTreeItem = (key: string, value: any, depth: number, path: string = ''
         // Show children for deterministic math types to show internal structure
         children: typeof value === 'object' && value !== null ? Object.entries(value).map(([k, v]) => {
           const childPath = `${itemPath}.${k}`
-          // For Position2.v, check if it's IVec2
-          if (k === 'v' && typeof v === 'object' && v !== null && 'x' in v && 'y' in v) {
-            const ivec2Value = v as any
-            const floatX = ivec2Value.x / 1000
-            const floatY = ivec2Value.y / 1000
-            return {
-              id: childPath,
-              name: `v (IVec2): x=${ivec2Value.x} (${floatX.toFixed(3)}), y=${ivec2Value.y} (${floatY.toFixed(3)})`,
-              value: v,
-              type: 'object',
-              children: [
-                {
-                  id: `${childPath}.x`,
-                  name: `x: ${ivec2Value.x} (${floatX.toFixed(3)} float)`,
-                  value: ivec2Value.x,
-                  type: 'number'
-                },
-                {
-                  id: `${childPath}.y`,
-                  name: `y: ${ivec2Value.y} (${floatY.toFixed(3)} float)`,
-                  value: ivec2Value.y,
-                  type: 'number'
-                }
-              ]
+          // For Position2.v, check if it's IVec2 class instance or plain object
+          if (k === 'v') {
+            if (v instanceof IVec2) {
+              // Class instance: use rawX/rawY for fixed-point, x/y for float
+              const fixedX = v.rawX
+              const fixedY = v.rawY
+              const floatX = v.x
+              const floatY = v.y
+              return {
+                id: childPath,
+                name: `v (IVec2): x=${fixedX} (${floatX.toFixed(3)}), y=${fixedY} (${floatY.toFixed(3)})`,
+                value: v,
+                type: 'object',
+                children: [
+                  {
+                    id: `${childPath}.x`,
+                    name: `x: ${fixedX} (${floatX.toFixed(3)} float)`,
+                    value: fixedX,
+                    type: 'number'
+                  },
+                  {
+                    id: `${childPath}.y`,
+                    name: `y: ${fixedY} (${floatY.toFixed(3)} float)`,
+                    value: fixedY,
+                    type: 'number'
+                  }
+                ]
+              }
+            } else if (typeof v === 'object' && v !== null && 'x' in v && 'y' in v) {
+              // Plain object: assume fixed-point integers
+              const ivec2Value = v as any
+              const floatX = ivec2Value.x / FIXED_POINT_SCALE
+              const floatY = ivec2Value.y / FIXED_POINT_SCALE
+              return {
+                id: childPath,
+                name: `v (IVec2): x=${ivec2Value.x} (${floatX.toFixed(3)}), y=${ivec2Value.y} (${floatY.toFixed(3)})`,
+                value: v,
+                type: 'object',
+                children: [
+                  {
+                    id: `${childPath}.x`,
+                    name: `x: ${ivec2Value.x} (${floatX.toFixed(3)} float)`,
+                    value: ivec2Value.x,
+                    type: 'number'
+                  },
+                  {
+                    id: `${childPath}.y`,
+                    name: `y: ${ivec2Value.y} (${floatY.toFixed(3)} float)`,
+                    value: ivec2Value.y,
+                    type: 'number'
+                  }
+                ]
+              }
             }
           }
           // For Angle.degrees
-          if (k === 'degrees' && typeof v === 'number') {
-            const floatDegrees = v / 1000
-            return {
-              id: childPath,
-              name: `degrees: ${v} (${floatDegrees.toFixed(3)}° float)`,
-              value: v,
-              type: 'number'
+          if (k === 'degrees') {
+            if (v instanceof Angle) {
+              // This shouldn't happen (degrees is a number property), but handle it
+              const fixedDegrees = v.rawDegrees
+              const floatDegrees = v.degrees
+              return {
+                id: childPath,
+                name: `degrees: ${fixedDegrees} (${floatDegrees.toFixed(3)}° float)`,
+                value: fixedDegrees,
+                type: 'number'
+              }
+            } else if (typeof v === 'number') {
+              // Plain object: assume fixed-point integer
+              const floatDegrees = v / FIXED_POINT_SCALE
+              return {
+                id: childPath,
+                name: `degrees: ${v} (${floatDegrees.toFixed(3)}° float)`,
+                value: v,
+                type: 'number'
+              }
             }
           }
           // For IVec2.x, IVec2.y

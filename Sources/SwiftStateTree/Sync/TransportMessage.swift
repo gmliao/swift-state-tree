@@ -50,14 +50,16 @@ public enum MessagePayload: Codable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
         case .action(let payload):
-            // Simplified: encode action fields directly
+            // Simplified: encode action fields directly (flattened, not nested in "action")
+            // Encoded format: { requestID: string, typeIdentifier: string, payload: Data }
             try container.encode(payload.requestID, forKey: .requestID)
             try container.encode(payload.action.typeIdentifier, forKey: .typeIdentifier)
             try container.encode(payload.action.payload, forKey: .payload)
         case .actionResponse(let payload):
             try container.encode(payload, forKey: .actionResponse)
         case .event(let event):
-            // Simplified: encode TransportEvent directly
+            // Simplified: encode TransportEvent directly (flattened format)
+            // Encoded format: { fromClient: {...} } or { fromServer: {...} }
             switch event {
             case .fromClient(let clientEvent):
                 try container.encode(clientEvent, forKey: .fromClient)
@@ -76,7 +78,8 @@ public enum MessagePayload: Codable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
 
-        // Simplified: decode action fields directly
+        // Simplified: decode action fields directly (flattened format)
+        // Decoded format: { requestID: string, typeIdentifier: string, payload: Data }
         if let requestID = try? container.decode(String.self, forKey: .requestID),
            let typeIdentifier = try? container.decode(String.self, forKey: .typeIdentifier),
            let payload = try? container.decode(Data.self, forKey: .payload) {
@@ -107,6 +110,10 @@ public enum MessagePayload: Codable, Sendable {
 }
 
 /// Action request payload for transport layer.
+///
+/// Note: The encoded format is simplified - fields are flattened in MessagePayload:
+/// - requestID, typeIdentifier, payload are encoded directly (not nested in "action")
+/// - This struct still uses ActionEnvelope internally for type safety
 public struct TransportActionPayload: Codable, Sendable {
     public let requestID: String
     // landID removed - server identifies land from session mapping
