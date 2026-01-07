@@ -69,10 +69,12 @@ export interface TransportMessage {
 export interface StatePatch {
   path: string
   op: 'replace' | 'remove' | 'add'
-  value?: {
-    type: string
-    value: any
-  }
+  /**
+   * Value for replace/add operations.
+   * Uses native JSON format (number, string, boolean, object, array, null).
+   * The type wrapper is removed during encoding on the server side.
+   */
+  value?: any
 }
 
 export interface StateUpdate {

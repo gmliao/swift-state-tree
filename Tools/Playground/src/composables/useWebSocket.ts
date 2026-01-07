@@ -14,7 +14,7 @@ export interface StateUpdateEntry {
   affectedPaths?: string[]
 }
 
-export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, selectedLandID: Ref<string> = ref('')) {
+export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, selectedLandID: Ref<string> = ref(''), landInstanceId: Ref<string> = ref('default')) {
   const isConnected = ref(false)
   const isJoined = ref(false)
   const connectionError = ref<string | null>(null)
@@ -29,20 +29,36 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
     timestamp: Date
   }>>([])
 
-  // Get initial landID from selectedLandID or fallback to first available land
-  const getInitialLandID = (): string => {
-    if (selectedLandID.value) {
-      return selectedLandID.value
-    }
-    // Fallback: use first land from schema if available
-    if (schema.value && schema.value.lands) {
-      const landKeys = Object.keys(schema.value.lands)
-      if (landKeys.length > 0) {
-        return landKeys[0]
+  // Build full landID from landType and landInstanceId
+  // Format: "landType:instanceId" or just "landType" if instanceId is empty/null
+  // If instanceId is "default", it will be included in the landID to join the "default" room
+  const buildLandID = (landType: string, instanceId: string | null | undefined): string => {
+    if (!landType) {
+      // Fallback: use first land from schema if available
+      if (schema.value && schema.value.lands) {
+        const landKeys = Object.keys(schema.value.lands)
+        if (landKeys.length > 0) {
+          landType = landKeys[0]
+        }
+      }
+      if (!landType) {
+        return 'demo-game'
       }
     }
-    // Final fallback
-    return 'demo-game'
+    
+    // If instanceId is provided and not empty (including "default"), format as "landType:instanceId"
+    // Empty string or null means single-room mode (no instance ID)
+    if (instanceId && instanceId.trim() !== '') {
+      return `${landType}:${instanceId.trim()}`
+    }
+    
+    // Otherwise, just return landType (single-room mode, server will create/assign a room)
+    return landType
+  }
+
+  // Get initial landID from selectedLandID and landInstanceId
+  const getInitialLandID = (): string => {
+    return buildLandID(selectedLandID.value, landInstanceId.value)
   }
   
   // Track current landID (may be updated after join if server returns different one)
@@ -74,13 +90,11 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
     }
   }
   
-  // Update currentLandID when selectedLandID changes
+  // Update currentLandID when selectedLandID or landInstanceId changes
   // Avoid desync: don't update currentLandID if already connected/joined
   // The view is bound to the landID used during connect, so changing it
   // without recreating the view would cause actions/events to target the wrong land
-  watch(selectedLandID, (newLandID) => {
-    if (!newLandID) return
-    
+  watch([selectedLandID, landInstanceId], ([newLandID, newInstanceId]) => {
     // If connected/joined, don't update currentLandID to avoid desync
     // User should disconnect first before changing land selection
     if (isConnected.value || isJoined.value) {
@@ -91,7 +105,7 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
       return
     }
     
-    currentLandID.value = newLandID
+    currentLandID.value = buildLandID(newLandID || '', newInstanceId || '')
   })
 
   // Helper to extract affected paths from patches

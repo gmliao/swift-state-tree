@@ -190,6 +190,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import type { Schema } from '@/types'
+import { IVec2, Position2, Velocity2, Acceleration2, Angle } from '@swiftstatetree/sdk/core'
 
 interface ActionField {
   name: string
@@ -504,33 +505,34 @@ const handleSend = () => {
       payload = {}
       for (const field of actionFields.value) {
         if (field.isDeterministicMath) {
-          // Build deterministic math objects
+          // Build deterministic math class instances (not plain objects)
           if (field.mathType === 'Position2' || field.mathType === 'IVec2' || field.mathType === 'Velocity2' || field.mathType === 'Acceleration2') {
             const x = payloadModel.value[`${field.name}_x`]
             const y = payloadModel.value[`${field.name}_y`]
             if (x !== '' && x !== null && x !== undefined && y !== '' && y !== null && y !== undefined) {
+              const xFloat = parseFloat(String(x))
+              const yFloat = parseFloat(String(y))
+              
               if (field.mathType === 'Position2') {
-                // Position2 needs { v: { x, y } }
-                payload[field.name] = {
-                  v: {
-                    x: parseFloat(String(x)),
-                    y: parseFloat(String(y))
-                  }
-                }
-              } else {
-                // IVec2, Velocity2, Acceleration2 are just { x, y }
-                payload[field.name] = {
-                  x: parseFloat(String(x)),
-                  y: parseFloat(String(y))
-                }
+                // Position2 needs IVec2 instance wrapped in Semantic2
+                const vec = new IVec2(xFloat, yFloat, false) // false = from float
+                payload[field.name] = new Position2(vec)
+              } else if (field.mathType === 'Velocity2') {
+                const vec = new IVec2(xFloat, yFloat, false)
+                payload[field.name] = new Velocity2(vec)
+              } else if (field.mathType === 'Acceleration2') {
+                const vec = new IVec2(xFloat, yFloat, false)
+                payload[field.name] = new Acceleration2(vec)
+              } else if (field.mathType === 'IVec2') {
+                // IVec2 is just the vector itself
+                payload[field.name] = new IVec2(xFloat, yFloat, false)
               }
             }
           } else if (field.mathType === 'Angle') {
             const degrees = payloadModel.value[`${field.name}_degrees`]
             if (degrees !== '' && degrees !== null && degrees !== undefined) {
-              payload[field.name] = {
-                degrees: parseFloat(String(degrees))
-              }
+              const degreesFloat = parseFloat(String(degrees))
+              payload[field.name] = new Angle(degreesFloat, false) // false = from float
             }
           }
         } else {

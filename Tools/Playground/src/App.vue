@@ -175,6 +175,19 @@
                   >
                     請選擇一個 Land 以繼續
                   </v-alert>
+                  
+                  <!-- Room Instance ID Input -->
+                  <v-text-field
+                    v-if="parsedSchema && selectedLandID"
+                    v-model="landInstanceId"
+                    label="房間編號 (Room Instance ID)"
+                    prepend-icon="mdi-door"
+                    variant="outlined"
+                    class="mt-4"
+                    :disabled="isConnected || isJoined"
+                    hint="留空以讓伺服器自動分配房間，或輸入 'default' 以加入預設房間，或輸入特定房間編號以加入該房間"
+                    persistent-hint
+                  ></v-text-field>
                 </v-card-text>
               </v-card>
 
@@ -531,6 +544,7 @@ const wsUrl = ref('ws://localhost:8080/game')
 const loadingSchema = ref(false)
 const schemaSuccess = ref(false)
 const selectedLandID = ref<string>('')
+const landInstanceId = ref<string>('default')
 const actionResults = ref<Array<{
   actionName: string
   success: boolean
@@ -626,7 +640,7 @@ const {
   disconnect, 
   sendAction, 
   sendEvent 
-} = useWebSocket(wsUrl, parsedSchema, selectedLandID)
+} = useWebSocket(wsUrl, parsedSchema, selectedLandID, landInstanceId)
 
 // Sync action results from WebSocket composable
 watch(actionResultsFromWS, (newResults) => {

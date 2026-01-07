@@ -40,10 +40,11 @@ export interface TransportMessage {
   payload: TransportActionPayload | TransportActionResponsePayload | TransportEventPayload | TransportJoinPayload | TransportJoinResponsePayload | ErrorPayload
 }
 
+// Simplified action payload - fields are flattened (not nested in "action")
 export interface TransportActionPayload {
   requestID: string
-  landID: string
-  action: ActionEnvelope
+  typeIdentifier: string  // Action 類型識別符（例如 "PlayAction"）
+  payload: string         // Base64 編碼的 JSON payload
 }
 
 export interface TransportActionResponsePayload {
@@ -51,23 +52,17 @@ export interface TransportActionResponsePayload {
   response: any
 }
 
+// Simplified event payload - directly contains fromClient or fromServer
 export interface TransportEventPayload {
-  landID: string
-  event: {
-    fromClient?: {
-      event: {
-        type: string
-        payload: any
-        rawBody?: any
-      }
-    }
-    fromServer?: {
-      event: {
-        type: string
-        payload: any
-        rawBody?: any
-      }
-    }
+  fromClient?: {
+    type: string
+    payload: any
+    rawBody?: any
+  }
+  fromServer?: {
+    type: string
+    payload: any
+    rawBody?: any
   }
 }
 
@@ -163,9 +158,9 @@ public struct TransportJoinResponsePayload: Codable, Sendable {
 
 `MessagePayload` enum 使用自定義 Codable 實現，根據 `kind` 欄位編碼為對應的 key：
 
-- `kind: "action"` → `payload: { "action": TransportActionPayload }`
+- `kind: "action"` → `payload: { "requestID": string, "typeIdentifier": string, "payload": string }` (簡化格式，字段扁平化)
 - `kind: "actionResponse"` → `payload: { "actionResponse": TransportActionResponsePayload }`
-- `kind: "event"` → `payload: { "event": TransportEventPayload }`
+- `kind: "event"` → `payload: { "fromClient": {...} }` 或 `{ "fromServer": {...} }` (簡化格式，直接包含 fromClient/fromServer)
 - `kind: "join"` → `payload: { "join": TransportJoinPayload }`
 - `kind: "joinResponse"` → `payload: { "joinResponse": TransportJoinResponsePayload }`
 - `kind: "error"` → `payload: { "error": ErrorPayload }`
@@ -196,14 +191,13 @@ public struct TransportJoinResponsePayload: Codable, Sendable {
   "kind": "action",
   "payload": {
     "requestID": "req-1234567890-abc",
-    "landID": "demo-game",
-    "action": {
-      "typeIdentifier": "AddGold",
-      "payload": "eyJhbW91bnQiOjEwMH0="
-    }
+    "typeIdentifier": "AddGold",
+    "payload": "eyJhbW91bnQiOjEwMH0="
   }
 }
 ```
+
+**注意：** Action 消息格式已簡化，字段直接扁平化在 payload 中，不再嵌套在 `action` 對象中。`landID` 已移除，伺服器從 session 映射中識別 land。
 
 #### ActionEnvelope
 
@@ -289,20 +283,17 @@ Event 訊息使用 `kind: "event"`，包含 `fromClient` 或 `fromServer` 之一
 {
   "kind": "event",
   "payload": {
-    "landID": "demo-game",
-    "event": {
-      "fromClient": {
-        "event": {
-          "type": "ChatEvent",
-          "payload": {
-            "message": "Hello, world!"
-          }
-        }
+    "fromClient": {
+      "type": "ChatEvent",
+      "payload": {
+        "message": "Hello, world!"
       }
     }
   }
 }
 ```
+
+**注意：** Event 消息格式已簡化，直接包含 `fromClient` 或 `fromServer`，不再嵌套在 `event` 對象中。`landID` 已移除，伺服器從 session 映射中識別 land。
 
 或
 
@@ -310,17 +301,12 @@ Event 訊息使用 `kind: "event"`，包含 `fromClient` 或 `fromServer` 之一
 {
   "kind": "event",
   "payload": {
-    "landID": "demo-game",
-    "event": {
-      "fromServer": {
-        "event": {
-          "type": "MatchmakingEvent",
-          "payload": {
-            "matched": {
-              "landID": {
-                "rawValue": "battle-royale-123"
-              }
-            }
+    "fromServer": {
+      "type": "MatchmakingEvent",
+      "payload": {
+        "matched": {
+          "landID": {
+            "rawValue": "battle-royale-123"
           }
         }
       }
@@ -329,7 +315,7 @@ Event 訊息使用 `kind: "event"`，包含 `fromClient` 或 `fromServer` 之一
 }
 ```
 
-**注意：** `TransportEvent` 的 associated values 現在使用 `event` label，不再使用 `_0` 格式。
+**注意：** Event 消息格式已簡化，直接包含 `fromClient` 或 `fromServer`，不再嵌套在 `event` 對象中。
 
 #### TransportEvent
 
@@ -342,12 +328,12 @@ public enum TransportEvent: Codable, Sendable {
 
 **編碼細節：**
 
-`TransportEvent` 的 associated values 使用 label `event`，編碼格式為：
+`TransportEvent` 的編碼格式已簡化，直接編碼 `fromClient` 或 `fromServer`：
 
-- `TransportEvent.fromClient(event: AnyClientEvent)` 編碼為 `{ "fromClient": { "event": AnyClientEvent } }`
-- `TransportEvent.fromServer(event: AnyServerEvent)` 編碼為 `{ "fromServer": { "event": AnyServerEvent } }`
+- `TransportEvent.fromClient(event: AnyClientEvent)` 編碼為 `{ "fromClient": AnyClientEvent }`
+- `TransportEvent.fromServer(event: AnyServerEvent)` 編碼為 `{ "fromServer": AnyServerEvent }`
 
-這是因為 Swift Codable 會使用 associated value 的 label 作為 JSON key，而不是 `_0`、`_1` 等。
+**注意：** 格式已簡化，不再嵌套在 `event` 對象中，`AnyClientEvent` 和 `AnyServerEvent` 直接作為 `fromClient` 或 `fromServer` 的值。
 
 #### AnyClientEvent / AnyServerEvent
 
@@ -373,15 +359,10 @@ public struct AnyServerEvent: Codable, Sendable {
 const message: TransportMessage = {
   kind: "event",
   payload: {
-    landID: "demo-game",
-    event: {
-      fromClient: {
-        event: {
-          type: "ChatEvent",
-          payload: {
-            message: "Hello, world!"
-          }
-        }
+    fromClient: {
+      type: "ChatEvent",
+      payload: {
+        message: "Hello, world!"
       }
     }
   }
@@ -394,17 +375,12 @@ const message: TransportMessage = {
 const message: TransportMessage = {
   kind: "event",
   payload: {
-    landID: "demo-game",
-    event: {
-      fromServer: {
-        event: {
-          type: "MatchmakingEvent",
-          payload: {
-            matched: {
-              landID: {
-                rawValue: "battle-royale-123"
-              }
-            }
+    fromServer: {
+      type: "MatchmakingEvent",
+      payload: {
+        matched: {
+          landID: {
+            rawValue: "battle-royale-123"
           }
         }
       }
@@ -604,7 +580,7 @@ public enum StateUpdate: Equatable, Sendable, Codable {
 }
 ```
 
-**注意：** `value` 欄位使用 `SnapshotValue` 的原生 JSON 表示（見下方說明），不再有額外包裝。
+**注意：** `value` 欄位使用原生 JSON 格式（number, string, boolean, object, array, null），不再包裝 `type + value`。這簡化了消息大小並提高了可讀性。
 
 ### StatePatch 格式
 
@@ -652,7 +628,7 @@ public enum PatchOperation: Equatable, Sendable, Codable {
 
 **編碼細節：**
 
-`value` 欄位使用 `SnapshotValue` 的原生 JSON 表示（見下方 `SnapshotValue` 說明）。
+`value` 欄位使用原生 JSON 格式（number, string, boolean, object, array, null），不再包裝 `type + value`。這簡化了消息大小並提高了可讀性。
 
 **路徑格式：**
 
@@ -789,8 +765,10 @@ const payload = JSON.parse(payloadJson)
 
 **StatePatch 的 value 欄位：**
 
-因為 `PatchOperation.set` 和 `PatchOperation.add` 的 associated value 是 `SnapshotValue` 類型，所以 value 欄位直接是上述原生 JSON 值：
+`value` 欄位直接使用原生 JSON 格式，不再包裝 `type + value`：
 - `PatchOperation.set(SnapshotValue.int(80))` → `{ "op": "replace", "path": "...", "value": 80 }`
+- `PatchOperation.set(SnapshotValue.string("hello"))` → `{ "op": "replace", "path": "...", "value": "hello" }`
+- `PatchOperation.set(SnapshotValue.object([...]))` → `{ "op": "replace", "path": "...", "value": {...} }`
 
 ### JSON Pointer 路徑
 
@@ -874,25 +852,16 @@ enum TransportEvent {
 {
   "values": {
     "players": {
-      "type": "object",
-      "value": {
-        "player-1": {
-          "type": "object",
-          "value": {
-            "name": {
-              "type": "string",
-              "value": "Alice"
-            },
-            "hpCurrent": {
-              "type": "int",
-              "value": 100
-            }
-          }
-        }
+      "player-1": {
+        "name": "Alice",
+        "hpCurrent": 100
       }
     }
   }
 }
+```
+
+**注意：** Snapshot 格式已簡化，直接使用原生 JSON 格式，不再包裝 `type + value`。
 
 // 5. 伺服器發送首次同步信號
 {
@@ -909,11 +878,8 @@ enum TransportEvent {
   "kind": "action",
   "payload": {
     "requestID": "req-1234567890-xyz",
-    "landID": "demo-game",
-    "action": {
-      "typeIdentifier": "AddGold",
-      "payload": "eyJhbW91bnQiOjEwMH0="
-    }
+    "typeIdentifier": "AddGold",
+    "payload": "eyJhbW91bnQiOjEwMH0="
   }
 }
 
@@ -936,13 +902,13 @@ enum TransportEvent {
     {
       "op": "replace",
       "path": "/gold",
-      "value": {
-        "type": "int",
-        "value": 200
-      }
+      "value": 200
     }
   ]
 }
+```
+
+**注意：** `value` 欄位使用原生 JSON 格式，不再包裝 `type + value`。
 ```
 ```
 
@@ -953,15 +919,10 @@ enum TransportEvent {
 {
   "kind": "event",
   "payload": {
-    "landID": "demo-game",
-    "event": {
-      "fromClient": {
-        "event": {
-          "type": "ChatEvent",
-          "payload": {
-            "message": "Hello, world!"
-          }
-        }
+    "fromClient": {
+      "type": "ChatEvent",
+      "payload": {
+        "message": "Hello, world!"
       }
     }
   }
@@ -974,10 +935,7 @@ enum TransportEvent {
     {
       "op": "replace",
       "path": "/lastMessage",
-      "value": {
-        "type": "string",
-        "value": "Hello, world!"
-      }
+      "value": "Hello, world!"
     }
   ]
 }
@@ -990,17 +948,12 @@ enum TransportEvent {
 {
   "kind": "event",
   "payload": {
-    "landID": "demo-game",
-    "event": {
-      "fromServer": {
-        "event": {
-          "type": "MatchmakingEvent",
-          "payload": {
-            "matched": {
-              "landID": {
-                "rawValue": "battle-royale-123"
-              }
-            }
+    "fromServer": {
+      "type": "MatchmakingEvent",
+      "payload": {
+        "matched": {
+          "landID": {
+            "rawValue": "battle-royale-123"
           }
         }
       }
@@ -1009,7 +962,7 @@ enum TransportEvent {
 }
 ```
 
-**編碼說明：** `TransportEvent.fromServer(event: AnyServerEvent)` 使用 label `event`，會產生 `{ "fromServer": { "event": AnyServerEvent } }` 格式。
+**編碼說明：** `TransportEvent.fromServer(event: AnyServerEvent)` 直接編碼為 `{ "fromServer": AnyServerEvent }` 格式（已簡化）。
 
 ## 參考資料
 
