@@ -276,7 +276,7 @@ function generateIndexTs(
   const lines: string[] = []
   lines.push(generateHeader())
 
-  lines.push(`import type { StateTreeRuntime, Logger, StatePatch } from '@swiftstatetree/sdk/core'`)
+  lines.push(`import type { StateTreeRuntime, Logger, StatePatch, MapSubscriptions } from '@swiftstatetree/sdk/core'`)
   lines.push(`import { StateTreeView } from '@swiftstatetree/sdk/core'`)
   lines.push(
     `import type { LandState, Actions, ClientEvents, ServerEventSubscriptions } from './bindings'`
@@ -292,24 +292,9 @@ function generateIndexTs(
   }
   lines.push('')
 
-  // Generate MapSubscriptions interface
-  lines.push('/**')
-  lines.push(' * Type-safe subscriptions for Map properties in state.')
-  lines.push(' */')
-  lines.push('export interface MapSubscriptions<T> {')
-  lines.push('  /**')
-  lines.push('   * Subscribe to item additions.')
-  lines.push('   * @param callback - Called when a new item is added to the map')
-  lines.push('   * @returns Unsubscribe function')
-  lines.push('   */')
-  lines.push('  onAdd(callback: (key: string, value: T) => void): () => void')
-  lines.push('  /**')
-  lines.push('   * Subscribe to item removals.')
-  lines.push('   * @param callback - Called when an item is removed from the map')
-  lines.push('   * @returns Unsubscribe function')
-  lines.push('   */')
-  lines.push('  onRemove(callback: (key: string) => void): () => void')
-  lines.push('}')
+  // Import MapSubscriptions interface from SDK core (re-export for convenience)
+  lines.push('// Re-export MapSubscriptions interface from SDK core')
+  lines.push(`export type { MapSubscriptions } from '@swiftstatetree/sdk/core'`)
   lines.push('')
 
   lines.push('export interface StateTreeOptions {')
@@ -398,34 +383,13 @@ function generateIndexTs(
   lines.push('    } as ServerEventSubscriptions')
   lines.push('')
   
-  // Initialize Map subscriptions
+  // Initialize Map subscriptions using SDK core implementation
   for (const mapProp of mapProperties) {
-    // Escape forward slashes for regex: /players -> \/players
-    const escapedPath = mapProp.path.replace(/\//g, '\\/')
-    const pathRegex = `^${escapedPath}\\/([^/]+)$`
-    lines.push(`    // Initialize ${mapProp.propertyName} map subscriptions`)
-    lines.push(`    this.${mapProp.propertyName} = {`)
-    lines.push(`      onAdd: (callback) => {`)
-    lines.push(`        return this.view.onPatch((patch, decodedValue) => {`)
-    lines.push(`          if (patch.op === 'add') {`)
-    lines.push(`            const match = patch.path.match(/${pathRegex}/)`)
-    lines.push(`            if (match) {`)
-    lines.push(`              callback(match[1], decodedValue as ${mapProp.valueType})`)
-    lines.push(`            }`)
-    lines.push(`          }`)
-    lines.push(`        })`)
-    lines.push(`      },`)
-    lines.push(`      onRemove: (callback) => {`)
-    lines.push(`        return this.view.onPatch((patch) => {`)
-    lines.push(`          if (patch.op === 'remove') {`)
-    lines.push(`            const match = patch.path.match(/${pathRegex}/)`)
-    lines.push(`            if (match) {`)
-    lines.push(`              callback(match[1])`)
-    lines.push(`            }`)
-    lines.push(`          }`)
-    lines.push(`        })`)
-    lines.push(`      }`)
-    lines.push(`    }`)
+    lines.push(`    // Initialize ${mapProp.propertyName} map subscriptions using SDK core`)
+    lines.push(`    this.${mapProp.propertyName} = this.view.createMapSubscriptions<${mapProp.valueType}>(`)
+    lines.push(`      '${mapProp.path}',`)
+    lines.push(`      (state) => state?.${mapProp.propertyName} as Record<string, ${mapProp.valueType}> | undefined`)
+    lines.push(`    )`)
   }
   
   lines.push('  }')

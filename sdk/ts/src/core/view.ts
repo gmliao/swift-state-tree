@@ -99,6 +99,7 @@ export class StateTreeView {
   private onErrorCallback?: (error: Error, context?: { code?: string; details?: any; source: string }) => void
   private onPatchCallback?: (patch: StatePatch, decodedValue?: any) => void
   private patchCallbacks = new Set<(patch: StatePatch, decodedValue?: any) => void>()
+  private stateSyncCallbacks = new Set<() => void>() // Callbacks to call after state sync (snapshot/patch)
   private schema?: ProtocolSchema
   private stateTypeName?: string
 
@@ -550,6 +551,11 @@ export class StateTreeView {
     if (this.onStateUpdate) {
       this.onStateUpdate({ ...this.currentState })
     }
+    
+    // Notify state sync callbacks (for MapSubscriptions late-join handling)
+    for (const callback of this.stateSyncCallbacks) {
+      callback()
+    }
   }
 
   /**
@@ -572,6 +578,11 @@ export class StateTreeView {
     // Also notify state update callback
     if (this.onStateUpdate) {
       this.onStateUpdate({ ...this.currentState })
+    }
+    
+    // Notify state sync callbacks (for MapSubscriptions late-join handling)
+    for (const callback of this.stateSyncCallbacks) {
+      callback()
     }
   }
 
@@ -628,6 +639,140 @@ export class StateTreeView {
     }
 
     throw new Error(`Invalid value format for encoding: ${JSON.stringify(value)}`)
+  }
+
+  /**
+   * Create type-safe subscriptions for a Map property in state.
+   * Handles both patch-based updates and snapshot late-join scenarios.
+   * 
+   * @param mapPath - JSON Pointer path to the map property (e.g., "/players")
+   * @param getMapFromState - Function to get the current map from state
+   * @returns MapSubscriptions instance with onAdd/onRemove methods
+   */
+  createMapSubscriptions<T>(
+    mapPath: string,
+    getMapFromState: (state: Record<string, any>) => Record<string, T> | undefined
+  ): {
+    onAdd: (callback: (key: string, value: T) => void) => () => void
+    onRemove: (callback: (key: string) => void) => () => void
+  } {
+    // Track callbacks and their processed keys to avoid duplicate triggers
+    const addCallbacks = new Map<(key: string, value: T) => void, Set<string>>()
+    const removeCallbacks = new Set<(key: string) => void>()
+    
+    // Track last known state to detect changes
+    let lastKnownKeys = new Set<string>()
+    
+    // Helper to check and trigger add callback for a key if not already processed
+    const checkAndTriggerAdd = (key: string, value: T, processedKeys: Set<string>, callback: (key: string, value: T) => void) => {
+      if (!processedKeys.has(key)) {
+        processedKeys.add(key)
+        callback(key, value)
+      }
+    }
+    
+    // Check map state and trigger callbacks after state is fully synced
+    // This ensures StateNode is complete before callbacks are triggered
+    const checkMapChanges = () => {
+      const currentMap = getMapFromState(this.currentState)
+      
+      if (!currentMap || typeof currentMap !== 'object') {
+        // Map doesn't exist or is not an object
+        // Trigger remove for all previously known keys
+        for (const key of lastKnownKeys) {
+          for (const callback of removeCallbacks) {
+            callback(key)
+          }
+          // Remove from processed keys for all add callbacks
+          for (const processedKeys of addCallbacks.values()) {
+            processedKeys.delete(key)
+          }
+        }
+        lastKnownKeys.clear()
+        return
+      }
+      
+      const currentKeys = new Set(Object.keys(currentMap))
+      
+      // Check for new items (add)
+      for (const [key, value] of Object.entries(currentMap)) {
+        if (!lastKnownKeys.has(key)) {
+          // New item - trigger add callbacks
+          for (const [callback, processedKeys] of addCallbacks.entries()) {
+            checkAndTriggerAdd(key, value as T, processedKeys, callback)
+          }
+        }
+      }
+      
+      // Check for removed items
+      for (const key of lastKnownKeys) {
+        if (!currentKeys.has(key)) {
+          // Removed item - trigger remove callbacks
+          for (const callback of removeCallbacks) {
+            callback(key)
+          }
+          // Remove from processed keys for all add callbacks
+          for (const processedKeys of addCallbacks.values()) {
+            processedKeys.delete(key)
+          }
+        }
+      }
+      
+      // Update last known keys
+      lastKnownKeys = currentKeys
+    }
+    
+    // Hook into state sync callbacks to check for changes after state is fully synced
+    // This is called after all patches are applied (handleStateUpdate) or after snapshot (handleSnapshot)
+    this.stateSyncCallbacks.add(checkMapChanges)
+    
+    return {
+      onAdd: (callback: (key: string, value: T) => void) => {
+        const processedKeys = new Set<string>()
+        addCallbacks.set(callback, processedKeys)
+        
+        // Check existing items immediately (handles snapshot arriving before subscription)
+        // This triggers for all current items in the map
+        const currentMap = getMapFromState(this.currentState)
+        if (currentMap && typeof currentMap === 'object') {
+          for (const [key, value] of Object.entries(currentMap)) {
+            checkAndTriggerAdd(key, value as T, processedKeys, callback)
+          }
+          // Update lastKnownKeys if not yet initialized
+          if (lastKnownKeys.size === 0) {
+            lastKnownKeys = new Set(Object.keys(currentMap))
+          }
+        }
+        
+        return () => {
+          addCallbacks.delete(callback)
+          processedKeys.clear()
+          if (addCallbacks.size === 0 && removeCallbacks.size === 0) {
+            this.stateSyncCallbacks.delete(checkMapChanges)
+            lastKnownKeys.clear()
+          }
+        }
+      },
+      onRemove: (callback: (key: string) => void) => {
+        removeCallbacks.add(callback)
+        
+        // Initialize lastKnownKeys if not yet initialized (for tracking current state)
+        if (lastKnownKeys.size === 0) {
+          const currentMap = getMapFromState(this.currentState)
+          if (currentMap && typeof currentMap === 'object') {
+            lastKnownKeys = new Set(Object.keys(currentMap))
+          }
+        }
+        
+        return () => {
+          removeCallbacks.delete(callback)
+          if (addCallbacks.size === 0 && removeCallbacks.size === 0) {
+            this.stateSyncCallbacks.delete(checkMapChanges)
+            lastKnownKeys.clear()
+          }
+        }
+      }
+    }
   }
 
   /**
