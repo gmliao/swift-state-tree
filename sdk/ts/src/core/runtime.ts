@@ -18,7 +18,7 @@ export class StateTreeRuntime {
   private isConnected = false
   private views = new Map<string, StateTreeView>()
   private logger: Logger
-  private onDisconnectCallback: (() => void) | null = null
+  private onDisconnectCallback: ((code: number, reason: string, wasClean: boolean) => void) | null = null
 
   constructor(logger?: Logger) {
     this.logger = logger || new NoOpLogger()
@@ -26,13 +26,17 @@ export class StateTreeRuntime {
 
   /**
    * Set callback for disconnection events
+   * @param callback - Called when connection closes, receives close code, reason, and wasClean flag
    */
-  onDisconnect(callback: () => void): void {
+  onDisconnect(callback: (code: number, reason: string, wasClean: boolean) => void): void {
     this.onDisconnectCallback = callback
   }
 
   /**
    * Connect to WebSocket server
+   * 
+   * @throws {Error} If connection fails, the error will have `closeCode`, `closeReason`, and `wasClean` properties
+   *                 if the failure occurred during WebSocket handshake (connection was closed before opening)
    */
   async connect(url: string): Promise<void> {
     if (this.isConnected) {
@@ -57,26 +61,65 @@ export class StateTreeRuntime {
   private setupWebSocketHandlers(resolve: () => void, reject: (error: any) => void): void {
     if (!this.ws) return
 
+    let connectionResolved = false
+    let closeCode: number | null = null
+    let closeReason: string = ''
+    let wasClean: boolean = false
+
     this.ws.onopen = () => {
       this.isConnected = true
       this.logger.info('WebSocket connected')
+      connectionResolved = true
       resolve()
     }
 
     this.ws.onerror = (event) => {
-      const error = (event as any).error || new Error('WebSocket connection error')
-      this.logger.error(`WebSocket error: ${error.message}`)
-      reject(error)
+      // Note: onerror doesn't provide detailed error info in browsers
+      // The actual error details will be in onclose event
+      this.logger.error('WebSocket error event triggered')
+      // Don't reject here - wait for onclose to get the actual error code and reason
     }
 
-    this.ws.onclose = () => {
+    this.ws.onclose = (event) => {
       this.isConnected = false
-      this.logger.info('WebSocket closed')
+      closeCode = event.code
+      closeReason = event.reason || 'No reason provided'
+      wasClean = event.wasClean
+      
+      // Log close details
+      if (closeCode !== 1000) { // 1000 is normal closure
+        this.logger.error(`WebSocket closed: code=${closeCode}, reason=${closeReason}, wasClean=${wasClean}`)
+      } else {
+        this.logger.info(`WebSocket closed: code=${closeCode}, reason=${closeReason}`)
+      }
+      
+      // If connection was never established (failed during handshake), reject the promise
+      if (!connectionResolved) {
+        // Create error with close code and reason
+        // Format a user-friendly error message based on close code
+        let errorMessage = `WebSocket connection failed`
+        if (closeCode === 1008) {
+          errorMessage = `Connection rejected (Policy Violation): ${closeReason || 'Possible JWT token validation failure'}`
+        } else if (closeCode === 1006) {
+          errorMessage = `Connection abnormally closed: ${closeReason || 'Possible network issue or server error'}`
+        } else if (closeCode === 1011) {
+          errorMessage = `Server internal error: ${closeReason || 'Server error while processing request'}`
+        } else if (closeCode !== 1000) {
+          errorMessage = `Connection failed (code=${closeCode}): ${closeReason || 'Unknown reason'}`
+        }
+        
+        const error = new Error(errorMessage) as any
+        error.closeCode = closeCode
+        error.closeReason = closeReason
+        error.wasClean = wasClean
+        reject(error)
+      }
+      
       // Clean up all views
       this.views.clear()
-      // Notify disconnect callback
+      // Notify disconnect callback with close details
       if (this.onDisconnectCallback) {
-        this.onDisconnectCallback()
+        this.onDisconnectCallback(closeCode, closeReason, wasClean)
       }
     }
 
@@ -253,14 +296,11 @@ export class StateTreeRuntime {
     const payload = message.payload as any
 
     // Try to extract landID from different message types
-    if (payload.action?.landID) {
-      landID = payload.action.landID
-    } else if (payload.join?.landID) {
+    // landID removed from action and event payloads - server identifies land from session mapping
+    if (payload.join?.landID) {
       landID = payload.join.landID
     } else if (payload.joinResponse?.landID) {
       landID = payload.joinResponse.landID
-    } else if (payload.event?.landID) {
-      landID = payload.event.landID
     } else if (message.kind === 'error') {
       // For error messages, try to extract landID from error details
       const errorPayload = payload.error || payload

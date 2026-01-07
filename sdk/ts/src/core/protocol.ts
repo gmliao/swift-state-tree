@@ -80,7 +80,6 @@ export function createJoinMessage(
  */
 export function createActionMessage(
   requestID: string,
-  landID: string,
   actionType: string,
   payload: any
 ): TransportMessage {
@@ -97,17 +96,13 @@ export function createActionMessage(
     payloadBase64 = btoa(unescape(encodeURIComponent(payloadJson)))
   }
 
+  // Simplified structure: directly use requestID, typeIdentifier, payload in payload
   return {
     kind: 'action',
     payload: {
-      action: {
-        requestID,
-        landID,
-        action: {
-          typeIdentifier: actionType,
-          payload: payloadBase64
-        }
-      }
+      requestID,
+      typeIdentifier: actionType,
+      payload: payloadBase64
     } as any // Type assertion needed because payload is a union type
   }
 }
@@ -117,35 +112,26 @@ export function createActionMessage(
  * MessagePayload encodes as { "event": TransportEventPayload }
  */
 export function createEventMessage(
-  landID: string,
   eventType: string,
   payload: any,
   fromClient: boolean = true
 ): TransportMessage {
+  // Simplified structure: directly use fromClient/fromServer in payload
   return {
     kind: 'event',
-    payload: {
-      event: {
-        landID,
-        event: fromClient
-          ? {
-              fromClient: {
-                event: {
-                  type: eventType,
-                  payload: payload || {}
-                }
-              }
-            }
-          : {
-              fromServer: {
-                event: {
-                  type: eventType,
-                  payload: payload || {}
-                }
-              }
-            }
-      }
-    } as any // Type assertion needed because payload is a union type
+    payload: fromClient
+      ? {
+          fromClient: {
+            type: eventType,
+            payload: payload || {}
+          }
+        } as any
+      : {
+          fromServer: {
+            type: eventType,
+            payload: payload || {}
+          }
+        } as any
   }
 }
 

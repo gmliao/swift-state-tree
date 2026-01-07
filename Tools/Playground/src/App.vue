@@ -45,6 +45,22 @@
 
     <v-main style="height: calc(100vh - 64px); overflow: hidden;">
       <v-container fluid class="app-shell">
+        <!-- Connection Error Alert (shown at top when error exists) -->
+        <v-row v-if="connectionError" justify="center" class="mb-2">
+          <v-col cols="12" md="8" lg="6">
+            <v-alert
+              type="error"
+              variant="tonal"
+              prominent
+              closable
+              @click:close="connectionError = null"
+            >
+              <v-alert-title>連線錯誤</v-alert-title>
+              {{ connectionError }}
+            </v-alert>
+          </v-col>
+        </v-row>
+
         <!-- Connection State: Schema & Connection Setup -->
         <div v-if="!isConnected || !isJoined">
           <v-row justify="center">
@@ -199,7 +215,7 @@
                     block
                     class="mb-2"
                     @click="connect"
-                    :disabled="!wsUrl || isConnected || Boolean(parsedSchema && availableLands.length > 1 && (!selectedLandID || selectedLandID === ''))"
+                    :disabled="!wsUrl || isConnected || !parsedSchema || Boolean(parsedSchema && availableLands.length > 1 && (!selectedLandID || selectedLandID === ''))"
                   >
                     <v-icon icon="mdi-link" class="mr-2"></v-icon>
                     連線

@@ -33,7 +33,7 @@ struct GameServer {
         let jwtConfig = createGameJWTConfig()
         let logger = createGameLogger(
             scope: "HeroDefenseServer",
-            logLevel: .debug
+            logLevel: .trace
         )
         
         let host = getEnvString(key: "HOST", defaultValue: "localhost")

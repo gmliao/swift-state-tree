@@ -63,7 +63,8 @@ public struct TypeToSchemaConverter {
                 items: elementSchema,
                 xStateTree: StateTreeMetadata(
                     nodeKind: .array,
-                    sync: metadata?.policy.map { SyncMetadata(policy: $0.rawValue) }
+                    sync: metadata?.policy.map { SyncMetadata(policy: $0.rawValue) },
+                    atomic: nil
                 )
             )
         }
@@ -98,7 +99,8 @@ public struct TypeToSchemaConverter {
                 additionalProperties: valueSchema,
                 xStateTree: StateTreeMetadata(
                     nodeKind: .map,
-                    sync: metadata?.policy.map { SyncMetadata(policy: $0.rawValue) }
+                    sync: metadata?.policy.map { SyncMetadata(policy: $0.rawValue) },
+                    atomic: nil
                 )
             )
         }
@@ -180,13 +182,17 @@ public struct TypeToSchemaConverter {
             required.append(field.name)
         }
         
+        // Check if this is an atomic type (DeterministicMath types)
+        let isAtomic = isAtomicType(type)
+        
         let schema = JSONSchema(
             type: .object,
             properties: properties,
             required: required,
             xStateTree: StateTreeMetadata(
                 nodeKind: .object,
-                sync: metadata?.policy.map { SyncMetadata(policy: $0.rawValue) }
+                sync: metadata?.policy.map { SyncMetadata(policy: $0.rawValue) },
+                atomic: isAtomic ? true : nil
             )
         )
         
@@ -194,6 +200,21 @@ public struct TypeToSchemaConverter {
         definitions[typeName] = schema
         
         return JSONSchema(ref: "#/defs/\(typeName)")
+    }
+    
+    // MARK: - Atomic Type Detection
+    
+    /// Check if a type is an atomic DeterministicMath type.
+    /// Atomic types should be updated as a whole unit, not field-by-field.
+    private static func isAtomicType(_ type: Any.Type) -> Bool {
+        let typeName = String(describing: type)
+        // Check for DeterministicMath types
+        return typeName.contains("IVec2") ||
+               typeName.contains("IVec3") ||
+               typeName.contains("Position2") ||
+               typeName.contains("Velocity2") ||
+               typeName.contains("Acceleration2") ||
+               typeName.contains("Angle")
     }
     
     // MARK: - Enum Type Conversion
@@ -256,11 +277,18 @@ public struct TypeToSchemaConverter {
                 required.append(field.name)
             }
             
+            // Check if this is an atomic type (DeterministicMath types)
+            let isAtomic = isAtomicType(type)
+            
             let schema = JSONSchema(
                 type: .object,
                 properties: properties,
                 required: required,
-                xStateTree: metadata.map { StateTreeMetadata(nodeKind: $0.nodeKind, sync: $0.policy.map { SyncMetadata(policy: $0.rawValue) }) }
+                xStateTree: StateTreeMetadata(
+                    nodeKind: metadata?.nodeKind ?? .leaf,
+                    sync: metadata?.policy.map { SyncMetadata(policy: $0.rawValue) },
+                    atomic: isAtomic ? true : nil
+                )
             )
             
             definitions[typeName] = schema
@@ -311,11 +339,18 @@ public struct TypeToSchemaConverter {
             }
         }
         
+        // Check if this is an atomic type (DeterministicMath types)
+        let isAtomic = isAtomicType(type)
+        
         let schema = JSONSchema(
             type: .object,
             properties: properties.isEmpty ? nil : properties,
             required: required.isEmpty ? nil : required,
-            xStateTree: metadata.map { StateTreeMetadata(nodeKind: $0.nodeKind, sync: $0.policy.map { SyncMetadata(policy: $0.rawValue) }) }
+            xStateTree: StateTreeMetadata(
+                nodeKind: metadata?.nodeKind ?? .leaf,
+                sync: metadata?.policy.map { SyncMetadata(policy: $0.rawValue) },
+                atomic: isAtomic ? true : nil
+            )
         )
         
         definitions[typeName] = schema

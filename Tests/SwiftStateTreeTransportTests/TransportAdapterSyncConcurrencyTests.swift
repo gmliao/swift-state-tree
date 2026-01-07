@@ -299,7 +299,6 @@ struct TransportAdapterSyncConcurrencyTests {
         )
         let actionRequest = TransportMessage.action(
             requestID: "action-1",
-            landID: "sync-concurrency-test",
             action: actionEnvelope
         )
         let actionData = try JSONEncoder().encode(actionRequest)

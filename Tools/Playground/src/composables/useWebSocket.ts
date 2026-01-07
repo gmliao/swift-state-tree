@@ -167,7 +167,7 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
       return
     }
 
-    connectionError.value = null
+      connectionError.value = null
 
     try {
       const urlToUse = customUrl ?? wsUrl.value
@@ -176,9 +176,116 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
       // Create runtime and view
       console.log('[Playground] Creating runtime with logger:', logger)
       runtime = new StateTreeRuntime(logger)
+      
+      // Set up disconnect callback to handle connection errors
+      runtime.onDisconnect((closeCode, closeReason, wasClean) => {
+        if (isConnected.value) {
+          isConnected.value = false
+          const wasJoined = isJoined.value
+          isJoined.value = false
+          
+          // Try to parse closeReason as JSON (server may send structured error)
+          let parsedReason: any = null
+          let reasonText = closeReason || ''
+          try {
+            if (closeReason && closeReason.trim().startsWith('{')) {
+              parsedReason = JSON.parse(closeReason)
+              reasonText = parsedReason.message || parsedReason.code || closeReason
+            }
+          } catch {
+            // Not JSON, use as-is
+          }
+          
+          // WebSocket close codes:
+          // 1000 = Normal Closure
+          // 1001 = Going Away
+          // 1002 = Protocol Error
+          // 1003 = Unsupported Data
+          // 1006 = Abnormal Closure (no close frame received)
+          // 1007 = Invalid frame payload data
+          // 1008 = Policy Violation (e.g., JWT validation failed)
+          // 1009 = Message too big
+          // 1011 = Internal Server Error
+          // 1012 = Service Restart
+          // 1013 = Try Again Later
+          // 1014 = Bad Gateway
+          // 1015 = TLS Handshake
+          
+          let errorMessage = ''
+          let userFriendlyError = ''
+          
+          if (closeCode === 1008) {
+            // Policy Violation - often JWT validation failure
+            if (parsedReason) {
+              userFriendlyError = `連線被拒絕: ${reasonText}`
+              if (parsedReason.code === 'WEBSOCKET_INVALID_TOKEN') {
+                userFriendlyError = `JWT Token 驗證失敗: ${reasonText}`
+              }
+            } else {
+              userFriendlyError = `連線被拒絕（政策違規）: ${reasonText || '可能是 JWT token 驗證失敗'}`
+            }
+            errorMessage = `❌ ${userFriendlyError}`
+          } else if (closeCode === 1006) {
+            userFriendlyError = `連線異常關閉: ${reasonText || '可能是網路問題或伺服器錯誤'}`
+            errorMessage = `❌ ${userFriendlyError}`
+          } else if (closeCode === 1011) {
+            userFriendlyError = `伺服器內部錯誤: ${reasonText || '伺服器處理請求時發生錯誤'}`
+            errorMessage = `❌ ${userFriendlyError}`
+          } else if (closeCode !== 1000) {
+            userFriendlyError = `連線關閉 (code=${closeCode}): ${reasonText || '未知原因'}`
+            errorMessage = `❌ ${userFriendlyError}`
+          } else {
+            userFriendlyError = `連線正常關閉: ${reasonText || '正常關閉'}`
+            errorMessage = `ℹ️  ${userFriendlyError}`
+          }
+          
+          // Add wasClean info for debugging
+          if (!wasClean && closeCode !== 1000) {
+            errorMessage += ' (非正常關閉)'
+          }
+          
+          // Set connection error for UI display
+          if (closeCode !== 1000) {
+            connectionError.value = userFriendlyError
+          } else {
+            connectionError.value = null
+          }
+          
+          // If we were in the process of joining or were joined, this might be an error
+          if (wasJoined) {
+            addLog(`${errorMessage}（已加入狀態）`, 'error')
+          } else if (closeCode !== 1000) {
+            addLog(errorMessage, 'error')
+          } else {
+            addLog(errorMessage, 'info')
+          }
+        }
+      })
+      
       console.log('[Playground] Runtime created, connecting...')
-      await runtime.connect(urlToUse)
-      console.log('[Playground] Connection completed')
+      try {
+        await runtime.connect(urlToUse)
+        console.log('[Playground] Connection completed')
+      } catch (connectError: any) {
+        // Connection failed during handshake
+        // SDK already formats a user-friendly error message, but we can enhance it for Playground
+        const errorMessage = connectError?.message || String(connectError)
+        const closeCode = connectError?.closeCode
+        
+        // SDK already provides a formatted error message, but we can add emoji for Playground UI
+        let formattedError = `❌ ${errorMessage}`
+        if (closeCode !== undefined && closeCode !== null && closeCode !== 1000) {
+          // Add close code info if not already in the message
+          if (!errorMessage.includes(`code=${closeCode}`)) {
+            formattedError += ` (code=${closeCode})`
+          }
+        }
+        
+        connectionError.value = formattedError
+        addLog(formattedError, 'error')
+        isConnected.value = false
+        throw connectError // Re-throw to be caught by outer catch
+      }
 
       isConnected.value = true
       isJoined.value = false
@@ -188,8 +295,14 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
       // Use current landID (from selectedLandID or fallback)
       const landIDToUse = currentLandID.value || getInitialLandID()
       
+      // Check if schema is available
+      if (!schema.value) {
+        throw new Error('Schema is required. Please load schema before connecting.')
+      }
+      
       // Create view with state update callbacks
       view = runtime.createView(landIDToUse, {
+        schema: schema.value as any, // Schema type is compatible with ProtocolSchema
         logger,
         onStateUpdate: (state) => {
           currentState.value = state
@@ -203,7 +316,20 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
           handleStateUpdate(update as StateUpdate)
         },
         onTransportMessage: (message) => {
-          addLog(`Transport message [${message.kind}]`, 'server', message)
+          // Special handling for error messages to make them more visible
+          if (message.kind === 'error') {
+            const errorPayload = (message.payload as any).error || message.payload
+            const code = errorPayload?.code || 'UNKNOWN_ERROR'
+            const errorMessage = errorPayload?.message || 'Unknown error'
+            const details = errorPayload?.details || {}
+            addLog(
+              `❌ 錯誤 [${code}]: ${errorMessage}${details ? ` (${JSON.stringify(details)})` : ''}`,
+              'error',
+              message
+            )
+          } else {
+            addLog(`Transport message [${message.kind}]`, 'server', message)
+          }
         },
         onError: (error) => {
           addLog(
@@ -217,9 +343,15 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
       // Subscribe to all server events (we'll need to handle this differently)
       // For now, events are logged by View's logger
 
-      // Join automatically
+      // Join automatically with timeout
       try {
-        const joinResult = await view.join()
+        // Set a timeout for join operation (10 seconds)
+        const joinPromise = view.join()
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Join timeout: 伺服器沒有回應')), 10000)
+        })
+        
+        const joinResult = await Promise.race([joinPromise, timeoutPromise]) as any
         if (joinResult.success) {
           isJoined.value = true
           
@@ -244,7 +376,14 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
           addLog(`❌ Join 失敗: ${joinResult.reason || '未知原因'}`, 'error')
         }
       } catch (err) {
-        addLog(`❌ Join 失敗: ${err}`, 'error')
+        isJoined.value = false
+        const errorMessage = err instanceof Error ? err.message : String(err)
+        addLog(`❌ Join 失敗: ${errorMessage}`, 'error')
+        
+        // If connection is still open but join failed, it might be an authentication error
+        if (isConnected.value && !isJoined.value) {
+          addLog('⚠️  可能是 JWT token 驗證失敗或其他認證問題', 'warning')
+        }
       }
 
       // Note: Server events are handled through View's event handlers

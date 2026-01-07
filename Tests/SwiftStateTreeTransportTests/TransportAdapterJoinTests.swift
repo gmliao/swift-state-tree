@@ -143,7 +143,7 @@ func testMessagesFromNonJoinedSessionRejected() async throws {
 
     // Act: Try to send event (should be rejected)
     let incrementEvent = AnyClientEvent(TestIncrementEvent())
-    let transportMsg = TransportMessage.event(landID: "join-test", event: .fromClient(event: incrementEvent))
+    let transportMsg = TransportMessage.event(event: .fromClient(event: incrementEvent))
     let data = try JSONEncoder().encode(transportMsg)
 
     await adapter.onMessage(data, from: sessionID)
@@ -188,7 +188,7 @@ func testMessagesBeforeAndAfterJoin() async throws {
 
     // Act: Try to send event before join (should be rejected)
     let incrementEvent = AnyClientEvent(TestIncrementEvent())
-    let transportMsg = TransportMessage.event(landID: "join-test", event: .fromClient(event: incrementEvent))
+    let transportMsg = TransportMessage.event(event: .fromClient(event: incrementEvent))
     let data = try JSONEncoder().encode(transportMsg)
 
     await adapter.onMessage(data, from: sessionID)

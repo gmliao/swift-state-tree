@@ -103,7 +103,6 @@ func testLandServerForTestHandlesClientEvents() async throws {
     // Act: send ping event
     let pingEvent = AnyClientEvent(TestPingEvent())
     let pingMessage = TransportMessage.event(
-        landID: harness.land.id,
         event: .fromClient(event: pingEvent)
     )
     let pingData = try encoder.encode(pingMessage)
@@ -112,7 +111,6 @@ func testLandServerForTestHandlesClientEvents() async throws {
     // Act: send chat event to mutate state
     let chatEvent = AnyClientEvent(TestChatEvent(message: "hello"))
     let chatMessage = TransportMessage.event(
-        landID: harness.land.id,
         event: .fromClient(event: chatEvent)
     )
     let chatData = try encoder.encode(chatMessage)
@@ -128,8 +126,8 @@ func testLandServerForTestHandlesClientEvents() async throws {
 
     #expect(transportMessages.contains(where: { message in
         if message.kind == .event,
-           case .event(let payload) = message.payload,
-           case .fromServer(let anyEvent) = payload.event,
+           case .event(let event) = message.payload,
+           case .fromServer(let anyEvent) = event,
            anyEvent.type == "TestPongEvent" {
             return true
         }
@@ -138,8 +136,8 @@ func testLandServerForTestHandlesClientEvents() async throws {
 
     #expect(transportMessages.contains(where: { message in
         if message.kind == .event,
-           case .event(let payload) = message.payload,
-           case .fromServer(let anyEvent) = payload.event,
+           case .event(let event) = message.payload,
+           case .fromServer(let anyEvent) = event,
            anyEvent.type == "TestChatMessageEvent" {
             // Decode the payload to check message content
             if let payloadDict = anyEvent.payload.base as? [String: Any],
