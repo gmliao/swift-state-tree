@@ -146,9 +146,16 @@ public struct ColoredLogHandler: LogHandler {
             .filter { $0.key != "scope" }
         
         if !additionalMetadata.isEmpty {
-            let metadataString = additionalMetadata.map { "\($0.key)=\($0.value)" }
-                .joined(separator: ", ")
-            result += " \(useColors ? ANSIColor.gray.rawValue : "")\(metadataString)\(reset)"
+            let metadataString = additionalMetadata.map { key, value in
+                if useColors {
+                    // Key in cyan, value in gray for better readability
+                    return "\(ANSIColor.cyan.rawValue)\(key)\(reset)=\(ANSIColor.gray.rawValue)\(value)\(reset)"
+                } else {
+                    return "\(key)=\(value)"
+                }
+            }
+            .joined(separator: ", ")
+            result += " \(metadataString)"
         }
         
         return result
