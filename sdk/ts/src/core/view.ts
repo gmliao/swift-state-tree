@@ -54,6 +54,13 @@ export interface ViewOptions {
    * (transport error, action error, join error, etc).
    */
   onError?: (error: Error, context?: { code?: string; details?: any; source: string }) => void
+  /**
+   * Called for each patch applied to the state.
+   * Useful for tracking add/remove/replace operations on specific paths.
+   * @param patch - The patch being applied (contains op, path, and optional value)
+   * @param decodedValue - The decoded value (with DeterministicMath instances) if applicable
+   */
+  onPatch?: (patch: StatePatch, decodedValue?: any) => void
 }
 
 /**
@@ -76,6 +83,13 @@ export class StateTreeView {
   private logger: Logger
   private playerID?: string
   private deviceID?: string
+  
+  /**
+   * Get the current player ID (set after successful join)
+   */
+  get currentPlayerID(): string | undefined {
+    return this.playerID
+  }
   private metadata?: Record<string, any>
   private onStateUpdate?: (state: Record<string, any>) => void
   private onSnapshot?: (snapshot: StateSnapshot) => void
@@ -83,6 +97,8 @@ export class StateTreeView {
   private onStateUpdateMessageCallback?: (update: StateUpdate) => void
   private onSnapshotMessageCallback?: (snapshot: StateSnapshot) => void
   private onErrorCallback?: (error: Error, context?: { code?: string; details?: any; source: string }) => void
+  private onPatchCallback?: (patch: StatePatch, decodedValue?: any) => void
+  private patchCallbacks = new Set<(patch: StatePatch, decodedValue?: any) => void>()
   private schema?: ProtocolSchema
   private stateTypeName?: string
 
@@ -103,6 +119,7 @@ export class StateTreeView {
     this.onStateUpdateMessageCallback = options?.onStateUpdateMessage
     this.onSnapshotMessageCallback = options?.onSnapshotMessage
     this.onErrorCallback = options?.onError
+    this.onPatchCallback = options?.onPatch
     
     // Schema is required for accurate type checking
     if (!this.schema) {
@@ -255,6 +272,21 @@ export class StateTreeView {
   }
 
   /**
+   * Subscribe to patch operations.
+   * Useful for tracking add/remove/replace operations on specific paths.
+   * @param callback - Called for each patch with the patch info and decoded value
+   * @returns Unsubscribe function
+   */
+  onPatch(callback: (patch: StatePatch, decodedValue?: any) => void): () => void {
+    this.patchCallbacks.add(callback)
+
+    // Return unsubscribe function
+    return () => {
+      this.patchCallbacks.delete(callback)
+    }
+  }
+
+  /**
    * Get current state
    */
   getState(): Record<string, any> {
@@ -322,6 +354,11 @@ export class StateTreeView {
               }
             }
           }
+        }
+
+        // Save playerID from server response (may differ from initial playerID)
+        if (success && payload.playerID) {
+          this.playerID = payload.playerID
         }
 
         const result = { 
@@ -740,6 +777,29 @@ export class StateTreeView {
       }
       // applyNestedPatch now handles conversion internally, so we don't need redecodeObject
       this.applyNestedPatch(this.currentState[key], { ...patch, path: restPath }, this.currentState, key, key)
+    }
+
+    // Trigger patch callbacks after applying
+    this.notifyPatchCallbacks(patch)
+  }
+
+  /**
+   * Notify all patch callbacks
+   */
+  private notifyPatchCallbacks(patch: StatePatch): void {
+    // Decode value if present (for add/replace operations)
+    const decodedValue = patch.value !== undefined
+      ? this.decodeSnapshotValue(patch.value, patch.path)
+      : undefined
+
+    // Notify single callback from options
+    if (this.onPatchCallback) {
+      this.onPatchCallback(patch, decodedValue)
+    }
+
+    // Notify all subscribed callbacks
+    for (const callback of this.patchCallbacks) {
+      callback(patch, decodedValue)
     }
   }
 

@@ -8,7 +8,7 @@ import { useGameClient } from "../utils/gameClient";
 const router = useRouter();
 const gameRef = ref<HTMLDivElement | null>(null);
 const phaserGame = ref<Phaser.Game | null>(null);
-const { isConnected, isJoined, disconnect, play, moveTo, tree, currentPlayerID } = useGameClient();
+const { isConnected, isJoined, disconnect, tree } = useGameClient();
 
 // Watch for disconnection and automatically redirect to connect page
 // Watch isJoined: when it changes from true to false, we've been disconnected
@@ -57,17 +57,10 @@ onMounted(async () => {
     // Wait for scene to be fully initialized, then set game client
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    // Pass tree, play function, events, and current player ID to scene
+    // Pass tree to scene (tree.currentPlayerID is automatically available)
     const scene = phaserGame.value.scene.getScene("GameScene") as GameScene;
     if (scene && tree.value) {
-      scene.setGameClient({ 
-        tree: tree.value, 
-        play,
-        events: {
-          moveTo
-        },
-        currentPlayerID: currentPlayerID.value
-      });
+      scene.setStateTree(tree.value);
     }
   }
 });

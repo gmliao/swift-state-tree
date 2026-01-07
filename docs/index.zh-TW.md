@@ -43,6 +43,10 @@
 
 - **[確定性數學運算](deterministic-math/README.zh-TW.md)** - 固定點運算、碰撞檢測和向量運算，用於伺服器權威遊戲
 
+### 客戶端 SDK
+
+- **[TypeScript SDK](sdk/README.zh-TW.md)** - 客戶端 SDK 架構、分層設計與框架整合
+
 ### 參考文檔
 
 - **[Schema 生成](schema/README.zh-TW.md)** - JSON Schema 自動生成
