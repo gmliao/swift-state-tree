@@ -117,14 +117,17 @@ public struct ILineSegment: Codable, Equatable, Sendable {
         }
         
         // Closest point is on the segment
-        // Calculate the closest point: start + (t / dirSq) * dir
-        // Distance squared = ||point - (start + (t / dirSq) * dir)||^2
+        // Calculate the closest point: start + (t / dirSq) * dir in fixed-point.
+        let scale = Int64(FixedPoint.scale)
+        let (scaledT, overflow) = t.multipliedReportingOverflow(by: scale)
+        let tScaled = overflow ? (t / dirSq) : (scaledT / dirSq)
+        let tScale = overflow ? Int64(1) : scale
         
-        // Calculate closest point using Float for precision, then convert back
-        let tFloat = Float(t) / Float(dirSq)
+        let closestX64 = Int64(start.x) + (Int64(dir.x) * tScaled) / tScale
+        let closestY64 = Int64(start.y) + (Int64(dir.y) * tScaled) / tScale
         let closestPoint = IVec2(
-            x: start.floatX + dir.floatX * tFloat,
-            y: start.floatY + dir.floatY * tFloat
+            fixedPointX: Int32(clamping: closestX64),
+            fixedPointY: Int32(clamping: closestY64)
         )
         
         // Directly compute distance using Int64 to avoid Int32 overflow
@@ -145,7 +148,8 @@ public struct ILineSegment: Codable, Equatable, Sendable {
     /// use `distanceSquaredToPoint` instead.
     public func distanceToPoint(_ point: IVec2) -> Float {
         let distSq = distanceSquaredToPoint(point)
-        return sqrt(Float(distSq) / FixedPoint.scaleSquaredFloat)
+        let dist = FixedPoint.sqrtInt64(distSq)
+        return FixedPoint.dequantize(dist)
     }
     
     /// Checks if this line segment intersects with another line segment.
@@ -185,21 +189,28 @@ public struct ILineSegment: Codable, Equatable, Sendable {
         let crossRD2 = r.cross(d2)
         let crossRD1 = r.cross(d1)
         
-        let t = Float(crossRD2) / Float(crossD1D2)
-        let u = Float(crossRD1) / Float(crossD1D2)
-        
-        // Check if intersection is within both segments
-        if t < 0 || t > 1 || u < 0 || u > 1 {
-            return nil  // Intersection is outside one or both segments
+        // Check if intersection is within both segments without floating-point.
+        if crossD1D2 > 0 {
+            if crossRD2 < 0 || crossRD2 > crossD1D2 || crossRD1 < 0 || crossRD1 > crossD1D2 {
+                return nil
+            }
+        } else {
+            if crossRD2 > 0 || crossRD2 < crossD1D2 || crossRD1 > 0 || crossRD1 < crossD1D2 {
+                return nil
+            }
         }
         
-        // Calculate intersection point
-        let intersection = IVec2(
-            x: start.floatX + d1.floatX * t,
-            y: start.floatY + d1.floatY * t
-        )
+        let scale = Int64(FixedPoint.scale)
+        let (scaledT, overflow) = crossRD2.multipliedReportingOverflow(by: scale)
+        let tScaled = overflow ? (crossRD2 / crossD1D2) : (scaledT / crossD1D2)
+        let tScale = overflow ? Int64(1) : scale
         
-        return intersection
+        let intersectionX = Int64(start.x) + (Int64(d1.x) * tScaled) / tScale
+        let intersectionY = Int64(start.y) + (Int64(d1.y) * tScaled) / tScale
+        return IVec2(
+            fixedPointX: Int32(clamping: intersectionX),
+            fixedPointY: Int32(clamping: intersectionY)
+        )
     }
     
     /// Checks if this line segment intersects with a circle.
@@ -249,28 +260,34 @@ public struct ILineSegment: Codable, Equatable, Sendable {
             return nil
         }
         
-        // Project circle center onto the line segment
-        let projection = toStart.dot(dir)
-        
-        var t: Float
-        if projection <= 0 {
-            t = 0  // Closest point is start
-        } else if projection >= dirSq {
-            t = 1  // Closest point is end
-        } else {
-            t = Float(projection) / Float(dirSq)
-        }
-        
-        // Calculate closest point on segment to circle center
+        // Project circle center onto the line
+        let toCenter = circle.center - start
+        let projection = toCenter.dot(dir)
+        let scale = Int64(FixedPoint.scale)
+        let (scaledProjection, overflow) = projection.multipliedReportingOverflow(by: scale)
+        let tProjection = overflow ? (projection / dirSq) : (scaledProjection / dirSq)
+        let tScale = overflow ? Int64(1) : scale
+
+        // Closest point on the line (not clamped)
+        let lineX = Int64(start.x) + (Int64(dir.x) * tProjection) / tScale
+        let lineY = Int64(start.y) + (Int64(dir.y) * tProjection) / tScale
+        let linePoint = IVec2(
+            fixedPointX: Int32(clamping: lineX),
+            fixedPointY: Int32(clamping: lineY)
+        )
+
+        let clampedT = min(max(tProjection, Int64(0)), tScale)
+        let clampedX = Int64(start.x) + (Int64(dir.x) * clampedT) / tScale
+        let clampedY = Int64(start.y) + (Int64(dir.y) * clampedT) / tScale
         let closestPoint = IVec2(
-            x: start.floatX + dir.floatX * t,
-            y: start.floatY + dir.floatY * t
+            fixedPointX: Int32(clamping: clampedX),
+            fixedPointY: Int32(clamping: clampedY)
         )
         
         // Check if closest point is within circle radius
         // Directly compute distance using Int64 to avoid Int32 overflow
-        let dx64 = Int64(closestPoint.x) - Int64(circle.center.x)
-        let dy64 = Int64(closestPoint.y) - Int64(circle.center.y)
+        let dx64 = Int64(linePoint.x) - Int64(circle.center.x)
+        let dy64 = Int64(linePoint.y) - Int64(circle.center.y)
         
         let (distSqX, distOverflowX) = dx64.multipliedReportingOverflow(by: dx64)
         if distOverflowX {
@@ -295,47 +312,34 @@ public struct ILineSegment: Codable, Equatable, Sendable {
         if distSq > radiusSq {
             return nil  // Segment doesn't intersect circle
         }
-        
-        // Calculate actual intersection point(s)
-        // Solve: ||start + t * dir - center|| = radius
-        // This is a quadratic equation: a*t^2 + b*t + c = 0
-        
-        let a = dirSq
-        let b = Int64(2) * toStart.dot(dir)
-        let c = toStart.magnitudeSquared() - radiusSq
-        
-        // Discriminant
-        let discriminant = b * b - Int64(4) * a * c
-        
-        if discriminant < 0 {
-            return nil  // No real solutions
+
+        let dirLen = FixedPoint.sqrtInt64(dirSq)
+        if dirLen == 0 {
+            return start
         }
-        
-        // Calculate t values
-        let sqrtDisc = Int64(sqrt(Float(discriminant)))
-        let t1 = Float(-b - sqrtDisc) / Float(Int64(2) * a)
-        let t2 = Float(-b + sqrtDisc) / Float(Int64(2) * a)
-        
-        // Find the intersection point within the segment [0, 1]
-        var intersectionT: Float? = nil
-        
-        if t1 >= 0 && t1 <= 1 {
-            intersectionT = t1
-        } else if t2 >= 0 && t2 <= 1 {
-            intersectionT = t2
+
+        let offset = FixedPoint.sqrtInt64(radiusSq - distSq)
+        let thc = (offset * tScale) / dirLen
+        let tHit = tProjection - thc
+        let tHitAlt = tProjection + thc
+        let minT = Int64(0)
+        let maxT = tScale
+
+        let finalT: Int64
+        if tHit >= minT && tHit <= maxT {
+            finalT = tHit
+        } else if tHitAlt >= minT && tHitAlt <= maxT {
+            finalT = tHitAlt
+        } else {
+            return nil
         }
-        
-        guard let t = intersectionT else {
-            return nil  // No intersection within segment
-        }
-        
-        // Calculate intersection point
-        let point = IVec2(
-            x: start.floatX + dir.floatX * t,
-            y: start.floatY + dir.floatY * t
+
+        let pointX = Int64(start.x) + (Int64(dir.x) * finalT) / tScale
+        let pointY = Int64(start.y) + (Int64(dir.y) * finalT) / tScale
+        return IVec2(
+            fixedPointX: Int32(clamping: pointX),
+            fixedPointY: Int32(clamping: pointY)
         )
-        
-        return point
     }
     
     /// Computes the closest point on this segment to a given point.
@@ -369,11 +373,17 @@ public struct ILineSegment: Codable, Equatable, Sendable {
             return end
         }
         
-        // Closest point is on the segment
-        let tFloat = Float(t) / Float(dirSq)
+        // Closest point is on the segment (fixed-point)
+        let scale = Int64(FixedPoint.scale)
+        let (scaledT, overflow) = t.multipliedReportingOverflow(by: scale)
+        let tScaled = overflow ? (t / dirSq) : (scaledT / dirSq)
+        let tScale = overflow ? Int64(1) : scale
+        
+        let closestX = Int64(start.x) + (Int64(dir.x) * tScaled) / tScale
+        let closestY = Int64(start.y) + (Int64(dir.y) * tScaled) / tScale
         return IVec2(
-            x: start.floatX + dir.floatX * tFloat,
-            y: start.floatY + dir.floatY * tFloat
+            fixedPointX: Int32(clamping: closestX),
+            fixedPointY: Int32(clamping: closestY)
         )
     }
 }

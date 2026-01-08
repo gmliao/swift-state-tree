@@ -10,10 +10,11 @@ import Testing
 func testMoveTowardsLargeDistanceNearWorldMax() {
     // Test with positions near WORLD_MAX_COORDINATE
     // WORLD_MAX_COORDINATE ≈ ±1,073,741.823 Float units
-    let maxCoord = Float(FixedPoint.WORLD_MAX_COORDINATE) / Float(FixedPoint.scale)
+    let maxCoord = FixedPoint.WORLD_MAX_COORDINATE
+    let nearMaxCoord = Int32((Int64(maxCoord) * 9) / 10)
     
-    let start = Position2(x: -maxCoord * 0.9, y: -maxCoord * 0.9)
-    let target = Position2(x: maxCoord * 0.9, y: maxCoord * 0.9)
+    let start = Position2(v: IVec2(fixedPointX: -nearMaxCoord, fixedPointY: -nearMaxCoord))
+    let target = Position2(v: IVec2(fixedPointX: nearMaxCoord, fixedPointY: nearMaxCoord))
     let maxDistance: Float = 1.0
     
     // This should not crash or overflow
@@ -38,13 +39,14 @@ func testMoveTowardsDistanceExceedingMaxSafeValue() {
     // Diagonal distance from (-max, -max) to (max, max) would be:
     // sqrt(2) * 2 * max ≈ 3,037,000 which exceeds maxSafeValue
     
-    let maxCoord = Float(FixedPoint.WORLD_MAX_COORDINATE) / Float(FixedPoint.scale)
-    let start = Position2(x: -maxCoord, y: -maxCoord)
-    let target = Position2(x: maxCoord, y: maxCoord)
+    let maxCoord = FixedPoint.WORLD_MAX_COORDINATE
+    let start = Position2(v: IVec2(fixedPointX: -maxCoord, fixedPointY: -maxCoord))
+    let target = Position2(v: IVec2(fixedPointX: maxCoord, fixedPointY: maxCoord))
     let maxDistance: Float = 1.0
     
     // Calculate expected distance
-    let expectedDistance = sqrt(2.0) * 2.0 * maxCoord
+    let maxCoordFloat = FixedPoint.dequantize(maxCoord)
+    let expectedDistance = sqrt(2.0) * 2.0 * maxCoordFloat
     print("Expected distance: \(expectedDistance)")
     print("maxSafeValue: \(FixedPoint.maxSafeValue)")
     

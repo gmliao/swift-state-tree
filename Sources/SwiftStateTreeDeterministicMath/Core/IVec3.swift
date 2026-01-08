@@ -204,10 +204,12 @@ extension IVec3 {
     /// Note: This uses floating-point math. For deterministic comparisons,
     /// use `magnitudeSquared()` instead.
     public func magnitude() -> Float {
-        let xFloat = floatX
-        let yFloat = floatY
-        let zFloat = floatZ
-        return sqrt(xFloat * xFloat + yFloat * yFloat + zFloat * zFloat)
+        let x64 = Int64(x)
+        let y64 = Int64(y)
+        let z64 = Int64(z)
+        let distSq = x64 * x64 + y64 * y64 + z64 * z64
+        let dist = FixedPoint.sqrtInt64(distSq)
+        return FixedPoint.dequantize(dist)
     }
     
     /// Computes the squared distance to another vector.
@@ -287,4 +289,3 @@ extension IVec3: SchemaMetadataProvider {
         ]
     }
 }
-

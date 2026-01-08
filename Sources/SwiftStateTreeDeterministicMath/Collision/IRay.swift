@@ -55,7 +55,9 @@ public struct IRay: Codable, Equatable, Sendable {
     /// ```
     public init(origin: IVec2, angle: Float, magnitude: Float = 1.0) {
         self.origin = origin
-        self.direction = IVec2.fromAngle(angle: angle, magnitude: magnitude)
+        let fixedAngle = Angle(radians: angle)
+        let fixedMagnitude = FixedPoint.quantize(magnitude)
+        self.direction = IVec2.fromAngle(angle: fixedAngle, magnitude: fixedMagnitude)
     }
     
     /// Checks if the ray intersects with an AABB.
@@ -134,12 +136,13 @@ public struct IRay: Codable, Equatable, Sendable {
             return nil  // Ray starts behind the AABB
         }
         
-        // Calculate intersection point
-        let t = Float(tMin) / FixedPoint.scaleFloat
-        let dirFloat = direction
+        // Calculate intersection point (fixed-point)
+        let scale = Int64(FixedPoint.scale)
+        let pointX = Int64(origin.x) + (Int64(direction.x) * tMin) / scale
+        let pointY = Int64(origin.y) + (Int64(direction.y) * tMin) / scale
         let point = IVec2(
-            x: origin.floatX + dirFloat.floatX * t,
-            y: origin.floatY + dirFloat.floatY * t
+            fixedPointX: Int32(clamping: pointX),
+            fixedPointY: Int32(clamping: pointY)
         )
         
         return (point, tMin)
@@ -180,7 +183,10 @@ public struct IRay: Codable, Equatable, Sendable {
         }
         
         let projection = toOrigin.dot(direction)
-        let tProjection = Float(projection) / Float(dirSq) * FixedPoint.scaleFloat
+        let scale = Int64(FixedPoint.scale)
+        let (scaledProjection, overflow) = projection.multipliedReportingOverflow(by: scale)
+        let tProjection = overflow ? (projection / dirSq) : (scaledProjection / dirSq)
+        let tScale = overflow ? Int64(1) : scale
         
         if tProjection < 0 {
             // Closest point is behind the ray origin, check if origin is inside circle
@@ -214,9 +220,11 @@ public struct IRay: Codable, Equatable, Sendable {
         }
         
         // Calculate closest point on ray to circle center
+        let closestX = Int64(origin.x) + (Int64(direction.x) * tProjection) / tScale
+        let closestY = Int64(origin.y) + (Int64(direction.y) * tProjection) / tScale
         let closestPoint = IVec2(
-            x: origin.floatX + direction.floatX * (tProjection / FixedPoint.scaleFloat),
-            y: origin.floatY + direction.floatY * (tProjection / FixedPoint.scaleFloat)
+            fixedPointX: Int32(clamping: closestX),
+            fixedPointY: Int32(clamping: closestY)
         )
         
         // Check if closest point is within circle radius
@@ -240,48 +248,35 @@ public struct IRay: Codable, Equatable, Sendable {
         let (radiusSq, radiusOverflow) = circle.radius.multipliedReportingOverflow(by: circle.radius)
         if radiusOverflow {
             // If radius squared overflows, treat as always intersecting (conservative)
-            // Calculate distance along ray
-            let distance = Int64(tProjection * FixedPoint.scaleFloat)
-            return (closestPoint, distance)
+            return (closestPoint, tProjection)
         }
         
         if distSq > radiusSq {
             return nil  // Ray doesn't intersect circle
         }
         
-        // Calculate actual intersection point(s)
-        // We need to solve: ||origin + t * direction - center|| = radius
-        // This is a quadratic equation: a*t^2 + b*t + c = 0
-        
-        let a = direction.magnitudeSquared()
-        let b = Int64(2) * toOrigin.dot(direction)
-        let c = toOrigin.magnitudeSquared() - radiusSq
-        
-        // Discriminant
-        let discriminant = b * b - Int64(4) * a * c
-        
-        if discriminant < 0 {
-            return nil  // No real solutions
+        let dirLen = FixedPoint.sqrtInt64(dirSq)
+        if dirLen == 0 {
+            return nil
         }
-        
-        // Calculate t (use the smaller positive t for the first intersection)
-        let sqrtDisc = Int64(sqrt(Float(discriminant)))
-        let t1 = (-b - sqrtDisc) / (Int64(2) * a)
-        let t2 = (-b + sqrtDisc) / (Int64(2) * a)
-        
-        let t = min(t1, t2)
-        if t < 0 {
-            return nil  // Intersection is behind the ray origin
+
+        let offset = FixedPoint.sqrtInt64(radiusSq - distSq)
+        let thc = (offset * tScale) / dirLen
+        let tHit = tProjection - thc
+        let tHitAlt = tProjection + thc
+        let finalT = tHit >= 0 ? tHit : tHitAlt
+        if finalT < 0 {
+            return nil
         }
-        
-        // Calculate intersection point
-        let tFloat = Float(t) / FixedPoint.scaleFloat
+
+        let pointX = Int64(origin.x) + (Int64(direction.x) * finalT) / tScale
+        let pointY = Int64(origin.y) + (Int64(direction.y) * finalT) / tScale
         let point = IVec2(
-            x: origin.floatX + direction.floatX * tFloat,
-            y: origin.floatY + direction.floatY * tFloat
+            fixedPointX: Int32(clamping: pointX),
+            fixedPointY: Int32(clamping: pointY)
         )
         
-        return (point, t)
+        return (point, finalT)
     }
 }
 

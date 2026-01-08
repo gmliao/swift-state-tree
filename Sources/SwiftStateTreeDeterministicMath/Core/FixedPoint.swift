@@ -187,4 +187,165 @@ public struct FixedPoint: Sendable {
     public static func clampCircleRadius(_ radius: Int64) -> Int64 {
         return max(MIN_CIRCLE_RADIUS, min(MAX_CIRCLE_RADIUS, radius))
     }
+
+    /// Fixed-point scale for trigonometric results (sin/cos).
+    public static let trigScale: Int64 = 1_000_000
+
+    /// Fixed-point scale for radians used in trigonometric calculations.
+    public static let angleScale: Int64 = 1_000_000_000
+
+    /// Pi in fixed-point radians.
+    public static let pi: Int64 = 3_141_592_654
+
+    /// Half pi in fixed-point radians.
+    public static let halfPi: Int64 = pi / 2
+
+    /// Two pi in fixed-point radians.
+    public static let twoPi: Int64 = pi * 2
+
+    /// CORDIC gain for 24 iterations, scaled by trigScale.
+    private static let cordicK: Int64 = 607_253
+
+    /// Arctangent table for CORDIC (radians scaled by angleScale).
+    private static let cordicAngles: [Int64] = [
+        785_398_163, 463_647_609, 244_978_663, 124_354_995,
+        62_418_810, 31_239_833, 15_623_729, 7_812_341,
+        3_906_230, 1_953_123, 976_562, 488_281,
+        244_141, 122_070, 61_035, 30_518,
+        15_259, 7_629, 3_815, 1_907,
+        954, 477, 238, 119
+    ]
+
+    /// Computes sin/cos for an angle in fixed-point degrees.
+    ///
+    /// - Parameter degrees: Angle in fixed-point degrees (1000 = 1 degree).
+    /// - Returns: sin/cos in fixed-point with trigScale.
+    public static func sinCosDegrees(_ degrees: Int32) -> (sin: Int32, cos: Int32) {
+        let numerator = Int64(degrees) * pi
+        let denominator = Int64(180 * FixedPoint.scale)
+        let radians = numerator >= 0
+            ? (numerator + denominator / 2) / denominator
+            : (numerator - denominator / 2) / denominator
+        return sinCosRadians(radians)
+    }
+
+    /// Computes atan2 in fixed-point degrees.
+    ///
+    /// - Parameters:
+    ///   - y: Y component in fixed-point.
+    ///   - x: X component in fixed-point.
+    /// - Returns: Angle in fixed-point degrees (1000 = 1 degree).
+    public static func atan2Degrees(y: Int32, x: Int32) -> Int32 {
+        if x == 0 && y == 0 {
+            return 0
+        }
+
+        if x == 0 {
+            return y > 0 ? 90 * FixedPoint.scale : -90 * FixedPoint.scale
+        }
+
+        var x64 = Int64(x)
+        var y64 = Int64(y)
+        var angleOffset: Int64 = 0
+
+        if x64 < 0 {
+            angleOffset = y64 >= 0 ? pi : -pi
+            x64 = -x64
+            y64 = -y64
+        }
+
+        if y64 == 0 {
+            let numerator = angleOffset * Int64(180 * FixedPoint.scale)
+            let degrees = numerator >= 0
+                ? (numerator + pi / 2) / pi
+                : (numerator - pi / 2) / pi
+            return Int32(clamping: degrees)
+        }
+
+        var z: Int64 = 0
+        for i in 0..<cordicAngles.count {
+            let di: Int64 = y64 >= 0 ? 1 : -1
+            let xNew = x64 + di * (y64 >> i)
+            let yNew = y64 - di * (x64 >> i)
+            z += di * cordicAngles[i]
+            x64 = xNew
+            y64 = yNew
+        }
+
+        let angleRad = z + angleOffset
+        let numerator = angleRad * Int64(180 * FixedPoint.scale)
+        let degrees = numerator >= 0
+            ? (numerator + pi / 2) / pi
+            : (numerator - pi / 2) / pi
+        return Int32(clamping: degrees)
+    }
+
+    /// Computes the integer square root of a non-negative Int64.
+    ///
+    /// - Parameter value: The value to compute the square root for.
+    /// - Returns: The floor of sqrt(value), or 0 when value is <= 0.
+    ///
+    /// This uses an integer algorithm to avoid floating-point math and
+    /// provides deterministic results across platforms.
+    public static func sqrtInt64(_ value: Int64) -> Int64 {
+        guard value > 0 else {
+            return 0
+        }
+
+        var remainder = UInt64(value)
+        var result: UInt64 = 0
+        var bit: UInt64 = 1 << 62
+
+        while bit > remainder {
+            bit >>= 2
+        }
+
+        while bit != 0 {
+            let candidate = result + bit
+            if remainder >= candidate {
+                remainder -= candidate
+                result = (result >> 1) + bit
+            } else {
+                result >>= 1
+            }
+            bit >>= 2
+        }
+
+        return Int64(result)
+    }
+
+    private static func sinCosRadians(_ radians: Int64) -> (sin: Int32, cos: Int32) {
+        var angle = radians % twoPi
+        if angle > pi {
+            angle -= twoPi
+        } else if angle < -pi {
+            angle += twoPi
+        }
+
+        var cosSign: Int64 = 1
+        if angle > halfPi {
+            angle = pi - angle
+            cosSign = -1
+        } else if angle < -halfPi {
+            angle = -pi - angle
+            cosSign = -1
+        }
+
+        var x = cordicK
+        var y: Int64 = 0
+        var z = angle
+
+        for i in 0..<cordicAngles.count {
+            let di: Int64 = z >= 0 ? 1 : -1
+            let xNew = x - di * (y >> i)
+            let yNew = y + di * (x >> i)
+            z -= di * cordicAngles[i]
+            x = xNew
+            y = yNew
+        }
+
+        let cosValue = Int32(clamping: x * cosSign)
+        let sinValue = Int32(clamping: y)
+        return (sinValue, cosValue)
+    }
 }

@@ -98,3 +98,35 @@ func testClampToInt32Range() {
     let clampedBelow = FixedPoint.clampToInt32Range(belowValue)
     #expect(clampedBelow >= minValue)
 }
+
+@Test("FixedPoint sinCosDegrees returns expected values")
+func testSinCosDegrees() {
+    let trigScale = Int32(FixedPoint.trigScale)
+
+    let (sin0, cos0) = FixedPoint.sinCosDegrees(0)
+    #expect(abs(sin0) <= 5)
+    #expect(abs(cos0 - trigScale) <= 5)
+
+    let ninety = 90 * FixedPoint.scale
+    let (sin90, cos90) = FixedPoint.sinCosDegrees(ninety)
+    #expect(abs(sin90 - trigScale) <= 5)
+    #expect(abs(cos90) <= 5)
+
+    let oneEighty = 180 * FixedPoint.scale
+    let (sin180, cos180) = FixedPoint.sinCosDegrees(oneEighty)
+    #expect(abs(sin180) <= 5)
+    #expect(abs(cos180 + trigScale) <= 5)
+}
+
+@Test("FixedPoint atan2Degrees returns expected values")
+func testAtan2Degrees() {
+    let scale = FixedPoint.scale
+
+    #expect(FixedPoint.atan2Degrees(y: 0, x: scale) == 0)
+    #expect(FixedPoint.atan2Degrees(y: scale, x: 0) == 90 * scale)
+    #expect(FixedPoint.atan2Degrees(y: -scale, x: 0) == -90 * scale)
+
+    let fortyFive = 45 * scale
+    let angle = FixedPoint.atan2Degrees(y: scale, x: scale)
+    #expect(abs(angle - fortyFive) <= 25)
+}

@@ -284,9 +284,9 @@ extension IVec2 {
     /// ```
     @inlinable
     public func magnitude() -> Float {
-        let fx = floatX
-        let fy = floatY
-        return sqrt(fx * fx + fy * fy)
+        let distSq = magnitudeSquared()
+        let dist = FixedPoint.sqrtInt64(distSq)
+        return FixedPoint.dequantize(dist)
     }
     
     /// Computes the squared distance to another vector.
@@ -345,26 +345,22 @@ extension IVec2 {
     ///
     @inlinable
     public func distance(to other: IVec2) -> Float {
-        let dx = floatX - other.floatX
-        let dy = floatY - other.floatY
-        return sqrt(dx * dx + dy * dy)
+        let distSq = distanceSquared(to: other)
+        let dist = FixedPoint.sqrtInt64(distSq)
+        return FixedPoint.dequantize(dist)
     }
     
     /// Normalizes the vector to unit length (as Float).
     ///
     /// - Returns: A normalized vector, or zero vector if magnitude is zero.
     ///
-    /// Note: This uses floating-point math and returns a Float-based vector.
-    /// For deterministic operations, consider using fixed-point normalization
-    /// or working with squared magnitudes.
+    /// Note: This returns Float values derived from fixed-point normalization.
+    /// For deterministic operations, prefer using integer-based APIs in tick logic.
     ///
     @inlinable
     public func normalized() -> (x: Float, y: Float) {
-        let mag = magnitude()
-        guard mag > 0.0001 else {
-            return (0, 0)
-        }
-        return (floatX / mag, floatY / mag)
+        let normalizedVec = normalizedVec()
+        return (normalizedVec.floatX, normalizedVec.floatY)
     }
     
     /// Computes the angle (in radians) of the vector.
@@ -379,7 +375,7 @@ extension IVec2 {
     /// let angle = v.toAngle()  // ≈ 0.785 radians (π/4)
     /// ```
     public func toAngle() -> Float {
-        return atan2(floatY, floatX)
+        angle().radians
     }
     
     /// Creates a vector from an angle and magnitude.
@@ -394,9 +390,25 @@ extension IVec2 {
     /// let v = IVec2.fromAngle(angle: .pi / 4, magnitude: 1.414)  // ≈ (1, 1)
     /// ```
     public static func fromAngle(angle: Float, magnitude: Float) -> IVec2 {
-        let x = cos(angle) * magnitude
-        let y = sin(angle) * magnitude
-        return IVec2(x: x, y: y)
+        let fixedAngle = Angle(radians: angle)
+        let fixedMagnitude = FixedPoint.quantize(magnitude)
+        return fromAngle(angle: fixedAngle, magnitude: fixedMagnitude)
+    }
+
+    /// Creates a vector from a fixed-point angle and fixed-point magnitude.
+    ///
+    /// - Parameters:
+    ///   - angle: The angle as a fixed-point Angle.
+    ///   - magnitude: The magnitude in fixed-point units.
+    /// - Returns: A new vector.
+    public static func fromAngle(angle: Angle, magnitude: Int32) -> IVec2 {
+        let (sinValue, cosValue) = FixedPoint.sinCosDegrees(angle.degrees)
+        let x64 = Int64(cosValue) * Int64(magnitude) / FixedPoint.trigScale
+        let y64 = Int64(sinValue) * Int64(magnitude) / FixedPoint.trigScale
+        return IVec2(
+            fixedPointX: Int32(clamping: x64),
+            fixedPointY: Int32(clamping: y64)
+        )
     }
     
     /// Scales this vector by a Float factor and returns a new IVec2.
@@ -417,21 +429,31 @@ extension IVec2 {
     /// ```
     @inlinable
     public func scaled(by factor: Float) -> IVec2 {
-        // Use Int64 intermediate calculation to avoid precision loss
-        // Calculate: (self * factor) in fixed-point
-        // = (x * factorQuantized) / scale, but we need to work in Int64
         let factorQuantized = FixedPoint.quantize(factor)
-        let factor64 = Int64(factorQuantized)
-        
-        // Calculate: (x * factor) / scale using Int64 to prevent overflow
+        return scaled(byFixedPoint: factorQuantized)
+    }
+
+    /// Scales this vector by a fixed-point factor and returns a new IVec2.
+    ///
+    /// - Parameter factor: The scaling factor in fixed-point units.
+    /// - Returns: A new scaled vector.
+    @inlinable
+    public func scaled(byFixedPoint factor: Int32) -> IVec2 {
+        let factor64 = Int64(factor)
         let x64 = Int64(x) * factor64 / Int64(FixedPoint.scale)
         let y64 = Int64(y) * factor64 / Int64(FixedPoint.scale)
-        
-        // Convert back to Int32 (clamp to prevent overflow)
         return IVec2(
             fixedPointX: Int32(clamping: x64),
             fixedPointY: Int32(clamping: y64)
         )
+    }
+
+    /// Computes the fixed-point angle of the vector.
+    ///
+    /// - Returns: The angle as a fixed-point Angle.
+    @inlinable
+    public func angle() -> Angle {
+        Angle(degrees: FixedPoint.atan2Degrees(y: y, x: x))
     }
     
     /// Returns a normalized version of this vector as IVec2.
@@ -439,7 +461,7 @@ extension IVec2 {
     /// - Returns: A normalized vector, or zero vector if magnitude is zero.
     ///
     /// This is a convenience method that returns an IVec2 instead of (Float, Float).
-    /// Uses floating-point math internally, then quantizes the result.
+    /// Uses fixed-point math internally for deterministic results.
     ///
     /// Example:
     /// ```swift
@@ -448,8 +470,19 @@ extension IVec2 {
     /// ```
     @inlinable
     public func normalizedVec() -> IVec2 {
-        let (x, y) = normalized()
-        return IVec2(x: x, y: y)
+        let magSq = magnitudeSquared()
+        let mag = FixedPoint.sqrtInt64(magSq)
+        guard mag > 0 else {
+            return .zero
+        }
+
+        let scale = Int64(FixedPoint.scale)
+        let x64 = Int64(x) * scale / mag
+        let y64 = Int64(y) * scale / mag
+        return IVec2(
+            fixedPointX: Int32(clamping: x64),
+            fixedPointY: Int32(clamping: y64)
+        )
     }
     
     /// Rotates the vector by 90 degrees counterclockwise.
@@ -522,11 +555,16 @@ extension IVec2 {
         }
         
         let dot = self.dot(other)
-        let scale = Float(dot) / Float(otherSq) * FixedPoint.scaleFloat
-        
+        let scale = Int64(FixedPoint.scale)
+        let (scaledDot, overflow) = dot.multipliedReportingOverflow(by: scale)
+        let ratio = overflow ? (dot / otherSq) : (scaledDot / otherSq)
+        let ratioScale = overflow ? Int64(1) : scale
+
+        let projX64 = (Int64(other.x) * ratio) / ratioScale
+        let projY64 = (Int64(other.y) * ratio) / ratioScale
         return IVec2(
-            x: other.floatX * scale / FixedPoint.scaleFloat,
-            y: other.floatY * scale / FixedPoint.scaleFloat
+            fixedPointX: Int32(clamping: projX64),
+            fixedPointY: Int32(clamping: projY64)
         )
     }
     
@@ -552,11 +590,18 @@ extension IVec2 {
         }
         
         // reflected = v - 2 * (v · n / ||n||^2) * n
-        let scale = Float(2 * dot) / Float(normalSq) * FixedPoint.scaleFloat
-        
+        let scale = Int64(FixedPoint.scale)
+        let (scaledDot, overflowDot) = dot.multipliedReportingOverflow(by: 2)
+        let (scaledNumerator, overflowScale) = scaledDot.multipliedReportingOverflow(by: scale)
+        let useOverflowPath = overflowDot || overflowScale
+        let ratio = useOverflowPath ? (scaledDot / normalSq) : (scaledNumerator / normalSq)
+        let ratioScale = useOverflowPath ? Int64(1) : scale
+
+        let scaledX64 = (Int64(normal.x) * ratio) / ratioScale
+        let scaledY64 = (Int64(normal.y) * ratio) / ratioScale
         let scaledNormal = IVec2(
-            x: normal.floatX * scale / FixedPoint.scaleFloat,
-            y: normal.floatY * scale / FixedPoint.scaleFloat
+            fixedPointX: Int32(clamping: scaledX64),
+            fixedPointY: Int32(clamping: scaledY64)
         )
         
         return self - scaledNormal
@@ -619,4 +664,3 @@ extension IVec2: SchemaMetadataProvider {
         ]
     }
 }
-
