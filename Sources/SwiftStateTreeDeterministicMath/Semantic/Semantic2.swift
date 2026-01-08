@@ -114,6 +114,133 @@ extension Position2 {
     public static func + (lhs: Position2, rhs: Velocity2) -> Position2 {
         Position2(v: lhs.v + rhs.v)
     }
+    
+    /// Checks if this position is within a threshold distance from another position.
+    ///
+    /// - Parameters:
+    ///   - other: The other position to compare against.
+    ///   - threshold: The threshold distance as Float (will be quantized).
+    /// - Returns: `true` if the distance is less than or equal to the threshold.
+    ///
+    /// Uses squared distance comparison to avoid floating-point operations.
+    /// This is more efficient than computing the actual distance.
+    ///
+    /// Example:
+    /// ```swift
+    /// let pos1 = Position2(x: 0.0, y: 0.0)
+    /// let pos2 = Position2(x: 0.5, y: 0.5)
+    /// let isNear = pos1.isWithinDistance(to: pos2, threshold: 1.0)  // true
+    /// ```
+    @inlinable
+    public func isWithinDistance(to other: Position2, threshold: Float) -> Bool {
+        // Convert to Int64 before squaring to prevent overflow
+        // This ensures consistency with distanceSquared which also uses Int64
+        let thresholdQuantized = FixedPoint.quantize(threshold)
+        let threshold64 = Int64(thresholdQuantized)
+        let thresholdSq = threshold64 * threshold64
+        
+        // distanceSquared already uses Int64 internally, so both values are in Int64
+        let distSq = v.distanceSquared(to: other.v)
+        return distSq <= thresholdSq
+    }
+    
+    /// Computes the squared distance to another position.
+    ///
+    /// - Parameter other: The other position.
+    /// - Returns: The squared distance (Int64 to handle overflow).
+    ///
+    /// **⚠️ Internal API: This method is `internal` to prevent direct `Int64` manipulation in game logic.**
+    /// **For game logic, always use `isWithinDistance(to:threshold:)` instead.**
+    ///
+    /// This method is only for internal library use (testing, advanced utilities, etc.).
+    /// Game logic should use semantic methods that handle fixed-point conversion automatically.
+    ///
+    /// **For game logic, use:**
+    /// ```swift
+    /// // ✅ Correct: Use semantic comparison
+    /// if pos1.isWithinDistance(to: pos2, threshold: 1.0) {
+    ///     // Within range
+    /// }
+    /// ```
+    @inlinable
+    internal func distanceSquared(to other: Position2) -> Int64 {
+        v.distanceSquared(to: other.v)
+    }
+    
+    /// Moves this position towards a target position by a maximum distance.
+    ///
+    /// - Parameters:
+    ///   - target: The target position to move towards.
+    ///   - maxDistance: The maximum distance to move as Float (will be quantized).
+    /// - Returns: A new position moved towards the target, or the target itself if within range.
+    ///
+    /// If the distance to the target is less than `maxDistance`, returns the target position.
+    /// Otherwise, moves towards the target by exactly `maxDistance`.
+    ///
+    /// Uses squared distance comparison to avoid unnecessary sqrt calculations.
+    ///
+    /// Example:
+    /// ```swift
+    /// let start = Position2(x: 0.0, y: 0.0)
+    /// let target = Position2(x: 5.0, y: 0.0)
+    /// let moved = start.moveTowards(target: target, maxDistance: 2.0)  // Position2(x: 2.0, y: 0.0)
+    /// ```
+  public func moveTowards(target: Position2, maxDistance: Float) -> Position2 {
+        let direction = target.v - v
+        let distSq = direction.magnitudeSquaredSafe()
+        
+        // If already at target, return target
+        if distSq == 0 {
+            return target
+        }
+        
+        // Compare squared distances to avoid sqrt
+        let maxDistanceQuantized = FixedPoint.quantize(maxDistance)
+        let maxDistanceSq = Int64(maxDistanceQuantized) * Int64(maxDistanceQuantized)
+        
+        // If within range, return target
+        if distSq <= maxDistanceSq {
+            return target
+        }
+        
+        // Calculate actual distance (need sqrt for precise movement)
+        let distance = direction.magnitude()
+        
+        // Avoid division by zero (shouldn't happen due to distSq check above)
+        guard distance > 0.0001 else {
+            return target
+        }
+        
+        // Calculate movement vector directly: direction * (maxDistance / distance)
+        // Use Int64 intermediate calculation to avoid precision loss from quantization
+        let maxDistance64 = Int64(maxDistanceQuantized)
+        
+        // Calculate scale in fixed-point: (maxDistance * scale) / distance
+        // To avoid precision loss, we calculate: (direction * maxDistance) / distance
+        // But we need to work in fixed-point, so:
+        // moveVec = (direction * maxDistance * scale) / (distance * scale)
+        //         = (direction * maxDistanceQuantized) / distanceQuantized
+        // But distance is Float, so we need to convert it
+        
+        // Better approach: calculate moveVec components directly using Int64
+        let dx64 = Int64(direction.x)
+        let dy64 = Int64(direction.y)
+        let distanceQuantized = FixedPoint.quantize(distance)
+        let distance64 = Int64(distanceQuantized)
+        
+        // Calculate: (direction * maxDistance) / distance in fixed-point
+        // moveVec.x = (dx * maxDistance) / distance
+        // moveVec.y = (dy * maxDistance) / distance
+        let moveX64 = (dx64 * maxDistance64) / distance64
+        let moveY64 = (dy64 * maxDistance64) / distance64
+        
+        // Convert back to Int32 (clamp to prevent overflow)
+        let moveX = Int32(clamping: moveX64)
+        let moveY = Int32(clamping: moveY64)
+        let moveVec = IVec2(fixedPointX: moveX, fixedPointY: moveY)
+        
+        return Position2(v: v + moveVec)
+    }
 }
 
 extension Velocity2 {

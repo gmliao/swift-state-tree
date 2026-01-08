@@ -87,9 +87,10 @@ public struct IRay: Codable, Equatable, Sendable {
                 return nil  // Ray is outside the AABB
             }
         } else {
-            let invD = Int64(1_000_000_000) / Int64(direction.x)  // Use large scale for precision
-            var t1 = (Int64(aabb.min.x) - Int64(origin.x)) * invD / 1_000_000
-            var t2 = (Int64(aabb.max.x) - Int64(origin.x)) * invD / 1_000_000
+            // Use scaleCubed for high-precision division to avoid loss of precision
+            let invD = FixedPoint.scaleCubed / Int64(direction.x)
+            var t1 = (Int64(aabb.min.x) - Int64(origin.x)) * invD / FixedPoint.scaleSquared
+            var t2 = (Int64(aabb.max.x) - Int64(origin.x)) * invD / FixedPoint.scaleSquared
             
             if t1 > t2 {
                 swap(&t1, &t2)
@@ -110,9 +111,10 @@ public struct IRay: Codable, Equatable, Sendable {
                 return nil  // Ray is outside the AABB
             }
         } else {
-            let invD = Int64(1_000_000_000) / Int64(direction.y)
-            var t1 = (Int64(aabb.min.y) - Int64(origin.y)) * invD / 1_000_000
-            var t2 = (Int64(aabb.max.y) - Int64(origin.y)) * invD / 1_000_000
+            // Use scaleCubed for high-precision division to avoid loss of precision
+            let invD = FixedPoint.scaleCubed / Int64(direction.y)
+            var t1 = (Int64(aabb.min.y) - Int64(origin.y)) * invD / FixedPoint.scaleSquared
+            var t2 = (Int64(aabb.max.y) - Int64(origin.y)) * invD / FixedPoint.scaleSquared
             
             if t1 > t2 {
                 swap(&t1, &t2)
@@ -133,7 +135,7 @@ public struct IRay: Codable, Equatable, Sendable {
         }
         
         // Calculate intersection point
-        let t = Float(tMin) / 1000.0  // Convert back to float scale
+        let t = Float(tMin) / FixedPoint.scaleFloat
         let dirFloat = direction
         let point = IVec2(
             x: origin.floatX + dirFloat.floatX * t,
@@ -149,7 +151,14 @@ public struct IRay: Codable, Equatable, Sendable {
     /// - Returns: The intersection point(s) and distance(s), or `nil` if no intersection.
     ///
     /// Returns the closest intersection point if the ray hits the circle.
-    /// Uses SIMD-optimized vector operations via IVec2 (subtraction, dot product, magnitudeSquared, distanceSquared).
+    /// Directly computes distance using Int64 to avoid Int32 overflow issues.
+    ///
+    /// **Range Limits (Invariants):**
+    /// - **Coordinates:** Must be within `FixedPoint.WORLD_MAX_COORDINATE` (≈ ±1,073,741,823 fixed-point units,
+    ///   or ±1,073,741.823 Float units with scale 1000) to prevent `Int64` overflow in distance calculations.
+    /// - **Radius:** Circle radius must be within `FixedPoint.MAX_CIRCLE_RADIUS` to ensure compatibility.
+    ///
+    /// **Overflow Handling:** Uses overflow detection to handle edge cases deterministically.
     ///
     /// Example:
     /// ```swift
@@ -161,23 +170,43 @@ public struct IRay: Codable, Equatable, Sendable {
     /// ```
     @inlinable
     public func intersects(circle: ICircle) -> (point: IVec2, distance: Int64)? {
-        // All IVec2 operations use SIMD
         // Vector from circle center to ray origin
-        let toOrigin = origin - circle.center  // SIMD-optimized subtraction
+        let toOrigin = origin - circle.center
         
         // Project toOrigin onto direction to get the closest point on the ray to the circle center
-        let dirSq = direction.magnitudeSquared()  // SIMD-optimized
+        let dirSq = direction.magnitudeSquared()
         if dirSq == 0 {
             return nil  // Zero direction vector
         }
         
-        let projection = toOrigin.dot(direction)  // SIMD-optimized dot product
-        let tProjection = Float(projection) / Float(dirSq) * 1000.0  // Scale factor
+        let projection = toOrigin.dot(direction)
+        let tProjection = Float(projection) / Float(dirSq) * FixedPoint.scaleFloat
         
         if tProjection < 0 {
             // Closest point is behind the ray origin, check if origin is inside circle
-            let distSq = origin.distanceSquared(to: circle.center)  // SIMD-optimized
-            let radiusSq = Int64(circle.radius) * Int64(circle.radius)
+            // Directly compute distance using Int64 to avoid Int32 overflow
+            let dx64 = Int64(origin.x) - Int64(circle.center.x)
+            let dy64 = Int64(origin.y) - Int64(circle.center.y)
+            
+            let (distSqX, distOverflowX) = dx64.multipliedReportingOverflow(by: dx64)
+            if distOverflowX {
+                return nil  // Origin is extremely far away, no intersection
+            }
+            let (distSqY, distOverflowY) = dy64.multipliedReportingOverflow(by: dy64)
+            if distOverflowY {
+                return nil
+            }
+            let (distSq, distOverflow) = distSqX.addingReportingOverflow(distSqY)
+            if distOverflow {
+                return nil
+            }
+            
+            let (radiusSq, radiusOverflow) = circle.radius.multipliedReportingOverflow(by: circle.radius)
+            if radiusOverflow {
+                // If radius squared overflows, treat as always intersecting (conservative)
+                return (origin, 0)
+            }
+            
             if distSq <= radiusSq {
                 return (origin, 0)
             }
@@ -186,13 +215,35 @@ public struct IRay: Codable, Equatable, Sendable {
         
         // Calculate closest point on ray to circle center
         let closestPoint = IVec2(
-            x: origin.floatX + direction.floatX * (tProjection / 1000.0),
-            y: origin.floatY + direction.floatY * (tProjection / 1000.0)
+            x: origin.floatX + direction.floatX * (tProjection / FixedPoint.scaleFloat),
+            y: origin.floatY + direction.floatY * (tProjection / FixedPoint.scaleFloat)
         )
         
         // Check if closest point is within circle radius
-        let distSq = closestPoint.distanceSquared(to: circle.center)  // SIMD-optimized
-        let radiusSq = Int64(circle.radius) * Int64(circle.radius)
+        // Directly compute distance using Int64 to avoid Int32 overflow
+        let dx64 = Int64(closestPoint.x) - Int64(circle.center.x)
+        let dy64 = Int64(closestPoint.y) - Int64(circle.center.y)
+        
+        let (distSqX, distOverflowX) = dx64.multipliedReportingOverflow(by: dx64)
+        if distOverflowX {
+            return nil  // Closest point is extremely far away, no intersection
+        }
+        let (distSqY, distOverflowY) = dy64.multipliedReportingOverflow(by: dy64)
+        if distOverflowY {
+            return nil
+        }
+        let (distSq, distOverflow) = distSqX.addingReportingOverflow(distSqY)
+        if distOverflow {
+            return nil
+        }
+        
+        let (radiusSq, radiusOverflow) = circle.radius.multipliedReportingOverflow(by: circle.radius)
+        if radiusOverflow {
+            // If radius squared overflows, treat as always intersecting (conservative)
+            // Calculate distance along ray
+            let distance = Int64(tProjection * FixedPoint.scaleFloat)
+            return (closestPoint, distance)
+        }
         
         if distSq > radiusSq {
             return nil  // Ray doesn't intersect circle
@@ -202,9 +253,9 @@ public struct IRay: Codable, Equatable, Sendable {
         // We need to solve: ||origin + t * direction - center|| = radius
         // This is a quadratic equation: a*t^2 + b*t + c = 0
         
-        let a = direction.magnitudeSquared()  // SIMD-optimized
-        let b = Int64(2) * toOrigin.dot(direction)  // SIMD-optimized dot product
-        let c = toOrigin.magnitudeSquared() - radiusSq  // SIMD-optimized
+        let a = direction.magnitudeSquared()
+        let b = Int64(2) * toOrigin.dot(direction)
+        let c = toOrigin.magnitudeSquared() - radiusSq
         
         // Discriminant
         let discriminant = b * b - Int64(4) * a * c
@@ -224,7 +275,7 @@ public struct IRay: Codable, Equatable, Sendable {
         }
         
         // Calculate intersection point
-        let tFloat = Float(t) / 1000.0
+        let tFloat = Float(t) / FixedPoint.scaleFloat
         let point = IVec2(
             x: origin.floatX + direction.floatX * tFloat,
             y: origin.floatY + direction.floatY * tFloat

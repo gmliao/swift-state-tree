@@ -19,6 +19,7 @@
         "IAABB",
         "inout",
         "lerp",
+        "lerped",
         "machdep",
         "matchmake",
         "memsize",
@@ -48,5 +49,5 @@
         "xcuserdata",
         "xcworkspace",
         "xcworkspacedata"
-]
+    ]
 }

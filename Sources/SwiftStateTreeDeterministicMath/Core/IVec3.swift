@@ -5,7 +5,6 @@
 
 import Foundation
 import SwiftStateTree
-import simd
 
 /// A 3D vector using Int32 coordinates for deterministic math.
 ///
@@ -20,48 +19,18 @@ import simd
 /// let sum = v1 + v2  // IVec3(x: 1500, y: 2300, z: 3100)
 /// ```
 public struct IVec3: Codable, Equatable, Hashable, Sendable, CustomStringConvertible {
-    /// Internal SIMD storage for optimized operations.
-    @usableFromInline
-    internal let storage: SIMD3<Int32>
-    
     /// The x coordinate.
-    @inlinable
-    public var x: Int32 {
-        storage.x
-    }
+    public let x: Int32
     
     /// The y coordinate.
-    @inlinable
-    public var y: Int32 {
-        storage.y
-    }
+    public let y: Int32
     
     /// The z coordinate.
-    @inlinable
-    public var z: Int32 {
-        storage.z
-    }
+    public let z: Int32
     
     // MARK: - Codable Implementation
     
-    private enum CodingKeys: String, CodingKey {
-        case x, y, z
-    }
-    
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let x = try container.decode(Int32.self, forKey: .x)
-        let y = try container.decode(Int32.self, forKey: .y)
-        let z = try container.decode(Int32.self, forKey: .z)
-        self.storage = SIMD3<Int32>(x, y, z)
-    }
-    
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(x, forKey: .x)
-        try container.encode(y, forKey: .y)
-        try container.encode(z, forKey: .z)
-    }
+    // Codable is automatically synthesized since x, y, and z are stored properties
     
     /// Creates a new IVec3 from Float coordinates.
     ///
@@ -84,11 +53,9 @@ public struct IVec3: Codable, Equatable, Hashable, Sendable, CustomStringConvert
         z: Float,
         rounding: FloatingPointRoundingRule = .toNearestOrAwayFromZero
     ) {
-        self.storage = SIMD3<Int32>(
-            FixedPoint.quantize(x, rounding: rounding),
-            FixedPoint.quantize(y, rounding: rounding),
-            FixedPoint.quantize(z, rounding: rounding)
-        )
+        self.x = FixedPoint.quantize(x, rounding: rounding)
+        self.y = FixedPoint.quantize(y, rounding: rounding)
+        self.z = FixedPoint.quantize(z, rounding: rounding)
     }
     
     /// Internal initializer for fixed-point integer coordinates.
@@ -102,7 +69,9 @@ public struct IVec3: Codable, Equatable, Hashable, Sendable, CustomStringConvert
     ///   - z: The z coordinate as fixed-point Int32.
     @inlinable
     internal init(fixedPointX x: Int32, fixedPointY y: Int32, fixedPointZ z: Int32) {
-        self.storage = SIMD3<Int32>(x, y, z)
+        self.x = x
+        self.y = y
+        self.z = z
     }
     
     /// The x coordinate as Float (dequantized).
@@ -135,12 +104,11 @@ extension IVec3 {
     /// - Returns: The sum of the two vectors.
     ///
     /// Note: Overflow behavior is wrapping (deterministic).
-    /// Uses SIMD3<Int32> for optimized performance.
     @inlinable
     public static func + (lhs: IVec3, rhs: IVec3) -> IVec3 {
-        IVec3(fixedPointX: (lhs.storage &+ rhs.storage).x, 
-              fixedPointY: (lhs.storage &+ rhs.storage).y,
-              fixedPointZ: (lhs.storage &+ rhs.storage).z)
+        IVec3(fixedPointX: lhs.x &+ rhs.x, 
+              fixedPointY: lhs.y &+ rhs.y,
+              fixedPointZ: lhs.z &+ rhs.z)
     }
     
     /// Subtracts two vectors.
@@ -151,12 +119,11 @@ extension IVec3 {
     /// - Returns: The difference of the two vectors.
     ///
     /// Note: Overflow behavior is wrapping (deterministic).
-    /// Uses SIMD3<Int32> for optimized performance.
     @inlinable
     public static func - (lhs: IVec3, rhs: IVec3) -> IVec3 {
-        IVec3(fixedPointX: (lhs.storage &- rhs.storage).x,
-              fixedPointY: (lhs.storage &- rhs.storage).y,
-              fixedPointZ: (lhs.storage &- rhs.storage).z)
+        IVec3(fixedPointX: lhs.x &- rhs.x,
+              fixedPointY: lhs.y &- rhs.y,
+              fixedPointZ: lhs.z &- rhs.z)
     }
     
     /// Multiplies a vector by a scalar.
@@ -167,12 +134,9 @@ extension IVec3 {
     /// - Returns: The scaled vector.
     ///
     /// Note: Overflow behavior is wrapping (deterministic).
-    /// Uses SIMD3<Int32> for optimized performance.
     @inlinable
     public static func * (lhs: IVec3, scalar: Int32) -> IVec3 {
-        let scalarVec = SIMD3<Int32>(repeating: scalar)
-        let result = lhs.storage &* scalarVec
-        return IVec3(fixedPointX: result.x, fixedPointY: result.y, fixedPointZ: result.z)
+        IVec3(fixedPointX: lhs.x &* scalar, fixedPointY: lhs.y &* scalar, fixedPointZ: lhs.z &* scalar)
     }
     
     /// Multiplies a scalar by a vector.
@@ -196,10 +160,10 @@ extension IVec3 {
     /// - Parameter other: The other vector.
     /// - Returns: The dot product (Int64 to handle overflow).
     public func dot(_ other: IVec3) -> Int64 {
-        // Note: SIMD3<Int32> doesn't support Int64 operations, so we convert component-wise
-        Int64(storage.x) * Int64(other.storage.x) + 
-        Int64(storage.y) * Int64(other.storage.y) + 
-        Int64(storage.z) * Int64(other.storage.z)
+        // Convert to Int64 before multiplication to prevent overflow
+        Int64(x) * Int64(other.x) + 
+        Int64(y) * Int64(other.y) + 
+        Int64(z) * Int64(other.z)
     }
     
     /// Computes the cross product of two vectors.
@@ -215,11 +179,11 @@ extension IVec3 {
     /// ```
     public func cross(_ other: IVec3) -> IVec3 {
         // cross = (a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x)
-        // Note: Uses Int64 to prevent overflow during intermediate calculations
+        // Uses Int64 to prevent overflow during intermediate calculations
         IVec3(
-            fixedPointX: Int32(Int64(storage.y) * Int64(other.storage.z) - Int64(storage.z) * Int64(other.storage.y)),
-            fixedPointY: Int32(Int64(storage.z) * Int64(other.storage.x) - Int64(storage.x) * Int64(other.storage.z)),
-            fixedPointZ: Int32(Int64(storage.x) * Int64(other.storage.y) - Int64(storage.y) * Int64(other.storage.x))
+            fixedPointX: Int32(Int64(y) * Int64(other.z) - Int64(z) * Int64(other.y)),
+            fixedPointY: Int32(Int64(z) * Int64(other.x) - Int64(x) * Int64(other.z)),
+            fixedPointZ: Int32(Int64(x) * Int64(other.y) - Int64(y) * Int64(other.x))
         )
     }
     
@@ -227,10 +191,10 @@ extension IVec3 {
     ///
     /// - Returns: The squared magnitude (Int64 to handle overflow).
     public func magnitudeSquared() -> Int64 {
-        // Note: SIMD3<Int32> doesn't support Int64 operations, so we convert component-wise
-        Int64(storage.x) * Int64(storage.x) + 
-        Int64(storage.y) * Int64(storage.y) + 
-        Int64(storage.z) * Int64(storage.z)
+        // Convert to Int64 before squaring to prevent overflow
+        Int64(x) * Int64(x) + 
+        Int64(y) * Int64(y) + 
+        Int64(z) * Int64(z)
     }
     
     /// Computes the magnitude (length) of the vector as Float.
@@ -251,10 +215,10 @@ extension IVec3 {
     /// - Parameter other: The other vector.
     /// - Returns: The squared distance (Int64 to handle overflow).
     public func distanceSquared(to other: IVec3) -> Int64 {
-        // Note: SIMD3<Int32> doesn't support Int64 operations, so we convert component-wise
-        let dx = Int64(storage.x) - Int64(other.storage.x)
-        let dy = Int64(storage.y) - Int64(other.storage.y)
-        let dz = Int64(storage.z) - Int64(other.storage.z)
+        // Convert to Int64 before squaring to prevent overflow
+        let dx = Int64(x) - Int64(other.x)
+        let dy = Int64(y) - Int64(other.y)
+        let dz = Int64(z) - Int64(other.z)
         return dx * dx + dy * dy + dz * dz
     }
 }
@@ -280,15 +244,12 @@ extension IVec3 {
 
 extension IVec3: SnapshotValueConvertible {
     /// Converts IVec3 to SnapshotValue using x, y, and z properties.
-    ///
-    /// This implementation directly accesses storage for optimal performance,
-    /// avoiding the computed property indirection while maintaining the same result.
     @inlinable
     public func toSnapshotValue() throws -> SnapshotValue {
         return .object([
-            "x": .int(Int(storage.x)),
-            "y": .int(Int(storage.y)),
-            "z": .int(Int(storage.z))
+            "x": .int(Int(x)),
+            "y": .int(Int(y)),
+            "z": .int(Int(z))
         ])
     }
 }
@@ -327,14 +288,3 @@ extension IVec3: SchemaMetadataProvider {
     }
 }
 
-// MARK: - Internal Initializers
-
-extension IVec3 {
-    /// Internal initializer for SIMD storage.
-    ///
-    /// - Parameter storage: The SIMD vector storage.
-    @inlinable
-    internal init(storage: SIMD3<Int32>) {
-        self.storage = storage
-    }
-}
