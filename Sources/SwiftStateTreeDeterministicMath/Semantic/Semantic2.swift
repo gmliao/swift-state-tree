@@ -212,27 +212,25 @@ extension Position2 {
         }
         
         // Calculate movement vector directly: direction * (maxDistance / distance)
-        // Use Int64 intermediate calculation to avoid precision loss from quantization
-        let maxDistance64 = Int64(maxDistanceQuantized)
-        
-        // Calculate scale in fixed-point: (maxDistance * scale) / distance
-        // To avoid precision loss, we calculate: (direction * maxDistance) / distance
-        // But we need to work in fixed-point, so:
-        // moveVec = (direction * maxDistance * scale) / (distance * scale)
-        //         = (direction * maxDistanceQuantized) / distanceQuantized
-        // But distance is Float, so we need to convert it
-        
-        // Better approach: calculate moveVec components directly using Int64
+        // Avoid quantizing distance to prevent overflow when distance > maxSafeValue
+        // Instead, calculate ratio in Float and apply to quantized components
         let dx64 = Int64(direction.x)
         let dy64 = Int64(direction.y)
-        let distanceQuantized = FixedPoint.quantize(distance)
-        let distance64 = Int64(distanceQuantized)
+        
+        // Calculate scale ratio: maxDistance / distance (both in Float units)
+        // This avoids quantizing distance which could overflow
+        let scaleRatio = maxDistance / distance
+        
+        // Clamp scaleRatio to safe range before quantizing (scaleRatio should be small, but be safe)
+        let safeScaleRatio = FixedPoint.clampToInt32Range(scaleRatio)
+        let scaleRatioQuantized = FixedPoint.quantize(safeScaleRatio)
+        let scaleRatio64 = Int64(scaleRatioQuantized)
         
         // Calculate: (direction * maxDistance) / distance in fixed-point
-        // moveVec.x = (dx * maxDistance) / distance
-        // moveVec.y = (dy * maxDistance) / distance
-        let moveX64 = (dx64 * maxDistance64) / distance64
-        let moveY64 = (dy64 * maxDistance64) / distance64
+        // moveVec.x = (dx * scaleRatio)
+        // moveVec.y = (dy * scaleRatio)
+        let moveX64 = (dx64 * scaleRatio64) / Int64(FixedPoint.scale)
+        let moveY64 = (dy64 * scaleRatio64) / Int64(FixedPoint.scale)
         
         // Convert back to Int32 (clamp to prevent overflow)
         let moveX = Int32(clamping: moveX64)
@@ -474,8 +472,10 @@ extension Angle {
     @inlinable
     public static func lerp(from: Angle, to: Angle, t: Float) -> Angle {
         let diff = from.shortestDifference(to: to)
-        let interpolated = Float(from.degrees) + Float(diff.degrees) * t
-        return Angle(degrees: FixedPoint.quantize(interpolated))
+        // Use floatDegrees to avoid double-quantization
+        // from.degrees and diff.degrees are already fixed-point, so we need to dequantize first
+        let interpolatedDegrees = from.floatDegrees + diff.floatDegrees * t
+        return Angle(degrees: interpolatedDegrees)
     }
 }
 
