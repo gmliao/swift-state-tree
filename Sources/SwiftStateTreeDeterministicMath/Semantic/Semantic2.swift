@@ -203,36 +203,21 @@ extension Position2 {
             return target
         }
         
-        // Calculate actual distance (need sqrt for precise movement)
-        let distance = direction.magnitude()
-        
-        // Avoid division by zero (shouldn't happen due to distSq check above)
-        guard distance > 0.0001 else {
+        // Calculate integer distance (fixed-point units) using deterministic sqrt.
+        let distance = FixedPoint.sqrtInt64(distSq)
+        guard distance > 0 else {
             return target
         }
-        
-        // Calculate movement vector directly: direction * (maxDistance / distance)
-        // Avoid quantizing distance to prevent overflow when distance > maxSafeValue
-        // Instead, calculate ratio in Float and apply to quantized components
+
         let dx64 = Int64(direction.x)
         let dy64 = Int64(direction.y)
-        
-        // Calculate scale ratio: maxDistance / distance (both in Float units)
-        // This avoids quantizing distance which could overflow
-        let scaleRatio = maxDistance / distance
-        
-        // Clamp scaleRatio to safe range before quantizing (scaleRatio should be small, but be safe)
-        let safeScaleRatio = FixedPoint.clampToInt32Range(scaleRatio)
-        let scaleRatioQuantized = FixedPoint.quantize(safeScaleRatio)
-        let scaleRatio64 = Int64(scaleRatioQuantized)
-        
-        // Calculate: (direction * maxDistance) / distance in fixed-point
-        // moveVec.x = (dx * scaleRatio)
-        // moveVec.y = (dy * scaleRatio)
-        let moveX64 = (dx64 * scaleRatio64) / Int64(FixedPoint.scale)
-        let moveY64 = (dy64 * scaleRatio64) / Int64(FixedPoint.scale)
-        
-        // Convert back to Int32 (clamp to prevent overflow)
+        let maxDistance64 = Int64(maxDistanceQuantized)
+
+        // Calculate movement vector in fixed-point: direction * maxDistance / distance.
+        let moveX64 = (dx64 * maxDistance64) / distance
+        let moveY64 = (dy64 * maxDistance64) / distance
+
+        // Convert back to Int32 (clamp to prevent overflow).
         let moveX = Int32(clamping: moveX64)
         let moveY = Int32(clamping: moveY64)
         let moveVec = IVec2(fixedPointX: moveX, fixedPointY: moveY)
@@ -471,11 +456,23 @@ extension Angle {
     /// - Returns: An interpolated angle.
     @inlinable
     public static func lerp(from: Angle, to: Angle, t: Float) -> Angle {
+        let tFixed = FixedPoint.quantize(t)
+        return lerpFixed(from: from, to: to, tFixedPoint: tFixed)
+    }
+
+    /// Linearly interpolates between two angles using the shortest path with fixed-point t.
+    ///
+    /// - Parameters:
+    ///   - from: The starting angle.
+    ///   - to: The target angle.
+    ///   - tFixedPoint: The interpolation factor in fixed-point units (1000 = 1.0).
+    /// - Returns: An interpolated angle.
+    @inlinable
+    public static func lerpFixed(from: Angle, to: Angle, tFixedPoint: Int32) -> Angle {
         let diff = from.shortestDifference(to: to)
-        // Use floatDegrees to avoid double-quantization
-        // from.degrees and diff.degrees are already fixed-point, so we need to dequantize first
-        let interpolatedDegrees = from.floatDegrees + diff.floatDegrees * t
-        return Angle(degrees: interpolatedDegrees)
+        let scale = Int64(FixedPoint.scale)
+        let interpolated = Int64(from.degrees) + (Int64(diff.degrees) * Int64(tFixedPoint)) / scale
+        return Angle(degrees: Int32(clamping: interpolated))
     }
 }
 

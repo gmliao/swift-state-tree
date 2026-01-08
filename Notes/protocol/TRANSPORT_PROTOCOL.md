@@ -485,6 +485,14 @@ const message: TransportMessage = {
 
 狀態更新以獨立的 `StateUpdate` 格式發送，不包裝在 `TransportMessage` 中。
 
+### 可選編碼（階段性優化）
+
+為了降低高頻 diff 的封包大小，規劃一個 **opcode + JSON array** 的可選編碼，
+保留 `playerID` 字串並維持 JSON 可讀性。此格式為 **階段一優化目標**，
+目前不取代既有 `StateUpdate`，需配合能力協商或版本切換。
+
+詳細說明請見：`Notes/protocol/STATE_UPDATE_OPCODE_JSON_ARRAY.md`
+
 ### StateUpdate 格式
 
 ```typescript
