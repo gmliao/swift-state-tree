@@ -46,6 +46,14 @@ let package = Package(
                 .product(name: "SwiftStateTree", package: "SwiftStateTree")
             ],
             path: "Sources/SchemaGen"
+        ),
+        .testTarget(
+            name: "GameContentTests",
+            dependencies: [
+                "GameContent",
+                .product(name: "SwiftStateTreeDeterministicMath", package: "SwiftStateTree")
+            ],
+            path: "Tests"
         )
     ]
 )

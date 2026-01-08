@@ -7,7 +7,7 @@
 - `Sources/SwiftStateTreeMatchmaking`: matchmaking service and lobby functionality.
 - `Sources/SwiftStateTreeMacros`: compile-time macros (`@StateNodeBuilder`, `@Payload`, `@SnapshotConvertible`).
 - `Sources/SwiftStateTreeDeterministicMath`: deterministic math library for server-authoritative games.
-  - `Core/`: Fixed-point arithmetic (`FixedPoint`), integer vectors (`IVec2`, `IVec3`) with SIMD optimization.
+  - `Core/`: Fixed-point arithmetic (`FixedPoint`), integer vectors (`IVec2`, `IVec3`).
   - `Collision/`: Collision detection (`IAABB2`, `ICircle`, `IRay`, `ILineSegment`) for 2D games.
   - `Semantic/`: Type-safe semantic types (`Position2`, `Velocity2`, `Acceleration2`).
   - `Grid/`: Grid-based coordinate conversions (`Grid2`).
@@ -43,6 +43,46 @@
 - Types: `UpperCamelCase`; methods/variables: `lowerCamelCase`; enums use verb-like cases for commands (`.join`, `.attack`).
 - Place new game logic in `Sources/SwiftStateTree`; keep demo-only code inside `Examples/HummingbirdDemo`.
 - **Return statements**: Omit `return` for single-expression functions; include `return` for multi-line function bodies.
+
+### DeterministicMath Usage Guidelines
+- **Never directly manipulate fixed-point scale (e.g., `/1000`, `*1000`)** in game logic code.
+- **Never directly use `Int64` return values** from `IVec2` methods (e.g., `distanceSquared()`, `magnitudeSquared()`, `dot()`) in game logic.
+- Always use semantic types (`Position2`, `Velocity2`, `Angle`) and their provided helper methods instead of raw `IVec2` operations when possible.
+- If you find yourself doing manual fixed-point conversions or distance calculations, check if `SwiftStateTreeDeterministicMath` already provides a helper method:
+  - Distance comparisons: Use `Position2.isWithinDistance(to:threshold:)` instead of `distanceSquared()` returning `Int64`.
+  - Movement: Use `Position2.moveTowards(target:maxDistance:)` instead of manual direction normalization and scaling.
+  - Vector operations: Use `IVec2.scaled(by:)` and `IVec2.normalizedVec()` instead of manual `/1000` conversions.
+- **IVec2 methods returning `Int64` are for internal library use only** (collision detection, raycasting, etc.). Game logic should use semantic types (`Position2`, `Velocity2`) instead.
+- If a needed helper method doesn't exist, **propose adding it to the DeterministicMath library** rather than implementing workarounds in game logic.
+- This ensures code clarity, maintainability, and consistency across the codebase.
+
+#### Collision Detection Range Limits
+
+##### ICircle (Invariants)
+- **Coordinates**: Must be within `FixedPoint.WORLD_MAX_COORDINATE` (≈ ±1,073,741,823 fixed-point units, or ±1,073,741.823 Float units with scale 1000).
+  - **Why Int32.max / 2?** The maximum possible difference between two coordinates is `Int32.max - Int32.min ≈ 4,294,967,295`, and `dx²` would be `1.844e19`, which exceeds `Int64.max (9.22e18)`. To ensure `dx² + dy² ≤ Int64.max`, we need `|dx| ≤ sqrt(Int64.max / 2) ≈ 2,147,483,647`. Since `dx = x1 - x2`, we need `|x| ≤ Int32.max / 2 = 1,073,741,823` to guarantee safety.
+- **Radius**: Must be within `FixedPoint.MAX_CIRCLE_RADIUS` (≈ 2,147,483,647 fixed-point units, or 2,147,483.647 Float units with scale 1000).
+  - **Why Int32.max?** Since `IAABB2` and `IVec2` use Int32 coordinates, and `boundingAABB()` needs to compute `center ± radius`, we limit radius to `Int32.max` to ensure the result can be represented as Int32.
+- **Invariant enforcement**: `ICircle.init` automatically clamps radius to `MAX_CIRCLE_RADIUS`. Coordinates should be validated by the game logic to ensure they are within `WORLD_MAX_COORDINATE`.
+- **Overflow handling**: All collision detection methods use `multipliedReportingOverflow` and `addingReportingOverflow` to detect overflow and handle it deterministically (conservative: treat as intersecting if radius overflow, no intersection if distance overflow).
+
+##### IRay and ILineSegment (Upgraded)
+- **Coordinates**: Must be within `FixedPoint.WORLD_MAX_COORDINATE` (≈ ±1,073,741,823 fixed-point units, or ±1,073,741.823 Float units with scale 1000).
+  - **Upgrade**: Both `IRay.intersects(circle:)` and `ILineSegment.intersects(circle:)` now use direct distance calculation with Int64, avoiding the previous 46.34 unit limit.
+  - **ILineSegment.distanceSquaredToPoint**: Also upgraded to use direct Int64 distance calculation.
+- **Radius**: Circle radius must be within `FixedPoint.MAX_CIRCLE_RADIUS` to ensure compatibility.
+- **Overflow handling**: All methods use overflow detection to handle edge cases deterministically.
+
+##### IAABB2
+- **No inherent coordinate limits**: `IAABB2` itself uses only simple comparisons (min/max checks) and does not compute squared distances, so it has no inherent overflow risk.
+- **Interaction with other collision types**: When `IAABB2` is used with other collision types:
+  - `ICircle.intersects(aabb:)`: Uses direct Int64 distance calculation, supports up to `WORLD_MAX_COORDINATE` (≈ ±1,073,741.823 Float units).
+  - `IRay.intersects(aabb:)`: Uses slab method (no distance calculation), supports full `Int32` coordinate range.
+- **Note**: The previous 46.34 unit limit was due to `ICircle.intersects(aabb:)` using `IVec2.distanceSquared`, but this has been upgraded and the limit no longer applies.
+
+##### Normal game scenarios
+- Most games will never approach these limits. `WORLD_MAX_COORDINATE` (≈ 1 million Float units with scale 1000) is very large for most 2D games.
+- Be aware when designing very large worlds or using extreme coordinate values. Use `FixedPoint.clampToWorldRange()` to ensure coordinates are within safe bounds.
 
 ## Testing Guidelines
 - **Framework: Swift Testing** (Swift 6's new testing framework, not XCTest).

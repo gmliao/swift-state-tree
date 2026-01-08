@@ -179,23 +179,22 @@ These operations are safe to use with large values without risk of intermediate 
 
 ## Performance Optimizations
 
-### SIMD Support
+### Vector Operations
 
-Vector operations use SIMD2<Int32> for optimized performance on macOS and Linux:
+Vector operations use integer arithmetic for deterministic behavior:
 
 ```swift
-// Uses SIMD2<Int32> for optimized performance
 let v1 = IVec2(x: 1000, y: 2000)
 let v2 = IVec2(x: 500, y: 300)
-let sum = v1 + v2  // Uses SIMD2<Int32> internally
+let sum = v1 + v2
 ```
 
 **Benefits**:
-- Vector operations are optimized using SIMD instructions
-- Single instruction processes both x and y components simultaneously
-- Maintains deterministic wrapping behavior
+- Deterministic behavior across platforms
+- Integer arithmetic for consistency
+- No floating-point precision issues
 
-**Note**: SIMD operations maintain the same deterministic wrapping behavior as regular operations.
+**Note**: All operations maintain deterministic wrapping behavior.
 
 ## Best Practices
 

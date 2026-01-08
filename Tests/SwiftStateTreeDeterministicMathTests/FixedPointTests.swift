@@ -19,11 +19,11 @@ func testQuantize() {
 @Test("FixedPoint dequantize converts Int32 to Float correctly")
 func testDequantize() {
     // Test basic dequantization
-    #expect(FixedPoint.dequantize(1000) == 1.0)
-    #expect(FixedPoint.dequantize(500) == 0.5)
-    #expect(FixedPoint.dequantize(2500) == 2.5)
-    #expect(FixedPoint.dequantize(0) == 0.0)
-    #expect(FixedPoint.dequantize(-1000) == -1.0)
+    #expect(FixedPoint.dequantize(Int32(1000)) == 1.0)
+    #expect(FixedPoint.dequantize(Int32(500)) == 0.5)
+    #expect(FixedPoint.dequantize(Int32(2500)) == 2.5)
+    #expect(FixedPoint.dequantize(Int32(0)) == 0.0)
+    #expect(FixedPoint.dequantize(Int32(-1000)) == -1.0)
 }
 
 @Test("FixedPoint quantize and dequantize are inverse operations")

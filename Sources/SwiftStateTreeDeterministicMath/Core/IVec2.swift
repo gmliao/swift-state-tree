@@ -5,7 +5,6 @@
 
 import Foundation
 import SwiftStateTree
-import simd
 
 /// A 2D vector using Int32 coordinates for deterministic math.
 ///
@@ -20,40 +19,15 @@ import simd
 /// let sum = v1 + v2  // IVec2(x: 1500, y: 2300)
 /// ```
 public struct IVec2: Codable, Equatable, Hashable, Sendable, CustomStringConvertible {
-    /// Internal SIMD storage for optimized operations.
-    @usableFromInline
-    internal let storage: SIMD2<Int32>
-    
     /// The x coordinate.
-    @inlinable
-    public var x: Int32 {
-        storage.x
-    }
+    public let x: Int32
     
     /// The y coordinate.
-    @inlinable
-    public var y: Int32 {
-        storage.y
-    }
+    public let y: Int32
     
     // MARK: - Codable Implementation
     
-    private enum CodingKeys: String, CodingKey {
-        case x, y
-    }
-    
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let x = try container.decode(Int32.self, forKey: .x)
-        let y = try container.decode(Int32.self, forKey: .y)
-        self.storage = SIMD2<Int32>(x, y)
-    }
-    
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(x, forKey: .x)
-        try container.encode(y, forKey: .y)
-    }
+    // Codable is automatically synthesized since x and y are stored properties
     
     /// Creates a new IVec2 from Float coordinates.
     ///
@@ -74,10 +48,8 @@ public struct IVec2: Codable, Equatable, Hashable, Sendable, CustomStringConvert
         y: Float,
         rounding: FloatingPointRoundingRule = .toNearestOrAwayFromZero
     ) {
-        self.storage = SIMD2<Int32>(
-            FixedPoint.quantize(x, rounding: rounding),
-            FixedPoint.quantize(y, rounding: rounding)
-        )
+        self.x = FixedPoint.quantize(x, rounding: rounding)
+        self.y = FixedPoint.quantize(y, rounding: rounding)
     }
     
     /// Internal initializer for fixed-point integer coordinates.
@@ -90,7 +62,8 @@ public struct IVec2: Codable, Equatable, Hashable, Sendable, CustomStringConvert
     ///   - y: The y coordinate as fixed-point Int32.
     @inlinable
     internal init(fixedPointX x: Int32, fixedPointY y: Int32) {
-        self.storage = SIMD2<Int32>(x, y)
+        self.x = x
+        self.y = y
     }
     
     /// The x coordinate as Float (dequantized).
@@ -118,10 +91,9 @@ extension IVec2 {
     /// - Returns: The sum of the two vectors.
     ///
     /// Note: Overflow behavior is wrapping (deterministic).
-    /// Uses SIMD2<Int32> for optimized performance.
     @inlinable
     public static func + (lhs: IVec2, rhs: IVec2) -> IVec2 {
-        IVec2(fixedPointX: (lhs.storage &+ rhs.storage).x, fixedPointY: (lhs.storage &+ rhs.storage).y)
+        IVec2(fixedPointX: lhs.x &+ rhs.x, fixedPointY: lhs.y &+ rhs.y)
     }
     
     /// Subtracts two vectors.
@@ -132,10 +104,9 @@ extension IVec2 {
     /// - Returns: The difference of the two vectors.
     ///
     /// Note: Overflow behavior is wrapping (deterministic).
-    /// Uses SIMD2<Int32> for optimized performance.
     @inlinable
     public static func - (lhs: IVec2, rhs: IVec2) -> IVec2 {
-        IVec2(fixedPointX: (lhs.storage &- rhs.storage).x, fixedPointY: (lhs.storage &- rhs.storage).y)
+        IVec2(fixedPointX: lhs.x &- rhs.x, fixedPointY: lhs.y &- rhs.y)
     }
     
     /// Multiplies a vector by a scalar.
@@ -146,13 +117,10 @@ extension IVec2 {
     /// - Returns: The scaled vector.
     ///
     /// Note: Overflow behavior is wrapping (deterministic).
-    /// Uses SIMD2<Int32> for optimized performance.
     /// For safe multiplication that prevents overflow, use `multiplySafe(_:by:)`.
     @inlinable
     public static func * (lhs: IVec2, scalar: Int32) -> IVec2 {
-        let scalarVec = SIMD2<Int32>(repeating: scalar)
-        let result = lhs.storage &* scalarVec
-        return IVec2(fixedPointX: result.x, fixedPointY: result.y)
+        IVec2(fixedPointX: lhs.x &* scalar, fixedPointY: lhs.y &* scalar)
     }
     
     /// Multiplies a scalar by a vector.
@@ -218,9 +186,29 @@ extension IVec2 {
     /// - Parameter other: The other vector.
     /// - Returns: The dot product (Int64 to handle overflow).
     ///
-    /// Uses SIMD for optimized multiplication, then converts to Int64 for summation.
+    /// **⚠️ This method returns `Int64` (fixed-point product).**
+    /// **For game logic, prefer using semantic types and their methods when possible.**
     ///
-    /// Example:
+    /// This method is intended for:
+    /// - Internal library use (collision detection, projection, reflection, etc.)
+    /// - Advanced use cases where raw `Int64` values are needed
+    ///
+    /// **Note:** This method requires Int64 intermediate values to prevent overflow
+    /// during multiplication, which cannot be efficiently performed using Int32 operations.
+    ///
+    /// **For game logic, avoid direct Int64 manipulation:**
+    /// ```swift
+    /// // ✅ Preferred: Use semantic methods that handle conversions internally
+    /// let newPos = pos.moveTowards(target: target, maxDistance: 1.0)
+    ///
+    /// // ❌ Avoid: Direct IVec2 Int64 manipulation in game logic
+    /// let dot = vec1.dot(vec2)
+    /// if dot > thresholdSq {
+    ///     // Error-prone: requires manual threshold quantization
+    /// }
+    /// ```
+    ///
+    /// Example (internal library use):
     /// ```swift
     /// let v1 = IVec2(x: 1.0, y: 2.0)
     /// let v2 = IVec2(x: 0.5, y: 0.3)
@@ -228,30 +216,57 @@ extension IVec2 {
     /// ```
     @inlinable
     public func dot(_ other: IVec2) -> Int64 {
-        // Use SIMD for parallel multiplication, then convert to Int64 for summation
-        let product = storage &* other.storage
-        return Int64(product.x) + Int64(product.y)
+        // Convert to Int64 before multiplication to prevent overflow
+        // This is safe even when x or y values are large (up to Int32.max)
+        let x1_64 = Int64(x)
+        let y1_64 = Int64(y)
+        let x2_64 = Int64(other.x)
+        let y2_64 = Int64(other.y)
+        return x1_64 * x2_64 + y1_64 * y2_64
     }
     
     /// Computes the squared magnitude (length squared) of the vector.
     ///
     /// - Returns: The squared magnitude (Int64 to handle overflow).
     ///
+    /// **⚠️ For game logic using semantic types (`Position2`, `Velocity2`),**
+    /// **prefer using `Position2.isWithinDistance(to:threshold:)` instead.**
+    ///
+    /// This method is intended for:
+    /// - Internal library use (collision detection, raycasting, etc.)
+    /// - Advanced use cases where raw `Int64` values are needed
+    ///
     /// This is faster than `magnitude` and avoids floating-point operations.
-    /// Use this when comparing distances (e.g., `v1.magnitudeSquared() < v2.magnitudeSquared()`).
     ///
-    /// Uses SIMD for optimized squaring, then converts to Int64 for summation.
+    /// **Note:** This method requires Int64 intermediate values to prevent overflow
+    /// during squaring, which cannot be efficiently performed using Int32 operations.
     ///
-    /// Example:
+    /// **For game logic, use semantic types:**
+    /// ```swift
+    /// // ✅ Preferred: Use Position2 semantic methods
+    /// if pos.isWithinDistance(to: target, threshold: 1.0) {
+    ///     // Within range
+    /// }
+    ///
+    /// // ❌ Avoid: Direct IVec2 Int64 manipulation in game logic
+    /// let magSq = vec.magnitudeSquared()
+    /// if magSq < thresholdSq {
+    ///     // Error-prone: requires manual threshold quantization
+    /// }
+    /// ```
+    ///
+    /// Example (internal library use):
     /// ```swift
     /// let v = IVec2(x: 3.0, y: 4.0)
     /// let magSq = v.magnitudeSquared()  // 3000^2 + 4000^2 = 25000000
     /// ```
     @inlinable
     public func magnitudeSquared() -> Int64 {
-        // Use SIMD for parallel squaring, then convert to Int64 for summation
-        let squared = storage &* storage
-        return Int64(squared.x) + Int64(squared.y)
+        // Convert to Int64 before squaring to prevent overflow
+        // This is safe even when x or y values are large (up to Int32.max)
+        let x64 = Int64(x)
+        let y64 = Int64(y)
+        return x64 * x64 + y64 * y64
     }
     
     /// Computes the magnitude (length) of the vector as Float.
@@ -261,7 +276,6 @@ extension IVec2 {
     /// Note: This uses floating-point math. For deterministic comparisons,
     /// use `magnitudeSquared()` instead.
     ///
-    /// Uses SIMD2<Float> for optimized floating-point operations.
     ///
     /// Example:
     /// ```swift
@@ -270,10 +284,9 @@ extension IVec2 {
     /// ```
     @inlinable
     public func magnitude() -> Float {
-        // Use SIMD2<Float> for optimized floating-point operations
-        let floatVec = SIMD2<Float>(floatX, floatY)
-        let squared = floatVec * floatVec
-        return sqrt(squared.x + squared.y)
+        let fx = floatX
+        let fy = floatY
+        return sqrt(fx * fx + fy * fy)
     }
     
     /// Computes the squared distance to another vector.
@@ -281,10 +294,33 @@ extension IVec2 {
     /// - Parameter other: The other vector.
     /// - Returns: The squared distance (Int64 to handle overflow).
     ///
-    /// This is faster than `distance` and avoids floating-point operations.
-    /// Uses SIMD for optimized difference and squaring operations.
+    /// **⚠️ For game logic using semantic types (`Position2`, `Velocity2`),**
+    /// **prefer using `Position2.isWithinDistance(to:threshold:)` instead.**
     ///
-    /// Example:
+    /// This method is intended for:
+    /// - Internal library use (collision detection, raycasting, etc.)
+    /// - Advanced use cases where raw `Int64` values are needed
+    ///
+    /// This is faster than `distance` and avoids floating-point operations.
+    ///
+    /// **Note:** This method converts to Int64 and performs squaring to prevent overflow.
+    /// The Int64 squaring operations cannot be efficiently performed using Int32 operations.
+    ///
+    /// **For game logic, use semantic types:**
+    /// ```swift
+    /// // ✅ Preferred: Use Position2 semantic methods
+    /// if pos1.isWithinDistance(to: pos2, threshold: 1.0) {
+    ///     // Within range
+    /// }
+    ///
+    /// // ❌ Avoid: Direct IVec2 Int64 manipulation in game logic
+    /// let distSq = vec1.distanceSquared(to: vec2)
+    /// if distSq < thresholdSq {
+    ///     // Error-prone: requires manual threshold quantization
+    /// }
+    /// ```
+    ///
+    /// Example (internal library use):
     /// ```swift
     /// let v1 = IVec2(x: 1.0, y: 2.0)
     /// let v2 = IVec2(x: 4.0, y: 6.0)
@@ -292,12 +328,11 @@ extension IVec2 {
     /// ```
     @inlinable
     public func distanceSquared(to other: IVec2) -> Int64 {
-        // Use SIMD for parallel difference calculation
-        let diff = storage &- other.storage
-        // Use SIMD for parallel squaring
-        let squared = diff &* diff
-        // Convert to Int64 for summation (to handle overflow)
-        return Int64(squared.x) + Int64(squared.y)
+        // Convert to Int64 before squaring to prevent overflow
+        // This is safe even when diff values are large (up to Int32.max)
+        let dx64 = Int64(x) - Int64(other.x)
+        let dy64 = Int64(y) - Int64(other.y)
+        return dx64 * dx64 + dy64 * dy64
     }
     
     /// Computes the distance to another vector as Float.
@@ -308,13 +343,11 @@ extension IVec2 {
     /// Note: This uses floating-point math. For deterministic comparisons,
     /// use `distanceSquared(to:)` instead.
     ///
-    /// Uses SIMD2<Float> for optimized floating-point operations.
     @inlinable
     public func distance(to other: IVec2) -> Float {
-        // Use SIMD2<Float> for optimized floating-point operations
-        let diff = SIMD2<Float>(floatX - other.floatX, floatY - other.floatY)
-        let squared = diff * diff
-        return sqrt(squared.x + squared.y)
+        let dx = floatX - other.floatX
+        let dy = floatY - other.floatY
+        return sqrt(dx * dx + dy * dy)
     }
     
     /// Normalizes the vector to unit length (as Float).
@@ -325,16 +358,13 @@ extension IVec2 {
     /// For deterministic operations, consider using fixed-point normalization
     /// or working with squared magnitudes.
     ///
-    /// Uses SIMD2<Float> for optimized floating-point operations.
     @inlinable
     public func normalized() -> (x: Float, y: Float) {
-        let floatVec = SIMD2<Float>(floatX, floatY)
         let mag = magnitude()
         guard mag > 0.0001 else {
             return (0, 0)
         }
-        let normalizedVec = floatVec / mag
-        return (normalizedVec.x, normalizedVec.y)
+        return (floatX / mag, floatY / mag)
     }
     
     /// Computes the angle (in radians) of the vector.
@@ -369,6 +399,59 @@ extension IVec2 {
         return IVec2(x: x, y: y)
     }
     
+    /// Scales this vector by a Float factor and returns a new IVec2.
+    ///
+    /// - Parameter factor: The scaling factor as Float (will be quantized).
+    /// - Returns: A new scaled vector.
+    ///
+    /// This is useful when you need to scale a normalized direction vector by a distance.
+    /// Uses Int64 intermediate calculation to avoid precision loss from quantization.
+    ///
+    /// **Note:** For small scale factors (< 0.01), this method uses Int64 intermediate
+    /// calculation to maintain precision. For larger factors, quantization is acceptable.
+    ///
+    /// Example:
+    /// ```swift
+    /// let direction = IVec2(x: 1.0, y: 0.0)  // Unit vector pointing right
+    /// let scaled = direction.scaled(by: 2.5)  // IVec2(x: 2.5, y: 0.0)
+    /// ```
+    @inlinable
+    public func scaled(by factor: Float) -> IVec2 {
+        // Use Int64 intermediate calculation to avoid precision loss
+        // Calculate: (self * factor) in fixed-point
+        // = (x * factorQuantized) / scale, but we need to work in Int64
+        let factorQuantized = FixedPoint.quantize(factor)
+        let factor64 = Int64(factorQuantized)
+        
+        // Calculate: (x * factor) / scale using Int64 to prevent overflow
+        let x64 = Int64(x) * factor64 / Int64(FixedPoint.scale)
+        let y64 = Int64(y) * factor64 / Int64(FixedPoint.scale)
+        
+        // Convert back to Int32 (clamp to prevent overflow)
+        return IVec2(
+            fixedPointX: Int32(clamping: x64),
+            fixedPointY: Int32(clamping: y64)
+        )
+    }
+    
+    /// Returns a normalized version of this vector as IVec2.
+    ///
+    /// - Returns: A normalized vector, or zero vector if magnitude is zero.
+    ///
+    /// This is a convenience method that returns an IVec2 instead of (Float, Float).
+    /// Uses floating-point math internally, then quantizes the result.
+    ///
+    /// Example:
+    /// ```swift
+    /// let v = IVec2(x: 3.0, y: 4.0)
+    /// let normalized = v.normalizedVec()  // IVec2(x: 0.6, y: 0.8)
+    /// ```
+    @inlinable
+    public func normalizedVec() -> IVec2 {
+        let (x, y) = normalized()
+        return IVec2(x: x, y: y)
+    }
+    
     /// Rotates the vector by 90 degrees counterclockwise.
     ///
     /// - Returns: A new rotated vector.
@@ -382,7 +465,7 @@ extension IVec2 {
     /// ```
     public func rotated90() -> IVec2 {
         // Rotate 90° CCW: (x, y) -> (-y, x)
-        IVec2(fixedPointX: -storage.y, fixedPointY: storage.x)
+        IVec2(fixedPointX: -y, fixedPointY: x)
     }
     
     /// Rotates the vector by -90 degrees (clockwise).
@@ -392,7 +475,7 @@ extension IVec2 {
     /// This is a deterministic integer operation (no floating-point).
     public func rotatedMinus90() -> IVec2 {
         // Rotate -90° (90° CW): (x, y) -> (y, -x)
-        IVec2(fixedPointX: storage.y, fixedPointY: -storage.x)
+        IVec2(fixedPointX: y, fixedPointY: -x)
     }
     
     /// Computes the 2D cross product (scalar result).
@@ -403,6 +486,9 @@ extension IVec2 {
     /// In 2D, the cross product is a scalar representing the signed area
     /// of the parallelogram formed by the two vectors.
     ///
+    /// **Note:** This method requires Int64 intermediate values to prevent overflow
+    /// during multiplication, which cannot be efficiently performed using Int32 operations.
+    ///
     /// Example:
     /// ```swift
     /// let v1 = IVec2(x: 1.0, y: 0.0)
@@ -412,6 +498,7 @@ extension IVec2 {
     @inlinable
     public func cross(_ other: IVec2) -> Int64 {
         // 2D cross product: x1 * y2 - y1 * x2
+        // Convert to Int64 before multiplication to prevent overflow
         return Int64(x) * Int64(other.y) - Int64(y) * Int64(other.x)
     }
     
@@ -435,11 +522,11 @@ extension IVec2 {
         }
         
         let dot = self.dot(other)
-        let scale = Float(dot) / Float(otherSq) * 1000.0  // Scale factor
+        let scale = Float(dot) / Float(otherSq) * FixedPoint.scaleFloat
         
         return IVec2(
-            x: other.floatX * scale / 1000.0,
-            y: other.floatY * scale / 1000.0
+            x: other.floatX * scale / FixedPoint.scaleFloat,
+            y: other.floatY * scale / FixedPoint.scaleFloat
         )
     }
     
@@ -465,11 +552,11 @@ extension IVec2 {
         }
         
         // reflected = v - 2 * (v · n / ||n||^2) * n
-        let scale = Float(2 * dot) / Float(normalSq) * 1000.0
+        let scale = Float(2 * dot) / Float(normalSq) * FixedPoint.scaleFloat
         
         let scaledNormal = IVec2(
-            x: normal.floatX * scale / 1000.0,
-            y: normal.floatY * scale / 1000.0
+            x: normal.floatX * scale / FixedPoint.scaleFloat,
+            y: normal.floatY * scale / FixedPoint.scaleFloat
         )
         
         return self - scaledNormal
@@ -497,14 +584,11 @@ extension IVec2 {
 
 extension IVec2: SnapshotValueConvertible {
     /// Converts IVec2 to SnapshotValue using x and y properties.
-    ///
-    /// This implementation directly accesses storage for optimal performance,
-    /// avoiding the computed property indirection while maintaining the same result.
     @inlinable
     public func toSnapshotValue() throws -> SnapshotValue {
         return .object([
-            "x": .int(Int(storage.x)),
-            "y": .int(Int(storage.y))
+            "x": .int(Int(x)),
+            "y": .int(Int(y))
         ])
     }
 }
@@ -536,14 +620,3 @@ extension IVec2: SchemaMetadataProvider {
     }
 }
 
-// MARK: - Internal Initializers
-
-extension IVec2 {
-    /// Internal initializer for SIMD storage.
-    ///
-    /// - Parameter storage: The SIMD vector storage.
-    @inlinable
-    internal init(storage: SIMD2<Int32>) {
-        self.storage = storage
-    }
-}

@@ -62,7 +62,10 @@ public struct ILineSegment: Codable, Equatable, Sendable {
     /// - Returns: The squared distance to the closest point on the segment.
     ///
     /// This is faster than `distanceToPoint` and avoids floating-point operations.
-    /// Uses SIMD-optimized vector operations via IVec2 (subtraction, dot product, magnitudeSquared, distanceSquared).
+    /// Directly computes distance using Int64 to avoid Int32 overflow issues.
+    ///
+    /// **Range Limits (Invariants):**
+    /// - **Coordinates:** Must be within `FixedPoint.WORLD_MAX_COORDINATE` to prevent `Int64` overflow.
     ///
     /// Example:
     /// ```swift
@@ -71,28 +74,46 @@ public struct ILineSegment: Codable, Equatable, Sendable {
     /// ```
     @inlinable
     public func distanceSquaredToPoint(_ point: IVec2) -> Int64 {
-        // All IVec2 operations (subtraction, dot, magnitudeSquared, distanceSquared) use SIMD
-        let toStart = point - start  // SIMD-optimized subtraction
-        let dir = direction  // Already computed using SIMD subtraction
+        // Compute distance directly using Int64
+        let toStart = point - start
+        let dir = direction
         
-        let dirSq = dir.magnitudeSquared()  // SIMD-optimized
+        let dirSq = dir.magnitudeSquared()
         if dirSq == 0 {
             // Segment is a point, return distance to that point
-            return toStart.magnitudeSquared()  // SIMD-optimized
+            // Directly compute distance using Int64
+            let dx64 = Int64(toStart.x)
+            let dy64 = Int64(toStart.y)
+            let (distSqX, _) = dx64.multipliedReportingOverflow(by: dx64)
+            let (distSqY, _) = dy64.multipliedReportingOverflow(by: dy64)
+            let (distSq, _) = distSqX.addingReportingOverflow(distSqY)
+            return distSq
         }
         
         // Project point onto the line segment
-        let t = toStart.dot(dir)  // SIMD-optimized dot product
+        let t = toStart.dot(dir)
         
         if t <= 0 {
             // Closest point is the start point
-            return toStart.magnitudeSquared()  // SIMD-optimized
+            // Directly compute distance using Int64
+            let dx64 = Int64(toStart.x)
+            let dy64 = Int64(toStart.y)
+            let (distSqX, _) = dx64.multipliedReportingOverflow(by: dx64)
+            let (distSqY, _) = dy64.multipliedReportingOverflow(by: dy64)
+            let (distSq, _) = distSqX.addingReportingOverflow(distSqY)
+            return distSq
         }
         
         if t >= dirSq {
             // Closest point is the end point
-            let toEnd = point - end  // SIMD-optimized subtraction
-            return toEnd.magnitudeSquared()  // SIMD-optimized
+            let toEnd = point - end
+            // Directly compute distance using Int64
+            let dx64 = Int64(toEnd.x)
+            let dy64 = Int64(toEnd.y)
+            let (distSqX, _) = dx64.multipliedReportingOverflow(by: dx64)
+            let (distSqY, _) = dy64.multipliedReportingOverflow(by: dy64)
+            let (distSq, _) = distSqX.addingReportingOverflow(distSqY)
+            return distSq
         }
         
         // Closest point is on the segment
@@ -106,7 +127,13 @@ public struct ILineSegment: Codable, Equatable, Sendable {
             y: start.floatY + dir.floatY * tFloat
         )
         
-        return point.distanceSquared(to: closestPoint)  // SIMD-optimized
+        // Directly compute distance using Int64 to avoid Int32 overflow
+        let dx64 = Int64(point.x) - Int64(closestPoint.x)
+        let dy64 = Int64(point.y) - Int64(closestPoint.y)
+        let (distSqX, _) = dx64.multipliedReportingOverflow(by: dx64)
+        let (distSqY, _) = dy64.multipliedReportingOverflow(by: dy64)
+        let (distSq, _) = distSqX.addingReportingOverflow(distSqY)
+        return distSq
     }
     
     /// Computes the distance from a point to this line segment as Float.
@@ -118,7 +145,7 @@ public struct ILineSegment: Codable, Equatable, Sendable {
     /// use `distanceSquaredToPoint` instead.
     public func distanceToPoint(_ point: IVec2) -> Float {
         let distSq = distanceSquaredToPoint(point)
-        return sqrt(Float(distSq) / 1_000_000.0)  // Dequantize
+        return sqrt(Float(distSq) / FixedPoint.scaleSquaredFloat)
     }
     
     /// Checks if this line segment intersects with another line segment.
@@ -155,9 +182,8 @@ public struct ILineSegment: Codable, Equatable, Sendable {
         // Calculate t and u parameters
         // t = cross(r, d2) / cross(d1, d2)
         // u = cross(r, d1) / cross(d1, d2)
-        // Use IVec2.cross for optimized cross product calculation
-        let crossRD2 = r.cross(d2)  // Uses optimized cross product
-        let crossRD1 = r.cross(d1)  // Uses optimized cross product
+        let crossRD2 = r.cross(d2)
+        let crossRD1 = r.cross(d1)
         
         let t = Float(crossRD2) / Float(crossD1D2)
         let u = Float(crossRD1) / Float(crossD1D2)
@@ -182,7 +208,14 @@ public struct ILineSegment: Codable, Equatable, Sendable {
     /// - Returns: The intersection point(s), or `nil` if no intersection.
     ///
     /// Returns the closest intersection point if the segment hits the circle.
-    /// Uses SIMD-optimized vector operations via IVec2 (subtraction, dot product, magnitudeSquared, distanceSquared).
+    /// Directly computes distance using Int64 to avoid Int32 overflow issues.
+    ///
+    /// **Range Limits (Invariants):**
+    /// - **Coordinates:** Must be within `FixedPoint.WORLD_MAX_COORDINATE` (≈ ±1,073,741,823 fixed-point units,
+    ///   or ±1,073,741.823 Float units with scale 1000) to prevent `Int64` overflow in distance calculations.
+    /// - **Radius:** Circle radius must be within `FixedPoint.MAX_CIRCLE_RADIUS` to ensure compatibility.
+    ///
+    /// **Overflow Handling:** Uses overflow detection to handle edge cases deterministically.
     ///
     /// Example:
     /// ```swift
@@ -194,23 +227,30 @@ public struct ILineSegment: Codable, Equatable, Sendable {
     /// ```
     @inlinable
     public func intersects(circle: ICircle) -> IVec2? {
-        // All IVec2 operations use SIMD
         // Vector from circle center to segment start
-        let toStart = start - circle.center  // SIMD-optimized subtraction
+        let toStart = start - circle.center
         
-        let dir = direction  // Already computed using SIMD subtraction
-        let dirSq = dir.magnitudeSquared()  // SIMD-optimized
+        let dir = direction
+        let dirSq = dir.magnitudeSquared()
         
         if dirSq == 0 {
             // Segment is a point, check if it's inside the circle
-            if toStart.magnitudeSquared() <= Int64(circle.radius) * Int64(circle.radius) {  // SIMD-optimized
+            // Directly compute distance using Int64
+            let dx64 = Int64(toStart.x)
+            let dy64 = Int64(toStart.y)
+            let (distSqX, _) = dx64.multipliedReportingOverflow(by: dx64)
+            let (distSqY, _) = dy64.multipliedReportingOverflow(by: dy64)
+            let (distSq, _) = distSqX.addingReportingOverflow(distSqY)
+            
+            let (radiusSq, _) = circle.radius.multipliedReportingOverflow(by: circle.radius)
+            if distSq <= radiusSq {
                 return start
             }
             return nil
         }
         
         // Project circle center onto the line segment
-        let projection = toStart.dot(dir)  // SIMD-optimized dot product
+        let projection = toStart.dot(dir)
         
         var t: Float
         if projection <= 0 {
@@ -228,8 +268,29 @@ public struct ILineSegment: Codable, Equatable, Sendable {
         )
         
         // Check if closest point is within circle radius
-        let distSq = closestPoint.distanceSquared(to: circle.center)  // SIMD-optimized
-        let radiusSq = Int64(circle.radius) * Int64(circle.radius)
+        // Directly compute distance using Int64 to avoid Int32 overflow
+        let dx64 = Int64(closestPoint.x) - Int64(circle.center.x)
+        let dy64 = Int64(closestPoint.y) - Int64(circle.center.y)
+        
+        let (distSqX, distOverflowX) = dx64.multipliedReportingOverflow(by: dx64)
+        if distOverflowX {
+            return nil  // Closest point is extremely far away, no intersection
+        }
+        let (distSqY, distOverflowY) = dy64.multipliedReportingOverflow(by: dy64)
+        if distOverflowY {
+            return nil
+        }
+        let (distSq, distOverflow) = distSqX.addingReportingOverflow(distSqY)
+        if distOverflow {
+            return nil
+        }
+        
+        let (radiusSq, radiusOverflow) = circle.radius.multipliedReportingOverflow(by: circle.radius)
+        if radiusOverflow {
+            // If radius squared overflows, treat as always intersecting (conservative)
+            // Return the closest point as intersection
+            return closestPoint
+        }
         
         if distSq > radiusSq {
             return nil  // Segment doesn't intersect circle
@@ -239,9 +300,9 @@ public struct ILineSegment: Codable, Equatable, Sendable {
         // Solve: ||start + t * dir - center|| = radius
         // This is a quadratic equation: a*t^2 + b*t + c = 0
         
-        let a = dirSq  // Already computed (SIMD-optimized)
-        let b = Int64(2) * toStart.dot(dir)  // SIMD-optimized dot product
-        let c = toStart.magnitudeSquared() - radiusSq  // SIMD-optimized
+        let a = dirSq
+        let b = Int64(2) * toStart.dot(dir)
+        let c = toStart.magnitudeSquared() - radiusSq
         
         // Discriminant
         let discriminant = b * b - Int64(4) * a * c
@@ -282,7 +343,6 @@ public struct ILineSegment: Codable, Equatable, Sendable {
     /// - Parameter point: The point to find the closest point to.
     /// - Returns: The closest point on the segment.
     ///
-    /// Uses SIMD-optimized vector operations via IVec2 (subtraction, dot product, magnitudeSquared).
     ///
     /// Example:
     /// ```swift
@@ -291,16 +351,15 @@ public struct ILineSegment: Codable, Equatable, Sendable {
     /// ```
     @inlinable
     public func closestPoint(to point: IVec2) -> IVec2 {
-        // All IVec2 operations use SIMD
-        let toStart = point - start  // SIMD-optimized subtraction
-        let dir = direction  // Already computed using SIMD subtraction
-        let dirSq = dir.magnitudeSquared()  // SIMD-optimized
+        let toStart = point - start
+        let dir = direction
+        let dirSq = dir.magnitudeSquared()
         
         if dirSq == 0 {
             return start  // Segment is a point
         }
         
-        let t = toStart.dot(dir)  // SIMD-optimized dot product
+        let t = toStart.dot(dir)
         
         if t <= 0 {
             return start
