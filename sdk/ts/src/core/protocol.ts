@@ -3,8 +3,11 @@ import type {
   TransportActionPayload,
   TransportJoinPayload,
   TransportEventPayload,
+  StatePatch,
   StateUpdate,
-  StateSnapshot
+  StateSnapshot,
+  TransportEncodingConfig,
+  StateUpdateDecoding
 } from '../types/transport'
 
 /**
@@ -17,8 +20,19 @@ export function encodeMessage(message: TransportMessage): string {
 /**
  * Decode a JSON string to TransportMessage, StateUpdate, or StateSnapshot
  */
-export function decodeMessage(data: string): TransportMessage | StateUpdate | StateSnapshot {
+export function decodeMessage(
+  data: string,
+  config?: TransportEncodingConfig
+): TransportMessage | StateUpdate | StateSnapshot {
   const json = JSON.parse(data)
+
+  if (Array.isArray(json)) {
+    const decoding = resolveStateUpdateDecoding(config)
+    if (decoding === 'jsonObject') {
+      throw new Error(`Unknown message format: ${JSON.stringify(json).substring(0, 100)}`)
+    }
+    return decodeStateUpdateArray(json)
+  }
 
   // Check for TransportMessage with kind field
   if (json && typeof json === 'object' && 'kind' in json) {
@@ -27,6 +41,10 @@ export function decodeMessage(data: string): TransportMessage | StateUpdate | St
 
   // Check for StateUpdate
   if (json && typeof json === 'object' && 'type' in json && 'patches' in json) {
+    const decoding = resolveStateUpdateDecoding(config)
+    if (decoding === 'opcodeJsonArray') {
+      throw new Error(`Unknown message format: ${JSON.stringify(json).substring(0, 100)}`)
+    }
     return json as StateUpdate
   }
 
@@ -36,6 +54,90 @@ export function decodeMessage(data: string): TransportMessage | StateUpdate | St
   }
 
   throw new Error(`Unknown message format: ${JSON.stringify(json).substring(0, 100)}`)
+}
+
+function resolveStateUpdateDecoding(config?: TransportEncodingConfig): StateUpdateDecoding {
+  return config?.stateUpdateDecoding ?? 'auto'
+}
+
+function decodeStateUpdateArray(payload: unknown[]): StateUpdate {
+  if (payload.length < 2) {
+    throw new Error(`Unknown message format: ${JSON.stringify(payload).substring(0, 100)}`)
+  }
+
+  const updateType = (() => {
+    switch (payload[0]) {
+      case 0:
+        return 'noChange' as const
+      case 1:
+        return 'firstSync' as const
+      case 2:
+        return 'diff' as const
+      default:
+        return null
+    }
+  })()
+
+  if (!updateType) {
+    throw new Error(`Unknown message format: ${JSON.stringify(payload).substring(0, 100)}`)
+  }
+
+  const patchStartIndex = (() => {
+    if (payload.length >= 3 && Array.isArray(payload[2])) {
+      return 2
+    }
+    if (payload.length === 2) {
+      return 2
+    }
+    if (payload.length >= 3 && typeof payload[2] !== 'object') {
+      return 3
+    }
+    return 3
+  })()
+
+  if (patchStartIndex === 2 && typeof payload[1] !== 'string') {
+    throw new Error(`Unknown message format: ${JSON.stringify(payload).substring(0, 100)}`)
+  }
+  if (patchStartIndex === 3 && (typeof payload[1] !== 'string' || typeof payload[2] !== 'string')) {
+    throw new Error(`Unknown message format: ${JSON.stringify(payload).substring(0, 100)}`)
+  }
+
+  const patches: StatePatch[] = []
+
+  for (const entry of payload.slice(patchStartIndex)) {
+    if (!Array.isArray(entry) || entry.length < 2) {
+      throw new Error(`Unknown message format: ${JSON.stringify(payload).substring(0, 100)}`)
+    }
+
+    const [path, opCode, value] = entry
+
+    if (typeof path !== 'string') {
+      throw new Error(`Unknown message format: ${JSON.stringify(payload).substring(0, 100)}`)
+    }
+
+    let op: StatePatch['op']
+    switch (opCode) {
+      case 1:
+        op = 'replace'
+        break
+      case 2:
+        op = 'remove'
+        break
+      case 3:
+        op = 'add'
+        break
+      default:
+        throw new Error(`Unknown message format: ${JSON.stringify(payload).substring(0, 100)}`)
+    }
+
+    const patch: StatePatch = { path, op }
+    if (op !== 'remove' && entry.length >= 3) {
+      patch.value = value
+    }
+    patches.push(patch)
+  }
+
+  return { type: updateType, patches }
 }
 
 export interface JoinOptions {
@@ -141,4 +243,3 @@ export function createEventMessage(
 export function generateRequestID(prefix: string = 'req'): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
 }
-

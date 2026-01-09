@@ -1,8 +1,13 @@
-import type { TransportMessage, StateUpdate, StateSnapshot } from '../types/transport'
+import type { TransportMessage, StateUpdate, StateSnapshot, TransportEncodingConfig } from '../types/transport'
 import { createWebSocket, type WebSocketConnection } from './websocket'
 import { decodeMessage, encodeMessage } from './protocol'
 import { NoOpLogger, type Logger } from './logger'
 import { StateTreeView, type ViewOptions } from './view'
+
+export interface RuntimeOptions {
+  logger?: Logger
+  transportEncoding?: TransportEncodingConfig
+}
 
 /**
  * StateTreeRuntime - Manages WebSocket connection and routes messages to Views
@@ -31,11 +36,14 @@ export class StateTreeRuntime {
   private isConnected = false
   private views = new Map<string, StateTreeView>()
   private logger: Logger
+  private transportEncoding: TransportEncodingConfig
   private onDisconnectCallback: ((code: number, reason: string, wasClean: boolean) => void) | null = null
   private statisticsCallback: StatisticsCallback | null = null
 
-  constructor(logger?: Logger) {
-    this.logger = logger || new NoOpLogger()
+  constructor(options?: Logger | RuntimeOptions) {
+    const resolved = resolveRuntimeOptions(options)
+    this.logger = resolved.logger
+    this.transportEncoding = resolved.transportEncoding
   }
 
   /**
@@ -285,7 +293,7 @@ export class StateTreeRuntime {
         messageSize = new TextEncoder().encode(text).length
       }
 
-      const decoded = decodeMessage(text)
+      const decoded = decodeMessage(text, this.transportEncoding)
 
       // Debug: log raw message structure
       this.logger.debug(`Received message: keys=${Object.keys(decoded).join(',')}, preview=${JSON.stringify(decoded).substring(0, 200)}`)
@@ -454,4 +462,34 @@ export class StateTreeRuntime {
       }
     }
   }
+}
+
+function resolveRuntimeOptions(options?: Logger | RuntimeOptions): { logger: Logger; transportEncoding: TransportEncodingConfig } {
+  const defaultConfig: TransportEncodingConfig = {
+    message: 'json',
+    stateUpdate: 'jsonObject',
+    stateUpdateDecoding: 'auto'
+  }
+
+  if (!options) {
+    return { logger: new NoOpLogger(), transportEncoding: defaultConfig }
+  }
+
+  if (isLogger(options)) {
+    return { logger: options, transportEncoding: defaultConfig }
+  }
+
+  const logger = options.logger ?? new NoOpLogger()
+  const transportEncoding: TransportEncodingConfig = {
+    message: options.transportEncoding?.message ?? 'json',
+    stateUpdate: options.transportEncoding?.stateUpdate ?? 'jsonObject',
+    stateUpdateDecoding: options.transportEncoding?.stateUpdateDecoding ?? 'auto'
+  }
+
+  return { logger, transportEncoding }
+}
+
+function isLogger(value: Logger | RuntimeOptions): value is Logger {
+  const candidate = value as Logger
+  return typeof candidate.info === 'function' && typeof candidate.error === 'function'
 }

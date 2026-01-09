@@ -25,6 +25,8 @@ program
   .option('-d, --device <deviceID>', 'Device ID')
   .option('-m, --metadata <json>', 'Metadata as JSON string')
   .option('-t, --token <token>', 'JWT token for authentication')
+  .option('--schema-url <url>', 'Schema base URL (defaults to WebSocket host)')
+  .option('--state-update-encoding <mode>', 'State update decoding mode (auto|jsonObject|opcodeJsonArray)', 'auto')
   .option('-s, --script <file>', 'Script file to execute after joining')
   .option('--once', 'Exit after successful connection and join (non-interactive mode)')
   .option('--timeout <seconds>', 'Auto-exit timeout in seconds after script completion (default: 10)', '10')
@@ -48,12 +50,18 @@ program
         wsUrl = `${wsUrl}${separator}token=${encodeURIComponent(options.token)}`
       }
 
+      // Fetch schema (required by StateTreeView)
+      const schemaBaseUrl = options.schemaUrl ?? deriveSchemaBaseUrl(wsUrl)
+      const schema = await fetchSchema(schemaBaseUrl)
+
       // Create runtime and view
       const logger = new ChalkLogger()
-      const runtime = new StateTreeRuntime(logger)
+      const transportEncoding = buildTransportEncoding(options.stateUpdateEncoding)
+      const runtime = new StateTreeRuntime({ logger, transportEncoding })
       await runtime.connect(wsUrl)
 
       const view = runtime.createView(options.land, {
+        schema: schema as any,
         playerID: options.player,
         deviceID: options.device,
         metadata,
@@ -158,6 +166,8 @@ program
   .option('-d, --device <deviceID>', 'Device ID')
   .option('-m, --metadata <json>', 'Metadata as JSON string')
   .option('-t, --token <token>', 'JWT token for authentication')
+  .option('--schema-url <url>', 'Schema base URL (defaults to WebSocket host)')
+  .option('--state-update-encoding <mode>', 'State update decoding mode (auto|jsonObject|opcodeJsonArray)', 'auto')
   .action(async (options) => {
     try {
       let metadata: Record<string, any> | undefined
@@ -176,11 +186,16 @@ program
         wsUrl = `${wsUrl}${separator}token=${encodeURIComponent(options.token)}`
       }
 
+      const schemaBaseUrl = options.schemaUrl ?? deriveSchemaBaseUrl(wsUrl)
+      const schema = await fetchSchema(schemaBaseUrl)
+
       const logger = new ChalkLogger()
-      const runtime = new StateTreeRuntime(logger)
+      const transportEncoding = buildTransportEncoding(options.stateUpdateEncoding)
+      const runtime = new StateTreeRuntime({ logger, transportEncoding })
       await runtime.connect(wsUrl)
 
       const view = runtime.createView(options.land, {
+        schema: schema as any,
         playerID: options.player,
         deviceID: options.device,
         metadata,
@@ -435,3 +450,22 @@ adminCommand
 
 program.parse()
 
+function deriveSchemaBaseUrl(wsUrl: string): string {
+  const url = new URL(wsUrl)
+  const schemaProtocol = url.protocol === 'wss:' ? 'https:' : 'http:'
+  return `${schemaProtocol}//${url.host}`
+}
+
+function buildTransportEncoding(stateUpdateEncoding?: string) {
+  const normalized = (stateUpdateEncoding ?? 'auto').toLowerCase()
+  const stateUpdateDecoding =
+    normalized === 'opcodejsonarray' ? 'opcodeJsonArray'
+    : normalized === 'jsonobject' ? 'jsonObject'
+    : 'auto'
+
+  return {
+    message: 'json',
+    stateUpdate: stateUpdateDecoding === 'opcodeJsonArray' ? 'opcodeJsonArray' : 'jsonObject',
+    stateUpdateDecoding
+  } as const
+}

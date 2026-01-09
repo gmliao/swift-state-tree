@@ -97,6 +97,7 @@ public struct LandServer<State: StateNodeProtocol>: Sendable {
             initialStateFactory: initialStateFactory,
             transport: transport,
             createGuestSession: createGuestSession ?? defaultCreateGuestSession,
+            transportEncoding: configuration.transportEncoding,
             enableParallelEncoding: configuration.enableParallelEncoding,
             logger: logger
         )
@@ -182,6 +183,7 @@ public struct LandServer<State: StateNodeProtocol>: Sendable {
         land definition: Land,
         initialState: State,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
+        transportEncoding: TransportEncodingConfig = .json,
         logger: Logger
     ) async -> CoreComponents {
         let transport = WebSocketTransport(logger: logger)
@@ -203,6 +205,7 @@ public struct LandServer<State: StateNodeProtocol>: Sendable {
             landID: definition.id,
             createGuestSession: createGuestSession,
             enableLegacyJoin: true,
+            encodingConfig: transportEncoding,
             enableParallelEncoding: nil,  // Use default (codec-based)
             logger: logger
         )
