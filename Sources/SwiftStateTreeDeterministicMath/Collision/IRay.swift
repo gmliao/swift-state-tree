@@ -236,8 +236,11 @@ public struct IRay: Codable, Equatable, Sendable {
         }
         
         // Calculate closest point on ray to circle center
-        let closestX = Int64(origin.x) + (Int64(direction.x) * tProjection) / tScale
-        let closestY = Int64(origin.y) + (Int64(direction.y) * tProjection) / tScale
+        // To avoid overflow in (direction.x * tProjection), compute t = tProjection / tScale first
+        // This is safe because t will be in a reasonable range (typically < scale)
+        let t = tProjection / tScale
+        let closestX = Int64(origin.x) + Int64(direction.x) * t
+        let closestY = Int64(origin.y) + Int64(direction.y) * t
         let closestPoint = IVec2(
             fixedPointX: Int32(clamping: closestX),
             fixedPointY: Int32(clamping: closestY)
