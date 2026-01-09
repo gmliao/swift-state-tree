@@ -558,26 +558,25 @@ extension IVec2 {
         let scale = Int64(FixedPoint.scale)
         let (scaledDot, overflow) = dot.multipliedReportingOverflow(by: scale)
         
-        let (ratio, ratioScale): (Int64, Int64)
+        let (projX64, projY64): (Int64, Int64)
         if overflow {
             // When overflow occurs, we need to compute: projX = (other.x * dot * scale) / (otherSq * scale)
             // = (other.x * dot) / otherSq
             // The scale factors cancel out, so we can compute directly without the scale multiplication.
-            // This preserves precision by avoiding the overflow while maintaining the correct result.
-            // ratio = dot, ratioScale = otherSq
-            // Then: projX = (other.x * ratio) / ratioScale = (other.x * dot) / otherSq ✓
-            ratio = dot
-            ratioScale = otherSq
+            // To avoid overflow in (other.x * dot), we first compute the ratio dot/otherSq,
+            // then multiply by other.x. Since dot and otherSq are both large, their ratio will be
+            // in a reasonable range (typically < scale), so (other.x * ratio) won't overflow.
+            let ratio = dot / otherSq
+            projX64 = Int64(other.x) * ratio
+            projY64 = Int64(other.y) * ratio
         } else {
             // Normal case: ratio = (dot * scale) / otherSq, ratioScale = scale
             // Then: projX = (other.x * ratio) / ratioScale = (other.x * dot * scale) / (otherSq * scale)
             // = (other.x * dot) / otherSq ✓
-            ratio = scaledDot / otherSq
-            ratioScale = scale
+            let ratio = scaledDot / otherSq
+            projX64 = (Int64(other.x) * ratio) / scale
+            projY64 = (Int64(other.y) * ratio) / scale
         }
-
-        let projX64 = (Int64(other.x) * ratio) / ratioScale
-        let projY64 = (Int64(other.y) * ratio) / ratioScale
         return IVec2(
             fixedPointX: Int32(clamping: projX64),
             fixedPointY: Int32(clamping: projY64)
