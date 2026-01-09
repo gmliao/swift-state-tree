@@ -1029,12 +1029,60 @@ export class StateTreeView {
           break
       }
     } else {
-      // Nested property
-      if (!(key in this.currentState) || typeof this.currentState[key] !== 'object' || this.currentState[key] === null) {
-        this.currentState[key] = {}
+      // Check if key is an array index (e.g., "positions[0]")
+      const arrayIndexMatch = key.match(/^(.+)\[(\d+)\]$/)
+      if (arrayIndexMatch) {
+        const arrayKey = arrayIndexMatch[1]
+        const index = parseInt(arrayIndexMatch[2], 10)
+        
+        // Ensure array exists
+        if (!(arrayKey in this.currentState) || !Array.isArray(this.currentState[arrayKey])) {
+          this.currentState[arrayKey] = []
+        }
+        
+        const array = this.currentState[arrayKey] as any[]
+        
+        switch (patch.op) {
+          case 'replace':
+          case 'add':
+            if (restPath && restPath.length > 1) {
+              // Nested property within array element
+              if (!array[index] || typeof array[index] !== 'object' || array[index] === null) {
+                array[index] = {}
+              }
+              this.applyNestedPatch(array[index], { ...patch, path: restPath }, array, String(index), `/${arrayKey}[${index}]`)
+            } else {
+              // Replace or add entire array element
+              const elementPath = `/${arrayKey}[${index}]`
+              const decodedValue = this.decodeSnapshotValue(patch.value, elementPath)
+              // For 'add' operation, ensure array is long enough
+              if (patch.op === 'add' && index >= array.length) {
+                // Extend array to accommodate the new index
+                array.length = index + 1
+              }
+              array[index] = decodedValue
+            }
+            break
+          case 'remove':
+            if (restPath && restPath.length > 1) {
+              // Remove nested property
+              if (array[index] && typeof array[index] === 'object') {
+                this.applyNestedPatch(array[index], { ...patch, path: restPath }, array, String(index), `/${arrayKey}[${index}]`)
+              }
+            } else {
+              // Remove array element
+              array.splice(index, 1)
+            }
+            break
+        }
+      } else {
+        // Nested property (not array)
+        if (!(key in this.currentState) || typeof this.currentState[key] !== 'object' || this.currentState[key] === null) {
+          this.currentState[key] = {}
+        }
+        // applyNestedPatch now handles conversion internally, so we don't need redecodeObject
+        this.applyNestedPatch(this.currentState[key], { ...patch, path: restPath }, this.currentState, key, key)
       }
-      // applyNestedPatch now handles conversion internally, so we don't need redecodeObject
-      this.applyNestedPatch(this.currentState[key], { ...patch, path: restPath }, this.currentState, key, key)
     }
 
     // Trigger patch callbacks after applying
@@ -1145,6 +1193,27 @@ export class StateTreeView {
         return null
       }
 
+      // Check if this property is an array type
+      if (prop.type === 'array' && prop.items) {
+        // This is an array, resolve the items type
+        if (typeof prop.items === 'object' && prop.items.$ref) {
+          let refName = resolveRefName(prop.items.$ref)
+          refName = unwrapOptionalType(refName)
+          currentDef = this.schema?.defs?.[refName]
+          if (!currentDef) {
+            return null
+          }
+          lastResolvedType = refName
+          // Array index doesn't affect the type, so we can return the item type
+          // But if there are more parts, continue processing
+          if (i === parts.length - 1) {
+            return lastResolvedType
+          }
+          // Continue to next part (skip the array index if present)
+          continue
+        }
+      }
+
       // If this property has a $ref, resolve it
       if (prop.$ref) {
         let refName = resolveRefName(prop.$ref)
@@ -1227,30 +1296,82 @@ export class StateTreeView {
 
     if (parts.length === 1) {
       const key = parts[0]
-      switch (patch.op) {
-        case 'replace':
-        case 'add':
-          // With atomic types, server always sends whole objects (e.g., entire IVec2, not just x or y)
-          // Use decodeSnapshotValue to create class instances based on schema
-          const updatePath = pathPrefix ? `${pathPrefix}/${key}` : `/${key}`
-          obj[key] = this.decodeSnapshotValue(patch.value, updatePath)
-          break
-        case 'remove':
-          delete obj[key]
-          break
+      
+      // Check if key is an array index (e.g., "items[0]")
+      const arrayIndexMatch = key.match(/^(.+)\[(\d+)\]$/)
+      if (arrayIndexMatch) {
+        const arrayKey = arrayIndexMatch[1]
+        const index = parseInt(arrayIndexMatch[2], 10)
+        
+        // Ensure array exists
+        if (!(arrayKey in obj) || !Array.isArray(obj[arrayKey])) {
+          obj[arrayKey] = []
+        }
+        
+        const array = obj[arrayKey] as any[]
+        
+        switch (patch.op) {
+          case 'replace':
+          case 'add':
+            const elementPath = pathPrefix ? `${pathPrefix}/${arrayKey}[${index}]` : `/${arrayKey}[${index}]`
+            array[index] = this.decodeSnapshotValue(patch.value, elementPath)
+            break
+          case 'remove':
+            array.splice(index, 1)
+            break
+        }
+      } else {
+        // Regular property
+        switch (patch.op) {
+          case 'replace':
+          case 'add':
+            // With atomic types, server always sends whole objects (e.g., entire IVec2, not just x or y)
+            // Use decodeSnapshotValue to create class instances based on schema
+            const updatePath = pathPrefix ? `${pathPrefix}/${key}` : `/${key}`
+            obj[key] = this.decodeSnapshotValue(patch.value, updatePath)
+            break
+          case 'remove':
+            delete obj[key]
+            break
+        }
       }
     } else {
       const key = parts[0]
-      const restPath = '/' + parts.slice(1).join('/')
       
-      // Ensure the key exists as an object for nested updates
-      if (!(key in obj) || typeof obj[key] !== 'object' || obj[key] === null) {
-        obj[key] = {}
+      // Check if key is an array index
+      const arrayIndexMatch = key.match(/^(.+)\[(\d+)\]$/)
+      if (arrayIndexMatch) {
+        const arrayKey = arrayIndexMatch[1]
+        const index = parseInt(arrayIndexMatch[2], 10)
+        const restPath = '/' + parts.slice(1).join('/')
+        
+        // Ensure array exists
+        if (!(arrayKey in obj) || !Array.isArray(obj[arrayKey])) {
+          obj[arrayKey] = []
+        }
+        
+        const array = obj[arrayKey] as any[]
+        
+        // Ensure array element exists as an object for nested updates
+        if (!array[index] || typeof array[index] !== 'object' || array[index] === null) {
+          array[index] = {}
+        }
+        
+        const newPathPrefix = pathPrefix ? `${pathPrefix}/${arrayKey}[${index}]` : `/${arrayKey}[${index}]`
+        this.applyNestedPatch(array[index], { ...patch, path: restPath }, array, String(index), newPathPrefix)
+      } else {
+        // Regular nested property
+        const restPath = '/' + parts.slice(1).join('/')
+        
+        // Ensure the key exists as an object for nested updates
+        if (!(key in obj) || typeof obj[key] !== 'object' || obj[key] === null) {
+          obj[key] = {}
+        }
+        
+        // Pass current obj as parent, and key as parentKey for the recursive call
+        const newPathPrefix = (pathPrefix ? pathPrefix + '/' : '') + key
+        this.applyNestedPatch(obj[key], { ...patch, path: restPath }, obj, key, newPathPrefix)
       }
-      
-      // Pass current obj as parent, and key as parentKey for the recursive call
-      const newPathPrefix = (pathPrefix ? pathPrefix + '/' : '') + key
-      this.applyNestedPatch(obj[key], { ...patch, path: restPath }, obj, key, newPathPrefix)
     }
   }
 

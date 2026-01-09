@@ -30,7 +30,28 @@ const testSchema: ProtocolSchema = {
           type: 'object',
           additionalProperties: { $ref: '#/defs/PlayerState' }
         },
-        player: { $ref: '#/defs/PlayerState' }
+        player: { $ref: '#/defs/PlayerState' },
+        positions: {
+          type: 'array',
+          items: { $ref: '#/defs/Position2' }
+        },
+        vectors: {
+          type: 'array',
+          items: { $ref: '#/defs/IVec2' }
+        },
+        angles: {
+          type: 'array',
+          items: { $ref: '#/defs/Angle' }
+        },
+        nestedArray: {
+          type: 'object',
+          properties: {
+            items: {
+              type: 'array',
+              items: { $ref: '#/defs/Position2' }
+            }
+          }
+        }
       }
     },
     'PlayerState': {
@@ -649,6 +670,234 @@ describe('StateTreeView DeterministicMath Integration', () => {
       // Should remain as plain object (not converted to IVec2)
       expect(state.customObject).not.toBeInstanceOf(IVec2)
       expect(state.customObject).toEqual({ x: 100, y: 200, z: 300, other: 'value' })
+    })
+  })
+
+  describe('Array element decoding with getTypeForPath', () => {
+    it('decodes array of Position2 from snapshot', () => {
+      const snapshot: StateSnapshot = {
+        values: {
+          positions: [
+            { v: { x: 10000, y: 20000 } },
+            { v: { x: 30000, y: 40000 } },
+            { v: { x: 50000, y: 60000 } }
+          ]
+        }
+      }
+
+      view.handleSnapshot(snapshot)
+      const state = view.getState()
+
+      expect(Array.isArray(state.positions)).toBe(true)
+      expect(state.positions).toHaveLength(3)
+      
+      // All elements should be Position2 instances
+      state.positions.forEach((pos: any) => {
+        expect(pos).toBeInstanceOf(Position2)
+        expect(pos.v).toBeInstanceOf(IVec2)
+      })
+
+      // Verify values
+      expect(state.positions[0].v.x).toBe(10.0)
+      expect(state.positions[0].v.y).toBe(20.0)
+      expect(state.positions[1].v.x).toBe(30.0)
+      expect(state.positions[1].v.y).toBe(40.0)
+      expect(state.positions[2].v.x).toBe(50.0)
+      expect(state.positions[2].v.y).toBe(60.0)
+    })
+
+    it('decodes array of IVec2 from snapshot', () => {
+      const snapshot: StateSnapshot = {
+        values: {
+          vectors: [
+            { x: 10000, y: 20000 },
+            { x: 30000, y: 40000 },
+            { x: 50000, y: 60000 }
+          ]
+        }
+      }
+
+      view.handleSnapshot(snapshot)
+      const state = view.getState()
+
+      expect(Array.isArray(state.vectors)).toBe(true)
+      expect(state.vectors).toHaveLength(3)
+      
+      // All elements should be IVec2 instances
+      state.vectors.forEach((vec: any) => {
+        expect(vec).toBeInstanceOf(IVec2)
+      })
+
+      // Verify values
+      expect(state.vectors[0].x).toBe(10.0)
+      expect(state.vectors[0].y).toBe(20.0)
+      expect(state.vectors[1].x).toBe(30.0)
+      expect(state.vectors[1].y).toBe(40.0)
+      expect(state.vectors[2].x).toBe(50.0)
+      expect(state.vectors[2].y).toBe(60.0)
+    })
+
+    it('decodes array of Angle from snapshot', () => {
+      const snapshot: StateSnapshot = {
+        values: {
+          angles: [
+            { degrees: 45000 },  // 45 degrees
+            { degrees: 90000 },  // 90 degrees
+            { degrees: 180000 }  // 180 degrees
+          ]
+        }
+      }
+
+      view.handleSnapshot(snapshot)
+      const state = view.getState()
+
+      expect(Array.isArray(state.angles)).toBe(true)
+      expect(state.angles).toHaveLength(3)
+      
+      // All elements should be Angle instances
+      state.angles.forEach((angle: any) => {
+        expect(angle).toBeInstanceOf(Angle)
+      })
+
+      // Verify values
+      expect(state.angles[0].degrees).toBe(45.0)
+      expect(state.angles[1].degrees).toBe(90.0)
+      expect(state.angles[2].degrees).toBe(180.0)
+    })
+
+    it('decodes nested array of Position2 from snapshot', () => {
+      const snapshot: StateSnapshot = {
+        values: {
+          nestedArray: {
+            items: [
+              { v: { x: 10000, y: 20000 } },
+              { v: { x: 30000, y: 40000 } }
+            ]
+          }
+        }
+      }
+
+      view.handleSnapshot(snapshot)
+      const state = view.getState()
+
+      expect(Array.isArray(state.nestedArray.items)).toBe(true)
+      expect(state.nestedArray.items).toHaveLength(2)
+      
+      // All elements should be Position2 instances
+      state.nestedArray.items.forEach((pos: any) => {
+        expect(pos).toBeInstanceOf(Position2)
+        expect(pos.v).toBeInstanceOf(IVec2)
+      })
+
+      expect(state.nestedArray.items[0].v.x).toBe(10.0)
+      expect(state.nestedArray.items[0].v.y).toBe(20.0)
+      expect(state.nestedArray.items[1].v.x).toBe(30.0)
+      expect(state.nestedArray.items[1].v.y).toBe(40.0)
+    })
+
+    it('handles patch update for array element', () => {
+      // First set up initial state
+      const snapshot: StateSnapshot = {
+        values: {
+          positions: [
+            { v: { x: 10000, y: 20000 } },
+            { v: { x: 30000, y: 40000 } }
+          ]
+        }
+      }
+
+      view.handleSnapshot(snapshot)
+      
+      // Update first element via patch
+      const update: StateUpdate = {
+        type: 'diff',
+        patches: [
+          {
+            path: '/positions[0]/v',
+            op: 'replace',
+            value: { x: 50000, y: 60000 }
+          }
+        ]
+      }
+
+      view.handleStateUpdate(update)
+      const state = view.getState()
+
+      expect(state.positions[0]).toBeInstanceOf(Position2)
+      expect(state.positions[0].v).toBeInstanceOf(IVec2)
+      expect(state.positions[0].v.x).toBe(50.0)
+      expect(state.positions[0].v.y).toBe(60.0)
+      
+      // Second element should remain unchanged
+      expect(state.positions[1].v.x).toBe(30.0)
+      expect(state.positions[1].v.y).toBe(40.0)
+    })
+
+    it('handles patch add for array element', () => {
+      // First set up initial state
+      const snapshot: StateSnapshot = {
+        values: {
+          positions: [
+            { v: { x: 10000, y: 20000 } }
+          ]
+        }
+      }
+
+      view.handleSnapshot(snapshot)
+      
+      // Add new element via patch
+      const update: StateUpdate = {
+        type: 'diff',
+        patches: [
+          {
+            path: '/positions[1]',
+            op: 'add',
+            value: { v: { x: 30000, y: 40000 } }
+          }
+        ]
+      }
+
+      view.handleStateUpdate(update)
+      const state = view.getState()
+
+      expect(state.positions).toHaveLength(2)
+      expect(state.positions[1]).toBeInstanceOf(Position2)
+      expect(state.positions[1].v).toBeInstanceOf(IVec2)
+      expect(state.positions[1].v.x).toBe(30.0)
+      expect(state.positions[1].v.y).toBe(40.0)
+    })
+
+    it('handles patch remove for array element', () => {
+      // First set up initial state
+      const snapshot: StateSnapshot = {
+        values: {
+          positions: [
+            { v: { x: 10000, y: 20000 } },
+            { v: { x: 30000, y: 40000 } },
+            { v: { x: 50000, y: 60000 } }
+          ]
+        }
+      }
+
+      view.handleSnapshot(snapshot)
+      
+      // Remove middle element via patch
+      const update: StateUpdate = {
+        type: 'diff',
+        patches: [
+          {
+            path: '/positions[1]',
+            op: 'remove'
+          }
+        ]
+      }
+
+      view.handleStateUpdate(update)
+      const state = view.getState()
+
+      expect(state.positions).toHaveLength(2)
+      expect(state.positions[0].v.x).toBe(10.0)
+      expect(state.positions[1].v.x).toBe(50.0)
     })
   })
 })
