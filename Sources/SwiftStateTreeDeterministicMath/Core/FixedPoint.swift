@@ -79,6 +79,9 @@ public struct FixedPoint: Sendable {
     
     /// Maximum safe coordinate value for distance calculations using Int64.
     ///
+    /// **Unit**: This value is in **fixed-point units** (Int32, already multiplied by scale).
+    /// To convert to Float units, divide by `scale`: `Float(WORLD_MAX_COORDINATE) / scaleFloat`.
+    ///
     /// This is the maximum coordinate value that can be safely used in distance calculations
     /// without causing Int64 overflow when computing `dx² + dy²`.
     ///
@@ -87,12 +90,29 @@ public struct FixedPoint: Sendable {
     /// `Int64.max (9.22e18)`. To ensure `dx² + dy² ≤ Int64.max`, we need `|dx| ≤ sqrt(Int64.max / 2) ≈ 2,147,483,647`.
     /// Since `dx = x1 - x2`, we need `|x| ≤ Int32.max / 2 = 1,073,741,823` to guarantee safety.
     ///
-    /// For scale = 1000: WORLD_MAX_COORDINATE ≈ ±1,073,741,823 fixed-point units (≈ ±1,073,741.823 Float units).
+    /// **Values**:
+    /// - Fixed-point units: `WORLD_MAX_COORDINATE = 1,073,741,823` (Int32)
+    /// - Float units: `1,073,741,823 / 1000 = 1,073,741.823` (Float)
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// // For Int32 (fixed-point) coordinates
+    /// let maxCoord = FixedPoint.WORLD_MAX_COORDINATE  // 1,073,741,823
+    /// let vec = IVec2(fixedPointX: maxCoord, fixedPointY: 0)
+    ///
+    /// // For Float coordinates (need to divide by scale)
+    /// let maxFloat = Float(FixedPoint.WORLD_MAX_COORDINATE) / FixedPoint.scaleFloat  // 1,073,741.823
+    /// ```
     public static let WORLD_MAX_COORDINATE: Int32 = Int32.max / 2
     
     /// Minimum safe coordinate value for distance calculations using Int64.
     ///
+    /// **Unit**: This value is in **fixed-point units** (Int32, already multiplied by scale).
+    /// To convert to Float units, divide by `scale`: `Float(WORLD_MIN_COORDINATE) / scaleFloat`.
+    ///
     /// This is the minimum coordinate value that can be safely used in distance calculations.
+    ///
+    /// **Value**: `WORLD_MIN_COORDINATE = -1,073,741,823` (fixed-point units)
     public static let WORLD_MIN_COORDINATE: Int32 = -WORLD_MAX_COORDINATE
     
     /// Maximum safe circle radius for ICircle.
