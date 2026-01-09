@@ -493,6 +493,35 @@ const message: TransportMessage = {
 
 詳細說明請見：`Notes/protocol/STATE_UPDATE_OPCODE_JSON_ARRAY.md`
 
+#### 編碼組合設定（第一階段）
+
+第一版以程式碼設定方式切換，可分別指定：
+
+- **Transport message**：`TransportEncoding`（目前為 `.json`）
+- **State update**：`StateUpdateEncoding`（`.jsonObject` 或 `.opcodeJsonArray`）
+
+範例：
+
+```swift
+let config = TransportEncodingConfig(
+    message: .json,
+    stateUpdate: .opcodeJsonArray
+)
+
+let adapter = TransportAdapter<State>(
+    keeper: keeper,
+    transport: transport,
+    landID: landID,
+    encodingConfig: config
+)
+```
+
+當 `TransportAdapter` 初始化時，logger 會輸出目前使用的
+`messageEncoding` 與 `stateUpdateEncoding`。
+
+**實作備註（v1）**：opcode JSON array 目前使用
+`[updateOpcode, playerID, patch...]`，並以 `path` 字串暫代 `fieldId`。
+
 ### StateUpdate 格式
 
 ```typescript

@@ -1,6 +1,16 @@
 // Transport protocol types
 export type MessageKind = 'action' | 'actionResponse' | 'event' | 'join' | 'joinResponse' | 'error'
 
+export type MessageEncoding = 'json'
+export type StateUpdateEncoding = 'jsonObject' | 'opcodeJsonArray'
+export type StateUpdateDecoding = 'auto' | StateUpdateEncoding
+
+export interface TransportEncodingConfig {
+  message: MessageEncoding
+  stateUpdate: StateUpdateEncoding
+  stateUpdateDecoding?: StateUpdateDecoding
+}
+
 export interface ActionEnvelope {
   typeIdentifier: string
   payload: string // Base64 encoded
@@ -86,4 +96,3 @@ export interface StateUpdate {
 export interface StateSnapshot {
   values: Record<string, any>
 }
-

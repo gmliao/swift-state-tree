@@ -233,14 +233,18 @@ func testParallelResolverExecutionAsyncLet() async throws {
         currentState: state
     )
 
-    let startTime = ContinuousClock.now
+    let serialStart = ContinuousClock.now
+    _ = try await ProductInfoResolver.resolve(ctx: resolverContext)
+    _ = try await UserProfileResolver.resolve(ctx: resolverContext)
+    let serialDuration = ContinuousClock.now - serialStart
+
+    let parallelStart = ContinuousClock.now
     let (productInfo, userProfile) = try await executeResolversInParallel(
         ProductInfoResolver.self,
         UserProfileResolver.self,
         ctx: resolverContext
     )
-    let endTime = ContinuousClock.now
-    let duration = endTime - startTime
+    let parallelDuration = ContinuousClock.now - parallelStart
 
     // Both resolvers should complete, and total time should be approximately
     // the max of individual resolver times (not the sum), since they run in parallel
@@ -253,18 +257,18 @@ func testParallelResolverExecutionAsyncLet() async throws {
     // - Clock precision and measurement overhead
     // - Context switching and thread pool management
     // - Swift runtime overhead for async/await
-    let durationMs = Double(duration.components.seconds) * 1000.0 + Double(duration.components.attoseconds) / 1_000_000_000_000_000.0
+    let serialMs = Double(serialDuration.components.seconds) * 1000.0
+        + Double(serialDuration.components.attoseconds) / 1_000_000_000_000_000.0
+    let parallelMs = Double(parallelDuration.components.seconds) * 1000.0
+        + Double(parallelDuration.components.attoseconds) / 1_000_000_000_000_000.0
 
     // Lower bound: should be at least as long as the shorter resolver (10ms)
     // Allow some measurement variance
-    #expect(durationMs >= 8.0)
+    #expect(parallelMs >= 8.0)
 
-    // Upper bound: should be less than serial execution time (25ms) with generous overhead
-    // This ensures parallel execution is actually happening, not just sequential
-    // We use 8x serial time (200ms) to account for system overhead in CI/test environments
-    // In ideal conditions, this should be closer to 15-20ms, but test environments
-    // (especially CI) can have significant variance due to resource constraints
-    #expect(durationMs < 200.0) // Should be less than 8x serial time to verify parallelism (allowing for CI variance)
+    // Upper bound: should not be significantly slower than serial execution.
+    // Use a ratio to reduce flakiness in noisy CI environments.
+    #expect(parallelMs <= serialMs * 1.5)
 
     #expect(productInfo.id == "product-123")
     #expect(userProfile.userID == "player-1")

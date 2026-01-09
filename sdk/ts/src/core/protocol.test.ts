@@ -86,6 +86,85 @@ describe('protocol', () => {
       }
     })
 
+    it('decodes opcode array StateUpdate from JSON string', () => {
+      const updateArray = [
+        2,
+        'player-1',
+        ['/players', 1, { hp: 10 }],
+        ['/stats', 2],
+        ['/items', 3, { id: 1 }]
+      ]
+
+      const encoded = JSON.stringify(updateArray)
+      const decoded = decodeMessage(encoded)
+
+      expect(decoded).toHaveProperty('type', 'diff')
+      expect(decoded).toHaveProperty('patches')
+      if ('type' in decoded && 'patches' in decoded) {
+        const update = decoded as StateUpdate
+        expect(update.patches.length).toBe(3)
+        expect(update.patches[0]).toMatchObject({ path: '/players', op: 'replace', value: { hp: 10 } })
+        expect(update.patches[1]).toMatchObject({ path: '/stats', op: 'remove' })
+        expect(update.patches[2]).toMatchObject({ path: '/items', op: 'add', value: { id: 1 } })
+      }
+    })
+
+    it('decodes opcode array noChange StateUpdate from JSON string', () => {
+      const updateArray = [0, 'player-1']
+      const encoded = JSON.stringify(updateArray)
+      const decoded = decodeMessage(encoded)
+
+      expect(decoded).toHaveProperty('type', 'noChange')
+      expect(decoded).toHaveProperty('patches')
+      if ('type' in decoded && 'patches' in decoded) {
+        const update = decoded as StateUpdate
+        expect(update.patches.length).toBe(0)
+      }
+    })
+
+    it('decodes opcode array firstSync StateUpdate from JSON string', () => {
+      const updateArray = [1, 'player-1', ['/score', 1, 10]]
+      const encoded = JSON.stringify(updateArray)
+      const decoded = decodeMessage(encoded)
+
+      expect(decoded).toHaveProperty('type', 'firstSync')
+      expect(decoded).toHaveProperty('patches')
+      if ('type' in decoded && 'patches' in decoded) {
+        const update = decoded as StateUpdate
+        expect(update.patches.length).toBe(1)
+        expect(update.patches[0]).toMatchObject({ path: '/score', op: 'replace', value: 10 })
+      }
+    })
+
+    it('throws when opcode array is received with jsonObject decoding', () => {
+      const updateArray = [2, 'player-1', ['/score', 1, 10]]
+      const encoded = JSON.stringify(updateArray)
+      expect(() => decodeMessage(encoded, {
+        message: 'json',
+        stateUpdate: 'jsonObject',
+        stateUpdateDecoding: 'jsonObject'
+      })).toThrow('Unknown message format')
+    })
+
+    it('throws when JSON object is received with opcodeJsonArray decoding', () => {
+      const update: StateUpdate = {
+        type: 'diff',
+        patches: [
+          {
+            path: '/score',
+            op: 'replace',
+            value: 10
+          }
+        ]
+      }
+      const encoded = JSON.stringify(update)
+      expect(() => decodeMessage(encoded, {
+        message: 'json',
+        stateUpdate: 'opcodeJsonArray',
+        stateUpdateDecoding: 'opcodeJsonArray'
+      })).toThrow('Unknown message format')
+    })
+
     it('decodes StateSnapshot from JSON string', () => {
       const snapshot: StateSnapshot = {
         values: {
@@ -197,4 +276,3 @@ describe('protocol', () => {
     })
   })
 })
-

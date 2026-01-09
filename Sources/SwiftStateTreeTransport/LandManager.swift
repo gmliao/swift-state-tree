@@ -83,6 +83,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private let sharedTransport: WebSocketTransport?
     private let createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)?
     private let logger: Logger
+    private let transportEncoding: TransportEncodingConfig
     
     /// Track creation time for each land
     private var landCreatedAt: [LandID: Date] = [:]
@@ -96,6 +97,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     ///   - initialStateFactory: Factory function to create initial state for a given LandID.
     ///   - transport: Optional shared WebSocketTransport instance.
     ///   - createGuestSession: Optional closure to create PlayerSession for guest users.
+    ///   - transportEncoding: Encoding configuration for transport messages and state updates.
     ///   - enableParallelEncoding: Enable parallel encoding for state updates (default: nil, uses codec default).
     ///   - logger: Optional logger instance.
     public init(
@@ -103,6 +105,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         initialStateFactory: @escaping @Sendable (LandID) -> State,
         transport: WebSocketTransport? = nil,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
+        transportEncoding: TransportEncodingConfig = .json,
         enableParallelEncoding: Bool? = nil,
         logger: Logger? = nil
     ) {
@@ -110,6 +113,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         self.initialStateFactory = initialStateFactory
         self.sharedTransport = transport
         self.createGuestSession = createGuestSession
+        self.transportEncoding = transportEncoding
         self.enableParallelEncoding = enableParallelEncoding
         self.logger = logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.runtime",
@@ -156,6 +160,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             onLandDestroyed: { [landID] in
                 await self.removeLand(landID: landID)
             },
+            encodingConfig: transportEncoding,
             enableParallelEncoding: enableParallelEncoding,
             logger: logger
         )
@@ -285,4 +290,3 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
 /// This typealias provides backward compatibility while `LandContainer` is now
 /// a nested type within `LandManager`.
 public typealias LandContainer<State: StateNodeProtocol> = LandManager<State>.Container
-

@@ -38,6 +38,14 @@ struct GameServer {
         
         let host = getEnvString(key: "HOST", defaultValue: "localhost")
         let port = getEnvUInt16(key: "PORT", defaultValue: 8080)
+
+        let stateUpdateEncoding = resolveStateUpdateEncoding(
+            rawValue: getEnvString(key: "STATE_UPDATE_ENCODING", defaultValue: "jsonObject")
+        )
+        let transportEncoding = TransportEncodingConfig(
+            message: .json,
+            stateUpdate: stateUpdateEncoding
+        )
         
         let landHost = LandHost(configuration: LandHost.HostConfiguration(
             host: host,
@@ -50,6 +58,7 @@ struct GameServer {
             jwtConfig: jwtConfig,
             allowGuestMode: true,
             allowAutoCreateOnJoin: true,
+            transportEncoding: transportEncoding,
             enableParallelEncoding: true
         )
         
@@ -81,5 +90,14 @@ struct GameServer {
             ])
             exit(1)
         }
+    }
+}
+
+private func resolveStateUpdateEncoding(rawValue: String) -> StateUpdateEncoding {
+    switch rawValue.lowercased() {
+    case "opcodejsonarray", "opcode_json_array", "opcode-json-array":
+        return .opcodeJsonArray
+    default:
+        return .jsonObject
     }
 }
