@@ -7,7 +7,7 @@ import { StateTreeRuntime } from '@swiftstatetree/sdk/core'
 import { HeroDefenseStateTree } from './index.js'
 import { LAND_TYPE } from './bindings.js'
 import type { HeroDefenseState } from '../defs.js'
-import type { MoveToEvent, PlayAction, PlayResponse } from '../defs.js'
+import type { MoveToEvent, PlaceTurretEvent, PlayAction, PlayResponse, ShootEvent, UpdateRotationEvent, UpgradeTurretEvent, UpgradeWeaponEvent } from '../defs.js'
 
 interface ConnectOptions {
   wsUrl: string
@@ -21,7 +21,7 @@ interface ConnectOptions {
 const runtime = ref<StateTreeRuntime | null>(null)
 const tree = ref<HeroDefenseStateTree | null>(null)
 
-const state: Ref<HeroDefenseState | null> = ref<HeroDefenseState | null>(null)
+const state = ref<HeroDefenseState | null>(null) as Ref<HeroDefenseState | null>
 const currentPlayerID = ref<string | null>(null)
 
 const isConnecting = ref(false)
@@ -40,6 +40,11 @@ export interface HeroDefenseComposableReturn {
   disconnect: () => Promise<void>
   play: (payload: PlayAction) => Promise<PlayResponse>
   moveTo: (payload: MoveToEvent) => Promise<void>
+  placeTurret: (payload: PlaceTurretEvent) => Promise<void>
+  shoot: (payload: ShootEvent) => Promise<void>
+  updateRotation: (payload: UpdateRotationEvent) => Promise<void>
+  upgradeTurret: (payload: UpgradeTurretEvent) => Promise<void>
+  upgradeWeapon: (payload: UpgradeWeaponEvent) => Promise<void>
   tree: ComputedRef<HeroDefenseStateTree | null>
 }
 
@@ -92,7 +97,10 @@ export function useHeroDefense(): HeroDefenseComposableReturn {
       
       // Make t.state reactive so Vue can track changes directly
       // This allows direct access like state.players[playerID].cookies in templates
-      const reactiveState = reactive(t.state as HeroDefenseState)
+      // Note: SDK automatically converts DeterministicMath types (IVec2, Position2, etc.)
+      // from fixed-point integers to class instances, but TypeScript may not infer this correctly
+      // after reactive() wrapping, so we use type assertion
+      const reactiveState = reactive(t.state as any) as HeroDefenseState
       state.value = reactiveState
       
       // Override t.state to point to reactiveState so syncInto updates it directly
@@ -166,6 +174,61 @@ export function useHeroDefense(): HeroDefenseComposableReturn {
     }
   }
 
+  async function placeTurret(payload: PlaceTurretEvent): Promise<void> {
+    if (!tree.value || !isJoined.value) return
+    try {
+      await tree.value.events.placeTurret(payload)
+      lastError.value = null
+    } catch (error) {
+      console.error('placeTurret failed:', error)
+      lastError.value = (error as Error).message ?? String(error)
+    }
+  }
+
+  async function shoot(payload: ShootEvent): Promise<void> {
+    if (!tree.value || !isJoined.value) return
+    try {
+      await tree.value.events.shoot(payload)
+      lastError.value = null
+    } catch (error) {
+      console.error('shoot failed:', error)
+      lastError.value = (error as Error).message ?? String(error)
+    }
+  }
+
+  async function updateRotation(payload: UpdateRotationEvent): Promise<void> {
+    if (!tree.value || !isJoined.value) return
+    try {
+      await tree.value.events.updateRotation(payload)
+      lastError.value = null
+    } catch (error) {
+      console.error('updateRotation failed:', error)
+      lastError.value = (error as Error).message ?? String(error)
+    }
+  }
+
+  async function upgradeTurret(payload: UpgradeTurretEvent): Promise<void> {
+    if (!tree.value || !isJoined.value) return
+    try {
+      await tree.value.events.upgradeTurret(payload)
+      lastError.value = null
+    } catch (error) {
+      console.error('upgradeTurret failed:', error)
+      lastError.value = (error as Error).message ?? String(error)
+    }
+  }
+
+  async function upgradeWeapon(payload: UpgradeWeaponEvent): Promise<void> {
+    if (!tree.value || !isJoined.value) return
+    try {
+      await tree.value.events.upgradeWeapon(payload)
+      lastError.value = null
+    } catch (error) {
+      console.error('upgradeWeapon failed:', error)
+      lastError.value = (error as Error).message ?? String(error)
+    }
+  }
+
   return {
     state,
     currentPlayerID,
@@ -177,6 +240,11 @@ export function useHeroDefense(): HeroDefenseComposableReturn {
     disconnect,
     play,
     moveTo,
+    placeTurret,
+    shoot,
+    updateRotation,
+    upgradeTurret,
+    upgradeWeapon,
     // Advanced: access to underlying tree instance
     tree: computed(() => tree.value) as ComputedRef<HeroDefenseStateTree | null>
   }

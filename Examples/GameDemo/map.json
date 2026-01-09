@@ -1,0 +1,89 @@
+{
+  "version": "1.0",
+  "width": 128,
+  "height": 72,
+  "tilewidth": 1,
+  "tileheight": 1,
+  "base": {
+    "x": 64,
+    "y": 36,
+    "radius": 3
+  },
+  "turretSlots": [
+    {
+      "id": "slot1",
+      "x": 72,
+      "y": 36
+    },
+    {
+      "id": "slot2",
+      "x": 56,
+      "y": 36
+    },
+    {
+      "id": "slot3",
+      "x": 64,
+      "y": 44
+    },
+    {
+      "id": "slot4",
+      "x": 64,
+      "y": 28
+    },
+    {
+      "id": "slot5",
+      "x": 76,
+      "y": 44
+    },
+    {
+      "id": "slot6",
+      "x": 52,
+      "y": 44
+    },
+    {
+      "id": "slot7",
+      "x": 76,
+      "y": 28
+    },
+    {
+      "id": "slot8",
+      "x": 52,
+      "y": 28
+    }
+  ],
+  "spawnPoints": [
+    {
+      "id": "spawn1",
+      "x": 0,
+      "y": 0,
+      "edge": "top"
+    },
+    {
+      "id": "spawn2",
+      "x": 128,
+      "y": 36,
+      "edge": "right"
+    },
+    {
+      "id": "spawn3",
+      "x": 64,
+      "y": 72,
+      "edge": "bottom"
+    },
+    {
+      "id": "spawn4",
+      "x": 0,
+      "y": 36,
+      "edge": "left"
+    }
+  ],
+  "layers": [
+    {
+      "name": "background",
+      "type": "tilelayer",
+      "width": 128,
+      "height": 72,
+      "data": []
+    }
+  ]
+}

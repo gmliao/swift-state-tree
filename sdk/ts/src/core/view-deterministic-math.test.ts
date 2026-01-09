@@ -634,4 +634,21 @@ describe('StateTreeView DeterministicMath Integration', () => {
       expect(state.player.position.v.y).toBe(36.0)
     })
   })
+
+  describe('Non-DeterministicMath objects', () => {
+    it('does not convert objects with x and y but other properties', () => {
+      const snapshot: StateSnapshot = {
+        values: {
+          customObject: { x: 100, y: 200, z: 300, other: 'value' }
+        }
+      }
+
+      view.handleSnapshot(snapshot)
+      const state = view.getState()
+
+      // Should remain as plain object (not converted to IVec2)
+      expect(state.customObject).not.toBeInstanceOf(IVec2)
+      expect(state.customObject).toEqual({ x: 100, y: 200, z: 300, other: 'value' })
+    })
+  })
 })

@@ -127,3 +127,28 @@ function isProtocolSchema(value: unknown): value is ProtocolSchema {
   const v = value as any
   return typeof v.version === 'string' && typeof v.defs === 'object' && typeof v.lands === 'object'
 }
+
+/**
+ * Check if a type name represents an Optional type (e.g., "Optional<Position2>").
+ */
+export function isOptionalType(typeName: string): boolean {
+  return typeName.startsWith('Optional<') && typeName.endsWith('>')
+}
+
+/**
+ * Unwrap an Optional type to get the inner type.
+ * Returns the inner type name if it's an Optional, otherwise returns the original type name.
+ * 
+ * @example
+ * unwrapOptionalType("Optional<Position2>") // returns "Position2"
+ * unwrapOptionalType("Position2") // returns "Position2"
+ */
+export function unwrapOptionalType(typeName: string): string {
+  if (isOptionalType(typeName)) {
+    const match = typeName.match(/^Optional<(.+)>$/)
+    if (match && match[1]) {
+      return match[1]
+    }
+  }
+  return typeName
+}

@@ -3,7 +3,7 @@
 
 import { ref, computed } from 'vue'
 import type { HeroDefenseState } from '../defs.js'
-import type { MoveToEvent, PlayAction, PlayResponse } from '../defs.js'
+import type { MoveToEvent, PlaceTurretEvent, PlayAction, PlayResponse, ShootEvent, UpdateRotationEvent, UpgradeTurretEvent, UpgradeWeaponEvent } from '../defs.js'
 
 /**
  * Creates a mock state for testing.
@@ -11,8 +11,12 @@ import type { MoveToEvent, PlayAction, PlayResponse } from '../defs.js'
  */
 export function createMockState(overrides?: Partial<HeroDefenseState>): HeroDefenseState {
   return {
+    base: { health: 0, maxHealth: 0, position: new Position2({ x: 0, y: 0 }, false), radius: 0 },
+    currentTick: 0,
+    monsters: {},
     players: {},
     score: 0,
+    turrets: {},
     ...overrides
   }
 }
@@ -30,6 +34,26 @@ export function createMockHeroDefense(initialState?: HeroDefenseState) {
   const lastError = ref<string | null>(null)
 
   const moveTo = (() => {})(async (_payload: MoveToEvent) => {
+    // Mock implementation - customize as needed
+  })
+
+  const placeTurret = (() => {})(async (_payload: PlaceTurretEvent) => {
+    // Mock implementation - customize as needed
+  })
+
+  const shoot = (() => {})(async (_payload: ShootEvent) => {
+    // Mock implementation - customize as needed
+  })
+
+  const updateRotation = (() => {})(async (_payload: UpdateRotationEvent) => {
+    // Mock implementation - customize as needed
+  })
+
+  const upgradeTurret = (() => {})(async (_payload: UpgradeTurretEvent) => {
+    // Mock implementation - customize as needed
+  })
+
+  const upgradeWeapon = (() => {})(async (_payload: UpgradeWeaponEvent) => {
     // Mock implementation - customize as needed
   })
 
@@ -52,6 +76,11 @@ export function createMockHeroDefense(initialState?: HeroDefenseState) {
     isJoined,
     lastError,
     moveTo,
+    placeTurret,
+    shoot,
+    updateRotation,
+    upgradeTurret,
+    upgradeWeapon,
     play,
     disconnect,
     connect: (() => {})(),

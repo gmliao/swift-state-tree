@@ -140,9 +140,31 @@ describe('Velocity2 and Acceleration2', () => {
     expect(vel.v.y).toBe(2.0)
   })
 
+  it('creates Velocity2 from plain object with float values', () => {
+    const vel = new Velocity2({ x: 0.1, y: 0.05 }, false)
+    expect(vel.v.x).toBeCloseTo(0.1, 2)
+    expect(vel.v.y).toBeCloseTo(0.05, 2)
+    expect(vel.v.rawX).toBe(100)
+    expect(vel.v.rawY).toBe(50)
+  })
+
   it('creates Acceleration2 from plain object', () => {
     const acc = new Acceleration2({ x: 500, y: 1000 }, true)
     expect(acc.v.x).toBe(0.5)
     expect(acc.v.y).toBe(1.0)
+  })
+
+  it('creates Acceleration2 from plain object with float values', () => {
+    const acc = new Acceleration2({ x: 0.01, y: 0.005 }, false)
+    expect(acc.v.x).toBeCloseTo(0.01, 3)
+    expect(acc.v.y).toBeCloseTo(0.005, 3)
+    expect(acc.v.rawX).toBe(10)
+    expect(acc.v.rawY).toBe(5)
+  })
+})
+
+describe('FIXED_POINT_SCALE', () => {
+  it('has correct value', () => {
+    expect(FIXED_POINT_SCALE).toBe(1000)
   })
 })

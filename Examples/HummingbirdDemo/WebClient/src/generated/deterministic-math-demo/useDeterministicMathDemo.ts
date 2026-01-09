@@ -20,7 +20,7 @@ interface ConnectOptions {
 const runtime = ref<StateTreeRuntime | null>(null)
 const tree = ref<DeterministicMathDemoStateTree | null>(null)
 
-const state: Ref<DeterministicMathDemoState | null> = ref<DeterministicMathDemoState | null>(null)
+const state = ref<DeterministicMathDemoState | null>(null) as Ref<DeterministicMathDemoState | null>
 const currentPlayerID = ref<string | null>(null)
 
 const isConnecting = ref(false)
@@ -89,7 +89,10 @@ export function useDeterministicMathDemo(): DeterministicMathDemoComposableRetur
       
       // Make t.state reactive so Vue can track changes directly
       // This allows direct access like state.players[playerID].cookies in templates
-      const reactiveState = reactive(t.state as DeterministicMathDemoState)
+      // Note: SDK automatically converts DeterministicMath types (IVec2, Position2, etc.)
+      // from fixed-point integers to class instances, but TypeScript may not infer this correctly
+      // after reactive() wrapping, so we use type assertion
+      const reactiveState = reactive(t.state as any) as DeterministicMathDemoState
       state.value = reactiveState
       
       // Override t.state to point to reactiveState so syncInto updates it directly
@@ -98,6 +101,17 @@ export function useDeterministicMathDemo(): DeterministicMathDemoComposableRetur
         get: () => reactiveState,
         enumerable: true,
         configurable: true
+      })
+      
+      // Set up disconnect callback for automatic cleanup
+      r.onDisconnect(() => {
+        if (isConnected.value || isJoined.value) {
+          console.warn('⚠️ WebSocket disconnected, cleaning up...')
+          // Update state immediately so watchers can react
+          isConnected.value = false
+          // disconnect() will set isJoined.value = false, triggering watchers
+          disconnect()
+        }
       })
       
       isJoined.value = true

@@ -2,6 +2,7 @@ import Phaser from 'phaser'
 import { PlayerSprite } from '../sprites/PlayerSprite'
 import type { PlayerState } from '../generated/defs'
 import type { HeroDefenseStateTree } from '../generated/hero-defense'
+import type { Unsubscribe } from '../generated/hero-defense/bindings'
 
 export interface PlayerManagerConfig {
   /** Throttle interval for state logging in ms (default: 1000) */
@@ -24,8 +25,8 @@ export class PlayerManager {
   private currentPlayerID: string | null = null
   private lastStateLogTime: number = 0
   private onCurrentPlayerUpdate: ((player: PlayerSprite, serverPos: { x: number; y: number }) => void) | null = null
-  private unsubscribeAdd: (() => void) | null = null
-  private unsubscribeRemove: (() => void) | null = null
+  private unsubscribeAdd: Unsubscribe | null = null
+  private unsubscribeRemove: Unsubscribe | null = null
 
   constructor(scene: Phaser.Scene, config: PlayerManagerConfig = {}) {
     this.scene = scene

@@ -3,10 +3,11 @@
 
 import type { StateTreeRuntime, Logger, StatePatch, MapSubscriptions } from '@swiftstatetree/sdk/core'
 import { StateTreeView } from '@swiftstatetree/sdk/core'
-import type { LandState, Actions, ClientEvents, ServerEventSubscriptions } from './bindings'
+import type { LandState, Actions, ClientEvents, ServerEventSubscriptions, EventSubscription, EventHandler } from './bindings'
 import { LAND_TYPE } from './bindings'
 import { SCHEMA } from '../schema.js'
-import type { PlayerState } from '../defs'
+import type { MonsterState, PlayerState, TurretState } from '../defs'
+import type { MoveToEvent, PlaceTurretEvent, PlayAction, PlayResponse, PlayerShootEvent, ShootEvent, TurretFireEvent, UpdateRotationEvent, UpgradeTurretEvent, UpgradeWeaponEvent } from '../defs'
 
 // Re-export MapSubscriptions interface from SDK core
 export type { MapSubscriptions } from '@swiftstatetree/sdk/core'
@@ -26,8 +27,33 @@ export class HeroDefenseStateTree {
   readonly events: ClientEvents
   readonly on: ServerEventSubscriptions
 
+  /** Type-safe subscriptions for monsters map */
+  readonly monsters: MapSubscriptions<MonsterState>
   /** Type-safe subscriptions for players map */
   readonly players: MapSubscriptions<PlayerState>
+  /** Type-safe subscriptions for turrets map */
+  readonly turrets: MapSubscriptions<TurretState>
+
+  /** Type-safe method for play action */
+  readonly play: (payload: PlayAction) => Promise<PlayResponse>
+
+  /** Type-safe method for moveTo client event */
+  readonly moveTo: (payload: MoveToEvent) => void
+  /** Type-safe method for placeTurret client event */
+  readonly placeTurret: (payload: PlaceTurretEvent) => void
+  /** Type-safe method for shoot client event */
+  readonly shoot: (payload: ShootEvent) => void
+  /** Type-safe method for updateRotation client event */
+  readonly updateRotation: (payload: UpdateRotationEvent) => void
+  /** Type-safe method for upgradeTurret client event */
+  readonly upgradeTurret: (payload: UpgradeTurretEvent) => void
+  /** Type-safe method for upgradeWeapon client event */
+  readonly upgradeWeapon: (payload: UpgradeWeaponEvent) => void
+
+  /** Type-safe subscription for playerShoot server event */
+  readonly playerShoot: EventSubscription<PlayerShootEvent>
+  /** Type-safe subscription for turretFire server event */
+  readonly turretFire: EventSubscription<TurretFireEvent>
 
   private readonly runtime: StateTreeRuntime
   private readonly view: StateTreeView
@@ -51,21 +77,74 @@ export class HeroDefenseStateTree {
       }
     })
 
+    this.play = (payload: PlayAction) => {
+      return this.view.sendAction("Play", payload) as Promise<PlayResponse>
+    }
+
     this.actions = {
-      play: (payload) => this.view.sendAction("Play", payload) as Promise<any>,
+      play: this.play,
     } as Actions
 
+    this.moveTo = (payload: MoveToEvent) => {
+      this.view.sendEvent("MoveToEvent", payload)
+    }
+    this.placeTurret = (payload: PlaceTurretEvent) => {
+      this.view.sendEvent("PlaceTurretEvent", payload)
+    }
+    this.shoot = (payload: ShootEvent) => {
+      this.view.sendEvent("ShootEvent", payload)
+    }
+    this.updateRotation = (payload: UpdateRotationEvent) => {
+      this.view.sendEvent("UpdateRotationEvent", payload)
+    }
+    this.upgradeTurret = (payload: UpgradeTurretEvent) => {
+      this.view.sendEvent("UpgradeTurretEvent", payload)
+    }
+    this.upgradeWeapon = (payload: UpgradeWeaponEvent) => {
+      this.view.sendEvent("UpgradeWeaponEvent", payload)
+    }
+
     this.events = {
-      moveTo: (payload) => this.view.sendEvent("MoveToEvent", payload),
+      moveTo: this.moveTo,
+      placeTurret: this.placeTurret,
+      shoot: this.shoot,
+      updateRotation: this.updateRotation,
+      upgradeTurret: this.upgradeTurret,
+      upgradeWeapon: this.upgradeWeapon,
     } as ClientEvents
 
     this.on = {
+      playerShoot: (handler) => this.view.onServerEvent("PlayerShootEvent", handler),
+      turretFire: (handler) => this.view.onServerEvent("TurretFireEvent", handler),
     } as ServerEventSubscriptions
 
+    // Initialize playerShoot server event subscription
+    this.playerShoot = {
+      subscribe: (handler: EventHandler<PlayerShootEvent>) => {
+        return this.view.onServerEvent("PlayerShootEvent", handler)
+      }
+    } as EventSubscription<PlayerShootEvent>
+    // Initialize turretFire server event subscription
+    this.turretFire = {
+      subscribe: (handler: EventHandler<TurretFireEvent>) => {
+        return this.view.onServerEvent("TurretFireEvent", handler)
+      }
+    } as EventSubscription<TurretFireEvent>
+
+    // Initialize monsters map subscriptions using SDK core
+    this.monsters = this.view.createMapSubscriptions<MonsterState>(
+      '/monsters',
+      (state) => state?.monsters as Record<string, MonsterState> | undefined
+    )
     // Initialize players map subscriptions using SDK core
     this.players = this.view.createMapSubscriptions<PlayerState>(
       '/players',
       (state) => state?.players as Record<string, PlayerState> | undefined
+    )
+    // Initialize turrets map subscriptions using SDK core
+    this.turrets = this.view.createMapSubscriptions<TurretState>(
+      '/turrets',
+      (state) => state?.turrets as Record<string, TurretState> | undefined
     )
   }
 

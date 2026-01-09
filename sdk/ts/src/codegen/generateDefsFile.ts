@@ -1,5 +1,6 @@
 import type { ProtocolSchema } from './schema.js'
 import { mapSchemaDefToTsType, type TypeMapperContext } from './typeMapper.js'
+import { isOptionalType } from './schema.js'
 
 function generateHeader(): string {
   return [
@@ -152,13 +153,35 @@ export function generateDefsTs(schema: ProtocolSchema): string {
     lines.push('')
   }
 
-  // Generate type definitions for non-DeterministicMath types
+  // Track Optional types to generate a single generic type definition
+  const optionalTypes = new Set<string>()
+  const nonOptionalDefs: string[] = []
+
+  // Separate Optional types from regular types
   for (const name of sortedDefNames) {
     // Skip DeterministicMath types - they are classes now
     if (isDeterministicMathType(name)) {
       continue
     }
+    if (isOptionalType(name)) {
+      optionalTypes.add(name)
+    } else {
+      nonOptionalDefs.push(name)
+    }
+  }
+
+  // Generate type definitions for non-Optional types
+  for (const name of nonOptionalDefs) {
     const def = schema.defs[name]
+    
+    // Special handling for PlayerID: Swift struct has rawValue: String property
+    // but schema may not include it, so we define it explicitly
+    if (name === 'PlayerID') {
+      lines.push('// PlayerID is a Swift struct with rawValue: String property')
+      lines.push('export type PlayerID = { rawValue: string }')
+      continue
+    }
+    
     const tsType = mapSchemaDefToTsType(def, ctx)
     // Add @ts-ignore for types that use DeterministicMath classes in type positions
     // This suppresses TypeScript's false positive warnings about unused imports
@@ -172,6 +195,13 @@ export function generateDefsTs(schema: ProtocolSchema): string {
       lines.push(`// @ts-ignore - DeterministicMath classes (${usedClasses.join(', ')}) are used in type definitions`)
     }
     lines.push(`export type ${name} = ${tsType}`)
+  }
+
+  // Generate a single generic Optional type if any Optional types exist
+  if (optionalTypes.size > 0) {
+    lines.push('')
+    lines.push('// Generic Optional type for all Optional<T> usages')
+    lines.push('export type Optional<T> = T | null | undefined')
   }
 
   if (lines[lines.length - 1] !== '') {
