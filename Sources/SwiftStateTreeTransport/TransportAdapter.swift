@@ -9,6 +9,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private let transport: any Transport
     private let landID: String
     private let codec: any TransportCodec
+    private let stateUpdateEncoder: any StateUpdateEncoder
     private var syncEngine = SyncEngine()
     private let logger: Logger
     private let enableLegacyJoin: Bool
@@ -81,13 +82,21 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         enableLegacyJoin: Bool = false,
         enableDirtyTracking: Bool = true,
         codec: any TransportCodec = JSONTransportCodec(),
+        stateUpdateEncoder: any StateUpdateEncoder = JSONStateUpdateEncoder(),
+        encodingConfig: TransportEncodingConfig? = nil,
         enableParallelEncoding: Bool? = nil,
         logger: Logger? = nil
     ) {
         self.keeper = keeper
         self.transport = transport
         self.landID = landID
-        self.codec = codec
+        if let encodingConfig = encodingConfig {
+            self.codec = encodingConfig.makeCodec()
+            self.stateUpdateEncoder = encodingConfig.makeStateUpdateEncoder()
+        } else {
+            self.codec = codec
+            self.stateUpdateEncoder = stateUpdateEncoder
+        }
         self.enableLegacyJoin = enableLegacyJoin
         self.enableDirtyTracking = enableDirtyTracking
         self.onLandDestroyedCallback = onLandDestroyed
@@ -103,18 +112,24 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         self.parallelEncodingHighPlayerThreshold = 30
         self.parallelEncodingLowConcurrencyCap = 2
         self.parallelEncodingHighConcurrencyCap = 4
-        // Create logger with scope if not provided
+        let resolvedLogger: Logger
         if let logger = logger {
-            self.logger = logger.withScope("TransportAdapter")
+            resolvedLogger = logger.withScope("TransportAdapter")
         } else {
-            self.logger = createColoredLogger(
+            resolvedLogger = createColoredLogger(
                 loggerIdentifier: "com.swiftstatetree.transport",
                 scope: "TransportAdapter"
             )
         }
+        self.logger = resolvedLogger
         if let createGuestSession = createGuestSession {
             self.createGuestSession = createGuestSession
         }
+        resolvedLogger.info("Transport encoding configured", metadata: [
+            "landID": .string(landID),
+            "messageEncoding": .string(self.codec.encoding.rawValue),
+            "stateUpdateEncoding": .string(self.stateUpdateEncoder.encoding.rawValue)
+        ])
     }
 
     // MARK: - Dirty Tracking Configuration
@@ -888,25 +903,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 return
             }
 
-            // Encode once (all players get the same broadcast update)
             let update = StateUpdate.diff(broadcastDiff)
-            let updateData = try codec.encode(update)
-            let updateSize = updateData.count
-
-            // Only compute logging metadata if debug logging is enabled
-            if logger.logLevel <= .debug {
-            logger.debug("📤 Broadcast-only sync", metadata: [
-                "players": .string("\(sessionToPlayer.count)"),
-                "patches": .string("\(broadcastDiff.count)"),
-                "bytes": .string("\(updateSize)"),
-                "mode": .string("\(broadcastMode)")
-            ])
-            }
+            var lastUpdateSize: Int?
 
             // Send to all connected players
             // Handle each send separately to avoid one failure stopping all updates
-            for (sessionID, _) in sessionToPlayer {
+            for (sessionID, playerID) in sessionToPlayer {
                 do {
+                    let updateData = try stateUpdateEncoder.encode(
+                        update: update,
+                        landID: landID,
+                        playerID: playerID
+                    )
+                    lastUpdateSize = updateData.count
                     try await transport.send(updateData, to: .session(sessionID))
                 } catch {
                     // Log error but continue sending to other players
@@ -915,6 +924,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         "error": .string("\(error)")
                     ])
                 }
+            }
+
+            // Only compute logging metadata if debug logging is enabled
+            if logger.logLevel <= .debug {
+                logger.debug("📤 Broadcast-only sync", metadata: [
+                    "players": .string("\(sessionToPlayer.count)"),
+                    "patches": .string("\(broadcastDiff.count)"),
+                    "bytes": .string("\(lastUpdateSize ?? 0)"),
+                    "mode": .string("\(broadcastMode)")
+                ])
             }
 
             // Release sync lock after successful sync
@@ -976,7 +995,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private func parallelEncodingDecision(
         pendingUpdateCount: Int
     ) -> (useParallel: Bool, maxConcurrency: Int) {
-        guard codec is JSONTransportCodec else {
+        guard stateUpdateEncoder is JSONStateUpdateEncoder
+            || stateUpdateEncoder is OpcodeJSONStateUpdateEncoder
+        else {
             return (false, 1)
         }
         guard enableParallelEncoding else {
@@ -1012,7 +1033,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Enable or disable parallel encoding at runtime.
     ///
-    /// - Parameter enabled: `true` to enable parallel encoding (only effective for JSON codec),
+    /// - Parameter enabled: `true` to enable parallel encoding (only effective for JSON encoders),
     ///   `false` to disable and use serial encoding.
     public func setParallelEncodingEnabled(_ enabled: Bool) {
         enableParallelEncoding = enabled
@@ -1063,7 +1084,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ) -> [EncodedSyncUpdate] {
         pendingUpdates.map { pending in
             do {
-                let data = try codec.encode(pending.update)
+                let data = try stateUpdateEncoder.encode(
+                    update: pending.update,
+                    landID: landID,
+                    playerID: pending.playerID
+                )
                 return EncodedSyncUpdate(
                     sessionID: pending.sessionID,
                     playerID: pending.playerID,
@@ -1086,7 +1111,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// Encode updates in parallel using TaskGroup
-    /// This is safe for JSON codec as JSONEncoder is thread-safe
+    /// This is safe for JSON encoders as JSONEncoder is thread-safe
     private func encodeUpdatesInParallel(
         _ pendingUpdates: [PendingSyncUpdate],
         maxConcurrency: Int
@@ -1094,8 +1119,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         guard !pendingUpdates.isEmpty else {
             return []
         }
-        // Capture codec once before parallel execution
-        let codec = self.codec
+        // Capture encoder once before parallel execution
+        let stateUpdateEncoder = self.stateUpdateEncoder
+        let landID = self.landID
         let maxConcurrency = max(1, maxConcurrency)
         let workerCount = min(maxConcurrency, pendingUpdates.count)
         let chunkSize = (pendingUpdates.count + workerCount - 1) / workerCount
@@ -1103,8 +1129,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         return await withTaskGroup(of: [EncodedSyncUpdate].self, returning: [EncodedSyncUpdate].self) { group in
             let encodeUpdate: @Sendable (PendingSyncUpdate) -> EncodedSyncUpdate = { pending in
                 do {
-                    // Reuse the same codec instance (JSONTransportCodec is thread-safe)
-                    let data = try codec.encode(pending.update)
+                    // Reuse the same encoder instance (JSONEncoder is thread-safe)
+                    let data = try stateUpdateEncoder.encode(
+                        update: pending.update,
+                        landID: landID,
+                        playerID: pending.playerID
+                    )
                     return EncodedSyncUpdate(
                         sessionID: pending.sessionID,
                         playerID: pending.playerID,
@@ -1223,7 +1253,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 return
             }
 
-            let updateData = try codec.encode(update)
+            let updateData = try stateUpdateEncoder.encode(
+                update: update,
+                landID: landID,
+                playerID: playerID
+            )
             let updateSize = updateData.count
 
             let updateType: String

@@ -6,7 +6,14 @@ export { BrowserWebSocket } from './websocket-browser'
 export { NodeWebSocket, NodeWebSocketFactory } from './websocket-node'
 export * from './logger'
 export * from './protocol'
-export type { StatePatch, StateUpdate, StateSnapshot } from '../types/transport'
+export type {
+  StatePatch,
+  StateUpdate,
+  StateSnapshot,
+  StateUpdateEncoding,
+  StateUpdateDecoding,
+  TransportEncodingConfig
+} from '../types/transport'
 
 /**
  * Type-safe subscriptions for Map properties in state.
@@ -27,4 +34,3 @@ export interface MapSubscriptions<T> {
    */
   onRemove(callback: (key: string) => void): () => void
 }
-

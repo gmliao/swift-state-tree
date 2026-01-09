@@ -244,6 +244,7 @@ Options:
 - `-d, --device <deviceID>`: Device ID (optional)
 - `-m, --metadata <json>`: Metadata as JSON string (optional)
 - `-t, --token <token>`: JWT token for authentication (optional)
+- `--state-update-encoding <mode>`: State update decoding mode (`auto`, `jsonObject`, `opcodeJsonArray`)
 - `-s, --script <file>`: Script file to execute (optional)
 - `--once`: Exit immediately after successful connection and join (non-interactive mode)
 - `--timeout <seconds>`: Auto-exit timeout in seconds after script completion (default: 10)
@@ -263,6 +264,7 @@ Options:
 - `-d, --device <deviceID>`: Device ID (optional)
 - `-m, --metadata <json>`: Metadata as JSON string (optional)
 - `-t, --token <token>`: JWT token for authentication (optional)
+- `--state-update-encoding <mode>`: State update decoding mode (`auto`, `jsonObject`, `opcodeJsonArray`)
 
 ### `admin`
 Admin commands for managing lands (requires admin authentication).
@@ -414,4 +416,3 @@ In this example:
 - First action is expected to fail with `ACTION_NOT_REGISTERED` error code
 - Second action is expected to fail (any error is acceptable)
 - Script will continue to completion and wait for timeout even if errors occur
-

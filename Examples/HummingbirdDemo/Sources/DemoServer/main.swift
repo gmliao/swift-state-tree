@@ -56,6 +56,18 @@ struct DemoServer {
             logger: logger
         ))
 
+        let stateUpdateEncoding = resolveStateUpdateEncoding(
+            rawValue: HummingbirdDemoContent.getEnvString(
+                key: "STATE_UPDATE_ENCODING",
+                defaultValue: "jsonObject"
+            )
+        )
+
+        let transportEncoding = TransportEncodingConfig(
+            message: .json,
+            stateUpdate: stateUpdateEncoding
+        )
+
         // Shared server configuration for all land types
         // Enable parallel encoding for better performance with multiple players
         let serverConfig = LandServerConfiguration(
@@ -63,6 +75,7 @@ struct DemoServer {
             jwtConfig: jwtConfig,
             allowGuestMode: true,
             allowAutoCreateOnJoin: true,
+            transportEncoding: transportEncoding,
             enableParallelEncoding: true  // Enable parallel JSON encoding for state updates
         )
 
@@ -105,5 +118,14 @@ struct DemoServer {
             ])
             exit(1)
         }
+    }
+}
+
+private func resolveStateUpdateEncoding(rawValue: String) -> StateUpdateEncoding {
+    switch rawValue.lowercased() {
+    case "opcodejsonarray", "opcode_json_array", "opcode-json-array":
+        return .opcodeJsonArray
+    default:
+        return .jsonObject
     }
 }

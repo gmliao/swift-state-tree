@@ -1,5 +1,6 @@
 import Foundation
 import Logging
+import SwiftStateTreeTransport
 
 /// Configuration for LandServer instances.
 ///
@@ -39,6 +40,9 @@ public struct LandServerConfiguration: Sendable {
     /// performance when syncing to many players simultaneously. Only effective for JSON codec.
     /// When `nil`, uses the default behavior based on codec type.
     public var enableParallelEncoding: Bool? = nil
+
+    /// Encoding configuration for transport messages and state updates.
+    public var transportEncoding: TransportEncodingConfig = .json
     
     public init(
         logger: Logger? = nil,
@@ -46,6 +50,7 @@ public struct LandServerConfiguration: Sendable {
         jwtValidator: JWTAuthValidator? = nil,
         allowGuestMode: Bool = false,
         allowAutoCreateOnJoin: Bool = false,
+        transportEncoding: TransportEncodingConfig = .json,
         enableParallelEncoding: Bool? = nil
     ) {
         self.logger = logger
@@ -53,6 +58,7 @@ public struct LandServerConfiguration: Sendable {
         self.jwtValidator = jwtValidator
         self.allowGuestMode = allowGuestMode
         self.allowAutoCreateOnJoin = allowAutoCreateOnJoin
+        self.transportEncoding = transportEncoding
         self.enableParallelEncoding = enableParallelEncoding
     }
 }
