@@ -15,73 +15,84 @@
         <div class="section-content">
           <!-- Statistics Grid (Box Format) -->
           <div class="statistics-grid">
-            <div class="stat-box">
+            <!-- Packet category (Blue) -->
+            <div class="stat-box stat-box-packet">
               <div class="stat-label">每秒封包數 (StateUpdate)</div>
               <div class="stat-value">{{ packetsPerSecond.toFixed(1) }} 個/s</div>
             </div>
-            <div class="stat-box">
-              <div class="stat-label">每秒 Patch 數 (StatePatch)</div>
-              <div class="stat-value">{{ patchesPerSecond.toFixed(1) }} 個/s</div>
-            </div>
-            <div class="stat-box">
-              <div class="stat-label">每秒流量 (接收)</div>
-              <div class="stat-value">{{ formatBytes(bytesPerSecondInbound) }}/s</div>
-            </div>
-            <div class="stat-box">
-              <div class="stat-label">每秒流量 (發送)</div>
-              <div class="stat-value">{{ formatBytes(bytesPerSecondOutbound) }}/s</div>
-            </div>
-            <div class="stat-box">
-              <div class="stat-label">每秒流量 (總計)</div>
-              <div class="stat-value">{{ formatBytes(bytesPerSecond) }}/s</div>
-            </div>
-            <div class="stat-box">
+            <div class="stat-box stat-box-packet">
               <div class="stat-label">累計封包 (StateUpdate)</div>
               <div class="stat-value">{{ totalPackets }} 個</div>
             </div>
-            <div class="stat-box">
-              <div class="stat-label">累計 Patch (StatePatch)</div>
-              <div class="stat-value">{{ totalPatches }} 個</div>
-            </div>
-            <div class="stat-box">
-              <div class="stat-label">累計流量 (接收)</div>
-              <div class="stat-value">{{ formatBytes(totalBytesInbound) }}</div>
-            </div>
-            <div class="stat-box">
-              <div class="stat-label">累計流量 (發送)</div>
-              <div class="stat-value">{{ formatBytes(totalBytesOutbound) }}</div>
-            </div>
-            <div class="stat-box">
-              <div class="stat-label">累計流量 (總計)</div>
-              <div class="stat-value">{{ formatBytes(totalBytes) }}</div>
-            </div>
-            <div class="stat-box">
-              <div class="stat-label">連線時間</div>
-              <div class="stat-value">{{ formatUptime() }}</div>
-            </div>
-            <div class="stat-box">
+            <div class="stat-box stat-box-packet">
               <div class="stat-label">平均每秒封包數</div>
               <div class="stat-value">{{ averagePacketsPerSecond.toFixed(2) }}</div>
             </div>
-            <div class="stat-box">
-              <div class="stat-label">平均每秒 Patch 數</div>
-              <div class="stat-value">{{ averagePatchesPerSecond.toFixed(2) }}</div>
-            </div>
-            <div class="stat-box">
-              <div class="stat-label">平均每秒流量 (總計)</div>
-              <div class="stat-value">{{ formatBytes(averageBytesPerSecond) }}/s</div>
-            </div>
-            <div class="stat-box">
+            <div class="stat-box stat-box-packet">
               <div class="stat-label">最大每秒封包數</div>
               <div class="stat-value">{{ maxPacketsPerSecond }}</div>
             </div>
-            <div class="stat-box">
+            
+            <!-- Patch category (Orange) -->
+            <div class="stat-box stat-box-patch">
+              <div class="stat-label">每秒 Patch 數 (StatePatch)</div>
+              <div class="stat-value">{{ patchesPerSecond.toFixed(1) }} 個/s</div>
+            </div>
+            <div class="stat-box stat-box-patch">
+              <div class="stat-label">累計 Patch (StatePatch)</div>
+              <div class="stat-value">{{ totalPatches }} 個</div>
+            </div>
+            <div class="stat-box stat-box-patch">
+              <div class="stat-label">平均每秒 Patch 數</div>
+              <div class="stat-value">{{ averagePatchesPerSecond.toFixed(2) }}</div>
+            </div>
+            <div class="stat-box stat-box-patch">
               <div class="stat-label">最大每秒 Patch 數</div>
               <div class="stat-value">{{ maxPatchesPerSecond }}</div>
             </div>
-            <div class="stat-box">
+            
+            <!-- Traffic Inbound category (Green) -->
+            <div class="stat-box stat-box-traffic-inbound">
+              <div class="stat-label">每秒流量 (接收)</div>
+              <div class="stat-value">{{ formatBytes(bytesPerSecondInbound) }}/s</div>
+            </div>
+            <div class="stat-box stat-box-traffic-inbound">
+              <div class="stat-label">累計流量 (接收)</div>
+              <div class="stat-value">{{ formatBytes(totalBytesInbound) }}</div>
+            </div>
+            
+            <!-- Traffic Outbound category (Teal) -->
+            <div class="stat-box stat-box-traffic-outbound">
+              <div class="stat-label">每秒流量 (發送)</div>
+              <div class="stat-value">{{ formatBytes(bytesPerSecondOutbound) }}/s</div>
+            </div>
+            <div class="stat-box stat-box-traffic-outbound">
+              <div class="stat-label">累計流量 (發送)</div>
+              <div class="stat-value">{{ formatBytes(totalBytesOutbound) }}</div>
+            </div>
+            
+            <!-- Traffic Total category (Deep Green) -->
+            <div class="stat-box stat-box-traffic-total">
+              <div class="stat-label">每秒流量 (總計)</div>
+              <div class="stat-value">{{ formatBytes(bytesPerSecond) }}/s</div>
+            </div>
+            <div class="stat-box stat-box-traffic-total">
+              <div class="stat-label">累計流量 (總計)</div>
+              <div class="stat-value">{{ formatBytes(totalBytes) }}</div>
+            </div>
+            <div class="stat-box stat-box-traffic-total">
+              <div class="stat-label">平均每秒流量 (總計)</div>
+              <div class="stat-value">{{ formatBytes(averageBytesPerSecond) }}/s</div>
+            </div>
+            <div class="stat-box stat-box-traffic-total">
               <div class="stat-label">最大每秒流量 (總計)</div>
               <div class="stat-value">{{ formatBytes(maxBytesPerSecond) }}/s</div>
+            </div>
+            
+            <!-- Meta category (Grey) -->
+            <div class="stat-box stat-box-meta">
+              <div class="stat-label">連線時間</div>
+              <div class="stat-value">{{ formatUptime() }}</div>
             </div>
           </div>
         </div>
@@ -804,7 +815,7 @@ watch(() => props.connected, (connected) => {
 
 .statistics-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  grid-template-columns: repeat(4, 1fr);
   gap: 12px;
 }
 
@@ -816,11 +827,100 @@ watch(() => props.connected, (connected) => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  border-left: 4px solid transparent;
+  transition: all 0.2s ease;
+}
+
+.stat-box:hover {
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+/* Packet category - Blue */
+.stat-box-packet {
+  border-left-color: #2196F3;
+  background-color: rgba(33, 150, 243, 0.05);
+}
+
+.stat-box-packet .stat-label {
+  color: #1976D2;
+}
+
+.stat-box-packet .stat-value {
+  color: #0D47A1;
+}
+
+/* Patch category - Orange */
+.stat-box-patch {
+  border-left-color: #FF9800;
+  background-color: rgba(255, 152, 0, 0.05);
+}
+
+.stat-box-patch .stat-label {
+  color: #F57C00;
+}
+
+.stat-box-patch .stat-value {
+  color: #E65100;
+}
+
+/* Traffic Inbound category - Green */
+.stat-box-traffic-inbound {
+  border-left-color: #4CAF50;
+  background-color: rgba(76, 175, 80, 0.05);
+}
+
+.stat-box-traffic-inbound .stat-label {
+  color: #388E3C;
+}
+
+.stat-box-traffic-inbound .stat-value {
+  color: #1B5E20;
+}
+
+/* Traffic Outbound category - Teal */
+.stat-box-traffic-outbound {
+  border-left-color: #009688;
+  background-color: rgba(0, 150, 136, 0.05);
+}
+
+.stat-box-traffic-outbound .stat-label {
+  color: #00796B;
+}
+
+.stat-box-traffic-outbound .stat-value {
+  color: #004D40;
+}
+
+/* Traffic Total category - Deep Green */
+.stat-box-traffic-total {
+  border-left-color: #2E7D32;
+  background-color: rgba(46, 125, 50, 0.05);
+}
+
+.stat-box-traffic-total .stat-label {
+  color: #1B5E20;
+}
+
+.stat-box-traffic-total .stat-value {
+  color: #0D2818;
+}
+
+/* Meta category - Grey */
+.stat-box-meta {
+  border-left-color: #757575;
+  background-color: rgba(117, 117, 117, 0.05);
+}
+
+.stat-box-meta .stat-label {
+  color: #616161;
+}
+
+.stat-box-meta .stat-value {
+  color: #424242;
 }
 
 .stat-box .stat-label {
   font-size: 0.75rem;
-  color: rgba(0, 0, 0, 0.6);
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -828,7 +928,6 @@ watch(() => props.connected, (connected) => {
 
 .stat-box .stat-value {
   font-size: 1rem;
-  color: rgba(0, 0, 0, 0.9);
   font-family: 'Courier New', monospace;
   font-weight: 600;
 }
