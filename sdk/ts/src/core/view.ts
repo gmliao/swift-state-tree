@@ -414,16 +414,16 @@ export class StateTreeView {
         if (payload.fromServer) {
           const eventData = payload.fromServer
           const handlers = this.eventHandlers.get(eventData.type)
+          // Decode event payload to convert DeterministicMath types (Position2, Angle, etc.)
+          // Use event type as path prefix for schema lookup
+          const decodedPayload = this.decodeEventPayload(eventData.type, eventData.payload)
           if (handlers) {
-            // Decode event payload to convert DeterministicMath types (Position2, Angle, etc.)
-            // Use event type as path prefix for schema lookup
-            const decodedPayload = this.decodeEventPayload(eventData.type, eventData.payload)
             handlers.forEach(handler => handler(decodedPayload))
           }
-          this.logger.info(`Server event [${eventData.type}]: ${JSON.stringify(eventData.payload)}`)
+          this.logger.debug(`Server event [${eventData.type}]: detail=${JSON.stringify(decodedPayload)}`)
         } else if (payload.fromClient) {
           const eventData = payload.fromClient
-          this.logger.info(`Client event echo [${eventData.type}]: ${JSON.stringify(eventData.payload)}`)
+          this.logger.debug(`Client event echo [${eventData.type}]: detail=${JSON.stringify(eventData.payload)}`)
         }
         break
       }

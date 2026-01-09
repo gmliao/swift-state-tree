@@ -1,64 +1,95 @@
 <template>
-  <v-card-text class="statistics-panel">
+  <div class="statistics-panel">
     <div v-if="!connected" class="text-center pa-4">
       <v-icon icon="mdi-information" size="large" class="mb-2"></v-icon>
       <div>請先連線以查看統計資訊</div>
     </div>
 
     <div v-else>
-      <!-- Real-time Statistics -->
-      <v-card variant="outlined" class="mb-4">
-        <v-card-title class="text-subtitle-1">
+      <!-- Statistics (Real-time + Detailed) -->
+      <div class="section-card mb-4">
+        <div class="section-title">
           <v-icon icon="mdi-chart-line" size="small" class="mr-2"></v-icon>
-          即時統計
-        </v-card-title>
-        <v-card-text>
-          <v-row dense>
-            <v-col cols="6" md="3">
-              <v-card variant="flat" color="primary" class="stat-card">
-                <v-card-text class="text-center pa-2">
-                  <div class="text-caption text-white">每秒封包數</div>
-                  <div class="text-h6 text-white font-weight-bold">
-                    {{ packetsPerSecond.toFixed(1) }}<span class="text-caption ml-1">個/s</span>
-                  </div>
-                </v-card-text>
-              </v-card>
-            </v-col>
-            <v-col cols="6" md="3">
-              <v-card variant="flat" color="success" class="stat-card">
-                <v-card-text class="text-center pa-2">
-                  <div class="text-caption text-white">每秒流量</div>
-                  <div class="text-h6 text-white font-weight-bold">
-                    {{ formatBytes(bytesPerSecond) }}<span class="text-caption ml-1">/s</span>
-                  </div>
-                </v-card-text>
-              </v-card>
-            </v-col>
-            <v-col cols="6" md="3">
-              <v-card variant="flat" color="info" class="stat-card">
-                <v-card-text class="text-center pa-2">
-                  <div class="text-caption text-white">累計封包</div>
-                  <div class="text-h6 text-white font-weight-bold">
-                    {{ totalPackets }}<span class="text-caption ml-1">個</span>
-                  </div>
-                </v-card-text>
-              </v-card>
-            </v-col>
-            <v-col cols="6" md="3">
-              <v-card variant="flat" color="warning" class="stat-card">
-                <v-card-text class="text-center pa-2">
-                  <div class="text-caption text-white">累計流量</div>
-                  <div class="text-h6 text-white font-weight-bold">{{ formatBytes(totalBytes) }}</div>
-                </v-card-text>
-              </v-card>
-            </v-col>
-          </v-row>
-        </v-card-text>
-      </v-card>
+          統計資訊
+        </div>
+        <div class="section-content">
+          <!-- Statistics Grid (Box Format) -->
+          <div class="statistics-grid">
+            <div class="stat-box">
+              <div class="stat-label">每秒封包數 (StateUpdate)</div>
+              <div class="stat-value">{{ packetsPerSecond.toFixed(1) }} 個/s</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">每秒 Patch 數 (StatePatch)</div>
+              <div class="stat-value">{{ patchesPerSecond.toFixed(1) }} 個/s</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">每秒流量 (接收)</div>
+              <div class="stat-value">{{ formatBytes(bytesPerSecondInbound) }}/s</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">每秒流量 (發送)</div>
+              <div class="stat-value">{{ formatBytes(bytesPerSecondOutbound) }}/s</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">每秒流量 (總計)</div>
+              <div class="stat-value">{{ formatBytes(bytesPerSecond) }}/s</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">累計封包 (StateUpdate)</div>
+              <div class="stat-value">{{ totalPackets }} 個</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">累計 Patch (StatePatch)</div>
+              <div class="stat-value">{{ totalPatches }} 個</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">累計流量 (接收)</div>
+              <div class="stat-value">{{ formatBytes(totalBytesInbound) }}</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">累計流量 (發送)</div>
+              <div class="stat-value">{{ formatBytes(totalBytesOutbound) }}</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">累計流量 (總計)</div>
+              <div class="stat-value">{{ formatBytes(totalBytes) }}</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">連線時間</div>
+              <div class="stat-value">{{ formatUptime() }}</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">平均每秒封包數</div>
+              <div class="stat-value">{{ averagePacketsPerSecond.toFixed(2) }}</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">平均每秒 Patch 數</div>
+              <div class="stat-value">{{ averagePatchesPerSecond.toFixed(2) }}</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">平均每秒流量 (總計)</div>
+              <div class="stat-value">{{ formatBytes(averageBytesPerSecond) }}/s</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">最大每秒封包數</div>
+              <div class="stat-value">{{ maxPacketsPerSecond }}</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">最大每秒 Patch 數</div>
+              <div class="stat-value">{{ maxPatchesPerSecond }}</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">最大每秒流量 (總計)</div>
+              <div class="stat-value">{{ formatBytes(maxBytesPerSecond) }}/s</div>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <!-- Traffic Chart -->
-      <v-card variant="outlined" class="mb-4">
-        <v-card-title class="text-subtitle-1">
+      <div class="section-card mb-4">
+        <div class="section-title">
           <v-icon icon="mdi-chart-timeline-variant" size="small" class="mr-2"></v-icon>
           流量圖表（最近 60 秒）
           <v-btn
@@ -72,139 +103,244 @@
             style="min-width: auto; width: auto;"
           ></v-btn>
           <v-spacer></v-spacer>
-        </v-card-title>
-        <v-card-text>
+        </div>
+        <div class="section-content">
           <div class="chart-container">
             <canvas ref="chartCanvas" class="traffic-chart"></canvas>
           </div>
-        </v-card-text>
-      </v-card>
-
-      <!-- Detailed Statistics Table -->
-      <v-card variant="outlined">
-        <v-card-title class="text-subtitle-1">
-          <v-icon icon="mdi-table" size="small" class="mr-2"></v-icon>
-          詳細統計
-        </v-card-title>
-        <v-card-text>
-          <v-data-table
-            :items="statisticsTable"
-            :headers="statisticsHeaders"
-            density="compact"
-            hide-default-footer
-            class="statistics-table"
-          >
-            <template v-slot:item.value="{ item }">
-              <code>{{ item.value }}</code>
-            </template>
-          </v-data-table>
-        </v-card-text>
-      </v-card>
+        </div>
+      </div>
     </div>
-  </v-card-text>
+  </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import type { StateUpdateEntry } from '@/composables/useWebSocket'
 
+// MessageStatistics type (matches SDK's MessageStatistics interface)
+type MessageStatistics = {
+  messageType: 'stateUpdate' | 'stateSnapshot' | 'transportMessage'
+  messageSize: number
+  direction: 'inbound' | 'outbound'
+  patchCount?: number
+}
+
 const props = defineProps<{
   connected: boolean
   stateUpdates: StateUpdateEntry[]
+  messageStatistics?: MessageStatistics[] // Actual message statistics from SDK
 }>()
 
 // Statistics data
-const totalPackets = ref(0)
-const totalBytes = ref(0)
-const packetsPerSecond = ref(0)
-const bytesPerSecond = ref(0)
+const totalPackets = ref(0) // Total StateUpdate count (inbound only)
+const totalPatches = ref(0) // Total StatePatch count (inbound only)
+const totalBytesInbound = ref(0) // Total inbound bytes
+const totalBytesOutbound = ref(0) // Total outbound bytes
+const totalBytes = computed(() => totalBytesInbound.value + totalBytesOutbound.value) // Total bytes (inbound + outbound)
+const packetsPerSecond = ref(0) // StateUpdates per second (inbound)
+const patchesPerSecond = ref(0) // StatePatches per second (inbound)
+const bytesPerSecondInbound = ref(0) // Inbound bytes per second
+const bytesPerSecondOutbound = ref(0) // Outbound bytes per second
+const bytesPerSecond = computed(() => bytesPerSecondInbound.value + bytesPerSecondOutbound.value) // Total bytes per second
 
 // Time series data for chart (last 60 seconds)
-const timeSeriesData = ref<Array<{ time: number; packets: number; bytes: number }>>([])
+const timeSeriesData = ref<Array<{ time: number; packets: number; patches: number; bytes: number }>>([])
 const chartCanvas = ref<HTMLCanvasElement | null>(null)
 
 // Track statistics
-let lastTotalPackets = 0
-let lastTotalBytes = 0
+let lastProcessedUpdateIndex = 0 // Track the last processed update index
+let lastProcessedStatsIndex = 0 // Track the last processed statistics index
 let lastSecondTimestamp = Date.now()
+let lastRecordedSecond = Math.floor(Date.now() / 1000) // Track the last second we recorded to timeSeriesData
+let currentSecondPackets = 0 // StateUpdates in current second (inbound)
+let currentSecondPatches = 0 // StatePatches in current second (inbound)
+let currentSecondBytesInbound = 0 // Inbound bytes in current second
+let currentSecondBytesOutbound = 0 // Outbound bytes in current second
+let previousSecondPackets = 0 // StateUpdates in previous second (for recording)
+let previousSecondPatches = 0 // StatePatches in previous second (for recording)
+let previousSecondBytesInbound = 0 // Inbound bytes in previous second (for recording)
+let previousSecondBytesOutbound = 0 // Outbound bytes in previous second (for recording)
 let updateInterval: number | null = null
 let statsUpdateInterval: number | null = null
 
-// Calculate packet size (estimate)
-const estimatePacketSize = (update: StateUpdateEntry): number => {
-  if (!update.patches || update.patches.length === 0) {
-    return 100 // Base size for empty updates
-  }
-  
-  // Estimate: each patch is roughly 200-500 bytes depending on value size
-  let estimatedSize = 100 // Base overhead
-  for (const patch of update.patches) {
-    const pathSize = (patch.path || '').length
-    const valueSize = patch.value ? JSON.stringify(patch.value).length : 0
-    estimatedSize += 50 + pathSize + valueSize // Rough estimate
-  }
-  
-  return estimatedSize
-}
-
-// Update total statistics when state updates change
-watch(() => props.stateUpdates, (updates) => {
-  if (!updates || updates.length === 0) {
-    totalPackets.value = 0
-    totalBytes.value = 0
+// Update statistics from actual message statistics (from SDK)
+watch(() => props.messageStatistics, (stats) => {
+  if (!stats || stats.length === 0) {
     return
   }
   
-  // Update total counts
-  totalPackets.value = updates.length
+  // Calculate only NEW statistics since last check
+  const newStats = stats.slice(lastProcessedStatsIndex)
   
-  // Recalculate total bytes from all updates
-  totalBytes.value = updates.reduce((sum, update) => {
-    return sum + estimatePacketSize(update)
-  }, 0)
+  if (newStats.length > 0) {
+    // Process each new statistic
+    for (const stat of newStats) {
+      if (stat.direction === 'inbound') {
+        // Inbound: count StateUpdates and Patches
+        if (stat.messageType === 'stateUpdate') {
+          totalPackets.value += 1
+          totalPatches.value += stat.patchCount || 0
+        }
+        totalBytesInbound.value += stat.messageSize
+      } else {
+        // Outbound: only count bytes
+        totalBytesOutbound.value += stat.messageSize
+      }
+    }
+    
+    // Update current second statistics
+    const now = Date.now()
+    const currentSecond = Math.floor(now / 1000)
+    const lastSecond = Math.floor(lastSecondTimestamp / 1000)
+    
+    // Calculate new stats for current second
+    let newPackets = 0
+    let newPatches = 0
+    let newBytesInbound = 0
+    let newBytesOutbound = 0
+    
+    for (const stat of newStats) {
+      if (stat.direction === 'inbound') {
+        if (stat.messageType === 'stateUpdate') {
+          newPackets += 1
+          newPatches += stat.patchCount || 0
+        }
+        newBytesInbound += stat.messageSize
+      } else {
+        newBytesOutbound += stat.messageSize
+      }
+    }
+    
+    if (currentSecond === lastSecond) {
+      // Same second, accumulate
+      currentSecondPackets += newPackets
+      currentSecondPatches += newPatches
+      currentSecondBytesInbound += newBytesInbound
+      currentSecondBytesOutbound += newBytesOutbound
+    } else {
+      // New second detected
+      // Save current second's values as previous before resetting
+      previousSecondPackets = currentSecondPackets
+      previousSecondPatches = currentSecondPatches
+      previousSecondBytesInbound = currentSecondBytesInbound
+      previousSecondBytesOutbound = currentSecondBytesOutbound
+      
+      // Reset and start counting for the new second
+      currentSecondPackets = newPackets
+      currentSecondPatches = newPatches
+      currentSecondBytesInbound = newBytesInbound
+      currentSecondBytesOutbound = newBytesOutbound
+      lastSecondTimestamp = now
+    }
+    
+    lastProcessedStatsIndex = stats.length
+  }
+  
+  // Handle reset case
+  if (stats.length < lastProcessedStatsIndex) {
+    lastProcessedStatsIndex = 0
+    // Recalculate totals from scratch
+    totalPackets.value = 0
+    totalPatches.value = 0
+    totalBytesInbound.value = 0
+    totalBytesOutbound.value = 0
+    for (const stat of stats) {
+      if (stat.direction === 'inbound') {
+        if (stat.messageType === 'stateUpdate') {
+          totalPackets.value += 1
+          totalPatches.value += stat.patchCount || 0
+        }
+        totalBytesInbound.value += stat.messageSize
+      } else {
+        totalBytesOutbound.value += stat.messageSize
+      }
+    }
+  }
+}, { deep: true })
+
+// Also track stateUpdates for patch count (fallback if messageStatistics not available)
+watch(() => props.stateUpdates, (updates) => {
+  if (!updates || updates.length === 0) {
+    if (!props.messageStatistics || props.messageStatistics.length === 0) {
+      totalPackets.value = 0
+      totalPatches.value = 0
+    }
+    lastProcessedUpdateIndex = 0
+    return
+  }
+  
+  // Only use stateUpdates if messageStatistics is not available
+  if (!props.messageStatistics || props.messageStatistics.length === 0) {
+    const newUpdates = updates.slice(lastProcessedUpdateIndex)
+    
+    if (newUpdates.length > 0) {
+      const newPatchesCount = newUpdates.reduce((sum, update) => {
+        return sum + (update.patches?.length || 0)
+      }, 0)
+      
+      totalPackets.value += newUpdates.length
+      totalPatches.value += newPatchesCount
+    }
+    
+    if (updates.length < lastProcessedUpdateIndex) {
+      lastProcessedUpdateIndex = 0
+      totalPackets.value = updates.length
+      totalPatches.value = updates.reduce((sum, update) => {
+        return sum + (update.patches?.length || 0)
+      }, 0)
+    } else {
+      lastProcessedUpdateIndex = updates.length
+    }
+  }
 }, { deep: true })
 
 // Calculate per-second statistics every second
 const calculatePerSecondStats = () => {
   const now = Date.now()
   const currentSecond = Math.floor(now / 1000)
-  const lastSecond = Math.floor(lastSecondTimestamp / 1000)
   
-  if (currentSecond > lastSecond) {
-    // Calculate packets and bytes in the last second
-    const packetsInLastSecond = totalPackets.value - lastTotalPackets
-    const bytesInLastSecond = totalBytes.value - lastTotalBytes
+  // If we've moved to a new second, record the previous second's data
+  if (currentSecond > lastRecordedSecond) {
+    // Record the data for the previous second (lastRecordedSecond)
+    // Use the saved previous second values (saved by watch when new second was detected)
+    const recordTimestamp = lastRecordedSecond * 1000
     
-    // Update per-second values
-    packetsPerSecond.value = packetsInLastSecond
-    bytesPerSecond.value = bytesInLastSecond
-    
-    // Add to time series
     timeSeriesData.value.push({
-      time: now,
-      packets: packetsInLastSecond,
-      bytes: bytesInLastSecond
+      time: recordTimestamp,
+      packets: previousSecondPackets,
+      patches: previousSecondPatches,
+      bytes: previousSecondBytesInbound + previousSecondBytesOutbound
     })
     
     // Keep only last 60 seconds
     const cutoffTime = now - 60000
     timeSeriesData.value = timeSeriesData.value.filter(d => d.time >= cutoffTime)
     
-    // Update tracking variables
-    lastTotalPackets = totalPackets.value
-    lastTotalBytes = totalBytes.value
-    lastSecondTimestamp = now
-  } else if (currentSecond === lastSecond) {
-    // Same second, calculate current rate (for real-time display)
-    const elapsed = (now - lastSecondTimestamp) / 1000
-    if (elapsed > 0) {
-      const packetsInCurrentSecond = totalPackets.value - lastTotalPackets
-      const bytesInCurrentSecond = totalBytes.value - lastTotalBytes
-      
-      // Show current second's rate (will be finalized at end of second)
-      packetsPerSecond.value = packetsInCurrentSecond
-      bytesPerSecond.value = bytesInCurrentSecond
-    }
+    // Update display with the previous second's data (stable, updates once per second)
+    // This shows "what happened in the last completed second"
+    packetsPerSecond.value = previousSecondPackets
+    patchesPerSecond.value = previousSecondPatches
+    bytesPerSecondInbound.value = previousSecondBytesInbound
+    bytesPerSecondOutbound.value = previousSecondBytesOutbound
+    
+    // Update lastRecordedSecond
+    lastRecordedSecond = currentSecond
+  } else if (timeSeriesData.value.length > 0) {
+    // Same second, but we have historical data
+    // Show the last recorded second's data (stable display)
+    const lastData = timeSeriesData.value[timeSeriesData.value.length - 1]
+    packetsPerSecond.value = lastData.packets
+    patchesPerSecond.value = lastData.patches
+    // Calculate bytes per second from time series (total)
+    bytesPerSecondInbound.value = previousSecondBytesInbound
+    bytesPerSecondOutbound.value = previousSecondBytesOutbound
+  } else {
+    // No historical data yet (initial state), show current second's accumulated data
+    packetsPerSecond.value = currentSecondPackets
+    patchesPerSecond.value = currentSecondPatches
+    bytesPerSecondInbound.value = currentSecondBytesInbound
+    bytesPerSecondOutbound.value = currentSecondBytesOutbound
   }
 }
 
@@ -233,21 +369,6 @@ const formatBytesShort = (bytes: number): string => {
   }
 }
 
-// Statistics table
-const statisticsHeaders = [
-  { title: '項目', key: 'label' },
-  { title: '數值', key: 'value' }
-]
-
-const statisticsTable = computed(() => [
-  { label: '連線時間', value: formatUptime() },
-  { label: '平均每秒封包數', value: averagePacketsPerSecond.value.toFixed(2) },
-  { label: '平均每秒流量', value: formatBytes(averageBytesPerSecond.value) + '/s' },
-  { label: '最大每秒封包數', value: maxPacketsPerSecond.value.toString() },
-  { label: '最大每秒流量', value: formatBytes(maxBytesPerSecond.value) + '/s' },
-  { label: '總封包數', value: totalPackets.value.toString() },
-  { label: '總流量', value: formatBytes(totalBytes.value) }
-])
 
 const startTime = ref(Date.now())
 
@@ -271,6 +392,12 @@ const averagePacketsPerSecond = computed(() => {
   return total / timeSeriesData.value.length
 })
 
+const averagePatchesPerSecond = computed(() => {
+  if (timeSeriesData.value.length === 0) return 0
+  const total = timeSeriesData.value.reduce((sum, d) => sum + d.patches, 0)
+  return total / timeSeriesData.value.length
+})
+
 const averageBytesPerSecond = computed(() => {
   if (timeSeriesData.value.length === 0) return 0
   const total = timeSeriesData.value.reduce((sum, d) => sum + d.bytes, 0)
@@ -280,6 +407,11 @@ const averageBytesPerSecond = computed(() => {
 const maxPacketsPerSecond = computed(() => {
   if (timeSeriesData.value.length === 0) return 0
   return Math.max(...timeSeriesData.value.map(d => d.packets))
+})
+
+const maxPatchesPerSecond = computed(() => {
+  if (timeSeriesData.value.length === 0) return 0
+  return Math.max(...timeSeriesData.value.map(d => d.patches))
 })
 
 const maxBytesPerSecond = computed(() => {
@@ -340,7 +472,7 @@ const drawChart = () => {
   }
   
   // Find max values for scaling
-  const maxPackets = Math.max(1, ...timeSeriesData.value.map(d => d.packets))
+  const maxPatches = Math.max(1, ...timeSeriesData.value.map(d => d.patches))
   const maxBytes = Math.max(1, ...timeSeriesData.value.map(d => d.bytes))
   
   // Draw background
@@ -376,29 +508,29 @@ const drawChart = () => {
     }
   }
   
-  // Draw packets line (blue)
+  // Draw patches line (orange)
   if (timeSeriesData.value.length > 0) {
-    ctx.strokeStyle = '#2196F3'
+    ctx.strokeStyle = '#FF9800'
     ctx.lineWidth = 2
     ctx.beginPath()
     
     if (timeSeriesData.value.length === 1) {
       // Single point - draw a dot
       const x = chartX + chartWidth / 2
-      const y = chartY + chartHeight - (timeSeriesData.value[0].packets / maxPackets) * chartHeight
+      const y = chartY + chartHeight - (timeSeriesData.value[0].patches / maxPatches) * chartHeight
       ctx.arc(x, y, 3, 0, Math.PI * 2)
-      ctx.fillStyle = '#2196F3'
+      ctx.fillStyle = '#FF9800'
       ctx.fill()
     } else {
       // Multiple points - draw line
-      const packetPoints = timeSeriesData.value.map((d, i) => {
+      const patchesPoints = timeSeriesData.value.map((d, i) => {
         const x = chartX + (chartWidth / (timeSeriesData.value.length - 1)) * i
-        const y = chartY + chartHeight - (d.packets / maxPackets) * chartHeight
+        const y = chartY + chartHeight - (d.patches / maxPatches) * chartHeight
         return { x, y }
       })
-      ctx.moveTo(packetPoints[0].x, packetPoints[0].y)
-      for (let i = 1; i < packetPoints.length; i++) {
-        ctx.lineTo(packetPoints[i].x, packetPoints[i].y)
+      ctx.moveTo(patchesPoints[0].x, patchesPoints[0].y)
+      for (let i = 1; i < patchesPoints.length; i++) {
+        ctx.lineTo(patchesPoints[i].x, patchesPoints[i].y)
       }
       ctx.stroke()
     }
@@ -432,15 +564,15 @@ const drawChart = () => {
     }
   }
   
-  // Draw Y-axis labels (left side) - for packets
+  // Draw Y-axis labels (left side) - for patches
   ctx.font = '10px sans-serif'
   ctx.fillStyle = '#666'
   ctx.textAlign = 'right'
   ctx.textBaseline = 'middle'
   
-  const maxPacketsLabel = Math.ceil(maxPackets)
+  const maxPatchesLabel = Math.ceil(maxPatches)
   for (let i = 0; i <= 5; i++) {
-    const value = (maxPacketsLabel / 5) * (5 - i)
+    const value = (maxPatchesLabel / 5) * (5 - i)
     const y = chartY + (chartHeight / 5) * i
     ctx.fillText(value.toFixed(0), chartX - 10, y)
   }
@@ -477,7 +609,7 @@ const drawChart = () => {
   ctx.translate(15, height / 2)
   ctx.rotate(-Math.PI / 2)
   ctx.textAlign = 'center'
-  ctx.fillText('封包數 / 流量', 0, 0)
+  ctx.fillText('Patch 數 / 流量', 0, 0)
   ctx.restore()
   
   // Draw legend with background for better visibility
@@ -485,27 +617,27 @@ const drawChart = () => {
   const legendX = 10
   const legendLineHeight = 18
   
-  // Background for legend
+  // Background for legend (fits 2 items)
   ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'
-  ctx.fillRect(legendX - 5, legendY - 12, 120, 35)
+  ctx.fillRect(legendX - 5, legendY - 12, 140, 35)
   
   // Border for legend
   ctx.strokeStyle = '#e0e0e0'
   ctx.lineWidth = 1
-  ctx.strokeRect(legendX - 5, legendY - 12, 120, 35)
+  ctx.strokeRect(legendX - 5, legendY - 12, 140, 35)
   
   // Legend text
   ctx.font = '12px sans-serif'
   ctx.textAlign = 'left'
   ctx.textBaseline = 'top'
   
-  // Packets legend
-  ctx.fillStyle = '#2196F3'
+  // Patches legend (orange)
+  ctx.fillStyle = '#FF9800'
   ctx.fillRect(legendX, legendY, 12, 2)
   ctx.fillStyle = '#333'
-  ctx.fillText('封包數', legendX + 18, legendY - 2)
+  ctx.fillText('Patch 數 (StatePatch)', legendX + 18, legendY - 2)
   
-  // Bytes legend
+  // Bytes legend (green)
   ctx.fillStyle = '#4CAF50'
   ctx.fillRect(legendX, legendY + legendLineHeight, 12, 2)
   ctx.fillStyle = '#333'
@@ -528,14 +660,27 @@ const resizeCanvas = () => {
 // Reset statistics
 const resetStatistics = () => {
   totalPackets.value = 0
-  totalBytes.value = 0
+  totalPatches.value = 0
+  totalBytesInbound.value = 0
+  totalBytesOutbound.value = 0
   packetsPerSecond.value = 0
-  bytesPerSecond.value = 0
+  patchesPerSecond.value = 0
+  bytesPerSecondInbound.value = 0
+  bytesPerSecondOutbound.value = 0
   timeSeriesData.value = []
   startTime.value = Date.now()
-  lastTotalPackets = 0
-  lastTotalBytes = 0
+  lastProcessedUpdateIndex = 0
+  lastProcessedStatsIndex = 0
+  currentSecondPackets = 0
+  currentSecondPatches = 0
+  currentSecondBytesInbound = 0
+  currentSecondBytesOutbound = 0
+  previousSecondPackets = 0
+  previousSecondPatches = 0
+  previousSecondBytesInbound = 0
+  previousSecondBytesOutbound = 0
   lastSecondTimestamp = Date.now()
+  lastRecordedSecond = Math.floor(Date.now() / 1000)
   drawChart()
 }
 
@@ -554,9 +699,18 @@ onMounted(() => {
   }, 1000)
   
   // Initialize tracking
-  lastTotalPackets = totalPackets.value
-  lastTotalBytes = totalBytes.value
+  lastProcessedUpdateIndex = 0
+  lastProcessedStatsIndex = 0
+  currentSecondPackets = 0
+  currentSecondPatches = 0
+  currentSecondBytesInbound = 0
+  currentSecondBytesOutbound = 0
+  previousSecondPackets = 0
+  previousSecondPatches = 0
+  previousSecondBytesInbound = 0
+  previousSecondBytesOutbound = 0
   lastSecondTimestamp = Date.now()
+  lastRecordedSecond = Math.floor(Date.now() / 1000)
 })
 
 onUnmounted(() => {
@@ -573,9 +727,18 @@ onUnmounted(() => {
 watch(() => props.connected, (connected) => {
   if (connected) {
     startTime.value = Date.now()
-    lastTotalPackets = totalPackets.value
-    lastTotalBytes = totalBytes.value
+    lastProcessedUpdateIndex = 0
+    lastProcessedStatsIndex = 0
+    currentSecondPackets = 0
+    currentSecondPatches = 0
+    currentSecondBytesInbound = 0
+    currentSecondBytesOutbound = 0
+    previousSecondPackets = 0
+    previousSecondPatches = 0
+    previousSecondBytesInbound = 0
+    previousSecondBytesOutbound = 0
     lastSecondTimestamp = Date.now()
+    lastRecordedSecond = Math.floor(Date.now() / 1000)
   } else {
     resetStatistics()
   }
@@ -588,12 +751,65 @@ watch(() => props.connected, (connected) => {
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 16px;
   padding-bottom: 16px;
+  box-sizing: border-box;
+  position: relative;
+  height: 0; /* Force flex item to respect parent constraints, similar to state-tree-content */
 }
 
-.stat-card {
-  min-height: 70px;
+.section-card {
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 4px;
+  background-color: rgb(var(--v-theme-surface));
+  overflow: hidden;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  padding: 16px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.12);
+  height: 25px;
+}
+
+.section-content {
+  padding: 16px;
+}
+
+.statistics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.stat-box {
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 4px;
+  padding: 12px;
+  background-color: rgb(var(--v-theme-surface));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stat-box .stat-label {
+  font-size: 0.75rem;
+  color: rgba(0, 0, 0, 0.6);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.stat-box .stat-value {
+  font-size: 1rem;
+  color: rgba(0, 0, 0, 0.9);
+  font-family: 'Courier New', monospace;
+  font-weight: 600;
 }
 
 .chart-container {

@@ -76,8 +76,8 @@ public struct PlayerState: StateNodeProtocol {
     var resources: Int = 0
     
     /// Last fire tick (for fire rate limiting)
-    @Sync(.broadcast)
-    var lastFireTick: Int = 0
+    @Sync(.serverOnly)
+    var lastFireTick: Int64 = 0
 
     public init() {}
 }
@@ -108,15 +108,15 @@ public struct MonsterState: StateNodeProtocol {
     var maxHealth: Int = GameConfig.MONSTER_BASE_HEALTH
     
     /// Spawn position (for path calculation)
-    @Sync(.broadcast)
+    @Sync(.serverOnly)
     var spawnPosition: Position2 = Position2(x: 0.0, y: 0.0)
     
     /// Path progress (0.0 to 1.0, where 1.0 = reached base)
-    @Sync(.broadcast)
+    @Sync(.serverOnly)
     var pathProgress: Float = 0.0
     
     /// Resource reward when defeated
-    @Sync(.broadcast)
+    @Sync(.serverOnly)
     var reward: Int = GameConfig.MONSTER_BASE_REWARD
     
     public init() {}
@@ -144,8 +144,8 @@ public struct TurretState: StateNodeProtocol {
     var level: Int = 0
     
     /// Last fire tick (for fire rate limiting)
-    @Sync(.broadcast)
-    var lastFireTick: Int = 0
+    @Sync(.serverOnly)
+    var lastFireTick: Int64 = 0
     
     /// Owner player ID (who placed this turret)
     @Sync(.broadcast)
@@ -197,20 +197,16 @@ public struct HeroDefenseState: StateNodeProtocol {
     var turrets: [Int: TurretState] = [:]
     
     /// Next monster ID counter (for generating unique IDs)
-    @Sync(.broadcast)
+    @Sync(.serverOnly)
     var nextMonsterID: Int = 1
     
     /// Next turret ID counter (for generating unique IDs)
-    @Sync(.broadcast)
+    @Sync(.serverOnly)
     var nextTurretID: Int = 1
 
     /// Base/fortress state
     @Sync(.broadcast)
     var base: BaseState = BaseState()
-
-    /// Current game tick (for spawn timing, etc.)
-    @Sync(.broadcast)
-    var currentTick: Int = 0
 
     /// Shared game score
     @Sync(.broadcast)
@@ -401,8 +397,8 @@ enum GameSystem {
     }
     
     /// Check if player can fire (fire rate check)
-    static func canPlayerFire(_ player: PlayerState, currentTick: Int) -> Bool {
-        let fireRate = GameConfig.WEAPON_FIRE_RATE_TICKS
+    static func canPlayerFire(_ player: PlayerState, currentTick: Int64) -> Bool {
+        let fireRate = Int64(GameConfig.WEAPON_FIRE_RATE_TICKS)
         return currentTick - player.lastFireTick >= fireRate
     }
     
@@ -530,8 +526,8 @@ enum GameSystem {
     }
     
     /// Check if turret can fire (fire rate check)
-    static func canTurretFire(_ turret: TurretState, currentTick: Int) -> Bool {
-        let fireRate = GameConfig.TURRET_FIRE_RATE_TICKS
+    static func canTurretFire(_ turret: TurretState, currentTick: Int64) -> Bool {
+        let fireRate = Int64(GameConfig.TURRET_FIRE_RATE_TICKS)
         return currentTick - turret.lastFireTick >= fireRate
     }
     
@@ -649,7 +645,7 @@ public enum HeroDefense {
 
             Lifetime {
                 Tick(every: .milliseconds(50)) { (state: inout HeroDefenseState, ctx: LandContext) in
-                    state.currentTick += 1
+                    guard let tickId = ctx.tickId else { return }
                     
                     // Update all player systems
                     for (playerID, var player) in state.players {
@@ -657,7 +653,7 @@ public enum HeroDefense {
                         GameSystem.updatePlayerMovement(&player)
                         
                         // Auto-shoot: Check if there's a monster in range and fire automatically
-                        if GameSystem.canPlayerFire(player, currentTick: state.currentTick) {
+                        if GameSystem.canPlayerFire(player, currentTick: tickId) {
                             let range = GameSystem.getWeaponRange(level: player.weaponLevel)
                             let nearestMonster = GameSystem.findNearestMonsterInRange(
                                 from: player.position,
@@ -686,7 +682,7 @@ public enum HeroDefense {
                                     state.monsters[monsterID] = updatedMonster
                                 }
                                 
-                                player.lastFireTick = state.currentTick
+                                player.lastFireTick = tickId
                                 
                                 // Broadcast shoot event to all players
                                 ctx.spawn {
@@ -706,7 +702,7 @@ public enum HeroDefense {
                     }
                     
                     // Spawn monsters periodically
-                    if state.currentTick % GameConfig.MONSTER_SPAWN_INTERVAL_TICKS == 0 {
+                    if tickId % Int64(GameConfig.MONSTER_SPAWN_INTERVAL_TICKS) == 0 {
                         let monsterID = state.nextMonsterID
                         state.nextMonsterID += 1
                         let monster = GameSystem.spawnMonster(nextID: monsterID)
@@ -733,7 +729,7 @@ public enum HeroDefense {
                     
                     // Update turrets (auto-target and fire)
                     for (turretID, var turret) in state.turrets {
-                        if GameSystem.canTurretFire(turret, currentTick: state.currentTick) {
+                        if GameSystem.canTurretFire(turret, currentTick: tickId) {
                             let range = GameSystem.getTurretRange(level: turret.level)
                             let nearestMonster = GameSystem.findNearestMonsterInTurretRange(
                                 from: turret.position,
@@ -765,7 +761,7 @@ public enum HeroDefense {
                                     state.monsters[monsterID] = updatedMonster
                                 }
                                 
-                                turret.lastFireTick = state.currentTick
+                                turret.lastFireTick = tickId
                                 
                                 // Broadcast turret fire event to all players
                                 ctx.spawn {
@@ -860,15 +856,16 @@ public enum HeroDefense {
                     // This can be used for manual shooting if needed in the future
                     let playerID = ctx.playerID
                     
-                    guard var player = state.players[playerID] else {
-                        ctx.logger.warning("⚠️ ShootEvent: Player not found", metadata: [
+                    guard var player = state.players[playerID],
+                          let tickId = ctx.tickId else {
+                        ctx.logger.warning("⚠️ ShootEvent: Player not found or tickId unavailable", metadata: [
                             "playerID": .string(playerID.rawValue),
                         ])
                         return
                     }
                     
                     // Check fire rate
-                    if !GameSystem.canPlayerFire(player, currentTick: state.currentTick) {
+                    if !GameSystem.canPlayerFire(player, currentTick: tickId) {
                         return
                     }
                     
@@ -901,7 +898,7 @@ public enum HeroDefense {
                             state.monsters[monsterID] = updatedMonster
                         }
                         
-                        player.lastFireTick = state.currentTick
+                        player.lastFireTick = tickId
                         
                         // Broadcast shoot event
                         ctx.spawn {

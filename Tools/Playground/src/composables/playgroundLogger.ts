@@ -1,4 +1,4 @@
-import type { Ref } from 'vue'
+import { ref, type Ref } from 'vue'
 import type { LogEntry } from '@/types/transport'
 import type { Logger } from '@swiftstatetree/sdk/core'
 
@@ -6,9 +6,15 @@ import type { Logger } from '@swiftstatetree/sdk/core'
  * Playground-specific logger that adds logs to Vue refs
  */
 export function createPlaygroundLogger(
-  logs: Ref<LogEntry[]>
+  logs: Ref<LogEntry[]>,
+  enableLogs: Ref<boolean> = ref(true)
 ): Logger {
   const addLog = (message: string, type: LogEntry['type'] = 'info', data?: any) => {
+    // Skip if logging is disabled
+    if (!enableLogs.value) {
+      return
+    }
+    
     logs.value.push({
       id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
       timestamp: new Date(),

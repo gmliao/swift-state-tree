@@ -72,10 +72,6 @@
             "radius" : 3
           }
         },
-        "currentTick" : {
-          "default" : 0,
-          "type" : "integer"
-        },
         "monsters" : {
           "additionalProperties" : {
             "$ref" : "#\/defs\/MonsterState"
@@ -144,7 +140,6 @@
         "nextMonsterID",
         "nextTurretID",
         "base",
-        "currentTick",
         "score"
       ],
       "type" : "object",
