@@ -21,9 +21,11 @@ func testICircleIntersects() {
     let circle1 = ICircle(center: IVec2(x: 0.0, y: 0.0), radius: 0.5)
     let circle2 = ICircle(center: IVec2(x: 0.8, y: 0.0), radius: 0.5)
     let circle3 = ICircle(center: IVec2(x: 1.5, y: 0.0), radius: 0.5)
+    let circle4 = ICircle(center: IVec2(x: 1.0, y: 0.0), radius: 0.5)
     
     #expect(circle1.intersects(circle2) == true)  // Overlapping
     #expect(circle1.intersects(circle3) == false)  // Not touching
+    #expect(circle1.intersects(circle4) == true)  // Tangent
 }
 
 @Test("ICircle intersects with AABB")
