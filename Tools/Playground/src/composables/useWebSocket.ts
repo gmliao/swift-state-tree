@@ -4,6 +4,14 @@ import type { LogEntry, StatePatch, StateUpdate } from '@/types/transport'
 import { StateTreeRuntime, StateTreeView } from '@swiftstatetree/sdk/core'
 import { createPlaygroundLogger } from './playgroundLogger.js'
 
+// MessageStatistics type (matches SDK's MessageStatistics interface)
+type MessageStatistics = {
+  messageType: 'stateUpdate' | 'stateSnapshot' | 'transportMessage'
+  messageSize: number
+  direction: 'inbound' | 'outbound'
+  patchCount?: number
+}
+
 export interface StateUpdateEntry {
   id: string
   timestamp: Date
@@ -14,13 +22,20 @@ export interface StateUpdateEntry {
   affectedPaths?: string[]
 }
 
-export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, selectedLandID: Ref<string> = ref(''), landInstanceId: Ref<string> = ref('default')) {
+export function useWebSocket(
+  wsUrl: Ref<string>, 
+  schema: Ref<Schema | null>, 
+  selectedLandID: Ref<string> = ref(''), 
+  landInstanceId: Ref<string> = ref('default'),
+  enableLogs: Ref<boolean> = ref(true)
+) {
   const isConnected = ref(false)
   const isJoined = ref(false)
   const connectionError = ref<string | null>(null)
   const currentState = ref<Record<string, any>>({})
   const logs = ref<LogEntry[]>([])
   const stateUpdates = ref<StateUpdateEntry[]>([])
+  const messageStatistics = ref<MessageStatistics[]>([]) // Raw statistics from SDK
   const actionResults = ref<Array<{
     actionName: string
     success: boolean
@@ -72,7 +87,7 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
   let runtime: StateTreeRuntime | null = null
   let view: StateTreeView | null = null
 
-  const logger = createPlaygroundLogger(logs)
+  const logger = createPlaygroundLogger(logs, enableLogs)
   
   // Debug: verify logger is created
   console.log('[Playground] Logger created:', typeof logger.info === 'function')
@@ -119,6 +134,7 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
   }
 
   // Handle state updates from View
+  // Note: stateUpdates are always collected (needed for StatisticsPanel)
   const handleStateUpdate = (update: StateUpdate) => {
     if (update.type === 'noChange') {
       return
@@ -147,6 +163,7 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
   }
 
   // Handle snapshot from View
+  // Note: stateUpdates are always collected (needed for StatisticsPanel)
   const handleSnapshot = (_snapshot: { values: Record<string, any> }) => {
     stateUpdates.value.push({
       id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
@@ -176,6 +193,16 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
       // Create runtime and view
       console.log('[Playground] Creating runtime with logger:', logger)
       runtime = new StateTreeRuntime(logger)
+      
+      // Set up statistics callback to collect actual message sizes from SDK
+      runtime.setStatisticsCallback((stats: MessageStatistics) => {
+        // Use array spread to ensure Vue reactivity
+        messageStatistics.value = [...messageStatistics.value, stats]
+        // Keep only last 1000 statistics entries
+        if (messageStatistics.value.length > 1000) {
+          messageStatistics.value = messageStatistics.value.slice(-1000)
+        }
+      })
       
       // Set up disconnect callback to handle connection errors
       runtime.onDisconnect((closeCode, closeReason, wasClean) => {
@@ -399,6 +426,7 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
 
   const disconnect = (): void => {
     if (runtime) {
+      runtime.setStatisticsCallback(null) // Clear statistics callback
       runtime.disconnect()
       runtime = null
       view = null
@@ -488,6 +516,7 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
     currentPlayerID,
     logs,
     stateUpdates,
+    messageStatistics, // Actual message statistics from SDK
     actionResults,
     connect,
     disconnect,

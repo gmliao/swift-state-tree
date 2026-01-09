@@ -35,11 +35,22 @@
         color="error"
         variant="flat"
         size="small"
-        class="mr-4"
+        class="mr-2"
         @click="handleDisconnect"
       >
         <v-icon icon="mdi-link-off" class="mr-1"></v-icon>
         斷線
+      </v-btn>
+      <v-btn
+        :color="showLogPanel ? 'primary' : 'white'"
+        :variant="showLogPanel ? 'flat' : 'outlined'"
+        size="small"
+        class="mr-4"
+        @click="showLogPanel = !showLogPanel"
+        :title="showLogPanel ? '隱藏日誌面板' : '顯示日誌面板'"
+      >
+        <v-icon :icon="showLogPanel ? 'mdi-eye-off' : 'mdi-eye'" class="mr-1"></v-icon>
+        {{ showLogPanel ? '隱藏日誌' : '顯示日誌' }}
       </v-btn>
     </v-app-bar>
 
@@ -338,6 +349,7 @@
                     <StatisticsPanel
                       :connected="isConnected"
                       :state-updates="stateUpdates"
+                      :message-statistics="messageStatistics"
                     />
                   </div>
                 </v-window-item>
@@ -416,6 +428,7 @@
                           <StatisticsPanel
                             :connected="isConnected"
                             :state-updates="stateUpdates"
+                            :message-statistics="messageStatistics"
                           />
                         </v-window-item>
                       </v-window>
@@ -427,7 +440,7 @@
           </div>
           
           <!-- Bottom Panel: Logs & State Updates (Resizable) -->
-          <div class="log-panel-wrapper">
+          <div v-if="showLogPanel" class="log-panel-wrapper">
             <ResizableLogPanel
               :height="logPanelHeight"
               :logTab="logTab"
@@ -561,6 +574,7 @@ import { generateJWT } from './utils/jwt'
 const tab = ref('actions')
 const logTab = ref('messages')
 const logPanelHeight = ref(200)
+const showLogPanel = ref(false) // Default: hidden
 const schemaTab = ref('server')
 const schemaFile = ref<File[] | null>(null)
 const schemaJson = ref('')
@@ -660,12 +674,13 @@ const {
   currentPlayerID,
   logs, 
   stateUpdates,
+  messageStatistics,
   actionResults: actionResultsFromWS,
   connect: connectWebSocket, 
   disconnect, 
   sendAction, 
   sendEvent 
-} = useWebSocket(wsUrl, parsedSchema, selectedLandID, landInstanceId)
+} = useWebSocket(wsUrl, parsedSchema, selectedLandID, landInstanceId, showLogPanel)
 
 // Sync action results from WebSocket composable
 watch(actionResultsFromWS, (newResults) => {
@@ -919,7 +934,8 @@ onMounted(() => {
 }
 
 .actions-events-container-mobile :deep(.action-panel),
-.actions-events-container-mobile :deep(.event-panel) {
+.actions-events-container-mobile :deep(.event-panel),
+.actions-events-container-mobile :deep(.statistics-panel) {
   flex: 1;
   min-height: 0;
   overflow: auto;
@@ -1029,12 +1045,24 @@ onMounted(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .actions-events-window-item {
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  padding: 8px;
+  overflow: visible; /* Changed from hidden to allow scrollbar to show */
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative; /* Added to contain the scrollbar */
+}
+
+.actions-events-window-item :deep(.statistics-panel) {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  height: 0; /* Force flex item to respect parent constraints */
 }
 </style>

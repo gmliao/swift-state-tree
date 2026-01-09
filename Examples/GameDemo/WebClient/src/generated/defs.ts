@@ -13,7 +13,7 @@ export { FIXED_POINT_SCALE }
 
 // @ts-ignore - DeterministicMath classes (Position2) are used in type definitions
 export type BaseState = { health: number; maxHealth: number; position: Position2; radius: number }
-export type HeroDefenseState = { base: BaseState; currentTick: number; monsters: { [key: string]: MonsterState }; nextMonsterID: number; nextTurretID: number; players: { [key: string]: PlayerState }; score: number; turrets: { [key: string]: TurretState } }
+export type HeroDefenseState = { base: BaseState; monsters: { [key: string]: MonsterState }; nextMonsterID: number; nextTurretID: number; players: { [key: string]: PlayerState }; score: number; turrets: { [key: string]: TurretState } }
 // @ts-ignore - DeterministicMath classes (Angle, Position2) are used in type definitions
 export type MonsterState = { health: number; id: number; maxHealth: number; pathProgress: number; position: Position2; reward: number; rotation: Angle; spawnPosition: Position2 }
 // @ts-ignore - DeterministicMath classes (Position2) are used in type definitions

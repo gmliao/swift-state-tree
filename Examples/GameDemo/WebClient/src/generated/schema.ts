@@ -102,10 +102,6 @@ export const SCHEMA = {
             "radius": 3
           }
         },
-        "currentTick": {
-          "default": 0,
-          "type": "integer"
-        },
         "monsters": {
           "additionalProperties": {
             "$ref": "#/defs/MonsterState"
@@ -168,7 +164,6 @@ export const SCHEMA = {
         "nextMonsterID",
         "nextTurretID",
         "base",
-        "currentTick",
         "score"
       ],
       "type": "object",

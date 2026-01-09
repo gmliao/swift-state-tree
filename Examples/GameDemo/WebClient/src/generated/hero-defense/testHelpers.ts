@@ -12,7 +12,6 @@ import type { MoveToEvent, PlaceTurretEvent, PlayAction, PlayResponse, ShootEven
 export function createMockState(overrides?: Partial<HeroDefenseState>): HeroDefenseState {
   return {
     base: { health: 0, maxHealth: 0, position: new Position2({ x: 0, y: 0 }, false), radius: 0 },
-    currentTick: 0,
     monsters: {},
     nextMonsterID: 0,
     nextTurretID: 0,
