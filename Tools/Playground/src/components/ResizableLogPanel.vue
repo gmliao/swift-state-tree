@@ -75,13 +75,13 @@
                   size="small"
                   style="margin-right: 8px;"
                 >
-                  <v-btn value="table">
-                    <v-icon icon="mdi-table" size="small" class="mr-1"></v-icon>
-                    列表
+                  <v-btn value="recording">
+                    <v-icon icon="mdi-record" size="small" class="mr-1"></v-icon>
+                    錄製
                   </v-btn>
-                  <v-btn value="json">
-                    <v-icon icon="mdi-code-json" size="small" class="mr-1"></v-icon>
-                    JSON
+                  <v-btn value="realtime">
+                    <v-icon icon="mdi-table" size="small" class="mr-1"></v-icon>
+                    即時
                   </v-btn>
                 </v-btn-toggle>
                 <v-text-field
@@ -182,13 +182,13 @@
               size="small"
               style="margin-right: 8px;"
             >
-              <v-btn value="table">
-                <v-icon icon="mdi-table" size="small" class="mr-1"></v-icon>
-                列表
+              <v-btn value="recording">
+                <v-icon icon="mdi-record" size="small" class="mr-1"></v-icon>
+                錄製
               </v-btn>
-              <v-btn value="json">
-                <v-icon icon="mdi-code-json" size="small" class="mr-1"></v-icon>
-                JSON
+              <v-btn value="realtime">
+                <v-icon icon="mdi-table" size="small" class="mr-1"></v-icon>
+                即時
               </v-btn>
             </v-btn-toggle>
             <v-text-field
@@ -253,7 +253,7 @@ const emit = defineEmits<{
 const localLogTab = ref(props.logTab)
 const logFilterKeyword = ref('')
 const stateUpdatePathFilter = ref('')
-const stateUpdateViewMode = ref<'table' | 'json'>('table')
+const stateUpdateViewMode = ref<'recording' | 'realtime'>('recording')
 
 type LogLevelFilter = 'all' | 'info' | 'warning' | 'error'
 
