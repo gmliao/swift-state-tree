@@ -1016,8 +1016,39 @@ export class StateTreeView {
     const key = parts[0]
     const restPath = '/' + parts.slice(1).join('/')
 
-    if (parts.length === 1) {
-      // Top-level property
+    // Check if key is an array index (e.g., "positions[0]") - check this first, even for top-level
+    const arrayIndexMatch = key.match(/^(.+)\[(\d+)\]$/)
+    
+    if (arrayIndexMatch && parts.length === 1) {
+      // Top-level array element (e.g., "/positions[1]")
+      const arrayKey = arrayIndexMatch[1]
+      const index = parseInt(arrayIndexMatch[2], 10)
+      
+      // Ensure array exists
+      if (!(arrayKey in this.currentState) || !Array.isArray(this.currentState[arrayKey])) {
+        this.currentState[arrayKey] = []
+      }
+      
+      const array = this.currentState[arrayKey] as any[]
+      
+      switch (patch.op) {
+        case 'replace':
+        case 'add':
+          const elementPath = `/${arrayKey}[${index}]`
+          const decodedValue = this.decodeSnapshotValue(patch.value, elementPath)
+          // For 'add' operation, ensure array is long enough
+          if (patch.op === 'add' && index >= array.length) {
+            // Extend array to accommodate the new index
+            array.length = index + 1
+          }
+          array[index] = decodedValue
+          break
+        case 'remove':
+          array.splice(index, 1)
+          break
+      }
+    } else if (parts.length === 1) {
+      // Top-level property (not array)
       switch (patch.op) {
         case 'replace':
         case 'add':
@@ -1030,7 +1061,6 @@ export class StateTreeView {
       }
     } else {
       // Check if key is an array index (e.g., "positions[0]")
-      const arrayIndexMatch = key.match(/^(.+)\[(\d+)\]$/)
       if (arrayIndexMatch) {
         const arrayKey = arrayIndexMatch[1]
         const index = parseInt(arrayIndexMatch[2], 10)
