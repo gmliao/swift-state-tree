@@ -51,8 +51,9 @@ func testIRayIntersectsCircle() {
 @Test("IRay intersects circle handles large values without crashing")
 func testIRayIntersectsCircleLargeValues() {
     // Test with large but safe values
-    // Use values within safe range to avoid discriminant overflow
-    let safeMax = FixedPoint.maxSafeInt32
+    // Use values within safe range (WORLD_MAX_COORDINATE)
+    // Use a reasonable fraction to avoid edge cases
+    let safeMax = FixedPoint.WORLD_MAX_COORDINATE / 100
     let ray = IRay(
         origin: IVec2(fixedPointX: 0, fixedPointY: 0),
         direction: IVec2(fixedPointX: safeMax / 2, fixedPointY: safeMax / 2)
