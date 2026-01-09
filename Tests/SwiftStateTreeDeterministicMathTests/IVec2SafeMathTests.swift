@@ -160,9 +160,8 @@ func testFixedPointSafeRangeConstants() {
 
 @Test("IVec2 operations within safe range do not overflow")
 func testIVec2WithinSafeRange() {
-    // Use values within safe range (WORLD_MAX_COORDINATE)
-    // Use a reasonable fraction to avoid edge cases
-    let safeMax = FixedPoint.WORLD_MAX_COORDINATE / 100
+    // Use values within safe range (100.0 Float units = 100 * scale fixed-point units)
+    let safeMax = 100 * Int32(FixedPoint.scale)  // 100,000 with scale = 1000
     let v1 = IVec2(fixedPointX: safeMax, fixedPointY: safeMax)
     let v2 = IVec2(fixedPointX: safeMax / 2, fixedPointY: safeMax / 2)
     
@@ -185,9 +184,8 @@ func testIVec2WithinSafeRange() {
 
 @Test("IVec2 operations near safe range boundary")
 func testIVec2NearSafeRangeBoundary() {
-    // Test with values near the safe boundary (WORLD_MAX_COORDINATE)
-    // Use a reasonable fraction to avoid edge cases
-    let safeMax = FixedPoint.WORLD_MAX_COORDINATE / 100
+    // Test with values within safe range (100.0 Float units = 100 * scale fixed-point units)
+    let safeMax = 100 * Int32(FixedPoint.scale)  // 100,000 with scale = 1000
     let v1 = IVec2(fixedPointX: safeMax, fixedPointY: safeMax)
     let v2 = IVec2(fixedPointX: safeMax, fixedPointY: safeMax)
     
