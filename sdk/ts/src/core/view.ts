@@ -13,6 +13,8 @@ import { createJoinMessage, createActionMessage, createEventMessage, generateReq
 import { NoOpLogger, type Logger } from './logger'
 import { IVec2, IVec3, Angle, Position2, Velocity2, Acceleration2 } from './deterministic-math'
 import type { ProtocolSchema, SchemaDef, SchemaProperty } from '../codegen/schema'
+import { unwrapOptionalType } from '../codegen/schema'
+import { resolveRefName } from '../codegen/typeMapper'
 
 export interface ViewOptions {
   playerID?: string
@@ -413,7 +415,10 @@ export class StateTreeView {
           const eventData = payload.fromServer
           const handlers = this.eventHandlers.get(eventData.type)
           if (handlers) {
-            handlers.forEach(handler => handler(eventData.payload))
+            // Decode event payload to convert DeterministicMath types (Position2, Angle, etc.)
+            // Use event type as path prefix for schema lookup
+            const decodedPayload = this.decodeEventPayload(eventData.type, eventData.payload)
+            handlers.forEach(handler => handler(decodedPayload))
           }
           this.logger.info(`Server event [${eventData.type}]: ${JSON.stringify(eventData.payload)}`)
         } else if (payload.fromClient) {
@@ -851,6 +856,114 @@ export class StateTreeView {
   }
 
   /**
+<<<<<<< HEAD
+   * Decode event payload to convert DeterministicMath types (Position2, Angle, etc.)
+   * Uses the same logic as decodeSnapshotValue but with event-specific schema lookup
+   */
+  private decodeEventPayload(eventType: string, payload: any): any {
+    if (!payload || typeof payload !== 'object') {
+      return payload
+    }
+
+    // Get event schema from defs if available
+    // Events are defined in schema.defs with the event type name (e.g., "PlayerShootEvent")
+    const eventDef = this.schema?.defs?.[eventType]
+    if (!eventDef || !eventDef.properties) {
+      // If no schema found, still try to decode using heuristics (for backward compatibility)
+      const decoded: Record<string, any> = {}
+      for (const [key, value] of Object.entries(payload)) {
+        // Try to decode without schema (will use heuristics in decodeSnapshotValue)
+        decoded[key] = this.decodeSnapshotValue(value, `/${eventType}/${key}`)
+      }
+      return decoded
+    }
+
+    // Decode each field using schema information from event definition
+    const decoded: Record<string, any> = {}
+    for (const [key, value] of Object.entries(payload)) {
+      const fieldSchema = eventDef.properties[key]
+      if (fieldSchema) {
+        // Get the type from field schema
+        let typeName: string | null = null
+        
+        if (fieldSchema.$ref) {
+          // Use schema utility functions to resolve and unwrap Optional types
+          const refName = resolveRefName(fieldSchema.$ref)
+          typeName = unwrapOptionalType(refName)
+        }
+        
+        // Decode the value using the type information
+        // Pass empty path since we're handling the type directly
+        decoded[key] = this.decodeValueWithType(value, typeName)
+      } else {
+        // No schema for this field, decode without type info
+        decoded[key] = this.decodeSnapshotValue(value, `/${eventType}/${key}`)
+      }
+    }
+
+    return decoded
+  }
+
+  /**
+   * Decode a value with explicit type information
+   */
+  private decodeValueWithType(value: any, typeName: string | null): any {
+    if (value === null || value === undefined) return null
+    
+    // Handle native JSON primitives
+    if (typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string') {
+      return value
+    }
+    
+    // Handle arrays
+    if (Array.isArray(value)) {
+      return value.map((item: any) => this.decodeValueWithType(item, null))
+    }
+    
+    // Handle objects with type information
+    if (value && typeof value === 'object') {
+      // Check type using provided typeName
+      if (typeName) {
+        if (this.isIVec2Type(typeName)) {
+          return this.createIVec2Instance(value.x, value.y, true)
+        }
+        if (typeName === 'IVec3') {
+          return this.createIVec3Instance(value.x, value.y, value.z, true)
+        }
+        if (this.isSemantic2Type(typeName)) {
+          // Semantic2 type (Position2, Velocity2, Acceleration2)
+          let ivec2: IVec2
+          if (value.v instanceof IVec2) {
+            ivec2 = value.v
+          } else if (value.v && typeof value.v === 'object' && 'x' in value.v && 'y' in value.v) {
+            // value.v is {x, y} object (fixed-point integers)
+            ivec2 = this.createIVec2Instance(value.v.x, value.v.y, true)
+          } else {
+            // Fallback: value might be plain object without v property
+            // This shouldn't happen for Position2, but handle it gracefully
+            this.logger.warn(`Unexpected value format for ${typeName}:`, value)
+            return value
+          }
+          // Default to Position2 for now (can be improved with exact type from schema)
+          return new Position2(ivec2)
+        }
+        if (typeName === 'Angle') {
+          return this.createAngleInstance(value.degrees, true)
+        }
+      }
+      
+      // Recursively decode nested objects
+      const result: Record<string, any> = {}
+      for (const [k, v] of Object.entries(value)) {
+        result[k] = this.decodeValueWithType(v, null)
+      }
+      return result
+    }
+    
+    return value
+  }
+
+  /**
    * Create IVec2 instance.
    */
   private createIVec2Instance(x: number, y: number, isFixedPoint: boolean): IVec2 {
@@ -1028,9 +1141,11 @@ export class StateTreeView {
 
       // If this property has a $ref, resolve it
       if (prop.$ref) {
-        const refName: string = prop.$ref.startsWith('#/defs/') 
-          ? prop.$ref.slice('#/defs/'.length)
-          : prop.$ref
+        let refName = resolveRefName(prop.$ref)
+        
+        // Handle Optional<Type> - unwrap to the inner type
+        refName = unwrapOptionalType(refName)
+        
         currentDef = this.schema?.defs?.[refName]
         if (!currentDef) {
           return null

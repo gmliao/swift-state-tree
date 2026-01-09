@@ -3,6 +3,7 @@
 
 import { ref, computed } from 'vue'
 import type { DeterministicMathDemoState } from '../defs.js'
+import { Acceleration2, IVec2, Position2, Velocity2 } from '@swiftstatetree/sdk/core'
 import { vi } from 'vitest'
 
 /**
@@ -11,7 +12,7 @@ import { vi } from 'vitest'
  */
 export function createMockState(overrides?: Partial<DeterministicMathDemoState>): DeterministicMathDemoState {
   return {
-    directVector: { x: 0, y: 0 },
+    directVector: new IVec2(0, 0),
     playerAccelerations: {},
     playerPositions: {},
     playerVelocities: {},
@@ -56,13 +57,11 @@ export function createMockDeterministicMathDemo(initialState?: DeterministicMath
  */
 export function testWithDeterministicMathDemoPlayerAcceleration(
   playerAccelerationID: string,
-  playerAccelerationData?: Partial<DeterministicMathDemoState['playerAccelerations'][string]>
+  playerAccelerationData?: Acceleration2
 ) {
   const mockState = createMockState({
     playerAccelerations: {
-      [playerAccelerationID]: {
-        v: playerAccelerationData?.v ?? { x: 0, y: 0 },
-      } as DeterministicMathDemoState['playerAccelerations'][string]
+      [playerAccelerationID]: playerAccelerationData ?? new Acceleration2({ x: 0, y: 0 }, false)
     }
   })
   const mockComposable = createMockDeterministicMathDemo(mockState)
@@ -75,13 +74,11 @@ export function testWithDeterministicMathDemoPlayerAcceleration(
  */
 export function testWithDeterministicMathDemoPlayerPosition(
   playerPositionID: string,
-  playerPositionData?: Partial<DeterministicMathDemoState['playerPositions'][string]>
+  playerPositionData?: Position2
 ) {
   const mockState = createMockState({
     playerPositions: {
-      [playerPositionID]: {
-        v: playerPositionData?.v ?? { x: 0, y: 0 },
-      } as DeterministicMathDemoState['playerPositions'][string]
+      [playerPositionID]: playerPositionData ?? new Position2({ x: 0, y: 0 }, false)
     }
   })
   const mockComposable = createMockDeterministicMathDemo(mockState)
@@ -94,13 +91,11 @@ export function testWithDeterministicMathDemoPlayerPosition(
  */
 export function testWithDeterministicMathDemoPlayerVelocitie(
   playerVelocitieID: string,
-  playerVelocitieData?: Partial<DeterministicMathDemoState['playerVelocities'][string]>
+  playerVelocitieData?: Velocity2
 ) {
   const mockState = createMockState({
     playerVelocities: {
-      [playerVelocitieID]: {
-        v: playerVelocitieData?.v ?? { x: 0, y: 0 },
-      } as DeterministicMathDemoState['playerVelocities'][string]
+      [playerVelocitieID]: playerVelocitieData ?? new Velocity2({ x: 0, y: 0 }, false)
     }
   })
   const mockComposable = createMockDeterministicMathDemo(mockState)

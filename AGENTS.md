@@ -45,6 +45,13 @@
 - **Return statements**: Omit `return` for single-expression functions; include `return` for multi-line function bodies.
 
 ### DeterministicMath Usage Guidelines
+- **Never use Swift's built-in math functions** (e.g., `cos`, `sin`, `atan2`, `sqrt`, `pow`) in game logic code.
+  - These functions are platform-dependent and may produce different results across macOS, Linux, and other platforms.
+  - **Do not import `Darwin` or `Glibc`** for math functions.
+  - Always use `SwiftStateTreeDeterministicMath` provided methods instead:
+    - Angles: Use `IVec2.toAngle()` to get `Angle` from direction vectors.
+    - Vector operations: Use `IVec2` methods (`normalizedVec()`, `scaled(by:)`, etc.).
+    - Distance calculations: Use `Position2.isWithinDistance(to:threshold:)` or semantic type methods.
 - **Never directly manipulate fixed-point scale (e.g., `/1000`, `*1000`)** in game logic code.
 - **Never directly use `Int64` return values** from `IVec2` methods (e.g., `distanceSquared()`, `magnitudeSquared()`, `dot()`) in game logic.
 - Always use semantic types (`Position2`, `Velocity2`, `Angle`) and their provided helper methods instead of raw `IVec2` operations when possible.

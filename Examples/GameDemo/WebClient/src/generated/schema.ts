@@ -13,13 +13,13 @@ export type AnyActionID = (typeof ACTION_IDS)[LandID][number]
 export type ActionIDFor<L extends LandID> = (typeof ACTION_IDS)[L][number]
 
 export const CLIENT_EVENT_IDS = {
-  "hero-defense": ["MoveTo"] as const,
+  "hero-defense": ["MoveTo","PlaceTurret","Shoot","UpdateRotation","UpgradeTurret","UpgradeWeapon"] as const,
 } as const
 export type AnyClientEventID = (typeof CLIENT_EVENT_IDS)[LandID][number]
 export type ClientEventIDFor<L extends LandID> = (typeof CLIENT_EVENT_IDS)[L][number]
 
 export const SERVER_EVENT_IDS = {
-  "hero-defense": [] as const,
+  "hero-defense": ["PlayerShoot","TurretFire"] as const,
 } as const
 export type AnyServerEventID = (typeof SERVER_EVENT_IDS)[LandID][number]
 export type ServerEventIDFor<L extends LandID> = (typeof SERVER_EVENT_IDS)[L][number]
@@ -48,8 +48,77 @@ export const SCHEMA = {
         }
       }
     },
+    "BaseState": {
+      "properties": {
+        "health": {
+          "default": 100,
+          "type": "integer"
+        },
+        "maxHealth": {
+          "default": 100,
+          "type": "integer"
+        },
+        "position": {
+          "$ref": "#/defs/Position2",
+          "default": {
+            "v": {
+              "x": 64000,
+              "y": 36000
+            }
+          }
+        },
+        "radius": {
+          "default": 3,
+          "type": "number"
+        }
+      },
+      "required": [
+        "position",
+        "radius",
+        "health",
+        "maxHealth"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "object",
+        "sync": {
+          "policy": "broadcast"
+        }
+      }
+    },
     "HeroDefenseState": {
       "properties": {
+        "base": {
+          "$ref": "#/defs/BaseState",
+          "default": {
+            "health": 100,
+            "maxHealth": 100,
+            "position": {
+              "v": {
+                "x": 64000,
+                "y": 36000
+              }
+            },
+            "radius": 3
+          }
+        },
+        "currentTick": {
+          "default": 0,
+          "type": "integer"
+        },
+        "monsters": {
+          "additionalProperties": {
+            "$ref": "#/defs/MonsterState"
+          },
+          "default": {},
+          "type": "object",
+          "x-stateTree": {
+            "nodeKind": "map",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
+        },
         "players": {
           "additionalProperties": {
             "$ref": "#/defs/PlayerState"
@@ -66,10 +135,27 @@ export const SCHEMA = {
         "score": {
           "default": 0,
           "type": "integer"
+        },
+        "turrets": {
+          "additionalProperties": {
+            "$ref": "#/defs/TurretState"
+          },
+          "default": {},
+          "type": "object",
+          "x-stateTree": {
+            "nodeKind": "map",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         }
       },
       "required": [
         "players",
+        "monsters",
+        "turrets",
+        "base",
+        "currentTick",
         "score"
       ],
       "type": "object",
@@ -96,6 +182,68 @@ export const SCHEMA = {
         "nodeKind": "leaf"
       }
     },
+    "MonsterState": {
+      "properties": {
+        "health": {
+          "default": 10,
+          "type": "integer"
+        },
+        "id": {
+          "default": "7E292080-0D74-4078-A956-34E533BEC562",
+          "type": "string"
+        },
+        "maxHealth": {
+          "default": 10,
+          "type": "integer"
+        },
+        "pathProgress": {
+          "default": 0,
+          "type": "number"
+        },
+        "position": {
+          "$ref": "#/defs/Position2",
+          "default": {
+            "v": {
+              "x": 0,
+              "y": 0
+            }
+          }
+        },
+        "reward": {
+          "default": 1,
+          "type": "integer"
+        },
+        "rotation": {
+          "$ref": "#/defs/Angle",
+          "default": {
+            "degrees": 0
+          }
+        },
+        "spawnPosition": {
+          "$ref": "#/defs/Position2",
+          "default": {
+            "v": {
+              "x": 0,
+              "y": 0
+            }
+          }
+        }
+      },
+      "required": [
+        "id",
+        "position",
+        "rotation",
+        "health",
+        "maxHealth",
+        "spawnPosition",
+        "pathProgress",
+        "reward"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "object"
+      }
+    },
     "MoveToEvent": {
       "properties": {
         "target": {
@@ -110,6 +258,15 @@ export const SCHEMA = {
         "nodeKind": "leaf"
       }
     },
+    "Optional<PlayerID>": {
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf",
+        "sync": {
+          "policy": "broadcast"
+        }
+      }
+    },
     "Optional<Position2>": {
       "type": "object",
       "x-stateTree": {
@@ -118,6 +275,20 @@ export const SCHEMA = {
         "sync": {
           "policy": "broadcast"
         }
+      }
+    },
+    "PlaceTurretEvent": {
+      "properties": {
+        "position": {
+          "$ref": "#/defs/Position2"
+        }
+      },
+      "required": [
+        "position"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
       }
     },
     "PlayAction": {
@@ -142,8 +313,48 @@ export const SCHEMA = {
         "nodeKind": "leaf"
       }
     },
+    "PlayerID": {
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "PlayerShootEvent": {
+      "properties": {
+        "from": {
+          "$ref": "#/defs/Position2"
+        },
+        "playerID": {
+          "$ref": "#/defs/PlayerID"
+        },
+        "to": {
+          "$ref": "#/defs/Position2"
+        }
+      },
+      "required": [
+        "playerID",
+        "from",
+        "to"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
     "PlayerState": {
       "properties": {
+        "health": {
+          "default": 100,
+          "type": "integer"
+        },
+        "lastFireTick": {
+          "default": 0,
+          "type": "integer"
+        },
+        "maxHealth": {
+          "default": 100,
+          "type": "integer"
+        },
         "position": {
           "$ref": "#/defs/Position2",
           "default": {
@@ -152,6 +363,10 @@ export const SCHEMA = {
               "y": 0
             }
           }
+        },
+        "resources": {
+          "default": 0,
+          "type": "integer"
         },
         "rotation": {
           "$ref": "#/defs/Angle",
@@ -162,12 +377,21 @@ export const SCHEMA = {
         "targetPosition": {
           "$ref": "#/defs/Optional<Position2>",
           "default": null
+        },
+        "weaponLevel": {
+          "default": 0,
+          "type": "integer"
         }
       },
       "required": [
         "position",
         "rotation",
-        "targetPosition"
+        "targetPosition",
+        "health",
+        "maxHealth",
+        "weaponLevel",
+        "resources",
+        "lastFireTick"
       ],
       "type": "object",
       "x-stateTree": {
@@ -190,6 +414,14 @@ export const SCHEMA = {
         "sync": {
           "policy": "broadcast"
         }
+      }
+    },
+    "ShootEvent": {
+      "properties": {},
+      "required": [],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
       }
     },
     "StateDiff": {
@@ -223,6 +455,111 @@ export const SCHEMA = {
       "x-stateTree": {
         "nodeKind": "leaf"
       }
+    },
+    "TurretFireEvent": {
+      "properties": {
+        "from": {
+          "$ref": "#/defs/Position2"
+        },
+        "to": {
+          "$ref": "#/defs/Position2"
+        },
+        "turretID": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "turretID",
+        "from",
+        "to"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "TurretState": {
+      "properties": {
+        "id": {
+          "default": "F61684B8-4205-4158-BB4F-A7713D3DDB8B",
+          "type": "string"
+        },
+        "lastFireTick": {
+          "default": 0,
+          "type": "integer"
+        },
+        "level": {
+          "default": 0,
+          "type": "integer"
+        },
+        "ownerID": {
+          "$ref": "#/defs/Optional<PlayerID>",
+          "default": null
+        },
+        "position": {
+          "$ref": "#/defs/Position2",
+          "default": {
+            "v": {
+              "x": 0,
+              "y": 0
+            }
+          }
+        },
+        "rotation": {
+          "$ref": "#/defs/Angle",
+          "default": {
+            "degrees": 0
+          }
+        }
+      },
+      "required": [
+        "id",
+        "position",
+        "rotation",
+        "level",
+        "lastFireTick",
+        "ownerID"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "object"
+      }
+    },
+    "UpdateRotationEvent": {
+      "properties": {
+        "rotation": {
+          "$ref": "#/defs/Angle"
+        }
+      },
+      "required": [
+        "rotation"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "UpgradeTurretEvent": {
+      "properties": {
+        "turretID": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "turretID"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "UpgradeWeaponEvent": {
+      "properties": {},
+      "required": [],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
     }
   },
   "lands": {
@@ -235,9 +572,31 @@ export const SCHEMA = {
       "clientEvents": {
         "MoveTo": {
           "$ref": "#/defs/MoveToEvent"
+        },
+        "PlaceTurret": {
+          "$ref": "#/defs/PlaceTurretEvent"
+        },
+        "Shoot": {
+          "$ref": "#/defs/ShootEvent"
+        },
+        "UpdateRotation": {
+          "$ref": "#/defs/UpdateRotationEvent"
+        },
+        "UpgradeTurret": {
+          "$ref": "#/defs/UpgradeTurretEvent"
+        },
+        "UpgradeWeapon": {
+          "$ref": "#/defs/UpgradeWeaponEvent"
         }
       },
-      "events": {},
+      "events": {
+        "PlayerShoot": {
+          "$ref": "#/defs/PlayerShootEvent"
+        },
+        "TurretFire": {
+          "$ref": "#/defs/TurretFireEvent"
+        }
+      },
       "stateType": "HeroDefenseState",
       "sync": {
         "diff": {

@@ -29,3 +29,415 @@ export const SERVER_EVENT_IDS = {
 } as const
 export type AnyServerEventID = (typeof SERVER_EVENT_IDS)[LandID][number]
 export type ServerEventIDFor<L extends LandID> = (typeof SERVER_EVENT_IDS)[L][number]
+
+/**
+ * Full schema definition for runtime type checking.
+ * Use this to pass schema to StateTreeView for accurate type inference.
+ */
+export const SCHEMA = {
+  "defs": {
+    "Acceleration2": {
+      "properties": {
+        "v": {
+          "$ref": "#/defs/IVec2"
+        }
+      },
+      "required": [
+        "v"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "BuyUpgradeAction": {
+      "properties": {
+        "upgradeID": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "upgradeID"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "BuyUpgradeResponse": {
+      "properties": {
+        "newCookies": {
+          "type": "integer"
+        },
+        "newCookiesPerSecond": {
+          "type": "integer"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "upgradeLevel": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "success",
+        "newCookies",
+        "newCookiesPerSecond",
+        "upgradeLevel"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "ClickCookieEvent": {
+      "properties": {
+        "amount": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "amount"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "CookieGameState": {
+      "properties": {
+        "players": {
+          "additionalProperties": {
+            "$ref": "#/defs/CookiePlayerPublicState"
+          },
+          "default": {},
+          "type": "object",
+          "x-stateTree": {
+            "nodeKind": "map",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
+        },
+        "privateStates": {
+          "additionalProperties": {
+            "$ref": "#/defs/CookiePlayerPrivateState"
+          },
+          "default": {},
+          "type": "object",
+          "x-stateTree": {
+            "nodeKind": "map",
+            "sync": {
+              "policy": "perPlayerSlice"
+            }
+          }
+        },
+        "ticks": {
+          "default": 0,
+          "type": "integer"
+        },
+        "totalCookies": {
+          "default": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "players",
+        "privateStates",
+        "totalCookies",
+        "ticks"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "object"
+      }
+    },
+    "CookiePlayerPrivateState": {
+      "properties": {
+        "totalClicks": {
+          "default": 0,
+          "type": "integer"
+        },
+        "upgrades": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "default": {},
+          "type": "object",
+          "x-stateTree": {
+            "nodeKind": "map",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
+        }
+      },
+      "required": [
+        "totalClicks",
+        "upgrades"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "object"
+      }
+    },
+    "CookiePlayerPublicState": {
+      "properties": {
+        "cookies": {
+          "default": 0,
+          "type": "integer"
+        },
+        "cookiesPerSecond": {
+          "default": 0,
+          "type": "integer"
+        },
+        "name": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "cookies",
+        "cookiesPerSecond"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "object"
+      }
+    },
+    "CounterState": {
+      "properties": {
+        "count": {
+          "default": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "count"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "object"
+      }
+    },
+    "DeterministicMathDemoState": {
+      "properties": {
+        "directVector": {
+          "$ref": "#/defs/IVec2"
+        },
+        "playerAccelerations": {
+          "additionalProperties": {
+            "$ref": "#/defs/Acceleration2"
+          },
+          "default": {},
+          "type": "object",
+          "x-stateTree": {
+            "nodeKind": "map",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
+        },
+        "playerPositions": {
+          "additionalProperties": {
+            "$ref": "#/defs/Position2"
+          },
+          "default": {},
+          "type": "object",
+          "x-stateTree": {
+            "nodeKind": "map",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
+        },
+        "playerVelocities": {
+          "additionalProperties": {
+            "$ref": "#/defs/Velocity2"
+          },
+          "default": {},
+          "type": "object",
+          "x-stateTree": {
+            "nodeKind": "map",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
+        }
+      },
+      "required": [
+        "playerPositions",
+        "playerVelocities",
+        "playerAccelerations",
+        "directVector"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "object"
+      }
+    },
+    "IVec2": {
+      "properties": {
+        "x": {
+          "type": "integer"
+        },
+        "y": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "x",
+        "y"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "IncrementAction": {
+      "properties": {},
+      "required": [],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "IncrementResponse": {
+      "properties": {
+        "newCount": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "newCount"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "Position2": {
+      "properties": {
+        "v": {
+          "$ref": "#/defs/IVec2"
+        }
+      },
+      "required": [
+        "v"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "StateDiff": {
+      "properties": {
+        "patches": {
+          "items": {
+            "properties": {
+              "op": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "value": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "op",
+              "path"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "patches"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "Velocity2": {
+      "properties": {
+        "v": {
+          "$ref": "#/defs/IVec2"
+        }
+      },
+      "required": [
+        "v"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    }
+  },
+  "lands": {
+    "cookie": {
+      "actions": {
+        "BuyUpgrade": {
+          "$ref": "#/defs/BuyUpgradeAction"
+        }
+      },
+      "clientEvents": {
+        "ClickCookie": {
+          "$ref": "#/defs/ClickCookieEvent"
+        }
+      },
+      "events": {},
+      "stateType": "CookieGameState",
+      "sync": {
+        "diff": {
+          "$ref": "#/defs/StateDiff"
+        },
+        "snapshot": {
+          "$ref": "#/defs/CookieGameState"
+        }
+      }
+    },
+    "counter": {
+      "actions": {
+        "Increment": {
+          "$ref": "#/defs/IncrementAction"
+        }
+      },
+      "clientEvents": {},
+      "events": {},
+      "stateType": "CounterState",
+      "sync": {
+        "diff": {
+          "$ref": "#/defs/StateDiff"
+        },
+        "snapshot": {
+          "$ref": "#/defs/CounterState"
+        }
+      }
+    },
+    "deterministic-math-demo": {
+      "actions": {},
+      "clientEvents": {},
+      "events": {},
+      "stateType": "DeterministicMathDemoState",
+      "sync": {
+        "diff": {
+          "$ref": "#/defs/StateDiff"
+        },
+        "snapshot": {
+          "$ref": "#/defs/DeterministicMathDemoState"
+        }
+      }
+    }
+  },
+  "version": "0.1.0"
+} as const
+
+/**
+ * Type helper for the schema constant.
+ */
+export type ProtocolSchema = typeof SCHEMA

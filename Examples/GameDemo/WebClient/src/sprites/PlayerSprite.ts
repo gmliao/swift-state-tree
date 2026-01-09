@@ -104,23 +104,24 @@ export class PlayerSprite {
   private createSprite(): Phaser.GameObjects.Container {
     const container = this.scene.add.container(0, 0)
     
-    // Player body (circle) - size in world units
-    // Current player: larger and brighter, other players: smaller and darker
-    const bodyRadius = this.isCurrentPlayer ? 2 : 1.5
-    const bodyColor = this.isCurrentPlayer ? 0x667eea : 0x9999cc
+    // All players have the same size
+    const bodyRadius = 2.0
+    
+    // Generate a unique color for each player based on their ID
+    const bodyColor = this.generatePlayerColor(this.playerID)
     const body = this.scene.add.circle(0, 0, bodyRadius, bodyColor)
     body.setOrigin(0.5, 0.5)
     
-    // Add border for current player
+    // Add border for current player to distinguish them
     if (this.isCurrentPlayer) {
-      const border = this.scene.add.circle(0, 0, bodyRadius + 0.2, 0xffffff, 0.3)
+      const border = this.scene.add.circle(0, 0, bodyRadius + 0.2, 0xffffff, 0.5)
       border.setOrigin(0.5, 0.5)
       container.add(border)
     }
     
-    // Direction indicator: arrow pointing forward
-    const arrowLength = this.isCurrentPlayer ? 3 : 2.5
-    const arrowWidth = this.isCurrentPlayer ? 0.8 : 0.6
+    // Direction indicator: arrow pointing forward (same size for all players)
+    const arrowLength = 3.0
+    const arrowWidth = 0.8
     const arrowHeadSize = 1.0
     
     // Create arrow container to ensure line and triangle are aligned
@@ -165,5 +166,76 @@ export class PlayerSprite {
       return null
     }
     return { x: v.x, y: v.y }
+  }
+
+  /**
+   * Generate a unique color for each player based on their ID as seed
+   * Uses playerID as seed for deterministic color generation
+   */
+  private generatePlayerColor(playerID: string): number {
+    // Create a seeded random number generator from playerID
+    const seed = this.stringToSeed(playerID)
+    const rng = this.seededRandom(seed)
+    
+    // Generate hue (0-360), saturation (60-90%), lightness (50-70%)
+    const hue = rng() * 360
+    const saturation = 60 + rng() * 30
+    const lightness = 50 + rng() * 20
+    
+    // Convert HSL to RGB
+    const h = hue / 360
+    const s = saturation / 100
+    const l = lightness / 100
+    
+    const c = (1 - Math.abs(2 * l - 1)) * s
+    const x = c * (1 - Math.abs((h * 6) % 2 - 1))
+    const m = l - c / 2
+    
+    let r = 0, g = 0, b = 0
+    if (h < 1/6) {
+      r = c; g = x; b = 0
+    } else if (h < 2/6) {
+      r = x; g = c; b = 0
+    } else if (h < 3/6) {
+      r = 0; g = c; b = x
+    } else if (h < 4/6) {
+      r = 0; g = x; b = c
+    } else if (h < 5/6) {
+      r = x; g = 0; b = c
+    } else {
+      r = c; g = 0; b = x
+    }
+    
+    const red = Math.round((r + m) * 255)
+    const green = Math.round((g + m) * 255)
+    const blue = Math.round((b + m) * 255)
+    
+    return (red << 16) | (green << 8) | blue
+  }
+
+  /**
+   * Convert string to a numeric seed
+   */
+  private stringToSeed(str: string): number {
+    let hash = 0
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i)
+      hash = ((hash << 5) - hash) + char
+      hash = hash & hash // Convert to 32-bit integer
+    }
+    return Math.abs(hash)
+  }
+
+  /**
+   * Seeded random number generator (returns values between 0 and 1)
+   * Uses Linear Congruential Generator (LCG) algorithm
+   */
+  private seededRandom(seed: number): () => number {
+    let state = seed
+    return () => {
+      // LCG parameters (same as used in many programming languages)
+      state = (state * 1664525 + 1013904223) % Math.pow(2, 32)
+      return state / Math.pow(2, 32)
+    }
   }
 }

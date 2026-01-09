@@ -79,7 +79,8 @@ async function generateForLand(
       classBaseName,
       actions,
       clientEvents,
-      landDef.stateType
+      landDef.stateType,
+      schema
     )
     await writeFileRecursive(join(landDir, `${composableName}.ts`), composableSource)
   }
@@ -246,6 +247,19 @@ function generateBindingsTs(
   lines.push('export type ServerEventName = keyof ServerEventPayloads')
   lines.push('')
 
+  // Event handler type aliases for better code readability
+  lines.push('/** Unsubscribe function type for cleaning up event subscriptions */')
+  lines.push('export type Unsubscribe = () => void')
+  lines.push('')
+  lines.push('/** Event handler callback type for server events */')
+  lines.push('export type EventHandler<T> = (payload: T) => void')
+  lines.push('')
+  lines.push('/** Event subscription type for server events */')
+  lines.push('export type EventSubscription<T> = {')
+  lines.push('  subscribe: (handler: EventHandler<T>) => Unsubscribe')
+  lines.push('}')
+  lines.push('')
+
   lines.push('export type Actions = {')
   lines.push('  [K in ActionName]: (payload: ActionPayloads[K]) => Promise<ActionResponses[K]>')
   lines.push('}')
@@ -257,7 +271,7 @@ function generateBindingsTs(
   lines.push('')
 
   lines.push('export type ServerEventSubscriptions = {')
-  lines.push('  [K in ServerEventName]: (handler: (payload: ServerEventPayloads[K]) => void) => () => void')
+  lines.push('  [K in ServerEventName]: (handler: EventHandler<ServerEventPayloads[K]>) => Unsubscribe')
   lines.push('}')
   lines.push('')
 
@@ -276,10 +290,15 @@ function generateIndexTs(
   const lines: string[] = []
   lines.push(generateHeader())
 
-  lines.push(`import type { StateTreeRuntime, Logger, StatePatch, MapSubscriptions } from '@swiftstatetree/sdk/core'`)
+  // Only import MapSubscriptions if there are map properties
+  if (mapProperties.length > 0) {
+    lines.push(`import type { StateTreeRuntime, Logger, StatePatch, MapSubscriptions } from '@swiftstatetree/sdk/core'`)
+  } else {
+    lines.push(`import type { StateTreeRuntime, Logger, StatePatch } from '@swiftstatetree/sdk/core'`)
+  }
   lines.push(`import { StateTreeView } from '@swiftstatetree/sdk/core'`)
   lines.push(
-    `import type { LandState, Actions, ClientEvents, ServerEventSubscriptions } from './bindings'`
+    `import type { LandState, Actions, ClientEvents, ServerEventSubscriptions, EventSubscription, EventHandler } from './bindings'`
   )
   lines.push(`import { LAND_TYPE } from './bindings'`)
   // Import SCHEMA for type checking if available
@@ -290,12 +309,34 @@ function generateIndexTs(
     const valueTypes = [...new Set(mapProperties.map(m => m.valueType))]
     lines.push(`import type { ${valueTypes.join(', ')} } from '../defs'`)
   }
+  // Import action payload and response types
+  const actionTypes = new Set<string>()
+  for (const a of actions) {
+    actionTypes.add(a.payloadType)
+    if (a.responseType) {
+      actionTypes.add(a.responseType)
+    }
+  }
+  // Import client event payload types
+  for (const e of clientEvents) {
+    actionTypes.add(e.payloadType)
+  }
+  // Import server event payload types
+  for (const e of serverEvents) {
+    actionTypes.add(e.payloadType)
+  }
+  if (actionTypes.size > 0) {
+    const sortedTypes = [...actionTypes].sort()
+    lines.push(`import type { ${sortedTypes.join(', ')} } from '../defs'`)
+  }
   lines.push('')
 
-  // Import MapSubscriptions interface from SDK core (re-export for convenience)
-  lines.push('// Re-export MapSubscriptions interface from SDK core')
-  lines.push(`export type { MapSubscriptions } from '@swiftstatetree/sdk/core'`)
-  lines.push('')
+  // Re-export MapSubscriptions interface from SDK core (only if used)
+  if (mapProperties.length > 0) {
+    lines.push('// Re-export MapSubscriptions interface from SDK core')
+    lines.push(`export type { MapSubscriptions } from '@swiftstatetree/sdk/core'`)
+    lines.push('')
+  }
 
   lines.push('export interface StateTreeOptions {')
   lines.push('  landID?: string')
@@ -323,6 +364,34 @@ function generateIndexTs(
     lines.push('')
   }
   
+  // Type-safe action methods
+  for (const a of actions) {
+    const responseType = a.responseType ?? 'any'
+    lines.push(`  /** Type-safe method for ${a.propertyName} action */`)
+    lines.push(`  readonly ${a.propertyName}: (payload: ${a.payloadType}) => Promise<${responseType}>`)
+  }
+  if (actions.length > 0) {
+    lines.push('')
+  }
+  
+  // Type-safe client event methods
+  for (const e of clientEvents) {
+    lines.push(`  /** Type-safe method for ${e.propertyName} client event */`)
+    lines.push(`  readonly ${e.propertyName}: (payload: ${e.payloadType}) => void`)
+  }
+  if (clientEvents.length > 0) {
+    lines.push('')
+  }
+  
+  // Type-safe server event subscriptions
+  for (const e of serverEvents) {
+    lines.push(`  /** Type-safe subscription for ${e.propertyName} server event */`)
+    lines.push(`  readonly ${e.propertyName}: EventSubscription<${e.payloadType}>`)
+  }
+  if (serverEvents.length > 0) {
+    lines.push('')
+  }
+  
   lines.push('  private readonly runtime: StateTreeRuntime')
   lines.push('  private readonly view: StateTreeView')
   lines.push('')
@@ -344,32 +413,45 @@ function generateIndexTs(
   lines.push('      onError: (error, context) => {')
   lines.push('        options?.logger?.error(`StateTree view error: ${error.message}`, context)')
   lines.push('      }')
-  lines.push('    })')
-  lines.push('')
+    lines.push('    })')
+    lines.push('')
 
-  // actions
-  lines.push('    this.actions = {')
-  for (const a of actions) {
-    lines.push(
-      `      ${a.propertyName}: (payload) => this.view.sendAction(${JSON.stringify(
-        a.id
-      )}, payload) as Promise<any>,`
-    )
-  }
-  lines.push('    } as Actions')
-  lines.push('')
+    // Initialize type-safe action methods
+    for (const a of actions) {
+      const responseType = a.responseType ?? 'any'
+      lines.push(`    this.${a.propertyName} = (payload: ${a.payloadType}) => {`)
+      lines.push(`      return this.view.sendAction(${JSON.stringify(a.id)}, payload) as Promise<${responseType}>`)
+      lines.push(`    }`)
+    }
+    if (actions.length > 0) {
+      lines.push('')
+    }
+    
+    // Keep legacy actions object for backward compatibility
+    lines.push('    this.actions = {')
+    for (const a of actions) {
+      lines.push(`      ${a.propertyName}: this.${a.propertyName},`)
+    }
+    lines.push('    } as Actions')
+    lines.push('')
 
-  // client events
-  lines.push('    this.events = {')
-  for (const e of clientEvents) {
-    lines.push(
-      `      ${e.propertyName}: (payload) => this.view.sendEvent(${JSON.stringify(
-        e.id
-      )}, payload),`
-    )
-  }
-  lines.push('    } as ClientEvents')
-  lines.push('')
+    // Initialize type-safe client event methods
+    for (const e of clientEvents) {
+      lines.push(`    this.${e.propertyName} = (payload: ${e.payloadType}) => {`)
+      lines.push(`      this.view.sendEvent(${JSON.stringify(e.id)}, payload)`)
+      lines.push(`    }`)
+    }
+    if (clientEvents.length > 0) {
+      lines.push('')
+    }
+    
+    // Keep legacy events object for backward compatibility
+    lines.push('    this.events = {')
+    for (const e of clientEvents) {
+      lines.push(`      ${e.propertyName}: this.${e.propertyName},`)
+    }
+    lines.push('    } as ClientEvents')
+    lines.push('')
 
   // server events
   lines.push('    this.on = {')
@@ -382,6 +464,19 @@ function generateIndexTs(
   }
   lines.push('    } as ServerEventSubscriptions')
   lines.push('')
+  
+  // Initialize type-safe server event subscriptions
+  for (const e of serverEvents) {
+    lines.push(`    // Initialize ${e.propertyName} server event subscription`)
+    lines.push(`    this.${e.propertyName} = {`)
+    lines.push(`      subscribe: (handler: EventHandler<${e.payloadType}>) => {`)
+    lines.push(`        return this.view.onServerEvent(${JSON.stringify(e.id)}, handler)`)
+    lines.push(`      }`)
+    lines.push(`    } as EventSubscription<${e.payloadType}>`)
+  }
+  if (serverEvents.length > 0) {
+    lines.push('')
+  }
   
   // Initialize Map subscriptions using SDK core implementation
   for (const mapProp of mapProperties) {
@@ -536,7 +631,8 @@ function generateVueComposable(
   classBaseName: string,
   actions: ActionBinding[],
   clientEvents: EventBinding[],
-  stateType: string
+  stateType: string,
+  schema: ProtocolSchema
 ): string {
   const lines: string[] = []
   lines.push(generateHeader())
@@ -547,6 +643,50 @@ function generateVueComposable(
   lines.push(`import { ${className} } from './index.js'`)
   lines.push(`import { LAND_TYPE } from './bindings.js'`)
   lines.push(`import type { ${stateType} } from '../defs.js'`)
+  
+  // Check if state uses DeterministicMath types (recursively)
+  const stateDef = schema.defs[stateType]
+  const checkedTypes = new Set<string>() // Prevent infinite recursion
+  
+  const checkForDeterministicMath = (propSchema: SchemaProperty): boolean => {
+    // Check direct $ref
+    if (propSchema.$ref) {
+      const refName = resolveRefName(propSchema.$ref)
+      if (isDeterministicMathType(refName)) {
+        return true
+      }
+      // Recursively check nested type definitions
+      if (!checkedTypes.has(refName)) {
+        checkedTypes.add(refName)
+        const refDef = schema.defs[refName]
+        if (refDef && refDef.properties) {
+          for (const nestedProp of Object.values(refDef.properties)) {
+            if (checkForDeterministicMath(nestedProp)) {
+              return true
+            }
+          }
+        }
+      }
+    }
+    // Check nested properties (e.g., in map values)
+    if (propSchema.type === 'object' && propSchema.additionalProperties && typeof propSchema.additionalProperties === 'object') {
+      if (checkForDeterministicMath(propSchema.additionalProperties)) {
+        return true
+      }
+    }
+    // Check object properties recursively
+    if (propSchema.type === 'object' && propSchema.properties) {
+      for (const nestedProp of Object.values(propSchema.properties)) {
+        if (checkForDeterministicMath(nestedProp)) {
+          return true
+        }
+      }
+    }
+    return false
+  }
+  
+  const hasDeterministicMath = stateDef && stateDef.properties && 
+    Object.values(stateDef.properties).some(prop => checkForDeterministicMath(prop))
   
   // Import action and event payload types, and response types
   const payloadTypes = new Set<string>()
@@ -581,7 +721,13 @@ function generateVueComposable(
   lines.push('const runtime = ref<StateTreeRuntime | null>(null)')
   lines.push(`const tree = ref<${className} | null>(null)`)
   lines.push('')
-  lines.push(`const state: Ref<${stateType} | null> = ref<${stateType} | null>(null)`)
+  if (hasDeterministicMath) {
+    // For states with DeterministicMath types, use type assertion to avoid type errors
+    // SDK automatically converts these types, but TypeScript may not infer correctly
+    lines.push(`const state = ref<${stateType} | null>(null) as Ref<${stateType} | null>`)
+  } else {
+    lines.push(`const state: Ref<${stateType} | null> = ref<${stateType} | null>(null)`)
+  }
   lines.push('const currentPlayerID = ref<string | null>(null)')
   lines.push('')
   lines.push('const isConnecting = ref(false)')
@@ -666,12 +812,19 @@ function generateVueComposable(
   lines.push('        throw new Error(joinResult.reason ?? \'Join failed\')')
   lines.push('      }')
   lines.push('')
-  lines.push('      currentPlayerID.value = joinResult.playerID ?? null')
-  lines.push('      ')
-  lines.push('      // Make t.state reactive so Vue can track changes directly')
-  lines.push('      // This allows direct access like state.players[playerID].cookies in templates')
-  lines.push(`      const reactiveState = reactive(t.state as ${stateType})`)
-  lines.push('      state.value = reactiveState')
+      lines.push('      currentPlayerID.value = joinResult.playerID ?? null')
+      lines.push('      ')
+      lines.push('      // Make t.state reactive so Vue can track changes directly')
+      lines.push('      // This allows direct access like state.players[playerID].cookies in templates')
+      if (hasDeterministicMath) {
+        lines.push('      // Note: SDK automatically converts DeterministicMath types (IVec2, Position2, etc.)')
+        lines.push('      // from fixed-point integers to class instances, but TypeScript may not infer this correctly')
+        lines.push('      // after reactive() wrapping, so we use type assertion')
+        lines.push(`      const reactiveState = reactive(t.state as any) as ${stateType}`)
+      } else {
+        lines.push(`      const reactiveState = reactive(t.state as ${stateType})`)
+      }
+      lines.push('      state.value = reactiveState')
   lines.push('      ')
   lines.push('      // Override t.state to point to reactiveState so syncInto updates it directly')
   lines.push('      // This way syncInto will update the reactive object and Vue tracks it automatically')
@@ -831,6 +984,35 @@ function generateTestHelpers(
   
   lines.push("import { ref, computed } from 'vue'")
   lines.push(`import type { ${stateType} } from '../defs.js'`)
+  
+  // Check if state uses DeterministicMath types and import them
+  const stateDefForImports = schema.defs[stateType]
+  const deterministicMathTypes = new Set<string>()
+  if (stateDefForImports && stateDefForImports.properties) {
+    const checkForDeterministicMath = (propSchema: SchemaProperty) => {
+      if (propSchema.$ref) {
+        const refName = resolveRefName(propSchema.$ref)
+        if (isDeterministicMathType(refName)) {
+          deterministicMathTypes.add(refName)
+        }
+      }
+      if (propSchema.type === 'object' && propSchema.properties) {
+        for (const prop of Object.values(propSchema.properties)) {
+          checkForDeterministicMath(prop)
+        }
+      }
+      if (propSchema.type === 'object' && propSchema.additionalProperties && typeof propSchema.additionalProperties === 'object') {
+        checkForDeterministicMath(propSchema.additionalProperties)
+      }
+    }
+    for (const propSchema of Object.values(stateDefForImports.properties)) {
+      checkForDeterministicMath(propSchema)
+    }
+  }
+  if (deterministicMathTypes.size > 0) {
+    const sortedTypes = [...deterministicMathTypes].sort()
+    lines.push(`import { ${sortedTypes.join(', ')} } from '@swiftstatetree/sdk/core'`)
+  }
   
   // Import action and event types
   const payloadTypes = new Set<string>()
@@ -1032,50 +1214,77 @@ function generateTestHelpers(
         lines.push('  })')
       } else {
         // If map value is an object, generate defaults for all required properties
-        let itemDefaults: string[] = []
-        const itemTypeDef = schema.defs[valueType]
-        if (itemTypeDef && itemTypeDef.properties) {
-          const ctx: TypeMapperContext = { knownDefs: new Set(Object.keys(schema.defs)) }
-          const requiredProps = new Set(itemTypeDef.required || [])
+        // Check if this is a DeterministicMath type (Position2, Velocity2, Acceleration2)
+        if (isDeterministicMathType(valueType)) {
+          // For DeterministicMath types, use class constructor directly
+          let constructorCall = ''
+          if (valueType === 'Position2') {
+            constructorCall = 'new Position2({ x: 0, y: 0 }, false)'
+          } else if (valueType === 'Velocity2') {
+            constructorCall = 'new Velocity2({ x: 0, y: 0 }, false)'
+          } else if (valueType === 'Acceleration2') {
+            constructorCall = 'new Acceleration2({ x: 0, y: 0 }, false)'
+          } else {
+            // Fallback for other DeterministicMath types
+            constructorCall = `new ${valueType}(0, 0)`
+          }
           
-          for (const [itemPropName, itemPropSchema] of Object.entries(itemTypeDef.properties)) {
-            const isRequired = requiredProps.has(itemPropName)
-            const defaultValue = generateDefaultValue(itemPropSchema, ctx, schema)
+          lines.push(`export function testWith${classBaseName}${pascalSingular}(`)
+          lines.push(`  ${itemIDName}: string,`)
+          lines.push(`  ${itemDataName}?: ${valueType}`)
+          lines.push(') {')
+          lines.push(`  const mockState = createMockState({`)
+          lines.push(`    ${mapPropName}: {`)
+          lines.push(`      [${itemIDName}]: ${itemDataName} ?? ${constructorCall}`)
+          lines.push('    }')
+          lines.push('  })')
+        } else {
+          // If map value is a regular object, generate defaults for all required properties
+          let itemDefaults: string[] = []
+          const itemTypeDef = schema.defs[valueType]
+          if (itemTypeDef && itemTypeDef.properties) {
+            const ctx: TypeMapperContext = { knownDefs: new Set(Object.keys(schema.defs)) }
+            const requiredProps = new Set(itemTypeDef.required || [])
             
-            if (isRequired) {
-              // Special handling for 'name' property
-              if (itemPropName === 'name') {
-                itemDefaults.push(`${itemPropName}: ${itemDataName}?.${itemPropName} ?? \`${singularName} \$\{${itemIDName}\}\``)
+            for (const [itemPropName, itemPropSchema] of Object.entries(itemTypeDef.properties)) {
+              const isRequired = requiredProps.has(itemPropName)
+              const defaultValue = generateDefaultValue(itemPropSchema, ctx, schema)
+              
+              if (isRequired) {
+                // Special handling for 'name' property
+                if (itemPropName === 'name') {
+                  itemDefaults.push(`${itemPropName}: ${itemDataName}?.${itemPropName} ?? \`${singularName} \$\{${itemIDName}\}\``)
+                } else {
+                  itemDefaults.push(`${itemPropName}: ${itemDataName}?.${itemPropName} ?? ${defaultValue}`)
+                }
               } else {
-                itemDefaults.push(`${itemPropName}: ${itemDataName}?.${itemPropName} ?? ${defaultValue}`)
+                itemDefaults.push(`${itemPropName}: ${itemDataName}?.${itemPropName} !== undefined ? ${itemDataName}.${itemPropName} : ${defaultValue}`)
               }
-            } else {
-              itemDefaults.push(`${itemPropName}: ${itemDataName}?.${itemPropName} !== undefined ? ${itemDataName}.${itemPropName} : ${defaultValue}`)
             }
           }
-        }
-        
-        lines.push(`export function testWith${classBaseName}${pascalSingular}(`)
-        lines.push(`  ${itemIDName}: string,`)
-        lines.push(`  ${itemDataName}?: Partial<${stateType}['${mapPropName}'][string]>`)
-        lines.push(') {')
-        lines.push(`  const mockState = createMockState({`)
-        lines.push(`    ${mapPropName}: {`)
-        if (itemDefaults.length > 0) {
-          lines.push(`      [${itemIDName}]: {`)
-          for (const defaultLine of itemDefaults) {
-            lines.push(`        ${defaultLine},`)
+          
+          lines.push(`export function testWith${classBaseName}${pascalSingular}(`)
+          lines.push(`  ${itemIDName}: string,`)
+          lines.push(`  ${itemDataName}?: Partial<${stateType}['${mapPropName}'][string]>`)
+          lines.push(') {')
+          lines.push(`  const mockState = createMockState({`)
+          lines.push(`    ${mapPropName}: {`)
+          if (itemDefaults.length > 0) {
+            lines.push(`      [${itemIDName}]: {`)
+            for (const defaultLine of itemDefaults) {
+              lines.push(`        ${defaultLine},`)
+            }
+            lines.push('      } as ' + stateType + `['${mapPropName}'][string]`)
+          } else {
+            // Fallback
+            lines.push(`      [${itemIDName}]: {`)
+            lines.push(`        ...(${itemDataName} as ${stateType}['${mapPropName}'][string]),`)
+            lines.push(`        name: ${itemDataName}?.name ?? \`${singularName} \$\{${itemIDName}\}\``)
+            lines.push('      } as ' + stateType + `['${mapPropName}'][string]`)
           }
-          lines.push('      } as ' + stateType + `['${mapPropName}'][string]`)
-        } else {
-          // Fallback
-          lines.push(`      [${itemIDName}]: {`)
-          lines.push(`        ...(${itemDataName} as ${stateType}['${mapPropName}'][string]),`)
-          lines.push(`        name: ${itemDataName}?.name ?? \`${singularName} \$\{${itemIDName}\}\``)
-          lines.push('      } as ' + stateType + `['${mapPropName}'][string]`)
+          lines.push('    }')
+          lines.push('  })')
         }
-        lines.push('    }')
-        lines.push('  })')
       }
       
       lines.push(`  const mockComposable = createMock${classBaseName}(mockState)`)
@@ -1104,6 +1313,25 @@ function generateDefaultValue(
   // Handle $ref
   if (propSchema.$ref) {
     const refName = resolveRefName(propSchema.$ref)
+    
+    // Check if this is a DeterministicMath type
+    if (isDeterministicMathType(refName)) {
+      // Generate class instance constructor
+      if (refName === 'IVec2') {
+        return 'new IVec2(0, 0)'
+      } else if (refName === 'IVec3') {
+        return 'new IVec3(0, 0, 0)'
+      } else if (refName === 'Position2') {
+        return 'new Position2({ x: 0, y: 0 }, false)'
+      } else if (refName === 'Velocity2') {
+        return 'new Velocity2({ x: 0, y: 0 }, false)'
+      } else if (refName === 'Acceleration2') {
+        return 'new Acceleration2({ x: 0, y: 0 }, false)'
+      } else if (refName === 'Angle') {
+        return 'new Angle(0, false)'
+      }
+    }
+    
     const refDef = schema.defs[refName]
     if (refDef) {
       return generateDefaultValueForDef(refDef, ctx, schema)
@@ -1144,6 +1372,13 @@ function generateDefaultValue(
 }
 
 /**
+ * Check if a type name is a DeterministicMath type.
+ */
+function isDeterministicMathType(name: string): boolean {
+  return ['IVec2', 'IVec3', 'Position2', 'Velocity2', 'Acceleration2', 'Angle'].includes(name)
+}
+
+/**
  * Generate default value for a SchemaDef (used for $ref types).
  */
 function generateDefaultValueForDef(
@@ -1153,15 +1388,34 @@ function generateDefaultValueForDef(
 ): string {
   if (def.$ref) {
     const refName = resolveRefName(def.$ref)
+    
+    // Check if this is a DeterministicMath type
+    if (isDeterministicMathType(refName)) {
+      // Generate class instance constructor
+      if (refName === 'IVec2') {
+        return 'new IVec2(0, 0)'
+      } else if (refName === 'IVec3') {
+        return 'new IVec3(0, 0, 0)'
+      } else if (refName === 'Position2') {
+        return 'new Position2({ x: 0, y: 0 }, false)'
+      } else if (refName === 'Velocity2') {
+        return 'new Velocity2({ x: 0, y: 0 }, false)'
+      } else if (refName === 'Acceleration2') {
+        return 'new Acceleration2({ x: 0, y: 0 }, false)'
+      } else if (refName === 'Angle') {
+        return 'new Angle(0, false)'
+      }
+    }
+    
     const refDef = schema.defs[refName]
     if (refDef) {
       return generateDefaultValueForDef(refDef, ctx, schema)
     }
     return '{} as any'
   }
-  
+
   const type = def.type
-  
+
   switch (type) {
     case 'string':
       return "''"
