@@ -165,7 +165,6 @@
           "type" : "integer"
         },
         "id" : {
-          "default" : "7E292080-0D74-4078-A956-34E533BEC562",
           "type" : "string"
         },
         "maxHealth" : {
@@ -465,7 +464,6 @@
     "TurretState" : {
       "properties" : {
         "id" : {
-          "default" : "F61684B8-4205-4158-BB4F-A7713D3DDB8B",
           "type" : "string"
         },
         "lastFireTick" : {

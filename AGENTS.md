@@ -108,6 +108,7 @@
 - Messages: short imperative summaries (`Add room snapshot hook`, `Fix attack damage clamp`).
 - PRs: describe intent, note new APIs, list test coverage (`swift test` output), and include manual steps for demo changes.
 - Keep changes scoped; separate library additions from demo tweaks when possible.
+- **AI CLI Operations**: When AI agents perform git operations (commit, rebase, merge, etc.) or any CLI commands through tools, all commit messages, branch names, and command outputs must be in English. This ensures consistency and compatibility across different environments and tools.
 
 ## Security & Configuration Tips
 - Demo server is for local use; avoid committing secrets or tokens.
