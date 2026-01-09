@@ -20,6 +20,13 @@ export interface StateUpdateEntry {
   message: string
   patches?: StatePatch[]
   affectedPaths?: string[]
+  // Debug information
+  tickId?: number | null
+  messageSize?: number
+  direction?: 'inbound' | 'outbound'
+  landID?: string
+  playerID?: string
+  sequenceNumber?: number
 }
 
 export function useWebSocket(
@@ -133,6 +140,9 @@ export function useWebSocket(
     ))
   }
 
+  // Sequence number for tracking update order
+  let updateSequenceNumber = 0
+
   // Handle state updates from View
   // Note: stateUpdates are always collected (needed for StatisticsPanel)
   const handleStateUpdate = (update: StateUpdate) => {
@@ -142,6 +152,36 @@ export function useWebSocket(
 
     const patches = update.patches || []
     const affectedPaths = extractAffectedPaths(patches)
+    
+    // Try to extract tickId from current state (if available)
+    let tickId: number | null = null
+    try {
+      if (currentState.value && typeof currentState.value === 'object') {
+        // Check common tickId locations in state
+        if ('tickId' in currentState.value && typeof currentState.value.tickId === 'number') {
+          tickId = currentState.value.tickId
+        } else if ('currentTick' in currentState.value && typeof currentState.value.currentTick === 'number') {
+          tickId = currentState.value.currentTick
+        }
+      }
+    } catch (e) {
+      // Ignore errors when accessing state
+    }
+    
+    // Find corresponding message statistics for this update
+    let messageSize: number | undefined
+    let direction: 'inbound' | 'outbound' | undefined
+    if (messageStatistics.value.length > 0) {
+      // Find the most recent stateUpdate statistics entry
+      for (let i = messageStatistics.value.length - 1; i >= 0; i--) {
+        const stat = messageStatistics.value[i]
+        if (stat.messageType === 'stateUpdate' && stat.direction === 'inbound') {
+          messageSize = stat.messageSize
+          direction = stat.direction
+          break
+        }
+      }
+    }
 
     // Add to state updates
     stateUpdates.value.push({
@@ -153,7 +193,14 @@ export function useWebSocket(
         ? `首次同步完成 (${patches.length} 個 patches)`
         : `狀態已更新 (${patches.length} 個 patches)`,
       patches: patches,
-      affectedPaths: affectedPaths
+      affectedPaths: affectedPaths,
+      // Debug information
+      tickId: tickId,
+      messageSize: messageSize,
+      direction: direction || 'inbound',
+      landID: currentLandID.value,
+      playerID: currentPlayerID.value || undefined,
+      sequenceNumber: updateSequenceNumber++
     })
 
     // Keep only last 1000 updates, remove oldest if exceeded
@@ -164,12 +211,48 @@ export function useWebSocket(
 
   // Handle snapshot from View
   // Note: stateUpdates are always collected (needed for StatisticsPanel)
-  const handleSnapshot = (_snapshot: { values: Record<string, any> }) => {
+  const handleSnapshot = (snapshot: { values: Record<string, any> }) => {
+    // Try to extract tickId from snapshot
+    let tickId: number | null = null
+    try {
+      if (snapshot.values && typeof snapshot.values === 'object') {
+        if ('tickId' in snapshot.values && typeof snapshot.values.tickId === 'number') {
+          tickId = snapshot.values.tickId
+        } else if ('currentTick' in snapshot.values && typeof snapshot.values.currentTick === 'number') {
+          tickId = snapshot.values.currentTick
+        }
+      }
+    } catch (e) {
+      // Ignore errors
+    }
+    
+    // Find corresponding message statistics for this snapshot
+    let messageSize: number | undefined
+    let direction: 'inbound' | 'outbound' | undefined
+    if (messageStatistics.value.length > 0) {
+      // Find the most recent stateSnapshot statistics entry
+      for (let i = messageStatistics.value.length - 1; i >= 0; i--) {
+        const stat = messageStatistics.value[i]
+        if (stat.messageType === 'stateSnapshot' && stat.direction === 'inbound') {
+          messageSize = stat.messageSize
+          direction = stat.direction
+          break
+        }
+      }
+    }
+    
     stateUpdates.value.push({
       id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
       timestamp: new Date(),
       type: 'snapshot',
-      message: '初始狀態已接收 (完整快照)'
+      message: '初始狀態已接收 (完整快照)',
+      // Debug information
+      tickId: tickId,
+      messageSize: messageSize,
+      direction: direction || 'inbound',
+      landID: currentLandID.value,
+      playerID: currentPlayerID.value || undefined,
+      sequenceNumber: updateSequenceNumber++
     })
 
     // Keep only last 1000 updates, remove oldest if exceeded
@@ -436,6 +519,7 @@ export function useWebSocket(
     currentState.value = {}
     logs.value = []
     stateUpdates.value = []
+    messageStatistics.value = [] // Reset statistics
     currentLandID.value = getInitialLandID()  // Reset to initial value
     currentPlayerID.value = null
   }

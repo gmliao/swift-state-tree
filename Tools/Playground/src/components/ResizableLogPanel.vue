@@ -67,6 +67,23 @@
                 <span>狀態更新歷史</span>
               </div>
               <div class="log-panel-header-right">
+                <v-btn-toggle
+                  v-model="stateUpdateViewMode"
+                  mandatory
+                  density="compact"
+                  variant="outlined"
+                  size="small"
+                  style="margin-right: 8px;"
+                >
+                  <v-btn value="table">
+                    <v-icon icon="mdi-table" size="small" class="mr-1"></v-icon>
+                    列表
+                  </v-btn>
+                  <v-btn value="json">
+                    <v-icon icon="mdi-code-json" size="small" class="mr-1"></v-icon>
+                    JSON
+                  </v-btn>
+                </v-btn-toggle>
                 <v-text-field
                   v-model="stateUpdatePathFilter"
                   label="過濾路徑"
@@ -82,7 +99,7 @@
                   size="small"
                   variant="text"
                   @click="exportStateUpdatesLog"
-                  title="導出狀態更新日誌 (.log)"
+                  title="導出狀態更新日誌 (.json)"
                 ></v-btn>
                 <v-btn
                   icon="mdi-delete-sweep"
@@ -94,7 +111,11 @@
               </div>
             </div>
             <div class="log-panel-mobile-content">
-              <StateUpdatePanel :stateUpdates="stateUpdates" :path-filter="stateUpdatePathFilter" />
+              <StateUpdatePanel 
+                :stateUpdates="stateUpdates" 
+                :path-filter="stateUpdatePathFilter"
+                :view-mode="stateUpdateViewMode"
+              />
             </div>
           </div>
         </v-window-item>
@@ -153,6 +174,23 @@
             <span>狀態更新歷史</span>
           </div>
           <div class="log-panel-header-right">
+            <v-btn-toggle
+              v-model="stateUpdateViewMode"
+              mandatory
+              density="compact"
+              variant="outlined"
+              size="small"
+              style="margin-right: 8px;"
+            >
+              <v-btn value="table">
+                <v-icon icon="mdi-table" size="small" class="mr-1"></v-icon>
+                列表
+              </v-btn>
+              <v-btn value="json">
+                <v-icon icon="mdi-code-json" size="small" class="mr-1"></v-icon>
+                JSON
+              </v-btn>
+            </v-btn-toggle>
             <v-text-field
               v-model="stateUpdatePathFilter"
               label="過濾路徑"
@@ -168,7 +206,7 @@
               size="small"
               variant="text"
               @click="exportStateUpdatesLog"
-              title="導出狀態更新日誌 (.log)"
+              title="導出狀態更新日誌 (.json)"
             ></v-btn>
             <v-btn
               icon="mdi-delete-sweep"
@@ -180,7 +218,11 @@
           </div>
         </div>
         <div class="log-panel-content">
-          <StateUpdatePanel :stateUpdates="stateUpdates" :path-filter="stateUpdatePathFilter" />
+          <StateUpdatePanel 
+            :stateUpdates="stateUpdates" 
+            :path-filter="stateUpdatePathFilter"
+            :view-mode="stateUpdateViewMode"
+          />
         </div>
       </div>
     </div>
@@ -211,6 +253,7 @@ const emit = defineEmits<{
 const localLogTab = ref(props.logTab)
 const logFilterKeyword = ref('')
 const stateUpdatePathFilter = ref('')
+const stateUpdateViewMode = ref<'table' | 'json'>('table')
 
 type LogLevelFilter = 'all' | 'info' | 'warning' | 'error'
 
@@ -278,43 +321,30 @@ const exportStateUpdatesLog = () => {
     return
   }
   
-  // Format log entries
-  const logLines: string[] = []
-  logLines.push(`# State Updates Log`)
-  logLines.push(`# Generated: ${new Date().toISOString()}`)
-  logLines.push(`# Total Updates: ${props.stateUpdates.length}`)
-  logLines.push('')
-  
-  for (const update of props.stateUpdates) {
-    const timestamp = update.timestamp.toISOString()
-    logLines.push(`[${timestamp}] ${update.type} - ${update.message || 'State Update'}`)
-    
-    if (update.patches && update.patches.length > 0) {
-      for (const patch of update.patches) {
-        logLines.push(`  ${patch.op} ${patch.path}`)
-        if (patch.value !== undefined) {
-          const valueStr = typeof patch.value === 'object' 
-            ? JSON.stringify(patch.value, null, 2).split('\n').map(line => `    ${line}`).join('\n')
-            : String(patch.value)
-          logLines.push(`    Value: ${valueStr}`)
-        }
+  // Format as JSON array with metadata
+  const exportData = {
+    metadata: {
+      generated: new Date().toISOString(),
+      totalUpdates: props.stateUpdates.length,
+      version: '1.0'
+    },
+    updates: props.stateUpdates.map(update => {
+      // Convert Date to ISO string for JSON serialization
+      const jsonUpdate: any = {
+        ...update,
+        timestamp: update.timestamp.toISOString()
       }
-    }
-    
-    if (update.affectedPaths && update.affectedPaths.length > 0) {
-      logLines.push(`  Affected Paths: ${update.affectedPaths.join(', ')}`)
-    }
-    
-    logLines.push('')
+      return jsonUpdate
+    })
   }
   
-  // Create blob and download
-  const logContent = logLines.join('\n')
-  const blob = new Blob([logContent], { type: 'text/plain;charset=utf-8' })
+  // Create blob and download as JSON
+  const jsonContent = JSON.stringify(exportData, null, 2)
+  const blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
-  link.download = `state-updates-${new Date().toISOString().replace(/[:.]/g, '-')}.log`
+  link.download = `state-updates-${new Date().toISOString().replace(/[:.]/g, '-')}.json`
   document.body.appendChild(link)
   link.click()
   document.body.removeChild(link)

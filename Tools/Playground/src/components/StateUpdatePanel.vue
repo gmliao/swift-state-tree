@@ -2,17 +2,29 @@
   <v-card-text style="height: 100%; padding: 4px; display: flex; flex-direction: column; overflow: hidden; background-color: #ffffff;">
     <div style="flex: 1; overflow: hidden; min-height: 0; display: flex; flex-direction: column;">
       <v-alert
-        v-if="sortedTableData.length === 0"
+        v-if="sortedTableData.length === 0 && viewMode === 'table'"
         type="info"
         density="compact"
         variant="text"
         class="ma-2"
         style="font-size: 10px; padding: 4px 8px; flex-shrink: 0;"
       >
-        {{ (filterKeyword || pathFilter) ? '沒有符合過濾條件的更新記錄' : '尚無狀態更新記錄' }}
+        {{ pathFilter ? '沒有符合過濾條件的更新記錄' : '尚無狀態更新記錄' }}
       </v-alert>
+      <v-alert
+        v-else-if="filteredUpdates.length === 0 && viewMode === 'json'"
+        type="info"
+        density="compact"
+        variant="text"
+        class="ma-2"
+        style="font-size: 10px; padding: 4px 8px; flex-shrink: 0;"
+      >
+        {{ pathFilter ? '沒有符合過濾條件的更新記錄' : '尚無狀態更新記錄' }}
+      </v-alert>
+      
+      <!-- Table view -->
       <v-data-table
-        v-else
+        v-if="viewMode === 'table'"
         :items="sortedTableData"
         :headers="headers"
         :items-per-page="-1"
@@ -53,6 +65,20 @@
         </div>
       </template>
       
+      <template v-slot:item.debug="{ item }">
+        <div class="update-debug">
+          <span v-if="item.tickId !== null && item.tickId !== undefined" class="debug-item">
+            Tick: {{ item.tickId }}
+          </span>
+          <span v-if="item.messageSize" class="debug-item">
+            Size: {{ formatBytes(item.messageSize) }}
+          </span>
+          <span v-if="item.sequenceNumber !== undefined" class="debug-item">
+            #{{ item.sequenceNumber }}
+          </span>
+        </div>
+      </template>
+      
       <template v-slot:footer.prepend>
         <div class="footer-filters">
           <v-text-field
@@ -65,19 +91,31 @@
             hide-details
             class="footer-filter-input"
           ></v-text-field>
-          <v-text-field
-            v-model="filterKeyword"
-            label="過濾關鍵字"
-            prepend-inner-icon="mdi-filter"
-            variant="outlined"
-            density="compact"
-            clearable
-            hide-details
-            class="footer-filter-input"
-          ></v-text-field>
         </div>
       </template>
       </v-data-table>
+      
+      <!-- JSON view -->
+      <div v-else-if="viewMode === 'json' && filteredUpdates.length > 0" style="flex: 1; overflow: auto; padding: 8px;">
+        <div
+          v-for="(update, index) in filteredUpdates"
+          :key="update.id"
+          class="update-entry"
+        >
+          <div class="update-header">
+            <span class="update-index">#{{ update.sequenceNumber ?? index }}</span>
+            <span class="update-type">{{ update.type }}</span>
+            <span class="update-timestamp">{{ formatTime(update.timestamp) }}</span>
+            <span v-if="update.tickId !== null && update.tickId !== undefined" class="update-tickid">
+              Tick: {{ update.tickId }}
+            </span>
+            <span v-if="update.messageSize" class="update-size">
+              Size: {{ formatBytes(update.messageSize) }}
+            </span>
+          </div>
+          <pre class="update-json">{{ formatUpdateJson(update) }}</pre>
+        </div>
+      </div>
     </div>
   </v-card-text>
 </template>
@@ -89,15 +127,105 @@ import type { StateUpdateEntry } from '@/composables/useWebSocket'
 const props = defineProps<{
   stateUpdates: StateUpdateEntry[]
   pathFilter?: string
+  viewMode?: 'table' | 'json'
 }>()
 
 const pathFilter = ref(props.pathFilter || '')
-const filterKeyword = ref('')
+const viewMode = ref<'table' | 'json'>(props.viewMode || 'table')
 
-// Watch external pathFilter prop changes
+// Watch external filter prop changes
 watch(() => props.pathFilter, (newVal) => {
   pathFilter.value = newVal || ''
 })
+
+watch(() => props.viewMode, (newVal) => {
+  if (newVal) {
+    viewMode.value = newVal
+  }
+})
+
+// Filter updates based on path and keyword
+const filteredUpdates = computed(() => {
+  if (!props.stateUpdates || props.stateUpdates.length === 0) {
+    return []
+  }
+  
+  let filtered = [...props.stateUpdates]
+  
+  // Filter by path (check patches and affectedPaths)
+  if (pathFilter.value) {
+    const filter = pathFilter.value.toLowerCase().trim()
+    const normalizedFilter = filter.startsWith('/') ? filter : `/${filter}`
+    filtered = filtered.filter(update => {
+      // Check patches
+      if (update.patches) {
+        const hasMatchingPatch = update.patches.some(patch => {
+          const path = (patch.path || '').toLowerCase()
+          return path.includes(normalizedFilter) || 
+                 path.includes(filter) ||
+                 path.split('/').some(segment => segment.includes(filter.replace('/', '')))
+        })
+        if (hasMatchingPatch) return true
+      }
+      
+      // Check affectedPaths
+      if (update.affectedPaths) {
+        const hasMatchingPath = update.affectedPaths.some(path => {
+          const lowerPath = path.toLowerCase()
+          return lowerPath.includes(normalizedFilter) || 
+                 lowerPath.includes(filter) ||
+                 lowerPath.split('/').some(segment => segment.includes(filter.replace('/', '')))
+        })
+        if (hasMatchingPath) return true
+      }
+      
+      return false
+    })
+  }
+  
+  // Sort by timestamp (newest first)
+  return filtered.sort((a, b) => 
+    b.timestamp.getTime() - a.timestamp.getTime()
+  )
+})
+
+const formatTime = (date: Date): string => {
+  return date.toLocaleTimeString('zh-TW', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    ...({ fractionalSecondDigits: 3 } as any)
+  })
+}
+
+const formatBytes = (bytes: number): string => {
+  if (bytes === 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i]
+}
+
+const formatUpdateJson = (update: StateUpdateEntry): string => {
+  // Create a clean JSON object with all debug information
+  const jsonObj: any = {
+    id: update.id,
+    timestamp: update.timestamp.toISOString(),
+    type: update.type,
+    message: update.message,
+    patchCount: update.patchCount,
+    sequenceNumber: update.sequenceNumber,
+    ...(update.tickId !== null && update.tickId !== undefined && { tickId: update.tickId }),
+    ...(update.messageSize && { messageSize: update.messageSize }),
+    ...(update.direction && { direction: update.direction }),
+    ...(update.landID && { landID: update.landID }),
+    ...(update.playerID && { playerID: update.playerID }),
+    ...(update.affectedPaths && update.affectedPaths.length > 0 && { affectedPaths: update.affectedPaths }),
+    ...(update.patches && update.patches.length > 0 && { patches: update.patches })
+  }
+  
+  return JSON.stringify(jsonObj, null, 2)
+}
 
 interface TableRow {
   id: string
@@ -105,13 +233,17 @@ interface TableRow {
   path: string
   op: string
   value: any
+  tickId?: number | null
+  messageSize?: number
+  sequenceNumber?: number
 }
 
 const headers = computed(() => [
   { title: '時間', key: 'timestamp', width: '100px', sortable: true },
   { title: '路徑', key: 'path', sortable: true },
   { title: '操作', key: 'op', width: '80px', sortable: true },
-  { title: '數值', key: 'value', sortable: false }
+  { title: '數值', key: 'value', sortable: false },
+  { title: 'Debug', key: 'debug', width: '150px', sortable: false }
 ])
 
 const tableData = computed<TableRow[]>(() => {
@@ -129,7 +261,10 @@ const tableData = computed<TableRow[]>(() => {
         timestamp: update.timestamp,
         path: '/',
         op: update.type,
-        value: update.message || '-'
+        value: update.message || '-',
+        tickId: update.tickId,
+        messageSize: update.messageSize,
+        sequenceNumber: update.sequenceNumber
       })
       continue
     }
@@ -141,7 +276,10 @@ const tableData = computed<TableRow[]>(() => {
         timestamp: update.timestamp,
         path: patch.path || '/',
         op: patch.op || update.type,
-        value: patch.value !== undefined ? patch.value : null
+        value: patch.value !== undefined ? patch.value : null,
+        tickId: update.tickId,
+        messageSize: update.messageSize,
+        sequenceNumber: update.sequenceNumber
       })
     }
   }
@@ -166,16 +304,6 @@ const sortedTableData = computed(() => {
     })
   }
   
-  // Filter by keyword (op, value, message)
-  if (filterKeyword.value) {
-    const keyword = filterKeyword.value.toLowerCase()
-    filtered = filtered.filter(row => {
-      const opMatch = row.op.toLowerCase().includes(keyword)
-      const valueMatch = row.value && String(row.value).toLowerCase().includes(keyword)
-      return opMatch || valueMatch
-    })
-  }
-  
   // Sort by timestamp (newest first)
   const sorted = filtered.sort((a, b) => 
     b.timestamp.getTime() - a.timestamp.getTime()
@@ -195,15 +323,6 @@ const sortedTableData = computed(() => {
   
   return limited
 })
-
-const formatTime = (date: Date): string => {
-  return date.toLocaleTimeString('zh-TW', {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    ...({ fractionalSecondDigits: 3 } as any)
-  })
-}
 
 const getOpColor = (op: string): string => {
   switch (op) {
@@ -363,6 +482,18 @@ const getValueSegments = (value: any): Array<{ key: string; value: string }> => 
   font-weight: 400;
 }
 
+.update-debug {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 8px;
+}
+
+.debug-item {
+  color: #666;
+  font-weight: 500;
+}
+
 .value-segments {
   display: flex;
   flex-direction: column;
@@ -444,5 +575,84 @@ const getValueSegments = (value: any): Array<{ key: string; value: string }> => 
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+/* JSON view styles */
+.update-entry {
+  margin-bottom: 16px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 4px;
+  background-color: #fafafa;
+  overflow: hidden;
+}
+
+.update-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background-color: #f5f5f5;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.12);
+  font-size: 11px;
+  font-weight: 500;
+  flex-wrap: wrap;
+}
+
+.update-index {
+  color: #666;
+  font-weight: 600;
+}
+
+.update-type {
+  color: #1976d2;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.update-timestamp {
+  color: #666;
+  margin-left: auto;
+}
+
+.update-tickid {
+  color: #388e3c;
+  font-weight: 500;
+}
+
+.update-size {
+  color: #7b1fa2;
+  font-weight: 500;
+}
+
+.update-json {
+  margin: 0;
+  padding: 12px;
+  font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  background-color: #ffffff;
+  color: #212121;
+  overflow-x: auto;
+  white-space: pre;
+  word-wrap: normal;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+@media (prefers-color-scheme: dark) {
+  .update-entry {
+    background-color: #1e1e1e;
+    border-color: rgba(255, 255, 255, 0.12);
+  }
+  
+  .update-header {
+    background-color: #2d2d2d;
+    border-color: rgba(255, 255, 255, 0.12);
+  }
+  
+  .update-json {
+    background-color: #1e1e1e;
+    color: #d4d4d4;
+  }
 }
 </style>
