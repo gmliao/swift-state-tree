@@ -161,7 +161,7 @@ const chartCanvas = ref<HTMLCanvasElement | null>(null)
 
 // Track statistics
 let lastProcessedUpdateIndex = 0 // Track the last processed update index
-let lastProcessedStatsIndex = 0 // Track the last processed statistics index
+let lastStatsArrayLength = 0 // Track the last processed array length - only process new entries
 let lastSecondTimestamp = Date.now()
 let lastRecordedSecond = Math.floor(Date.now() / 1000) // Track the last second we recorded to timeSeriesData
 let currentSecondPackets = 0 // StateUpdates in current second (inbound)
@@ -182,53 +182,61 @@ watch(() => props.messageStatistics, (stats) => {
     return
   }
   
-  // If stats array is empty, just reset the index
+  // If stats array is empty, just reset the tracker
   if (stats.length === 0) {
-    lastProcessedStatsIndex = 0
+    lastStatsArrayLength = 0
     return
   }
   
-  // Calculate only NEW statistics since last check
-  const newStats = stats.slice(lastProcessedStatsIndex)
+  // Simple approach: only process new entries that were added since last check
+  // Totals are cumulative, so we don't need to worry about truncation
+  const currentArrayLength = stats.length
+  
+  // If array length stayed the same or decreased, no new entries to process
+  if (currentArrayLength <= lastStatsArrayLength) {
+    // Update tracker if array was truncated
+    if (currentArrayLength < lastStatsArrayLength) {
+      lastStatsArrayLength = currentArrayLength
+    }
+    return
+  }
+  
+  // Array length increased - process new entries from lastStatsArrayLength to currentArrayLength
+  const newStats = stats.slice(lastStatsArrayLength)
   
   if (newStats.length > 0) {
-    // Process each new statistic
-    for (const stat of newStats) {
-      if (stat.direction === 'inbound') {
-        // Inbound: count StateUpdates and Patches
-        if (stat.messageType === 'stateUpdate') {
-          totalPackets.value += 1
-          totalPatches.value += stat.patchCount || 0
-        }
-        totalBytesInbound.value += stat.messageSize
-      } else {
-        // Outbound: only count bytes
-        totalBytesOutbound.value += stat.messageSize
-      }
-    }
-    
-    // Update current second statistics
-    const now = Date.now()
-    const currentSecond = Math.floor(now / 1000)
-    const lastSecond = Math.floor(lastSecondTimestamp / 1000)
-    
-    // Calculate new stats for current second
+    // Process each new statistic and accumulate totals
+    // These totals are independent of the array - they represent cumulative counts from the beginning
     let newPackets = 0
     let newPatches = 0
     let newBytesInbound = 0
     let newBytesOutbound = 0
     
+    // First, calculate new statistics for this batch
     for (const stat of newStats) {
       if (stat.direction === 'inbound') {
+        // Inbound: count StateUpdates and Patches
         if (stat.messageType === 'stateUpdate') {
           newPackets += 1
           newPatches += stat.patchCount || 0
         }
         newBytesInbound += stat.messageSize
       } else {
+        // Outbound: only count bytes
         newBytesOutbound += stat.messageSize
       }
     }
+    
+    // Then, accumulate to totals (these are cumulative from the beginning)
+    totalPackets.value += newPackets
+    totalPatches.value += newPatches
+    totalBytesInbound.value += newBytesInbound
+    totalBytesOutbound.value += newBytesOutbound
+    
+    // Update current second statistics based on the new data we just processed
+    const now = Date.now()
+    const currentSecond = Math.floor(now / 1000)
+    const lastSecond = Math.floor(lastSecondTimestamp / 1000)
     
     if (currentSecond === lastSecond) {
       // Same second, accumulate
@@ -252,12 +260,13 @@ watch(() => props.messageStatistics, (stats) => {
       lastSecondTimestamp = now
     }
     
-    lastProcessedStatsIndex = stats.length
+    // Update tracking: mark all processed entries
+    lastStatsArrayLength = stats.length
   }
   
-  // Handle reset case
-  if (stats.length < lastProcessedStatsIndex) {
-    lastProcessedStatsIndex = 0
+  // Handle reset case (when array is manually cleared)
+  if (stats.length === 0 && lastStatsArrayLength > 0) {
+    lastStatsArrayLength = 0
     // Recalculate totals from scratch
     totalPackets.value = 0
     totalPatches.value = 0
@@ -451,7 +460,7 @@ const drawChart = () => {
   
   const rect = container.getBoundingClientRect()
   const displayWidth = Math.max(100, rect.width - 32) // Account for padding
-  const displayHeight = 200
+  const displayHeight = 220
   
   // Handle device pixel ratio for crisp rendering
   const dpr = window.devicePixelRatio || 1
@@ -498,7 +507,7 @@ const drawChart = () => {
   ctx.fillRect(0, 0, width, height)
   
   // Draw grid (leave space for labels)
-  const chartPadding = { top: 10, bottom: 30, left: 50, right: 50 }
+  const chartPadding = { top: 10, bottom: 50, left: 50, right: 50 }
   const chartWidth = width - chartPadding.left - chartPadding.right
   const chartHeight = height - chartPadding.top - chartPadding.bottom
   const chartX = chartPadding.left
@@ -613,7 +622,7 @@ const drawChart = () => {
       const index = Math.floor((timeSeriesData.value.length - 1) * (i / (labelCount - 1)))
       const x = chartX + (chartWidth / (timeSeriesData.value.length - 1)) * index
       const secondsAgo = Math.floor((Date.now() - timeSeriesData.value[index].time) / 1000)
-      ctx.fillText(`${secondsAgo}s`, x, chartY + chartHeight + 5)
+      ctx.fillText(`${secondsAgo}s`, x, chartY + chartHeight + 10)
     }
   }
   
@@ -621,7 +630,7 @@ const drawChart = () => {
   ctx.font = '11px sans-serif'
   ctx.fillStyle = '#333'
   ctx.textAlign = 'center'
-  ctx.fillText('時間 (秒前)', width / 2, height - 5)
+  ctx.fillText('時間 (秒前)', width / 2, height - 20)
   
   ctx.save()
   ctx.translate(15, height / 2)
@@ -632,17 +641,17 @@ const drawChart = () => {
   
   // Draw legend with background for better visibility
   const legendY = 30 // Moved down more
-  const legendX = 10
+  const legendX = 100
   const legendLineHeight = 18
   
   // Background for legend (fits 2 items)
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'
-  ctx.fillRect(legendX - 5, legendY - 12, 140, 35)
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.5)'
+  ctx.fillRect(legendX - 5, legendY - 12, 160, 50)
   
   // Border for legend
   ctx.strokeStyle = '#e0e0e0'
   ctx.lineWidth = 1
-  ctx.strokeRect(legendX - 5, legendY - 12, 140, 35)
+  ctx.strokeRect(legendX - 5, legendY - 12, 160, 50)
   
   // Legend text
   ctx.font = '12px sans-serif'
@@ -688,7 +697,7 @@ const resetStatistics = () => {
   timeSeriesData.value = []
   startTime.value = Date.now()
   lastProcessedUpdateIndex = 0
-  lastProcessedStatsIndex = 0
+  lastStatsArrayLength = 0
   currentSecondPackets = 0
   currentSecondPatches = 0
   currentSecondBytesInbound = 0
@@ -710,7 +719,7 @@ onMounted(() => {
   // This prevents showing accumulated data from before the panel was visible
   lastProcessedUpdateIndex = 0
   // Skip all existing statistics - only process new ones from now on
-  lastProcessedStatsIndex = props.messageStatistics?.length || 0
+  lastStatsArrayLength = props.messageStatistics?.length || 0
   currentSecondPackets = 0
   currentSecondPatches = 0
   currentSecondBytesInbound = 0
@@ -760,7 +769,7 @@ watch(() => props.connected, (connected) => {
     startTime.value = Date.now()
     // When reconnecting, skip existing statistics to avoid processing old data
     lastProcessedUpdateIndex = 0
-    lastProcessedStatsIndex = props.messageStatistics?.length || 0
+    lastStatsArrayLength = props.messageStatistics?.length || 0
     currentSecondPackets = 0
     currentSecondPatches = 0
     currentSecondBytesInbound = 0
@@ -935,7 +944,7 @@ watch(() => props.connected, (connected) => {
 .chart-container {
   position: relative;
   width: 100%;
-  height: 200px;
+  height: 240px;
   padding: 16px;
 }
 
