@@ -189,7 +189,7 @@ export const SCHEMA = {
           "type": "integer"
         },
         "id": {
-          "default": "7E292080-0D74-4078-A956-34E533BEC562",
+          "default": "C7EC82F1-E4AA-4864-8D11-7472F57672A0",
           "type": "string"
         },
         "maxHealth": {
@@ -481,7 +481,7 @@ export const SCHEMA = {
     "TurretState": {
       "properties": {
         "id": {
-          "default": "F61684B8-4205-4158-BB4F-A7713D3DDB8B",
+          "default": "73F65C6F-39BB-4A9F-9448-BD31F38DF511",
           "type": "string"
         },
         "lastFireTick": {

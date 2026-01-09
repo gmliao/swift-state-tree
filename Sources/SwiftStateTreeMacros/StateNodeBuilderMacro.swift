@@ -485,7 +485,8 @@ public struct StateNodeBuilderMacro: MemberMacro {
                     codeLines.append("if let unwrapped = \(storageName).wrappedValue, var nestedState = unwrapped as? any StateNodeProtocol {")
                 } else {
                     // For non-optional types, directly check if it's a StateNodeProtocol
-                    // Use direct cast since the type should already conform to StateNodeProtocol if it's not primitive
+                    // Note: Not all non-primitive types conform to StateNodeProtocol (e.g., DeterministicMath types, collections)
+                    // The conditional cast is necessary to safely check at runtime
                     codeLines.append("if var nestedState = \(storageName).wrappedValue as? any StateNodeProtocol {")
                 }
                 codeLines.append("    nestedState.clearDirty()")
