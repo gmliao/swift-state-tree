@@ -83,15 +83,21 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import type { StateUpdateEntry } from '@/composables/useWebSocket'
 
 const props = defineProps<{
   stateUpdates: StateUpdateEntry[]
+  pathFilter?: string
 }>()
 
-const pathFilter = ref('')
+const pathFilter = ref(props.pathFilter || '')
 const filterKeyword = ref('')
+
+// Watch external pathFilter prop changes
+watch(() => props.pathFilter, (newVal) => {
+  pathFilter.value = newVal || ''
+})
 
 interface TableRow {
   id: string
@@ -146,12 +152,18 @@ const tableData = computed<TableRow[]>(() => {
 const sortedTableData = computed(() => {
   let filtered = [...tableData.value]
   
-  // Filter by path
+  // Filter by path (case-insensitive, supports partial match)
   if (pathFilter.value) {
-    const filter = pathFilter.value.toLowerCase()
-    filtered = filtered.filter(row => 
-      row.path.toLowerCase().includes(filter)
-    )
+    const filter = pathFilter.value.toLowerCase().trim()
+    // Remove leading slash if present for more flexible matching
+    const normalizedFilter = filter.startsWith('/') ? filter : `/${filter}`
+    filtered = filtered.filter(row => {
+      const path = row.path.toLowerCase()
+      // Match if path contains the filter, or if filter matches path segments
+      return path.includes(normalizedFilter) || 
+             path.includes(filter) ||
+             path.split('/').some(segment => segment.includes(filter.replace('/', '')))
+    })
   }
   
   // Filter by keyword (op, value, message)

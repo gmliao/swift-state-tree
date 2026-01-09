@@ -6,11 +6,11 @@ import type { TurretState } from '../generated/defs'
  */
 export class TurretSprite {
   public readonly container: Phaser.GameObjects.Container
-  public readonly turretID: string
+  public readonly turretID: number
   
   private readonly scene: Phaser.Scene
   
-  constructor(scene: Phaser.Scene, turretID: string) {
+  constructor(scene: Phaser.Scene, turretID: number) {
     this.scene = scene
     this.turretID = turretID
     this.container = this.createSprite()

@@ -140,25 +140,10 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
       affectedPaths: affectedPaths
     })
 
-    // Keep only last 3 updates per top-level path and cap total at 100
-    const byPath: Record<string, StateUpdateEntry[]> = {}
-    for (const entry of [...stateUpdates.value].reverse()) {
-      const paths = entry.patches?.map(p => {
-        const parts = p.path.split('/').filter(Boolean)
-        return parts[0] || '/'
-      }) ?? entry.affectedPaths ?? ['/']
-
-      const uniquePaths = Array.from(new Set(paths))
-      for (const path of uniquePaths) {
-        byPath[path] = byPath[path] ?? []
-        if (byPath[path].length < 3) {
-          byPath[path].push(entry)
-        }
-      }
+    // Keep only last 1000 updates, remove oldest if exceeded
+    if (stateUpdates.value.length > 1000) {
+      stateUpdates.value = stateUpdates.value.slice(-1000)
     }
-    const merged = Object.values(byPath).flat()
-    merged.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
-    stateUpdates.value = merged.slice(0, 100)
   }
 
   // Handle snapshot from View
@@ -170,8 +155,9 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
       message: '初始狀態已接收 (完整快照)'
     })
 
-    if (stateUpdates.value.length > 100) {
-      stateUpdates.value.shift()
+    // Keep only last 1000 updates, remove oldest if exceeded
+    if (stateUpdates.value.length > 1000) {
+      stateUpdates.value = stateUpdates.value.slice(-1000)
     }
   }
 

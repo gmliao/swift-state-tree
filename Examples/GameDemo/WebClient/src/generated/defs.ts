@@ -13,9 +13,9 @@ export { FIXED_POINT_SCALE }
 
 // @ts-ignore - DeterministicMath classes (Position2) are used in type definitions
 export type BaseState = { health: number; maxHealth: number; position: Position2; radius: number }
-export type HeroDefenseState = { base: BaseState; currentTick: number; monsters: { [key: string]: MonsterState }; players: { [key: string]: PlayerState }; score: number; turrets: { [key: string]: TurretState } }
+export type HeroDefenseState = { base: BaseState; currentTick: number; monsters: { [key: string]: MonsterState }; nextMonsterID: number; nextTurretID: number; players: { [key: string]: PlayerState }; score: number; turrets: { [key: string]: TurretState } }
 // @ts-ignore - DeterministicMath classes (Angle, Position2) are used in type definitions
-export type MonsterState = { health: number; id: string; maxHealth: number; pathProgress: number; position: Position2; reward: number; rotation: Angle; spawnPosition: Position2 }
+export type MonsterState = { health: number; id: number; maxHealth: number; pathProgress: number; position: Position2; reward: number; rotation: Angle; spawnPosition: Position2 }
 // @ts-ignore - DeterministicMath classes (Position2) are used in type definitions
 export type MoveToEvent = { target: Position2 }
 // @ts-ignore - DeterministicMath classes (Position2) are used in type definitions
@@ -31,12 +31,12 @@ export type PlayerState = { health: number; lastFireTick: number; maxHealth: num
 export type ShootEvent = { [key: string]: any }
 export type StateDiff = { patches: { op: string; path: string; value?: { [key: string]: any } }[] }
 // @ts-ignore - DeterministicMath classes (Position2) are used in type definitions
-export type TurretFireEvent = { from: Position2; to: Position2; turretID: string }
+export type TurretFireEvent = { from: Position2; to: Position2; turretID: number }
 // @ts-ignore - DeterministicMath classes (Angle, Position2) are used in type definitions
-export type TurretState = { id: string; lastFireTick: number; level: number; ownerID: Optional<PlayerID>; position: Position2; rotation: Angle }
+export type TurretState = { id: number; lastFireTick: number; level: number; ownerID: Optional<PlayerID>; position: Position2; rotation: Angle }
 // @ts-ignore - DeterministicMath classes (Angle) are used in type definitions
 export type UpdateRotationEvent = { rotation: Angle }
-export type UpgradeTurretEvent = { turretID: string }
+export type UpgradeTurretEvent = { turretID: number }
 export type UpgradeWeaponEvent = { [key: string]: any }
 
 // Generic Optional type for all Optional<T> usages

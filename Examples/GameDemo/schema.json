@@ -85,11 +85,20 @@
           },
           "type" : "object",
           "x-stateTree" : {
+            "keyType" : "Int",
             "nodeKind" : "map",
             "sync" : {
               "policy" : "broadcast"
             }
           }
+        },
+        "nextMonsterID" : {
+          "default" : 1,
+          "type" : "integer"
+        },
+        "nextTurretID" : {
+          "default" : 1,
+          "type" : "integer"
         },
         "players" : {
           "additionalProperties" : {
@@ -100,6 +109,7 @@
           },
           "type" : "object",
           "x-stateTree" : {
+            "keyType" : "PlayerID",
             "nodeKind" : "map",
             "sync" : {
               "policy" : "broadcast"
@@ -119,6 +129,7 @@
           },
           "type" : "object",
           "x-stateTree" : {
+            "keyType" : "Int",
             "nodeKind" : "map",
             "sync" : {
               "policy" : "broadcast"
@@ -130,6 +141,8 @@
         "players",
         "monsters",
         "turrets",
+        "nextMonsterID",
+        "nextTurretID",
         "base",
         "currentTick",
         "score"
@@ -165,7 +178,8 @@
           "type" : "integer"
         },
         "id" : {
-          "type" : "string"
+          "default" : 0,
+          "type" : "integer"
         },
         "maxHealth" : {
           "default" : 10,
@@ -236,7 +250,9 @@
     "Optional<PlayerID>" : {
       "type" : "object",
       "x-stateTree" : {
+        "innerType" : "PlayerID",
         "nodeKind" : "leaf",
+        "optional" : true,
         "sync" : {
           "policy" : "broadcast"
         }
@@ -246,7 +262,9 @@
       "type" : "object",
       "x-stateTree" : {
         "atomic" : true,
+        "innerType" : "Position2",
         "nodeKind" : "leaf",
+        "optional" : true,
         "sync" : {
           "policy" : "broadcast"
         }
@@ -448,7 +466,7 @@
           "$ref" : "#\/defs\/Position2"
         },
         "turretID" : {
-          "type" : "string"
+          "type" : "integer"
         }
       },
       "required" : [
@@ -464,7 +482,8 @@
     "TurretState" : {
       "properties" : {
         "id" : {
-          "type" : "string"
+          "default" : 0,
+          "type" : "integer"
         },
         "lastFireTick" : {
           "default" : 0,
@@ -524,7 +543,7 @@
     "UpgradeTurretEvent" : {
       "properties" : {
         "turretID" : {
-          "type" : "string"
+          "type" : "integer"
         }
       },
       "required" : [

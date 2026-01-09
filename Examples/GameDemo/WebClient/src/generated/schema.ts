@@ -113,11 +113,20 @@ export const SCHEMA = {
           "default": {},
           "type": "object",
           "x-stateTree": {
+            "keyType": "Int",
             "nodeKind": "map",
             "sync": {
               "policy": "broadcast"
             }
           }
+        },
+        "nextMonsterID": {
+          "default": 1,
+          "type": "integer"
+        },
+        "nextTurretID": {
+          "default": 1,
+          "type": "integer"
         },
         "players": {
           "additionalProperties": {
@@ -126,6 +135,7 @@ export const SCHEMA = {
           "default": {},
           "type": "object",
           "x-stateTree": {
+            "keyType": "PlayerID",
             "nodeKind": "map",
             "sync": {
               "policy": "broadcast"
@@ -143,6 +153,7 @@ export const SCHEMA = {
           "default": {},
           "type": "object",
           "x-stateTree": {
+            "keyType": "Int",
             "nodeKind": "map",
             "sync": {
               "policy": "broadcast"
@@ -154,6 +165,8 @@ export const SCHEMA = {
         "players",
         "monsters",
         "turrets",
+        "nextMonsterID",
+        "nextTurretID",
         "base",
         "currentTick",
         "score"
@@ -189,8 +202,8 @@ export const SCHEMA = {
           "type": "integer"
         },
         "id": {
-          "default": "C7EC82F1-E4AA-4864-8D11-7472F57672A0",
-          "type": "string"
+          "default": 0,
+          "type": "integer"
         },
         "maxHealth": {
           "default": 10,
@@ -261,7 +274,9 @@ export const SCHEMA = {
     "Optional<PlayerID>": {
       "type": "object",
       "x-stateTree": {
+        "innerType": "PlayerID",
         "nodeKind": "leaf",
+        "optional": true,
         "sync": {
           "policy": "broadcast"
         }
@@ -271,7 +286,9 @@ export const SCHEMA = {
       "type": "object",
       "x-stateTree": {
         "atomic": true,
+        "innerType": "Position2",
         "nodeKind": "leaf",
+        "optional": true,
         "sync": {
           "policy": "broadcast"
         }
@@ -465,7 +482,7 @@ export const SCHEMA = {
           "$ref": "#/defs/Position2"
         },
         "turretID": {
-          "type": "string"
+          "type": "integer"
         }
       },
       "required": [
@@ -481,8 +498,8 @@ export const SCHEMA = {
     "TurretState": {
       "properties": {
         "id": {
-          "default": "73F65C6F-39BB-4A9F-9448-BD31F38DF511",
-          "type": "string"
+          "default": 0,
+          "type": "integer"
         },
         "lastFireTick": {
           "default": 0,
@@ -542,7 +559,7 @@ export const SCHEMA = {
     "UpgradeTurretEvent": {
       "properties": {
         "turretID": {
-          "type": "string"
+          "type": "integer"
         }
       },
       "required": [

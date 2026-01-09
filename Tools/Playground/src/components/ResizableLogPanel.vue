@@ -67,6 +67,23 @@
                 <span>狀態更新歷史</span>
               </div>
               <div class="log-panel-header-right">
+                <v-text-field
+                  v-model="stateUpdatePathFilter"
+                  label="過濾路徑"
+                  prepend-inner-icon="mdi-folder-search"
+                  variant="outlined"
+                  density="compact"
+                  clearable
+                  hide-details
+                  class="log-header-filter-input"
+                ></v-text-field>
+                <v-btn
+                  icon="mdi-download"
+                  size="small"
+                  variant="text"
+                  @click="exportStateUpdatesLog"
+                  title="導出狀態更新日誌 (.log)"
+                ></v-btn>
                 <v-btn
                   icon="mdi-delete-sweep"
                   size="small"
@@ -77,7 +94,7 @@
               </div>
             </div>
             <div class="log-panel-mobile-content">
-              <StateUpdatePanel :stateUpdates="stateUpdates" />
+              <StateUpdatePanel :stateUpdates="stateUpdates" :path-filter="stateUpdatePathFilter" />
             </div>
           </div>
         </v-window-item>
@@ -136,6 +153,23 @@
             <span>狀態更新歷史</span>
           </div>
           <div class="log-panel-header-right">
+            <v-text-field
+              v-model="stateUpdatePathFilter"
+              label="過濾路徑"
+              prepend-inner-icon="mdi-folder-search"
+              variant="outlined"
+              density="compact"
+              clearable
+              hide-details
+              class="log-header-filter-input"
+            ></v-text-field>
+            <v-btn
+              icon="mdi-download"
+              size="small"
+              variant="text"
+              @click="exportStateUpdatesLog"
+              title="導出狀態更新日誌 (.log)"
+            ></v-btn>
             <v-btn
               icon="mdi-delete-sweep"
               size="small"
@@ -146,7 +180,7 @@
           </div>
         </div>
         <div class="log-panel-content">
-          <StateUpdatePanel :stateUpdates="stateUpdates" />
+          <StateUpdatePanel :stateUpdates="stateUpdates" :path-filter="stateUpdatePathFilter" />
         </div>
       </div>
     </div>
@@ -176,6 +210,7 @@ const emit = defineEmits<{
 
 const localLogTab = ref(props.logTab)
 const logFilterKeyword = ref('')
+const stateUpdatePathFilter = ref('')
 
 type LogLevelFilter = 'all' | 'info' | 'warning' | 'error'
 
@@ -236,6 +271,54 @@ const startResize = (e: MouseEvent) => {
   document.addEventListener('mouseup', stopResize)
   document.body.style.cursor = 'row-resize'
   document.body.style.userSelect = 'none'
+}
+
+const exportStateUpdatesLog = () => {
+  if (!props.stateUpdates || props.stateUpdates.length === 0) {
+    return
+  }
+  
+  // Format log entries
+  const logLines: string[] = []
+  logLines.push(`# State Updates Log`)
+  logLines.push(`# Generated: ${new Date().toISOString()}`)
+  logLines.push(`# Total Updates: ${props.stateUpdates.length}`)
+  logLines.push('')
+  
+  for (const update of props.stateUpdates) {
+    const timestamp = update.timestamp.toISOString()
+    logLines.push(`[${timestamp}] ${update.type} - ${update.message || 'State Update'}`)
+    
+    if (update.patches && update.patches.length > 0) {
+      for (const patch of update.patches) {
+        logLines.push(`  ${patch.op} ${patch.path}`)
+        if (patch.value !== undefined) {
+          const valueStr = typeof patch.value === 'object' 
+            ? JSON.stringify(patch.value, null, 2).split('\n').map(line => `    ${line}`).join('\n')
+            : String(patch.value)
+          logLines.push(`    Value: ${valueStr}`)
+        }
+      }
+    }
+    
+    if (update.affectedPaths && update.affectedPaths.length > 0) {
+      logLines.push(`  Affected Paths: ${update.affectedPaths.join(', ')}`)
+    }
+    
+    logLines.push('')
+  }
+  
+  // Create blob and download
+  const logContent = logLines.join('\n')
+  const blob = new Blob([logContent], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `state-updates-${new Date().toISOString().replace(/[:.]/g, '-')}.log`
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
 }
 </script>
 

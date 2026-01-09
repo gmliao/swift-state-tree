@@ -856,7 +856,6 @@ export class StateTreeView {
   }
 
   /**
-<<<<<<< HEAD
    * Decode event payload to convert DeterministicMath types (Position2, Angle, etc.)
    * Uses the same logic as decodeSnapshotValue but with event-specific schema lookup
    */
@@ -889,7 +888,9 @@ export class StateTreeView {
         if (fieldSchema.$ref) {
           // Use schema utility functions to resolve and unwrap Optional types
           const refName = resolveRefName(fieldSchema.$ref)
-          typeName = unwrapOptionalType(refName)
+          // Get the definition to check for structured Optional marker
+          const refDef = this.schema?.defs?.[refName]
+          typeName = unwrapOptionalType(refName, refDef)
         }
         
         // Decode the value using the type information
@@ -1228,7 +1229,9 @@ export class StateTreeView {
         // This is an array, resolve the items type
         if (typeof prop.items === 'object' && prop.items.$ref) {
           let refName = resolveRefName(prop.items.$ref)
-          refName = unwrapOptionalType(refName)
+          // Get the definition to check for structured Optional marker
+          const itemsDef = this.schema?.defs?.[refName]
+          refName = unwrapOptionalType(refName, itemsDef)
           currentDef = this.schema?.defs?.[refName]
           if (!currentDef) {
             return null
@@ -1248,8 +1251,10 @@ export class StateTreeView {
       if (prop.$ref) {
         let refName = resolveRefName(prop.$ref)
         
-        // Handle Optional<Type> - unwrap to the inner type
-        refName = unwrapOptionalType(refName)
+        // Handle Optional<Type> - unwrap to the inner type using structured marker
+        // Get the definition to check for structured Optional marker
+        const refDef = this.schema?.defs?.[refName]
+        refName = unwrapOptionalType(refName, refDef)
         
         currentDef = this.schema?.defs?.[refName]
         if (!currentDef) {
