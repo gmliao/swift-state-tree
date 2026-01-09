@@ -185,8 +185,24 @@ public struct IRay: Codable, Equatable, Sendable {
         let projection = toOrigin.dot(direction)
         let scale = Int64(FixedPoint.scale)
         let (scaledProjection, overflow) = projection.multipliedReportingOverflow(by: scale)
-        let tProjection = overflow ? (projection / dirSq) : (scaledProjection / dirSq)
-        let tScale = overflow ? Int64(1) : scale
+        
+        let (tProjection, tScale): (Int64, Int64)
+        if overflow {
+            // When overflow occurs, we need to compute: t = (projection * scale) / (dirSq * scale)
+            // = projection / dirSq
+            // The scale factors cancel out, so we can compute directly without the scale multiplication.
+            // This preserves precision by avoiding the overflow while maintaining the correct result.
+            // tProjection = projection, tScale = dirSq
+            // Then: t = tProjection / tScale = projection / dirSq ✓
+            tProjection = projection
+            tScale = dirSq
+        } else {
+            // Normal case: tProjection = (projection * scale) / dirSq, tScale = scale
+            // Then: t = tProjection / tScale = (projection * scale) / (dirSq * scale)
+            // = projection / dirSq ✓
+            tProjection = scaledProjection / dirSq
+            tScale = scale
+        }
         
         if tProjection < 0 {
             // Closest point is behind the ray origin, check if origin is inside circle

@@ -131,3 +131,29 @@ func testIVec2Equatable() {
     #expect(v1 == v2)
     #expect(v1 != v3)
 }
+
+// MARK: - Overflow Tests
+
+@Test("IVec2.project(onto:) preserves precision when dot*scale overflows")
+func testIVec2ProjectOverflowPath() {
+    // Test with vectors near WORLD_MAX_COORDINATE to trigger overflow
+    // When dot * scale overflows, the fallback should preserve fixed-point precision
+    let maxCoord = FixedPoint.WORLD_MAX_COORDINATE
+    let nearMaxCoord = Int32((Int64(maxCoord) * 9) / 10)  // 90% of max to ensure overflow
+    
+    let v1 = IVec2(fixedPointX: nearMaxCoord, fixedPointY: nearMaxCoord)
+    let v2 = IVec2(fixedPointX: nearMaxCoord, fixedPointY: 0)
+    
+    // This should trigger overflow in dot * scale, but still produce correct result
+    let projection = v1.project(onto: v2)
+    
+    // The projection should be in the direction of v2
+    // Since v1 and v2 are both in the +x direction, projection should be along +x
+    #expect(projection.x > 0, "Projection should be in positive x direction")
+    #expect(projection.y == 0, "Projection onto x-axis should have y=0")
+    
+    // Verify the projection magnitude is reasonable (not truncated to 0 or max)
+    let projMagnitude = projection.magnitude()
+    #expect(projMagnitude > 0, "Projection should not be zero")
+    #expect(projMagnitude < v2.magnitude() * 2, "Projection should not exceed 2x the target vector")
+}
