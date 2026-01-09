@@ -123,8 +123,26 @@ public struct ILineSegment: Codable, Equatable, Sendable {
         let tScaled = overflow ? (t / dirSq) : (scaledT / dirSq)
         let tScale = overflow ? Int64(1) : scale
         
-        let closestX64 = Int64(start.x) + (Int64(dir.x) * tScaled) / tScale
-        let closestY64 = Int64(start.y) + (Int64(dir.y) * tScaled) / tScale
+        // To avoid overflow in (dir.x * tScaled), check if multiplication would overflow
+        // If overflow would occur, compute t = tScaled / tScale first, then multiply
+        let dirX64 = Int64(dir.x)
+        let dirY64 = Int64(dir.y)
+        let (prodX, overflowX) = dirX64.multipliedReportingOverflow(by: tScaled)
+        let (prodY, overflowY) = dirY64.multipliedReportingOverflow(by: tScaled)
+        
+        let closestX64: Int64
+        let closestY64: Int64
+        if overflowX || overflowY {
+            // If multiplication would overflow, compute t = tScaled / tScale first
+            // This is safe because t will be in a reasonable range (typically < scale)
+            let tValue = tScaled / tScale
+            closestX64 = Int64(start.x) + dirX64 * tValue
+            closestY64 = Int64(start.y) + dirY64 * tValue
+        } else {
+            // Safe to compute directly
+            closestX64 = Int64(start.x) + prodX / tScale
+            closestY64 = Int64(start.y) + prodY / tScale
+        }
         let closestPoint = IVec2(
             fixedPointX: Int32(clamping: closestX64),
             fixedPointY: Int32(clamping: closestY64)
@@ -269,16 +287,46 @@ public struct ILineSegment: Codable, Equatable, Sendable {
         let tScale = overflow ? Int64(1) : scale
 
         // Closest point on the line (not clamped)
-        let lineX = Int64(start.x) + (Int64(dir.x) * tProjection) / tScale
-        let lineY = Int64(start.y) + (Int64(dir.y) * tProjection) / tScale
+        // To avoid overflow in (dir.x * tProjection), check if multiplication would overflow
+        let dirX64 = Int64(dir.x)
+        let dirY64 = Int64(dir.y)
+        let (prodLineX, overflowLineX) = dirX64.multipliedReportingOverflow(by: tProjection)
+        let (prodLineY, overflowLineY) = dirY64.multipliedReportingOverflow(by: tProjection)
+        
+        let lineX: Int64
+        let lineY: Int64
+        if overflowLineX || overflowLineY {
+            // If multiplication would overflow, compute t = tProjection / tScale first
+            let tValue = tProjection / tScale
+            lineX = Int64(start.x) + dirX64 * tValue
+            lineY = Int64(start.y) + dirY64 * tValue
+        } else {
+            // Safe to compute directly
+            lineX = Int64(start.x) + prodLineX / tScale
+            lineY = Int64(start.y) + prodLineY / tScale
+        }
         let linePoint = IVec2(
             fixedPointX: Int32(clamping: lineX),
             fixedPointY: Int32(clamping: lineY)
         )
 
         let clampedT = min(max(tProjection, Int64(0)), tScale)
-        let clampedX = Int64(start.x) + (Int64(dir.x) * clampedT) / tScale
-        let clampedY = Int64(start.y) + (Int64(dir.y) * clampedT) / tScale
+        // For clampedT, check if multiplication would overflow
+        let (prodClampedX, overflowClampedX) = dirX64.multipliedReportingOverflow(by: clampedT)
+        let (prodClampedY, overflowClampedY) = dirY64.multipliedReportingOverflow(by: clampedT)
+        
+        let clampedX: Int64
+        let clampedY: Int64
+        if overflowClampedX || overflowClampedY {
+            // If multiplication would overflow, compute t = clampedT / tScale first
+            let clampedTValue = clampedT / tScale
+            clampedX = Int64(start.x) + dirX64 * clampedTValue
+            clampedY = Int64(start.y) + dirY64 * clampedTValue
+        } else {
+            // Safe to compute directly
+            clampedX = Int64(start.x) + prodClampedX / tScale
+            clampedY = Int64(start.y) + prodClampedY / tScale
+        }
         let closestPoint = IVec2(
             fixedPointX: Int32(clamping: clampedX),
             fixedPointY: Int32(clamping: clampedY)
@@ -334,8 +382,22 @@ public struct ILineSegment: Codable, Equatable, Sendable {
             return nil
         }
 
-        let pointX = Int64(start.x) + (Int64(dir.x) * finalT) / tScale
-        let pointY = Int64(start.y) + (Int64(dir.y) * finalT) / tScale
+        // To avoid overflow in (dir.x * finalT), check if multiplication would overflow
+        let (prodFinalX, overflowFinalX) = dirX64.multipliedReportingOverflow(by: finalT)
+        let (prodFinalY, overflowFinalY) = dirY64.multipliedReportingOverflow(by: finalT)
+        
+        let pointX: Int64
+        let pointY: Int64
+        if overflowFinalX || overflowFinalY {
+            // If multiplication would overflow, compute t = finalT / tScale first
+            let finalTValue = finalT / tScale
+            pointX = Int64(start.x) + dirX64 * finalTValue
+            pointY = Int64(start.y) + dirY64 * finalTValue
+        } else {
+            // Safe to compute directly
+            pointX = Int64(start.x) + prodFinalX / tScale
+            pointY = Int64(start.y) + prodFinalY / tScale
+        }
         return IVec2(
             fixedPointX: Int32(clamping: pointX),
             fixedPointY: Int32(clamping: pointY)
@@ -379,8 +441,24 @@ public struct ILineSegment: Codable, Equatable, Sendable {
         let tScaled = overflow ? (t / dirSq) : (scaledT / dirSq)
         let tScale = overflow ? Int64(1) : scale
         
-        let closestX = Int64(start.x) + (Int64(dir.x) * tScaled) / tScale
-        let closestY = Int64(start.y) + (Int64(dir.y) * tScaled) / tScale
+        // To avoid overflow in (dir.x * tScaled), check if multiplication would overflow
+        let dirX64 = Int64(dir.x)
+        let dirY64 = Int64(dir.y)
+        let (prodX, overflowX) = dirX64.multipliedReportingOverflow(by: tScaled)
+        let (prodY, overflowY) = dirY64.multipliedReportingOverflow(by: tScaled)
+        
+        let closestX: Int64
+        let closestY: Int64
+        if overflowX || overflowY {
+            // If multiplication would overflow, compute t = tScaled / tScale first
+            let tValue = tScaled / tScale
+            closestX = Int64(start.x) + dirX64 * tValue
+            closestY = Int64(start.y) + dirY64 * tValue
+        } else {
+            // Safe to compute directly
+            closestX = Int64(start.x) + prodX / tScale
+            closestY = Int64(start.y) + prodY / tScale
+        }
         return IVec2(
             fixedPointX: Int32(clamping: closestX),
             fixedPointY: Int32(clamping: closestY)
