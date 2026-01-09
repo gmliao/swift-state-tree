@@ -57,18 +57,24 @@ public struct FixedPoint: Sendable {
     
     /// Maximum safe Int32 value for fixed-point operations.
     ///
-    /// This is the maximum Int32 value that can be safely used in operations
-    /// without causing overflow in intermediate calculations.
+    /// **⚠️ Deprecated: This limit is no longer enforced in actual operations.**
     ///
-    /// For operations involving squaring (e.g., magnitudeSquared), the safe
-    /// maximum is approximately sqrt(Int32.max) ≈ 46,340 to prevent overflow
-    /// when squaring.
+    /// This was the historical maximum Int32 value (approximately sqrt(Int32.max) ≈ 46,340)
+    /// that could be safely used in operations without causing overflow when squaring.
+    ///
+    /// **Current status**: All operations (magnitudeSquared, distanceSquared, dot product, etc.)
+    /// now use Int64 internally, so this limit no longer applies. The actual coordinate limit
+    /// is `WORLD_MAX_COORDINATE` (Int32.max / 2 ≈ 1,073,741,823), which is much larger.
+    ///
+    /// **Usage**: This value is retained for backward compatibility and testing purposes only.
+    /// For new code, use `WORLD_MAX_COORDINATE` instead.
     public static let maxSafeInt32: Int32 = Int32(sqrt(Double(Int32.max)))
     
     /// Minimum safe Int32 value for fixed-point operations.
     ///
-    /// This is the minimum Int32 value that can be safely used in operations
-    /// without causing overflow in intermediate calculations.
+    /// **⚠️ Deprecated: This limit is no longer enforced in actual operations.**
+    ///
+    /// See `maxSafeInt32` for details. For new code, use `WORLD_MIN_COORDINATE` instead.
     public static let minSafeInt32: Int32 = -maxSafeInt32
     
     /// Maximum safe coordinate value for distance calculations using Int64.
