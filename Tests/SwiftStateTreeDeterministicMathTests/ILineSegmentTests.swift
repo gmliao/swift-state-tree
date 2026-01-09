@@ -55,6 +55,36 @@ func testILineSegmentIntersectsCircle() {
     }
 }
 
+@Test("ILineSegment intersects with circle when segment length is zero")
+func testILineSegmentIntersectsCircleZeroLength() {
+    let centerCircle = ICircle(center: IVec2(x: 0.0, y: 0.0), radius: 0.5)
+    
+    let insideSegment = ILineSegment(start: IVec2(x: 0.1, y: 0.0), end: IVec2(x: 0.1, y: 0.0))
+    let insideIntersection = insideSegment.intersects(circle: centerCircle)
+    #expect(insideIntersection == insideSegment.start)
+    
+    let boundarySegment = ILineSegment(start: IVec2(x: 0.5, y: 0.0), end: IVec2(x: 0.5, y: 0.0))
+    let boundaryIntersection = boundarySegment.intersects(circle: centerCircle)
+    #expect(boundaryIntersection == boundarySegment.start)
+    
+    let outsideSegment = ILineSegment(start: IVec2(x: 0.8, y: 0.0), end: IVec2(x: 0.8, y: 0.0))
+    let outsideIntersection = outsideSegment.intersects(circle: centerCircle)
+    #expect(outsideIntersection == nil)
+}
+
+@Test("ILineSegment intersects with circle on tangent contact")
+func testILineSegmentIntersectsCircleTangent() {
+    let segment = ILineSegment(start: IVec2(x: -1.0, y: 0.5), end: IVec2(x: 1.0, y: 0.5))
+    let circle = ICircle(center: IVec2(x: 0.0, y: 0.0), radius: 0.5)
+    
+    let intersection = segment.intersects(circle: circle)
+    #expect(intersection != nil)
+    if let point = intersection {
+        #expect(abs(point.x) <= 10, "Tangent intersection x should be near 0")
+        #expect(abs(point.y - 500) <= 10, "Tangent intersection y should be near 0.5")
+    }
+}
+
 @Test("ILineSegment closest point works correctly")
 func testILineSegmentClosestPoint() {
     let segment = ILineSegment(start: IVec2(x: 0.0, y: 0.0), end: IVec2(x: 1.0, y: 0.0))
