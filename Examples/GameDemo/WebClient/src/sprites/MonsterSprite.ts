@@ -6,12 +6,12 @@ import type { MonsterState } from '../generated/defs'
  */
 export class MonsterSprite {
   public readonly container: Phaser.GameObjects.Container
-  public readonly monsterID: string
+  public readonly monsterID: number
   
   private readonly scene: Phaser.Scene
   private readonly lerpFactor: number = 0.1
   
-  constructor(scene: Phaser.Scene, monsterID: string) {
+  constructor(scene: Phaser.Scene, monsterID: number) {
     this.scene = scene
     this.monsterID = monsterID
     this.container = this.createSprite()

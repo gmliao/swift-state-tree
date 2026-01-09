@@ -278,6 +278,10 @@
                   <v-icon icon="mdi-broadcast" size="small" class="mr-1"></v-icon>
                   Events
                 </v-tab>
+                <v-tab value="statistics">
+                  <v-icon icon="mdi-chart-line" size="small" class="mr-1"></v-icon>
+                  流量統計
+                </v-tab>
               </v-tabs>
               
               <v-window v-model="tab" class="playground-window">
@@ -328,6 +332,15 @@
                     />
                   </div>
                 </v-window-item>
+
+                <v-window-item value="statistics" class="playground-window-item">
+                  <div class="actions-events-container-mobile">
+                    <StatisticsPanel
+                      :connected="isConnected"
+                      :state-updates="stateUpdates"
+                    />
+                  </div>
+                </v-window-item>
               </v-window>
             </div>
             
@@ -372,6 +385,10 @@
                         <v-icon icon="mdi-broadcast" size="small" class="mr-1"></v-icon>
                         Events
                       </v-tab>
+                      <v-tab value="statistics">
+                        <v-icon icon="mdi-chart-line" size="small" class="mr-1"></v-icon>
+                        流量統計
+                      </v-tab>
                     </v-tabs>
 
                     <div class="actions-events-content">
@@ -392,6 +409,13 @@
                             :connected="isConnected"
                             :selected-land-i-d="selectedLandID"
                             @send-event="handleSendEvent"
+                          />
+                        </v-window-item>
+
+                        <v-window-item value="statistics" class="actions-events-window-item">
+                          <StatisticsPanel
+                            :connected="isConnected"
+                            :state-updates="stateUpdates"
                           />
                         </v-window-item>
                       </v-window>
@@ -528,6 +552,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import StateTreeViewer from './components/StateTreeViewer.vue'
 import ActionPanel from './components/ActionPanel.vue'
 import EventPanel from './components/EventPanel.vue'
+import StatisticsPanel from './components/StatisticsPanel.vue'
 import ResizableLogPanel from './components/ResizableLogPanel.vue'
 import { useWebSocket } from './composables/useWebSocket'
 import { useSchema } from './composables/useSchema'

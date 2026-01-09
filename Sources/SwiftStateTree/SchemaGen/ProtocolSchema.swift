@@ -151,11 +151,27 @@ public struct StateTreeMetadata: Codable, Sendable {
     /// Whether this type should be treated as atomic (not recursively diffed).
     /// Atomic types are updated as a whole unit, not field-by-field.
     public let atomic: Bool?
+    /// Whether this type represents an Optional type (e.g., Optional<PlayerID>).
+    public let optional: Bool?
+    /// The inner type name for Optional types (e.g., "PlayerID" for Optional<PlayerID>).
+    public let innerType: String?
+    /// The key type name for Map/Dictionary types (e.g., "Int", "String", "PlayerID").
+    public let keyType: String?
     
-    public init(nodeKind: NodeKind, sync: SyncMetadata? = nil, atomic: Bool? = nil) {
+    public init(
+        nodeKind: NodeKind,
+        sync: SyncMetadata? = nil,
+        atomic: Bool? = nil,
+        optional: Bool? = nil,
+        innerType: String? = nil,
+        keyType: String? = nil
+    ) {
         self.nodeKind = nodeKind
         self.sync = sync
         self.atomic = atomic
+        self.optional = optional
+        self.innerType = innerType
+        self.keyType = keyType
     }
 }
 

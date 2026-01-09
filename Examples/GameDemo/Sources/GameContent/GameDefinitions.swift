@@ -89,7 +89,7 @@ public struct PlayerState: StateNodeProtocol {
 public struct MonsterState: StateNodeProtocol {
     /// Unique monster ID
     @Sync(.broadcast)
-    var id: String = UUID().uuidString
+    var id: Int = 0
     
     /// Monster position in 2D world
     @Sync(.broadcast)
@@ -129,7 +129,7 @@ public struct MonsterState: StateNodeProtocol {
 public struct TurretState: StateNodeProtocol {
     /// Unique turret ID
     @Sync(.broadcast)
-    var id: String = UUID().uuidString
+    var id: Int = 0
     
     /// Turret position in 2D world
     @Sync(.broadcast)
@@ -190,11 +190,19 @@ public struct HeroDefenseState: StateNodeProtocol {
 
     /// Active monsters in the world
     @Sync(.broadcast)
-    var monsters: [String: MonsterState] = [:]
+    var monsters: [Int: MonsterState] = [:]
 
     /// Placed turrets
     @Sync(.broadcast)
-    var turrets: [String: TurretState] = [:]
+    var turrets: [Int: TurretState] = [:]
+    
+    /// Next monster ID counter (for generating unique IDs)
+    @Sync(.broadcast)
+    var nextMonsterID: Int = 1
+    
+    /// Next turret ID counter (for generating unique IDs)
+    @Sync(.broadcast)
+    var nextTurretID: Int = 1
 
     /// Base/fortress state
     @Sync(.broadcast)
@@ -292,9 +300,9 @@ public struct UpgradeWeaponEvent: ClientEventPayload {
 /// Client event to upgrade a turret.
 @Payload
 public struct UpgradeTurretEvent: ClientEventPayload {
-    public let turretID: String
+    public let turretID: Int
 
-    public init(turretID: String) {
+    public init(turretID: Int) {
         self.turretID = turretID
     }
 }
@@ -318,11 +326,11 @@ public struct PlayerShootEvent: ServerEventPayload {
 /// Server event broadcasted when a turret fires.
 @Payload
 public struct TurretFireEvent: ServerEventPayload {
-    public let turretID: String
+    public let turretID: Int
     public let from: Position2
     public let to: Position2
 
-    public init(turretID: String, from: Position2, to: Position2) {
+    public init(turretID: Int, from: Position2, to: Position2) {
         self.turretID = turretID
         self.from = from
         self.to = to
@@ -402,9 +410,9 @@ enum GameSystem {
     static func findNearestMonsterInRange(
         from position: Position2,
         range: Float,
-        monsters: [String: MonsterState]
-    ) -> (id: String, monster: MonsterState)? {
-        var nearest: (id: String, monster: MonsterState)? = nil
+        monsters: [Int: MonsterState]
+    ) -> (id: Int, monster: MonsterState)? {
+        var nearest: (id: Int, monster: MonsterState)? = nil
         var nearestDistance: Float = Float.greatestFiniteMagnitude
         
         for (id, monster) in monsters {
@@ -421,8 +429,9 @@ enum GameSystem {
     // MARK: - Monster Systems
     
     /// Spawn a new monster at a random edge position
-    static func spawnMonster() -> MonsterState {
+    static func spawnMonster(nextID: Int) -> MonsterState {
         var monster = MonsterState()
+        monster.id = nextID
         
         // Spawn at random edge position
         let edge = Int.random(in: 0..<4)  // 0=top, 1=right, 2=bottom, 3=left
@@ -530,8 +539,8 @@ enum GameSystem {
     static func findNearestMonsterInTurretRange(
         from position: Position2,
         range: Float,
-        monsters: [String: MonsterState]
-    ) -> (id: String, monster: MonsterState)? {
+        monsters: [Int: MonsterState]
+    ) -> (id: Int, monster: MonsterState)? {
         return findNearestMonsterInRange(from: position, range: range, monsters: monsters)
     }
     
@@ -539,7 +548,7 @@ enum GameSystem {
     static func isValidTurretPosition(
         _ position: Position2,
         basePosition: Position2,
-        existingTurrets: [String: TurretState]
+        existingTurrets: [Int: TurretState]
     ) -> Bool {
         // Check distance from base
         let distanceFromBase = position.v.distance(to: basePosition.v)
@@ -698,12 +707,14 @@ public enum HeroDefense {
                     
                     // Spawn monsters periodically
                     if state.currentTick % GameConfig.MONSTER_SPAWN_INTERVAL_TICKS == 0 {
-                        let monster = GameSystem.spawnMonster()
+                        let monsterID = state.nextMonsterID
+                        state.nextMonsterID += 1
+                        let monster = GameSystem.spawnMonster(nextID: monsterID)
                         state.monsters[monster.id] = monster
                     }
                     
                     // Update all monsters
-                    var monstersToRemove: [String] = []
+                    var monstersToRemove: [Int] = []
                     for (monsterID, var monster) in state.monsters {
                         // Update movement
                         GameSystem.updateMonsterMovement(&monster, basePosition: state.base.position)
@@ -957,7 +968,10 @@ public enum HeroDefense {
 
                     // Deduct resources and place turret
                     player.resources -= GameConfig.TURRET_PLACEMENT_COST
+                    let turretID = state.nextTurretID
+                    state.nextTurretID += 1
                     var turret = TurretState()
+                    turret.id = turretID
                     turret.position = event.position
                     turret.ownerID = playerID
                     turret.level = 0
@@ -966,7 +980,7 @@ public enum HeroDefense {
 
                     ctx.logger.info("🏰 Turret placed", metadata: [
                         "playerID": .string(playerID.rawValue),
-                        "turretID": .string(turret.id),
+                        "turretID": .string("\(turret.id)"),
                         "cost": .string("\(GameConfig.TURRET_PLACEMENT_COST)"),
                         "remainingResources": .string("\(player.resources)"),
                     ])
@@ -1002,7 +1016,7 @@ public enum HeroDefense {
                           var turret = state.turrets[event.turretID] else {
                         ctx.logger.warning("⚠️ UpgradeTurretEvent: Player or turret not found", metadata: [
                             "playerID": .string(playerID.rawValue),
-                            "turretID": .string(event.turretID),
+                            "turretID": .string("\(event.turretID)"),
                         ])
                         return
                     }
@@ -1011,7 +1025,7 @@ public enum HeroDefense {
                     guard turret.ownerID == playerID else {
                         ctx.logger.warning("⚠️ UpgradeTurretEvent: Not owner", metadata: [
                             "playerID": .string(playerID.rawValue),
-                            "turretID": .string(event.turretID),
+                            "turretID": .string("\(event.turretID)"),
                         ])
                         return
                     }
@@ -1025,7 +1039,7 @@ public enum HeroDefense {
                         
                         ctx.logger.info("🏰 Turret upgraded", metadata: [
                             "playerID": .string(playerID.rawValue),
-                            "turretID": .string(event.turretID),
+                            "turretID": .string("\(event.turretID)"),
                             "level": .string("\(turret.level)"),
                         ])
                     }
