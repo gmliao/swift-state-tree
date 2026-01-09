@@ -1072,7 +1072,13 @@ export class StateTreeView {
       return null
     }
 
-    const parts = path.split('/').filter((p: string) => p !== '')
+    // Split path and remove array indices (e.g., "positions[0]" -> "positions")
+    const parts = path.split('/').filter((p: string) => p !== '').map((part: string) => {
+      // Remove array index notation: "positions[0]" -> "positions"
+      const arrayIndexMatch = part.match(/^(.+)\[\d+\]$/)
+      return arrayIndexMatch ? arrayIndexMatch[1] : part
+    })
+    
     if (parts.length === 0) {
       return this.stateTypeName
     }
