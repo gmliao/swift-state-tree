@@ -166,7 +166,14 @@ let statsUpdateInterval: number | null = null
 
 // Update statistics from actual message statistics (from SDK)
 watch(() => props.messageStatistics, (stats) => {
-  if (!stats || stats.length === 0) {
+  // Allow empty array to pass through for initialization, but skip if null/undefined
+  if (!stats) {
+    return
+  }
+  
+  // If stats array is empty, just reset the index
+  if (stats.length === 0) {
+    lastProcessedStatsIndex = 0
     return
   }
   
@@ -688,19 +695,11 @@ onMounted(() => {
   resizeCanvas()
   window.addEventListener('resize', resizeCanvas)
   
-  // Update chart periodically
-  updateInterval = window.setInterval(() => {
-    drawChart()
-  }, 1000)
-  
-  // Calculate per-second statistics every second
-  statsUpdateInterval = window.setInterval(() => {
-    calculatePerSecondStats()
-  }, 1000)
-  
-  // Initialize tracking
+  // Reset all accumulated statistics when component is mounted
+  // This prevents showing accumulated data from before the panel was visible
   lastProcessedUpdateIndex = 0
-  lastProcessedStatsIndex = 0
+  // Skip all existing statistics - only process new ones from now on
+  lastProcessedStatsIndex = props.messageStatistics?.length || 0
   currentSecondPackets = 0
   currentSecondPatches = 0
   currentSecondBytesInbound = 0
@@ -711,6 +710,27 @@ onMounted(() => {
   previousSecondBytesOutbound = 0
   lastSecondTimestamp = Date.now()
   lastRecordedSecond = Math.floor(Date.now() / 1000)
+  
+  // Initialize display values to zero
+  packetsPerSecond.value = 0
+  patchesPerSecond.value = 0
+  bytesPerSecondInbound.value = 0
+  bytesPerSecondOutbound.value = 0
+  
+  // Update chart periodically
+  updateInterval = window.setInterval(() => {
+    drawChart()
+  }, 1000)
+  
+  // Calculate per-second statistics every second
+  statsUpdateInterval = window.setInterval(() => {
+    calculatePerSecondStats()
+  }, 1000)
+  
+  // Initial calculation after a short delay to avoid showing accumulated data
+  setTimeout(() => {
+    calculatePerSecondStats()
+  }, 100)
 })
 
 onUnmounted(() => {
@@ -727,8 +747,9 @@ onUnmounted(() => {
 watch(() => props.connected, (connected) => {
   if (connected) {
     startTime.value = Date.now()
+    // When reconnecting, skip existing statistics to avoid processing old data
     lastProcessedUpdateIndex = 0
-    lastProcessedStatsIndex = 0
+    lastProcessedStatsIndex = props.messageStatistics?.length || 0
     currentSecondPackets = 0
     currentSecondPatches = 0
     currentSecondBytesInbound = 0
