@@ -73,11 +73,13 @@ func testTickUpdatesBroadcastFields() async throws {
     ) {
         Rules { }
         
-        Lifetime { (config: inout LifetimeConfig<TickTestState>) in
-            config.tickInterval = .milliseconds(50)
-            config.tickHandler = { state, _ in
+        Lifetime {
+            Tick(every: .milliseconds(50)) { (state: inout TickTestState, _) in
                 state.ticks += 1
                 state.gameTime += 1
+            }
+            StateSync(every: .milliseconds(50)) { (_: TickTestState, _: LandContext) in
+                // Read-only sync callback
             }
         }
     }
