@@ -1062,7 +1062,7 @@ onMounted(() => {
   border-bottom: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
 }
 
-.playground-tabs :deep(.v-tab) {
+.playground-tabs .v-tab {
   font-size: 0.875rem;
   min-height: 48px;
 }
@@ -1105,9 +1105,9 @@ onMounted(() => {
   flex-direction: column;
 }
 
-.actions-events-container-mobile :deep(.action-panel),
-.actions-events-container-mobile :deep(.event-panel),
-.actions-events-container-mobile :deep(.statistics-panel) {
+.actions-events-container-mobile .action-panel,
+.actions-events-container-mobile .event-panel,
+.actions-events-container-mobile .statistics-panel {
   flex: 1;
   min-height: 0;
   overflow: auto;
@@ -1199,7 +1199,7 @@ onMounted(() => {
   border-bottom: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
 }
 
-.actions-events-tabs :deep(.v-tab) {
+.actions-events-tabs .v-tab {
   font-size: 0.875rem;
   min-height: 48px;
 }
@@ -1218,23 +1218,33 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  height: 100%;
 }
 
 .actions-events-window-item {
   flex: 1;
   min-height: 0;
-  overflow: visible; /* Changed from hidden to allow scrollbar to show */
+  overflow: hidden;
   padding: 0;
   display: flex;
   flex-direction: column;
-  position: relative; /* Added to contain the scrollbar */
+  position: relative;
 }
 
-.actions-events-window-item :deep(.statistics-panel) {
+.actions-events-window .v-window__container {
+  height: 100%;
+}
+
+.actions-events-window .v-window-item {
+  height: 100%;
+}
+
+.actions-events-window-item .action-panel,
+.actions-events-window-item .event-panel,
+.actions-events-window-item .statistics-panel {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  height: 0; /* Force flex item to respect parent constraints */
 }
 </style>
