@@ -24,6 +24,10 @@ export interface SchemaDef {
     sync?: {
       policy?: string
     }
+    atomic?: boolean
+    optional?: boolean
+    innerType?: string
+    keyType?: string
   }
   // Extra fields from JSON Schema that we do not care about for v1 are ignored.
 }
@@ -39,6 +43,10 @@ export interface SchemaProperty {
     sync?: {
       policy?: string
     }
+    atomic?: boolean
+    optional?: boolean
+    innerType?: string
+    keyType?: string
   }
 }
 
@@ -130,20 +138,54 @@ function isProtocolSchema(value: unknown): value is ProtocolSchema {
 
 /**
  * Check if a type name represents an Optional type (e.g., "Optional<Position2>").
+ * 
+ * This function can also check a SchemaDef for the optional marker.
+ * 
+ * @param typeName - The type name to check, or a SchemaDef object
+ * @param def - Optional SchemaDef to check for x-stateTree.optional marker
+ * @returns true if the type is Optional
  */
-export function isOptionalType(typeName: string): boolean {
-  return typeName.startsWith('Optional<') && typeName.endsWith('>')
+export function isOptionalType(typeName: string | SchemaDef, def?: SchemaDef): boolean {
+  // If first argument is a SchemaDef, check its metadata
+  if (typeof typeName === 'object' && typeName !== null) {
+    return typeName['x-stateTree']?.optional === true
+  }
+  
+  // If def is provided, check its metadata first (preferred method)
+  if (def && def['x-stateTree']?.optional === true) {
+    return true
+  }
+  
+  // Fallback to string matching for backward compatibility
+  if (typeof typeName === 'string') {
+    return typeName.startsWith('Optional<') && typeName.endsWith('>')
+  }
+  
+  return false
 }
 
 /**
  * Unwrap an Optional type to get the inner type.
  * Returns the inner type name if it's an Optional, otherwise returns the original type name.
  * 
+ * This function prioritizes the structured marker (x-stateTree.innerType) over string parsing.
+ * 
+ * @param typeName - The type name to unwrap
+ * @param def - Optional SchemaDef to check for x-stateTree.innerType marker
+ * @returns The inner type name, or the original type name if not Optional
+ * 
  * @example
  * unwrapOptionalType("Optional<Position2>") // returns "Position2"
  * unwrapOptionalType("Position2") // returns "Position2"
+ * unwrapOptionalType("Optional<Position2>", { 'x-stateTree': { innerType: 'Position2' } }) // returns "Position2"
  */
-export function unwrapOptionalType(typeName: string): string {
+export function unwrapOptionalType(typeName: string, def?: SchemaDef): string {
+  // If def is provided, check its metadata first (preferred method)
+  if (def && def['x-stateTree']?.innerType) {
+    return def['x-stateTree'].innerType!
+  }
+  
+  // Fallback to string parsing for backward compatibility
   if (isOptionalType(typeName)) {
     const match = typeName.match(/^Optional<(.+)>$/)
     if (match && match[1]) {

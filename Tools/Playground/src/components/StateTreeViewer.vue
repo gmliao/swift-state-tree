@@ -8,42 +8,62 @@
       等待狀態更新...
     </v-alert>
     <div v-else>
-    <v-treeview
-      :items="treeItems"
-        :key="treeKey"
-      activatable
-      item-title="name"
-      item-value="id"
-      item-children="children"
-      density="compact"
-    >
-      <template v-slot:prepend="{ item }">
-        <v-icon :icon="getIcon(item.type)" :color="getColor(item.type, item.syncPolicy)"></v-icon>
-      </template>
-      <template v-slot:title="{ item }">
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <span>{{ item.name }}</span>
-          <v-chip
-            v-if="item.syncPolicy"
-            :color="getPolicyColor(item.syncPolicy)"
-            size="x-small"
-            variant="flat"
-            style="font-size: 0.7rem; height: 18px;"
-          >
-            {{ item.syncPolicy }}
-          </v-chip>
-          <v-chip
-            v-if="item.nodeKind"
-            :color="getNodeKindColor(item.nodeKind)"
-            size="x-small"
-            variant="flat"
-            style="font-size: 0.7rem; height: 18px;"
-          >
-            {{ item.nodeKind }}
-          </v-chip>
-        </div>
-      </template>
-    </v-treeview>
+      <!-- Copy button for JSON view -->
+      <div v-if="viewMode === 'json'" style="display: flex; justify-content: flex-end; padding: 8px; border-bottom: 1px solid rgba(0,0,0,0.12);">
+        <v-btn
+          icon="mdi-content-copy"
+          size="small"
+          variant="text"
+          density="compact"
+          @click="copyJson"
+          :title="copyButtonText"
+        ></v-btn>
+      </div>
+      
+      <!-- Tree view -->
+      <div v-if="(props.viewMode || 'tree') === 'tree'" style="overflow: auto; max-height: calc(100vh - 200px);">
+        <v-treeview
+          :items="treeItems"
+          :key="treeKey"
+          activatable
+          item-title="name"
+          item-value="id"
+          item-children="children"
+          density="compact"
+        >
+          <template v-slot:prepend="{ item }">
+            <v-icon :icon="getIcon(item.type)" :color="getColor(item.type, item.syncPolicy)"></v-icon>
+          </template>
+          <template v-slot:title="{ item }">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span>{{ item.name }}</span>
+              <v-chip
+                v-if="item.syncPolicy"
+                :color="getPolicyColor(item.syncPolicy)"
+                size="x-small"
+                variant="flat"
+                style="font-size: 0.7rem; height: 18px;"
+              >
+                {{ item.syncPolicy }}
+              </v-chip>
+              <v-chip
+                v-if="item.nodeKind"
+                :color="getNodeKindColor(item.nodeKind)"
+                size="x-small"
+                variant="flat"
+                style="font-size: 0.7rem; height: 18px;"
+              >
+                {{ item.nodeKind }}
+              </v-chip>
+            </div>
+          </template>
+        </v-treeview>
+      </div>
+      
+      <!-- JSON view -->
+      <div v-else style="overflow: auto; max-height: calc(100vh - 200px);">
+        <pre class="json-viewer">{{ formattedJson }}</pre>
+      </div>
     </div>
   </div>
 </template>
@@ -52,6 +72,9 @@
 import { computed, ref, watch } from 'vue'
 import type { Schema } from '@/types'
 import { IVec2, Position2, Angle, FIXED_POINT_SCALE } from '@swiftstatetree/sdk/core'
+
+const viewMode = ref<'tree' | 'json'>('tree')
+const copyButtonText = ref('複製 JSON')
 
 interface TreeItem {
   id: string
@@ -66,6 +89,7 @@ interface TreeItem {
 const props = defineProps<{
   state: Record<string, any>
   schema: Schema | null
+  viewMode?: 'tree' | 'json'
 }>()
 
 // Use a stable key that only changes when state structure changes significantly
@@ -90,6 +114,68 @@ watch(() => props.state, (newState, oldState) => {
     }
   }
 }, { deep: false }) // Only watch top-level changes
+
+// Format state as JSON string
+const formattedJson = computed(() => {
+  if (!props.state || Object.keys(props.state).length === 0) {
+    return ''
+  }
+  
+  // Convert state to JSON with proper formatting
+  // Handle DeterministicMath types by converting them to serializable format
+  const serializeState = (obj: any): any => {
+    if (obj === null || obj === undefined) {
+      return obj
+    }
+    
+    // Handle DeterministicMath class instances
+    if (obj instanceof IVec2) {
+      return { x: obj.x, y: obj.y, rawX: obj.rawX, rawY: obj.rawY }
+    }
+    if (obj instanceof Position2) {
+      return { v: serializeState(obj.v) }
+    }
+    if (obj instanceof Angle) {
+      return { degrees: obj.degrees, rawDegrees: obj.rawDegrees }
+    }
+    
+    // Handle arrays
+    if (Array.isArray(obj)) {
+      return obj.map(item => serializeState(item))
+    }
+    
+    // Handle objects
+    if (typeof obj === 'object') {
+      const result: Record<string, any> = {}
+      for (const [key, value] of Object.entries(obj)) {
+        result[key] = serializeState(value)
+      }
+      return result
+    }
+    
+    return obj
+  }
+  
+  const serialized = serializeState(props.state)
+  return JSON.stringify(serialized, null, 2)
+})
+
+// Copy JSON to clipboard
+const copyJson = async () => {
+  try {
+    await navigator.clipboard.writeText(formattedJson.value)
+    copyButtonText.value = '已複製！'
+    setTimeout(() => {
+      copyButtonText.value = '複製 JSON'
+    }, 2000)
+  } catch (err) {
+    console.error('Failed to copy JSON:', err)
+    copyButtonText.value = '複製失敗'
+    setTimeout(() => {
+      copyButtonText.value = '複製 JSON'
+    }, 2000)
+  }
+}
 
 const treeItems = computed((): TreeItem[] => {
   if (!props.state || Object.keys(props.state).length === 0) {
@@ -546,5 +632,25 @@ const getNodeKindColor = (nodeKind: string): string => {
   flex: 1;
   min-height: 0;
   overflow: auto;
+}
+
+.json-viewer {
+  padding: 16px;
+  margin: 0;
+  background-color: #f5f5f5;
+  border-radius: 4px;
+  font-family: 'Courier New', monospace;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-x: auto;
+}
+
+@media (prefers-color-scheme: dark) {
+  .json-viewer {
+    background-color: #1e1e1e;
+    color: #d4d4d4;
+  }
 }
 </style>

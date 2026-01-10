@@ -41,11 +41,12 @@ export class MonsterManager {
     }
     
     // Add or update existing monsters
-    for (const [id, monsterState] of Object.entries(monsters)) {
-      if (!this.monsters.has(id)) {
+    for (const [idStr, monsterState] of Object.entries(monsters)) {
+      const id = Number(idStr)
+      if (!this.monsters.has(idStr)) {
         this.add(id, monsterState)
       } else {
-        this.updateMonster(id, monsterState)
+        this.updateMonster(idStr, monsterState)
       }
     }
   }
@@ -53,14 +54,15 @@ export class MonsterManager {
   /**
    * Add a new monster
    */
-  private add(id: string, monsterState: MonsterState): void {
+  private add(id: number, monsterState: MonsterState): void {
     const sprite = new MonsterSprite(this.scene, id)
+    const idStr = String(id)
     sprite.setInitialPosition(monsterState)
-    this.monsters.set(id, sprite)
+    this.monsters.set(idStr, sprite)
     
     // Store initial position
     if (monsterState.position?.v) {
-      this.previousMonsterPositions.set(id, {
+      this.previousMonsterPositions.set(idStr, {
         x: monsterState.position.v.x,
         y: monsterState.position.v.y
       })

@@ -21,6 +21,19 @@ public struct SchemaHelper {
         return .leaf
     }
     
+    /// Attempt to extract the key type from a Dictionary type.
+    ///
+    /// Returns `nil` if the provided type is not a Dictionary.
+    public static func dictionaryKeyType(from type: Any.Type) -> Any.Type? {
+        func extract<T: DictionaryProtocol>(_ t: T.Type) -> Any.Type {
+            T.Key.self
+        }
+        guard let dictType = type as? any DictionaryProtocol.Type else {
+            return nil
+        }
+        return _openExistential(dictType, do: extract)
+    }
+    
     /// Attempt to extract the value type from a Dictionary type.
     ///
     /// Returns `nil` if the provided type is not a Dictionary.

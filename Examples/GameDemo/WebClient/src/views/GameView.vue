@@ -175,7 +175,7 @@ async function handleUpgradeTurret() {
     
     const playerTurrets = Object.entries(state.turrets)
       .filter(([_, turret]: [string, any]) => turret.ownerID === currentPlayerID)
-      .map(([id, turret]: [string, any]) => ({ id, level: turret.level || 0 }));
+      .map(([idStr, turret]: [string, any]) => ({ id: Number(idStr), level: turret.level || 0 }));
     
     if (playerTurrets.length === 0) {
       console.log('No turrets to upgrade');

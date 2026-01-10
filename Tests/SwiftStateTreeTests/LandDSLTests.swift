@@ -243,10 +243,12 @@ func testLandKeeperTickHandler() async throws {
     ) {
         Rules { }
 
-        Lifetime { (config: inout LifetimeConfig<DemoLandState>) in
-            config.tickInterval = .milliseconds(10)
-            config.tickHandler = { state, _ in
+        Lifetime {
+            Tick(every: .milliseconds(10)) { (state: inout DemoLandState, _) in
                 state.ticks += 1
+            }
+            StateSync(every: .milliseconds(10)) { (_: DemoLandState, _: LandContext) in
+                // Read-only sync callback
             }
         }
     }
@@ -376,15 +378,17 @@ func testCtxSpawn() async throws {
         "spawn-test",
         using: DemoLandState.self
     ) {
-        Lifetime { (config: inout LifetimeConfig<DemoLandState>) in
-            config.tickInterval = .milliseconds(10)
-            config.tickHandler = { (state: inout DemoLandState, ctx: LandContext) in
+        Lifetime {
+            Tick(every: .milliseconds(10)) { (state: inout DemoLandState, ctx: LandContext) in
                 state.ticks += 1
                 
                 // Spawn background task
                 ctx.spawn {
                     await counter.increment()
                 }
+            }
+            StateSync(every: .milliseconds(10)) { (_: DemoLandState, _: LandContext) in
+                // Read-only sync callback
             }
         }
     }
@@ -408,11 +412,13 @@ func testOnTickSynchronous() async throws {
         "sync-tick-test",
         using: DemoLandState.self
     ) {
-        Lifetime { (config: inout LifetimeConfig<DemoLandState>) in
-            config.tickInterval = .milliseconds(5)
-            config.tickHandler = { (state: inout DemoLandState, _: LandContext) in
+        Lifetime {
+            Tick(every: .milliseconds(5)) { (state: inout DemoLandState, _: LandContext) in
                 // This is synchronous - no await allowed
                 state.ticks += 1
+            }
+            StateSync(every: .milliseconds(5)) { (_: DemoLandState, _: LandContext) in
+                // Read-only sync callback
             }
         }
     }
@@ -1134,6 +1140,9 @@ func testOnInitializeBeforeTick() async throws {
                 } else {
                     state.ticks += 1
                 }
+            }
+            StateSync(every: .milliseconds(100)) { (_: DemoLandState, _: LandContext) in
+                // Read-only sync callback
             }
         }
     }

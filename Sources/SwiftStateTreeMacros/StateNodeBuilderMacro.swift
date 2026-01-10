@@ -482,12 +482,15 @@ public struct StateNodeBuilderMacro: MemberMacro {
 
                 if isOptional {
                     // For optional types, unwrap first then check if it's a StateNodeProtocol
-                    codeLines.append("if let unwrapped = \(storageName).wrappedValue, var nestedState = unwrapped as? any StateNodeProtocol {")
+                    // Use 'is' check to avoid compiler warning about always-succeeding cast
+                    codeLines.append("if let unwrapped = \(storageName).wrappedValue, unwrapped is any StateNodeProtocol {")
+                    codeLines.append("    var nestedState = unwrapped as! any StateNodeProtocol")
                 } else {
                     // For non-optional types, directly check if it's a StateNodeProtocol
                     // Note: Not all non-primitive types conform to StateNodeProtocol (e.g., DeterministicMath types, collections)
-                    // The conditional cast is necessary to safely check at runtime
-                    codeLines.append("if var nestedState = \(storageName).wrappedValue as? any StateNodeProtocol {")
+                    // Use 'is' check to avoid compiler warning about always-succeeding cast
+                    codeLines.append("if \(storageName).wrappedValue is any StateNodeProtocol {")
+                    codeLines.append("    var nestedState = \(storageName).wrappedValue as! any StateNodeProtocol")
                 }
                 codeLines.append("    nestedState.clearDirty()")
                 codeLines.append("    // Update value without marking as dirty (using internal method)")

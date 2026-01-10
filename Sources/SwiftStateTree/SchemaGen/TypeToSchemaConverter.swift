@@ -94,13 +94,24 @@ public struct TypeToSchemaConverter {
                 valueSchema = JSONSchema(type: .object)
             }
             
+            // Extract key type for Map/Dictionary
+            let keyTypeName: String? = {
+                guard let keyType = SchemaHelper.dictionaryKeyType(from: type) else {
+                    return nil
+                }
+                return typeNameFromSwiftType(keyType)
+            }()
+            
             return JSONSchema(
                 type: .object,
                 additionalProperties: valueSchema,
                 xStateTree: StateTreeMetadata(
                     nodeKind: .map,
                     sync: metadata?.policy.map { SyncMetadata(policy: $0.rawValue) },
-                    atomic: nil
+                    atomic: nil,
+                    optional: nil,
+                    innerType: nil,
+                    keyType: keyTypeName
                 )
             )
         }
@@ -215,6 +226,41 @@ public struct TypeToSchemaConverter {
                typeName.contains("Velocity2") ||
                typeName.contains("Acceleration2") ||
                typeName.contains("Angle")
+    }
+    
+    // MARK: - Type Name Conversion
+    
+    /// Convert a Swift type to its type name string.
+    /// Removes module prefixes (e.g., "SwiftStateTree.PlayerID" -> "PlayerID").
+    private static func typeNameFromSwiftType(_ type: Any.Type) -> String {
+        let fullName = String(describing: type)
+        // Remove module prefix if present (e.g., "SwiftStateTree.PlayerID" -> "PlayerID")
+        if let dotIndex = fullName.firstIndex(of: ".") {
+            return String(fullName[fullName.index(after: dotIndex)...])
+        }
+        return fullName
+    }
+    
+    // MARK: - Optional Type Detection
+    
+    /// Check if a type name represents an Optional type (e.g., "Optional<PlayerID>").
+    private static func isOptionalTypeName(_ typeName: String) -> Bool {
+        let normalized = typeName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.hasPrefix("Optional<") && normalized.hasSuffix(">")
+    }
+    
+    /// Extract the inner type name from an Optional type name.
+    /// Returns nil if the type is not Optional.
+    /// 
+    /// - Example: "Optional<PlayerID>" -> "PlayerID"
+    private static func extractInnerType(from typeName: String) -> String? {
+        let normalized = typeName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.hasPrefix("Optional<") && normalized.hasSuffix(">") else {
+            return nil
+        }
+        // Remove "Optional<" prefix and ">" suffix
+        let inner = normalized.dropFirst(9).dropLast(1)
+        return String(inner).trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     // MARK: - Enum Type Conversion
@@ -342,6 +388,10 @@ public struct TypeToSchemaConverter {
         // Check if this is an atomic type (DeterministicMath types)
         let isAtomic = isAtomicType(type)
         
+        // Check if this is an Optional type
+        let isOptional = isOptionalTypeName(typeName)
+        let innerType = isOptional ? extractInnerType(from: typeName) : nil
+        
         let schema = JSONSchema(
             type: .object,
             properties: properties.isEmpty ? nil : properties,
@@ -349,7 +399,9 @@ public struct TypeToSchemaConverter {
             xStateTree: StateTreeMetadata(
                 nodeKind: metadata?.nodeKind ?? .leaf,
                 sync: metadata?.policy.map { SyncMetadata(policy: $0.rawValue) },
-                atomic: isAtomic ? true : nil
+                atomic: isAtomic ? true : nil,
+                optional: isOptional ? true : nil,
+                innerType: innerType
             )
         )
         

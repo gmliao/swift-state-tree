@@ -35,16 +35,27 @@
         color="error"
         variant="flat"
         size="small"
-        class="mr-4"
+        class="mr-2"
         @click="handleDisconnect"
       >
         <v-icon icon="mdi-link-off" class="mr-1"></v-icon>
         斷線
       </v-btn>
+      <v-btn
+        :color="showLogPanel ? 'primary' : 'white'"
+        :variant="showLogPanel ? 'flat' : 'outlined'"
+        size="small"
+        class="mr-4"
+        @click="showLogPanel = !showLogPanel"
+        :title="showLogPanel ? '隱藏日誌面板' : '顯示日誌面板'"
+      >
+        <v-icon :icon="showLogPanel ? 'mdi-eye-off' : 'mdi-eye'" class="mr-1"></v-icon>
+        {{ showLogPanel ? '隱藏日誌' : '顯示日誌' }}
+      </v-btn>
     </v-app-bar>
 
     <v-main style="height: calc(100vh - 64px); overflow: hidden;">
-      <v-container fluid class="app-shell">
+      <v-container fluid class="app-shell" :class="{ 'app-shell-scroll': !isConnected || !isJoined }">
         <!-- Connection Error Alert (shown at top when error exists) -->
         <v-row v-if="connectionError" justify="center" class="mb-2">
           <v-col cols="12" md="8" lg="6">
@@ -278,6 +289,10 @@
                   <v-icon icon="mdi-broadcast" size="small" class="mr-1"></v-icon>
                   Events
                 </v-tab>
+                <v-tab value="statistics">
+                  <v-icon icon="mdi-chart-line" size="small" class="mr-1"></v-icon>
+                  流量統計
+                </v-tab>
               </v-tabs>
               
               <v-window v-model="tab" class="playground-window">
@@ -287,20 +302,50 @@
                       <v-icon icon="mdi-file-tree" size="small" class="mr-1"></v-icon>
                       <span>狀態樹</span>
                       <v-spacer></v-spacer>
-                      <v-chip
-                        v-if="isJoined && currentLandID"
-                        color="info"
+                      <v-select
+                        v-model="stateTreeUpdateSpeed"
+                        :items="[
+                          { title: '即時', value: 'realtime' },
+                          { title: '每秒', value: 'throttled' }
+                        ]"
+                        density="compact"
                         variant="outlined"
-                        size="x-small"
-                        class="ml-2"
+                        hide-details
+                        style="max-width: 100px; margin-right: 8px;"
+                      ></v-select>
+                      <v-btn-toggle
+                        v-model="stateTreeViewMode"
+                        mandatory
+                        density="compact"
+                        variant="outlined"
+                        size="small"
+                        style="margin-right: 8px;"
                       >
-                        {{ currentLandID }}
-                      </v-chip>
+                        <v-btn value="tree">
+                          <v-icon icon="mdi-file-tree" size="small" class="mr-1"></v-icon>
+                          樹狀
+                        </v-btn>
+                        <v-btn value="json">
+                          <v-icon icon="mdi-code-json" size="small" class="mr-1"></v-icon>
+                          JSON
+                        </v-btn>
+                      </v-btn-toggle>
+                      <v-btn
+                        v-if="stateTreeViewMode === 'json'"
+                        icon="mdi-content-copy"
+                        size="small"
+                        variant="text"
+                        density="compact"
+                        style="margin-right: 8px;"
+                        @click="copyStateJson"
+                        :title="copyJsonButtonText"
+                      ></v-btn>
                     </div>
                     <div class="state-tree-content">
                       <StateTreeViewer
-                        :state="currentState"
+                        :state="throttledState"
                         :schema="parsedSchema"
+                        :view-mode="stateTreeViewMode"
                       />
                     </div>
                   </div>
@@ -328,6 +373,16 @@
                     />
                   </div>
                 </v-window-item>
+
+                <v-window-item value="statistics" class="playground-window-item">
+                  <div class="actions-events-container-mobile">
+                    <StatisticsPanel
+                      :connected="isConnected"
+                      :state-updates="stateUpdates"
+                      :message-statistics="messageStatistics"
+                    />
+                  </div>
+                </v-window-item>
               </v-window>
             </div>
             
@@ -341,20 +396,50 @@
                       <v-icon icon="mdi-file-tree" size="small" class="mr-1"></v-icon>
                       <span>狀態樹</span>
                       <v-spacer></v-spacer>
-                      <v-chip
-                        v-if="isJoined && currentLandID"
-                        color="info"
+                      <v-select
+                        v-model="stateTreeUpdateSpeed"
+                        :items="[
+                          { title: '即時', value: 'realtime' },
+                          { title: '每秒', value: 'throttled' }
+                        ]"
+                        density="compact"
                         variant="outlined"
-                        size="x-small"
-                        class="ml-2"
+                        hide-details
+                        style="max-width: 100px; margin-right: 8px;"
+                      ></v-select>
+                      <v-btn-toggle
+                        v-model="stateTreeViewMode"
+                        mandatory
+                        density="compact"
+                        variant="outlined"
+                        size="small"
+                        style="margin-right: 8px;"
                       >
-                        {{ currentLandID }}
-                      </v-chip>
+                        <v-btn value="tree">
+                          <v-icon icon="mdi-file-tree" size="small" class="mr-1"></v-icon>
+                          樹狀
+                        </v-btn>
+                        <v-btn value="json">
+                          <v-icon icon="mdi-code-json" size="small" class="mr-1"></v-icon>
+                          JSON
+                        </v-btn>
+                      </v-btn-toggle>
+                      <v-btn
+                        v-if="stateTreeViewMode === 'json'"
+                        icon="mdi-content-copy"
+                        size="small"
+                        variant="text"
+                        density="compact"
+                        style="margin-right: 8px;"
+                        @click="copyStateJson"
+                        :title="copyJsonButtonText"
+                      ></v-btn>
                     </div>
                     <div class="state-tree-content">
                       <StateTreeViewer
-                        :state="currentState"
+                        :state="throttledState"
                         :schema="parsedSchema"
+                        :view-mode="stateTreeViewMode"
                       />
                     </div>
                   </div>
@@ -371,6 +456,10 @@
                       <v-tab value="events">
                         <v-icon icon="mdi-broadcast" size="small" class="mr-1"></v-icon>
                         Events
+                      </v-tab>
+                      <v-tab value="statistics">
+                        <v-icon icon="mdi-chart-line" size="small" class="mr-1"></v-icon>
+                        流量統計
                       </v-tab>
                     </v-tabs>
 
@@ -394,6 +483,14 @@
                             @send-event="handleSendEvent"
                           />
                         </v-window-item>
+
+                        <v-window-item value="statistics" class="actions-events-window-item">
+                          <StatisticsPanel
+                            :connected="isConnected"
+                            :state-updates="stateUpdates"
+                            :message-statistics="messageStatistics"
+                          />
+                        </v-window-item>
                       </v-window>
                     </div>
                   </div>
@@ -403,7 +500,7 @@
           </div>
           
           <!-- Bottom Panel: Logs & State Updates (Resizable) -->
-          <div class="log-panel-wrapper">
+          <div v-if="showLogPanel" class="log-panel-wrapper">
             <ResizableLogPanel
               :height="logPanelHeight"
               :logTab="logTab"
@@ -524,18 +621,24 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import StateTreeViewer from './components/StateTreeViewer.vue'
 import ActionPanel from './components/ActionPanel.vue'
 import EventPanel from './components/EventPanel.vue'
+import StatisticsPanel from './components/StatisticsPanel.vue'
 import ResizableLogPanel from './components/ResizableLogPanel.vue'
 import { useWebSocket } from './composables/useWebSocket'
 import { useSchema } from './composables/useSchema'
 import { generateJWT } from './utils/jwt'
+import { IVec2, Position2, Angle } from '@swiftstatetree/sdk/core'
 
 const tab = ref('actions')
 const logTab = ref('messages')
 const logPanelHeight = ref(200)
+const showLogPanel = ref(false) // Default: hidden
+const stateTreeUpdateSpeed = ref<'realtime' | 'throttled'>('throttled')
+const stateTreeViewMode = ref<'tree' | 'json'>('tree')
+const copyJsonButtonText = ref('複製 JSON')
 const schemaTab = ref('server')
 const schemaFile = ref<File[] | null>(null)
 const schemaJson = ref('')
@@ -635,12 +738,117 @@ const {
   currentPlayerID,
   logs, 
   stateUpdates,
+  messageStatistics,
   actionResults: actionResultsFromWS,
   connect: connectWebSocket, 
   disconnect, 
   sendAction, 
   sendEvent 
-} = useWebSocket(wsUrl, parsedSchema, selectedLandID, landInstanceId)
+} = useWebSocket(wsUrl, parsedSchema, selectedLandID, landInstanceId, showLogPanel)
+
+// Throttled state for StateTreeViewer (updates at most once per second)
+const throttledState = ref<Record<string, any>>({})
+let throttleTimer: number | null = null
+let lastUpdateTime = 0
+
+watch([currentState, stateTreeUpdateSpeed], ([newState, speed]) => {
+  if (speed === 'realtime') {
+    // Real-time: update immediately
+    throttledState.value = newState
+    if (throttleTimer) {
+      clearTimeout(throttleTimer)
+      throttleTimer = null
+    }
+  } else {
+    // Throttled: update at most once per second
+    const now = Date.now()
+    if (now - lastUpdateTime >= 1000) {
+      // More than 1 second has passed, update immediately
+      throttledState.value = newState
+      lastUpdateTime = now
+    } else {
+      // Schedule update for the next second boundary
+      if (!throttleTimer) {
+        const timeUntilNextSecond = 1000 - (now - lastUpdateTime)
+        throttleTimer = window.setTimeout(() => {
+          throttledState.value = newState
+          lastUpdateTime = Date.now()
+          throttleTimer = null
+        }, timeUntilNextSecond)
+      }
+    }
+  }
+}, { immediate: true, deep: true })
+
+// Cleanup on unmount
+onUnmounted(() => {
+  if (throttleTimer) {
+    clearTimeout(throttleTimer)
+    throttleTimer = null
+  }
+})
+
+// Serialize state to JSON (handles DeterministicMath types)
+const serializeStateForJson = (obj: any): any => {
+  if (obj === null || obj === undefined) {
+    return obj
+  }
+  
+  // Handle DeterministicMath class instances
+  if (obj instanceof IVec2) {
+    return { x: obj.x, y: obj.y, rawX: obj.rawX, rawY: obj.rawY }
+  }
+  if (obj instanceof Position2) {
+    return { v: serializeStateForJson(obj.v) }
+  }
+  if (obj instanceof Angle) {
+    return { degrees: obj.degrees, rawDegrees: obj.rawDegrees }
+  }
+  
+  // Handle arrays
+  if (Array.isArray(obj)) {
+    return obj.map(item => serializeStateForJson(item))
+  }
+  
+  // Handle objects
+  if (typeof obj === 'object') {
+    const result: Record<string, any> = {}
+    for (const [key, value] of Object.entries(obj)) {
+      result[key] = serializeStateForJson(value)
+    }
+    return result
+  }
+  
+  return obj
+}
+
+// Copy JSON to clipboard
+const copyStateJson = async () => {
+  try {
+    if (!throttledState.value || Object.keys(throttledState.value).length === 0) {
+      copyJsonButtonText.value = '無狀態可複製'
+      setTimeout(() => {
+        copyJsonButtonText.value = '複製 JSON'
+      }, 2000)
+      return
+    }
+    
+    const serialized = serializeStateForJson(throttledState.value)
+    const jsonString = JSON.stringify(serialized, null, 2)
+    
+    await navigator.clipboard.writeText(jsonString)
+    copyJsonButtonText.value = '已複製！'
+    setTimeout(() => {
+      copyJsonButtonText.value = '複製 JSON'
+    }, 2000)
+  } catch (err) {
+    console.error('Failed to copy JSON:', err)
+    copyJsonButtonText.value = '複製失敗'
+    setTimeout(() => {
+      copyJsonButtonText.value = '複製 JSON'
+    }, 2000)
+  }
+}
 
 // Sync action results from WebSocket composable
 watch(actionResultsFromWS, (newResults) => {
@@ -816,6 +1024,10 @@ onMounted(() => {
   overflow: hidden;
 }
 
+.app-shell-scroll {
+  overflow: auto;
+}
+
 .playground-layout {
   display: grid;
   grid-template-rows: 1fr auto;
@@ -850,7 +1062,7 @@ onMounted(() => {
   border-bottom: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
 }
 
-.playground-tabs :deep(.v-tab) {
+.playground-tabs .v-tab {
   font-size: 0.875rem;
   min-height: 48px;
 }
@@ -893,8 +1105,9 @@ onMounted(() => {
   flex-direction: column;
 }
 
-.actions-events-container-mobile :deep(.action-panel),
-.actions-events-container-mobile :deep(.event-panel) {
+.actions-events-container-mobile .action-panel,
+.actions-events-container-mobile .event-panel,
+.actions-events-container-mobile .statistics-panel {
   flex: 1;
   min-height: 0;
   overflow: auto;
@@ -986,7 +1199,7 @@ onMounted(() => {
   border-bottom: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
 }
 
-.actions-events-tabs :deep(.v-tab) {
+.actions-events-tabs .v-tab {
   font-size: 0.875rem;
   min-height: 48px;
 }
@@ -1004,12 +1217,34 @@ onMounted(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+  height: 100%;
 }
 
 .actions-events-window-item {
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  padding: 8px;
+  overflow: hidden;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.actions-events-window .v-window__container {
+  height: 100%;
+}
+
+.actions-events-window .v-window-item {
+  height: 100%;
+}
+
+.actions-events-window-item .action-panel,
+.actions-events-window-item .event-panel,
+.actions-events-window-item .statistics-panel {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 </style>

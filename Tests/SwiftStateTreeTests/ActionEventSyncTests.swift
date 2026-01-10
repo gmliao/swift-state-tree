@@ -346,13 +346,13 @@ func testActionWithTickTriggersSync() async throws {
             }
         }
         
-        Lifetime { (config: inout LifetimeConfig<ActionEventSyncTestState>) in
-            // Configure tick for game logic (state mutations)
-            config.tickInterval = .milliseconds(20)
-            config.tickHandler = { state, _ in
+        Lifetime {
+            Tick(every: .milliseconds(20)) { (state: inout ActionEventSyncTestState, _) in
                 // Tick handler for game logic
             }
-            // Sync will be auto-configured to match tick interval (20ms)
+            StateSync(every: .milliseconds(20)) { (_: ActionEventSyncTestState, _: LandContext) in
+                // Read-only sync callback
+            }
         }
     }
     
@@ -415,13 +415,13 @@ func testEventWithTickTriggersSync() async throws {
             }
         }
         
-        Lifetime { (config: inout LifetimeConfig<ActionEventSyncTestState>) in
-            // Configure tick for game logic (state mutations)
-            config.tickInterval = .milliseconds(20)
-            config.tickHandler = { state, _ in
+        Lifetime {
+            Tick(every: .milliseconds(20)) { (state: inout ActionEventSyncTestState, _) in
                 // Tick handler for game logic
             }
-            // Sync will be auto-configured to match tick interval (20ms)
+            StateSync(every: .milliseconds(20)) { (_: ActionEventSyncTestState, _: LandContext) in
+                // Read-only sync callback
+            }
         }
     }
     

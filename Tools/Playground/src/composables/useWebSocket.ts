@@ -4,6 +4,18 @@ import type { LogEntry, StatePatch, StateUpdate } from '@/types/transport'
 import { StateTreeRuntime, StateTreeView } from '@swiftstatetree/sdk/core'
 import { createPlaygroundLogger } from './playgroundLogger.js'
 
+// MessageStatistics type (matches SDK's MessageStatistics interface)
+type RawMessageStatistics = {
+  messageType: 'stateUpdate' | 'stateSnapshot' | 'transportMessage'
+  messageSize: number
+  direction: 'inbound' | 'outbound'
+  patchCount?: number
+}
+
+type MessageStatistics = RawMessageStatistics & {
+  sequence: number
+}
+
 export interface StateUpdateEntry {
   id: string
   timestamp: Date
@@ -12,15 +24,29 @@ export interface StateUpdateEntry {
   message: string
   patches?: StatePatch[]
   affectedPaths?: string[]
+  // Debug information
+  tickId?: number | null
+  messageSize?: number
+  direction?: 'inbound' | 'outbound'
+  landID?: string
+  playerID?: string
+  sequenceNumber?: number
 }
 
-export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, selectedLandID: Ref<string> = ref(''), landInstanceId: Ref<string> = ref('default')) {
+export function useWebSocket(
+  wsUrl: Ref<string>, 
+  schema: Ref<Schema | null>, 
+  selectedLandID: Ref<string> = ref(''), 
+  landInstanceId: Ref<string> = ref('default'),
+  enableLogs: Ref<boolean> = ref(true)
+) {
   const isConnected = ref(false)
   const isJoined = ref(false)
   const connectionError = ref<string | null>(null)
   const currentState = ref<Record<string, any>>({})
   const logs = ref<LogEntry[]>([])
   const stateUpdates = ref<StateUpdateEntry[]>([])
+  const messageStatistics = ref<MessageStatistics[]>([]) // Raw statistics from SDK
   const actionResults = ref<Array<{
     actionName: string
     success: boolean
@@ -72,7 +98,7 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
   let runtime: StateTreeRuntime | null = null
   let view: StateTreeView | null = null
 
-  const logger = createPlaygroundLogger(logs)
+  const logger = createPlaygroundLogger(logs, enableLogs)
   
   // Debug: verify logger is created
   console.log('[Playground] Logger created:', typeof logger.info === 'function')
@@ -118,7 +144,12 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
     ))
   }
 
+  // Sequence number for tracking update order
+  let updateSequenceNumber = 0
+  let statsSequenceNumber = 0
+
   // Handle state updates from View
+  // Note: stateUpdates are always collected (needed for StatisticsPanel)
   const handleStateUpdate = (update: StateUpdate) => {
     if (update.type === 'noChange') {
       return
@@ -126,6 +157,36 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
 
     const patches = update.patches || []
     const affectedPaths = extractAffectedPaths(patches)
+    
+    // Try to extract tickId from current state (if available)
+    let tickId: number | null = null
+    try {
+      if (currentState.value && typeof currentState.value === 'object') {
+        // Check common tickId locations in state
+        if ('tickId' in currentState.value && typeof currentState.value.tickId === 'number') {
+          tickId = currentState.value.tickId
+        } else if ('currentTick' in currentState.value && typeof currentState.value.currentTick === 'number') {
+          tickId = currentState.value.currentTick
+        }
+      }
+    } catch (e) {
+      // Ignore errors when accessing state
+    }
+    
+    // Find corresponding message statistics for this update
+    let messageSize: number | undefined
+    let direction: 'inbound' | 'outbound' | undefined
+    if (messageStatistics.value.length > 0) {
+      // Find the most recent stateUpdate statistics entry
+      for (let i = messageStatistics.value.length - 1; i >= 0; i--) {
+        const stat = messageStatistics.value[i]
+        if (stat.messageType === 'stateUpdate' && stat.direction === 'inbound') {
+          messageSize = stat.messageSize
+          direction = stat.direction
+          break
+        }
+      }
+    }
 
     // Add to state updates
     stateUpdates.value.push({
@@ -137,41 +198,71 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
         ? `首次同步完成 (${patches.length} 個 patches)`
         : `狀態已更新 (${patches.length} 個 patches)`,
       patches: patches,
-      affectedPaths: affectedPaths
+      affectedPaths: affectedPaths,
+      // Debug information
+      tickId: tickId,
+      messageSize: messageSize,
+      direction: direction || 'inbound',
+      landID: currentLandID.value,
+      playerID: currentPlayerID.value || undefined,
+      sequenceNumber: updateSequenceNumber++
     })
 
-    // Keep only last 3 updates per top-level path and cap total at 100
-    const byPath: Record<string, StateUpdateEntry[]> = {}
-    for (const entry of [...stateUpdates.value].reverse()) {
-      const paths = entry.patches?.map(p => {
-        const parts = p.path.split('/').filter(Boolean)
-        return parts[0] || '/'
-      }) ?? entry.affectedPaths ?? ['/']
-
-      const uniquePaths = Array.from(new Set(paths))
-      for (const path of uniquePaths) {
-        byPath[path] = byPath[path] ?? []
-        if (byPath[path].length < 3) {
-          byPath[path].push(entry)
-        }
-      }
+    // Keep only last 1000 updates, remove oldest if exceeded
+    if (stateUpdates.value.length > 1000) {
+      stateUpdates.value = stateUpdates.value.slice(-1000)
     }
-    const merged = Object.values(byPath).flat()
-    merged.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
-    stateUpdates.value = merged.slice(0, 100)
   }
 
   // Handle snapshot from View
-  const handleSnapshot = (_snapshot: { values: Record<string, any> }) => {
+  // Note: stateUpdates are always collected (needed for StatisticsPanel)
+  const handleSnapshot = (snapshot: { values: Record<string, any> }) => {
+    // Try to extract tickId from snapshot
+    let tickId: number | null = null
+    try {
+      if (snapshot.values && typeof snapshot.values === 'object') {
+        if ('tickId' in snapshot.values && typeof snapshot.values.tickId === 'number') {
+          tickId = snapshot.values.tickId
+        } else if ('currentTick' in snapshot.values && typeof snapshot.values.currentTick === 'number') {
+          tickId = snapshot.values.currentTick
+        }
+      }
+    } catch (e) {
+      // Ignore errors
+    }
+    
+    // Find corresponding message statistics for this snapshot
+    let messageSize: number | undefined
+    let direction: 'inbound' | 'outbound' | undefined
+    if (messageStatistics.value.length > 0) {
+      // Find the most recent stateSnapshot statistics entry
+      for (let i = messageStatistics.value.length - 1; i >= 0; i--) {
+        const stat = messageStatistics.value[i]
+        if (stat.messageType === 'stateSnapshot' && stat.direction === 'inbound') {
+          messageSize = stat.messageSize
+          direction = stat.direction
+          break
+        }
+      }
+    }
+    
     stateUpdates.value.push({
       id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
       timestamp: new Date(),
       type: 'snapshot',
-      message: '初始狀態已接收 (完整快照)'
+      message: '初始狀態已接收 (完整快照)',
+      // Debug information
+      tickId: tickId,
+      messageSize: messageSize,
+      direction: direction || 'inbound',
+      landID: currentLandID.value,
+      playerID: currentPlayerID.value || undefined,
+      sequenceNumber: updateSequenceNumber++
     })
 
-    if (stateUpdates.value.length > 100) {
-      stateUpdates.value.shift()
+    // Keep only last 1000 updates, remove oldest if exceeded
+    if (stateUpdates.value.length > 1000) {
+      stateUpdates.value = stateUpdates.value.slice(-1000)
     }
   }
 
@@ -190,6 +281,20 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
       // Create runtime and view
       console.log('[Playground] Creating runtime with logger:', logger)
       runtime = new StateTreeRuntime(logger)
+      
+      // Set up statistics callback to collect actual message sizes from SDK
+      runtime.setStatisticsCallback((stats: RawMessageStatistics) => {
+        const entry: MessageStatistics = {
+          ...stats,
+          sequence: statsSequenceNumber++
+        }
+        // Use array spread to ensure Vue reactivity
+        messageStatistics.value = [...messageStatistics.value, entry]
+        // Keep only last 1000 statistics entries
+        if (messageStatistics.value.length > 1000) {
+          messageStatistics.value = messageStatistics.value.slice(-1000)
+        }
+      })
       
       // Set up disconnect callback to handle connection errors
       runtime.onDisconnect((closeCode, closeReason, wasClean) => {
@@ -413,6 +518,7 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
 
   const disconnect = (): void => {
     if (runtime) {
+      runtime.setStatisticsCallback(null) // Clear statistics callback
       runtime.disconnect()
       runtime = null
       view = null
@@ -422,6 +528,8 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
     currentState.value = {}
     logs.value = []
     stateUpdates.value = []
+    messageStatistics.value = [] // Reset statistics
+    statsSequenceNumber = 0
     currentLandID.value = getInitialLandID()  // Reset to initial value
     currentPlayerID.value = null
   }
@@ -502,6 +610,7 @@ export function useWebSocket(wsUrl: Ref<string>, schema: Ref<Schema | null>, sel
     currentPlayerID,
     logs,
     stateUpdates,
+    messageStatistics, // Actual message statistics from SDK
     actionResults,
     connect,
     disconnect,

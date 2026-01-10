@@ -13,15 +13,37 @@ import { StateTreeView, type ViewOptions } from './view'
  * - Message routing to Views
  * - Connection lifecycle management
  */
+/**
+ * Statistics callback for tracking message traffic
+ * Used to report actual WebSocket message sizes for accurate traffic monitoring
+ */
+export interface MessageStatistics {
+  messageType: 'stateUpdate' | 'stateSnapshot' | 'transportMessage'
+  messageSize: number // Actual bytes (raw WebSocket message size)
+  direction: 'inbound' | 'outbound' // Whether message is received or sent
+  patchCount?: number // Number of patches (for StateUpdate)
+}
+
+export type StatisticsCallback = (stats: MessageStatistics) => void
+
 export class StateTreeRuntime {
   private ws: WebSocketConnection | null = null
   private isConnected = false
   private views = new Map<string, StateTreeView>()
   private logger: Logger
   private onDisconnectCallback: ((code: number, reason: string, wasClean: boolean) => void) | null = null
+  private statisticsCallback: StatisticsCallback | null = null
 
   constructor(logger?: Logger) {
     this.logger = logger || new NoOpLogger()
+  }
+
+  /**
+   * Set callback for message statistics
+   * @param callback - Called for each received message with statistics
+   */
+  setStatisticsCallback(callback: StatisticsCallback | null): void {
+    this.statisticsCallback = callback
   }
 
   /**
@@ -208,6 +230,17 @@ export class StateTreeRuntime {
     }
 
     const encoded = encodeMessage(message)
+    const messageSize = new TextEncoder().encode(encoded).length
+    
+    // Report outbound statistics
+    if (this.statisticsCallback) {
+      this.statisticsCallback({
+        messageType: 'transportMessage',
+        messageSize,
+        direction: 'outbound'
+      })
+    }
+    
     this.ws.send(encoded)
   }
 
@@ -225,14 +258,22 @@ export class StateTreeRuntime {
   private async handleMessage(data: unknown): Promise<void> {
     try {
       let text: string
+      let messageSize: number
 
+      // Calculate actual message size (bytes) before decoding
       if (typeof data === 'string') {
+        // UTF-8 encoding: each character is 1-4 bytes, but for ASCII it's 1 byte
+        // Use TextEncoder to get accurate byte length
+        messageSize = new TextEncoder().encode(data).length
         text = data
       } else if (data instanceof ArrayBuffer) {
+        messageSize = data.byteLength
         text = new TextDecoder().decode(data)
       } else if (ArrayBuffer.isView(data)) {
+        messageSize = data.byteLength
         text = new TextDecoder().decode(data)
       } else if (typeof Blob !== 'undefined' && data instanceof Blob) {
+        messageSize = data.size
         const arrayBuffer = await data.arrayBuffer()
         text = new TextDecoder().decode(arrayBuffer)
       } else {
@@ -241,6 +282,7 @@ export class StateTreeRuntime {
         const typeName = (data as any)?.constructor?.name ?? typeof data
         this.logger.warn(`Unexpected data type: ${typeName}, attempting to convert to string`)
         text = String(data)
+        messageSize = new TextEncoder().encode(text).length
       }
 
       const decoded = decodeMessage(text)
@@ -252,6 +294,16 @@ export class StateTreeRuntime {
       if ('kind' in decoded) {
         const message = decoded as TransportMessage
         this.logger.debug(`Routing as TransportMessage: kind=${message.kind}`)
+        
+        // Report inbound statistics
+        if (this.statisticsCallback) {
+          this.statisticsCallback({
+            messageType: 'transportMessage',
+            messageSize,
+            direction: 'inbound'
+          })
+        }
+        
         this.routeTransportMessage(message)
         return
       }
@@ -260,6 +312,17 @@ export class StateTreeRuntime {
       if ('type' in decoded && 'patches' in decoded) {
         const update = decoded as StateUpdate
         this.logger.info(`📥 Received StateUpdate: type=${update.type}, patches=${update.patches.length}`)
+        
+        // Report inbound statistics
+        if (this.statisticsCallback) {
+          this.statisticsCallback({
+            messageType: 'stateUpdate',
+            messageSize,
+            direction: 'inbound',
+            patchCount: update.patches.length
+          })
+        }
+        
         // StateUpdate doesn't have landID, so we need to route to all views
         // or find a way to determine which view it belongs to
         // For now, route to all views (they will ignore if not relevant)
@@ -273,6 +336,16 @@ export class StateTreeRuntime {
       if ('values' in decoded) {
         const snapshot = decoded as StateSnapshot
         this.logger.info(`📥 Received StateSnapshot: fields=${Object.keys(snapshot.values).length}`)
+        
+        // Report inbound statistics
+        if (this.statisticsCallback) {
+          this.statisticsCallback({
+            messageType: 'stateSnapshot',
+            messageSize,
+            direction: 'inbound'
+          })
+        }
+        
         // StateSnapshot doesn't have landID, route to all views
         for (const view of this.views.values()) {
           view.handleSnapshot(snapshot)

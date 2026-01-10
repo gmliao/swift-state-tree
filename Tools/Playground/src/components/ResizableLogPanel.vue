@@ -67,6 +67,40 @@
                 <span>狀態更新歷史</span>
               </div>
               <div class="log-panel-header-right">
+                <v-btn-toggle
+                  v-model="stateUpdateViewMode"
+                  mandatory
+                  density="compact"
+                  variant="outlined"
+                  size="small"
+                  style="margin-right: 8px;"
+                >
+                  <v-btn value="recording">
+                    <v-icon icon="mdi-record" size="small" class="mr-1"></v-icon>
+                    錄製
+                  </v-btn>
+                  <v-btn value="realtime">
+                    <v-icon icon="mdi-table" size="small" class="mr-1"></v-icon>
+                    即時
+                  </v-btn>
+                </v-btn-toggle>
+                <v-text-field
+                  v-model="stateUpdatePathFilter"
+                  label="過濾路徑"
+                  prepend-inner-icon="mdi-folder-search"
+                  variant="outlined"
+                  density="compact"
+                  clearable
+                  hide-details
+                  class="log-header-filter-input"
+                ></v-text-field>
+                <v-btn
+                  icon="mdi-download"
+                  size="small"
+                  variant="text"
+                  @click="exportStateUpdatesLog"
+                  title="導出狀態更新日誌 (.json)"
+                ></v-btn>
                 <v-btn
                   icon="mdi-delete-sweep"
                   size="small"
@@ -77,7 +111,11 @@
               </div>
             </div>
             <div class="log-panel-mobile-content">
-              <StateUpdatePanel :stateUpdates="stateUpdates" />
+              <StateUpdatePanel 
+                :stateUpdates="stateUpdates" 
+                :path-filter="stateUpdatePathFilter"
+                :view-mode="stateUpdateViewMode"
+              />
             </div>
           </div>
         </v-window-item>
@@ -136,6 +174,40 @@
             <span>狀態更新歷史</span>
           </div>
           <div class="log-panel-header-right">
+            <v-btn-toggle
+              v-model="stateUpdateViewMode"
+              mandatory
+              density="compact"
+              variant="outlined"
+              size="small"
+              style="margin-right: 8px;"
+            >
+              <v-btn value="recording">
+                <v-icon icon="mdi-record" size="small" class="mr-1"></v-icon>
+                錄製
+              </v-btn>
+              <v-btn value="realtime">
+                <v-icon icon="mdi-table" size="small" class="mr-1"></v-icon>
+                即時
+              </v-btn>
+            </v-btn-toggle>
+            <v-text-field
+              v-model="stateUpdatePathFilter"
+              label="過濾路徑"
+              prepend-inner-icon="mdi-folder-search"
+              variant="outlined"
+              density="compact"
+              clearable
+              hide-details
+              class="log-header-filter-input"
+            ></v-text-field>
+            <v-btn
+              icon="mdi-download"
+              size="small"
+              variant="text"
+              @click="exportStateUpdatesLog"
+              title="導出狀態更新日誌 (.json)"
+            ></v-btn>
             <v-btn
               icon="mdi-delete-sweep"
               size="small"
@@ -146,7 +218,11 @@
           </div>
         </div>
         <div class="log-panel-content">
-          <StateUpdatePanel :stateUpdates="stateUpdates" />
+          <StateUpdatePanel 
+            :stateUpdates="stateUpdates" 
+            :path-filter="stateUpdatePathFilter"
+            :view-mode="stateUpdateViewMode"
+          />
         </div>
       </div>
     </div>
@@ -176,6 +252,8 @@ const emit = defineEmits<{
 
 const localLogTab = ref(props.logTab)
 const logFilterKeyword = ref('')
+const stateUpdatePathFilter = ref('')
+const stateUpdateViewMode = ref<'recording' | 'realtime'>('recording')
 
 type LogLevelFilter = 'all' | 'info' | 'warning' | 'error'
 
@@ -236,6 +314,41 @@ const startResize = (e: MouseEvent) => {
   document.addEventListener('mouseup', stopResize)
   document.body.style.cursor = 'row-resize'
   document.body.style.userSelect = 'none'
+}
+
+const exportStateUpdatesLog = () => {
+  if (!props.stateUpdates || props.stateUpdates.length === 0) {
+    return
+  }
+  
+  // Format as JSON array with metadata
+  const exportData = {
+    metadata: {
+      generated: new Date().toISOString(),
+      totalUpdates: props.stateUpdates.length,
+      version: '1.0'
+    },
+    updates: props.stateUpdates.map(update => {
+      // Convert Date to ISO string for JSON serialization
+      const jsonUpdate: any = {
+        ...update,
+        timestamp: update.timestamp.toISOString()
+      }
+      return jsonUpdate
+    })
+  }
+  
+  // Create blob and download as JSON
+  const jsonContent = JSON.stringify(exportData, null, 2)
+  const blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `state-updates-${new Date().toISOString().replace(/[:.]/g, '-')}.json`
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
 }
 </script>
 

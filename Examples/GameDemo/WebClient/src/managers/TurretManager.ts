@@ -34,11 +34,12 @@ export class TurretManager {
     }
     
     // Add or update existing turrets
-    for (const [id, turretState] of Object.entries(turrets)) {
-      if (!this.turrets.has(id)) {
+    for (const [idStr, turretState] of Object.entries(turrets)) {
+      const id = Number(idStr)
+      if (!this.turrets.has(idStr)) {
         this.add(id, turretState)
       } else {
-        this.updateTurret(id, turretState)
+        this.updateTurret(idStr, turretState)
       }
     }
   }
@@ -46,10 +47,11 @@ export class TurretManager {
   /**
    * Add a new turret
    */
-  private add(id: string, turretState: TurretState): void {
+  private add(id: number, turretState: TurretState): void {
     const sprite = new TurretSprite(this.scene, id)
+    const idStr = String(id)
     sprite.setInitialPosition(turretState)
-    this.turrets.set(id, sprite)
+    this.turrets.set(idStr, sprite)
   }
   
   /**

@@ -11,7 +11,8 @@ export class PlayerSprite {
   public readonly isCurrentPlayer: boolean
   
   private readonly scene: Phaser.Scene
-  private readonly lerpFactor: number = 0.1
+  private readonly lerpFactor: number = 0.1  // For position interpolation
+  private readonly rotationLerpFactor: number = 0.4  // Higher value = faster rotation (for shooting responsiveness)
   
   constructor(scene: Phaser.Scene, playerID: string, isCurrentPlayer: boolean) {
     this.scene = scene
@@ -48,7 +49,7 @@ export class PlayerSprite {
     this.container.x = currentX + (targetX - currentX) * this.lerpFactor
     this.container.y = currentY + (targetY - currentY) * this.lerpFactor
     
-    // Smooth rotation interpolation
+    // Smooth rotation interpolation (faster than position for shooting responsiveness)
     const currentRotation = this.container.rotation
     let targetRotation = Phaser.Math.Angle.Wrap(serverRotation)
     
@@ -57,7 +58,8 @@ export class PlayerSprite {
     if (rotationDiff > Math.PI) rotationDiff -= 2 * Math.PI
     if (rotationDiff < -Math.PI) rotationDiff += 2 * Math.PI
     
-    this.container.rotation = currentRotation + rotationDiff * this.lerpFactor
+    // Use faster lerp factor for rotation to ensure player turns quickly when shooting
+    this.container.rotation = currentRotation + rotationDiff * this.rotationLerpFactor
   }
   
   /**
