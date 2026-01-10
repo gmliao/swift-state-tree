@@ -9,6 +9,7 @@ export class TurretSprite {
   public readonly turretID: number
   
   private readonly scene: Phaser.Scene
+  private readonly rotationLerpFactor: number = 0.5  // Higher value = faster rotation
   
   constructor(scene: Phaser.Scene, turretID: number) {
     this.scene = scene
@@ -27,10 +28,19 @@ export class TurretSprite {
     this.container.x = serverPos.x
     this.container.y = serverPos.y
     
-    // Update rotation
+    // Smooth rotation interpolation (faster than player rotation)
     if ((turretState.rotation as any)?.toRadians) {
-      const rotation = (turretState.rotation as any).toRadians()
-      this.container.rotation = Phaser.Math.Angle.Wrap(rotation)
+      const serverRotation = (turretState.rotation as any).toRadians()
+      const currentRotation = this.container.rotation
+      let targetRotation = Phaser.Math.Angle.Wrap(serverRotation)
+      
+      // Normalize rotation difference
+      let rotationDiff = targetRotation - currentRotation
+      if (rotationDiff > Math.PI) rotationDiff -= 2 * Math.PI
+      if (rotationDiff < -Math.PI) rotationDiff += 2 * Math.PI
+      
+      // Apply smooth interpolation with higher factor for faster rotation
+      this.container.rotation = currentRotation + rotationDiff * this.rotationLerpFactor
     }
     
     // Update level indicator
