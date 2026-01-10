@@ -20,7 +20,10 @@ public enum GameConfig {
     public static let BASE_MAX_HEALTH: Int = 100
     
     /// Monster spawn configuration
-    public static let MONSTER_SPAWN_INTERVAL_TICKS: Int = 100  // 5 seconds at 50ms/tick
+    public static let MONSTER_SPAWN_INTERVAL_TICKS: Int = 50  // 5 seconds at 50ms/tick (initial)
+    public static let MONSTER_SPAWN_INTERVAL_MIN_TICKS: Int = 5  // 1 second at 50ms/tick (fastest, upper limit)
+    public static let MONSTER_SPAWN_INTERVAL_MAX_TICKS: Int = 50  // 5 seconds at 50ms/tick (slowest, initial)
+    public static let MONSTER_SPAWN_ACCELERATION_TICKS: Int64 = 6000  // 300 seconds (5 minutes) to reach max speed
     public static let MONSTER_MOVE_SPEED: Float = 0.5
     public static let MONSTER_BASE_HEALTH: Int = 10
     public static let MONSTER_BASE_REWARD: Int = 1
@@ -424,6 +427,23 @@ enum GameSystem {
     
     // MARK: - Monster Systems
     
+    /// Calculate current monster spawn interval based on game time
+    /// Spawn speed increases over time, with a minimum interval limit
+    static func getMonsterSpawnInterval(currentTick: Int64) -> Int {
+        let minInterval = Int64(GameConfig.MONSTER_SPAWN_INTERVAL_MIN_TICKS)
+        let maxInterval = Int64(GameConfig.MONSTER_SPAWN_INTERVAL_MAX_TICKS)
+        let accelerationTicks = GameConfig.MONSTER_SPAWN_ACCELERATION_TICKS
+        
+        // Calculate progress (0.0 to 1.0) towards maximum speed
+        let progress = min(1.0, Float(currentTick) / Float(accelerationTicks))
+        
+        // Linear interpolation from max to min interval
+        let currentInterval = Float(maxInterval) - (Float(maxInterval - minInterval) * progress)
+        
+        // Clamp to ensure we don't go below minimum
+        return max(Int(minInterval), Int(currentInterval))
+    }
+    
     /// Spawn a new monster at a random edge position
     static func spawnMonster(nextID: Int) -> MonsterState {
         var monster = MonsterState()
@@ -701,8 +721,9 @@ public enum HeroDefense {
                         state.players[playerID] = player
                     }
                     
-                    // Spawn monsters periodically
-                    if tickId % Int64(GameConfig.MONSTER_SPAWN_INTERVAL_TICKS) == 0 {
+                    // Spawn monsters periodically (spawn speed increases over time)
+                    let spawnInterval = GameSystem.getMonsterSpawnInterval(currentTick: tickId)
+                    if tickId % Int64(spawnInterval) == 0 {
                         let monsterID = state.nextMonsterID
                         state.nextMonsterID += 1
                         let monster = GameSystem.spawnMonster(nextID: monsterID)
