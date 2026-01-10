@@ -55,7 +55,7 @@
     </v-app-bar>
 
     <v-main style="height: calc(100vh - 64px); overflow: hidden;">
-      <v-container fluid class="app-shell">
+      <v-container fluid class="app-shell" :class="{ 'app-shell-scroll': !isConnected || !isJoined }">
         <!-- Connection Error Alert (shown at top when error exists) -->
         <v-row v-if="connectionError" justify="center" class="mb-2">
           <v-col cols="12" md="8" lg="6">
@@ -1022,6 +1022,10 @@ onMounted(() => {
   flex-direction: column;
   gap: 12px;
   overflow: hidden;
+}
+
+.app-shell-scroll {
+  overflow: auto;
 }
 
 .playground-layout {

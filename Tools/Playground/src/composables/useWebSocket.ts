@@ -5,11 +5,15 @@ import { StateTreeRuntime, StateTreeView } from '@swiftstatetree/sdk/core'
 import { createPlaygroundLogger } from './playgroundLogger.js'
 
 // MessageStatistics type (matches SDK's MessageStatistics interface)
-type MessageStatistics = {
+type RawMessageStatistics = {
   messageType: 'stateUpdate' | 'stateSnapshot' | 'transportMessage'
   messageSize: number
   direction: 'inbound' | 'outbound'
   patchCount?: number
+}
+
+type MessageStatistics = RawMessageStatistics & {
+  sequence: number
 }
 
 export interface StateUpdateEntry {
@@ -142,6 +146,7 @@ export function useWebSocket(
 
   // Sequence number for tracking update order
   let updateSequenceNumber = 0
+  let statsSequenceNumber = 0
 
   // Handle state updates from View
   // Note: stateUpdates are always collected (needed for StatisticsPanel)
@@ -278,9 +283,13 @@ export function useWebSocket(
       runtime = new StateTreeRuntime(logger)
       
       // Set up statistics callback to collect actual message sizes from SDK
-      runtime.setStatisticsCallback((stats: MessageStatistics) => {
+      runtime.setStatisticsCallback((stats: RawMessageStatistics) => {
+        const entry: MessageStatistics = {
+          ...stats,
+          sequence: statsSequenceNumber++
+        }
         // Use array spread to ensure Vue reactivity
-        messageStatistics.value = [...messageStatistics.value, stats]
+        messageStatistics.value = [...messageStatistics.value, entry]
         // Keep only last 1000 statistics entries
         if (messageStatistics.value.length > 1000) {
           messageStatistics.value = messageStatistics.value.slice(-1000)
@@ -520,6 +529,7 @@ export function useWebSocket(
     logs.value = []
     stateUpdates.value = []
     messageStatistics.value = [] // Reset statistics
+    statsSequenceNumber = 0
     currentLandID.value = getInitialLandID()  // Reset to initial value
     currentPlayerID.value = null
   }

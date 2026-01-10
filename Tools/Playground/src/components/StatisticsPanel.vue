@@ -135,6 +135,7 @@ type MessageStatistics = {
   messageSize: number
   direction: 'inbound' | 'outbound'
   patchCount?: number
+  sequence: number
 }
 
 const props = defineProps<{
@@ -161,7 +162,7 @@ const chartCanvas = ref<HTMLCanvasElement | null>(null)
 
 // Track statistics
 let lastProcessedUpdateIndex = 0 // Track the last processed update index
-let lastStatsArrayLength = 0 // Track the last processed array length - only process new entries
+let lastProcessedStatsSequence = -1
 let lastSecondTimestamp = Date.now()
 let lastRecordedSecond = Math.floor(Date.now() / 1000) // Track the last second we recorded to timeSeriesData
 let currentSecondPackets = 0 // StateUpdates in current second (inbound)
@@ -176,6 +177,11 @@ let updateInterval: number | null = null
 let statsUpdateInterval: number | null = null
 
 // Update statistics from actual message statistics (from SDK)
+const getLastStatsSequence = (stats?: MessageStatistics[]): number => {
+  if (!stats || stats.length === 0) return -1
+  return stats[stats.length - 1].sequence
+}
+
 watch(() => props.messageStatistics, (stats) => {
   // Allow empty array to pass through for initialization, but skip if null/undefined
   if (!stats) {
@@ -184,106 +190,73 @@ watch(() => props.messageStatistics, (stats) => {
   
   // If stats array is empty, just reset the tracker
   if (stats.length === 0) {
-    lastStatsArrayLength = 0
+    lastProcessedStatsSequence = -1
     return
   }
   
-  // Simple approach: only process new entries that were added since last check
-  // Totals are cumulative, so we don't need to worry about truncation
-  const currentArrayLength = stats.length
-  
-  // If array length stayed the same or decreased, no new entries to process
-  if (currentArrayLength <= lastStatsArrayLength) {
-    // Update tracker if array was truncated
-    if (currentArrayLength < lastStatsArrayLength) {
-      lastStatsArrayLength = currentArrayLength
-    }
+  // Process entries that have not been seen yet (sequence is monotonic)
+  const newStats = stats.filter(stat => stat.sequence > lastProcessedStatsSequence)
+  if (newStats.length === 0) {
     return
   }
   
-  // Array length increased - process new entries from lastStatsArrayLength to currentArrayLength
-  const newStats = stats.slice(lastStatsArrayLength)
+  // Process each new statistic and accumulate totals
+  // These totals are independent of the array - they represent cumulative counts from the beginning
+  let newPackets = 0
+  let newPatches = 0
+  let newBytesInbound = 0
+  let newBytesOutbound = 0
   
-  if (newStats.length > 0) {
-    // Process each new statistic and accumulate totals
-    // These totals are independent of the array - they represent cumulative counts from the beginning
-    let newPackets = 0
-    let newPatches = 0
-    let newBytesInbound = 0
-    let newBytesOutbound = 0
-    
-    // First, calculate new statistics for this batch
-    for (const stat of newStats) {
-      if (stat.direction === 'inbound') {
-        // Inbound: count StateUpdates and Patches
-        if (stat.messageType === 'stateUpdate') {
-          newPackets += 1
-          newPatches += stat.patchCount || 0
-        }
-        newBytesInbound += stat.messageSize
-      } else {
-        // Outbound: only count bytes
-        newBytesOutbound += stat.messageSize
+  // First, calculate new statistics for this batch
+  for (const stat of newStats) {
+    if (stat.direction === 'inbound') {
+      // Inbound: count StateUpdates and Patches
+      if (stat.messageType === 'stateUpdate') {
+        newPackets += 1
+        newPatches += stat.patchCount || 0
       }
-    }
-    
-    // Then, accumulate to totals (these are cumulative from the beginning)
-    totalPackets.value += newPackets
-    totalPatches.value += newPatches
-    totalBytesInbound.value += newBytesInbound
-    totalBytesOutbound.value += newBytesOutbound
-    
-    // Update current second statistics based on the new data we just processed
-    const now = Date.now()
-    const currentSecond = Math.floor(now / 1000)
-    const lastSecond = Math.floor(lastSecondTimestamp / 1000)
-    
-    if (currentSecond === lastSecond) {
-      // Same second, accumulate
-      currentSecondPackets += newPackets
-      currentSecondPatches += newPatches
-      currentSecondBytesInbound += newBytesInbound
-      currentSecondBytesOutbound += newBytesOutbound
+      newBytesInbound += stat.messageSize
     } else {
-      // New second detected
-      // Save current second's values as previous before resetting
-      previousSecondPackets = currentSecondPackets
-      previousSecondPatches = currentSecondPatches
-      previousSecondBytesInbound = currentSecondBytesInbound
-      previousSecondBytesOutbound = currentSecondBytesOutbound
-      
-      // Reset and start counting for the new second
-      currentSecondPackets = newPackets
-      currentSecondPatches = newPatches
-      currentSecondBytesInbound = newBytesInbound
-      currentSecondBytesOutbound = newBytesOutbound
-      lastSecondTimestamp = now
+      // Outbound: only count bytes
+      newBytesOutbound += stat.messageSize
     }
-    
-    // Update tracking: mark all processed entries
-    lastStatsArrayLength = stats.length
   }
   
-  // Handle reset case (when array is manually cleared)
-  if (stats.length === 0 && lastStatsArrayLength > 0) {
-    lastStatsArrayLength = 0
-    // Recalculate totals from scratch
-    totalPackets.value = 0
-    totalPatches.value = 0
-    totalBytesInbound.value = 0
-    totalBytesOutbound.value = 0
-    for (const stat of stats) {
-      if (stat.direction === 'inbound') {
-        if (stat.messageType === 'stateUpdate') {
-          totalPackets.value += 1
-          totalPatches.value += stat.patchCount || 0
-        }
-        totalBytesInbound.value += stat.messageSize
-      } else {
-        totalBytesOutbound.value += stat.messageSize
-      }
-    }
+  // Then, accumulate to totals (these are cumulative from the beginning)
+  totalPackets.value += newPackets
+  totalPatches.value += newPatches
+  totalBytesInbound.value += newBytesInbound
+  totalBytesOutbound.value += newBytesOutbound
+  
+  // Update current second statistics based on the new data we just processed
+  const now = Date.now()
+  const currentSecond = Math.floor(now / 1000)
+  const lastSecond = Math.floor(lastSecondTimestamp / 1000)
+  
+  if (currentSecond === lastSecond) {
+    // Same second, accumulate
+    currentSecondPackets += newPackets
+    currentSecondPatches += newPatches
+    currentSecondBytesInbound += newBytesInbound
+    currentSecondBytesOutbound += newBytesOutbound
+  } else {
+    // New second detected
+    // Save current second's values as previous before resetting
+    previousSecondPackets = currentSecondPackets
+    previousSecondPatches = currentSecondPatches
+    previousSecondBytesInbound = currentSecondBytesInbound
+    previousSecondBytesOutbound = currentSecondBytesOutbound
+    
+    // Reset and start counting for the new second
+    currentSecondPackets = newPackets
+    currentSecondPatches = newPatches
+    currentSecondBytesInbound = newBytesInbound
+    currentSecondBytesOutbound = newBytesOutbound
+    lastSecondTimestamp = now
   }
+  
+  // Update tracking: mark all processed entries
+  lastProcessedStatsSequence = newStats[newStats.length - 1].sequence
 }, { deep: true })
 
 // Also track stateUpdates for patch count (fallback if messageStatistics not available)
@@ -697,7 +670,7 @@ const resetStatistics = () => {
   timeSeriesData.value = []
   startTime.value = Date.now()
   lastProcessedUpdateIndex = 0
-  lastStatsArrayLength = 0
+  lastProcessedStatsSequence = getLastStatsSequence(props.messageStatistics)
   currentSecondPackets = 0
   currentSecondPatches = 0
   currentSecondBytesInbound = 0
@@ -719,7 +692,7 @@ onMounted(() => {
   // This prevents showing accumulated data from before the panel was visible
   lastProcessedUpdateIndex = 0
   // Skip all existing statistics - only process new ones from now on
-  lastStatsArrayLength = props.messageStatistics?.length || 0
+  lastProcessedStatsSequence = getLastStatsSequence(props.messageStatistics)
   currentSecondPackets = 0
   currentSecondPatches = 0
   currentSecondBytesInbound = 0
@@ -769,7 +742,7 @@ watch(() => props.connected, (connected) => {
     startTime.value = Date.now()
     // When reconnecting, skip existing statistics to avoid processing old data
     lastProcessedUpdateIndex = 0
-    lastStatsArrayLength = props.messageStatistics?.length || 0
+    lastProcessedStatsSequence = getLastStatsSequence(props.messageStatistics)
     currentSecondPackets = 0
     currentSecondPatches = 0
     currentSecondBytesInbound = 0
