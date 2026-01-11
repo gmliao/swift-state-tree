@@ -42,11 +42,22 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private var parallelEncodingHighConcurrencyCap: Int
     /// Active room count used to derive a per-room concurrency budget.
 
+    /// Expected schema hash for version verification.
+    /// If set, clients must provide matching schemaHash in join metadata.
+    private var expectedSchemaHash: String?
+
     // Track session to player mapping
     private var sessionToPlayer: [SessionID: PlayerID] = [:]
     private var sessionToClient: [SessionID: ClientID] = [:]
     // Track JWT payload information for each session
     private var sessionToAuthInfo: [SessionID: AuthenticatedInfo] = [:]
+    
+    // MARK: - PlayerSlot Tracking
+    
+    /// Maps playerSlot (Int32) to PlayerID for efficient lookup
+    private var slotToPlayer: [Int32: PlayerID] = [:]
+    /// Maps PlayerID to playerSlot for reverse lookup
+    private var playerToSlot: [PlayerID: Int32] = [:]
 
     // Computed property: sessions that are connected but not yet joined
     private var connectedSessions: Set<SessionID> {
@@ -81,6 +92,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         onLandDestroyed: (@Sendable () async -> Void)? = nil,
         enableLegacyJoin: Bool = false,
         enableDirtyTracking: Bool = true,
+        expectedSchemaHash: String? = nil,
         codec: any TransportCodec = JSONTransportCodec(),
         stateUpdateEncoder: any StateUpdateEncoder = JSONStateUpdateEncoder(),
         encodingConfig: TransportEncodingConfig? = nil,
@@ -99,6 +111,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         self.enableLegacyJoin = enableLegacyJoin
         self.enableDirtyTracking = enableDirtyTracking
+        self.expectedSchemaHash = expectedSchemaHash
         self.onLandDestroyedCallback = onLandDestroyed
 
         // Default parallel encoding: disabled unless explicitly enabled.
@@ -146,7 +159,54 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     public func setDirtyTrackingEnabled(_ enabled: Bool) {
         enableDirtyTracking = enabled
     }
-
+    
+    // MARK: - PlayerSlot Allocation
+    
+    /// Allocate a deterministic playerSlot for a player based on accountKey.
+    ///
+    /// Uses FNV-1a hash for deterministic slot assignment, with linear probing for collision handling.
+    /// If the player already has a slot (reconnection), returns the existing slot.
+    ///
+    /// - Parameters:
+    ///   - accountKey: The account identifier (typically playerID)
+    ///   - playerID: The PlayerID to associate with the slot
+    /// - Returns: The allocated Int32 slot
+    public func allocatePlayerSlot(accountKey: String, for playerID: PlayerID) -> Int32 {
+        // Check if player already has a slot (reconnection scenario)
+        if let existingSlot = playerToSlot[playerID] {
+            return existingSlot
+        }
+        
+        // Compute initial slot from hash
+        var slot = DeterministicHash.stableInt32(accountKey)
+        
+        // Linear probing for collision resolution
+        while slotToPlayer[slot] != nil {
+            slot = (slot &+ 1) & 0x7FFFFFFF  // Keep positive
+        }
+        
+        // Register the slot
+        slotToPlayer[slot] = playerID
+        playerToSlot[playerID] = slot
+        
+        return slot
+    }
+    
+    /// Get the playerSlot for an existing player.
+    ///
+    /// - Parameter playerID: The PlayerID to look up
+    /// - Returns: The player's slot, or nil if not found
+    public func getPlayerSlot(for playerID: PlayerID) -> Int32? {
+        playerToSlot[playerID]
+    }
+    
+    /// Get the PlayerID for a given slot.
+    ///
+    /// - Parameter slot: The slot to look up
+    /// - Returns: The PlayerID, or nil if slot is not occupied
+    public func getPlayerID(for slot: Int32) -> PlayerID? {
+        slotToPlayer[slot]
+    }
 
     public func onConnect(sessionID: SessionID, clientID: ClientID, authInfo: AuthenticatedInfo? = nil) async {
         // Only record connection, don't auto-join
@@ -194,6 +254,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Clear syncEngine cache for disconnected player
             // This ensures reconnection behaves like first connection
             syncEngine.clearCacheForDisconnectedPlayer(playerID)
+            
+            // Release playerSlot for this player
+            if let slot = playerToSlot[playerID] {
+                slotToPlayer.removeValue(forKey: slot)
+                playerToSlot.removeValue(forKey: playerID)
+            }
 
             logger.info("Client disconnected: session=\(sessionID.rawValue), player=\(playerID.rawValue)")
         } else {
@@ -303,10 +369,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///   - sessionID: The session ID
     ///   - authInfo: Optional authentication info
     /// - Returns: The final PlayerID if join succeeded, nil if denied
-    /// Join result containing the playerID if successful
+    /// Join result containing the playerID and playerSlot if successful
     public struct JoinResult: Sendable {
         public let playerID: PlayerID
         public let sessionID: SessionID
+        /// Deterministic slot (Int32) for efficient transport encoding
+        public let playerSlot: Int32
     }
 
     public func performJoin(
@@ -327,6 +395,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         case .allow(let playerID):
             // Update TransportAdapter state (synchronization point)
             sessionToPlayer[sessionID] = playerID
+            
+            // Allocate playerSlot (uses playerID as accountKey by default)
+            let slot = allocatePlayerSlot(accountKey: playerID.rawValue, for: playerID)
 
             // Register session
             await registerSession(
@@ -342,7 +413,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // 2. Then call sendInitialSnapshot() to send the state
             // This ensures client knows join succeeded before receiving state.
 
-            return JoinResult(playerID: playerID, sessionID: sessionID)
+            return JoinResult(playerID: playerID, sessionID: sessionID, playerSlot: slot)
 
         case .deny:
             return nil
@@ -1481,6 +1552,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             return
         }
 
+        // Verify schemaHash matches (if configured)
+        if let expected = expectedSchemaHash {
+            let clientSchemaHash = metadata?["schemaHash"]?.base as? String
+            if clientSchemaHash != expected {
+                logger.warning("Join request with mismatched schemaHash: expected=\(expected), received=\(clientSchemaHash ?? "nil")")
+                await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinSchemaHashMismatch, message: "Schema version mismatch", details: [
+                    "expected": AnyCodable(expected),
+                    "received": AnyCodable(clientSchemaHash ?? "nil")
+                ])
+                return
+            }
+        }
+
         // Phase 2: Preparation (no state modification)
         // Use shared helper to prepare PlayerSession
         let jwtAuthInfo = sessionToAuthInfo[sessionID]
@@ -1542,8 +1626,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 // IMPORTANT: Send JoinResponse FIRST, then StateSnapshot
                 // This ensures client knows join succeeded before receiving state
 
-                // 1. Send join response
-                await sendJoinResponse(requestID: requestID, sessionID: sessionID, success: true, playerID: joinResult.playerID.rawValue)
+                // 1. Send join response with playerSlot
+                await sendJoinResponse(requestID: requestID, sessionID: sessionID, success: true, playerID: joinResult.playerID.rawValue, playerSlot: joinResult.playerSlot)
 
                 // 2. Send initial state snapshot AFTER JoinResponse
                 await sendInitialSnapshot(for: joinResult)
@@ -1630,6 +1714,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         sessionID: SessionID,
         success: Bool,
         playerID: String? = nil,
+        playerSlot: Int32? = nil,
         reason: String? = nil
     ) async {
         do {
@@ -1637,6 +1722,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 requestID: requestID,
                 success: success,
                 playerID: playerID,
+                playerSlot: playerSlot,
                 reason: reason
             )
             let responseData = try codec.encode(response)
@@ -1646,7 +1732,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "requestID": "\(requestID)",
                 "sessionID": "\(sessionID.rawValue)",
                 "success": "\(success)",
-                "playerID": "\(playerID ?? "nil")"
+                "playerID": "\(playerID ?? "nil")",
+                "playerSlot": "\(playerSlot.map { String($0) } ?? "nil")"
             ])
         } catch {
             logger.error("❌ Failed to send join response", metadata: [

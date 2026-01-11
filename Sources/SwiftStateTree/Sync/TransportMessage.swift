@@ -181,6 +181,8 @@ public struct TransportJoinResponsePayload: Codable, Sendable {
     /// The complete landID (landType:instanceId)
     public let landID: String?
     public let playerID: String?
+    /// Deterministic slot for efficient transport encoding (Int32 based on accountKey hash)
+    public let playerSlot: Int32?
     public let reason: String?
 
     public init(
@@ -190,6 +192,7 @@ public struct TransportJoinResponsePayload: Codable, Sendable {
         landInstanceId: String? = nil,
         landID: String? = nil,
         playerID: String? = nil,
+        playerSlot: Int32? = nil,
         reason: String? = nil
     ) {
         self.requestID = requestID
@@ -198,6 +201,7 @@ public struct TransportJoinResponsePayload: Codable, Sendable {
         self.landInstanceId = landInstanceId
         self.landID = landID
         self.playerID = playerID
+        self.playerSlot = playerSlot
         self.reason = reason
     }
 }
@@ -288,6 +292,7 @@ public struct TransportMessage: Codable, Sendable {
         landInstanceId: String? = nil,
         landID: String? = nil,
         playerID: String? = nil,
+        playerSlot: Int32? = nil,
         reason: String? = nil
     ) -> TransportMessage {
         return TransportMessage(
@@ -299,6 +304,7 @@ public struct TransportMessage: Codable, Sendable {
                 landInstanceId: landInstanceId,
                 landID: landID,
                 playerID: playerID,
+                playerSlot: playerSlot,
                 reason: reason
             ))
         )

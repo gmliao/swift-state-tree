@@ -50,6 +50,8 @@ export interface TransportJoinResponsePayload {
   /// The complete landID (landType:instanceId)
   landID?: string | null
   playerID?: string
+  /// Deterministic slot for efficient transport encoding (Int32 based on accountKey hash)
+  playerSlot?: number | null
   reason?: string
 }
 

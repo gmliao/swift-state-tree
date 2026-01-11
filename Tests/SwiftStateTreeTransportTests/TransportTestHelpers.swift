@@ -55,9 +55,12 @@ func simulateRouterJoin<State: StateNodeProtocol>(
         authInfo: authInfo
     )
     
-    // 3. Send initial state snapshot
+    // 3. Allocate playerSlot (simulates what performJoin does)
+    let playerSlot = await adapter.allocatePlayerSlot(accountKey: finalPlayerID.rawValue, for: finalPlayerID)
+    
+    // 4. Send initial state snapshot
     // In production this happens AFTER JoinResponse is sent to ensure correct message order.
     // In tests we call it directly since we don't have the actual WebSocket message flow.
-    let joinResult = TransportAdapter<State>.JoinResult(playerID: finalPlayerID, sessionID: sessionID)
+    let joinResult = TransportAdapter<State>.JoinResult(playerID: finalPlayerID, sessionID: sessionID, playerSlot: playerSlot)
     await adapter.sendInitialSnapshot(for: joinResult)
 }

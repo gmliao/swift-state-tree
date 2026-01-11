@@ -165,7 +165,11 @@ export class StateTreeView {
       const message = createJoinMessage(requestID, landType, landInstanceId, {
         playerID: this.playerID,
         deviceID: this.deviceID,
-        metadata: this.metadata
+        metadata: {
+          ...this.metadata,
+          // Include schemaHash for version verification
+          schemaHash: this.schema?.schemaHash
+        }
       })
 
       this.joinCallbacks.set(requestID, resolve)

@@ -10,6 +10,8 @@ export interface LandDefinition {
     snapshot?: { $ref: string }
     diff?: { $ref: string }
   }
+  /// Path hashes for state update compression (hash → path pattern)
+  pathHashes?: Record<string, number>
 }
 
 export interface SchemaDef {
@@ -52,6 +54,8 @@ export interface SchemaProperty {
 
 export interface ProtocolSchema {
   version: string
+  /** Deterministic hash of schema content for version verification */
+  schemaHash: string
   defs: Record<string, SchemaDef>
   lands: Record<string, LandDefinition>
 }

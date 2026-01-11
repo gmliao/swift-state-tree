@@ -146,13 +146,20 @@ public struct SchemaExtractor {
             diff: diffSchema
         )
         
+        // Generate path hashes for state update compression
+        let pathHashes = PathFlattener.flatten(
+            rootTypeName: stateTypeName,
+            definitions: definitions
+        )
+        
         // Create land schema
         let landSchema = LandSchema(
             stateType: stateTypeName,
             actions: actions,
             clientEvents: clientEvents,
             events: events,
-            sync: syncSchema
+            sync: syncSchema,
+            pathHashes: pathHashes
         )
         
         return ProtocolSchema(
