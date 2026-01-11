@@ -7,13 +7,16 @@ public struct TransportEncodingConfig: Sendable {
 
     public init(
         message: TransportEncoding = .json,
-        stateUpdate: StateUpdateEncoding = .jsonObject
+        stateUpdate: StateUpdateEncoding = .opcodeJsonArray
     ) {
         self.message = message
         self.stateUpdate = stateUpdate
     }
 
-    public static let json = TransportEncodingConfig()
+    public static let json = TransportEncodingConfig(
+        message: .json,
+        stateUpdate: .jsonObject
+    )
     public static let jsonOpcode = TransportEncodingConfig(
         message: .json,
         stateUpdate: .opcodeJsonArray

@@ -40,7 +40,7 @@ struct GameServer {
         let port = getEnvUInt16(key: "PORT", defaultValue: 8080)
 
         let stateUpdateEncoding = resolveStateUpdateEncoding(
-            rawValue: getEnvString(key: "STATE_UPDATE_ENCODING", defaultValue: "jsonObject")
+            rawValue: getEnvString(key: "STATE_UPDATE_ENCODING", defaultValue: "opcodeJsonArray")
         )
         let transportEncoding = TransportEncodingConfig(
             message: .json,

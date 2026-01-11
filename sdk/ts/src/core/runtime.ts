@@ -467,7 +467,7 @@ export class StateTreeRuntime {
 function resolveRuntimeOptions(options?: Logger | RuntimeOptions): { logger: Logger; transportEncoding: TransportEncodingConfig } {
   const defaultConfig: TransportEncodingConfig = {
     message: 'json',
-    stateUpdate: 'jsonObject',
+    stateUpdate: 'opcodeJsonArray',
     stateUpdateDecoding: 'auto'
   }
 
@@ -482,7 +482,7 @@ function resolveRuntimeOptions(options?: Logger | RuntimeOptions): { logger: Log
   const logger = options.logger ?? new NoOpLogger()
   const transportEncoding: TransportEncodingConfig = {
     message: options.transportEncoding?.message ?? 'json',
-    stateUpdate: options.transportEncoding?.stateUpdate ?? 'jsonObject',
+    stateUpdate: options.transportEncoding?.stateUpdate ?? 'opcodeJsonArray',
     stateUpdateDecoding: options.transportEncoding?.stateUpdateDecoding ?? 'auto'
   }
 
