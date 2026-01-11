@@ -5,6 +5,7 @@ import SwiftStateTree
 public enum StateUpdateEncoding: String, Sendable {
     case jsonObject
     case opcodeJsonArray
+    case opcodeJsonArrayLegacy
 }
 
 /// Opcode for state update types.
