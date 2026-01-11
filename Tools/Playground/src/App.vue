@@ -768,10 +768,12 @@ watch([currentState, stateTreeUpdateSpeed], ([newState, speed]) => {
       lastUpdateTime = now
     } else {
       // Schedule update for the next second boundary
+      // Always update the pending state to use the latest value
       if (!throttleTimer) {
         const timeUntilNextSecond = 1000 - (now - lastUpdateTime)
         throttleTimer = window.setTimeout(() => {
-          throttledState.value = newState
+          // Use currentState.value to get the latest state when timer fires
+          throttledState.value = currentState.value
           lastUpdateTime = Date.now()
           throttleTimer = null
         }, timeUntilNextSecond)
