@@ -96,6 +96,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         codec: any TransportCodec = JSONTransportCodec(),
         stateUpdateEncoder: any StateUpdateEncoder = JSONStateUpdateEncoder(),
         encodingConfig: TransportEncodingConfig? = nil,
+        pathHashes: [String: UInt32]? = nil,
         enableParallelEncoding: Bool? = nil,
         logger: Logger? = nil
     ) {
@@ -104,7 +105,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         self.landID = landID
         if let encodingConfig = encodingConfig {
             self.codec = encodingConfig.makeCodec()
-            self.stateUpdateEncoder = encodingConfig.makeStateUpdateEncoder()
+            self.stateUpdateEncoder = encodingConfig.makeStateUpdateEncoder(pathHashes: pathHashes)
         } else {
             self.codec = codec
             self.stateUpdateEncoder = stateUpdateEncoder

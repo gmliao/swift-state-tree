@@ -104,7 +104,10 @@ public actor LandHost {
     /// Registered land definitions for schema generation.
     private var registeredLandDefinitions: [AnyLandDefinition] = []
     
-    /// Cached schema JSON data (computed once, reused for all requests).
+    /// Cached ProtocolSchema (generated once, reused for all requests).
+    private var cachedSchema: ProtocolSchema?
+    
+    /// Cached schema JSON data (computed from cachedSchema).
     private var cachedSchemaJSON: Data?
     
     /// Initialize a new LandHost.
@@ -189,6 +192,19 @@ public actor LandHost {
             finalConfig = LandServerConfiguration()
         }
         
+        // Store land definition for schema generation BEFORE regenerating schema
+        let sampleLandID = LandID.generate(landType: landType)
+        let sampleDefinition = landFactory(sampleLandID)
+        registeredLandDefinitions.append(AnyLandDefinition(sampleDefinition))
+        
+        // Regenerate schema to include this new land type
+        regenerateSchema()
+        
+        // Extract pathHashes for this land type from cached schema
+        if let pathHashes = getPathHashes(for: landType) {
+            finalConfig.pathHashes = pathHashes
+        }
+        
         // Create server (no router - LandHost handles route registration)
         // LandServer<State>.Configuration is a typealias of LandServerConfiguration, so we can use it directly
         let serverConfig: LandServer<State>.Configuration = finalConfig
@@ -216,15 +232,33 @@ public actor LandHost {
         // Store path and encoding config for startup logging
         registeredServerPaths[landType] = path
         registeredLandEncodings[landType] = finalConfig.transportEncoding
+    }
+    
+    /// Regenerate schema from all registered land definitions and cache it.
+    ///
+    /// This method is called after each land registration to ensure the schema
+    /// includes all registered lands. It caches both the ProtocolSchema object
+    /// and its JSON representation for efficient reuse.
+    private func regenerateSchema() {
+        // Generate schema from all registered lands
+        let schema = SchemaGenCLI.generateSchema(
+            landDefinitions: registeredLandDefinitions,
+            version: "0.1.0"
+        )
         
-        // Store land definition for schema generation
-        // Create a sample LandDefinition to extract schema (using a dummy LandID)
-        let sampleLandID = LandID.generate(landType: landType)
-        let sampleDefinition = landFactory(sampleLandID)
-        registeredLandDefinitions.append(AnyLandDefinition(sampleDefinition))
+        // Cache the schema object
+        cachedSchema = schema
         
-        // Invalidate cached schema (will be recomputed on next request)
+        // Invalidate JSON cache (will be regenerated on next /schema request)
         cachedSchemaJSON = nil
+    }
+    
+    /// Get pathHashes for a specific land type from cached schema.
+    ///
+    /// - Parameter landType: The land type to get pathHashes for
+    /// - Returns: Dictionary of path patterns to hashes, or nil if not available
+    private func getPathHashes(for landType: String) -> [String: UInt32]? {
+        return cachedSchema?.lands[landType]?.pathHashes
     }
     
     /// Register a land type - simplified version.
@@ -454,35 +488,44 @@ public actor LandHost {
     
     /// Generate aggregated schema response from all registered lands.
     ///
-    /// This method uses `SchemaGenCLI` to generate the schema and caches the result
-    /// for subsequent requests. The cache is invalidated when new lands are registered.
+    /// This method uses the cached ProtocolSchema (generated during land registration)
+    /// and returns it as JSON with CORS headers.
     ///
     /// - Returns: HTTP response with JSON schema and CORS headers
     private func generateSchemaResponse() async -> Response {
-        // Return cached schema if available
+        // Return cached JSON if available
         if let cached = cachedSchemaJSON {
             var response = HTTPResponseHelpers.jsonResponse(from: cached, status: .ok)
             addCORSHeaders(to: &response)
             return response
         }
         
-        // Generate schema using SchemaGenCLI
-        do {
-            // Use SchemaGenCLI.generateSchema to create aggregated schema
-            let finalSchema = SchemaGenCLI.generateSchema(
-                landDefinitions: registeredLandDefinitions,
-                version: "0.1.0"
+        // Use cached schema if available
+        guard let schema = cachedSchema else {
+            let logger = configuration.logger ?? createColoredLogger(
+                loggerIdentifier: "com.swiftstatetree.hummingbird",
+                scope: "LandHost"
             )
+            logger.warning("No schema available - no lands registered yet")
             
-            // Encode to JSON and cache
+            var response = HTTPResponseHelpers.errorResponse(
+                message: "No lands registered",
+                status: .notFound
+            )
+            addCORSHeaders(to: &response)
+            return response
+        }
+        
+        // Encode cached schema to JSON
+        do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let jsonData = try encoder.encode(finalSchema)
+            let jsonData = try encoder.encode(schema)
             
-            // Cache the result
+            // Cache the JSON
             cachedSchemaJSON = jsonData
             
-            // Return response using helper with CORS headers
+            // Return response with CORS headers
             var response = HTTPResponseHelpers.jsonResponse(from: jsonData, status: .ok)
             addCORSHeaders(to: &response)
             return response
@@ -491,10 +534,10 @@ public actor LandHost {
                 loggerIdentifier: "com.swiftstatetree.hummingbird",
                 scope: "LandHost"
             )
-            logger.error("Failed to generate schema: \(error)")
+            logger.error("Failed to encode schema: \(error)")
             
             var response = HTTPResponseHelpers.errorResponse(
-                message: "Failed to generate schema",
+                message: "Failed to encode schema",
                 status: .internalServerError
             )
             addCORSHeaders(to: &response)

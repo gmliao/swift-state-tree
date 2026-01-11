@@ -26,17 +26,22 @@ public struct TransportEncodingConfig: Sendable {
         message.makeCodec()
     }
 
-    public func makeStateUpdateEncoder() -> any StateUpdateEncoder {
-        stateUpdate.makeEncoder()
+    public func makeStateUpdateEncoder(pathHashes: [String: UInt32]? = nil) -> any StateUpdateEncoder {
+        stateUpdate.makeEncoder(pathHashes: pathHashes)
     }
 }
 
 public extension StateUpdateEncoding {
-    func makeEncoder() -> any StateUpdateEncoder {
+    func makeEncoder(pathHashes: [String: UInt32]? = nil) -> any StateUpdateEncoder {
         switch self {
         case .jsonObject:
             return JSONStateUpdateEncoder()
         case .opcodeJsonArray:
+            // Create PathHasher if pathHashes available
+            if let pathHashes = pathHashes {
+                let pathHasher = PathHasher(pathHashes: pathHashes)
+                return OpcodeJSONStateUpdateEncoder(pathHasher: pathHasher)
+            }
             return OpcodeJSONStateUpdateEncoder()
         }
     }
