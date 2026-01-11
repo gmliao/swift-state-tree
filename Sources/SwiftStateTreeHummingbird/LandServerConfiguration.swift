@@ -42,7 +42,7 @@ public struct LandServerConfiguration: Sendable {
     public var enableParallelEncoding: Bool? = nil
 
     /// Encoding configuration for transport messages and state updates.
-    public var transportEncoding: TransportEncodingConfig = .json
+    public var transportEncoding: TransportEncodingConfig = .jsonOpcode
     
     public init(
         logger: Logger? = nil,
@@ -50,7 +50,7 @@ public struct LandServerConfiguration: Sendable {
         jwtValidator: JWTAuthValidator? = nil,
         allowGuestMode: Bool = false,
         allowAutoCreateOnJoin: Bool = false,
-        transportEncoding: TransportEncodingConfig = .json,
+        transportEncoding: TransportEncodingConfig = .jsonOpcode,
         enableParallelEncoding: Bool? = nil
     ) {
         self.logger = logger

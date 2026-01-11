@@ -57,7 +57,8 @@ struct MultiRoomTwoPlayerTests {
         
         let server = try await Server.create(
             configuration: LandServerConfiguration(
-                allowGuestMode: true
+                allowGuestMode: true,
+                transportEncoding: .json  // Use jsonObject for this test to match JSONDecoder usage
             ),
             landFactory: landFactory,
             initialStateFactory: initialStateFactory

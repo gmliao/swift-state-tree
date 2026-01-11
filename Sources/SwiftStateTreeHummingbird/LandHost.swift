@@ -98,6 +98,9 @@ public actor LandHost {
     /// Registered server paths for startup logging.
     private var registeredServerPaths: [String: String] = [:]
     
+    /// Registered land encoding configurations for startup logging.
+    private var registeredLandEncodings: [String: TransportEncodingConfig] = [:]
+    
     /// Registered land definitions for schema generation.
     private var registeredLandDefinitions: [AnyLandDefinition] = []
     
@@ -210,8 +213,9 @@ public actor LandHost {
         // Register server with realm (we're in actor context, so this is safe)
         try await realm.register(landType: landType, server: server)
         
-        // Store path for startup logging
+        // Store path and encoding config for startup logging
         registeredServerPaths[landType] = path
+        registeredLandEncodings[landType] = finalConfig.transportEncoding
         
         // Store land definition for schema generation
         // Create a sample LandDefinition to extract schema (using a dummy LandID)
@@ -305,7 +309,9 @@ public actor LandHost {
                 let wsURL = "ws://\(configuration.host):\(configuration.port)\(path)"
                 // Get state type name from realm
                 let stateTypeName = await getStateTypeName(for: landType)
-                logger.info("   - \(landType): \(wsURL) (State: \(stateTypeName))")
+                // Get encoding config for this land type
+                let encoding = registeredLandEncodings[landType] ?? .jsonOpcode
+                logger.info("   - \(landType): \(wsURL) (State: \(stateTypeName), Encoding: message=\(encoding.message.rawValue), stateUpdate=\(encoding.stateUpdate.rawValue))")
             }
             
             // Add connection hint for multi-room mode

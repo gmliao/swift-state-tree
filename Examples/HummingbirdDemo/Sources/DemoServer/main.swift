@@ -59,7 +59,7 @@ struct DemoServer {
         let stateUpdateEncoding = resolveStateUpdateEncoding(
             rawValue: HummingbirdDemoContent.getEnvString(
                 key: "STATE_UPDATE_ENCODING",
-                defaultValue: "jsonObject"
+                defaultValue: "opcodeJsonArray"
             )
         )
 

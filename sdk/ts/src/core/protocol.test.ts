@@ -86,6 +86,107 @@ describe('protocol', () => {
       }
     })
 
+    it('decodes StateUpdate with nested object from JSON string', () => {
+      const update: StateUpdate = {
+        type: 'diff',
+        patches: [
+          {
+            path: '/player',
+            op: 'replace',
+            value: {
+              name: 'Alice',
+              hp: 100,
+              inventory: ['sword', 'potion']
+            }
+          },
+          {
+            path: '/stats',
+            op: 'replace',
+            value: {
+              str: 10,
+              dex: 8
+            }
+          }
+        ]
+      }
+
+      const encoded = JSON.stringify(update)
+      const decoded = decodeMessage(encoded)
+
+      expect(decoded).toHaveProperty('type', 'diff')
+      expect(decoded).toHaveProperty('patches')
+      if ('type' in decoded && 'patches' in decoded) {
+        const updateDecoded = decoded as StateUpdate
+        expect(updateDecoded.patches.length).toBe(2)
+        expect(updateDecoded.patches[0]).toMatchObject({
+          path: '/player',
+          op: 'replace',
+          value: {
+            name: 'Alice',
+            hp: 100,
+            inventory: ['sword', 'potion']
+          }
+        })
+        expect(updateDecoded.patches[1]).toMatchObject({
+          path: '/stats',
+          op: 'replace',
+          value: {
+            str: 10,
+            dex: 8
+          }
+        })
+      }
+    })
+
+    it('decodes StateUpdate with deeply nested object from JSON string', () => {
+      const update: StateUpdate = {
+        type: 'diff',
+        patches: [
+          {
+            path: '/player',
+            op: 'replace',
+            value: {
+              name: 'Bob',
+              level: 5,
+              stats: {
+                str: 10,
+                dex: 8,
+                equipment: {
+                  weapon: 'sword',
+                  armor: 'plate'
+                }
+              }
+            }
+          }
+        ]
+      }
+
+      const encoded = JSON.stringify(update)
+      const decoded = decodeMessage(encoded)
+
+      expect(decoded).toHaveProperty('type', 'diff')
+      expect(decoded).toHaveProperty('patches')
+      if ('type' in decoded && 'patches' in decoded) {
+        const updateDecoded = decoded as StateUpdate
+        expect(updateDecoded.patches.length).toBe(1)
+        expect(updateDecoded.patches[0].path).toBe('/player')
+        expect(updateDecoded.patches[0].op).toBe('replace')
+        if (updateDecoded.patches[0].value && typeof updateDecoded.patches[0].value === 'object') {
+          const value = updateDecoded.patches[0].value as any
+          expect(value.name).toBe('Bob')
+          expect(value.level).toBe(5)
+          expect(value.stats).toEqual({
+            str: 10,
+            dex: 8,
+            equipment: {
+              weapon: 'sword',
+              armor: 'plate'
+            }
+          })
+        }
+      }
+    })
+
     it('decodes opcode array StateUpdate from JSON string', () => {
       const updateArray = [
         2,
@@ -133,6 +234,83 @@ describe('protocol', () => {
         const update = decoded as StateUpdate
         expect(update.patches.length).toBe(1)
         expect(update.patches[0]).toMatchObject({ path: '/score', op: 'replace', value: 10 })
+      }
+    })
+
+    it('decodes opcode array StateUpdate with nested object', () => {
+      const updateArray = [
+        2,
+        'player-1',
+        ['/player', 1, { name: 'Alice', hp: 100, inventory: ['sword', 'potion'] }],
+        ['/stats', 1, { str: 10, dex: 8 }]
+      ]
+
+      const encoded = JSON.stringify(updateArray)
+      const decoded = decodeMessage(encoded)
+
+      expect(decoded).toHaveProperty('type', 'diff')
+      expect(decoded).toHaveProperty('patches')
+      if ('type' in decoded && 'patches' in decoded) {
+        const update = decoded as StateUpdate
+        expect(update.patches.length).toBe(2)
+        expect(update.patches[0]).toMatchObject({
+          path: '/player',
+          op: 'replace',
+          value: { name: 'Alice', hp: 100, inventory: ['sword', 'potion'] }
+        })
+        expect(update.patches[1]).toMatchObject({
+          path: '/stats',
+          op: 'replace',
+          value: { str: 10, dex: 8 }
+        })
+      }
+    })
+
+    it('decodes opcode array StateUpdate with deeply nested object', () => {
+      const updateArray = [
+        2,
+        'player-1',
+        [
+          '/player',
+          1,
+          {
+            name: 'Bob',
+            level: 5,
+            stats: {
+              str: 10,
+              dex: 8,
+              equipment: {
+                weapon: 'sword',
+                armor: 'plate'
+              }
+            }
+          }
+        ]
+      ]
+
+      const encoded = JSON.stringify(updateArray)
+      const decoded = decodeMessage(encoded)
+
+      expect(decoded).toHaveProperty('type', 'diff')
+      expect(decoded).toHaveProperty('patches')
+      if ('type' in decoded && 'patches' in decoded) {
+        const update = decoded as StateUpdate
+        expect(update.patches.length).toBe(1)
+        expect(update.patches[0].path).toBe('/player')
+        expect(update.patches[0].op).toBe('replace')
+        if (update.patches[0].value && typeof update.patches[0].value === 'object') {
+          const value = update.patches[0].value as any
+          expect(value.name).toBe('Bob')
+          expect(value.level).toBe(5)
+          expect(value.stats).toEqual({
+            str: 10,
+            dex: 8,
+            equipment: {
+              weapon: 'sword',
+              armor: 'plate'
+            }
+          })
+        }
       }
     })
 
