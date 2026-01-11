@@ -9,7 +9,7 @@ import type {
   ErrorPayload
 } from '../types/transport'
 import { StateTreeRuntime } from './runtime'
-import { createJoinMessage, createActionMessage, createEventMessage, generateRequestID } from './protocol'
+import { createJoinMessage, createActionMessage, createEventMessage, generateRequestID, pathHashReverseLookup } from './protocol'
 import { NoOpLogger, type Logger } from './logger'
 import { IVec2, IVec3, Angle, Position2, Velocity2, Acceleration2 } from './deterministic-math'
 import type { ProtocolSchema, SchemaDef, SchemaProperty } from '../codegen/schema'
@@ -141,14 +141,12 @@ export class StateTreeView {
     }
     this.stateTypeName = landDef.stateType
     
-    // Initialize path hash reverse lookup table
+    // Initialize path hash reverse lookup table (synchronous)
     if (landDef.pathHashes) {
-      import('./protocol.js').then(({ pathHashReverseLookup }) => {
-        pathHashReverseLookup.clear()
-        for (const [pattern, hash] of Object.entries(landDef.pathHashes!)) {
-          pathHashReverseLookup.set(hash, pattern)
-        }
-      })
+      pathHashReverseLookup.clear()
+      for (const [pattern, hash] of Object.entries(landDef.pathHashes)) {
+        pathHashReverseLookup.set(hash, pattern)
+      }
     }
   }
 
