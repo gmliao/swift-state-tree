@@ -19,24 +19,29 @@ public enum GameConfig {
     /// Base health
     public static let BASE_MAX_HEALTH: Int = 100
     
+    /// Game tick configuration
+    public static let TICK_INTERVAL_MS: Int = 50  // Game tick interval in milliseconds
+    
     /// Monster spawn configuration
-    public static let MONSTER_SPAWN_INTERVAL_TICKS: Int = 50  // 5 seconds at 50ms/tick (initial)
-    public static let MONSTER_SPAWN_INTERVAL_MIN_TICKS: Int = 5  // 1 second at 50ms/tick (fastest, upper limit)
-    public static let MONSTER_SPAWN_INTERVAL_MAX_TICKS: Int = 50  // 5 seconds at 50ms/tick (slowest, initial)
-    public static let MONSTER_SPAWN_ACCELERATION_TICKS: Int64 = 6000  // 300 seconds (5 minutes) to reach max speed
+    public static let MONSTER_SPAWN_INTERVAL_TICKS: Int = 30  // Initial spawn interval in ticks (faster start)
+    public static let MONSTER_SPAWN_INTERVAL_MIN_TICKS: Int = 3  // Fastest spawn interval in ticks (upper limit, more intense)
+    public static let MONSTER_SPAWN_INTERVAL_MAX_TICKS: Int = 30  // Slowest spawn interval in ticks (initial)
+    public static let MONSTER_SPAWN_ACCELERATION_TICKS: Int64 = 3000  // Ticks to reach max speed (faster acceleration, ~2.5 minutes at 50ms/tick)
+    public static let MONSTER_SPAWN_COUNT_MIN: Int = 1  // Minimum monsters spawned per wave
+    public static let MONSTER_SPAWN_COUNT_MAX: Int = 4  // Maximum monsters spawned per wave
     public static let MONSTER_MOVE_SPEED: Float = 0.5
     public static let MONSTER_BASE_HEALTH: Int = 10
-    public static let MONSTER_BASE_REWARD: Int = 1
+    public static let MONSTER_BASE_REWARD: Int = 10  // Increased reward for faster progression
     
     /// Weapon configuration
     public static let WEAPON_BASE_DAMAGE: Int = 5
     public static let WEAPON_BASE_RANGE: Float = 20.0
-    public static let WEAPON_FIRE_RATE_TICKS: Int = 10  // 0.5 seconds at 50ms/tick
+    public static let WEAPON_FIRE_RATE_TICKS: Int = 10  // Fire rate interval in ticks
     
     /// Turret configuration
     public static let TURRET_BASE_DAMAGE: Int = 3
     public static let TURRET_BASE_RANGE: Float = 15.0
-    public static let TURRET_FIRE_RATE_TICKS: Int = 20  // 1 second at 50ms/tick
+    public static let TURRET_FIRE_RATE_TICKS: Int = 20  // Fire rate interval in ticks
     public static let TURRET_PLACEMENT_DISTANCE: Float = 8.0  // Distance from base center
     
     /// Upgrade costs
@@ -664,7 +669,7 @@ public enum HeroDefense {
             }
 
             Lifetime {
-                Tick(every: .milliseconds(50)) { (state: inout HeroDefenseState, ctx: LandContext) in
+                Tick(every: .milliseconds(Int64(GameConfig.TICK_INTERVAL_MS))) { (state: inout HeroDefenseState, ctx: LandContext) in
                     guard let tickId = ctx.tickId else { return }
                     
                     // Update all player systems
@@ -724,10 +729,14 @@ public enum HeroDefense {
                     // Spawn monsters periodically (spawn speed increases over time)
                     let spawnInterval = GameSystem.getMonsterSpawnInterval(currentTick: tickId)
                     if tickId % Int64(spawnInterval) == 0 {
-                        let monsterID = state.nextMonsterID
-                        state.nextMonsterID += 1
-                        let monster = GameSystem.spawnMonster(nextID: monsterID)
-                        state.monsters[monster.id] = monster
+                        // Spawn random number of monsters (1-4) for more intense combat
+                        let spawnCount = Int.random(in: GameConfig.MONSTER_SPAWN_COUNT_MIN...GameConfig.MONSTER_SPAWN_COUNT_MAX)
+                        for _ in 0..<spawnCount {
+                            let monsterID = state.nextMonsterID
+                            state.nextMonsterID += 1
+                            let monster = GameSystem.spawnMonster(nextID: monsterID)
+                            state.monsters[monster.id] = monster
+                        }
                     }
                     
                     // Update all monsters

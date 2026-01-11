@@ -8,6 +8,7 @@ import Foundation
 /// ```jsonc
 /// {
 ///   "version": "0.1.0",
+///   "schemaHash": "a1b2c3d4",
 ///   "lands": {
 ///     "MatchLand": {
 ///       "stateType": "MatchLandState",
@@ -21,13 +22,55 @@ import Foundation
 /// ```
 public struct ProtocolSchema: Codable, Sendable {
     public let version: String
+    /// Deterministic hash of schema content for version verification.
+    /// Clients should send this during join to verify schema compatibility.
+    public let schemaHash: String
     public let lands: [String: LandSchema]
     public let defs: [String: JSONSchema]
     
-    public init(version: String = "0.1.0", lands: [String: LandSchema] = [:], defs: [String: JSONSchema] = [:]) {
+    public init(
+        version: String = "0.1.0",
+        schemaHash: String = "",
+        lands: [String: LandSchema] = [:],
+        defs: [String: JSONSchema] = [:]
+    ) {
         self.version = version
+        self.schemaHash = schemaHash
         self.lands = lands
         self.defs = defs
+    }
+    
+    /// Creates a copy of this schema with the computed hash filled in.
+    public func withComputedHash() -> ProtocolSchema {
+        ProtocolSchema(
+            version: version,
+            schemaHash: computeHash(),
+            lands: lands,
+            defs: defs
+        )
+    }
+    
+    /// Compute deterministic hash of schema content (excluding schemaHash field itself).
+    ///
+    /// Uses a stable JSON encoding (sorted keys) to ensure consistent hash across platforms.
+    /// Returns 16-character hex string (64-bit FNV-1a hash).
+    public func computeHash() -> String {
+        // Create a hashable version without the schemaHash field
+        struct HashableSchema: Encodable {
+            let version: String
+            let lands: [String: LandSchema]
+            let defs: [String: JSONSchema]
+        }
+        
+        let hashable = HashableSchema(version: version, lands: lands, defs: defs)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        
+        guard let data = try? encoder.encode(hashable) else {
+            return "error"
+        }
+        
+        return DeterministicHash.toHex64(DeterministicHash.fnv1a64(data))
     }
 }
 
@@ -49,18 +92,25 @@ public struct LandSchema: Codable, Sendable {
     /// Sync-related payload types.
     public let sync: SyncSchema
     
+    /// Path hashes for state update compression.
+    /// Maps normalized path patterns to their FNV-1a 32-bit hashes.
+    /// Example: "players.*.position.x" → 0x12345678
+    public let pathHashes: [String: UInt32]?
+    
     public init(
         stateType: String,
         actions: [String: JSONSchema] = [:],
         clientEvents: [String: JSONSchema] = [:],
         events: [String: JSONSchema] = [:],
-        sync: SyncSchema
+        sync: SyncSchema,
+        pathHashes: [String: UInt32]? = nil
     ) {
         self.stateType = stateType
         self.actions = actions
         self.clientEvents = clientEvents
         self.events = events
         self.sync = sync
+        self.pathHashes = pathHashes
     }
 }
 

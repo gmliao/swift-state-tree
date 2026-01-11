@@ -323,7 +323,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 // IMPORTANT: Send JoinResponse FIRST, then StateSnapshot
                 // This ensures client knows join succeeded before receiving state
                 
-                // 1. Send join response with landType and instanceId
+                // 1. Send join response with landType, instanceId, and playerSlot
                 await sendJoinResponse(
                     requestID: requestID,
                     sessionID: sessionID,
@@ -331,7 +331,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                     landType: landID.landType,
                     landInstanceId: landID.instanceId,
                     landID: landID.rawValue,
-                    playerID: joinResult.playerID.rawValue
+                    playerID: joinResult.playerID.rawValue,
+                    playerSlot: joinResult.playerSlot
                 )
                 
                 // 2. Send initial state snapshot AFTER JoinResponse
@@ -435,6 +436,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         landInstanceId: String? = nil,
         landID: String? = nil,
         playerID: String? = nil,
+        playerSlot: Int32? = nil,
         reason: String? = nil
     ) async {
         do {
@@ -445,6 +447,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 landInstanceId: landInstanceId,
                 landID: landID,
                 playerID: playerID,
+                playerSlot: playerSlot,
                 reason: reason
             )
             let responseData = try encoder.encode(response)

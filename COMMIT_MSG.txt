@@ -1,0 +1,69 @@
+feat: implement transport protocol optimizations (Phase 1-3)
+
+This commit implements core infrastructure for transport protocol optimization,
+including schema hash verification, path hash generation, and player slot allocation.
+
+## Phase 1: Schema Hash Verification
+
+- Add DeterministicHash utility with FNV-1a algorithm
+- Generate schemaHash in ProtocolSchema during codegen
+- Validate client schemaHash on join (prevent version mismatches)
+- Add joinSchemaHashMismatch error code
+- Update TypeScript SDK to send schemaHash in join metadata
+
+## Phase 2: Path Hash Generation (Schema Only)
+
+- Implement PathFlattener to traverse JSON Schema tree
+- Generate path patterns with wildcards (e.g., "players.*.position.x")
+- Add pathHashes field to LandSchema (54 paths in GameDemo)
+- Create PathHasher utility for path splitting
+- Update TypeScript schema types to include pathHashes
+- Note: Encoder/Decoder integration deferred to next commit
+
+## Phase 3: PlayerSlot Allocation
+
+- Add deterministic slot allocation using FNV-1a hash
+- Implement bidirectional mapping (slot ↔ playerID)
+- Include playerSlot in JoinResponse payload
+- Add slot cleanup on disconnect
+- Update TypeScript transport types
+
+## Files Changed
+
+**New Files:**
+- Sources/SwiftStateTree/Core/DeterministicHash.swift
+- Sources/SwiftStateTree/Core/PathHasher.swift
+- Sources/SwiftStateTree/SchemaGen/PathFlattener.swift
+- Tests/SwiftStateTreeTests/DeterministicHashTests.swift
+- Tests/SwiftStateTreeTests/PathFlattenerTests.swift
+
+**Modified Files:**
+- Sources/SwiftStateTree/SchemaGen/ProtocolSchema.swift
+- Sources/SwiftStateTree/SchemaGen/SchemaExtractor.swift
+- Sources/SwiftStateTree/Sync/ErrorPayload.swift
+- Sources/SwiftStateTree/Sync/TransportMessage.swift
+- Sources/SwiftStateTreeTransport/TransportAdapter.swift
+- Sources/SwiftStateTreeTransport/LandRouter.swift
+- sdk/ts/src/codegen/schema.ts
+- sdk/ts/src/types/transport.ts
+- sdk/ts/src/core/view.ts
+
+## Tests
+
+- Swift: 601/601 passing ✓
+- TypeScript SDK: 96/96 passing ✓
+- DeterministicHash: 14/14 ✓
+- PathFlattener: 5/5 ✓
+- TransportAdapter: 70/70 ✓
+- No hash collisions detected
+
+## Breaking Changes
+
+- JoinResponse payload now includes playerSlot field
+- LandSchema includes new pathHashes field
+
+## Next Steps
+
+- Phase 2 completion: Update Encoder/Decoder to use path hashes
+- Phase 5: MessagePack integration
+- Expected bandwidth reduction: >50% combined

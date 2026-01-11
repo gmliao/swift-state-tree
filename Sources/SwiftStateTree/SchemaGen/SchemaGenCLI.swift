@@ -40,11 +40,12 @@ public struct SchemaGenCLI {
             }
         }
         
+        // Compute and include schemaHash for version verification
         return ProtocolSchema(
             version: version,
             lands: allLands,
             defs: allDefinitions
-        )
+        ).withComputedHash()
     }
     
     /// Generate schema from LandDefinitions and write to file or stdout.
@@ -78,6 +79,7 @@ public struct SchemaGenCLI {
             try jsonData.write(to: outputURL)
             print("✅ Schema generated: \(outputPath)")
             print("   - Version: \(version)")
+            print("   - SchemaHash: \(finalSchema.schemaHash)")
             print("   - Lands: \(finalSchema.lands.count)")
             print("   - Definitions: \(finalSchema.defs.count)")
         } else {

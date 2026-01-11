@@ -6,6 +6,7 @@ public enum ErrorCode: String, Codable, Sendable {
     case joinSessionNotConnected = "JOIN_SESSION_NOT_CONNECTED"
     case joinAlreadyJoined = "JOIN_ALREADY_JOINED"
     case joinLandIDMismatch = "JOIN_LAND_ID_MISMATCH"
+    case joinSchemaHashMismatch = "JOIN_SCHEMA_HASH_MISMATCH"
     case joinDenied = "JOIN_DENIED"
     case joinRoomFull = "JOIN_ROOM_FULL"
     case joinRoomNotFound = "JOIN_ROOM_NOT_FOUND"
