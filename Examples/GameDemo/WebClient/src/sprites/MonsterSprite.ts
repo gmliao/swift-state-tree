@@ -24,20 +24,8 @@ export class MonsterSprite {
     const serverPos = this.readServerPosition(monsterState, 'update')
     if (!serverPos) return
     
-    // Extract rotation (handle both Angle objects and plain objects)
-    let serverRotation = 0
-    if (monsterState.rotation) {
-      if (typeof (monsterState.rotation as any).toRadians === 'function') {
-        // Angle object with toRadians method
-        serverRotation = (monsterState.rotation as any).toRadians()
-      } else if (typeof (monsterState.rotation as any).degrees === 'number') {
-        // Plain object with degrees field
-        serverRotation = (monsterState.rotation as any).degrees * (Math.PI / 180)
-      } else if (typeof monsterState.rotation === 'number') {
-        // Direct number (radians)
-        serverRotation = monsterState.rotation
-      }
-    }
+    // Extract rotation in radians
+    const serverRotation = this.extractRotation(monsterState.rotation)
     
     // Get current visual position (lerped)
     const currentX = this.container.x
@@ -71,17 +59,8 @@ export class MonsterSprite {
     const pos = this.readServerPosition(monsterState, 'setInitialPosition')
     if (!pos) return
     
-    // Extract rotation (handle both Angle objects and plain objects)
-    let rotation = 0
-    if (monsterState.rotation) {
-      if (typeof (monsterState.rotation as any).toRadians === 'function') {
-        rotation = (monsterState.rotation as any).toRadians()
-      } else if (typeof (monsterState.rotation as any).degrees === 'number') {
-        rotation = (monsterState.rotation as any).degrees * (Math.PI / 180)
-      } else if (typeof monsterState.rotation === 'number') {
-        rotation = monsterState.rotation
-      }
-    }
+    // Extract rotation in radians
+    const rotation = this.extractRotation(monsterState.rotation)
     this.container.rotation = Phaser.Math.Angle.Wrap(rotation)
     
     this.container.x = pos.x
@@ -166,5 +145,30 @@ export class MonsterSprite {
       return null
     }
     return { x: v.x, y: v.y }
+  }
+  
+  /**
+   * Extract rotation value in radians from various formats
+   * Handles: Angle objects, plain {degrees} objects, and raw numbers
+   */
+  private extractRotation(rotation: any): number {
+    if (!rotation) return 0
+    
+    // Angle object with toRadians method
+    if (typeof rotation.toRadians === 'function') {
+      return rotation.toRadians()
+    }
+    
+    // Plain object with degrees field (from PathHash nested updates)
+    if (typeof rotation.degrees === 'number') {
+      return rotation.degrees * (Math.PI / 180)
+    }
+    
+    // Direct number (radians)
+    if (typeof rotation === 'number') {
+      return rotation
+    }
+    
+    return 0
   }
 }
