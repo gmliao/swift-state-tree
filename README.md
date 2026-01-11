@@ -13,6 +13,12 @@ StateTree is a product that combines state management concepts from frontend fra
 
 For detailed architectural concepts, please refer to [Architecture Overview](docs/programming-model.md).
 
+## 🎮 Demo
+
+Watch the demo game in action:
+
+[![Demo Game](https://img.youtube.com/vi/SsYCn9oA0pc/0.jpg)](https://www.youtube.com/watch?v=SsYCn9oA0pc)
+
 ## 📝 About the Project
 
 ### Why Swift?

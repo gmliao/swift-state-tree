@@ -11,6 +11,12 @@ StateTree 是結合前端框架的狀態管理想法與後端資料過濾經驗�
 
 詳細的架構概念說明請參考 [架構概念總覽](docs/programming-model.zh-TW.md)。
 
+## 🎮 示範影片
+
+觀看示範遊戲的實際運行：
+
+[![示範遊戲](https://img.youtube.com/vi/SsYCn9oA0pc/0.jpg)](https://www.youtube.com/watch?v=SsYCn9oA0pc)
+
 ## 📝 關於專案
 
 ### 為什麼是 Swift？
