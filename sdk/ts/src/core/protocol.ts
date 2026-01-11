@@ -109,10 +109,39 @@ function decodeStateUpdateArray(payload: unknown[]): StateUpdate {
       throw new Error(`Unknown message format: ${JSON.stringify(payload).substring(0, 100)}`)
     }
 
-    const [path, opCode, value] = entry
+    // Detect format:
+    // Legacy: [path(string), op, value?]
+    // PathHash: [pathHash(number), dynamicKey(string|null), op, value?]
+    const firstElement = entry[0]
+    const isPathHashFormat = typeof firstElement === 'number'
 
-    if (typeof path !== 'string') {
-      throw new Error(`Unknown message format: ${JSON.stringify(payload).substring(0, 100)}`)
+    let path: string
+    let opCode: number
+    let value: any
+
+    if (isPathHashFormat) {
+      // PathHash format: [pathHash, dynamicKey, op, value?]
+      const [pathHash, dynamicKey, op, val] = entry
+      
+      if (typeof pathHash !== 'number') {
+        throw new Error(`Invalid PathHash format: expected number, got ${typeof pathHash}`)
+      }
+      
+      // Reconstruct path from hash + dynamicKey
+      path = reconstructPath(pathHash, dynamicKey)
+      opCode = op
+      value = val
+    } else {
+      // Legacy format: [path, op, value?]
+      const [pathStr, op, val] = entry
+      
+      if (typeof pathStr !== 'string') {
+        throw new Error(`Unknown message format: ${JSON.stringify(payload).substring(0, 100)}`)
+      }
+      
+      path = pathStr
+      opCode = op
+      value = val
     }
 
     let op: StatePatch['op']
@@ -131,7 +160,7 @@ function decodeStateUpdateArray(payload: unknown[]): StateUpdate {
     }
 
     const patch: StatePatch = { path, op }
-    if (op !== 'remove' && entry.length >= 3) {
+    if (op !== 'remove' && value !== undefined) {
       patch.value = value
     }
     patches.push(patch)
@@ -139,6 +168,30 @@ function decodeStateUpdateArray(payload: unknown[]): StateUpdate {
 
   return { type: updateType, patches }
 }
+
+/**
+ * Reconstruct full JSON Pointer path from pathHash and dynamicKey
+ * Uses global pathHashReverseLookup (set during schema initialization)
+ */
+function reconstructPath(pathHash: number, dynamicKey: string | null): string {
+  const pattern = pathHashReverseLookup.get(pathHash)
+  if (!pattern) {
+    throw new Error(`Unknown pathHash: ${pathHash}. Ensure schema is loaded.`)
+  }
+  
+  // Replace wildcard with dynamic key
+  if (dynamicKey !== null && pattern.includes('*')) {
+    const pathPattern = pattern.replace('*', dynamicKey)
+    return '/' + pathPattern.replace(/\./g, '/')
+  }
+  
+  // No dynamic key (static path)
+  return '/' + pattern.replace(/\./g, '/')
+}
+
+// Global reverse lookup table (hash → path pattern)
+// Populated by View during schema initialization
+export const pathHashReverseLookup = new Map<number, string>()
 
 export interface JoinOptions {
   playerID?: string

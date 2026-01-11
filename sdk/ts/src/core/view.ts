@@ -140,6 +140,16 @@ export class StateTreeView {
       throw new Error(`Land "${landType}" does not have stateType defined in schema`)
     }
     this.stateTypeName = landDef.stateType
+    
+    // Initialize path hash reverse lookup table
+    if (landDef.pathHashes) {
+      import('./protocol.js').then(({ pathHashReverseLookup }) => {
+        pathHashReverseLookup.clear()
+        for (const [pattern, hash] of Object.entries(landDef.pathHashes!)) {
+          pathHashReverseLookup.set(hash, pattern)
+        }
+      })
+    }
   }
 
   /**
