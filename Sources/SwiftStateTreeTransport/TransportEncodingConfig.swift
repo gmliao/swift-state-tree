@@ -43,6 +43,9 @@ public extension StateUpdateEncoding {
                 return OpcodeJSONStateUpdateEncoder(pathHasher: pathHasher)
             }
             return OpcodeJSONStateUpdateEncoder()
+        case .opcodeJsonArrayLegacy:
+            // Explicitly force legacy mode (no PathHasher)
+            return OpcodeJSONStateUpdateEncoder()
         }
     }
 }
