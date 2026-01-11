@@ -24,13 +24,20 @@ export class MonsterSprite {
     const serverPos = this.readServerPosition(monsterState, 'update')
     if (!serverPos) return
     
-    if (!(monsterState.rotation instanceof Object)) {
-      console.warn(`⚠️ MonsterSprite.update: rotation is invalid for monster ${this.monsterID}`)
-      return
+    // Extract rotation (handle both Angle objects and plain objects)
+    let serverRotation = 0
+    if (monsterState.rotation) {
+      if (typeof (monsterState.rotation as any).toRadians === 'function') {
+        // Angle object with toRadians method
+        serverRotation = (monsterState.rotation as any).toRadians()
+      } else if (typeof (monsterState.rotation as any).degrees === 'number') {
+        // Plain object with degrees field
+        serverRotation = (monsterState.rotation as any).degrees * (Math.PI / 180)
+      } else if (typeof monsterState.rotation === 'number') {
+        // Direct number (radians)
+        serverRotation = monsterState.rotation
+      }
     }
-    
-    // Get rotation (assuming it has toRadians method)
-    const serverRotation = (monsterState.rotation as any).toRadians?.() ?? 0
     
     // Get current visual position (lerped)
     const currentX = this.container.x
@@ -64,10 +71,18 @@ export class MonsterSprite {
     const pos = this.readServerPosition(monsterState, 'setInitialPosition')
     if (!pos) return
     
-    if ((monsterState.rotation as any)?.toRadians) {
-      const rotation = (monsterState.rotation as any).toRadians()
-      this.container.rotation = Phaser.Math.Angle.Wrap(rotation)
+    // Extract rotation (handle both Angle objects and plain objects)
+    let rotation = 0
+    if (monsterState.rotation) {
+      if (typeof (monsterState.rotation as any).toRadians === 'function') {
+        rotation = (monsterState.rotation as any).toRadians()
+      } else if (typeof (monsterState.rotation as any).degrees === 'number') {
+        rotation = (monsterState.rotation as any).degrees * (Math.PI / 180)
+      } else if (typeof monsterState.rotation === 'number') {
+        rotation = monsterState.rotation
+      }
     }
+    this.container.rotation = Phaser.Math.Angle.Wrap(rotation)
     
     this.container.x = pos.x
     this.container.y = pos.y
