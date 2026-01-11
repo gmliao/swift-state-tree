@@ -4,7 +4,7 @@
  * Tests message encoding/decoding, join/action/event message creation
  */
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import {
   encodeMessage,
   decodeMessage,
@@ -451,6 +451,172 @@ describe('protocol', () => {
     it('includes prefix in request ID', () => {
       const id = generateRequestID('test')
       expect(id.startsWith('test-')).toBe(true)
+    })
+  })
+
+  describe('PathHash format decoding', async () => {
+    // Import pathHashReverseLookup for testing
+    const { pathHashReverseLookup } = await import('./protocol')
+
+    beforeEach(() => {
+      // Setup mock pathHashes (simulate schema initialization)
+      pathHashReverseLookup.clear()
+      pathHashReverseLookup.set(123456, 'monsters.*')
+      pathHashReverseLookup.set(789012, 'monsters.*.position')
+      pathHashReverseLookup.set(345678, 'monsters.*.rotation')
+      pathHashReverseLookup.set(901234, 'monsters.*.rotation.degrees')
+      pathHashReverseLookup.set(567890, 'monsters.*.health')
+      pathHashReverseLookup.set(111111, 'players.*')
+      pathHashReverseLookup.set(222222, 'players.*.hp')
+    })
+
+    it('decodes PathHash format with static path', () => {
+      const updateArray = [
+        2, // diff opcode
+        'player-1',
+        [222222, null, 1, 100] // [pathHash, dynamicKey, op, value]
+      ]
+
+      const encoded = JSON.stringify(updateArray)
+      const decoded = decodeMessage(encoded)
+
+      expect(decoded).toHaveProperty('type', 'diff')
+      if ('type' in decoded && 'patches' in decoded) {
+        const update = decoded as StateUpdate
+        expect(update.patches.length).toBe(1)
+        expect(update.patches[0]).toMatchObject({
+          path: '/players/*/hp',
+          op: 'replace',
+          value: 100
+        })
+      }
+    })
+
+    it('decodes PathHash format with dynamic key', () => {
+      const updateArray = [
+        2, // diff opcode
+        'player-1',
+        [567890, '42', 1, 50] // monsters.42.health = 50
+      ]
+
+      const encoded = JSON.stringify(updateArray)
+      const decoded = decodeMessage(encoded)
+
+      expect(decoded).toHaveProperty('type', 'diff')
+      if ('type' in decoded && 'patches' in decoded) {
+        const update = decoded as StateUpdate
+        expect(update.patches.length).toBe(1)
+        expect(update.patches[0]).toMatchObject({
+          path: '/monsters/42/health',
+          op: 'replace',
+          value: 50
+        })
+      }
+    })
+
+    it('decodes PathHash format remove operation', () => {
+      const updateArray = [
+        2, // diff opcode
+        'player-1',
+        [123456, '36', 2] // remove monsters.36
+      ]
+
+      const encoded = JSON.stringify(updateArray)
+      const decoded = decodeMessage(encoded)
+
+      expect(decoded).toHaveProperty('type', 'diff')
+      if ('type' in decoded && 'patches' in decoded) {
+        const update = decoded as StateUpdate
+        expect(update.patches.length).toBe(1)
+        expect(update.patches[0]).toMatchObject({
+          path: '/monsters/36',
+          op: 'remove'
+        })
+        expect(update.patches[0].value).toBeUndefined()
+      }
+    })
+
+    it('decodes mixed Legacy and PathHash formats', () => {
+      const updateArray = [
+        2, // diff opcode
+        'player-1',
+        ['/score', 1, 100], // Legacy format
+        [567890, '42', 1, 50] // PathHash format
+      ]
+
+      const encoded = JSON.stringify(updateArray)
+      const decoded = decodeMessage(encoded)
+
+      expect(decoded).toHaveProperty('type', 'diff')
+      if ('type' in decoded && 'patches' in decoded) {
+        const update = decoded as StateUpdate
+        expect(update.patches.length).toBe(2)
+        expect(update.patches[0]).toMatchObject({
+          path: '/score',
+          op: 'replace',
+          value: 100
+        })
+        expect(update.patches[1]).toMatchObject({
+          path: '/monsters/42/health',
+          op: 'replace',
+          value: 50
+        })
+      }
+    })
+
+    it('decodes PathHash format with nested property (rotation.degrees)', () => {
+      const updateArray = [
+        2, // diff opcode
+        'player-1',
+        [901234, '37', 1, 90] // monsters.37.rotation.degrees = 90
+      ]
+
+      const encoded = JSON.stringify(updateArray)
+      const decoded = decodeMessage(encoded)
+
+      expect(decoded).toHaveProperty('type', 'diff')
+      if ('type' in decoded && 'patches' in decoded) {
+        const update = decoded as StateUpdate
+        expect(update.patches.length).toBe(1)
+        expect(update.patches[0]).toMatchObject({
+          path: '/monsters/37/rotation/degrees',
+          op: 'replace',
+          value: 90
+        })
+      }
+    })
+
+    it('throws error for unknown pathHash', () => {
+      const updateArray = [
+        2, // diff opcode
+        'player-1',
+        [999999, '42', 1, 50] // Unknown hash
+      ]
+
+      const encoded = JSON.stringify(updateArray)
+      expect(() => decodeMessage(encoded)).toThrow('Unknown pathHash: 999999')
+    })
+
+    it('decodes PathHash format with complex object value', () => {
+      const updateArray = [
+        2, // diff opcode
+        'player-1',
+        [789012, '42', 1, { v: { x: 10, y: 20 } }] // monsters.42.position
+      ]
+
+      const encoded = JSON.stringify(updateArray)
+      const decoded = decodeMessage(encoded)
+
+      expect(decoded).toHaveProperty('type', 'diff')
+      if ('type' in decoded && 'patches' in decoded) {
+        const update = decoded as StateUpdate
+        expect(update.patches.length).toBe(1)
+        expect(update.patches[0]).toMatchObject({
+          path: '/monsters/42/position',
+          op: 'replace',
+          value: { v: { x: 10, y: 20 } }
+        })
+      }
     })
   })
 })
