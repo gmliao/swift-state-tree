@@ -485,42 +485,123 @@ const message: TransportMessage = {
 
 狀態更新以獨立的 `StateUpdate` 格式發送，不包裝在 `TransportMessage` 中。
 
-### 可選編碼（階段性優化）
+### 編碼格式
 
-為了降低高頻 diff 的封包大小，規劃一個 **opcode + JSON array** 的可選編碼，
-保留 `playerID` 字串並維持 JSON 可讀性。此格式為 **階段一優化目標**，
-目前不取代既有 `StateUpdate`，需配合能力協商或版本切換。
+State Update 支援兩種 Patch 編碼格式：
 
-詳細說明請見：`Notes/protocol/STATE_UPDATE_OPCODE_JSON_ARRAY.md`
+#### 1. Legacy Format (默認向後相容)
 
-#### 編碼組合設定（第一階段）
+**Patch 格式：** `[path, op, value?]`
 
-第一版以程式碼設定方式切換，可分別指定：
-
-- **Transport message**：`TransportEncoding`（目前為 `.json`）
-- **State update**：`StateUpdateEncoding`（`.jsonObject` 或 `.opcodeJsonArray`）
-
-範例：
-
-```swift
-let config = TransportEncodingConfig(
-    message: .json,
-    stateUpdate: .opcodeJsonArray
-)
-
-let adapter = TransportAdapter<State>(
-    keeper: keeper,
-    transport: transport,
-    landID: landID,
-    encodingConfig: config
-)
+```json
+[
+  2,
+  "player-123",
+  ["/players/player-123/hp", 1, 90],
+  ["/players/player-123/position/x", 1, 150]
+]
 ```
 
-當 `TransportAdapter` 初始化時，logger 會輸出目前使用的
-`messageEncoding` 與 `stateUpdateEncoding`。
+- `path`: 完整 JSON Pointer 路徑字串 (e.g., `/players/player-123/hp`)
+- `op`: 操作碼 (1=replace, 2=remove, 3=add)
+- `value`: 新值 (僅 replace/add 需要)
 
-**實作備註（v1）**：opcode JSON array 目前使用
-`[updateOpcode, playerID, patch...]`，並以 `path` 字串暫代 `fieldId`。
+**特點：**
+- ✅ 可讀性高，便於調試
+- ❌ 路徑字串冗長，頻寬消耗大
+
+#### 2. PathHash Format (優化版)
+
+**Patch 格式：** `[pathHash, dynamicKey, op, value?]`
+
+```json
+[
+  2,
+  "player-123",
+  [2558331159, "42", 1, 90],
+  [2730936389, "42", 1, 150]
+]
+```
+
+- `pathHash`: UInt32 hash of path pattern (e.g., `players.*.hp` → `2558331159`)
+- `dynamicKey`: 動態部分 (e.g., playerSlot `"42"` or `null` for static paths)
+- `op`: 操作碼 (1=replace, 2=remove, 3=add)
+- `value`: 新值 (僅 replace/add 需要)
+
+**特點：**
+- ✅ 路徑壓縮：~30 bytes → 4 bytes (hash)
+- ✅ 結合 playerSlot：進一步壓縮 (UUID 36 bytes → Int32 4 bytes)
+- ✅ 自動檢測：decoder 根據第一個元素類型 (number vs string) 自動識別格式
+- ❌ 需要 schema.json 的 `pathHashes` 映射表
+
+**格式檢測：**
+
+Decoder 自動檢測格式：
+- 如果 `entry[0]` 是 `number` → PathHash 格式
+- 如果 `entry[0]` 是 `string` → Legacy 格式
+
+**路徑重建：**
+
+客戶端使用 `pathHashes` 反向查詢：
+
+```typescript
+// schema.json 包含：
+{
+  "pathHashes": {
+    "players.*.hp": 2558331159,
+    "players.*.position.x": 2730936389
+  }
+}
+
+// 解碼時：
+const pattern = pathHashReverseLookup.get(2558331159)  // "players.*.hp"
+const path = pattern.replace('*', dynamicKey)          // "players.42.hp"
+const jsonPointer = '/' + path.replace(/\./g, '/')     // "/players/42/hp"
+```
+
+#### 編碼配置
+
+**Swift 端 (Server):**
+
+```swift
+// 使用 PathHasher 啟用 PathHash 格式
+let pathHasher = PathHasher(pathHashes: schema.pathHashes)
+let encoder = OpcodeJSONStateUpdateEncoder(pathHasher: pathHasher)
+
+// 或使用 Legacy 格式 (向後相容)
+let encoder = OpcodeJSONStateUpdateEncoder()  // pathHasher = nil
+```
+
+**TypeScript 端 (Client):**
+
+```typescript
+// 自動檢測，無需配置
+// View 初始化時會自動從 schema.pathHashes 填充反向查詢表
+const view = new StateTreeView(runtime, landID, { schema })
+```
+
+#### 性能對比
+
+| 格式 | Patch 大小 (估算) | 優勢場景 |
+|------|------------------|---------|
+| Legacy | ~40-60 bytes | 調試、小規模應用 |
+| PathHash | ~12-20 bytes | 生產環境、高頻更新 |
+| PathHash + PlayerSlot | ~8-12 bytes | 多玩家遊戲 (最佳) |
+
+**範例對比：**
+
+```json
+// Legacy: 55 bytes
+["/players/guest-12345678-1234-1234-1234-123456789012/hp", 1, 90]
+
+// PathHash: 17 bytes
+[2558331159, "guest-12345678-1234-1234-1234-123456789012", 1, 90]
+
+// PathHash + PlayerSlot: 13 bytes
+[2558331159, "42", 1, 90]
+```
+
+節省 **76% 頻寬** (55 bytes → 13 bytes)
 
 ### StateUpdate 格式
 

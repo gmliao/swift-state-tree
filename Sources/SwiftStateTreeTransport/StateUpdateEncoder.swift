@@ -47,18 +47,25 @@ public struct JSONStateUpdateEncoder: StateUpdateEncoder {
 
 /// Opcode + JSON array state update encoder.
 ///
-/// Format: [updateOpcode, playerID, patch...]
-/// Patch format: [path, op, value?]
+/// Supports two formats:
+/// 1. Legacy: `[updateOpcode, playerID, [path, op, value?], ...]`
+/// 2. PathHash: `[updateOpcode, playerID, [pathHash, dynamicKey, op, value?], ...]`
+///
+/// Format is determined by presence of PathHasher during initialization.
 public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoder {
     public let encoding: StateUpdateEncoding = .opcodeJsonArray
 
     /// Per-instance JSONEncoder for encoding operations.
     private let encoder: JSONEncoder
+    
+    /// Optional path hasher for compression (nil = legacy format)
+    private let pathHasher: PathHasher?
 
-    public init() {
+    public init(pathHasher: PathHasher? = nil) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = []
         self.encoder = encoder
+        self.pathHasher = pathHasher
     }
 
     public func encode(update: StateUpdate, landID _: String, playerID: PlayerID) throws -> Data {
@@ -90,6 +97,16 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoder {
     }
 
     private func encodePatch(_ patch: StatePatch) -> [AnyCodable] {
+        if let hasher = pathHasher {
+            // PathHash format: [pathHash, dynamicKey, op, value?]
+            return encodePatchWithHash(patch, hasher: hasher)
+        } else {
+            // Legacy format: [path, op, value?]
+            return encodePatchLegacy(patch)
+        }
+    }
+    
+    private func encodePatchLegacy(_ patch: StatePatch) -> [AnyCodable] {
         switch patch.operation {
         case .set(let value):
             return [
@@ -110,4 +127,32 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoder {
             ]
         }
     }
+    
+    private func encodePatchWithHash(_ patch: StatePatch, hasher: PathHasher) -> [AnyCodable] {
+        let (pathHash, dynamicKey) = hasher.split(patch.path)
+        
+        switch patch.operation {
+        case .set(let value):
+            return [
+                AnyCodable(pathHash),
+                AnyCodable(dynamicKey),
+                AnyCodable(StatePatchOpcode.set.rawValue),
+                AnyCodable(value)
+            ]
+        case .delete:
+            return [
+                AnyCodable(pathHash),
+                AnyCodable(dynamicKey),
+                AnyCodable(StatePatchOpcode.remove.rawValue)
+            ]
+        case .add(let value):
+            return [
+                AnyCodable(pathHash),
+                AnyCodable(dynamicKey),
+                AnyCodable(StatePatchOpcode.add.rawValue),
+                AnyCodable(value)
+            ]
+        }
+    }
 }
+

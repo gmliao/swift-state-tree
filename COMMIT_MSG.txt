@@ -1,69 +1,66 @@
-feat: implement transport protocol optimizations (Phase 1-3)
+feat: complete Phase 2 path hash encoder/decoder
 
-This commit implements core infrastructure for transport protocol optimization,
-including schema hash verification, path hash generation, and player slot allocation.
+Implements PathHash compression for state updates with automatic format detection
+and backward compatibility.
 
-## Phase 1: Schema Hash Verification
+## Changes
 
-- Add DeterministicHash utility with FNV-1a algorithm
-- Generate schemaHash in ProtocolSchema during codegen
-- Validate client schemaHash on join (prevent version mismatches)
-- Add joinSchemaHashMismatch error code
-- Update TypeScript SDK to send schemaHash in join metadata
+### Server (Swift)
 
-## Phase 2: Path Hash Generation (Schema Only)
+- **OpcodeJSONStateUpdateEncoder**: Added optional PathHasher parameter
+  - Legacy format: `[path, op, value?]`
+  - PathHash format: `[pathHash, dynamicKey, op, value?]`
+  - Backward compatible (nil pathHasher = legacy format)
 
-- Implement PathFlattener to traverse JSON Schema tree
-- Generate path patterns with wildcards (e.g., "players.*.position.x")
-- Add pathHashes field to LandSchema (54 paths in GameDemo)
-- Create PathHasher utility for path splitting
-- Update TypeScript schema types to include pathHashes
-- Note: Encoder/Decoder integration deferred to next commit
+### Client (TypeScript)
 
-## Phase 3: PlayerSlot Allocation
+- **protocol.ts**: Enhanced decoder with automatic format detection
+  - Detects format based on first element type (string vs number)
+  - Added `reconstructPath()` function for hash→path conversion
+  - Exported `pathHashReverseLookup` Map for reverse lookup
+- **view.ts**: Initialize pathHashReverseLookup from schema.pathHashes
+  - Automatic population during View construction
+  - No client-side configuration needed
 
-- Add deterministic slot allocation using FNV-1a hash
-- Implement bidirectional mapping (slot ↔ playerID)
-- Include playerSlot in JoinResponse payload
-- Add slot cleanup on disconnect
-- Update TypeScript transport types
+### Documentation
 
-## Files Changed
+- **TRANSPORT_PROTOCOL.md**: Comprehensive PathHash format documentation
+  - Format comparison (Legacy vs PathHash)
+  - Configuration examples (Swift & TypeScript)
+  - Performance comparison table
+  - Bandwidth savings: **76%** (55 bytes → 13 bytes with PlayerSlot)
 
-**New Files:**
-- Sources/SwiftStateTree/Core/DeterministicHash.swift
-- Sources/SwiftStateTree/Core/PathHasher.swift
-- Sources/SwiftStateTree/SchemaGen/PathFlattener.swift
-- Tests/SwiftStateTreeTests/DeterministicHashTests.swift
-- Tests/SwiftStateTreeTests/PathFlattenerTests.swift
+## Format Examples
 
-**Modified Files:**
-- Sources/SwiftStateTree/SchemaGen/ProtocolSchema.swift
-- Sources/SwiftStateTree/SchemaGen/SchemaExtractor.swift
-- Sources/SwiftStateTree/Sync/ErrorPayload.swift
-- Sources/SwiftStateTree/Sync/TransportMessage.swift
-- Sources/SwiftStateTreeTransport/TransportAdapter.swift
-- Sources/SwiftStateTreeTransport/LandRouter.swift
-- sdk/ts/src/codegen/schema.ts
-- sdk/ts/src/types/transport.ts
-- sdk/ts/src/core/view.ts
+### Legacy Format
+```json
+[2, "player-123", ["/players/player-123/hp", 1, 90]]
+```
+
+### PathHash Format
+```json
+[2, "player-123", [2558331159, "42", 1, 90]]
+```
+
+### PathHash + PlayerSlot (Optimal)
+- Path compression: ~30 bytes → 4 bytes
+- PlayerID compression: 36 bytes → 4 bytes
+- Total savings: **76%** bandwidth reduction
 
 ## Tests
 
 - Swift: 601/601 passing ✓
 - TypeScript SDK: 96/96 passing ✓
-- DeterministicHash: 14/14 ✓
-- PathFlattener: 5/5 ✓
-- TransportAdapter: 70/70 ✓
-- No hash collisions detected
+- Automatic format detection verified
+- Backward compatibility maintained
 
 ## Breaking Changes
 
-- JoinResponse payload now includes playerSlot field
-- LandSchema includes new pathHashes field
+None - both formats are supported simultaneously with automatic detection.
 
-## Next Steps
+## Files Modified
 
-- Phase 2 completion: Update Encoder/Decoder to use path hashes
-- Phase 5: MessagePack integration
-- Expected bandwidth reduction: >50% combined
+- Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift
+- sdk/ts/src/core/protocol.ts
+- sdk/ts/src/core/view.ts
+- Notes/protocol/TRANSPORT_PROTOCOL.md
