@@ -44,6 +44,10 @@ public struct LandServerConfiguration: Sendable {
     /// Encoding configuration for transport messages and state updates.
     public var transportEncoding: TransportEncodingConfig = .jsonOpcode
     
+    /// Path hashes for state update compression (extracted from schema).
+    /// When provided, enables PathHash format for OpcodeJSONStateUpdateEncoder.
+    public var pathHashes: [String: UInt32]? = nil
+    
     public init(
         logger: Logger? = nil,
         jwtConfig: JWTConfiguration? = nil,
@@ -51,7 +55,8 @@ public struct LandServerConfiguration: Sendable {
         allowGuestMode: Bool = false,
         allowAutoCreateOnJoin: Bool = false,
         transportEncoding: TransportEncodingConfig = .jsonOpcode,
-        enableParallelEncoding: Bool? = nil
+        enableParallelEncoding: Bool? = nil,
+        pathHashes: [String: UInt32]? = nil
     ) {
         self.logger = logger
         self.jwtConfig = jwtConfig
@@ -60,5 +65,6 @@ public struct LandServerConfiguration: Sendable {
         self.allowAutoCreateOnJoin = allowAutoCreateOnJoin
         self.transportEncoding = transportEncoding
         self.enableParallelEncoding = enableParallelEncoding
+        self.pathHashes = pathHashes
     }
 }

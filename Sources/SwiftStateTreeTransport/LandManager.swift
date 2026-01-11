@@ -84,6 +84,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private let createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)?
     private let logger: Logger
     private let transportEncoding: TransportEncodingConfig
+    private let pathHashes: [String: UInt32]?
     
     /// Track creation time for each land
     private var landCreatedAt: [LandID: Date] = [:]
@@ -106,6 +107,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         transport: WebSocketTransport? = nil,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         transportEncoding: TransportEncodingConfig = .json,
+        pathHashes: [String: UInt32]? = nil,
         enableParallelEncoding: Bool? = nil,
         logger: Logger? = nil
     ) {
@@ -114,6 +116,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         self.sharedTransport = transport
         self.createGuestSession = createGuestSession
         self.transportEncoding = transportEncoding
+        self.pathHashes = pathHashes
         self.enableParallelEncoding = enableParallelEncoding
         self.logger = logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.runtime",
@@ -152,6 +155,13 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             logger: logger
         )
         
+        // Debug: Check if pathHashes is available
+        if let pathHashes = pathHashes {
+            logger.info("🔍 PathHashes available for land", metadata: ["count": .stringConvertible(pathHashes.count)])
+        } else {
+            logger.warning("⚠️  PathHashes is nil for land")
+        }
+        
         let transportAdapter = TransportAdapter<State>(
             keeper: keeper,
             transport: transport,
@@ -161,6 +171,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                 await self.removeLand(landID: landID)
             },
             encodingConfig: transportEncoding,
+            pathHashes: pathHashes,
             enableParallelEncoding: enableParallelEncoding,
             logger: logger
         )
