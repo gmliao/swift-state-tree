@@ -98,7 +98,7 @@ export class PlayerManager {
     player.setInitialPosition(playerState)
     this.players.set(playerID, player)
 
-    console.log(`🎮 Player added: ${playerID}`)
+      // Log removed
 
     // If this is the current player, track it
     if (isCurrentPlayer) {
@@ -123,7 +123,7 @@ export class PlayerManager {
     player.destroy()
     this.players.delete(playerID)
 
-    console.log(`🎮 Player removed: ${playerID}`)
+    // console.log removed
 
     if (playerID === this.currentPlayerID) {
       this.currentPlayer = null
@@ -233,9 +233,7 @@ export class PlayerManager {
   private logStateUpdate(playersState: PlayersState): void {
     const now = Date.now()
     if (!this.lastStateLogTime || now - this.lastStateLogTime > this.config.logThrottleMs) {
-      const playerCount = Object.keys(playersState).length
-      const movingCount = Object.values(playersState).filter(p => p.targetPosition != null).length
-      console.log(`📥 Client: State update received - ${playerCount} players, ${movingCount} moving`)
+      // Variables and log removed
       this.lastStateLogTime = now
     }
   }

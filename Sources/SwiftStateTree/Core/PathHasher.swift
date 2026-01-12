@@ -16,14 +16,46 @@ public struct PathHasher: Sendable {
     
     /// Maps normalized path patterns to their hashes
     /// Example: "players.*.position" → 0x12345678
+
+    /// Maps normalized path patterns to their hashes
+    /// Example: "players.*.position" → 0x12345678
     private let pathToHash: [String: UInt32]
     
     /// Reverse mapping for debugging/validation
     private let hashToPath: [UInt32: String]
     
+    /// Root of the path pattern trie
+    private let root: PathTrieNode
+    
     public init(pathHashes: [String: UInt32]) {
         self.pathToHash = pathHashes
         self.hashToPath = Dictionary(uniqueKeysWithValues: pathHashes.map { ($1, $0) })
+        self.root = PathTrieNode()
+        
+        for (pattern, hash) in pathHashes {
+            insert(pattern: pattern, hash: hash)
+        }
+    }
+    
+    private func insert(pattern: String, hash: UInt32) {
+        let components = pattern.split(separator: ".").map(String.init)
+        var currentNode = root
+        
+        for component in components {
+            if component == "*" {
+                if currentNode.wildcard == nil {
+                    currentNode.wildcard = PathTrieNode()
+                }
+                currentNode = currentNode.wildcard!
+            } else {
+                if currentNode.children[component] == nil {
+                    currentNode.children[component] = PathTrieNode()
+                }
+                currentNode = currentNode.children[component]!
+            }
+        }
+        currentNode.hash = hash
+        currentNode.pattern = pattern
     }
     
     /// Split a JSON Pointer path into (pathHash, dynamicKey).
@@ -35,17 +67,47 @@ public struct PathHasher: Sendable {
     /// - Parameter path: JSON Pointer path (e.g., "/players/42/hp")
     /// - Returns: Tuple of (pathHash, dynamicKey or nil)
     public func split(_ path: String) -> (pathHash: UInt32, dynamicKey: String?) {
-        // Convert JSON Pointer to normalized pattern
-        let (pattern, dynamicKey) = normalizePath(path)
+        // Remove leading slash and split
+        let components = path.dropFirst().split(separator: "/").map(String.init)
         
-        if let hash = pathToHash[pattern] {
+        // Traverse Trie
+        var currentNode = root
+        var dynamicKey: String? = nil
+        
+        for component in components {
+            if let child = currentNode.children[component] {
+                currentNode = child
+            } else if let wildcard = currentNode.wildcard {
+                currentNode = wildcard
+                // Capture FIRST dynamic key
+                if dynamicKey == nil {
+                    dynamicKey = component
+                }
+            } else {
+                // No match found in known patterns
+                // Fallback: Try the legacy heuristic (though it's likely wrong for deep paths)
+                // or just hash the raw path?
+                // Ideally we should return a "not found" or log, but here we must return something.
+                // Logically, if the schema is complete, this shouldn't happen for valid paths.
+                // If we fallback to heuristic normalization, we might produce a hash that isn't in schema
+                // (which is what was happening before).
+                let (fallbackPattern, fallbackKey) = normalizePathFallback(path)
+                let hash = DeterministicHash.fnv1a32(fallbackPattern)
+                return (hash, fallbackKey)
+            }
+        }
+        
+        if let hash = currentNode.hash {
             return (hash, dynamicKey)
         }
         
-        // Fallback: compute hash on-the-fly if not in table
-        // This shouldn't happen in production if schema is complete
-        let hash = DeterministicHash.fnv1a32(pattern)
-        return (hash, dynamicKey)
+        // Path ended but no hash at this node (intermediate node)
+        // e.g. path is "/players" but only "/players.*" has hash? 
+        // Actually intermediate nodes (like maps) usually do have hashes.
+        // Fallback
+        let (fallbackPattern, fallbackKey) = normalizePathFallback(path)
+        let hash = DeterministicHash.fnv1a32(fallbackPattern)
+        return (hash, fallbackKey)
     }
     
     /// Get the original path pattern for a hash (for debugging).
@@ -53,41 +115,24 @@ public struct PathHasher: Sendable {
         hashToPath[hash]
     }
     
-    // MARK: - Path Normalization
+    // MARK: - Legacy Normalization (Fallback)
     
-    /// Normalize JSON Pointer path to pattern with wildcards.
-    ///
-    /// Strategy: Replace ALL intermediate path segments with wildcards,
-    /// keeping only the first and last segments as static.
-    ///
-    /// Examples:
-    /// - `/players/42/position` → ("players.*.position", "42")
-    /// - `/gameState/round` → ("gameState.round", nil)
-    /// - `/players/42/inventory/0/itemId` → ("players.*.inventory.*.itemId", "42")
-    ///
-    /// Note: Only extracts first dynamic segment as the key.
-    /// Multi-level dynamic paths preserve structure but only return first key.
-    private func normalizePath(_ jsonPointer: String) -> (pattern: String, dynamicKey: String?) {
+    private func normalizePathFallback(_ jsonPointer: String) -> (pattern: String, dynamicKey: String?) {
         // Remove leading slash and split
         let components = jsonPointer.dropFirst().split(separator: "/").map(String.init)
         
         guard components.count > 1 else {
-            // Simple path with no dynamic parts
             return (components.joined(separator: "."), nil)
         }
         
-        // Strategy: First and last are static, middle segments are wildcards
         var patternComponents: [String] = []
         var dynamicKey: String? = nil
         
         for (index, component) in components.enumerated() {
             if index == 0 || index == components.count - 1 {
-                // Keep first and last as static
                 patternComponents.append(component)
             } else {
-                // Middle segments become wildcards
                 patternComponents.append("*")
-                // Capture first dynamic segment as the key
                 if dynamicKey == nil {
                     dynamicKey = component
                 }
@@ -98,4 +143,12 @@ public struct PathHasher: Sendable {
         return (pattern, dynamicKey)
     }
 }
+
+fileprivate final class PathTrieNode: @unchecked Sendable {
+    var children: [String: PathTrieNode] = [:]
+    var wildcard: PathTrieNode?
+    var hash: UInt32?
+    var pattern: String?
+}
+
 

@@ -31,6 +31,8 @@ export class MonsterManager {
     // Remove monsters that no longer exist (show hit effect)
     for (const id of spriteIDs) {
       if (!currentIDs.has(id)) {
+        console.log(`[MonsterManager] Removing monster ${id} (not in server state)`)
+        // Show hit effect at last known position before removing
         // Show hit effect at last known position before removing
         const lastPos = this.previousMonsterPositions.get(id)
         if (lastPos) {
@@ -44,6 +46,7 @@ export class MonsterManager {
     for (const [idStr, monsterState] of Object.entries(monsters)) {
       const id = Number(idStr)
       if (!this.monsters.has(idStr)) {
+        console.log(`[MonsterManager] Adding monster ${id}`)
         this.add(id, monsterState)
       } else {
         this.updateMonster(idStr, monsterState)
