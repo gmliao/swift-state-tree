@@ -27,9 +27,35 @@
   // Use 'forwardPorts' to make a list of ports inside the container available locally
   "forwardPorts": [8080,5173],
 
-  // Mount the local workspace to /workspace in container
+  // Mount configuration:
+  // 1. Workspace: bind mount for source code (needs to sync with host)
+  // 2. .build and .swiftpm: Docker volumes (isolated in container, not copied to host)
+  //
+  // Mount options:
+  //   type: bind (default) | volume | tmpfs
+  //   consistency: cached (default, macOS/Windows) | delegated (Linux) | consistent (strict sync)
+  //   read_only: true | false (default)
+  //   propagation: shared | slave | private | rshared | rslave | rprivate (Linux only)
+  //
+  // Performance modes:
+  //   - cached: Optimized reads, writes may be delayed (best for macOS/Windows)
+  //   - delegated: Both reads and writes may be delayed (best for Linux, fastest)
+  //   - consistent: Strict synchronization (slowest, most reliable)
   "mounts": [
-    "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached"
+    // Main workspace: bind mount for source code
+    "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
+    
+    // Root project: Swift build artifacts and SPM cache
+    "source=swiftstatetree-build,target=/workspace/.build,type=volume",
+    "source=swiftstatetree-swiftpm,target=/workspace/.swiftpm,type=volume",
+    
+    // GameDemo project: Swift build artifacts and SPM cache
+    "source=gamedemo-build,target=/workspace/Examples/GameDemo/.build,type=volume",
+    "source=gamedemo-swiftpm,target=/workspace/Examples/GameDemo/.swiftpm,type=volume",
+    
+    // HummingbirdDemo project: Swift build artifacts and SPM cache
+    "source=hummingbirddemo-build,target=/workspace/Examples/HummingbirdDemo/.build,type=volume",
+    "source=hummingbirddemo-swiftpm,target=/workspace/Examples/HummingbirdDemo/.swiftpm,type=volume"
   ],
 
   // Use 'postCreateCommand' to run commands after the container is created

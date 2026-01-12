@@ -1,4 +1,4 @@
-FROM swift:6.0
+FROM swift:6.2
 
 # Create workspace directory
 RUN mkdir -p /workspace
