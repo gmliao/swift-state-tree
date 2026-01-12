@@ -156,7 +156,7 @@ async function handleUpgradeWeapon() {
   if (tree.value) {
     try {
       await tree.value.events.upgradeWeapon({});
-      console.log('UpgradeWeaponEvent sent');
+      // console.log removed
     } catch (error) {
       console.error('Failed to upgrade weapon:', error);
     }
@@ -178,7 +178,7 @@ async function handleUpgradeTurret() {
       .map(([idStr, turret]: [string, any]) => ({ id: Number(idStr), level: turret.level || 0 }));
     
     if (playerTurrets.length === 0) {
-      console.log('No turrets to upgrade');
+      // console.log removed
       return;
     }
     
@@ -189,7 +189,7 @@ async function handleUpgradeTurret() {
     
     try {
       await tree.value.events.upgradeTurret({ turretID: lowestLevelTurret.id });
-      console.log('UpgradeTurretEvent sent for lowest level turret:', lowestLevelTurret.id, 'level:', lowestLevelTurret.level);
+      // console.log removed
     } catch (error) {
       console.error('Failed to upgrade turret:', error);
     }
