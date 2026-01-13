@@ -4,6 +4,7 @@ import SwiftStateTree
 /// Supported transport encodings for WebSocket payloads.
 public enum TransportEncoding: String, Sendable {
     case json
+    case opcodeJsonArray
 }
 
 /// Encodes and decodes transport payloads.
@@ -62,9 +63,11 @@ public struct JSONTransportCodec: TransportCodec {
 
 public extension TransportEncoding {
     /// Create a codec for the selected encoding.
+    /// Note: opcodeJsonArray uses JSON codec for decoding (incoming messages are still JSON)
+    /// but a specialized encoder for outgoing messages.
     func makeCodec() -> any TransportCodec {
         switch self {
-        case .json:
+        case .json, .opcodeJsonArray:
             return JSONTransportCodec()
         }
     }

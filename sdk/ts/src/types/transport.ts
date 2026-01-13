@@ -1,7 +1,7 @@
 // Transport protocol types
 export type MessageKind = 'action' | 'actionResponse' | 'event' | 'join' | 'joinResponse' | 'error'
 
-export type MessageEncoding = 'json'
+export type MessageEncoding = 'json' | 'opcodeJsonArray'
 export type StateUpdateEncoding = 'jsonObject' | 'opcodeJsonArray'
 export type StateUpdateDecoding = 'auto' | StateUpdateEncoding
 

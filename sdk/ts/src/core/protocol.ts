@@ -31,6 +31,13 @@ export function decodeMessage(
   const json = JSON.parse(data)
 
   if (Array.isArray(json)) {
+    // Check if first element is a TransportMessage opcode (101-106)
+    const firstElement = json[0]
+    if (typeof firstElement === 'number' && firstElement >= 101 && firstElement <= 106) {
+      return decodeTransportMessageArray(json)
+    }
+    
+    // Otherwise, treat as StateUpdate opcode array (0-2)
     const decoding = resolveStateUpdateDecoding(config)
     if (decoding === 'jsonObject') {
       throw new Error(`Unknown message format: ${JSON.stringify(json).substring(0, 100)}`)
@@ -349,3 +356,200 @@ export function createEventMessage(
 export function generateRequestID(prefix: string = 'req'): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
 }
+
+// MARK: - TransportMessage Opcode Decoding
+
+/**
+ * Map from opcode number to MessageKind.
+ * Uses 101+ range to avoid conflict with StateUpdateOpcode (0-2).
+ */
+const MESSAGE_OPCODE_TO_KIND: Record<number, import('../types/transport').MessageKind> = {
+  101: 'action',
+  102: 'actionResponse',
+  103: 'event',
+  104: 'join',
+  105: 'joinResponse',
+  106: 'error'
+}
+
+/**
+ * Check if an opcode is a TransportMessage opcode (101-106)
+ */
+export function isTransportMessageOpcode(opcode: number): boolean {
+  return opcode >= 101 && opcode <= 106
+}
+
+/**
+ * Decode a JSON array to TransportMessage (opcode format)
+ * 
+ * Formats:
+ * - joinResponse: [105, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, reason?]
+ * - actionResponse: [102, requestID, response]
+ * - error: [106, code, message, details?]
+ * - action: [101, requestID, typeIdentifier, payload(base64)]
+ * - join: [104, requestID, landType, landInstanceId?, playerID?, deviceID?, metadata?]
+ * - event: [103, direction(0=client,1=server), type, payload, rawBody?]
+ */
+export function decodeTransportMessageArray(payload: unknown[]): TransportMessage {
+  if (payload.length < 2) {
+    throw new Error(`Invalid TransportMessage opcode array: too short: ${JSON.stringify(payload).substring(0, 100)}`)
+  }
+  
+  const opcode = payload[0] as number
+  const kind = MESSAGE_OPCODE_TO_KIND[opcode]
+  
+  if (!kind) {
+    throw new Error(`Unknown TransportMessage opcode: ${opcode}`)
+  }
+  
+  switch (kind) {
+    case 'joinResponse':
+      return decodeJoinResponseArray(payload)
+    case 'actionResponse':
+      return decodeActionResponseArray(payload)
+    case 'error':
+      return decodeErrorArray(payload)
+    case 'action':
+      return decodeActionArray(payload)
+    case 'join':
+      return decodeJoinArray(payload)
+    case 'event':
+      return decodeEventArray(payload)
+    default:
+      throw new Error(`Unsupported TransportMessage kind: ${kind}`)
+  }
+}
+
+// [105, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, reason?]
+function decodeJoinResponseArray(payload: unknown[]): TransportMessage {
+  const requestID = payload[1] as string
+  const success = payload[2] === 1
+  const landType = payload[3] as string | null | undefined
+  const landInstanceId = payload[4] as string | null | undefined
+  const playerSlot = payload[5] as number | null | undefined
+  const reason = payload[6] as string | null | undefined
+  
+  return {
+    kind: 'joinResponse',
+    payload: {
+      joinResponse: {
+        requestID,
+        success,
+        landType: landType ?? undefined,
+        landInstanceId: landInstanceId ?? undefined,
+        landID: landType && landInstanceId ? `${landType}:${landInstanceId}` : undefined,
+        playerSlot: playerSlot ?? undefined,
+        reason: reason ?? undefined
+      }
+    }
+  } as TransportMessage
+}
+
+// [102, requestID, response]
+function decodeActionResponseArray(payload: unknown[]): TransportMessage {
+  const requestID = payload[1] as string
+  const response = payload[2]
+  
+  return {
+    kind: 'actionResponse',
+    payload: {
+      actionResponse: {
+        requestID,
+        response
+      }
+    }
+  } as TransportMessage
+}
+
+// [106, code, message, details?]
+function decodeErrorArray(payload: unknown[]): TransportMessage {
+  const code = payload[1] as string
+  const message = payload[2] as string
+  const details = payload[3] as Record<string, any> | undefined
+  
+  return {
+    kind: 'error',
+    payload: {
+      error: {
+        code,
+        message,
+        details
+      }
+    }
+  } as TransportMessage
+}
+
+// [101, requestID, typeIdentifier, payload(base64)]
+function decodeActionArray(payload: unknown[]): TransportMessage {
+  const requestID = payload[1] as string
+  const typeIdentifier = payload[2] as string
+  const payloadBase64 = payload[3] as string
+  
+  return {
+    kind: 'action',
+    payload: {
+      requestID,
+      typeIdentifier,
+      payload: payloadBase64
+    }
+  } as TransportMessage
+}
+
+// [104, requestID, landType, landInstanceId?, playerID?, deviceID?, metadata?]
+function decodeJoinArray(payload: unknown[]): TransportMessage {
+  const requestID = payload[1] as string
+  const landType = payload[2] as string
+  const landInstanceId = payload[3] as string | null | undefined
+  const playerID = payload[4] as string | null | undefined
+  const deviceID = payload[5] as string | null | undefined
+  const metadata = payload[6] as Record<string, any> | null | undefined
+  
+  return {
+    kind: 'join',
+    payload: {
+      join: {
+        requestID,
+        landType,
+        landInstanceId: landInstanceId ?? undefined,
+        playerID: playerID ?? undefined,
+        deviceID: deviceID ?? undefined,
+        metadata: metadata ?? undefined
+      }
+    }
+  } as TransportMessage
+}
+
+// [103, direction(0=client,1=server), type, payload, rawBody?]
+function decodeEventArray(payload: unknown[]): TransportMessage {
+  const direction = payload[1] as number
+  const type = payload[2] as string
+  const eventPayload = payload[3]
+  const rawBody = payload[4]
+  
+  if (direction === 0) {
+    // fromClient
+    return {
+      kind: 'event',
+      payload: {
+        fromClient: {
+          type,
+          payload: eventPayload,
+          rawBody
+        }
+      }
+    } as TransportMessage
+  } else {
+    // fromServer
+    return {
+      kind: 'event',
+      payload: {
+        fromServer: {
+          type,
+          payload: eventPayload,
+          rawBody
+        }
+      }
+    } as TransportMessage
+  }
+}
+

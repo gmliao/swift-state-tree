@@ -26,6 +26,10 @@ public struct TransportEncodingConfig: Sendable {
         message.makeCodec()
     }
 
+    public func makeMessageEncoder() -> any TransportMessageEncoder {
+        message.makeMessageEncoder()
+    }
+
     public func makeStateUpdateEncoder(pathHashes: [String: UInt32]? = nil) -> any StateUpdateEncoder {
         stateUpdate.makeEncoder(pathHashes: pathHashes)
     }
