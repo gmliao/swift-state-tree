@@ -421,6 +421,7 @@ public struct SyncEngine: Sendable {
         onlyPaths: Set<String>?,
         mode: SnapshotMode = .all
     ) throws -> [StatePatch] {
+        // ... implementation unchanged ...
         // If only broadcast fields are dirty, we can skip per-player diff when cache exists
         if case .dirtyTracking(let dirtyFields) = mode, dirtyFields.isEmpty, lastPerPlayerSnapshots[playerID] != nil {
             return []
@@ -459,6 +460,21 @@ public struct SyncEngine: Sendable {
         }
         
         return patches
+    }
+    
+    /// Compute diff between two arbitrary snapshots.
+    ///
+    /// Used for generating initial state patches (diff from empty) or manual diffing.
+    public func computeDiff(
+        from oldSnapshot: StateSnapshot,
+        to newSnapshot: StateSnapshot,
+        onlyPaths: Set<String>? = nil
+    ) -> [StatePatch] {
+        compareSnapshots(
+            from: oldSnapshot,
+            to: newSnapshot,
+            onlyPaths: onlyPaths
+        )
     }
     
     /// Merge broadcast and per-player patches (per-player takes precedence).

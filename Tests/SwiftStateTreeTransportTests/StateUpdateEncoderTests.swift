@@ -404,3 +404,203 @@ func testOpcodeStateUpdateDecoderNestedObject() throws {
         Issue.record("Expected .diff case")
     }
 }
+
+@Test("OpcodeJSONStateUpdateEncoder compresses dynamic keys with define-on-first-use and force-definition")
+func testOpcodeStateUpdateEncoderDynamicKeyCompression() throws {
+    // 1. Setup PathHasher with a wildcard pattern
+    let hasher = PathHasher(pathHashes: ["players.*": 12345])
+    let encoder = OpcodeJSONStateUpdateEncoder(pathHasher: hasher)
+    
+    // 2. Encode FIRST usage of dynamic key "uuid-1" (as part of firstSync)
+    // This should Define the key: [Slot, "uuid-1"]
+    let update1 = StateUpdate.firstSync([
+        StatePatch(path: "/players/uuid-1", operation: .set(.int(100)))
+    ])
+    
+    let data1 = try encoder.encode(update: update1, landID: "land-1", playerID: PlayerID("p1"))
+    let json1 = try JSONSerialization.jsonObject(with: data1) as? [Any]
+    
+    // Validate Structure: [Op, PID, Patch...]
+    // Patch: [Hash, DynamicKey, Op, Val]
+    let patch1 = json1?[2] as? [Any]
+    #expect((patch1?[0] as? UInt32) == 12345) // Hash
+    
+    // Dynamic Key Definition: [Slot, "uuid-1"]
+    let dynamicKeyDef = patch1?[1] as? [Any]
+    #expect(dynamicKeyDef?.count == 2)
+    let slot = dynamicKeyDef?[0] as? Int
+    #expect(slot != nil)
+    #expect((dynamicKeyDef?[1] as? String) == "uuid-1")
+    
+    // 3. Encode SAME key "uuid-1" in a normal diff
+    // This should use the SLOT: Slot
+    let update2 = StateUpdate.diff([
+        StatePatch(path: "/players/uuid-1", operation: .set(.int(200)))
+    ])
+    
+    let data2 = try encoder.encode(update: update2, landID: "land-1", playerID: PlayerID("p1"))
+    let json2 = try JSONSerialization.jsonObject(with: data2) as? [Any]
+    
+    let patch2 = json2?[2] as? [Any]
+    let dynamicKeyUsage = patch2?[1] as? Int
+    #expect(dynamicKeyUsage == slot)
+
+
+    // 4. Encode SAME key "uuid-1" in ANOTHER firstSync (simulating Late Join for another player)
+    // This MUST trigger Force Definition: [Slot, "uuid-1"] 
+    // Even though the key is known to the encoder, firstSync requires definitions.
+    let update3 = StateUpdate.firstSync([
+        StatePatch(path: "/players/uuid-1", operation: .set(.int(100)))
+    ])
+    
+    let data3 = try encoder.encode(update: update3, landID: "land-1", playerID: PlayerID("p2")) // Different player
+    let json3 = try JSONSerialization.jsonObject(with: data3) as? [Any]
+    
+    let patch3 = json3?[2] as? [Any]
+    let dynamicKeyRedef = patch3?[1] as? [Any]
+    #expect(dynamicKeyRedef?.count == 2)
+    let slotRedef = dynamicKeyRedef?[0] as? Int
+    #expect(slotRedef == slot) // Should be same slot ID
+    #expect((dynamicKeyRedef?[1] as? String) == "uuid-1") // Should supply string again
+}
+
+@Test("OpcodeJSONStateUpdateEncoder defines dynamic keys per player on first diff")
+func testOpcodeStateUpdateEncoderDynamicKeyPerPlayerDefinitionOnDiff() throws {
+    let hasher = PathHasher(pathHashes: ["players.*": 12345])
+    let encoder = OpcodeJSONStateUpdateEncoder(pathHasher: hasher)
+
+    let update1 = StateUpdate.diff([
+        StatePatch(path: "/players/uuid-1", operation: .set(.int(100)))
+    ])
+
+    let data1 = try encoder.encode(update: update1, landID: "land-1", playerID: PlayerID("p1"))
+    let json1 = try JSONSerialization.jsonObject(with: data1) as? [Any]
+    let patch1 = json1?[2] as? [Any]
+    let dynamicKeyDef1 = patch1?[1] as? [Any]
+    #expect(dynamicKeyDef1?.count == 2)
+    let slot1 = dynamicKeyDef1?[0] as? Int
+    #expect(slot1 != nil)
+    #expect((dynamicKeyDef1?[1] as? String) == "uuid-1")
+
+    let update2 = StateUpdate.diff([
+        StatePatch(path: "/players/uuid-1", operation: .set(.int(200)))
+    ])
+
+    let data2 = try encoder.encode(update: update2, landID: "land-1", playerID: PlayerID("p2"))
+    let json2 = try JSONSerialization.jsonObject(with: data2) as? [Any]
+    let patch2 = json2?[2] as? [Any]
+    let dynamicKeyDef2 = patch2?[1] as? [Any]
+    #expect(dynamicKeyDef2?.count == 2)
+    let slot2 = dynamicKeyDef2?[0] as? Int
+    #expect(slot2 != nil)
+    #expect(slot2 == slot1)
+    #expect((dynamicKeyDef2?[1] as? String) == "uuid-1")
+}
+
+@Test("OpcodeJSONStateUpdateEncoder resets dynamic key table on firstSync for same player")
+func testOpcodeStateUpdateEncoderDynamicKeyResetOnFirstSyncForSamePlayer() throws {
+    let hasher = PathHasher(pathHashes: ["players.*": 12345])
+    let encoder = OpcodeJSONStateUpdateEncoder(pathHasher: hasher)
+
+    let update1 = StateUpdate.diff([
+        StatePatch(path: "/players/uuid-1", operation: .set(.int(100)))
+    ])
+
+    let data1 = try encoder.encode(update: update1, landID: "land-1", playerID: PlayerID("p1"))
+    let json1 = try JSONSerialization.jsonObject(with: data1) as? [Any]
+    let patch1 = json1?[2] as? [Any]
+    let dynamicKeyDef1 = patch1?[1] as? [Any]
+    #expect(dynamicKeyDef1?.count == 2)
+    let slot1 = dynamicKeyDef1?[0] as? Int
+    #expect(slot1 != nil)
+
+    let update2 = StateUpdate.firstSync([
+        StatePatch(path: "/players/uuid-1", operation: .set(.int(200)))
+    ])
+
+    let data2 = try encoder.encode(update: update2, landID: "land-1", playerID: PlayerID("p1"))
+    let json2 = try JSONSerialization.jsonObject(with: data2) as? [Any]
+    let patch2 = json2?[2] as? [Any]
+    let dynamicKeyDef2 = patch2?[1] as? [Any]
+    #expect(dynamicKeyDef2?.count == 2)
+    let slot2 = dynamicKeyDef2?[0] as? Int
+    #expect(slot2 != nil)
+    #expect((dynamicKeyDef2?[1] as? String) == "uuid-1")
+
+    let update3 = StateUpdate.diff([
+        StatePatch(path: "/players/uuid-1", operation: .set(.int(300)))
+    ])
+
+    let data3 = try encoder.encode(update: update3, landID: "land-1", playerID: PlayerID("p1"))
+    let json3 = try JSONSerialization.jsonObject(with: data3) as? [Any]
+    let patch3 = json3?[2] as? [Any]
+    let dynamicKeyUsage3 = patch3?[1] as? Int
+    #expect(dynamicKeyUsage3 == slot2)
+    #expect(slot2 == slot1)
+}
+
+@Test("OpcodeJSONStateUpdateEncoder isolates dynamic key tables per land")
+func testOpcodeStateUpdateEncoderDynamicKeyPerLandIsolation() throws {
+    let hasher = PathHasher(pathHashes: ["players.*": 12345])
+    let encoder = OpcodeJSONStateUpdateEncoder(pathHasher: hasher)
+
+    let update1 = StateUpdate.diff([
+        StatePatch(path: "/players/uuid-1", operation: .set(.int(100)))
+    ])
+
+    let data1 = try encoder.encode(update: update1, landID: "land-1", playerID: PlayerID("p1"))
+    let json1 = try JSONSerialization.jsonObject(with: data1) as? [Any]
+    let patch1 = json1?[2] as? [Any]
+    let dynamicKeyDef1 = patch1?[1] as? [Any]
+    #expect(dynamicKeyDef1?.count == 2)
+    #expect((dynamicKeyDef1?[1] as? String) == "uuid-1")
+
+    let update2 = StateUpdate.diff([
+        StatePatch(path: "/players/uuid-1", operation: .set(.int(200)))
+    ])
+
+    let data2 = try encoder.encode(update: update2, landID: "land-2", playerID: PlayerID("p1"))
+    let json2 = try JSONSerialization.jsonObject(with: data2) as? [Any]
+    let patch2 = json2?[2] as? [Any]
+    let dynamicKeyDef2 = patch2?[1] as? [Any]
+    #expect(dynamicKeyDef2?.count == 2)
+    #expect((dynamicKeyDef2?[1] as? String) == "uuid-1")
+}
+
+@Test("OpcodeJSONStateUpdateEncoder legacy format does not compress dynamic key paths")
+func testOpcodeStateUpdateEncoderLegacyFormatDynamicKeyPath() throws {
+    let encoder = OpcodeJSONStateUpdateEncoder()
+    let update = StateUpdate.diff([
+        StatePatch(path: "/players/uuid-1", operation: .set(.int(100)))
+    ])
+
+    let data = try encoder.encode(update: update, landID: "land-1", playerID: PlayerID("p1"))
+    let json = try JSONSerialization.jsonObject(with: data) as? [Any]
+    let patch = json?[2] as? [Any]
+    #expect((patch?[0] as? String) == "/players/uuid-1")
+    #expect((patch?[1] as? Int) == StatePatchOpcode.set.rawValue)
+    #expect((patch?[2] as? Int) == 100)
+}
+
+@Test("OpcodeJSONStateUpdateEncoder uses playerSlot when provided for compression")
+func testOpcodeStateUpdateEncoderPlayerSlotCompression() throws {
+    let encoder = OpcodeJSONStateUpdateEncoder()
+    let update = StateUpdate.diff([
+        StatePatch(path: "/hp", operation: .set(.int(100)))
+    ])
+    
+    // Test without playerSlot (should use playerID string)
+    let dataWithoutSlot = try encoder.encode(update: update, landID: "land-1", playerID: PlayerID("player-very-long-id-string"))
+    let jsonWithoutSlot = try JSONSerialization.jsonObject(with: dataWithoutSlot) as? [Any]
+    #expect((jsonWithoutSlot?[1] as? String) == "player-very-long-id-string")
+    
+    // Test with playerSlot (should use Int instead of String)
+    let playerSlot: Int32 = 42
+    let dataWithSlot = try encoder.encode(update: update, landID: "land-1", playerID: PlayerID("player-very-long-id-string"), playerSlot: playerSlot)
+    let jsonWithSlot = try JSONSerialization.jsonObject(with: dataWithSlot) as? [Any]
+    #expect((jsonWithSlot?[1] as? Int) == 42)
+    #expect((jsonWithSlot?[1] as? String) == nil)
+    
+    // Verify compression: data with slot should be smaller
+    #expect(dataWithSlot.count < dataWithoutSlot.count, "Data with playerSlot should be smaller than data with playerID string")
+}

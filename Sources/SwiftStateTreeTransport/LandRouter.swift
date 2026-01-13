@@ -322,6 +322,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             ) {
                 // IMPORTANT: Send JoinResponse FIRST, then StateSnapshot
                 // This ensures client knows join succeeded before receiving state
+                // Note: initialSyncingPlayers is managed by syncStateForNewPlayer via withInitialSync
                 
                 // 1. Send join response with landType, instanceId, and playerSlot
                 await sendJoinResponse(
@@ -336,7 +337,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 )
                 
                 // 2. Send initial state snapshot AFTER JoinResponse
-                await container.transportAdapter.sendInitialSnapshot(for: joinResult)
+                // syncStateForNewPlayer automatically manages initialSyncingPlayers via withInitialSync
+                await container.transportAdapter.syncStateForNewPlayer(playerID: joinResult.playerID, sessionID: joinResult.sessionID)
                 
                 logger.info("Join successful: session=\(sessionID.rawValue), landID=\(landID.rawValue), playerID=\(joinResult.playerID.rawValue)")
             } else {

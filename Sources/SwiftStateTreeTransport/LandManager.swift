@@ -122,6 +122,18 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             loggerIdentifier: "com.swiftstatetree.runtime",
             scope: "LandManager"
         )
+        
+        // Validate: Warn if opcodeJsonArray is used without pathHashes
+        if transportEncoding.stateUpdate == .opcodeJsonArray && pathHashes == nil {
+            self.logger.warning(
+                "⚠️ LandManager: opcodeJsonArray encoding without pathHashes",
+                metadata: [
+                    "encoding": .string(transportEncoding.stateUpdate.rawValue),
+                    "issue": .string("PathHash compression disabled for all lands"),
+                    "solution": .string("Provide pathHashes in LandServerConfiguration")
+                ]
+            )
+        }
     }
     
     /// Get or create a land with the specified ID.

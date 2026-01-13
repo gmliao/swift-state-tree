@@ -18,7 +18,9 @@ func testMultiRoomServerSendsInitialSnapshotAfterJoin() async throws {
     let server = try await Server.create(
         configuration: LandServerConfiguration(
             allowGuestMode: true,
-            allowAutoCreateOnJoin: true
+            allowAutoCreateOnJoin: true,
+            // Use JSON format for this test (not opcode array) to decode StateUpdate
+            transportEncoding: .json
         ),
         landFactory: { landID in
             Land(landID.landType, using: MultiRoomSnapshotTestState.self) {
@@ -70,8 +72,11 @@ func testMultiRoomServerSendsInitialSnapshotAfterJoin() async throws {
                 }
                 continue
             }
-            if (try? decoder.decode(StateSnapshot.self, from: msg)) != nil {
-                sawSnapshot = true
+            // Check for StateUpdate (current format) - firstSync type
+            if let stateUpdate = try? decoder.decode(StateUpdate.self, from: msg) {
+                if case .firstSync = stateUpdate {
+                    sawSnapshot = true
+                }
             }
         }
         

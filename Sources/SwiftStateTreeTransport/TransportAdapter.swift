@@ -51,6 +51,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private var sessionToClient: [SessionID: ClientID] = [:]
     // Track JWT payload information for each session
     private var sessionToAuthInfo: [SessionID: AuthenticatedInfo] = [:]
+    private var initialSyncingPlayers: Set<PlayerID> = []
     
     // MARK: - PlayerSlot Tracking
     
@@ -106,6 +107,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         if let encodingConfig = encodingConfig {
             self.codec = encodingConfig.makeCodec()
             self.stateUpdateEncoder = encodingConfig.makeStateUpdateEncoder(pathHashes: pathHashes)
+            
+            // Validate: Warn if opcodeJsonArray is used without pathHashes
+            if encodingConfig.stateUpdate == .opcodeJsonArray && pathHashes == nil {
+                logger?.warning(
+                    "⚠️ opcodeJsonArray encoding without pathHashes detected",
+                    metadata: [
+                        "landID": .string(landID),
+                        "encoding": .string(encodingConfig.stateUpdate.rawValue),
+                        "issue": .string("PathHash compression disabled (falling back to Legacy format)"),
+                        "solution": .string("Provide pathHashes from your Land schema to enable full compression")
+                    ]
+                )
+            }
         } else {
             self.codec = codec
             self.stateUpdateEncoder = stateUpdateEncoder
@@ -255,6 +269,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Clear syncEngine cache for disconnected player
             // This ensures reconnection behaves like first connection
             syncEngine.clearCacheForDisconnectedPlayer(playerID)
+            initialSyncingPlayers.remove(playerID)
             
             // Release playerSlot for this player
             if let slot = playerToSlot[playerID] {
@@ -291,6 +306,26 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     // MARK: - Join Helpers (Shared Logic)
+
+    /// Execute a block while marking player as initial syncing.
+    /// Automatically removes the player from initialSyncingPlayers when done (even on error).
+    /// This ensures syncNow() and syncBroadcastOnly() skip this player during initial sync.
+    private func withInitialSync<T>(
+        for playerID: PlayerID,
+        operation: () async throws -> T
+    ) async rethrows -> T {
+        initialSyncingPlayers.insert(playerID)
+        defer { initialSyncingPlayers.remove(playerID) }
+        return try await operation()
+    }
+    
+    /// Mark a player as undergoing initial sync to avoid pre-firstSync updates.
+    /// 
+    /// Note: Prefer using `withInitialSync(for:operation:)` for automatic cleanup.
+    /// This method is kept for backward compatibility but should be avoided in new code.
+    func beginInitialSync(for playerID: PlayerID) {
+        initialSyncingPlayers.insert(playerID)
+    }
 
     /// Prepare PlayerSession from join request parameters.
     /// Handles priority: join message > JWT payload > guest session.
@@ -411,7 +446,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // NOTE: Initial state snapshot is NOT sent here anymore.
             // The caller should:
             // 1. First send JoinResponse to client
-            // 2. Then call sendInitialSnapshot() to send the state
+            // 2. Then call syncStateForNewPlayer() to send the state
             // This ensures client knows join succeeded before receiving state.
 
             return JoinResult(playerID: playerID, sessionID: sessionID, playerSlot: slot)
@@ -421,12 +456,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-    /// Send initial state snapshot for a newly joined player.
-    /// Call this AFTER sending JoinResponse to ensure correct message order.
-    public func sendInitialSnapshot(for result: JoinResult) async {
-        await syncStateForNewPlayer(playerID: result.playerID, sessionID: result.sessionID)
-        syncEngine.markFirstSyncReceived(for: result.playerID)
-    }
 
     public func onMessage(_ message: Data, from sessionID: SessionID) async {
         let messageSize = message.count
@@ -819,6 +848,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             pendingUpdates.reserveCapacity(sessionToPlayer.count)
 
             for (sessionID, playerID) in sessionToPlayer {
+                if initialSyncingPlayers.contains(playerID) {
+                    continue
+                }
+
                 // Extract per-player snapshot (specific to this player)
                 let perPlayerSnapshot = try syncEngine.extractPerPlayerSnapshot(
                     for: playerID,
@@ -841,9 +874,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 }
 
                 let (updateType, patchCount) = describeUpdate(update)
+                let playerSlot = getPlayerSlot(for: playerID)
                 pendingUpdates.append(PendingSyncUpdate(
                     sessionID: sessionID,
                     playerID: playerID,
+                    playerSlot: playerSlot,
                     update: update,
                     updateType: updateType,
                     patchCount: patchCount
@@ -981,13 +1016,32 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Send to all connected players
             // Handle each send separately to avoid one failure stopping all updates
             for (sessionID, playerID) in sessionToPlayer {
+                if initialSyncingPlayers.contains(playerID) {
+                    continue
+                }
+
                 do {
+                    let playerSlot = getPlayerSlot(for: playerID)
                     let updateData = try stateUpdateEncoder.encode(
                         update: update,
                         landID: landID,
-                        playerID: playerID
+                        playerID: playerID,
+                        playerSlot: playerSlot
                     )
                     lastUpdateSize = updateData.count
+                    
+                    // Debug: Log first few bytes to verify encoding format
+                    if logger.logLevel <= .trace,
+                       lastUpdateSize == updateData.count,
+                       let preview = String(data: updateData.prefix(100), encoding: .utf8)
+                    {
+                        logger.trace("📤 Encoded update preview", metadata: [
+                            "playerID": .string(playerID.rawValue),
+                            "bytes": .string("\(updateData.count)"),
+                            "preview": .string(preview)
+                        ])
+                    }
+                    
                     try await transport.send(updateData, to: .session(sessionID))
                 } catch {
                     // Log error but continue sending to other players
@@ -1028,6 +1082,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private struct PendingSyncUpdate: Sendable {
         let sessionID: SessionID
         let playerID: PlayerID
+        let playerSlot: Int32?
         let update: StateUpdate
         let updateType: String
         let patchCount: Int
@@ -1159,7 +1214,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 let data = try stateUpdateEncoder.encode(
                     update: pending.update,
                     landID: landID,
-                    playerID: pending.playerID
+                    playerID: pending.playerID,
+                    playerSlot: pending.playerSlot
                 )
                 return EncodedSyncUpdate(
                     sessionID: pending.sessionID,
@@ -1325,10 +1381,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 return
             }
 
+            let playerSlot = getPlayerSlot(for: playerID)
             let updateData = try stateUpdateEncoder.encode(
                 update: update,
                 landID: landID,
-                playerID: playerID
+                playerID: playerID,
+                playerSlot: playerSlot
             )
             let updateSize = updateData.count
 
@@ -1379,49 +1437,77 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-    /// Sync state for a new player (first connection) using lateJoinSnapshot
-    /// This sends the complete initial state as a snapshot (not as patches)
-    /// Does NOT mark firstSync as received - that will happen on first actual sync
-    public func syncStateForNewPlayer(playerID: PlayerID, sessionID: SessionID) async {
+    /// Internal implementation of syncStateForNewPlayer without initialSyncingPlayers management.
+    /// Caller is responsible for managing initialSyncingPlayers.
+    private func _syncStateForNewPlayer(playerID: PlayerID, sessionID: SessionID) async {
         do {
             let state = await keeper.currentState()
 
-            // Use lateJoinSnapshot to get complete snapshot and populate cache
-            // This does NOT mark firstSync as received - that happens on first sync
-            // lateJoin only sends complete snapshot, does NOT calculate delta
+            // Extract a complete snapshot for this player and populate cache.
             let snapshot = try syncEngine.lateJoinSnapshot(for: playerID, from: state)
-
-            // Encode snapshot as JSON and send directly (not as patches)
-            let snapshotData = try codec.encode(snapshot)
-            let snapshotSize = snapshotData.count
+            
+            // Generate full patch set (assume client starts from empty state)
+            // This is effectively a "diff from empty" -> series of .set operations
+            let patches = syncEngine.computeDiff(
+                from: StateSnapshot(values: [:]),
+                to: snapshot,
+                onlyPaths: nil
+            )
+            
+            // Wrap in firstSync to trigger Force Definition in Encoder
+            let update = StateUpdate.firstSync(patches)
+            
+            // Encode using the shared stateUpdateEncoder
+            // Thread-safe DynamicKeyTable ensures no corruption during parallel encoding
+            // .firstSync triggers "Define-on-first-use" for correct client mapping
+            let playerSlot = getPlayerSlot(for: playerID)
+            let updateData = try stateUpdateEncoder.encode(
+                update: update,
+                landID: landID,
+                playerID: playerID,
+                playerSlot: playerSlot
+            )
+            let updateSize = updateData.count
 
             // Only compute logging metadata if debug logging is enabled
             if logger.logLevel <= .debug {
-            logger.debug("📤 Sending initial snapshot (late join)", metadata: [
-                "playerID": .string(playerID.rawValue),
-                "sessionID": .string(sessionID.rawValue),
-                "bytes": .string("\(snapshotSize)"),
-                "fields": .string("\(snapshot.values.count)")
-            ])
+                logger.debug("📤 Sending initial state (firstSync)", metadata: [
+                    "playerID": .string(playerID.rawValue),
+                    "sessionID": .string(sessionID.rawValue),
+                    "bytes": .string("\(updateSize)"),
+                    "patches": .string("\(patches.count)")
+                ])
             }
 
-            // Log snapshot preview (first 500 chars) - only compute if trace logging is enabled
-            if let preview = logger.safePreview(from: snapshotData, maxLength: 500) {
-                logger.trace("📤 Snapshot preview", metadata: [
+            // Log update preview (first 500 chars) - only compute if trace logging is enabled
+            if let preview = logger.safePreview(from: updateData, maxLength: 500) {
+                logger.trace("📤 FirstSync preview", metadata: [
                     "playerID": .string(playerID.rawValue),
                     "preview": .string(preview)
                 ])
             }
 
-            // Send snapshot directly (not as StateUpdate format)
-            // Note: Does NOT mark firstSync as received - that will happen on first sync
-            try await transport.send(snapshotData, to: .session(sessionID))
+            // Send encoded update (OpArray format)
+            try await transport.send(updateData, to: .session(sessionID))
+            
+            // Mark as synced so subsequent updates use diffs
+            syncEngine.markFirstSyncReceived(for: playerID)
+            
         } catch {
             logger.error("❌ Failed to sync initial state", metadata: [
                 "playerID": .string(playerID.rawValue),
                 "sessionID": .string(sessionID.rawValue),
                 "error": .string("\(error)")
             ])
+        }
+    }
+    
+    /// Sync state for a new player (first connection) using firstSync (OpArray format).
+    /// This sends the complete initial state as a series of patches (with compressed keys).
+    /// Automatically manages initialSyncingPlayers to prevent concurrent diff updates.
+    public func syncStateForNewPlayer(playerID: PlayerID, sessionID: SessionID) async {
+        await withInitialSync(for: playerID) {
+            await _syncStateForNewPlayer(playerID: playerID, sessionID: sessionID)
         }
     }
 
@@ -1623,15 +1709,20 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ) {
                 playerID = joinResult.playerID
                 joinSucceeded = true
+                
+                // Use withInitialSync to protect the entire initial sync process
+                // This ensures syncNow() called during joinResponse won't send diff to this player
+                await withInitialSync(for: joinResult.playerID) {
+                    // IMPORTANT: Send JoinResponse FIRST, then StateSnapshot
+                    // This ensures client knows join succeeded before receiving state
 
-                // IMPORTANT: Send JoinResponse FIRST, then StateSnapshot
-                // This ensures client knows join succeeded before receiving state
+                    // 1. Send join response with playerSlot
+                    await sendJoinResponse(requestID: requestID, sessionID: sessionID, success: true, playerID: joinResult.playerID.rawValue, playerSlot: joinResult.playerSlot)
 
-                // 1. Send join response with playerSlot
-                await sendJoinResponse(requestID: requestID, sessionID: sessionID, success: true, playerID: joinResult.playerID.rawValue, playerSlot: joinResult.playerSlot)
-
-                // 2. Send initial state snapshot AFTER JoinResponse
-                await sendInitialSnapshot(for: joinResult)
+                    // 2. Send initial state snapshot AFTER JoinResponse
+                    // Use internal version to avoid double withInitialSync wrapping
+                    await _syncStateForNewPlayer(playerID: joinResult.playerID, sessionID: joinResult.sessionID)
+                }
 
                 logger.info("Client joined: session=\(sessionID.rawValue), player=\(joinResult.playerID.rawValue), playerID=\(playerSession.playerID)")
             } else {

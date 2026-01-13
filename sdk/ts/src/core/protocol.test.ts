@@ -619,4 +619,179 @@ describe('protocol', () => {
       }
     })
   })
+
+  describe('playerSlot compression', async () => {
+    // Import pathHashReverseLookup for testing
+    const { pathHashReverseLookup } = await import('./protocol')
+
+    beforeEach(() => {
+      // Setup mock pathHashes (simulate schema initialization)
+      pathHashReverseLookup.clear()
+      pathHashReverseLookup.set(222222, 'players.*.hp')
+      pathHashReverseLookup.set(567890, 'monsters.*.health')
+    })
+
+    it('decodes opcode format with playerSlot (Int) instead of playerID (String)', () => {
+      const playerSlot = 42
+      const updateArray = [
+        2, // diff opcode
+        playerSlot, // playerSlot (Int) instead of playerID (String)
+        [222222, null, 1, 100] // [pathHash, dynamicKey, op, value]
+      ]
+
+      const encoded = JSON.stringify(updateArray)
+      const decoded = decodeMessage(encoded, { stateUpdateDecoding: 'opcodeJsonArray' })
+
+      expect(decoded).toHaveProperty('type', 'diff')
+      if ('type' in decoded && 'patches' in decoded) {
+        const update = decoded as StateUpdate
+        expect(update.patches.length).toBe(1)
+        expect(update.patches[0]).toMatchObject({
+          path: '/players/*/hp',
+          op: 'replace',
+          value: 100
+        })
+      }
+    })
+
+    it('decodes firstSync opcode with playerSlot (Int)', () => {
+      const playerSlot = 12345
+      const updateArray = [
+        1, // firstSync opcode
+        playerSlot, // playerSlot (Int)
+        [222222, null, 1, 100],
+        [567890, 'monster-1', 1, 50]
+      ]
+
+      const encoded = JSON.stringify(updateArray)
+      const decoded = decodeMessage(encoded, { stateUpdateDecoding: 'opcodeJsonArray' })
+
+      expect(decoded).toHaveProperty('type', 'firstSync')
+      if ('type' in decoded && 'patches' in decoded) {
+        const update = decoded as StateUpdate
+        expect(update.patches.length).toBe(2)
+        expect(update.patches[0]).toMatchObject({
+          path: '/players/*/hp',
+          op: 'replace',
+          value: 100
+        })
+        expect(update.patches[1]).toMatchObject({
+          path: '/monsters/monster-1/health',
+          op: 'replace',
+          value: 50
+        })
+      }
+    })
+
+    it('decodes noChange opcode with playerSlot (Int)', () => {
+      const playerSlot = 999
+      const updateArray = [
+        0, // noChange opcode
+        playerSlot // playerSlot (Int)
+      ]
+
+      const encoded = JSON.stringify(updateArray)
+      const decoded = decodeMessage(encoded, { stateUpdateDecoding: 'opcodeJsonArray' })
+
+      expect(decoded).toHaveProperty('type', 'noChange')
+      if ('type' in decoded && 'patches' in decoded) {
+        const update = decoded as StateUpdate
+        expect(update.patches.length).toBe(0)
+      }
+    })
+
+    it('maintains backward compatibility with playerID (String)', () => {
+      const playerID = 'player-very-long-id-string'
+      const updateArray = [
+        2, // diff opcode
+        playerID, // playerID (String) - legacy format
+        [222222, null, 1, 100]
+      ]
+
+      const encoded = JSON.stringify(updateArray)
+      const decoded = decodeMessage(encoded, { stateUpdateDecoding: 'opcodeJsonArray' })
+
+      expect(decoded).toHaveProperty('type', 'diff')
+      if ('type' in decoded && 'patches' in decoded) {
+        const update = decoded as StateUpdate
+        expect(update.patches.length).toBe(1)
+        expect(update.patches[0]).toMatchObject({
+          path: '/players/*/hp',
+          op: 'replace',
+          value: 100
+        })
+      }
+    })
+
+    it('throws error for invalid playerIdentifier type', () => {
+      const updateArray = [
+        2, // diff opcode
+        true, // Invalid type (should be string or number)
+        [222222, null, 1, 100]
+      ]
+
+      const encoded = JSON.stringify(updateArray)
+      expect(() => {
+        decodeMessage(encoded, { stateUpdateDecoding: 'opcodeJsonArray' })
+      }).toThrow('expected string (playerID) or number (playerSlot)')
+    })
+
+    it('decodes playerSlot with PathHash format patches', () => {
+      const playerSlot = 777
+      const updateArray = [
+        2, // diff opcode
+        playerSlot, // playerSlot (Int)
+        [222222, 'player-abc', 1, 150], // PathHash with dynamic key
+        [567890, null, 1, 75] // PathHash without dynamic key
+      ]
+
+      const encoded = JSON.stringify(updateArray)
+      const decoded = decodeMessage(encoded, { stateUpdateDecoding: 'opcodeJsonArray' })
+
+      expect(decoded).toHaveProperty('type', 'diff')
+      if ('type' in decoded && 'patches' in decoded) {
+        const update = decoded as StateUpdate
+        expect(update.patches.length).toBe(2)
+        expect(update.patches[0]).toMatchObject({
+          path: '/players/player-abc/hp',
+          op: 'replace',
+          value: 150
+        })
+        expect(update.patches[1]).toMatchObject({
+          path: '/monsters/*/health',
+          op: 'replace',
+          value: 75
+        })
+      }
+    })
+
+    it('decodes playerSlot with mixed Legacy and PathHash formats', () => {
+      const playerSlot = 888
+      const updateArray = [
+        2, // diff opcode
+        playerSlot, // playerSlot (Int)
+        ['/score', 1, 200], // Legacy format
+        [567890, 'monster-xyz', 1, 60] // PathHash format
+      ]
+
+      const encoded = JSON.stringify(updateArray)
+      const decoded = decodeMessage(encoded, { stateUpdateDecoding: 'opcodeJsonArray' })
+
+      expect(decoded).toHaveProperty('type', 'diff')
+      if ('type' in decoded && 'patches' in decoded) {
+        const update = decoded as StateUpdate
+        expect(update.patches.length).toBe(2)
+        expect(update.patches[0]).toMatchObject({
+          path: '/score',
+          op: 'replace',
+          value: 200
+        })
+        expect(update.patches[1]).toMatchObject({
+          path: '/monsters/monster-xyz/health',
+          op: 'replace',
+          value: 60
+        })
+      }
+    })
+  })
 })

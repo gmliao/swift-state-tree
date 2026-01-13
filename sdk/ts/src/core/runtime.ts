@@ -39,6 +39,10 @@ export class StateTreeRuntime {
   private transportEncoding: TransportEncodingConfig
   private onDisconnectCallback: ((code: number, reason: string, wasClean: boolean) => void) | null = null
   private statisticsCallback: StatisticsCallback | null = null
+  
+  // Mapping for dynamic key compression (Slot ID -> Original Key)
+  // Managed per-connection to match server session state
+  private dynamicKeyMap = new Map<number, string>()
 
   constructor(options?: Logger | RuntimeOptions) {
     const resolved = resolveRuntimeOptions(options)
@@ -99,6 +103,8 @@ export class StateTreeRuntime {
     this.ws.onopen = () => {
       this.isConnected = true
       this.logger.info('WebSocket connected')
+      // Reset dynamic key map on new connection
+      this.dynamicKeyMap.clear()
       connectionResolved = true
       resolve()
     }
@@ -112,6 +118,7 @@ export class StateTreeRuntime {
 
     this.ws.onclose = (event) => {
       this.isConnected = false
+      this.dynamicKeyMap.clear() // Clear map on close
       closeCode = event.code
       closeReason = event.reason || 'No reason provided'
       wasClean = event.wasClean
@@ -167,6 +174,7 @@ export class StateTreeRuntime {
       this.ws = null
     }
     this.isConnected = false
+    this.dynamicKeyMap.clear()
     // Clean up all views
     this.views.clear()
     // Clear disconnect callback
@@ -293,7 +301,7 @@ export class StateTreeRuntime {
         messageSize = new TextEncoder().encode(text).length
       }
 
-      const decoded = decodeMessage(text, this.transportEncoding)
+      const decoded = decodeMessage(text, this.transportEncoding, this.dynamicKeyMap)
 
       // Debug: log raw message structure
       this.logger.debug(`Received message: keys=${Object.keys(decoded).join(',')}, preview=${JSON.stringify(decoded).substring(0, 200)}`)

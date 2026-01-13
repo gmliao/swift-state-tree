@@ -47,6 +47,20 @@ struct GameServer {
             stateUpdate: stateUpdateEncoding
         )
         
+        // Extract pathHashes from schema for compression
+        let landDef = HeroDefense.makeLand()
+        let schema = SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(landDef)])
+        let pathHashes = schema.lands["hero-defense"]?.pathHashes
+        
+        if let pathHashes = pathHashes {
+            logger.info("✅ PathHashes extracted", metadata: [
+                "count": .string("\(pathHashes.count)"),
+                "sample": .string(Array(pathHashes.keys.prefix(3)).joined(separator: ", "))
+            ])
+        } else {
+            logger.warning("⚠️ PathHashes is nil - compression will fall back to Legacy format")
+        }
+        
         let landHost = LandHost(configuration: LandHost.HostConfiguration(
             host: host,
             port: port,
@@ -59,7 +73,8 @@ struct GameServer {
             allowGuestMode: true,
             allowAutoCreateOnJoin: true,
             transportEncoding: transportEncoding,
-            enableParallelEncoding: true
+            enableParallelEncoding: true,
+            pathHashes: pathHashes  // Enable PathHash compression
         )
         
         // Register Hero Defense game
