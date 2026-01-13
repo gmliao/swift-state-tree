@@ -9,6 +9,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private let transport: any Transport
     private let landID: String
     private let codec: any TransportCodec
+    private let messageEncoder: any TransportMessageEncoder
     private let stateUpdateEncoder: any StateUpdateEncoder
     private var syncEngine = SyncEngine()
     private let logger: Logger
@@ -106,6 +107,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         self.landID = landID
         if let encodingConfig = encodingConfig {
             self.codec = encodingConfig.makeCodec()
+            self.messageEncoder = encodingConfig.makeMessageEncoder()
             self.stateUpdateEncoder = encodingConfig.makeStateUpdateEncoder(pathHashes: pathHashes)
             
             // Validate: Warn if opcodeJsonArray is used without pathHashes
@@ -122,6 +124,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
         } else {
             self.codec = codec
+            self.messageEncoder = JSONTransportMessageEncoder()
             self.stateUpdateEncoder = stateUpdateEncoder
         }
         self.enableLegacyJoin = enableLegacyJoin
@@ -155,7 +158,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         resolvedLogger.info("Transport encoding configured", metadata: [
             "landID": .string(landID),
-            "messageEncoding": .string(self.codec.encoding.rawValue),
+            "messageEncoding": .string(self.messageEncoder.encoding.rawValue),
             "stateUpdateEncoding": .string(self.stateUpdateEncoder.encoding.rawValue)
         ])
     }
@@ -642,7 +645,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                                     ]
                                 )
                                 let errorResponse = TransportMessage.error(errorPayload)
-                                if let errorData = try? codec.encode(errorResponse) {
+                                if let errorData = try? messageEncoder.encode(errorResponse) {
                                     try? await transport.send(errorData, to: .session(sessionID))
                                 }
                             }
@@ -679,7 +682,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     ]
                 )
                 let errorResponse = TransportMessage.error(errorPayload)
-                let errorData = try codec.encode(errorResponse)
+                let errorData = try messageEncoder.encode(errorResponse)
                 try await transport.send(errorData, to: .session(sessionID))
             } catch {
                 logger.error("❌ Failed to send decode error to client", metadata: [
@@ -699,7 +702,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 event: .fromServer(event: event)
             )
 
-            let data = try codec.encode(transportMsg)
+            let data = try messageEncoder.encode(transportMsg)
             let dataSize = data.count
 
             // Convert SwiftStateTree.EventTarget to SwiftStateTreeTransport.EventTarget
@@ -1534,7 +1537,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 requestID: requestID,
                 response: response
             )
-            let responseData = try codec.encode(actionResponse)
+            let responseData = try messageEncoder.encode(actionResponse)
             let responseSize = responseData.count
 
             // Only compute logging metadata if info logging is enabled
@@ -1595,7 +1598,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     ]
                 )
                 let errorResponse = TransportMessage.error(errorPayload)
-                let errorData = try codec.encode(errorResponse)
+                let errorData = try messageEncoder.encode(errorResponse)
                 try await transport.send(errorData, to: .session(sessionID))
             } catch {
                 logger.error("❌ Failed to send error response", metadata: [
@@ -1783,7 +1786,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
             let errorPayload = ErrorPayload(code: code, message: message, details: errorDetails)
             let errorResponse = TransportMessage.error(errorPayload)
-            let errorData = try codec.encode(errorResponse)
+            let errorData = try messageEncoder.encode(errorResponse)
             try await transport.send(errorData, to: .session(sessionID))
 
             logger.debug("📤 Sent join error", metadata: [
@@ -1817,7 +1820,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 playerSlot: playerSlot,
                 reason: reason
             )
-            let responseData = try codec.encode(response)
+            let responseData = try messageEncoder.encode(response)
             try await transport.send(responseData, to: .session(sessionID))
 
             logger.debug("📤 Sent join response", metadata: [

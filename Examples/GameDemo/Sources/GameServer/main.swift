@@ -39,13 +39,15 @@ struct GameServer {
         let host = getEnvString(key: "HOST", defaultValue: "localhost")
         let port = getEnvUInt16(key: "PORT", defaultValue: 8080)
 
-        let stateUpdateEncoding = resolveStateUpdateEncoding(
-            rawValue: getEnvString(key: "STATE_UPDATE_ENCODING", defaultValue: "opcodeJsonArray")
+        // Single TRANSPORT_ENCODING controls both message and stateUpdate encoding
+        let transportEncoding = resolveTransportEncoding(
+            rawValue: getEnvString(key: "TRANSPORT_ENCODING", defaultValue: "opcode")
         )
-        let transportEncoding = TransportEncodingConfig(
-            message: .json,
-            stateUpdate: stateUpdateEncoding
-        )
+        
+        logger.info("📦 Transport encoding configured", metadata: [
+            "message": .string(transportEncoding.message.rawValue),
+            "stateUpdate": .string(transportEncoding.stateUpdate.rawValue)
+        ])
         
         // Extract pathHashes from schema for compression
         let landDef = HeroDefense.makeLand()
@@ -108,11 +110,18 @@ struct GameServer {
     }
 }
 
-private func resolveStateUpdateEncoding(rawValue: String) -> StateUpdateEncoding {
+private func resolveTransportEncoding(rawValue: String) -> TransportEncodingConfig {
     switch rawValue.lowercased() {
-    case "opcodejsonarray", "opcode_json_array", "opcode-json-array":
-        return .opcodeJsonArray
+    case "opcode", "opcodejsonarray", "opcode_json_array", "opcode-json-array":
+        return TransportEncodingConfig(
+            message: .opcodeJsonArray,
+            stateUpdate: .opcodeJsonArray
+        )
     default:
-        return .jsonObject
+        return TransportEncodingConfig(
+            message: .json,
+            stateUpdate: .jsonObject
+        )
     }
 }
+
