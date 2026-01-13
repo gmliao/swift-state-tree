@@ -69,6 +69,37 @@ export class SwiftStateTreeClient {
         return
       }
 
+      // Check for opcode format (array): [opcode, playerID/slot, ...patches]
+      if (Array.isArray(json) && json.length >= 2) {
+        const opcode = json[0]
+        const playerIdentifier = json[1]
+        const isOpcodeFormat = typeof opcode === 'number' && (opcode === 0 || opcode === 1 || opcode === 2)
+        
+        if (isOpcodeFormat) {
+          const opcodeNames = ['noChange', 'firstSync', 'diff']
+          const opcodeName = opcodeNames[opcode] || 'unknown'
+          const playerIDType = typeof playerIdentifier === 'number' ? 'playerSlot (Int)' : 'playerID (String)'
+          const playerIDValue = typeof playerIdentifier === 'number' ? playerIdentifier : playerIdentifier
+          const patchCount = Math.max(0, json.length - 2)
+          
+          console.log(chalk.cyan(`📦 Opcode StateUpdate [${opcodeName}]: ${playerIDType}=${playerIDValue}, patches=${patchCount}`))
+          console.log(chalk.gray(`   Raw payload (first 200 chars): ${JSON.stringify(json).substring(0, 200)}...`))
+          
+          // Show first few patches for debugging
+          if (patchCount > 0 && json.length > 2) {
+            const patches = json.slice(2)
+            const previewCount = Math.min(3, patches.length)
+            console.log(chalk.gray(`   First ${previewCount} patch(es):`))
+            for (let i = 0; i < previewCount; i++) {
+              const patch = patches[i]
+              const patchStr = Array.isArray(patch) ? JSON.stringify(patch).substring(0, 100) : String(patch).substring(0, 100)
+              console.log(chalk.gray(`     [${i}]: ${patchStr}...`))
+            }
+          }
+          return
+        }
+      }
+
       // Check for StateUpdate
       if (json && typeof json === 'object' && 'type' in json && 'patches' in json) {
         const update = json as StateUpdate

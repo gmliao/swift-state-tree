@@ -37,6 +37,15 @@ public extension StateUpdateEncoding {
         case .jsonObject:
             return JSONStateUpdateEncoder()
         case .opcodeJsonArray:
+            // Validate configuration: opcodeJsonArray should have pathHashes for compression
+            if pathHashes == nil {
+                // Log warning (using print as we don't have logger context here)
+                print("⚠️ WARNING: opcodeJsonArray encoding is configured but pathHashes is nil.")
+                print("   This will fall back to Legacy format (no PathHash compression).")
+                print("   To enable full compression, provide pathHashes from your Land schema:")
+                print("   Example: pathHashes: YourLand.schema.pathHashes")
+            }
+            
             // Create PathHasher if pathHashes available
             if let pathHashes = pathHashes {
                 let pathHasher = PathHasher(pathHashes: pathHashes)

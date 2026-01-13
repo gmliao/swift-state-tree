@@ -27,8 +27,11 @@ public enum GameConfig {
     public static let MONSTER_SPAWN_INTERVAL_MIN_TICKS: Int = 3  // Fastest spawn interval in ticks (upper limit, more intense)
     public static let MONSTER_SPAWN_INTERVAL_MAX_TICKS: Int = 30  // Slowest spawn interval in ticks (initial)
     public static let MONSTER_SPAWN_ACCELERATION_TICKS: Int64 = 3000  // Ticks to reach max speed (faster acceleration, ~2.5 minutes at 50ms/tick)
+    /// Monster spawn count per wave
+    /// Note: For consistent performance testing, set both MIN and MAX to 1
+    /// For gameplay, use range (e.g., MIN=1, MAX=4) for varied intensity
     public static let MONSTER_SPAWN_COUNT_MIN: Int = 1  // Minimum monsters spawned per wave
-    public static let MONSTER_SPAWN_COUNT_MAX: Int = 4  // Maximum monsters spawned per wave
+    public static let MONSTER_SPAWN_COUNT_MAX: Int = 1  // Maximum monsters spawned per wave (set to 1 for consistent testing)
     public static let MONSTER_MOVE_SPEED: Float = 0.5
     public static let MONSTER_BASE_HEALTH: Int = 10
     public static let MONSTER_BASE_REWARD: Int = 10  // Increased reward for faster progression

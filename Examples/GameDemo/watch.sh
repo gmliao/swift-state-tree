@@ -7,9 +7,27 @@ cd "$(dirname "$0")"
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
+if [[ -z "${STATE_UPDATE_ENCODING:-}" ]]; then
+  echo "Select state update encoding:"
+  select choice in "opcodeJsonArray" "jsonObject"; do
+    case "$choice" in
+      opcodeJsonArray|jsonObject)
+        STATE_UPDATE_ENCODING="$choice"
+        break
+        ;;
+      *)
+        echo "Invalid selection. Choose 1 or 2."
+        ;;
+    esac
+  done
+fi
+
+export STATE_UPDATE_ENCODING
+
 echo "Watching for changes in:"
 echo "  - $(pwd)/Sources"
 echo "  - $PROJECT_ROOT/Sources"
+echo "Using STATE_UPDATE_ENCODING=$STATE_UPDATE_ENCODING"
 echo ""
 
 watchexec \

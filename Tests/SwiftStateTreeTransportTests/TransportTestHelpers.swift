@@ -16,7 +16,7 @@ import Testing
 /// Note: In production, the order is:
 /// 1. performJoin() - keeper.join + registerSession
 /// 2. sendJoinResponse() - client receives join confirmation
-/// 3. sendInitialSnapshot() - client receives initial state
+/// 3. syncStateForNewPlayer() - client receives initial state
 ///
 /// In tests, we simulate this without the actual JoinResponse message.
 func simulateRouterJoin<State: StateNodeProtocol>(
@@ -61,6 +61,5 @@ func simulateRouterJoin<State: StateNodeProtocol>(
     // 4. Send initial state snapshot
     // In production this happens AFTER JoinResponse is sent to ensure correct message order.
     // In tests we call it directly since we don't have the actual WebSocket message flow.
-    let joinResult = TransportAdapter<State>.JoinResult(playerID: finalPlayerID, sessionID: sessionID, playerSlot: playerSlot)
-    await adapter.sendInitialSnapshot(for: joinResult)
+    await adapter.syncStateForNewPlayer(playerID: finalPlayerID, sessionID: sessionID)
 }

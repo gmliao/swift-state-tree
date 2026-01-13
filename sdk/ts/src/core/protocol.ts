@@ -20,9 +20,13 @@ export function encodeMessage(message: TransportMessage): string {
 /**
  * Decode a JSON string to TransportMessage, StateUpdate, or StateSnapshot
  */
+/**
+ * Decode a JSON string to TransportMessage, StateUpdate, or StateSnapshot
+ */
 export function decodeMessage(
   data: string,
-  config?: TransportEncodingConfig
+  config?: TransportEncodingConfig,
+  dynamicKeyMap?: Map<number, string>
 ): TransportMessage | StateUpdate | StateSnapshot {
   const json = JSON.parse(data)
 
@@ -31,7 +35,7 @@ export function decodeMessage(
     if (decoding === 'jsonObject') {
       throw new Error(`Unknown message format: ${JSON.stringify(json).substring(0, 100)}`)
     }
-    return decodeStateUpdateArray(json)
+    return decodeStateUpdateArray(json, dynamicKeyMap)
   }
 
   // Check for TransportMessage with kind field
@@ -60,7 +64,7 @@ function resolveStateUpdateDecoding(config?: TransportEncodingConfig): StateUpda
   return config?.stateUpdateDecoding ?? 'auto'
 }
 
-function decodeStateUpdateArray(payload: unknown[]): StateUpdate {
+function decodeStateUpdateArray(payload: unknown[], dynamicKeyMap?: Map<number, string>): StateUpdate {
   if (payload.length < 2) {
     throw new Error(`Unknown message format: ${JSON.stringify(payload).substring(0, 100)}`)
   }
@@ -81,6 +85,11 @@ function decodeStateUpdateArray(payload: unknown[]): StateUpdate {
   if (!updateType) {
     throw new Error(`Unknown message format: ${JSON.stringify(payload).substring(0, 100)}`)
   }
+  
+  // Reset dynamic key map on first sync
+  if (updateType === 'firstSync' && dynamicKeyMap) {
+    dynamicKeyMap.clear()
+  }
 
   const patchStartIndex = (() => {
     if (payload.length >= 3 && Array.isArray(payload[2])) {
@@ -95,11 +104,21 @@ function decodeStateUpdateArray(payload: unknown[]): StateUpdate {
     return 3
   })()
 
-  if (patchStartIndex === 2 && typeof payload[1] !== 'string') {
-    throw new Error(`Unknown message format: ${JSON.stringify(payload).substring(0, 100)}`)
-  }
-  if (patchStartIndex === 3 && (typeof payload[1] !== 'string' || typeof payload[2] !== 'string')) {
-    throw new Error(`Unknown message format: ${JSON.stringify(payload).substring(0, 100)}`)
+  // Support both playerID (string) and playerSlot (number) compression
+  // payload[1] can be either:
+  // - playerID (string) - legacy format
+  // - playerSlot (number) - compressed format
+  if (patchStartIndex === 2) {
+    // Format: [opcode, playerID/playerSlot, ...patches]
+    if (typeof payload[1] !== 'string' && typeof payload[1] !== 'number') {
+      throw new Error(`Unknown message format: expected string (playerID) or number (playerSlot) at index 1, got ${typeof payload[1]}: ${JSON.stringify(payload).substring(0, 100)}`)
+    }
+  } else if (patchStartIndex === 3) {
+    // Format: [opcode, playerID/playerSlot, landID, ...patches]
+    // This format is for future extension, currently not used
+    if ((typeof payload[1] !== 'string' && typeof payload[1] !== 'number') || typeof payload[2] !== 'string') {
+      throw new Error(`Unknown message format: expected string (playerID) or number (playerSlot) at index 1, and string (landID) at index 2, got types: [${typeof payload[1]}, ${typeof payload[2]}]: ${JSON.stringify(payload).substring(0, 100)}`)
+    }
   }
 
   const patches: StatePatch[] = []
@@ -111,7 +130,7 @@ function decodeStateUpdateArray(payload: unknown[]): StateUpdate {
 
     // Detect format:
     // Legacy: [path(string), op, value?]
-    // PathHash: [pathHash(number), dynamicKey(string|null), op, value?]
+    // PathHash: [pathHash(number), dynamicKey(string|number|[number,string]|null), op, value?]
     const firstElement = entry[0]
     const isPathHashFormat = typeof firstElement === 'number'
 
@@ -121,10 +140,42 @@ function decodeStateUpdateArray(payload: unknown[]): StateUpdate {
 
     if (isPathHashFormat) {
       // PathHash format: [pathHash, dynamicKey, op, value?]
-      const [pathHash, dynamicKey, op, val] = entry
+      const [pathHash, rawDynamicKey, op, val] = entry
       
       if (typeof pathHash !== 'number') {
         throw new Error(`Invalid PathHash format: expected number, got ${typeof pathHash}`)
+      }
+      
+      // Resolve dynamic key
+      let dynamicKey: string | null = null
+      
+      if (rawDynamicKey === null) {
+        dynamicKey = null
+      } else if (typeof rawDynamicKey === 'string') {
+        dynamicKey = rawDynamicKey
+      } else if (typeof rawDynamicKey === 'number') {
+        // Cached slot
+        if (dynamicKeyMap) {
+          dynamicKey = dynamicKeyMap.get(rawDynamicKey) || null
+          if (dynamicKey === null) {
+            // Error: Used slot before definition
+            throw new Error(`Dynamic key slot ${rawDynamicKey} used before definition`)
+          }
+        } else {
+             // If no map provided, treat as number string (fallback behavior, shouldn't happen with correct runtime)
+             dynamicKey = String(rawDynamicKey)
+        }
+      } else if (Array.isArray(rawDynamicKey) && rawDynamicKey.length === 2) {
+        // Definition: [slot, key]
+        const [slot, key] = rawDynamicKey
+        if (typeof slot === 'number' && typeof key === 'string') {
+          dynamicKey = key
+          if (dynamicKeyMap) {
+            dynamicKeyMap.set(slot, key)
+          }
+        } else {
+           throw new Error(`Invalid dynamic key definition format: ${JSON.stringify(rawDynamicKey)}`)
+        }
       }
       
       // Reconstruct path from hash + dynamicKey
@@ -176,7 +227,9 @@ function decodeStateUpdateArray(payload: unknown[]): StateUpdate {
 function reconstructPath(pathHash: number, dynamicKey: string | null): string {
   const pattern = pathHashReverseLookup.get(pathHash)
   if (!pattern) {
-    throw new Error(`Unknown pathHash: ${pathHash}. Ensure schema is loaded.`)
+    // More descriptive error message for debugging
+    const availableHashes = Array.from(pathHashReverseLookup.keys()).slice(0, 10).join(', ')
+    throw new Error(`Unknown pathHash: ${pathHash}. Ensure schema is loaded. Available hashes (first 10): ${availableHashes}. Lookup table size: ${pathHashReverseLookup.size}`)
   }
   
   // Replace wildcard with dynamic key

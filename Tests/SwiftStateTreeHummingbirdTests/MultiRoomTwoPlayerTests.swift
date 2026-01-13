@@ -195,8 +195,15 @@ private func containsJoinSuccess(messages: [Data], decoder: JSONDecoder, request
 
 private func containsSnapshot(messages: [Data], decoder: JSONDecoder) -> Bool {
     for msg in messages {
+        // Check legacy StateSnapshot format
         if (try? decoder.decode(StateSnapshot.self, from: msg)) != nil {
             return true
+        }
+        // Check new StateUpdate.firstSync format (replaces StateSnapshot in current Server)
+        if let update = try? decoder.decode(StateUpdate.self, from: msg) {
+            if case .firstSync = update {
+                return true
+            }
         }
     }
     return false

@@ -144,6 +144,13 @@ public struct PathHasher: Sendable {
     }
 }
 
+/// Internal Trie node for path pattern matching.
+///
+/// **Thread Safety:**
+/// - This class uses `@unchecked Sendable` because Swift structs cannot have recursive stored properties.
+/// - The Trie structure is built during `PathHasher.init()` and is **immutable after initialization**.
+/// - All read operations (`split` method) only traverse the tree without modification.
+/// - This design ensures thread safety: multiple threads can safely read from the same `PathHasher` instance concurrently.
 fileprivate final class PathTrieNode: @unchecked Sendable {
     var children: [String: PathTrieNode] = [:]
     var wildcard: PathTrieNode?
