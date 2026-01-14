@@ -6,9 +6,11 @@
  */
 
 import chalk from 'chalk'
-import { StateTreeRuntime } from '@swiftstatetree/sdk/core'
+import { StateTreeRuntime, Position2 } from '@swiftstatetree/sdk/core'
 import { HeroDefenseStateTree } from './generated/hero-defense/index.js'
 import { LAND_TYPE } from './generated/hero-defense/bindings.js'
+
+type LogMode = 'quiet' | 'normal' | 'verbose'
 
 interface TestState {
   runtime: StateTreeRuntime | null
@@ -101,12 +103,13 @@ function testFail(name: string, reason: string) {
   log(`Test failed: ${name}: ${reason}`, 'error')
 }
 
-function getRandomPosition(): { x: number; y: number } {
+function getRandomPosition(): Position2 {
   // Random position within map bounds, but avoid base area
   const margin = 10
   const x = Math.random() * (MAP_MAX_X - MAP_MIN_X - margin * 2) + MAP_MIN_X + margin
   const y = Math.random() * (MAP_MAX_Y - MAP_MIN_Y - margin * 2) + MAP_MIN_Y + margin
-  return { x, y }
+  // Position2 constructor accepts { x, y } plain object and converts to IVec2
+  return new Position2({ x, y }, false) // false = float input
 }
 
 function formatPosition(x: number, y: number): string {
@@ -219,7 +222,7 @@ async function testMoveEvent(): Promise<boolean> {
   try {
     const position = getRandomPosition()
     if (logMode === 'verbose') {
-      log(`Sending move event to ${formatPosition(position.x, position.y)}...`, 'info')
+      log(`Sending move event to ${formatPosition(position.v.x, position.v.y)}...`, 'info')
     }
     
     // Get current player position before move
@@ -229,10 +232,10 @@ async function testMoveEvent(): Promise<boolean> {
       testFail('Move Event', 'Player not found in state')
       return false
     }
-    const oldPosition = { x: player.position.x, y: player.position.y }
+    const oldPosition = player.position ? { x: player.position.v.x, y: player.position.v.y } : { x: 0, y: 0 }
     
     // Send move event
-    testState.tree.events.moveTo(position)
+    testState.tree.events.moveTo({ target: position })
     
     // Wait a bit for state update
     await new Promise(resolve => setTimeout(resolve, 300))
@@ -245,7 +248,7 @@ async function testMoveEvent(): Promise<boolean> {
       return false
     }
     
-    const newPosition = { x: newPlayer.position.x, y: newPlayer.position.y }
+    const newPosition = newPlayer.position ? { x: newPlayer.position.v.x, y: newPlayer.position.v.y } : { x: 0, y: 0 }
     const distance = Math.sqrt(
       Math.pow(newPosition.x - oldPosition.x, 2) + 
       Math.pow(newPosition.y - oldPosition.y, 2)
@@ -280,9 +283,9 @@ async function testShootEvent(): Promise<boolean> {
   try {
     const target = getRandomPosition()
     if (logMode === 'verbose') {
-      log(`Sending shoot event to ${formatPosition(target.x, target.y)}...`, 'info')
+      log(`Sending shoot event to ${formatPosition(target.v.x, target.v.y)}...`, 'info')
     }
-    testState.tree.events.shoot(target)
+    testState.tree.events.shoot({})
     testPass('Shoot Event')
     return true
   } catch (error) {
@@ -314,12 +317,13 @@ async function testPlaceTurretEvent(): Promise<boolean> {
     // Place turret near base but not too close
     const turretX = BASE_X + (Math.random() - 0.5) * 20
     const turretY = BASE_Y + (Math.random() - 0.5) * 20
+    const turretPosition = new Position2({ x: turretX, y: turretY }, false)
     
     const turretCountBefore = Object.keys(state.turrets).length
     if (logMode === 'verbose') {
       log(`Sending place turret event at ${formatPosition(turretX, turretY)}...`, 'info')
     }
-    testState.tree.events.placeTurret({ x: turretX, y: turretY })
+    testState.tree.events.placeTurret({ position: turretPosition })
     
     // Wait for state update
     await new Promise(resolve => setTimeout(resolve, 300))
@@ -401,17 +405,27 @@ async function printStatus() {
   const player = testState.playerID ? state.players[testState.playerID] : null
 
   log('\n=== Game Status ===', 'info', true)
-  log(`Base HP: ${state.base.hp}/${state.base.maxHp}`, 'info', true)
-  log(`Wave: ${state.wave}`, 'info', true)
-  log(`Monsters: ${Object.keys(state.monsters).length}`, 'info', true)
-  log(`Turrets: ${Object.keys(state.turrets).length}`, 'info', true)
+  log(`Base HP: ${state.base?.health ?? 'N/A'}/${state.base?.maxHealth ?? 'N/A'}`, 'info', true)
+  log(`Score: ${state.score ?? 0}`, 'info', true)
+  log(`Monsters: ${Object.keys(state.monsters ?? {}).length}`, 'info', true)
+  log(`Turrets: ${Object.keys(state.turrets ?? {}).length}`, 'info', true)
   
   if (player) {
     log(`\n=== Player Status ===`, 'info', true)
-    log(`Position: ${formatPosition(player.position.x, player.position.y)}`, 'info', true)
-    log(`HP: ${player.hp}/${player.maxHp}`, 'info', true)
-    log(`Resources: ${player.resources}`, 'info', true)
-    log(`Weapon Level: ${player.weaponLevel} (Damage: ${player.weaponDamage}, Range: ${player.weaponRange})`, 'info', true)
+    const pos = player.position
+    if (pos && pos.v) {
+      log(`Position: ${formatPosition(pos.v.x, pos.v.y)}`, 'info', true)
+    } else {
+      log(`Position: N/A`, 'info', true)
+    }
+    log(`HP: ${player.health ?? 0}/${player.maxHealth ?? 100}`, 'info', true)
+    log(`Resources: ${player.resources ?? 0}`, 'info', true)
+    
+    // Calculate weapon damage and range based on weapon level (matching GameSystem logic)
+    const weaponLevel = player.weaponLevel ?? 0
+    const weaponDamage = 5 + (weaponLevel * 2) // GameConfig.WEAPON_BASE_DAMAGE + (level * 2)
+    const weaponRange = 20.0 + (weaponLevel * 2.0) // GameConfig.WEAPON_BASE_RANGE + (level * 2.0)
+    log(`Weapon Level: ${weaponLevel} (Damage: ${weaponDamage}, Range: ${weaponRange.toFixed(1)})`, 'info', true)
   }
   log('', 'info', true)
 }
