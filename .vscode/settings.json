@@ -23,6 +23,7 @@
         "machdep",
         "matchmake",
         "memsize",
+        "messagepack",
         "multiroom",
         "MVVM",
         "ncpu",
