@@ -137,13 +137,6 @@ struct TransportAdapterParallelEncodingPerformanceTests {
             }
         }
         
-        // Log performance comparison
-        print("📊 Encoding Performance Comparison:")
-        print("  Players: \(playerCount)")
-        print("  Serial:   \(String(format: "%.2f", serialMs))ms")
-        print("  Parallel: \(String(format: "%.2f", parallelMs))ms")
-        print("  Speedup:  \(String(format: "%.2fx", serialMs / max(parallelMs, 0.001)))")
-        
         // In CI environments, parallel encoding may not always be faster due to overhead
         // So we just verify both modes work correctly and log the results
         #expect(serialMs >= 0)

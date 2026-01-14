@@ -44,7 +44,7 @@ export interface TransportMessage {
 export interface TransportActionPayload {
   requestID: string
   typeIdentifier: string  // Action 類型識別符（例如 "PlayAction"）
-  payload: string         // Base64 編碼的 JSON payload
+  payload: any            // JSON 對象（與 Event payload 一致）
 }
 
 export interface TransportActionResponsePayload {
@@ -204,7 +204,7 @@ public struct TransportJoinResponsePayload: Codable, Sendable {
 ```typescript
 export interface ActionEnvelope {
   typeIdentifier: string  // Action 類型識別符（例如 "AddGold"）
-  payload: string          // Base64 編碼的 JSON payload
+  payload: any            // JSON 對象（與 Event payload 一致）
 }
 ```
 
@@ -213,16 +213,15 @@ export interface ActionEnvelope {
 ```swift
 public struct ActionEnvelope: Codable, Sendable {
     public let typeIdentifier: String
-    public let payload: Data  // 編碼為 Base64 字串傳輸
+    public let payload: AnyCodable  // JSON 對象（與 Event payload 一致）
 }
 ```
 
 **編碼細節：**
 
-1. Action payload 先序列化為 JSON
-2. JSON 字串轉換為 UTF-8 Data
-3. Data 編碼為 Base64 字串
-4. 在 `ActionEnvelope` 中，`payload` 欄位存儲 Base64 字串
+1. Action payload 直接使用 JSON 對象格式（與 Event payload 一致）
+2. 在 opcode array 格式中：`[101, requestID, typeIdentifier, payload(object)]`
+3. 支援 payload 壓縮（使用 `@Payload` macro 的 `encodeAsArray()`）
 
 **範例：**
 
@@ -230,12 +229,9 @@ public struct ActionEnvelope: Codable, Sendable {
 // 原始 payload
 const payload = { amount: 100 }
 
-// 1. 序列化為 JSON
-const payloadJson = JSON.stringify(payload)  // '{"amount":100}'
-
-// 2. 編碼為 Base64
-const payloadBase64 = btoa(unescape(encodeURIComponent(payloadJson)))
-// 結果: "eyJhbW91bnQiOjEwMH0="
+// 直接使用 JSON 對象（不再需要 Base64 編碼）
+// 在 opcode array 格式中：
+// [101, "req-123", "AddGold", { amount: 100 }]
 ```
 
 ### Action 回應（伺服器 → 客戶端）
@@ -841,19 +837,19 @@ function decodeSnapshotValue(value: any): any {
 
 ## 編碼細節
 
-### Base64 編碼
+### Action Payload 編碼
 
-Action payload 使用 Base64 編碼：
+Action payload 使用 JSON 對象格式（與 Event payload 一致）：
 
 ```typescript
-// 編碼
-const payloadJson = JSON.stringify(payload)
-const payloadBase64 = btoa(unescape(encodeURIComponent(payloadJson)))
+// 編碼（直接使用 JSON 對象）
+const actionPayload = { /* payload data */ }
 
-// 解碼
-const payloadJson = decodeURIComponent(escape(atob(payloadBase64)))
-const payload = JSON.parse(payloadJson)
+// 在 opcode array 格式中：
+// [101, requestID, typeIdentifier, payload(object)]
 ```
+
+**注意：** 不再使用 Base64 編碼，統一使用 JSON 對象格式以提高一致性和可讀性。
 
 ### JSON Patch 操作
 

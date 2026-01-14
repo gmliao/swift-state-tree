@@ -479,17 +479,23 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///   - clientID: The client instance identifier.
     public func leave(playerID: PlayerID, clientID: ClientID) async throws {
         guard let session = players[playerID] else {
-            logger.debug("Leave called for player \(playerID.rawValue) but not found in players dictionary")
+            if logger.logLevel <= .debug {
+                logger.debug("Leave called for player \(playerID.rawValue) but not found in players dictionary")
+            }
             return
         }
         
         // Verify this is the correct client (should always match since we only allow one client per playerID)
         guard session.clientID == clientID else {
-            logger.debug("Leave called for player \(playerID.rawValue) with mismatched clientID: expected=\(session.clientID?.rawValue ?? "nil"), received=\(clientID.rawValue)")
+            if logger.logLevel <= .debug {
+                logger.debug("Leave called for player \(playerID.rawValue) with mismatched clientID: expected=\(session.clientID?.rawValue ?? "nil"), received=\(clientID.rawValue)")
+            }
             return
         }
         
-        logger.debug("Player \(playerID.rawValue) leave: clientID=\(clientID.rawValue)")
+        if logger.logLevel <= .debug {
+            logger.debug("Player \(playerID.rawValue) leave: clientID=\(clientID.rawValue)")
+        }
 
         // Since we only allow one client per playerID, always call OnLeave handler
         let deviceID = session.deviceID

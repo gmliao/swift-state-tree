@@ -44,12 +44,6 @@ func testMoveTowardsDistanceExceedingMaxSafeValue() {
     let target = Position2(v: IVec2(fixedPointX: maxCoord, fixedPointY: maxCoord))
     let maxDistance: Float = 1.0
     
-    // Calculate expected distance
-    let maxCoordFloat = FixedPoint.dequantize(maxCoord)
-    let expectedDistance = sqrt(2.0) * 2.0 * maxCoordFloat
-    print("Expected distance: \(expectedDistance)")
-    print("maxSafeValue: \(FixedPoint.maxSafeValue)")
-    
     // This should not crash - distance quantization should be handled safely
     let moved = start.moveTowards(target: target, maxDistance: maxDistance)
     

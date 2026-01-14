@@ -46,8 +46,7 @@ public enum CounterDemo {
 
             Lifetime {
                 // Game logic updates (can modify state)
-                Tick(every: .milliseconds(100)) { (state: inout CounterState, ctx: LandContext) in
-                    // ctx.logger.info("LandId \(ctx.landID) is ticking...count: \(state.count)")
+                Tick(every: .milliseconds(100)) { (_: inout CounterState, _: LandContext) in
                 }
 
                 // Network synchronization (read-only callback will be called during sync)

@@ -7,17 +7,20 @@ import Testing
 @testable import SwiftStateTree
 @testable import SwiftStateTreeTransport
 
-struct TestAction: ActionPayload {
-    typealias Response = TestActionResponse
+@Payload
+struct OpcodeDecodingTestAction: ActionPayload {
+    typealias Response = OpcodeDecodingTestActionResponse
     
     let message: String
 }
 
-struct TestActionResponse: ResponsePayload {
+@Payload
+struct OpcodeDecodingTestActionResponse: ResponsePayload {
     let success: Bool
 }
 
-struct TestIncrementEvent: ClientEventPayload {
+@Payload
+struct OpcodeDecodingTestIncrementEvent: ClientEventPayload {
     // Empty payload
 }
 
@@ -40,8 +43,9 @@ struct TransportAdapterOpcodeDecodingTests {
             using: OpcodeDecodingTestState.self
         ) {
             Rules {
-                HandleAction(TestAction.self) { (state: inout OpcodeDecodingTestState, action: TestAction, _: LandContext) in
+                HandleAction(OpcodeDecodingTestAction.self) { (state: inout OpcodeDecodingTestState, action: OpcodeDecodingTestAction, _: LandContext) in
                     state.lastAction = action.message
+                    return OpcodeDecodingTestActionResponse(success: true)
                 }
             }
         }
@@ -67,16 +71,16 @@ struct TransportAdapterOpcodeDecodingTests {
         try await simulateRouterJoin(adapter: adapter, keeper: keeper, sessionID: sessionID, clientID: clientID, playerID: playerID)
         
         // Create opcode array format action message
-        // [101, requestID, typeIdentifier, payload(base64)]
-        let actionPayload = TestAction(message: "Hello from opcode array")
-        let payloadJson = try JSONEncoder().encode(actionPayload)
-        let payloadBase64 = payloadJson.base64EncodedString()
+        // [101, requestID, typeIdentifier, payload(object)]
+        let actionPayload = OpcodeDecodingTestAction(message: "Hello from opcode array")
+        // Payload is now JSON object (not base64)
+        let payloadDict = try JSONSerialization.jsonObject(with: JSONEncoder().encode(actionPayload)) as! [String: Any]
         
         let actionArray: [Any] = [
             101, // opcode
             "action-req-opcode-001",
-            "TestAction",
-            payloadBase64
+            "OpcodeDecodingTestAction",
+            payloadDict
         ]
         
         let actionData = try JSONSerialization.data(withJSONObject: actionArray)
@@ -98,8 +102,11 @@ struct TransportAdapterOpcodeDecodingTests {
             "opcode-event-test",
             using: OpcodeDecodingTestState.self
         ) {
+            ClientEvents {
+                Register(OpcodeDecodingTestIncrementEvent.self)
+            }
             Rules {
-                OnClientEvent(TestIncrementEvent.self) { (state: inout OpcodeDecodingTestState, _: TestIncrementEvent, _: LandContext) in
+                HandleEvent(OpcodeDecodingTestIncrementEvent.self) { (state: inout OpcodeDecodingTestState, _: OpcodeDecodingTestIncrementEvent, _: LandContext) in
                     state.ticks += 1
                 }
             }
@@ -127,10 +134,11 @@ struct TransportAdapterOpcodeDecodingTests {
         
         // Create opcode array format event message
         // [103, direction(0=client), type, payload, rawBody?]
+        // Note: Event type name should be without "Event" suffix (matches schema generation)
         let eventArray: [Any] = [
             103, // opcode
             0, // direction: fromClient
-            "TestIncrementEvent",
+            "OpcodeDecodingTestIncrement", // Event name without "Event" suffix
             [:] // empty payload
         ]
         
@@ -154,8 +162,9 @@ struct TransportAdapterOpcodeDecodingTests {
             using: OpcodeDecodingTestState.self
         ) {
             Rules {
-                HandleAction(TestAction.self) { (state: inout OpcodeDecodingTestState, action: TestAction, _: LandContext) in
+                HandleAction(OpcodeDecodingTestAction.self) { (state: inout OpcodeDecodingTestState, action: OpcodeDecodingTestAction, _: LandContext) in
                     state.lastAction = action.message
+                    return OpcodeDecodingTestActionResponse(success: true)
                 }
             }
         }
@@ -181,11 +190,11 @@ struct TransportAdapterOpcodeDecodingTests {
         try await simulateRouterJoin(adapter: adapter, keeper: keeper, sessionID: sessionID, clientID: clientID, playerID: playerID)
         
         // Test 1: Send JSON format action
-        let jsonActionPayload = TestAction(message: "JSON format")
+        let jsonActionPayload = OpcodeDecodingTestAction(message: "JSON format")
         let jsonAction = TransportMessage.action(
             requestID: "json-action-001",
             action: ActionEnvelope(
-                typeIdentifier: "TestAction",
+                typeIdentifier: "OpcodeDecodingTestAction",
                 payload: AnyCodable(jsonActionPayload)
             )
         )
@@ -198,15 +207,15 @@ struct TransportAdapterOpcodeDecodingTests {
         #expect(state.lastAction == "JSON format", "JSON format action should be processed")
         
         // Test 2: Send opcode array format action
-        let opcodeActionPayload = TestAction(message: "Opcode array format")
-        let payloadJson = try JSONEncoder().encode(opcodeActionPayload)
-        let payloadBase64 = payloadJson.base64EncodedString()
+        let opcodeActionPayload = OpcodeDecodingTestAction(message: "Opcode array format")
+        // Payload is now JSON object (not base64)
+        let payloadDict = try JSONSerialization.jsonObject(with: JSONEncoder().encode(opcodeActionPayload)) as! [String: Any]
         
         let opcodeArray: [Any] = [
             101, // opcode
             "opcode-action-001",
-            "TestAction",
-            payloadBase64
+            "OpcodeDecodingTestAction",
+            payloadDict
         ]
         
         let opcodeData = try JSONSerialization.data(withJSONObject: opcodeArray)

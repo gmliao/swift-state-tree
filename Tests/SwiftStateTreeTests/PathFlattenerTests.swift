@@ -228,10 +228,5 @@ struct PathFlattenerTests {
         let uniqueHashes = Set(hashes)
         
         #expect(hashes.count == uniqueHashes.count, "Hash collision detected!")
-        
-        // Print paths and hashes for inspection
-        for (path, hash) in paths.sorted(by: { $0.key < $1.key }) {
-            print("\(path) -> 0x\(String(hash, radix: 16))")
-        }
     }
 }

@@ -123,7 +123,7 @@ func testUpdatePlayerMovementMultipleSteps() {
     // Act - simulate multiple movement steps with smaller move speed
     var previousX: Int32 = 0
     var hasMoved = false
-    for step in 0..<3 {
+    for _ in 0..<3 {
         let hadTarget = player.targetPosition != nil
         GameSystem.updatePlayerMovement(&player, moveSpeed: 0.5)  // Smaller move speed
         // Verify position is progressing towards target (if target still exists)
@@ -170,10 +170,6 @@ func testUpdatePlayerMovementStepByStep() {
     let moveSpeed: Float = 1.0
     let arrivalThreshold: Float = 1.0
     
-    print("\n=== Step-by-Step Movement Tracking ===")
-    print("Start: (\(player.position.v.floatX), \(player.position.v.floatY))")
-    print("Target: (\(target.v.floatX), \(target.v.floatY))")
-    
     // Track multiple steps
     var stepCount = 0
     var previousPosition = player.position
@@ -186,7 +182,7 @@ func testUpdatePlayerMovementStepByStep() {
         // Calculate distance before movement
         let direction = target.v - player.position.v
         let distance = direction.magnitude()
-        let distSq = direction.magnitudeSquaredSafe()
+        _ = direction.magnitudeSquaredSafe()
         positions.append((
             step: stepCount,
             x: player.position.v.floatX,
@@ -194,34 +190,8 @@ func testUpdatePlayerMovementStepByStep() {
             distance: distance
         ))
         
-        print("\n--- Step \(stepCount) ---")
-        print("Before: (\(player.position.v.floatX), \(player.position.v.floatY))")
-        print("  Raw: (\(player.position.v.x), \(player.position.v.y))")
-        print("Distance to target: \(distance)")
-        print("Distance squared: \(distSq)")
-        print("Target: (\(target.v.floatX), \(target.v.floatY))")
-        print("  Raw: (\(target.v.x), \(target.v.y))")
-        
-        // Test moveTowards directly to see what it returns
-        let testNewPosition = player.position.moveTowards(target: target, maxDistance: moveSpeed)
-        print("moveTowards result: (\(testNewPosition.v.floatX), \(testNewPosition.v.floatY))")
-        print("  Raw: (\(testNewPosition.v.x), \(testNewPosition.v.y))")
-        
-        // Calculate what the move vector should be
-        let directionVec = target.v - player.position.v
-        let scale = moveSpeed / distance
-        let moveVec = directionVec.scaled(by: scale)
-        print("Move vector: (\(moveVec.floatX), \(moveVec.floatY))")
-        print("  Raw: (\(moveVec.x), \(moveVec.y))")
-        print("Scale: \(scale)")
-        print("Direction: (\(directionVec.floatX), \(directionVec.floatY))")
-        print("  Raw: (\(directionVec.x), \(directionVec.y))")
-        
         // Perform movement
         GameSystem.updatePlayerMovement(&player, moveSpeed: moveSpeed, arrivalThreshold: arrivalThreshold)
-        
-        print("After:  (\(player.position.v.floatX), \(player.position.v.floatY))")
-        print("  Raw: (\(player.position.v.x), \(player.position.v.y))")
         
         // Check for issues - these should fail the test if precision problems occur
         if stepCount > 1 {
@@ -240,14 +210,8 @@ func testUpdatePlayerMovementStepByStep() {
         }
     }
     
-    print("\n=== Movement Summary ===")
-    print("Total steps: \(stepCount)")
-    print("Final position: (\(player.position.v.floatX), \(player.position.v.floatY))")
-    print("Target reached: \(player.targetPosition == nil)")
-    
     if player.targetPosition == nil {
         let finalDistance = player.position.isWithinDistance(to: target, threshold: 0.1)
-        print("Final distance check: \(finalDistance)")
         #expect(finalDistance == true)
     }
     
@@ -304,14 +268,12 @@ func testUpdatePlayerMovementPrecisionSmallScaleFactor() {
         let movedDistance = (player.position.v - positionBefore.v).magnitude()
         if movedDistance > moveSpeed + 0.2 {
             hasLargeJump = true
-            print("⚠️ Large jump at step \(stepCount): \(movedDistance) (expected max: \(moveSpeed))")
         }
         
         // Check for distance increase (precision loss symptom)
         let currentDistance = (target.v - player.position.v).magnitude()
         if currentDistance > previousDistance + 0.2 {
             hasDistanceIncrease = true
-            print("⚠️ Distance increased at step \(stepCount): \(previousDistance) -> \(currentDistance)")
         }
         
         previousDistance = currentDistance

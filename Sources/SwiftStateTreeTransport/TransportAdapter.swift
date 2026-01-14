@@ -261,7 +261,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
         // If player had joined, handle leave
         if let playerID = sessionToPlayer[sessionID] {
-            logger.debug("Player \(playerID.rawValue) disconnecting: session=\(sessionID.rawValue), clientID=\(clientID.rawValue)")
+            if logger.logLevel <= .debug {
+                logger.debug("Player \(playerID.rawValue) disconnecting: session=\(sessionID.rawValue), clientID=\(clientID.rawValue)")
+            }
 
             // Remove from sessionToPlayer BEFORE calling keeper.leave()
             // This ensures syncBroadcastOnly() only sends to remaining players
@@ -271,7 +273,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // syncBroadcastOnly() will only see remaining players in sessionToPlayer
             do {
                 try await keeper.leave(playerID: playerID, clientID: clientID)
-                logger.debug("Successfully called keeper.leave() for player \(playerID.rawValue)")
+                if logger.logLevel <= .debug {
+                    logger.debug("Successfully called keeper.leave() for player \(playerID.rawValue)")
+                }
             } catch {
                 // Log error but don't block disconnection flow
                 logger.error("❌ OnLeave handler failed", metadata: [
@@ -828,7 +832,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Sync already in progress, skip this sync request
             // TODO: Consider implementing sync queue to handle concurrent sync requests
             // TODO: Add metrics/logging for skipped sync operations
-            logger.debug("⏭️ Sync skipped: another sync operation is in progress")
+            if logger.logLevel <= .debug {
+                logger.debug("⏭️ Sync skipped: another sync operation is in progress")
+            }
             return
         }
 
@@ -995,7 +1001,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Sync already in progress, skip this sync request
             // TODO: For broadcast-only sync, consider allowing concurrent execution
             // since it's read-only (but cache updates need coordination)
-            logger.debug("⏭️ Broadcast-only sync skipped: another sync operation is in progress")
+            if logger.logLevel <= .debug {
+                logger.debug("⏭️ Broadcast-only sync skipped: another sync operation is in progress")
+            }
             return
         }
 
@@ -1696,7 +1704,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         )
 
         // Log metadata sources for debugging
-        if let jwtAuthInfo = jwtAuthInfo {
+        if let jwtAuthInfo = jwtAuthInfo, logger.logLevel <= .debug {
             logger.debug("Using JWT payload for join", metadata: [
                 "sessionID": .string(sessionID.rawValue),
                 "jwtPlayerID": .string(jwtAuthInfo.playerID),
@@ -1817,11 +1825,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let errorData = try messageEncoder.encode(errorResponse)
             try await transport.send(errorData, to: .session(sessionID))
 
-            logger.debug("📤 Sent join error", metadata: [
-                "requestID": "\(requestID)",
-                "sessionID": "\(sessionID.rawValue)",
-                "code": "\(code.rawValue)"
-            ])
+            if logger.logLevel <= .debug {
+                logger.debug("📤 Sent join error", metadata: [
+                    "requestID": "\(requestID)",
+                    "sessionID": "\(sessionID.rawValue)",
+                    "code": "\(code.rawValue)"
+                ])
+            }
         } catch {
             logger.error("❌ Failed to send join error", metadata: [
                 "requestID": .string(requestID),
@@ -1854,13 +1864,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let responseData = try messageEncoder.encode(response)
             try await transport.send(responseData, to: .session(sessionID))
 
-            logger.debug("📤 Sent join response", metadata: [
-                "requestID": "\(requestID)",
-                "sessionID": "\(sessionID.rawValue)",
-                "success": "\(success)",
-                "playerID": "\(playerID ?? "nil")",
-                "playerSlot": "\(playerSlot.map { String($0) } ?? "nil")"
-            ])
+            if logger.logLevel <= .debug {
+                logger.debug("📤 Sent join response", metadata: [
+                    "requestID": "\(requestID)",
+                    "sessionID": "\(sessionID.rawValue)",
+                    "success": "\(success)",
+                    "playerID": "\(playerID ?? "nil")",
+                    "playerSlot": "\(playerSlot.map { String($0) } ?? "nil")"
+                ])
+            }
         } catch {
             logger.error("❌ Failed to send join response", metadata: [
                 "requestID": "\(requestID)",

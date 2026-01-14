@@ -15,7 +15,7 @@ public struct OpcodeTransportMessageDecoder {
     /// - joinResponse: [105, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?]
     /// - actionResponse: [102, requestID, response]
     /// - error: [106, code, message, details?]
-    /// - action: [101, requestID, typeIdentifier, payload(base64)]
+    /// - action: [101, requestID, typeIdentifier, payload(object)]
     /// - join: [104, requestID, landType, landInstanceId?, playerID?, deviceID?, metadata?]
     /// - event: [103, direction(0=client,1=server), type, payload, rawBody?]
     public func decode(from data: Data) throws -> TransportMessage {
@@ -115,20 +115,30 @@ public struct OpcodeTransportMessageDecoder {
         
         let requestID = try stringValue(array[1], name: "requestID")
         let typeIdentifier = try stringValue(array[2], name: "typeIdentifier")
-        let payloadBase64 = try stringValue(array[3], name: "payload")
+        let payloadValue = array[3]
+        
+        // Decode payload (same as Event: can be array or object)
+        let actionPayload: AnyCodable
+        if let payloadArray = payloadValue as? [Any] {
+            // Payload is array format (compressed)
+            actionPayload = AnyCodable(payloadArray)
+        } else {
+            // Payload is object (JSON object)
+            actionPayload = AnyCodable(payloadValue)
+        }
         
         // Create ActionEnvelope
         let actionEnvelope = ActionEnvelope(
             typeIdentifier: typeIdentifier,
-            payload: AnyCodable(payloadBase64)
+            payload: actionPayload
         )
         
-        let payload = TransportActionPayload(
+        let transportPayload = TransportActionPayload(
             requestID: requestID,
             action: actionEnvelope
         )
         
-        return TransportMessage(kind: .action, payload: .action(payload))
+        return TransportMessage(kind: .action, payload: .action(transportPayload))
     }
     
     // MARK: - Decode ActionResponse
