@@ -292,10 +292,9 @@ struct TransportAdapterSyncConcurrencyTests {
 
         // Modify state while sync is in progress
         let actionPayload = IncrementCounterAction(amount: 10, modifier: "test")
-        let payloadData = try JSONEncoder().encode(actionPayload)
         let actionEnvelope = ActionEnvelope(
             typeIdentifier: "IncrementCounterAction",
-            payload: payloadData
+            payload: AnyCodable(actionPayload)
         )
         let actionRequest = TransportMessage.action(
             requestID: "action-1",

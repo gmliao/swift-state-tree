@@ -554,7 +554,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         ])
 
                         // Decode action payload if possible - only compute if trace logging is enabled
-                        if let payloadString = logger.safePreview(from: payload.action.payload) {
+                        // Encode AnyCodable to Data for logging preview
+                        if let payloadData = try? JSONEncoder().encode(payload.action.payload),
+                           let payloadString = logger.safePreview(from: payloadData) {
                             logger.trace("📥 Action payload", metadata: [
                                 "requestID": .string(payload.requestID),
                                 "payload": .string(payloadString)

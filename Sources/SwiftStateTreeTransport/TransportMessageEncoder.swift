@@ -199,11 +199,19 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
     }
     
     private func encodeAction(opcode: MessageKindOpcode, payload: TransportActionPayload) -> [AnyCodable] {
-        [
+        // Encode action payload: Array or Object (same rule as Event)
+        let payloadValue: AnyCodable
+        if enablePayloadCompression {
+            payloadValue = encodePayloadAsArray(payload.action.payload)
+        } else {
+            payloadValue = payload.action.payload
+        }
+        
+        return [
             AnyCodable(opcode.rawValue),
             AnyCodable(payload.requestID),
             AnyCodable(payload.action.typeIdentifier),
-            AnyCodable(payload.action.payload.base64EncodedString())
+            payloadValue
         ]
     }
     
@@ -302,36 +310,17 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
             actualPayload = payload
         }
         
-        // Try to use PayloadCompression.encodeAsArray() if available
-        // This uses macro-generated code with correct field order
-        if let payloadCompression = actualPayload as? any PayloadCompression {
-            let array = payloadCompression.encodeAsArray()
-            return AnyCodable(array)
+        // All payload types (ActionPayload, ResponsePayload, ClientEventPayload, ServerEventPayload)
+        // must use @Payload macro which generates encodeAsArray() with correct field order.
+        // The default PayloadCompression.encodeAsArray() implementation is fatalError,
+        // so if a type doesn't have @Payload macro, it will crash at runtime.
+        guard let payloadCompression = actualPayload as? any PayloadCompression else {
+            // This should never happen for valid payload types, but provide a clear error message
+            fatalError("Payload type '\(type(of: actualPayload))' must conform to PayloadCompression and use @Payload macro for compression support.")
         }
         
-        // Fallback to Mirror-based encoding (for non-macro types or compatibility)
-        let mirror = Mirror(reflecting: actualPayload)
-        
-        // If no children, check if it's an empty struct or primitive
-        if mirror.children.isEmpty {
-            // For structs/classes with no properties, return empty array
-            // Optimization: primitives shouldn't reach here as payloads are usually objects
-            // But if payload IS a primitive, we wrap it in array? No, RFC says "Compress objects... into arrays"
-            // If it's a primitive, array encoding doesn't make sense.
-            // Assuming payload is always a composite type (Event struct).
-            return AnyCodable([])
-        }
-        
-        var values: [AnyCodable] = []
-        for child in mirror.children {
-            // Recursively compress? For now, flat or rely on child's Encodable
-            // But AnyCodable(child.value) will encode value as is (Object if struct).
-            // To recursively compress, we'd need to check if child value is also a struct we want to compress.
-            // RFC Phase 2 only mentions top-level event payload. Phase 3 is "Atomic Flattening".
-            // So we stick to top-level flattening for now.
-            values.append(AnyCodable(child.value))
-        }
-        return AnyCodable(values)
+        let array = payloadCompression.encodeAsArray()
+        return AnyCodable(array)
     }
 }
 

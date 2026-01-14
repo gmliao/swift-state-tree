@@ -3,9 +3,9 @@ import Foundation
 /// Encoded action payload and metadata used by the transport layer.
 public struct ActionEnvelope: Codable, Sendable {
     public let typeIdentifier: String
-    public let payload: Data
+    public let payload: AnyCodable
 
-    public init(typeIdentifier: String, payload: Data) {
+    public init(typeIdentifier: String, payload: AnyCodable) {
         self.typeIdentifier = typeIdentifier
         self.payload = payload
     }
@@ -51,7 +51,7 @@ public enum MessagePayload: Codable, Sendable {
         switch self {
         case .action(let payload):
             // Simplified: encode action fields directly (flattened, not nested in "action")
-            // Encoded format: { requestID: string, typeIdentifier: string, payload: Data }
+            // Encoded format: { requestID: string, typeIdentifier: string, payload: AnyCodable }
             try container.encode(payload.requestID, forKey: .requestID)
             try container.encode(payload.action.typeIdentifier, forKey: .typeIdentifier)
             try container.encode(payload.action.payload, forKey: .payload)
@@ -79,10 +79,10 @@ public enum MessagePayload: Codable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
 
         // Simplified: decode action fields directly (flattened format)
-        // Decoded format: { requestID: string, typeIdentifier: string, payload: Data }
+        // Decoded format: { requestID: string, typeIdentifier: string, payload: AnyCodable }
         if let requestID = try? container.decode(String.self, forKey: .requestID),
            let typeIdentifier = try? container.decode(String.self, forKey: .typeIdentifier),
-           let payload = try? container.decode(Data.self, forKey: .payload) {
+           let payload = try? container.decode(AnyCodable.self, forKey: .payload) {
             let actionEnvelope = ActionEnvelope(typeIdentifier: typeIdentifier, payload: payload)
             let actionPayload = TransportActionPayload(requestID: requestID, action: actionEnvelope)
             self = .action(actionPayload)

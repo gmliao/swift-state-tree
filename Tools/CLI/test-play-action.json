@@ -1,0 +1,34 @@
+{
+  "steps": [
+    {
+      "type": "log",
+      "message": "Testing PlayAction with empty payload"
+    },
+    {
+      "type": "action",
+      "action": "PlayAction",
+      "payload": {}
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "state",
+      "message": "State after PlayAction (score should be incremented)"
+    },
+    {
+      "type": "action",
+      "action": "PlayAction",
+      "payload": {}
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "state",
+      "message": "State after second PlayAction (score should be incremented again)"
+    }
+  ]
+}

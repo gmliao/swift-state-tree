@@ -1,0 +1,41 @@
+{
+  "steps": [
+    {
+      "type": "log",
+      "message": "Testing MoveToEvent with complex payload (Position2)"
+    },
+    {
+      "type": "event",
+      "event": "MoveToEvent",
+      "payload": {
+        "target": {
+          "v": {
+            "x": 50000,
+            "y": 30000
+          }
+        }
+      }
+    },
+    {
+      "type": "wait",
+      "wait": 1000
+    },
+    {
+      "type": "state",
+      "message": "Player should be moving towards target position"
+    },
+    {
+      "type": "event",
+      "event": "UpgradeWeaponEvent",
+      "payload": {}
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "state",
+      "message": "Weapon upgrade event sent (should fail - not enough resources)"
+    }
+  ]
+}
