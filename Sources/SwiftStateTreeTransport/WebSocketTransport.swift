@@ -136,10 +136,12 @@ public actor WebSocketTransport: Transport {
     private func logIncoming(_ data: Data, from sessionID: SessionID) {
         let size = data.count
 
-        logger.debug("WS ⇦ receive", metadata: [
-            "session": .string(sessionID.rawValue),
-            "bytes": .string("\(size)"),
-        ])
+        if logger.logLevel <= .debug {
+            logger.debug("WS ⇦ receive", metadata: [
+                "session": .string(sessionID.rawValue),
+                "bytes": .string("\(size)"),
+            ])
+        }
 
         // Log payload - only compute if trace logging is enabled
         if let preview = logger.safePreview(from: data) {
@@ -195,10 +197,12 @@ public actor WebSocketTransport: Transport {
         }
         lastMissingSessionLogAt[sessionID] = now
 
-        logger.debug("WS ⇨ drop (session not found)", metadata: [
-            "session": .string(sessionID.rawValue),
-            "bytes": .string("\(bytes)"),
-        ])
+        if logger.logLevel <= .debug {
+            logger.debug("WS ⇨ drop (session not found)", metadata: [
+                "session": .string(sessionID.rawValue),
+                "bytes": .string("\(bytes)"),
+            ])
+        }
     }
 
     private func logDropMissingPlayer(playerID: PlayerID, bytes: Int) {
@@ -214,10 +218,12 @@ public actor WebSocketTransport: Transport {
         }
         lastMissingPlayerLogAt[playerID] = now
 
-        logger.debug("WS ⇨ drop (player has no sessions)", metadata: [
-            "player": .string(playerID.rawValue),
-            "bytes": .string("\(bytes)"),
-        ])
+        if logger.logLevel <= .debug {
+            logger.debug("WS ⇨ drop (player has no sessions)", metadata: [
+                "player": .string(playerID.rawValue),
+                "bytes": .string("\(bytes)"),
+            ])
+        }
     }
 }
 

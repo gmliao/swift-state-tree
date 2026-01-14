@@ -292,7 +292,7 @@ func testHummingbirdAdapterEmitsJSON() async throws {
         if message.kind == .event,
            case .event(let event) = message.payload,
            case .fromServer(let anyEvent) = event,
-           anyEvent.type == "TestPongEvent" {
+           anyEvent.type == "TestPong" {
             return true
         }
         return false
@@ -302,7 +302,7 @@ func testHummingbirdAdapterEmitsJSON() async throws {
         if message.kind == .event,
            case .event(let event) = message.payload,
            case .fromServer(let anyEvent) = event,
-           anyEvent.type == "TestMessageEvent" {
+           anyEvent.type == "TestMessage" {
             // Decode the payload to check message content
             if let payloadDict = anyEvent.payload.base as? [String: Any],
                let message = payloadDict["message"] as? String,

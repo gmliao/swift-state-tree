@@ -160,10 +160,12 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                let firstElement = array[0] as? Int,
                firstElement >= 101 && firstElement <= 106 {
                 // This is an opcode array format message
-                logger.debug("Detected opcode array format message", metadata: [
-                    "sessionID": .string(sessionID.rawValue),
-                    "opcode": .string("\(firstElement)")
-                ])
+                if logger.logLevel <= .debug {
+                    logger.debug("Detected opcode array format message", metadata: [
+                        "sessionID": .string(sessionID.rawValue),
+                        "opcode": .string("\(firstElement)")
+                    ])
+                }
                 let opcodeDecoder = OpcodeTransportMessageDecoder()
                 transportMsg = try opcodeDecoder.decode(from: message)
             } else {

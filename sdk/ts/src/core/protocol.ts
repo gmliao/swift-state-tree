@@ -24,7 +24,7 @@ export function encodeMessage(message: TransportMessage): string {
  * - joinResponse: [105, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?]
  * - actionResponse: [102, requestID, response]
  * - error: [106, code, message, details?]
- * - action: [101, requestID, typeIdentifier, payload(base64)]
+ * - action: [101, requestID, typeIdentifier, payload(object)]
  * - join: [104, requestID, landType, landInstanceId?, playerID?, deviceID?, metadata?]
  * - event: [103, direction(0=client,1=server), type, payload, rawBody?]
  */
@@ -91,7 +91,7 @@ export function encodeMessageArray(message: TransportMessage): string {
       array.push(101) // opcode
       array.push(payload.requestID)
       array.push(payload.typeIdentifier)
-      array.push(payload.payload) // Base64 encoded
+      array.push(payload.payload || {}) // JSON object (same as Event payload)
       break
     }
     
@@ -434,26 +434,14 @@ export function createActionMessage(
   actionType: string,
   payload: any
 ): TransportMessage {
-  // Encode payload to Base64
-  const payloadJson = JSON.stringify(payload)
-  let payloadBase64: string
-
-  // Handle both browser and Node.js environments
-  if (typeof Buffer !== 'undefined') {
-    // Node.js environment
-    payloadBase64 = Buffer.from(payloadJson, 'utf-8').toString('base64')
-  } else {
-    // Browser environment
-    payloadBase64 = btoa(unescape(encodeURIComponent(payloadJson)))
-  }
-
+  // Use JSON object directly (same as Event payload)
   // Simplified structure: directly use requestID, typeIdentifier, payload in payload
   return {
     kind: 'action',
     payload: {
       requestID,
       typeIdentifier: actionType,
-      payload: payloadBase64
+      payload: payload || {}
     } as any // Type assertion needed because payload is a union type
   }
 }
@@ -486,11 +474,20 @@ export function createEventMessage(
   }
 }
 
+// Client-side request ID counter (only needs to be unique within a single client instance)
+let requestIDCounter = 0
+
 /**
  * Generate a unique request ID
+ * 
+ * Uses a simple counter since requestID only needs to be unique within a single client instance.
+ * The server just echoes it back in the response for matching.
  */
 export function generateRequestID(prefix: string = 'req'): string {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+  requestIDCounter++
+  // Use counter for minimal size (e.g., "req-1", "req-2")
+  // Prefix is optional but useful for debugging
+  return prefix ? `${prefix}-${requestIDCounter}` : String(requestIDCounter)
 }
 
 // MARK: - TransportMessage Opcode Decoding
@@ -522,7 +519,7 @@ export function isTransportMessageOpcode(opcode: number): boolean {
  * - joinResponse: [105, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?]
  * - actionResponse: [102, requestID, response]
  * - error: [106, code, message, details?]
- * - action: [101, requestID, typeIdentifier, payload(base64)]
+ * - action: [101, requestID, typeIdentifier, payload(object)]
  * - join: [104, requestID, landType, landInstanceId?, playerID?, deviceID?, metadata?]
  * - event: [103, direction(0=client,1=server), type, payload, rawBody?]
  */
@@ -617,18 +614,18 @@ function decodeErrorArray(payload: unknown[]): TransportMessage {
   } as TransportMessage
 }
 
-// [101, requestID, typeIdentifier, payload(base64)]
+// [101, requestID, typeIdentifier, payload(object)]
 function decodeActionArray(payload: unknown[]): TransportMessage {
   const requestID = payload[1] as string
   const typeIdentifier = payload[2] as string
-  const payloadBase64 = payload[3] as string
+  const actionPayload = payload[3] as any || {}
   
   return {
     kind: 'action',
     payload: {
       requestID,
       typeIdentifier,
-      payload: payloadBase64
+      payload: actionPayload
     }
   } as TransportMessage
 }

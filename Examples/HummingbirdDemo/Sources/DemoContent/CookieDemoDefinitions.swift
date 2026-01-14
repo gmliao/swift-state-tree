@@ -317,12 +317,10 @@ public enum CookieGame {
                     ctx.logger.info("Cookie land is empty, destroying...")
                 }
 
-                OnInitialize { (state: inout CookieGameState, _: LandContext) in
-                    print("Cookie land initialized - players: \(state.players.count)")
+                OnInitialize { (_: inout CookieGameState, _: LandContext) in
                 }
 
-                OnFinalize { (state: inout CookieGameState, _: LandContext) in
-                    print("Cookie land finalizing - players: \(state.players.count), totalCookies: \(state.totalCookies)")
+                OnFinalize { (_: inout CookieGameState, _: LandContext) in
                 }
 
                 AfterFinalize { (state: CookieGameState, ctx: LandContext) async in

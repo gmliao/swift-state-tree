@@ -128,7 +128,7 @@ func testLandServerForTestHandlesClientEvents() async throws {
         if message.kind == .event,
            case .event(let event) = message.payload,
            case .fromServer(let anyEvent) = event,
-           anyEvent.type == "TestPongEvent" {
+           anyEvent.type == "TestPong" {
             return true
         }
         return false
@@ -138,7 +138,7 @@ func testLandServerForTestHandlesClientEvents() async throws {
         if message.kind == .event,
            case .event(let event) = message.payload,
            case .fromServer(let anyEvent) = event,
-           anyEvent.type == "TestChatMessageEvent" {
+           anyEvent.type == "TestChatMessage" {
             // Decode the payload to check message content
             if let payloadDict = anyEvent.payload.base as? [String: Any],
                let message = payloadDict["message"] as? String,
