@@ -1,94 +1,27 @@
-// Sources/SwiftStateTreeTransport/TransportMessageEncoder.swift
+// Sources/SwiftStateTreeTransport/MessagePackTransportMessageEncoder.swift
 //
-// Encoder for TransportMessage with support for JSON and Opcode array formats.
+// MessagePack encoder for TransportMessage using opcode array format.
+// Uses the same array structure as OpcodeTransportMessageEncoder but serializes with MessagePack.
 
 import Foundation
 import SwiftStateTree
+import SwiftStateTreeMessagePack
 
-// MARK: - Message Kind Opcodes
-
-/// Opcode values for MessageKind in opcode array format.
-/// Uses 101+ range to avoid conflict with StateUpdateOpcode (0-2).
-public enum MessageKindOpcode: Int, Sendable {
-    case action = 101
-    case actionResponse = 102
-    case event = 103
-    case join = 104
-    case joinResponse = 105
-    case error = 106
-    
-    public init?(kind: MessageKind) {
-        switch kind {
-        case .action: self = .action
-        case .actionResponse: self = .actionResponse
-        case .event: self = .event
-        case .join: self = .join
-        case .joinResponse: self = .joinResponse
-        case .error: self = .error
-        }
-    }
-    
-    public var messageKind: MessageKind {
-        switch self {
-        case .action: return .action
-        case .actionResponse: return .actionResponse
-        case .event: return .event
-        case .join: return .join
-        case .joinResponse: return .joinResponse
-        case .error: return .error
-        }
-    }
-}
-
-// MARK: - TransportMessageEncoder Protocol
-
-/// Encodes TransportMessage for wire transmission.
-public protocol TransportMessageEncoder: Sendable {
-    var encoding: TransportEncoding { get }
-    func encode(_ message: TransportMessage) throws -> Data
-}
-
-// MARK: - JSON Encoder
-
-/// JSON object-based transport message encoder.
-public struct JSONTransportMessageEncoder: TransportMessageEncoder {
-    public let encoding: TransportEncoding = .json
-    
-    private let encoder: JSONEncoder
-    
-    public init() {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = []
-        self.encoder = encoder
-    }
-    
-    public func encode(_ message: TransportMessage) throws -> Data {
-        try encoder.encode(message)
-    }
-}
-
-// MARK: - Opcode Array Encoder
-
-/// Opcode + JSON array transport message encoder.
+/// MessagePack + Opcode array transport message encoder.
 ///
-/// Encodes TransportMessage as a compact JSON array:
-/// - joinResponse: [opcode, requestID, success, landType?, landInstanceId?, playerSlot?]
+/// Encodes TransportMessage as a compact MessagePack array (same structure as opcodeJsonArray):
+/// - joinResponse: [opcode, requestID, success, landType?, landInstanceId?, playerSlot?, encoding?, reason?]
 /// - actionResponse: [opcode, requestID, response]
 /// - error: [opcode, code, message, details?]
-/// - Other formats as needed
-// MARK: - Opcode Array Encoder
-
-/// Opcode + JSON array transport message encoder.
+/// - action: [opcode, requestID, typeIdentifier, payload]
+/// - join: [opcode, requestID, landType, landInstanceId?, playerID?, deviceID?, metadata?]
+/// - event: [opcode, direction(0=client,1=server), type, payload, rawBody?]
 ///
-/// Encodes TransportMessage as a compact JSON array:
-/// - joinResponse: [opcode, requestID, success, landType?, landInstanceId?, playerSlot?]
-/// - actionResponse: [opcode, requestID, response]
-/// - error: [opcode, code, message, details?]
-/// - Other formats as needed
-public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
-    public let encoding: TransportEncoding = .opcodeJsonArray
+/// The array structure is identical to OpcodeTransportMessageEncoder, but uses MessagePack binary serialization
+/// instead of JSON text serialization.
+public struct MessagePackTransportMessageEncoder: TransportMessageEncoder {
+    public let encoding: TransportEncoding = .messagepack
     
-    private let encoder: JSONEncoder
     private let eventHashes: [String: Int]?
     private let clientEventHashes: [String: Int]?
     private let enablePayloadCompression: Bool
@@ -98,20 +31,23 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
         clientEventHashes: [String: Int]? = nil,
         enablePayloadCompression: Bool = false
     ) {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = []
-        self.encoder = encoder
         self.eventHashes = eventHashes
         self.clientEventHashes = clientEventHashes
         self.enablePayloadCompression = enablePayloadCompression
     }
     
     public func encode(_ message: TransportMessage) throws -> Data {
+        // Generate array structure (same as OpcodeTransportMessageEncoder)
         let array = try encodeToArray(message)
-        return try encoder.encode(array)
+        
+        // Convert [AnyCodable] to MessagePackValue array
+        let messagePackArray = try array.map { try anyCodableToMessagePackValue($0) }
+        
+        // Serialize with MessagePack
+        return try pack(.array(messagePackArray))
     }
     
-    // ... existing private methods ...
+    // MARK: - Array Encoding (same logic as OpcodeTransportMessageEncoder)
     
     private func encodeToArray(_ message: TransportMessage) throws -> [AnyCodable] {
         guard let opcode = MessageKindOpcode(kind: message.kind) else {
@@ -142,8 +78,6 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
         }
     }
     
-    // ... encodeJoinResponse, encodeActionResponse, encodeError, encodeAction, encodeJoin methods ...
-    
     private func encodeJoinResponse(opcode: MessageKindOpcode, payload: TransportJoinResponsePayload) -> [AnyCodable] {
         var result: [AnyCodable] = [
             AnyCodable(opcode.rawValue),
@@ -152,7 +86,6 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
         ]
         
         // Optional fields - only include if present
-        // Check encoding first as it's a new field that should be included if present
         if payload.landType != nil || payload.landInstanceId != nil || payload.playerSlot != nil || payload.encoding != nil || payload.reason != nil {
             result.append(AnyCodable(payload.landType))
         }
@@ -326,32 +259,12 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
         let array = payloadCompression.encodeAsArray()
         return AnyCodable(array)
     }
-}
-
-// MARK: - TransportEncoding Extension
-
-public extension TransportEncoding {
-    /// Create a message encoder for the selected encoding.
-    func makeMessageEncoder(
-        eventHashes: [String: Int]? = nil,
-        clientEventHashes: [String: Int]? = nil,
-        enablePayloadCompression: Bool = false
-    ) -> any TransportMessageEncoder {
-        switch self {
-        case .json:
-            return JSONTransportMessageEncoder()
-        case .opcodeJsonArray:
-            return OpcodeTransportMessageEncoder(
-                eventHashes: eventHashes,
-                clientEventHashes: clientEventHashes,
-                enablePayloadCompression: enablePayloadCompression
-            )
-        case .messagepack:
-            return MessagePackTransportMessageEncoder(
-                eventHashes: eventHashes,
-                clientEventHashes: clientEventHashes,
-                enablePayloadCompression: enablePayloadCompression
-            )
-        }
+    
+    // MARK: - MessagePack Conversion
+    
+    /// Convert AnyCodable to MessagePackValue
+    private func anyCodableToMessagePackValue(_ value: AnyCodable) throws -> MessagePackValue {
+        // Use MessagePackValueEncoder to convert AnyCodable to MessagePackValue
+        return try MessagePackValueEncoder().encode(value)
     }
 }

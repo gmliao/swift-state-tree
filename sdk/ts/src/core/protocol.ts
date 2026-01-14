@@ -9,6 +9,7 @@ import type {
   TransportEncodingConfig,
   StateUpdateDecoding
 } from '../types/transport'
+import { encode as msgpackEncode, decode as msgpackDecode } from '@msgpack/msgpack'
 
 /**
  * Encode a TransportMessage to JSON string
@@ -154,17 +155,194 @@ export function encodeMessageArray(message: TransportMessage): string {
 }
 
 /**
- * Decode a JSON string to TransportMessage, StateUpdate, or StateSnapshot
+ * Encode a TransportMessage to MessagePack binary format
+ * Uses the same array structure as encodeMessageArray but serializes with MessagePack
+ * 
+ * @param message - The TransportMessage to encode
+ * @returns Uint8Array containing MessagePack-encoded array
  */
+export function encodeMessageArrayToMessagePack(message: TransportMessage): Uint8Array {
+  // Generate the same array structure as encodeMessageArray
+  const array: any[] = []
+  
+  switch (message.kind) {
+    case 'joinResponse': {
+      const payload = (message.payload as any).joinResponse
+      if (!payload) throw new Error('Invalid joinResponse payload')
+      
+      array.push(105) // opcode
+      array.push(payload.requestID)
+      array.push(payload.success ? 1 : 0)
+      
+      // Optional fields - include encoding if present
+      if (payload.landType != null || payload.landInstanceId != null || payload.playerSlot != null || payload.encoding != null || payload.reason != null) {
+        array.push(payload.landType ?? null)
+      }
+      if (payload.landInstanceId != null || payload.playerSlot != null || payload.encoding != null || payload.reason != null) {
+        array.push(payload.landInstanceId ?? null)
+      }
+      if (payload.playerSlot != null || payload.encoding != null || payload.reason != null) {
+        array.push(payload.playerSlot ?? null)
+      }
+      if (payload.encoding != null || payload.reason != null) {
+        array.push(payload.encoding ?? null)
+      }
+      if (payload.reason != null) {
+        array.push(payload.reason)
+      }
+      break
+    }
+    
+    case 'actionResponse': {
+      const payload = (message.payload as any).actionResponse
+      if (!payload) throw new Error('Invalid actionResponse payload')
+      
+      array.push(102) // opcode
+      array.push(payload.requestID)
+      array.push(payload.response)
+      break
+    }
+    
+    case 'error': {
+      const payload = message.payload as any
+      if (!payload.error) throw new Error('Invalid error payload')
+      
+      array.push(106) // opcode
+      array.push(payload.error.code)
+      array.push(payload.error.message)
+      if (payload.error.details != null) {
+        array.push(payload.error.details)
+      }
+      break
+    }
+    
+    case 'action': {
+      const payload = message.payload as any
+      if (!payload.requestID || !payload.typeIdentifier || !payload.payload) {
+        throw new Error('Invalid action payload')
+      }
+      
+      array.push(101) // opcode
+      array.push(payload.requestID)
+      array.push(payload.typeIdentifier)
+      array.push(payload.payload || {}) // JSON object (same as Event payload)
+      break
+    }
+    
+    case 'join': {
+      const payload = (message.payload as any).join
+      if (!payload) throw new Error('Invalid join payload')
+      
+      array.push(104) // opcode
+      array.push(payload.requestID)
+      array.push(payload.landType)
+      
+      // Optional trailing fields
+      if (payload.landInstanceId != null || payload.playerID != null || payload.deviceID != null || payload.metadata != null) {
+        array.push(payload.landInstanceId ?? null)
+      }
+      if (payload.playerID != null || payload.deviceID != null || payload.metadata != null) {
+        array.push(payload.playerID ?? null)
+      }
+      if (payload.deviceID != null || payload.metadata != null) {
+        array.push(payload.deviceID ?? null)
+      }
+      if (payload.metadata != null) {
+        array.push(payload.metadata)
+      }
+      break
+    }
+    
+    case 'event': {
+      const payload = message.payload as any
+      const fromClient = payload.fromClient
+      const fromServer = payload.fromServer
+      
+      array.push(103) // opcode
+      
+      if (fromClient) {
+        array.push(0) // direction: 0 = fromClient
+        array.push(fromClient.type)
+        array.push(fromClient.payload || {})
+        if (fromClient.rawBody != null) {
+          array.push(fromClient.rawBody)
+        }
+      } else if (fromServer) {
+        array.push(1) // direction: 1 = fromServer
+        array.push(fromServer.type)
+        array.push(fromServer.payload || {})
+        if (fromServer.rawBody != null) {
+          array.push(fromServer.rawBody)
+        }
+      } else {
+        throw new Error('Invalid event payload: missing fromClient or fromServer')
+      }
+      break
+    }
+    
+    default:
+      throw new Error(`Unsupported message kind: ${message.kind}`)
+  }
+  
+  // Serialize array with MessagePack
+  return msgpackEncode(array)
+}
+
 /**
- * Decode a JSON string to TransportMessage, StateUpdate, or StateSnapshot
+ * Decode a JSON string or MessagePack binary data to TransportMessage, StateUpdate, or StateSnapshot
  */
 export function decodeMessage(
-  data: string,
+  data: string | ArrayBuffer | Uint8Array,
   config?: TransportEncodingConfig,
   dynamicKeyMap?: Map<number, string>
 ): TransportMessage | StateUpdate | StateSnapshot {
-  const json = JSON.parse(data)
+  // Handle MessagePack binary data
+  if (data instanceof ArrayBuffer || data instanceof Uint8Array) {
+    try {
+      // Convert ArrayBuffer to Uint8Array if needed
+      const uint8Array = data instanceof ArrayBuffer ? new Uint8Array(data) : data
+      const array = msgpackDecode(uint8Array) as any[]
+      
+      // Check if first element is a TransportMessage opcode (101-106)
+      const firstElement = array[0]
+      if (typeof firstElement === 'number' && firstElement >= 101 && firstElement <= 106) {
+        return decodeTransportMessageArray(array)
+      }
+      
+      // Otherwise, treat as StateUpdate opcode array (0-2)
+      const decoding = resolveStateUpdateDecoding(config)
+      if (decoding === 'jsonObject') {
+        throw new Error(`Unknown message format: MessagePack array with opcode ${firstElement}`)
+      }
+      return decodeStateUpdateArray(array, dynamicKeyMap)
+    } catch (error) {
+      // If MessagePack decode fails, it might be JSON text in binary format
+      // Try to decode as text first
+      const text = new TextDecoder().decode(data instanceof ArrayBuffer ? data : data.buffer)
+      const json = JSON.parse(text)
+      
+      if (Array.isArray(json)) {
+        const firstElement = json[0]
+        if (typeof firstElement === 'number' && firstElement >= 101 && firstElement <= 106) {
+          return decodeTransportMessageArray(json)
+        }
+        const decoding = resolveStateUpdateDecoding(config)
+        if (decoding === 'jsonObject') {
+          throw new Error(`Unknown message format: ${JSON.stringify(json).substring(0, 100)}`)
+        }
+        return decodeStateUpdateArray(json, dynamicKeyMap)
+      }
+      
+      if (json && typeof json === 'object' && 'kind' in json) {
+        return json as TransportMessage
+      }
+      
+      throw error
+    }
+  }
+  
+  // Handle JSON string
+  const json = JSON.parse(data as string)
 
   if (Array.isArray(json)) {
     // Check if first element is a TransportMessage opcode (101-106)

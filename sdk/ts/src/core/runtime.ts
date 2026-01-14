@@ -1,6 +1,6 @@
 import type { TransportMessage, StateUpdate, StateSnapshot, TransportEncodingConfig, MessageEncoding } from '../types/transport'
 import { createWebSocket, type WebSocketConnection } from './websocket'
-import { decodeMessage, encodeMessage, encodeMessageArray } from './protocol'
+import { decodeMessage, encodeMessage, encodeMessageArray, encodeMessageArrayToMessagePack } from './protocol'
 import { NoOpLogger, type Logger } from './logger'
 import { StateTreeView, type ViewOptions } from './view'
 
@@ -82,7 +82,8 @@ export class StateTreeRuntime {
 
       try {
         // createWebSocket is now async (returns Promise)
-        this.ws = await createWebSocket(url)
+        // Set binaryType to 'arraybuffer' for MessagePack binary support
+    this.ws = await createWebSocket(url, { binaryType: 'arraybuffer' })
 
         this.setupWebSocketHandlers(resolve, reject)
       } catch (error) {
@@ -265,11 +266,26 @@ export class StateTreeRuntime {
       this.ws.send(encoded as string)
     } else if (useEncoding === 'messagepack') {
       // MessagePack format: encode as opcode array, then serialize with MessagePack
-      // TODO: Implement MessagePack serialization
-      // For now, fallback to opcodeJsonArray format
-      encoded = encodeMessageArray(message)
-      messageSize = new TextEncoder().encode(encoded as string).length
-      this.ws.send(encoded as string)
+      const msgpackData = encodeMessageArrayToMessagePack(message)
+      // Use byteLength for accurate binary size calculation
+      messageSize = msgpackData.byteLength
+      // Ensure WebSocket binaryType is set to 'arraybuffer' for binary messages
+      // Convert Uint8Array to ArrayBuffer for WebSocket.send()
+      // Use slice() to ensure we get an ArrayBuffer (not SharedArrayBuffer)
+      const buffer = msgpackData.buffer instanceof ArrayBuffer 
+        ? msgpackData.buffer.slice(msgpackData.byteOffset, msgpackData.byteOffset + msgpackData.byteLength)
+        : new Uint8Array(msgpackData).buffer
+      this.ws.send(buffer)
+      
+      // Report outbound statistics
+      if (this.statisticsCallback) {
+        this.statisticsCallback({
+          messageType: 'transportMessage',
+          messageSize,
+          direction: 'outbound'
+        })
+      }
+      return
     } else {
       // Fallback to JSON
       encoded = encodeMessage(message)
@@ -304,31 +320,37 @@ export class StateTreeRuntime {
       let messageSize: number
 
       // Calculate actual message size (bytes) before decoding
+      let decoded: TransportMessage | StateUpdate | StateSnapshot
+      
       if (typeof data === 'string') {
         // UTF-8 encoding: each character is 1-4 bytes, but for ASCII it's 1 byte
         // Use TextEncoder to get accurate byte length
         messageSize = new TextEncoder().encode(data).length
-        text = data
+        decoded = decodeMessage(data, this.transportEncoding, this.dynamicKeyMap)
       } else if (data instanceof ArrayBuffer) {
         messageSize = data.byteLength
-        text = new TextDecoder().decode(data)
+        // MessagePack binary data - decode directly
+        decoded = decodeMessage(data, this.transportEncoding, this.dynamicKeyMap)
       } else if (ArrayBuffer.isView(data)) {
         messageSize = data.byteLength
-        text = new TextDecoder().decode(data)
+        // MessagePack binary data - decode directly
+        // Convert ArrayBufferView to Uint8Array for decodeMessage
+        const uint8Array = new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+        decoded = decodeMessage(uint8Array, this.transportEncoding, this.dynamicKeyMap)
       } else if (typeof Blob !== 'undefined' && data instanceof Blob) {
         messageSize = data.size
         const arrayBuffer = await data.arrayBuffer()
-        text = new TextDecoder().decode(arrayBuffer)
+        // MessagePack binary data - decode directly
+        decoded = decodeMessage(arrayBuffer, this.transportEncoding, this.dynamicKeyMap)
       } else {
         // Fallback: try to convert to string
         // This handles unexpected types as best effort
         const typeName = (data as any)?.constructor?.name ?? typeof data
         this.logger.warn(`Unexpected data type: ${typeName}, attempting to convert to string`)
-        text = String(data)
+        const text = String(data)
         messageSize = new TextEncoder().encode(text).length
+        decoded = decodeMessage(text, this.transportEncoding, this.dynamicKeyMap)
       }
-
-      const decoded = decodeMessage(text, this.transportEncoding, this.dynamicKeyMap)
 
       // Debug: log raw message structure
       this.logger.debug(`Received message: keys=${Object.keys(decoded).join(',')}, preview=${JSON.stringify(decoded).substring(0, 200)}`)
