@@ -76,21 +76,42 @@ public struct JSONTransportMessageEncoder: TransportMessageEncoder {
 /// - actionResponse: [opcode, requestID, response]
 /// - error: [opcode, code, message, details?]
 /// - Other formats as needed
+// MARK: - Opcode Array Encoder
+
+/// Opcode + JSON array transport message encoder.
+///
+/// Encodes TransportMessage as a compact JSON array:
+/// - joinResponse: [opcode, requestID, success, landType?, landInstanceId?, playerSlot?]
+/// - actionResponse: [opcode, requestID, response]
+/// - error: [opcode, code, message, details?]
+/// - Other formats as needed
 public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
     public let encoding: TransportEncoding = .opcodeJsonArray
     
     private let encoder: JSONEncoder
+    private let eventHashes: [String: Int]?
+    private let clientEventHashes: [String: Int]?
+    private let enablePayloadCompression: Bool
     
-    public init() {
+    public init(
+        eventHashes: [String: Int]? = nil,
+        clientEventHashes: [String: Int]? = nil,
+        enablePayloadCompression: Bool = false
+    ) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = []
         self.encoder = encoder
+        self.eventHashes = eventHashes
+        self.clientEventHashes = clientEventHashes
+        self.enablePayloadCompression = enablePayloadCompression
     }
     
     public func encode(_ message: TransportMessage) throws -> Data {
         let array = try encodeToArray(message)
         return try encoder.encode(array)
     }
+    
+    // ... existing private methods ...
     
     private func encodeToArray(_ message: TransportMessage) throws -> [AnyCodable] {
         guard let opcode = MessageKindOpcode(kind: message.kind) else {
@@ -121,9 +142,8 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
         }
     }
     
-    // MARK: - Payload Encoding
+    // ... encodeJoinResponse, encodeActionResponse, encodeError, encodeAction, encodeJoin methods ...
     
-    /// Encode JoinResponse: [opcode, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, reason?]
     private func encodeJoinResponse(opcode: MessageKindOpcode, payload: TransportJoinResponsePayload) -> [AnyCodable] {
         var result: [AnyCodable] = [
             AnyCodable(opcode.rawValue),
@@ -148,16 +168,22 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
         return result
     }
     
-    /// Encode ActionResponse: [opcode, requestID, response]
     private func encodeActionResponse(opcode: MessageKindOpcode, payload: TransportActionResponsePayload) -> [AnyCodable] {
-        [
+        // Encode response payload: Array or Object
+        let responseValue: AnyCodable
+        if enablePayloadCompression {
+            responseValue = encodePayloadAsArray(payload.response)
+        } else {
+            responseValue = payload.response
+        }
+        
+        return [
             AnyCodable(opcode.rawValue),
             AnyCodable(payload.requestID),
-            payload.response
+            responseValue
         ]
     }
     
-    /// Encode Error: [opcode, code, message, details?]
     private func encodeError(opcode: MessageKindOpcode, payload: ErrorPayload) -> [AnyCodable] {
         var result: [AnyCodable] = [
             AnyCodable(opcode.rawValue),
@@ -172,7 +198,6 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
         return result
     }
     
-    /// Encode Action: [opcode, requestID, typeIdentifier, payload(base64)]
     private func encodeAction(opcode: MessageKindOpcode, payload: TransportActionPayload) -> [AnyCodable] {
         [
             AnyCodable(opcode.rawValue),
@@ -182,7 +207,6 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
         ]
     }
     
-    /// Encode Join: [opcode, requestID, landType, landInstanceId?, playerID?, deviceID?, metadata?]
     private func encodeJoin(opcode: MessageKindOpcode, payload: TransportJoinPayload) -> [AnyCodable] {
         var result: [AnyCodable] = [
             AnyCodable(opcode.rawValue),
@@ -207,15 +231,31 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
         return result
     }
     
-    /// Encode Event: [opcode, direction(0=client,1=server), type, payload, rawBody?]
+    /// Encode Event: [opcode, direction(0=client,1=server), type(int|string), payload, rawBody?]
     private func encodeEvent(opcode: MessageKindOpcode, event: TransportEvent) throws -> [AnyCodable] {
         switch event {
         case .fromClient(let clientEvent):
+            // Check for opcode, fallback to string type
+            let typeValue: AnyCodable
+            if let hash = clientEventHashes?[clientEvent.type] {
+                typeValue = AnyCodable(hash)
+            } else {
+                typeValue = AnyCodable(clientEvent.type)
+            }
+            
+            // Encode payload: Array or Object
+            let payloadValue: AnyCodable
+            if enablePayloadCompression {
+                payloadValue = encodePayloadAsArray(clientEvent.payload)
+            } else {
+                payloadValue = AnyCodable(clientEvent.payload)
+            }
+            
             var result: [AnyCodable] = [
                 AnyCodable(opcode.rawValue),
                 AnyCodable(0), // 0 = fromClient
-                AnyCodable(clientEvent.type),
-                AnyCodable(clientEvent.payload)
+                typeValue,
+                payloadValue
             ]
             if let rawBody = clientEvent.rawBody {
                 result.append(AnyCodable(rawBody))
@@ -223,11 +263,27 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
             return result
             
         case .fromServer(let serverEvent):
+            // Check for opcode, fallback to string type
+            let typeValue: AnyCodable
+            if let hash = eventHashes?[serverEvent.type] {
+                typeValue = AnyCodable(hash)
+            } else {
+                typeValue = AnyCodable(serverEvent.type)
+            }
+            
+            // Encode payload: Array or Object
+            let payloadValue: AnyCodable
+            if enablePayloadCompression {
+                payloadValue = encodePayloadAsArray(serverEvent.payload)
+            } else {
+                payloadValue = AnyCodable(serverEvent.payload)
+            }
+            
             var result: [AnyCodable] = [
                 AnyCodable(opcode.rawValue),
                 AnyCodable(1), // 1 = fromServer
-                AnyCodable(serverEvent.type),
-                AnyCodable(serverEvent.payload)
+                typeValue,
+                payloadValue
             ]
             if let rawBody = serverEvent.rawBody {
                 result.append(AnyCodable(rawBody))
@@ -235,18 +291,68 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
             return result
         }
     }
+    
+    private func encodePayloadAsArray(_ payload: Any) -> AnyCodable {
+        // Extract the actual payload value from AnyCodable if needed
+        let actualPayload: Any
+        if let anyCodable = payload as? AnyCodable {
+            // If payload is AnyCodable, extract its base value
+            actualPayload = anyCodable.base
+        } else {
+            actualPayload = payload
+        }
+        
+        // Try to use PayloadCompression.encodeAsArray() if available
+        // This uses macro-generated code with correct field order
+        if let payloadCompression = actualPayload as? any PayloadCompression {
+            let array = payloadCompression.encodeAsArray()
+            return AnyCodable(array)
+        }
+        
+        // Fallback to Mirror-based encoding (for non-macro types or compatibility)
+        let mirror = Mirror(reflecting: actualPayload)
+        
+        // If no children, check if it's an empty struct or primitive
+        if mirror.children.isEmpty {
+            // For structs/classes with no properties, return empty array
+            // Optimization: primitives shouldn't reach here as payloads are usually objects
+            // But if payload IS a primitive, we wrap it in array? No, RFC says "Compress objects... into arrays"
+            // If it's a primitive, array encoding doesn't make sense.
+            // Assuming payload is always a composite type (Event struct).
+            return AnyCodable([])
+        }
+        
+        var values: [AnyCodable] = []
+        for child in mirror.children {
+            // Recursively compress? For now, flat or rely on child's Encodable
+            // But AnyCodable(child.value) will encode value as is (Object if struct).
+            // To recursively compress, we'd need to check if child value is also a struct we want to compress.
+            // RFC Phase 2 only mentions top-level event payload. Phase 3 is "Atomic Flattening".
+            // So we stick to top-level flattening for now.
+            values.append(AnyCodable(child.value))
+        }
+        return AnyCodable(values)
+    }
 }
 
 // MARK: - TransportEncoding Extension
 
 public extension TransportEncoding {
     /// Create a message encoder for the selected encoding.
-    func makeMessageEncoder() -> any TransportMessageEncoder {
+    func makeMessageEncoder(
+        eventHashes: [String: Int]? = nil,
+        clientEventHashes: [String: Int]? = nil,
+        enablePayloadCompression: Bool = false
+    ) -> any TransportMessageEncoder {
         switch self {
         case .json:
             return JSONTransportMessageEncoder()
         case .opcodeJsonArray:
-            return OpcodeTransportMessageEncoder()
+            return OpcodeTransportMessageEncoder(
+                eventHashes: eventHashes,
+                clientEventHashes: clientEventHashes,
+                enablePayloadCompression: enablePayloadCompression
+            )
         }
     }
 }

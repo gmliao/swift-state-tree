@@ -520,11 +520,64 @@ function decodeJoinArray(payload: unknown[]): TransportMessage {
 }
 
 // [103, direction(0=client,1=server), type, payload, rawBody?]
+// [103, direction(0=client,1=server), type, payload, rawBody?]
 function decodeEventArray(payload: unknown[]): TransportMessage {
   const direction = payload[1] as number
-  const type = payload[2] as string
-  const eventPayload = payload[3]
+  const rawType = payload[2]
+  const rawPayload = payload[3]
   const rawBody = payload[4]
+  
+  let type: string
+  if (typeof rawType === 'number') {
+    // Resolve opcode
+    const lookup = direction === 0 ? clientEventHashReverseLookup : eventHashReverseLookup
+    const resolved = lookup.get(rawType)
+    if (!resolved) {
+        throw new Error(`Unknown event opcode: ${rawType} (direction: ${direction})`)
+    }
+    type = resolved
+  } else {
+    type = rawType as string
+  }
+
+  // Handle Array Payload (Compressed)
+  let eventPayload = rawPayload
+  if (Array.isArray(rawPayload)) {
+    // Reconstruct object from array using field order
+    // Use type string for lookup (as we might not interpret opcode in future phases or fallback)
+    // Actually, looking up by type name is safest as it works for both opcode and string sources.
+    const fieldOrderMap = direction === 0 ? clientEventFieldOrder : eventFieldOrder
+    const fieldOrder = fieldOrderMap.get(type)
+    
+    // DEBUG: Confirm compression is working
+    console.log(`COMPRESSED_PAYLOAD: Decoding array payload for event '${type}' (Length: ${rawPayload.length})`)
+
+    if (!fieldOrder) {
+        // Warning or Error? If we receive an array but don't know the schema, we can't decode.
+        // But maybe it's just an empty array for an empty event?
+        // If array is empty and fieldOrder is missing/empty, it's fine.
+        if (rawPayload.length > 0) {
+           console.warn(`[Compression] Received array payload for event '${type}' but no field order found. Payload may be corrupt.`)
+        }
+        eventPayload = {}
+    } else {
+        const payloadObj: Record<string, any> = {}
+        // Map values to keys
+        // Note: rawPayload length might be shorter than fieldOrder if trailing optionals are omitted (not implemented in server yet, server sends all? Server sends based on Mirror children).
+        // Swift Mirror children includes optionals.
+        // Server sends [AnyCodable].
+        fieldOrder.forEach((key, index) => {
+            if (index < rawPayload.length) {
+                payloadObj[key] = rawPayload[index]
+            }
+        })
+        eventPayload = payloadObj
+    }
+  } else if (rawPayload && typeof rawPayload === 'object') {
+    // Payload is already an object (not compressed array)
+    // Use it as-is, but validate structure
+    eventPayload = rawPayload
+  }
   
   if (direction === 0) {
     // fromClient
@@ -552,4 +605,14 @@ function decodeEventArray(payload: unknown[]): TransportMessage {
     } as TransportMessage
   }
 }
+
+// Global reverse lookup tables (hash → event type)
+// Populated by View during schema initialization
+export const eventHashReverseLookup = new Map<number, string>()
+export const clientEventHashReverseLookup = new Map<number, string>()
+
+// Global field order tables (event type → field keys[])
+// Populated by View during schema initialization
+export const eventFieldOrder = new Map<string, string[]>()
+export const clientEventFieldOrder = new Map<string, string[]>()
 

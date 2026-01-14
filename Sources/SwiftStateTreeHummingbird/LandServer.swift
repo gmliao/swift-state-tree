@@ -99,6 +99,8 @@ public struct LandServer<State: StateNodeProtocol>: Sendable {
             createGuestSession: createGuestSession ?? defaultCreateGuestSession,
             transportEncoding: configuration.transportEncoding,
             pathHashes: configuration.pathHashes,
+            eventHashes: configuration.eventHashes,
+            clientEventHashes: configuration.clientEventHashes,
             enableParallelEncoding: configuration.enableParallelEncoding,
             logger: logger
         )

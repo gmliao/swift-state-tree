@@ -205,6 +205,16 @@ public actor LandHost {
             finalConfig.pathHashes = pathHashes
         }
         
+        // Extract eventHashes for this land type from cached schema
+        if let eventHashes = getEventHashes(for: landType) {
+            finalConfig.eventHashes = eventHashes
+        }
+        
+        // Extract clientEventHashes for this land type from cached schema
+        if let clientEventHashes = getClientEventHashes(for: landType) {
+            finalConfig.clientEventHashes = clientEventHashes
+        }
+        
         // Create server (no router - LandHost handles route registration)
         // LandServer<State>.Configuration is a typealias of LandServerConfiguration, so we can use it directly
         let serverConfig: LandServer<State>.Configuration = finalConfig
@@ -259,6 +269,16 @@ public actor LandHost {
     /// - Returns: Dictionary of path patterns to hashes, or nil if not available
     private func getPathHashes(for landType: String) -> [String: UInt32]? {
         return cachedSchema?.lands[landType]?.pathHashes
+    }
+    
+    /// Get eventHashes for a specific land type from cached schema.
+    private func getEventHashes(for landType: String) -> [String: Int]? {
+        return cachedSchema?.lands[landType]?.eventHashes
+    }
+    
+    /// Get clientEventHashes for a specific land type from cached schema.
+    private func getClientEventHashes(for landType: String) -> [String: Int]? {
+        return cachedSchema?.lands[landType]?.clientEventHashes
     }
     
     /// Register a land type - simplified version.

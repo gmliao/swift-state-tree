@@ -85,6 +85,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private let logger: Logger
     private let transportEncoding: TransportEncodingConfig
     private let pathHashes: [String: UInt32]?
+    private let eventHashes: [String: Int]?
+    private let clientEventHashes: [String: Int]?
     
     /// Track creation time for each land
     private var landCreatedAt: [LandID: Date] = [:]
@@ -108,6 +110,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         transportEncoding: TransportEncodingConfig = .json,
         pathHashes: [String: UInt32]? = nil,
+        eventHashes: [String: Int]? = nil,
+        clientEventHashes: [String: Int]? = nil,
         enableParallelEncoding: Bool? = nil,
         logger: Logger? = nil
     ) {
@@ -117,6 +121,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         self.createGuestSession = createGuestSession
         self.transportEncoding = transportEncoding
         self.pathHashes = pathHashes
+        self.eventHashes = eventHashes
+        self.clientEventHashes = clientEventHashes
         self.enableParallelEncoding = enableParallelEncoding
         self.logger = logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.runtime",
@@ -184,6 +190,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             },
             encodingConfig: transportEncoding,
             pathHashes: pathHashes,
+            eventHashes: eventHashes,
+            clientEventHashes: clientEventHashes,
             enableParallelEncoding: enableParallelEncoding,
             logger: logger
         )

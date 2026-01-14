@@ -55,6 +55,11 @@ public struct PayloadMacro: MemberMacro {
         
         var members: [DeclSyntax] = [DeclSyntax(getFieldMetadataMethod)]
         
+        // Generate encodeAsArray() method for PayloadCompression protocol
+        // This ensures correct field order for opcode-based compression
+        let encodeAsArrayMethod = try generateEncodeAsArray(properties: properties, structName: structDecl.name.text)
+        members.append(DeclSyntax(encodeAsArrayMethod))
+        
         // Always generate getResponseType() for ActionPayload types
         // This ensures the macro declaration covers it
         if conformsToActionPayload(structDecl) {
@@ -225,6 +230,37 @@ public struct PayloadMacro: MemberMacro {
             """
             public static func getFieldMetadata() -> [FieldMetadata] {
                 return \(arrayExpr)
+            }
+            """
+        )
+    }
+    
+    /// Generate encodeAsArray() method for PayloadCompression protocol
+    /// This method encodes the payload as an array using the exact field order from the struct declaration
+    private static func generateEncodeAsArray(properties: [PropertyInfo], structName: String) throws -> FunctionDeclSyntax {
+        guard !properties.isEmpty else {
+            // Empty struct - return empty array
+            return try FunctionDeclSyntax(
+                """
+                public func encodeAsArray() -> [AnyCodable] {
+                    return []
+                }
+                """
+            )
+        }
+        
+        // Generate array elements in declaration order
+        var arrayElements: [String] = []
+        for property in properties {
+            arrayElements.append("AnyCodable(self.\(property.name))")
+        }
+        
+        let arrayBody = arrayElements.joined(separator: ", ")
+        
+        return try FunctionDeclSyntax(
+            """
+            public func encodeAsArray() -> [AnyCodable] {
+                return [\(raw: arrayBody)]
             }
             """
         )

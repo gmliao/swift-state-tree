@@ -463,8 +463,10 @@ function buildTransportEncoding(stateUpdateEncoding?: string) {
     : normalized === 'jsonobject' ? 'jsonObject'
     : 'auto'
 
+  const messageEncoding = stateUpdateDecoding === 'opcodeJsonArray' ? 'opcodeJsonArray' : 'json'
+
   return {
-    message: 'json',
+    message: messageEncoding,
     stateUpdate: stateUpdateDecoding === 'opcodeJsonArray' ? 'opcodeJsonArray' : 'jsonObject',
     stateUpdateDecoding
   } as const

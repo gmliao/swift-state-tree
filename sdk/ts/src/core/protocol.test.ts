@@ -11,7 +11,11 @@ import {
   createJoinMessage,
   createActionMessage,
   createEventMessage,
-  generateRequestID
+  generateRequestID,
+  eventHashReverseLookup,
+  clientEventHashReverseLookup,
+  eventFieldOrder,
+  clientEventFieldOrder
 } from './protocol'
 import type { TransportMessage, StateUpdate, StateSnapshot } from '../types/transport'
 
@@ -640,7 +644,11 @@ describe('protocol', () => {
       ]
 
       const encoded = JSON.stringify(updateArray)
-      const decoded = decodeMessage(encoded, { stateUpdateDecoding: 'opcodeJsonArray' })
+      const decoded = decodeMessage(encoded, { 
+        message: 'json', 
+        stateUpdate: 'opcodeJsonArray', 
+        stateUpdateDecoding: 'opcodeJsonArray' 
+      })
 
       expect(decoded).toHaveProperty('type', 'diff')
       if ('type' in decoded && 'patches' in decoded) {
@@ -664,7 +672,11 @@ describe('protocol', () => {
       ]
 
       const encoded = JSON.stringify(updateArray)
-      const decoded = decodeMessage(encoded, { stateUpdateDecoding: 'opcodeJsonArray' })
+      const decoded = decodeMessage(encoded, { 
+        message: 'json', 
+        stateUpdate: 'opcodeJsonArray', 
+        stateUpdateDecoding: 'opcodeJsonArray' 
+      })
 
       expect(decoded).toHaveProperty('type', 'firstSync')
       if ('type' in decoded && 'patches' in decoded) {
@@ -691,7 +703,11 @@ describe('protocol', () => {
       ]
 
       const encoded = JSON.stringify(updateArray)
-      const decoded = decodeMessage(encoded, { stateUpdateDecoding: 'opcodeJsonArray' })
+      const decoded = decodeMessage(encoded, { 
+        message: 'json', 
+        stateUpdate: 'opcodeJsonArray', 
+        stateUpdateDecoding: 'opcodeJsonArray' 
+      })
 
       expect(decoded).toHaveProperty('type', 'noChange')
       if ('type' in decoded && 'patches' in decoded) {
@@ -709,7 +725,11 @@ describe('protocol', () => {
       ]
 
       const encoded = JSON.stringify(updateArray)
-      const decoded = decodeMessage(encoded, { stateUpdateDecoding: 'opcodeJsonArray' })
+      const decoded = decodeMessage(encoded, { 
+        message: 'json', 
+        stateUpdate: 'opcodeJsonArray', 
+        stateUpdateDecoding: 'opcodeJsonArray' 
+      })
 
       expect(decoded).toHaveProperty('type', 'diff')
       if ('type' in decoded && 'patches' in decoded) {
@@ -732,7 +752,11 @@ describe('protocol', () => {
 
       const encoded = JSON.stringify(updateArray)
       expect(() => {
-        decodeMessage(encoded, { stateUpdateDecoding: 'opcodeJsonArray' })
+        decodeMessage(encoded, { 
+          message: 'json', 
+          stateUpdate: 'opcodeJsonArray', 
+          stateUpdateDecoding: 'opcodeJsonArray' 
+        })
       }).toThrow('expected string (playerID) or number (playerSlot)')
     })
 
@@ -746,7 +770,11 @@ describe('protocol', () => {
       ]
 
       const encoded = JSON.stringify(updateArray)
-      const decoded = decodeMessage(encoded, { stateUpdateDecoding: 'opcodeJsonArray' })
+      const decoded = decodeMessage(encoded, { 
+        message: 'json', 
+        stateUpdate: 'opcodeJsonArray', 
+        stateUpdateDecoding: 'opcodeJsonArray' 
+      })
 
       expect(decoded).toHaveProperty('type', 'diff')
       if ('type' in decoded && 'patches' in decoded) {
@@ -775,7 +803,11 @@ describe('protocol', () => {
       ]
 
       const encoded = JSON.stringify(updateArray)
-      const decoded = decodeMessage(encoded, { stateUpdateDecoding: 'opcodeJsonArray' })
+      const decoded = decodeMessage(encoded, { 
+        message: 'json', 
+        stateUpdate: 'opcodeJsonArray', 
+        stateUpdateDecoding: 'opcodeJsonArray' 
+      })
 
       expect(decoded).toHaveProperty('type', 'diff')
       if ('type' in decoded && 'patches' in decoded) {
@@ -792,6 +824,50 @@ describe('protocol', () => {
           value: 60
         })
       }
+    })
+  })
+
+  describe('Event Opcode Decoding', () => {
+
+    beforeEach(() => {
+      // Reset lookups
+      eventHashReverseLookup.clear()
+      clientEventHashReverseLookup.clear()
+    })
+
+    it('falls back to string type if rawType is string', () => {
+      const eventPayload = { msg: 'hello' }
+      const eventArray = [
+        103, // Opcode for Event
+        1,   // Direction: fromServer
+        'UnknownEvent', // String type
+        eventPayload,
+        null
+      ]
+      
+      const encoded = JSON.stringify(eventArray)
+      const decoded = decodeMessage(encoded)
+      
+      expect(decoded).toHaveProperty('kind', 'event')
+      if ('kind' in decoded && decoded.kind === 'event') {
+        const messagePayload = decoded.payload as any
+        const event = messagePayload.fromServer
+        expect(event.type).toBe('UnknownEvent')
+        expect(event.payload).toEqual(eventPayload)
+      }
+    })
+
+    it('throws error for unknown event opcode', () => {
+      const eventArray = [
+        103,
+        1,
+        999, // Unknown opcode
+        {},
+        null
+      ]
+      
+      const encoded = JSON.stringify(eventArray)
+      expect(() => decodeMessage(encoded)).toThrow('Unknown event opcode: 999')
     })
   })
 })

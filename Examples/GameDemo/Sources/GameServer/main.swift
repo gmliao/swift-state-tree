@@ -115,12 +115,14 @@ private func resolveTransportEncoding(rawValue: String) -> TransportEncodingConf
     case "opcode", "opcodejsonarray", "opcode_json_array", "opcode-json-array":
         return TransportEncodingConfig(
             message: .opcodeJsonArray,
-            stateUpdate: .opcodeJsonArray
+            stateUpdate: .opcodeJsonArray,
+            enablePayloadCompression: true
         )
     default:
         return TransportEncodingConfig(
             message: .json,
-            stateUpdate: .jsonObject
+            stateUpdate: .jsonObject,
+            enablePayloadCompression: false
         )
     }
 }

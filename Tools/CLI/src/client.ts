@@ -69,7 +69,48 @@ export class SwiftStateTreeClient {
         return
       }
 
-      // Check for opcode format (array): [opcode, playerID/slot, ...patches]
+      // Check for TransportMessage opcode format (array): [101-106, ...]
+      if (Array.isArray(json) && json.length >= 1) {
+        const firstElement = json[0]
+        const isTransportMessageOpcode = typeof firstElement === 'number' && firstElement >= 101 && firstElement <= 106
+        
+        if (isTransportMessageOpcode) {
+          // This is a TransportMessage in opcode format
+          const opcodeNames: Record<number, string> = {
+            101: 'join',
+            102: 'joinResponse',
+            103: 'event',
+            104: 'action',
+            105: 'actionResponse',
+            106: 'error'
+          }
+          const messageType = opcodeNames[firstElement] || 'unknown'
+          console.log(chalk.cyan(`📦 TransportMessage [${messageType}] (opcode: ${firstElement}):`))
+          console.log(chalk.gray(`   Raw array (first 500 chars): ${JSON.stringify(json).substring(0, 500)}...`))
+          
+          // Special handling for event messages
+          if (firstElement === 103 && json.length >= 4) {
+            const direction = json[1] as number
+            const type = json[2]
+            const payload = json[3]
+            const directionName = direction === 0 ? 'fromClient' : 'fromServer'
+            const typeStr = typeof type === 'number' ? `opcode:${type}` : type
+            console.log(chalk.cyan(`   Event: ${directionName}, type: ${typeStr}`))
+            if (Array.isArray(payload)) {
+              console.log(chalk.gray(`   Payload array (length: ${payload.length}):`))
+              payload.forEach((item: any, index: number) => {
+                const itemStr = typeof item === 'object' ? JSON.stringify(item).substring(0, 200) : String(item)
+                console.log(chalk.gray(`     [${index}]: ${itemStr}${typeof item === 'object' ? '...' : ''}`))
+              })
+            } else {
+              console.log(chalk.gray(`   Payload: ${JSON.stringify(payload).substring(0, 300)}...`))
+            }
+          }
+          return
+        }
+      }
+      
+      // Check for StateUpdate opcode format (array): [opcode, playerID/slot, ...patches]
       if (Array.isArray(json) && json.length >= 2) {
         const opcode = json[0]
         const playerIdentifier = json[1]
@@ -213,6 +254,14 @@ export class SwiftStateTreeClient {
         if (payload.fromServer) {
           const eventData = payload.fromServer
           console.log(chalk.magenta(`📨 Server event [${eventData.type}]: ${JSON.stringify(eventData.payload)}`))
+          // Debug: Show raw payload structure
+          if (Array.isArray(eventData.payload)) {
+            console.log(chalk.gray(`   Raw array payload (length: ${eventData.payload.length}):`))
+            eventData.payload.forEach((item: any, index: number) => {
+              const itemStr = typeof item === 'object' ? JSON.stringify(item).substring(0, 100) : String(item)
+              console.log(chalk.gray(`     [${index}]: ${itemStr}${typeof item === 'object' ? '...' : ''}`))
+            })
+          }
         } else if (payload.fromClient) {
           const eventData = payload.fromClient
           console.log(chalk.blue(`📤 Client event echo [${eventData.type}]: ${JSON.stringify(eventData.payload)}`))

@@ -12,6 +12,12 @@ export interface LandDefinition {
   }
   /// Path hashes for state update compression (hash → path pattern)
   pathHashes?: Record<string, number>
+  
+  /// Event hashes for event type compression (event type → hash)
+  eventHashes?: Record<string, number>
+  
+  /// Client event hashes for client event compression (event type → hash)
+  clientEventHashes?: Record<string, number>
 }
 
 export interface SchemaDef {
