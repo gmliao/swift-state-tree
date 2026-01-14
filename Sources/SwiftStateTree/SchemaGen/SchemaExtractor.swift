@@ -108,7 +108,8 @@ public struct SchemaExtractor {
             
             let typeName = String(describing: descriptor.type)
             
-            // Generate event ID from type name (e.g., "ChatEvent" -> "chat")
+            // Generate event ID by removing "Event" suffix to match AnyClientEvent.type
+            // Example: "MoveToEvent" -> "MoveTo"
             let eventID = generateEventID(from: descriptor.type)
             // Always use a reference to the definition
             clientEvents[eventID] = JSONSchema(ref: "#/defs/\(typeName)")
@@ -129,7 +130,8 @@ public struct SchemaExtractor {
             // and creates the detailed schema in definitions, so we don't need to duplicate that logic here.
             let typeName = String(describing: descriptor.type)
             
-            // Generate event ID from type name (e.g., "WelcomeEvent" -> "welcome")
+            // Generate event ID by removing "Event" suffix to match AnyServerEvent.type
+            // Example: "PlayerShootEvent" -> "PlayerShoot"
             let eventID = generateEventID(from: descriptor.type)
             // Always use a reference to the definition
             events[eventID] = JSONSchema(ref: "#/defs/\(typeName)")
@@ -152,6 +154,23 @@ public struct SchemaExtractor {
             definitions: definitions
         )
         
+        // Generate event hashes (Server → Client)
+        // Sort keys to ensure deterministic opcode assignment
+        let sortedEvents = events.keys.sorted()
+        var eventHashes: [String: Int] = [:]
+        for (index, eventID) in sortedEvents.enumerated() {
+            // Opcode starts at 1
+            eventHashes[eventID] = index + 1
+        }
+        // Generate client event hashes (Client → Server) 
+        // Sort keys to ensure deterministic opcode assignment
+        let sortedClientEvents = clientEvents.keys.sorted()
+        var clientEventHashes: [String: Int] = [:]
+        for (index, eventID) in sortedClientEvents.enumerated() {
+            // Opcode starts at 1
+            clientEventHashes[eventID] = index + 1
+        }
+        
         // Create land schema
         let landSchema = LandSchema(
             stateType: stateTypeName,
@@ -159,7 +178,9 @@ public struct SchemaExtractor {
             clientEvents: clientEvents,
             events: events,
             sync: syncSchema,
-            pathHashes: pathHashes
+            pathHashes: pathHashes,
+            eventHashes: eventHashes,
+            clientEventHashes: clientEventHashes
         )
         
         return ProtocolSchema(

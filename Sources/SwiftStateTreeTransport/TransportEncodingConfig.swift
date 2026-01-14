@@ -4,30 +4,42 @@ import SwiftStateTree
 public struct TransportEncodingConfig: Sendable {
     public let message: TransportEncoding
     public let stateUpdate: StateUpdateEncoding
+    public let enablePayloadCompression: Bool
 
     public init(
         message: TransportEncoding = .json,
-        stateUpdate: StateUpdateEncoding = .opcodeJsonArray
+        stateUpdate: StateUpdateEncoding = .opcodeJsonArray,
+        enablePayloadCompression: Bool = false
     ) {
         self.message = message
         self.stateUpdate = stateUpdate
+        self.enablePayloadCompression = enablePayloadCompression
     }
 
     public static let json = TransportEncodingConfig(
         message: .json,
-        stateUpdate: .jsonObject
+        stateUpdate: .jsonObject,
+        enablePayloadCompression: false
     )
     public static let jsonOpcode = TransportEncodingConfig(
         message: .json,
-        stateUpdate: .opcodeJsonArray
+        stateUpdate: .opcodeJsonArray,
+        enablePayloadCompression: false
     )
 
     public func makeCodec() -> any TransportCodec {
         message.makeCodec()
     }
 
-    public func makeMessageEncoder() -> any TransportMessageEncoder {
-        message.makeMessageEncoder()
+    public func makeMessageEncoder(
+        eventHashes: [String: Int]? = nil,
+        clientEventHashes: [String: Int]? = nil
+    ) -> any TransportMessageEncoder {
+        message.makeMessageEncoder(
+            eventHashes: eventHashes,
+            clientEventHashes: clientEventHashes,
+            enablePayloadCompression: enablePayloadCompression
+        )
     }
 
     public func makeStateUpdateEncoder(pathHashes: [String: UInt32]? = nil) -> any StateUpdateEncoder {

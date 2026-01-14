@@ -86,22 +86,22 @@ export class HeroDefenseStateTree {
     } as Actions
 
     this.moveTo = (payload: MoveToEvent) => {
-      this.view.sendEvent("MoveToEvent", payload)
+      this.view.sendEvent("MoveTo", payload)
     }
     this.placeTurret = (payload: PlaceTurretEvent) => {
-      this.view.sendEvent("PlaceTurretEvent", payload)
+      this.view.sendEvent("PlaceTurret", payload)
     }
     this.shoot = (payload: ShootEvent) => {
-      this.view.sendEvent("ShootEvent", payload)
+      this.view.sendEvent("Shoot", payload)
     }
     this.updateRotation = (payload: UpdateRotationEvent) => {
-      this.view.sendEvent("UpdateRotationEvent", payload)
+      this.view.sendEvent("UpdateRotation", payload)
     }
     this.upgradeTurret = (payload: UpgradeTurretEvent) => {
-      this.view.sendEvent("UpgradeTurretEvent", payload)
+      this.view.sendEvent("UpgradeTurret", payload)
     }
     this.upgradeWeapon = (payload: UpgradeWeaponEvent) => {
-      this.view.sendEvent("UpgradeWeaponEvent", payload)
+      this.view.sendEvent("UpgradeWeapon", payload)
     }
 
     this.events = {
@@ -114,20 +114,20 @@ export class HeroDefenseStateTree {
     } as ClientEvents
 
     this.on = {
-      playerShoot: (handler) => this.view.onServerEvent("PlayerShootEvent", handler),
-      turretFire: (handler) => this.view.onServerEvent("TurretFireEvent", handler),
+      playerShoot: (handler) => this.view.onServerEvent("PlayerShoot", handler),
+      turretFire: (handler) => this.view.onServerEvent("TurretFire", handler),
     } as ServerEventSubscriptions
 
     // Initialize playerShoot server event subscription
     this.playerShoot = {
       subscribe: (handler: EventHandler<PlayerShootEvent>) => {
-        return this.view.onServerEvent("PlayerShootEvent", handler)
+        return this.view.onServerEvent("PlayerShoot", handler)
       }
     } as EventSubscription<PlayerShootEvent>
     // Initialize turretFire server event subscription
     this.turretFire = {
       subscribe: (handler: EventHandler<TurretFireEvent>) => {
-        return this.view.onServerEvent("TurretFireEvent", handler)
+        return this.view.onServerEvent("TurretFire", handler)
       }
     } as EventSubscription<TurretFireEvent>
 

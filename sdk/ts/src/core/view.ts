@@ -9,7 +9,7 @@ import type {
   ErrorPayload
 } from '../types/transport'
 import { StateTreeRuntime } from './runtime'
-import { createJoinMessage, createActionMessage, createEventMessage, generateRequestID, pathHashReverseLookup } from './protocol'
+import { createJoinMessage, createActionMessage, createEventMessage, generateRequestID, pathHashReverseLookup, eventHashReverseLookup, clientEventHashReverseLookup, eventFieldOrder, clientEventFieldOrder } from './protocol'
 import { NoOpLogger, type Logger } from './logger'
 import { IVec2, IVec3, Angle, Position2, Velocity2, Acceleration2 } from './deterministic-math'
 import type { ProtocolSchema, SchemaDef, SchemaProperty } from '../codegen/schema'
@@ -147,6 +147,52 @@ export class StateTreeView {
       for (const [pattern, hash] of Object.entries(landDef.pathHashes)) {
         pathHashReverseLookup.set(hash, pattern)
       }
+    }
+    
+    // Initialize event hash reverse lookup tables
+    if (landDef.eventHashes) {
+      eventHashReverseLookup.clear()
+      for (const [type, hash] of Object.entries(landDef.eventHashes)) {
+        eventHashReverseLookup.set(hash, type)
+      }
+    }
+    
+    if (landDef.clientEventHashes) {
+      clientEventHashReverseLookup.clear()
+      for (const [type, hash] of Object.entries(landDef.clientEventHashes)) {
+        clientEventHashReverseLookup.set(hash, type)
+      }
+    }
+
+    // Initialize event field order tables for array compression
+    if (landDef.events && this.schema.defs) {
+        eventFieldOrder.clear()
+        for (const [type, schemaRef] of Object.entries(landDef.events)) {
+            if (schemaRef.$ref) {
+                // Parse ref "#/defs/TypeName"
+                const parts = schemaRef.$ref.split('/')
+                const TypeName = parts[parts.length - 1]
+                const def = this.schema.defs[TypeName]
+                if (def && Array.isArray(def.required)) {
+                    eventFieldOrder.set(type, [...def.required]) // Copy array
+                }
+            }
+        }
+    }
+
+    if (landDef.clientEvents && this.schema.defs) {
+        clientEventFieldOrder.clear()
+        for (const [type, schemaRef] of Object.entries(landDef.clientEvents)) {
+            if (schemaRef.$ref) {
+                // Parse ref "#/defs/TypeName"
+                const parts = schemaRef.$ref.split('/')
+                const TypeName = parts[parts.length - 1]
+                const def = this.schema.defs[TypeName]
+                if (def && Array.isArray(def.required)) {
+                    clientEventFieldOrder.set(type, [...def.required]) // Copy array
+                }
+            }
+        }
     }
   }
 
@@ -877,21 +923,67 @@ export class StateTreeView {
     }
 
     // Get event schema from defs if available
-    // Events are defined in schema.defs with the event type name (e.g., "PlayerShootEvent")
-    const eventDef = this.schema?.defs?.[eventType]
-    if (!eventDef || !eventDef.properties) {
-      // If no schema found, still try to decode using heuristics (for backward compatibility)
-      const decoded: Record<string, any> = {}
-      for (const [key, value] of Object.entries(payload)) {
-        // Try to decode without schema (will use heuristics in decodeSnapshotValue)
-        decoded[key] = this.decodeSnapshotValue(value, `/${eventType}/${key}`)
+    // eventType is the short name (e.g., "PlayerShoot"), but schema.defs uses full name (e.g., "PlayerShootEvent")
+    // We need to look up the event in landDef.events to get the $ref, then resolve to the full type name
+    let eventDef: any = null
+    let fullEventTypeName: string | null = null
+    
+    if (this.schema) {
+      // Extract land type from landID
+      const colonIndex = this.landID.indexOf(':')
+      const landType = colonIndex > 0 ? this.landID.substring(0, colonIndex) : this.landID
+      const landDef = this.schema.lands[landType]
+      
+      if (landDef?.events?.[eventType]?.$ref) {
+        // Resolve the full type name from the $ref (e.g., "#/defs/PlayerShootEvent" -> "PlayerShootEvent")
+        fullEventTypeName = resolveRefName(landDef.events[eventType].$ref)
+        eventDef = this.schema.defs?.[fullEventTypeName]
+      } else {
+        // Fallback: try direct lookup (for backward compatibility or non-standard schemas)
+        eventDef = this.schema.defs?.[eventType]
+        if (eventDef) {
+          fullEventTypeName = eventType
+        }
       }
-      return decoded
+    }
+    
+    if (!eventDef || !eventDef.properties) {
+      // If no schema found, log warning and return payload as-is (don't try to decode)
+      // This prevents incorrect structure when schema lookup fails
+      this.logger.warn(`No schema found for event '${eventType}'. Returning payload as-is.`, {
+        eventType,
+        payloadKeys: Object.keys(payload || {}),
+        payloadType: typeof payload,
+        isArray: Array.isArray(payload),
+        hasSchema: !!this.schema,
+        hasLandDef: !!this.schema?.lands,
+        landID: this.landID
+      })
+      return payload
     }
 
     // Decode each field using schema information from event definition
     const decoded: Record<string, any> = {}
     for (const [key, value] of Object.entries(payload)) {
+      // Safety check: if value is the entire payload object, something went wrong
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        const valueKeys = Object.keys(value)
+        const payloadKeys = Object.keys(payload)
+        // If value has the same keys as payload, it's likely the entire payload was nested
+        if (valueKeys.length === payloadKeys.length && 
+            valueKeys.every(k => payloadKeys.includes(k))) {
+          this.logger.warn(`Event payload field '${key}' appears to contain the entire payload. This may indicate a decoding issue.`, {
+            eventType,
+            field: key,
+            valueKeys,
+            payloadKeys
+          })
+          // Use the value as-is to avoid further corruption
+          decoded[key] = value
+          continue
+        }
+      }
+      
       const fieldSchema = eventDef.properties[key]
       if (fieldSchema) {
         // Get the type from field schema

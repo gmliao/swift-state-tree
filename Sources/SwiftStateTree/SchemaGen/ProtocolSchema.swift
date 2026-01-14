@@ -97,13 +97,23 @@ public struct LandSchema: Codable, Sendable {
     /// Example: "players.*.position.x" → 0x12345678
     public let pathHashes: [String: UInt32]?
     
+    /// Server Event ID → Opcode (Server → Client).
+    /// Used for compressing event type strings to integer opcodes.
+    public let eventHashes: [String: Int]?
+    
+    /// Client Event ID → Opcode (Client → Server).
+    /// Used for compressing client event type strings to integer opcodes.
+    public let clientEventHashes: [String: Int]?
+    
     public init(
         stateType: String,
         actions: [String: JSONSchema] = [:],
         clientEvents: [String: JSONSchema] = [:],
         events: [String: JSONSchema] = [:],
         sync: SyncSchema,
-        pathHashes: [String: UInt32]? = nil
+        pathHashes: [String: UInt32]? = nil,
+        eventHashes: [String: Int]? = nil,
+        clientEventHashes: [String: Int]? = nil
     ) {
         self.stateType = stateType
         self.actions = actions
@@ -111,6 +121,8 @@ public struct LandSchema: Codable, Sendable {
         self.events = events
         self.sync = sync
         self.pathHashes = pathHashes
+        self.eventHashes = eventHashes
+        self.clientEventHashes = clientEventHashes
     }
 }
 

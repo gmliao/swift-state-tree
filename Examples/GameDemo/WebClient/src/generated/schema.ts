@@ -581,6 +581,14 @@ export const SCHEMA = {
           "$ref": "#/defs/PlayAction"
         }
       },
+      "clientEventHashes": {
+        "MoveTo": 1,
+        "PlaceTurret": 2,
+        "Shoot": 3,
+        "UpdateRotation": 4,
+        "UpgradeTurret": 5,
+        "UpgradeWeapon": 6
+      },
       "clientEvents": {
         "MoveTo": {
           "$ref": "#/defs/MoveToEvent"
@@ -600,6 +608,10 @@ export const SCHEMA = {
         "UpgradeWeapon": {
           "$ref": "#/defs/UpgradeWeaponEvent"
         }
+      },
+      "eventHashes": {
+        "PlayerShoot": 1,
+        "TurretFire": 2
       },
       "events": {
         "PlayerShoot": {
@@ -676,7 +688,7 @@ export const SCHEMA = {
       }
     }
   },
-  "schemaHash": "504dae14762d6942",
+  "schemaHash": "66997a29657e5238",
   "version": "0.1.0"
 } as const
 

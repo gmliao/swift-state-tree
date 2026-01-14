@@ -78,6 +78,22 @@ public struct EventRegistry<E: Codable & Sendable>: Sendable {
         // We can't directly check protocol conformance at runtime in a type-safe way,
         // so we'll create a descriptor and let the caller handle validation
         let eventName = Self.eventName(for: type)
+        
+        // Validate that @Payload macro was used
+        // If getFieldMetadata() returns empty array, it means the default implementation was used (no @Payload)
+        if let metadataProvider = type as? any SchemaMetadataProvider.Type {
+            let metadata = metadataProvider.getFieldMetadata()
+            if metadata.isEmpty {
+                // Check if this is an empty struct (which is valid) or missing @Payload
+                // For now, we'll only warn for non-empty structs
+                // Empty structs are valid even without @Payload
+                let mirror = Mirror(reflecting: type)
+                if !mirror.children.isEmpty {
+                    print("⚠️ Warning: Event type '\(eventName)' may be missing @Payload macro. getFieldMetadata() returned empty array.")
+                }
+            }
+        }
+        
         let descriptor = AnyEventDescriptor(
             type: type,
             eventName: eventName,
@@ -113,6 +129,22 @@ public struct EventRegistry<E: Codable & Sendable>: Sendable {
     /// - Returns: A new registry with the event added.
     public func registerClientEventErased(_ type: Any.Type) -> EventRegistry<E> {
         let eventName = Self.eventName(for: type)
+        
+        // Validate that @Payload macro was used
+        // If getFieldMetadata() returns empty array, it means the default implementation was used (no @Payload)
+        if let metadataProvider = type as? any SchemaMetadataProvider.Type {
+            let metadata = metadataProvider.getFieldMetadata()
+            if metadata.isEmpty {
+                // Check if this is an empty struct (which is valid) or missing @Payload
+                // For now, we'll only warn for non-empty structs
+                // Empty structs are valid even without @Payload
+                let mirror = Mirror(reflecting: type)
+                if !mirror.children.isEmpty {
+                    print("⚠️ Warning: Event type '\(eventName)' may be missing @Payload macro. getFieldMetadata() returned empty array.")
+                }
+            }
+        }
+        
         let descriptor = AnyEventDescriptor(
             type: type,
             eventName: eventName,
@@ -125,13 +157,31 @@ public struct EventRegistry<E: Codable & Sendable>: Sendable {
     
     /// Get the event name for a given type.
     ///
-    /// The event name is derived from the type name using `String(describing:)`.
-    /// For example, "WelcomeEvent" -> "WelcomeEvent".
+    /// The event name is derived from the type name, removing the "Event" suffix
+    /// to match schema generation and AnyServerEvent/AnyClientEvent naming.
+    /// For example, "WelcomeEvent" -> "Welcome", "PlayerShootEvent" -> "PlayerShoot".
     ///
     /// - Parameter type: The event type.
-    /// - Returns: The event name.
+    /// - Returns: The event name (without "Event" suffix if present).
     public static func eventName(for type: Any.Type) -> String {
-        return String(describing: type)
+        let typeName = String(describing: type)
+        
+        // Extract base type name (handle module prefixes)
+        var baseTypeName: String
+        if let lastComponent = typeName.split(separator: ".").last {
+            baseTypeName = String(lastComponent)
+        } else {
+            baseTypeName = typeName
+        }
+        
+        // Remove "Event" suffix if present, keep camelCase format
+        // Example: "ChatEvent" -> "Chat", "PingEvent" -> "Ping"
+        var eventID = baseTypeName
+        if eventID.hasSuffix("Event") {
+            eventID = String(eventID.dropLast(5))
+        }
+        
+        return eventID
     }
     
     /// Find a descriptor by event name.

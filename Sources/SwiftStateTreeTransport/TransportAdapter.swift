@@ -99,6 +99,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         stateUpdateEncoder: any StateUpdateEncoder = JSONStateUpdateEncoder(),
         encodingConfig: TransportEncodingConfig? = nil,
         pathHashes: [String: UInt32]? = nil,
+        eventHashes: [String: Int]? = nil,
+        clientEventHashes: [String: Int]? = nil,
         enableParallelEncoding: Bool? = nil,
         logger: Logger? = nil
     ) {
@@ -107,7 +109,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         self.landID = landID
         if let encodingConfig = encodingConfig {
             self.codec = encodingConfig.makeCodec()
-            self.messageEncoder = encodingConfig.makeMessageEncoder()
+            self.messageEncoder = encodingConfig.makeMessageEncoder(
+                eventHashes: eventHashes,
+                clientEventHashes: clientEventHashes
+            )
             self.stateUpdateEncoder = encodingConfig.makeStateUpdateEncoder(pathHashes: pathHashes)
             
             // Validate: Warn if opcodeJsonArray is used without pathHashes

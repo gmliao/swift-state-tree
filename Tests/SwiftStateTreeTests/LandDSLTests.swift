@@ -530,10 +530,10 @@ func testEventRegistryFindDescriptor() {
         Rules { }
     }
     
-    // Test finding by event name
-    let descriptor = definition.serverEventRegistry.findDescriptor(for: "TestFindEvent")
+    // Test finding by event name (event name now removes "Event" suffix to match schema)
+    let descriptor = definition.serverEventRegistry.findDescriptor(for: "TestFind")
     #expect(descriptor != nil)
-    #expect(descriptor?.eventName == "TestFindEvent")
+    #expect(descriptor?.eventName == "TestFind")
     #expect(descriptor?.direction == .server)
     
     // Test finding non-existent event
@@ -599,8 +599,8 @@ func testBothClientAndServerEvents() {
     #expect(definition.clientEventRegistry.registered.count == 1)
     #expect(definition.serverEventRegistry.registered.count == 1)
     
-    #expect(definition.clientEventRegistry.registered.first?.eventName == "ClientEvent")
-    #expect(definition.serverEventRegistry.registered.first?.eventName == "ServerEvent")
+    #expect(definition.clientEventRegistry.registered.first?.eventName == "Client")
+    #expect(definition.serverEventRegistry.registered.first?.eventName == "Server")
 }
 
 // MARK: - Lifecycle Handler Tests
