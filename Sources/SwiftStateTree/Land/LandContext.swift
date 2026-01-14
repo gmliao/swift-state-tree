@@ -24,6 +24,24 @@ public struct LandContext: Sendable {
     /// System session ID used for system operations.
     public static let systemSessionID = SessionID("_system")
     
+    /// Invalid player slot constant (used when player slot is not available).
+    ///
+    /// This value is returned when:
+    /// - The context is for a system operation (not a real player)
+    /// - The transport layer doesn't support player slots
+    /// - The player hasn't been assigned a slot yet
+    ///
+    /// Example usage:
+    /// ```swift
+    /// HandleAction(AttackAction.self) { state, action, ctx in
+    ///     let slot = ctx.playerSlot ?? LandContext.invalidPlayerSlot
+    ///     if slot != LandContext.invalidPlayerSlot {
+    ///         print("Player has valid slot: \(slot)")
+    ///     }
+    /// }
+    /// ```
+    public static let invalidPlayerSlot: Int32 = -1
+    
     // MARK: - Instance Properties
     
     /// Land identifier
@@ -100,6 +118,27 @@ public struct LandContext: Sendable {
     /// ```
     public let tickId: Int64?
 
+    /// Player slot for the current player (deterministic Int32 identifier for transport encoding).
+    ///
+    /// This is a deterministic slot number allocated for the current player, used for efficient
+    /// transport encoding (e.g., in opcode-based state updates). The slot is allocated when the
+    /// player joins and remains stable for the duration of their session.
+    ///
+    /// **Availability**:
+    /// - Available in Action/Event handlers (for joined players)
+    /// - `nil` for system operations (Tick, OnInitialize, OnFinalize, etc.)
+    /// - `nil` if transport layer doesn't support player slots
+    ///
+    /// Example usage:
+    /// ```swift
+    /// HandleAction(AttackAction.self) { state, action, ctx in
+    ///     if let slot = ctx.playerSlot {
+    ///         print("Player \(ctx.playerID) has slot \(slot)")
+    ///     }
+    /// }
+    /// ```
+    public let playerSlot: Int32?
+
     /// Send event handler closure (delegates to Runtime layer without exposing Transport)
     /// Accepts AnyServerEvent (type-erased root type).
     private let sendEventHandler: @Sendable (AnyServerEvent, EventTarget) async -> Void
@@ -122,6 +161,7 @@ public struct LandContext: Sendable {
         isGuest: Bool = false,
         metadata: [String: String] = [:],
         tickId: Int64? = nil,
+        playerSlot: Int32? = nil,
         sendEventHandler: @escaping @Sendable (AnyServerEvent, EventTarget) async -> Void,
         syncHandler: @escaping @Sendable () async -> Void
     ) {
@@ -135,6 +175,7 @@ public struct LandContext: Sendable {
         self.services = services
         self.logger = logger
         self.tickId = tickId
+        self.playerSlot = playerSlot
         self.sendEventHandler = sendEventHandler
         self.syncHandler = syncHandler
     }

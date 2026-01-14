@@ -1,6 +1,6 @@
 // Examples/GameDemo/Tests/GameSystemTests.swift
 //
-// Unit tests for GameSystem movement logic.
+// Unit tests for MovementSystem logic.
 // These tests ensure movement calculations are correct and handle edge cases.
 
 import Foundation
@@ -8,7 +8,7 @@ import Testing
 @testable import GameContent
 import SwiftStateTreeDeterministicMath
 
-@Test("GameSystem.updatePlayerMovement moves player towards target")
+@Test("MovementSystem.updatePlayerMovement moves player towards target")
 func testUpdatePlayerMovementMovesTowardsTarget() {
     // Arrange
     var player = PlayerState()
@@ -17,7 +17,7 @@ func testUpdatePlayerMovementMovesTowardsTarget() {
     player.rotation = Angle(degrees: 0.0)
     
     // Act
-    GameSystem.updatePlayerMovement(&player, moveSpeed: 1.0)
+    MovementSystem.updatePlayerMovement(&player, moveSpeed: 1.0)
     
     // Assert
     // Player should have moved towards target
@@ -27,7 +27,7 @@ func testUpdatePlayerMovementMovesTowardsTarget() {
     // So we just verify movement occurred and direction is correct
 }
 
-@Test("GameSystem.updatePlayerMovement reaches target when close enough")
+@Test("MovementSystem.updatePlayerMovement reaches target when close enough")
 func testUpdatePlayerMovementReachesTarget() {
     // Arrange
     var player = PlayerState()
@@ -37,7 +37,7 @@ func testUpdatePlayerMovementReachesTarget() {
     player.rotation = Angle(degrees: 0.0)
     
     // Act
-    GameSystem.updatePlayerMovement(&player, moveSpeed: 1.0, arrivalThreshold: 1.0)
+    MovementSystem.updatePlayerMovement(&player, moveSpeed: 1.0, arrivalThreshold: 1.0)
     
     // Assert
     // Player should have reached target (within threshold)
@@ -45,7 +45,7 @@ func testUpdatePlayerMovementReachesTarget() {
     #expect(player.position.isWithinDistance(to: target, threshold: 0.1))
 }
 
-@Test("GameSystem.updatePlayerMovement updates rotation towards target")
+@Test("MovementSystem.updatePlayerMovement updates rotation towards target")
 func testUpdatePlayerMovementUpdatesRotation() {
     // Arrange
     var player = PlayerState()
@@ -54,7 +54,7 @@ func testUpdatePlayerMovementUpdatesRotation() {
     player.rotation = Angle(degrees: 0.0)
     
     // Act
-    GameSystem.updatePlayerMovement(&player, moveSpeed: 0.1)
+    MovementSystem.updatePlayerMovement(&player, moveSpeed: 0.1)
     
     // Assert
     // Rotation should be approximately 45 degrees
@@ -63,7 +63,7 @@ func testUpdatePlayerMovementUpdatesRotation() {
     #expect(angleDiff < 1.0)  // Allow 1 degree tolerance
 }
 
-@Test("GameSystem.updatePlayerMovement handles no target")
+@Test("MovementSystem.updatePlayerMovement handles no target")
 func testUpdatePlayerMovementHandlesNoTarget() {
     // Arrange
     var player = PlayerState()
@@ -72,14 +72,14 @@ func testUpdatePlayerMovementHandlesNoTarget() {
     let originalPosition = player.position
     
     // Act
-    GameSystem.updatePlayerMovement(&player)
+    MovementSystem.updatePlayerMovement(&player)
     
     // Assert
     // Position should not change when there's no target
     #expect(player.position == originalPosition)
 }
 
-@Test("GameSystem.updatePlayerMovement handles very small distances")
+@Test("MovementSystem.updatePlayerMovement handles very small distances")
 func testUpdatePlayerMovementHandlesSmallDistances() {
     // Arrange
     var player = PlayerState()
@@ -88,14 +88,14 @@ func testUpdatePlayerMovementHandlesSmallDistances() {
     player.targetPosition = target
     
     // Act
-    GameSystem.updatePlayerMovement(&player, moveSpeed: 1.0, arrivalThreshold: 1.0)
+    MovementSystem.updatePlayerMovement(&player, moveSpeed: 1.0, arrivalThreshold: 1.0)
     
     // Assert
     // Should handle small distances gracefully (either reach target or move towards it)
     #expect(player.position.isWithinDistance(to: target, threshold: 1.0) || player.targetPosition != nil)
 }
 
-@Test("GameSystem.updatePlayerMovement handles large distances")
+@Test("MovementSystem.updatePlayerMovement handles large distances")
 func testUpdatePlayerMovementHandlesLargeDistances() {
     // Arrange
     var player = PlayerState()
@@ -104,7 +104,7 @@ func testUpdatePlayerMovementHandlesLargeDistances() {
     let originalTarget = player.targetPosition
     
     // Act
-    GameSystem.updatePlayerMovement(&player, moveSpeed: 1.0)
+    MovementSystem.updatePlayerMovement(&player, moveSpeed: 1.0)
     
     // Assert
     // Should move towards target without issues
@@ -112,7 +112,7 @@ func testUpdatePlayerMovementHandlesLargeDistances() {
     #expect(player.position.v.x > 0 || player.position.v.y > 0)  // Should have moved
 }
 
-@Test("GameSystem.updatePlayerMovement handles multiple movement steps")
+@Test("MovementSystem.updatePlayerMovement handles multiple movement steps")
 func testUpdatePlayerMovementMultipleSteps() {
     // Arrange
     var player = PlayerState()
@@ -125,7 +125,7 @@ func testUpdatePlayerMovementMultipleSteps() {
     var hasMoved = false
     for _ in 0..<3 {
         let hadTarget = player.targetPosition != nil
-        GameSystem.updatePlayerMovement(&player, moveSpeed: 0.5)  // Smaller move speed
+        MovementSystem.updatePlayerMovement(&player, moveSpeed: 0.5)  // Smaller move speed
         // Verify position is progressing towards target (if target still exists)
         if hadTarget && player.targetPosition != nil {
             #expect(player.position.v.x >= previousX)  // Should not move backwards
@@ -142,7 +142,7 @@ func testUpdatePlayerMovementMultipleSteps() {
     #expect(abs(player.position.v.y) < 100)  // Should be close to 0 (y-axis)
 }
 
-@Test("GameSystem.updatePlayerMovement clears target when reached")
+@Test("MovementSystem.updatePlayerMovement clears target when reached")
 func testUpdatePlayerMovementClearsTargetWhenReached() {
     // Arrange
     var player = PlayerState()
@@ -151,14 +151,14 @@ func testUpdatePlayerMovementClearsTargetWhenReached() {
     player.targetPosition = target
     
     // Act
-    GameSystem.updatePlayerMovement(&player, moveSpeed: 1.0, arrivalThreshold: 1.0)
+    MovementSystem.updatePlayerMovement(&player, moveSpeed: 1.0, arrivalThreshold: 1.0)
     
     // Assert
     #expect(player.targetPosition == nil)  // Target should be cleared
     #expect(player.position.isWithinDistance(to: target, threshold: 0.1))
 }
 
-@Test("GameSystem.updatePlayerMovement detailed step-by-step tracking")
+@Test("MovementSystem.updatePlayerMovement detailed step-by-step tracking")
 func testUpdatePlayerMovementStepByStep() {
     // Arrange - simulate a realistic movement scenario
     var player = PlayerState()
@@ -191,7 +191,7 @@ func testUpdatePlayerMovementStepByStep() {
         ))
         
         // Perform movement
-        GameSystem.updatePlayerMovement(&player, moveSpeed: moveSpeed, arrivalThreshold: arrivalThreshold)
+        MovementSystem.updatePlayerMovement(&player, moveSpeed: moveSpeed, arrivalThreshold: arrivalThreshold)
         
         // Check for issues - these should fail the test if precision problems occur
         if stepCount > 1 {
@@ -237,7 +237,7 @@ func testUpdatePlayerMovementStepByStep() {
 
 // MARK: - Precision Tests (Detecting the "亂跳" bug)
 
-@Test("GameSystem.updatePlayerMovement precision test - small scale factor scenario")
+@Test("MovementSystem.updatePlayerMovement precision test - small scale factor scenario")
 func testUpdatePlayerMovementPrecisionSmallScaleFactor() {
     // This test specifically targets the precision bug that caused "亂跳" (erratic jumping)
     // The bug occurred when moveSpeed / distance resulted in a very small scale factor
@@ -262,7 +262,7 @@ func testUpdatePlayerMovementPrecisionSmallScaleFactor() {
         stepCount += 1
         let positionBefore = player.position
         
-        GameSystem.updatePlayerMovement(&player, moveSpeed: moveSpeed)
+        MovementSystem.updatePlayerMovement(&player, moveSpeed: moveSpeed)
         
         // Check for large jumps (the "亂跳" symptom)
         let movedDistance = (player.position.v - positionBefore.v).magnitude()
@@ -285,7 +285,7 @@ func testUpdatePlayerMovementPrecisionSmallScaleFactor() {
     #expect(stepCount > 0, "Should have taken at least one step")
 }
 
-@Test("GameSystem.updatePlayerMovement precision test - very small moveSpeed")
+@Test("MovementSystem.updatePlayerMovement precision test - very small moveSpeed")
 func testUpdatePlayerMovementPrecisionVerySmallMoveSpeed() {
     // Test with very small moveSpeed to stress test precision
     var player = PlayerState()
@@ -306,7 +306,7 @@ func testUpdatePlayerMovementPrecisionVerySmallMoveSpeed() {
         previousPosition = player.position
         previousDistance = (target.v - player.position.v).magnitude()
         
-        GameSystem.updatePlayerMovement(&player, moveSpeed: moveSpeed)
+        MovementSystem.updatePlayerMovement(&player, moveSpeed: moveSpeed)
         
         // Check movement distance
         let movedDistance = (player.position.v - previousPosition.v).magnitude()
@@ -322,7 +322,7 @@ func testUpdatePlayerMovementPrecisionVerySmallMoveSpeed() {
     }
 }
 
-@Test("GameSystem.updatePlayerMovement precision test - multiple steps consistency")
+@Test("MovementSystem.updatePlayerMovement precision test - multiple steps consistency")
 func testUpdatePlayerMovementPrecisionMultipleStepsConsistency() {
     // Test that multiple steps maintain precision and don't accumulate errors
     var player = PlayerState()
@@ -340,7 +340,7 @@ func testUpdatePlayerMovementPrecisionMultipleStepsConsistency() {
         }
         
         let previousPosition = player.position
-        GameSystem.updatePlayerMovement(&player, moveSpeed: moveSpeed)
+        MovementSystem.updatePlayerMovement(&player, moveSpeed: moveSpeed)
         positions.append(player.position)
         
         // Verify smooth progression

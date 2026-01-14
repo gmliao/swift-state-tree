@@ -822,15 +822,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
             
             // Debug: Log actual data size breakdown for trace level
-            // if logger.logLevel <= .trace {
+            if logger.logLevel <= .trace {
                 let hexPreview = data.map { String(format: "%02x", $0) }.joined(separator: " ")
-                logger.info("📤 Event data breakdown", metadata: [
+                logger.trace("📤 Event data breakdown", metadata: [
                     "eventType": .string(event.type),
                     "totalBytes": .string("\(dataSize)"),
                     "hexPreview": .string(hexPreview),
                     "encoding": .string("\(messageEncoder.encoding.rawValue)")
                 ])
-            // }
+            }
 
             // Log event payload - only compute if trace logging is enabled
             if let payloadData = try? codec.encode(event.payload),
