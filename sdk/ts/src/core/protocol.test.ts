@@ -7,6 +7,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
   encodeMessage,
+  encodeMessageArray,
   decodeMessage,
   createJoinMessage,
   createActionMessage,
@@ -50,12 +51,9 @@ describe('protocol', () => {
       const message: TransportMessage = {
         kind: 'action',
         payload: {
-          action: {
-            requestID: 'action-123',
-            landID: 'demo-game',
-            actionType: 'BuyUpgrade',
-            payload: 'base64encoded'
-          }
+          requestID: 'action-123',
+          typeIdentifier: 'BuyUpgrade',
+          payload: { upgradeID: 'cursor' }
         } as any
       }
 
@@ -403,7 +401,7 @@ describe('protocol', () => {
   })
 
   describe('createActionMessage', () => {
-    it('creates action message with base64 encoded payload', () => {
+    it('creates action message with raw payload', () => {
       const payload = { upgradeID: 'cursor' }
       const message = createActionMessage('req-789', 'BuyUpgrade', payload)
 
@@ -412,15 +410,7 @@ describe('protocol', () => {
       // Simplified structure: fields directly in payload
       expect(action.requestID).toBe('req-789')
       expect(action.typeIdentifier).toBe('BuyUpgrade')
-      expect(typeof action.payload).toBe('string') // base64 encoded
-      
-      // Decode and verify
-      const decoded = JSON.parse(
-        typeof Buffer !== 'undefined'
-          ? Buffer.from(action.payload, 'base64').toString('utf-8')
-          : decodeURIComponent(escape(atob(action.payload)))
-      )
-      expect(decoded).toEqual(payload)
+      expect(action.payload).toEqual(payload)
     })
   })
 
@@ -868,6 +858,110 @@ describe('protocol', () => {
       
       const encoded = JSON.stringify(eventArray)
       expect(() => decodeMessage(encoded)).toThrow('Unknown event opcode: 999')
+    })
+  })
+
+  describe('encodeMessageArray - joinResponse with encoding', () => {
+    it('encodes joinResponse with encoding field', () => {
+      const message: TransportMessage = {
+        kind: 'joinResponse',
+        payload: {
+          joinResponse: {
+            requestID: 'req-123',
+            success: true,
+            landType: 'demo-game',
+            landInstanceId: 'instance-1',
+            playerSlot: 0,
+            encoding: 'opcodeJsonArray',
+            reason: undefined
+          }
+        } as any
+      }
+
+      const encoded = encodeMessageArray(message)
+      const array = JSON.parse(encoded)
+      
+      expect(array[0]).toBe(105) // opcode
+      expect(array[1]).toBe('req-123') // requestID
+      expect(array[2]).toBe(1) // success
+      expect(array[3]).toBe('demo-game') // landType
+      expect(array[4]).toBe('instance-1') // landInstanceId
+      expect(array[5]).toBe(0) // playerSlot
+      expect(array[6]).toBe('opcodeJsonArray') // encoding
+      expect(array.length).toBe(7) // No reason field
+    })
+
+    it('encodes joinResponse without encoding field', () => {
+      const message: TransportMessage = {
+        kind: 'joinResponse',
+        payload: {
+          joinResponse: {
+            requestID: 'req-456',
+            success: false,
+            reason: 'Room full'
+          }
+        } as any
+      }
+
+      const encoded = encodeMessageArray(message)
+      const array = JSON.parse(encoded)
+      
+      expect(array[0]).toBe(105) // opcode
+      expect(array[1]).toBe('req-456') // requestID
+      expect(array[2]).toBe(0) // success
+      expect(array[3]).toBe(null) // landType
+      expect(array[4]).toBe(null) // landInstanceId
+      expect(array[5]).toBe(null) // playerSlot
+      expect(array[6]).toBe(null) // encoding (null when not provided)
+      expect(array[7]).toBe('Room full') // reason
+    })
+
+    it('decodes joinResponse with encoding field from opcode array', () => {
+      const array = [
+        105, // opcode
+        'req-789',
+        1, // success
+        'demo-game',
+        'instance-2',
+        1, // playerSlot
+        'opcodeJsonArray', // encoding
+        null // reason
+      ]
+
+      const encoded = JSON.stringify(array)
+      const decoded = decodeMessage(encoded) as TransportMessage
+
+      expect(decoded.kind).toBe('joinResponse')
+      const payload = (decoded.payload as any).joinResponse
+      expect(payload.requestID).toBe('req-789')
+      expect(payload.success).toBe(true)
+      expect(payload.landType).toBe('demo-game')
+      expect(payload.landInstanceId).toBe('instance-2')
+      expect(payload.playerSlot).toBe(1)
+      expect(payload.encoding).toBe('opcodeJsonArray')
+    })
+
+    it('decodes joinResponse without encoding field from opcode array', () => {
+      const array = [
+        105, // opcode
+        'req-999',
+        0, // success
+        null, // landType
+        null, // landInstanceId
+        null, // playerSlot
+        null, // encoding (not provided)
+        'Access denied' // reason
+      ]
+
+      const encoded = JSON.stringify(array)
+      const decoded = decodeMessage(encoded) as TransportMessage
+
+      expect(decoded.kind).toBe('joinResponse')
+      const payload = (decoded.payload as any).joinResponse
+      expect(payload.requestID).toBe('req-999')
+      expect(payload.success).toBe(false)
+      expect(payload.encoding).toBeUndefined()
+      expect(payload.reason).toBe('Access denied')
     })
   })
 })

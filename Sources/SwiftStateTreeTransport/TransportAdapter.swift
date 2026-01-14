@@ -168,6 +168,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         ])
     }
 
+    // MARK: - Encoding Configuration
+
+    /// Get the current message encoding format.
+    public func getMessageEncoding() -> String {
+        messageEncoder.encoding.rawValue
+    }
+
     // MARK: - Dirty Tracking Configuration
 
     /// Check whether dirty tracking optimization is currently enabled.
@@ -487,7 +494,21 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Compute messagePreview for error logging (only if needed)
         // We compute it lazily in the catch block to avoid unnecessary work
         do {
-            let transportMsg = try codec.decode(TransportMessage.self, from: message)
+            // Try to detect if message is in opcode array format
+            // If it's an array starting with 101-106, use opcode decoder
+            let transportMsg: TransportMessage
+            if let json = try? JSONSerialization.jsonObject(with: message),
+               let array = json as? [Any],
+               array.count >= 1,
+               let firstElement = array[0] as? Int,
+               firstElement >= 101 && firstElement <= 106 {
+                // This is an opcode array format message
+                let decoder = OpcodeTransportMessageDecoder()
+                transportMsg = try decoder.decode(from: message)
+            } else {
+                // Standard JSON object format
+                transportMsg = try codec.decode(TransportMessage.self, from: message)
+            }
 
             switch transportMsg.kind {
             case .join:
@@ -1820,11 +1841,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         reason: String? = nil
     ) async {
         do {
+            // Include encoding in join response so client knows which format to use
+            let encoding = messageEncoder.encoding.rawValue
             let response = TransportMessage.joinResponse(
                 requestID: requestID,
                 success: success,
                 playerID: playerID,
                 playerSlot: playerSlot,
+                encoding: encoding,
                 reason: reason
             )
             let responseData = try messageEncoder.encode(response)

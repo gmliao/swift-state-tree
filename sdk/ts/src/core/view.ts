@@ -6,10 +6,11 @@ import type {
   TransportJoinResponsePayload,
   TransportActionResponsePayload,
   TransportEventPayload,
-  ErrorPayload
+  ErrorPayload,
+  MessageEncoding
 } from '../types/transport'
 import { StateTreeRuntime } from './runtime'
-import { createJoinMessage, createActionMessage, createEventMessage, generateRequestID, pathHashReverseLookup, eventHashReverseLookup, clientEventHashReverseLookup, eventFieldOrder, clientEventFieldOrder } from './protocol'
+import { createJoinMessage, createActionMessage, createEventMessage, generateRequestID, encodeMessage, encodeMessageArray, pathHashReverseLookup, eventHashReverseLookup, clientEventHashReverseLookup, eventHashLookup, clientEventHashLookup, eventFieldOrder, clientEventFieldOrder, actionFieldOrder } from './protocol'
 import { NoOpLogger, type Logger } from './logger'
 import { IVec2, IVec3, Angle, Position2, Velocity2, Acceleration2 } from './deterministic-math'
 import type { ProtocolSchema, SchemaDef, SchemaProperty } from '../codegen/schema'
@@ -85,6 +86,8 @@ export class StateTreeView {
   private logger: Logger
   private playerID?: string
   private deviceID?: string
+  /// Message encoding format to use for sending messages (defaults to 'json')
+  private messageEncoding: MessageEncoding = 'json'
   
   /**
    * Get the current player ID (set after successful join)
@@ -149,18 +152,22 @@ export class StateTreeView {
       }
     }
     
-    // Initialize event hash reverse lookup tables
+    // Initialize event hash lookup tables
     if (landDef.eventHashes) {
       eventHashReverseLookup.clear()
+      eventHashLookup.clear()
       for (const [type, hash] of Object.entries(landDef.eventHashes)) {
         eventHashReverseLookup.set(hash, type)
+        eventHashLookup.set(type, hash)
       }
     }
     
     if (landDef.clientEventHashes) {
       clientEventHashReverseLookup.clear()
+      clientEventHashLookup.clear()
       for (const [type, hash] of Object.entries(landDef.clientEventHashes)) {
         clientEventHashReverseLookup.set(hash, type)
+        clientEventHashLookup.set(type, hash)
       }
     }
 
@@ -190,6 +197,21 @@ export class StateTreeView {
                 const def = this.schema.defs[TypeName]
                 if (def && Array.isArray(def.required)) {
                     clientEventFieldOrder.set(type, [...def.required]) // Copy array
+                }
+            }
+        }
+    }
+
+    // Initialize action field order table for array compression
+    if (landDef.actions && this.schema.defs) {
+        actionFieldOrder.clear()
+        for (const [type, schemaRef] of Object.entries(landDef.actions)) {
+            if (schemaRef.$ref) {
+                const parts = schemaRef.$ref.split('/')
+                const TypeName = parts[parts.length - 1]
+                const def = this.schema.defs[TypeName]
+                if (def && Array.isArray(def.required)) {
+                    actionFieldOrder.set(type, [...def.required])
                 }
             }
         }
@@ -228,7 +250,8 @@ export class StateTreeView {
 
       this.joinCallbacks.set(requestID, resolve)
       try {
-        this.runtime.sendRawMessage(message)
+        // Join messages always use JSON format (before we know the server's encoding preference)
+        this.runtime.sendRawMessage(message, 'json')
         this.logger.info(`Join request sent: landType=${landType}, landInstanceId=${landInstanceId ?? 'null'}`)
       } catch (error) {
         this.logger.error(`Failed to send join message: ${error}`)
@@ -257,7 +280,8 @@ export class StateTreeView {
     // landID removed - server identifies land from session mapping
     const message = createEventMessage(eventType, encodedPayload, true)
     try {
-      this.runtime.sendRawMessage(message)
+      // Use the encoding specified in join response (defaults to 'json' if not provided)
+      this.runtime.sendRawMessage(message, this.messageEncoding)
       this.logger.info(`Event sent [${eventType}]: ${JSON.stringify(encodedPayload)}`)
     } catch (error) {
       this.logger.error(`Failed to send event message: ${error}`)
@@ -297,7 +321,8 @@ export class StateTreeView {
       this.actionRejectCallbacks.set(requestID, reject)
       
       try {
-        this.runtime.sendRawMessage(message)
+        // Use the encoding specified in join response (defaults to 'json' if not provided)
+        this.runtime.sendRawMessage(message, this.messageEncoding)
         this.logger.info(`Action sent [${actionType}]: ${JSON.stringify(encodedPayload)}`)
       } catch (error: any) {
         this.actionCallbacks.delete(requestID)
@@ -395,6 +420,14 @@ export class StateTreeView {
 
         const success = payload.success === true
         this.isJoined = success
+
+        // Update message encoding if server provided it in join response
+        if (payload.encoding) {
+          this.messageEncoding = payload.encoding as MessageEncoding
+          this.logger.info(`Updated message encoding to: ${this.messageEncoding}`)
+        }
+
+        // Note: Legacy transportConfig support removed - use encoding field instead
 
         // Update landID if server returned a different one (e.g., new room created)
         // This ensures we track the actual landID the client is connected to

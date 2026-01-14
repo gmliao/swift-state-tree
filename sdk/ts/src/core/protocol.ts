@@ -18,6 +18,142 @@ export function encodeMessage(message: TransportMessage): string {
 }
 
 /**
+ * Encode a TransportMessage to opcode JSON array format
+ * 
+ * Formats:
+ * - joinResponse: [105, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?]
+ * - actionResponse: [102, requestID, response]
+ * - error: [106, code, message, details?]
+ * - action: [101, requestID, typeIdentifier, payload(base64)]
+ * - join: [104, requestID, landType, landInstanceId?, playerID?, deviceID?, metadata?]
+ * - event: [103, direction(0=client,1=server), type, payload, rawBody?]
+ */
+export function encodeMessageArray(message: TransportMessage): string {
+  const array: any[] = []
+  
+  switch (message.kind) {
+    case 'joinResponse': {
+      const payload = (message.payload as any).joinResponse
+      if (!payload) throw new Error('Invalid joinResponse payload')
+      
+      array.push(105) // opcode
+      array.push(payload.requestID)
+      array.push(payload.success ? 1 : 0)
+      
+      // Optional fields - include encoding if present
+      if (payload.landType != null || payload.landInstanceId != null || payload.playerSlot != null || payload.encoding != null || payload.reason != null) {
+        array.push(payload.landType ?? null)
+      }
+      if (payload.landInstanceId != null || payload.playerSlot != null || payload.encoding != null || payload.reason != null) {
+        array.push(payload.landInstanceId ?? null)
+      }
+      if (payload.playerSlot != null || payload.encoding != null || payload.reason != null) {
+        array.push(payload.playerSlot ?? null)
+      }
+      if (payload.encoding != null || payload.reason != null) {
+        array.push(payload.encoding ?? null)
+      }
+      if (payload.reason != null) {
+        array.push(payload.reason)
+      }
+      break
+    }
+    
+    case 'actionResponse': {
+      const payload = (message.payload as any).actionResponse
+      if (!payload) throw new Error('Invalid actionResponse payload')
+      
+      array.push(102) // opcode
+      array.push(payload.requestID)
+      array.push(payload.response)
+      break
+    }
+    
+    case 'error': {
+      const payload = message.payload as any
+      if (!payload.error) throw new Error('Invalid error payload')
+      
+      array.push(106) // opcode
+      array.push(payload.error.code)
+      array.push(payload.error.message)
+      if (payload.error.details != null) {
+        array.push(payload.error.details)
+      }
+      break
+    }
+    
+    case 'action': {
+      const payload = message.payload as any
+      if (!payload.requestID || !payload.typeIdentifier || !payload.payload) {
+        throw new Error('Invalid action payload')
+      }
+      
+      array.push(101) // opcode
+      array.push(payload.requestID)
+      array.push(payload.typeIdentifier)
+      array.push(payload.payload) // Base64 encoded
+      break
+    }
+    
+    case 'join': {
+      const payload = (message.payload as any).join
+      if (!payload) throw new Error('Invalid join payload')
+      
+      array.push(104) // opcode
+      array.push(payload.requestID)
+      array.push(payload.landType)
+      
+      // Optional trailing fields
+      if (payload.landInstanceId != null || payload.playerID != null || payload.deviceID != null || payload.metadata != null) {
+        array.push(payload.landInstanceId ?? null)
+      }
+      if (payload.playerID != null || payload.deviceID != null || payload.metadata != null) {
+        array.push(payload.playerID ?? null)
+      }
+      if (payload.deviceID != null || payload.metadata != null) {
+        array.push(payload.deviceID ?? null)
+      }
+      if (payload.metadata != null) {
+        array.push(payload.metadata)
+      }
+      break
+    }
+    
+    case 'event': {
+      const payload = message.payload as any
+      const fromClient = payload.fromClient
+      const fromServer = payload.fromServer
+      
+      array.push(103) // opcode
+      
+      if (fromClient) {
+        array.push(0) // direction: 0 = fromClient
+        array.push(fromClient.type)
+        array.push(fromClient.payload || {})
+        if (fromClient.rawBody != null) {
+          array.push(fromClient.rawBody)
+        }
+      } else if (fromServer) {
+        array.push(1) // direction: 1 = fromServer
+        array.push(fromServer.type)
+        array.push(fromServer.payload || {})
+        if (fromServer.rawBody != null) {
+          array.push(fromServer.rawBody)
+        }
+      } else {
+        throw new Error('Invalid event payload: missing fromClient or fromServer')
+      }
+      break
+    }
+    
+    default:
+      throw new Error(`Unsupported message kind: ${message.kind}`)
+  }
+  
+  return JSON.stringify(array)
+}
+
+/**
  * Decode a JSON string to TransportMessage, StateUpdate, or StateSnapshot
  */
 /**
@@ -383,7 +519,7 @@ export function isTransportMessageOpcode(opcode: number): boolean {
  * Decode a JSON array to TransportMessage (opcode format)
  * 
  * Formats:
- * - joinResponse: [105, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, reason?]
+ * - joinResponse: [105, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?]
  * - actionResponse: [102, requestID, response]
  * - error: [106, code, message, details?]
  * - action: [101, requestID, typeIdentifier, payload(base64)]
@@ -420,14 +556,15 @@ export function decodeTransportMessageArray(payload: unknown[]): TransportMessag
   }
 }
 
-// [105, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, reason?]
+// [105, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?]
 function decodeJoinResponseArray(payload: unknown[]): TransportMessage {
   const requestID = payload[1] as string
   const success = payload[2] === 1
   const landType = payload[3] as string | null | undefined
   const landInstanceId = payload[4] as string | null | undefined
   const playerSlot = payload[5] as number | null | undefined
-  const reason = payload[6] as string | null | undefined
+  const encoding = payload[6] as string | null | undefined
+  const reason = payload[7] as string | null | undefined
   
   return {
     kind: 'joinResponse',
@@ -439,6 +576,7 @@ function decodeJoinResponseArray(payload: unknown[]): TransportMessage {
         landInstanceId: landInstanceId ?? undefined,
         landID: landType && landInstanceId ? `${landType}:${landInstanceId}` : undefined,
         playerSlot: playerSlot ?? undefined,
+        encoding: encoding ?? undefined,
         reason: reason ?? undefined
       }
     }
@@ -611,8 +749,16 @@ function decodeEventArray(payload: unknown[]): TransportMessage {
 export const eventHashReverseLookup = new Map<number, string>()
 export const clientEventHashReverseLookup = new Map<number, string>()
 
+// Global forward lookup tables (event type → hash)
+// Populated by View during schema initialization
+export const eventHashLookup = new Map<string, number>()
+export const clientEventHashLookup = new Map<string, number>()
+
 // Global field order tables (event type → field keys[])
 // Populated by View during schema initialization
 export const eventFieldOrder = new Map<string, string[]>()
 export const clientEventFieldOrder = new Map<string, string[]>()
 
+// Global action field order table (action type → field keys[])
+// Populated by View during schema initialization
+export const actionFieldOrder = new Map<string, string[]>()

@@ -1,6 +1,6 @@
-import type { TransportMessage, StateUpdate, StateSnapshot, TransportEncodingConfig } from '../types/transport'
+import type { TransportMessage, StateUpdate, StateSnapshot, TransportEncodingConfig, MessageEncoding } from '../types/transport'
 import { createWebSocket, type WebSocketConnection } from './websocket'
-import { decodeMessage, encodeMessage } from './protocol'
+import { decodeMessage, encodeMessage, encodeMessageArray } from './protocol'
 import { NoOpLogger, type Logger } from './logger'
 import { StateTreeView, type ViewOptions } from './view'
 
@@ -239,14 +239,43 @@ export class StateTreeRuntime {
 
   /**
    * Send a raw message through the WebSocket
+   * @param message - The TransportMessage to send
+   * @param encoding - Optional encoding format. If not provided, uses JSON (for join messages)
    */
-  sendRawMessage(message: TransportMessage): void {
+  sendRawMessage(message: TransportMessage, encoding?: MessageEncoding): void {
     if (!this.ws) {
       throw new Error('WebSocket not connected')
     }
 
-    const encoded = encodeMessage(message)
-    const messageSize = new TextEncoder().encode(encoded).length
+    // Join messages always use JSON format
+    const useEncoding = encoding || 'json'
+    
+    let encoded: string | ArrayBuffer
+    let messageSize: number
+    
+    if (useEncoding === 'json') {
+      // JSON format: encode as JSON object
+      encoded = encodeMessage(message)
+      messageSize = new TextEncoder().encode(encoded as string).length
+      this.ws.send(encoded as string)
+    } else if (useEncoding === 'opcodeJsonArray') {
+      // Opcode array format: encode as JSON array
+      encoded = encodeMessageArray(message)
+      messageSize = new TextEncoder().encode(encoded as string).length
+      this.ws.send(encoded as string)
+    } else if (useEncoding === 'messagepack') {
+      // MessagePack format: encode as opcode array, then serialize with MessagePack
+      // TODO: Implement MessagePack serialization
+      // For now, fallback to opcodeJsonArray format
+      encoded = encodeMessageArray(message)
+      messageSize = new TextEncoder().encode(encoded as string).length
+      this.ws.send(encoded as string)
+    } else {
+      // Fallback to JSON
+      encoded = encodeMessage(message)
+      messageSize = new TextEncoder().encode(encoded as string).length
+      this.ws.send(encoded as string)
+    }
     
     // Report outbound statistics
     if (this.statisticsCallback) {
@@ -256,8 +285,6 @@ export class StateTreeRuntime {
         direction: 'outbound'
       })
     }
-    
-    this.ws.send(encoded)
   }
 
   /**
