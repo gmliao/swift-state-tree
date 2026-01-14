@@ -151,7 +151,43 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     ///   - sessionID: The session that sent the message
     public func onMessage(_ message: Data, from sessionID: SessionID) async {
         do {
-            let transportMsg = try decoder.decode(TransportMessage.self, from: message)
+            // Try to detect if message is in opcode array format
+            // If it's an array starting with 101-106, use opcode decoder
+            let transportMsg: TransportMessage
+            if let json = try? JSONSerialization.jsonObject(with: message),
+               let array = json as? [Any],
+               array.count >= 1,
+               let firstElement = array[0] as? Int,
+               firstElement >= 101 && firstElement <= 106 {
+                // This is an opcode array format message
+                logger.debug("Detected opcode array format message", metadata: [
+                    "sessionID": .string(sessionID.rawValue),
+                    "opcode": .string("\(firstElement)")
+                ])
+                let opcodeDecoder = OpcodeTransportMessageDecoder()
+                transportMsg = try opcodeDecoder.decode(from: message)
+            } else {
+                // Standard JSON object format
+                // Try to decode as JSON object first
+                if let json = try? JSONSerialization.jsonObject(with: message),
+                   json is [String: Any] {
+                    transportMsg = try decoder.decode(TransportMessage.self, from: message)
+                } else {
+                    // If it's not a JSON object, it might be an array that doesn't match opcode format
+                    // Log for debugging
+                    if let json = try? JSONSerialization.jsonObject(with: message),
+                       let array = json as? [Any],
+                       array.count >= 1 {
+                        logger.warning("Received array message but opcode detection failed", metadata: [
+                            "sessionID": .string(sessionID.rawValue),
+                            "firstElement": .string("\(array[0])"),
+                            "arrayLength": .string("\(array.count)")
+                        ])
+                    }
+                    // Fall back to standard decoder (will fail if it's an array, but that's expected)
+                    transportMsg = try decoder.decode(TransportMessage.self, from: message)
+                }
+            }
             
             switch transportMsg.kind {
             case .join:
@@ -324,7 +360,9 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 // This ensures client knows join succeeded before receiving state
                 // Note: initialSyncingPlayers is managed by syncStateForNewPlayer via withInitialSync
                 
-                // 1. Send join response with landType, instanceId, and playerSlot
+                // 1. Send join response with landType, instanceId, playerSlot, and encoding
+                // Get encoding from TransportAdapter (defaults to 'json' if not available)
+                let encoding = await container.transportAdapter.getMessageEncoding()
                 await sendJoinResponse(
                     requestID: requestID,
                     sessionID: sessionID,
@@ -333,7 +371,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                     landInstanceId: landID.instanceId,
                     landID: landID.rawValue,
                     playerID: joinResult.playerID.rawValue,
-                    playerSlot: joinResult.playerSlot
+                    playerSlot: joinResult.playerSlot,
+                    encoding: encoding
                 )
                 
                 // 2. Send initial state snapshot AFTER JoinResponse
@@ -439,6 +478,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         landID: String? = nil,
         playerID: String? = nil,
         playerSlot: Int32? = nil,
+        encoding: String? = nil,
         reason: String? = nil
     ) async {
         do {
@@ -450,6 +490,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 landID: landID,
                 playerID: playerID,
                 playerSlot: playerSlot,
+                encoding: encoding,
                 reason: reason
             )
             let responseData = try encoder.encode(response)

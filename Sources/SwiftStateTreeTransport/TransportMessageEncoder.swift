@@ -152,14 +152,18 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
         ]
         
         // Optional fields - only include if present
-        if payload.landType != nil || payload.landInstanceId != nil || payload.playerSlot != nil || payload.reason != nil {
+        // Check encoding first as it's a new field that should be included if present
+        if payload.landType != nil || payload.landInstanceId != nil || payload.playerSlot != nil || payload.encoding != nil || payload.reason != nil {
             result.append(AnyCodable(payload.landType))
         }
-        if payload.landInstanceId != nil || payload.playerSlot != nil || payload.reason != nil {
+        if payload.landInstanceId != nil || payload.playerSlot != nil || payload.encoding != nil || payload.reason != nil {
             result.append(AnyCodable(payload.landInstanceId))
         }
-        if payload.playerSlot != nil || payload.reason != nil {
+        if payload.playerSlot != nil || payload.encoding != nil || payload.reason != nil {
             result.append(AnyCodable(payload.playerSlot))
+        }
+        if payload.encoding != nil || payload.reason != nil {
+            result.append(AnyCodable(payload.encoding))
         }
         if payload.reason != nil {
             result.append(AnyCodable(payload.reason))
@@ -337,6 +341,20 @@ public extension TransportEncoding {
         case .json:
             return JSONTransportMessageEncoder()
         case .opcodeJsonArray:
+            return OpcodeTransportMessageEncoder(
+                eventHashes: eventHashes,
+                clientEventHashes: clientEventHashes,
+                enablePayloadCompression: enablePayloadCompression
+            )
+        case .messagepack:
+            // TODO: Implement MessagePack encoder
+            // MessagePack encoder should:
+            // 1. Use the same encodeToArray() logic as OpcodeTransportMessageEncoder
+            // 2. Serialize the resulting array using MessagePack (binary) instead of JSON (text)
+            // This means the format is: opcode array structure + MessagePack serialization
+            // For now, return opcode encoder as fallback (will use JSON serialization)
+            // When MessagePack is implemented, return MessagePackTransportMessageEncoder()
+            // which should reuse OpcodeTransportMessageEncoder.encodeToArray() but use MessagePack
             return OpcodeTransportMessageEncoder(
                 eventHashes: eventHashes,
                 clientEventHashes: clientEventHashes,

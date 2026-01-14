@@ -77,18 +77,36 @@ export class SwiftStateTreeClient {
         if (isTransportMessageOpcode) {
           // This is a TransportMessage in opcode format
           const opcodeNames: Record<number, string> = {
-            101: 'join',
-            102: 'joinResponse',
+            101: 'action',
+            102: 'actionResponse',
             103: 'event',
-            104: 'action',
-            105: 'actionResponse',
+            104: 'join',
+            105: 'joinResponse',
             106: 'error'
           }
           const messageType = opcodeNames[firstElement] || 'unknown'
           console.log(chalk.cyan(`📦 TransportMessage [${messageType}] (opcode: ${firstElement}):`))
           console.log(chalk.gray(`   Raw array (first 500 chars): ${JSON.stringify(json).substring(0, 500)}...`))
           
-          // Special handling for event messages
+          // Special handling for joinResponse messages (opcode 105)
+          if (firstElement === 105 && json.length >= 3) {
+            const requestID = json[1] as string
+            const success = json[2] === 1
+            const landType = json[3] as string | null | undefined
+            const landInstanceId = json[4] as string | null | undefined
+            const playerSlot = json[5] as number | null | undefined
+            const encoding = json[6] as string | null | undefined
+            const reason = json[7] as string | null | undefined
+            
+            console.log(chalk.cyan(`   JoinResponse: requestID=${requestID}, success=${success}`))
+            if (landType) console.log(chalk.gray(`   landType: ${landType}`))
+            if (landInstanceId) console.log(chalk.gray(`   landInstanceId: ${landInstanceId}`))
+            if (playerSlot != null) console.log(chalk.gray(`   playerSlot: ${playerSlot}`))
+            if (encoding) console.log(chalk.yellow(`   encoding: ${encoding}`))
+            if (reason) console.log(chalk.gray(`   reason: ${reason}`))
+          }
+          
+          // Special handling for event messages (opcode 103)
           if (firstElement === 103 && json.length >= 4) {
             const direction = json[1] as number
             const type = json[2]
@@ -196,7 +214,8 @@ export class SwiftStateTreeClient {
             this.landID = payload.landID
           }
           
-          console.log(chalk.green(`✅ Join successful: playerID=${payload.playerID || 'unknown'}, landID=${this.landID}`))
+          const encodingInfo = payload.encoding ? chalk.yellow(`, encoding=${payload.encoding}`) : ''
+          console.log(chalk.green(`✅ Join successful: playerID=${payload.playerID || 'unknown'}, landID=${this.landID}${encodingInfo}`))
         } else {
           this.isJoined = false
           console.log(chalk.red(`❌ Join failed: ${payload.reason || 'unknown reason'}`))

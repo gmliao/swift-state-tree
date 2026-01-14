@@ -5,6 +5,7 @@ import SwiftStateTree
 public enum TransportEncoding: String, Sendable {
     case json
     case opcodeJsonArray
+    case messagepack
 }
 
 /// Encodes and decodes transport payloads.
@@ -63,11 +64,24 @@ public struct JSONTransportCodec: TransportCodec {
 
 public extension TransportEncoding {
     /// Create a codec for the selected encoding.
-    /// Note: opcodeJsonArray uses JSON codec for decoding (incoming messages are still JSON)
-    /// but a specialized encoder for outgoing messages.
+    /// 
+    /// Note: 
+    /// - `opcodeJsonArray` uses JSON codec for decoding (incoming messages are still JSON)
+    ///   but a specialized encoder for outgoing messages.
+    /// - `messagepack` uses the same opcode array format as `opcodeJsonArray`, but serializes
+    ///   the array using MessagePack instead of JSON. The array structure is identical:
+    ///   `[opcode, ...fields]` format, just different serialization (binary vs text).
     func makeCodec() -> any TransportCodec {
         switch self {
         case .json, .opcodeJsonArray:
+            return JSONTransportCodec()
+        case .messagepack:
+            // TODO: Implement MessagePack codec
+            // MessagePack should serialize the same opcode array format as opcodeJsonArray
+            // but use MessagePack binary encoding instead of JSON text encoding.
+            // The array structure from OpcodeTransportMessageEncoder.encodeToArray() is reused.
+            // For now, return JSON codec as fallback
+            // When MessagePack is implemented, return MessagePackTransportCodec()
             return JSONTransportCodec()
         }
     }

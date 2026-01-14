@@ -1,7 +1,7 @@
 // Transport protocol types
 export type MessageKind = 'action' | 'actionResponse' | 'event' | 'join' | 'joinResponse' | 'error'
 
-export type MessageEncoding = 'json' | 'opcodeJsonArray'
+export type MessageEncoding = 'json' | 'opcodeJsonArray' | 'messagepack'
 export type StateUpdateEncoding = 'jsonObject' | 'opcodeJsonArray'
 export type StateUpdateDecoding = 'auto' | StateUpdateEncoding
 
@@ -52,6 +52,8 @@ export interface TransportJoinResponsePayload {
   playerID?: string
   /// Deterministic slot for efficient transport encoding (Int32 based on accountKey hash)
   playerSlot?: number | null
+  /// Transport encoding format to use for subsequent messages (optional, defaults to JSON if not provided)
+  encoding?: MessageEncoding | null
   reason?: string
 }
 

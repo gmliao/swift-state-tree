@@ -9,7 +9,13 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/cli.ts",
-    "start": "node dist/cli.js"
+    "start": "node dist/cli.js",
+    "test-mixed-encoding": "tsx scripts/test-mixed-encoding.ts",
+    "test-mixed-encoding-server": "tsx scripts/test-mixed-encoding-server.ts",
+    "test-packet-encoding": "tsx scripts/test-packet-encoding.ts",
+    "test-encoding-integration": "tsx scripts/test-encoding-integration.ts",
+    "test-server-opcode-decoding": "tsx scripts/test-server-opcode-decoding.ts",
+    "test-packet-encoding": "tsx scripts/test-packet-encoding.ts"
   },
   "dependencies": {
     "commander": "^11.1.0",
