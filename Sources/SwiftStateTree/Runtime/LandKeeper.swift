@@ -644,7 +644,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             throw LandError.actionNotRegistered
         }
         
-        let decodedAction = try decoder.decode(actionPayloadType, from: envelope.payload)
+        // Decode action payload from AnyCodable
+        // First, encode AnyCodable to JSON Data, then decode to the specific action type
+        let payloadData = try JSONEncoder().encode(envelope.payload)
+        let decodedAction = try decoder.decode(actionPayloadType, from: payloadData)
         // Bind action to lastCommittedTickId for replay logging
         // This represents the world state's current committed tick (not the next tick)
         var ctx = makeContext(

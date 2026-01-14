@@ -572,12 +572,9 @@ func testHandleActionEnvelopeDecodesPayloadTypes() async throws {
         doubleValue: 3.14
     )
     
-    let encoder = JSONEncoder()
-    let payloadData = try encoder.encode(action)
-    
     let envelope = ActionEnvelope(
         typeIdentifier: "TestActionWithTypes",
-        payload: payloadData
+        payload: AnyCodable(action)
     )
     
     // Act: Decode and handle action
@@ -637,12 +634,10 @@ func testHandleActionEnvelopeTypeMismatch() async throws {
     
     // Act: Create action envelope with wrong type (string instead of int)
     let wrongPayload = ["value": "not-an-int"]  // Should be Int, not String
-    let encoder = JSONEncoder()
-    let payloadData = try encoder.encode(wrongPayload)
     
     let envelope = ActionEnvelope(
         typeIdentifier: "IntAction",
-        payload: payloadData
+        payload: AnyCodable(wrongPayload)
     )
     
     // Assert: Should throw decoding error
