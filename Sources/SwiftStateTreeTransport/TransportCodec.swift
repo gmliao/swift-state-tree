@@ -76,13 +76,7 @@ public extension TransportEncoding {
         case .json, .opcodeJsonArray:
             return JSONTransportCodec()
         case .messagepack:
-            // TODO: Implement MessagePack codec
-            // MessagePack should serialize the same opcode array format as opcodeJsonArray
-            // but use MessagePack binary encoding instead of JSON text encoding.
-            // The array structure from OpcodeTransportMessageEncoder.encodeToArray() is reused.
-            // For now, return JSON codec as fallback
-            // When MessagePack is implemented, return MessagePackTransportCodec()
-            return JSONTransportCodec()
+            return MessagePackTransportCodec()
         }
     }
 }

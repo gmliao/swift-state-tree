@@ -28,7 +28,9 @@
     "test:ui": "vitest --ui",
     "test:coverage": "vitest --coverage"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@msgpack/msgpack": "^3.0.0"
+  },
   "devDependencies": {
     "@types/node": "^20.10.0",
     "@types/ws": "^8.5.10",

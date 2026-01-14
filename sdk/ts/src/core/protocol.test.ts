@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import {
   encodeMessage,
   encodeMessageArray,
+  encodeMessageArrayToMessagePack,
   decodeMessage,
   createJoinMessage,
   createActionMessage,

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftStateTree
+import SwiftStateTreeMessagePack
 import Logging
 
 /// Adapts Transport events to LandKeeper calls.
@@ -501,12 +502,47 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Try to detect if message is in opcode array format
             // If it's an array starting with 101-106, use opcode decoder
             let transportMsg: TransportMessage
-            if let json = try? JSONSerialization.jsonObject(with: message),
+            
+            // First, try to detect MessagePack binary format (for opcode array)
+            if codec.encoding == .messagepack {
+                // For MessagePack, try to decode as opcode array first
+                // MessagePack opcode arrays start with opcode 101-106
+                do {
+                    let unpacked = try unpack(message)
+                    if case .array(let array) = unpacked, array.count >= 1,
+                       case .int(let opcode) = array[0],
+                       opcode >= 101 && opcode <= 106 {
+                        // This is a MessagePack opcode array - convert to JSON array for OpcodeTransportMessageDecoder
+                        let jsonArray = try array.map { value -> Any in
+                            switch value {
+                            case .int(let v): return v
+                            case .uint(let v): return Int(v)
+                            case .string(let v): return v
+                            case .bool(let v): return v
+                            case .array(let arr): return try arr.map { try messagePackValueToJSON($0) }
+                            case .map(let map): return try messagePackMapToJSON(map)
+                            case .nil: return NSNull()
+                            case .binary(let data): return data.base64EncodedString()
+                            default: throw TransportMessageDecodingError.invalidFormat("Unsupported MessagePack value type")
+                            }
+                        }
+                        let jsonData = try JSONSerialization.data(withJSONObject: jsonArray)
+                        let decoder = OpcodeTransportMessageDecoder()
+                        transportMsg = try decoder.decode(from: jsonData)
+                    } else {
+                        // Not an opcode array, use standard MessagePack codec
+                        transportMsg = try codec.decode(TransportMessage.self, from: message)
+                    }
+                } catch {
+                    // If MessagePack decode fails, fall back to standard codec
+                    transportMsg = try codec.decode(TransportMessage.self, from: message)
+                }
+            } else if let json = try? JSONSerialization.jsonObject(with: message),
                let array = json as? [Any],
                array.count >= 1,
                let firstElement = array[0] as? Int,
                firstElement >= 101 && firstElement <= 106 {
-                // This is an opcode array format message
+                // This is a JSON opcode array format message
                 let decoder = OpcodeTransportMessageDecoder()
                 transportMsg = try decoder.decode(from: message)
             } else {
@@ -781,8 +817,20 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "eventType": .string(event.type),
                 "target": .string(targetDescription),
                 "landID": .string(landID),
-                "bytes": .string("\(dataSize)")
+                "bytes": .string("\(dataSize)"),
+                "encoding": .string("\(messageEncoder.encoding.rawValue)")
             ])
+            
+            // Debug: Log actual data size breakdown for trace level
+            // if logger.logLevel <= .trace {
+                let hexPreview = data.map { String(format: "%02x", $0) }.joined(separator: " ")
+                logger.info("📤 Event data breakdown", metadata: [
+                    "eventType": .string(event.type),
+                    "totalBytes": .string("\(dataSize)"),
+                    "hexPreview": .string(hexPreview),
+                    "encoding": .string("\(messageEncoder.encoding.rawValue)")
+                ])
+            // }
 
             // Log event payload - only compute if trace logging is enabled
             if let payloadData = try? codec.encode(event.payload),
@@ -1880,5 +1928,34 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "error": "\(error)"
             ])
         }
+    }
+    
+    // MARK: - MessagePack Helper Functions
+    
+    private func messagePackValueToJSON(_ value: SwiftStateTreeMessagePack.MessagePackValue) throws -> Any {
+        switch value {
+        case .nil: return NSNull()
+        case .bool(let v): return v
+        case .int(let v): return v
+        case .uint(let v): return Int(v)
+        case .float(let v): return v
+        case .double(let v): return v
+        case .string(let v): return v
+        case .binary(let data): return data.base64EncodedString()
+        case .array(let arr): return try arr.map { try messagePackValueToJSON($0) }
+        case .map(let map): return try messagePackMapToJSON(map)
+        case .extended: throw TransportMessageDecodingError.invalidFormat("Extended MessagePack type not supported")
+        }
+    }
+    
+    private func messagePackMapToJSON(_ map: [SwiftStateTreeMessagePack.MessagePackValue: SwiftStateTreeMessagePack.MessagePackValue]) throws -> [String: Any] {
+        var dict: [String: Any] = [:]
+        for (key, value) in map {
+            guard case .string(let keyString) = key else {
+                throw TransportMessageDecodingError.invalidFormat("Non-string key in MessagePack map")
+            }
+            dict[keyString] = try messagePackValueToJSON(value)
+        }
+        return dict
     }
 }

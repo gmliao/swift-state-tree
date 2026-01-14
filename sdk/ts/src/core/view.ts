@@ -88,12 +88,37 @@ export class StateTreeView {
   private deviceID?: string
   /// Message encoding format to use for sending messages (defaults to 'json')
   private messageEncoding: MessageEncoding = 'json'
+  /// Map playerSlot (number) to playerID (string) for efficient lookup
+  private slotToPlayerID = new Map<number, string>()
   
   /**
    * Get the current player ID (set after successful join)
    */
   get currentPlayerID(): string | undefined {
     return this.playerID
+  }
+  
+  /**
+   * Get playerID from playerSlot
+   * @param slot - The playerSlot to look up
+   * @returns The playerID if found, or undefined
+   */
+  getPlayerIDFromSlot(slot: number): string | undefined {
+    return this.slotToPlayerID.get(slot)
+  }
+  
+  /**
+   * Get playerSlot from playerID (reverse lookup)
+   * @param playerID - The playerID to look up
+   * @returns The playerSlot if found, or undefined
+   */
+  getPlayerSlotFromID(playerID: string): number | undefined {
+    for (const [slot, id] of this.slotToPlayerID.entries()) {
+      if (id === playerID) {
+        return slot
+      }
+    }
+    return undefined
   }
   private metadata?: Record<string, any>
   private onStateUpdate?: (state: Record<string, any>) => void
@@ -453,6 +478,12 @@ export class StateTreeView {
         // Save playerID from server response (may differ from initial playerID)
         if (success && payload.playerID) {
           this.playerID = payload.playerID
+        }
+        
+        // Save playerSlot -> playerID mapping from joinResponse
+        if (success && payload.playerSlot != null && payload.playerID) {
+          this.slotToPlayerID.set(payload.playerSlot, payload.playerID)
+          this.logger.debug(`Saved playerSlot mapping: ${payload.playerSlot} -> ${payload.playerID}`)
         }
 
         const result = { 
