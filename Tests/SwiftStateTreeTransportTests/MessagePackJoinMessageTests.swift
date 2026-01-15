@@ -66,6 +66,38 @@ func testClientSDKMessagePackJoinFormat() throws {
     }
 }
 
+@Test("Client SDK MessagePack Join message with UInt opcode can be decoded by server")
+func testClientSDKMessagePackJoinFormatWithUIntOpcode() throws {
+    // Some MessagePack implementations may encode small positive integers as unsigned.
+    // Ensure the decoder accepts both int and uint opcodes.
+    let requestID = "join-1768434969"
+    let landType = "hero-defense"
+    let playerID = "measure-player"
+
+    let array: [MessagePackValue] = [
+        .uint(104),                          // opcode for join (UInt)
+        .string(requestID),
+        .string(landType),
+        .nil,
+        .string(playerID),
+        .nil,
+        .nil
+    ]
+
+    let packedData = try pack(.array(array))
+    let codec = MessagePackTransportCodec()
+
+    let decoded = try codec.decode(TransportMessage.self, from: packedData)
+    #expect(decoded.kind == .join)
+    guard case .join(let joinPayload) = decoded.payload else {
+        Issue.record("Expected join payload")
+        return
+    }
+    #expect(joinPayload.requestID == requestID)
+    #expect(joinPayload.landType == landType)
+    #expect(joinPayload.playerID == playerID)
+}
+
 @Test("TransportAdapter can handle client SDK MessagePack Join")
 func testTransportAdapterHandlesClientSDKJoin() async throws {
     let definition = Land("test-land", using: MPJoinTestState.self) {

@@ -41,7 +41,7 @@ struct GameServer {
 
         // Single TRANSPORT_ENCODING controls both message and stateUpdate encoding
         let transportEncoding = resolveTransportEncoding(
-            rawValue: getEnvString(key: "TRANSPORT_ENCODING", defaultValue: "opcode")
+            rawValue: getEnvString(key: "TRANSPORT_ENCODING", defaultValue: "msgpack")
         )
         
         logger.info("📦 Transport encoding configured", metadata: [

@@ -56,6 +56,17 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     /// Guest session factory (optional)
     private let createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)?
     
+    // MARK: - Handshake State Machine
+    
+    /// Handshake phase for managing join protocol
+    private enum HandshakePhase {
+        case awaitingJoin    // Waiting for join (only accepts JSON join)
+        case joined          // Handshake completed (uses configured encoding)
+    }
+    
+    /// Tracks handshake phase for each session
+    private var sessionHandshakePhase: [SessionID: HandshakePhase] = [:]
+    
     // MARK: - Configuration
     
     /// Allow auto-creating land when join with instanceId but land doesn't exist.
@@ -115,6 +126,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     ///   - authInfo: Optional authenticated information (e.g., from JWT validation)
     public func onConnect(sessionID: SessionID, clientID: ClientID, authInfo: AuthenticatedInfo? = nil) async {
         sessionToClient[sessionID] = clientID
+        sessionHandshakePhase[sessionID] = .awaitingJoin  // Initialize handshake state
         
         if let authInfo = authInfo {
             sessionToAuthInfo[sessionID] = authInfo
@@ -137,6 +149,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         sessionToClient.removeValue(forKey: sessionID)
         sessionToAuthInfo.removeValue(forKey: sessionID)
         sessionToBoundLandID.removeValue(forKey: sessionID)
+        sessionHandshakePhase.removeValue(forKey: sessionID)  // Clean up handshake state
         
         // If session was bound to a land, notify the TransportAdapter
         if let landID = boundLandID {
@@ -161,30 +174,99 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     ///   - message: The raw message data
     ///   - sessionID: The session that sent the message
     public func onMessage(_ message: Data, from sessionID: SessionID) async {
+        // Get handshake phase for this session
+        let handshakePhase = sessionHandshakePhase[sessionID] ?? .awaitingJoin
+        
         do {
             let transportMsg: TransportMessage
-            if codec.encoding == .messagepack {
-                // MessagePack codec handles both map and opcode-array formats.
-                transportMsg = try codec.decode(TransportMessage.self, from: message)
-            } else if let json = try? JSONSerialization.jsonObject(with: message),
-                      let array = json as? [Any],
-                      array.count >= 1,
-                      let firstElement = array[0] as? Int,
-                      firstElement >= 101 && firstElement <= 106
-            {
-                // JSON opcode array format
-                if logger.logLevel <= .debug {
-                    logger.debug("Detected opcode array format message", metadata: [
-                        "sessionID": .string(sessionID.rawValue),
-                        "opcode": .string("\(firstElement)")
-                    ])
+            
+            // MARK: - Handshake Phase: JSON-only decoding
+            if handshakePhase == .awaitingJoin {
+                // During handshake, only accept JSON-encoded messages
+                guard let firstByte = message.first else {
+                    await sendError(
+                        to: sessionID,
+                        code: .invalidJSON,
+                        message: "Empty message received"
+                    )
+                    return
                 }
-                transportMsg = try OpcodeTransportMessageDecoder().decode(from: message)
+                
+                // Check if message is JSON (starts with { or [)
+                if firstByte == 0x7b || firstByte == 0x5b {  // '{' or '['
+                    // Try JSON opcode array format first
+                    if let json = try? JSONSerialization.jsonObject(with: message),
+                       let array = json as? [Any],
+                       array.count >= 1,
+                       let firstElement = array[0] as? Int,
+                       firstElement >= 101 && firstElement <= 106 {
+                        // JSON opcode array format
+                        transportMsg = try OpcodeTransportMessageDecoder().decode(from: message)
+                        
+                        if logger.logLevel <= .debug {
+                            logger.debug("Handshake: Decoded JSON opcode array format", metadata: [
+                                "sessionID": .string(sessionID.rawValue),
+                                "opcode": .string("\(firstElement)")
+                            ])
+                        }
+                    } else {
+                        // JSON object format
+                        let jsonCodec = TransportEncodingConfig.json.makeCodec()
+                        transportMsg = try jsonCodec.decode(TransportMessage.self, from: message)
+                        
+                        if logger.logLevel <= .debug {
+                            logger.debug("Handshake: Decoded JSON object format", metadata: [
+                                "sessionID": .string(sessionID.rawValue),
+                                "kind": .string(transportMsg.kind.rawValue)
+                            ])
+                        }
+                    }
+                } else {
+                    // Non-JSON format during handshake not allowed
+                    await sendError(
+                        to: sessionID,
+                        code: .invalidJSON,
+                        message: "Handshake not completed. Only JSON-encoded join messages are accepted."
+                    )
+                    return
+                }
+                
+                // During handshake, only process join messages
+                guard transportMsg.kind == .join else {
+                    await sendError(
+                        to: sessionID,
+                        code: .joinSessionNotConnected,
+                        message: "Not joined. Please send a join request first."
+                    )
+                    return
+                }
+                
+            // MARK: - Post-Handshake: Use configured encoding
             } else {
-                // Standard JSON object format
-                transportMsg = try codec.decode(TransportMessage.self, from: message)
+                if codec.encoding == .messagepack {
+                    // MessagePack codec handles both map and opcode-array formats.
+                    transportMsg = try codec.decode(TransportMessage.self, from: message)
+                } else if let json = try? JSONSerialization.jsonObject(with: message),
+                          let array = json as? [Any],
+                          array.count >= 1,
+                          let firstElement = array[0] as? Int,
+                          firstElement >= 101 && firstElement <= 106
+                {
+                    // JSON opcode array format
+                    if logger.logLevel <= .debug {
+                        logger.debug("Detected opcode array format message", metadata: [
+                            "sessionID": .string(sessionID.rawValue),
+                            "opcode": .string("\(firstElement)")
+                        ])
+                    }
+                    transportMsg = try OpcodeTransportMessageDecoder().decode(from: message)
+                } else {
+                    // Standard JSON object format
+                    transportMsg = try codec.decode(TransportMessage.self, from: message)
+                }
             }
             
+            // MARK: - Message Routing
             switch transportMsg.kind {
             case .join:
                 if case .join(let payload) = transportMsg.payload {
@@ -359,6 +441,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 // 1. Send join response with landType, instanceId, playerSlot, and encoding
                 // Get encoding from TransportAdapter (defaults to 'json' if not available)
                 let encoding = await container.transportAdapter.getMessageEncoding()
+                
                 await sendJoinResponse(
                     requestID: requestID,
                     sessionID: sessionID,
@@ -370,6 +453,10 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                     playerSlot: joinResult.playerSlot,
                     encoding: encoding
                 )
+                
+                // Complete handshake: transition to joined state AFTER sending joinResponse
+                // This ensures joinResponse is sent using JSON encoding (handshake phase)
+                sessionHandshakePhase[sessionID] = .joined
                 
                 // 2. Send initial state snapshot AFTER JoinResponse
                 // syncStateForNewPlayer automatically manages initialSyncingPlayers via withInitialSync
@@ -489,7 +576,17 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 encoding: encoding,
                 reason: reason
             )
-            let responseData = try messageEncoder.encode(response)
+            
+            // Use JSON encoder for handshake phase, configured encoder after joined
+            let handshakePhase = sessionHandshakePhase[sessionID] ?? .awaitingJoin
+            let encoder: any TransportMessageEncoder
+            if handshakePhase == .awaitingJoin {
+                encoder = TransportEncodingConfig.json.makeMessageEncoder()
+            } else {
+                encoder = messageEncoder
+            }
+            
+            let responseData = try encoder.encode(response)
             try await transport.send(responseData, to: .session(sessionID))
         } catch {
             logger.error("Failed to send join response", metadata: [
@@ -514,7 +611,17 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             
             let errorPayload = ErrorPayload(code: code, message: message, details: errorDetails)
             let errorResponse = TransportMessage.error(errorPayload)
-            let errorData = try messageEncoder.encode(errorResponse)
+            
+            // Use JSON encoder for handshake phase, configured encoder after joined
+            let handshakePhase = sessionHandshakePhase[sessionID] ?? .awaitingJoin
+            let encoder: any TransportMessageEncoder
+            if handshakePhase == .awaitingJoin {
+                encoder = TransportEncodingConfig.json.makeMessageEncoder()
+            } else {
+                encoder = messageEncoder
+            }
+            
+            let errorData = try encoder.encode(errorResponse)
             try await transport.send(errorData, to: .session(sessionID))
         } catch {
             logger.error("Failed to send join error", metadata: [
@@ -535,7 +642,17 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         do {
             let errorPayload = ErrorPayload(code: code, message: message, details: details)
             let errorResponse = TransportMessage.error(errorPayload)
-            let errorData = try messageEncoder.encode(errorResponse)
+            
+            // Use JSON encoder for handshake phase, configured encoder after joined
+            let handshakePhase = sessionHandshakePhase[sessionID] ?? .awaitingJoin
+            let encoder: any TransportMessageEncoder
+            if handshakePhase == .awaitingJoin {
+                encoder = TransportEncodingConfig.json.makeMessageEncoder()
+            } else {
+                encoder = messageEncoder
+            }
+            
+            let errorData = try encoder.encode(errorResponse)
             try await transport.send(errorData, to: .session(sessionID))
         } catch {
             logger.error("Failed to send error", metadata: [
