@@ -56,7 +56,8 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
               let opcode = StateUpdateOpcode(rawValue: opcodeValue) else {
             throw StateUpdateDecodingError.invalidPayload("Unknown state update opcode.")
         }
-        let (landID, playerIDRaw, patchStartIndex) = try decodeMetadata(from: payload)
+        
+        let patchStartIndex = 1
 
         if opcode == .noChange && payload.count > patchStartIndex {
             throw StateUpdateDecodingError.invalidPayload("noChange payload must not include patches.")
@@ -74,51 +75,11 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
             update = .diff(patches)
         }
 
-        let playerID = playerIDRaw.map { PlayerID($0) }
-        return DecodedStateUpdate(update: update, landID: landID, playerID: playerID)
+        // derived IDs are no longer in the payload
+        return DecodedStateUpdate(update: update, landID: nil, playerID: nil)
     }
 
-    private func decodeMetadata(from payload: [Any]) throws -> (String?, String?, Int) {
-        guard payload.count >= 2 else {
-            throw StateUpdateDecodingError.invalidPayload("Opcode payload must include opcode and playerID.")
-        }
-
-        if payload.count >= 3, payload[2] is [Any] {
-            guard let playerIDRaw = payload[1] as? String else {
-                throw StateUpdateDecodingError.invalidPayload("Invalid playerID.")
-            }
-            return (nil, playerIDRaw, 2)
-        }
-
-        if payload.count >= 4 {
-            guard let landID = payload[1] as? String else {
-                throw StateUpdateDecodingError.invalidPayload("Invalid landID.")
-            }
-            guard let playerIDRaw = payload[2] as? String else {
-                throw StateUpdateDecodingError.invalidPayload("Invalid playerID.")
-            }
-            return (landID, playerIDRaw, 3)
-        }
-
-        if payload.count == 2 {
-            guard let playerIDRaw = payload[1] as? String else {
-                throw StateUpdateDecodingError.invalidPayload("Invalid playerID.")
-            }
-            return (nil, playerIDRaw, 2)
-        }
-
-        if payload.count == 3 {
-            guard let landID = payload[1] as? String else {
-                throw StateUpdateDecodingError.invalidPayload("Invalid landID.")
-            }
-            guard let playerIDRaw = payload[2] as? String else {
-                throw StateUpdateDecodingError.invalidPayload("Invalid playerID.")
-            }
-            return (landID, playerIDRaw, 3)
-        }
-
-        throw StateUpdateDecodingError.invalidPayload("Invalid opcode payload format.")
-    }
+    // decodeMetadata removed
 
     private func decodePatches(from payload: ArraySlice<Any>) throws -> [StatePatch] {
         guard !payload.isEmpty else { return [] }

@@ -221,9 +221,9 @@ func testOpcodeStateUpdateEncoderDiff() throws {
     let json = try JSONSerialization.jsonObject(with: data) as? [Any]
 
     #expect((json?[0] as? Int) == StateUpdateOpcode.diff.rawValue)
-    #expect((json?[1] as? String) == "player-1")
+    // removed header slot check
 
-    let patch = json?[2] as? [Any]
+    let patch = json?[1] as? [Any]
     #expect((patch?[0] as? String) == "/hp")
     #expect((patch?[1] as? Int) == StatePatchOpcode.set.rawValue)
     #expect((patch?[2] as? Int) == 10)
@@ -238,8 +238,8 @@ func testOpcodeStateUpdateEncoderNoChange() throws {
     let json = try JSONSerialization.jsonObject(with: data) as? [Any]
 
     #expect((json?[0] as? Int) == StateUpdateOpcode.noChange.rawValue)
-    #expect((json?[1] as? String) == "player-1")
-    #expect(json?.count == 2)
+    // removed header slot check
+    #expect(json?.count == 1)
 }
 
 @Test("OpcodeJSONStateUpdateEncoder encodes firstSync payload with patch opcodes")
@@ -254,14 +254,14 @@ func testOpcodeStateUpdateEncoderFirstSync() throws {
     let json = try JSONSerialization.jsonObject(with: data) as? [Any]
 
     #expect((json?[0] as? Int) == StateUpdateOpcode.firstSync.rawValue)
-    #expect((json?[1] as? String) == "player-1")
+    // removed header slot check
 
-    let addPatch = json?[2] as? [Any]
+    let addPatch = json?[1] as? [Any]
     #expect((addPatch?[0] as? String) == "/items")
     #expect((addPatch?[1] as? Int) == StatePatchOpcode.add.rawValue)
     #expect((addPatch?[2] as? String) == "sword")
 
-    let removePatch = json?[3] as? [Any]
+    let removePatch = json?[2] as? [Any]
     #expect((removePatch?[0] as? String) == "/buffs")
     #expect((removePatch?[1] as? Int) == StatePatchOpcode.remove.rawValue)
 }
@@ -271,7 +271,6 @@ func testOpcodeStateUpdateDecoderDiff() throws {
     let decoder = OpcodeJSONStateUpdateDecoder()
     let payload: [Any] = [
         StateUpdateOpcode.diff.rawValue,
-        "player-1",
         ["/hp", StatePatchOpcode.set.rawValue, 10]
     ]
 
@@ -279,7 +278,6 @@ func testOpcodeStateUpdateDecoderDiff() throws {
     let decoded = try decoder.decode(data: data)
 
     #expect(decoded.landID == nil)
-    #expect(decoded.playerID == PlayerID("player-1"))
     #expect(decoded.update == .diff([StatePatch(path: "/hp", operation: .set(.int(10)))]))
 }
 
@@ -288,7 +286,6 @@ func testOpcodeStateUpdateDecoderFirstSync() throws {
     let decoder = OpcodeJSONStateUpdateDecoder()
     let payload: [Any] = [
         StateUpdateOpcode.firstSync.rawValue,
-        "player-1",
         ["/items", StatePatchOpcode.add.rawValue, "sword"],
         ["/buffs", StatePatchOpcode.remove.rawValue]
     ]
@@ -306,8 +303,7 @@ func testOpcodeStateUpdateDecoderFirstSync() throws {
 func testOpcodeStateUpdateDecoderNoChange() throws {
     let decoder = OpcodeJSONStateUpdateDecoder()
     let payload: [Any] = [
-        StateUpdateOpcode.noChange.rawValue,
-        "player-1"
+        StateUpdateOpcode.noChange.rawValue
     ]
 
     let data = try JSONSerialization.data(withJSONObject: payload)
@@ -334,9 +330,9 @@ func testOpcodeStateUpdateEncoderNestedObject() throws {
     let json = try JSONSerialization.jsonObject(with: data) as? [Any]
 
     #expect((json?[0] as? Int) == StateUpdateOpcode.diff.rawValue)
-    #expect((json?[1] as? String) == "player-1")
+    // removed header slot check
 
-    let patch = json?[2] as? [Any]
+    let patch = json?[1] as? [Any]
     #expect((patch?[0] as? String) == "/player")
     #expect((patch?[1] as? Int) == StatePatchOpcode.set.rawValue)
     
@@ -361,7 +357,6 @@ func testOpcodeStateUpdateDecoderNestedObject() throws {
     let decoder = OpcodeJSONStateUpdateDecoder()
     let payload: [Any] = [
         StateUpdateOpcode.diff.rawValue,
-        "player-1",
         [
             "/player",
             StatePatchOpcode.set.rawValue,
@@ -380,7 +375,6 @@ func testOpcodeStateUpdateDecoderNestedObject() throws {
     let decoded = try decoder.decode(data: data)
 
     #expect(decoded.landID == nil)
-    #expect(decoded.playerID == PlayerID("player-1"))
     if case .diff(let patches) = decoded.update {
         #expect(patches.count == 1)
         #expect(patches[0].path == "/player")
@@ -420,9 +414,9 @@ func testOpcodeStateUpdateEncoderDynamicKeyCompression() throws {
     let data1 = try encoder.encode(update: update1, landID: "land-1", playerID: PlayerID("p1"))
     let json1 = try JSONSerialization.jsonObject(with: data1) as? [Any]
     
-    // Validate Structure: [Op, PID, Patch...]
+    // Validate Structure: [Op, Patch...]
     // Patch: [Hash, DynamicKey, Op, Val]
-    let patch1 = json1?[2] as? [Any]
+    let patch1 = json1?[1] as? [Any]
     #expect((patch1?[0] as? UInt32) == 12345) // Hash
     
     // Dynamic Key Definition: [Slot, "uuid-1"]
@@ -441,7 +435,7 @@ func testOpcodeStateUpdateEncoderDynamicKeyCompression() throws {
     let data2 = try encoder.encode(update: update2, landID: "land-1", playerID: PlayerID("p1"))
     let json2 = try JSONSerialization.jsonObject(with: data2) as? [Any]
     
-    let patch2 = json2?[2] as? [Any]
+    let patch2 = json2?[1] as? [Any]
     let dynamicKeyUsage = patch2?[1] as? Int
     #expect(dynamicKeyUsage == slot)
 
@@ -456,7 +450,7 @@ func testOpcodeStateUpdateEncoderDynamicKeyCompression() throws {
     let data3 = try encoder.encode(update: update3, landID: "land-1", playerID: PlayerID("p2")) // Different player
     let json3 = try JSONSerialization.jsonObject(with: data3) as? [Any]
     
-    let patch3 = json3?[2] as? [Any]
+    let patch3 = json3?[1] as? [Any]
     let dynamicKeyRedef = patch3?[1] as? [Any]
     #expect(dynamicKeyRedef?.count == 2)
     let slotRedef = dynamicKeyRedef?[0] as? Int
@@ -475,7 +469,7 @@ func testOpcodeStateUpdateEncoderDynamicKeyPerPlayerDefinitionOnDiff() throws {
 
     let data1 = try encoder.encode(update: update1, landID: "land-1", playerID: PlayerID("p1"))
     let json1 = try JSONSerialization.jsonObject(with: data1) as? [Any]
-    let patch1 = json1?[2] as? [Any]
+    let patch1 = json1?[1] as? [Any]
     let dynamicKeyDef1 = patch1?[1] as? [Any]
     #expect(dynamicKeyDef1?.count == 2)
     let slot1 = dynamicKeyDef1?[0] as? Int
@@ -488,7 +482,7 @@ func testOpcodeStateUpdateEncoderDynamicKeyPerPlayerDefinitionOnDiff() throws {
 
     let data2 = try encoder.encode(update: update2, landID: "land-1", playerID: PlayerID("p2"))
     let json2 = try JSONSerialization.jsonObject(with: data2) as? [Any]
-    let patch2 = json2?[2] as? [Any]
+    let patch2 = json2?[1] as? [Any]
     let dynamicKeyDef2 = patch2?[1] as? [Any]
     #expect(dynamicKeyDef2?.count == 2)
     let slot2 = dynamicKeyDef2?[0] as? Int
@@ -508,7 +502,7 @@ func testOpcodeStateUpdateEncoderDynamicKeyResetOnFirstSyncForSamePlayer() throw
 
     let data1 = try encoder.encode(update: update1, landID: "land-1", playerID: PlayerID("p1"))
     let json1 = try JSONSerialization.jsonObject(with: data1) as? [Any]
-    let patch1 = json1?[2] as? [Any]
+    let patch1 = json1?[1] as? [Any]
     let dynamicKeyDef1 = patch1?[1] as? [Any]
     #expect(dynamicKeyDef1?.count == 2)
     let slot1 = dynamicKeyDef1?[0] as? Int
@@ -520,7 +514,7 @@ func testOpcodeStateUpdateEncoderDynamicKeyResetOnFirstSyncForSamePlayer() throw
 
     let data2 = try encoder.encode(update: update2, landID: "land-1", playerID: PlayerID("p1"))
     let json2 = try JSONSerialization.jsonObject(with: data2) as? [Any]
-    let patch2 = json2?[2] as? [Any]
+    let patch2 = json2?[1] as? [Any]
     let dynamicKeyDef2 = patch2?[1] as? [Any]
     #expect(dynamicKeyDef2?.count == 2)
     let slot2 = dynamicKeyDef2?[0] as? Int
@@ -533,7 +527,7 @@ func testOpcodeStateUpdateEncoderDynamicKeyResetOnFirstSyncForSamePlayer() throw
 
     let data3 = try encoder.encode(update: update3, landID: "land-1", playerID: PlayerID("p1"))
     let json3 = try JSONSerialization.jsonObject(with: data3) as? [Any]
-    let patch3 = json3?[2] as? [Any]
+    let patch3 = json3?[1] as? [Any]
     let dynamicKeyUsage3 = patch3?[1] as? Int
     #expect(dynamicKeyUsage3 == slot2)
     #expect(slot2 == slot1)
@@ -550,7 +544,7 @@ func testOpcodeStateUpdateEncoderDynamicKeyPerLandIsolation() throws {
 
     let data1 = try encoder.encode(update: update1, landID: "land-1", playerID: PlayerID("p1"))
     let json1 = try JSONSerialization.jsonObject(with: data1) as? [Any]
-    let patch1 = json1?[2] as? [Any]
+    let patch1 = json1?[1] as? [Any]
     let dynamicKeyDef1 = patch1?[1] as? [Any]
     #expect(dynamicKeyDef1?.count == 2)
     #expect((dynamicKeyDef1?[1] as? String) == "uuid-1")
@@ -561,7 +555,7 @@ func testOpcodeStateUpdateEncoderDynamicKeyPerLandIsolation() throws {
 
     let data2 = try encoder.encode(update: update2, landID: "land-2", playerID: PlayerID("p1"))
     let json2 = try JSONSerialization.jsonObject(with: data2) as? [Any]
-    let patch2 = json2?[2] as? [Any]
+    let patch2 = json2?[1] as? [Any]
     let dynamicKeyDef2 = patch2?[1] as? [Any]
     #expect(dynamicKeyDef2?.count == 2)
     #expect((dynamicKeyDef2?[1] as? String) == "uuid-1")
@@ -576,31 +570,10 @@ func testOpcodeStateUpdateEncoderLegacyFormatDynamicKeyPath() throws {
 
     let data = try encoder.encode(update: update, landID: "land-1", playerID: PlayerID("p1"))
     let json = try JSONSerialization.jsonObject(with: data) as? [Any]
-    let patch = json?[2] as? [Any]
+    let patch = json?[1] as? [Any]
     #expect((patch?[0] as? String) == "/players/uuid-1")
     #expect((patch?[1] as? Int) == StatePatchOpcode.set.rawValue)
     #expect((patch?[2] as? Int) == 100)
 }
 
-@Test("OpcodeJSONStateUpdateEncoder uses playerSlot when provided for compression")
-func testOpcodeStateUpdateEncoderPlayerSlotCompression() throws {
-    let encoder = OpcodeJSONStateUpdateEncoder()
-    let update = StateUpdate.diff([
-        StatePatch(path: "/hp", operation: .set(.int(100)))
-    ])
-    
-    // Test without playerSlot (should use playerID string)
-    let dataWithoutSlot = try encoder.encode(update: update, landID: "land-1", playerID: PlayerID("player-very-long-id-string"))
-    let jsonWithoutSlot = try JSONSerialization.jsonObject(with: dataWithoutSlot) as? [Any]
-    #expect((jsonWithoutSlot?[1] as? String) == "player-very-long-id-string")
-    
-    // Test with playerSlot (should use Int instead of String)
-    let playerSlot: Int32 = 42
-    let dataWithSlot = try encoder.encode(update: update, landID: "land-1", playerID: PlayerID("player-very-long-id-string"), playerSlot: playerSlot)
-    let jsonWithSlot = try JSONSerialization.jsonObject(with: dataWithSlot) as? [Any]
-    #expect((jsonWithSlot?[1] as? Int) == 42)
-    #expect((jsonWithSlot?[1] as? String) == nil)
-    
-    // Verify compression: data with slot should be smaller
-    #expect(dataWithSlot.count < dataWithoutSlot.count, "Data with playerSlot should be smaller than data with playerID string")
-}
+

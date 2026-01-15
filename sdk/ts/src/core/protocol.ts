@@ -386,8 +386,8 @@ function resolveStateUpdateDecoding(config?: TransportEncodingConfig): StateUpda
 }
 
 function decodeStateUpdateArray(payload: unknown[], dynamicKeyMap?: Map<number, string>): StateUpdate {
-  if (payload.length < 2) {
-    throw new Error(`Unknown message format: ${JSON.stringify(payload).substring(0, 100)}`)
+  if (payload.length < 1) {
+    throw new Error(`Unknown message format: empty payload`)
   }
 
   const updateType = (() => {
@@ -412,36 +412,12 @@ function decodeStateUpdateArray(payload: unknown[], dynamicKeyMap?: Map<number, 
     dynamicKeyMap.clear()
   }
 
-  const patchStartIndex = (() => {
-    if (payload.length >= 3 && Array.isArray(payload[2])) {
-      return 2
-    }
-    if (payload.length === 2) {
-      return 2
-    }
-    if (payload.length >= 3 && typeof payload[2] !== 'object') {
-      return 3
-    }
-    return 3
-  })()
+  const patchStartIndex = 1
 
-  // Support both playerID (string) and playerSlot (number) compression
-  // payload[1] can be either:
-  // - playerID (string) - legacy format
-  // - playerSlot (number) - compressed format
-  if (patchStartIndex === 2) {
-    // Format: [opcode, playerID/playerSlot, ...patches]
-    if (typeof payload[1] !== 'string' && typeof payload[1] !== 'number') {
-      throw new Error(`Unknown message format: expected string (playerID) or number (playerSlot) at index 1, got ${typeof payload[1]}: ${JSON.stringify(payload).substring(0, 100)}`)
-    }
-  } else if (patchStartIndex === 3) {
-    // Format: [opcode, playerID/playerSlot, landID, ...patches]
-    // This format is for future extension, currently not used
-    if ((typeof payload[1] !== 'string' && typeof payload[1] !== 'number') || typeof payload[2] !== 'string') {
-      throw new Error(`Unknown message format: expected string (playerID) or number (playerSlot) at index 1, and string (landID) at index 2, got types: [${typeof payload[1]}, ${typeof payload[2]}]: ${JSON.stringify(payload).substring(0, 100)}`)
-    }
+  // Validate opcode format
+  if (typeof payload[0] !== 'number') {
+    throw new Error(`Unknown message format: expected opcode number at index 0`)
   }
-
   const patches: StatePatch[] = []
 
   for (const entry of payload.slice(patchStartIndex)) {

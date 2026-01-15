@@ -32,6 +32,7 @@
 ### 整合與部署
 
 - **[Transport 層](transport/README.zh-TW.md)** - WebSocket、連線管理、多房間支援
+- **[傳輸層演進](transport_evolution.zh-TW.md)** - 從 JSON 到 MessagePack 二進位編碼的演進歷程
 - **[Hummingbird 整合](hummingbird/README.zh-TW.md)** - 伺服器設定、單房間/多房間模式
 - **[認證機制](hummingbird/auth.zh-TW.md)** - JWT、Guest 模式、Admin 路由
 
@@ -75,6 +76,7 @@
 
 1. [Macros](macros/README.zh-TW.md) - 使用 `@SnapshotConvertible` 提升效能
 2. [核心模組](core/README.zh-TW.md) - 了解 Runtime 運作機制
+3. [傳輸層演進](transport_evolution.zh-TW.md) - 了解傳輸層編碼優化
 
 ### 我想建立確定性遊戲
 

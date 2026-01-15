@@ -32,6 +32,7 @@ If this is your first time with SwiftStateTree, we recommend reading in the foll
 ### Integration & Deployment
 
 - **[Transport Layer](transport/README.md)** - WebSocket, connection management, multi-room support
+- **[Transport Evolution](transport_evolution.md)** - Evolution history from JSON to MessagePack binary encoding
 - **[Hummingbird Integration](hummingbird/README.md)** - Server configuration, single-room/multi-room modes
 - **[Authentication](hummingbird/auth.md)** - JWT, Guest mode, Admin routes
 
@@ -75,6 +76,7 @@ If this is your first time with SwiftStateTree, we recommend reading in the foll
 
 1. [Macros](macros/README.md) - Use `@SnapshotConvertible` to improve performance
 2. [Core Module](core/README.md) - Understand Runtime operation mechanisms
+3. [Transport Evolution](transport_evolution.md) - Understand transport layer encoding optimizations
 
 ### I want to build a deterministic game
 
