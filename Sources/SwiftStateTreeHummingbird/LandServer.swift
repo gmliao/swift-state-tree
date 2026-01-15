@@ -132,6 +132,7 @@ public struct LandServer<State: StateNodeProtocol>: Sendable {
             transport: transport,
             createGuestSession: createGuestSession ?? defaultCreateGuestSession,
             allowAutoCreateOnJoin: configuration.allowAutoCreateOnJoin,
+            transportEncoding: configuration.transportEncoding,
             logger: logger
         )
 

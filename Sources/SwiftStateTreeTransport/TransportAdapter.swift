@@ -503,40 +503,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // If it's an array starting with 101-106, use opcode decoder
             let transportMsg: TransportMessage
             
-            // First, try to detect MessagePack binary format (for opcode array)
+            // For MessagePack, the codec now handles both opcode array and map formats internally
+            // No need for special conversion logic here
             if codec.encoding == .messagepack {
-                // For MessagePack, try to decode as opcode array first
-                // MessagePack opcode arrays start with opcode 101-106
-                do {
-                    let unpacked = try unpack(message)
-                    if case .array(let array) = unpacked, array.count >= 1,
-                       case .int(let opcode) = array[0],
-                       opcode >= 101 && opcode <= 106 {
-                        // This is a MessagePack opcode array - convert to JSON array for OpcodeTransportMessageDecoder
-                        let jsonArray = try array.map { value -> Any in
-                            switch value {
-                            case .int(let v): return v
-                            case .uint(let v): return Int(v)
-                            case .string(let v): return v
-                            case .bool(let v): return v
-                            case .array(let arr): return try arr.map { try messagePackValueToJSON($0) }
-                            case .map(let map): return try messagePackMapToJSON(map)
-                            case .nil: return NSNull()
-                            case .binary(let data): return data.base64EncodedString()
-                            default: throw TransportMessageDecodingError.invalidFormat("Unsupported MessagePack value type")
-                            }
-                        }
-                        let jsonData = try JSONSerialization.data(withJSONObject: jsonArray)
-                        let decoder = OpcodeTransportMessageDecoder()
-                        transportMsg = try decoder.decode(from: jsonData)
-                    } else {
-                        // Not an opcode array, use standard MessagePack codec
-                        transportMsg = try codec.decode(TransportMessage.self, from: message)
-                    }
-                } catch {
-                    // If MessagePack decode fails, fall back to standard codec
-                    transportMsg = try codec.decode(TransportMessage.self, from: message)
-                }
+                transportMsg = try codec.decode(TransportMessage.self, from: message)
             } else if let json = try? JSONSerialization.jsonObject(with: message),
                let array = json as? [Any],
                array.count >= 1,

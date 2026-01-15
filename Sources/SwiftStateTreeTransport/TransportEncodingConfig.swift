@@ -68,6 +68,18 @@ public extension StateUpdateEncoding {
                 return OpcodeJSONStateUpdateEncoder(pathHasher: pathHasher)
             }
             return OpcodeJSONStateUpdateEncoder()
+        case .opcodeMessagePack:
+            // Validate configuration: opcodeMessagePack should have pathHashes for compression (optional)
+            if pathHashes == nil {
+                print("⚠️ WARNING: opcodeMessagePack encoding is configured but pathHashes is nil.")
+                print("   This will use Legacy format (no PathHash compression).")
+                print("   To enable full compression, provide pathHashes from your Land schema.")
+            }
+            if let pathHashes = pathHashes {
+                let pathHasher = PathHasher(pathHashes: pathHashes)
+                return OpcodeMessagePackStateUpdateEncoder(pathHasher: pathHasher)
+            }
+            return OpcodeMessagePackStateUpdateEncoder()
         case .opcodeJsonArrayLegacy:
             // Explicitly force legacy mode (no PathHasher)
             return OpcodeJSONStateUpdateEncoder()
