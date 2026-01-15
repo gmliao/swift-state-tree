@@ -108,8 +108,7 @@ func testTransportAdapterHandlesClientSDKJoin() async throws {
     
     let encodingConfig = TransportEncodingConfig(
         message: .messagepack,
-        stateUpdate: .opcodeJsonArray,
-        enablePayloadCompression: true
+        stateUpdate: .opcodeJsonArray
     )
     
     let adapter = TransportAdapter<MPJoinTestState>(

@@ -35,40 +35,52 @@ struct GameServer {
             scope: "HeroDefenseServer",
             logLevel: .info
         )
-        
+
         let host = getEnvString(key: "HOST", defaultValue: "localhost")
         let port = getEnvUInt16(key: "PORT", defaultValue: 8080)
 
         // Single TRANSPORT_ENCODING controls both message and stateUpdate encoding
-        let transportEncoding = resolveTransportEncoding(
-            rawValue: getEnvString(key: "TRANSPORT_ENCODING", defaultValue: "msgpack")
-        )
-        
+        let transportEncodingEnv = getEnvString(key: "TRANSPORT_ENCODING", defaultValue: "messagepack")
+        let transportEncoding: TransportEncodingConfig
+
+        switch transportEncodingEnv.lowercased() {
+        case "opcode":
+            transportEncoding = .opcode
+        case "json":
+            transportEncoding = .json
+        case "json_opcode":
+            transportEncoding = .jsonOpcode
+        case "messagepack":
+            transportEncoding = .messagepack
+        default:
+            fatalError("Invalid TRANSPORT_ENCODING value: '\(transportEncodingEnv)'. Supported values: 'messagepack', 'opcode', 'json', 'json_opcode'.")
+        }
+
         logger.info("📦 Transport encoding configured", metadata: [
             "message": .string(transportEncoding.message.rawValue),
-            "stateUpdate": .string(transportEncoding.stateUpdate.rawValue)
+            "stateUpdate": .string(transportEncoding.stateUpdate.rawValue),
         ])
-        
+
         // Extract pathHashes from schema for compression
         let landDef = HeroDefense.makeLand()
         let schema = SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(landDef)])
         let pathHashes = schema.lands["hero-defense"]?.pathHashes
-        
+
         if let pathHashes = pathHashes {
             logger.info("✅ PathHashes extracted", metadata: [
                 "count": .string("\(pathHashes.count)"),
-                "sample": .string(Array(pathHashes.keys.prefix(3)).joined(separator: ", "))
+                "sample": .string(Array(pathHashes.keys.prefix(3)).joined(separator: ", ")),
             ])
         } else {
             logger.warning("⚠️ PathHashes is nil - compression will fall back to Legacy format")
         }
-        
+
         let landHost = LandHost(configuration: LandHost.HostConfiguration(
             host: host,
             port: port,
             logger: logger
         ))
-        
+
         let serverConfig = LandServerConfiguration(
             logger: logger,
             jwtConfig: jwtConfig,
@@ -76,9 +88,9 @@ struct GameServer {
             allowAutoCreateOnJoin: true,
             transportEncoding: transportEncoding,
             enableParallelEncoding: true,
-            pathHashes: pathHashes  // Enable PathHash compression
+            pathHashes: pathHashes // Enable PathHash compression
         )
-        
+
         // Register Hero Defense game
         try await landHost.register(
             landType: "hero-defense",
@@ -87,7 +99,7 @@ struct GameServer {
             webSocketPath: "/game/hero-defense",
             configuration: serverConfig
         )
-        
+
         // Register admin routes
         let adminAuth = AdminAuthMiddleware(
             jwtValidator: nil,
@@ -98,38 +110,14 @@ struct GameServer {
             logger: logger
         )
         logger.info("✅ Admin routes registered at /admin/* (API Key: hero-defense-admin-key)")
-        
+
         do {
             try await landHost.run()
         } catch let error as LandHostError {
             logger.error("❌ Server startup failed: \(error)", metadata: [
-                "error": .string(String(describing: error))
+                "error": .string(String(describing: error)),
             ])
             exit(1)
         }
     }
 }
-
-private func resolveTransportEncoding(rawValue: String) -> TransportEncodingConfig {
-    switch rawValue.lowercased() {
-    case "opcode", "opcodejsonarray", "opcode_json_array", "opcode-json-array":
-        return TransportEncodingConfig(
-            message: .opcodeJsonArray,
-            stateUpdate: .opcodeJsonArray,
-            enablePayloadCompression: true
-        )
-    case "messagepack", "msgpack", "message-pack":
-        return TransportEncodingConfig(
-            message: .messagepack,
-            stateUpdate: .opcodeMessagePack,  // Opcode array structure, serialized as MessagePack binary
-            enablePayloadCompression: true
-        )
-    default:
-        return TransportEncodingConfig(
-            message: .json,
-            stateUpdate: .jsonObject,
-            enablePayloadCompression: false
-        )
-    }
-}
-
