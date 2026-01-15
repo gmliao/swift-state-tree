@@ -101,7 +101,7 @@ public struct LandServer<State: StateNodeProtocol>: Sendable {
             pathHashes: configuration.pathHashes,
             eventHashes: configuration.eventHashes,
             clientEventHashes: configuration.clientEventHashes,
-            enableParallelEncoding: configuration.enableParallelEncoding,
+            enableParallelEncoding: false, // configuration.enableParallelEncoding, temporary disabled
             logger: logger
         )
 
@@ -210,7 +210,7 @@ public struct LandServer<State: StateNodeProtocol>: Sendable {
             createGuestSession: createGuestSession,
             enableLegacyJoin: true,
             encodingConfig: transportEncoding,
-            enableParallelEncoding: nil,  // Use default (codec-based)
+            enableParallelEncoding: nil, // Use default (codec-based)
             logger: logger
         )
 

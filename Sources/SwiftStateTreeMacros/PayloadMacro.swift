@@ -43,8 +43,10 @@ public struct PayloadMacro: MemberMacro {
         }
         
         // Collect all stored properties
+        // Collect all stored properties and sort them by name (ASCII)
         var diagnostics: [Diagnostic] = []
         let properties = collectStoredProperties(from: structDecl, diagnostics: &diagnostics)
+            .sorted { $0.name < $1.name }
         
         if !diagnostics.isEmpty {
             throw DiagnosticsError(diagnostics: diagnostics)

@@ -344,8 +344,8 @@ export const SCHEMA = {
         }
       },
       "required": [
-        "playerID",
         "from",
+        "playerID",
         "to"
       ],
       "type": "object",
@@ -481,9 +481,9 @@ export const SCHEMA = {
         }
       },
       "required": [
-        "turretID",
         "from",
-        "to"
+        "to",
+        "turretID"
       ],
       "type": "object",
       "x-stateTree": {
@@ -688,7 +688,7 @@ export const SCHEMA = {
       }
     }
   },
-  "schemaHash": "66997a29657e5238",
+  "schemaHash": "ab31b0e196e3e0e6",
   "version": "0.1.0"
 } as const
 

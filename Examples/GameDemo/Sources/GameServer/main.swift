@@ -87,7 +87,6 @@ struct GameServer {
             allowGuestMode: true,
             allowAutoCreateOnJoin: true,
             transportEncoding: transportEncoding,
-            enableParallelEncoding: true,
             pathHashes: pathHashes // Enable PathHash compression
         )
 
