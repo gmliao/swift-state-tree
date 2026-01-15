@@ -12,8 +12,9 @@ struct MessagePackDirectDecoder {
         // Format: [opcode(101-106), ...fields]
         if case let .array(array) = value,
            array.count >= 1,
-           case let .int(opcode) = array[0],
-           opcode >= 101 && opcode <= 106 {
+           let opcode = extractOpcode(array[0]),
+           opcode >= 101 && opcode <= 106
+        {
             // This is opcode array format - decode accordingly
             return try decodeTransportMessageFromOpcodeArray(array, opcode: opcode)
         }
@@ -176,6 +177,18 @@ struct MessagePackDirectDecoder {
             
         default:
             throw MessagePackDirectDecodingError.invalidFormat("Unknown opcode: \(opcode)")
+        }
+    }
+
+    private func extractOpcode(_ value: MessagePackValue) -> Int64? {
+        switch value {
+        case .int(let opcode):
+            return opcode
+        case .uint(let opcode):
+            guard opcode <= UInt64(Int64.max) else { return nil }
+            return Int64(opcode)
+        default:
+            return nil
         }
     }
     
