@@ -318,7 +318,9 @@ export function decodeMessage(
     } catch (error) {
       // If MessagePack decode fails, it might be JSON text in binary format
       // Try to decode as text first
-      const text = new TextDecoder().decode(data instanceof ArrayBuffer ? data : data.buffer)
+      const text = new TextDecoder().decode(
+        data instanceof ArrayBuffer ? new Uint8Array(data) : data
+      )
       const json = JSON.parse(text)
       
       if (Array.isArray(json)) {
@@ -335,6 +337,20 @@ export function decodeMessage(
       
       if (json && typeof json === 'object' && 'kind' in json) {
         return json as TransportMessage
+      }
+
+      // JSON object StateUpdate in binary frame (server may send JSON bytes as binary)
+      if (json && typeof json === 'object' && 'type' in json && 'patches' in json) {
+        const decoding = resolveStateUpdateDecoding(config)
+        if (decoding === 'opcodeJsonArray') {
+          throw new Error(`Unknown message format: ${JSON.stringify(json).substring(0, 100)}`)
+        }
+        return json as StateUpdate
+      }
+
+      // JSON object StateSnapshot in binary frame
+      if (json && typeof json === 'object' && 'values' in json) {
+        return json as StateSnapshot
       }
       
       throw error

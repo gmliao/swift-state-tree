@@ -3,7 +3,7 @@
 
 import type { StateTreeRuntime, Logger, StatePatch } from '@swiftstatetree/sdk/core'
 import { StateTreeView } from '@swiftstatetree/sdk/core'
-import type { LandState, Actions, ClientEvents, ServerEventSubscriptions } from './bindings'
+import type { LandState, Actions, ClientEvents, ServerEventSubscriptions, EventSubscription, EventHandler } from './bindings'
 import { LAND_TYPE } from './bindings'
 import { SCHEMA } from '../schema.js'
 import type { IncrementAction, IncrementResponse } from '../defs'
