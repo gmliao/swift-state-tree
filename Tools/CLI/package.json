@@ -10,18 +10,20 @@
     "build": "tsc",
     "dev": "tsx src/cli.ts",
     "start": "node dist/cli.js",
+    "measure": "tsx scripts/measure-state-updates.ts",
+    "measure:full": "bash scripts/run-protocol-measurement.sh",
     "test-mixed-encoding": "tsx scripts/test-mixed-encoding.ts",
     "test-mixed-encoding-server": "tsx scripts/test-mixed-encoding-server.ts",
     "test-packet-encoding": "tsx scripts/test-packet-encoding.ts",
     "test-encoding-integration": "tsx scripts/test-encoding-integration.ts",
-    "test-server-opcode-decoding": "tsx scripts/test-server-opcode-decoding.ts",
-    "test-packet-encoding": "tsx scripts/test-packet-encoding.ts"
+    "test-server-opcode-decoding": "tsx scripts/test-server-opcode-decoding.ts"
   },
   "dependencies": {
-    "commander": "^11.1.0",
-    "ws": "^8.16.0",
+    "@msgpack/msgpack": "^3.1.3",
+    "@swiftstatetree/sdk": "file:../../sdk/ts",
     "chalk": "^5.3.0",
-    "@swiftstatetree/sdk": "file:../../sdk/ts"
+    "commander": "^11.1.0",
+    "ws": "^8.16.0"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
@@ -30,4 +32,3 @@
     "typescript": "^5.3.0"
   }
 }
-

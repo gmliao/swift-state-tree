@@ -118,6 +118,12 @@ private func resolveTransportEncoding(rawValue: String) -> TransportEncodingConf
             stateUpdate: .opcodeJsonArray,
             enablePayloadCompression: true
         )
+    case "messagepack", "msgpack", "message-pack":
+        return TransportEncodingConfig(
+            message: .messagepack,
+            stateUpdate: .opcodeMessagePack,  // Opcode array structure, serialized as MessagePack binary
+            enablePayloadCompression: true
+        )
     default:
         return TransportEncodingConfig(
             message: .json,

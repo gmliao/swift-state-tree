@@ -8,6 +8,18 @@ enum MessagePackDirectDecodingError: Error {
 
 struct MessagePackDirectDecoder {
     func decodeTransportMessage(from value: MessagePackValue) throws -> TransportMessage {
+        // Check if it's an opcode array format (same as opcodeJsonArray)
+        // Format: [opcode(101-106), ...fields]
+        if case let .array(array) = value,
+           array.count >= 1,
+           case let .int(opcode) = array[0],
+           opcode >= 101 && opcode <= 106 {
+            // This is opcode array format - decode accordingly
+            return try decodeTransportMessageFromOpcodeArray(array, opcode: opcode)
+        }
+        
+        // Otherwise, expect map format (legacy/direct format)
+        // Format: {kind: "join", payload: {...}}
         let map = try stringKeyedMap(from: value, context: "transport message")
         guard let kindValue = map["kind"], case let .string(kindRaw) = kindValue else {
             throw MessagePackDirectDecodingError.invalidFormat("Missing kind")
@@ -54,6 +66,146 @@ struct MessagePackDirectDecoder {
             }
             return TransportMessage(kind: kind, payload: .error(try decodeErrorPayload(from: errorValue)))
         }
+    }
+    
+    // Decode TransportMessage from opcode array format
+    // Formats (same as opcodeJsonArray):
+    // - join: [104, requestID, landType, landInstanceId?, playerID?, deviceID?, metadata?]
+    // - joinResponse: [105, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?]
+    // - action: [101, requestID, typeIdentifier, payload(object)]
+    // - actionResponse: [102, requestID, response]
+    // - event: [103, direction(0=client,1=server), type, payload, rawBody?]
+    // - error: [106, code, message, details?]
+    private func decodeTransportMessageFromOpcodeArray(_ array: [MessagePackValue], opcode: Int64) throws -> TransportMessage {
+        switch opcode {
+        case 101: // action
+            guard array.count >= 4 else {
+                throw MessagePackDirectDecodingError.invalidFormat("Invalid action array length")
+            }
+            let requestID = try extractString(array[1], context: "action requestID")
+            let typeIdentifier = try extractString(array[2], context: "action typeIdentifier")
+            let payload = try decodeAnyCodable(from: array[3])
+            let action = ActionEnvelope(typeIdentifier: typeIdentifier, payload: payload)
+            return TransportMessage(kind: .action, payload: .action(TransportActionPayload(requestID: requestID, action: action)))
+            
+        case 102: // actionResponse
+            guard array.count >= 3 else {
+                throw MessagePackDirectDecodingError.invalidFormat("Invalid actionResponse array length")
+            }
+            let requestID = try extractString(array[1], context: "actionResponse requestID")
+            let response = try decodeAnyCodable(from: array[2])
+            return TransportMessage(kind: .actionResponse, payload: .actionResponse(TransportActionResponsePayload(requestID: requestID, response: response)))
+            
+        case 103: // event
+            guard array.count >= 4 else {
+                throw MessagePackDirectDecodingError.invalidFormat("Invalid event array length")
+            }
+            let direction = try extractInt(array[1], context: "event direction")
+            let type = try extractString(array[2], context: "event type")
+            let payload = try decodeAnyCodable(from: array[3])
+            let rawBody = array.count > 4 ? try decodeOptionalBinaryData(array[4], context: "event rawBody") : nil
+            
+            let event: TransportEvent
+            if direction == 0 {
+                event = .fromClient(event: AnyClientEvent(type: type, payload: payload, rawBody: rawBody))
+            } else {
+                event = .fromServer(event: AnyServerEvent(type: type, payload: payload, rawBody: rawBody))
+            }
+            return TransportMessage(kind: .event, payload: .event(event))
+            
+        case 104: // join
+            guard array.count >= 3 else {
+                throw MessagePackDirectDecodingError.invalidFormat("Invalid join array length")
+            }
+            let requestID = try extractString(array[1], context: "join requestID")
+            let landType = try extractString(array[2], context: "join landType")
+            let landInstanceId = array.count > 3 ? try extractOptionalString(array[3], context: "join landInstanceId") : nil
+            let playerID = array.count > 4 ? try extractOptionalString(array[4], context: "join playerID") : nil
+            let deviceID = array.count > 5 ? try extractOptionalString(array[5], context: "join deviceID") : nil
+            let metadata = array.count > 6 ? try decodeOptionalAnyCodableDictionary(array[6], context: "join metadata") : nil
+            
+            return TransportMessage(kind: .join, payload: .join(TransportJoinPayload(
+                requestID: requestID,
+                landType: landType,
+                landInstanceId: landInstanceId,
+                playerID: playerID,
+                deviceID: deviceID,
+                metadata: metadata
+            )))
+            
+        case 105: // joinResponse
+            guard array.count >= 3 else {
+                throw MessagePackDirectDecodingError.invalidFormat("Invalid joinResponse array length")
+            }
+            let requestID = try extractString(array[1], context: "joinResponse requestID")
+            let successInt = try extractInt(array[2], context: "joinResponse success")
+            let success = successInt == 1
+            let landType = array.count > 3 ? try extractOptionalString(array[3], context: "joinResponse landType") : nil
+            let landInstanceId = array.count > 4 ? try extractOptionalString(array[4], context: "joinResponse landInstanceId") : nil
+            let playerSlot = array.count > 5 ? try extractOptionalInt(array[5], context: "joinResponse playerSlot") : nil
+            let encoding = array.count > 6 ? try extractOptionalString(array[6], context: "joinResponse encoding") : nil
+            let reason = array.count > 7 ? try extractOptionalString(array[7], context: "joinResponse reason") : nil
+            
+            let landID: String?
+            if let landType = landType, let landInstanceId = landInstanceId {
+                landID = "\(landType):\(landInstanceId)"
+            } else {
+                landID = nil
+            }
+            
+            return TransportMessage(kind: .joinResponse, payload: .joinResponse(TransportJoinResponsePayload(
+                requestID: requestID,
+                success: success,
+                landType: landType,
+                landInstanceId: landInstanceId,
+                landID: landID,
+                playerSlot: playerSlot != nil ? Int32(playerSlot!) : nil,
+                encoding: encoding,
+                reason: reason
+            )))
+            
+        case 106: // error
+            guard array.count >= 3 else {
+                throw MessagePackDirectDecodingError.invalidFormat("Invalid error array length")
+            }
+            let code = try extractString(array[1], context: "error code")
+            let message = try extractString(array[2], context: "error message")
+            let details = array.count > 3 ? try decodeOptionalAnyCodableDictionary(array[3], context: "error details") : nil
+            
+            return TransportMessage(kind: .error, payload: .error(ErrorPayload(code: code, message: message, details: details)))
+            
+        default:
+            throw MessagePackDirectDecodingError.invalidFormat("Unknown opcode: \(opcode)")
+        }
+    }
+    
+    // Helper methods for extracting values from MessagePackValue array
+    private func extractString(_ value: MessagePackValue, context: String) throws -> String {
+        guard case let .string(string) = value else {
+            throw MessagePackDirectDecodingError.invalidFormat("Expected string for \(context)")
+        }
+        return string
+    }
+    
+    private func extractOptionalString(_ value: MessagePackValue, context: String) throws -> String? {
+        if case .nil = value { return nil }
+        return try extractString(value, context: context)
+    }
+    
+    private func extractInt(_ value: MessagePackValue, context: String) throws -> Int {
+        switch value {
+        case .int(let int):
+            return Int(int)
+        case .uint(let uint):
+            return Int(uint)
+        default:
+            throw MessagePackDirectDecodingError.invalidFormat("Expected int for \(context)")
+        }
+    }
+    
+    private func extractOptionalInt(_ value: MessagePackValue, context: String) throws -> Int? {
+        if case .nil = value { return nil }
+        return try extractInt(value, context: context)
     }
 
     func decodeStateUpdate(from value: MessagePackValue) throws -> StateUpdate {

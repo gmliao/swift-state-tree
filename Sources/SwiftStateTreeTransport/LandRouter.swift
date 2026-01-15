@@ -38,8 +38,9 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     private let landTypeRegistry: LandTypeRegistry<State>
     private let transport: WebSocketTransport
     private let logger: Logger
-    private let encoder = JSONEncoder()
-    private let decoder = JSONDecoder()
+    private let encodingConfig: TransportEncodingConfig
+    private let codec: any TransportCodec
+    private let messageEncoder: any TransportMessageEncoder
     
     // MARK: - Session Management
     
@@ -81,6 +82,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         transport: WebSocketTransport,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         allowAutoCreateOnJoin: Bool = false,
+        transportEncoding: TransportEncodingConfig = .jsonOpcode,
         logger: Logger? = nil
     ) {
         self.landManager = landManager
@@ -88,10 +90,19 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         self.transport = transport
         self.createGuestSession = createGuestSession
         self.allowAutoCreateOnJoin = allowAutoCreateOnJoin
-        self.logger = logger ?? createColoredLogger(
+        self.encodingConfig = transportEncoding
+        self.codec = transportEncoding.makeCodec()
+        self.messageEncoder = transportEncoding.makeMessageEncoder()
+        let resolvedLogger = logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.transport",
             scope: "LandRouter"
         )
+        self.logger = resolvedLogger
+
+        resolvedLogger.info("LandRouter encoding configured", metadata: [
+            "messageEncoding": .string(self.messageEncoder.encoding.rawValue),
+            "codecEncoding": .string(self.codec.encoding.rawValue)
+        ])
     }
     
     // MARK: - Connection Management
@@ -151,44 +162,27 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     ///   - sessionID: The session that sent the message
     public func onMessage(_ message: Data, from sessionID: SessionID) async {
         do {
-            // Try to detect if message is in opcode array format
-            // If it's an array starting with 101-106, use opcode decoder
             let transportMsg: TransportMessage
-            if let json = try? JSONSerialization.jsonObject(with: message),
-               let array = json as? [Any],
-               array.count >= 1,
-               let firstElement = array[0] as? Int,
-               firstElement >= 101 && firstElement <= 106 {
-                // This is an opcode array format message
+            if codec.encoding == .messagepack {
+                // MessagePack codec handles both map and opcode-array formats.
+                transportMsg = try codec.decode(TransportMessage.self, from: message)
+            } else if let json = try? JSONSerialization.jsonObject(with: message),
+                      let array = json as? [Any],
+                      array.count >= 1,
+                      let firstElement = array[0] as? Int,
+                      firstElement >= 101 && firstElement <= 106
+            {
+                // JSON opcode array format
                 if logger.logLevel <= .debug {
                     logger.debug("Detected opcode array format message", metadata: [
                         "sessionID": .string(sessionID.rawValue),
                         "opcode": .string("\(firstElement)")
                     ])
                 }
-                let opcodeDecoder = OpcodeTransportMessageDecoder()
-                transportMsg = try opcodeDecoder.decode(from: message)
+                transportMsg = try OpcodeTransportMessageDecoder().decode(from: message)
             } else {
                 // Standard JSON object format
-                // Try to decode as JSON object first
-                if let json = try? JSONSerialization.jsonObject(with: message),
-                   json is [String: Any] {
-                    transportMsg = try decoder.decode(TransportMessage.self, from: message)
-                } else {
-                    // If it's not a JSON object, it might be an array that doesn't match opcode format
-                    // Log for debugging
-                    if let json = try? JSONSerialization.jsonObject(with: message),
-                       let array = json as? [Any],
-                       array.count >= 1 {
-                        logger.warning("Received array message but opcode detection failed", metadata: [
-                            "sessionID": .string(sessionID.rawValue),
-                            "firstElement": .string("\(array[0])"),
-                            "arrayLength": .string("\(array.count)")
-                        ])
-                    }
-                    // Fall back to standard decoder (will fail if it's an array, but that's expected)
-                    transportMsg = try decoder.decode(TransportMessage.self, from: message)
-                }
+                transportMsg = try codec.decode(TransportMessage.self, from: message)
             }
             
             switch transportMsg.kind {
@@ -495,7 +489,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 encoding: encoding,
                 reason: reason
             )
-            let responseData = try encoder.encode(response)
+            let responseData = try messageEncoder.encode(response)
             try await transport.send(responseData, to: .session(sessionID))
         } catch {
             logger.error("Failed to send join response", metadata: [
@@ -520,7 +514,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             
             let errorPayload = ErrorPayload(code: code, message: message, details: errorDetails)
             let errorResponse = TransportMessage.error(errorPayload)
-            let errorData = try encoder.encode(errorResponse)
+            let errorData = try messageEncoder.encode(errorResponse)
             try await transport.send(errorData, to: .session(sessionID))
         } catch {
             logger.error("Failed to send join error", metadata: [
@@ -541,7 +535,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         do {
             let errorPayload = ErrorPayload(code: code, message: message, details: details)
             let errorResponse = TransportMessage.error(errorPayload)
-            let errorData = try encoder.encode(errorResponse)
+            let errorData = try messageEncoder.encode(errorResponse)
             try await transport.send(errorData, to: .session(sessionID))
         } catch {
             logger.error("Failed to send error", metadata: [
