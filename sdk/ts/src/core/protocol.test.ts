@@ -17,7 +17,8 @@ import {
   eventHashReverseLookup,
   clientEventHashReverseLookup,
   eventFieldOrder,
-  clientEventFieldOrder
+  clientEventFieldOrder,
+  pathHashReverseLookup
 } from './protocol'
 import type { TransportMessage, StateUpdate, StateSnapshot } from '../types/transport'
 
@@ -193,7 +194,6 @@ describe('protocol', () => {
     it('decodes opcode array StateUpdate from JSON string', () => {
       const updateArray = [
         2,
-        'player-1',
         ['/players', 1, { hp: 10 }],
         ['/stats', 2],
         ['/items', 3, { id: 1 }]
@@ -214,7 +214,7 @@ describe('protocol', () => {
     })
 
     it('decodes opcode array noChange StateUpdate from JSON string', () => {
-      const updateArray = [0, 'player-1']
+      const updateArray = [0]
       const encoded = JSON.stringify(updateArray)
       const decoded = decodeMessage(encoded)
 
@@ -227,7 +227,7 @@ describe('protocol', () => {
     })
 
     it('decodes opcode array firstSync StateUpdate from JSON string', () => {
-      const updateArray = [1, 'player-1', ['/score', 1, 10]]
+      const updateArray = [1, ['/score', 1, 10]]
       const encoded = JSON.stringify(updateArray)
       const decoded = decodeMessage(encoded)
 
@@ -243,7 +243,6 @@ describe('protocol', () => {
     it('decodes opcode array StateUpdate with nested object', () => {
       const updateArray = [
         2,
-        'player-1',
         ['/player', 1, { name: 'Alice', hp: 100, inventory: ['sword', 'potion'] }],
         ['/stats', 1, { str: 10, dex: 8 }]
       ]
@@ -272,7 +271,6 @@ describe('protocol', () => {
     it('decodes opcode array StateUpdate with deeply nested object', () => {
       const updateArray = [
         2,
-        'player-1',
         [
           '/player',
           1,
@@ -318,7 +316,7 @@ describe('protocol', () => {
     })
 
     it('throws when opcode array is received with jsonObject decoding', () => {
-      const updateArray = [2, 'player-1', ['/score', 1, 10]]
+      const updateArray = [2, ['/score', 1, 10]]
       const encoded = JSON.stringify(updateArray)
       expect(() => decodeMessage(encoded, {
         message: 'json',
@@ -468,7 +466,6 @@ describe('protocol', () => {
     it('decodes PathHash format with static path', () => {
       const updateArray = [
         2, // diff opcode
-        'player-1',
         [222222, null, 1, 100] // [pathHash, dynamicKey, op, value]
       ]
 
@@ -490,7 +487,6 @@ describe('protocol', () => {
     it('decodes PathHash format with dynamic key', () => {
       const updateArray = [
         2, // diff opcode
-        'player-1',
         [567890, '42', 1, 50] // monsters.42.health = 50
       ]
 
@@ -512,7 +508,6 @@ describe('protocol', () => {
     it('decodes PathHash format remove operation', () => {
       const updateArray = [
         2, // diff opcode
-        'player-1',
         [123456, '36', 2] // remove monsters.36
       ]
 
@@ -534,7 +529,6 @@ describe('protocol', () => {
     it('decodes mixed Legacy and PathHash formats', () => {
       const updateArray = [
         2, // diff opcode
-        'player-1',
         ['/score', 1, 100], // Legacy format
         [567890, '42', 1, 50] // PathHash format
       ]
@@ -562,7 +556,6 @@ describe('protocol', () => {
     it('decodes PathHash format with nested property (rotation.degrees)', () => {
       const updateArray = [
         2, // diff opcode
-        'player-1',
         [901234, '37', 1, 90] // monsters.37.rotation.degrees = 90
       ]
 
@@ -584,7 +577,6 @@ describe('protocol', () => {
     it('throws error for unknown pathHash', () => {
       const updateArray = [
         2, // diff opcode
-        'player-1',
         [999999, '42', 1, 50] // Unknown hash
       ]
 
@@ -595,7 +587,6 @@ describe('protocol', () => {
     it('decodes PathHash format with complex object value', () => {
       const updateArray = [
         2, // diff opcode
-        'player-1',
         [789012, '42', 1, { v: { x: 10, y: 20 } }] // monsters.42.position
       ]
 
@@ -616,9 +607,6 @@ describe('protocol', () => {
   })
 
   describe('playerSlot compression', async () => {
-    // Import pathHashReverseLookup for testing
-    const { pathHashReverseLookup } = await import('./protocol')
-
     beforeEach(() => {
       // Setup mock pathHashes (simulate schema initialization)
       pathHashReverseLookup.clear()
@@ -626,11 +614,9 @@ describe('protocol', () => {
       pathHashReverseLookup.set(567890, 'monsters.*.health')
     })
 
-    it('decodes opcode format with playerSlot (Int) instead of playerID (String)', () => {
-      const playerSlot = 42
+    it('decodes compressed path with dynamic key', () => {
       const updateArray = [
         2, // diff opcode
-        playerSlot, // playerSlot (Int) instead of playerID (String)
         [222222, null, 1, 100] // [pathHash, dynamicKey, op, value]
       ]
 
@@ -654,10 +640,8 @@ describe('protocol', () => {
     })
 
     it('decodes firstSync opcode with playerSlot (Int)', () => {
-      const playerSlot = 12345
       const updateArray = [
         1, // firstSync opcode
-        playerSlot, // playerSlot (Int)
         [222222, null, 1, 100],
         [567890, 'monster-1', 1, 50]
       ]
@@ -687,10 +671,8 @@ describe('protocol', () => {
     })
 
     it('decodes noChange opcode with playerSlot (Int)', () => {
-      const playerSlot = 999
       const updateArray = [
         0, // noChange opcode
-        playerSlot // playerSlot (Int)
       ]
 
       const encoded = JSON.stringify(updateArray)
@@ -707,55 +689,11 @@ describe('protocol', () => {
       }
     })
 
-    it('maintains backward compatibility with playerID (String)', () => {
-      const playerID = 'player-very-long-id-string'
-      const updateArray = [
-        2, // diff opcode
-        playerID, // playerID (String) - legacy format
-        [222222, null, 1, 100]
-      ]
 
-      const encoded = JSON.stringify(updateArray)
-      const decoded = decodeMessage(encoded, { 
-        message: 'json', 
-        stateUpdate: 'opcodeJsonArray', 
-        stateUpdateDecoding: 'opcodeJsonArray' 
-      })
-
-      expect(decoded).toHaveProperty('type', 'diff')
-      if ('type' in decoded && 'patches' in decoded) {
-        const update = decoded as StateUpdate
-        expect(update.patches.length).toBe(1)
-        expect(update.patches[0]).toMatchObject({
-          path: '/players/*/hp',
-          op: 'replace',
-          value: 100
-        })
-      }
-    })
-
-    it('throws error for invalid playerIdentifier type', () => {
-      const updateArray = [
-        2, // diff opcode
-        true, // Invalid type (should be string or number)
-        [222222, null, 1, 100]
-      ]
-
-      const encoded = JSON.stringify(updateArray)
-      expect(() => {
-        decodeMessage(encoded, { 
-          message: 'json', 
-          stateUpdate: 'opcodeJsonArray', 
-          stateUpdateDecoding: 'opcodeJsonArray' 
-        })
-      }).toThrow('expected string (playerID) or number (playerSlot)')
-    })
 
     it('decodes playerSlot with PathHash format patches', () => {
-      const playerSlot = 777
       const updateArray = [
         2, // diff opcode
-        playerSlot, // playerSlot (Int)
         [222222, 'player-abc', 1, 150], // PathHash with dynamic key
         [567890, null, 1, 75] // PathHash without dynamic key
       ]
@@ -785,10 +723,8 @@ describe('protocol', () => {
     })
 
     it('decodes playerSlot with mixed Legacy and PathHash formats', () => {
-      const playerSlot = 888
       const updateArray = [
         2, // diff opcode
-        playerSlot, // playerSlot (Int)
         ['/score', 1, 200], // Legacy format
         [567890, 'monster-xyz', 1, 60] // PathHash format
       ]

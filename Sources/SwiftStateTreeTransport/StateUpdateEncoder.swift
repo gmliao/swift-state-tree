@@ -159,17 +159,8 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoder {
             forceDefinition = false
         }
 
-        // Use playerSlot if provided, otherwise fall back to playerID string
-        let playerIdentifier: AnyCodable
-        if let slot = playerSlot {
-            playerIdentifier = AnyCodable(slot)
-        } else {
-            playerIdentifier = AnyCodable(playerID.rawValue)
-        }
-
         var payload: [AnyCodable] = [
-            AnyCodable(opcode.rawValue),
-            playerIdentifier
+            AnyCodable(opcode.rawValue)
         ]
         
         // Include initial state payload if needed (legacy or otherwise)
@@ -356,17 +347,8 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoder {
             forceDefinition = false
         }
 
-        // Use playerSlot if provided, otherwise fall back to playerID string
-        let playerIdentifier: AnyCodable
-        if let slot = playerSlot {
-            playerIdentifier = AnyCodable(slot)
-        } else {
-            playerIdentifier = AnyCodable(playerID.rawValue)
-        }
-
         var payload: [AnyCodable] = [
-            AnyCodable(opcode.rawValue),
-            playerIdentifier
+            AnyCodable(opcode.rawValue)
         ]
 
         if let hasher = pathHasher {
