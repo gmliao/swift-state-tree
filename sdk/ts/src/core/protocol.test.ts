@@ -361,6 +361,44 @@ describe('protocol', () => {
       }
     })
 
+    it('decodes StateUpdate from JSON bytes (binary WebSocket frame)', () => {
+      const update: StateUpdate = {
+        type: 'diff',
+        patches: [
+          { path: '/count', op: 'replace', value: 1 }
+        ]
+      }
+
+      const encoded = JSON.stringify(update)
+      const bytes = new TextEncoder().encode(encoded)
+      const decoded = decodeMessage(bytes)
+
+      expect(decoded).toHaveProperty('type', 'diff')
+      expect(decoded).toHaveProperty('patches')
+      if ('type' in decoded && 'patches' in decoded) {
+        const u = decoded as StateUpdate
+        expect(u.patches.length).toBe(1)
+        expect(u.patches[0]).toMatchObject({ path: '/count', op: 'replace', value: 1 })
+      }
+    })
+
+    it('decodes StateSnapshot from JSON bytes (binary WebSocket frame)', () => {
+      const snapshot: StateSnapshot = {
+        values: {
+          count: 0
+        }
+      }
+
+      const encoded = JSON.stringify(snapshot)
+      const bytes = new TextEncoder().encode(encoded)
+      const decoded = decodeMessage(bytes)
+
+      expect(decoded).toHaveProperty('values')
+      if ('values' in decoded) {
+        expect((decoded as StateSnapshot).values).toEqual({ count: 0 })
+      }
+    })
+
     it('throws error for unknown message format', () => {
       const invalid = JSON.stringify({ unknown: 'format' })
       

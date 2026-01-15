@@ -28,6 +28,17 @@ export interface ServerEventPayloads {
 
 export type ServerEventName = keyof ServerEventPayloads
 
+/** Unsubscribe function type for cleaning up event subscriptions */
+export type Unsubscribe = () => void
+
+/** Event handler callback type for server events */
+export type EventHandler<T> = (payload: T) => void
+
+/** Event subscription type for server events */
+export type EventSubscription<T> = {
+  subscribe: (handler: EventHandler<T>) => Unsubscribe
+}
+
 export type Actions = {
   [K in ActionName]: (payload: ActionPayloads[K]) => Promise<ActionResponses[K]>
 }
@@ -37,5 +48,5 @@ export type ClientEvents = {
 }
 
 export type ServerEventSubscriptions = {
-  [K in ServerEventName]: (handler: (payload: ServerEventPayloads[K]) => void) => () => void
+  [K in ServerEventName]: (handler: EventHandler<ServerEventPayloads[K]>) => Unsubscribe
 }

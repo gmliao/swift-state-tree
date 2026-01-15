@@ -47,6 +47,7 @@ export const SCHEMA = {
       ],
       "type": "object",
       "x-stateTree": {
+        "atomic": true,
         "nodeKind": "leaf"
       }
     },
@@ -80,9 +81,9 @@ export const SCHEMA = {
         }
       },
       "required": [
-        "success",
         "newCookies",
         "newCookiesPerSecond",
+        "success",
         "upgradeLevel"
       ],
       "type": "object",
@@ -113,6 +114,7 @@ export const SCHEMA = {
           "default": {},
           "type": "object",
           "x-stateTree": {
+            "keyType": "PlayerID",
             "nodeKind": "map",
             "sync": {
               "policy": "broadcast"
@@ -126,6 +128,7 @@ export const SCHEMA = {
           "default": {},
           "type": "object",
           "x-stateTree": {
+            "keyType": "PlayerID",
             "nodeKind": "map",
             "sync": {
               "policy": "perPlayerSlice"
@@ -165,6 +168,7 @@ export const SCHEMA = {
           "default": {},
           "type": "object",
           "x-stateTree": {
+            "keyType": "String",
             "nodeKind": "map",
             "sync": {
               "policy": "broadcast"
@@ -224,7 +228,11 @@ export const SCHEMA = {
     "DeterministicMathDemoState": {
       "properties": {
         "directVector": {
-          "$ref": "#/defs/IVec2"
+          "$ref": "#/defs/IVec2",
+          "default": {
+            "x": 0,
+            "y": 0
+          }
         },
         "playerAccelerations": {
           "additionalProperties": {
@@ -233,6 +241,7 @@ export const SCHEMA = {
           "default": {},
           "type": "object",
           "x-stateTree": {
+            "keyType": "PlayerID",
             "nodeKind": "map",
             "sync": {
               "policy": "broadcast"
@@ -246,6 +255,7 @@ export const SCHEMA = {
           "default": {},
           "type": "object",
           "x-stateTree": {
+            "keyType": "PlayerID",
             "nodeKind": "map",
             "sync": {
               "policy": "broadcast"
@@ -259,6 +269,7 @@ export const SCHEMA = {
           "default": {},
           "type": "object",
           "x-stateTree": {
+            "keyType": "PlayerID",
             "nodeKind": "map",
             "sync": {
               "policy": "broadcast"
@@ -292,6 +303,7 @@ export const SCHEMA = {
       ],
       "type": "object",
       "x-stateTree": {
+        "atomic": true,
         "nodeKind": "leaf"
       }
     },
@@ -328,6 +340,7 @@ export const SCHEMA = {
       ],
       "type": "object",
       "x-stateTree": {
+        "atomic": true,
         "nodeKind": "leaf"
       }
     },
@@ -374,6 +387,7 @@ export const SCHEMA = {
       ],
       "type": "object",
       "x-stateTree": {
+        "atomic": true,
         "nodeKind": "leaf"
       }
     }
@@ -385,12 +399,30 @@ export const SCHEMA = {
           "$ref": "#/defs/BuyUpgradeAction"
         }
       },
+      "clientEventHashes": {
+        "ClickCookie": 1
+      },
       "clientEvents": {
         "ClickCookie": {
           "$ref": "#/defs/ClickCookieEvent"
         }
       },
+      "eventHashes": {},
       "events": {},
+      "pathHashes": {
+        "players": 2159421276,
+        "players.*": 3150840898,
+        "players.*.cookies": 3482196000,
+        "players.*.cookiesPerSecond": 1222562229,
+        "players.*.name": 3363715859,
+        "privateStates": 934395240,
+        "privateStates.*": 1791569854,
+        "privateStates.*.totalClicks": 931414395,
+        "privateStates.*.upgrades": 4073323572,
+        "privateStates.*.upgrades.*": 1509523934,
+        "ticks": 367461337,
+        "totalCookies": 3595574451
+      },
       "stateType": "CookieGameState",
       "sync": {
         "diff": {
@@ -407,8 +439,13 @@ export const SCHEMA = {
           "$ref": "#/defs/IncrementAction"
         }
       },
+      "clientEventHashes": {},
       "clientEvents": {},
+      "eventHashes": {},
       "events": {},
+      "pathHashes": {
+        "count": 4120658170
+      },
       "stateType": "CounterState",
       "sync": {
         "diff": {
@@ -421,8 +458,30 @@ export const SCHEMA = {
     },
     "deterministic-math-demo": {
       "actions": {},
+      "clientEventHashes": {},
       "clientEvents": {},
+      "eventHashes": {},
       "events": {},
+      "pathHashes": {
+        "directVector": 3997634636,
+        "directVector.x": 1490192477,
+        "directVector.y": 1490192650,
+        "playerAccelerations": 4155314444,
+        "playerAccelerations.*": 2636192721,
+        "playerAccelerations.*.v": 3896796012,
+        "playerAccelerations.*.v.x": 1661447367,
+        "playerAccelerations.*.v.y": 1661448084,
+        "playerPositions": 4294121736,
+        "playerPositions.*": 2364403294,
+        "playerPositions.*.v": 2718036403,
+        "playerPositions.*.v.x": 1878951362,
+        "playerPositions.*.v.y": 1878951573,
+        "playerVelocities": 2035896259,
+        "playerVelocities.*": 2654505192,
+        "playerVelocities.*.v": 3861532996,
+        "playerVelocities.*.v.x": 2748565410,
+        "playerVelocities.*.v.y": 2748563677
+      },
       "stateType": "DeterministicMathDemoState",
       "sync": {
         "diff": {
@@ -434,6 +493,7 @@ export const SCHEMA = {
       }
     }
   },
+  "schemaHash": "d62c6ff067ac1cdb",
   "version": "0.1.0"
 } as const
 
