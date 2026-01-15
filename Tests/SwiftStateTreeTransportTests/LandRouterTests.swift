@@ -468,8 +468,7 @@ struct LandRouterTests {
             allowAutoCreateOnJoin: true,
             transportEncoding: TransportEncodingConfig(
                 message: .messagepack,
-                stateUpdate: .opcodeMessagePack,
-                enablePayloadCompression: true
+                stateUpdate: .opcodeMessagePack
             )
         )
         await transport.setDelegate(router)
@@ -534,8 +533,7 @@ struct LandRouterTests {
             allowAutoCreateOnJoin: true,
             transportEncoding: TransportEncodingConfig(
                 message: .messagepack,
-                stateUpdate: .opcodeMessagePack,
-                enablePayloadCompression: true
+                stateUpdate: .opcodeMessagePack
             )
         )
         await transport.setDelegate(router)
@@ -726,8 +724,7 @@ struct LandRouterTests {
             allowAutoCreateOnJoin: true,
             transportEncoding: TransportEncodingConfig(
                 message: .messagepack,
-                stateUpdate: .opcodeMessagePack,
-                enablePayloadCompression: true
+                stateUpdate: .opcodeMessagePack
             )
         )
         await transport.setDelegate(router)
@@ -792,8 +789,7 @@ struct LandRouterTests {
             allowAutoCreateOnJoin: true,
             transportEncoding: TransportEncodingConfig(
                 message: .messagepack,
-                stateUpdate: .opcodeMessagePack,
-                enablePayloadCompression: true
+                stateUpdate: .opcodeMessagePack
             )
         )
         await transport.setDelegate(router)
@@ -876,8 +872,7 @@ struct LandRouterTests {
             allowAutoCreateOnJoin: false,
             transportEncoding: TransportEncodingConfig(
                 message: .messagepack,
-                stateUpdate: .opcodeMessagePack,
-                enablePayloadCompression: true
+                stateUpdate: .opcodeMessagePack
             )
         )
         await transport.setDelegate(router)

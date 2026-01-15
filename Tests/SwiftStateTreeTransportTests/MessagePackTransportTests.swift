@@ -150,8 +150,7 @@ func testMessagePackTransportAdapterJoin() async throws {
     // Use TransportEncodingConfig with messagepack encoding
     let encodingConfig = TransportEncodingConfig(
         message: .messagepack,
-        stateUpdate: .jsonObject,
-        enablePayloadCompression: false
+        stateUpdate: .jsonObject
     )
     let adapter = TransportAdapter<MessagePackTestState>(
         keeper: keeper,

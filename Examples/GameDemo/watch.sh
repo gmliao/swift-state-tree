@@ -9,37 +9,37 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
 # Single variable controls both StateUpdate and TransportMessage encoding
 if [[ -z "${TRANSPORT_ENCODING:-}" ]]; then
-  echo "Select transport encoding (default: opcode, press Enter to use default):"
-  echo "  1) opcode      - uses opcodeJsonArray (Opcode structure + JSON encoding)"
-  echo "  2) json        - uses jsonObject (traditional JSON)"
-  echo "  3) messagepack - uses MessagePack binary (Opcode structure + MessagePack encoding)"
+  echo "Select transport encoding (default: messagepack, press Enter to use default):"
+  echo "  1) messagepack - uses MessagePack binary (Opcode structure + MessagePack encoding)"
+  echo "  2) opcode      - uses opcodeJsonArray (Opcode structure + JSON encoding)"
+  echo "  3) json        - uses jsonObject (traditional JSON)"
   
   # Use timeout to allow Enter to select default
   if read -t 2 -r choice; then
     case "$choice" in
-      1|opcode)
+      1|messagepack)
+        TRANSPORT_ENCODING="messagepack"
+        ;;
+      2|opcode)
         TRANSPORT_ENCODING="opcode"
         ;;
-      2|json)
+      3|json)
         TRANSPORT_ENCODING="json"
-        ;;
-      3|messagepack)
-        TRANSPORT_ENCODING="messagepack"
         ;;
       "")
         # Empty input (just Enter) - use default
-        TRANSPORT_ENCODING="opcode"
-        echo "Using default: opcode"
+        TRANSPORT_ENCODING="messagepack"
+        echo "Using default: messagepack"
         ;;
       *)
-        echo "Invalid selection. Using default: opcode"
-        TRANSPORT_ENCODING="opcode"
+        echo "Invalid selection. Using default: messagepack"
+        TRANSPORT_ENCODING="messagepack"
         ;;
     esac
   else
     # Timeout or no input - use default
-    TRANSPORT_ENCODING="opcode"
-    echo "Using default: opcode"
+    TRANSPORT_ENCODING="messagepack"
+    echo "Using default: messagepack"
   fi
 fi
 
