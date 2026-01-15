@@ -56,18 +56,6 @@ struct DemoServer {
             logger: logger
         ))
 
-        let stateUpdateEncoding = resolveStateUpdateEncoding(
-            rawValue: HummingbirdDemoContent.getEnvString(
-                key: "STATE_UPDATE_ENCODING",
-                defaultValue: "opcodeJsonArray"
-            )
-        )
-
-        let transportEncoding = TransportEncodingConfig(
-            message: .json,
-            stateUpdate: stateUpdateEncoding
-        )
-
         // Shared server configuration for all land types
         // Enable parallel encoding for better performance with multiple players
         let serverConfig = LandServerConfiguration(
@@ -75,8 +63,7 @@ struct DemoServer {
             jwtConfig: jwtConfig,
             allowGuestMode: true,
             allowAutoCreateOnJoin: true,
-            transportEncoding: transportEncoding,
-            enableParallelEncoding: true  // Enable parallel JSON encoding for state updates
+            transportEncoding: .json
         )
 
         // Register Cookie Game server
@@ -100,8 +87,8 @@ struct DemoServer {
         // Register admin routes for managing lands
         // Use API key for demo (in production, use JWT with adminRole)
         let adminAuth = AdminAuthMiddleware(
-            jwtValidator: nil,  // Can use JWT validator if needed
-            apiKey: "demo-admin-key"  // Demo API key (change in production!)
+            jwtValidator: nil, // Can use JWT validator if needed
+            apiKey: "demo-admin-key" // Demo API key (change in production!)
         )
         await landHost.registerAdminRoutes(
             adminAuth: adminAuth,
@@ -114,7 +101,7 @@ struct DemoServer {
             try await landHost.run()
         } catch let error as LandHostError {
             logger.error("❌ Server startup failed: \(error)", metadata: [
-                "error": .string(String(describing: error))
+                "error": .string(String(describing: error)),
             ])
             exit(1)
         }

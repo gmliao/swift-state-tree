@@ -1,0 +1,38 @@
+{
+    "steps": [
+        {
+            "type": "log",
+            "message": "Connecting to Counter Demo..."
+        },
+        {
+            "type": "state",
+            "message": "Initial state"
+        },
+        {
+            "type": "action",
+            "action": "Increment",
+            "payload": {}
+        },
+        {
+            "type": "wait",
+            "wait": 100
+        },
+        {
+            "type": "state",
+            "message": "State after Increment"
+        },
+        {
+            "type": "action",
+            "action": "Increment",
+            "payload": {}
+        },
+        {
+            "type": "wait",
+            "wait": 100
+        },
+        {
+            "type": "state",
+            "message": "State after 2nd Increment"
+        }
+    ]
+}

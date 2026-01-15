@@ -42,6 +42,10 @@ Suppose there is a `MoveTo` Action:
 ```
 > **Difference**: Removed redundant keys like "kind", "payload", "action", "type", significantly reducing packet size.
 
+*   **Source Code**:
+    *   Server Encoder: [StateUpdateEncoder.swift:L140](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift#L140)
+    *   Client Decoder: [protocol.ts:L388](../sdk/ts/src/core/protocol.ts#L388)
+
 ---
 
 ### Stage 2: Path Hashing
@@ -84,6 +88,11 @@ When the server updates a player's position (using Diff as an example):
 > **Difference**: Long string `players.*.position` is replaced by a 4-byte integer.
 > **Note**: In JSON format, the **text size** may not drop significantly because the hash integer (e.g., `3358665268` is 10 bytes) is similar in length to the original path, and an array structure is introduced to separate dynamic keys. The core value of this stage is establishing a "numerical" structure for the binary storage in Stage 4.
 
+*   **Source Code**:
+    *   Path Hashing Logic: [PathHasher.swift](../Sources/SwiftStateTree/Core/PathHasher.swift)
+    *   Server Usage: [StateUpdateEncoder.swift:L214](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift#L214)
+    *   Client Reconstruction: [protocol.ts:L520](../sdk/ts/src/core/protocol.ts#L520)
+
 ---
 
 ### Stage 3: Runtime Compression Optimization (Runtime Compression)
@@ -117,6 +126,10 @@ Once the mapping is established, all subsequent updates (Diff) only need to tran
 *   **Body**: Uses Slot `1` (1 byte) instead of "user-123" (36 bytes).
 > **Note**: The current Dynamic Key mechanism is mainly used to optimize `PlayerID` in the `players` dictionary.
 
+*   **Source Code**:
+    *   Server Tracking: [StateUpdateEncoder.swift:L221](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift#L221)
+    *   Client Resolution: [protocol.ts:L455](../sdk/ts/src/core/protocol.ts#L455)
+
 ---
 
 ### Stage 4: MessagePack Binary Integration (MessagePack Integration)
@@ -141,6 +154,10 @@ Position update again (Diff):
 
 > **Final Benefit**: Completely removes text parsing costs and compresses packet size to the extreme.
 
+*   **Source Code**:
+    *   Server Encoder: [StateUpdateEncoder.swift:L329](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift#L329)
+    *   Client Decoder: [protocol.ts:L304](../sdk/ts/src/core/protocol.ts#L304)
+
 ---
 
 
@@ -155,7 +172,6 @@ Currently, **GameDemo** uses the following configuration for optimal performance
 3.  **Schema**: `schema.json`
     *   Contains the full `pathHashes` table to ensure synchronized decoding between client and server.
 
-This architecture allows high-frequency updates of `position` (60Hz) and `rotation` in `HeroDefenseState` to be broadcast with extremely low bandwidth consumption, supporting real-time multiplayer combat.
 
 ## Performance Benchmarks
 
@@ -190,7 +206,13 @@ Based on performance test results on `2026-01-15` (GameServer: hero-defense, dur
 **A: Strictly according to the declaration order of the Struct properties.**
 
 *   **Implementation**: The `@Payload` Macro parses the Struct's Abstract Syntax Tree (AST) at compile time.
-*   **Rule**: It reads the declarations of `Stored Properties` in order and generates corresponding serialization code.
+*   **Rule**: It sorts `Stored Properties` by **ASCII Name (Deterministic ASCII Sorting)** before generating serialization code. This ensures protocol stability even if you refactor source code (change declaration lines), as long as field names remain unchanged.
+*   **Dual Guarantee (Synchronization)**:
+    1.  **Runtime (`encodeAsArray`)**: The Macro generates this function using sorted fields for Server serialization.
+    2.  **Schema (`getFieldMetadata`)**: The Macro generates this metadata using sorted fields for `SchemaExtractor` to write into `schema.json`.
+*   **Critical Constraint**: These two functions MUST use the exact same sorting logic. We chose ASCII sorting because it guarantees **cross-platform, cross-language determinism** and is immune to developer refactoring habits.
+*   **Schema Mapping**: Although the `properties` in a JSON Object are unordered, the `required` array in the generated `schema.json` strictly preserves this order, serving as the reference for clients to decode the Tuple Array.
+*   **Source Code**: [PayloadMacro.swift](../Sources/SwiftStateTreeMacros/PayloadMacro.swift)
 *   **Example**:
     ```swift
     @Payload

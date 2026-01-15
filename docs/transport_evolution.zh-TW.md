@@ -42,6 +42,10 @@
 ```
 > **差異**：移除了 "kind", "payload", "action", "type" 等重複 Key，大幅減少封包大小。
 
+*   **相關分析程式碼**:
+    *   Server 端編碼: [StateUpdateEncoder.swift:L140](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift#L140)
+    *   Client 端解碼: [protocol.ts:L388](../sdk/ts/src/core/protocol.ts#L388)
+
 ---
 
 ### 第二階段：路徑雜湊 (Path Hashing)
@@ -84,6 +88,11 @@
 > **差異**：長字串 `players.*.position` 被 4-byte 整數取代。
 > **註**：在 JSON 格式下，由於雜湊數字長度（如 `3358665268` 為 10 bytes）與原路徑相近，且為了分離動態鍵值引入了陣列結構，此階段的 **文字體積** 可能不會明顯下降。其核心價值在於建立「數值化」的結構，為後續的「第四階段」二進制壓縮提供物理基礎。
 
+*   **相關分析程式碼**:
+    *   路徑雜湊邏輯: [PathHasher.swift](../Sources/SwiftStateTree/Core/PathHasher.swift)
+    *   Server 端應用: [StateUpdateEncoder.swift:L214](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift#L214)
+    *   Client 端路徑重建: [protocol.ts:L520](../sdk/ts/src/core/protocol.ts#L520)
+
 ---
 
 ### 第三階段：執行期壓縮優化 (Runtime Compression)
@@ -117,6 +126,10 @@
 *   **Body**: 使用 Slot `1` (1 byte) 代替 "user-123" (36 bytes)。
 > **註**：目前 Dynamic Key 機制主要用於優化 `players` 字典中的 `PlayerID`。
 
+*   **相關分析程式碼**:
+    *   Server 端管理: [StateUpdateEncoder.swift:L221](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift#L221)
+    *   Client 端映射解析: [protocol.ts:L455](../sdk/ts/src/core/protocol.ts#L455)
+
 ---
 
 ### 第四階段：MessagePack 二進制整合 (MessagePack Integration)
@@ -141,6 +154,10 @@
 
 > **最終效益**：徹底移除文字解析成本，將封包大小壓縮至極限。
 
+*   **相關分析程式碼**:
+    *   Server 端編碼 (MessagePack): [StateUpdateEncoder.swift:L329](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift#L329)
+    *   Client 端解碼: [protocol.ts:L304](../sdk/ts/src/core/protocol.ts#L304)
+
 ---
 
 
@@ -155,7 +172,6 @@
 3.  **Schema**: `schema.json`
     *   包含完整 `pathHashes` 表，確保客戶端與伺服器端同步解碼。
 
-此架構使得 `HeroDefenseState` 中高頻更新的 `position` (60Hz) 與 `rotation` 能夠以極低的頻寬消耗進行廣播，支撐多人即時戰鬥的需求。
 
 ## 效能實測 (Performance Benchmarks)
 
@@ -190,7 +206,13 @@
 **A: 嚴格依照 Struct 屬性的宣告順序 (Declaration Order)。**
 
 *   **實作**：`@Payload` Macro 在編譯期會解析 Struct 的語法樹 (AST)。
-*   **規則**：它會依序讀取 `Stored Properties` 的宣告，並生成對應的序列化程式碼。
+*   **規則**：它會先將 `Stored Properties` 依照欄位名稱進行 **ASCII 排序 (Deterministic ASCII Sorting)**，再產生對應的序列化程式碼。這確保了即使重構原始碼（改變宣告行號），只要欄位名稱不變，協議就能保持穩定。
+*   **雙重保證 (同步性)**：
+    1.  **Runtime (`encodeAsArray`)**: Macro 排序後生成此函數供 Server 序列化使用。
+    2.  **Schema (`getFieldMetadata`)**: Macro 排序後生成此元數據供 `SchemaExtractor` 寫入 `schema.json`。
+*   **關鍵限制**：這兩個函數必須使用相同的排序邏輯。我們選擇 ASCII 排序是因為它以此確保了**跨平台、跨語言的決定性**，且不受開發者重構程式碼的習慣影響。
+*   **Schema 對應**：雖然 JSON Object 的 `properties` 是無序的，但在生成的 `schema.json` 中，`required` 陣列會嚴格保留此順序，作為客戶端解碼 Tuple Array 的依據。
+*   **相關程式碼**：[PayloadMacro.swift](../Sources/SwiftStateTreeMacros/PayloadMacro.swift)
 *   **範例**：
     ```swift
     @Payload

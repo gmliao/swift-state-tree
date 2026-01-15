@@ -1,0 +1,65 @@
+{
+    "steps": [
+        {
+            "type": "log",
+            "message": "Connecting to Cookie Demo..."
+        },
+        {
+            "type": "state",
+            "message": "Initial state"
+        },
+        {
+            "type": "event",
+            "event": "ClickCookie",
+            "payload": {
+                "amount": 1
+            }
+        },
+        {
+            "type": "wait",
+            "wait": 100
+        },
+        {
+            "type": "state",
+            "message": "State after ClickCookie"
+        },
+        {
+            "type": "action",
+            "action": "BuyUpgrade",
+            "payload": {
+                "upgradeID": "cursor"
+            },
+            "expectError": true
+        },
+        {
+            "type": "log",
+            "message": "Simulating enough clicks to buy cursor"
+        },
+        {
+            "type": "event",
+            "event": "ClickCookie",
+            "payload": {
+                "amount": 100
+            }
+        },
+        {
+            "type": "wait",
+            "wait": 100
+        },
+        {
+            "type": "action",
+            "action": "BuyUpgrade",
+            "payload": {
+                "upgradeID": "cursor"
+            }
+        },
+        {
+            "type": "wait",
+            "wait": 100
+        },
+        {
+            "type": "state",
+            "message": "State after BuyUpgrade"
+        }
+    ]
+}

@@ -324,8 +324,8 @@
         }
       },
       "required" : [
-        "playerID",
         "from",
+        "playerID",
         "to"
       ],
       "type" : "object",
@@ -465,9 +465,9 @@
         }
       },
       "required" : [
-        "turretID",
         "from",
-        "to"
+        "to",
+        "turretID"
       ],
       "type" : "object",
       "x-stateTree" : {
@@ -676,6 +676,6 @@
       }
     }
   },
-  "schemaHash" : "66997a29657e5238",
+  "schemaHash" : "ab31b0e196e3e0e6",
   "version" : "0.1.0"
 }
