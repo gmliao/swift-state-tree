@@ -144,10 +144,16 @@ Position update again (Diff):
 
 **MessagePack (Binary):**
 `92 02 94 CE C8 31 2A 34 01 01 64`
+
+> **Note**: Depending on the encoder (especially online tools based on JavaScript `Number`), `3358665268` may be encoded as **float64** (`CB`) instead of `uint32` (`CE`), e.g.:
+> `92 02 94 CB 41 E9 06 25 46 80 00 00 01 01 64`
+>
+> Both represent the same numeric value, but with different MessagePack type tags. On the Swift server, `UInt32` PathHash normally encodes as `CE` (uint32).
 *   `92`: Top-level Array of 2 elements (`[opcode, patches]`).
 *   `02`: Opcode `2` (Diff).
 *   `94`: Patch Array of 4 elements (`[pathHash, slot, op, val]`).
 *   `CE C8 31 2A 34`: `UInt32` (PathHash) takes only 5 bytes.
+    *   If you see `CB 41 E9 06 25 46 80 00 00`: it's the same PathHash encoded as `float64` (9 bytes).
 *   `01`: `Int` (Dynamic Key Slot) takes only 1 byte.
 *   `01`: `Int` (Patch Opcode) takes only 1 byte.
 *   `64`: `Int` (Value 100) takes only 1 byte.
@@ -185,7 +191,9 @@ Based on performance test results on `2026-01-15` (GameServer: hero-defense, dur
 
 ### Key Data
 *   **73% Bandwidth Savings**: From original JSON to the final MessagePack + PathHash, state update packet sizes are reduced to 1/4 of the original size.
-*   **Under 150 bytes**: The average state update packet (including 60Hz displacement sync) is only 142 bytes, greatly reducing latency risks on mobile networks.
+*   **Under 150 bytes**: The average state update **packet** (including 60Hz displacement sync) is about **142 bytes/packet**.
+    *   **Throughput**: bandwidth is approximately \(142 \times \text{packets per second}\) bytes/s.
+    *   For example, at 10 state updates per second: \(142 \times 10 = 1420\) bytes/s (~1.4 KB/s).
 
 ## Technical Q&A
 
