@@ -143,11 +143,17 @@
 `[2, [3358665268, 1, 1, 100]]` (純文字，每個數位/逗點都是字元)
 
 **MessagePack (二進制):**
-`92 02 94 CE C8 31 12 34 01 01 64`
+`92 02 94 CE C8 31 2A 34 01 01 64`
+
+> **註**：你若用某些線上工具（特別是以 JavaScript Number 為基礎的編碼器）去轉，可能會把 `3358665268` 編成 **float64**（`CB`）而不是 `UInt32`（`CE`），例如：
+> `92 02 94 CB 41 E9 06 25 46 80 00 00 01 01 64`
+>
+> 這兩者代表的數值相同，但 **型別 tag 不同**；Swift 端的 `UInt32` PathHash 在 MessagePack 正常會走 `CE`（uint32）。
 *   `92`: Top-level Array of 2 elements (`[opcode, patches]`)。
 *   `02`: Opcode `2` (Diff)。
 *   `94`: Patch Array of 4 elements (`[pathHash, slot, op, val]`)。
-*   `CE C8 31 12 34`: `UInt32` (PathHash) 僅佔 5 bytes。
+*   `CE C8 31 2A 34`: `UInt32` (PathHash) 僅佔 5 bytes。
+    *   若看到 `CB 41 E9 06 25 46 80 00 00`：代表同一個 PathHash 被編成 `float64`（9 bytes）。
 *   `01`: `Int` (Dynamic Key Slot) 僅佔 1 byte。
 *   `01`: `Int` (Patch Opcode) 僅佔 1 byte。
 *   `64`: `Int` (Value 100) 僅佔 1 byte。
@@ -185,7 +191,9 @@
 
 ### 關鍵數據
 *   **73% 頻寬節省**: 從原始 JSON 到最終 MessagePack + PathHash，狀態更新封包大小縮減至原本的 1/4。
-*   **低於 150 bytes**: 平均每個狀態更新封包 (含 60Hz 位移同步) 僅需 142 bytes，極大降低了行動網路下的延遲風險。
+*   **低於 150 bytes**: 平均每個狀態更新**封包** (含 60Hz 位移同步) 約 **142 bytes/封包**。
+    *   **換算頻寬**：實際頻寬約為 \(142 \times \text{每秒封包數}\) bytes/s。
+    *   例如若每秒發送 10 次狀態更新，約為 \(142 \times 10 = 1420\) bytes/s（約 1.4 KB/s）。
 
 ## 技術問答 (Technical Q&A)
 

@@ -499,7 +499,21 @@ describe('protocol', () => {
       pathHashReverseLookup.set(567890, 'monsters.*.health')
       pathHashReverseLookup.set(111111, 'players.*')
       pathHashReverseLookup.set(222222, 'players.*.hp')
+      // Real-world example from docs: 0xC8312A34 = 3358665268
+      pathHashReverseLookup.set(3358665268, 'players.*.position')
     })
+
+    function hexToBytes(hex: string): Uint8Array {
+      const cleaned = hex.replace(/\s+/g, '')
+      if (cleaned.length % 2 !== 0) {
+        throw new Error(`Invalid hex length: ${cleaned.length}`)
+      }
+      const out = new Uint8Array(cleaned.length / 2)
+      for (let i = 0; i < cleaned.length; i += 2) {
+        out[i / 2] = parseInt(cleaned.slice(i, i + 2), 16)
+      }
+      return out
+    }
 
     it('decodes PathHash format with static path', () => {
       const updateArray = [
@@ -516,6 +530,44 @@ describe('protocol', () => {
         expect(update.patches.length).toBe(1)
         expect(update.patches[0]).toMatchObject({
           path: '/players/*/hp',
+          op: 'replace',
+          value: 100
+        })
+      }
+    })
+
+    it('decodes MessagePack bytes (uint32 PathHash, CE) into StateUpdate', () => {
+      // MessagePack for: [2, [3358665268, 1, 1, 100]]
+      // 92 = array(2), 02 = diff, 94 = array(4), CE = uint32(0xC8312A34), 01 01 64
+      const bytes = hexToBytes('92 02 94 CE C8 31 2A 34 01 01 64')
+      const decoded = decodeMessage(bytes)
+
+      expect(decoded).toHaveProperty('type', 'diff')
+      expect(decoded).toHaveProperty('patches')
+      if ('type' in decoded && 'patches' in decoded) {
+        const update = decoded as StateUpdate
+        expect(update.patches.length).toBe(1)
+        expect(update.patches[0]).toMatchObject({
+          path: '/players/1/position',
+          op: 'replace',
+          value: 100
+        })
+      }
+    })
+
+    it('decodes MessagePack bytes (float64 PathHash, CB) into StateUpdate', () => {
+      // Some JS-based encoders emit 3358665268 as float64 (CB) instead of uint32 (CE).
+      // This still decodes to the same numeric value in JS (<= 2^53, so exact).
+      const bytes = hexToBytes('92 02 94 CB 41 E9 06 25 46 80 00 00 01 01 64')
+      const decoded = decodeMessage(bytes)
+
+      expect(decoded).toHaveProperty('type', 'diff')
+      expect(decoded).toHaveProperty('patches')
+      if ('type' in decoded && 'patches' in decoded) {
+        const update = decoded as StateUpdate
+        expect(update.patches.length).toBe(1)
+        expect(update.patches[0]).toMatchObject({
+          path: '/players/1/position',
           op: 'replace',
           value: 100
         })
