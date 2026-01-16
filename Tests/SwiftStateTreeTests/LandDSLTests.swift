@@ -793,8 +793,12 @@ func testAfterFinalize() async throws {
     try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
     try await keeper.leave(playerID: playerID, clientID: clientID)
     
-    // Wait for destroy timer and finalize handlers to execute
-    try await Task.sleep(nanoseconds: 200_000_000) // 200ms
+    // Wait for destroy timer and finalize handlers to execute.
+    // Use polling instead of fixed delay for CI stability.
+    await waitFor("OnFinalize and AfterFinalize to be called", timeout: .seconds(2)) {
+        let status = await order.getStatus()
+        return status.onFinalize && status.afterFinalize
+    }
     
     let status = await order.getStatus()
     #expect(status.onFinalize, "OnFinalize should be called")
