@@ -501,6 +501,8 @@ describe('protocol', () => {
       pathHashReverseLookup.set(222222, 'players.*.hp')
       // Real-world example from docs: 0xC8312A34 = 3358665268
       pathHashReverseLookup.set(3358665268, 'players.*.position')
+      // Multi-wildcard example (nested maps/arrays)
+      pathHashReverseLookup.set(888888, 'players.*.inventory.*.itemId')
     })
 
     function hexToBytes(hex: string): Uint8Array {
@@ -591,6 +593,28 @@ describe('protocol', () => {
           path: '/monsters/42/health',
           op: 'replace',
           value: 50
+        })
+      }
+    })
+
+    it('decodes PathHash format with multiple dynamic keys (multi-wildcard pattern)', () => {
+      const updateArray = [
+        2, // diff opcode
+        // [pathHash, dynamicKeys[], op, value]
+        [888888, ['42', '7'], 1, 'sword']
+      ]
+
+      const encoded = JSON.stringify(updateArray)
+      const decoded = decodeMessage(encoded)
+
+      expect(decoded).toHaveProperty('type', 'diff')
+      if ('type' in decoded && 'patches' in decoded) {
+        const update = decoded as StateUpdate
+        expect(update.patches.length).toBe(1)
+        expect(update.patches[0]).toMatchObject({
+          path: '/players/42/inventory/7/itemId',
+          op: 'replace',
+          value: 'sword'
         })
       }
     })

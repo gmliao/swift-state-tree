@@ -102,7 +102,31 @@ A runtime compression mechanism was introduced for dynamic data that cannot be p
 #### 1. Core Concept: Slot Mapping
 To eliminate overhead caused by long strings (Dynamic Path Keys), the server maintains a dynamic mapping table of `String <-> Int Slot`.
 
-*   **Dynamic Key (Body Layer)**: Maps dynamic strings in the State Path (e.g., `players["user-123"]`) to an `Int`.
+*   **Dynamic Key (Body Layer)**: Maps dynamic strings in the State Path (e.g., `players["user-123"]`, `inventory["item-abcdef"]`) to an `Int`.
+*   **Scope**: The slot table is **not global**. It is scoped per `(landID, playerID)` so different players do not share the same mapping.
+*   **Reset**: On `firstSync`, the table is reset and keys are (re)defined to avoid unbounded growth and to keep decoding deterministic.
+
+#### 1.1 Dynamic Key Wire Format (Opcode Patch)
+For PathHash patches, the patch format is:
+
+`[pathHash, dynamicKeyOrKeys, op, value?]`
+
+Where `dynamicKeyOrKeys` supports both single-wildcard and multi-wildcard patterns:
+
+- **No wildcard**: `null`
+- **Single wildcard** (one `*` in the schema pattern): a *DynamicKeyToken*
+- **Multiple wildcards** (two or more `*` in the schema pattern): an array of *DynamicKeyToken* in wildcard order
+
+**DynamicKeyToken** can be one of:
+
+- `string`: the raw key (no compression)
+- `number`: a previously-defined **slot id** (compressed reference)
+- `[number, string]`: a **definition** of slot id to raw key (`[slot, "key"]`)
+- `null`: no key (only valid when the schema pattern has no `*`)
+
+> **Important**: `number` is reserved for slot ids. If your dynamic key is a numeric index (e.g. `"7"`), encode it as a **string** to avoid being interpreted as a slot id.
+
+> **Ambiguity rule**: An array `[number, string]` is always treated as a *definition token*. Any other array shape is treated as the multi-wildcard `dynamicKeyOrKeys` list.
 
 #### 2. Establishment Mechanism: First Sync
 When a player first connects, the server sends Opcode `1` (FirstSync).
@@ -124,7 +148,7 @@ Once the mapping is established, all subsequent updates (Diff) only need to tran
 `[2, [3358665268, 1, 1, 100]]`
 *   **Opcode**: `2` (Diff).
 *   **Body**: Uses Slot `1` (1 byte) instead of "user-123" (36 bytes).
-> **Note**: The current Dynamic Key mechanism is mainly used to optimize `PlayerID` in the `players` dictionary.
+> **Note**: This mechanism applies to **any wildcard segment** (e.g. `PlayerID`, `MonsterID`, `ItemKey`) as long as it appears under `*` in the schema path pattern.
 
 *   **Source Code**:
     *   Server Tracking: [StateUpdateEncoder.swift:L221](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift#L221)

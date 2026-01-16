@@ -102,7 +102,31 @@
 #### 1. 核心概念：Slot Mapping
 為了消除長字串 (Dynamic Path Keys) 帶來的 Overhead，伺服器維護了 `String <-> Int Slot` 的動態映射表。
 
-*   **Dynamic Key (Body Layer)**: 將 State Path 中的動態字串 (e.g. `players["user-123"]`) 映射為 `Int`。
+*   **Dynamic Key (Body Layer)**: 將 State Path 中的動態字串（例如 `players["user-123"]`、`inventory["item-abcdef"]`）映射為 `Int`。
+*   **Scope**：slot 表格 **不是全域共用**，而是以 `(landID, playerID)` 為單位各自維護，避免不同玩家互相污染。
+*   **Reset**：在 `firstSync` 時會重置表格並重新定義 keys，避免無限制成長，並確保解碼決定性。
+
+#### 1.1 Dynamic Key 封包格式（Opcode Patch）
+在 PathHash patch 中，patch 格式為：
+
+`[pathHash, dynamicKeyOrKeys, op, value?]`
+
+其中 `dynamicKeyOrKeys` 同時支援單層與多層 wildcard：
+
+- **無 wildcard**：`null`
+- **單層 wildcard**（schema pattern 只有一個 `*`）：一個 *DynamicKeyToken*
+- **多層 wildcard**（schema pattern 有兩個以上 `*`）：依 wildcard 出現順序的一組 *DynamicKeyToken* 陣列
+
+**DynamicKeyToken** 可以是：
+
+- `string`：原始 key（不壓縮）
+- `number`：已定義過的 **slot id**（壓縮引用）
+- `[number, string]`：**定義** slot id 對應原始 key（`[slot, "key"]`）
+- `null`：無 key（僅在 schema pattern 沒有 `*` 時合理）
+
+> **重要**：`number` 保留給 slot id 使用。若你的動態 key 本身是數字索引（例如 `7`），請以 **字串** `"7"` 傳輸，避免被誤判為 slot id。
+
+> **歧義規則**：陣列形狀若為 `[number, string]`，一定視為「定義 token」。其他形狀的陣列一律視為多層 wildcard 的 `dynamicKeyOrKeys` 列表。
 
 #### 2. 建立機制：首次同步 (First Sync)
 當玩家剛連線時，伺服器發送 Opcode `1` (FirstSync)。
@@ -124,7 +148,7 @@
 `[2, [3358665268, 1, 1, 100]]`
 *   **Opcode**: `2` (Diff)。
 *   **Body**: 使用 Slot `1` (1 byte) 代替 "user-123" (36 bytes)。
-> **註**：目前 Dynamic Key 機制主要用於優化 `players` 字典中的 `PlayerID`。
+> **註**：此機制可用於 **任何** 出現在 `*` 的動態片段（例如 `PlayerID`、`MonsterID`、`ItemKey`），不限於 `players` 字典。
 
 *   **相關分析程式碼**:
     *   Server 端管理: [StateUpdateEncoder.swift:L221](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift#L221)
