@@ -414,6 +414,14 @@ swift test
 cd Tools/CLI && npm test
 ```
 
+**E2E Test Coverage**:
+- ✅ Core Features: Actions, Events, State Sync, Error Handling, Multi-Encoding
+- ✅ Lifecycle: Tick Handler, OnJoin Handler
+- ⚠️ Partial: Per-Player State, Broadcast State (single client)
+- ❌ Not Covered: Multi-Player Scenarios, OnLeave Handler
+
+See [Tools/CLI/README.md](Tools/CLI/README.md) for detailed E2E testing documentation.
+
 ### Writing Tests
 
 Use `@Test` attribute and `#expect()` for assertions:

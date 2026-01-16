@@ -410,6 +410,14 @@ swift test
 cd Tools/CLI && npm test
 ```
 
+**E2E 測試覆蓋**:
+- ✅ 核心功能: Actions, Events, State Sync, Error Handling, Multi-Encoding
+- ✅ 生命週期: Tick Handler, OnJoin Handler
+- ⚠️ 部分覆蓋: Per-Player State, Broadcast State (單一客戶端)
+- ❌ 未覆蓋: Multi-Player Scenarios, OnLeave Handler
+
+詳細的 E2E 測試文檔請參閱 [Tools/CLI/README.md](Tools/CLI/README.md)。
+
 ### 編寫測試
 
 使用 `@Test` 屬性和 `#expect()` 進行斷言：
