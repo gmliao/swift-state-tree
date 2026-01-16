@@ -32,14 +32,13 @@
 - **Cookie**: 驗證 `totalCookies` (broadcast)
 - **Missing**: 未測試多玩家同時看到相同的 broadcast state
 
-### 8. **Tick Handler** ❌ **NOT DIRECTLY TESTED**
-- **Counter**: 有 tick (100ms)，但未驗證 tick 是否執行
-- **Cookie**: 有 tick (300ms)，但未驗證 tick 是否執行
-- **Missing**: 沒有測試 tick 是否正確更新 state（例如 cookie 的 `ticks` 字段）
+### 8. **Tick Handler** ✅ **FULLY COVERED**
+- **Cookie**: `test-tick.json` - 驗證 `ticks` 字段每 300ms 自動增加
+- **Coverage**: Tick handler execution, automatic state updates
 
-### 9. **OnJoin Handler** ❌ **NOT TESTED**
-- **Cookie**: 有 OnJoin handler（初始化玩家狀態）
-- **Missing**: 未驗證 OnJoin 是否正確執行（玩家狀態是否正確初始化）
+### 9. **OnJoin Handler** ✅ **FULLY COVERED**
+- **Cookie**: `test-onjoin.json` - 驗證玩家加入時狀態初始化
+- **Coverage**: OnJoin handler execution, player state initialization
 
 ### 10. **OnLeave Handler** ❌ **NOT TESTED**
 - **Cookie**: 有 OnLeave handler（清理玩家狀態）
@@ -62,20 +61,20 @@
 
 ## Summary
 
-### ✅ Well Covered (5/14)
+### ✅ Well Covered (7/14)
 1. Actions (HandleAction)
 2. Client Events (HandleEvent)
 3. State Synchronization
 4. Error Handling
 5. Multi-Encoding Support
+6. Tick Handler ✅ **NEW**
+7. OnJoin Handler ✅ **NEW**
 
 ### ⚠️ Partially Covered (2/14)
-6. Per-Player State (只驗證存在，未測試隔離性)
-7. Broadcast State (只驗證值，未測試多玩家同步)
+8. Per-Player State (只驗證存在，未測試隔離性)
+9. Broadcast State (只驗證值，未測試多玩家同步)
 
-### ❌ Not Covered (7/14)
-8. Tick Handler
-9. OnJoin Handler
+### ❌ Not Covered (5/14)
 10. OnLeave Handler
 11. Multi-Player Scenarios
 12. StateSync Handler
@@ -86,8 +85,8 @@
 
 ### High Priority (Core Functionality)
 1. **Multi-Player Test**: 測試多個客戶端同時連接，驗證狀態同步
-2. **Tick Test**: 驗證 tick handler 是否正確執行（例如 cookie 的 `ticks` 字段）
-3. **OnJoin Test**: 驗證玩家加入時狀態初始化
+2. ~~**Tick Test**: 驗證 tick handler 是否正確執行（例如 cookie 的 `ticks` 字段）~~ ✅ **DONE**
+3. ~~**OnJoin Test**: 驗證玩家加入時狀態初始化~~ ✅ **DONE**
 
 ### Medium Priority (Important Features)
 4. **OnLeave Test**: 驗證玩家離開時的清理邏輯
