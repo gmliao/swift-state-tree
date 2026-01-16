@@ -192,26 +192,6 @@ program
       const schemaBaseUrl = options.schemaUrl ?? deriveSchemaBaseUrl(wsUrl)
       const schema = await fetchSchema(schemaBaseUrl)
 
-      const logger = new ChalkLogger()
-      const transportEncoding = buildTransportEncoding(options.stateUpdateEncoding)
-      const runtime = new StateTreeRuntime({ logger, transportEncoding })
-      await runtime.connect(wsUrl)
-
-      const view = runtime.createView(options.land, {
-        schema: schema as any,
-        playerID: options.player,
-        deviceID: options.device,
-        metadata,
-        logger
-      })
-
-      const joinResult = await view.join()
-      if (!joinResult.success) {
-        console.error(chalk.red(`Failed to join: ${joinResult.reason}`))
-        runtime.disconnect()
-        process.exit(1)
-      }
-
       const stats = statSync(options.script)
       const scripts = stats.isDirectory() 
         ? readdirSync(options.script).filter(f => f.endsWith('.json')).map(f => join(options.script, f))
@@ -220,17 +200,55 @@ program
       console.log(chalk.blue(`📂 Executing ${scripts.length} script(s).`))
 
       for (const scriptPath of scripts) {
+        // Create a new runtime connection for each script to avoid "Already joined a land" error
+        const logger = new ChalkLogger()
+        const transportEncoding = buildTransportEncoding(options.stateUpdateEncoding)
+        const runtime = new StateTreeRuntime({ logger, transportEncoding })
+        
         try {
-          await executeScript(view, scriptPath)
+          await runtime.connect(wsUrl)
+          
+          // Read script to check for landID override
+          const scriptContent = readFileSync(scriptPath, 'utf-8')
+          const script = JSON.parse(scriptContent)
+          
+          // Generate unique room ID for each script to ensure clean state
+          // Format: landType:unique-instance-id
+          // Use script.landID if specified, otherwise generate unique instance ID
+          const uniqueInstanceId = script.landID 
+            ? (script.landID.includes(':') ? script.landID.split(':')[1] : script.landID)
+            : `test-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
+          const landID = `${options.land}:${uniqueInstanceId}`
+          
+          console.log(chalk.cyan(`🏠 Using land ID: ${landID}`))
+          
+          // Create a new view with unique land ID for each script
+          const view = runtime.createView(landID, {
+            schema: schema as any,
+            playerID: options.player,
+            deviceID: options.device,
+            metadata,
+            logger
+          })
+          
+          const joinResult = await view.join()
+          if (!joinResult.success) {
+            throw new Error(`Failed to join land ${landID}: ${joinResult.reason || 'Unknown reason'}`)
+          }
+          console.log(chalk.green(`✅ Joined land: ${joinResult.landID || landID}`))
+          
+          await executeScript(view, scriptPath, script)
+          
+          // Disconnect runtime after script completes
+          runtime.disconnect()
         } catch (scriptError) {
           console.error(chalk.red(`\n❌ Script execution error in ${basename(scriptPath)}: ${scriptError}`))
-          await runtime.disconnect()
+          runtime.disconnect()
           process.exit(1)
         }
       }
       
-      console.log(chalk.yellow('\n👋 Disconnecting...'))
-      await runtime.disconnect()
+      console.log(chalk.yellow('\n👋 All scripts completed successfully'))
       process.exit(0)
     } catch (error) {
       console.error(chalk.red(`Error: ${error}`))
@@ -238,10 +256,13 @@ program
     }
   })
 
-async function executeScript(view: StateTreeView, scriptPath: string) {
+async function executeScript(view: StateTreeView, scriptPath: string, script?: any) {
   try {
-    const scriptContent = readFileSync(scriptPath, 'utf-8')
-    const script = JSON.parse(scriptContent)
+    // If script is already parsed, use it; otherwise read from file
+    if (!script) {
+      const scriptContent = readFileSync(scriptPath, 'utf-8')
+      script = JSON.parse(scriptContent)
+    }
 
     console.log(chalk.blue(`📜 Executing scenario: ${basename(scriptPath)}`))
     
@@ -297,7 +318,7 @@ async function executeScript(view: StateTreeView, scriptPath: string) {
         console.log(chalk.blue(`📤 Sending event [${event}]...`))
         view.sendEvent(event, payload || {})
       } else if (type === 'assert') {
-        const { path, equals, exists, message } = assert
+        const { path, equals, exists, greaterThanOrEqual, message } = assert
         const state = view.getState()
         const value = getNestedValue(state, path)
         
@@ -313,6 +334,14 @@ async function executeScript(view: StateTreeView, scriptPath: string) {
         if (equals !== undefined) {
           if (JSON.stringify(value) !== JSON.stringify(equals)) {
             throw new Error(message || `Assertion failed: ${path} expected ${JSON.stringify(equals)}, but got ${JSON.stringify(value)}`)
+          }
+        }
+        
+        if (greaterThanOrEqual !== undefined) {
+          const numValue = typeof value === 'number' ? value : Number(value)
+          const numExpected = typeof greaterThanOrEqual === 'number' ? greaterThanOrEqual : Number(greaterThanOrEqual)
+          if (isNaN(numValue) || isNaN(numExpected) || numValue < numExpected) {
+            throw new Error(message || `Assertion failed: ${path} expected >= ${greaterThanOrEqual}, but got ${value}`)
           }
         }
         console.log(chalk.green(`✅ Assertion passed: ${path}`))

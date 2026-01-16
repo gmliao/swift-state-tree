@@ -1,0 +1,45 @@
+{
+  "maxDuration": 5000,
+  "steps": [
+    {
+      "type": "log",
+      "message": "Testing Tick handler - ticks should auto-increment every 300ms"
+    },
+    {
+      "type": "wait",
+      "wait": 200
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "ticks",
+        "equals": 0,
+        "message": "Initial ticks should be 0 (before first tick at 300ms)"
+      }
+    },
+    {
+      "type": "wait",
+      "wait": 200
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "ticks",
+        "equals": 1,
+        "message": "ticks should be 1 after first tick at 300ms"
+      }
+    },
+    {
+      "type": "wait",
+      "wait": 300
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "ticks",
+        "equals": 2,
+        "message": "ticks should be 2 after another tick at 600ms"
+      }
+    }
+  ]
+}

@@ -1,5 +1,32 @@
 # Repository Guidelines
 
+## AI Agent Quick Reference
+
+### Common Commands
+- **Run E2E Tests**: When user says "執行 e2e 測試" or "run e2e tests":
+  1. Start server: `cd Examples/HummingbirdDemo && swift run DemoServer` (background)
+  2. Wait 2-3 seconds for server startup
+  3. Run tests: `cd Tools/CLI && npm test`
+  4. Verify all tests pass before proceeding
+
+- **Run Full Test Suite**: `cd Tools/CLI && npm run test:e2e:with-game` (requires DemoServer + GameServer)
+
+- **Create New Test Scenario**: Add JSON file to `Tools/CLI/scenarios/{land-type}/` directory
+
+### Key Testing Locations
+- **Unit Tests**: `swift test` (Swift Testing framework)
+- **E2E Tests**: `cd Tools/CLI && npm test` (requires DemoServer)
+- **Protocol Tests**: `cd Tools/CLI && npm run test:protocol`
+- **WebClient Tests**: `cd Examples/HummingbirdDemo/WebClient && npm test`
+
+### Before Submitting PRs
+- ✅ All `swift test` must pass
+- ✅ All E2E tests must pass (both encoding modes: `jsonObject`, `opcodeJsonArray`)
+- ✅ No linter errors
+- ✅ Code comments in English
+
+---
+
 ## Project Structure & Module Organization
 - `Sources/SwiftStateTree`: core library (Land DSL, Runtime, Sync, StateTree).
 - `Sources/SwiftStateTreeTransport`: transport abstraction layer (WebSocket, Land management, routing).
@@ -22,7 +49,9 @@
 - `swift test`: run all library tests; use `swift test --filter StateTreeTests.testGetSyncFields` for a single case.
 - `swift test list`: list all available tests.
 - `swift run DemoServer`: start the unified demo server (from `Examples/HummingbirdDemo`).
+- `swift run GameServer`: start the Hero Defense game server (from `Examples/GameDemo`).
 - `swift package resolve`: refresh dependencies if `Package.resolved` drifts.
+- **E2E Testing**: `cd Tools/CLI && npm test` (requires DemoServer running). See "Testing Guidelines" section for details.
 
 ## Schema Generation & Codegen
 - **Generate schema**: `cd Examples/HummingbirdDemo && swift run SchemaGen --output schema.json` (generates JSON schema from LandDefinitions).
@@ -104,10 +133,38 @@
 - Aim to cover new public APIs and concurrency paths; avoid shared mutable state between tests.
 - **WebClient tests**: `cd Examples/HummingbirdDemo/WebClient && npm test` (uses vitest for Vue component and business logic tests).
 - **Automated E2E Testing (CLI)**: 
-  1. Start server: `swift run DemoServer`.
-  2. Run suite: `cd Tools/CLI && npm test`.
-  3. AI must ensure all encoding modes (`jsonObject`, `opcodeJsonArray`) pass before submitting PRs.
-  4. **Proactive Testing**: AI agents are encouraged to create new JSON scenarios in `Tools/CLI/scenarios/` to verify specific features or bug fixes. These scenarios should use the `assert` step to ensure correctness.
+  
+  **Quick Command**: When user says "執行 e2e 測試" or "run e2e tests", AI should:
+  1. **Start DemoServer**: `cd Examples/HummingbirdDemo && swift run DemoServer` (run in background).
+  2. **Wait for server**: Wait 2-3 seconds for server to start.
+  3. **Run E2E tests**: `cd Tools/CLI && npm test` (runs protocol tests + counter/cookie E2E tests).
+  4. **Verify results**: All tests must pass. If any test fails, investigate and fix before proceeding.
+  
+  **Full Test Suite** (including game tests):
+  1. **Start DemoServer**: `cd Examples/HummingbirdDemo && swift run DemoServer`.
+  2. **Start GameServer** (optional): `cd Examples/GameDemo && swift run GameServer` (runs on same port 8080, different endpoint).
+  3. **Run all tests**: `cd Tools/CLI && npm run test:e2e:with-game` (requires both servers running).
+  
+  **Test Coverage**:
+  - ✅ **Core Features**: Actions, Events, State Sync, Error Handling, Multi-Encoding
+  - ✅ **Lifecycle**: Tick Handler, OnJoin Handler
+  - ⚠️ **Partial**: Per-Player State, Broadcast State (single client only)
+  - ❌ **Not Covered**: Multi-Player Scenarios, OnLeave Handler (requires disconnect testing)
+  
+  **Important Notes**:
+  - AI must ensure all encoding modes (`jsonObject`, `opcodeJsonArray`) pass before submitting PRs.
+  - Each test uses unique land instance ID to ensure clean state.
+  - Tests verify exact state values (not ranges) for precision.
+  - **Connection Info**:
+     - **Base URL**: `http://localhost:8080`
+     - **WebSocket Endpoints**:
+       - `cookie`: `ws://localhost:8080/game/cookie` (DemoServer)
+       - `counter`: `ws://localhost:8080/game/counter` (DemoServer)
+       - `hero-defense`: `ws://localhost:8080/game/hero-defense` (GameServer)
+     - **Admin Keys**: 
+       - DemoServer: `demo-admin-key`
+       - GameServer: `hero-defense-admin-key`
+  - **Proactive Testing**: AI agents are encouraged to create new JSON scenarios in `Tools/CLI/scenarios/` (organized by Land subdirectories) to verify specific features or bug fixes.
 
 ## Commit & Pull Request Guidelines
 - Messages: short imperative summaries (`Add room snapshot hook`, `Fix attack damage clamp`).

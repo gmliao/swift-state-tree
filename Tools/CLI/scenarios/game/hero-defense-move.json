@@ -1,4 +1,5 @@
 {
+  "maxDuration": 30000,
   "steps": [
     {
       "type": "log",
@@ -69,12 +70,16 @@
       "wait": 2000
     },
     {
-      "type": "state",
-      "message": "✅ Final state after movement tests"
+      "type": "assert",
+      "assert": {
+        "path": "players",
+        "exists": true,
+        "message": "players should exist after movement tests"
+      }
     },
     {
       "type": "log",
-      "message": "✅ Movement test completed"
+      "message": "✅ Movement test completed - all MoveToEvents sent successfully"
     }
   ]
 }

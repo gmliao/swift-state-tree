@@ -13,14 +13,17 @@
     "measure": "tsx benchmarks/measure-state-updates.ts",
     "measure:full": "bash benchmarks/run-protocol-measurement.sh",
     "test:protocol": "npm run test-mixed-encoding && npm run test-packet-encoding && npm run test-encoding-integration && npm run test-server-opcode-decoding",
-    "test:e2e": "tsx src/cli.ts script -u ws://localhost:8080/game -l demo-game -s scenarios/",
+    "test:e2e": "npm run test:e2e:counter && npm run test:e2e:cookie",
+    "test:e2e:with-game": "npm run test:e2e && npm run test:e2e:game",
+    "test:e2e:counter": "tsx src/cli.ts script -u ws://localhost:8080/game/counter -l counter -s scenarios/counter/",
+    "test:e2e:cookie": "tsx src/cli.ts script -u ws://localhost:8080/game/cookie -l cookie -s scenarios/cookie/",
+    "test:e2e:game": "tsx src/cli.ts script -u ws://localhost:8080/game/hero-defense -l hero-defense -s scenarios/game/",
     "test:e2e:all": "npm run test:e2e -- --state-update-encoding jsonObject && npm run test:e2e -- --state-update-encoding opcodeJsonArray",
     "test": "npm run test:protocol && npm run test:e2e:all",
-    "test-mixed-encoding": "tsx scripts/internal/test-mixed-encoding.ts",
-    "test-mixed-encoding-server": "tsx scripts/internal/test-mixed-encoding-server.ts",
-    "test-packet-encoding": "tsx scripts/internal/test-packet-encoding.ts",
+    "test-mixed-encoding": "tsx scripts/internal/test-mixed-encoding.ts --url ws://localhost:8080/game/counter",
+    "test-packet-encoding": "tsx scripts/internal/test-packet-encoding.ts --url ws://localhost:8080/game/counter",
     "test-encoding-integration": "tsx scripts/internal/test-encoding-integration.ts",
-    "test-server-opcode-decoding": "tsx scripts/internal/test-server-opcode-decoding.ts"
+    "test-server-opcode-decoding": "tsx scripts/internal/test-server-opcode-decoding.ts --url ws://localhost:8080/game/counter"
   },
   "dependencies": {
     "@msgpack/msgpack": "^3.1.3",

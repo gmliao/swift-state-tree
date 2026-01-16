@@ -17,6 +17,18 @@ npm install
 npm run build
 ```
 
+## Directory Index
+
+### `scenarios/` (E2E Test Cases organized by Land)
+- `scenarios/counter/`: Tests for the Counter demo (requires DemoServer).
+- `scenarios/cookie/`: Tests for the Cookie Clicker game (requires DemoServer).
+- `scenarios/game/`: Tests for the Hero Defense game (requires GameServer).
+- `scenarios/internal/`: Internal protocol and compression validation scenarios.
+
+**AI Agents Tip**: When adding tests for a new project or Land, create a corresponding subdirectory under `scenarios/`. You can use your own created scenarios to verify new logic or bug fixes before submitting a PR.
+
+---
+
 ## Unified Testing
 
 The CLI provides a unified testing suite that covers both low-level protocol and high-level E2E scenarios across all encoding modes.
@@ -41,14 +53,26 @@ npm run dev -- script -u ws://localhost:8080/game -l demo-game -s scenarios/
 # Run only low-level protocol tests
 npm run test:protocol
 
-# Run E2E scenarios in default mode
+# Run E2E scenarios in default mode (counter, cookie)
+# Note: Game tests are excluded by default - use test:e2e:with-game to include them
 npm run test:e2e
+
+# Run E2E scenarios including game tests (requires GameServer running)
+npm run test:e2e:with-game
 
 # Run E2E scenarios across all encoding modes (jsonObject, opcodeJsonArray)
 npm run test:e2e:all
+
+# Run individual test suites
+npm run test:e2e:counter  # Counter demo tests (requires DemoServer)
+npm run test:e2e:cookie   # Cookie game tests (requires DemoServer)
+npm run test:e2e:game     # Game demo tests (requires GameServer on ws://localhost:8080/game/hero-defense)
 ```
 
-**Note**: `npm test` uses a Fail-Fast strategy. If any protocol test fails, E2E tests will not run.
+**Note**: 
+- `npm test` uses a Fail-Fast strategy. If any protocol test fails, E2E tests will not run.
+- Default E2E tests (`npm run test:e2e`) only test DemoServer lands (counter, cookie). Game tests require GameServer to be running separately.
+- To test all lands including game: `npm run test:e2e:with-game` (requires both DemoServer and GameServer running).
 
 ## Scenario Format (JSON)
 

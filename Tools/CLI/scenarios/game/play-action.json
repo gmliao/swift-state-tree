@@ -1,0 +1,55 @@
+{
+  "maxDuration": 15000,
+  "steps": [
+    {
+      "type": "log",
+      "message": "Testing PlayAction with empty payload"
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "score",
+        "equals": 0,
+        "message": "Initial score should be 0"
+      }
+    },
+    {
+      "type": "action",
+      "action": "PlayAction",
+      "payload": {}
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "score",
+        "equals": 1,
+        "message": "score should be exactly 1 after first PlayAction"
+      }
+    },
+    {
+      "type": "action",
+      "action": "PlayAction",
+      "payload": {}
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "score",
+        "equals": 2,
+        "message": "score should be exactly 2 after two PlayActions"
+      }
+    }
+  ]
+}

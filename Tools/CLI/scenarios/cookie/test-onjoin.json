@@ -1,0 +1,41 @@
+{
+  "maxDuration": 10000,
+  "steps": [
+    {
+      "type": "log",
+      "message": "Testing OnJoin handler - player state should be initialized"
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "players",
+        "exists": true,
+        "message": "players map should exist after OnJoin"
+      }
+    },
+    {
+      "type": "log",
+      "message": "Verifying OnJoin initialized player state correctly"
+    },
+    {
+      "type": "state",
+      "message": "Current state after join - should show players map with initialized player"
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "privateStates",
+        "exists": true,
+        "message": "privateStates map should exist after OnJoin"
+      }
+    },
+    {
+      "type": "log",
+      "message": "OnJoin handler should have initialized: players[playerID].cookies=0, cookiesPerSecond=0, and privateStates[playerID]"
+    }
+  ]
+}

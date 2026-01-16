@@ -1,0 +1,25 @@
+{
+  "maxDuration": 15000,
+  "steps": [
+    {
+      "type": "log",
+      "message": "Template test for demo-game (generic land)"
+    },
+    {
+      "type": "action",
+      "action": "SomeGameAction",
+      "payload": { "id": 1 }
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "game.state",
+        "equals": "active"
+      }
+    }
+  ]
+}
