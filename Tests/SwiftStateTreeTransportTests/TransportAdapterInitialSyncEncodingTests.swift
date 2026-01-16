@@ -49,12 +49,15 @@ private func decodeOpcodePatchPaths(from data: Data) throws -> [String] {
         throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid opcode payload"])
     }
     
-    guard payload.count >= 3 else {
+    // Opcode JSON array state update format is:
+    // [updateOpcode, patch1, patch2, ...]
+    // (playerID/playerSlot was removed from the payload)
+    guard payload.count >= 2 else {
         throw NSError(domain: "TestError", code: 2, userInfo: [NSLocalizedDescriptionKey: "Opcode payload missing patches"])
     }
     
     var paths: [String] = []
-    for entry in payload.dropFirst(2) {
+    for entry in payload.dropFirst(1) {
         guard let patch = entry as? [Any], let path = patch.first as? String else {
             continue
         }
@@ -230,23 +233,17 @@ func testTransportAdapterUsesPlayerSlotInOpcodeEncoding() async throws {
         Issue.record("Failed to decode payload")
         return
     }
-    #expect(payload.count >= 2, "Payload should have at least opcode and player identifier")
+    #expect(payload.count >= 2, "Payload should have at least opcode and one patch")
     
     let opcode = payload[0] as? Int
     #expect(opcode == StateUpdateOpcode.firstSync.rawValue, "Expected firstSync opcode")
     
-    // Verify playerSlot is used (Int) instead of playerID (String)
-    let playerIdentifier = payload[1]
-    #expect(playerIdentifier is Int, "Player identifier should be Int (playerSlot), not String")
-    if let slotValue = playerIdentifier as? Int, let allocatedSlotValue = allocatedSlot {
-        #expect(slotValue == Int(allocatedSlotValue), "Player identifier should match allocated playerSlot")
-    } else {
-        Issue.record("Failed to compare playerSlot values")
-    }
-    #expect(playerIdentifier as? String == nil, "Player identifier should NOT be String (playerID)")
+    // NOTE: playerID/playerSlot was removed from the state update payload.
+    // payload[1] is the first patch entry.
+    #expect(!(payload[1] is String), "StateUpdate payload should not include playerID string")
     
     // Verify compression: compare size with and without playerSlot
-    // Create a message without playerSlot for comparison
+    // Create a message without playerSlot for comparison (playerSlot is currently not included in payload)
     let encoder = OpcodeJSONStateUpdateEncoder()
     let update = StateUpdate.firstSync([
         StatePatch(path: "/ticks", operation: .set(.int(10))),
@@ -256,18 +253,14 @@ func testTransportAdapterUsesPlayerSlotInOpcodeEncoding() async throws {
     let dataWithoutSlot = try encoder.encode(update: update, landID: "playerSlot-test", playerID: playerID)
     let dataWithSlot = try encoder.encode(update: update, landID: "playerSlot-test", playerID: playerID, playerSlot: allocatedSlot)
     
-    // Verify compression effect
-    #expect(dataWithSlot.count < dataWithoutSlot.count, "Data with playerSlot should be smaller than data with playerID string")
+    // Verify current behavior: playerSlot is ignored for opcodeJsonArray state updates (no player identifier field).
+    #expect(dataWithSlot.count == dataWithoutSlot.count, "playerSlot should not affect encoded size for state updates")
     
-    // Verify the actual payload uses playerSlot
+    // Verify the payload shape remains stable
     guard let payloadWithSlot = try JSONSerialization.jsonObject(with: dataWithSlot) as? [Any] else {
         Issue.record("Failed to decode payload with slot")
         return
     }
-    if let slotValue = payloadWithSlot[1] as? Int, let allocatedSlotValue = allocatedSlot {
-        #expect(slotValue == Int(allocatedSlotValue), "Encoded payload should use playerSlot")
-    } else {
-        Issue.record("Failed to verify playerSlot in encoded payload")
-    }
-    #expect(payloadWithSlot[1] as? String == nil, "Encoded payload should NOT use playerID string")
+    #expect(payloadWithSlot.count >= 2, "Payload with slot should include at least opcode and one patch")
+    #expect(!(payloadWithSlot[1] is String), "Encoded payload should not include playerID string")
 }

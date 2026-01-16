@@ -330,7 +330,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Execute a block while marking player as initial syncing.
     /// Automatically removes the player from initialSyncingPlayers when done (even on error).
     /// This ensures syncNow() and syncBroadcastOnly() skip this player during initial sync.
-    private func withInitialSync<T>(
+    private func withInitialSync<T: Sendable>(
         for playerID: PlayerID,
         operation: () async throws -> T
     ) async rethrows -> T {

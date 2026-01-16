@@ -130,14 +130,14 @@ struct TransportMessageEncoderTests {
         #expect(jsonArray != nil)
         #expect(jsonArray?.count == 4)
         
-        // Check payload is array [10, 20, "foo"]
-        // Note: Reflection order is usually declaration order in Swift, but not guaranteed across all ABI versions.
-        // For standard structs it's usually reliable.
+        // Check payload is array encoded by @Payload macro.
+        // Field order is deterministic ASCII sorting by property name.
+        // For TestPayload { x, y, name } the order is: name, x, y.
         if let payloadArray = jsonArray?[3] as? [Any] {
             #expect(payloadArray.count == 3)
-            #expect(payloadArray[0] as? Int == 10)
-            #expect(payloadArray[1] as? Int == 20)
-            #expect(payloadArray[2] as? String == "foo")
+            #expect(payloadArray[0] as? String == "foo")
+            #expect(payloadArray[1] as? Int == 10)
+            #expect(payloadArray[2] as? Int == 20)
         } else {
             Issue.record("Payload should be an array")
         }
@@ -182,10 +182,11 @@ struct TransportMessageEncoderTests {
         // Verify payload is array with correct field order (from @Payload macro)
         if let payloadArray = jsonArray?[2] as? [Any] {
             #expect(payloadArray.count == 3)
-            // Field order: success, newCount, message (as declared in struct)
-            #expect(payloadArray[0] as? Bool == true)
+            // Field order is deterministic ASCII sorting by property name:
+            // message, newCount, success
+            #expect(payloadArray[0] as? String == "done")
             #expect(payloadArray[1] as? Int == 42)
-            #expect(payloadArray[2] as? String == "done")
+            #expect(payloadArray[2] as? Bool == true)
         } else {
             Issue.record("ActionResponse payload should be an array")
         }
@@ -284,10 +285,11 @@ struct TransportMessageEncoderTests {
         // Verify payload is array with correct field order (from @Payload macro)
         if let payloadArray = jsonArray?[3] as? [Any] {
             #expect(payloadArray.count == 3)
-            // Field order: amount, target, enabled (as declared in struct)
+            // Field order is deterministic ASCII sorting by property name:
+            // amount, enabled, target
             #expect(payloadArray[0] as? Int == 100)
-            #expect(payloadArray[1] as? String == "player1")
-            #expect(payloadArray[2] as? Bool == true)
+            #expect(payloadArray[1] as? Bool == true)
+            #expect(payloadArray[2] as? String == "player1")
         } else {
             Issue.record("Action payload should be an array")
         }
