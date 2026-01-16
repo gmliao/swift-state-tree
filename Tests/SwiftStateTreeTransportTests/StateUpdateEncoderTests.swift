@@ -458,6 +458,158 @@ func testOpcodeStateUpdateEncoderDynamicKeyCompression() throws {
     #expect((dynamicKeyRedef?[1] as? String) == "uuid-1") // Should supply string again
 }
 
+@Test("OpcodeJSONStateUpdateEncoder compresses arbitrary wildcard keys (e.g., upgrades.*) not just players.*")
+func testOpcodeStateUpdateEncoderCompressesUpgradesWildcardKeys() throws {
+    func u32(_ value: Any?) -> UInt32? {
+        if let v = value as? UInt32 { return v }
+        if let v = value as? Int { return UInt32(v) }
+        if let v = value as? NSNumber { return v.uint32Value }
+        return nil
+    }
+
+    // Simulate Cookie demo: upgrades is a broadcast map keyed by upgradeID strings.
+    let hasher = PathHasher(pathHashes: ["upgrades.*": 777])
+    let encoder = OpcodeJSONStateUpdateEncoder(pathHasher: hasher)
+
+    let player = PlayerID("p1")
+    let landID = "cookie-test"
+
+    // FirstSync must force definitions: dynamicKey token should be [slot, "cursor"]
+    let first = StateUpdate.firstSync([
+        StatePatch(path: "/upgrades/cursor", operation: .set(.int(3)))
+    ])
+    let data1 = try encoder.encode(update: first, landID: landID, playerID: player)
+    let json1 = try JSONSerialization.jsonObject(with: data1) as? [Any]
+    let patch1 = json1?[1] as? [Any]
+    #expect(u32(patch1?[0]) == 777)
+    let def1 = patch1?[1] as? [Any]
+    #expect(def1?.count == 2)
+    #expect((def1?[0] as? Int) == 0)
+    #expect((def1?[1] as? String) == "cursor")
+
+    // Diff for same key should use slot int, not definition array
+    let diff = StateUpdate.diff([
+        StatePatch(path: "/upgrades/cursor", operation: .set(.int(4)))
+    ])
+    let data2 = try encoder.encode(update: diff, landID: landID, playerID: player)
+    let json2 = try JSONSerialization.jsonObject(with: data2) as? [Any]
+    let patch2 = json2?[1] as? [Any]
+    #expect(u32(patch2?[0]) == 777)
+    #expect((patch2?[1] as? Int) == 0)
+}
+
+@Test("OpcodeJSONStateUpdateEncoder encodes multi-wildcard dynamic keys as token lists")
+func testOpcodeStateUpdateEncoderEncodesMultiWildcardDynamicKeys() throws {
+    func u32(_ value: Any?) -> UInt32? {
+        if let v = value as? UInt32 { return v }
+        if let v = value as? Int { return UInt32(v) }
+        if let v = value as? NSNumber { return v.uint32Value }
+        return nil
+    }
+
+    let hasher = PathHasher(pathHashes: ["players.*.inventory.*.itemId": 888])
+    let encoder = OpcodeJSONStateUpdateEncoder(pathHasher: hasher)
+
+    let player = PlayerID("p1")
+    let landID = "inv-test"
+
+    // FirstSync forces definitions for all dynamic keys in multi-wildcard patterns.
+    let first = StateUpdate.firstSync([
+        StatePatch(path: "/players/p1/inventory/item-1/itemId", operation: .set(.string("sword")))
+    ])
+    let data1 = try encoder.encode(update: first, landID: landID, playerID: player)
+    let json1 = try JSONSerialization.jsonObject(with: data1) as? [Any]
+    let patch1 = json1?[1] as? [Any]
+    #expect(u32(patch1?[0]) == 888)
+
+    // dynamicKeyOrKeys should be a list of 2 definition tokens: [[0,"p1"], [1,"item-1"]]
+    let tokens1 = patch1?[1] as? [Any]
+    #expect(tokens1?.count == 2)
+    let t0 = tokens1?[0] as? [Any]
+    let t1 = tokens1?[1] as? [Any]
+    #expect((t0?[0] as? Int) == 0)
+    #expect((t0?[1] as? String) == "p1")
+    #expect((t1?[0] as? Int) == 1)
+    #expect((t1?[1] as? String) == "item-1")
+
+    // Diff for same keys should use slot ids [0, 1]
+    let diffSame = StateUpdate.diff([
+        StatePatch(path: "/players/p1/inventory/item-1/itemId", operation: .set(.string("axe")))
+    ])
+    let data2 = try encoder.encode(update: diffSame, landID: landID, playerID: player)
+    let json2 = try JSONSerialization.jsonObject(with: data2) as? [Any]
+    let patch2 = json2?[1] as? [Any]
+    let tokens2 = patch2?[1] as? [Any]
+    #expect(tokens2?.count == 2)
+    #expect((tokens2?[0] as? Int) == 0)
+    #expect((tokens2?[1] as? Int) == 1)
+
+    // Diff with a NEW second-level key should define-on-first-use for that key only.
+    let diffNewItem = StateUpdate.diff([
+        StatePatch(path: "/players/p1/inventory/item-2/itemId", operation: .set(.string("bow")))
+    ])
+    let data3 = try encoder.encode(update: diffNewItem, landID: landID, playerID: player)
+    let json3 = try JSONSerialization.jsonObject(with: data3) as? [Any]
+    let patch3 = json3?[1] as? [Any]
+    let tokens3 = patch3?[1] as? [Any]
+    #expect(tokens3?.count == 2)
+    // player key reuses slot 0
+    #expect((tokens3?[0] as? Int) == 0)
+    // item-2 is new → definition token [2, "item-2"]
+    let itemToken = tokens3?[1] as? [Any]
+    #expect((itemToken?[0] as? Int) == 2)
+    #expect((itemToken?[1] as? String) == "item-2")
+}
+
+@Test("OpcodeJSONStateUpdateEncoder handles nested map keys that look like indices (players.*.inventory.* where second key is \"7\")")
+func testOpcodeStateUpdateEncoderMultiWildcardWithIndexLikeKey() throws {
+    func u32(_ value: Any?) -> UInt32? {
+        if let v = value as? UInt32 { return v }
+        if let v = value as? Int { return UInt32(v) }
+        if let v = value as? NSNumber { return v.uint32Value }
+        return nil
+    }
+
+    // This models a nested map such as: players[playerID].inventory[index].itemId
+    // Even if the "index" is numeric, it is a dynamic key string at the path level ("7"),
+    // and should be compressed via slot mapping (not sent as a raw number which would be ambiguous).
+    let hasher = PathHasher(pathHashes: ["players.*.inventory.*.itemId": 999])
+    let encoder = OpcodeJSONStateUpdateEncoder(pathHasher: hasher)
+
+    let player = PlayerID("p1")
+    let landID = "inv-index-test"
+
+    // FirstSync must force definitions. Second-level key should be "7" (string), not number 7.
+    let first = StateUpdate.firstSync([
+        StatePatch(path: "/players/p1/inventory/7/itemId", operation: .set(.string("sword")))
+    ])
+    let data1 = try encoder.encode(update: first, landID: landID, playerID: player)
+    let json1 = try JSONSerialization.jsonObject(with: data1) as? [Any]
+    let patch1 = json1?[1] as? [Any]
+    #expect(u32(patch1?[0]) == 999)
+
+    let tokens1 = patch1?[1] as? [Any]
+    #expect(tokens1?.count == 2)
+    let t0 = tokens1?[0] as? [Any]
+    let t1 = tokens1?[1] as? [Any]
+    #expect((t0?[0] as? Int) == 0)
+    #expect((t0?[1] as? String) == "p1")
+    #expect((t1?[0] as? Int) == 1)
+    #expect((t1?[1] as? String) == "7")
+
+    // Diff should use slots [0, 1] (not any raw numeric key).
+    let diff = StateUpdate.diff([
+        StatePatch(path: "/players/p1/inventory/7/itemId", operation: .set(.string("axe")))
+    ])
+    let data2 = try encoder.encode(update: diff, landID: landID, playerID: player)
+    let json2 = try JSONSerialization.jsonObject(with: data2) as? [Any]
+    let patch2 = json2?[1] as? [Any]
+    let tokens2 = patch2?[1] as? [Any]
+    #expect(tokens2?.count == 2)
+    #expect((tokens2?[0] as? Int) == 0)
+    #expect((tokens2?[1] as? Int) == 1)
+}
+
 @Test("OpcodeJSONStateUpdateEncoder defines dynamic keys per player on first diff")
 func testOpcodeStateUpdateEncoderDynamicKeyPerPlayerDefinitionOnDiff() throws {
     let hasher = PathHasher(pathHashes: ["players.*": 12345])
