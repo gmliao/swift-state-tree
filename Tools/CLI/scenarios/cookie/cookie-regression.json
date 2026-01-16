@@ -1,4 +1,5 @@
 {
+  "maxDuration": 20000,
   "steps": [
     {
       "type": "log",
@@ -42,12 +43,16 @@
       "wait": 500
     },
     {
-      "type": "log",
-      "message": "Final state check"
+      "type": "assert",
+      "assert": {
+        "path": "privateStates",
+        "exists": true,
+        "message": "privateStates should exist after actions"
+      }
     },
     {
-      "type": "state"
+      "type": "log",
+      "message": "✅ All regression tests passed"
     }
   ]
 }
-

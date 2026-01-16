@@ -1,0 +1,59 @@
+{
+  "maxDuration": 15000,
+  "steps": [
+    {
+      "type": "log",
+      "message": "Testing cookie events"
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "totalCookies",
+        "equals": 0,
+        "message": "Initial totalCookies should be 0"
+      }
+    },
+    {
+      "type": "event",
+      "event": "ClickCookie",
+      "payload": {
+        "amount": 1
+      }
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "totalCookies",
+        "equals": 1,
+        "message": "totalCookies should be exactly 1 after ClickCookie event with amount 1"
+      }
+    },
+    {
+      "type": "event",
+      "event": "ClickCookie",
+      "payload": {
+        "amount": 10
+      }
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "totalCookies",
+        "equals": 11,
+        "message": "totalCookies should be exactly 11 after two ClickCookie events (1 + 10)"
+      }
+    }
+  ]
+}

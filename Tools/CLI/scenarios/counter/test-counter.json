@@ -1,0 +1,26 @@
+{
+    "maxDuration": 10000,
+    "steps": [
+        {
+            "type": "log",
+            "message": "Connecting to Counter Land..."
+        },
+        {
+            "type": "action",
+            "action": "Increment",
+            "payload": {}
+        },
+        {
+            "type": "wait",
+            "wait": 200
+        },
+        {
+            "type": "assert",
+            "assert": {
+                "path": "count",
+                "equals": 1,
+                "message": "Count should be 1 after one increment"
+            }
+        }
+    ]
+}

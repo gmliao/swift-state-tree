@@ -1,4 +1,5 @@
 {
+  "maxDuration": 15000,
   "steps": [
     {
       "type": "log",
@@ -21,8 +22,16 @@
       "wait": 1000
     },
     {
-      "type": "state",
-      "message": "Player should be moving towards target position"
+      "type": "assert",
+      "assert": {
+        "path": "players",
+        "exists": true,
+        "message": "players should exist in state"
+      }
+    },
+    {
+      "type": "log",
+      "message": "MoveToEvent sent successfully - player should be moving towards target position"
     },
     {
       "type": "event",
@@ -34,8 +43,8 @@
       "wait": 500
     },
     {
-      "type": "state",
-      "message": "Weapon upgrade event sent (should fail - not enough resources)"
+      "type": "log",
+      "message": "UpgradeWeaponEvent sent (may fail if not enough resources)"
     }
   ]
 }

@@ -1,0 +1,65 @@
+{
+  "maxDuration": 20000,
+  "steps": [
+    {
+      "type": "log",
+      "message": "Testing Cookie Game..."
+    },
+    {
+      "type": "action",
+      "action": "BuyUpgradeAction",
+      "payload": {
+        "upgradeID": "cursor"
+      },
+      "expectError": true,
+      "message": "Should fail because not enough cookies"
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "totalCookies",
+        "equals": 0,
+        "message": "Initial totalCookies should be 0"
+      }
+    },
+    {
+      "type": "event",
+      "event": "ClickCookie",
+      "payload": { "amount": 20 }
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "totalCookies",
+        "equals": 20,
+        "message": "totalCookies should be exactly 20 after ClickCookie event with amount 20"
+      }
+    },
+    {
+      "type": "action",
+      "action": "BuyUpgradeAction",
+      "payload": {
+        "upgradeID": "cursor"
+      }
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "privateStates",
+        "exists": true
+      }
+    }
+  ]
+}
