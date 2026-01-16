@@ -17,6 +17,7 @@ npm install
 npm run build
 ```
 
+<<<<<<< HEAD
 ## Directory Index
 
 ### `scenarios/` (E2E Test Cases organized by Land)
@@ -32,7 +33,6 @@ npm run build
 ## Unified Testing
 
 The CLI provides a unified testing suite that covers both low-level protocol and high-level E2E scenarios across all encoding modes.
-
 ### Run All Tests
 ```bash
 # Run all tests (Protocol + E2E Matrix)
