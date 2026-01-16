@@ -135,10 +135,11 @@
 - **Automated E2E Testing (CLI)**: 
   
   **Quick Command**: When user says "執行 e2e 測試" or "run e2e tests", AI should:
-  1. **Start DemoServer**: `cd Examples/HummingbirdDemo && swift run DemoServer` (run in background).
+  1. **Start DemoServer**: `cd Examples/HummingbirdDemo && swift run DemoServer` (run in background, default: json encoding).
   2. **Wait for server**: Wait 2-3 seconds for server to start.
-  3. **Run E2E tests**: `cd Tools/CLI && npm test` (runs protocol tests + counter/cookie E2E tests).
-  4. **Verify results**: All tests must pass. If any test fails, investigate and fix before proceeding.
+  3. **Run E2E tests**: `cd Tools/CLI && npm test` (runs protocol tests + counter/cookie E2E tests in both jsonObject and opcodeJsonArray modes).
+  4. **Note**: Tests automatically start servers with correct encoding modes via environment variables.
+  5. **Verify results**: All tests must pass. If any test fails, investigate and fix before proceeding.
   
   **Full Test Suite** (including game tests):
   1. **Start DemoServer**: `cd Examples/HummingbirdDemo && swift run DemoServer`.
@@ -153,7 +154,11 @@
   
   **Important Notes**:
   - AI must ensure all tests pass before submitting PRs.
-  - **Note**: DemoServer uses `.json` encoding, so state updates are always in JSON object format. The `opcodeJsonArray` mode is not currently tested with DemoServer (would require server configuration changes).
+  - **Encoding Modes**: Tests run in all three encoding modes (`jsonObject`, `opcodeJsonArray`, `messagepack`). DemoServer automatically switches encoding based on `TRANSPORT_ENCODING` environment variable:
+    - `TRANSPORT_ENCODING=json` → JSON messages + JSON object state updates
+    - `TRANSPORT_ENCODING=jsonOpcode` → JSON messages + opcode JSON array state updates
+    - `TRANSPORT_ENCODING=messagepack` → MessagePack binary encoding for both messages and state updates
+  - When running tests manually, ensure the server is started with the matching encoding mode.
   - Each test uses unique land instance ID to ensure clean state.
   - Tests verify exact state values (not ranges) for precision.
   - **Connection Info**:

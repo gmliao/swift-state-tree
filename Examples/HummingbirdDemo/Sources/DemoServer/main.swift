@@ -18,13 +18,18 @@ import SwiftStateTreeTransport
 /// **Configuration**:
 /// - Port: Set via `PORT` environment variable (default: 8080)
 /// - Host: Set via `HOST` environment variable (default: "localhost")
+/// - Transport Encoding: Set via `TRANSPORT_ENCODING` environment variable (default: "json")
+///   - `json`: JSON messages + JSON object state updates (default)
+///   - `jsonOpcode`: JSON messages + opcode JSON array state updates
+///   - `opcode`: Opcode JSON array for both messages and state updates
+///   - `messagepack`: MessagePack binary encoding for both
 /// - Guest mode: Enabled (allows connections without JWT)
 /// - Auto-create rooms: Enabled (clients can create rooms dynamically)
 /// - Admin routes: Enabled at `/admin/*` (API Key: `demo-admin-key`)
 ///
 /// **Usage**:
 /// ```bash
-/// # Run with default settings (localhost:8080)
+/// # Run with default settings (localhost:8080, json encoding)
 /// swift run DemoServer
 ///
 /// # Run on custom port
@@ -32,6 +37,9 @@ import SwiftStateTreeTransport
 ///
 /// # Run on custom host and port
 /// HOST=0.0.0.0 PORT=3000 swift run DemoServer
+///
+/// # Run with opcode JSON array state updates
+/// TRANSPORT_ENCODING=jsonOpcode swift run DemoServer
 /// ```
 @main
 struct DemoServer {
@@ -48,6 +56,8 @@ struct DemoServer {
         // Get configuration from environment variables
         let host = HummingbirdDemoContent.getEnvString(key: "HOST", defaultValue: "localhost")
         let port = HummingbirdDemoContent.getEnvUInt16(key: "PORT", defaultValue: 8080)
+        let transportEncodingRaw = HummingbirdDemoContent.getEnvString(key: "TRANSPORT_ENCODING", defaultValue: "json")
+        let transportEncoding = resolveTransportEncoding(rawValue: transportEncodingRaw)
 
         // Create LandHost to manage both game logic and HTTP server
         let landHost = LandHost(configuration: LandHost.HostConfiguration(
@@ -63,8 +73,10 @@ struct DemoServer {
             jwtConfig: jwtConfig,
             allowGuestMode: true,
             allowAutoCreateOnJoin: true,
-            transportEncoding: .json
+            transportEncoding: transportEncoding
         )
+        
+        logger.info("📡 Transport encoding: \(transportEncodingRaw) (message: \(transportEncoding.message.rawValue), stateUpdate: \(transportEncoding.stateUpdate.rawValue))")
 
         // Register Cookie Game server
         try await landHost.register(
@@ -108,11 +120,17 @@ struct DemoServer {
     }
 }
 
-private func resolveStateUpdateEncoding(rawValue: String) -> StateUpdateEncoding {
+private func resolveTransportEncoding(rawValue: String) -> TransportEncodingConfig {
     switch rawValue.lowercased() {
-    case "opcodejsonarray", "opcode_json_array", "opcode-json-array":
-        return .opcodeJsonArray
+    case "json":
+        return .json
+    case "jsonopcode", "json_opcode", "json-opcode":
+        return .jsonOpcode
+    case "opcode":
+        return .opcode
+    case "messagepack", "msgpack":
+        return .messagepack
     default:
-        return .jsonObject
+        return .json
     }
 }

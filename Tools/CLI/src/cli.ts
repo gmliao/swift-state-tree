@@ -26,7 +26,7 @@ program
   .option('-m, --metadata <json>', 'Metadata as JSON string')
   .option('-t, --token <token>', 'JWT token for authentication')
   .option('--schema-url <url>', 'Schema base URL (defaults to WebSocket host)')
-  .option('--state-update-encoding <mode>', 'State update decoding mode (auto|jsonObject|opcodeJsonArray)', 'auto')
+  .option('--state-update-encoding <mode>', 'State update decoding mode (auto|jsonObject|opcodeJsonArray|messagepack)', 'auto')
   .option('-s, --script <file_or_dir>', 'Script file or directory of scripts to execute after joining')
   .option('--once', 'Exit after successful connection and join (non-interactive mode)')
   .option('--timeout <seconds>', 'Auto-exit timeout in seconds after script completion (default: 10)', '10')
@@ -170,7 +170,7 @@ program
   .option('-m, --metadata <json>', 'Metadata as JSON string')
   .option('-t, --token <token>', 'JWT token for authentication')
   .option('--schema-url <url>', 'Schema base URL (defaults to WebSocket host)')
-  .option('--state-update-encoding <mode>', 'State update decoding mode (auto|jsonObject|opcodeJsonArray)', 'auto')
+  .option('--state-update-encoding <mode>', 'State update decoding mode (auto|jsonObject|opcodeJsonArray|messagepack)', 'auto')
   .action(async (options) => {
     try {
       let metadata: Record<string, any> | undefined
@@ -500,16 +500,41 @@ function deriveSchemaBaseUrl(wsUrl: string): string {
 
 function buildTransportEncoding(stateUpdateEncoding?: string) {
   const normalized = (stateUpdateEncoding ?? 'auto').toLowerCase()
-  const stateUpdateDecoding =
-    normalized === 'opcodejsonarray' ? 'opcodeJsonArray'
-    : normalized === 'jsonobject' ? 'jsonObject'
-    : 'auto'
-
-  const messageEncoding = stateUpdateDecoding === 'opcodeJsonArray' ? 'opcodeJsonArray' : 'json'
-
+  
+  // Handle messagepack mode
+  // Note: When message is messagepack, stateUpdate is also messagepack format (opcodeMessagePack)
+  // TypeScript types don't include opcodeMessagePack, so we use 'auto' decoding
+  // The SDK will automatically detect binary format and decode correctly
+  if (normalized === 'messagepack' || normalized === 'msgpack') {
+    return {
+      message: 'messagepack',
+      stateUpdate: 'opcodeJsonArray', // Type doesn't support opcodeMessagePack, but decoding will handle it
+      stateUpdateDecoding: 'auto' // Auto-detect messagepack format from binary data
+    } as const
+  }
+  
+  // Handle opcodeJsonArray mode
+  if (normalized === 'opcodejsonarray') {
+    return {
+      message: 'opcodeJsonArray',
+      stateUpdate: 'opcodeJsonArray',
+      stateUpdateDecoding: 'opcodeJsonArray'
+    } as const
+  }
+  
+  // Handle jsonObject mode (default)
+  if (normalized === 'jsonobject' || normalized === 'auto') {
+    return {
+      message: 'json',
+      stateUpdate: 'jsonObject',
+      stateUpdateDecoding: 'jsonObject'
+    } as const
+  }
+  
+  // Default fallback
   return {
-    message: messageEncoding,
-    stateUpdate: stateUpdateDecoding === 'opcodeJsonArray' ? 'opcodeJsonArray' : 'jsonObject',
-    stateUpdateDecoding
+    message: 'json',
+    stateUpdate: 'jsonObject',
+    stateUpdateDecoding: 'jsonObject'
   } as const
 }
