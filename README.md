@@ -407,11 +407,11 @@ This project uses **Swift Testing** (Swift 6's new testing framework) for unit t
 ### Running Tests
 
 ```bash
-# Run all tests
+# Run all unit tests
 swift test
 
-# Run specific test
-swift test --filter StateTreeTests.testGetSyncFields
+# Run E2E and Protocol tests (requires DemoServer running)
+cd Tools/CLI && npm test
 ```
 
 ### Writing Tests

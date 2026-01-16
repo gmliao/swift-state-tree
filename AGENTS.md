@@ -103,6 +103,11 @@
 - When adding public APIs or core game logic, add/refresh tests and run `swift test` before sending changes out.
 - Aim to cover new public APIs and concurrency paths; avoid shared mutable state between tests.
 - **WebClient tests**: `cd Examples/HummingbirdDemo/WebClient && npm test` (uses vitest for Vue component and business logic tests).
+- **Automated E2E Testing (CLI)**: 
+  1. Start server: `swift run DemoServer`.
+  2. Run suite: `cd Tools/CLI && npm test`.
+  3. AI must ensure all encoding modes (`jsonObject`, `opcodeJsonArray`) pass before submitting PRs.
+  4. **Proactive Testing**: AI agents are encouraged to create new JSON scenarios in `Tools/CLI/scenarios/` to verify specific features or bug fixes. These scenarios should use the `assert` step to ensure correctness.
 
 ## Commit & Pull Request Guidelines
 - Messages: short imperative summaries (`Add room snapshot hook`, `Fix attack damage clamp`).

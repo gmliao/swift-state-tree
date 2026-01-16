@@ -403,11 +403,11 @@ let gameLand = Land("game-room", using: GameStateTree.self) {
 ### 運行測試
 
 ```bash
-# 運行所有測試
+# 運行所有單元測試
 swift test
 
-# 運行特定測試
-swift test --filter StateTreeTests.testGetSyncFields
+# 運行 E2E 與協議測試 (需要啟動 DemoServer)
+cd Tools/CLI && npm test
 ```
 
 ### 編寫測試

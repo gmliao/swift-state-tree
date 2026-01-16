@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander'
-import { readFileSync } from 'fs'
-import { join } from 'path'
+import { readFileSync, statSync, readdirSync } from 'fs'
+import { join, basename } from 'path'
 import chalk from 'chalk'
 import { StateTreeRuntime, StateTreeView } from '@swiftstatetree/sdk/core'
 import { ChalkLogger } from './logger'
@@ -27,7 +27,7 @@ program
   .option('-t, --token <token>', 'JWT token for authentication')
   .option('--schema-url <url>', 'Schema base URL (defaults to WebSocket host)')
   .option('--state-update-encoding <mode>', 'State update decoding mode (auto|jsonObject|opcodeJsonArray)', 'auto')
-  .option('-s, --script <file>', 'Script file to execute after joining')
+  .option('-s, --script <file_or_dir>', 'Script file or directory of scripts to execute after joining')
   .option('--once', 'Exit after successful connection and join (non-interactive mode)')
   .option('--timeout <seconds>', 'Auto-exit timeout in seconds after script completion (default: 10)', '10')
   .action(async (options) => {
@@ -80,60 +80,63 @@ program
 
       // Execute script if provided
       if (options.script) {
-        try {
-          await executeScript(view, options.script)
-        } catch (scriptError) {
-          console.error(chalk.red(`\n❌ Script execution error: ${scriptError}`))
-          // Continue to cleanup even if script failed
+        const stats = statSync(options.script)
+        const scripts = stats.isDirectory() 
+          ? readdirSync(options.script).filter(f => f.endsWith('.json')).map(f => join(options.script, f))
+          : [options.script]
+
+        console.log(chalk.blue(`📂 Found ${scripts.length} script(s) to execute.`))
+
+        let allPassed = true
+        for (const scriptPath of scripts) {
+          try {
+            await executeScript(view, scriptPath)
+          } catch (scriptError) {
+            console.error(chalk.red(`\n❌ Script execution error in ${basename(scriptPath)}: ${scriptError}`))
+            allPassed = false
+            // Fail fast: if one script in directory fails, stop
+            break
+          }
         }
         
+        if (!allPassed) {
+          console.error(chalk.red('\n❌ Some tests failed. Halting.'))
+          process.exit(1)
+        }
+
         // Wait for responses and then auto-exit
         const timeoutSeconds = parseInt(options.timeout || '10', 10)
         console.log(chalk.gray(`\n⏳ Waiting ${timeoutSeconds}s for final responses, then auto-exit...`))
         
-        // Show countdown with error handling
         try {
           for (let i = timeoutSeconds; i > 0; i--) {
             await new Promise(resolve => setTimeout(resolve, 1000))
             process.stdout.write(chalk.gray(`\r⏳ ${i}s remaining...`))
           }
-          console.log() // New line after countdown
+          console.log() 
         } catch (countdownError) {
-          // Ignore countdown errors (e.g., if stdout is closed)
           console.log()
         }
         
         console.log(chalk.yellow('\n👋 Disconnecting...'))
-        try {
-          await runtime.disconnect()
-          console.log(chalk.green('✅ Disconnected successfully'))
-        } catch (disconnectError) {
-          console.error(chalk.red(`⚠️  Disconnect error: ${disconnectError}`))
-        }
+        await runtime.disconnect()
         process.exit(0)
       } else if (options.once) {
-        // Non-interactive mode: exit after successful connection
         console.log(chalk.green('\n✅ Connected and joined successfully!'))
         runtime.disconnect()
         process.exit(0)
       } else {
-        // Interactive mode (currently just keeps connection alive)
-        // TODO: Implement readline for actual command input
         console.log(chalk.green('\n✅ Connected and joined successfully!'))
         console.log(chalk.yellow('Use Ctrl+C to exit\n'))
         console.log(chalk.cyan('Note: Interactive command input is not yet implemented.'))
-        console.log(chalk.cyan('For now, this mode just keeps the connection alive.'))
-        console.log(chalk.gray('Use --script to execute actions, or --once to exit immediately.\n'))
-
-        // Keep process alive
+        
         process.on('SIGINT', async () => {
           console.log(chalk.yellow('\n👋 Disconnecting...'))
           await runtime.disconnect()
           process.exit(0)
         })
 
-        // Wait for user input (simplified - in real CLI you'd use readline)
-        await new Promise(() => {}) // Keep alive
+        await new Promise(() => {}) 
       }
     } catch (error) {
       console.error(chalk.red(`Error: ${error}`))
@@ -158,10 +161,10 @@ program
 
 program
   .command('script')
-  .description('Execute a test script')
+  .description('Execute a test script or directory of scripts')
   .requiredOption('-u, --url <url>', 'WebSocket URL')
   .requiredOption('-l, --land <landID>', 'Land ID to join')
-  .requiredOption('-s, --script <file>', 'Script file to execute')
+  .requiredOption('-s, --script <file_or_dir>', 'Script file or directory to execute')
   .option('-p, --player <playerID>', 'Player ID')
   .option('-d, --device <deviceID>', 'Device ID')
   .option('-m, --metadata <json>', 'Metadata as JSON string')
@@ -209,36 +212,25 @@ program
         process.exit(1)
       }
 
-      try {
-        await executeScript(view, options.script)
-      } catch (scriptError) {
-        console.error(chalk.red(`\n❌ Script execution error: ${scriptError}`))
-        // Continue to cleanup even if script failed
-      }
-      
-      // Wait for responses and then auto-exit
-      const timeoutSeconds = 10 // Default 10 seconds for script command
-      console.log(chalk.gray(`\n⏳ Waiting ${timeoutSeconds}s for final responses, then auto-exit...`))
-      
-      // Show countdown with error handling
-      try {
-        for (let i = timeoutSeconds; i > 0; i--) {
-          await new Promise(resolve => setTimeout(resolve, 1000))
-          process.stdout.write(chalk.gray(`\r⏳ ${i}s remaining...`))
+      const stats = statSync(options.script)
+      const scripts = stats.isDirectory() 
+        ? readdirSync(options.script).filter(f => f.endsWith('.json')).map(f => join(options.script, f))
+        : [options.script]
+
+      console.log(chalk.blue(`📂 Executing ${scripts.length} script(s).`))
+
+      for (const scriptPath of scripts) {
+        try {
+          await executeScript(view, scriptPath)
+        } catch (scriptError) {
+          console.error(chalk.red(`\n❌ Script execution error in ${basename(scriptPath)}: ${scriptError}`))
+          await runtime.disconnect()
+          process.exit(1)
         }
-        console.log() // New line after countdown
-      } catch (countdownError) {
-        // Ignore countdown errors (e.g., if stdout is closed)
-        console.log()
       }
       
       console.log(chalk.yellow('\n👋 Disconnecting...'))
-      try {
-        await runtime.disconnect()
-        console.log(chalk.green('✅ Disconnected successfully'))
-      } catch (disconnectError) {
-        console.error(chalk.red(`⚠️  Disconnect error: ${disconnectError}`))
-      }
+      await runtime.disconnect()
       process.exit(0)
     } catch (error) {
       console.error(chalk.red(`Error: ${error}`))
@@ -251,10 +243,19 @@ async function executeScript(view: StateTreeView, scriptPath: string) {
     const scriptContent = readFileSync(scriptPath, 'utf-8')
     const script = JSON.parse(scriptContent)
 
-    console.log(chalk.blue(`📜 Executing script: ${scriptPath}\n`))
+    console.log(chalk.blue(`📜 Executing scenario: ${basename(scriptPath)}`))
+    
+    // Default max duration if not specified
+    const maxDuration = script.maxDuration || 60000 // 60 seconds default
+    const startTime = Date.now()
 
     for (const step of script.steps || []) {
-      const { type, action, event, payload, wait, expectError, errorCode, errorMessage } = step
+      // Check for global timeout
+      if (Date.now() - startTime > maxDuration) {
+        throw new Error(`Scenario exceeded maximum duration of ${maxDuration}ms`)
+      }
+
+      const { type, action, event, payload, wait, assert, expectError, errorCode, errorMessage } = step
 
       if (wait) {
         console.log(chalk.gray(`⏳ Waiting ${wait}ms...`))
@@ -273,54 +274,66 @@ async function executeScript(view: StateTreeView, scriptPath: string) {
           const response = await view.sendAction(action, payload || {})
           
           if (isExpectedError) {
-            console.error(chalk.red(`❌ Action [${action}] was expected to fail but succeeded: ${JSON.stringify(response)}`))
             throw new Error(`Expected action [${action}] to fail but it succeeded`)
           } else {
-            console.log(chalk.green(`✅ Action [${action}] response: ${JSON.stringify(response)}`))
+            console.log(chalk.green(`✅ Action [${action}] response received`))
           }
         } catch (error: any) {
           if (isExpectedError) {
-            // Verify error matches expected criteria
             const errorCodeMatch = !errorCode || (error as any)?.code === errorCode || error?.message?.includes(errorCode)
             const errorMessageMatch = !errorMessage || error?.message?.includes(errorMessage)
             
             if (errorCodeMatch && errorMessageMatch) {
-              console.log(chalk.green(`✅ Action [${action}] failed as expected: ${error?.message || error}`))
-              if (errorCode) {
-                console.log(chalk.gray(`   Error code: ${(error as any)?.code || 'N/A'}`))
-              }
+              console.log(chalk.green(`✅ Action [${action}] failed as expected`))
             } else {
-              // Log warning but continue execution - this allows testing error cases
-              // even if error format doesn't exactly match expectations
-              console.error(chalk.yellow(`⚠️  Action [${action}] failed but didn't match expected error criteria:`))
-              console.error(chalk.yellow(`   Expected: code=${errorCode || 'any'}, message=${errorMessage || 'any'}`))
-              console.error(chalk.yellow(`   Got: code=${(error as any)?.code || 'N/A'}, message=${error?.message || 'N/A'}`))
-              console.log(chalk.gray(`   Continuing script execution...`))
-              // Don't throw - continue execution to allow testing multiple error cases
+              console.warn(chalk.yellow(`⚠️  Action [${action}] failed but didn't match criteria. Continuing...`))
             }
           } else {
             console.error(chalk.red(`❌ Action [${action}] failed unexpectedly: ${error?.message || error}`))
-            // Continue execution even if action fails (unless it was expected to succeed)
+            throw error // In E2E, unexpected failures should stop the test
           }
         }
       } else if (type === 'event' && event) {
+        console.log(chalk.blue(`📤 Sending event [${event}]...`))
         view.sendEvent(event, payload || {})
+      } else if (type === 'assert') {
+        const { path, equals, exists, message } = assert
+        const state = view.getState()
+        const value = getNestedValue(state, path)
+        
+        console.log(chalk.magenta(`🔍 Asserting: ${path} ...`))
+        
+        if (exists !== undefined) {
+          const isPresent = value !== undefined
+          if (isPresent !== exists) {
+            throw new Error(message || `Assertion failed: path ${path} presence should be ${exists}, but got ${isPresent}`)
+          }
+        }
+        
+        if (equals !== undefined) {
+          if (JSON.stringify(value) !== JSON.stringify(equals)) {
+            throw new Error(message || `Assertion failed: ${path} expected ${JSON.stringify(equals)}, but got ${JSON.stringify(value)}`)
+          }
+        }
+        console.log(chalk.green(`✅ Assertion passed: ${path}`))
       } else if (type === 'log') {
         console.log(chalk.cyan(`ℹ️  ${step.message || ''}`))
       } else if (type === 'state') {
         const state = view.getState()
         console.log(chalk.yellow(`📊 Current state: ${JSON.stringify(state, null, 2)}`))
-      } else if (type === 'expectError') {
-        // Standalone error expectation step (for testing error handling)
-        console.log(chalk.yellow(`⚠️  Expected error step: ${step.message || 'No message'}`))
       }
     }
 
-    console.log(chalk.green('\n✅ Script completed'))
+    console.log(chalk.green(`✅ Scenario completed: ${basename(scriptPath)}\n`))
   } catch (error) {
-    console.error(chalk.red(`Failed to execute script: ${error}`))
+    console.error(chalk.red(`❌ Scenario failed: ${basename(scriptPath)}: ${error}`))
     throw error
   }
+}
+
+function getNestedValue(obj: any, path: string): any {
+  if (!path) return obj
+  return path.split('.').reduce((o, i) => (o ? o[i] : undefined), obj)
 }
 
 // Admin commands
