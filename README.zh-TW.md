@@ -66,6 +66,18 @@ SwiftStateTree 採用以下核心設計：
 | **SwiftStateTreeHummingbird** | Hummingbird 整合（LandServer、JWT/Guest、Admin 路由） |
 | **SwiftStateTreeBenchmarks** | 基準測試執行檔 |
 
+## 🚚 傳輸編碼格式（Transport Encodings）
+
+SwiftStateTree 目前支援 **三種**傳輸編碼組合。建議預設使用 **MessagePack**，搭配 opcode array 協議、PathHash 與執行期 dynamic-key（slot）壓縮，以獲得更小的封包與更快的解析速度。
+
+| 模式 | Message 編碼 | StateUpdate 編碼 | 說明 |
+|---|---|---|---|
+| **JSON（除錯用）** | `json` | `jsonObject` | 最好閱讀、最容易除錯 |
+| **Opcode JSON（精簡）** | `opcodeJsonArray` | `opcodeJsonArray` | JSON 陣列格式更精簡，適合作為過渡方案 |
+| **MessagePack（預設）** | `messagepack` | `opcodeMessagePack` | 封包最小、解析最快 |
+
+完整細節與效能數據請參考：[Transport Evolution](docs/transport_evolution.zh-TW.md)。
+
 ## 📦 系統要求
 
 - Swift 6.0+

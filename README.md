@@ -68,6 +68,18 @@ SwiftStateTree adopts the following core design:
 | **SwiftStateTreeHummingbird** | Hummingbird integration (LandServer, JWT/Guest, Admin routes) |
 | **SwiftStateTreeBenchmarks** | Benchmark executable |
 
+## 🚚 Transport Encodings
+
+SwiftStateTree supports **three** transport encoding combinations. The recommended default is **MessagePack**, which combines an opcode array protocol with PathHash + runtime dynamic-key (slot) compression for small packets.
+
+| Mode | Message encoding | State update encoding | Notes |
+|---|---|---|---|
+| **JSON (debug)** | `json` | `jsonObject` | Most readable, easiest to debug |
+| **Opcode JSON (compact)** | `opcodeJsonArray` | `opcodeJsonArray` | Compact JSON arrays; good transition path |
+| **MessagePack (default)** | `messagepack` | `opcodeMessagePack` | Smallest packets + fastest parsing |
+
+For details and performance results, see: [Transport Evolution](docs/transport_evolution.md).
+
 ## 📦 System Requirements
 
 - Swift 6.0+
