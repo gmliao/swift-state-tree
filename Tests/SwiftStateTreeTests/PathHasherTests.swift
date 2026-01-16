@@ -20,14 +20,14 @@ struct PathHasherTests {
         let hasher = PathHasher(pathHashes: hashes)
         
         // Test /round
-        let (hash1, key1) = hasher.split("/round")
+        let (hash1, keys1) = hasher.split("/round")
         #expect(hash1 == 0x1111)
-        #expect(key1 == nil)
+        #expect(keys1.isEmpty)
         
         // Test /score
-        let (hash2, key2) = hasher.split("/score")
+        let (hash2, keys2) = hasher.split("/score")
         #expect(hash2 == 0x2222)
-        #expect(key2 == nil)
+        #expect(keys2.isEmpty)
     }
     
     @Test("Map path resolution (single level)")
@@ -43,14 +43,14 @@ struct PathHasherTests {
         let hasher = PathHasher(pathHashes: hashes)
         
         // Test /players/123/hp
-        let (hash1, key1) = hasher.split("/players/123/hp")
+        let (hash1, keys1) = hasher.split("/players/123/hp")
         #expect(hash1 == 0x3333)
-        #expect(key1 == "123")
+        #expect(keys1 == ["123"])
         
         // Test /players/abc-def/id
-        let (hash2, key2) = hasher.split("/players/abc-def/id")
+        let (hash2, keys2) = hasher.split("/players/abc-def/id")
         #expect(hash2 == 0x4444)
-        #expect(key2 == "abc-def")
+        #expect(keys2 == ["abc-def"])
     }
     
     @Test("Nested map path resolution (multi level)")
@@ -66,15 +66,13 @@ struct PathHasherTests {
         let hasher = PathHasher(pathHashes: hashes)
         
         // Test /guilds/g1/members/m2/name
-        // Note: The system currently only captures the FIRST dynamic key encountered.
-        // This is specified in PathHasher.split documentation.
-        let (hash1, key1) = hasher.split("/guilds/g1/members/m2/name")
+        let (hash1, keys1) = hasher.split("/guilds/g1/members/m2/name")
         #expect(hash1 == 0x5555)
-        #expect(key1 == "g1")
+        #expect(keys1 == ["g1", "m2"])
         
-        let (hash2, key2) = hasher.split("/guilds/777/members/888/level")
+        let (hash2, keys2) = hasher.split("/guilds/777/members/888/level")
         #expect(hash2 == 0x6666)
-        #expect(key2 == "777")
+        #expect(keys2 == ["777", "888"])
     }
     
     @Test("Complex static structure inside map")
@@ -99,14 +97,14 @@ struct PathHasherTests {
         let hasher = PathHasher(pathHashes: hashes)
         
         // Test deep path
-        let (hash1, key1) = hasher.split("/monsters/6/position/v/x")
+        let (hash1, keys1) = hasher.split("/monsters/6/position/v/x")
         #expect(hash1 == 0x7777, "Should match specific leaf path hash")
-        #expect(key1 == "6")
+        #expect(keys1 == ["6"])
         
         // Test intermediate path (if sent as diff)
-        let (hash2, key2) = hasher.split("/monsters/6/position")
+        let (hash2, keys2) = hasher.split("/monsters/6/position")
         #expect(hash2 == 0xAAAA)
-        #expect(key2 == "6")
+        #expect(keys2 == ["6"])
     }
     
     @Test("Handling of non-matching paths (fallback)")
@@ -127,8 +125,8 @@ struct PathHasherTests {
         
         // Unknown dynamic path: /unknown/123
         // Should fallback to naive normalization: unknown.* -> FNV1a("unknown.*")
-        let (hash2, key2) = hasher.split("/unknown/123")
-        #expect(key2 == nil) // Naive fallback doesn't capture key reliably or maybe it does?
+        let (hash2, keys2) = hasher.split("/unknown/123")
+        #expect(keys2.isEmpty) // No wildcard segment in fallback for 2 components
         // Let's check fallback implementation:
         // normalizePathFallback returns (pattern, dynamicKey)
         // /unknown/123 -> components [unknown, 123] -> pattern "unknown.*", key "123" if intermediate?
@@ -141,8 +139,9 @@ struct PathHasherTests {
         // So /unknown/123 -> unknown.123
         // /unknown/123/prop -> unknown.*.prop (123 becomes *)
         
-        let (hash3, _) = hasher.split("/unknown/123/prop")
+        let (hash3, keys3) = hasher.split("/unknown/123/prop")
         // fallback pattern: unknown.*.prop
         #expect(hash3 == DeterministicHash.fnv1a32("unknown.*.prop"))
+        #expect(keys3 == ["123"])
     }
 }

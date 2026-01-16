@@ -459,40 +459,57 @@ function decodeStateUpdateArray(payload: unknown[], dynamicKeyMap?: Map<number, 
         throw new Error(`Invalid PathHash format: expected number, got ${typeof pathHash}`)
       }
       
-      // Resolve dynamic key
-      let dynamicKey: string | null = null
-      
-      if (rawDynamicKey === null) {
-        dynamicKey = null
-      } else if (typeof rawDynamicKey === 'string') {
-        dynamicKey = rawDynamicKey
-      } else if (typeof rawDynamicKey === 'number') {
-        // Cached slot
-        if (dynamicKeyMap) {
-          dynamicKey = dynamicKeyMap.get(rawDynamicKey) || null
-          if (dynamicKey === null) {
-            // Error: Used slot before definition
-            throw new Error(`Dynamic key slot ${rawDynamicKey} used before definition`)
-          }
-        } else {
-             // If no map provided, treat as number string (fallback behavior, shouldn't happen with correct runtime)
-             dynamicKey = String(rawDynamicKey)
-        }
-      } else if (Array.isArray(rawDynamicKey) && rawDynamicKey.length === 2) {
-        // Definition: [slot, key]
-        const [slot, key] = rawDynamicKey
-        if (typeof slot === 'number' && typeof key === 'string') {
-          dynamicKey = key
+      // Resolve dynamic keys (supports multi-wildcard patterns).
+      const resolveOneDynamicKey = (raw: unknown): string | null => {
+        if (raw === null) return null
+        if (typeof raw === 'string') return raw
+        if (typeof raw === 'number') {
           if (dynamicKeyMap) {
-            dynamicKeyMap.set(slot, key)
+            const key = dynamicKeyMap.get(raw) || null
+            if (key === null) {
+              throw new Error(`Dynamic key slot ${raw} used before definition`)
+            }
+            return key
           }
-        } else {
-           throw new Error(`Invalid dynamic key definition format: ${JSON.stringify(rawDynamicKey)}`)
+          // Fallback: treat as number string when no map is provided
+          return String(raw)
         }
+        if (Array.isArray(raw) && raw.length === 2) {
+          const [slot, key] = raw
+          if (typeof slot === 'number' && typeof key === 'string') {
+            if (dynamicKeyMap) dynamicKeyMap.set(slot, key)
+            return key
+          }
+          throw new Error(`Invalid dynamic key definition format: ${JSON.stringify(raw)}`)
+        }
+        throw new Error(`Invalid dynamic key format: ${JSON.stringify(raw)}`)
+      }
+
+      let dynamicKeys: string[] = []
+      if (Array.isArray(rawDynamicKey)) {
+        // Ambiguity: [slot, "key"] is a single-key definition, but [key1, key2] is multi-key.
+        // Treat as a single-key definition ONLY when it matches [number, string].
+        const isSingleKeyDefinition =
+          rawDynamicKey.length === 2 &&
+          typeof rawDynamicKey[0] === 'number' &&
+          typeof rawDynamicKey[1] === 'string'
+
+        if (isSingleKeyDefinition) {
+          const one = resolveOneDynamicKey(rawDynamicKey)
+          if (one !== null) dynamicKeys = [one]
+        } else {
+          // Multi-key form: [key0, key1, ...] where each key can be slot/definition/string/null.
+          dynamicKeys = rawDynamicKey
+            .map(k => resolveOneDynamicKey(k))
+            .filter((k): k is string => k !== null)
+        }
+      } else {
+        const one = resolveOneDynamicKey(rawDynamicKey)
+        if (one !== null) dynamicKeys = [one]
       }
       
-      // Reconstruct path from hash + dynamicKey
-      path = reconstructPath(pathHash, dynamicKey)
+      // Reconstruct path from hash + dynamicKeys
+      path = reconstructPath(pathHash, dynamicKeys)
       opCode = op
       value = val
     } else {
@@ -537,7 +554,7 @@ function decodeStateUpdateArray(payload: unknown[], dynamicKeyMap?: Map<number, 
  * Reconstruct full JSON Pointer path from pathHash and dynamicKey
  * Uses global pathHashReverseLookup (set during schema initialization)
  */
-function reconstructPath(pathHash: number, dynamicKey: string | null): string {
+function reconstructPath(pathHash: number, dynamicKeys: string[]): string {
   const pattern = pathHashReverseLookup.get(pathHash)
   if (!pattern) {
     // More descriptive error message for debugging
@@ -545,9 +562,13 @@ function reconstructPath(pathHash: number, dynamicKey: string | null): string {
     throw new Error(`Unknown pathHash: ${pathHash}. Ensure schema is loaded. Available hashes (first 10): ${availableHashes}. Lookup table size: ${pathHashReverseLookup.size}`)
   }
   
-  // Replace wildcard with dynamic key
-  if (dynamicKey !== null && pattern.includes('*')) {
-    const pathPattern = pattern.replace('*', dynamicKey)
+  // Replace wildcards with dynamic keys (in order)
+  if (pattern.includes('*') && dynamicKeys.length > 0) {
+    let i = 0
+    const pathPattern = pattern.replace(/\*/g, (m) => {
+      if (i >= dynamicKeys.length) return m
+      return dynamicKeys[i++]
+    })
     return '/' + pathPattern.replace(/\./g, '/')
   }
   

@@ -214,21 +214,27 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoder {
         forceDefinition: Bool,
         keyTable: DynamicKeyTable
     ) -> [AnyCodable] {
-        let (pathHash, dynamicKey) = hasher.split(patch.path)
-        
-        // Compress dynamicKey if present
-        var encodedKey: AnyCodable
-        if let key = dynamicKey {
+        let (pathHash, dynamicKeys) = hasher.split(patch.path)
+
+        func encodeDynamicKey(_ key: String) -> AnyCodable {
             let (slot, isNew) = keyTable.getSlot(for: key)
             if isNew || forceDefinition {
                 // Define-on-first-use OR Force Definition: [slot, "key"]
-                encodedKey = AnyCodable([AnyCodable(slot), AnyCodable(key)])
-            } else {
-                // Subsequent use: slot
-                encodedKey = AnyCodable(slot)
+                return AnyCodable([AnyCodable(slot), AnyCodable(key)])
             }
-        } else {
+            // Subsequent use: slot
+            return AnyCodable(slot)
+        }
+
+        // Compress dynamicKeys if present
+        let encodedKey: AnyCodable
+        switch dynamicKeys.count {
+        case 0:
             encodedKey = AnyCodable(nil as String?)
+        case 1:
+            encodedKey = encodeDynamicKey(dynamicKeys[0])
+        default:
+            encodedKey = AnyCodable(dynamicKeys.map { encodeDynamicKey($0) })
         }
         
         switch patch.operation {
@@ -400,21 +406,27 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoder {
         forceDefinition: Bool,
         keyTable: DynamicKeyTable
     ) -> [AnyCodable] {
-        let (pathHash, dynamicKey) = hasher.split(patch.path)
+        let (pathHash, dynamicKeys) = hasher.split(patch.path)
 
-        // Compress dynamicKey if present
-        let encodedKey: AnyCodable
-        if let key = dynamicKey {
+        func encodeDynamicKey(_ key: String) -> AnyCodable {
             let (slot, isNew) = keyTable.getSlot(for: key)
             if isNew || forceDefinition {
                 // Define-on-first-use OR Force Definition: [slot, "key"]
-                encodedKey = AnyCodable([AnyCodable(slot), AnyCodable(key)])
-            } else {
-                // Subsequent use: slot
-                encodedKey = AnyCodable(slot)
+                return AnyCodable([AnyCodable(slot), AnyCodable(key)])
             }
-        } else {
+            // Subsequent use: slot
+            return AnyCodable(slot)
+        }
+
+        // Compress dynamicKeys if present
+        let encodedKey: AnyCodable
+        switch dynamicKeys.count {
+        case 0:
             encodedKey = AnyCodable(nil as String?)
+        case 1:
+            encodedKey = encodeDynamicKey(dynamicKeys[0])
+        default:
+            encodedKey = AnyCodable(dynamicKeys.map { encodeDynamicKey($0) })
         }
 
         switch patch.operation {

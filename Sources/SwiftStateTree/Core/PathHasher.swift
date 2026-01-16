@@ -58,31 +58,30 @@ public struct PathHasher: Sendable {
         currentNode.pattern = pattern
     }
     
-    /// Split a JSON Pointer path into (pathHash, dynamicKey).
+    /// Split a JSON Pointer path into (pathHash, dynamicKeys).
     ///
     /// Examples:
-    /// - `/players/42/position` → (hash("players.*.position"), "42")
+    /// - `/players/42/position` → (hash("players.*.position"), ["42"])
     /// - `/gameState/round` → (hash("gameState.round"), nil)
+    /// - `/players/42/inventory/7/itemId` → (hash("players.*.inventory.*.itemId"), ["42", "7"])
     ///
     /// - Parameter path: JSON Pointer path (e.g., "/players/42/hp")
-    /// - Returns: Tuple of (pathHash, dynamicKey or nil)
-    public func split(_ path: String) -> (pathHash: UInt32, dynamicKey: String?) {
+    /// - Returns: Tuple of (pathHash, dynamicKeys)
+    public func split(_ path: String) -> (pathHash: UInt32, dynamicKeys: [String]) {
         // Remove leading slash and split
         let components = path.dropFirst().split(separator: "/").map(String.init)
         
         // Traverse Trie
         var currentNode = root
-        var dynamicKey: String? = nil
+        var dynamicKeys: [String] = []
         
         for component in components {
             if let child = currentNode.children[component] {
                 currentNode = child
             } else if let wildcard = currentNode.wildcard {
                 currentNode = wildcard
-                // Capture FIRST dynamic key
-                if dynamicKey == nil {
-                    dynamicKey = component
-                }
+                // Capture ALL dynamic keys in traversal order
+                dynamicKeys.append(component)
             } else {
                 // No match found in known patterns
                 // Fallback: Try the legacy heuristic (though it's likely wrong for deep paths)
@@ -98,7 +97,7 @@ public struct PathHasher: Sendable {
         }
         
         if let hash = currentNode.hash {
-            return (hash, dynamicKey)
+            return (hash, dynamicKeys)
         }
         
         // Path ended but no hash at this node (intermediate node)
@@ -117,30 +116,28 @@ public struct PathHasher: Sendable {
     
     // MARK: - Legacy Normalization (Fallback)
     
-    private func normalizePathFallback(_ jsonPointer: String) -> (pattern: String, dynamicKey: String?) {
+    private func normalizePathFallback(_ jsonPointer: String) -> (pattern: String, dynamicKeys: [String]) {
         // Remove leading slash and split
         let components = jsonPointer.dropFirst().split(separator: "/").map(String.init)
         
         guard components.count > 1 else {
-            return (components.joined(separator: "."), nil)
+            return (components.joined(separator: "."), [])
         }
         
         var patternComponents: [String] = []
-        var dynamicKey: String? = nil
+        var dynamicKeys: [String] = []
         
         for (index, component) in components.enumerated() {
             if index == 0 || index == components.count - 1 {
                 patternComponents.append(component)
             } else {
                 patternComponents.append("*")
-                if dynamicKey == nil {
-                    dynamicKey = component
-                }
+                dynamicKeys.append(component)
             }
         }
         
         let pattern = patternComponents.joined(separator: ".")
-        return (pattern, dynamicKey)
+        return (pattern, dynamicKeys)
     }
 }
 
