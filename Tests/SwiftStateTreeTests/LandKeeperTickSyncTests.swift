@@ -74,11 +74,12 @@ func testTickUpdatesBroadcastFields() async throws {
         Rules { }
         
         Lifetime {
-            Tick(every: .milliseconds(50)) { (state: inout TickTestState, _) in
+            // Use a short interval to reduce CI flakiness.
+            Tick(every: .milliseconds(10)) { (state: inout TickTestState, _) in
                 state.ticks += 1
                 state.gameTime += 1
             }
-            StateSync(every: .milliseconds(50)) { (_: TickTestState, _: LandContext) in
+            StateSync(every: .milliseconds(10)) { (_: TickTestState, _: LandContext) in
                 // Read-only sync callback
             }
         }
@@ -93,8 +94,8 @@ func testTickUpdatesBroadcastFields() async throws {
     try await keeper.join(playerID: alice, clientID: ClientID("alice-client"), sessionID: SessionID("alice-session"))
     try await keeper.join(playerID: bob, clientID: ClientID("bob-client"), sessionID: SessionID("bob-session"))
     
-    // Wait for at least 3 ticks
-    await waitFor("Ticks should increment", timeout: .seconds(1)) {
+    // Wait for at least 3 ticks (polling; CI runners can be slow).
+    await waitFor("Ticks should increment", timeout: .seconds(3)) {
         let state = await keeper.currentState()
         return state.ticks >= 3
     }
@@ -116,8 +117,12 @@ func testTickUpdatesBroadcastFields() async throws {
     // First sync for bob (populates cache)
     _ = try syncEngineBob.generateDiff(for: bob, from: state)
     
-    // Wait a bit more for another tick to generate actual diffs
-    try? await Task.sleep(for: .milliseconds(100))
+    // Wait for another tick so that generateDiff produces actual patches.
+    let baselineTicks = state.ticks
+    await waitFor("Another tick should occur", timeout: .seconds(3)) {
+        let s = await keeper.currentState()
+        return s.ticks > baselineTicks
+    }
     let stateAfterTick = await keeper.currentState()
     
     // Now generate diffs - these should have patches
