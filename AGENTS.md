@@ -133,6 +133,7 @@
 - Aim to cover new public APIs and concurrency paths; avoid shared mutable state between tests.
 - **WebClient tests**: `cd Examples/HummingbirdDemo/WebClient && npm test` (uses vitest for Vue component and business logic tests).
 - **Automated E2E Testing (CLI)**: 
+<<<<<<< HEAD
   
   **Quick Command**: When user says "執行 e2e 測試" or "run e2e tests", AI should:
   1. **Start DemoServer**: `cd Examples/HummingbirdDemo && swift run DemoServer` (run in background, default: json encoding).
@@ -170,7 +171,7 @@
      - **Admin Keys**: 
        - DemoServer: `demo-admin-key`
        - GameServer: `hero-defense-admin-key`
-  - **Proactive Testing**: AI agents are encouraged to create new JSON scenarios in `Tools/CLI/scenarios/` (organized by Land subdirectories) to verify specific features or bug fixes.
+  - **Proactive Testing**: AI agents are encouraged to create new JSON scenarios in `Tools/CLI/scenarios/` (organized by Land subdirectories) to verify specific features or bug fixes. These scenarios should use the `assert` step to ensure correctness.
 
 ## Commit & Pull Request Guidelines
 - Messages: short imperative summaries (`Add room snapshot hook`, `Fix attack damage clamp`).
