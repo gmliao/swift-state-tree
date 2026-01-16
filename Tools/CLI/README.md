@@ -60,8 +60,14 @@ npm run test:e2e
 # Run E2E scenarios including game tests (requires GameServer running)
 npm run test:e2e:with-game
 
-# Run E2E scenarios across all encoding modes (jsonObject, opcodeJsonArray)
+# Run E2E scenarios across all encoding modes (jsonObject, opcodeJsonArray, messagepack)
+# Note: Tests automatically start DemoServer with correct encoding via TRANSPORT_ENCODING env var
 npm run test:e2e:all
+
+# Run E2E tests with specific encoding mode
+npm run test:e2e:jsonObject      # JSON object state updates (TRANSPORT_ENCODING=json)
+npm run test:e2e:opcodeJsonArray # Opcode JSON array state updates (TRANSPORT_ENCODING=jsonOpcode)
+npm run test:e2e:messagepack     # MessagePack binary encoding (TRANSPORT_ENCODING=messagepack)
 
 # Run individual test suites
 npm run test:e2e:counter  # Counter demo tests (requires DemoServer)
@@ -73,6 +79,10 @@ npm run test:e2e:game     # Game demo tests (requires GameServer on ws://localho
 - `npm test` uses a Fail-Fast strategy. If any protocol test fails, E2E tests will not run.
 - Default E2E tests (`npm run test:e2e`) only test DemoServer lands (counter, cookie). Game tests require GameServer to be running separately.
 - To test all lands including game: `npm run test:e2e:with-game` (requires both DemoServer and GameServer running).
+- **Encoding Modes**: `test:e2e:all` automatically tests all three encoding modes by starting DemoServer with different `TRANSPORT_ENCODING` environment variables:
+  - `json`: JSON messages + JSON object state updates
+  - `jsonOpcode`: JSON messages + opcode JSON array state updates
+  - `messagepack`: MessagePack binary encoding for both messages and state updates
 
 ## Scenario Format (JSON)
 
