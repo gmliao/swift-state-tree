@@ -152,7 +152,8 @@
   - ❌ **Not Covered**: Multi-Player Scenarios, OnLeave Handler (requires disconnect testing)
   
   **Important Notes**:
-  - AI must ensure all encoding modes (`jsonObject`, `opcodeJsonArray`) pass before submitting PRs.
+  - AI must ensure all tests pass before submitting PRs.
+  - **Note**: DemoServer uses `.json` encoding, so state updates are always in JSON object format. The `opcodeJsonArray` mode is not currently tested with DemoServer (would require server configuration changes).
   - Each test uses unique land instance ID to ensure clean state.
   - Tests verify exact state values (not ranges) for precision.
   - **Connection Info**:
