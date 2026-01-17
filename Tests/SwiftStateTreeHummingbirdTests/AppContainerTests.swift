@@ -69,29 +69,6 @@ private enum TestGame {
     }
 }
 
-// MARK: - Helper Functions
-
-// Helper for async assertions
-func waitFor(
-    _ description: String,
-    timeout: Duration = .seconds(2),
-    interval: Duration = .milliseconds(10),
-    condition: () async throws -> Bool
-) async {
-    let start = ContinuousClock.now
-    while start.duration(to: .now) < timeout {
-        do {
-            if try await condition() {
-                return
-            }
-        } catch {
-            // Ignore errors during polling, just wait
-        }
-        try? await Task.sleep(for: interval)
-    }
-    Issue.record("Timeout waiting for: \(description)")
-}
-
 @Test("LandServerForTest wires transport and runtime")
 func testLandServerForTestHandlesClientEvents() async throws {
     // Arrange
