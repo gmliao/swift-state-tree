@@ -9,7 +9,7 @@ on:
 
 jobs:
   e2e-tests:
-    runs-on: ubuntu-latest # Linux runner (production target)
+    runs-on: ubuntu-22.04 # Linux runner (production target, Ubuntu 24.04 not yet supported by setup-swift)
 
     steps:
     - uses: actions/checkout@v4
