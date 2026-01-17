@@ -214,13 +214,21 @@ program
           const scriptContent = readFileSync(scriptPath, 'utf-8')
           const script = JSON.parse(scriptContent)
           
-          // Generate unique room ID for each script to ensure clean state
-          // Format: landType:unique-instance-id
-          // Use script.landID if specified, otherwise generate unique instance ID
-          const uniqueInstanceId = script.landID 
-            ? (script.landID.includes(':') ? script.landID.split(':')[1] : script.landID)
-            : `test-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
-          const landID = `${options.land}:${uniqueInstanceId}`
+          // Determine land ID: respect full land IDs, only append random instance for bare land types
+          // If options.land already contains ':', it's a full land ID - use it as-is
+          // Otherwise, it's a bare land type - append instance ID
+          let landID: string
+          if (options.land.includes(':')) {
+            // Full land ID provided (e.g., "cookie:room-123") - use it directly
+            landID = options.land
+          } else {
+            // Bare land type provided (e.g., "cookie") - append instance ID
+            // Use script.landID if specified, otherwise generate unique instance ID
+            const uniqueInstanceId = script.landID 
+              ? (script.landID.includes(':') ? script.landID.split(':')[1] : script.landID)
+              : `test-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
+            landID = `${options.land}:${uniqueInstanceId}`
+          }
           
           console.log(chalk.cyan(`🏠 Using land ID: ${landID}`))
           

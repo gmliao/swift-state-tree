@@ -84,6 +84,13 @@ npm run test:e2e:game     # Game demo tests (requires GameServer on ws://localho
   - `jsonOpcode`: JSON messages + opcode JSON array state updates
   - `messagepack`: MessagePack binary encoding for both messages and state updates
 
+### Running Tests
+- **GitLab CI**: Use `gitlab-runner exec docker <job-name>` to run jobs locally
+- **Jenkins**: Can run Jenkins locally or use `jenkinsfile-runner`
+- **CircleCI**: Use `circleci local execute` to test workflows locally
+- **Azure DevOps**: Use `azure-pipelines-task-lib` for local task testing
+- **GitHub Actions**: Use `act` (as shown above) or custom scripts like `test-e2e-ci.sh`
+
 ## Scenario Format (JSON)
 
 Test scenarios are defined in JSON files within the `scenarios/` directory.
