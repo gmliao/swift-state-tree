@@ -69,6 +69,29 @@ private enum TestGame {
     }
 }
 
+// MARK: - Helper Functions
+
+// Helper for async assertions
+func waitFor(
+    _ description: String,
+    timeout: Duration = .seconds(2),
+    interval: Duration = .milliseconds(10),
+    condition: () async throws -> Bool
+) async {
+    let start = ContinuousClock.now
+    while start.duration(to: .now) < timeout {
+        do {
+            if try await condition() {
+                return
+            }
+        } catch {
+            // Ignore errors during polling, just wait
+        }
+        try? await Task.sleep(for: interval)
+    }
+    Issue.record("Timeout waiting for: \(description)")
+}
+
 @Test("LandServerForTest wires transport and runtime")
 func testLandServerForTestHandlesClientEvents() async throws {
     // Arrange
@@ -116,7 +139,26 @@ func testLandServerForTestHandlesClientEvents() async throws {
     let chatData = try encoder.encode(chatMessage)
     await harness.send(chatData, from: sessionID)
 
-    try await Task.sleep(nanoseconds: 50_000_000)
+    // Wait for async sends to finish using polling
+    await waitFor("TestChatMessage event to be sent", condition: {
+        let outgoing = await connection.recordedMessages()
+        let transportMessages = outgoing.compactMap {
+            try? decoder.decode(TransportMessage.self, from: $0)
+        }
+        return transportMessages.contains(where: { message in
+            if message.kind == .event,
+               case .event(let event) = message.payload,
+               case .fromServer(let anyEvent) = event,
+               anyEvent.type == "TestChatMessage" {
+                if let payloadDict = anyEvent.payload.base as? [String: Any],
+                   let message = payloadDict["message"] as? String,
+                   message == "hello" {
+                    return true
+                }
+            }
+            return false
+        })
+    })
 
     // Assert: transport echoed server events via adapter
     let outgoing = await connection.recordedMessages()

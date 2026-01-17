@@ -633,8 +633,12 @@ func testOnInitialize() async throws {
         initialState: DemoLandState()
     )
     
-    // Wait a bit for OnInitialize to complete
-    try await Task.sleep(nanoseconds: 50_000_000) // 50ms
+    // Wait for OnInitialize to complete and spawn task to finish
+    await waitFor("OnInitialize to complete and spawn task to finish", condition: {
+        let state = await keeper.currentState()
+        let count = await counter.current()
+        return state.ticks == 42 && count == 1
+    })
     
     let state = await keeper.currentState()
     #expect(state.ticks == 42, "OnInitialize should set ticks to 42")
