@@ -1,0 +1,18 @@
+FROM swift:6.2
+
+# Install Node.js (required for E2E tests and TypeScript SDK)
+RUN apt-get update && \
+    apt-get install -y curl && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create workspace directory
+RUN mkdir -p /workspace
+
+# Set working directory
+WORKDIR /workspace
+
+# Verify installations
+RUN swift --version && node --version && npm --version
