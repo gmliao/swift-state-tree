@@ -9,22 +9,26 @@ on:
 
 jobs:
   e2e-tests:
-    runs-on: ubuntu-22.04 # Linux runner (production target, Ubuntu 24.04 not yet supported by setup-swift)
+    runs-on: ubuntu-22.04 # Linux runner (production target)
+    container:
+      image: swift:6.2
 
     steps:
     - uses: actions/checkout@v4
 
-    - name: Setup Swift
-      uses: swift-actions/setup-swift@v1
+    - name: Install Node.js
+      run: |
+        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+        apt-get install -y nodejs
+        node --version && npm --version
+    
+    - name: Setup npm cache
+      uses: actions/cache@v4
       with:
-        swift-version: "6.0"
-
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-        cache: 'npm'
-        cache-dependency-path: sdk/ts/package-lock.json
+        path: ~/.npm
+        key: ${{ runner.os }}-node-${{ hashFiles('sdk/ts/package-lock.json') }}
+        restore-keys: |
+          ${{ runner.os }}-node-
 
     - name: Build SDK (required by CLI)
       working-directory: sdk/ts
