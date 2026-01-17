@@ -26,9 +26,11 @@
  5. Open PR in browser: `gh pr view --web`
 
 - **Reply to Specific PR Comment**: When user wants to reply to a specific comment thread:
- 1. Get comment ID: `gh api repos/:owner/:repo/pulls/PR_NUMBER/comments --jq '.[] | {id: .id, body: (.body | split("\n")[0]), author: .user.login}'`
- 2. Reply to specific comment: `gh api --method POST repos/:owner/:repo/pulls/PR_NUMBER/comments/COMMENT_ID/replies -f body="Your reply text"`
- 3. Example: `gh api --method POST repos/:owner/:repo/pulls/23/comments/2698816589/replies -f body="✅ Fixed: ..."`
+ 1. Get repo name: `gh repo view --json nameWithOwner --jq '.nameWithOwner'` (e.g., `gmliao/swift-state-tree`)
+ 2. Get comment ID from PR comments: `gh pr view PR_NUMBER --json comments,reviews --jq '.reviews[].comments[] | {id: .id, author: .author.login, body: (.body | split("\n")[0:2] | join("\n"))}'` or view line comments: `gh api repos/OWNER/REPO/pulls/PR_NUMBER/comments --jq '.[] | {id: .id, path: .path, line: .line, body: (.body | split("\n")[0:2] | join("\n"))}'`
+ 3. Reply to review comment (line comment): `gh api --method POST repos/OWNER/REPO/pulls/PR_NUMBER/comments/COMMENT_ID/replies -f body="Your reply text"`
+ 4. Note: Use actual repo name (e.g., `gmliao/swift-state-tree`) instead of `:owner/:repo` placeholder
+ 5. Example: `gh api --method POST repos/gmliao/swift-state-tree/pulls/24/comments/2700778279/replies -f body="Thanks for the review! ..."`
 
 ### Key Testing Locations
 - **Unit Tests**: `swift test` (Swift Testing framework)
