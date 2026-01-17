@@ -3,8 +3,20 @@ name: E2E Tests
 on:
   push:
     branches: [ "main" ]
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+      - 'Notes/**'
+      - '.devcontainer/**'
+      - 'README*'
   pull_request:
     branches: [ "main" ]
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+      - 'Notes/**'
+      - '.devcontainer/**'
+      - 'README*'
   workflow_dispatch: # Allow manual triggering
 
 jobs:

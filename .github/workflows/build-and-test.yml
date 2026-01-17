@@ -6,8 +6,20 @@ name: Swift Build & Test
 on:
   push:
     branches: [ "main" ]
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+      - 'Notes/**'
+      - '.devcontainer/**'
+      - 'README*'
   pull_request:
     branches: [ "main" ]
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+      - 'Notes/**'
+      - '.devcontainer/**'
+      - 'README*'
 
 jobs:
   build:
