@@ -327,12 +327,33 @@ struct MessagePackDirectEncoder {
     }
 
     private func encodeNSNumber(_ value: NSNumber) -> MessagePackValue {
-        if CFGetTypeID(value) == CFBooleanGetTypeID() {
+        // Use objCType for cross-platform type detection (available on both macOS and Linux)
+        // This avoids platform-specific APIs like CFGetTypeID/CFBooleanGetTypeID
+        let objCType = String(cString: value.objCType)
+        
+        // Check for boolean type
+        // "B" = Bool (explicit boolean type, available on Linux)
+        // "c" = char (on macOS, BOOL is often represented as char)
+        if objCType == "B" {
+            // Explicit Bool type
             return .bool(value.boolValue)
+        } else if objCType == "c" {
+            // char type: could be boolean or small integer
+            // If value is exactly 0 or 1, treat as boolean (common pattern)
+            let intVal = value.int64Value
+            if intVal == 0 || intVal == 1 {
+                return .bool(value.boolValue)
+            }
+            // Otherwise treat as integer (fall through)
         }
-        if CFNumberIsFloatType(value) {
+        
+        // Check for floating point types
+        // "f" = Float, "d" = Double
+        if objCType == "f" || objCType == "d" {
             return .double(value.doubleValue)
         }
+        
+        // Integer types: check if value fits in unsigned range
         let intValue = value.int64Value
         if intValue >= 0 {
             return .uint(UInt64(intValue))

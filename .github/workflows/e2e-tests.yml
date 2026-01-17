@@ -1,0 +1,185 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch: # Allow manual triggering
+
+jobs:
+  e2e-tests:
+    runs-on: ubuntu-latest # Linux runner (production target)
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Swift
+      uses: swift-actions/setup-swift@v1
+      with:
+        swift-version: "6.0"
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: sdk/ts/package-lock.json
+
+    - name: Build SDK (required by CLI)
+      working-directory: sdk/ts
+      run: |
+        npm ci
+        npm run build
+
+    - name: Install CLI dependencies
+      working-directory: Tools/CLI
+      run: npm ci
+
+    - name: Build CLI
+      working-directory: Tools/CLI
+      run: npm run build
+
+    - name: Build DemoServer
+      working-directory: Examples/HummingbirdDemo
+      run: swift build
+
+    # Test jsonObject encoding
+    - name: Start DemoServer (jsonObject)
+      working-directory: Examples/HummingbirdDemo
+      env:
+        TRANSPORT_ENCODING: json
+      run: |
+        swift run DemoServer > /tmp/demoserver-json.log 2>&1 &
+        echo $! > /tmp/demoserver-json.pid
+        echo "DemoServer started with PID $(cat /tmp/demoserver-json.pid) using encoding: json"
+
+    - name: Wait for DemoServer (jsonObject)
+      run: |
+        echo "Waiting for DemoServer (jsonObject) to start..."
+        timeout=30
+        elapsed=0
+        while [ $elapsed -lt $timeout ]; do
+          if curl -s http://localhost:8080/schema > /dev/null 2>&1; then
+            echo "✅ DemoServer (jsonObject) is ready!"
+            exit 0
+          fi
+          echo "Waiting... ($elapsed/$timeout seconds)"
+          sleep 2
+          elapsed=$((elapsed + 2))
+        done
+        echo "❌ DemoServer (jsonObject) failed to start within $timeout seconds"
+        cat /tmp/demoserver-json.log
+        exit 1
+
+    - name: Run E2E tests (jsonObject)
+      working-directory: Tools/CLI
+      env:
+        TRANSPORT_ENCODING: json
+      run: npm run test:e2e:jsonObject
+
+    - name: Stop DemoServer (jsonObject)
+      if: always()
+      run: |
+        if [ -f /tmp/demoserver-json.pid ]; then
+          kill $(cat /tmp/demoserver-json.pid) || true
+          wait $(cat /tmp/demoserver-json.pid) 2>/dev/null || true
+        fi
+        sleep 2 # Give port time to release
+
+    # Test opcodeJsonArray encoding
+    - name: Start DemoServer (opcodeJsonArray)
+      working-directory: Examples/HummingbirdDemo
+      env:
+        TRANSPORT_ENCODING: jsonOpcode
+      run: |
+        swift run DemoServer > /tmp/demoserver-jsonopcode.log 2>&1 &
+        echo $! > /tmp/demoserver-jsonopcode.pid
+        echo "DemoServer started with PID $(cat /tmp/demoserver-jsonopcode.pid) using encoding: jsonOpcode"
+
+    - name: Wait for DemoServer (opcodeJsonArray)
+      run: |
+        echo "Waiting for DemoServer (opcodeJsonArray) to start..."
+        timeout=30
+        elapsed=0
+        while [ $elapsed -lt $timeout ]; do
+          if curl -s http://localhost:8080/schema > /dev/null 2>&1; then
+            echo "✅ DemoServer (opcodeJsonArray) is ready!"
+            exit 0
+          fi
+          echo "Waiting... ($elapsed/$timeout seconds)"
+          sleep 2
+          elapsed=$((elapsed + 2))
+        done
+        echo "❌ DemoServer (opcodeJsonArray) failed to start within $timeout seconds"
+        cat /tmp/demoserver-jsonopcode.log
+        exit 1
+
+    - name: Run E2E tests (opcodeJsonArray)
+      working-directory: Tools/CLI
+      env:
+        TRANSPORT_ENCODING: jsonOpcode
+      run: npm run test:e2e:opcodeJsonArray
+
+    - name: Stop DemoServer (opcodeJsonArray)
+      if: always()
+      run: |
+        if [ -f /tmp/demoserver-jsonopcode.pid ]; then
+          kill $(cat /tmp/demoserver-jsonopcode.pid) || true
+          wait $(cat /tmp/demoserver-jsonopcode.pid) 2>/dev/null || true
+        fi
+        sleep 2 # Give port time to release
+
+    # Test messagepack encoding
+    - name: Start DemoServer (messagepack)
+      working-directory: Examples/HummingbirdDemo
+      env:
+        TRANSPORT_ENCODING: messagepack
+      run: |
+        swift run DemoServer > /tmp/demoserver-messagepack.log 2>&1 &
+        echo $! > /tmp/demoserver-messagepack.pid
+        echo "DemoServer started with PID $(cat /tmp/demoserver-messagepack.pid) using encoding: messagepack"
+
+    - name: Wait for DemoServer (messagepack)
+      run: |
+        echo "Waiting for DemoServer (messagepack) to start..."
+        timeout=30
+        elapsed=0
+        while [ $elapsed -lt $timeout ]; do
+          if curl -s http://localhost:8080/schema > /dev/null 2>&1; then
+            echo "✅ DemoServer (messagepack) is ready!"
+            exit 0
+          fi
+          echo "Waiting... ($elapsed/$timeout seconds)"
+          sleep 2
+          elapsed=$((elapsed + 2))
+        done
+        echo "❌ DemoServer (messagepack) failed to start within $timeout seconds"
+        cat /tmp/demoserver-messagepack.log
+        exit 1
+
+    - name: Run E2E tests (messagepack)
+      working-directory: Tools/CLI
+      env:
+        TRANSPORT_ENCODING: messagepack
+      run: npm run test:e2e:messagepack
+
+    - name: Stop DemoServer (messagepack)
+      if: always()
+      run: |
+        if [ -f /tmp/demoserver-messagepack.pid ]; then
+          kill $(cat /tmp/demoserver-messagepack.pid) || true
+          wait $(cat /tmp/demoserver-messagepack.pid) 2>/dev/null || true
+        fi
+
+    - name: Show DemoServer logs on failure
+      if: failure()
+      run: |
+        echo "=== DemoServer logs ==="
+        for log in /tmp/demoserver-*.log; do
+          if [ -f "$log" ]; then
+            echo "--- $(basename $log) ---"
+            cat "$log"
+            echo ""
+          fi
+        done

@@ -4,14 +4,31 @@
 
 ### Common Commands
 - **Run E2E Tests**: When user says "執行 e2e 測試" or "run e2e tests":
-  1. Start server: `cd Examples/HummingbirdDemo && swift run DemoServer` (background)
-  2. Wait 2-3 seconds for server startup
-  3. Run tests: `cd Tools/CLI && npm test`
-  4. Verify all tests pass before proceeding
+ 1. **Option 1 - Use test script (recommended)**: `cd Tools/CLI && ./test-e2e-ci.sh`
+    - Automatically handles server startup/shutdown
+    - Tests all three encoding modes sequentially
+    - Shows server logs on failure
+ 2. **Option 2 - Manual steps**:
+    - Start server: `cd Examples/HummingbirdDemo && swift run DemoServer` (background)
+    - Wait 2-3 seconds for server startup
+    - Run tests: `cd Tools/CLI && npm test`
+    - Verify all tests pass before proceeding
 
 - **Run Full Test Suite**: `cd Tools/CLI && npm run test:e2e:with-game` (requires DemoServer + GameServer)
 
 - **Create New Test Scenario**: Add JSON file to `Tools/CLI/scenarios/{land-type}/` directory
+
+- **View PR Comments**: When user says "看 PR comment" or "查看 PR":
+ 1. View PR details with comments: `gh pr view --comments` (shows PR info and review comments)
+ 2. View PR comments (留言區): `gh api repos/:owner/:repo/pulls/$(gh pr view --json number --jq '.number')/comments --jq '.[] | {id: .id, author: .user.login, body: .body, createdAt: .created_at}'` (shows all comments in the conversation thread)
+ 3. View PR reviews (review comments): `gh pr view --json reviews --jq '.reviews[] | select(.state == "COMMENTED") | {body: .body, author: .author.login}'` (shows review comments from reviewers)
+ 4. View all comments and reviews together: `gh pr view --json comments,reviews --jq '{comments: .comments, reviews: .reviews}'`
+ 5. Open PR in browser: `gh pr view --web`
+
+- **Reply to Specific PR Comment**: When user wants to reply to a specific comment thread:
+ 1. Get comment ID: `gh api repos/:owner/:repo/pulls/PR_NUMBER/comments --jq '.[] | {id: .id, body: (.body | split("\n")[0]), author: .user.login}'`
+ 2. Reply to specific comment: `gh api --method POST repos/:owner/:repo/pulls/PR_NUMBER/comments/COMMENT_ID/replies -f body="Your reply text"`
+ 3. Example: `gh api --method POST repos/:owner/:repo/pulls/23/comments/2698816589/replies -f body="✅ Fixed: ..."`
 
 ### Key Testing Locations
 - **Unit Tests**: `swift test` (Swift Testing framework)
@@ -72,6 +89,7 @@
 - Types: `UpperCamelCase`; methods/variables: `lowerCamelCase`; enums use verb-like cases for commands (`.join`, `.attack`).
 - Place new game logic in `Sources/SwiftStateTree`; keep demo-only code inside `Examples/HummingbirdDemo`.
 - **Return statements**: Omit `return` for single-expression functions; include `return` for multi-line function bodies.
+- **Cross-Platform Compatibility**: Always prioritize cross-platform solutions over platform-specific code. Avoid `#if os(macOS)` or `#if os(Linux)` conditionals unless absolutely necessary (e.g., when platform-specific APIs are required and no cross-platform alternative exists). Prefer using Foundation APIs that work on both macOS and Linux (e.g., `objCType` instead of `CFGetTypeID`). When platform-specific code is unavoidable, document why and consider future alternatives.
 
 ### DeterministicMath Usage Guidelines
 - **Never use Swift's built-in math functions** (e.g., `cos`, `sin`, `atan2`, `sqrt`, `pow`) in game logic code.
