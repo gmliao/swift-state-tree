@@ -18,11 +18,17 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
+    - name: Clean build artifacts
+      run: |
+        rm -rf .build
+        swift package clean
+    
     - name: Build
-      run: swift build -v
+      run: swift build
     
     - name: Run tests
-      run: swift test -v
+      run: swift test
+      timeout-minutes: 30
 
   test-typescript-sdk:
     runs-on: ubuntu-22.04
