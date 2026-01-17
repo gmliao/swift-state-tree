@@ -26,7 +26,6 @@ program
   .option('-m, --metadata <json>', 'Metadata as JSON string')
   .option('-t, --token <token>', 'JWT token for authentication')
   .option('--schema-url <url>', 'Schema base URL (defaults to WebSocket host)')
-<<<<<<< HEAD
   .option('--state-update-encoding <mode>', 'State update decoding mode (auto|jsonObject|opcodeJsonArray|messagepack)', 'auto')
   .option('-s, --script <file_or_dir>', 'Script file or directory of scripts to execute after joining')
   .option('--once', 'Exit after successful connection and join (non-interactive mode)')
@@ -200,7 +199,6 @@ program
 
       console.log(chalk.blue(`📂 Executing ${scripts.length} script(s).`))
 
-<<<<<<< HEAD
       for (const scriptPath of scripts) {
         // Create a new runtime connection for each script to avoid "Already joined a land" error
         const logger = new ChalkLogger()
@@ -328,7 +326,6 @@ async function executeScript(view: StateTreeView, scriptPath: string, script?: a
         console.log(chalk.blue(`📤 Sending event [${event}]...`))
         view.sendEvent(event, payload || {})
       } else if (type === 'assert') {
-<<<<<<< HEAD
         const { path, equals, exists, greaterThanOrEqual, message } = assert
         const state = view.getState()
         const value = getNestedValue(state, path)
@@ -347,7 +344,6 @@ async function executeScript(view: StateTreeView, scriptPath: string, script?: a
             throw new Error(message || `Assertion failed: ${path} expected ${JSON.stringify(equals)}, but got ${JSON.stringify(value)}`)
           }
         }
-<<<<<<< HEAD
         
         if (greaterThanOrEqual !== undefined) {
           const numValue = typeof value === 'number' ? value : Number(value)

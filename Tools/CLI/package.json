@@ -13,7 +13,6 @@
     "measure": "tsx benchmarks/measure-state-updates.ts",
     "measure:full": "bash benchmarks/run-protocol-measurement.sh",
     "test:protocol": "npm run test-mixed-encoding && npm run test-packet-encoding && npm run test-encoding-integration && npm run test-server-opcode-decoding",
-<<<<<<< HEAD
     "test:e2e": "npm run test:e2e:counter && npm run test:e2e:cookie",
     "test:e2e:with-game": "npm run test:e2e && npm run test:e2e:game",
     "test:e2e:counter": "tsx src/cli.ts script -u ws://localhost:8080/game/counter -l counter -s scenarios/counter/",
