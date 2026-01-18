@@ -15,7 +15,6 @@ Usage:
 
 import csv
 import json
-import os
 from datetime import datetime
 from pathlib import Path
 from core import search, DATA_DIR
@@ -317,7 +316,8 @@ def format_ascii_box(design_system: dict) -> str:
     lines.append("|" + " " * BOX_WIDTH + "|")
 
     # Typography section
-    lines.append(f"|  TYPOGRAPHY: {typography.get('heading', '')} / {typography.get('body', '')}".ljust(BOX_WIDTH) + "|")
+    typo_text = f"|  TYPOGRAPHY: {typography.get('heading', '')} / {typography.get('body', '')}"
+    lines.append(typo_text.ljust(BOX_WIDTH) + "|")
     if typography.get("mood"):
         for line in wrap_text(f"Mood: {typography.get('mood', '')}", "|     ", BOX_WIDTH):
             lines.append(line.ljust(BOX_WIDTH) + "|")
@@ -398,7 +398,9 @@ def format_markdown(design_system: dict) -> str:
     if style.get('best_for'):
         lines.append(f"- **Best For:** {style.get('best_for', '')}")
     if style.get('performance') or style.get('accessibility'):
-        lines.append(f"- **Performance:** {style.get('performance', '')} | **Accessibility:** {style.get('accessibility', '')}")
+        perf = style.get('performance', '')
+        acc = style.get('accessibility', '')
+        lines.append(f"- **Performance:** {perf} | **Accessibility:** {acc}")
     lines.append("")
 
     # Colors section
@@ -487,7 +489,12 @@ def generate_design_system(query: str, project_name: str = None, output_format: 
 
 
 # ============ PERSISTENCE FUNCTIONS ============
-def persist_design_system(design_system: dict, page: str = None, output_dir: str = None, page_query: str = None) -> dict:
+def persist_design_system(
+    design_system: dict,
+    page: str = None,
+    output_dir: str = None,
+    page_query: str = None
+) -> dict:
     """
     Persist design system to design-system/<project>/ folder using Master + Overrides pattern.
     
@@ -556,7 +563,11 @@ def format_master_md(design_system: dict) -> str:
     # Logic header
     lines.append("# Design System Master File")
     lines.append("")
-    lines.append(f"> **LOGIC:** When building a specific page, first check `design-system/{project_slug}/pages/[page-name].md`.")
+    logic_msg = (
+        f"> **LOGIC:** When building a specific page, "
+        f"first check `design-system/{project_slug}/pages/[page-name].md`."
+    )
+    lines.append(logic_msg)
     lines.append("> If that file exists, its rules **override** this Master file.")
     lines.append("> If not, strictly follow the rules below.")
     lines.append("")
@@ -596,7 +607,10 @@ def format_master_md(design_system: dict) -> str:
     if typography.get("mood"):
         lines.append(f"- **Mood:** {typography.get('mood', '')}")
     if typography.get("google_fonts_url"):
-        lines.append(f"- **Google Fonts:** [{typography.get('heading', '')} + {typography.get('body', '')}]({typography.get('google_fonts_url', '')})")
+        heading_font = typography.get('heading', '')
+        body_font = typography.get('body', '')
+        fonts_url = typography.get('google_fonts_url', '')
+        lines.append(f"- **Google Fonts:** [{heading_font} + {body_font}]({fonts_url})")
     lines.append("")
     if typography.get("css_import"):
         lines.append("**CSS Import:**")
@@ -821,7 +835,11 @@ def format_page_override_md(design_system: dict, page_name: str, page_query: str
     lines.append(f"> **Generated:** {timestamp}")
     lines.append(f"> **Page Type:** {page_overrides.get('page_type', 'General')}")
     lines.append("")
-    lines.append(f"> ⚠️ **IMPORTANT:** Rules in this file **override** the Master file (`design-system/{project_slug}/MASTER.md`).")
+    override_msg = (
+        f"> ⚠️ **IMPORTANT:** Rules in this file **override** "
+        f"the Master file (`design-system/{project_slug}/MASTER.md`)."
+    )
+    lines.append(override_msg)
     lines.append("> Only deviations from the Master are documented here. For all other rules, refer to the Master.")
     lines.append("")
     lines.append("---")
@@ -1025,7 +1043,10 @@ def _detect_page_type(context: str, style_results: list) -> str:
     
     # Check for common page type patterns
     page_patterns = [
-        (["dashboard", "admin", "analytics", "data", "metrics", "stats", "monitor", "overview"], "Dashboard / Data View"),
+        (
+            ["dashboard", "admin", "analytics", "data", "metrics", "stats", "monitor", "overview"],
+            "Dashboard / Data View"
+        ),
         (["checkout", "payment", "cart", "purchase", "order", "billing"], "Checkout / Payment"),
         (["settings", "profile", "account", "preferences", "config"], "Settings / Profile"),
         (["landing", "marketing", "homepage", "hero", "home", "promo"], "Landing / Marketing"),
