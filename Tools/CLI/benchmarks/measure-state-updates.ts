@@ -117,6 +117,7 @@ async function startMeasurement() {
   ws = new WebSocket(url)
   
   ws.on('open', () => {
+    if (!ws) return
     const joinMessage = createJoinMessage(`join-${Date.now()}`, landType, landInstanceId, {
       playerID
     })
