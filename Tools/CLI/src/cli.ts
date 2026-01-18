@@ -4,7 +4,7 @@ import { Command } from 'commander'
 import { readFileSync, statSync, readdirSync } from 'fs'
 import { join, basename } from 'path'
 import chalk from 'chalk'
-import { StateTreeRuntime, StateTreeView } from '@swiftstatetree/sdk/core'
+import { StateTreeRuntime, StateTreeView, Position2, Velocity2, Acceleration2, Angle, IVec2, IVec3 } from '@swiftstatetree/sdk/core'
 import { ChalkLogger } from './logger'
 import { fetchSchema, printSchema } from './schema'
 import * as admin from './admin'
@@ -245,7 +245,7 @@ program
           }
           console.log(chalk.green(`✅ Joined land: ${joinResult.landID || landID}`))
           
-          await executeScript(view, scriptPath, script)
+          await executeScript(view, scriptPath, script, joinResult.playerID)
           
           // Disconnect runtime after script completes
           runtime.disconnect()
@@ -264,12 +264,17 @@ program
     }
   })
 
-async function executeScript(view: StateTreeView, scriptPath: string, script?: any) {
+async function executeScript(view: StateTreeView, scriptPath: string, script?: any, playerID?: string) {
   try {
     // If script is already parsed, use it; otherwise read from file
     if (!script) {
       const scriptContent = readFileSync(scriptPath, 'utf-8')
       script = JSON.parse(scriptContent)
+    }
+
+    // Replace [PLAYER_ID] placeholder in steps
+    if (playerID && script.steps) {
+      script.steps = replacePlaceholder(script.steps, '[PLAYER_ID]', playerID)
     }
 
     console.log(chalk.blue(`📜 Executing scenario: ${basename(scriptPath)}`))
@@ -300,7 +305,7 @@ async function executeScript(view: StateTreeView, scriptPath: string, script?: a
             console.log(chalk.blue(`📤 Sending action [${action}]...`))
           }
           
-          const response = await view.sendAction(action, payload || {})
+          const response = await view.sendAction(action, hydratePayload(payload || {}))
           
           if (isExpectedError) {
             throw new Error(`Expected action [${action}] to fail but it succeeded`)
@@ -324,24 +329,27 @@ async function executeScript(view: StateTreeView, scriptPath: string, script?: a
         }
       } else if (type === 'event' && event) {
         console.log(chalk.blue(`📤 Sending event [${event}]...`))
-        view.sendEvent(event, payload || {})
+        view.sendEvent(event, hydratePayload(payload || {}))
       } else if (type === 'assert') {
         const { path, equals, exists, greaterThanOrEqual, message } = assert
         const state = view.getState()
         const value = getNestedValue(state, path)
         
         console.log(chalk.magenta(`🔍 Asserting: ${path} ...`))
+        console.log(chalk.gray(`   Value: ${JSON.stringify(value)} (${typeof value})`))
+        console.log(chalk.gray(`   Expected: ${JSON.stringify(equals)} (${typeof equals})`))
         
         if (exists !== undefined) {
+          // Check if value exists (not undefined) - null is considered as existing
           const isPresent = value !== undefined
           if (isPresent !== exists) {
-            throw new Error(message || `Assertion failed: path ${path} presence should be ${exists}, but got ${isPresent}`)
+            throw new Error(message || `Assertion failed: path ${path} presence should be ${exists}, but got ${isPresent} (value: ${JSON.stringify(value)})`)
           }
         }
         
         if (equals !== undefined) {
-          if (JSON.stringify(value) !== JSON.stringify(equals)) {
-            throw new Error(message || `Assertion failed: ${path} expected ${JSON.stringify(equals)}, but got ${JSON.stringify(value)}`)
+          if (!deepEqual(value, equals)) {
+            throw new Error(message || `Assertion failed: ${path} expected ${JSON.stringify(equals)}, but got ${JSON.stringify(value)} (type: ${typeof value})`)
           }
         }
         
@@ -368,9 +376,96 @@ async function executeScript(view: StateTreeView, scriptPath: string, script?: a
   }
 }
 
+function replacePlaceholder(obj: any, placeholder: string, value: string): any {
+  if (typeof obj === 'string') {
+    return obj.replace(new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), value)
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(item => replacePlaceholder(item, placeholder, value))
+  }
+  if (typeof obj === 'object' && obj !== null) {
+    const result: any = {}
+    for (const [key, val] of Object.entries(obj)) {
+      // Also replace in keys if needed (though less common)
+      const newKey = key.replace(new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), value)
+      result[newKey] = replacePlaceholder(val, placeholder, value)
+    }
+    return result
+  }
+  return obj
+}
+
 function getNestedValue(obj: any, path: string): any {
   if (!path) return obj
   return path.split('.').reduce((o, i) => (o ? o[i] : undefined), obj)
+}
+
+function deepEqual(a: any, b: any): boolean {
+  if (a === b) return true
+  
+  if (typeof a !== 'object' || a === null || typeof b !== 'object' || b === null) {
+    return false
+  }
+  
+  const keysA = Object.keys(a)
+  const keysB = Object.keys(b)
+  
+  if (keysA.length !== keysB.length) return false
+  
+  for (const key of keysA) {
+    if (!keysB.includes(key)) return false
+    if (!deepEqual(a[key], b[key])) return false
+  }
+  
+  return true
+}
+
+function hydratePayload(payload: any): any {
+  if (payload === null || payload === undefined) return payload
+  
+  if (Array.isArray(payload)) {
+    return payload.map(item => hydratePayload(item))
+  }
+  
+  if (typeof payload === 'object') {
+    // Handle explicit type markers
+    if ('__type' in payload && 'value' in payload) {
+      const type = payload.__type
+      const value = payload.value
+      
+      switch (type) {
+        case 'Position2':
+          // Expect value to be { x, y } or { v: { x, y } }
+          // If value has v, use value.v, otherwise use value
+          const posVal = value.v || value
+          return new Position2(posVal, true) // Assume fixed-point input from JSON
+        case 'Velocity2':
+          const velVal = value.v || value
+          return new Velocity2(velVal, true)
+        case 'Acceleration2':
+          const accVal = value.v || value
+          return new Acceleration2(accVal, true)
+        case 'Angle':
+          // Expect value to be { degrees }
+          return new Angle(value.degrees, true)
+        case 'IVec2':
+          return new IVec2(value.x, value.y, true)
+        case 'IVec3':
+          return new IVec3(value.x, value.y, value.z, true)
+        default:
+          console.warn(chalk.yellow(`⚠️  Unknown type marker: ${type}`))
+      }
+    }
+    
+    // Recursively hydrate object properties
+    const result: any = {}
+    for (const [key, value] of Object.entries(payload)) {
+      result[key] = hydratePayload(value)
+    }
+    return result
+  }
+  
+  return payload
 }
 
 // Admin commands

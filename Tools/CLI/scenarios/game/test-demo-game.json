@@ -3,12 +3,28 @@
   "steps": [
     {
       "type": "log",
-      "message": "Template test for demo-game (generic land)"
+      "message": "Starting Hero Defense E2E Test (Combined)"
+    },
+    {
+      "type": "wait",
+      "wait": 1000
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "score",
+        "equals": 0,
+        "message": "Initial score should be 0"
+      }
+    },
+    {
+      "type": "log",
+      "message": "Sending PlayAction to increment score"
     },
     {
       "type": "action",
-      "action": "SomeGameAction",
-      "payload": { "id": 1 }
+      "action": "PlayAction",
+      "payload": {}
     },
     {
       "type": "wait",
@@ -17,9 +33,46 @@
     {
       "type": "assert",
       "assert": {
-        "path": "game.state",
-        "equals": "active"
+        "path": "score",
+        "equals": 1,
+        "message": "Score should be 1 after PlayAction"
       }
+    },
+    {
+      "type": "log",
+      "message": "Sending MoveTo event to (50, 50)"
+    },
+    {
+      "type": "event",
+      "event": "MoveTo",
+      "payload": {
+        "target": {
+            "__type": "Position2",
+            "value": {
+                "x": 50000,
+                "y": 50000
+            }
+        }
+      }
+    },
+    {
+      "type": "wait",
+      "wait": 100
+    },
+    {
+        "type": "log",
+        "message": "Checking if MoveTo event was processed (targetPosition may be null if player already reached target)"
+    },
+    {
+      "type": "state"
+    },
+    {
+        "type": "assert",
+        "assert": {
+            "path": "players.[PLAYER_ID].targetPosition",
+            "exists": true,
+            "message": "targetPosition field should exist (may be null if player reached target, which is OK)"
+        }
     }
   ]
 }

@@ -356,7 +356,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 container = await landManager.getOrCreateLand(
                     landID: landID,
                     definition: definition,
-                    initialState: initialState
+                    initialState: initialState,
+                    metadata: [:]
                 )
                 
                 logger.info("Land auto-created and joined (allowAutoCreateOnJoin=true)", metadata: [
@@ -401,7 +402,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             container = await landManager.getOrCreateLand(
                 landID: landID,
                 definition: definition,
-                initialState: initialState
+                initialState: initialState,
+                metadata: [:]
             )
             
             // Note: LandManager already logs "Created new land", so we just log the join context here

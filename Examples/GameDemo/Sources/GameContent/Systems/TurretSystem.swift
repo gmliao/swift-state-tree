@@ -1,4 +1,5 @@
 import Foundation
+import SwiftStateTree
 import SwiftStateTreeDeterministicMath
 
 // MARK: - Turret System
@@ -9,11 +10,17 @@ public enum TurretSystem {
     public static func isValidTurretPosition(
         _ position: Position2,
         basePosition: Position2,
-        existingTurrets: [Int: TurretState]
+        existingTurrets: [Int: TurretState],
+        _ ctx: LandContext
     ) -> Bool {
+        guard let configService = ctx.services.get(GameConfigProviderService.self) else {
+            return false
+        }
+        let config = configService.provider
+        
         // Check distance from base
         let distanceFromBase = position.v.distance(to: basePosition.v)
-        if distanceFromBase < GameConfig.TURRET_PLACEMENT_DISTANCE {
+        if distanceFromBase < config.turretPlacementDistance {
             return false
         }
         
@@ -28,8 +35,8 @@ public enum TurretSystem {
         // Check world bounds (convert from fixed-point to Float)
         let posX = Float(position.v.x) / 1000.0
         let posY = Float(position.v.y) / 1000.0
-        if posX < 0 || posX > GameConfig.WORLD_WIDTH ||
-           posY < 0 || posY > GameConfig.WORLD_HEIGHT {
+        if posX < 0 || posX > config.worldWidth ||
+           posY < 0 || posY > config.worldHeight {
             return false
         }
         

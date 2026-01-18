@@ -95,6 +95,7 @@ public struct LandServer<State: StateNodeProtocol>: Sendable {
         let landManager = LandManager<State>(
             landFactory: landFactory,
             initialStateFactory: initialStateFactory,
+            servicesFactory: configuration.servicesFactory,
             transport: transport,
             createGuestSession: createGuestSession ?? defaultCreateGuestSession,
             transportEncoding: configuration.transportEncoding,
@@ -113,7 +114,8 @@ public struct LandServer<State: StateNodeProtocol>: Sendable {
             _ = await landManager.getOrCreateLand(
                 landID: lobbyID,
                 definition: definition,
-                initialState: initialState
+                initialState: initialState,
+                metadata: [:]
             )
             logger.info("Pre-created lobby: \(lobbyIDString)")
         }

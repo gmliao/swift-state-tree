@@ -22,7 +22,8 @@ public protocol LandManagerProtocol: Actor {
     func getOrCreateLand(
         landID: LandID,
         definition: LandDefinition<State>,
-        initialState: State
+        initialState: State,
+        metadata: [String: String]
     ) async -> LandContainer<State>
     
     /// Get an existing land by ID.

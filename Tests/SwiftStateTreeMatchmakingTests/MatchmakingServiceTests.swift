@@ -299,7 +299,7 @@ func testMatchmakingServiceStrategyFullThenNext() async throws {
     let landID1 = LandID("land-1")
     let def1 = landFactory(landID1)
     let init1 = initialStateFactory(landID1)
-    _ = await manager.getOrCreateLand(landID: landID1, definition: def1, initialState: init1)
+    _ = await manager.getOrCreateLand(landID: landID1, definition: def1, initialState: init1, metadata: [:])
     
     // Simulate adding players to the land (we can't actually join, but we can check stats)
     // For this test, we'll just verify the strategy logic works
@@ -340,7 +340,8 @@ func testDefaultMatchmakingStrategyMaxPlayers() async throws {
         landID: LandID("land-1"),
         playerCount: 4,
         createdAt: Date(),
-        lastActivityAt: Date()
+        lastActivityAt: Date(),
+        metadata: [:]
     )
     
     // Create a land with 5 players (at max)
@@ -348,7 +349,8 @@ func testDefaultMatchmakingStrategyMaxPlayers() async throws {
         landID: LandID("land-2"),
         playerCount: 5,
         createdAt: Date(),
-        lastActivityAt: Date()
+        lastActivityAt: Date(),
+        metadata: [:]
     )
     
     let preferences = MatchmakingPreferences(landType: "standard")

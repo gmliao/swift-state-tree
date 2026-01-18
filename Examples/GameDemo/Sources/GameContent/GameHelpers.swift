@@ -2,6 +2,7 @@ import Foundation
 import Logging
 import SwiftStateTree
 import SwiftStateTreeHummingbird
+import SwiftStateTreeTransport
 
 // MARK: - Game Helper Functions
 
@@ -101,4 +102,38 @@ public func getEnvString(key: String, defaultValue: String) -> String {
 public func getEnvStringOptional(key: String) -> String? {
     let value = ProcessInfo.processInfo.environment[key]
     return value?.isEmpty == false ? value : nil
+}
+
+// MARK: - Transport Encoding Helpers
+
+/// Resolve transport encoding from environment variable string.
+///
+/// This helper provides a flexible way to parse transport encoding values,
+/// accepting multiple formats for better compatibility:
+/// - `jsonOpcode`, `json_opcode`, `json-opcode` → `.jsonOpcode`
+/// - `messagepack`, `msgpack` → `.messagepack`
+/// - `json` → `.json`
+/// - `opcode` → `.opcode`
+///
+/// - Parameter rawValue: The raw string value from environment variable
+/// - Returns: A TransportEncodingConfig instance, defaults to `.json` if invalid
+///
+/// Example:
+/// ```swift
+/// let encoding = resolveTransportEncoding(rawValue: "jsonOpcode")
+/// ```
+public func resolveTransportEncoding(rawValue: String) -> TransportEncodingConfig {
+    switch rawValue.lowercased() {
+    case "json":
+        return .json
+    case "jsonopcode", "json_opcode", "json-opcode":
+        return .jsonOpcode
+    case "opcode":
+        return .opcode
+    case "messagepack", "msgpack":
+        return .messagepack
+    default:
+        // Default to json for backward compatibility
+        return .json
+    }
 }

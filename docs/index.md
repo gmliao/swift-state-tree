@@ -44,6 +44,10 @@ If this is your first time with SwiftStateTree, we recommend reading in the foll
 
 - **[Deterministic Math](deterministic-math/README.md)** - Fixed-point arithmetic, collision detection, and vector operations for server-authoritative games
 
+### AI-Assisted Development
+
+- **[AI-Agent Architecture Observations](ai-agent-architecture-observations.md)** - Personal observations and research context for ECS-inspired systems and AI workflows
+
 ### Client SDK
 
 - **[TypeScript SDK](sdk/README.md)** - Client SDK architecture, layers, and framework integration

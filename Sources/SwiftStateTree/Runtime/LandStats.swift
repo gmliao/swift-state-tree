@@ -17,16 +17,21 @@ public struct LandStats: Codable, Sendable {
     /// Timestamp of the last activity in the land.
     public let lastActivityAt: Date
     
+    /// Metadata describing land initialization parameters.
+    public let metadata: [String: String]
+    
     public init(
         landID: LandID,
         playerCount: Int,
         createdAt: Date,
-        lastActivityAt: Date
+        lastActivityAt: Date,
+        metadata: [String: String] = [:]
     ) {
         self.landID = landID
         self.playerCount = playerCount
         self.createdAt = createdAt
         self.lastActivityAt = lastActivityAt
+        self.metadata = metadata
     }
 }
 

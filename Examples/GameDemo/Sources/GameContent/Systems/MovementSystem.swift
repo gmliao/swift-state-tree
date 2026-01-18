@@ -1,4 +1,5 @@
 import Foundation
+import SwiftStateTree
 import SwiftStateTreeDeterministicMath
 
 // MARK: - Movement System
@@ -6,9 +7,13 @@ import SwiftStateTreeDeterministicMath
 /// System functions for movement logic
 public enum MovementSystem {
     /// Clamp position to world bounds
-    public static func clampToWorldBounds(_ position: Position2) -> Position2 {
-        let clampedX = max(0.0, min(GameConfig.WORLD_WIDTH, Float(position.v.x) / 1000.0))
-        let clampedY = max(0.0, min(GameConfig.WORLD_HEIGHT, Float(position.v.y) / 1000.0))
+    public static func clampToWorldBounds(_ position: Position2, _ ctx: LandContext) -> Position2 {
+        guard let configService = ctx.services.get(GameConfigProviderService.self) else {
+            return position
+        }
+        let config = configService.provider
+        let clampedX = max(0.0, min(config.worldWidth, Float(position.v.x) / 1000.0))
+        let clampedY = max(0.0, min(config.worldHeight, Float(position.v.y) / 1000.0))
         return Position2(x: clampedX, y: clampedY)
     }
     
@@ -16,6 +21,7 @@ public enum MovementSystem {
     /// Called every tick to move players with active targets.
     public static func updatePlayerMovement(
         _ player: inout PlayerState,
+        _ ctx: LandContext,
         moveSpeed: Float = 1.0,
         arrivalThreshold: Float = 1.0
     ) {
@@ -27,7 +33,7 @@ public enum MovementSystem {
 
         // Check if already reached target (using arrival threshold)
         if current.isWithinDistance(to: target, threshold: arrivalThreshold) {
-            player.position = clampToWorldBounds(target)
+            player.position = clampToWorldBounds(target, ctx)
             player.targetPosition = nil
             return
         }
@@ -41,7 +47,7 @@ public enum MovementSystem {
         let newPosition = current.moveTowards(target: target, maxDistance: moveSpeed)
         
         // Clamp to world bounds
-        player.position = clampToWorldBounds(newPosition)
+        player.position = clampToWorldBounds(newPosition, ctx)
 
         // Check if reached target
         if newPosition == target {
@@ -52,8 +58,14 @@ public enum MovementSystem {
     /// Update monster movement along path to base
     public static func updateMonsterMovement(
         _ monster: inout MonsterState,
-        basePosition: Position2
+        basePosition: Position2,
+        _ ctx: LandContext
     ) {
+        guard let configService = ctx.services.get(GameConfigProviderService.self) else {
+            return
+        }
+        let config = configService.provider
+        
         let current = monster.position
         let target = basePosition
         
@@ -61,7 +73,7 @@ public enum MovementSystem {
         let distanceToBase = current.v.distance(to: target.v)
         
         // Check if reached base (within base radius)
-        if distanceToBase <= GameConfig.BASE_RADIUS {
+        if distanceToBase <= config.baseRadius {
             monster.pathProgress = 1.0
             return
         }
@@ -72,7 +84,7 @@ public enum MovementSystem {
         monster.rotation = Angle(radians: angleRad)
         
         // Move towards base
-        let newPosition = current.moveTowards(target: target, maxDistance: GameConfig.MONSTER_MOVE_SPEED)
+        let newPosition = current.moveTowards(target: target, maxDistance: config.monsterMoveSpeed)
         monster.position = newPosition
         
         // Update path progress (0.0 to 1.0)

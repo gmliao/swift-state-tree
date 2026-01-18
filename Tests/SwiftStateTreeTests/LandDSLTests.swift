@@ -132,7 +132,8 @@ func testLandKeeperLifecycle() async throws {
 
     let keeper = LandKeeper<DemoLandState>(
         definition: definition,
-        initialState: DemoLandState()
+        initialState: DemoLandState(),
+        services: LandServices()
     )
     let playerID = PlayerID("alice")
     let clientID = ClientID("device-1")
@@ -193,7 +194,8 @@ func testLandKeeperAllowedEvents() async throws {
 
     let keeper = LandKeeper<DemoLandState>(
         definition: definition,
-        initialState: DemoLandState()
+        initialState: DemoLandState(),
+        services: LandServices()
     )
     let playerID = PlayerID("player")
     let clientID = ClientID("client")
@@ -255,7 +257,8 @@ func testLandKeeperTickHandler() async throws {
 
     let keeper = LandKeeper<DemoLandState>(
         definition: definition,
-        initialState: DemoLandState()
+        initialState: DemoLandState(),
+        services: LandServices()
     )
     
     await waitFor("Ticks should increment") {
@@ -289,7 +292,8 @@ func testCanJoinAllows() async throws {
     
     let keeper = LandKeeper<DemoLandState>(
         definition: definition,
-        initialState: DemoLandState()
+        initialState: DemoLandState(),
+        services: LandServices()
     )
     
     let session1 = PlayerSession(playerID: "user1")
@@ -333,11 +337,12 @@ func testCanJoinDenies() async throws {
     
     let keeper = LandKeeper<DemoLandState>(
         definition: definition,
-        initialState: DemoLandState()
+        initialState: DemoLandState(),
+        services: LandServices()
     )
-    
-    // First join succeeds
+
     let session1 = PlayerSession(playerID: "user1")
+
     _ = try await keeper.join(
         session: session1,
         clientID: ClientID("client1"),
@@ -395,7 +400,8 @@ func testCtxSpawn() async throws {
     
     let keeper = LandKeeper<DemoLandState>(
         definition: definition,
-        initialState: DemoLandState()
+        initialState: DemoLandState(),
+        services: LandServices()
     )
     
     await waitFor("Background tasks should execute") {
@@ -425,10 +431,11 @@ func testOnTickSynchronous() async throws {
     
     let keeper = LandKeeper<DemoLandState>(
         definition: definition,
-        initialState: DemoLandState()
+        initialState: DemoLandState(),
+        services: LandServices()
     )
-    
-    await waitFor("Ticks should accumulate") {
+
+    await waitFor("Ticks should increment") {
         let state = await keeper.currentState()
         return state.ticks >= 3
     }
@@ -630,7 +637,8 @@ func testOnInitialize() async throws {
     
     let keeper = LandKeeper<DemoLandState>(
         definition: definition,
-        initialState: DemoLandState()
+        initialState: DemoLandState(),
+        services: LandServices()
     )
     
     // Wait for OnInitialize to complete and spawn task to finish
@@ -677,7 +685,8 @@ func testOnInitializeWithResolver() async throws {
     
     let keeper = LandKeeper<DemoLandState>(
         definition: definition,
-        initialState: DemoLandState()
+        initialState: DemoLandState(),
+        services: LandServices()
     )
     
     // Wait for OnInitialize with resolver to complete with retry logic
@@ -721,7 +730,8 @@ func testOnFinalize() async throws {
     
     let keeper = LandKeeper<DemoLandState>(
         definition: definition,
-        initialState: DemoLandState()
+        initialState: DemoLandState(),
+        services: LandServices()
     )
     
     // Join and then leave to trigger shutdown
@@ -786,7 +796,8 @@ func testAfterFinalize() async throws {
     
     let keeper = LandKeeper<DemoLandState>(
         definition: definition,
-        initialState: DemoLandState()
+        initialState: DemoLandState(),
+        services: LandServices()
     )
     
     // Join and then leave to trigger shutdown
@@ -852,11 +863,13 @@ func testDestroyWhenEmptyDestroysAfterDelay() async throws {
     
     let keeper = LandKeeper<DemoLandState>(
         definition: definition,
-        initialState: DemoLandState()
+        initialState: DemoLandState(),
+        services: LandServices()
     )
     
-    // Join and then leave to trigger destroy timer
+    // Join and then leave to trigger shutdown
     let playerID = PlayerID("test-player")
+
     let clientID = ClientID("test-client")
     let sessionID = SessionID("test-session")
     
@@ -911,7 +924,8 @@ func testDestroyWhenEmptyCancelsOnJoin() async throws {
     
     let keeper = LandKeeper<DemoLandState>(
         definition: definition,
-        initialState: DemoLandState()
+        initialState: DemoLandState(),
+        services: LandServices()
     )
     
     let player1ID = PlayerID("player-1")
@@ -972,7 +986,8 @@ func testDestroyWhenEmptyResetsTimerOnRejoin() async throws {
     
     let keeper = LandKeeper<DemoLandState>(
         definition: definition,
-        initialState: DemoLandState()
+        initialState: DemoLandState(),
+        services: LandServices()
     )
     
     let playerID = PlayerID("test-player")
@@ -1038,7 +1053,8 @@ func testDestroyWhenEmptyDoesNotDestroyWithPlayers() async throws {
     
     let keeper = LandKeeper<DemoLandState>(
         definition: definition,
-        initialState: DemoLandState()
+        initialState: DemoLandState(),
+        services: LandServices()
     )
     
     let playerID = PlayerID("test-player")
@@ -1106,7 +1122,8 @@ func testCanJoinWithResolver() async throws {
     
     let keeper = LandKeeper<DemoLandState>(
         definition: definition,
-        initialState: DemoLandState()
+        initialState: DemoLandState(),
+        services: LandServices()
     )
     
     let session = PlayerSession(playerID: "user1")
@@ -1157,7 +1174,8 @@ func testOnInitializeBeforeTick() async throws {
     
     let keeper = LandKeeper<DemoLandState>(
         definition: definition,
-        initialState: DemoLandState()
+        initialState: DemoLandState(),
+        services: LandServices()
     )
     
     // Wait for initialization and first tick to execute

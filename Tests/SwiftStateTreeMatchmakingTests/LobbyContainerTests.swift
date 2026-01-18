@@ -323,7 +323,8 @@ func testLobbyContainerJoinRoom() async throws {
     _ = await landManager.getOrCreateLand(
         landID: gameLandID,
         definition: gameLandDefinition,
-        initialState: initialState
+        initialState: initialState,
+        metadata: [:]
     )
     
     let strategy = DefaultMatchmakingStrategy(maxPlayersPerLand: 4, minPlayersToStart: 1)
@@ -495,12 +496,14 @@ func testLobbyContainerUpdateRoomList() async throws {
     _ = await landManager.getOrCreateLand(
         landID: room1ID,
         definition: gameLandDefinition,
-        initialState: initialState
+        initialState: initialState,
+        metadata: [:]
     )
     _ = await landManager.getOrCreateLand(
         landID: room2ID,
         definition: gameLandDefinition,
-        initialState: initialState
+        initialState: initialState,
+        metadata: [:]
     )
     
     let strategy = DefaultMatchmakingStrategy(maxPlayersPerLand: 4, minPlayersToStart: 1)

@@ -1,12 +1,35 @@
-// Examples/GameDemo/Tests/GameSystemTests.swift
+// Examples/GameDemo/Tests/MovementSystemTests.swift
 //
 // Unit tests for MovementSystem logic.
 // These tests ensure movement calculations are correct and handle edge cases.
 
 import Foundation
 import Testing
+import Logging
 @testable import GameContent
+@testable import SwiftStateTree
 import SwiftStateTreeDeterministicMath
+
+// Helper to create a test context with default config
+func createTestContext(tickId: Int64? = nil) -> LandContext {
+    let configProvider = DefaultGameConfigProvider()
+    var services = LandServices()
+    services.register(GameConfigProviderService(provider: configProvider), as: GameConfigProviderService.self)
+    
+    return LandContext(
+        landID: "test",
+        playerID: LandContext.systemPlayerID,
+        clientID: LandContext.systemClientID,
+        sessionID: LandContext.systemSessionID,
+        services: services,
+        logger: Logger(label: "test"),
+        tickId: tickId,
+        sendEventHandler: { _, _ in },
+        syncHandler: { }
+    )
+}
+
+// MARK: - MovementSystem.updatePlayerMovement Tests
 
 @Test("MovementSystem.updatePlayerMovement moves player towards target")
 func testUpdatePlayerMovementMovesTowardsTarget() {
@@ -17,7 +40,8 @@ func testUpdatePlayerMovementMovesTowardsTarget() {
     player.rotation = Angle(degrees: 0.0)
     
     // Act
-    MovementSystem.updatePlayerMovement(&player, moveSpeed: 1.0)
+    let ctx = createTestContext()
+    MovementSystem.updatePlayerMovement(&player, ctx, moveSpeed: 1.0)
     
     // Assert
     // Player should have moved towards target
@@ -37,7 +61,8 @@ func testUpdatePlayerMovementReachesTarget() {
     player.rotation = Angle(degrees: 0.0)
     
     // Act
-    MovementSystem.updatePlayerMovement(&player, moveSpeed: 1.0, arrivalThreshold: 1.0)
+    let ctx = createTestContext()
+    MovementSystem.updatePlayerMovement(&player, ctx, moveSpeed: 1.0, arrivalThreshold: 1.0)
     
     // Assert
     // Player should have reached target (within threshold)
@@ -54,7 +79,8 @@ func testUpdatePlayerMovementUpdatesRotation() {
     player.rotation = Angle(degrees: 0.0)
     
     // Act
-    MovementSystem.updatePlayerMovement(&player, moveSpeed: 0.1)
+    let ctx = createTestContext()
+    MovementSystem.updatePlayerMovement(&player, ctx, moveSpeed: 0.1)
     
     // Assert
     // Rotation should be approximately 45 degrees
@@ -72,7 +98,8 @@ func testUpdatePlayerMovementHandlesNoTarget() {
     let originalPosition = player.position
     
     // Act
-    MovementSystem.updatePlayerMovement(&player)
+    let ctx = createTestContext()
+    MovementSystem.updatePlayerMovement(&player, ctx)
     
     // Assert
     // Position should not change when there's no target
@@ -88,7 +115,8 @@ func testUpdatePlayerMovementHandlesSmallDistances() {
     player.targetPosition = target
     
     // Act
-    MovementSystem.updatePlayerMovement(&player, moveSpeed: 1.0, arrivalThreshold: 1.0)
+    let ctx = createTestContext()
+    MovementSystem.updatePlayerMovement(&player, ctx, moveSpeed: 1.0, arrivalThreshold: 1.0)
     
     // Assert
     // Should handle small distances gracefully (either reach target or move towards it)
@@ -104,7 +132,8 @@ func testUpdatePlayerMovementHandlesLargeDistances() {
     let originalTarget = player.targetPosition
     
     // Act
-    MovementSystem.updatePlayerMovement(&player, moveSpeed: 1.0)
+    let ctx = createTestContext()
+    MovementSystem.updatePlayerMovement(&player, ctx, moveSpeed: 1.0)
     
     // Assert
     // Should move towards target without issues
@@ -125,7 +154,8 @@ func testUpdatePlayerMovementMultipleSteps() {
     var hasMoved = false
     for _ in 0..<3 {
         let hadTarget = player.targetPosition != nil
-        MovementSystem.updatePlayerMovement(&player, moveSpeed: 0.5)  // Smaller move speed
+        let ctx = createTestContext()
+        MovementSystem.updatePlayerMovement(&player, ctx, moveSpeed: 0.5)  // Smaller move speed
         // Verify position is progressing towards target (if target still exists)
         if hadTarget && player.targetPosition != nil {
             #expect(player.position.v.x >= previousX)  // Should not move backwards
@@ -151,7 +181,8 @@ func testUpdatePlayerMovementClearsTargetWhenReached() {
     player.targetPosition = target
     
     // Act
-    MovementSystem.updatePlayerMovement(&player, moveSpeed: 1.0, arrivalThreshold: 1.0)
+    let ctx = createTestContext()
+    MovementSystem.updatePlayerMovement(&player, ctx, moveSpeed: 1.0, arrivalThreshold: 1.0)
     
     // Assert
     #expect(player.targetPosition == nil)  // Target should be cleared
@@ -191,7 +222,8 @@ func testUpdatePlayerMovementStepByStep() {
         ))
         
         // Perform movement
-        MovementSystem.updatePlayerMovement(&player, moveSpeed: moveSpeed, arrivalThreshold: arrivalThreshold)
+        let ctx = createTestContext()
+        MovementSystem.updatePlayerMovement(&player, ctx, moveSpeed: moveSpeed, arrivalThreshold: arrivalThreshold)
         
         // Check for issues - these should fail the test if precision problems occur
         if stepCount > 1 {
@@ -262,7 +294,8 @@ func testUpdatePlayerMovementPrecisionSmallScaleFactor() {
         stepCount += 1
         let positionBefore = player.position
         
-        MovementSystem.updatePlayerMovement(&player, moveSpeed: moveSpeed)
+        let ctx = createTestContext()
+        MovementSystem.updatePlayerMovement(&player, ctx, moveSpeed: moveSpeed)
         
         // Check for large jumps (the "亂跳" symptom)
         let movedDistance = (player.position.v - positionBefore.v).magnitude()
@@ -306,7 +339,8 @@ func testUpdatePlayerMovementPrecisionVerySmallMoveSpeed() {
         previousPosition = player.position
         previousDistance = (target.v - player.position.v).magnitude()
         
-        MovementSystem.updatePlayerMovement(&player, moveSpeed: moveSpeed)
+        let ctx = createTestContext()
+        MovementSystem.updatePlayerMovement(&player, ctx, moveSpeed: moveSpeed)
         
         // Check movement distance
         let movedDistance = (player.position.v - previousPosition.v).magnitude()
@@ -340,7 +374,8 @@ func testUpdatePlayerMovementPrecisionMultipleStepsConsistency() {
         }
         
         let previousPosition = player.position
-        MovementSystem.updatePlayerMovement(&player, moveSpeed: moveSpeed)
+        let ctx = createTestContext()
+        MovementSystem.updatePlayerMovement(&player, ctx, moveSpeed: moveSpeed)
         positions.append(player.position)
         
         // Verify smooth progression
@@ -364,4 +399,96 @@ func testUpdatePlayerMovementPrecisionMultipleStepsConsistency() {
         let initialDistance = (target.v - positions[0].v).magnitude()
         #expect(finalDistance < initialDistance, "Should be closer to target after multiple steps")
     }
+}
+
+// MARK: - MovementSystem.clampToWorldBounds Tests
+
+@Test("MovementSystem.clampToWorldBounds clamps positions outside bounds")
+func testClampToWorldBounds() {
+    let ctx = createTestContext()
+    
+    // Test position outside world bounds
+    let outsidePos = Position2(x: 200.0, y: 100.0)  // Outside 128x72 world
+    let clamped = MovementSystem.clampToWorldBounds(outsidePos, ctx)
+    
+    #expect(Float(clamped.v.x) / 1000.0 <= 128.0)
+    #expect(Float(clamped.v.y) / 1000.0 <= 72.0)
+}
+
+@Test("MovementSystem.clampToWorldBounds keeps positions inside bounds")
+func testClampToWorldBoundsKeepsInsideBounds() {
+    let ctx = createTestContext()
+    
+    // Test position inside world bounds
+    let insidePos = Position2(x: 64.0, y: 36.0)  // Inside 128x72 world
+    let clamped = MovementSystem.clampToWorldBounds(insidePos, ctx)
+    
+    #expect(clamped == insidePos)  // Should remain unchanged
+}
+
+@Test("MovementSystem.clampToWorldBounds clamps negative positions")
+func testClampToWorldBoundsClampsNegative() {
+    let ctx = createTestContext()
+    
+    // Test negative position
+    let negativePos = Position2(x: -10.0, y: -5.0)
+    let clamped = MovementSystem.clampToWorldBounds(negativePos, ctx)
+    
+    #expect(Float(clamped.v.x) / 1000.0 >= 0.0)
+    #expect(Float(clamped.v.y) / 1000.0 >= 0.0)
+}
+
+// MARK: - MovementSystem.updateMonsterMovement Tests
+
+@Test("MovementSystem.updateMonsterMovement moves monster towards base")
+func testUpdateMonsterMovementMovesTowardsBase() {
+    // Arrange
+    var monster = MonsterState()
+    monster.position = Position2(x: 0.0, y: 0.0)
+    monster.spawnPosition = Position2(x: 0.0, y: 0.0)
+    let basePosition = Position2(x: 64.0, y: 36.0)
+    
+    // Act
+    let ctx = createTestContext()
+    MovementSystem.updateMonsterMovement(&monster, basePosition: basePosition, ctx)
+    
+    // Assert
+    // Monster should have moved towards base
+    let distanceAfter = monster.position.v.distance(to: basePosition.v)
+    let distanceBefore = Position2(x: 0.0, y: 0.0).v.distance(to: basePosition.v)
+    #expect(distanceAfter < distanceBefore)
+}
+
+@Test("MovementSystem.updateMonsterMovement stops when reaching base")
+func testUpdateMonsterMovementStopsAtBase() {
+    // Arrange
+    var monster = MonsterState()
+    let basePosition = Position2(x: 64.0, y: 36.0)
+    // Place monster very close to base (within base radius)
+    monster.position = Position2(x: 64.0, y: 36.0 + 2.0)  // Within 3.0 radius
+    monster.spawnPosition = Position2(x: 0.0, y: 0.0)
+    
+    // Act
+    let ctx = createTestContext()
+    MovementSystem.updateMonsterMovement(&monster, basePosition: basePosition, ctx)
+    
+    // Assert
+    #expect(monster.pathProgress == 1.0)  // Should mark as reached
+}
+
+@Test("MovementSystem.updateMonsterMovement updates path progress")
+func testUpdateMonsterMovementUpdatesPathProgress() {
+    // Arrange
+    var monster = MonsterState()
+    monster.spawnPosition = Position2(x: 0.0, y: 0.0)
+    monster.position = Position2(x: 10.0, y: 0.0)  // Moved partway
+    let basePosition = Position2(x: 64.0, y: 36.0)
+    
+    // Act
+    let ctx = createTestContext()
+    MovementSystem.updateMonsterMovement(&monster, basePosition: basePosition, ctx)
+    
+    // Assert
+    #expect(monster.pathProgress > 0.0)
+    #expect(monster.pathProgress <= 1.0)
 }

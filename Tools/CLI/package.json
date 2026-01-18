@@ -18,6 +18,7 @@
     "test:e2e:counter": "tsx src/cli.ts script -u ws://localhost:8080/game/counter -l counter -s scenarios/counter/",
     "test:e2e:cookie": "tsx src/cli.ts script -u ws://localhost:8080/game/cookie -l cookie -s scenarios/cookie/",
     "test:e2e:game": "tsx src/cli.ts script -u ws://localhost:8080/game/hero-defense -l hero-defense -s scenarios/game/",
+    "test:e2e:game:ci": "./test-e2e-game.sh",
     "test:e2e:all": "npm run test:e2e:jsonObject && npm run test:e2e:opcodeJsonArray && npm run test:e2e:messagepack",
     "test:e2e:jsonObject": "TRANSPORT_ENCODING=json npm run test:e2e:counter -- --state-update-encoding jsonObject && TRANSPORT_ENCODING=json npm run test:e2e:cookie -- --state-update-encoding jsonObject",
     "test:e2e:opcodeJsonArray": "TRANSPORT_ENCODING=jsonOpcode npm run test:e2e:counter -- --state-update-encoding opcodeJsonArray && TRANSPORT_ENCODING=jsonOpcode npm run test:e2e:cookie -- --state-update-encoding opcodeJsonArray",

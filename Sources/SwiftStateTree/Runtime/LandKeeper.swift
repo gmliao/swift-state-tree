@@ -30,6 +30,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     private var state: State
     private var players: [PlayerID: InternalPlayerSession] = [:]
+    private let services: LandServices
 
     private var transport: LandKeeperTransport?
     private let logger: Logger
@@ -95,11 +96,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     public init(
         definition: LandDefinition<State>,
         initialState: State,
+        services: LandServices = LandServices(),
         transport: LandKeeperTransport? = nil,
         logger: Logger? = nil
     ) {
         self.definition = definition
         self.state = initialState
+        self.services = services
         self.transport = transport
         let resolvedLogger = logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.runtime",
@@ -802,7 +805,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         metadata: [String: String] = [:],
         tickId: Int64? = nil
     ) -> LandContext {
-        let services = servicesOverride ?? players[playerID]?.services ?? LandServices()
+        let baseServices = servicesOverride ?? LandServices()
+        let playerServices = players[playerID]?.services
+        let resolvedServices = services.merging(baseServices).merging(playerServices ?? LandServices())
         let playerSession = players[playerID]
         // Use actual land instance ID if available, otherwise fall back to definition.id (land type)
         let landID = actualLandID ?? definition.id
@@ -811,7 +816,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             playerID: playerID,
             clientID: clientID,
             sessionID: sessionID,
-            services: services,
+            services: resolvedServices,
             logger: logger,
             deviceID: deviceID ?? playerSession?.deviceID,
             isGuest: isGuest ?? playerSession?.isGuest ?? false,
@@ -906,7 +911,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             playerID: systemPlayerID,
             clientID: systemClientID,
             sessionID: systemSessionID,
-            servicesOverride: LandServices(),
             tickId: tickId
         )
         
