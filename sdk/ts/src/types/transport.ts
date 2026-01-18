@@ -5,6 +5,34 @@ export type MessageEncoding = 'json' | 'opcodeJsonArray' | 'messagepack'
 export type StateUpdateEncoding = 'jsonObject' | 'opcodeJsonArray'
 export type StateUpdateDecoding = 'auto' | StateUpdateEncoding
 
+/**
+ * Message encoding constants
+ * Matches Swift TransportEncoding enum
+ */
+export const MessageEncodingValues = {
+  json: 'json' as const,
+  opcodeJsonArray: 'opcodeJsonArray' as const,
+  messagepack: 'messagepack' as const
+} as const
+
+/**
+ * State update encoding constants
+ * Matches Swift StateUpdateEncoding enum
+ */
+export const StateUpdateEncodingValues = {
+  jsonObject: 'jsonObject' as const,
+  opcodeJsonArray: 'opcodeJsonArray' as const
+} as const
+
+/**
+ * State update decoding constants
+ */
+export const StateUpdateDecodingValues = {
+  auto: 'auto' as const,
+  jsonObject: 'jsonObject' as const,
+  opcodeJsonArray: 'opcodeJsonArray' as const
+} as const
+
 export interface TransportEncodingConfig {
   message: MessageEncoding
   stateUpdate: StateUpdateEncoding

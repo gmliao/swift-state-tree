@@ -1,6 +1,7 @@
 import type { TransportMessage, StateUpdate, StateSnapshot, TransportEncodingConfig, MessageEncoding } from '../types/transport'
+import { MessageEncodingValues, StateUpdateEncodingValues } from '../types/transport'
 import { createWebSocket, type WebSocketConnection } from './websocket'
-import { decodeMessage, encodeMessage, encodeMessageArray, encodeMessageArrayToMessagePack } from './protocol'
+import { decodeMessage, encodeMessageToFormat } from './protocol'
 import { NoOpLogger, type Logger } from './logger'
 import { StateTreeView, type ViewOptions } from './view'
 
@@ -43,6 +44,47 @@ export class StateTreeRuntime {
   // Mapping for dynamic key compression (Slot ID -> Original Key)
   // Managed per-connection to match server session state
   private dynamicKeyMap = new Map<number, string>()
+  
+  /**
+   * Determine StateUpdate encoding based on Message encoding
+   * 
+   * Protocol mapping:
+   * - json message encoding → jsonObject stateUpdate encoding
+   * - opcodeJsonArray message encoding → opcodeJsonArray stateUpdate encoding
+   * - messagepack message encoding → opcodeJsonArray stateUpdate encoding (MessagePack uses opcode array format)
+   */
+  private static getStateUpdateEncoding(messageEncoding: MessageEncoding): 'jsonObject' | 'opcodeJsonArray' {
+    switch (messageEncoding) {
+      case MessageEncodingValues.json:
+        return StateUpdateEncodingValues.jsonObject
+      case MessageEncodingValues.opcodeJsonArray:
+      case MessageEncodingValues.messagepack:
+        return StateUpdateEncodingValues.opcodeJsonArray
+      default:
+        // Fallback to opcodeJsonArray for unknown encodings
+        return StateUpdateEncodingValues.opcodeJsonArray
+    }
+  }
+  
+  /**
+   * Update decoding strategy based on encoding received from joinResponse
+   * This allows Runtime to use the correct decoding path instead of trying multiple formats
+   * @param encoding - The message encoding format from joinResponse
+   */
+  updateDecodingStrategy(encoding: MessageEncoding): void {
+    // Update transportEncoding to use the known encoding format
+    // This ensures decodeMessage uses the correct path instead of trying multiple formats
+    // Preserve existing stateUpdateDecoding preference if set (don't override strict decoding preferences)
+    const stateUpdateEncoding = StateTreeRuntime.getStateUpdateEncoding(encoding)
+    this.transportEncoding = {
+      ...this.transportEncoding,
+      message: encoding,
+      stateUpdate: stateUpdateEncoding,
+      // Preserve existing stateUpdateDecoding if explicitly set, otherwise use 'auto'
+      stateUpdateDecoding: this.transportEncoding.stateUpdateDecoding ?? 'auto'
+    }
+    this.logger.info(`Updated Runtime decoding strategy: message=${encoding}, stateUpdate=${stateUpdateEncoding}, stateUpdateDecoding=${this.transportEncoding.stateUpdateDecoding}`)
+  }
 
   constructor(options?: Logger | RuntimeOptions) {
     const resolved = resolveRuntimeOptions(options)
@@ -249,25 +291,15 @@ export class StateTreeRuntime {
     }
 
     // Join messages always use JSON format
-    const useEncoding = encoding || 'json'
+    const useEncoding = encoding || MessageEncodingValues.json
     
-    let encoded: string | ArrayBuffer
+    // Use unified encoding function
+    const encoded = encodeMessageToFormat(message, useEncoding)
     let messageSize: number
     
-    if (useEncoding === 'json') {
-      // JSON format: encode as JSON object
-      encoded = encodeMessage(message)
-      messageSize = new TextEncoder().encode(encoded as string).length
-      this.ws.send(encoded as string)
-    } else if (useEncoding === 'opcodeJsonArray') {
-      // Opcode array format: encode as JSON array
-      encoded = encodeMessageArray(message)
-      messageSize = new TextEncoder().encode(encoded as string).length
-      this.ws.send(encoded as string)
-    } else if (useEncoding === 'messagepack') {
-      // MessagePack format: encode as opcode array, then serialize with MessagePack
-      const msgpackData = encodeMessageArrayToMessagePack(message)
-      // Use byteLength for accurate binary size calculation
+    if (useEncoding === MessageEncodingValues.messagepack) {
+      // MessagePack returns Uint8Array
+      const msgpackData = encoded as Uint8Array
       messageSize = msgpackData.byteLength
       // Ensure WebSocket binaryType is set to 'arraybuffer' for binary messages
       // Convert Uint8Array to ArrayBuffer for WebSocket.send()
@@ -276,21 +308,11 @@ export class StateTreeRuntime {
         ? msgpackData.buffer.slice(msgpackData.byteOffset, msgpackData.byteOffset + msgpackData.byteLength)
         : new Uint8Array(msgpackData).buffer
       this.ws.send(buffer)
-      
-      // Report outbound statistics
-      if (this.statisticsCallback) {
-        this.statisticsCallback({
-          messageType: 'transportMessage',
-          messageSize,
-          direction: 'outbound'
-        })
-      }
-      return
     } else {
-      // Fallback to JSON
-      encoded = encodeMessage(message)
-      messageSize = new TextEncoder().encode(encoded as string).length
-      this.ws.send(encoded as string)
+      // JSON and opcodeJsonArray return string
+      const jsonString = encoded as string
+      messageSize = new TextEncoder().encode(jsonString).length
+      this.ws.send(jsonString)
     }
     
     // Report outbound statistics
@@ -523,8 +545,8 @@ export class StateTreeRuntime {
 
 function resolveRuntimeOptions(options?: Logger | RuntimeOptions): { logger: Logger; transportEncoding: TransportEncodingConfig } {
   const defaultConfig: TransportEncodingConfig = {
-    message: 'json',
-    stateUpdate: 'opcodeJsonArray',
+    message: MessageEncodingValues.json,
+    stateUpdate: StateUpdateEncodingValues.opcodeJsonArray,
     stateUpdateDecoding: 'auto'
   }
 
@@ -538,8 +560,8 @@ function resolveRuntimeOptions(options?: Logger | RuntimeOptions): { logger: Log
 
   const logger = options.logger ?? new NoOpLogger()
   const transportEncoding: TransportEncodingConfig = {
-    message: options.transportEncoding?.message ?? 'json',
-    stateUpdate: options.transportEncoding?.stateUpdate ?? 'opcodeJsonArray',
+    message: options.transportEncoding?.message ?? MessageEncodingValues.json,
+    stateUpdate: options.transportEncoding?.stateUpdate ?? StateUpdateEncodingValues.opcodeJsonArray,
     stateUpdateDecoding: options.transportEncoding?.stateUpdateDecoding ?? 'auto'
   }
 
