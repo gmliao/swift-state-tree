@@ -334,6 +334,8 @@ async function executeScript(view: StateTreeView, scriptPath: string, script?: a
         const { path, equals, exists, greaterThanOrEqual, message } = assert
         const state = view.getState()
         const value = getNestedValue(state, path)
+        const normalizedValue = normalizeForCompare(value)
+        const normalizedEquals = normalizeForCompare(equals)
         
         console.log(chalk.magenta(`🔍 Asserting: ${path} ...`))
         console.log(chalk.gray(`   Value: ${JSON.stringify(value)} (${typeof value})`))
@@ -348,7 +350,7 @@ async function executeScript(view: StateTreeView, scriptPath: string, script?: a
         }
         
         if (equals !== undefined) {
-          if (!deepEqual(value, equals)) {
+          if (!deepEqual(normalizedValue, normalizedEquals)) {
             throw new Error(message || `Assertion failed: ${path} expected ${JSON.stringify(equals)}, but got ${JSON.stringify(value)} (type: ${typeof value})`)
           }
         }
@@ -418,6 +420,28 @@ function deepEqual(a: any, b: any): boolean {
   }
   
   return true
+}
+
+function normalizeForCompare(value: any): any {
+  if (value === null || value === undefined) return value
+
+  if (Array.isArray(value)) {
+    return value.map(item => normalizeForCompare(item))
+  }
+
+  if (typeof value === 'object') {
+    if (typeof (value as any).toJSON === 'function') {
+      return normalizeForCompare((value as any).toJSON())
+    }
+
+    const result: any = {}
+    for (const [key, val] of Object.entries(value)) {
+      result[key] = normalizeForCompare(val)
+    }
+    return result
+  }
+
+  return value
 }
 
 function hydratePayload(payload: any): any {
