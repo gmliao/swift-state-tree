@@ -61,7 +61,10 @@ start_server() {
     
     print_step "Starting DemoServer ($encoding)..."
     
-    cd Examples/HummingbirdDemo
+    # Get project root and demoserver directory
+    local project_root="$(pwd)"
+    local demoserver_dir="$project_root/Examples/HummingbirdDemo"
+    cd "$demoserver_dir"
     
     # Kill any existing server on this port and SwiftPM processes
     lsof -ti:${SERVER_PORT} | xargs kill -9 2>/dev/null || true
@@ -75,13 +78,13 @@ start_server() {
     # Check if process is still running (quick validation)
     sleep 1
     if ! kill -0 $pid 2>/dev/null; then
-        cd - > /dev/null
+        cd "$project_root"
         print_error "Failed to start DemoServer ($encoding) - process died immediately"
         return 1
     fi
     
     echo $pid > "${pid_file}"
-    cd - > /dev/null
+    cd "$project_root"
     
     print_success "DemoServer started with PID $pid using encoding: $encoding"
     return 0
@@ -136,11 +139,14 @@ run_encoding_tests() {
     esac
     
     print_step "Running E2E tests ($encoding)..."
-    cd Tools/CLI
+    # Get project root (assuming we're in it)
+    local project_root="$(pwd)"
+    local cli_dir="$project_root/Tools/CLI"
+    cd "$cli_dir"
     
     TRANSPORT_ENCODING=${encoding} $test_command
     
-    cd - > /dev/null
+    cd "$project_root"
     print_success "E2E tests ($encoding) completed successfully"
 }
 
@@ -157,11 +163,61 @@ show_logs() {
     fi
 }
 
+# Function to check if rebuild is needed
+needs_rebuild() {
+    local dir=$1
+    local src_dir="$dir/src"
+    local dist_dir="$dir/dist"
+    
+    # If dist doesn't exist, need to build
+    if [ ! -d "$dist_dir" ]; then
+        return 0  # true - needs rebuild
+    fi
+    
+    # Check if any source file is newer than dist
+    if find "$src_dir" -type f -newer "$dist_dir" 2>/dev/null | grep -q .; then
+        return 0  # true - needs rebuild
+    fi
+    
+    return 1  # false - no rebuild needed
+}
+
 # Main execution
 main() {
+    # Get the script directory and navigate to project root
+    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local project_root="$(cd "$script_dir/../.." && pwd)"
+    cd "$project_root"
+    
+    # Auto-detect paths
+    local sdk_dir="$project_root/sdk/ts"
+    local cli_dir="$project_root/Tools/CLI"
+    local demoserver_dir="$project_root/Examples/HummingbirdDemo"
+    
+    # Verify paths exist
+    if [ ! -d "$sdk_dir" ]; then
+        print_error "SDK directory not found: $sdk_dir"
+        exit 1
+    fi
+    
+    if [ ! -d "$cli_dir" ]; then
+        print_error "CLI directory not found: $cli_dir"
+        exit 1
+    fi
+    
+    if [ ! -d "$demoserver_dir" ]; then
+        print_error "DemoServer directory not found: $demoserver_dir"
+        exit 1
+    fi
+    
     echo "=========================================="
     echo "  Local E2E CI/CD Test Runner"
     echo "=========================================="
+    echo ""
+    echo "Project root: $project_root"
+    echo "SDK path: $sdk_dir"
+    echo "CLI path: $cli_dir"
+    echo "DemoServer path: $demoserver_dir"
     echo ""
     
     # Check prerequisites
@@ -185,20 +241,37 @@ main() {
     print_success "All prerequisites met"
     echo ""
     
+    # Build SDK first (CLI depends on it)
+    if needs_rebuild "$sdk_dir"; then
+        print_step "Building TypeScript SDK (changes detected)..."
+        cd "$sdk_dir"
+        npm ci
+        npm run build
+        cd "$project_root"
+        print_success "SDK built successfully"
+    else
+        print_step "TypeScript SDK is up to date, skipping build"
+    fi
+    echo ""
+    
     # Build CLI
-    print_step "Building CLI..."
-    cd Tools/CLI
-    npm ci
-    npm run build
-    cd - > /dev/null
-    print_success "CLI built successfully"
+    if needs_rebuild "$cli_dir"; then
+        print_step "Building CLI (changes detected)..."
+        cd "$cli_dir"
+        npm ci
+        npm run build
+        cd "$project_root"
+        print_success "CLI built successfully"
+    else
+        print_step "CLI is up to date, skipping build"
+    fi
     echo ""
     
     # Build DemoServer
     print_step "Building DemoServer..."
-    cd Examples/HummingbirdDemo
+    cd "$demoserver_dir"
     swift build
-    cd - > /dev/null
+    cd "$project_root"
     print_success "DemoServer built successfully"
     echo ""
     

@@ -9,6 +9,7 @@ import type {
   ErrorPayload,
   MessageEncoding
 } from '../types/transport'
+import { MessageEncodingValues } from '../types/transport'
 import { StateTreeRuntime } from './runtime'
 import { createJoinMessage, createActionMessage, createEventMessage, generateRequestID, encodeMessage, encodeMessageArray, pathHashReverseLookup, eventHashReverseLookup, clientEventHashReverseLookup, eventHashLookup, clientEventHashLookup, eventFieldOrder, clientEventFieldOrder, actionFieldOrder } from './protocol'
 import { NoOpLogger, type Logger } from './logger'
@@ -87,7 +88,7 @@ export class StateTreeView {
   private playerID?: string
   private deviceID?: string
   /// Message encoding format to use for sending messages (defaults to 'json')
-  private messageEncoding: MessageEncoding = 'json'
+  private messageEncoding: MessageEncoding = MessageEncodingValues.json
   /// Map playerSlot (number) to playerID (string) for efficient lookup
   private slotToPlayerID = new Map<number, string>()
   
@@ -276,7 +277,7 @@ export class StateTreeView {
       this.joinCallbacks.set(requestID, resolve)
       try {
         // Join messages always use JSON format (before we know the server's encoding preference)
-        this.runtime.sendRawMessage(message, 'json')
+        this.runtime.sendRawMessage(message, MessageEncodingValues.json)
         this.logger.info(`Join request sent: landType=${landType}, landInstanceId=${landInstanceId ?? 'null'}`)
       } catch (error) {
         this.logger.error(`Failed to send join message: ${error}`)
@@ -450,6 +451,10 @@ export class StateTreeView {
         if (payload.encoding) {
           this.messageEncoding = payload.encoding as MessageEncoding
           this.logger.info(`Updated message encoding to: ${this.messageEncoding}`)
+          
+          // Notify Runtime to update decoding strategy
+          // This allows Runtime to use the correct decoding path instead of trying multiple formats
+          this.runtime.updateDecodingStrategy(this.messageEncoding)
         }
 
         // Note: Legacy transportConfig support removed - use encoding field instead

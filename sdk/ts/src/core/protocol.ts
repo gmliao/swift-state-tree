@@ -7,9 +7,57 @@ import type {
   StateUpdate,
   StateSnapshot,
   TransportEncodingConfig,
-  StateUpdateDecoding
+  StateUpdateDecoding,
+  MessageEncoding
+} from '../types/transport'
+import { 
+  MessageEncodingValues, 
+  StateUpdateEncodingValues, 
+  StateUpdateDecodingValues 
 } from '../types/transport'
 import { encode as msgpackEncode, decode as msgpackDecode } from '@msgpack/msgpack'
+
+/**
+ * Opcode constants for TransportMessage types
+ * Uses 101+ range to avoid conflict with StateUpdateOpcode (0-2)
+ * Matches Swift MessageKindOpcode enum
+ */
+export const MessageKindOpcode = {
+  action: 101,
+  actionResponse: 102,
+  event: 103,
+  join: 104,
+  joinResponse: 105,
+  error: 106
+} as const
+
+/**
+ * Opcode constants for StateUpdate types
+ * Matches Swift StateUpdateOpcode enum
+ */
+export const StateUpdateOpcode = {
+  noChange: 0,
+  firstSync: 1,
+  diff: 2
+} as const
+
+/**
+ * Opcode constants for StatePatch operations
+ * Matches Swift StatePatchOpcode enum
+ */
+export const StatePatchOpcode = {
+  replace: 1,  // set
+  remove: 2,
+  add: 3
+} as const
+
+/**
+ * Event direction constants
+ */
+export const EventDirection = {
+  fromClient: 0,
+  fromServer: 1
+} as const
 
 /**
  * Encode a TransportMessage to JSON string
@@ -19,17 +67,18 @@ export function encodeMessage(message: TransportMessage): string {
 }
 
 /**
- * Encode a TransportMessage to opcode JSON array format
+ * Build the opcode array structure for a TransportMessage
+ * This is the common logic used by both JSON and MessagePack encoding
  * 
  * Formats:
- * - joinResponse: [105, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?]
- * - actionResponse: [102, requestID, response]
- * - error: [106, code, message, details?]
- * - action: [101, requestID, typeIdentifier, payload(object)]
- * - join: [104, requestID, landType, landInstanceId?, playerID?, deviceID?, metadata?]
- * - event: [103, direction(0=client,1=server), type, payload, rawBody?]
+ * - joinResponse: [MessageKindOpcode.joinResponse, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?]
+ * - actionResponse: [MessageKindOpcode.actionResponse, requestID, response]
+ * - error: [MessageKindOpcode.error, code, message, details?]
+ * - action: [MessageKindOpcode.action, requestID, typeIdentifier, payload(object)]
+ * - join: [MessageKindOpcode.join, requestID, landType, landInstanceId?, playerID?, deviceID?, metadata?]
+ * - event: [MessageKindOpcode.event, direction(EventDirection.fromClient/fromServer), type, payload, rawBody?]
  */
-export function encodeMessageArray(message: TransportMessage): string {
+function buildMessageArray(message: TransportMessage): any[] {
   const array: any[] = []
   
   switch (message.kind) {
@@ -37,7 +86,7 @@ export function encodeMessageArray(message: TransportMessage): string {
       const payload = (message.payload as any).joinResponse
       if (!payload) throw new Error('Invalid joinResponse payload')
       
-      array.push(105) // opcode
+      array.push(MessageKindOpcode.joinResponse)
       array.push(payload.requestID)
       array.push(payload.success ? 1 : 0)
       
@@ -64,7 +113,7 @@ export function encodeMessageArray(message: TransportMessage): string {
       const payload = (message.payload as any).actionResponse
       if (!payload) throw new Error('Invalid actionResponse payload')
       
-      array.push(102) // opcode
+      array.push(MessageKindOpcode.actionResponse)
       array.push(payload.requestID)
       array.push(payload.response)
       break
@@ -74,7 +123,7 @@ export function encodeMessageArray(message: TransportMessage): string {
       const payload = message.payload as any
       if (!payload.error) throw new Error('Invalid error payload')
       
-      array.push(106) // opcode
+      array.push(MessageKindOpcode.error)
       array.push(payload.error.code)
       array.push(payload.error.message)
       if (payload.error.details != null) {
@@ -89,7 +138,7 @@ export function encodeMessageArray(message: TransportMessage): string {
         throw new Error('Invalid action payload')
       }
       
-      array.push(101) // opcode
+      array.push(MessageKindOpcode.action)
       array.push(payload.requestID)
       array.push(payload.typeIdentifier)
       array.push(payload.payload || {}) // JSON object (same as Event payload)
@@ -100,7 +149,7 @@ export function encodeMessageArray(message: TransportMessage): string {
       const payload = (message.payload as any).join
       if (!payload) throw new Error('Invalid join payload')
       
-      array.push(104) // opcode
+      array.push(MessageKindOpcode.join)
       array.push(payload.requestID)
       array.push(payload.landType)
       
@@ -125,17 +174,17 @@ export function encodeMessageArray(message: TransportMessage): string {
       const fromClient = payload.fromClient
       const fromServer = payload.fromServer
       
-      array.push(103) // opcode
+      array.push(MessageKindOpcode.event)
       
       if (fromClient) {
-        array.push(0) // direction: 0 = fromClient
+        array.push(EventDirection.fromClient)
         array.push(fromClient.type)
         array.push(fromClient.payload || {})
         if (fromClient.rawBody != null) {
           array.push(fromClient.rawBody)
         }
       } else if (fromServer) {
-        array.push(1) // direction: 1 = fromServer
+        array.push(EventDirection.fromServer)
         array.push(fromServer.type)
         array.push(fromServer.payload || {})
         if (fromServer.rawBody != null) {
@@ -151,6 +200,22 @@ export function encodeMessageArray(message: TransportMessage): string {
       throw new Error(`Unsupported message kind: ${message.kind}`)
   }
   
+  return array
+}
+
+/**
+ * Encode a TransportMessage to opcode JSON array format
+ * 
+ * Formats:
+ * - joinResponse: [MessageKindOpcode.joinResponse, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?]
+ * - actionResponse: [MessageKindOpcode.actionResponse, requestID, response]
+ * - error: [MessageKindOpcode.error, code, message, details?]
+ * - action: [MessageKindOpcode.action, requestID, typeIdentifier, payload(object)]
+ * - join: [MessageKindOpcode.join, requestID, landType, landInstanceId?, playerID?, deviceID?, metadata?]
+ * - event: [MessageKindOpcode.event, direction(EventDirection.fromClient/fromServer), type, payload, rawBody?]
+ */
+export function encodeMessageArray(message: TransportMessage): string {
+  const array = buildMessageArray(message)
   return JSON.stringify(array)
 }
 
@@ -162,243 +227,181 @@ export function encodeMessageArray(message: TransportMessage): string {
  * @returns Uint8Array containing MessagePack-encoded array
  */
 export function encodeMessageArrayToMessagePack(message: TransportMessage): Uint8Array {
-  // Generate the same array structure as encodeMessageArray
-  const array: any[] = []
-  
-  switch (message.kind) {
-    case 'joinResponse': {
-      const payload = (message.payload as any).joinResponse
-      if (!payload) throw new Error('Invalid joinResponse payload')
-      
-      array.push(105) // opcode
-      array.push(payload.requestID)
-      array.push(payload.success ? 1 : 0)
-      
-      // Optional fields - include encoding if present
-      if (payload.landType != null || payload.landInstanceId != null || payload.playerSlot != null || payload.encoding != null || payload.reason != null) {
-        array.push(payload.landType ?? null)
-      }
-      if (payload.landInstanceId != null || payload.playerSlot != null || payload.encoding != null || payload.reason != null) {
-        array.push(payload.landInstanceId ?? null)
-      }
-      if (payload.playerSlot != null || payload.encoding != null || payload.reason != null) {
-        array.push(payload.playerSlot ?? null)
-      }
-      if (payload.encoding != null || payload.reason != null) {
-        array.push(payload.encoding ?? null)
-      }
-      if (payload.reason != null) {
-        array.push(payload.reason)
-      }
-      break
-    }
-    
-    case 'actionResponse': {
-      const payload = (message.payload as any).actionResponse
-      if (!payload) throw new Error('Invalid actionResponse payload')
-      
-      array.push(102) // opcode
-      array.push(payload.requestID)
-      array.push(payload.response)
-      break
-    }
-    
-    case 'error': {
-      const payload = message.payload as any
-      if (!payload.error) throw new Error('Invalid error payload')
-      
-      array.push(106) // opcode
-      array.push(payload.error.code)
-      array.push(payload.error.message)
-      if (payload.error.details != null) {
-        array.push(payload.error.details)
-      }
-      break
-    }
-    
-    case 'action': {
-      const payload = message.payload as any
-      if (!payload.requestID || !payload.typeIdentifier || !payload.payload) {
-        throw new Error('Invalid action payload')
-      }
-      
-      array.push(101) // opcode
-      array.push(payload.requestID)
-      array.push(payload.typeIdentifier)
-      array.push(payload.payload || {}) // JSON object (same as Event payload)
-      break
-    }
-    
-    case 'join': {
-      const payload = (message.payload as any).join
-      if (!payload) throw new Error('Invalid join payload')
-      
-      array.push(104) // opcode
-      array.push(payload.requestID)
-      array.push(payload.landType)
-      
-      // Optional trailing fields
-      if (payload.landInstanceId != null || payload.playerID != null || payload.deviceID != null || payload.metadata != null) {
-        array.push(payload.landInstanceId ?? null)
-      }
-      if (payload.playerID != null || payload.deviceID != null || payload.metadata != null) {
-        array.push(payload.playerID ?? null)
-      }
-      if (payload.deviceID != null || payload.metadata != null) {
-        array.push(payload.deviceID ?? null)
-      }
-      if (payload.metadata != null) {
-        array.push(payload.metadata)
-      }
-      break
-    }
-    
-    case 'event': {
-      const payload = message.payload as any
-      const fromClient = payload.fromClient
-      const fromServer = payload.fromServer
-      
-      array.push(103) // opcode
-      
-      if (fromClient) {
-        array.push(0) // direction: 0 = fromClient
-        array.push(fromClient.type)
-        array.push(fromClient.payload || {})
-        if (fromClient.rawBody != null) {
-          array.push(fromClient.rawBody)
-        }
-      } else if (fromServer) {
-        array.push(1) // direction: 1 = fromServer
-        array.push(fromServer.type)
-        array.push(fromServer.payload || {})
-        if (fromServer.rawBody != null) {
-          array.push(fromServer.rawBody)
-        }
-      } else {
-        throw new Error('Invalid event payload: missing fromClient or fromServer')
-      }
-      break
-    }
-    
-    default:
-      throw new Error(`Unsupported message kind: ${message.kind}`)
-  }
-  
-  // Serialize array with MessagePack
+  const array = buildMessageArray(message)
   return msgpackEncode(array)
 }
 
 /**
+ * Encode a TransportMessage to the specified format
+ * Unified encoding function that handles all three encoding formats
+ * 
+ * @param message - The TransportMessage to encode
+ * @param format - The encoding format to use
+ * @returns Encoded message as string (for json/opcodeJsonArray) or Uint8Array (for messagepack)
+ */
+export function encodeMessageToFormat(
+  message: TransportMessage,
+  format: MessageEncoding
+): string | Uint8Array {
+  switch (format) {
+    case MessageEncodingValues.json:
+      return encodeMessage(message)
+    case MessageEncodingValues.opcodeJsonArray:
+      return encodeMessageArray(message)
+    case MessageEncodingValues.messagepack:
+      return encodeMessageArrayToMessagePack(message)
+    default:
+      // Fallback to JSON for unknown formats
+      return encodeMessage(message)
+  }
+}
+
+/**
+ * Try to decode binary data as MessagePack
+ * @returns Decoded array or null if decode fails
+ */
+function tryDecodeAsMessagePack(data: ArrayBuffer | Uint8Array): any[] | null {
+  try {
+    const uint8Array = data instanceof ArrayBuffer ? new Uint8Array(data) : data
+    return msgpackDecode(uint8Array) as any[]
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Try to decode data as JSON (string or binary)
+ * @returns Decoded object or null if decode fails
+ */
+function tryDecodeAsJson(data: string | ArrayBuffer | Uint8Array): any | null {
+  try {
+    if (typeof data === 'string') {
+      return JSON.parse(data)
+    } else {
+      // Binary data - try to decode as UTF-8 text
+      const text = new TextDecoder().decode(
+        data instanceof ArrayBuffer ? new Uint8Array(data) : data
+      )
+      return JSON.parse(text)
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Classify decoded data and route to appropriate decoder
+ */
+function classifyAndDecode(
+  decoded: any,
+  config: TransportEncodingConfig | undefined,
+  dynamicKeyMap: Map<number, string> | undefined
+): TransportMessage | StateUpdate | StateSnapshot {
+  if (Array.isArray(decoded)) {
+    // Check if first element is a TransportMessage opcode (101-106)
+    const firstElement = decoded[0]
+    if (typeof firstElement === 'number' && 
+        firstElement >= MessageKindOpcode.action && 
+        firstElement <= MessageKindOpcode.error) {
+      return decodeTransportMessageArray(decoded)
+    }
+    
+    // Otherwise, treat as StateUpdate opcode array (0-2)
+    const decoding = resolveStateUpdateDecoding(config)
+    if (decoding === StateUpdateDecodingValues.jsonObject) {
+      throw new Error(`Unknown message format: ${JSON.stringify(decoded).substring(0, 100)}`)
+    }
+    return decodeStateUpdateArray(decoded, dynamicKeyMap)
+  }
+
+  // Check for TransportMessage with kind field
+  if (decoded && typeof decoded === 'object' && 'kind' in decoded) {
+    return decoded as TransportMessage
+  }
+
+  // Check for StateUpdate
+  if (decoded && typeof decoded === 'object' && 'type' in decoded && 'patches' in decoded) {
+    const decoding = resolveStateUpdateDecoding(config)
+    if (decoding === StateUpdateDecodingValues.opcodeJsonArray) {
+      throw new Error(`Unknown message format: ${JSON.stringify(decoded).substring(0, 100)}`)
+    }
+    return decoded as StateUpdate
+  }
+
+  // Check for StateSnapshot
+  if (decoded && typeof decoded === 'object' && 'values' in decoded) {
+    return decoded as StateSnapshot
+  }
+
+  throw new Error(`Unknown message format: ${JSON.stringify(decoded).substring(0, 100)}`)
+}
+
+/**
  * Decode a JSON string or MessagePack binary data to TransportMessage, StateUpdate, or StateSnapshot
+ * Optimized to use known encoding format when available (after joinResponse)
  */
 export function decodeMessage(
   data: string | ArrayBuffer | Uint8Array,
   config?: TransportEncodingConfig,
   dynamicKeyMap?: Map<number, string>
 ): TransportMessage | StateUpdate | StateSnapshot {
-  // Handle MessagePack binary data
+  const knownEncoding = config?.message
+  
+  // Handle binary data (ArrayBuffer or Uint8Array)
   if (data instanceof ArrayBuffer || data instanceof Uint8Array) {
-    try {
-      // Convert ArrayBuffer to Uint8Array if needed
-      const uint8Array = data instanceof ArrayBuffer ? new Uint8Array(data) : data
-      const array = msgpackDecode(uint8Array) as any[]
-      
-      // Check if first element is a TransportMessage opcode (101-106)
-      const firstElement = array[0]
-      if (typeof firstElement === 'number' && firstElement >= 101 && firstElement <= 106) {
-        return decodeTransportMessageArray(array)
+    // If we know the encoding is messagepack, try MessagePack first
+    if (knownEncoding === MessageEncodingValues.messagepack) {
+      const msgpackDecoded = tryDecodeAsMessagePack(data)
+      if (msgpackDecoded !== null) {
+        return classifyAndDecode(msgpackDecoded, config, dynamicKeyMap)
       }
-      
-      // Otherwise, treat as StateUpdate opcode array (0-2)
-      const decoding = resolveStateUpdateDecoding(config)
-      if (decoding === 'jsonObject') {
-        throw new Error(`Unknown message format: MessagePack array with opcode ${firstElement}`)
+      // If MessagePack fails, fallback to JSON (server may send JSON text as binary)
+      const jsonDecoded = tryDecodeAsJson(data)
+      if (jsonDecoded !== null) {
+        return classifyAndDecode(jsonDecoded, config, dynamicKeyMap)
       }
-      return decodeStateUpdateArray(array, dynamicKeyMap)
-    } catch (error) {
-      // If MessagePack decode fails, it might be JSON text in binary format
-      // Try to decode as text first
-      const text = new TextDecoder().decode(
-        data instanceof ArrayBuffer ? new Uint8Array(data) : data
-      )
-      const json = JSON.parse(text)
-      
-      if (Array.isArray(json)) {
-        const firstElement = json[0]
-        if (typeof firstElement === 'number' && firstElement >= 101 && firstElement <= 106) {
-          return decodeTransportMessageArray(json)
-        }
-        const decoding = resolveStateUpdateDecoding(config)
-        if (decoding === 'jsonObject') {
-          throw new Error(`Unknown message format: ${JSON.stringify(json).substring(0, 100)}`)
-        }
-        return decodeStateUpdateArray(json, dynamicKeyMap)
-      }
-      
-      if (json && typeof json === 'object' && 'kind' in json) {
-        return json as TransportMessage
-      }
-
-      // JSON object StateUpdate in binary frame (server may send JSON bytes as binary)
-      if (json && typeof json === 'object' && 'type' in json && 'patches' in json) {
-        const decoding = resolveStateUpdateDecoding(config)
-        if (decoding === 'opcodeJsonArray') {
-          throw new Error(`Unknown message format: ${JSON.stringify(json).substring(0, 100)}`)
-        }
-        return json as StateUpdate
-      }
-
-      // JSON object StateSnapshot in binary frame
-      if (json && typeof json === 'object' && 'values' in json) {
-        return json as StateSnapshot
-      }
-      
-      throw error
+      throw new Error(`Failed to decode binary data as MessagePack or JSON`)
     }
+    
+    // If we know the encoding is opcodeJsonArray or json, try JSON first
+    if (knownEncoding === MessageEncodingValues.opcodeJsonArray || knownEncoding === MessageEncodingValues.json) {
+      const jsonDecoded = tryDecodeAsJson(data)
+      if (jsonDecoded !== null) {
+        return classifyAndDecode(jsonDecoded, config, dynamicKeyMap)
+      }
+      // Fallback to MessagePack (might be binary even in opcode mode)
+      const msgpackDecoded = tryDecodeAsMessagePack(data)
+      if (msgpackDecoded !== null) {
+        return classifyAndDecode(msgpackDecoded, config, dynamicKeyMap)
+      }
+      throw new Error(`Failed to decode binary data as JSON or MessagePack`)
+    }
+    
+    // Unknown encoding (before joinResponse) - try both formats
+    const msgpackDecoded = tryDecodeAsMessagePack(data)
+    if (msgpackDecoded !== null) {
+      return classifyAndDecode(msgpackDecoded, config, dynamicKeyMap)
+    }
+    
+    const jsonDecoded = tryDecodeAsJson(data)
+    if (jsonDecoded !== null) {
+      return classifyAndDecode(jsonDecoded, config, dynamicKeyMap)
+    }
+    
+    throw new Error(`Failed to decode binary data: tried MessagePack and JSON, both failed`)
   }
   
   // Handle JSON string
-  const json = JSON.parse(data as string)
-
-  if (Array.isArray(json)) {
-    // Check if first element is a TransportMessage opcode (101-106)
-    const firstElement = json[0]
-    if (typeof firstElement === 'number' && firstElement >= 101 && firstElement <= 106) {
-      return decodeTransportMessageArray(json)
-    }
-    
-    // Otherwise, treat as StateUpdate opcode array (0-2)
-    const decoding = resolveStateUpdateDecoding(config)
-    if (decoding === 'jsonObject') {
-      throw new Error(`Unknown message format: ${JSON.stringify(json).substring(0, 100)}`)
-    }
-    return decodeStateUpdateArray(json, dynamicKeyMap)
+  const jsonDecoded = tryDecodeAsJson(data as string)
+  if (jsonDecoded === null) {
+    throw new Error(`Failed to parse JSON string`)
   }
-
-  // Check for TransportMessage with kind field
-  if (json && typeof json === 'object' && 'kind' in json) {
-    return json as TransportMessage
-  }
-
-  // Check for StateUpdate
-  if (json && typeof json === 'object' && 'type' in json && 'patches' in json) {
-    const decoding = resolveStateUpdateDecoding(config)
-    if (decoding === 'opcodeJsonArray') {
-      throw new Error(`Unknown message format: ${JSON.stringify(json).substring(0, 100)}`)
-    }
-    return json as StateUpdate
-  }
-
-  // Check for StateSnapshot
-  if (json && typeof json === 'object' && 'values' in json) {
-    return json as StateSnapshot
-  }
-
-  throw new Error(`Unknown message format: ${JSON.stringify(json).substring(0, 100)}`)
+  
+  return classifyAndDecode(jsonDecoded, config, dynamicKeyMap)
 }
 
 function resolveStateUpdateDecoding(config?: TransportEncodingConfig): StateUpdateDecoding {
-  return config?.stateUpdateDecoding ?? 'auto'
+  return config?.stateUpdateDecoding ?? StateUpdateDecodingValues.auto
 }
 
 function decodeStateUpdateArray(payload: unknown[], dynamicKeyMap?: Map<number, string>): StateUpdate {
@@ -408,11 +411,11 @@ function decodeStateUpdateArray(payload: unknown[], dynamicKeyMap?: Map<number, 
 
   const updateType = (() => {
     switch (payload[0]) {
-      case 0:
+      case StateUpdateOpcode.noChange:
         return 'noChange' as const
-      case 1:
+      case StateUpdateOpcode.firstSync:
         return 'firstSync' as const
-      case 2:
+      case StateUpdateOpcode.diff:
         return 'diff' as const
       default:
         return null
@@ -527,13 +530,13 @@ function decodeStateUpdateArray(payload: unknown[], dynamicKeyMap?: Map<number, 
 
     let op: StatePatch['op']
     switch (opCode) {
-      case 1:
+      case StatePatchOpcode.replace:
         op = 'replace'
         break
-      case 2:
+      case StatePatchOpcode.remove:
         op = 'remove'
         break
-      case 3:
+      case StatePatchOpcode.add:
         op = 'add'
         break
       default:
@@ -688,31 +691,31 @@ export function generateRequestID(prefix: string = 'req'): string {
  * Uses 101+ range to avoid conflict with StateUpdateOpcode (0-2).
  */
 const MESSAGE_OPCODE_TO_KIND: Record<number, import('../types/transport').MessageKind> = {
-  101: 'action',
-  102: 'actionResponse',
-  103: 'event',
-  104: 'join',
-  105: 'joinResponse',
-  106: 'error'
+  [MessageKindOpcode.action]: 'action',
+  [MessageKindOpcode.actionResponse]: 'actionResponse',
+  [MessageKindOpcode.event]: 'event',
+  [MessageKindOpcode.join]: 'join',
+  [MessageKindOpcode.joinResponse]: 'joinResponse',
+  [MessageKindOpcode.error]: 'error'
 }
 
 /**
  * Check if an opcode is a TransportMessage opcode (101-106)
  */
 export function isTransportMessageOpcode(opcode: number): boolean {
-  return opcode >= 101 && opcode <= 106
+  return opcode >= MessageKindOpcode.action && opcode <= MessageKindOpcode.error
 }
 
 /**
  * Decode a JSON array to TransportMessage (opcode format)
  * 
  * Formats:
- * - joinResponse: [105, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?]
- * - actionResponse: [102, requestID, response]
- * - error: [106, code, message, details?]
- * - action: [101, requestID, typeIdentifier, payload(object)]
- * - join: [104, requestID, landType, landInstanceId?, playerID?, deviceID?, metadata?]
- * - event: [103, direction(0=client,1=server), type, payload, rawBody?]
+ * - joinResponse: [MessageKindOpcode.joinResponse, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?]
+ * - actionResponse: [MessageKindOpcode.actionResponse, requestID, response]
+ * - error: [MessageKindOpcode.error, code, message, details?]
+ * - action: [MessageKindOpcode.action, requestID, typeIdentifier, payload(object)]
+ * - join: [MessageKindOpcode.join, requestID, landType, landInstanceId?, playerID?, deviceID?, metadata?]
+ * - event: [MessageKindOpcode.event, direction(EventDirection.fromClient/fromServer), type, payload, rawBody?]
  */
 export function decodeTransportMessageArray(payload: unknown[]): TransportMessage {
   if (payload.length < 2) {
@@ -744,7 +747,7 @@ export function decodeTransportMessageArray(payload: unknown[]): TransportMessag
   }
 }
 
-// [105, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?]
+// [MessageKindOpcode.joinResponse, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?]
 function decodeJoinResponseArray(payload: unknown[]): TransportMessage {
   const requestID = payload[1] as string
   const success = payload[2] === 1
@@ -771,7 +774,7 @@ function decodeJoinResponseArray(payload: unknown[]): TransportMessage {
   } as TransportMessage
 }
 
-// [102, requestID, response]
+// [MessageKindOpcode.actionResponse, requestID, response]
 function decodeActionResponseArray(payload: unknown[]): TransportMessage {
   const requestID = payload[1] as string
   const response = payload[2]
@@ -787,7 +790,7 @@ function decodeActionResponseArray(payload: unknown[]): TransportMessage {
   } as TransportMessage
 }
 
-// [106, code, message, details?]
+// [MessageKindOpcode.error, code, message, details?]
 function decodeErrorArray(payload: unknown[]): TransportMessage {
   const code = payload[1] as string
   const message = payload[2] as string
@@ -805,7 +808,7 @@ function decodeErrorArray(payload: unknown[]): TransportMessage {
   } as TransportMessage
 }
 
-// [101, requestID, typeIdentifier, payload(object)]
+// [MessageKindOpcode.action, requestID, typeIdentifier, payload(object)]
 function decodeActionArray(payload: unknown[]): TransportMessage {
   const requestID = payload[1] as string
   const typeIdentifier = payload[2] as string
@@ -821,7 +824,7 @@ function decodeActionArray(payload: unknown[]): TransportMessage {
   } as TransportMessage
 }
 
-// [104, requestID, landType, landInstanceId?, playerID?, deviceID?, metadata?]
+// [MessageKindOpcode.join, requestID, landType, landInstanceId?, playerID?, deviceID?, metadata?]
 function decodeJoinArray(payload: unknown[]): TransportMessage {
   const requestID = payload[1] as string
   const landType = payload[2] as string
@@ -845,8 +848,7 @@ function decodeJoinArray(payload: unknown[]): TransportMessage {
   } as TransportMessage
 }
 
-// [103, direction(0=client,1=server), type, payload, rawBody?]
-// [103, direction(0=client,1=server), type, payload, rawBody?]
+// [MessageKindOpcode.event, direction(EventDirection.fromClient/fromServer), type, payload, rawBody?]
 function decodeEventArray(payload: unknown[]): TransportMessage {
   const direction = payload[1] as number
   const rawType = payload[2]
@@ -856,7 +858,7 @@ function decodeEventArray(payload: unknown[]): TransportMessage {
   let type: string
   if (typeof rawType === 'number') {
     // Resolve opcode
-    const lookup = direction === 0 ? clientEventHashReverseLookup : eventHashReverseLookup
+    const lookup = direction === EventDirection.fromClient ? clientEventHashReverseLookup : eventHashReverseLookup
     const resolved = lookup.get(rawType)
     if (!resolved) {
         throw new Error(`Unknown event opcode: ${rawType} (direction: ${direction})`)
@@ -872,7 +874,7 @@ function decodeEventArray(payload: unknown[]): TransportMessage {
     // Reconstruct object from array using field order
     // Use type string for lookup (as we might not interpret opcode in future phases or fallback)
     // Actually, looking up by type name is safest as it works for both opcode and string sources.
-    const fieldOrderMap = direction === 0 ? clientEventFieldOrder : eventFieldOrder
+    const fieldOrderMap = direction === EventDirection.fromClient ? clientEventFieldOrder : eventFieldOrder
     const fieldOrder = fieldOrderMap.get(type)
     
     // DEBUG: Confirm compression is working
@@ -905,7 +907,7 @@ function decodeEventArray(payload: unknown[]): TransportMessage {
     eventPayload = rawPayload
   }
   
-  if (direction === 0) {
+  if (direction === EventDirection.fromClient) {
     // fromClient
     return {
       kind: 'event',

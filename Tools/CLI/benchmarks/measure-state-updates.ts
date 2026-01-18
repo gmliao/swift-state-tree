@@ -1,11 +1,81 @@
 import WebSocket from 'ws'
-import { createJoinMessage, encodeMessageArrayToMessagePack } from '@swiftstatetree/sdk/core'
-import { decode as msgpackDecode } from '@msgpack/msgpack'
+import { createJoinMessage, encodeMessageArrayToMessagePack, decodeMessage, pathHashReverseLookup, eventHashReverseLookup, clientEventHashReverseLookup } from '@swiftstatetree/sdk/core'
+import type { TransportEncodingConfig } from '@swiftstatetree/sdk/types'
 import * as fs from 'fs'
 
 type Counters = {
   bytes: number
   count: number
+}
+
+interface Schema {
+  version: string
+  defs: Record<string, any>
+  lands: Record<string, LandDefinition>
+}
+
+interface LandDefinition {
+  stateType: string
+  pathHashes?: Record<string, number>
+  eventHashes?: Record<string, number>
+  clientEventHashes?: Record<string, number>
+  actions?: Record<string, { $ref: string }>
+  clientEvents?: Record<string, { $ref: string }>
+  events?: Record<string, { $ref: string }>
+}
+
+async function fetchSchema(baseUrl: string): Promise<Schema> {
+  const schemaUrl = baseUrl.replace(/^ws:/, 'http:').replace(/^wss:/, 'https:').replace(/\/game\/.*$/, '') + '/schema'
+  
+  // Check if fetch is available (Node 18+)
+  if (typeof fetch === 'undefined') {
+    throw new Error('fetch is not available. This script requires Node.js 18+ or a fetch polyfill.')
+  }
+  
+  try {
+    const response = await fetch(schemaUrl)
+    if (!response.ok) {
+      throw new Error(`Failed to fetch schema: ${response.status} ${response.statusText}`)
+    }
+    const schema = await response.json() as Schema
+    return schema
+  } catch (error) {
+    throw new Error(`Failed to fetch schema from ${schemaUrl}: ${error}`)
+  }
+}
+
+function initializeSchemaLookups(schema: Schema, landType: string): void {
+  const landDef = schema.lands[landType]
+  if (!landDef) {
+    console.warn(`⚠️  Land definition not found for '${landType}' in schema. Available lands: ${Object.keys(schema.lands).join(', ')}`)
+    return
+  }
+
+  // Initialize path hash reverse lookup table
+  if (landDef.pathHashes) {
+    pathHashReverseLookup.clear()
+    for (const [pattern, hash] of Object.entries(landDef.pathHashes)) {
+      pathHashReverseLookup.set(hash, pattern)
+    }
+    console.log(`✅ Loaded ${pathHashReverseLookup.size} path hashes for '${landType}'`)
+  }
+
+  // Initialize event hash reverse lookup tables
+  if (landDef.eventHashes) {
+    eventHashReverseLookup.clear()
+    for (const [type, hash] of Object.entries(landDef.eventHashes)) {
+      eventHashReverseLookup.set(hash, type)
+    }
+    console.log(`✅ Loaded ${eventHashReverseLookup.size} event hashes for '${landType}'`)
+  }
+
+  if (landDef.clientEventHashes) {
+    clientEventHashReverseLookup.clear()
+    for (const [type, hash] of Object.entries(landDef.clientEventHashes)) {
+      clientEventHashReverseLookup.set(hash, type)
+    }
+    console.log(`✅ Loaded ${clientEventHashReverseLookup.size} client event hashes for '${landType}'`)
+  }
 }
 
 const args = parseArgs(process.argv.slice(2))
@@ -26,179 +96,164 @@ const totals = {
   other: { bytes: 0, count: 0 }
 }
 
-const ws = new WebSocket(url)
+let ws: WebSocket | null = null
 let tracking = false
 let stopTimer: NodeJS.Timeout | null = null
-let printedJsonFallbackNotice = false
 
-ws.on('open', () => {
-  const joinMessage = createJoinMessage(`join-${Date.now()}`, landType, landInstanceId, {
-    playerID
+async function startMeasurement() {
+  // Load schema before connecting (required for opcode/messagepack formats)
+  if (format === 'opcode' || format === 'messagepack') {
+    try {
+      console.log('📥 Loading schema from server...')
+      const schema = await fetchSchema(url)
+      initializeSchemaLookups(schema, landType)
+    } catch (error) {
+      console.error(`❌ Failed to load schema: ${error}`)
+      console.error('⚠️  Continuing without schema - opcode decoding may fail')
+    }
+  }
+
+  // Connect WebSocket after schema is loaded
+  ws = new WebSocket(url)
+  
+  ws.on('open', () => {
+    const joinMessage = createJoinMessage(`join-${Date.now()}`, landType, landInstanceId, {
+      playerID
+    })
+
+    if (format === 'messagepack') {
+      const encoded = encodeMessageArrayToMessagePack(joinMessage)
+      console.log(`Sending MessagePack data (${encoded.length} bytes), first 16 bytes:`, Array.from(encoded.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' '))
+      ws.send(encoded)
+    } else {
+      ws.send(JSON.stringify(joinMessage))
+    }
   })
 
-  if (format === 'messagepack') {
-    const encoded = encodeMessageArrayToMessagePack(joinMessage)
-    console.log(`Sending MessagePack data (${encoded.length} bytes), first 16 bytes:`, Array.from(encoded.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' '))
-    ws.send(encoded)
-  } else {
-    ws.send(JSON.stringify(joinMessage))
-  }
-})
+  ws.on('message', (data) => {
+    const payload = toBuffer(data)
+    const size = payload.length
 
-ws.on('message', (data) => {
-  const payload = toBuffer(data)
-  const size = payload.length
+    // Use unified decodeMessage function from SDK
+    // Configure encoding based on format parameter
+    const encodingConfig: TransportEncodingConfig = {
+      message: format === 'messagepack' ? 'messagepack' : format === 'opcode' ? 'opcodeJsonArray' : 'json',
+      stateUpdate: format === 'json' ? 'jsonObject' : 'opcodeJsonArray',
+      stateUpdateDecoding: 'auto'
+    }
 
-  // Try to decode the message
-  let decoded: any
-  let decodingMethod = 'unknown'
-  
-  // Strategy: Try MessagePack first (if format is messagepack), then fall back to JSON
-  if (format === 'messagepack') {
-    // For MessagePack format, try MessagePack decode first
+    let decoded: any
     try {
-      decoded = msgpackDecode(payload)
-      decodingMethod = 'messagepack'
-    } catch (msgpackError) {
-      // If MessagePack fails, try JSON as fallback.
-      // This is expected for StateUpdate payloads when the server is configured with:
-      // - message = messagepack
-      // - stateUpdate = opcodeJsonArray (JSON text arrays)
-      const firstByte = payload[0]
-      const looksLikeJson = firstByte === 0x5b /* [ */ || firstByte === 0x7b /* { */
-      const jsonDecoded = looksLikeJson ? safeJsonParse(payload.toString('utf8')) : null
+      decoded = decodeMessage(payload, encodingConfig)
+    } catch (error) {
+      if (tracking) {
+        console.log(`❌ Failed to decode message: ${error}. First bytes: ${payload.slice(0, 4).toString('hex')}`)
+        accumulate(totals.other, size)
+      }
+      return
+    }
 
-      if (jsonDecoded !== null) {
-        decoded = jsonDecoded
-        decodingMethod = 'json-fallback'
-        if (!printedJsonFallbackNotice) {
-          printedJsonFallbackNotice = true
-          console.log(
-            `ℹ️  收到 JSON payload（多半是 StateUpdate 的 opcode array），在 messagepack 模式下會自動 fallback 解碼。`
-          )
-        }
-      } else {
-        if (tracking) {
-          console.log(`❌ Both MessagePack and JSON decode failed. First bytes: ${payload.slice(0, 4).toString('hex')}`)
-          accumulate(totals.other, size)
-        }
-        return
+    // Handle join response to start tracking
+    let isJoinSuccess = false
+    if (decoded?.kind === 'joinResponse' && decoded?.payload?.joinResponse?.success) {
+      isJoinSuccess = true
+    }
+    // Check for Opcode Array JoinResponse: [105, requestID, success(0/1), ...]
+    else if (Array.isArray(decoded) && decoded[0] === 105 && decoded[2] === 1) {
+      isJoinSuccess = true
+    }
+
+    if (isJoinSuccess) {
+      if (!tracking) {
+        tracking = true
+        console.log(`\n✅ 已加入房間，開始測量... (${durationSeconds} 秒)`)
+        stopTimer = setTimeout(() => finish(), durationSeconds * 1000)
       }
     }
-  } else {
-    // For JSON/Opcode format, try JSON first
-    const jsonDecoded = safeJsonParse(payload.toString('utf8'))
-    if (jsonDecoded !== null) {
-      decoded = jsonDecoded
-      decodingMethod = 'json'
-    } else {
-      // Fallback to MessagePack (might be binary even in opcode mode)
-      try {
-        decoded = msgpackDecode(payload)
-        decodingMethod = 'messagepack-fallback'
-      } catch (msgpackError) {
-        if (tracking) {
-          accumulate(totals.other, size)
-        }
-        return
-      }
-    }
-  }
 
-  // Handle join response to start tracking
-  let isJoinSuccess = false
-  if (decoded?.kind === 'joinResponse' && decoded?.payload?.joinResponse?.success) {
-    isJoinSuccess = true
-  }
-  // Check for Opcode Array JoinResponse: [105, requestID, success(0/1), ...]
-  else if (Array.isArray(decoded) && decoded[0] === 105 && decoded[2] === 1) {
-    isJoinSuccess = true
-  }
-
-  if (isJoinSuccess) {
     if (!tracking) {
-      tracking = true
-      console.log(`\n✅ 已加入房間，開始測量... (${durationSeconds} 秒)`)
-      stopTimer = setTimeout(() => finish(), durationSeconds * 1000)
+      return
     }
-  }
 
-  if (!tracking) {
-    return
-  }
+    // Classify message based on decoded structure
+    // decodeMessage converts opcode arrays to structured objects, so we check the object structure
+    classifyDecodedMessage(decoded, size)
+  })
 
-  // Classify message based on format
-  if (format === 'opcode' || format === 'messagepack') {
-    classifyOpcodeMessage(decoded, size)
-  } else {
-    classifyJsonMessage(decoded, size)
-  }
-})
-
-function classifyOpcodeMessage(decoded: any, size: number) {
-  if (!Array.isArray(decoded)) {
-    accumulate(totals.other, size)
-    return
-  }
-
-  const opcode = decoded[0]
-  
-  if (typeof opcode !== 'number') {
-    accumulate(totals.other, size)
-    return
-  }
-
-  // Opcode classification
-  // 1 = snapshot, 2 = diff/stateUpdate, 103 = event, 100+ = transport messages
-  if (opcode === 1) {
-    accumulate(totals.snapshot, size)
-  } else if (opcode === 2) {
-    accumulate(totals.stateUpdate, size)
-  } else if (opcode === 103) {
-    accumulate(totals.event, size)
-  } else if (opcode >= 100) {
-    accumulate(totals.transport, size)
-  } else {
-    accumulate(totals.other, size)
-  }
-}
-
-function classifyJsonMessage(decoded: any, size: number) {
-  // Legacy JSON format classification
-  if (Array.isArray(decoded)) {
-    accumulate(totals.stateUpdate, size)
-    return
-  }
-
+function classifyDecodedMessage(decoded: any, size: number) {
+  // Check if it's a StateUpdate (diff or snapshot)
   if (decoded && typeof decoded === 'object') {
+    if ('type' in decoded) {
+      // StateUpdate format: { type: 'diff' | 'firstSync', patches: [...] }
+      if (decoded.type === 'firstSync' || decoded.type === 'snapshot') {
+        accumulate(totals.snapshot, size)
+        return
+      } else if (decoded.type === 'diff') {
+        accumulate(totals.stateUpdate, size)
+        return
+      }
+    }
+    
+    // Check if it's a TransportMessage
     if ('kind' in decoded) {
       if (decoded.kind === 'event') {
         accumulate(totals.event, size)
+        return
       } else {
+        // Other transport messages (joinResponse, actionResponse, error, etc.)
         accumulate(totals.transport, size)
+        return
       }
-      return
     }
-    if ('type' in decoded && 'patches' in decoded) {
-      accumulate(totals.stateUpdate, size)
-      return
-    }
+    
+    // Check for legacy snapshot format: { values: {...} }
     if ('values' in decoded) {
       accumulate(totals.snapshot, size)
       return
     }
   }
+  
+  // Check if it's still an opcode array (shouldn't happen after decodeMessage, but handle it)
+  if (Array.isArray(decoded) && decoded.length > 0) {
+    const opcode = decoded[0]
+    if (typeof opcode === 'number') {
+      // Opcode classification
+      // 1 = snapshot, 2 = diff/stateUpdate, 103 = event, 100+ = transport messages
+      if (opcode === 1) {
+        accumulate(totals.snapshot, size)
+        return
+      } else if (opcode === 2) {
+        accumulate(totals.stateUpdate, size)
+        return
+      } else if (opcode === 103) {
+        accumulate(totals.event, size)
+        return
+      } else if (opcode >= 100) {
+        accumulate(totals.transport, size)
+        return
+      }
+    }
+  }
 
+  // Unknown format
   accumulate(totals.other, size)
 }
 
-ws.on('error', (error) => {
-  console.error(`WebSocket error: ${error}`)
-  finish()
-})
 
-ws.on('close', () => {
-  finish()
+  ws.on('error', (error) => {
+    console.error(`WebSocket error: ${error}`)
+    finish()
+  })
+
+  ws.on('close', () => {
+    finish()
+  })
+}
+
+// Start the measurement process
+startMeasurement().catch((error) => {
+  console.error(`Failed to start measurement: ${error}`)
+  process.exit(1)
 })
 
 function finish() {
@@ -206,7 +261,7 @@ function finish() {
     clearTimeout(stopTimer)
     stopTimer = null
   }
-  if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
     ws.close()
   }
   printReport()
@@ -353,14 +408,6 @@ function toBuffer(data: WebSocket.RawData): Buffer {
     return Buffer.from(data.buffer)
   }
   return Buffer.from(String(data))
-}
-
-function safeJsonParse(text: string): any {
-  try {
-    return JSON.parse(text)
-  } catch {
-    return null
-  }
 }
 
 function parseLand(land: string) {

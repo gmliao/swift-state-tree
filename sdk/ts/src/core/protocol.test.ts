@@ -18,8 +18,13 @@ import {
   clientEventHashReverseLookup,
   eventFieldOrder,
   clientEventFieldOrder,
-  pathHashReverseLookup
+  pathHashReverseLookup,
+  MessageKindOpcode,
+  StateUpdateOpcode,
+  StatePatchOpcode,
+  EventDirection
 } from './protocol'
+import { MessageEncodingValues, StateUpdateEncodingValues } from '../types/transport'
 import type { TransportMessage, StateUpdate, StateSnapshot } from '../types/transport'
 
 describe('protocol', () => {
@@ -214,7 +219,7 @@ describe('protocol', () => {
     })
 
     it('decodes opcode array noChange StateUpdate from JSON string', () => {
-      const updateArray = [0]
+      const updateArray = [StateUpdateOpcode.noChange]
       const encoded = JSON.stringify(updateArray)
       const decoded = decodeMessage(encoded)
 
@@ -227,7 +232,7 @@ describe('protocol', () => {
     })
 
     it('decodes opcode array firstSync StateUpdate from JSON string', () => {
-      const updateArray = [1, ['/score', 1, 10]]
+      const updateArray = [StateUpdateOpcode.firstSync, ['/score', StatePatchOpcode.replace, 10]]
       const encoded = JSON.stringify(updateArray)
       const decoded = decodeMessage(encoded)
 
@@ -242,9 +247,9 @@ describe('protocol', () => {
 
     it('decodes opcode array StateUpdate with nested object', () => {
       const updateArray = [
-        2,
-        ['/player', 1, { name: 'Alice', hp: 100, inventory: ['sword', 'potion'] }],
-        ['/stats', 1, { str: 10, dex: 8 }]
+        StateUpdateOpcode.diff,
+        ['/player', StatePatchOpcode.replace, { name: 'Alice', hp: 100, inventory: ['sword', 'potion'] }],
+        ['/stats', StatePatchOpcode.replace, { str: 10, dex: 8 }]
       ]
 
       const encoded = JSON.stringify(updateArray)
@@ -270,10 +275,10 @@ describe('protocol', () => {
 
     it('decodes opcode array StateUpdate with deeply nested object', () => {
       const updateArray = [
-        2,
+        StateUpdateOpcode.diff,
         [
           '/player',
-          1,
+          StatePatchOpcode.replace,
           {
             name: 'Bob',
             level: 5,
@@ -316,12 +321,12 @@ describe('protocol', () => {
     })
 
     it('throws when opcode array is received with jsonObject decoding', () => {
-      const updateArray = [2, ['/score', 1, 10]]
+      const updateArray = [StateUpdateOpcode.diff, ['/score', StatePatchOpcode.replace, 10]]
       const encoded = JSON.stringify(updateArray)
       expect(() => decodeMessage(encoded, {
-        message: 'json',
-        stateUpdate: 'jsonObject',
-        stateUpdateDecoding: 'jsonObject'
+        message: MessageEncodingValues.json,
+        stateUpdate: StateUpdateEncodingValues.jsonObject,
+        stateUpdateDecoding: StateUpdateEncodingValues.jsonObject
       })).toThrow('Unknown message format')
     })
 
@@ -338,9 +343,9 @@ describe('protocol', () => {
       }
       const encoded = JSON.stringify(update)
       expect(() => decodeMessage(encoded, {
-        message: 'json',
-        stateUpdate: 'opcodeJsonArray',
-        stateUpdateDecoding: 'opcodeJsonArray'
+        message: MessageEncodingValues.json,
+        stateUpdate: StateUpdateEncodingValues.opcodeJsonArray,
+        stateUpdateDecoding: StateUpdateEncodingValues.opcodeJsonArray
       })).toThrow('Unknown message format')
     })
 
@@ -519,8 +524,8 @@ describe('protocol', () => {
 
     it('decodes PathHash format with static path', () => {
       const updateArray = [
-        2, // diff opcode
-        [222222, null, 1, 100] // [pathHash, dynamicKey, op, value]
+        StateUpdateOpcode.diff,
+        [222222, null, StatePatchOpcode.replace, 100] // [pathHash, dynamicKey, op, value]
       ]
 
       const encoded = JSON.stringify(updateArray)
@@ -578,8 +583,8 @@ describe('protocol', () => {
 
     it('decodes PathHash format with dynamic key', () => {
       const updateArray = [
-        2, // diff opcode
-        [567890, '42', 1, 50] // monsters.42.health = 50
+        StateUpdateOpcode.diff,
+        [567890, '42', StatePatchOpcode.replace, 50] // monsters.42.health = 50
       ]
 
       const encoded = JSON.stringify(updateArray)
@@ -599,9 +604,9 @@ describe('protocol', () => {
 
     it('decodes PathHash format with multiple dynamic keys (multi-wildcard pattern)', () => {
       const updateArray = [
-        2, // diff opcode
+        StateUpdateOpcode.diff,
         // [pathHash, dynamicKeys[], op, value]
-        [888888, ['42', '7'], 1, 'sword']
+        [888888, ['42', '7'], StatePatchOpcode.replace, 'sword']
       ]
 
       const encoded = JSON.stringify(updateArray)
@@ -621,8 +626,8 @@ describe('protocol', () => {
 
     it('decodes PathHash format remove operation', () => {
       const updateArray = [
-        2, // diff opcode
-        [123456, '36', 2] // remove monsters.36
+        StateUpdateOpcode.diff,
+        [123456, '36', StatePatchOpcode.remove] // remove monsters.36
       ]
 
       const encoded = JSON.stringify(updateArray)
@@ -642,9 +647,9 @@ describe('protocol', () => {
 
     it('decodes mixed Legacy and PathHash formats', () => {
       const updateArray = [
-        2, // diff opcode
-        ['/score', 1, 100], // Legacy format
-        [567890, '42', 1, 50] // PathHash format
+        StateUpdateOpcode.diff,
+        ['/score', StatePatchOpcode.replace, 100], // Legacy format
+        [567890, '42', StatePatchOpcode.replace, 50] // PathHash format
       ]
 
       const encoded = JSON.stringify(updateArray)
@@ -669,8 +674,8 @@ describe('protocol', () => {
 
     it('decodes PathHash format with nested property (rotation.degrees)', () => {
       const updateArray = [
-        2, // diff opcode
-        [901234, '37', 1, 90] // monsters.37.rotation.degrees = 90
+        StateUpdateOpcode.diff,
+        [901234, '37', StatePatchOpcode.replace, 90] // monsters.37.rotation.degrees = 90
       ]
 
       const encoded = JSON.stringify(updateArray)
@@ -690,8 +695,8 @@ describe('protocol', () => {
 
     it('throws error for unknown pathHash', () => {
       const updateArray = [
-        2, // diff opcode
-        [999999, '42', 1, 50] // Unknown hash
+        StateUpdateOpcode.diff,
+        [999999, '42', StatePatchOpcode.replace, 50] // Unknown hash
       ]
 
       const encoded = JSON.stringify(updateArray)
@@ -700,8 +705,8 @@ describe('protocol', () => {
 
     it('decodes PathHash format with complex object value', () => {
       const updateArray = [
-        2, // diff opcode
-        [789012, '42', 1, { v: { x: 10, y: 20 } }] // monsters.42.position
+        StateUpdateOpcode.diff,
+        [789012, '42', StatePatchOpcode.replace, { v: { x: 10, y: 20 } }] // monsters.42.position
       ]
 
       const encoded = JSON.stringify(updateArray)
@@ -730,14 +735,14 @@ describe('protocol', () => {
 
     it('decodes compressed path with dynamic key', () => {
       const updateArray = [
-        2, // diff opcode
-        [222222, null, 1, 100] // [pathHash, dynamicKey, op, value]
+        StateUpdateOpcode.diff,
+        [222222, null, StatePatchOpcode.replace, 100] // [pathHash, dynamicKey, op, value]
       ]
 
       const encoded = JSON.stringify(updateArray)
       const decoded = decodeMessage(encoded, { 
-        message: 'json', 
-        stateUpdate: 'opcodeJsonArray', 
+        message: MessageEncodingValues.json, 
+        stateUpdate: StateUpdateEncodingValues.opcodeJsonArray, 
         stateUpdateDecoding: 'opcodeJsonArray' 
       })
 
@@ -755,15 +760,15 @@ describe('protocol', () => {
 
     it('decodes firstSync opcode with playerSlot (Int)', () => {
       const updateArray = [
-        1, // firstSync opcode
-        [222222, null, 1, 100],
+        StateUpdateOpcode.firstSync,
+        [222222, null, StatePatchOpcode.replace, 100],
         [567890, 'monster-1', 1, 50]
       ]
 
       const encoded = JSON.stringify(updateArray)
       const decoded = decodeMessage(encoded, { 
-        message: 'json', 
-        stateUpdate: 'opcodeJsonArray', 
+        message: MessageEncodingValues.json, 
+        stateUpdate: StateUpdateEncodingValues.opcodeJsonArray, 
         stateUpdateDecoding: 'opcodeJsonArray' 
       })
 
@@ -786,13 +791,13 @@ describe('protocol', () => {
 
     it('decodes noChange opcode with playerSlot (Int)', () => {
       const updateArray = [
-        0, // noChange opcode
+        StateUpdateOpcode.noChange,
       ]
 
       const encoded = JSON.stringify(updateArray)
       const decoded = decodeMessage(encoded, { 
-        message: 'json', 
-        stateUpdate: 'opcodeJsonArray', 
+        message: MessageEncodingValues.json, 
+        stateUpdate: StateUpdateEncodingValues.opcodeJsonArray, 
         stateUpdateDecoding: 'opcodeJsonArray' 
       })
 
@@ -807,15 +812,15 @@ describe('protocol', () => {
 
     it('decodes playerSlot with PathHash format patches', () => {
       const updateArray = [
-        2, // diff opcode
-        [222222, 'player-abc', 1, 150], // PathHash with dynamic key
-        [567890, null, 1, 75] // PathHash without dynamic key
+        StateUpdateOpcode.diff,
+        [222222, 'player-abc', StatePatchOpcode.replace, 150], // PathHash with dynamic key
+        [567890, null, StatePatchOpcode.replace, 75] // PathHash without dynamic key
       ]
 
       const encoded = JSON.stringify(updateArray)
       const decoded = decodeMessage(encoded, { 
-        message: 'json', 
-        stateUpdate: 'opcodeJsonArray', 
+        message: MessageEncodingValues.json, 
+        stateUpdate: StateUpdateEncodingValues.opcodeJsonArray, 
         stateUpdateDecoding: 'opcodeJsonArray' 
       })
 
@@ -838,15 +843,15 @@ describe('protocol', () => {
 
     it('decodes playerSlot with mixed Legacy and PathHash formats', () => {
       const updateArray = [
-        2, // diff opcode
-        ['/score', 1, 200], // Legacy format
-        [567890, 'monster-xyz', 1, 60] // PathHash format
+        StateUpdateOpcode.diff,
+        ['/score', StatePatchOpcode.replace, 200], // Legacy format
+        [567890, 'monster-xyz', StatePatchOpcode.replace, 60] // PathHash format
       ]
 
       const encoded = JSON.stringify(updateArray)
       const decoded = decodeMessage(encoded, { 
-        message: 'json', 
-        stateUpdate: 'opcodeJsonArray', 
+        message: MessageEncodingValues.json, 
+        stateUpdate: StateUpdateEncodingValues.opcodeJsonArray, 
         stateUpdateDecoding: 'opcodeJsonArray' 
       })
 
@@ -879,8 +884,8 @@ describe('protocol', () => {
     it('falls back to string type if rawType is string', () => {
       const eventPayload = { msg: 'hello' }
       const eventArray = [
-        103, // Opcode for Event
-        1,   // Direction: fromServer
+        MessageKindOpcode.event, // Opcode for Event
+        EventDirection.fromServer,   // Direction: fromServer
         'UnknownEvent', // String type
         eventPayload,
         null
@@ -923,7 +928,7 @@ describe('protocol', () => {
             landType: 'demo-game',
             landInstanceId: 'instance-1',
             playerSlot: 0,
-            encoding: 'opcodeJsonArray',
+            encoding: MessageEncodingValues.opcodeJsonArray,
             reason: undefined
           }
         } as any
@@ -957,7 +962,7 @@ describe('protocol', () => {
       const encoded = encodeMessageArray(message)
       const array = JSON.parse(encoded)
       
-      expect(array[0]).toBe(105) // opcode
+      expect(array[0]).toBe(MessageKindOpcode.joinResponse)
       expect(array[1]).toBe('req-456') // requestID
       expect(array[2]).toBe(0) // success
       expect(array[3]).toBe(null) // landType
@@ -969,13 +974,13 @@ describe('protocol', () => {
 
     it('decodes joinResponse with encoding field from opcode array', () => {
       const array = [
-        105, // opcode
+        MessageKindOpcode.joinResponse,
         'req-789',
         1, // success
         'demo-game',
         'instance-2',
         1, // playerSlot
-        'opcodeJsonArray', // encoding
+        MessageEncodingValues.opcodeJsonArray, // encoding
         null // reason
       ]
 
@@ -989,12 +994,12 @@ describe('protocol', () => {
       expect(payload.landType).toBe('demo-game')
       expect(payload.landInstanceId).toBe('instance-2')
       expect(payload.playerSlot).toBe(1)
-      expect(payload.encoding).toBe('opcodeJsonArray')
+      expect(payload.encoding).toBe(MessageEncodingValues.opcodeJsonArray)
     })
 
     it('decodes joinResponse without encoding field from opcode array', () => {
       const array = [
-        105, // opcode
+        MessageKindOpcode.joinResponse,
         'req-999',
         0, // success
         null, // landType
@@ -1013,6 +1018,251 @@ describe('protocol', () => {
       expect(payload.success).toBe(false)
       expect(payload.encoding).toBeUndefined()
       expect(payload.reason).toBe('Access denied')
+    })
+  })
+
+  describe('Opcode Constants', () => {
+    it('has correct MessageKindOpcode values', () => {
+      expect(MessageKindOpcode.action).toBe(101)
+      expect(MessageKindOpcode.actionResponse).toBe(102)
+      expect(MessageKindOpcode.event).toBe(103)
+      expect(MessageKindOpcode.join).toBe(104)
+      expect(MessageKindOpcode.joinResponse).toBe(105)
+      expect(MessageKindOpcode.error).toBe(106)
+    })
+
+    it('has correct StateUpdateOpcode values', () => {
+      expect(StateUpdateOpcode.noChange).toBe(0)
+      expect(StateUpdateOpcode.firstSync).toBe(1)
+      expect(StateUpdateOpcode.diff).toBe(2)
+    })
+
+    it('has correct StatePatchOpcode values', () => {
+      expect(StatePatchOpcode.replace).toBe(1)
+      expect(StatePatchOpcode.remove).toBe(2)
+      expect(StatePatchOpcode.add).toBe(3)
+    })
+
+    it('has correct EventDirection values', () => {
+      expect(EventDirection.fromClient).toBe(0)
+      expect(EventDirection.fromServer).toBe(1)
+    })
+
+    it('has correct MessageEncodingValues', () => {
+      expect(MessageEncodingValues.json).toBe('json')
+      expect(MessageEncodingValues.opcodeJsonArray).toBe('opcodeJsonArray')
+      expect(MessageEncodingValues.messagepack).toBe('messagepack')
+    })
+
+    it('has correct StateUpdateEncodingValues', () => {
+      expect(StateUpdateEncodingValues.jsonObject).toBe('jsonObject')
+      expect(StateUpdateEncodingValues.opcodeJsonArray).toBe('opcodeJsonArray')
+    })
+  })
+
+  describe('encodeMessageArray - other message types', () => {
+    it('encodes action message', () => {
+      const message: TransportMessage = {
+        kind: 'action',
+        payload: {
+          requestID: 'req-action-1',
+          typeIdentifier: 'BuyItem',
+          payload: { itemID: 'sword' }
+        } as any
+      }
+
+      const encoded = encodeMessageArray(message)
+      const array = JSON.parse(encoded)
+      
+      expect(array[0]).toBe(MessageKindOpcode.action)
+      expect(array[1]).toBe('req-action-1')
+      expect(array[2]).toBe('BuyItem')
+      expect(array[3]).toEqual({ itemID: 'sword' })
+    })
+
+    it('encodes actionResponse message', () => {
+      const message: TransportMessage = {
+        kind: 'actionResponse',
+        payload: {
+          actionResponse: {
+            requestID: 'req-action-1',
+            response: { success: true, itemID: 'sword' }
+          }
+        } as any
+      }
+
+      const encoded = encodeMessageArray(message)
+      const array = JSON.parse(encoded)
+      
+      expect(array[0]).toBe(MessageKindOpcode.actionResponse)
+      expect(array[1]).toBe('req-action-1')
+      expect(array[2]).toEqual({ success: true, itemID: 'sword' })
+    })
+
+    it('encodes error message', () => {
+      const message: TransportMessage = {
+        kind: 'error',
+        payload: {
+          error: {
+            code: 'INVALID_ACTION',
+            message: 'Action not found',
+            details: { actionType: 'UnknownAction' }
+          }
+        } as any
+      }
+
+      const encoded = encodeMessageArray(message)
+      const array = JSON.parse(encoded)
+      
+      expect(array[0]).toBe(MessageKindOpcode.error)
+      expect(array[1]).toBe('INVALID_ACTION')
+      expect(array[2]).toBe('Action not found')
+      expect(array[3]).toEqual({ actionType: 'UnknownAction' })
+    })
+
+    it('encodes join message', () => {
+      const message: TransportMessage = {
+        kind: 'join',
+        payload: {
+          join: {
+            requestID: 'req-join-1',
+            landType: 'demo-game',
+            landInstanceId: 'room-123',
+            playerID: 'player-1',
+            deviceID: 'device-1',
+            metadata: { version: '1.0' }
+          }
+        } as any
+      }
+
+      const encoded = encodeMessageArray(message)
+      const array = JSON.parse(encoded)
+      
+      expect(array[0]).toBe(MessageKindOpcode.join)
+      expect(array[1]).toBe('req-join-1')
+      expect(array[2]).toBe('demo-game')
+      expect(array[3]).toBe('room-123')
+      expect(array[4]).toBe('player-1')
+      expect(array[5]).toBe('device-1')
+      expect(array[6]).toEqual({ version: '1.0' })
+    })
+
+    it('encodes event message fromClient', () => {
+      const message: TransportMessage = {
+        kind: 'event',
+        payload: {
+          fromClient: {
+            type: 'ClickButton',
+            payload: { buttonID: 'start' }
+          }
+        } as any
+      }
+
+      const encoded = encodeMessageArray(message)
+      const array = JSON.parse(encoded)
+      
+      expect(array[0]).toBe(MessageKindOpcode.event)
+      expect(array[1]).toBe(EventDirection.fromClient)
+      expect(array[2]).toBe('ClickButton')
+      expect(array[3]).toEqual({ buttonID: 'start' })
+    })
+
+    it('encodes event message fromServer', () => {
+      const message: TransportMessage = {
+        kind: 'event',
+        payload: {
+          fromServer: {
+            type: 'GameStarted',
+            payload: { gameID: 'game-123' }
+          }
+        } as any
+      }
+
+      const encoded = encodeMessageArray(message)
+      const array = JSON.parse(encoded)
+      
+      expect(array[0]).toBe(MessageKindOpcode.event)
+      expect(array[1]).toBe(EventDirection.fromServer)
+      expect(array[2]).toBe('GameStarted')
+      expect(array[3]).toEqual({ gameID: 'game-123' })
+    })
+  })
+
+  describe('decodeTransportMessageArray - other message types', () => {
+    it('decodes action message from opcode array', () => {
+      const array = [
+        MessageKindOpcode.action,
+        'req-action-1',
+        'BuyItem',
+        { itemID: 'sword' }
+      ]
+
+      const encoded = JSON.stringify(array)
+      const decoded = decodeMessage(encoded) as TransportMessage
+
+      expect(decoded.kind).toBe('action')
+      const payload = decoded.payload as any
+      expect(payload.requestID).toBe('req-action-1')
+      expect(payload.typeIdentifier).toBe('BuyItem')
+      expect(payload.payload).toEqual({ itemID: 'sword' })
+    })
+
+    it('decodes actionResponse message from opcode array', () => {
+      const array = [
+        MessageKindOpcode.actionResponse,
+        'req-action-1',
+        { success: true, itemID: 'sword' }
+      ]
+
+      const encoded = JSON.stringify(array)
+      const decoded = decodeMessage(encoded) as TransportMessage
+
+      expect(decoded.kind).toBe('actionResponse')
+      const payload = (decoded.payload as any).actionResponse
+      expect(payload.requestID).toBe('req-action-1')
+      expect(payload.response).toEqual({ success: true, itemID: 'sword' })
+    })
+
+    it('decodes error message from opcode array', () => {
+      const array = [
+        MessageKindOpcode.error,
+        'INVALID_ACTION',
+        'Action not found',
+        { actionType: 'UnknownAction' }
+      ]
+
+      const encoded = JSON.stringify(array)
+      const decoded = decodeMessage(encoded) as TransportMessage
+
+      expect(decoded.kind).toBe('error')
+      const payload = (decoded.payload as any).error
+      expect(payload.code).toBe('INVALID_ACTION')
+      expect(payload.message).toBe('Action not found')
+      expect(payload.details).toEqual({ actionType: 'UnknownAction' })
+    })
+
+    it('decodes join message from opcode array', () => {
+      const array = [
+        MessageKindOpcode.join,
+        'req-join-1',
+        'demo-game',
+        'room-123',
+        'player-1',
+        'device-1',
+        { version: '1.0' }
+      ]
+
+      const encoded = JSON.stringify(array)
+      const decoded = decodeMessage(encoded) as TransportMessage
+
+      expect(decoded.kind).toBe('join')
+      const payload = (decoded.payload as any).join
+      expect(payload.requestID).toBe('req-join-1')
+      expect(payload.landType).toBe('demo-game')
+      expect(payload.landInstanceId).toBe('room-123')
+      expect(payload.playerID).toBe('player-1')
+      expect(payload.deviceID).toBe('device-1')
+      expect(payload.metadata).toEqual({ version: '1.0' })
     })
   })
 })
