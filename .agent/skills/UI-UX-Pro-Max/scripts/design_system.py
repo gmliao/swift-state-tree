@@ -136,21 +136,21 @@ class DesignSystemGenerator:
 
         # Second: score by keyword match in all fields
         scored = []
-        for result in results:
-            result_str = str(result).lower()
+        for item in results:
+            item_str = str(item).lower()
             score = 0
             for kw in priority_keywords:
                 kw_lower = kw.lower().strip()
                 # Higher score for style name match
-                if kw_lower in result.get("Style Category", "").lower():
+                if kw_lower in item.get("Style Category", "").lower():
                     score += 10
                 # Lower score for keyword field match
-                elif kw_lower in result.get("Keywords", "").lower():
+                elif kw_lower in item.get("Keywords", "").lower():
                     score += 3
                 # Even lower for other field matches
-                elif kw_lower in result_str:
+                elif kw_lower in item_str:
                     score += 1
-            scored.append((score, result))
+            scored.append((score, item))
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return scored[0][1] if scored and scored[0][0] > 0 else results[0]
@@ -405,8 +405,8 @@ def format_markdown(design_system: dict) -> str:
 
     # Colors section
     lines.append("### Colors")
-    lines.append(f"| Role | Hex |")
-    lines.append(f"|------|-----|")
+    lines.append("| Role | Hex |")
+    lines.append("|------|-----|")
     lines.append(f"| Primary | {colors.get('primary', '')} |")
     lines.append(f"| Secondary | {colors.get('secondary', '')} |")
     lines.append(f"| CTA | {colors.get('cta', '')} |")
@@ -427,10 +427,10 @@ def format_markdown(design_system: dict) -> str:
     if typography.get("google_fonts_url"):
         lines.append(f"- **Google Fonts:** {typography.get('google_fonts_url', '')}")
     if typography.get("css_import"):
-        lines.append(f"- **CSS Import:**")
-        lines.append(f"```css")
-        lines.append(f"{typography.get('css_import', '')}")
-        lines.append(f"```")
+        lines.append("- **CSS Import:**")
+        lines.append("```css")
+        lines.append(typography.get('css_import', ''))
+        lines.append("```")
     lines.append("")
 
     # Key Effects section
@@ -938,7 +938,8 @@ def _generate_intelligent_overrides(page_name: str, page_query: str, design_syst
     Uses the existing search infrastructure to find relevant style, UX, and layout
     data instead of hardcoded page types.
     """
-    from core import search
+    # design_system parameter reserved for future use
+    _ = design_system
     
     page_lower = page_name.lower()
     query_lower = (page_query or "").lower()
@@ -1086,5 +1087,5 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    result = generate_design_system(args.query, args.project_name, args.format)
-    print(result)
+    output = generate_design_system(args.query, args.project_name, args.format)
+    print(output)
