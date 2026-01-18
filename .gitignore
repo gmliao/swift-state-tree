@@ -151,3 +151,4 @@ temp/
 
 # Diagram files
 *.dia
+.worktrees/
