@@ -1,5 +1,6 @@
 import Foundation
 import Logging
+import SwiftStateTree
 import SwiftStateTreeTransport
 
 /// Configuration for LandServer instances.
@@ -54,10 +55,13 @@ public struct LandServerConfiguration: Sendable {
     /// Event hashes for event compression (extracted from schema).
     /// When provided, enables Opcode encoding for event types.
     public var eventHashes: [String: Int]?
-
+    
     /// Client event hashes for client event compression (extracted from schema).
     public var clientEventHashes: [String: Int]?
-
+    
+    /// Factory for providing LandServices per land instance.
+    public var servicesFactory: @Sendable (LandID, [String: String]) -> LandServices
+    
     public init(
         logger: Logger? = nil,
         jwtConfig: JWTConfiguration? = nil,
@@ -68,7 +72,10 @@ public struct LandServerConfiguration: Sendable {
         // enableParallelEncoding: Bool? = nil, // Temporarily disabled as parallel encoding evaluation showed little benefit
         pathHashes: [String: UInt32]? = nil,
         eventHashes: [String: Int]? = nil,
-        clientEventHashes: [String: Int]? = nil
+        clientEventHashes: [String: Int]? = nil,
+        servicesFactory: @Sendable @escaping (LandID, [String: String]) -> LandServices = { _, _ in
+            LandServices()
+        }
     ) {
         self.logger = logger
         self.jwtConfig = jwtConfig
@@ -80,5 +87,7 @@ public struct LandServerConfiguration: Sendable {
         self.pathHashes = pathHashes
         self.eventHashes = eventHashes
         self.clientEventHashes = clientEventHashes
+        self.servicesFactory = servicesFactory
     }
+
 }

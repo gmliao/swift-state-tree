@@ -41,20 +41,7 @@ struct GameServer {
 
         // Single TRANSPORT_ENCODING controls both message and stateUpdate encoding
         let transportEncodingEnv = getEnvString(key: "TRANSPORT_ENCODING", defaultValue: "messagepack")
-        let transportEncoding: TransportEncodingConfig
-
-        switch transportEncodingEnv.lowercased() {
-        case "opcode":
-            transportEncoding = .opcode
-        case "json":
-            transportEncoding = .json
-        case "json_opcode":
-            transportEncoding = .jsonOpcode
-        case "messagepack":
-            transportEncoding = .messagepack
-        default:
-            fatalError("Invalid TRANSPORT_ENCODING value: '\(transportEncodingEnv)'. Supported values: 'messagepack', 'opcode', 'json', 'json_opcode'.")
-        }
+        let transportEncoding = resolveTransportEncoding(rawValue: transportEncodingEnv)
 
         logger.info("📦 Transport encoding configured", metadata: [
             "message": .string(transportEncoding.message.rawValue),
@@ -84,10 +71,28 @@ struct GameServer {
         let serverConfig = LandServerConfiguration(
             logger: logger,
             jwtConfig: jwtConfig,
+            jwtValidator: nil,
             allowGuestMode: true,
             allowAutoCreateOnJoin: true,
             transportEncoding: transportEncoding,
-            pathHashes: pathHashes // Enable PathHash compression
+            pathHashes: pathHashes, // Enable PathHash compression
+            eventHashes: nil,
+            clientEventHashes: nil,
+            servicesFactory: { landID, metadata in
+                var services = LandServices()
+                
+                // Inject GameConfig provider
+                let configProvider = DefaultGameConfigProvider()
+                let configService = GameConfigProviderService(provider: configProvider)
+                services.register(configService, as: GameConfigProviderService.self)
+                
+                // Inject Deterministic RNG seeded by landID
+                let seed = DeterministicSeed.fromLandID(landID.stringValue)
+                let rngService = DeterministicRngService(seed: seed)
+                services.register(rngService, as: DeterministicRngService.self)
+                
+                return services
+            }
         )
 
         // Register Hero Defense game

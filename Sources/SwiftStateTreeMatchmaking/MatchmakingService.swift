@@ -146,7 +146,8 @@ public actor MatchmakingService<State: StateNodeProtocol, Registry: LandManagerR
             _ = await registry.createLand(
                 landID: newLandID,
                 definition: definition,
-                initialState: initialState
+                initialState: initialState,
+                metadata: [:]
             )
             
             // Remove matched players from queue

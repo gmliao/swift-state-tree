@@ -66,13 +66,14 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         /// - Parameters:
         ///   - createdAt: The creation time of the land.
         /// - Returns: LandStats containing player count and activity information.
-        public func getStats(createdAt: Date) async -> LandStats {
+        public func getStats(createdAt: Date, metadata: [String: String]) async -> LandStats {
             let playerCount = await keeper.playerCount()
             return LandStats(
                 landID: landID,
                 playerCount: playerCount,
                 createdAt: createdAt,
-                lastActivityAt: Date()
+                lastActivityAt: Date(),
+                metadata: metadata
             )
         }
     }
@@ -80,6 +81,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private var lands: [LandID: Container] = [:]
     private let landFactory: (LandID) -> LandDefinition<State>
     private let initialStateFactory: (LandID) -> State
+    private let servicesFactory: (LandID, [String: String]) -> LandServices
     private let sharedTransport: WebSocketTransport?
     private let createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)?
     private let logger: Logger
@@ -90,6 +92,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     
     /// Track creation time for each land
     private var landCreatedAt: [LandID: Date] = [:]
+    private var landMetadata: [LandID: [String: String]] = [:]
     
     private let enableParallelEncoding: Bool?
     
@@ -106,6 +109,9 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     public init(
         landFactory: @escaping @Sendable (LandID) -> LandDefinition<State>,
         initialStateFactory: @escaping @Sendable (LandID) -> State,
+        servicesFactory: @escaping @Sendable (LandID, [String: String]) -> LandServices = { _, _ in
+            LandServices()
+        },
         transport: WebSocketTransport? = nil,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         transportEncoding: TransportEncodingConfig = .json,
@@ -117,6 +123,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     ) {
         self.landFactory = landFactory
         self.initialStateFactory = initialStateFactory
+        self.servicesFactory = servicesFactory
         self.sharedTransport = transport
         self.createGuestSession = createGuestSession
         self.transportEncoding = transportEncoding
@@ -152,7 +159,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     public func getOrCreateLand(
         landID: LandID,
         definition: LandDefinition<State>,
-        initialState: State
+        initialState: State,
+        metadata: [String: String]
     ) async -> LandContainer<State> {
         // Check if land already exists
         if let existing = lands[landID] {
@@ -163,13 +171,15 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         // Create new land (use provided parameters)
         let landDefinition = definition
         let initial = initialState
-        
 
-        
+        let metadataServices = servicesFactory(landID, metadata)
+
         let transport = self.sharedTransport ?? WebSocketTransport(logger: logger)
+
         let keeper = LandKeeper<State>(
             definition: landDefinition,
             initialState: initial,
+            services: metadataServices,
             logger: logger
         )
         
@@ -217,6 +227,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         
         lands[landID] = container
         landCreatedAt[landID] = Date()
+        landMetadata[landID] = metadata
         
         logger.info("Created new land", metadata: [
             "landID": .string(landID.stringValue),
@@ -241,6 +252,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     public func removeLand(landID: LandID) async {
         lands.removeValue(forKey: landID)
         landCreatedAt.removeValue(forKey: landID)
+        landMetadata.removeValue(forKey: landID)
         logger.info("Removed land: \(landID.stringValue)")
     }
     
@@ -262,7 +274,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         }
         
         // Get stats from container
-        let stats = await container.getStats(createdAt: createdAt)
+        let stats = await container.getStats(createdAt: createdAt, metadata: landMetadata[landID] ?? [:])
         return stats
     }
     

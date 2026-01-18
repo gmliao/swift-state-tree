@@ -37,7 +37,8 @@ public protocol LandManagerRegistry: Actor {
     func createLand(
         landID: LandID,
         definition: LandDefinition<State>,
-        initialState: State
+        initialState: State,
+        metadata: [String: String]
     ) async -> LandContainer<State>
     
     /// Get a specific land (may be on any LandManager).
@@ -72,12 +73,14 @@ public actor SingleLandManagerRegistry<State: StateNodeProtocol>: LandManagerReg
     public func createLand(
         landID: LandID,
         definition: LandDefinition<State>,
-        initialState: State
+        initialState: State,
+        metadata: [String: String]
     ) async -> LandContainer<State> {
         await landManager.getOrCreateLand(
             landID: landID,
             definition: definition,
-            initialState: initialState
+            initialState: initialState,
+            metadata: metadata
         )
     }
     
@@ -117,7 +120,8 @@ public actor DistributedLandManagerRegistry<State: StateNodeProtocol>: LandManag
     public func createLand(
         landID: LandID,
         definition: LandDefinition<State>,
-        initialState: State
+        initialState: State,
+        metadata: [String: String]
     ) async -> LandContainer<State> {
         // Future: Select a suitable distributed LandManager and create land there
         fatalError("DistributedLandManagerRegistry not yet implemented")

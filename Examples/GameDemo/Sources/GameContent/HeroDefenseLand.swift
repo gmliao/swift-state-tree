@@ -32,24 +32,29 @@ public enum HeroDefense {
 
             Lifetime {
                 Tick(every: .milliseconds(Int64(GameConfig.TICK_INTERVAL_MS))) { (state: inout HeroDefenseState, ctx: LandContext) in
-                    guard let tickId = ctx.tickId else { return }
+                    guard let tickId = ctx.tickId,
+                          let configService = ctx.services.get(GameConfigProviderService.self),
+                          let rngService = ctx.services.get(DeterministicRngService.self) else {
+                        return
+                    }
+                    let config = configService.provider
                     
                     // Update all player systems
                     for (playerID, var player) in state.players {
                         defer { state.players[playerID] = player }
                         
                         // Update movement (this also updates rotation towards movement target)
-                        MovementSystem.updatePlayerMovement(&player)
+                        MovementSystem.updatePlayerMovement(&player, ctx)
                         
                         // Auto-shoot: Check if there's a monster in range and fire automatically
-                        guard CombatSystem.canPlayerFire(player, currentTick: tickId) else {
+                        guard CombatSystem.canPlayerFire(player, ctx) else {
                             continue
                         }
                         
                         guard let result = CombatSystem.processPlayerShoot(
                             player: &player,
                             monsters: &state.monsters,
-                            currentTick: tickId
+                            ctx
                         ) else {
                             continue
                         }
@@ -68,14 +73,14 @@ public enum HeroDefense {
                     }
                     
                     // Spawn monsters periodically (spawn speed increases over time)
-                    let spawnInterval = MonsterSystem.getMonsterSpawnInterval(currentTick: tickId)
+                    let spawnInterval = MonsterSystem.getMonsterSpawnInterval(ctx)
                     if tickId % Int64(spawnInterval) == 0 {
                         // Spawn random number of monsters (1-4) for more intense combat
-                        let spawnCount = Int.random(in: GameConfig.MONSTER_SPAWN_COUNT_MIN...GameConfig.MONSTER_SPAWN_COUNT_MAX)
+                        let spawnCount = rngService.nextInt(in: config.monsterSpawnCountMin...config.monsterSpawnCountMax)
                         for _ in 0..<spawnCount {
                             let monsterID = state.nextMonsterID
                             state.nextMonsterID += 1
-                            let monster = MonsterSystem.spawnMonster(nextID: monsterID)
+                            let monster = MonsterSystem.spawnMonster(nextID: monsterID, ctx)
                             state.monsters[monster.id] = monster
                         }
                     }
@@ -84,11 +89,19 @@ public enum HeroDefense {
                     var monstersToRemove: [Int] = []
                     for (monsterID, var monster) in state.monsters {
                         // Update movement
-                        MovementSystem.updateMonsterMovement(&monster, basePosition: state.base.position)
+                        MovementSystem.updateMonsterMovement(
+                            &monster,
+                            basePosition: state.base.position,
+                            ctx
+                        )
                         state.monsters[monsterID] = monster
                         
                         // Check if reached base
-                        if MonsterSystem.checkMonsterReachedBase(monster, base: &state.base) {
+                        if MonsterSystem.checkMonsterReachedBase(
+                            monster,
+                            base: &state.base,
+                            ctx
+                        ) {
                             monstersToRemove.append(monsterID)
                         }
                     }
@@ -103,7 +116,7 @@ public enum HeroDefense {
                         defer { state.turrets[turretID] = turret }
                         
                         // Check fire rate
-                        guard CombatSystem.canTurretFire(turret, currentTick: tickId) else {
+                        guard CombatSystem.canTurretFire(turret, ctx) else {
                             continue
                         }
                         
@@ -111,7 +124,7 @@ public enum HeroDefense {
                         guard let result = CombatSystem.processTurretShoot(
                             turret: &turret,
                             monsters: &state.monsters,
-                            currentTick: tickId
+                            ctx
                         ) else {
                             continue
                         }
@@ -157,14 +170,21 @@ public enum HeroDefense {
 
             Rules {
                 OnJoin { (state: inout HeroDefenseState, ctx: LandContext) in
+                    guard let configService = ctx.services.get(GameConfigProviderService.self),
+                          let rngService = ctx.services.get(DeterministicRngService.self) else {
+                        return
+                    }
+                    let config = configService.provider
+
                     let playerID = ctx.playerID
+
                     // Spawn player near base center
                     var player = PlayerState()
                     player.position = Position2(
-                        x: GameConfig.BASE_CENTER_X + Float.random(in: -5.0..<5.0),
-                        y: GameConfig.BASE_CENTER_Y + Float.random(in: -5.0..<5.0)
+                        x: config.baseCenterX + rngService.nextFloat(in: -5.0..<5.0),
+                        y: config.baseCenterY + rngService.nextFloat(in: -5.0..<5.0)
                     )
-                    player.position = MovementSystem.clampToWorldBounds(player.position)
+                    player.position = MovementSystem.clampToWorldBounds(player.position, ctx)
                     player.rotation = Angle(degrees: 0.0)
                     player.targetPosition = nil as Position2?
                     player.health = 100
@@ -196,7 +216,7 @@ public enum HeroDefense {
 
                     // Update player's target position (clamp to world bounds)
                     if var player = state.players[playerID] {
-                        let clampedTarget = MovementSystem.clampToWorldBounds(event.target)
+                        let clampedTarget = MovementSystem.clampToWorldBounds(event.target, ctx)
                         player.targetPosition = clampedTarget
                         state.players[playerID] = player
                     } else {
@@ -211,21 +231,20 @@ public enum HeroDefense {
                     // This can be used for manual shooting if needed in the future
                     let playerID = ctx.playerID
                     
-                    guard var player = state.players[playerID],
-                          let tickId = ctx.tickId else {
-                        ctx.logger.warning("⚠️ ShootEvent: Player not found or tickId unavailable", metadata: [
+                    guard var player = state.players[playerID] else {
+                        ctx.logger.warning("⚠️ ShootEvent: Player not found", metadata: [
                             "playerID": .string(playerID.rawValue),
                         ])
                         return
                     }
-                    
+
                     // Check fire rate
-                    if !CombatSystem.canPlayerFire(player, currentTick: tickId) {
+                    if !CombatSystem.canPlayerFire(player, ctx) {
                         return
                     }
                     
                     // Find nearest monster in range and auto-aim
-                    let range = CombatSystem.getWeaponRange(level: player.weaponLevel)
+                    let range = CombatSystem.getWeaponRange(level: player.weaponLevel, ctx)
                     let nearestMonster = CombatSystem.findNearestMonsterInRange(
                         from: player.position,
                         range: range,
@@ -244,7 +263,7 @@ public enum HeroDefense {
                         
                         // Apply damage
                         var updatedMonster = monster
-                        let damage = CombatSystem.getWeaponDamage(level: player.weaponLevel)
+                        let damage = CombatSystem.getWeaponDamage(level: player.weaponLevel, ctx)
                         if CombatSystem.damageMonster(&updatedMonster, damage: damage) {
                             // Monster defeated, give resources
                             player.resources += updatedMonster.reward
@@ -253,7 +272,10 @@ public enum HeroDefense {
                             state.monsters[monsterID] = updatedMonster
                         }
                         
-                        player.lastFireTick = tickId
+                        // Update fire tick
+                        if let tickId = ctx.tickId {
+                            player.lastFireTick = tickId
+                        }
                         
                         // Broadcast shoot event
                         ctx.spawn {
@@ -297,10 +319,15 @@ public enum HeroDefense {
                     }
 
                     // Check if player has enough resources
-                    if player.resources < GameConfig.TURRET_PLACEMENT_COST {
+                    guard let configService = ctx.services.get(GameConfigProviderService.self) else {
+                        return
+                    }
+                    let config = configService.provider
+
+                    if player.resources < config.turretPlacementCost {
                         ctx.logger.info("⚠️ PlaceTurretEvent: Insufficient resources", metadata: [
                             "playerID": .string(playerID.rawValue),
-                            "required": .string("\(GameConfig.TURRET_PLACEMENT_COST)"),
+                            "required": .string("\(config.turretPlacementCost)"),
                             "available": .string("\(player.resources)"),
                         ])
                         return
@@ -310,7 +337,8 @@ public enum HeroDefense {
                     if !TurretSystem.isValidTurretPosition(
                         event.position,
                         basePosition: state.base.position,
-                        existingTurrets: state.turrets
+                        existingTurrets: state.turrets,
+                        ctx
                     ) {
                         ctx.logger.info("⚠️ PlaceTurretEvent: Invalid position", metadata: [
                             "playerID": .string(playerID.rawValue),
@@ -319,7 +347,7 @@ public enum HeroDefense {
                     }
 
                     // Deduct resources and place turret
-                    player.resources -= GameConfig.TURRET_PLACEMENT_COST
+                    player.resources -= config.turretPlacementCost
                     let turretID = state.nextTurretID
                     state.nextTurretID += 1
                     var turret = TurretState()
@@ -333,7 +361,7 @@ public enum HeroDefense {
                     ctx.logger.info("🏰 Turret placed", metadata: [
                         "playerID": .string(playerID.rawValue),
                         "turretID": .string("\(turret.id)"),
-                        "cost": .string("\(GameConfig.TURRET_PLACEMENT_COST)"),
+                        "cost": .string("\(config.turretPlacementCost)"),
                         "remainingResources": .string("\(player.resources)"),
                     ])
                 }
@@ -348,9 +376,14 @@ public enum HeroDefense {
                         return
                     }
                     
+                    guard let configService = ctx.services.get(GameConfigProviderService.self) else {
+                        return
+                    }
+                    let config = configService.provider
+
                     // Check if player has enough resources
-                    if player.resources >= GameConfig.WEAPON_UPGRADE_COST {
-                        player.resources -= GameConfig.WEAPON_UPGRADE_COST
+                    if player.resources >= config.weaponUpgradeCost {
+                        player.resources -= config.weaponUpgradeCost
                         player.weaponLevel += 1
                         state.players[playerID] = player
                         
@@ -382,9 +415,14 @@ public enum HeroDefense {
                         return
                     }
                     
+                    guard let configService = ctx.services.get(GameConfigProviderService.self) else {
+                        return
+                    }
+                    let config = configService.provider
+
                     // Check if player has enough resources
-                    if player.resources >= GameConfig.TURRET_UPGRADE_COST {
-                        player.resources -= GameConfig.TURRET_UPGRADE_COST
+                    if player.resources >= config.turretUpgradeCost {
+                        player.resources -= config.turretUpgradeCost
                         turret.level += 1
                         state.players[playerID] = player
                         state.turrets[event.turretID] = turret

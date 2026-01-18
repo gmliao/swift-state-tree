@@ -95,7 +95,8 @@ public struct LobbyContainer<State: StateNodeProtocol, Registry: LandManagerRegi
         _ = await landManagerRegistry.createLand(
             landID: landID,
             definition: definition,
-            initialState: initialState
+            initialState: initialState,
+            metadata: [:]
         )
         
         logger.info("Room created by player", metadata: [

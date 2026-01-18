@@ -286,13 +286,15 @@ func testLandRealmGetLandStats() async throws {
         landID: land1,
         playerCount: 5,
         createdAt: Date(),
-        lastActivityAt: Date()
+        lastActivityAt: Date(),
+        metadata: [:]
     )
     let stats2 = LandStats(
         landID: land2,
         playerCount: 3,
         createdAt: Date(),
-        lastActivityAt: Date()
+        lastActivityAt: Date(),
+        metadata: [:]
     )
 
     server1.mockLands = [land1]

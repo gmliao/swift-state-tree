@@ -73,7 +73,8 @@ struct MultiRoomTwoPlayerTests {
         _ = await landManager.getOrCreateLand(
             landID: sharedLandID,
             definition: landFactory(sharedLandID),
-            initialState: initialStateFactory(sharedLandID)
+            initialState: initialStateFactory(sharedLandID),
+            metadata: [:]
         )
         
         let encoder = JSONEncoder()

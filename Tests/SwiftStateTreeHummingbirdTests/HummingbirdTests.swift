@@ -101,7 +101,7 @@ func testServerSetup() async throws {
     }
 
     let transport = WebSocketTransport()
-    let keeper = LandKeeper<TestState>(definition: definition, initialState: TestState())
+    let keeper = LandKeeper<TestState>(definition: definition, initialState: TestState(), services: LandServices())
     let transportAdapter = TransportAdapter<TestState>(
         keeper: keeper,
         transport: transport,
@@ -137,7 +137,7 @@ func testHummingbirdAdapterConnection() async throws {
     }
 
     let transport = WebSocketTransport()
-    let keeper = LandKeeper<TestState>(definition: definition, initialState: TestState())
+    let keeper = LandKeeper<TestState>(definition: definition, initialState: TestState(), services: LandServices())
     let transportAdapter = TransportAdapter<TestState>(
         keeper: keeper,
         transport: transport,
@@ -167,13 +167,15 @@ func testHummingbirdAppConfiguration() async throws {
     }
 
     let transport = WebSocketTransport()
-    let keeper = LandKeeper<TestState>(definition: definition, initialState: TestState())
+    let keeper = LandKeeper<TestState>(definition: definition, initialState: TestState(), services: LandServices())
     let transportAdapter = TransportAdapter<TestState>(
         keeper: keeper,
         transport: transport,
-        landID: "hb-app-test"
+        landID: "hb-test"
+
     )
     await transport.setDelegate(transportAdapter)
+
 
     let hbAdapter = HummingbirdStateTreeAdapter(transport: transport)
 
@@ -251,7 +253,8 @@ func testHummingbirdAdapterEmitsJSON() async throws {
 
     let keeper = LandKeeper<TestState>(
         definition: definition,
-        initialState: TestState()
+        initialState: TestState(),
+        services: LandServices()
     )
 
     let adapter = TransportAdapter<TestState>(

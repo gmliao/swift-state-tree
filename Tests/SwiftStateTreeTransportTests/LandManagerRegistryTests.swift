@@ -50,7 +50,8 @@ func testSingleLandManagerRegistryDelegates() async throws {
     let container1 = await registry.createLand(
         landID: landID1,
         definition: definition1,
-        initialState: initialState1
+        initialState: initialState1,
+        metadata: [:]
     )
     #expect(container1.landID == landID1)
     
@@ -107,19 +108,22 @@ func testSingleLandManagerRegistryMultipleLands() async throws {
     let container1 = await registry.createLand(
         landID: landID1,
         definition: landFactory(landID1),
-        initialState: initialStateFactory(landID1)
+        initialState: initialStateFactory(landID1),
+        metadata: [:]
     )
     
     let container2 = await registry.createLand(
         landID: landID2,
         definition: landFactory(landID2),
-        initialState: initialStateFactory(landID2)
+        initialState: initialStateFactory(landID2),
+        metadata: [:]
     )
     
     let container3 = await registry.createLand(
         landID: landID3,
         definition: landFactory(landID3),
-        initialState: initialStateFactory(landID3)
+        initialState: initialStateFactory(landID3),
+        metadata: [:]
     )
     
     // Assert
@@ -159,14 +163,16 @@ func testSingleLandManagerRegistryReusesExistingLand() async throws {
     let container1 = await registry.createLand(
         landID: landID,
         definition: landFactory(landID),
-        initialState: initialStateFactory(landID)
+        initialState: initialStateFactory(landID),
+        metadata: [:]
     )
     
     // Create same land again (should return existing)
     let container2 = await registry.createLand(
         landID: landID,
         definition: landFactory(landID),
-        initialState: initialStateFactory(landID)
+        initialState: initialStateFactory(landID),
+        metadata: [:]
     )
     
     // Assert - Should return same container

@@ -67,4 +67,16 @@ public struct LandServices: Sendable {
     public func get<Service: Sendable>(_ type: Service.Type) -> Service? {
         return services[ObjectIdentifier(type)] as? Service
     }
+
+    /// Merge another LandServices into this instance.
+    public mutating func merge(_ other: LandServices) {
+        services.merge(other.services) { _, new in new }
+    }
+
+    /// Return a new LandServices by merging another instance.
+    public func merging(_ other: LandServices) -> LandServices {
+        var combined = self
+        combined.merge(other)
+        return combined
+    }
 }

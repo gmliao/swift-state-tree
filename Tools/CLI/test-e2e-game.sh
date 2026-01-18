@@ -1,6 +1,6 @@
 #!/bin/bash
-# Local E2E test script that mimics GitHub Actions workflow
-# This allows testing the CI/CD workflow locally before pushing
+# E2E test script specifically for GameServer (hero-defense game)
+# This script starts GameServer, runs game tests, and cleans up
 
 set -e  # Exit on error
 
@@ -9,32 +9,33 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/e2e-test-common.sh"
 
 # Server-specific configuration
-SERVER_NAME="DemoServer"
-SERVER_DIR_NAME="HummingbirdDemo"
-SERVER_CMD="DemoServer"
+SERVER_NAME="GameServer"
+SERVER_DIR_NAME="GameDemo"
+SERVER_CMD="GameServer"
 
-# Function to start DemoServer
+# Function to start GameServer
 start_server() {
     local encoding=$1
     local project_root="$(pwd)"
     local server_dir="$project_root/Examples/${SERVER_DIR_NAME}"
+    # Normalize encoding: GameServer accepts json_opcode, jsonOpcode, json-opcode
     start_server_impl "$encoding" "$SERVER_NAME" "$server_dir" "$SERVER_CMD"
 }
 
 # Function to run tests for a specific encoding
 run_encoding_tests() {
     local encoding=$1
-    local test_command=""
+    local state_update_encoding=""
     
     case "$encoding" in
         json)
-            test_command="npm run test:e2e:jsonObject"
+            state_update_encoding="jsonObject"
             ;;
-        jsonOpcode)
-            test_command="npm run test:e2e:opcodeJsonArray"
+        jsonOpcode|json_opcode)
+            state_update_encoding="opcodeJsonArray"
             ;;
         messagepack)
-            test_command="npm run test:e2e:messagepack"
+            state_update_encoding="messagepack"
             ;;
         *)
             print_error "Unknown encoding: $encoding"
@@ -42,15 +43,35 @@ run_encoding_tests() {
             ;;
     esac
     
-    print_step "Running E2E tests ($encoding)..."
+    print_step "Running ${SERVER_NAME} E2E tests ($encoding)..."
     local project_root="$(pwd)"
     local cli_dir="$project_root/Tools/CLI"
     cd "$cli_dir"
     
-    TRANSPORT_ENCODING=${encoding} $test_command
+    # Ensure npm dependencies are installed
+    if [ ! -d "node_modules" ]; then
+        npm ci
+    fi
     
+    # Normalize encoding for server (GameServer accepts json_opcode)
+    local server_encoding=$(normalize_encoding_for_server "$encoding" "gameserver")
+    
+    TRANSPORT_ENCODING=${server_encoding} npx tsx src/cli.ts script \
+        -u ws://localhost:${SERVER_PORT}/game/hero-defense \
+        -l hero-defense \
+        -s scenarios/game/ \
+        --state-update-encoding ${state_update_encoding}
+    
+    local test_result=$?
     cd "$project_root"
-    print_success "E2E tests ($encoding) completed successfully"
+    
+    if [ $test_result -eq 0 ]; then
+        print_success "${SERVER_NAME} E2E tests ($encoding) completed successfully"
+        return 0
+    else
+        print_error "${SERVER_NAME} E2E tests ($encoding) failed"
+        return 1
+    fi
 }
 
 # Main execution
@@ -82,7 +103,7 @@ main() {
     fi
     
     echo "=========================================="
-    echo "  Local E2E CI/CD Test Runner"
+    echo "  ${SERVER_NAME} E2E Test Runner"
     echo "=========================================="
     echo ""
     echo "Project root: $project_root"
@@ -98,7 +119,7 @@ main() {
     build_sdk "$project_root"
     build_cli "$project_root"
     
-    # Build DemoServer
+    # Build GameServer
     print_step "Building ${SERVER_NAME}..."
     cd "$server_dir"
     swift build
@@ -107,6 +128,7 @@ main() {
     echo ""
     
     # Test each encoding mode
+    # Note: Use jsonOpcode in test script, but GameServer accepts json_opcode/jsonOpcode/json-opcode
     local encodings=("json" "jsonOpcode" "messagepack")
     local failed_encodings=()
     

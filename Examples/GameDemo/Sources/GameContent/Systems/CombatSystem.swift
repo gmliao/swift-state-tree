@@ -1,4 +1,5 @@
 import Foundation
+import SwiftStateTree
 import SwiftStateTreeDeterministicMath
 
 // MARK: - Combat System
@@ -8,19 +9,32 @@ public enum CombatSystem {
     // MARK: - Player Combat
     
     /// Calculate weapon damage based on level
-    public static func getWeaponDamage(level: Int) -> Int {
-        return GameConfig.WEAPON_BASE_DAMAGE + (level * 2)
+    public static func getWeaponDamage(level: Int, _ ctx: LandContext) -> Int {
+        guard let configService = ctx.services.get(GameConfigProviderService.self) else {
+            return 0
+        }
+        let config = configService.provider
+        return config.weaponBaseDamage + (level * 2)
     }
     
     /// Calculate weapon range based on level
-    public static func getWeaponRange(level: Int) -> Float {
-        return GameConfig.WEAPON_BASE_RANGE + (Float(level) * 2.0)
+    public static func getWeaponRange(level: Int, _ ctx: LandContext) -> Float {
+        guard let configService = ctx.services.get(GameConfigProviderService.self) else {
+            return 0.0
+        }
+        let config = configService.provider
+        return config.weaponBaseRange + (Float(level) * 2.0)
     }
     
     /// Check if player can fire (fire rate check)
-    public static func canPlayerFire(_ player: PlayerState, currentTick: Int64) -> Bool {
-        let fireRate = Int64(GameConfig.WEAPON_FIRE_RATE_TICKS)
-        return currentTick - player.lastFireTick >= fireRate
+    public static func canPlayerFire(_ player: PlayerState, _ ctx: LandContext) -> Bool {
+        guard let tickId = ctx.tickId,
+              let configService = ctx.services.get(GameConfigProviderService.self) else {
+            return false
+        }
+        let config = configService.provider
+        let fireRate = Int64(config.weaponFireRateTicks)
+        return tickId - player.lastFireTick >= fireRate
     }
     
     /// Find nearest monster within range
@@ -73,15 +87,18 @@ public enum CombatSystem {
     /// - Parameters:
     ///   - player: Player state (will be mutated: rotation, resources, lastFireTick)
     ///   - monsters: Dictionary of monsters (will be mutated if monster is defeated)
-    ///   - currentTick: Current tick ID for fire rate tracking
     /// - Returns: ShootResult if shot was fired, nil if no target in range
     public static func processPlayerShoot(
         player: inout PlayerState,
         monsters: inout [Int: MonsterState],
-        currentTick: Int64
+        _ ctx: LandContext
     ) -> ShootResult? {
+        guard let tickId = ctx.tickId else {
+            return nil
+        }
+        
         // Find nearest monster in range
-        let range = getWeaponRange(level: player.weaponLevel)
+        let range = getWeaponRange(level: player.weaponLevel, ctx)
         guard let (monsterID, monster) = findNearestMonsterInRange(
             from: player.position,
             range: range,
@@ -101,7 +118,7 @@ public enum CombatSystem {
         
         // Apply damage
         var updatedMonster = monster
-        let damage = getWeaponDamage(level: player.weaponLevel)
+        let damage = getWeaponDamage(level: player.weaponLevel, ctx)
         let defeated = damageMonster(&updatedMonster, damage: damage)
         
         var rewardGained = 0
@@ -115,7 +132,7 @@ public enum CombatSystem {
         }
         
         // Update fire tick
-        player.lastFireTick = currentTick
+        player.lastFireTick = tickId
         
         return ShootResult(
             shooterPosition: playerPos,
@@ -129,19 +146,32 @@ public enum CombatSystem {
     // MARK: - Turret Combat
     
     /// Calculate turret damage based on level
-    public static func getTurretDamage(level: Int) -> Int {
-        return GameConfig.TURRET_BASE_DAMAGE + (level * 1)
+    public static func getTurretDamage(level: Int, _ ctx: LandContext) -> Int {
+        guard let configService = ctx.services.get(GameConfigProviderService.self) else {
+            return 0
+        }
+        let config = configService.provider
+        return config.turretBaseDamage + (level * 1)
     }
     
     /// Calculate turret range based on level
-    public static func getTurretRange(level: Int) -> Float {
-        return GameConfig.TURRET_BASE_RANGE + (Float(level) * 1.0)
+    public static func getTurretRange(level: Int, _ ctx: LandContext) -> Float {
+        guard let configService = ctx.services.get(GameConfigProviderService.self) else {
+            return 0.0
+        }
+        let config = configService.provider
+        return config.turretBaseRange + (Float(level) * 1.0)
     }
     
     /// Check if turret can fire (fire rate check)
-    public static func canTurretFire(_ turret: TurretState, currentTick: Int64) -> Bool {
-        let fireRate = Int64(GameConfig.TURRET_FIRE_RATE_TICKS)
-        return currentTick - turret.lastFireTick >= fireRate
+    public static func canTurretFire(_ turret: TurretState, _ ctx: LandContext) -> Bool {
+        guard let tickId = ctx.tickId,
+              let configService = ctx.services.get(GameConfigProviderService.self) else {
+            return false
+        }
+        let config = configService.provider
+        let fireRate = Int64(config.turretFireRateTicks)
+        return tickId - turret.lastFireTick >= fireRate
     }
     
     /// Find nearest monster within turret range
@@ -182,15 +212,18 @@ public enum CombatSystem {
     /// - Parameters:
     ///   - turret: Turret state (will be mutated: rotation, lastFireTick)
     ///   - monsters: Dictionary of monsters (will be mutated if monster is defeated)
-    ///   - currentTick: Current tick ID for fire rate tracking
     /// - Returns: TurretShootResult if shot was fired, nil if no target in range
     public static func processTurretShoot(
         turret: inout TurretState,
         monsters: inout [Int: MonsterState],
-        currentTick: Int64
+        _ ctx: LandContext
     ) -> TurretShootResult? {
+        guard let tickId = ctx.tickId else {
+            return nil
+        }
+        
         // Find nearest monster in range
-        let range = getTurretRange(level: turret.level)
+        let range = getTurretRange(level: turret.level, ctx)
         guard let (monsterID, monster) = findNearestMonsterInTurretRange(
             from: turret.position,
             range: range,
@@ -210,7 +243,7 @@ public enum CombatSystem {
         
         // Apply damage
         var updatedMonster = monster
-        let damage = getTurretDamage(level: turret.level)
+        let damage = getTurretDamage(level: turret.level, ctx)
         let defeated = damageMonster(&updatedMonster, damage: damage)
         
         var rewardGained = 0
@@ -223,7 +256,7 @@ public enum CombatSystem {
         }
         
         // Update fire tick
-        turret.lastFireTick = currentTick
+        turret.lastFireTick = tickId
         
         return TurretShootResult(
             turretPosition: turretPos,
