@@ -126,6 +126,7 @@ WebClient 會運行在另一個端口（通常是 `http://localhost:5173`），�
 - 📖 [完整文檔索引](docs/index.zh-TW.md)
 - 🚀 [快速開始指南](docs/quickstart.zh-TW.md)
 - 📐 [架構概觀](docs/overview.zh-TW.md)
+- 🔎 [深度研究筆記](deep-research/README.zh-TW.md)
 
 ### 4. 最簡單範例
 
