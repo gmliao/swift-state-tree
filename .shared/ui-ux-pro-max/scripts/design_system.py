@@ -541,6 +541,7 @@ def persist_design_system(design_system: dict, page: str = None, output_dir: str
 def format_master_md(design_system: dict) -> str:
     """Format design system as MASTER.md with hierarchical override logic."""
     project = design_system.get("project_name", "PROJECT")
+    project_slug = project.lower().replace(' ', '-')
     pattern = design_system.get("pattern", {})
     style = design_system.get("style", {})
     colors = design_system.get("colors", {})
@@ -555,7 +556,7 @@ def format_master_md(design_system: dict) -> str:
     # Logic header
     lines.append("# Design System Master File")
     lines.append("")
-    lines.append("> **LOGIC:** When building a specific page, first check `design-system/pages/[page-name].md`.")
+    lines.append(f"> **LOGIC:** When building a specific page, first check `design-system/{project_slug}/pages/[page-name].md`.")
     lines.append("> If that file exists, its rules **override** this Master file.")
     lines.append("> If not, strictly follow the rules below.")
     lines.append("")
@@ -812,13 +813,15 @@ def format_page_override_md(design_system: dict, page_name: str, page_query: str
     
     lines = []
     
+    project_slug = project.lower().replace(' ', '-')
+    
     lines.append(f"# {page_title} Page Overrides")
     lines.append("")
     lines.append(f"> **PROJECT:** {project}")
     lines.append(f"> **Generated:** {timestamp}")
     lines.append(f"> **Page Type:** {page_overrides.get('page_type', 'General')}")
     lines.append("")
-    lines.append("> ⚠️ **IMPORTANT:** Rules in this file **override** the Master file (`design-system/MASTER.md`).")
+    lines.append(f"> ⚠️ **IMPORTANT:** Rules in this file **override** the Master file (`design-system/{project_slug}/MASTER.md`).")
     lines.append("> Only deviations from the Master are documented here. For all other rules, refer to the Master.")
     lines.append("")
     lines.append("---")
