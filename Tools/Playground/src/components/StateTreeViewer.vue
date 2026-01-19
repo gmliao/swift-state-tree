@@ -4,6 +4,7 @@
       v-if="!state || Object.keys(state).length === 0"
       type="info"
       density="compact"
+      variant="tonal"
     >
       等待狀態更新...
     </v-alert>
@@ -41,7 +42,7 @@
                 v-if="item.syncPolicy"
                 :color="getPolicyColor(item.syncPolicy)"
                 size="x-small"
-                variant="flat"
+                variant="tonal"
                 style="font-size: 0.7rem; height: 18px;"
               >
                 {{ item.syncPolicy }}
@@ -50,7 +51,7 @@
                 v-if="item.nodeKind"
                 :color="getNodeKindColor(item.nodeKind)"
                 size="x-small"
-                variant="flat"
+                variant="tonal"
                 style="font-size: 0.7rem; height: 18px;"
               >
                 {{ item.nodeKind }}
