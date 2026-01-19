@@ -38,7 +38,8 @@ export function useWebSocket(
   schema: Ref<Schema | null>, 
   selectedLandID: Ref<string> = ref(''), 
   landInstanceId: Ref<string> = ref('default'),
-  enableLogs: Ref<boolean> = ref(true)
+  enableLogs: Ref<boolean> = ref(true),
+  debugConsoleEnabled: Ref<boolean> = ref(false)
 ) {
   const isConnected = ref(false)
   const isJoined = ref(false)
@@ -98,12 +99,19 @@ export function useWebSocket(
   let runtime: StateTreeRuntime | null = null
   let view: StateTreeView | null = null
 
-  const logger = createPlaygroundLogger(logs, enableLogs)
+  const logger = createPlaygroundLogger(logs, enableLogs, debugConsoleEnabled)
   
   // Debug: verify logger is created
-  console.log('[Playground] Logger created:', typeof logger.info === 'function')
+  if (debugConsoleEnabled.value) {
+    console.log('[Playground] Logger created:', typeof logger.info === 'function')
+  }
 
   const addLog = (message: string, type: LogEntry['type'] = 'info', data?: any) => {
+    // Skip if logging is disabled (respect the UI toggle)
+    if (!enableLogs.value) {
+      return
+    }
+
     logs.value.push({
       id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
       timestamp: new Date(),
@@ -279,7 +287,9 @@ export function useWebSocket(
       addLog(`正在連線到 ${urlToUse}...`, 'info')
 
       // Create runtime and view
-      console.log('[Playground] Creating runtime with logger:', logger)
+      if (debugConsoleEnabled.value) {
+        console.log('[Playground] Creating runtime with logger:', logger)
+      }
       runtime = new StateTreeRuntime(logger)
       
       // Set up statistics callback to collect actual message sizes from SDK
@@ -381,10 +391,14 @@ export function useWebSocket(
         }
       })
       
-      console.log('[Playground] Runtime created, connecting...')
+      if (debugConsoleEnabled.value) {
+        console.log('[Playground] Runtime created, connecting...')
+      }
       try {
         await runtime.connect(urlToUse)
-        console.log('[Playground] Connection completed')
+        if (debugConsoleEnabled.value) {
+          console.log('[Playground] Connection completed')
+        }
       } catch (connectError: any) {
         // Connection failed during handshake
         // SDK already formats a user-friendly error message, but we can enhance it for Playground

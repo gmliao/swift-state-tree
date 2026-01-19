@@ -1,57 +1,75 @@
 <template>
   <v-app>
-    <v-app-bar color="blue-darken-2" prominent>
-      <v-app-bar-title style="font-size: 1.5rem;">
+    <v-app-bar color="surface" elevation="1" density="comfortable">
+      <v-app-bar-title class="text-primary font-weight-bold" style="font-size: 1.25rem;">
         <span class="mr-2">🌲</span>
-        SwiftStateTree Playground
+        SwiftStateTree
       </v-app-bar-title>
       <v-spacer></v-spacer>
-      <v-chip :color="connectionStatus.color" variant="flat" class="mr-2">
-        <v-icon :icon="connectionStatus.icon" class="mr-1"></v-icon>
+      <v-chip :color="connectionStatus.color" variant="tonal" size="small" class="mr-2 font-weight-medium">
+        <v-icon :icon="connectionStatus.icon" start size="small"></v-icon>
         {{ connectionStatus.text }}
       </v-chip>
       <v-chip
         v-if="isJoined && currentLandID"
         color="info"
-        variant="flat"
+        variant="tonal"
         size="small"
         class="mr-2"
       >
-        <v-icon icon="mdi-map-marker" size="small" class="mr-1"></v-icon>
-        Land: {{ currentLandID }}
+        <v-icon icon="mdi-map-marker" start size="small"></v-icon>
+        {{ currentLandID }}
       </v-chip>
       <v-chip
         v-if="isJoined && currentPlayerID"
         color="secondary"
-        variant="flat"
+        variant="tonal"
         size="small"
         class="mr-2"
       >
-        <v-icon icon="mdi-account" size="small" class="mr-1"></v-icon>
-        Player: {{ currentPlayerID }}
+        <v-icon icon="mdi-account" start size="small"></v-icon>
+        {{ currentPlayerID }}
       </v-chip>
       <v-btn
         v-if="isConnected"
         color="error"
-        variant="flat"
+        variant="tonal"
         size="small"
         class="mr-2"
         @click="handleDisconnect"
       >
-        <v-icon icon="mdi-link-off" class="mr-1"></v-icon>
+        <v-icon icon="mdi-link-off" start></v-icon>
         斷線
       </v-btn>
       <v-btn
-        :color="showLogPanel ? 'primary' : 'white'"
-        :variant="showLogPanel ? 'flat' : 'outlined'"
+        :color="showLogPanel ? 'primary' : 'medium-emphasis'"
+        :variant="showLogPanel ? 'tonal' : 'text'"
         size="small"
-        class="mr-4"
+        class="mr-2"
         @click="showLogPanel = !showLogPanel"
         :title="showLogPanel ? '隱藏日誌面板' : '顯示日誌面板'"
       >
-        <v-icon :icon="showLogPanel ? 'mdi-eye-off' : 'mdi-eye'" class="mr-1"></v-icon>
+        <v-icon :icon="showLogPanel ? 'mdi-eye-off' : 'mdi-eye'" start></v-icon>
         {{ showLogPanel ? '隱藏日誌' : '顯示日誌' }}
       </v-btn>
+
+      <v-divider vertical class="mx-2 my-auto" style="height: 20px"></v-divider>
+
+      <div class="d-flex align-center ml-2">
+        <v-switch
+          v-model="debugConsoleEnabled"
+          color="warning"
+          hide-details
+          density="compact"
+          inset
+          label="Debug Console"
+          class="compact-switch"
+        >
+          <template v-slot:label>
+            <span class="text-caption text-medium-emphasis">Debug Console</span>
+          </template>
+        </v-switch>
+      </div>
     </v-app-bar>
 
     <v-main style="height: calc(100vh - 64px); overflow: hidden;">
@@ -76,13 +94,13 @@
         <div v-if="!isConnected || !isJoined">
           <v-row justify="center">
             <v-col cols="12" md="8" lg="6">
-              <v-card class="mb-4">
-                <v-card-title>
-                  <v-icon icon="mdi-file-upload" class="mr-2"></v-icon>
+              <v-card class="mb-4" variant="outlined" elevation="0">
+                <v-card-title class="text-subtitle-1 font-weight-bold d-flex align-center">
+                  <v-icon icon="mdi-file-upload" class="mr-2" color="primary"></v-icon>
                   Schema 設定
                 </v-card-title>
                 <v-card-text>
-                  <v-tabs v-model="schemaTab" class="mb-4">
+                  <v-tabs v-model="schemaTab" class="mb-4" color="primary" grow density="compact">
                     <v-tab value="server">從伺服器</v-tab>
                     <v-tab value="file">上傳檔案</v-tab>
                   </v-tabs>
@@ -92,22 +110,24 @@
                       <v-text-field
                         v-model="schemaUrl"
                         label="Schema URL"
-                        prepend-icon="mdi-link"
+                        prepend-inner-icon="mdi-link"
                         variant="outlined"
                         hint="例如: http://localhost:8080/schema"
                         persistent-hint
                         class="mb-2"
+                        density="compact"
                         style="margin-top: 8px;"
                       ></v-text-field>
                       
                       <v-btn
-                        color="blue-darken-2"
+                        color="primary"
                         block
                         @click="loadSchemaFromServer"
                         :loading="loadingSchema"
                         :disabled="!schemaUrl"
+                        variant="flat"
                       >
-                        <v-icon icon="mdi-download" class="mr-2"></v-icon>
+                        <v-icon icon="mdi-download" start></v-icon>
                         從伺服器載入
                       </v-btn>
                     </v-window-item>
@@ -118,19 +138,20 @@
                         @update:model-value="handleFileChange"
                         label="上傳 JSON Schema"
                         accept=".json"
-                        prepend-icon="mdi-file-code"
+                        prepend-inner-icon="mdi-file-code"
                         variant="outlined"
                         density="compact"
                       ></v-file-input>
                       
                       <v-btn
-                        color="blue-darken-2"
+                        color="primary"
                         block
                         class="mt-4"
                         @click="parseSchema"
                         :disabled="!schemaJson"
+                        variant="flat"
                       >
-                        <v-icon icon="mdi-check" class="mr-2"></v-icon>
+                        <v-icon icon="mdi-check" start></v-icon>
                         解析 Schema
                       </v-btn>
                     </v-window-item>
@@ -202,65 +223,72 @@
                 </v-card-text>
               </v-card>
 
-              <v-card>
-                <v-card-title>
-                  <v-icon icon="mdi-web" class="mr-2"></v-icon>
+              <v-card variant="outlined" elevation="0">
+                <v-card-title class="text-subtitle-1 font-weight-bold d-flex align-center">
+                  <v-icon icon="mdi-web" class="mr-2" color="primary"></v-icon>
                   連線設定
                 </v-card-title>
                 <v-card-text>
                   <v-text-field
                     v-model="wsUrl"
                     label="WebSocket URL"
-                    prepend-icon="mdi-link"
+                    prepend-inner-icon="mdi-link"
                     variant="outlined"
                     class="mb-2"
+                    density="compact"
                   ></v-text-field>
                   
                   <v-btn
-                    color="primary"
+                    color="secondary"
+                    variant="tonal"
                     block
-                    class="mb-2"
+                    class="mb-4"
                     @click="showJWTDialog = true"
                   >
-                    <v-icon icon="mdi-key-variant" class="mr-2"></v-icon>
+                    <v-icon icon="mdi-key-variant" start></v-icon>
                     JWT 認證設定
                     <v-chip
                       v-if="jwtToken"
                       color="success"
-                      size="small"
+                      size="x-small"
                       class="ml-2"
+                      variant="flat"
                     >
                       已設定
                     </v-chip>
                   </v-btn>
                   
-                  <v-btn
-                    color="success"
-                    block
-                    class="mb-2"
-                    @click="connect"
-                    :disabled="!wsUrl || isConnected || !parsedSchema || Boolean(parsedSchema && availableLands.length > 1 && (!selectedLandID || selectedLandID === ''))"
-                  >
-                    <v-icon icon="mdi-link" class="mr-2"></v-icon>
-                    連線
-                  </v-btn>
-                  
-                  <v-btn
-                    color="error"
-                    block
-                    @click="disconnect"
-                    :disabled="!isConnected"
-                  >
-                    <v-icon icon="mdi-link-off" class="mr-2"></v-icon>
-                    斷線
-                  </v-btn>
+                  <div class="d-flex gap-2">
+                    <v-btn
+                      color="success"
+                      class="flex-grow-1"
+                      @click="connect"
+                      :disabled="!wsUrl || isConnected || !parsedSchema || Boolean(parsedSchema && availableLands.length > 1 && (!selectedLandID || selectedLandID === ''))"
+                      variant="flat"
+                    >
+                      <v-icon icon="mdi-link" start></v-icon>
+                      連線
+                    </v-btn>
+                    
+                    <v-btn
+                      color="error"
+                      class="flex-grow-1"
+                      @click="disconnect"
+                      :disabled="!isConnected"
+                      variant="tonal"
+                    >
+                      <v-icon icon="mdi-link-off" start></v-icon>
+                      斷線
+                    </v-btn>
+                  </div>
                   
                   <v-alert
                     v-if="connectionError"
                     type="error"
                     density="compact"
-                    class="mt-2"
+                    class="mt-4"
                     closable
+                    variant="tonal"
                     @click:close="() => { connectionError = null }"
                   >
                     {{ connectionError }}
@@ -636,6 +664,33 @@ const tab = ref('actions')
 const logTab = ref('messages')
 const logPanelHeight = ref(200)
 const showLogPanel = ref(false) // Default: hidden
+const debugConsoleEnabled = ref(false)
+
+// Restore UI state from localStorage
+const restoreUIState = () => {
+  const savedLogPanel = localStorage.getItem('playground.showLogPanel')
+  if (savedLogPanel !== null) {
+    showLogPanel.value = savedLogPanel === 'true'
+  }
+  
+  const savedDebugConsole = localStorage.getItem('playground.debugConsoleEnabled')
+  if (savedDebugConsole !== null) {
+    debugConsoleEnabled.value = savedDebugConsole === 'true'
+  }
+}
+
+// Save UI state to localStorage
+watch(showLogPanel, (val) => {
+  localStorage.setItem('playground.showLogPanel', String(val))
+})
+
+watch(debugConsoleEnabled, (val) => {
+  localStorage.setItem('playground.debugConsoleEnabled', String(val))
+})
+
+// Initialize UI state
+restoreUIState()
+
 const stateTreeUpdateSpeed = ref<'realtime' | 'throttled'>('throttled')
 const stateTreeViewMode = ref<'tree' | 'json'>('tree')
 const copyJsonButtonText = ref('複製 JSON')
@@ -744,7 +799,7 @@ const {
   disconnect, 
   sendAction, 
   sendEvent 
-} = useWebSocket(wsUrl, parsedSchema, selectedLandID, landInstanceId, showLogPanel)
+} = useWebSocket(wsUrl, parsedSchema, selectedLandID, landInstanceId, showLogPanel, debugConsoleEnabled)
 
 // Throttled state for StateTreeViewer (updates at most once per second)
 const throttledState = ref<Record<string, any>>({})
@@ -865,11 +920,18 @@ const connect = () => {
   if (jwtToken.value) {
     const separator = url.includes('?') ? '&' : '?'
     url = `${url}${separator}token=${encodeURIComponent(jwtToken.value)}`
-    console.log('🔑 Using JWT token for connection:', jwtToken.value.substring(0, 20) + '...')
+    if (debugConsoleEnabled.value) {
+      console.log('🔑 Using JWT token for connection:', jwtToken.value.substring(0, 10) + '...[redacted]')
+    }
   } else {
-    console.log('👤 No JWT token - connecting as guest (server supports guest mode)')
+    if (debugConsoleEnabled.value) {
+      console.log('👤 No JWT token - connecting as guest (server supports guest mode)')
+    }
   }
-  console.log('🔌 Connecting to:', url)
+  
+  if (debugConsoleEnabled.value) {
+    console.log('🔌 Connecting to:', url)
+  }
   
   // Pass the URL with token directly to connectWebSocket
   connectWebSocket(url)

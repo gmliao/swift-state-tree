@@ -21,7 +21,7 @@ export function useSchema(schemaJson: Ref<string>) {
       parsedSchema.value = schema
       error.value = null
       
-      console.log('Schema 解析成功:', schema)
+      // console.log('Schema 解析成功:', schema)
       return schema
     } catch (err) {
       const message = err instanceof Error ? err.message : '未知錯誤'

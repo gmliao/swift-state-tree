@@ -257,7 +257,7 @@ const stateUpdateViewMode = ref<'recording' | 'realtime'>('recording')
 
 type LogLevelFilter = 'all' | 'info' | 'warning' | 'error'
 
-const selectedLevel = ref<LogLevelFilter>('info')
+const selectedLevel = ref<LogLevelFilter>('warning')
 
 const levelOrder: LogLevelFilter[] = ['all', 'info', 'warning', 'error']
 
