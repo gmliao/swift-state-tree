@@ -1,13 +1,17 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useCounter } from '../generated/counter/useCounter'
+import DemoLayout from '../components/demo/DemoLayout.vue'
+import ConnectionStatusCard from '../components/demo/ConnectionStatusCard.vue'
+import AuthorityHint from '../components/demo/AuthorityHint.vue'
+import CounterStateInspector from '../components/demo/counter/CounterStateInspector.vue'
 
 const router = useRouter()
 const route = useRoute()
 
 // Get room ID from query parameter
-const roomId = (route.query.roomId as string) || ''
+const roomId = (route.query.roomId as string) || 'default'
 
 // Use generated composable
 const {
@@ -18,11 +22,30 @@ const {
   increment
 } = useCounter()
 
+// Track connection state for UI
+const connected = ref(false)
+const lastStateAt = ref<Date>()
+const error = ref<string>()
+
+// Update lastStateAt when state changes
+watch(state, () => {
+  if (state.value) {
+    lastStateAt.value = new Date()
+  }
+})
+
 onMounted(async () => {
-  await connect({
-    wsUrl: 'ws://localhost:8080/game/counter',
-    landID: roomId.trim() || undefined  // Pass room ID if provided
-  })
+  try {
+    await connect({
+      wsUrl: 'ws://localhost:8080/game/counter',
+      landID: roomId.trim() || undefined  // Pass room ID if provided
+    })
+    connected.value = true
+    error.value = undefined
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : 'Failed to connect'
+    connected.value = false
+  }
 })
 
 onUnmounted(async () => {
@@ -40,102 +63,97 @@ async function handleLeave() {
 </script>
 
 <template>
-  <v-container class="counter-page">
-    <v-row justify="center">
-      <v-col cols="12" md="8" lg="6">
-        <!-- Loading State -->
-        <v-card v-if="!isJoined || !state" variant="outlined" class="text-center pa-8">
-          <v-progress-circular
-            indeterminate
-            color="primary"
-            size="64"
-            class="mb-4"
-          ></v-progress-circular>
-          <v-card-title>Connecting to Server...</v-card-title>
-          <v-card-subtitle>Please wait while we establish connection</v-card-subtitle>
+  <DemoLayout
+    title="Counter Demo"
+    :room-id="roomId"
+    land-type="counter"
+  >
+    <!-- Connection Status -->
+    <ConnectionStatusCard
+      :connected="connected"
+      :joined="isJoined"
+      :room-id="roomId"
+      :last-state-at="lastStateAt"
+      :error="error"
+    />
+
+    <!-- Authority Hint -->
+    <AuthorityHint />
+
+    <v-row>
+      <!-- Left: Actions -->
+      <v-col cols="12" md="6">
+        <v-card variant="outlined">
+          <v-card-title class="bg-surface-variant py-2 d-flex align-center">
+            <v-icon icon="mdi-gesture-tap" size="small" class="mr-2" />
+            <span class="text-subtitle-1">Actions</span>
+          </v-card-title>
+          <v-card-text class="pa-4">
+            <p class="text-body-2 text-medium-emphasis mb-4">
+              Click the button below to send an <code>increment</code> action to the server.
+              The server will process it and broadcast the updated count to all connected clients.
+            </p>
+            <v-btn
+              color="primary"
+              size="large"
+              block
+              :disabled="!isJoined"
+              :loading="!connected"
+              @click="handleIncrement"
+              prepend-icon="mdi-plus-circle"
+            >
+              Increment Counter
+            </v-btn>
+          </v-card-text>
         </v-card>
 
-        <!-- Connected State -->
-        <div v-else>
-          <!-- Counter Display Card -->
-          <v-card variant="outlined" class="mb-6">
-            <v-card-item>
-              <template v-slot:prepend>
-                <v-avatar color="primary" size="48">
-                  <v-icon icon="mdi-counter" size="32"></v-icon>
-                </v-avatar>
-              </template>
-              <v-card-title class="text-h5">Counter Demo</v-card-title>
-              <v-card-subtitle>Real-time Synchronized Counter</v-card-subtitle>
-            </v-card-item>
+        <!-- How It Works -->
+        <v-card variant="outlined" class="mt-4">
+          <v-card-title class="bg-surface-variant py-2 d-flex align-center">
+            <v-icon icon="mdi-information" size="small" class="mr-2" />
+            <span class="text-subtitle-1">How It Works</span>
+          </v-card-title>
+          <v-card-text class="pa-4">
+            <p class="text-body-2 mb-3">
+              This is the simplest SwiftStateTree example demonstrating real-time state synchronization.
+            </p>
+            <v-list density="compact" class="bg-transparent">
+              <v-list-item prepend-icon="mdi-check-circle" title="Click the button to increment">
+                <v-list-item-subtitle class="text-caption">The action is sent to the server</v-list-item-subtitle>
+              </v-list-item>
+              <v-list-item prepend-icon="mdi-sync" title="Server processes and broadcasts">
+                <v-list-item-subtitle class="text-caption">All connected clients receive the update</v-list-item-subtitle>
+              </v-list-item>
+              <v-list-item prepend-icon="mdi-update" title="State updates instantly">
+                <v-list-item-subtitle class="text-caption">No manual refresh needed</v-list-item-subtitle>
+              </v-list-item>
+            </v-list>
+          </v-card-text>
 
-            <v-divider></v-divider>
+          <v-divider />
 
-            <v-card-text class="pa-8 text-center">
-              <div class="text-h6 text-medium-emphasis mb-2">Current Count</div>
-              <div class="text-h2 font-weight-bold text-primary mb-6">
-                {{ state.count ?? 0 }}
-              </div>
+          <v-card-actions class="pa-4">
+            <v-btn
+              color="grey-darken-1"
+              variant="tonal"
+              prepend-icon="mdi-arrow-left"
+              @click="handleLeave"
+              block
+            >
+              Leave Demo
+            </v-btn>
+          </v-card-actions>
+        </v-card>
+      </v-col>
 
-              <v-btn
-                color="primary"
-                size="x-large"
-                variant="flat"
-                @click="handleIncrement"
-                prepend-icon="mdi-plus-circle"
-                block
-              >
-                Increment Counter
-              </v-btn>
-            </v-card-text>
-          </v-card>
-
-          <!-- Info Card -->
-          <v-card variant="outlined">
-            <v-card-title class="bg-surface-variant">
-              <v-icon icon="mdi-information" class="mr-2"></v-icon>
-              How It Works
-            </v-card-title>
-            <v-card-text class="pa-6">
-              <p class="text-body-1 mb-3">
-                This is the simplest SwiftStateTree example demonstrating real-time state synchronization.
-              </p>
-              <v-list density="compact" class="bg-transparent">
-                <v-list-item prepend-icon="mdi-check-circle" title="Click the button to increment">
-                  <v-list-item-subtitle>The action is sent to the server</v-list-item-subtitle>
-                </v-list-item>
-                <v-list-item prepend-icon="mdi-sync" title="Server processes and broadcasts">
-                  <v-list-item-subtitle>All connected clients receive the update</v-list-item-subtitle>
-                </v-list-item>
-                <v-list-item prepend-icon="mdi-update" title="State updates instantly">
-                  <v-list-item-subtitle>No manual refresh needed</v-list-item-subtitle>
-                </v-list-item>
-              </v-list>
-            </v-card-text>
-
-            <v-divider></v-divider>
-
-            <v-card-actions class="pa-4">
-              <v-btn
-                color="grey-darken-1"
-                variant="tonal"
-                prepend-icon="mdi-arrow-left"
-                @click="handleLeave"
-                block
-              >
-                Leave Demo
-              </v-btn>
-            </v-card-actions>
-          </v-card>
-        </div>
+      <!-- Right: State Inspector -->
+      <v-col cols="12" md="6">
+        <CounterStateInspector
+          :snapshot="state"
+          :last-updated-at="lastStateAt"
+        />
       </v-col>
     </v-row>
-  </v-container>
+  </DemoLayout>
 </template>
 
-<style scoped>
-.counter-page {
-  max-width: 100%;
-  padding-top: 24px;
-}
-</style>
