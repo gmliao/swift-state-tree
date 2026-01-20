@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { formatSince } from '../../utils/time'
+import { useNow } from '../../utils/useNow'
+
 interface Props {
   connected: boolean
   joined: boolean
@@ -9,15 +12,7 @@ interface Props {
 
 defineProps<Props>()
 
-const formatLastUpdate = (date?: Date) => {
-  if (!date) return 'Never'
-  const now = new Date()
-  const diff = now.getTime() - date.getTime()
-  if (diff < 1000) return 'Just now'
-  if (diff < 60000) return `${Math.floor(diff / 1000)}s ago`
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`
-  return date.toLocaleTimeString()
-}
+const { nowMs } = useNow(1000)
 </script>
 
 <template>
@@ -66,7 +61,7 @@ const formatLastUpdate = (date?: Date) => {
 
         <v-col cols="12" sm="6" md="3">
           <div class="text-caption text-medium-emphasis">Last State Update</div>
-          <div class="text-body-2 font-weight-medium">{{ formatLastUpdate(lastStateAt) }}</div>
+          <div class="text-body-2 font-weight-medium">{{ formatSince(lastStateAt, nowMs) }}</div>
         </v-col>
       </v-row>
 
