@@ -32,7 +32,7 @@ watch(state, () => {
   if (state.value) {
     lastStateAt.value = new Date()
   }
-})
+}, { deep: true })
 
 onMounted(async () => {
   try {
