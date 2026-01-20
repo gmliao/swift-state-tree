@@ -2,36 +2,37 @@
 import { computed } from 'vue'
 import MetricGrid from '../MetricGrid.vue'
 import type { CookieSnapshot } from '../../../generated/cookie'
+import type { CookiePlayerPublicState, CookiePlayerPrivateState } from '../../../generated/defs'
 
 interface Props {
   snapshot: CookieSnapshot | null
+  currentPlayer: CookiePlayerPublicState | null
+  currentPrivate: CookiePlayerPrivateState | null
   lastUpdatedAt?: Date
 }
 
 const props = defineProps<Props>()
 
 const metrics = computed(() => {
-  if (!props.snapshot) return []
-  
-  const playerState = props.snapshot.players[0] // Assume first player for now
+  if (!props.currentPlayer) return []
   
   return [
     {
       label: 'Total Cookies',
-      value: playerState?.cookies.toFixed(1) ?? 0,
+      value: props.currentPlayer.cookies.toFixed(1),
       icon: 'mdi-cookie',
       color: 'warning'
     },
     {
       label: 'Cookies/sec',
-      value: playerState?.cookiesPerSecond.toFixed(1) ?? 0,
+      value: props.currentPlayer.cookiesPerSecond.toFixed(1),
       icon: 'mdi-speedometer',
       color: 'success'
     },
     {
-      label: 'Upgrades Owned',
-      value: playerState?.upgrades.length ?? 0,
-      icon: 'mdi-star',
+      label: 'Total Clicks',
+      value: props.currentPrivate?.totalClicks ?? 0,
+      icon: 'mdi-cursor-default-click',
       color: 'info'
     },
     {
@@ -59,7 +60,7 @@ const metrics = computed(() => {
 
     <v-card-text class="pa-4">
       <v-alert
-        v-if="!snapshot"
+        v-if="!currentPlayer"
         type="info"
         variant="tonal"
         density="compact"

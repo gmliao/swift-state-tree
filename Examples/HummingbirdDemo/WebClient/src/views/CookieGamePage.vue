@@ -255,6 +255,8 @@ const canAffordGrandma = computed(() => (me.value?.cookies ?? 0) >= grandmaCost.
         <!-- State Inspector -->
         <CookieStateInspector
           :snapshot="state"
+          :current-player="me"
+          :current-private="myPrivate"
           :last-updated-at="lastStateAt"
           class="mb-4"
         />

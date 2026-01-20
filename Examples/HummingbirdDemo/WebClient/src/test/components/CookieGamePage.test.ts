@@ -57,7 +57,10 @@ const stubDemoComponents = {
   DemoLayout: { template: '<div class="demo-layout"><slot /></div>' },
   ConnectionStatusCard: { template: '<div class="connection-status-card"></div>' },
   AuthorityHint: { template: '<div class="authority-hint"></div>' },
-  CookieStateInspector: { template: '<div class="cookie-state-inspector"></div>' },
+  CookieStateInspector: { 
+    template: '<div class="cookie-state-inspector"></div>',
+    props: ['snapshot', 'currentPlayer', 'currentPrivate', 'lastUpdatedAt']
+  },
 }
 
 describe('CookieGamePage', () => {
