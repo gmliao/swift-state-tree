@@ -414,11 +414,11 @@
               </v-window>
             </div>
             
-            <!-- Desktop: Side by side -->
+            <!-- Desktop: Side by side with draggable splitter -->
             <div class="playground-desktop">
-              <v-row class="panel-row">
+              <div class="split-panel-container">
                 <!-- Left Panel: State Tree -->
-                <v-col cols="12" md="6" class="panel-col">
+                <div class="left-panel" :style="{ width: leftPanelWidth + '%' }">
                   <div class="state-tree-container">
                     <div class="state-tree-header">
                       <v-icon icon="mdi-file-tree" size="small" class="mr-1"></v-icon>
@@ -471,10 +471,13 @@
                       />
                     </div>
                   </div>
-                </v-col>
+                </div>
+
+                <!-- Draggable Splitter -->
+                <DraggableSplitter @resize="handleSplitterResize" />
 
                 <!-- Right Panel: Actions & Events -->
-                <v-col cols="12" md="6" class="panel-col">
+                <div class="right-panel" :style="{ width: (100 - leftPanelWidth) + '%' }">
                   <div class="actions-events-container">
                     <v-tabs v-model="tab" color="primary" class="actions-events-tabs">
                       <v-tab value="actions">
@@ -522,8 +525,8 @@
                       </v-window>
                     </div>
                   </div>
-                </v-col>
-              </v-row>
+                </div>
+              </div>
             </div>
           </div>
           
@@ -655,6 +658,7 @@ import ActionPanel from './components/ActionPanel.vue'
 import EventPanel from './components/EventPanel.vue'
 import StatisticsPanel from './components/StatisticsPanel.vue'
 import ResizableLogPanel from './components/ResizableLogPanel.vue'
+import DraggableSplitter from './components/DraggableSplitter.vue'
 import { useWebSocket } from './composables/useWebSocket'
 import { useSchema } from './composables/useSchema'
 import { generateJWT } from './utils/jwt'
@@ -665,6 +669,7 @@ const logTab = ref('messages')
 const logPanelHeight = ref(200)
 const showLogPanel = ref(false) // Default: hidden
 const debugConsoleEnabled = ref(false)
+const leftPanelWidth = ref(50) // Percentage (0-100)
 
 // Restore UI state from localStorage
 const restoreUIState = () => {
@@ -677,6 +682,14 @@ const restoreUIState = () => {
   if (savedDebugConsole !== null) {
     debugConsoleEnabled.value = savedDebugConsole === 'true'
   }
+  
+  const savedLeftPanelWidth = localStorage.getItem('playground.leftPanelWidth')
+  if (savedLeftPanelWidth !== null) {
+    const width = parseFloat(savedLeftPanelWidth)
+    if (!isNaN(width) && width >= 20 && width <= 80) {
+      leftPanelWidth.value = width
+    }
+  }
 }
 
 // Save UI state to localStorage
@@ -688,8 +701,21 @@ watch(debugConsoleEnabled, (val) => {
   localStorage.setItem('playground.debugConsoleEnabled', String(val))
 })
 
+watch(leftPanelWidth, (val) => {
+  localStorage.setItem('playground.leftPanelWidth', String(val))
+})
+
 // Initialize UI state
 restoreUIState()
+
+const handleSplitterResize = (delta: number) => {
+  // Calculate percentage change based on viewport width
+  const viewportWidth = window.innerWidth
+  const percentageDelta = (delta / viewportWidth) * 100
+  
+  // Update leftPanelWidth with constraints (20% - 80%)
+  leftPanelWidth.value = Math.max(20, Math.min(80, leftPanelWidth.value + percentageDelta))
+}
 
 const stateTreeUpdateSpeed = ref<'realtime' | 'throttled'>('throttled')
 const stateTreeViewMode = ref<'tree' | 'json'>('tree')
@@ -1178,7 +1204,7 @@ onMounted(() => {
   height: 100%;
 }
 
-/* Desktop: Show side-by-side, hide tabs */
+/* Desktop: Show side-by-side with draggable splitter, hide tabs */
 @media (min-width: 960px) {
   .playground-mobile {
     display: none;
@@ -1188,6 +1214,23 @@ onMounted(() => {
     display: flex;
     flex-direction: column;
     height: 100%;
+    overflow: hidden;
+  }
+  
+  .split-panel-container {
+    flex: 1;
+    display: flex;
+    flex-direction: row;
+    min-height: 0;
+    overflow: hidden;
+    gap: 0;
+  }
+  
+  .left-panel,
+  .right-panel {
+    min-width: 200px;
+    display: flex;
+    flex-direction: column;
     overflow: hidden;
   }
   
@@ -1310,5 +1353,14 @@ onMounted(() => {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+}
+
+/* Compact switch for Debug Console */
+.compact-switch {
+  max-width: 150px;
+}
+
+.compact-switch .v-label {
+  font-size: 0.75rem;
 }
 </style>
