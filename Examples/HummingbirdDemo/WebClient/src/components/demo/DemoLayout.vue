@@ -8,7 +8,7 @@ interface Props {
 defineProps<Props>()
 </script>
 
-<parameter>
+<template>
   <v-container fluid class="pa-4">
     <v-row>
       <v-col cols="12">
