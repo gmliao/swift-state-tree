@@ -41,7 +41,7 @@ watch(state, () => {
   if (state.value) {
     lastStateAt.value = new Date()
   }
-})
+}, { deep: true })
 
 onMounted(async () => {
   // Auto-connect with room ID from query parameter
