@@ -1,6 +1,11 @@
 // Test setup file for Vitest
 import { vi } from 'vitest'
 
+// Mock CSS imports from Vuetify and other sources
+vi.mock('*.css', () => ({}))
+vi.mock('*.scss', () => ({}))
+vi.mock('*.sass', () => ({}))
+
 // Mock WebSocket for tests
 global.WebSocket = class MockWebSocket {
   url: string
@@ -44,6 +49,7 @@ global.console = {
   error: vi.fn(),
   debug: vi.fn()
 }
+
 
 
 
