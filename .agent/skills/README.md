@@ -32,6 +32,41 @@ Located in `Superpowers/` directory - Complete set of development workflow skill
 
 All skills include their complete structure with references, examples, and scripts as provided by Superpowers.
 
+### SpecKit Skills
+
+Located in `SpecKit/` directory - Spec-Driven Development workflow from [GitHub Spec-Kit](https://github.com/github/spec-kit):
+
+**Complete Workflow:**
+- **SpecKit/constitution** - Establish project governing principles and development guidelines (first step)
+- **SpecKit/specify** - Define functional requirements and user stories (focus on WHAT and WHY)
+- **SpecKit/clarify** - Clarify underspecified areas in specifications (before planning)
+- **SpecKit/plan** - Create technical implementation plans with chosen tech stack
+- **SpecKit/tasks** - Generate actionable task lists organized by user story with dependencies
+- **SpecKit/implement** - Execute all tasks to build feature according to plan
+
+**Integration with Superpowers:**
+- Can be used alongside Superpowers skills
+- `SpecKit/plan` provides high-level architecture, `Superpowers/writing-plans` provides detailed steps
+- `SpecKit/implement` executes automatically, `Superpowers/executing-plans` provides batch review
+
+### SwiftStateTree Project-Specific Skills
+
+Located in `SwiftStateTree/` directory - Project-specific workflows and guidelines:
+
+**Testing & Development:**
+- **SwiftStateTree/run-e2e-tests** - Execute E2E tests with automatic server management and encoding mode support
+- **SwiftStateTree/swift-testing-guidelines** - Guidelines for writing tests using Swift Testing framework
+
+**GitHub Workflow:**
+- **SwiftStateTree/view-pr-comments** - View PR details, comments, and reviews using GitHub CLI
+- **SwiftStateTree/reply-pr-comment** - Reply to specific PR comment threads
+
+**Code Generation:**
+- **SwiftStateTree/generate-schema** - Generate JSON schema from LandDefinitions and TypeScript client SDK
+
+**Code Guidelines:**
+- **SwiftStateTree/deterministic-math-guidelines** - Guidelines for using deterministic math in game logic (cross-platform compatibility)
+
 ### UI/UX Pro Max Skill
 
 Located in `UI-UX-Pro-Max/` directory - Design intelligence skill from [UI-UX-Pro-Max](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill):
@@ -106,6 +141,32 @@ Skills can be organized in subdirectories for better management:
 │   │   ├── SKILL.md
 │   │   └── testing-anti-patterns.md  # Reference file
 │   └── ...                   # All 14 Superpowers skills
+├── SpecKit/                  # Spec-Driven Development workflow
+│   ├── constitution/
+│   │   └── SKILL.md
+│   ├── specify/
+│   │   └── SKILL.md
+│   ├── clarify/
+│   │   └── SKILL.md
+│   ├── plan/
+│   │   └── SKILL.md
+│   ├── tasks/
+│   │   └── SKILL.md
+│   └── implement/
+│       └── SKILL.md
+├── SwiftStateTree/           # Project-specific skills
+│   ├── run-e2e-tests/
+│   │   └── SKILL.md
+│   ├── view-pr-comments/
+│   │   └── SKILL.md
+│   ├── reply-pr-comment/
+│   │   └── SKILL.md
+│   ├── generate-schema/
+│   │   └── SKILL.md
+│   ├── deterministic-math-guidelines/
+│   │   └── SKILL.md
+│   └── swift-testing-guidelines/
+│       └── SKILL.md
 ├── UI-UX-Pro-Max/            # UI/UX design intelligence
 │   ├── SKILL.md
 │   ├── scripts/              # Python scripts for design system generation
@@ -143,5 +204,6 @@ To add a new skill:
 - Agent Skills Standard: https://agentskills.io
 - Antigravity Skills Docs: https://antigravity.google/docs/skills
 - Superpowers Framework: https://github.com/obra/superpowers
+- Spec-Kit (Spec-Driven Development): https://github.com/github/spec-kit
 - UI-UX-Pro-Max Skill: https://github.com/nextlevelbuilder/ui-ux-pro-max-skill
 - Project Guidelines: See `AGENTS.md` in project root
