@@ -352,7 +352,11 @@ func testLandManagerRecreatesDestroyedLandWithFreshState() async throws {
 
     // Modify state by executing action (increment to 7)
     let action = IncrementTestAction(amount: 7)
-    _ = try await container1.keeper.handleAction(action, playerID: playerID1, clientID: clientID1, sessionID: sessionID1)
+    let envelope = ActionEnvelope(
+        typeIdentifier: String(describing: IncrementTestAction.self),
+        payload: AnyCodable(action)
+    )
+    _ = try await container1.keeper.handleActionEnvelope(envelope, playerID: playerID1, clientID: clientID1, sessionID: sessionID1)
 
     // Verify state was modified
     let stateAfterModification = await container1.keeper.currentState()

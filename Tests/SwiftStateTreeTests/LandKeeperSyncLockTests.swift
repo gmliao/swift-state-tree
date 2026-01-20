@@ -81,8 +81,13 @@ func testSyncUsesSnapshotModel() async throws {
 
     // Mutations can proceed concurrently (not blocked by sync)
     let actionTask = Task {
-        try await keeper.handleAction(
-            IncrementCounterAction(amount: 10, modifier: "action"),
+        let action = IncrementCounterAction(amount: 10, modifier: "action")
+        let envelope = ActionEnvelope(
+            typeIdentifier: String(describing: IncrementCounterAction.self),
+            payload: AnyCodable(action)
+        )
+        return try await keeper.handleActionEnvelope(
+            envelope,
             playerID: PlayerID("player1"),
             clientID: ClientID("client1"),
             sessionID: SessionID("session1")
@@ -225,8 +230,13 @@ func testSyncSnapshotRemainsConsistent() async throws {
 
     // Modify state while sync is in progress (should wait)
     let modifyTask = Task {
-        try await keeper.handleAction(
-            IncrementCounterAction(amount: 100, modifier: "action"),
+        let action = IncrementCounterAction(amount: 100, modifier: "action")
+        let envelope = ActionEnvelope(
+            typeIdentifier: String(describing: IncrementCounterAction.self),
+            payload: AnyCodable(action)
+        )
+        _ = try await keeper.handleActionEnvelope(
+            envelope,
             playerID: PlayerID("player1"),
             clientID: ClientID("client1"),
             sessionID: SessionID("session1")
@@ -316,8 +326,13 @@ func testEndSync_ClearsDirtyFlags() async throws {
     )
 
     // Act: Modify state (marks as dirty)
-    _ = try await keeper.handleAction(
-        IncrementCounterAction(amount: 5, modifier: "test"),
+    let action = IncrementCounterAction(amount: 5, modifier: "test")
+    let envelope = ActionEnvelope(
+        typeIdentifier: String(describing: IncrementCounterAction.self),
+        payload: AnyCodable(action)
+    )
+    _ = try await keeper.handleActionEnvelope(
+        envelope,
         playerID: PlayerID("player1"),
         clientID: ClientID("client1"),
         sessionID: SessionID("session1")
@@ -370,9 +385,14 @@ func testMultipleSyncRounds_EndSync_KeepsAllFlagsCleared() async throws {
     // Act: Simulate multiple sync rounds
     for round in 1...10 {
         // Modify state
-        _ = try await keeper.handleAction(
-            IncrementCounterAction(amount: round, modifier: "round\(round)"),
-            playerID: PlayerID("player1"),
+        let action = IncrementCounterAction(amount: 5, modifier: "test")
+    let envelope = ActionEnvelope(
+        typeIdentifier: String(describing: IncrementCounterAction.self),
+        payload: AnyCodable(action)
+    )
+    _ = try await keeper.handleActionEnvelope(
+        envelope,
+        playerID: PlayerID("player1"),
             clientID: ClientID("client1"),
             sessionID: SessionID("session1")
         )
@@ -424,8 +444,13 @@ func testEndSync_RecursivelyClearsNestedStateNode() async throws {
     )
 
     // Act: Modify both parent and nested fields
-    _ = try await keeper.handleAction(
-        IncrementCounterAction(amount: 5, modifier: "test"),
+    let action = IncrementCounterAction(amount: 5, modifier: "test")
+    let envelope = ActionEnvelope(
+        typeIdentifier: String(describing: IncrementCounterAction.self),
+        payload: AnyCodable(action)
+    )
+    _ = try await keeper.handleActionEnvelope(
+        envelope,
         playerID: PlayerID("player1"),
         clientID: ClientID("client1"),
         sessionID: SessionID("session1")
@@ -480,9 +505,14 @@ func testMultipleSyncRounds_WithNestedStateNode_RecursivelyClearsAllFlags() asyn
     // Act: Simulate multiple sync rounds with nested StateNode modifications
     for round in 1...5 {
         // Modify both parent and nested fields
-        _ = try await keeper.handleAction(
-            IncrementCounterAction(amount: round, modifier: "round\(round)"),
-            playerID: PlayerID("player1"),
+        let action = IncrementCounterAction(amount: 5, modifier: "test")
+    let envelope = ActionEnvelope(
+        typeIdentifier: String(describing: IncrementCounterAction.self),
+        payload: AnyCodable(action)
+    )
+    _ = try await keeper.handleActionEnvelope(
+        envelope,
+        playerID: PlayerID("player1"),
             clientID: ClientID("client1"),
             sessionID: SessionID("session1")
         )

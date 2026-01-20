@@ -86,10 +86,9 @@ struct GameServer {
                 let configService = GameConfigProviderService(provider: configProvider)
                 services.register(configService, as: GameConfigProviderService.self)
                 
-                // Inject Deterministic RNG seeded by landID
-                let seed = DeterministicSeed.fromLandID(landID.stringValue)
-                let rngService = DeterministicRngService(seed: seed)
-                services.register(rngService, as: DeterministicRngService.self)
+                // Note: DeterministicRng is now automatically managed by LandKeeper
+                // No need to register DeterministicRngService - LandKeeper creates it internally
+                // based on landID for deterministic behavior
                 
                 return services
             }

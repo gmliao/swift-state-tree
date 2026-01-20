@@ -33,8 +33,7 @@ public enum HeroDefense {
             Lifetime {
                 Tick(every: .milliseconds(Int64(GameConfig.TICK_INTERVAL_MS))) { (state: inout HeroDefenseState, ctx: LandContext) in
                     guard let tickId = ctx.tickId,
-                          let configService = ctx.services.get(GameConfigProviderService.self),
-                          let rngService = ctx.services.get(DeterministicRngService.self) else {
+                          let configService = ctx.services.get(GameConfigProviderService.self) else {
                         return
                     }
                     let config = configService.provider
@@ -76,7 +75,7 @@ public enum HeroDefense {
                     let spawnInterval = MonsterSystem.getMonsterSpawnInterval(ctx)
                     if tickId % Int64(spawnInterval) == 0 {
                         // Spawn random number of monsters (1-4) for more intense combat
-                        let spawnCount = rngService.nextInt(in: config.monsterSpawnCountMin...config.monsterSpawnCountMax)
+                        let spawnCount = ctx.random.nextInt(in: config.monsterSpawnCountMin...config.monsterSpawnCountMax)
                         for _ in 0..<spawnCount {
                             let monsterID = state.nextMonsterID
                             state.nextMonsterID += 1
@@ -169,31 +168,43 @@ public enum HeroDefense {
             }
 
             Rules {
-                OnJoin { (state: inout HeroDefenseState, ctx: LandContext) in
-                    guard let configService = ctx.services.get(GameConfigProviderService.self),
-                          let rngService = ctx.services.get(DeterministicRngService.self) else {
+                OnJoin(resolvers: UserLevelResolver.self) { (state: inout HeroDefenseState, ctx: LandContext) in
+                    guard let configService = ctx.services.get(GameConfigProviderService.self) else {
                         return
                     }
                     let config = configService.provider
 
                     let playerID = ctx.playerID
+                    
+                    // Get user level from resolver (deterministic based on PlayerID hash)
+                    let userLevel = (ctx.userLevel as UserLevel?)?.level ?? 1
 
                     // Spawn player near base center
                     var player = PlayerState()
                     player.position = Position2(
-                        x: config.baseCenterX + rngService.nextFloat(in: -5.0..<5.0),
-                        y: config.baseCenterY + rngService.nextFloat(in: -5.0..<5.0)
+                        x: config.baseCenterX + ctx.random.nextFloat(in: -5.0..<5.0),
+                        y: config.baseCenterY + ctx.random.nextFloat(in: -5.0..<5.0)
                     )
                     player.position = MovementSystem.clampToWorldBounds(player.position, ctx)
                     player.rotation = Angle(degrees: 0.0)
                     player.targetPosition = nil as Position2?
-                    player.health = 100
-                    player.maxHealth = 100
-                    player.weaponLevel = 0
+                    
+                    // Set initial health and max health based on user level
+                    // Higher level players start with more health
+                    let baseHealth = 100
+                    let levelBonus = userLevel * 10
+                    player.health = baseHealth + levelBonus
+                    player.maxHealth = baseHealth + levelBonus
+                    
+                    // Set initial weapon level based on user level (deterministic from PlayerID hash)
+                    // Players start with different weapon levels, but can upgrade further
+                    player.weaponLevel = userLevel - 1  // Convert 1-3 to 0-2 for weapon level
                     player.resources = 0
                     state.players[playerID] = player
                     ctx.logger.info("👤 Player joined", metadata: [
                         "playerID": .string(playerID.rawValue),
+                        "level": .stringConvertible(userLevel),
+                        "health": .stringConvertible(player.health),
                         "totalPlayers": .string("\(state.players.count)"),
                     ])
                 }

@@ -1,6 +1,9 @@
 import Foundation
 import Logging
 
+// MARK: - Helper for Replay Mode
+// Note: AnyCodableResolverOutput is now defined in LandContext.swift for access by dynamic member lookup
+
 /// The runtime executor for a Land instance.
 ///
 /// `LandKeeper` is an actor that manages the authoritative state and executes the handlers
@@ -21,19 +24,175 @@ import Logging
 /// - Each sync gets a consistent snapshot (actor serialization ensures this)
 /// - Sync deduplication prevents redundant concurrent sync operations
 ///
-    /// TODO: Performance considerations:
-    /// - When Resolver mechanism is implemented and Action Handlers become synchronous,
-    ///   we may be able to directly modify state without copying
-    /// - Consider sync queue or debouncing for high-frequency sync scenarios
+///     /// TODO: Performance considerations:
+///     /// - When Resolver mechanism is implemented and Action Handlers become synchronous,
+///     ///   we may be able to directly modify state without copying
+///     /// - Consider sync queue or debouncing for high-frequency sync scenarios
+public enum LandMode: Sendable {
+    case live
+    case replay
+}
+
 public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
+    /// Unified pending item for actions and client events
+    public enum PendingItem: Sendable {
+        case action(PendingActionItem)
+        case clientEvent(PendingClientEventItem)
+        case lifecycle(PendingLifecycleItem)
+    }
+
+    public enum LifecycleKind: String, Codable, Sendable {
+        case initialize
+        case join
+        case leave
+    }
+
+    public struct PendingLifecycleItem: Sendable {
+        public let sequence: Int64
+        public let kind: LifecycleKind
+        public let playerID: PlayerID?
+        public let clientID: ClientID?
+        public let sessionID: SessionID?
+        public let deviceID: String?
+        public let isGuest: Bool?
+        public let metadata: [String: String]
+        public let resolverOutputs: [String: any ResolverOutput]
+        public let resolvedAtTick: Int64
+
+        public init(
+            sequence: Int64,
+            kind: LifecycleKind,
+            playerID: PlayerID?,
+            clientID: ClientID?,
+            sessionID: SessionID?,
+            deviceID: String?,
+            isGuest: Bool?,
+            metadata: [String: String],
+            resolverOutputs: [String: any ResolverOutput],
+            resolvedAtTick: Int64
+        ) {
+            self.sequence = sequence
+            self.kind = kind
+            self.playerID = playerID
+            self.clientID = clientID
+            self.sessionID = sessionID
+            self.deviceID = deviceID
+            self.isGuest = isGuest
+            self.metadata = metadata
+            self.resolverOutputs = resolverOutputs
+            self.resolvedAtTick = resolvedAtTick
+        }
+    }
+    
+    public struct PendingActionItem: Sendable {
+        public let sequence: Int64
+        public let action: AnyCodable
+        public let actionType: any ActionPayload.Type
+        public let playerID: PlayerID
+        public let clientID: ClientID
+        public let sessionID: SessionID
+        public let resolverOutputs: [String: any ResolverOutput]
+        public let resolvedAtTick: Int64
+        
+        public init(
+            sequence: Int64,
+            action: AnyCodable,
+            actionType: any ActionPayload.Type,
+            playerID: PlayerID,
+            clientID: ClientID,
+            sessionID: SessionID,
+            resolverOutputs: [String: any ResolverOutput],
+            resolvedAtTick: Int64
+        ) {
+            self.sequence = sequence
+            self.action = action
+            self.actionType = actionType
+            self.playerID = playerID
+            self.clientID = clientID
+            self.sessionID = sessionID
+            self.resolverOutputs = resolverOutputs
+            self.resolvedAtTick = resolvedAtTick
+        }
+    }
+    
+    public struct PendingClientEventItem: Sendable {
+        public let sequence: Int64
+        public let event: AnyClientEvent
+        public let playerID: PlayerID
+        public let clientID: ClientID
+        public let sessionID: SessionID
+        public let resolvedAtTick: Int64
+        
+        public init(
+            sequence: Int64,
+            event: AnyClientEvent,
+            playerID: PlayerID,
+            clientID: ClientID,
+            sessionID: SessionID,
+            resolvedAtTick: Int64
+        ) {
+            self.sequence = sequence
+            self.event = event
+            self.playerID = playerID
+            self.clientID = clientID
+            self.sessionID = sessionID
+            self.resolvedAtTick = resolvedAtTick
+        }
+    }
+    
+    // Legacy PendingAction kept for backward compatibility during migration
+    public struct PendingAction<ID: Hashable & Sendable>: Sendable {
+        public let id: ID
+        public let action: AnyCodable
+        public let actionType: any ActionPayload.Type
+        public let playerID: PlayerID
+        public let clientID: ClientID
+        public let sessionID: SessionID
+        public let resolverOutputs: [String: any ResolverOutput]
+        public let resolvedAtTick: Int64
+        
+        public init(
+            id: ID,
+            action: AnyCodable,
+            actionType: any ActionPayload.Type,
+            playerID: PlayerID,
+            clientID: ClientID,
+            sessionID: SessionID,
+            resolverOutputs: [String: any ResolverOutput],
+            resolvedAtTick: Int64
+        ) {
+            self.id = id
+            self.action = action
+            self.actionType = actionType
+            self.playerID = playerID
+            self.clientID = clientID
+            self.sessionID = sessionID
+            self.resolverOutputs = resolverOutputs
+            self.resolvedAtTick = resolvedAtTick
+        }
+    }
+
     public let definition: LandDefinition<State>
 
     private var state: State
     private var players: [PlayerID: InternalPlayerSession] = [:]
-    private let services: LandServices
+    private var services: LandServices
 
     private var transport: LandKeeperTransport?
     private let logger: Logger
+    private let autoStartLoops: Bool
+    
+    private var pendingItems: [PendingItem] = []
+    private var mode: LandMode
+    
+    /// Global sequence counter for deterministic ordering (Action + ClientEvent + ServerEvent)
+    private var nextSequence: Int64 = 0
+    
+    /// Action recorder for deterministic replay (only in .live mode)
+    private var actionRecorder: ActionRecorder?
+    
+    /// Action source for reading recorded actions during replay (only in .replay mode)
+    private var actionSource: (any ActionSource)?
     
     /// Actual land instance ID (e.g., "counter:550e8400-...")
     /// This is different from definition.id which is just the land type (e.g., "counter")
@@ -46,13 +205,39 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     
     /// Set the actual land instance ID (called after LandKeeper is created)
     /// This allows LandContext to use the actual instance ID instead of just the land type
+    /// Also updates the RNG service seed if it was created with a default seed
     public func setLandID(_ landID: String) {
         self.actualLandID = landID
+        
+        // Update RNG service seed if it was created with definition.id seed
+        // This ensures deterministic behavior based on actual land instance ID
+        if let rngService = services.get(DeterministicRngService.self),
+           rngService.seed == DeterministicSeed.fromLandID(definition.id) {
+            // Replace with new RNG service using actual landID seed
+            let newSeed = DeterministicSeed.fromLandID(landID)
+            let newRngService = DeterministicRngService(seed: newSeed)
+            var updatedServices = services
+            updatedServices.register(newRngService, as: DeterministicRngService.self)
+            self.services = updatedServices
+        }
+    }
+    
+    /// Get the RNG seed for recording purposes.
+    /// Returns the seed from the DeterministicRngService if it exists, nil otherwise.
+    public func getRngSeed() -> UInt64? {
+        return services.get(DeterministicRngService.self)?.seed
+    }
+    
+    /// Internal helper to set nextSequence (for use in closures)
+    private func setNextSequence(_ value: Int64) {
+        self.nextSequence = value
     }
 
     private var tickTask: Task<Void, Never>?
     private var syncTask: Task<Void, Never>?
     private var destroyTask: Task<Void, Never>?
+    private var initializationTask: Task<Void, Never>?
+    private var didInitialize = false
     
     /// Next tick ID (0-based, increments with each tick) for deterministic replay.
     /// This represents the ID that will be assigned to the next tick execution.
@@ -64,6 +249,26 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Action/Event handlers should use this to bind to the committed world state.
     /// Initialized to -1 to indicate no ticks have been committed yet.
     private var lastCommittedTickId: Int64 = -1
+
+    private func recordServerEventForReplay(
+        anyEvent: AnyServerEvent,
+        target: EventTarget,
+        tickId: Int64
+    ) async {
+        guard let recorder = actionRecorder else { return }
+        let sequence = nextSequence
+        nextSequence += 1
+        let targetRecord = EventTargetRecord.from(target)
+        let recordedServerEvent = RecordedServerEvent(
+            kind: "serverEvent",
+            sequence: sequence,
+            tickId: tickId,
+            typeIdentifier: anyEvent.type,
+            payload: anyEvent.payload,
+            target: targetRecord
+        )
+        await recorder.recordServerEvent(recordedServerEvent)
+    }
 
     /// Flag to prevent duplicate sync operations (for deduplication only).
     ///
@@ -90,68 +295,189 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// - Parameters:
     ///   - definition: The Land definition containing all handlers and configuration.
     ///   - initialState: The initial state of the Land.
+    ///   - mode: The execution mode (live or replay). Defaults to .live.
+    ///   - actionSource: Optional action source for replay mode. Required when mode is .replay.
     ///   - transport: Optional transport interface for sending events and syncing state.
     ///                If not provided, operations will be no-ops (useful for testing).
     ///   - logger: Optional logger instance. If not provided, a default logger will be created.
     public init(
         definition: LandDefinition<State>,
         initialState: State,
+        mode: LandMode = .live,
+        actionSource: (any ActionSource)? = nil,
         services: LandServices = LandServices(),
+        autoStartLoops: Bool = true,
         transport: LandKeeperTransport? = nil,
         logger: Logger? = nil
     ) {
         self.definition = definition
         self.state = initialState
-        self.services = services
+        self.mode = mode
+        
+        // Ensure DeterministicRngService is always registered for deterministic behavior
+        // If not provided, create one based on definition.id (will be updated with actualLandID later)
+        var resolvedServices = services
+        if resolvedServices.get(DeterministicRngService.self) == nil {
+            let seed = DeterministicSeed.fromLandID(definition.id)
+            let rngService = DeterministicRngService(seed: seed)
+            resolvedServices.register(rngService, as: DeterministicRngService.self)
+        }
+        self.services = resolvedServices
+        
         self.transport = transport
+        self.autoStartLoops = autoStartLoops
         let resolvedLogger = logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.runtime",
             scope: "LandKeeper"
                     )
         self.logger = resolvedLogger
+        
+        // Initialize ActionRecorder if in live mode
+        if mode == .live {
+            self.actionRecorder = ActionRecorder(flushInterval: 60)
+        }
+        
+        // Initialize ActionSource if in replay mode
+        if mode == .replay {
+            self.actionSource = actionSource
+        }
 
-        // Execute OnInitialize handler and then start tick loop
-        // Both are async, so we use a single Task to ensure proper sequencing
+        // Execute OnInitialize handler and then start tick/sync loops.
+        // Initialization is performed lazily (first entry point call) to avoid escaping self in init.
+
+        // Kick off initialization eagerly to preserve existing semantics:
+        // - OnInitialize runs when Land is created
+        // - Tick/sync loops start automatically when configured
         Task { [weak self] in
-            guard let self = self else { return }
-            
-            // First, execute OnInitialize if defined
-            if let onInitializeHandler = definition.lifetimeHandlers.onInitialize {
-                await self.executeOnInitialize(handler: onInitializeHandler)
-            }
-            
-            // Then, start tick and sync loops if configured (only after OnInitialize completes)
-            let tickInterval = definition.lifetimeHandlers.tickInterval
-            let syncInterval = definition.lifetimeHandlers.syncInterval
-            
-            // Start tick loop if configured
-            if let interval = tickInterval,
-               definition.lifetimeHandlers.tickHandler != nil {
-                await self.configureTickLoop(interval: interval)
-            }
-            
-            // Start sync loop: use configured interval, or fallback to tick interval if not configured
-            let effectiveSyncInterval: Duration?
-            if let sync = syncInterval {
-                effectiveSyncInterval = sync
-            } else if let tick = tickInterval {
-                // Auto-configure sync to match tick interval if sync is not explicitly set
-                effectiveSyncInterval = tick
-                self.logger.warning(
-                    "⚠️ Sync interval not configured for land '\(definition.id)'. Auto-configuring sync to match tick interval (\(tick)). Consider explicitly setting StateSync(every:) in Lifetime block for better control.",
-                    metadata: [
-                        "landID": .string(definition.id),
-                        "tickInterval": .string("\(tick)"),
-                        "autoSyncInterval": .string("\(tick)")
-                    ]
+            guard let self else { return }
+            await self.ensureInitialized()
+        }
+    }
+
+    private func ensureInitialized() async {
+        if didInitialize { return }
+        if let task = initializationTask {
+            await task.value
+            return
+        }
+
+        let task: Task<Void, Never> = Task { [weak self] in
+            guard let self else { return }
+            await self.performInitialization()
+        }
+        initializationTask = task
+        await task.value
+        initializationTask = nil
+        didInitialize = true
+    }
+
+    private func performInitialization() async {
+        // Execute OnInitialize immediately in live mode (preserve existing semantics).
+        // Record it as a lifecycle event under tick 0 so replay can apply it deterministically
+        // before the first tick handler runs.
+        if mode == .live, let handler = definition.lifetimeHandlers.onInitialize {
+            let sequence = nextSequence
+            nextSequence += 1
+
+            var ctx = makeContext(
+                playerID: systemPlayerID,
+                clientID: systemClientID,
+                sessionID: systemSessionID,
+                tickId: lastCommittedTickId
+            )
+
+            // Execute resolvers in parallel if any are declared
+            if !definition.lifetimeHandlers.onInitializeResolverExecutors.isEmpty {
+                let resolverContext = ResolverContext(
+                    landContext: ctx,
+                    actionPayload: nil,
+                    eventPayload: nil,
+                    currentState: state
                 )
-            } else {
-                effectiveSyncInterval = nil
+                do {
+                    ctx = try await ResolverExecutor.executeResolvers(
+                        executors: definition.lifetimeHandlers.onInitializeResolverExecutors,
+                        resolverContext: resolverContext,
+                        landContext: ctx
+                    )
+                } catch {
+                    logger.error("❌ OnInitialize resolvers failed", metadata: [
+                        "error": .string(String(describing: error))
+                    ])
+                }
             }
-            
-            if let interval = effectiveSyncInterval {
-                await self.configureSyncLoop(interval: interval)
+
+            do {
+                try withMutableStateSync { state in
+                    try handler(&state, ctx)
+                }
+            } catch {
+                logger.error("❌ OnInitialize handler failed", metadata: [
+                    "error": .string(String(describing: error))
+                ])
             }
+
+            if let recorder = actionRecorder {
+                let resolverOutputsDict = ctx.getAllResolverOutputs().mapValues { output in
+                    RecordedResolverOutput(
+                        typeIdentifier: String(describing: type(of: output)),
+                        value: AnyCodable(output)
+                    )
+                }
+                let recorded = RecordedLifecycleEvent(
+                    kind: LifecycleKind.initialize.rawValue,
+                    sequence: sequence,
+                    tickId: 0,
+                    playerID: nil,
+                    clientID: nil,
+                    sessionID: nil,
+                    deviceID: nil,
+                    isGuest: nil,
+                    metadata: [:],
+                    resolverOutputs: resolverOutputsDict,
+                    resolvedAtTick: lastCommittedTickId
+                )
+                await recorder.record(
+                    tickId: 0,
+                    actions: [],
+                    clientEvents: [],
+                    lifecycleEvents: [recorded]
+                )
+            }
+        }
+
+        // Then, start tick and sync loops if configured (only after OnInitialize completes)
+        guard autoStartLoops else { return }
+        let tickInterval = definition.lifetimeHandlers.tickInterval
+        let syncInterval = definition.lifetimeHandlers.syncInterval
+
+        // Start tick loop if configured
+        if let interval = tickInterval,
+           definition.lifetimeHandlers.tickHandler != nil {
+            await configureTickLoop(interval: interval)
+        }
+
+        // Start sync loop: use configured interval, or fallback to tick interval if not configured
+        let effectiveSyncInterval: Duration?
+        if let sync = syncInterval {
+            effectiveSyncInterval = sync
+        } else if let tick = tickInterval {
+            // Auto-configure sync to match tick interval if sync is not explicitly set
+            effectiveSyncInterval = tick
+            logger.warning(
+                "⚠️ Sync interval not configured for land '\(definition.id)'. Auto-configuring sync to match tick interval (\(tick)). Consider explicitly setting StateSync(every:) in Lifetime block for better control.",
+                metadata: [
+                    "landID": .string(definition.id),
+                    "tickInterval": .string("\(tick)"),
+                    "autoSyncInterval": .string("\(tick)")
+                ]
+            )
+        } else {
+            effectiveSyncInterval = nil
+        }
+
+        if let interval = effectiveSyncInterval {
+            await configureSyncLoop(interval: interval)
         }
     }
     
@@ -262,6 +588,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     public func playerCount() -> Int {
         players.count
     }
+    
+    /// Get the ActionRecorder instance (for testing/debugging)
+    /// Returns nil if not in live mode or recorder is not available
+    public func getActionRecorder() -> ActionRecorder? {
+        return actionRecorder
+    }
 
     deinit {
         tickTask?.cancel()
@@ -287,6 +619,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         sessionID: SessionID,
         services: LandServices = LandServices()
     ) async throws {
+        await ensureInitialized()
         // Check for duplicate playerID login (Kick Old strategy)
         if let existingSession = players[playerID], let oldClientID = existingSession.clientID {
             logger.info("Duplicate playerID login detected: \(playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
@@ -306,16 +639,24 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         destroyTask?.cancel()
         destroyTask = nil
 
-        guard isFirst, let handler = definition.lifetimeHandlers.onJoin else { return }
-        var ctx = makeContext(
-            playerID: playerID,
-            clientID: clientID,
-            sessionID: sessionID,
-            servicesOverride: services
-        )
-        
+        guard isFirst, definition.lifetimeHandlers.onJoin != nil else { return }
+
+        // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
+        let sequence = nextSequence
+        nextSequence += 1
+
+        // Snapshot tick at request time; update after resolver completion for async determinism.
+        var resolvedAtTick = lastCommittedTickId
+        var resolverOutputs: [String: any ResolverOutput] = [:]
+
         // Execute resolvers in parallel if any are declared
         if !definition.lifetimeHandlers.onJoinResolverExecutors.isEmpty {
+            var ctx = makeContext(
+                playerID: playerID,
+                clientID: clientID,
+                sessionID: sessionID,
+                servicesOverride: services
+            )
             let resolverContext = ResolverContext(
                 landContext: ctx,
                 actionPayload: nil,
@@ -327,12 +668,30 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 resolverContext: resolverContext,
                 landContext: ctx
             )
+            resolverOutputs = ctx.getAllResolverOutputs()
+            // Bind to the tick that was current when resolvers completed
+            resolvedAtTick = lastCommittedTickId
         }
-        
-        // Execute handler synchronously (resolvers already executed above)
-        // withMutableStateSync is now synchronous - no await needed
-        try withMutableStateSync { state in
-            try handler(&state, ctx)
+
+        let pendingItem = PendingItem.lifecycle(
+            PendingLifecycleItem(
+                sequence: sequence,
+                kind: .join,
+                playerID: playerID,
+                clientID: clientID,
+                sessionID: sessionID,
+                deviceID: session.deviceID,
+                isGuest: session.isGuest,
+                metadata: session.metadata,
+                resolverOutputs: resolverOutputs,
+                resolvedAtTick: resolvedAtTick
+            )
+        )
+        pendingItems.append(pendingItem)
+
+        // If there's no tick handler, process lifecycle immediately (backward-compatible mode)
+        if definition.lifetimeHandlers.tickHandler == nil {
+            _ = try await processPendingActions()
         }
     }
 
@@ -354,6 +713,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         sessionID: SessionID,
         services: LandServices
     ) async throws -> JoinDecision {
+        await ensureInitialized()
         // Call CanJoin handler if defined
         var decision: JoinDecision = .allow(playerID: PlayerID(session.playerID))
         
@@ -437,19 +797,27 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         destroyTask?.cancel()
         destroyTask = nil
 
-        guard isFirst, let handler = definition.lifetimeHandlers.onJoin else { return decision }
-        var ctx = makeContext(
-            playerID: playerID,
-            clientID: clientID,
-            sessionID: sessionID,
-            servicesOverride: services,
-            deviceID: session.deviceID,
-            isGuest: session.isGuest,
-            metadata: session.metadata
-        )
-        
+        guard isFirst, definition.lifetimeHandlers.onJoin != nil else { return decision }
+
+        // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
+        let sequence = nextSequence
+        nextSequence += 1
+
+        // Snapshot tick at request time; update after resolver completion for async determinism.
+        var resolvedAtTick = lastCommittedTickId
+        var resolverOutputs: [String: any ResolverOutput] = [:]
+
         // Execute resolvers in parallel if any are declared
         if !definition.lifetimeHandlers.onJoinResolverExecutors.isEmpty {
+            var ctx = makeContext(
+                playerID: playerID,
+                clientID: clientID,
+                sessionID: sessionID,
+                servicesOverride: services,
+                deviceID: session.deviceID,
+                isGuest: session.isGuest,
+                metadata: session.metadata
+            )
             let resolverContext = ResolverContext(
                 landContext: ctx,
                 actionPayload: nil,
@@ -461,12 +829,29 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 resolverContext: resolverContext,
                 landContext: ctx
             )
+            resolverOutputs = ctx.getAllResolverOutputs()
+            resolvedAtTick = lastCommittedTickId
         }
-        
-        // Execute handler synchronously (resolvers already executed above)
-        // withMutableStateSync is now synchronous - no await needed
-        try withMutableStateSync { state in
-            try handler(&state, ctx)
+
+        let pendingItem = PendingItem.lifecycle(
+            PendingLifecycleItem(
+                sequence: sequence,
+                kind: .join,
+                playerID: playerID,
+                clientID: clientID,
+                sessionID: sessionID,
+                deviceID: session.deviceID,
+                isGuest: session.isGuest,
+                metadata: session.metadata,
+                resolverOutputs: resolverOutputs,
+                resolvedAtTick: resolvedAtTick
+            )
+        )
+        pendingItems.append(pendingItem)
+
+        // If there's no tick handler, process lifecycle immediately (backward-compatible mode)
+        if definition.lifetimeHandlers.tickHandler == nil {
+            _ = try await processPendingActions()
         }
         
         return decision
@@ -481,6 +866,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///   - playerID: The player's unique identifier.
     ///   - clientID: The client instance identifier.
     public func leave(playerID: PlayerID, clientID: ClientID) async throws {
+        await ensureInitialized()
         guard let session = players[playerID] else {
             if logger.logLevel <= .debug {
                 logger.debug("Leave called for player \(playerID.rawValue) but not found in players dictionary")
@@ -506,9 +892,23 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let metadata = session.metadata
         players.removeValue(forKey: playerID)
         
-        logger.info("Player \(playerID.rawValue) leaving, calling OnLeave handler")
-        
-        if let handler = definition.lifetimeHandlers.onLeave {
+        logger.info("Player \(playerID.rawValue) leaving, enqueuing OnLeave lifecycle item")
+
+        guard definition.lifetimeHandlers.onLeave != nil else {
+            scheduleDestroyIfNeeded()
+            return
+        }
+
+        // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
+        let sequence = nextSequence
+        nextSequence += 1
+
+        // Snapshot tick at request time; update after resolver completion for async determinism.
+        var resolvedAtTick = lastCommittedTickId
+        var resolverOutputs: [String: any ResolverOutput] = [:]
+
+        // Execute resolvers in parallel if any are declared
+        if !definition.lifetimeHandlers.onLeaveResolverExecutors.isEmpty {
             var ctx = makeContext(
                 playerID: playerID,
                 clientID: clientID,
@@ -518,102 +918,64 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 isGuest: isGuest,
                 metadata: metadata
             )
-            
-            // Execute resolvers in parallel if any are declared
-            if !definition.lifetimeHandlers.onLeaveResolverExecutors.isEmpty {
-                let resolverContext = ResolverContext(
-                    landContext: ctx,
-                    actionPayload: nil,
-                    eventPayload: nil,
-                    currentState: state
-                )
-                ctx = try await ResolverExecutor.executeResolvers(
-                    executors: definition.lifetimeHandlers.onLeaveResolverExecutors,
-                    resolverContext: resolverContext,
-                    landContext: ctx
-                )
-            }
-            
-            // Execute handler synchronously (resolvers already executed above)
-            // withMutableStateSync is now synchronous - no await needed
-            try withMutableStateSync { state in
-                try handler(&state, ctx)
-            }
-            // Trigger sync after OnLeave handler modifies state
-            // Use syncBroadcastOnlyHandler for optimization: only syncs broadcast changes
-            // (e.g., removing player from dictionary) using dirty tracking.
-            // This is more efficient than syncNow() because:
-            // - Only extracts/compares dirty broadcast fields (not entire state)
-            // - Sends same update to all players (no per-player diff needed)
-            // - Updates shared broadcast cache efficiently
-            await transport?.syncBroadcastOnlyFromTransport()
+            let resolverContext = ResolverContext(
+                landContext: ctx,
+                actionPayload: nil,
+                eventPayload: nil,
+                currentState: state
+            )
+            ctx = try await ResolverExecutor.executeResolvers(
+                executors: definition.lifetimeHandlers.onLeaveResolverExecutors,
+                resolverContext: resolverContext,
+                landContext: ctx
+            )
+            resolverOutputs = ctx.getAllResolverOutputs()
+            resolvedAtTick = lastCommittedTickId
         }
+
+        let pendingItem = PendingItem.lifecycle(
+            PendingLifecycleItem(
+                sequence: sequence,
+                kind: .leave,
+                playerID: playerID,
+                clientID: clientID,
+                sessionID: session.lastSessionID ?? systemSessionID,
+                deviceID: deviceID,
+                isGuest: isGuest,
+                metadata: metadata,
+                resolverOutputs: resolverOutputs,
+                resolvedAtTick: resolvedAtTick
+            )
+        )
+        pendingItems.append(pendingItem)
+
+        // If there's no tick handler, process lifecycle immediately (backward-compatible mode)
+        if definition.lifetimeHandlers.tickHandler == nil {
+            _ = try await processPendingActions()
+        }
+
         scheduleDestroyIfNeeded()
     }
 
     // MARK: - Action & Event Handling
 
-    /// Handles an action from a player.
-    ///
-    /// Finds the registered handler for the action type and executes it.
-    ///
-    /// - Parameters:
-    ///   - action: The action payload.
-    ///   - playerID: The player sending the action.
-    ///   - clientID: The client instance.
-    ///   - sessionID: The session identifier.
-    /// - Returns: The action result (type-erased as `AnyCodable`).
-    /// - Throws: `LandError.actionNotRegistered` if no handler is found.
-    public func handleAction<A: ActionPayload>(
-        _ action: A,
-        playerID: PlayerID,
-        clientID: ClientID,
-        sessionID: SessionID
-    ) async throws -> AnyCodable {
-        guard let handler = definition.actionHandlers.first(where: { $0.canHandle(A.self) }) else {
-            throw LandError.actionNotRegistered
-        }
-
-        // Bind action to lastCommittedTickId for replay logging
-        // This represents the world state's current committed tick (not the next tick)
-        var ctx = makeContext(
-            playerID: playerID,
-            clientID: clientID,
-            sessionID: sessionID,
-            tickId: lastCommittedTickId
-        )
-        
-        // Execute resolvers in parallel if any are declared
-        if !handler.resolverExecutors.isEmpty {
-            let resolverContext = ResolverContext(
-                landContext: ctx,
-                actionPayload: action,
-                eventPayload: nil,
-                currentState: state
-            )
-            ctx = try await ResolverExecutor.executeResolvers(
-                executors: handler.resolverExecutors,
-                resolverContext: resolverContext,
-                landContext: ctx
-            )
-        }
-        
-        // Execute handler synchronously (resolvers already executed above)
-        // withMutableStateSync is now synchronous - no await needed
-        return try withMutableStateSync { state in
-            try handler.invoke(&state, action: action, ctx: ctx)
-        }
-    }
-    
     /// Handles an action envelope by decoding and dispatching to the registered handler.
     ///
     /// This is used by transport adapters that receive type-erased `ActionEnvelope` payloads.
+    /// In `.live` mode, actions are queued and executed in ticks. In `.replay` mode, returns immediately.
     public func handleActionEnvelope(
         _ envelope: ActionEnvelope,
         playerID: PlayerID,
         clientID: ClientID,
         sessionID: SessionID
     ) async throws -> AnyCodable {
+        await ensureInitialized()
+        // In replay mode, actions come from ActionSource, not from transport
+        guard mode == .live else {
+            // Return empty response in replay mode
+            return AnyCodable(())
+        }
+        
         let decoder = JSONDecoder()
         let typeIdentifier = envelope.typeIdentifier
         
@@ -654,20 +1016,26 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
         
         // Decode action payload from AnyCodable
-        // First, encode AnyCodable to JSON Data, then decode to the specific action type
         let payloadData = try JSONEncoder().encode(envelope.payload)
         let decodedAction = try decoder.decode(actionPayloadType, from: payloadData)
-        // Bind action to lastCommittedTickId for replay logging
-        // This represents the world state's current committed tick (not the next tick)
-        var ctx = makeContext(
-            playerID: playerID,
-            clientID: clientID,
-            sessionID: sessionID,
-            tickId: lastCommittedTickId
-        )
+        
+        // Allocate sequence number (shared across Action + ClientEvent + ServerEvent)
+        let sequence = nextSequence
+        nextSequence += 1
+        
+        // Bind action to lastCommittedTickId; if resolvers are async, update after they complete.
+        var resolvedAtTick = lastCommittedTickId
         
         // Execute resolvers in parallel if any are declared
+        var resolverOutputs: [String: any ResolverOutput] = [:]
         if !handler.resolverExecutors.isEmpty {
+            var ctx = makeContext(
+                playerID: playerID,
+                clientID: clientID,
+                sessionID: sessionID,
+                tickId: resolvedAtTick
+            )
+            
             // ActionPayload already conforms to Sendable, so we can use it directly
             let actionPayloadAsSendable = decodedAction as (any Sendable)
             let resolverContext = ResolverContext(
@@ -681,13 +1049,47 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 resolverContext: resolverContext,
                 landContext: ctx
             )
+            
+            // Extract resolver outputs from context
+            resolverOutputs = ctx.getAllResolverOutputs()
+
+            // Bind to the tick that was current when resolvers completed (deterministic ordering)
+            resolvedAtTick = lastCommittedTickId
         }
         
-        // Execute handler synchronously (resolvers already executed above)
-        // withMutableStateSync is now synchronous - no await needed
-        return try withMutableStateSync { state in
-            try handler.invokeErased(&state, action: decodedAction, ctx: ctx)
+        // Create pending item and add to queue
+        let pendingItem = PendingItem.action(
+            PendingActionItem(
+                sequence: sequence,
+                action: envelope.payload,
+                actionType: actionPayloadType,
+                playerID: playerID,
+                clientID: clientID,
+                sessionID: sessionID,
+                resolverOutputs: resolverOutputs,
+                resolvedAtTick: resolvedAtTick
+            )
+        )
+        pendingItems.append(pendingItem)
+        
+        // If there's no tick handler, process pending actions immediately and return response
+        // This maintains backward compatibility for tests and simple use cases
+        if definition.lifetimeHandlers.tickHandler == nil {
+            do {
+                if let response = try await processPendingActions() {
+                    return response
+                }
+            } catch {
+                logger.error("Error processing pending actions", metadata: [
+                    "error": .string(String(describing: error))
+                ])
+                throw error
+            }
         }
+        
+        // Return immediate ACK (handler will execute in tick)
+        // Return empty response - actual response will be available after tick execution
+        return AnyCodable(())
     }
     
     /// Generate action ID for matching (same format as schema generation).
@@ -718,21 +1120,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Handles a client event from a player.
     ///
-    /// Checks if the event is allowed, then invokes all registered event handlers.
+    /// In `.live` mode, events are queued and executed in ticks. In `.replay` mode, returns immediately.
     ///
     /// - Parameters:
     ///   - event: The client event (type-erased).
     ///   - playerID: The player sending the event.
     ///   - clientID: The client instance.
     ///   - sessionID: The session identifier.
-    /// Handles a client event by finding and invoking registered event handlers.
-    ///
-    /// - Parameters:
-    ///   - event: The client event to handle.
-    ///   - playerID: The player sending the event.
-    ///   - clientID: The client instance.
-    ///   - sessionID: The session identifier.
-    /// - Throws: Errors from event handler execution (e.g., resolver failures)
+    /// - Throws: Errors from event validation (e.g., event not registered)
     ///
     /// **Error Handling**:
     /// - If any event handler throws an error, the error is propagated to the caller
@@ -743,14 +1138,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         clientID: ClientID,
         sessionID: SessionID
     ) async throws {
-        // Bind event to lastCommittedTickId for replay logging
-        // This represents the world state's current committed tick (not the next tick)
-        let ctx = makeContext(
-            playerID: playerID,
-            clientID: clientID,
-            sessionID: sessionID,
-            tickId: lastCommittedTickId
-        )
+        await ensureInitialized()
+        // In replay mode, events come from ActionSource, not from transport
+        guard mode == .live else {
+            return
+        }
         
         // Check if event is registered in the client event registry
         guard let descriptor = definition.clientEventRegistry.findDescriptor(for: event.type) else {
@@ -782,15 +1174,44 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             throw LandError.eventNotRegistered
         }
         
-        // Note: Event handlers don't currently support resolvers, but we prepare for it
-        // If we add resolver support for events in the future, we would execute them here
+        // Allocate sequence number (shared across Action + ClientEvent + ServerEvent)
+        let sequence = nextSequence
+        nextSequence += 1
         
-        // withMutableStateSync is now synchronous - no await needed
-        try withMutableStateSync { state in
-            for handler in matchingHandlers {
-                try handler.invoke(&state, event: event, ctx: ctx)
+        // Bind event to lastCommittedTickId for replay logging
+        let resolvedAtTick = lastCommittedTickId
+        
+        // Create pending item and add to queue
+        let pendingItem = PendingItem.clientEvent(
+            PendingClientEventItem(
+                sequence: sequence,
+                event: event,
+                playerID: playerID,
+                clientID: clientID,
+                sessionID: sessionID,
+                resolvedAtTick: resolvedAtTick
+            )
+        )
+        pendingItems.append(pendingItem)
+        
+        // If there's no tick handler, process pending actions immediately
+        // This maintains backward compatibility for tests and simple use cases
+        // Note: This is async, but we can't await in a non-async context
+        // So we use Task to handle it asynchronously
+        if definition.lifetimeHandlers.tickHandler == nil {
+            Task { [weak self] in
+                guard let self = self else { return }
+                do {
+                    _ = try await self.processPendingActions()
+                } catch {
+                    self.logger.error("Error processing pending actions", metadata: [
+                        "error": .string(String(describing: error))
+                    ])
+                }
             }
         }
+        
+        // Return immediately (handler will execute in tick or immediately if no tick handler)
     }
 
     // MARK: - Helpers
@@ -803,7 +1224,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         deviceID: String? = nil,
         isGuest: Bool? = nil,
         metadata: [String: String] = [:],
-        tickId: Int64? = nil
+        tickId: Int64? = nil,
+        resolverOutputs: [String: any ResolverOutput] = [:]
     ) -> LandContext {
         let baseServices = servicesOverride ?? LandServices()
         let playerServices = players[playerID]?.services
@@ -811,6 +1233,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let playerSession = players[playerID]
         // Use actual land instance ID if available, otherwise fall back to definition.id (land type)
         let landID = actualLandID ?? definition.id
+        let eventRecordingTickId = tickId ?? lastCommittedTickId
         return LandContext(
             landID: landID,
             playerID: playerID,
@@ -822,23 +1245,34 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             isGuest: isGuest ?? playerSession?.isGuest ?? false,
             metadata: metadata.isEmpty ? (playerSession?.metadata ?? [:]) : metadata,
             tickId: tickId,
-            sendEventHandler: { [transport, logger, definition] anyEvent, target in
+            sendEventHandler: { [weak self] anyEvent, target in
+                guard let self = self else { return }
                 #if DEBUG
-                if !definition.serverEventRegistry.registered.isEmpty {
+                if !self.definition.serverEventRegistry.registered.isEmpty {
                     // Check if the event type is registered by looking up the event name
-                    if definition.serverEventRegistry.findDescriptor(for: anyEvent.type) == nil {
-                        logger.warning(
+                    if self.definition.serverEventRegistry.findDescriptor(for: anyEvent.type) == nil {
+                        self.logger.warning(
                             "ServerEvent type '\(anyEvent.type)' was sent but not registered via ServerEvents { Register(...) } in the Land DSL. It will not be included in generated schemas.",
                             metadata: ["eventType": .string(anyEvent.type)]
                         )
                     }
                 }
                 #endif
-                await transport?.sendEventToTransport(anyEvent, to: target)
+                
+                // Record server event for replay (actor hop).
+                await self.recordServerEventForReplay(
+                    anyEvent: anyEvent,
+                    target: target,
+                    tickId: eventRecordingTickId
+                )
+                
+                await self.transport?.sendEventToTransport(anyEvent, to: target)
             },
-            syncHandler: { [transport] in
-                await transport?.syncNowFromTransport()
-            }
+            syncHandler: { [weak self] in
+                guard let self = self else { return }
+                await self.transport?.syncNowFromTransport()
+            },
+            resolverOutputs: resolverOutputs
         )
     }
 
@@ -877,7 +1311,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     try? await Task.sleep(until: nextTickTime, clock: .continuous)
                 }
                 
-                await self.runTick()
+                await self.runTick(allowWhenNoTickTask: false)
                 
                 // Fixed-rate scheduling: calculate next time from the scheduled time, not from now
                 // This maintains a consistent tick rate even if execution takes longer than interval
@@ -893,19 +1327,466 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
     }
 
-    private func runTick() {
+    /// Manually execute a single tick (for deterministic tests/tools).
+    ///
+    /// This bypasses the internal tick loop guard and allows stepping a land deterministically
+    /// without relying on wall-clock time.
+    public func stepTickOnce() async {
+        await ensureInitialized()
+        await runTick(allowWhenNoTickTask: true)
+    }
+
+    /// Process pending actions and client events that are ready to execute
+    /// Returns the response from the last executed action (if any)
+    private func processPendingActions() async throws -> AnyCodable? {
+        // The tick currently executing (best-effort).
+        // In the normal tick loop, nextTickId has already been incremented for this tick.
+        let executingTickId = nextTickId - 1
+
+        // Filter items that are ready to execute (resolvedAtTick < nextTickId)
+        let readyItems = pendingItems.filter { item in
+            let resolvedAtTick: Int64
+            switch item {
+            case .action(let actionItem):
+                resolvedAtTick = actionItem.resolvedAtTick
+            case .clientEvent(let eventItem):
+                resolvedAtTick = eventItem.resolvedAtTick
+            case .lifecycle(let lifecycleItem):
+                resolvedAtTick = lifecycleItem.resolvedAtTick
+            }
+            return resolvedAtTick < nextTickId
+        }
+        
+        // Sort by resolvedAtTick (primary) and sequence (secondary)
+        let sortedItems = readyItems.sorted { item1, item2 in
+            let (resolvedAtTick1, sequence1): (Int64, Int64)
+            let (resolvedAtTick2, sequence2): (Int64, Int64)
+            
+            switch item1 {
+            case .action(let actionItem):
+                resolvedAtTick1 = actionItem.resolvedAtTick
+                sequence1 = actionItem.sequence
+            case .clientEvent(let eventItem):
+                resolvedAtTick1 = eventItem.resolvedAtTick
+                sequence1 = eventItem.sequence
+            case .lifecycle(let lifecycleItem):
+                resolvedAtTick1 = lifecycleItem.resolvedAtTick
+                sequence1 = lifecycleItem.sequence
+            }
+            
+            switch item2 {
+            case .action(let actionItem):
+                resolvedAtTick2 = actionItem.resolvedAtTick
+                sequence2 = actionItem.sequence
+            case .clientEvent(let eventItem):
+                resolvedAtTick2 = eventItem.resolvedAtTick
+                sequence2 = eventItem.sequence
+            case .lifecycle(let lifecycleItem):
+                resolvedAtTick2 = lifecycleItem.resolvedAtTick
+                sequence2 = lifecycleItem.sequence
+            }
+            
+            if resolvedAtTick1 != resolvedAtTick2 {
+                return resolvedAtTick1 < resolvedAtTick2
+            }
+            return sequence1 < sequence2
+        }
+        
+        // Execute each item and track the last action response
+        var lastActionResponse: AnyCodable? = nil
+        var recordedActions: [RecordedAction] = []
+        var recordedClientEvents: [RecordedClientEvent] = []
+        var recordedLifecycleEvents: [RecordedLifecycleEvent] = []
+        var shouldSyncBroadcastOnly = false
+        
+        for item in sortedItems {
+            switch item {
+            case .action(let actionItem):
+                // Find handler for this action type
+                guard let handler = definition.actionHandlers.first(where: { handler in
+                    handler.canHandle(actionItem.actionType)
+                }) else {
+                    logger.error("Handler not found for action type", metadata: [
+                        "actionType": .string(String(describing: actionItem.actionType))
+                    ])
+                    continue
+                }
+                
+                // Decode action from AnyCodable
+                let decoder = JSONDecoder()
+                let payloadData = try JSONEncoder().encode(actionItem.action)
+                let decodedAction = try decoder.decode(actionItem.actionType, from: payloadData)
+                
+                // Create context with resolver outputs
+                let ctx = makeContext(
+                    playerID: actionItem.playerID,
+                    clientID: actionItem.clientID,
+                    sessionID: actionItem.sessionID,
+                    tickId: executingTickId,
+                    resolverOutputs: actionItem.resolverOutputs
+                )
+                
+                // Execute handler and capture response
+                let response = try withMutableStateSync { state in
+                    try handler.invokeErased(&state, action: decodedAction, ctx: ctx)
+                }
+                lastActionResponse = response
+                
+                // Record action for replay
+                let resolverOutputsDict = actionItem.resolverOutputs.mapValues { output in
+                    RecordedResolverOutput(
+                        typeIdentifier: String(describing: type(of: output)),
+                        value: AnyCodable(output)
+                    )
+                }
+                let recordedAction = RecordedAction(
+                    kind: "action",
+                    sequence: actionItem.sequence,
+                    typeIdentifier: String(describing: actionItem.actionType),
+                    payload: actionItem.action,
+                    playerID: actionItem.playerID.rawValue,
+                    clientID: actionItem.clientID.rawValue,
+                    sessionID: actionItem.sessionID.rawValue,
+                    resolverOutputs: resolverOutputsDict,
+                    resolvedAtTick: actionItem.resolvedAtTick
+                )
+                recordedActions.append(recordedAction)
+                
+            case .clientEvent(let eventItem):
+                // Find handlers for this event type
+                guard let descriptor = definition.clientEventRegistry.findDescriptor(for: eventItem.event.type) else {
+                    logger.error("Event descriptor not found", metadata: [
+                        "eventType": .string(eventItem.event.type)
+                    ])
+                    continue
+                }
+                
+                let matchingHandlers = definition.eventHandlers.filter { handler in
+                    handler.canHandle(descriptor.type)
+                }
+                
+                guard !matchingHandlers.isEmpty else {
+                    logger.error("No handler found for client event", metadata: [
+                        "eventType": .string(eventItem.event.type)
+                    ])
+                    continue
+                }
+                
+                // Create context (client events don't have resolver outputs)
+                let ctx = makeContext(
+                    playerID: eventItem.playerID,
+                    clientID: eventItem.clientID,
+                    sessionID: eventItem.sessionID,
+                    tickId: executingTickId,
+                    resolverOutputs: [:]
+                )
+                
+                // Execute handlers
+                try withMutableStateSync { state in
+                    for handler in matchingHandlers {
+                        try handler.invoke(&state, event: eventItem.event, ctx: ctx)
+                    }
+                }
+                
+                // Record client event for replay
+                let recordedClientEvent = RecordedClientEvent(
+                    kind: "clientEvent",
+                    sequence: eventItem.sequence,
+                    typeIdentifier: eventItem.event.type,
+                    payload: eventItem.event.payload,
+                    playerID: eventItem.playerID.rawValue,
+                    clientID: eventItem.clientID.rawValue,
+                    sessionID: eventItem.sessionID.rawValue,
+                    resolvedAtTick: eventItem.resolvedAtTick
+                )
+                recordedClientEvents.append(recordedClientEvent)
+            case .lifecycle(let lifecycleItem):
+                switch lifecycleItem.kind {
+                case .initialize:
+                    guard let handler = definition.lifetimeHandlers.onInitialize else { break }
+                    let ctx = makeContext(
+                        playerID: systemPlayerID,
+                        clientID: systemClientID,
+                        sessionID: systemSessionID,
+                        tickId: executingTickId,
+                        resolverOutputs: lifecycleItem.resolverOutputs
+                    )
+                    // Execute handler synchronously (resolver outputs already injected)
+                    try withMutableStateSync { state in
+                        try handler(&state, ctx)
+                    }
+                case .join:
+                    guard
+                        let playerID = lifecycleItem.playerID,
+                        let clientID = lifecycleItem.clientID,
+                        let sessionID = lifecycleItem.sessionID,
+                        let handler = definition.lifetimeHandlers.onJoin
+                    else { break }
+                    let ctx = makeContext(
+                        playerID: playerID,
+                        clientID: clientID,
+                        sessionID: sessionID,
+                        deviceID: lifecycleItem.deviceID,
+                        isGuest: lifecycleItem.isGuest,
+                        metadata: lifecycleItem.metadata,
+                        tickId: executingTickId,
+                        resolverOutputs: lifecycleItem.resolverOutputs
+                    )
+                    try withMutableStateSync { state in
+                        try handler(&state, ctx)
+                    }
+                case .leave:
+                    guard
+                        let playerID = lifecycleItem.playerID,
+                        let clientID = lifecycleItem.clientID,
+                        let sessionID = lifecycleItem.sessionID,
+                        let handler = definition.lifetimeHandlers.onLeave
+                    else { break }
+                    let ctx = makeContext(
+                        playerID: playerID,
+                        clientID: clientID,
+                        sessionID: sessionID,
+                        deviceID: lifecycleItem.deviceID,
+                        isGuest: lifecycleItem.isGuest,
+                        metadata: lifecycleItem.metadata,
+                        tickId: executingTickId,
+                        resolverOutputs: lifecycleItem.resolverOutputs
+                    )
+                    try withMutableStateSync { state in
+                        try handler(&state, ctx)
+                    }
+                    // Defer sync until after pending item removal to avoid duplicate execution races.
+                    shouldSyncBroadcastOnly = true
+                }
+
+                // Record lifecycle event for replay
+                let resolverOutputsDict = lifecycleItem.resolverOutputs.mapValues { output in
+                    RecordedResolverOutput(
+                        typeIdentifier: String(describing: type(of: output)),
+                        value: AnyCodable(output)
+                    )
+                }
+                let recordedLifecycleEvent = RecordedLifecycleEvent(
+                    kind: lifecycleItem.kind.rawValue,
+                    sequence: lifecycleItem.sequence,
+                    tickId: executingTickId,
+                    playerID: lifecycleItem.playerID?.rawValue,
+                    clientID: lifecycleItem.clientID?.rawValue,
+                    sessionID: lifecycleItem.sessionID?.rawValue,
+                    deviceID: lifecycleItem.deviceID,
+                    isGuest: lifecycleItem.isGuest,
+                    metadata: lifecycleItem.metadata,
+                    resolverOutputs: resolverOutputsDict,
+                    resolvedAtTick: lifecycleItem.resolvedAtTick
+                )
+                recordedLifecycleEvents.append(recordedLifecycleEvent)
+            }
+        }
+        
+        // Remove executed items from queue
+        let executedSequences = Set(sortedItems.map { item -> Int64 in
+            switch item {
+            case .action(let actionItem):
+                return actionItem.sequence
+            case .clientEvent(let eventItem):
+                return eventItem.sequence
+            case .lifecycle(let lifecycleItem):
+                return lifecycleItem.sequence
+            }
+        })
+        
+        pendingItems.removeAll { item in
+            let sequence: Int64
+            switch item {
+            case .action(let actionItem):
+                sequence = actionItem.sequence
+            case .clientEvent(let eventItem):
+                sequence = eventItem.sequence
+            case .lifecycle(let lifecycleItem):
+                sequence = lifecycleItem.sequence
+            }
+            return executedSequences.contains(sequence)
+        }
+        
+        // Record actions and client events to ActionRecorder
+        if let recorder = actionRecorder,
+           !recordedActions.isEmpty || !recordedClientEvents.isEmpty || !recordedLifecycleEvents.isEmpty {
+            // Use the tick ID that was used for processing (nextTickId - 1, since we incremented it before processing)
+            let recordingTickId = nextTickId - 1
+            await recorder.record(
+                tickId: recordingTickId,
+                actions: recordedActions,
+                clientEvents: recordedClientEvents,
+                lifecycleEvents: recordedLifecycleEvents
+            )
+            
+            // Flush if needed
+            try? await recorder.flushIfNeeded(currentTick: recordingTickId)
+        }
+        
+        if shouldSyncBroadcastOnly {
+            await transport?.syncBroadcastOnlyFromTransport()
+        }
+        
+        return lastActionResponse
+    }
+    
+    private func runTick(allowWhenNoTickTask: Bool) async {
         // Check if task was cancelled before executing tick
         // This prevents ticks from running after shutdown has started
         guard !Task.isCancelled else { return }
         
-        guard let handler = definition.lifetimeHandlers.tickHandler else { return }
+        guard let handler = definition.lifetimeHandlers.tickHandler else {
+            // Even if there's no tick handler, we still need to process pending actions
+            do {
+                _ = try await processPendingActions()
+            } catch {
+                logger.error("Error processing pending actions", metadata: [
+                    "error": .string(String(describing: error))
+                ])
+            }
+            return
+        }
         
-        // Double-check: if tickTask is nil, we're in shutdown, don't run
-        guard tickTask != nil else { return }
+        // Double-check: if tickTask is nil, we're in shutdown, don't run (unless manually stepping)
+        if !allowWhenNoTickTask {
+            guard tickTask != nil else { return }
+        }
         
         // Use tickId for deterministic replay (increments with each tick)
+        // Increment BEFORE processing pending actions so they can execute in this tick
         let tickId = nextTickId
         nextTickId += 1
+        
+        // In replay mode, load actions, client events, and lifecycle events from ActionSource
+        if mode == .replay, let source = actionSource {
+            do {
+                let recordedActions = try await source.getActions(for: tickId)
+                let recordedClientEvents = try await source.getClientEvents(for: tickId)
+                let recordedLifecycleEvents = try await source.getLifecycleEvents(for: tickId)
+                
+                // Convert recorded actions to PendingItem
+                for recordedAction in recordedActions {
+                    // Find the action type handler by matching type identifier
+                    guard let handler = definition.actionHandlers.first(where: { handler in
+                        let actionType = handler.getActionType()
+                        let actionTypeName = String(describing: actionType)
+                        
+                        // Direct type name match (e.g., "AddGoldAction" == "AddGoldAction")
+                        if actionTypeName == recordedAction.typeIdentifier {
+                            return true
+                        }
+                        
+                        // Match last component (e.g., "Module.AddGoldAction" == "AddGoldAction")
+                        if actionTypeName.split(separator: ".").last == recordedAction.typeIdentifier.split(separator: ".").last {
+                            return true
+                        }
+                        
+                        return false
+                    }) else {
+                        logger.warning("Handler not found for recorded action type", metadata: [
+                            "typeIdentifier": .string(recordedAction.typeIdentifier)
+                        ])
+                        continue
+                    }
+                    
+                    // Get the action type from handler (we know it's ActionPayload.Type)
+                    let actionTypeAny = handler.getActionType()
+                    guard let actionType = actionTypeAny as? any ActionPayload.Type else {
+                        logger.warning("Action type is not ActionPayload", metadata: [
+                            "typeIdentifier": .string(recordedAction.typeIdentifier)
+                        ])
+                        continue
+                    }
+                    
+                    // Convert resolver outputs from RecordedResolverOutput back to ResolverOutput
+                    // In replay mode, we wrap them in AnyCodableResolverOutput for lazy decoding
+                    // The actual decoding happens when accessed via LandContext.subscript
+                    var resolverOutputs: [String: any ResolverOutput] = [:]
+                    for (key, recordedOutput) in recordedAction.resolverOutputs {
+                        resolverOutputs[key] = AnyCodableResolverOutput(
+                            typeIdentifier: recordedOutput.typeIdentifier,
+                            value: recordedOutput.value
+                        )
+                    }
+                    
+                    let pendingItem = PendingItem.action(
+                        PendingActionItem(
+                            sequence: recordedAction.sequence,
+                            action: recordedAction.payload,
+                            actionType: actionType,
+                            playerID: PlayerID(recordedAction.playerID),
+                            clientID: ClientID(recordedAction.clientID),
+                            sessionID: SessionID(recordedAction.sessionID),
+                            resolverOutputs: resolverOutputs,
+                            resolvedAtTick: recordedAction.resolvedAtTick
+                        )
+                    )
+                    pendingItems.append(pendingItem)
+                }
+                
+                // Convert recorded client events to PendingItem
+                for recordedClientEvent in recordedClientEvents {
+                    let pendingItem = PendingItem.clientEvent(
+                        PendingClientEventItem(
+                            sequence: recordedClientEvent.sequence,
+                            event: AnyClientEvent(
+                                type: recordedClientEvent.typeIdentifier,
+                                payload: recordedClientEvent.payload
+                            ),
+                            playerID: PlayerID(recordedClientEvent.playerID),
+                            clientID: ClientID(recordedClientEvent.clientID),
+                            sessionID: SessionID(recordedClientEvent.sessionID),
+                            resolvedAtTick: recordedClientEvent.resolvedAtTick
+                        )
+                    )
+                    pendingItems.append(pendingItem)
+                }
+
+                // Convert recorded lifecycle events to PendingItem
+                for recordedLifecycleEvent in recordedLifecycleEvents {
+                    let kind = LifecycleKind(rawValue: recordedLifecycleEvent.kind) ?? .initialize
+
+                    var resolverOutputs: [String: any ResolverOutput] = [:]
+                    for (key, recordedOutput) in recordedLifecycleEvent.resolverOutputs {
+                        resolverOutputs[key] = AnyCodableResolverOutput(
+                            typeIdentifier: recordedOutput.typeIdentifier,
+                            value: recordedOutput.value
+                        )
+                    }
+
+                    let pendingItem = PendingItem.lifecycle(
+                        PendingLifecycleItem(
+                            sequence: recordedLifecycleEvent.sequence,
+                            kind: kind,
+                            playerID: recordedLifecycleEvent.playerID.map(PlayerID.init),
+                            clientID: recordedLifecycleEvent.clientID.map(ClientID.init),
+                            sessionID: recordedLifecycleEvent.sessionID.map(SessionID.init),
+                            deviceID: recordedLifecycleEvent.deviceID,
+                            isGuest: recordedLifecycleEvent.isGuest,
+                            metadata: recordedLifecycleEvent.metadata,
+                            resolverOutputs: resolverOutputs,
+                            resolvedAtTick: recordedLifecycleEvent.resolvedAtTick
+                        )
+                    )
+                    pendingItems.append(pendingItem)
+                }
+            } catch {
+                logger.error("Error loading actions from ActionSource", metadata: [
+                    "tickId": .stringConvertible(tickId),
+                    "error": .string(String(describing: error))
+                ])
+            }
+        }
+        
+        // Process pending actions before tick handler
+        do {
+            _ = try await processPendingActions()
+        } catch {
+            logger.error("Error processing pending actions", metadata: [
+                "error": .string(String(describing: error))
+            ])
+        }
         
         let ctx = makeContext(
             playerID: systemPlayerID,
@@ -921,7 +1802,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Update lastCommittedTickId after tick execution completes
         // This represents the world state's current committed tick
         lastCommittedTickId = tickId
-        
+
+        // Ensure we have a frame for every tick in live mode, even if no inputs occurred.
+        if let recorder = actionRecorder {
+            await recorder.record(
+                tickId: tickId,
+                actions: [],
+                clientEvents: [],
+                lifecycleEvents: []
+            )
+        }
+
         // Note: Tick handler does NOT trigger automatic network sync
         // Network synchronization is handled separately by the sync mechanism
     }

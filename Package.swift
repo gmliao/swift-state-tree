@@ -44,6 +44,11 @@ let package = Package(
             name: "SwiftStateTreeBenchmarks",
             targets: ["SwiftStateTreeBenchmarks"]
         ),
+        // 🔄 Replay Runner executable
+        .executable(
+            name: "ReplayRunner",
+            targets: ["ReplayRunner"]
+        ),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-syntax.git", from: "509.0.0"),
@@ -219,6 +224,16 @@ let package = Package(
             exclude: [
                 "README.md"
             ]
+        ),
+        
+        // 🔄 Replay Runner executable
+        .executableTarget(
+            name: "ReplayRunner",
+            dependencies: [
+                "SwiftStateTree",
+                .product(name: "Logging", package: "swift-log")
+            ],
+            path: "Tools/ReplayRunner/Sources"
         ),
     ]
 )

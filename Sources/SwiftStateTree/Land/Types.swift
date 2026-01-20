@@ -53,6 +53,12 @@ public enum EventTarget: Sendable {
 ///
 /// Currently supports dynamic service registration via type-based lookup.
 /// This is a temporary implementation and may be refined in the future.
+/// Protocol for RNG services that provide a seed for deterministic replay.
+/// Services implementing this protocol can have their seed extracted for recording.
+public protocol RngSeedProvider: Sendable {
+    var seed: UInt64 { get }
+}
+
 public struct LandServices: Sendable {
     private var services: [ObjectIdentifier: any Sendable] = [:]
     
@@ -66,6 +72,17 @@ public struct LandServices: Sendable {
     /// Retrieve a service by its type
     public func get<Service: Sendable>(_ type: Service.Type) -> Service? {
         return services[ObjectIdentifier(type)] as? Service
+    }
+    
+    /// Extract RNG seed from any service implementing RngSeedProvider.
+    /// Returns the first RNG seed found, or nil if no RNG service is registered.
+    public func extractRngSeed() -> UInt64? {
+        for service in services.values {
+            if let rngProvider = service as? RngSeedProvider {
+                return rngProvider.seed
+            }
+        }
+        return nil
     }
 
     /// Merge another LandServices into this instance.

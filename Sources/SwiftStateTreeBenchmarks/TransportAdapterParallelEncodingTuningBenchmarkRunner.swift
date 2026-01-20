@@ -248,8 +248,12 @@ struct TransportAdapterParallelEncodingTuningBenchmarkRunner: BenchmarkRunner {
         if warmupIterations > 0 {
             for i in 0..<warmupIterations {
                 let action = BenchmarkMutationAction(iteration: i)
-                _ = try? await keeper.handleAction(
-                    action,
+                let envelope = ActionEnvelope(
+                    typeIdentifier: String(describing: BenchmarkMutationAction.self),
+                    payload: AnyCodable(action)
+                )
+                _ = try? await keeper.handleActionEnvelope(
+                    envelope,
                     playerID: actionPlayerID,
                     clientID: actionClientID,
                     sessionID: actionSessionID
@@ -264,8 +268,12 @@ struct TransportAdapterParallelEncodingTuningBenchmarkRunner: BenchmarkRunner {
         for i in 0..<iterations {
             let iterationIndex = warmupIterations + i
             let action = BenchmarkMutationAction(iteration: iterationIndex)
-            _ = try? await keeper.handleAction(
-                action,
+            let envelope = ActionEnvelope(
+                typeIdentifier: String(describing: BenchmarkMutationAction.self),
+                payload: AnyCodable(action)
+            )
+            _ = try? await keeper.handleActionEnvelope(
+                envelope,
                 playerID: actionPlayerID,
                 clientID: actionClientID,
                 sessionID: actionSessionID

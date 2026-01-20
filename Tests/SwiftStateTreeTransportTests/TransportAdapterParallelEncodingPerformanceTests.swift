@@ -197,8 +197,13 @@ struct TransportAdapterParallelEncodingPerformanceTests {
         }
         
         // Modify state to trigger sync
-        _ = try await keeper.handleAction(
-            TestAction(),
+        let action = TestAction()
+        let envelope = ActionEnvelope(
+            typeIdentifier: String(describing: TestAction.self),
+            payload: AnyCodable(action)
+        )
+        _ = try await keeper.handleActionEnvelope(
+            envelope,
             playerID: playerIDs[0],
             clientID: ClientID("client-0"),
             sessionID: SessionID("session-0")

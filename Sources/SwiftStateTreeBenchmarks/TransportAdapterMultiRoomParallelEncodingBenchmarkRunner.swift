@@ -391,8 +391,12 @@ struct TransportAdapterMultiRoomParallelEncodingBenchmarkRunner: BenchmarkRunner
                 }
                 group.addTask {
                     let action = BenchmarkMutationAction(iteration: iteration)
-                    _ = try? await room.keeper.handleAction(
-                        action,
+                    let envelope = ActionEnvelope(
+                        typeIdentifier: String(describing: BenchmarkMutationAction.self),
+                        payload: AnyCodable(action)
+                    )
+                    _ = try? await room.keeper.handleActionEnvelope(
+                        envelope,
                         playerID: room.actionPlayerID,
                         clientID: room.actionClientID,
                         sessionID: room.actionSessionID
