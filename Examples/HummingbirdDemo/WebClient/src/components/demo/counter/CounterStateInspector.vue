@@ -2,6 +2,8 @@
 import { computed } from 'vue'
 import MetricGrid from '../MetricGrid.vue'
 import type { CounterSnapshot } from '../../../generated/counter'
+import { formatSince } from '../../../utils/time'
+import { useNow } from '../../../utils/useNow'
 
 interface Props {
   snapshot: CounterSnapshot | null
@@ -9,6 +11,8 @@ interface Props {
 }
 
 const props = defineProps<Props>()
+
+const { nowMs } = useNow(1000)
 
 const metrics = computed(() => {
   if (!props.snapshot) return []
@@ -22,9 +26,7 @@ const metrics = computed(() => {
     },
     {
       label: 'Updated',
-      value: props.lastUpdatedAt 
-        ? `${new Date().getTime() - props.lastUpdatedAt.getTime()}ms ago`
-        : 'Never',
+      value: formatSince(props.lastUpdatedAt, nowMs.value),
       icon: 'mdi-clock-outline',
       color: 'info'
     }

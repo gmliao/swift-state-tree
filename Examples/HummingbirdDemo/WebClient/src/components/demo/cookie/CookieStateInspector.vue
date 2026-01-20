@@ -3,6 +3,8 @@ import { computed } from 'vue'
 import MetricGrid from '../MetricGrid.vue'
 import type { CookieSnapshot } from '../../../generated/cookie'
 import type { CookiePlayerPublicState, CookiePlayerPrivateState } from '../../../generated/defs'
+import { formatSince } from '../../../utils/time'
+import { useNow } from '../../../utils/useNow'
 
 interface Props {
   snapshot: CookieSnapshot | null
@@ -12,6 +14,8 @@ interface Props {
 }
 
 const props = defineProps<Props>()
+
+const { nowMs } = useNow(1000)
 
 const metrics = computed(() => {
   if (!props.currentPlayer) return []
@@ -37,9 +41,7 @@ const metrics = computed(() => {
     },
     {
       label: 'Last Update',
-      value: props.lastUpdatedAt 
-        ? `${new Date().getTime() - props.lastUpdatedAt.getTime()}ms ago`
-        : 'Never',
+      value: formatSince(props.lastUpdatedAt, nowMs.value),
       icon: 'mdi-clock-outline',
       color: 'primary'
     }
