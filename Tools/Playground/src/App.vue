@@ -530,8 +530,8 @@
             </div>
           </div>
           
-          <!-- Bottom Panel: Logs & State Updates (Resizable) -->
-          <div v-if="showLogPanel" class="log-panel-wrapper">
+          <!-- Bottom Panel: Logs & State Updates (Resizable, Docked or Floating) -->
+          <div v-if="showLogPanel && !isLogPanelFloating" class="log-panel-wrapper">
             <ResizableLogPanel
               :height="logPanelHeight"
               :logTab="logTab"
@@ -541,11 +541,28 @@
               @update:height="logPanelHeight = $event"
               @clear-logs="handleClearLogs"
               @clear-state-updates="handleClearStateUpdates"
+              @undock="handleUndockLogPanel"
             />
           </div>
         </div>
       </v-container>
     </v-main>
+
+    <!-- Floating Log Panel (Non-Modal Window) -->
+    <FloatingLogPanel
+      v-if="showLogPanel && isLogPanelFloating"
+      :logTab="logTab"
+      :logs="logs"
+      :stateUpdates="stateUpdates"
+      :height="logPanelHeight"
+      :isVisible="showLogPanel && isLogPanelFloating"
+      @update:logTab="logTab = $event"
+      @update:height="logPanelHeight = $event"
+      @clear-logs="handleClearLogs"
+      @clear-state-updates="handleClearStateUpdates"
+      @dock="handleDockLogPanel"
+      @close="showLogPanel = false"
+    />
 
     <!-- JWT 設定 Dialog -->
     <v-dialog v-model="showJWTDialog" max-width="600">
@@ -658,6 +675,7 @@ import ActionPanel from './components/ActionPanel.vue'
 import EventPanel from './components/EventPanel.vue'
 import StatisticsPanel from './components/StatisticsPanel.vue'
 import ResizableLogPanel from './components/ResizableLogPanel.vue'
+import FloatingLogPanel from './components/FloatingLogPanel.vue'
 import DraggableSplitter from './components/DraggableSplitter.vue'
 import { useWebSocket } from './composables/useWebSocket'
 import { useSchema } from './composables/useSchema'
@@ -670,6 +688,7 @@ const logPanelHeight = ref(200)
 const showLogPanel = ref(false) // Default: hidden
 const debugConsoleEnabled = ref(false)
 const leftPanelWidth = ref(50) // Percentage (0-100)
+const isLogPanelFloating = ref(false) // Log panel docked or floating
 
 // Restore UI state from localStorage
 const restoreUIState = () => {
@@ -690,6 +709,11 @@ const restoreUIState = () => {
       leftPanelWidth.value = width
     }
   }
+  
+  const savedIsLogPanelFloating = localStorage.getItem('playground.isLogPanelFloating')
+  if (savedIsLogPanelFloating !== null) {
+    isLogPanelFloating.value = savedIsLogPanelFloating === 'true'
+  }
 }
 
 // Save UI state to localStorage
@@ -705,6 +729,10 @@ watch(leftPanelWidth, (val) => {
   localStorage.setItem('playground.leftPanelWidth', String(val))
 })
 
+watch(isLogPanelFloating, (val) => {
+  localStorage.setItem('playground.isLogPanelFloating', String(val))
+})
+
 // Initialize UI state
 restoreUIState()
 
@@ -715,6 +743,14 @@ const handleSplitterResize = (delta: number) => {
   
   // Update leftPanelWidth with constraints (20% - 80%)
   leftPanelWidth.value = Math.max(20, Math.min(80, leftPanelWidth.value + percentageDelta))
+}
+
+const handleUndockLogPanel = () => {
+  isLogPanelFloating.value = true
+}
+
+const handleDockLogPanel = () => {
+  isLogPanelFloating.value = false
 }
 
 const stateTreeUpdateSpeed = ref<'realtime' | 'throttled'>('throttled')
