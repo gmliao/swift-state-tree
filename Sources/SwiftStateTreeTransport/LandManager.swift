@@ -183,6 +183,38 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             logger: logger
         )
         
+        // Set the actual land instance ID before recording metadata
+        // This ensures the RNG seed is updated to use the actual landID (not just definition.id)
+        await keeper.setLandID(landID.stringValue)
+
+        // Configure recording metadata (deterministic replay)
+        if let recorder = await keeper.getActionRecorder() {
+            // Extract RNG seed from LandKeeper's services for deterministic replay
+            // RNG seed is critical when RNG is used in game logic (e.g., monster spawning, player positioning)
+            // Note: DeterministicRngService is automatically registered by LandKeeper if not provided,
+            // and setLandID() ensures it uses the actual landID seed
+            let rngSeed = await keeper.getRngSeed()
+            
+            // Note: We do NOT record tickInterval/syncInterval because:
+            // 1. Replay mode uses manual tick stepping (stepTickOnce()), not automatic loops
+            // 2. These intervals are runtime configuration, not game logic
+            // 3. Recording them could cause confusion if they change later
+            // Only record configuration that affects game logic determinism
+            let recordingMetadata = RecordingMetadata(
+                landID: landID.stringValue,
+                landType: landID.landType,
+                createdAt: Date(),
+                metadata: metadata,
+                landDefinitionID: landDefinition.id,
+                initialStateHash: nil,
+                landConfig: nil, // No runtime config needed for replay
+                rngSeed: rngSeed,
+                version: "1.0",
+                extensions: nil
+            )
+            await recorder.setMetadata(recordingMetadata)
+        }
+        
         // Debug: Check if pathHashes is available
         if let pathHashes = pathHashes {
             logger.info("🔍 PathHashes available for land", metadata: ["count": .stringConvertible(pathHashes.count)])
@@ -208,8 +240,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         
         await keeper.setTransport(transportAdapter)
         
-        // Set the actual land instance ID so LandContext can use it
-        await keeper.setLandID(landID.stringValue)
+        // Note: setLandID was already called above before recording metadata
+        // to ensure the RNG seed uses the actual landID
         
         // Only set delegate if we created the transport (own it)
         // If sharedTransport is provided, LandRouter handles delegation

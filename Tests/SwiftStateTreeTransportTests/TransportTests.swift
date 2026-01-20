@@ -101,6 +101,15 @@ func testTransportAdapterForwardsEvents() async throws {
     await adapter.onMessage(data, from: sessionID)
 
     // Assert
+    var attempts = 0
+    while attempts < 20 {
+        let state = await keeper.currentState()
+        if state.count == 1 {
+            return
+        }
+        try await Task.sleep(for: .milliseconds(5))
+        attempts += 1
+    }
     let state = await keeper.currentState()
     #expect(state.count == 1)
 }

@@ -148,6 +148,33 @@ public struct LandContext: Sendable {
 
     /// Storage for resolver outputs (dynamically populated based on @Resolvers declaration)
     private var resolverOutputs: [String: any ResolverOutput] = [:]
+    
+    /// Thread-safe deterministic random number generator.
+    ///
+    /// This property provides convenient access to the deterministic RNG service.
+    /// The RNG service is automatically registered by `LandKeeper` during initialization,
+    /// ensuring deterministic behavior based on the land instance ID.
+    ///
+    /// **Thread Safety**: The returned RNG is thread-safe and can be used concurrently.
+    ///
+    /// **Precondition**: A `DeterministicRngService` must be registered in `services`.
+    /// `LandKeeper` automatically ensures this during initialization.
+    ///
+    /// Example usage:
+    /// ```swift
+    /// HandleAction(SpawnMonster.self) { state, action, ctx in
+    ///     let count = ctx.random.nextInt(in: 1...5)
+    ///     let position = ctx.random.nextFloat(in: 0.0..<100.0)
+    ///     // ...
+    /// }
+    /// ```
+    public var random: DeterministicRngService {
+        // LandKeeper ensures DeterministicRngService is always registered
+        guard let rngService = services.get(DeterministicRngService.self) else {
+            fatalError("DeterministicRngService not found in services. This should not happen as LandKeeper automatically registers it.")
+        }
+        return rngService
+    }
 
     /// Internal initializer for creating LandContext
     internal init(
@@ -163,7 +190,8 @@ public struct LandContext: Sendable {
         tickId: Int64? = nil,
         playerSlot: Int32? = nil,
         sendEventHandler: @escaping @Sendable (AnyServerEvent, EventTarget) async -> Void,
-        syncHandler: @escaping @Sendable () async -> Void
+        syncHandler: @escaping @Sendable () async -> Void,
+        resolverOutputs: [String: any ResolverOutput] = [:]
     ) {
         self.landID = landID
         self.playerID = playerID
@@ -178,6 +206,7 @@ public struct LandContext: Sendable {
         self.playerSlot = playerSlot
         self.sendEventHandler = sendEventHandler
         self.syncHandler = syncHandler
+        self.resolverOutputs = resolverOutputs
     }
 
     // MARK: - Public Methods
@@ -280,6 +309,11 @@ public struct LandContext: Sendable {
     ) -> Output? {
         return resolverOutputs[propertyName] as? Output
     }
+    
+    /// Get all resolver outputs (internal use for recording)
+    internal func getAllResolverOutputs() -> [String: any ResolverOutput] {
+        return resolverOutputs
+    }
 
     // MARK: - Dynamic Member Lookup
 
@@ -294,7 +328,82 @@ public struct LandContext: Sendable {
     /// Property names are derived from resolver type names:
     /// - `ProductInfoResolver` -> `productInfo`
     /// - `UserProfileResolver` -> `userProfile`
+    ///
+    /// **Replay Mode Support**: In replay mode, resolver outputs are stored as `AnyCodableResolverOutput`
+    /// wrappers. This subscript automatically decodes them to the requested type when accessed.
+    /// 
+    /// **Type Safety**: If the recorded type identifier doesn't match the expected type,
+    /// this will attempt to decode anyway (for compatibility), but ideally types should match.
     public subscript<T: ResolverOutput>(dynamicMember member: String) -> T? {
-        return resolverOutputs[member] as? T
+        guard let output = resolverOutputs[member] else {
+            return nil
+        }
+        
+        // Direct cast if types match (live mode or already decoded)
+        if let direct = output as? T {
+            return direct
+        }
+        
+        // In replay mode, outputs may be wrapped in AnyCodableResolverOutput
+        // Decode from AnyCodable using the recorded type information
+        if let wrapped = output as? AnyCodableResolverOutput {
+            let encoder = JSONEncoder()
+            let decoder = JSONDecoder()
+            do {
+                // Encode the AnyCodable value
+                let encoded = try encoder.encode(wrapped.value)
+                // Decode as the target type T
+                let decoded = try decoder.decode(T.self, from: encoded)
+                
+                // Optional: Log type mismatch warnings for debugging
+                let expectedTypeName = String(describing: T.self)
+                if wrapped.typeIdentifier != expectedTypeName {
+                    // Type names don't match, but decoding succeeded (might be compatible types)
+                    // This is acceptable but worth noting for debugging
+                }
+                
+                return decoded
+            } catch {
+                // Decoding failed - this indicates a type mismatch
+                // Return nil to indicate the resolver output is not available
+                return nil
+            }
+        }
+        
+        return nil
+    }
+}
+
+// MARK: - Replay Mode Helper
+
+/// Wrapper to convert AnyCodable to ResolverOutput for replay
+/// This allows storing resolver outputs as AnyCodable during recording,
+/// and decoding them back to concrete types when accessed in replay mode.
+internal struct AnyCodableResolverOutput: ResolverOutput {
+    /// Type identifier of the resolver output (e.g., "SlowDeterministicOutput")
+    let typeIdentifier: String
+    /// The actual resolver output value as AnyCodable
+    let value: AnyCodable
+    
+    init(typeIdentifier: String, value: AnyCodable) {
+        self.typeIdentifier = typeIdentifier
+        self.value = value
+    }
+    
+    enum CodingKeys: String, CodingKey {
+        case typeIdentifier
+        case value
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.typeIdentifier = try container.decode(String.self, forKey: .typeIdentifier)
+        self.value = try container.decode(AnyCodable.self, forKey: .value)
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(typeIdentifier, forKey: .typeIdentifier)
+        try container.encode(value, forKey: .value)
     }
 }

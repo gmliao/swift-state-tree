@@ -400,6 +400,11 @@ func testJoinDuringLeave() async throws {
     #expect(joined2, "Session 2 should be joined")
 
     // Assert: OnLeave should be called
+    var attempts = 0
+    while await onLeaveCallCount.value < 1, attempts < 20 {
+        try await Task.sleep(for: .milliseconds(10))
+        attempts += 1
+    }
     #expect(await onLeaveCallCount.value == 1, "OnLeave should be called once")
 
     // Assert: OnJoin should be called twice (first join + second join)

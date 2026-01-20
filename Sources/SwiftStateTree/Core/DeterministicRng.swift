@@ -1,6 +1,10 @@
 import Foundation
-import SwiftStateTree
 
+/// Deterministic random number generator for use in game logic.
+///
+/// This RNG uses a deterministic algorithm that produces the same sequence
+/// of random numbers when initialized with the same seed, ensuring consistent
+/// behavior across platforms and enabling deterministic replay.
 public struct DeterministicRng: Sendable {
     private var state: UInt64
 
@@ -41,7 +45,12 @@ public struct DeterministicRng: Sendable {
     }
 }
 
+/// Helper for generating deterministic seeds from land identifiers.
 public enum DeterministicSeed {
+    /// Generate a deterministic seed from a land ID.
+    ///
+    /// This ensures that the same land ID always produces the same seed,
+    /// enabling deterministic behavior across server restarts and replays.
     public static func fromLandID(_ landID: String) -> UInt64 {
         DeterministicHash.fnv1a64(landID)
     }

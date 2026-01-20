@@ -66,6 +66,29 @@ struct SetMessageEvent: ClientEventPayload {
     let message: String
 }
 
+// MARK: - Test Helpers
+
+extension LandKeeper {
+    /// Helper method to send an action using handleActionEnvelope
+    func sendAction<A: ActionPayload>(
+        _ action: A,
+        playerID: PlayerID,
+        clientID: ClientID,
+        sessionID: SessionID
+    ) async throws -> AnyCodable {
+        let envelope = ActionEnvelope(
+            typeIdentifier: String(describing: A.self),
+            payload: AnyCodable(action)
+        )
+        return try await handleActionEnvelope(
+            envelope,
+            playerID: playerID,
+            clientID: clientID,
+            sessionID: sessionID
+        )
+    }
+}
+
 // MARK: - Mock Transport for Testing
 
 /// Mock implementation of LandKeeperTransport for testing sync calls
@@ -148,7 +171,7 @@ func testActionModifiesState() async throws {
     
     // Act: Execute action
     let action = IncrementAction(amount: 5)
-    let response = try await keeper.handleAction(
+    let response = try await keeper.sendAction(
         action,
         playerID: playerID,
         clientID: clientID,
@@ -304,7 +327,7 @@ func testMultipleActionsAndEventsModifyState() async throws {
     
     // Act: Execute action
     let action = IncrementAction(amount: 2)
-    _ = try await keeper.handleAction(action, playerID: playerID, clientID: clientID, sessionID: sessionID)
+    _ = try await keeper.sendAction(action, playerID: playerID, clientID: clientID, sessionID: sessionID)
     try await Task.sleep(for: .milliseconds(50))
     
     // Act: Send event
@@ -314,7 +337,7 @@ func testMultipleActionsAndEventsModifyState() async throws {
     
     // Act: Execute another action
     let action2 = IncrementAction(amount: 1)
-    _ = try await keeper.handleAction(action2, playerID: playerID, clientID: clientID, sessionID: sessionID)
+    _ = try await keeper.sendAction(action2, playerID: playerID, clientID: clientID, sessionID: sessionID)
     try await Task.sleep(for: .milliseconds(50))
     
     // Assert: Verify final state
@@ -379,7 +402,7 @@ func testActionWithTickTriggersSync() async throws {
     
     // Act: Execute action
     let action = IncrementAction(amount: 5)
-    _ = try await keeper.handleAction(action, playerID: playerID, clientID: clientID, sessionID: sessionID)
+    _ = try await keeper.sendAction(action, playerID: playerID, clientID: clientID, sessionID: sessionID)
     
     // Wait for sync to trigger (sync interval is 20ms, wait for at least one sync cycle)
     try await Task.sleep(for: .milliseconds(50))
@@ -508,7 +531,7 @@ func testManualSyncNowInSpawn() async throws {
     
     // Act: Execute action
     let action = IncrementAction(amount: 7)
-    _ = try await keeper.handleAction(action, playerID: playerID, clientID: clientID, sessionID: sessionID)
+    _ = try await keeper.sendAction(action, playerID: playerID, clientID: clientID, sessionID: sessionID)
     
     // Wait for spawn task to complete sync (spawn runs in background)
     try await Task.sleep(for: .milliseconds(50))

@@ -34,7 +34,7 @@ public enum MonsterSystem {
         _ ctx: LandContext
     ) -> MonsterState {
         guard let configService = ctx.services.get(GameConfigProviderService.self),
-              let rng = ctx.services.get(DeterministicRngService.self) else {
+              else {
             return MonsterState()
         }
         let config = configService.provider
@@ -43,27 +43,27 @@ public enum MonsterSystem {
         monster.id = nextID
         
         // Spawn at random edge position
-        let edge = rng.nextInt(in: 0..<4)  // 0=top, 1=right, 2=bottom, 3=left
+        let edge = ctx.random.nextInt(in: 0..<4)  // 0=top, 1=right, 2=bottom, 3=left
         switch edge {
         case 0:  // Top
             monster.spawnPosition = Position2(
-                x: rng.nextFloat(in: 0..<config.worldWidth),
+                x: ctx.random.nextFloat(in: 0..<config.worldWidth),
                 y: 0.0
             )
         case 1:  // Right
             monster.spawnPosition = Position2(
                 x: config.worldWidth,
-                y: rng.nextFloat(in: 0..<config.worldHeight)
+                y: ctx.random.nextFloat(in: 0..<config.worldHeight)
             )
         case 2:  // Bottom
             monster.spawnPosition = Position2(
-                x: rng.nextFloat(in: 0..<config.worldWidth),
+                x: ctx.random.nextFloat(in: 0..<config.worldWidth),
                 y: config.worldHeight
             )
         case 3:  // Left
             monster.spawnPosition = Position2(
                 x: 0.0,
-                y: rng.nextFloat(in: 0..<config.worldHeight)
+                y: ctx.random.nextFloat(in: 0..<config.worldHeight)
             )
         default:
             monster.spawnPosition = Position2(x: 0.0, y: 0.0)

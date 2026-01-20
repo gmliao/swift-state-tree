@@ -141,8 +141,13 @@ func testLandKeeperLifecycle() async throws {
 
     try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
 
-    let joinResponse = try await keeper.handleAction(
-        JoinAction(name: "Alice"),
+    let action = JoinAction(name: "Alice")
+    let envelope = ActionEnvelope(
+        typeIdentifier: "JoinAction",
+        payload: AnyCodable(action)
+    )
+    let joinResponse = try await keeper.handleActionEnvelope(
+        envelope,
         playerID: playerID,
         clientID: clientID,
         sessionID: sessionID
