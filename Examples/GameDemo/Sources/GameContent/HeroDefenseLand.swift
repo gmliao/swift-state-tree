@@ -2,6 +2,7 @@ import Foundation
 import Logging
 import SwiftStateTree
 import SwiftStateTreeDeterministicMath
+import SwiftStateTreeReevaluationMonitor
 
 // MARK: - Land Definition
 
@@ -33,23 +34,24 @@ public enum HeroDefense {
             Lifetime {
                 Tick(every: .milliseconds(Int64(GameConfig.TICK_INTERVAL_MS))) { (state: inout HeroDefenseState, ctx: LandContext) in
                     guard let tickId = ctx.tickId,
-                          let configService = ctx.services.get(GameConfigProviderService.self) else {
+                          let configService = ctx.services.get(GameConfigProviderService.self)
+                    else {
                         return
                     }
                     let config = configService.provider
-                    
+
                     // Update all player systems
                     for (playerID, var player) in state.players {
                         defer { state.players[playerID] = player }
-                        
+
                         // Update movement (this also updates rotation towards movement target)
                         MovementSystem.updatePlayerMovement(&player, ctx)
-                        
+
                         // Auto-shoot: Check if there's a monster in range and fire automatically
                         guard CombatSystem.canPlayerFire(player, ctx) else {
                             continue
                         }
-                        
+
                         guard let result = CombatSystem.processPlayerShoot(
                             player: &player,
                             monsters: &state.monsters,
@@ -57,7 +59,7 @@ public enum HeroDefense {
                         ) else {
                             continue
                         }
-                        
+
                         // Broadcast shoot event to all players (deterministic output)
                         ctx.emitEvent(
                             PlayerShootEvent(
@@ -68,20 +70,20 @@ public enum HeroDefense {
                             to: .all
                         )
                     }
-                    
+
                     // Spawn monsters periodically (spawn speed increases over time)
                     let spawnInterval = MonsterSystem.getMonsterSpawnInterval(ctx)
                     if tickId % Int64(spawnInterval) == 0 {
                         // Spawn random number of monsters (1-4) for more intense combat
-                        let spawnCount = ctx.random.nextInt(in: config.monsterSpawnCountMin...config.monsterSpawnCountMax)
-                        for _ in 0..<spawnCount {
+                        let spawnCount = ctx.random.nextInt(in: config.monsterSpawnCountMin ... config.monsterSpawnCountMax)
+                        for _ in 0 ..< spawnCount {
                             let monsterID = state.nextMonsterID
                             state.nextMonsterID += 1
                             let monster = MonsterSystem.spawnMonster(nextID: monsterID, ctx)
                             state.monsters[monster.id] = monster
                         }
                     }
-                    
+
                     // Update all monsters
                     var monstersToRemove: [Int] = []
                     for (monsterID, var monster) in state.monsters {
@@ -92,7 +94,7 @@ public enum HeroDefense {
                             ctx
                         )
                         state.monsters[monsterID] = monster
-                        
+
                         // Check if reached base
                         if MonsterSystem.checkMonsterReachedBase(
                             monster,
@@ -102,21 +104,21 @@ public enum HeroDefense {
                             monstersToRemove.append(monsterID)
                         }
                     }
-                    
+
                     // Remove monsters that reached base
                     for monsterID in monstersToRemove {
                         state.monsters.removeValue(forKey: monsterID)
                     }
-                    
+
                     // Update turrets (auto-target and fire)
                     for (turretID, var turret) in state.turrets {
                         defer { state.turrets[turretID] = turret }
-                        
+
                         // Check fire rate
                         guard CombatSystem.canTurretFire(turret, ctx) else {
                             continue
                         }
-                        
+
                         // Try to shoot at nearest monster
                         guard let result = CombatSystem.processTurretShoot(
                             turret: &turret,
@@ -125,12 +127,12 @@ public enum HeroDefense {
                         ) else {
                             continue
                         }
-                        
+
                         // Give resources to turret owner if monster was defeated
                         if result.defeated, let ownerID = turret.ownerID {
                             state.players[ownerID]?.resources += result.rewardGained
                         }
-                        
+
                         // Broadcast turret fire event to all players (deterministic output)
                         ctx.emitEvent(
                             TurretFireEvent(
@@ -160,6 +162,16 @@ public enum HeroDefense {
 
                 AfterFinalize { (state: HeroDefenseState, ctx: LandContext) async in
                     ctx.logger.info("Hero Defense room is finalized with final score: \(state.score)")
+
+                    do {
+                        try await ReevaluationRecordSaver.saveOnShutdown(
+                            ctx: ctx,
+                            filenamePrefix: "hero-defense"
+                        )
+                        ctx.logger.info("✅ Reevaluation record saved successfully")
+                    } catch {
+                        ctx.logger.error("❌ Failed to save reevaluation record: \(error)")
+                    }
                 }
             }
 
@@ -171,30 +183,30 @@ public enum HeroDefense {
                     let config = configService.provider
 
                     let playerID = ctx.playerID
-                    
+
                     // Get user level from resolver (deterministic based on PlayerID hash)
                     let userLevel = (ctx.userLevel as UserLevel?)?.level ?? 1
 
                     // Spawn player near base center
                     var player = PlayerState()
                     player.position = Position2(
-                        x: config.baseCenterX + ctx.random.nextFloat(in: -5.0..<5.0),
-                        y: config.baseCenterY + ctx.random.nextFloat(in: -5.0..<5.0)
+                        x: config.baseCenterX + ctx.random.nextFloat(in: -5.0 ..< 5.0),
+                        y: config.baseCenterY + ctx.random.nextFloat(in: -5.0 ..< 5.0)
                     )
                     player.position = MovementSystem.clampToWorldBounds(player.position, ctx)
                     player.rotation = Angle(degrees: 0.0)
                     player.targetPosition = nil as Position2?
-                    
+
                     // Set initial health and max health based on user level
                     // Higher level players start with more health
                     let baseHealth = 100
                     let levelBonus = userLevel * 10
                     player.health = baseHealth + levelBonus
                     player.maxHealth = baseHealth + levelBonus
-                    
+
                     // Set initial weapon level based on user level (deterministic from PlayerID hash)
                     // Players start with different weapon levels, but can upgrade further
-                    player.weaponLevel = userLevel - 1  // Convert 1-3 to 0-2 for weapon level
+                    player.weaponLevel = userLevel - 1 // Convert 1-3 to 0-2 for weapon level
                     player.resources = 0
                     state.players[playerID] = player
                     ctx.logger.info("👤 Player joined", metadata: [
@@ -213,7 +225,7 @@ public enum HeroDefense {
                     ])
                 }
 
-                HandleAction(PlayAction.self) { (state: inout HeroDefenseState, _: PlayAction, ctx: LandContext) in
+                HandleAction(PlayAction.self) { (state: inout HeroDefenseState, _: PlayAction, _: LandContext) in
                     state.score += 1
                     return PlayResponse(newScore: state.score)
                 }
@@ -232,12 +244,12 @@ public enum HeroDefense {
                         ])
                     }
                 }
-                
-                HandleEvent(ShootEvent.self) { (state: inout HeroDefenseState, event: ShootEvent, ctx: LandContext) in
+
+                HandleEvent(ShootEvent.self) { (state: inout HeroDefenseState, _: ShootEvent, ctx: LandContext) in
                     // Manual shoot event (optional - auto-shoot is handled in Tick)
                     // This can be used for manual shooting if needed in the future
                     let playerID = ctx.playerID
-                    
+
                     guard var player = state.players[playerID] else {
                         ctx.logger.warning("⚠️ ShootEvent: Player not found", metadata: [
                             "playerID": .string(playerID.rawValue),
@@ -249,7 +261,7 @@ public enum HeroDefense {
                     if !CombatSystem.canPlayerFire(player, ctx) {
                         return
                     }
-                    
+
                     // Find nearest monster in range and auto-aim
                     let range = CombatSystem.getWeaponRange(level: player.weaponLevel, ctx)
                     let nearestMonster = CombatSystem.findNearestMonsterInRange(
@@ -257,17 +269,17 @@ public enum HeroDefense {
                         range: range,
                         monsters: state.monsters
                     )
-                    
+
                     if let (monsterID, monster) = nearestMonster {
                         // Rotate player towards monster (auto-aim)
                         let direction = monster.position.v - player.position.v
                         let angleRad = direction.toAngle()
                         player.rotation = Angle(radians: angleRad)
-                        
+
                         // Save positions for event (before mutation)
                         let playerPos = player.position
                         let monsterPos = monster.position
-                        
+
                         // Apply damage
                         var updatedMonster = monster
                         let damage = CombatSystem.getWeaponDamage(level: player.weaponLevel, ctx)
@@ -278,12 +290,12 @@ public enum HeroDefense {
                         } else {
                             state.monsters[monsterID] = updatedMonster
                         }
-                        
+
                         // Update fire tick
                         if let tickId = ctx.tickId {
                             player.lastFireTick = tickId
                         }
-                        
+
                         // Broadcast shoot event (deterministic output)
                         ctx.emitEvent(
                             PlayerShootEvent(
@@ -294,25 +306,25 @@ public enum HeroDefense {
                             to: .all
                         )
                     }
-                    
+
                     state.players[playerID] = player
                 }
-                
+
                 HandleEvent(UpdateRotationEvent.self) { (state: inout HeroDefenseState, event: UpdateRotationEvent, ctx: LandContext) in
                     let playerID = ctx.playerID
-                    
+
                     guard var player = state.players[playerID] else {
                         ctx.logger.warning("⚠️ UpdateRotationEvent: Player not found", metadata: [
                             "playerID": .string(playerID.rawValue),
                         ])
                         return
                     }
-                    
+
                     // Update player rotation
                     player.rotation = event.rotation
                     state.players[playerID] = player
                 }
-                
+
                 HandleEvent(PlaceTurretEvent.self) { (state: inout HeroDefenseState, event: PlaceTurretEvent, ctx: LandContext) in
                     let playerID = ctx.playerID
 
@@ -370,17 +382,17 @@ public enum HeroDefense {
                         "remainingResources": .string("\(player.resources)"),
                     ])
                 }
-                
-                HandleEvent(UpgradeWeaponEvent.self) { (state: inout HeroDefenseState, event: UpgradeWeaponEvent, ctx: LandContext) in
+
+                HandleEvent(UpgradeWeaponEvent.self) { (state: inout HeroDefenseState, _: UpgradeWeaponEvent, ctx: LandContext) in
                     let playerID = ctx.playerID
-                    
+
                     guard var player = state.players[playerID] else {
                         ctx.logger.warning("⚠️ UpgradeWeaponEvent: Player not found", metadata: [
                             "playerID": .string(playerID.rawValue),
                         ])
                         return
                     }
-                    
+
                     guard let configService = ctx.services.get(GameConfigProviderService.self) else {
                         return
                     }
@@ -391,26 +403,27 @@ public enum HeroDefense {
                         player.resources -= config.weaponUpgradeCost
                         player.weaponLevel += 1
                         state.players[playerID] = player
-                        
+
                         ctx.logger.info("🔫 Weapon upgraded", metadata: [
                             "playerID": .string(playerID.rawValue),
                             "level": .string("\(player.weaponLevel)"),
                         ])
                     }
                 }
-                
+
                 HandleEvent(UpgradeTurretEvent.self) { (state: inout HeroDefenseState, event: UpgradeTurretEvent, ctx: LandContext) in
                     let playerID = ctx.playerID
-                    
+
                     guard var player = state.players[playerID],
-                          var turret = state.turrets[event.turretID] else {
+                          var turret = state.turrets[event.turretID]
+                    else {
                         ctx.logger.warning("⚠️ UpgradeTurretEvent: Player or turret not found", metadata: [
                             "playerID": .string(playerID.rawValue),
                             "turretID": .string("\(event.turretID)"),
                         ])
                         return
                     }
-                    
+
                     // Check ownership
                     guard turret.ownerID == playerID else {
                         ctx.logger.warning("⚠️ UpgradeTurretEvent: Not owner", metadata: [
@@ -419,7 +432,7 @@ public enum HeroDefense {
                         ])
                         return
                     }
-                    
+
                     guard let configService = ctx.services.get(GameConfigProviderService.self) else {
                         return
                     }
@@ -431,7 +444,7 @@ public enum HeroDefense {
                         turret.level += 1
                         state.players[playerID] = player
                         state.turrets[event.turretID] = turret
-                        
+
                         ctx.logger.info("🏰 Turret upgraded", metadata: [
                             "playerID": .string(playerID.rawValue),
                             "turretID": .string("\(event.turretID)"),

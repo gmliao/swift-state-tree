@@ -56,6 +56,10 @@ async function handleConnect() {
     // Error is already stored in lastError by useGameClient
   }
 }
+
+function goToReevaluationMonitor() {
+  router.push({ name: "reevaluation-monitor" });
+}
 </script>
 
 <template>
@@ -119,6 +123,20 @@ async function handleConnect() {
           開始遊戲
         </v-btn>
       </v-form>
+
+      <!-- Reevaluation Monitor entry -->
+      <v-divider class="my-4" />
+
+      <v-btn
+        color="secondary"
+        size="large"
+        block
+        variant="outlined"
+        @click="goToReevaluationMonitor"
+      >
+        <v-icon start>mdi-check-circle-outline</v-icon>
+        Reevaluation 驗證
+      </v-btn>
     </v-card>
   </v-container>
 </template>

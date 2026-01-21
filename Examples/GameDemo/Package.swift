@@ -5,7 +5,7 @@ import PackageDescription
 let package = Package(
     name: "GameDemo",
     platforms: [
-        .macOS(.v14)
+        .macOS(.v14),
     ],
     products: [
         .executable(
@@ -19,10 +19,10 @@ let package = Package(
         .executable(
             name: "ReevaluationRunner",
             targets: ["ReevaluationRunner"]
-        )
+        ),
     ],
     dependencies: [
-        .package(name: "SwiftStateTree", path: "../..")
+        .package(name: "SwiftStateTree", path: "../.."),
     ],
     targets: [
         .target(
@@ -30,7 +30,8 @@ let package = Package(
             dependencies: [
                 .product(name: "SwiftStateTree", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeHummingbird", package: "SwiftStateTree"),
-                .product(name: "SwiftStateTreeDeterministicMath", package: "SwiftStateTree")
+                .product(name: "SwiftStateTreeDeterministicMath", package: "SwiftStateTree"),
+                .product(name: "SwiftStateTreeReevaluationMonitor", package: "SwiftStateTree"),
             ],
             path: "Sources/GameContent"
         ),
@@ -39,7 +40,7 @@ let package = Package(
             dependencies: [
                 "GameContent",
                 .product(name: "SwiftStateTreeHummingbird", package: "SwiftStateTree"),
-                .product(name: "SwiftStateTreeTransport", package: "SwiftStateTree")
+                .product(name: "SwiftStateTreeTransport", package: "SwiftStateTree"),
             ],
             path: "Sources/GameServer"
         ),
@@ -47,7 +48,7 @@ let package = Package(
             name: "SchemaGen",
             dependencies: [
                 "GameContent",
-                .product(name: "SwiftStateTree", package: "SwiftStateTree")
+                .product(name: "SwiftStateTree", package: "SwiftStateTree"),
             ],
             path: "Sources/SchemaGen"
         ),
@@ -55,7 +56,7 @@ let package = Package(
             name: "ReevaluationRunner",
             dependencies: [
                 "GameContent",
-                .product(name: "SwiftStateTree", package: "SwiftStateTree")
+                .product(name: "SwiftStateTree", package: "SwiftStateTree"),
             ],
             path: "Sources/ReevaluationRunner"
         ),
@@ -63,9 +64,9 @@ let package = Package(
             name: "GameContentTests",
             dependencies: [
                 "GameContent",
-                .product(name: "SwiftStateTreeDeterministicMath", package: "SwiftStateTree")
+                .product(name: "SwiftStateTreeDeterministicMath", package: "SwiftStateTree"),
             ],
             path: "Tests"
-        )
+        ),
     ]
 )

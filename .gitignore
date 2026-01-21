@@ -154,3 +154,5 @@ temp/
 # Diagram files
 *.dia
 .worktrees/
+Examples/GameDemo/reevaluation-records/*
+
