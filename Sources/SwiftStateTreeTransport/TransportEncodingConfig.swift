@@ -25,9 +25,10 @@ public struct TransportEncodingConfig: Sendable {
     }
 
     /// JSON mode: human-readable JSON object format for both messages and state updates
-    /// - message: json (e.g., {"kind": "action", "payload": {...}})
-    /// - stateUpdate: jsonObject (full JSON patches)
-    /// - compression: disabled (JSON text doesn't compress well)
+    /// - JOIN: JSON Object format (protocol requirement)
+    /// - Post-JOIN messages: JSON Object format (e.g., {"kind": "action", "payload": {...}})
+    /// - State updates: JSON Object (full JSON patches)
+    /// - Compression: disabled (JSON text doesn't compress well)
     /// - Use case: debugging, development, maximum compatibility
     public static let json = TransportEncodingConfig(
         message: .json,
@@ -35,9 +36,10 @@ public struct TransportEncodingConfig: Sendable {
     )
     
     /// Hybrid mode: JSON messages with opcode state updates
-    /// - message: json (readable action/event messages)
-    /// - stateUpdate: opcodeJsonArray (compact state patches with path hashing)
-    /// - compression: disabled for payload (message is json), enabled for state (opcode)
+    /// - JOIN: JSON Object format (protocol requirement)
+    /// - Post-JOIN messages: JSON Object format (readable action/event messages)
+    /// - State updates: Opcode JSON Array (compact state patches with path hashing)
+    /// - Compression: disabled for messages (JSON), enabled for state (opcode)
     /// - Use case: debugging messages while optimizing state sync, gradual migration
     public static let jsonOpcode = TransportEncodingConfig(
         message: .json,
@@ -45,18 +47,20 @@ public struct TransportEncodingConfig: Sendable {
     )
     
     /// Opcode JSON Array mode: compact JSON array format for both messages and state updates
-    /// - message: opcodeJsonArray (e.g., [101, requestID, ...])
-    /// - stateUpdate: opcodeJsonArray (compact state patches)
-    /// - compression: enabled (array format compresses well)
+    /// - JOIN: JSON Object format (protocol requirement)
+    /// - Post-JOIN messages: JSON Array format (e.g., [101, requestID, ...])
+    /// - State updates: Opcode JSON Array (compact state patches)
+    /// - Compression: enabled (array format compresses well)
     public static let opcode = TransportEncodingConfig(
         message: .opcodeJsonArray,
         stateUpdate: .opcodeJsonArray
     )
     
     /// MessagePack mode: binary encoding for both messages and state updates
-    /// - message: messagepack (binary encoded messages)
-    /// - stateUpdate: opcodeMessagePack (opcode array structure in MessagePack binary)
-    /// - compression: enabled (binary format compresses very well)
+    /// - JOIN: JSON Object format (protocol requirement)
+    /// - Post-JOIN messages: MessagePack binary format
+    /// - State updates: Opcode MessagePack (opcode array structure in MessagePack binary)
+    /// - Compression: enabled (binary format compresses very well)
     public static let messagepack = TransportEncodingConfig(
         message: .messagepack,
         stateUpdate: .opcodeMessagePack

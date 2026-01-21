@@ -476,7 +476,18 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-
+    /// Handle incoming WebSocket message.
+    ///
+    /// Decoding Strategy:
+    /// - **Pre-JOIN** (session not in sessionToPlayer):
+    ///   - MessagePack mode: Decode as MessagePack (JOIN can be MessagePack)
+    ///   - JSON modes: Decode as JSON Object (JOIN must be JSON Object)
+    /// - **Post-JOIN** (session in sessionToPlayer):
+    ///   - Use configured TransportCodec
+    ///   - JSON codec also supports opcode array format for backward compatibility
+    ///
+    /// This ensures JOIN messages follow the configured encoding in MessagePack mode,
+    /// while maintaining JSON Object format requirement for JSON-based modes.
     public func onMessage(_ message: Data, from sessionID: SessionID) async {
         let messageSize = message.count
 
@@ -499,25 +510,39 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Compute messagePreview for error logging (only if needed)
         // We compute it lazily in the catch block to avoid unnecessary work
         do {
-            // Try to detect if message is in opcode array format
-            // If it's an array starting with 101-106, use opcode decoder
+            // State-based decoding: Check if session has joined
+            let hasJoined = sessionToPlayer[sessionID] != nil
             let transportMsg: TransportMessage
-            
-            // For MessagePack, the codec now handles both opcode array and map formats internally
-            // No need for special conversion logic here
-            if codec.encoding == .messagepack {
-                transportMsg = try codec.decode(TransportMessage.self, from: message)
-            } else if let json = try? JSONSerialization.jsonObject(with: message),
-               let array = json as? [Any],
-               array.count >= 1,
-               let firstElement = array[0] as? Int,
-               firstElement >= 101 && firstElement <= 106 {
-                // This is a JSON opcode array format message
-                let decoder = OpcodeTransportMessageDecoder()
-                transportMsg = try decoder.decode(from: message)
+
+            if hasJoined {
+                // Post-JOIN: Use configured codec, with opcode array detection for JSON codec
+                // This maintains backward compatibility for clients sending opcode array format
+                if codec.encoding == .messagepack {
+                    // MessagePack codec handles its own format
+                    transportMsg = try codec.decode(TransportMessage.self, from: message)
+                } else if let json = try? JSONSerialization.jsonObject(with: message),
+                   let array = json as? [Any],
+                   array.count >= 1,
+                   let firstElement = array[0] as? Int,
+                   firstElement >= 101 && firstElement <= 106 {
+                    // Opcode array format detected - use OpcodeTransportMessageDecoder
+                    let decoder = OpcodeTransportMessageDecoder()
+                    transportMsg = try decoder.decode(from: message)
+                } else {
+                    // Standard format - use configured codec
+                    transportMsg = try codec.decode(TransportMessage.self, from: message)
+                }
             } else {
-                // Standard JSON object format
-                transportMsg = try codec.decode(TransportMessage.self, from: message)
+                // Pre-JOIN: JOIN messages use configured codec if MessagePack, otherwise JSON Object
+                // This supports MessagePack JOIN messages while maintaining JSON Object as default
+                if codec.encoding == .messagepack {
+                    // MessagePack mode: JOIN can be MessagePack format
+                    transportMsg = try codec.decode(TransportMessage.self, from: message)
+                } else {
+                    // JSON modes: JOIN must be JSON Object format (protocol requirement)
+                    let jsonCodec = JSONTransportCodec()
+                    transportMsg = try jsonCodec.decode(TransportMessage.self, from: message)
+                }
             }
 
             switch transportMsg.kind {
