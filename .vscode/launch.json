@@ -35,6 +35,24 @@
             "name": "Release SwiftStateTreeBenchmarks",
             "program": "${workspaceFolder:swift-state-tree}/.build/release/SwiftStateTreeBenchmarks",
             "preLaunchTask": "swift: Build Release SwiftStateTreeBenchmarks"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:swift-state-tree}",
+            "name": "Debug reevaluation-cli",
+            "program": "${workspaceFolder:swift-state-tree}/.build/debug/reevaluation-cli",
+            "preLaunchTask": "swift: Build Debug reevaluation-cli"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:swift-state-tree}",
+            "name": "Release reevaluation-cli",
+            "program": "${workspaceFolder:swift-state-tree}/.build/release/reevaluation-cli",
+            "preLaunchTask": "swift: Build Release reevaluation-cli"
         }
     ]
 }

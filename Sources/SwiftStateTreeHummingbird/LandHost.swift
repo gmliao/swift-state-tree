@@ -1,11 +1,11 @@
 import Foundation
+import HTTPTypes
 import Hummingbird
 import HummingbirdWebSocket
-import SwiftStateTree
-import SwiftStateTreeTransport
 import Logging
 import NIOCore
-import HTTPTypes
+import SwiftStateTree
+import SwiftStateTreeTransport
 
 // MARK: - LandHost
 
@@ -61,7 +61,7 @@ public actor LandHost {
         public var logStartupBanner: Bool
         /// Logger instance (optional)
         public var logger: Logger?
-        
+
         public init(
             host: String = "localhost",
             port: UInt16 = 8080,
@@ -78,55 +78,55 @@ public actor LandHost {
             self.logger = logger
         }
     }
-    
+
     /// The underlying LandRealm for game logic management.
     private let _realm: LandRealm
-    
+
     /// The underlying LandRealm for game logic management.
     public var realm: LandRealm {
         _realm
     }
-    
+
     /// The shared Router for all registered LandServer instances.
     ///
     /// Route registration is handled by LandHost methods (register, registerAdminRoutes).
     let router: Router<BasicWebSocketRequestContext>
-    
+
     /// Host configuration.
     public let configuration: HostConfiguration
-    
+
     /// Registered server paths for startup logging.
     private var registeredServerPaths: [String: String] = [:]
-    
+
     /// Registered land encoding configurations for startup logging.
     private var registeredLandEncodings: [String: TransportEncodingConfig] = [:]
-    
+
     /// Registered land definitions for schema generation.
     private var registeredLandDefinitions: [AnyLandDefinition] = []
-    
+
     /// Cached ProtocolSchema (generated once, reused for all requests).
     private var cachedSchema: ProtocolSchema?
-    
+
     /// Cached schema JSON data (computed from cachedSchema).
     private var cachedSchemaJSON: Data?
-    
+
     /// Initialize a new LandHost.
     ///
     /// - Parameter configuration: Host configuration (host, port, logger, etc.)
     public init(configuration: HostConfiguration = HostConfiguration()) {
         self.configuration = configuration
-        self._realm = LandRealm(logger: configuration.logger)
+        _realm = LandRealm(logger: configuration.logger)
         // Create router - all access is serialized through the actor's methods
         let createdRouter = Router(context: BasicWebSocketRequestContext.self)
-        self.router = createdRouter
-        
+        router = createdRouter
+
         // Register health check route if enabled
         if configuration.enableHealthRoute {
             createdRouter.get(RouterPath(configuration.healthPath)) { _, _ in
                 "OK"
             }
         }
-        
+
         // Register schema route (will be populated as lands are registered)
         createdRouter.get("/schema") { [weak self] _, _ in
             guard let self = self else {
@@ -137,7 +137,7 @@ public actor LandHost {
             }
             return await self.generateSchemaResponse()
         }
-        
+
         // Register OPTIONS handler for schema route to handle CORS preflight
         if let optionsMethod = HTTPRequest.Method("OPTIONS") {
             createdRouter.on("/schema", method: optionsMethod) { _, _ in
@@ -150,7 +150,7 @@ public actor LandHost {
             }
         }
     }
-    
+
     /// Register a land type.
     ///
     /// This method creates a LandServer and registers it with the underlying LandRealm,
@@ -176,14 +176,14 @@ public actor LandHost {
         guard !landType.isEmpty else {
             throw LandRealmError.invalidLandType(landType)
         }
-        
+
         // Check for duplicate
         if await realm.isRegistered(landType: landType) {
             throw LandRealmError.duplicateLandType(landType)
         }
-        
+
         let path = webSocketPath ?? "/\(landType)"
-        
+
         // Create server configuration
         var finalConfig: LandServerConfiguration
         if let providedConfig = configuration {
@@ -191,30 +191,30 @@ public actor LandHost {
         } else {
             finalConfig = LandServerConfiguration()
         }
-        
+
         // Store land definition for schema generation BEFORE regenerating schema
         let sampleLandID = LandID.generate(landType: landType)
         let sampleDefinition = landFactory(sampleLandID)
         registeredLandDefinitions.append(AnyLandDefinition(sampleDefinition))
-        
+
         // Regenerate schema to include this new land type
         regenerateSchema()
-        
+
         // Extract pathHashes for this land type from cached schema
         if let pathHashes = getPathHashes(for: landType) {
             finalConfig.pathHashes = pathHashes
         }
-        
+
         // Extract eventHashes for this land type from cached schema
         if let eventHashes = getEventHashes(for: landType) {
             finalConfig.eventHashes = eventHashes
         }
-        
+
         // Extract clientEventHashes for this land type from cached schema
         if let clientEventHashes = getClientEventHashes(for: landType) {
             finalConfig.clientEventHashes = clientEventHashes
         }
-        
+
         // Create server (no router - LandHost handles route registration)
         // LandServer<State>.Configuration is a typealias of LandServerConfiguration, so we can use it directly
         let serverConfig: LandServer<State>.Configuration = finalConfig
@@ -224,26 +224,26 @@ public actor LandHost {
             initialStateFactory: initialStateFactory,
             createGuestSession: LandServer<State>.defaultCreateGuestSession
         )
-        
+
         // Register WebSocket route on shared router
         guard let hbAdapter = server.hbAdapter else {
             throw LandHostError.invalidServer("Server does not have hbAdapter")
         }
-        
+
         // Register WebSocket route
         registerWebSocketRoute(
             path: path,
             hbAdapter: hbAdapter
         )
-        
+
         // Register server with realm (we're in actor context, so this is safe)
         try await realm.register(landType: landType, server: server)
-        
+
         // Store path and encoding config for startup logging
         registeredServerPaths[landType] = path
         registeredLandEncodings[landType] = finalConfig.transportEncoding
     }
-    
+
     /// Regenerate schema from all registered land definitions and cache it.
     ///
     /// This method is called after each land registration to ensure the schema
@@ -255,14 +255,14 @@ public actor LandHost {
             landDefinitions: registeredLandDefinitions,
             version: "0.1.0"
         )
-        
+
         // Cache the schema object
         cachedSchema = schema
-        
+
         // Invalidate JSON cache (will be regenerated on next /schema request)
         cachedSchemaJSON = nil
     }
-    
+
     /// Get pathHashes for a specific land type from cached schema.
     ///
     /// - Parameter landType: The land type to get pathHashes for
@@ -270,17 +270,17 @@ public actor LandHost {
     private func getPathHashes(for landType: String) -> [String: UInt32]? {
         return cachedSchema?.lands[landType]?.pathHashes
     }
-    
+
     /// Get eventHashes for a specific land type from cached schema.
     private func getEventHashes(for landType: String) -> [String: Int]? {
         return cachedSchema?.lands[landType]?.eventHashes
     }
-    
+
     /// Get clientEventHashes for a specific land type from cached schema.
     private func getClientEventHashes(for landType: String) -> [String: Int]? {
         return cachedSchema?.lands[landType]?.clientEventHashes
     }
-    
+
     /// Register a land type - simplified version.
     ///
     /// This is a convenience overload that accepts `LandDefinition` and `State` directly
@@ -311,7 +311,7 @@ public actor LandHost {
             configuration: configuration
         )
     }
-    
+
     /// Run the unified Hummingbird HTTP server.
     ///
     /// This method creates and runs a single Hummingbird Application with the
@@ -323,11 +323,11 @@ public actor LandHost {
             loggerIdentifier: "com.swiftstatetree.hummingbird",
             scope: "LandHost"
         )
-        
+
         let httpConfiguration = ApplicationConfiguration(
             address: .hostname(configuration.host, port: Int(configuration.port))
         )
-        
+
         // Create a custom WebSocket router wrapper that provides better error messages
         // Capture registered paths synchronously before creating the wrapper
         let registeredPathsSnapshot = registeredServerPaths.values.sorted()
@@ -338,7 +338,7 @@ public actor LandHost {
             port: configuration.port,
             logger: logger
         )
-        
+
         let app = Application(
             router: router,
             server: .http1WebSocketUpgrade(
@@ -347,17 +347,17 @@ public actor LandHost {
             configuration: httpConfiguration,
             logger: logger
         )
-        
+
         if configuration.logStartupBanner {
             let baseURL = "http://\(configuration.host):\(configuration.port)"
             logger.info("🚀 LandHost server started at \(baseURL)")
-            
+
             if configuration.enableHealthRoute {
                 logger.info("❤️  Health check: \(baseURL)\(configuration.healthPath)")
             }
-            
+
             logger.info("📋 Schema endpoint: \(baseURL)/schema (with CORS support)")
-            
+
             logger.info("📡 Registered WebSocket endpoints:")
             for (landType, path) in registeredServerPaths.sorted(by: { $0.key < $1.key }) {
                 let wsURL = "ws://\(configuration.host):\(configuration.port)\(path)"
@@ -367,13 +367,13 @@ public actor LandHost {
                 let encoding = registeredLandEncodings[landType] ?? .jsonOpcode
                 logger.info("   - \(landType): \(wsURL) (State: \(stateTypeName), Encoding: message=\(encoding.message.rawValue), stateUpdate=\(encoding.stateUpdate.rawValue))")
             }
-            
+
             // Add connection hint for multi-room mode
             if registeredServerPaths.count > 0 {
                 logger.info("💡 Tip: Use JoinRequest message with landID to connect to specific rooms")
             }
         }
-        
+
         do {
             try await app.runService()
         } catch {
@@ -381,15 +381,15 @@ public actor LandHost {
             let errorDescription = String(describing: error)
             let errorMessage = "\(error)"
             let lowercasedError = errorMessage.lowercased()
-            
+
             // Check if it's a port binding error (multiple patterns to catch different error formats)
             let isPortInUse = lowercasedError.contains("address already in use") ||
-                             lowercasedError.contains("errno: 48") ||
-                             lowercasedError.contains("errno 48") ||
-                             lowercasedError.contains("eaddrinuse") ||
-                             errorDescription.contains("Address already in use") ||
-                             errorDescription.contains("errno: 48")
-            
+                lowercasedError.contains("errno: 48") ||
+                lowercasedError.contains("errno 48") ||
+                lowercasedError.contains("eaddrinuse") ||
+                errorDescription.contains("Address already in use") ||
+                errorDescription.contains("errno: 48")
+
             if isPortInUse {
                 logger.error("❌ Failed to start server: Port \(configuration.port) is already in use", metadata: [
                     "host": .string(configuration.host),
@@ -397,7 +397,7 @@ public actor LandHost {
                     "error": .string(errorMessage),
                     "errno": .string("48"),
                     "errorType": .string("EADDRINUSE"),
-                    "suggestion": .string("Try using a different port or stop the process using this port")
+                    "suggestion": .string("Try using a different port or stop the process using this port"),
                 ])
                 throw LandHostError.portAlreadyInUse(host: configuration.host, port: configuration.port, underlyingError: errorMessage)
             } else {
@@ -406,18 +406,18 @@ public actor LandHost {
                     "host": .string(configuration.host),
                     "port": .string("\(configuration.port)"),
                     "error": .string(errorMessage),
-                    "errorType": .string(String(describing: type(of: error)))
+                    "errorType": .string(String(describing: type(of: error))),
                 ])
                 throw LandHostError.serverStartupFailed(underlyingError: errorMessage)
             }
         }
     }
-    
+
     /// Get the state type name for a registered land type (for logging).
     private func getStateTypeName(for landType: String) async -> String {
         return await realm.getStateTypeName(for: landType) ?? "Unknown"
     }
-    
+
     /// Register WebSocket route on the router.
     private func registerWebSocketRoute(
         path: String,
@@ -427,17 +427,17 @@ public actor LandHost {
             loggerIdentifier: "com.swiftstatetree.hummingbird",
             scope: "LandHost"
         )
-        
+
         logger.info("📡 Registering WebSocket route", metadata: [
             "path": .string(path),
-            "fullURL": .string("ws://\(configuration.host):\(configuration.port)\(path)")
+            "fullURL": .string("ws://\(configuration.host):\(configuration.port)\(path)"),
         ])
-        
+
         router.ws(RouterPath(path)) { inbound, outbound, context in
             await hbAdapter.handle(inbound: inbound, outbound: outbound, context: context)
         }
     }
-    
+
     /// Register admin routes for this LandHost.
     ///
     /// This method creates and registers admin HTTP routes that can manage lands
@@ -457,44 +457,9 @@ public actor LandHost {
         // Register OPTIONS handler for all admin routes to handle CORS preflight
         // This must be registered before the specific routes
         // Create OPTIONS method from string
-        if let optionsMethod = HTTPRequest.Method("OPTIONS") {
-            router.on("/admin/lands", method: optionsMethod) { request, context in
-                var response = Response(status: .ok)
-                response.headers[HTTPField.Name("Access-Control-Allow-Origin")!] = "*"
-                response.headers[HTTPField.Name("Access-Control-Allow-Methods")!] = "GET, POST, DELETE, OPTIONS"
-                response.headers[HTTPField.Name("Access-Control-Allow-Headers")!] = "Content-Type, X-API-Key, Authorization"
-                response.headers[HTTPField.Name("Access-Control-Max-Age")!] = "3600"
-                return response
-            }
-            
-            router.on("/admin/lands/:landID", method: optionsMethod) { request, context in
-                var response = Response(status: .ok)
-                response.headers[HTTPField.Name("Access-Control-Allow-Origin")!] = "*"
-                response.headers[HTTPField.Name("Access-Control-Allow-Methods")!] = "GET, POST, DELETE, OPTIONS"
-                response.headers[HTTPField.Name("Access-Control-Allow-Headers")!] = "Content-Type, X-API-Key, Authorization"
-                response.headers[HTTPField.Name("Access-Control-Max-Age")!] = "3600"
-                return response
-            }
-            
-            router.on("/admin/lands/:landID/stats", method: optionsMethod) { request, context in
-                var response = Response(status: .ok)
-                response.headers[HTTPField.Name("Access-Control-Allow-Origin")!] = "*"
-                response.headers[HTTPField.Name("Access-Control-Allow-Methods")!] = "GET, POST, DELETE, OPTIONS"
-                response.headers[HTTPField.Name("Access-Control-Allow-Headers")!] = "Content-Type, X-API-Key, Authorization"
-                response.headers[HTTPField.Name("Access-Control-Max-Age")!] = "3600"
-                return response
-            }
-            
-            router.on("/admin/stats", method: optionsMethod) { request, context in
-                var response = Response(status: .ok)
-                response.headers[HTTPField.Name("Access-Control-Allow-Origin")!] = "*"
-                response.headers[HTTPField.Name("Access-Control-Allow-Methods")!] = "GET, POST, DELETE, OPTIONS"
-                response.headers[HTTPField.Name("Access-Control-Allow-Headers")!] = "Content-Type, X-API-Key, Authorization"
-                response.headers[HTTPField.Name("Access-Control-Max-Age")!] = "3600"
-                return response
-            }
-        }
-        
+        // Register OPTIONS handlers are now handled within AdminRoutes.registerRoutes
+        // so we don't need to register them here explicitly anymore to avoid duplication/conflicts.
+
         // Create AdminRoutes and register on the shared router
         let adminRoutes = AdminRoutes(
             landRealm: realm,
@@ -503,9 +468,9 @@ public actor LandHost {
         )
         adminRoutes.registerRoutes(on: router)
     }
-    
+
     // MARK: - Schema Generation
-    
+
     /// Generate aggregated schema response from all registered lands.
     ///
     /// This method uses the cached ProtocolSchema (generated during land registration)
@@ -519,7 +484,7 @@ public actor LandHost {
             addCORSHeaders(to: &response)
             return response
         }
-        
+
         // Use cached schema if available
         guard let schema = cachedSchema else {
             let logger = configuration.logger ?? createColoredLogger(
@@ -527,7 +492,7 @@ public actor LandHost {
                 scope: "LandHost"
             )
             logger.warning("No schema available - no lands registered yet")
-            
+
             var response = HTTPResponseHelpers.errorResponse(
                 message: "No lands registered",
                 status: .notFound
@@ -535,16 +500,16 @@ public actor LandHost {
             addCORSHeaders(to: &response)
             return response
         }
-        
+
         // Encode cached schema to JSON
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let jsonData = try encoder.encode(schema)
-            
+
             // Cache the JSON
             cachedSchemaJSON = jsonData
-            
+
             // Return response with CORS headers
             var response = HTTPResponseHelpers.jsonResponse(from: jsonData, status: .ok)
             addCORSHeaders(to: &response)
@@ -555,7 +520,7 @@ public actor LandHost {
                 scope: "LandHost"
             )
             logger.error("Failed to encode schema: \(error)")
-            
+
             var response = HTTPResponseHelpers.errorResponse(
                 message: "Failed to encode schema",
                 status: .internalServerError
@@ -564,7 +529,7 @@ public actor LandHost {
             return response
         }
     }
-    
+
     /// Add CORS headers to a response.
     ///
     /// - Parameter response: The response to modify (inout)

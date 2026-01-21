@@ -2,6 +2,7 @@ import Foundation
 import GameContent
 import SwiftStateTree
 import SwiftStateTreeHummingbird
+import SwiftStateTreeReevaluationMonitor
 import SwiftStateTreeTransport
 
 /// Hero Defense Server
@@ -68,6 +69,10 @@ struct GameServer {
             logger: logger
         ))
 
+        // Create Reevaluation Services
+        let reevaluationFactory = GameReevaluationFactory()
+        let reevaluationService = ReevaluationRunnerService(factory: reevaluationFactory)
+
         let serverConfig = LandServerConfiguration(
             logger: logger,
             jwtConfig: jwtConfig,
@@ -79,18 +84,17 @@ struct GameServer {
             pathHashes: pathHashes, // Enable PathHash compression
             eventHashes: nil,
             clientEventHashes: nil,
-            servicesFactory: { landID, metadata in
+            servicesFactory: { _, _ in
                 var services = LandServices()
-                
+
                 // Inject GameConfig provider
                 let configProvider = DefaultGameConfigProvider()
                 let configService = GameConfigProviderService(provider: configProvider)
                 services.register(configService, as: GameConfigProviderService.self)
-                
-                // Note: DeterministicRng is now automatically managed by LandKeeper
-                // No need to register DeterministicRngService - LandKeeper creates it internally
-                // based on landID for deterministic behavior
-                
+
+                // Inject Reevaluation Service
+                services.register(reevaluationService, as: ReevaluationRunnerService.self)
+
                 return services
             }
         )
@@ -101,6 +105,15 @@ struct GameServer {
             land: HeroDefense.makeLand(),
             initialState: HeroDefenseState(),
             webSocketPath: "/game/hero-defense",
+            configuration: serverConfig
+        )
+
+        // Register Reevaluation Monitor
+        try await landHost.register(
+            landType: "reevaluation-monitor",
+            land: ReevaluationMonitor.makeLand(),
+            initialState: ReevaluationMonitorState(),
+            webSocketPath: "/reevaluation-monitor",
             configuration: serverConfig
         )
 

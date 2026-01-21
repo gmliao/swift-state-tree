@@ -1,5 +1,5 @@
 {
-  "maxDuration": 15000,
+  "maxDuration": 120000,
   "steps": [
     {
       "type": "log",
@@ -47,11 +47,11 @@
       "event": "MoveTo",
       "payload": {
         "target": {
-            "__type": "Position2",
-            "value": {
-                "x": 50000,
-                "y": 50000
-            }
+          "__type": "Position2",
+          "value": {
+            "x": 50000,
+            "y": 50000
+          }
         }
       }
     },
@@ -60,19 +60,154 @@
       "wait": 100
     },
     {
-        "type": "log",
-        "message": "Checking if MoveTo event was processed (targetPosition may be null if player already reached target)"
+      "type": "log",
+      "message": "Checking if MoveTo event was processed (targetPosition may be null if player already reached target)"
     },
     {
       "type": "state"
     },
     {
-        "type": "assert",
-        "assert": {
-            "path": "players.[PLAYER_ID].targetPosition",
-            "exists": true,
-            "message": "targetPosition field should exist (may be null if player reached target, which is OK)"
+      "type": "assert",
+      "assert": {
+        "path": "players.[PLAYER_ID].targetPosition",
+        "exists": true,
+        "message": "targetPosition field should exist (may be null if player reached target, which is OK)"
+      }
+    },
+    {
+      "type": "log",
+      "message": "Performing multiple PlayActions"
+    },
+    {
+      "type": "action",
+      "action": "PlayAction",
+      "payload": {}
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "action",
+      "action": "PlayAction",
+      "payload": {}
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "action",
+      "action": "PlayAction",
+      "payload": {}
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "score",
+        "equals": 4,
+        "message": "Score should be 4 after 4 PlayActions"
+      }
+    },
+    {
+      "type": "log",
+      "message": "Testing movement to different positions"
+    },
+    {
+      "type": "event",
+      "event": "MoveTo",
+      "payload": {
+        "target": {
+          "__type": "Position2",
+          "value": {
+            "x": 100000,
+            "y": 100000
+          }
         }
+      }
+    },
+    {
+      "type": "wait",
+      "wait": 1000
+    },
+    {
+      "type": "event",
+      "event": "MoveTo",
+      "payload": {
+        "target": {
+          "__type": "Position2",
+          "value": {
+            "x": 150000,
+            "y": 50000
+          }
+        }
+      }
+    },
+    {
+      "type": "wait",
+      "wait": 1000
+    },
+    {
+      "type": "log",
+      "message": "Continuing game actions"
+    },
+    {
+      "type": "action",
+      "action": "PlayAction",
+      "payload": {}
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "action",
+      "action": "PlayAction",
+      "payload": {}
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "score",
+        "equals": 6,
+        "message": "Score should be 6"
+      }
+    },
+    {
+      "type": "log",
+      "message": "Final movement test"
+    },
+    {
+      "type": "event",
+      "event": "MoveTo",
+      "payload": {
+        "target": {
+          "__type": "Position2",
+          "value": {
+            "x": 200000,
+            "y": 200000
+          }
+        }
+      }
+    },
+    {
+      "type": "wait",
+      "wait": 2000
+    },
+    {
+      "type": "log",
+      "message": "Test completed"
+    },
+    {
+      "type": "state"
     }
   ]
 }

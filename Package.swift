@@ -1,12 +1,12 @@
 // swift-tools-version: 6.0
 
-import PackageDescription
 import CompilerPluginSupport
+import PackageDescription
 
 let package = Package(
     name: "SwiftStateTree",
     platforms: [
-        .macOS(.v14)
+        .macOS(.v14),
     ],
     products: [
         // ⭐ Open source library for public use
@@ -39,6 +39,11 @@ let package = Package(
             name: "SwiftStateTreeDeterministicMath",
             targets: ["SwiftStateTreeDeterministicMath"]
         ),
+        // 🔍 Reevaluation Monitor: Built-in Land for monitoring reevaluation verification
+        .library(
+            name: "SwiftStateTreeReevaluationMonitor",
+            targets: ["SwiftStateTreeReevaluationMonitor"]
+        ),
         // 🔹 Benchmark executable
         .executable(
             name: "SwiftStateTreeBenchmarks",
@@ -51,7 +56,7 @@ let package = Package(
         .package(url: "https://github.com/hummingbird-project/hummingbird-websocket.git", from: "2.0.0"),
         .package(url: "https://github.com/apple/swift-atomics.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.0"),
-        .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0")
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
     ],
     targets: [
         // 🔹 Core Library: Pure Swift game logic, no network dependency
@@ -59,37 +64,37 @@ let package = Package(
             name: "SwiftStateTree",
             dependencies: [
                 "SwiftStateTreeMacros",
-                .product(name: "Logging", package: "swift-log")
+                .product(name: "Logging", package: "swift-log"),
             ],
             path: "Sources/SwiftStateTree",
             exclude: [
                 "Land/README.md",
                 "Runtime/README.md",
                 "SchemaGen/README.md",
-                "Resolver/README.md"
+                "Resolver/README.md",
             ]
         ),
-        
+
         // 🔹 Transport Layer: Framework-agnostic transport abstraction (network + services)
         .target(
             name: "SwiftStateTreeTransport",
             dependencies: [
                 "SwiftStateTree",
                 "SwiftStateTreeMessagePack",
-                .product(name: "Logging", package: "swift-log")
+                .product(name: "Logging", package: "swift-log"),
             ],
             path: "Sources/SwiftStateTreeTransport"
         ),
-        
+
         // 📦 MessagePack core codec
         .target(
             name: "SwiftStateTreeMessagePack",
             dependencies: [
-                "SwiftStateTree"
+                "SwiftStateTree",
             ],
             path: "Sources/SwiftStateTreeMessagePack"
         ),
-        
+
         // 🕊️ Hummingbird integration
         .target(
             name: "SwiftStateTreeHummingbird",
@@ -100,56 +105,65 @@ let package = Package(
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket"),
                 .product(name: "Logging", package: "swift-log"),
-                .product(name: "Crypto", package: "swift-crypto")
+                .product(name: "Crypto", package: "swift-crypto"),
             ],
             path: "Sources/SwiftStateTreeHummingbird"
         ),
-        
+
         // 🎯 Matchmaking & Lobby: Matchmaking service and lobby functionality
         .target(
             name: "SwiftStateTreeMatchmaking",
             dependencies: [
                 "SwiftStateTree",
                 "SwiftStateTreeTransport",
-                .product(name: "Logging", package: "swift-log")
+                .product(name: "Logging", package: "swift-log"),
             ],
             path: "Sources/SwiftStateTreeMatchmaking"
         ),
-        
+
         // 🔢 Deterministic Math: Fixed-point math for server-authoritative games
         .target(
             name: "SwiftStateTreeDeterministicMath",
             dependencies: [
                 "SwiftStateTree",
-                "SwiftStateTreeMacros"
+                "SwiftStateTreeMacros",
             ],
             path: "Sources/SwiftStateTreeDeterministicMath",
             exclude: [
-                "Docs"
+                "Docs",
             ]
         ),
-        
+
+        // 🔍 Reevaluation Monitor: Built-in Land for monitoring reevaluation verification
+        .target(
+            name: "SwiftStateTreeReevaluationMonitor",
+            dependencies: [
+                "SwiftStateTree",
+            ],
+            path: "Sources/SwiftStateTreeReevaluationMonitor"
+        ),
+
         // 🔹 Macro Implementation: Compile-time macro expansion
         .macro(
             name: "SwiftStateTreeMacros",
             dependencies: [
                 .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
-                .product(name: "SwiftCompilerPlugin", package: "swift-syntax")
+                .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
             ],
             path: "Sources/SwiftStateTreeMacros"
         ),
-        
+
         // 🔹 Library tests (using Swift Testing framework)
         .testTarget(
             name: "SwiftStateTreeTests",
             dependencies: [
                 "SwiftStateTree",
                 "SwiftStateTreeMacros",
-                "SwiftStateTreeTransport"
+                "SwiftStateTreeTransport",
             ],
             path: "Tests/SwiftStateTreeTests"
         ),
-        
+
         // 🔹 Transport tests
         .testTarget(
             name: "SwiftStateTreeTransportTests",
@@ -157,11 +171,11 @@ let package = Package(
                 "SwiftStateTreeTransport",
                 "SwiftStateTree",
                 "SwiftStateTreeHummingbird",
-                .product(name: "Atomics", package: "swift-atomics")
+                .product(name: "Atomics", package: "swift-atomics"),
             ],
             path: "Tests/SwiftStateTreeTransportTests"
         ),
-        
+
         // 🕊️ Hummingbird tests
         .testTarget(
             name: "SwiftStateTreeHummingbirdTests",
@@ -170,21 +184,21 @@ let package = Package(
                 "SwiftStateTreeTransport",
                 "SwiftStateTree",
                 .product(name: "Hummingbird", package: "hummingbird"),
-                .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket")
+                .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket"),
             ],
             path: "Tests/SwiftStateTreeHummingbirdTests"
         ),
-        
+
         // 🔹 Macro tests
         .testTarget(
             name: "SwiftStateTreeMacrosTests",
             dependencies: [
                 "SwiftStateTreeMacros",
-                .product(name: "SwiftSyntaxMacrosTestSupport", package: "swift-syntax")
+                .product(name: "SwiftSyntaxMacrosTestSupport", package: "swift-syntax"),
             ],
             path: "Tests/SwiftStateTreeMacrosTests"
         ),
-        
+
         // 🎯 Matchmaking tests
         .testTarget(
             name: "SwiftStateTreeMatchmakingTests",
@@ -192,32 +206,32 @@ let package = Package(
                 "SwiftStateTreeMatchmaking",
                 "SwiftStateTreeTransport",
                 "SwiftStateTree",
-                .product(name: "Atomics", package: "swift-atomics")
+                .product(name: "Atomics", package: "swift-atomics"),
             ],
             path: "Tests/SwiftStateTreeMatchmakingTests"
         ),
-        
+
         // 🔢 Deterministic Math tests
         .testTarget(
             name: "SwiftStateTreeDeterministicMathTests",
             dependencies: [
                 "SwiftStateTreeDeterministicMath",
-                "SwiftStateTree"
+                "SwiftStateTree",
             ],
             path: "Tests/SwiftStateTreeDeterministicMathTests"
         ),
-        
+
         // 🔹 Benchmark executable
         .executableTarget(
             name: "SwiftStateTreeBenchmarks",
             dependencies: [
                 "SwiftStateTree",
                 "SwiftStateTreeTransport",
-                "SwiftStateTreeMacros"
+                "SwiftStateTreeMacros",
             ],
             path: "Sources/SwiftStateTreeBenchmarks",
             exclude: [
-                "README.md"
+                "README.md",
             ]
         ),
     ]
