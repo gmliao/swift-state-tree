@@ -99,6 +99,7 @@ public struct LandServer<State: StateNodeProtocol>: Sendable {
             transport: transport,
             createGuestSession: createGuestSession ?? defaultCreateGuestSession,
             transportEncoding: configuration.transportEncoding,
+            enableLiveStateHashRecording: configuration.enableLiveStateHashRecording,
             pathHashes: configuration.pathHashes,
             eventHashes: configuration.eventHashes,
             clientEventHashes: configuration.clientEventHashes,
@@ -325,5 +326,12 @@ extension LandServer: LandServerProtocol {
             return
         }
         await landManager.removeLand(landID: landID)
+    }
+
+    public func getReevaluationRecord(landID: LandID) async throws -> Data? {
+        guard let landManager else { return nil }
+        guard let container = await landManager.getLand(landID: landID) else { return nil }
+        guard let recorder = await container.keeper.getReevaluationRecorder() else { return nil }
+        return try await recorder.encode()
     }
 }

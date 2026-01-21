@@ -64,8 +64,9 @@ struct DeterministicTests {
             services: LandServices(),
             logger: createGameLogger(scope: "Test", logLevel: .error),
             tickId: 0,
-            sendEventHandler: { _, _ in },
-            syncHandler: { }
+            emitEventHandler: { _, _ in },
+            requestSyncNowHandler: { },
+            requestSyncBroadcastOnlyHandler: { }
         )
         
         let resolverCtx = ResolverContext(
@@ -128,8 +129,9 @@ struct DeterministicTests {
             services: services,
             logger: createGameLogger(scope: "Test", logLevel: .error),
             tickId: 0, // Start at tick 0
-            sendEventHandler: { _, _ in },
-            syncHandler: { }
+            emitEventHandler: { _, _ in },
+            requestSyncNowHandler: { },
+            requestSyncBroadcastOnlyHandler: { }
         )
         
         // Run ticks
@@ -148,8 +150,9 @@ struct DeterministicTests {
                 services: services,
                 logger: ctx.logger,
                 tickId: Int64(i),
-                sendEventHandler: { _, _ in },
-                syncHandler: { }
+                emitEventHandler: { _, _ in },
+                requestSyncNowHandler: { },
+                requestSyncBroadcastOnlyHandler: { }
             )
             
             tickHandler(&state, stepCtx)

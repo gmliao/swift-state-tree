@@ -168,13 +168,6 @@ func testLandKeeperLifecycle() async throws {
 
 @Test("LandKeeper enforces allowed client events")
 func testLandKeeperAllowedEvents() async throws {
-    actor ReadyCounter {
-        var value = 0
-        func increment() { value += 1 }
-        func current() -> Int { value }
-    }
-    let counter = ReadyCounter()
-
     let definition = Land(
         "allowed-events",
         using: DemoLandState.self
@@ -189,10 +182,9 @@ func testLandKeeperAllowedEvents() async throws {
         }
         
         Rules {
-            HandleEvent(DemoReadyEvent.self) { (_: inout DemoLandState, event: DemoReadyEvent, ctx: LandContext) in
-                ctx.spawn {
-                    await counter.increment()
-                }
+            HandleEvent(DemoReadyEvent.self) { (state: inout DemoLandState, event: DemoReadyEvent, ctx: LandContext) in
+                // Synchronous handler: mutate state directly
+                state.spawnedTaskCount += 1
             }
         }
     }
@@ -210,15 +202,14 @@ func testLandKeeperAllowedEvents() async throws {
 
     let chatEvent = AnyClientEvent(DemoChatEvent(message: "hi"))
     try? await keeper.handleClientEvent(chatEvent, playerID: playerID, clientID: clientID, sessionID: sessionID)
-    #expect(await counter.current() == 0)
+    #expect((await keeper.currentState()).spawnedTaskCount == 0)
 
     let readyEvent = AnyClientEvent(DemoReadyEvent())
     try? await keeper.handleClientEvent(readyEvent, playerID: playerID, clientID: clientID, sessionID: sessionID)
-    // ctx.spawn executes asynchronously, so we need to wait for the spawned task to complete
-    await waitFor("counter to increment after spawn", condition: {
-        await counter.current() == 1
-    })
-    #expect(await counter.current() == 1)
+    await waitFor("Ready event handler to run") {
+        (await keeper.currentState()).spawnedTaskCount == 1
+    }
+    #expect((await keeper.currentState()).spawnedTaskCount == 1)
 }
 
 // Helper for async assertions
@@ -375,30 +366,26 @@ func testCanJoinDenies() async throws {
     #expect(state.players.count == 1)
 }
 
-@Test("ctx.spawn executes background tasks")
-func testCtxSpawn() async throws {
-    actor TaskCounter {
-        var count = 0
-        func increment() { count += 1 }
-        func current() -> Int { count }
+@Test("ctx.emitEvent queues and flushes deterministically")
+func testCtxEmitEventQueuesAndFlushes() async throws {
+    actor RecordingTransport: LandKeeperTransport {
+        var events: [AnyServerEvent] = []
+        func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async { events.append(event) }
+        func syncNowFromTransport() async {}
+        func syncBroadcastOnlyFromTransport() async {}
+        func onLandDestroyed() async {}
     }
-    let counter = TaskCounter()
+    let transport = RecordingTransport()
     
     let definition = Land(
-        "spawn-test",
+        "emit-event-test",
         using: DemoLandState.self
     ) {
+        ServerEvents { Register(DemoMessageEvent.self) }
         Lifetime {
             Tick(every: .milliseconds(10)) { (state: inout DemoLandState, ctx: LandContext) in
                 state.ticks += 1
-                
-                // Spawn background task
-                ctx.spawn {
-                    await counter.increment()
-                }
-            }
-            StateSync(every: .milliseconds(10)) { (_: DemoLandState, _: LandContext) in
-                // Read-only sync callback
+                ctx.emitEvent(DemoMessageEvent(message: "tick-\(state.ticks)"), to: .all)
             }
         }
     }
@@ -408,12 +395,10 @@ func testCtxSpawn() async throws {
         initialState: DemoLandState(),
         services: LandServices()
     )
+    await keeper.setTransport(transport)
     
-    await waitFor("Background tasks should execute") {
-        let state = await keeper.currentState()
-        let spawnCount = await counter.current()
-        // Wait until we have at least some ticks and some spawns
-        return state.ticks > 0 && spawnCount > 0
+    await waitFor("Emitted server events should be flushed") {
+        await transport.events.count > 0
     }
 }
 
@@ -619,13 +604,6 @@ func testBothClientAndServerEvents() {
 
 @Test("OnInitialize executes when Land is created")
 func testOnInitialize() async throws {
-    actor InitCounter {
-        var count = 0
-        func increment() { count += 1 }
-        func current() -> Int { count }
-    }
-    let counter = InitCounter()
-    
     let definition = Land(
         "init-test",
         using: DemoLandState.self
@@ -633,9 +611,7 @@ func testOnInitialize() async throws {
         Lifetime {
             OnInitialize { (state: inout DemoLandState, ctx: LandContext) in
                 state.ticks = 42  // Set initial value
-                ctx.spawn {
-                    await counter.increment()
-                }
+                state.spawnedTaskCount += 1
             }
         }
     }
@@ -646,16 +622,15 @@ func testOnInitialize() async throws {
         services: LandServices()
     )
     
-    // Wait for OnInitialize to complete and spawn task to finish
-    await waitFor("OnInitialize to complete and spawn task to finish", condition: {
+    // Wait for OnInitialize to complete
+    await waitFor("OnInitialize to complete", condition: {
         let state = await keeper.currentState()
-        let count = await counter.current()
-        return state.ticks == 42 && count == 1
+        return state.ticks == 42 && state.spawnedTaskCount == 1
     })
     
     let state = await keeper.currentState()
     #expect(state.ticks == 42, "OnInitialize should set ticks to 42")
-    #expect(await counter.current() == 1, "OnInitialize should be called once")
+    #expect(state.spawnedTaskCount == 1, "OnInitialize should be called once")
 }
 
 @Test("OnInitialize with resolver loads data before handler executes")
@@ -711,13 +686,6 @@ func testOnInitializeWithResolver() async throws {
 
 @Test("OnFinalize executes before Land is destroyed")
 func testOnFinalize() async throws {
-    actor FinalizeCounter {
-        var count = 0
-        func increment() { count += 1 }
-        func current() -> Int { count }
-    }
-    let counter = FinalizeCounter()
-    
     let definition = Land(
         "finalize-test",
         using: DemoLandState.self
@@ -725,9 +693,7 @@ func testOnFinalize() async throws {
         Lifetime { (config: inout LifetimeConfig<DemoLandState>) in
             config.onFinalize = { (state: inout DemoLandState, ctx: LandContext) in
                 state.ticks = 999  // Set final value
-                ctx.spawn {
-                    await counter.increment()
-                }
+                state.spawnedTaskCount += 1
             }
             config.destroyWhenEmptyAfter = .milliseconds(10)
         }
@@ -751,30 +717,24 @@ func testOnFinalize() async throws {
     // destroyWhenEmptyAfter: 10ms + handler execution time
     // Use retry loop to handle timing variations in CI environments
     var state = await keeper.currentState()
-    var counterValue = await counter.current()
     var attempts = 0
     let maxAttempts = 20 // 20 * 25ms = 500ms max wait time
-    while (state.ticks != 999 || counterValue != 1) && attempts < maxAttempts {
+    while (state.ticks != 999 || state.spawnedTaskCount != 1) && attempts < maxAttempts {
         try await Task.sleep(nanoseconds: 25_000_000) // 25ms
         state = await keeper.currentState()
-        counterValue = await counter.current()
         attempts += 1
     }
     
     #expect(state.ticks == 999, "OnFinalize should set ticks to 999")
-    #expect(counterValue == 1, "OnFinalize should be called once")
+    #expect(state.spawnedTaskCount == 1, "OnFinalize should be called once")
 }
 
 @Test("AfterFinalize executes after OnFinalize")
 func testAfterFinalize() async throws {
     actor FinalizeOrder {
-        var onFinalizeCalled = false
         var afterFinalizeCalled = false
-        func markOnFinalize() { onFinalizeCalled = true }
         func markAfterFinalize() { afterFinalizeCalled = true }
-        func getStatus() -> (onFinalize: Bool, afterFinalize: Bool) {
-            (onFinalize: onFinalizeCalled, afterFinalize: afterFinalizeCalled)
-        }
+        func getStatus() -> Bool { afterFinalizeCalled }
     }
     let order = FinalizeOrder()
     
@@ -784,15 +744,14 @@ func testAfterFinalize() async throws {
     ) {
         Lifetime { (config: inout LifetimeConfig<DemoLandState>) in
             config.onFinalize = { (state: inout DemoLandState, ctx: LandContext) in
-                // OnFinalize is sync, mark it immediately
+                // OnFinalize is sync, mark it in state
                 state.ticks = 100  // Mark that OnFinalize ran
-                ctx.spawn {
-                    await order.markOnFinalize()
-                }
+                state.spawnedTaskCount += 1
             }
             config.afterFinalize = { (state: DemoLandState, ctx: LandContext) in
                 // Verify OnFinalize already ran (state.ticks should be 100)
                 #expect(state.ticks == 100, "OnFinalize should have set ticks to 100")
+                #expect(state.spawnedTaskCount == 1, "OnFinalize should have been called before AfterFinalize")
                 await order.markAfterFinalize()
             }
             config.destroyWhenEmptyAfter = .milliseconds(10)
@@ -816,13 +775,10 @@ func testAfterFinalize() async throws {
     // Wait for destroy timer and finalize handlers to execute.
     // Use polling instead of fixed delay for CI stability.
     await waitFor("OnFinalize and AfterFinalize to be called", timeout: .seconds(2)) {
-        let status = await order.getStatus()
-        return status.onFinalize && status.afterFinalize
+        await order.getStatus()
     }
     
-    let status = await order.getStatus()
-    #expect(status.onFinalize, "OnFinalize should be called")
-    #expect(status.afterFinalize, "AfterFinalize should be called")
+    #expect(await order.getStatus(), "AfterFinalize should be called")
     
     // Verify state was modified by OnFinalize
     let finalState = await keeper.currentState()
@@ -834,15 +790,9 @@ func testAfterFinalize() async throws {
 @Test("DestroyWhenEmpty destroys Land after delay when empty")
 func testDestroyWhenEmptyDestroysAfterDelay() async throws {
     actor DestroyTracker {
-        var onFinalizeCalled = false
         var afterFinalizeCalled = false
-        
-        func markOnFinalize() { onFinalizeCalled = true }
         func markAfterFinalize() { afterFinalizeCalled = true }
-        
-        func getStatus() -> (onFinalize: Bool, afterFinalize: Bool) {
-            (onFinalize: onFinalizeCalled, afterFinalize: afterFinalizeCalled)
-        }
+        func getStatus() -> Bool { afterFinalizeCalled }
     }
     let tracker = DestroyTracker()
     
@@ -853,13 +803,12 @@ func testDestroyWhenEmptyDestroysAfterDelay() async throws {
         Lifetime { (config: inout LifetimeConfig<DemoLandState>) in
             config.onFinalize = { (state: inout DemoLandState, ctx: LandContext) in
                 state.ticks = 999  // Mark that OnFinalize ran
-                ctx.spawn {
-                    await tracker.markOnFinalize()
-                }
+                state.spawnedTaskCount += 1
             }
             config.afterFinalize = { (state: DemoLandState, ctx: LandContext) in
                 // Verify OnFinalize already ran
                 #expect(state.ticks == 999, "OnFinalize should have set ticks to 999")
+                #expect(state.spawnedTaskCount == 1, "OnFinalize should have been called before AfterFinalize")
                 await tracker.markAfterFinalize()
             }
             config.destroyWhenEmptyAfter = .milliseconds(50)
@@ -884,29 +833,19 @@ func testDestroyWhenEmptyDestroysAfterDelay() async throws {
     // Wait for destroy timer to expire and OnFinalize/AfterFinalize to be called
     // Use polling instead of fixed delay for better CI stability
     await waitFor("OnFinalize and AfterFinalize to be called", timeout: .seconds(2)) {
-        let status = await tracker.getStatus()
-        return status.onFinalize && status.afterFinalize
+        await tracker.getStatus()
     }
     
-    let status = await tracker.getStatus()
-    #expect(status.onFinalize, "OnFinalize should be called after destroy delay")
-    #expect(status.afterFinalize, "AfterFinalize should be called after destroy delay")
+    #expect(await tracker.getStatus(), "AfterFinalize should be called after destroy delay")
     
     // Verify state was modified by OnFinalize
     let finalState = await keeper.currentState()
     #expect(finalState.ticks == 999, "OnFinalize should have modified state")
+    #expect(finalState.spawnedTaskCount == 1, "OnFinalize should have been called once")
 }
 
 @Test("DestroyWhenEmpty cancels destroy timer when new player joins")
 func testDestroyWhenEmptyCancelsOnJoin() async throws {
-    actor DestroyTracker {
-        var onFinalizeCalled = false
-        
-        func markOnFinalize() { onFinalizeCalled = true }
-        func getStatus() -> Bool { onFinalizeCalled }
-    }
-    let tracker = DestroyTracker()
-    
     let definition = Land(
         "cancel-destroy-test",
         using: DemoLandState.self
@@ -914,9 +853,7 @@ func testDestroyWhenEmptyCancelsOnJoin() async throws {
         Lifetime { (config: inout LifetimeConfig<DemoLandState>) in
             config.onFinalize = { (state: inout DemoLandState, ctx: LandContext) in
                 state.ticks = 999
-                ctx.spawn {
-                    await tracker.markOnFinalize()
-                }
+                state.spawnedTaskCount += 1
             }
             config.destroyWhenEmptyAfter = .milliseconds(50)
         }
@@ -957,8 +894,8 @@ func testDestroyWhenEmptyCancelsOnJoin() async throws {
     try await Task.sleep(nanoseconds: 150_000_000) // 150ms (more than 50ms delay)
     
     // OnFinalize should NOT have been called because player 2 joined
-    let status = await tracker.getStatus()
-    #expect(!status, "OnFinalize should NOT be called when new player joins before destroy delay")
+    let stateAfter = await keeper.currentState()
+    #expect(stateAfter.spawnedTaskCount == 0, "OnFinalize should NOT be called when new player joins before destroy delay")
     
     // Verify player 2 is still in the land
     let state = await keeper.currentState()
@@ -967,23 +904,13 @@ func testDestroyWhenEmptyCancelsOnJoin() async throws {
 
 @Test("DestroyWhenEmpty resets timer when last player leaves again")
 func testDestroyWhenEmptyResetsTimerOnRejoin() async throws {
-    actor DestroyTracker {
-        var destroyCount = 0
-        
-        func increment() { destroyCount += 1 }
-        func getCount() -> Int { destroyCount }
-    }
-    let tracker = DestroyTracker()
-    
     let definition = Land(
         "reset-timer-test",
         using: DemoLandState.self
     ) {
         Lifetime { (config: inout LifetimeConfig<DemoLandState>) in
             config.onFinalize = { (state: inout DemoLandState, ctx: LandContext) in
-                ctx.spawn {
-                    await tracker.increment()
-                }
+                state.spawnedTaskCount += 1
             }
             config.destroyWhenEmptyAfter = .milliseconds(50)
         }
@@ -1018,34 +945,24 @@ func testDestroyWhenEmptyResetsTimerOnRejoin() async throws {
     // Wait for the new destroy timer to expire and OnFinalize to be called
     // Use polling instead of fixed delay for better CI stability
     await waitFor("OnFinalize to be called after second leave", timeout: .seconds(2)) {
-        let count = await tracker.getCount()
-        return count >= 1
+        let state = await keeper.currentState()
+        return state.spawnedTaskCount >= 1
     }
     
     // OnFinalize should be called only once (after the second leave)
-    let count = await tracker.getCount()
-    #expect(count == 1, "OnFinalize should be called once after the second leave cycle")
+    let state = await keeper.currentState()
+    #expect(state.spawnedTaskCount == 1, "OnFinalize should be called once after the second leave cycle")
 }
 
 @Test("DestroyWhenEmpty does not destroy when players are present")
 func testDestroyWhenEmptyDoesNotDestroyWithPlayers() async throws {
-    actor DestroyTracker {
-        var onFinalizeCalled = false
-        
-        func markOnFinalize() { onFinalizeCalled = true }
-        func getStatus() -> Bool { onFinalizeCalled }
-    }
-    let tracker = DestroyTracker()
-    
     let definition = Land(
         "no-destroy-with-players-test",
         using: DemoLandState.self
     ) {
         Lifetime { (config: inout LifetimeConfig<DemoLandState>) in
             config.onFinalize = { (state: inout DemoLandState, ctx: LandContext) in
-                ctx.spawn {
-                    await tracker.markOnFinalize()
-                }
+                state.spawnedTaskCount += 1
             }
             config.destroyWhenEmptyAfter = .milliseconds(50)
         }
@@ -1073,8 +990,8 @@ func testDestroyWhenEmptyDoesNotDestroyWithPlayers() async throws {
     try await Task.sleep(nanoseconds: 200_000_000) // 200ms
     
     // OnFinalize should NOT be called because player is still present
-    let status = await tracker.getStatus()
-    #expect(!status, "OnFinalize should NOT be called when players are present")
+    let stateAfter = await keeper.currentState()
+    #expect(stateAfter.spawnedTaskCount == 0, "OnFinalize should NOT be called when players are present")
     
     // Verify player is still in the land
     let state = await keeper.currentState()

@@ -24,8 +24,9 @@ func createTurretTestContext() -> LandContext {
         services: services,
         logger: Logger(label: "test"),
         tickId: nil,
-        sendEventHandler: { _, _ in },
-        syncHandler: { }
+        emitEventHandler: { _, _ in },
+        requestSyncNowHandler: { },
+        requestSyncBroadcastOnlyHandler: { }
     )
 }
 

@@ -26,6 +26,7 @@ public actor LandRealm {
         nonisolated(unsafe) let healthCheckClosure: () async -> Bool
         nonisolated(unsafe) let listLandsClosure: () async -> [LandID]
         nonisolated(unsafe) let getLandStatsClosure: (LandID) async -> LandStats?
+        nonisolated(unsafe) let getReevaluationRecordClosure: (LandID) async throws -> Data?
         nonisolated(unsafe) let removeLandClosure: (LandID) async -> Void
         
         init<Server: LandServerProtocol>(
@@ -52,6 +53,10 @@ public actor LandRealm {
             
             self.getLandStatsClosure = { landID in
                 await server.getLandStats(landID: landID)
+            }
+
+            self.getReevaluationRecordClosure = { landID in
+                try await server.getReevaluationRecord(landID: landID)
             }
             
             self.removeLandClosure = { landID in
@@ -272,6 +277,36 @@ public actor LandRealm {
             
             return nil
         }
+    }
+
+    /// Get the current re-evaluation record for a specific land across all registered servers.
+    ///
+    /// - Parameter landID: The unique identifier for the land.
+    /// - Returns: JSON data for the record if found, nil otherwise.
+    public func getReevaluationRecord(landID: LandID) async throws -> Data? {
+        // Fast path: use landType routing when available
+        if !landID.landType.isEmpty, let serverInfo = servers[landID.landType] {
+            return try await serverInfo.getReevaluationRecordClosure(landID)
+        }
+
+        var firstError: Error?
+        for (landType, serverInfo) in servers {
+            do {
+                if let data = try await serverInfo.getReevaluationRecordClosure(landID) {
+                    return data
+                }
+            } catch {
+                if firstError == nil { firstError = error }
+                logger.error("Error getting re-evaluation record", metadata: [
+                    "landType": .string(landType),
+                    "landID": .string(landID.stringValue),
+                    "error": .string(String(describing: error))
+                ])
+            }
+        }
+
+        if let firstError { throw firstError }
+        return nil
     }
     
     /// Remove a land from the appropriate server.

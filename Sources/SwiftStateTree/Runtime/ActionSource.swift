@@ -15,9 +15,9 @@ public protocol ReevaluationSource: Sendable {
 
     /// Get lifecycle events for a specific tick.
     func getLifecycleEvents(for tickId: Int64) async throws -> [ReevaluationRecordedLifecycleEvent]
-    
-    /// Get server events for a specific tick.
-    func getServerEvents(for tickId: Int64) async throws -> [ReevaluationRecordedServerEvent]
+
+    /// Get the recorded per-tick state hash for a specific tick (live ground truth).
+    func getStateHash(for tickId: Int64) async throws -> String?
     
     /// Get the maximum tick ID available in the record.
     func getMaxTickId() async throws -> Int64
@@ -77,9 +77,9 @@ public actor JSONReevaluationSource: ReevaluationSource {
     public func getLifecycleEvents(for tickId: Int64) async throws -> [ReevaluationRecordedLifecycleEvent] {
         framesByTickId[tickId]?.lifecycleEvents ?? []
     }
-    
-    public func getServerEvents(for tickId: Int64) async throws -> [ReevaluationRecordedServerEvent] {
-        framesByTickId[tickId]?.serverEvents ?? []
+
+    public func getStateHash(for tickId: Int64) async throws -> String? {
+        framesByTickId[tickId]?.stateHash
     }
     
     public func getMaxTickId() async throws -> Int64 {

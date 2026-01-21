@@ -119,20 +119,25 @@ A:
 
 ### Q: 如何在 handler 中執行 async 操作？
 
-A: 使用 `ctx.spawn` 來執行非同步操作：
+A: 為了 determinism，handlers 以同步方式設計，**不建議在 handler 內直接做 async I/O**。
+
+請改用 Resolver 在 handler 執行前載入資料，並用 `ctx.emitEvent(...)` 產生 deterministic 輸出：
 
 ```swift
+struct LoadSomethingResolver: ContextResolver {
+    struct Output: ResolverOutput { let value: Int }
+    static func resolve(ctx: ResolverContext) async throws -> Output {
+        let value = try await someAsyncOperation()
+        return Output(value: value)
+    }
+}
+
 Rules {
-    HandleAction(SomeAction.self) { state, action, ctx in
-        // 同步處理
-        state.someField = action.value
-        
-        // 非同步操作
-        ctx.spawn {
-            let result = await someAsyncOperation()
-            await ctx.sendEvent(SomeEvent(result: result), to: .player(ctx.playerID))
-        }
-        
+    HandleAction(SomeAction.self, resolvers: LoadSomethingResolver.self) { state, action, ctx in
+        let output: LoadSomethingResolver.Output? = ctx.loadSomething
+        state.someField = output?.value ?? 0
+
+        ctx.emitEvent(SomeEvent(result: state.someField), to: .player(ctx.playerID))
         return SomeResponse()
     }
 }
@@ -358,7 +363,7 @@ A:
 1. 檢查 `@Sync` 標記是否正確
 2. 確認 dirty tracking 是否啟用
 3. 查看 SyncEngine 的日誌
-4. 使用 `ctx.syncNow()` 手動觸發同步
+4. 使用 `ctx.requestSyncNow()` 請求 deterministic 的同步（於 tick 結尾 flush）
 
 ### Q: 如何查看狀態變更？
 

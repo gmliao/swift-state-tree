@@ -487,7 +487,7 @@ func testEventWithTickTriggersSync() async throws {
 }
 
 @Test("Manual syncNow() in spawn triggers sync")
-func testManualSyncNowInSpawn() async throws {
+func testManualSyncNowRequest() async throws {
     // Arrange
     let definition = Land(
         "manual-sync-test",
@@ -501,10 +501,8 @@ func testManualSyncNowInSpawn() async throws {
             HandleAction(IncrementAction.self) { (state: inout ActionEventSyncTestState, action: IncrementAction, ctx: LandContext) in
                 state.count += action.amount
                 
-                // Manually trigger sync in background (does not block handler)
-                ctx.spawn {
-                    await ctx.syncNow()
-                }
+                // Request sync deterministically (flushed at end of tick)
+                ctx.requestSyncNow()
                 
                 return IncrementResponse(success: true, newCount: state.count)
             }
@@ -533,16 +531,13 @@ func testManualSyncNowInSpawn() async throws {
     let action = IncrementAction(amount: 7)
     _ = try await keeper.sendAction(action, playerID: playerID, clientID: clientID, sessionID: sessionID)
     
-    // Wait for spawn task to complete sync (spawn runs in background)
-    try await Task.sleep(for: .milliseconds(50))
-    
     // Assert: Verify state was modified
     let state = await keeper.currentState()
     #expect(state.count == 7, "State count should be 7 after action")
     
     // Assert: Verify sync was called manually
     let syncNowCount = await mockTransport.syncNowCallCount
-    #expect(syncNowCount > 0, "Sync should be called when ctx.syncNow() is invoked in spawn")
+    #expect(syncNowCount > 0, "Sync should be called when ctx.requestSyncNow() is invoked")
 }
 
 @Test("handleActionEnvelope correctly decodes action payload with different types")

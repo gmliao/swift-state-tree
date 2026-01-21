@@ -138,9 +138,8 @@ func handleAction<A: ActionPayload>(_ action: A, ...) async throws -> AnyCodable
 
 - **Identification**: `playerID`, `clientID`, `sessionID`, `landID`
 - **Service access**: `services` - External service abstraction (database, logging, etc.)
-- **Event sending**: `sendEvent(_:to:)` - Send event to specified target
-- **Manual sync**: `syncNow()` - Manually trigger state synchronization
-- **Background tasks**: `spawn(_:)` - Execute asynchronous background tasks
+- **Deterministic events**: `emitEvent(_:to:)` - Enqueue an event to be flushed deterministically at end of tick
+- **Deterministic sync**: `requestSyncNow()` / `requestSyncBroadcastOnly()` - Request sync to be flushed deterministically at end of tick
 - **Resolver output**: Access resolver results through `@dynamicMemberLookup`
 
 ## Handler Execution Flow
@@ -395,7 +394,7 @@ private func checkAutoDestroy() {
 
 ## Best Practices
 
-1. **Avoid long-running handlers**: Handlers should execute quickly, use `ctx.spawn` for long operations
+1. **Avoid long-running handlers**: Handlers should execute quickly. Do async I/O out-of-band (e.g., via Resolver + cached outputs, or external pipelines).
 2. **Use Resolver appropriately**: Put data loading logic in Resolver, keep handlers synchronous
 3. **Pay attention to state change scope**: Only change state in handlers, don't change in Resolver
 4. **Leverage Actor serialization**: No need for additional locking mechanisms, actor automatically ensures thread safety

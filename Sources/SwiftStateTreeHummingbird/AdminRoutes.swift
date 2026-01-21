@@ -157,6 +157,45 @@ public struct AdminRoutes: Sendable {
                 return try HTTPResponseHelpers.adminResponse(errorResponse, status: .internalServerError)
             }
         }
+
+        // GET /admin/lands/:landID/reevaluation-record - Download re-evaluation record (admin only)
+        router.get("/admin/lands/:landID/reevaluation-record") { request, context in
+            guard await self.adminAuth.hasRequiredRole(from: request, requiredRole: .admin) else {
+                let errorResponse = AdminAPIAnyResponse.error(
+                    code: .unauthorized,
+                    message: "Invalid API key or token"
+                )
+                return try HTTPResponseHelpers.adminResponse(errorResponse, status: .unauthorized)
+            }
+
+            let landIDString = context.parameters.get("landID") ?? "unknown"
+            let decodedLandIDString = landIDString.removingPercentEncoding ?? landIDString
+            let landID = LandID(decodedLandIDString)
+
+            do {
+                guard let jsonData = try await self.landRealm.getReevaluationRecord(landID: landID) else {
+                    let errorResponse = AdminAPIAnyResponse.error(
+                        code: .notFound,
+                        message: "Re-evaluation record not found",
+                        details: ["landID": AnyCodable(decodedLandIDString)]
+                    )
+                    return try HTTPResponseHelpers.adminResponse(errorResponse, status: .notFound)
+                }
+
+                var response = HTTPResponseHelpers.jsonResponse(from: jsonData, status: .ok)
+                response.headers[HTTPField.Name("Access-Control-Allow-Origin")!] = "*"
+                response.headers[HTTPField.Name("Access-Control-Allow-Methods")!] = "GET, POST, DELETE, OPTIONS"
+                response.headers[HTTPField.Name("Access-Control-Allow-Headers")!] = "Content-Type, X-API-Key, Authorization"
+                return response
+            } catch {
+                self.logger.error("Failed to get re-evaluation record: \(error)")
+                let errorResponse = AdminAPIAnyResponse.error(
+                    code: .internalError,
+                    message: "Failed to get re-evaluation record"
+                )
+                return try HTTPResponseHelpers.adminResponse(errorResponse, status: .internalServerError)
+            }
+        }
         
         // POST /admin/lands - Create a new land (admin only)
         router.post("/admin/lands") { request, context in

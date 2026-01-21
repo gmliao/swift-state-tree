@@ -119,20 +119,25 @@ For detailed information, please refer to [Sync Rules](core/sync.md).
 
 ### Q: How do I execute async operations in handlers?
 
-A: Use `ctx.spawn` to execute asynchronous operations:
+A: Handlers are synchronous by design (for determinism). **Do not run async I/O inside handlers**.
+
+Use a Resolver to load async data *before* the handler executes, then emit deterministic outputs via `ctx.emitEvent(...)`:
 
 ```swift
+struct LoadSomethingResolver: ContextResolver {
+    struct Output: ResolverOutput { let value: Int }
+    static func resolve(ctx: ResolverContext) async throws -> Output {
+        let value = try await someAsyncOperation()
+        return Output(value: value)
+    }
+}
+
 Rules {
-    HandleAction(SomeAction.self) { state, action, ctx in
-        // Synchronous processing
-        state.someField = action.value
-        
-        // Asynchronous operation
-        ctx.spawn {
-            let result = await someAsyncOperation()
-            await ctx.sendEvent(SomeEvent(result: result), to: .player(ctx.playerID))
-        }
-        
+    HandleAction(SomeAction.self, resolvers: LoadSomethingResolver.self) { state, action, ctx in
+        let output: LoadSomethingResolver.Output? = ctx.loadSomething
+        state.someField = output?.value ?? 0
+
+        ctx.emitEvent(SomeEvent(result: state.someField), to: .player(ctx.playerID))
         return SomeResponse()
     }
 }
@@ -358,7 +363,7 @@ A:
 1. Check if `@Sync` markers are correct
 2. Confirm if dirty tracking is enabled
 3. Check SyncEngine logs
-4. Use `ctx.syncNow()` to manually trigger sync
+4. Use `ctx.requestSyncNow()` to request deterministic sync (flushed at end of tick)
 
 ### Q: How do I view state changes?
 

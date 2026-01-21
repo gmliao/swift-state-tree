@@ -8,7 +8,7 @@ Land 是伺服器邏輯的最小可運行單位，負責定義加入規則、行
 ## 設計說明
 
 - Land DSL 只描述行為，不暴露 Transport 細節
-- handlers 以同步方式定義，必要的 async 可透過 `ctx.spawn` 補上
+- handlers 以同步方式定義；輸出請用 `ctx.emitEvent(...)` / `ctx.requestSync*()`，非同步 I/O 請在 handler 之外處理（例如 Resolver）。
 - 事件型別註冊（Client/ServerEvents）用於 schema 與驗證
 
 ## 基本結構
@@ -80,7 +80,7 @@ Handler 會取得 `LandContext`，包含：
 - `landID`, `playerID`, `clientID`, `sessionID`, `deviceID`
 - `metadata`（來自 join/JWT/guest）
 - `services`（注入外部服務）
-- `sendEvent(...)`, `syncNow()`, `spawn { ... }`
+- `emitEvent(...)`, `requestSyncNow()`, `requestSyncBroadcastOnly()`
 
 LandContext 是 request-scoped，請避免保存引用。
 

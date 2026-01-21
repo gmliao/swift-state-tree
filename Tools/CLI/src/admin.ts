@@ -189,6 +189,21 @@ export async function deleteLand(options: AdminOptions): Promise<void> {
 }
 
 /**
+ * Download a land's re-evaluation record (JSON).
+ */
+export async function downloadReevaluationRecord(options: AdminOptions): Promise<any> {
+  if (!options.landID) {
+    throw new Error('landID is required')
+  }
+
+  const baseUrl = options.url.replace(/\/$/, '')
+  const url = `${baseUrl}/admin/lands/${encodeURIComponent(options.landID)}/reevaluation-record`
+
+  const response = await adminRequest(url, 'GET', options)
+  return await response.json()
+}
+
+/**
  * Print formatted land list
  */
 export function printLandList(lands: string[]): void {

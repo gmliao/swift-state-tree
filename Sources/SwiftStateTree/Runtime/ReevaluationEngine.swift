@@ -6,9 +6,27 @@ import Logging
 /// This is intentionally generic and is meant to be used by demo-specific runners
 /// (e.g., `Examples/HummingbirdDemo` and `Examples/GameDemo`) that can import their own land definitions.
 public enum ReevaluationEngine {
+    private actor CapturingSink: ReevaluationSink {
+        private var eventsByTick: [Int64: [ReevaluationRecordedServerEvent]] = [:]
+        private let downstream: (any ReevaluationSink)?
+
+        init(downstream: (any ReevaluationSink)?) { self.downstream = downstream }
+
+        func onEmittedServerEvents(tickId: Int64, events: [ReevaluationRecordedServerEvent]) async {
+            eventsByTick[tickId, default: []].append(contentsOf: events)
+            if let downstream { await downstream.onEmittedServerEvents(tickId: tickId, events: events) }
+        }
+
+        func takeEmittedEvents(for tickId: Int64) -> [ReevaluationRecordedServerEvent] {
+            let events = eventsByTick.removeValue(forKey: tickId) ?? []
+            return events.sorted { $0.sequence < $1.sequence }
+        }
+    }
+
     public struct RunResult: Sendable {
         public let maxTickId: Int64
         public let tickHashes: [Int64: String]
+        public let recordedStateHashes: [Int64: String]
     }
     
     /// Run a deterministic re-evaluation from a JSON record file.
@@ -23,18 +41,39 @@ public enum ReevaluationEngine {
         logger: Logger? = nil
     ) async throws -> RunResult {
         let source = try JSONReevaluationSource(filePath: recordFilePath)
+        let metadata = try await source.getMetadata()
         let maxTickId = try await source.getMaxTickId()
+        let capturingSink = CapturingSink(downstream: sink)
+
+        // Ensure RNG seed matches the recorded run (critical for deterministic re-evaluation).
+        var resolvedServices = services
+        let expectedSeedFromLandID = DeterministicSeed.fromLandID(metadata.landID)
+        if let recordedSeed = metadata.rngSeed, recordedSeed != expectedSeedFromLandID {
+            logger?.warning(
+                "Recorded rngSeed does not match landID-derived seed; using landID-derived seed for deterministic re-evaluation.",
+                metadata: [
+                    "landID": .string(metadata.landID),
+                    "recordedSeed": .stringConvertible(recordedSeed),
+                    "expectedSeed": .stringConvertible(expectedSeedFromLandID),
+                ]
+            )
+        }
+        resolvedServices.register(
+            DeterministicRngService(seed: expectedSeedFromLandID),
+            as: DeterministicRngService.self
+        )
         
         let keeper = LandKeeper<State>(
             definition: definition,
             initialState: initialState,
             mode: .reevaluation,
             reevaluationSource: source,
-            reevaluationSink: sink,
-            services: services,
+            reevaluationSink: capturingSink,
+            services: resolvedServices,
             autoStartLoops: false,
             logger: logger
         )
+        await keeper.setLandID(metadata.landID)
         
         let syncEngine = SyncEngine()
         let snapshotEncoder = JSONEncoder()
@@ -45,6 +84,7 @@ public enum ReevaluationEngine {
         }
         
         var hashes: [Int64: String] = [:]
+        var recordedHashes: [Int64: String] = [:]
         if maxTickId >= 0 {
             for tickId in 0...maxTickId {
                 await keeper.stepTickOnce()
@@ -58,10 +98,13 @@ public enum ReevaluationEngine {
                     stateHash = "error"
                 }
                 hashes[tickId] = stateHash
+
+                if let recorded = try await source.getStateHash(for: tickId) {
+                    recordedHashes[tickId] = recorded
+                }
                 
                 if let exporter {
-                    let recordedServerEvents = (try? await source.getServerEvents(for: tickId)) ?? []
-                    let sortedEvents = recordedServerEvents.sorted { $0.sequence < $1.sequence }
+                    let sortedEvents = await capturingSink.takeEmittedEvents(for: tickId)
                     try await exporter.writeTick(
                         tickId: tickId,
                         stateSnapshot: snapshot,
@@ -76,7 +119,7 @@ public enum ReevaluationEngine {
             try await exporter.close()
         }
         
-        return RunResult(maxTickId: maxTickId, tickHashes: hashes)
+        return RunResult(maxTickId: maxTickId, tickHashes: hashes, recordedStateHashes: recordedHashes)
     }
     
     /// Calculate a deterministic hash of the full state snapshot.

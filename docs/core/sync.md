@@ -44,4 +44,4 @@ TransportAdapter can switch dirty tracking at runtime:
 
 ## Manual Sync
 
-In handlers, you can actively trigger sync through `ctx.syncNow()`.
+In handlers, you can request a deterministic sync through `ctx.requestSyncNow()` (or `ctx.requestSyncBroadcastOnly()`).

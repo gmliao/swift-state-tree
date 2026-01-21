@@ -232,9 +232,7 @@ let gameLand = Land("multiplayer-game", using: GameState.self) {
                 if let winner = alivePlayers.first {
                     let winnerID = state.players.first(where: { $0.value.name == winner.name })?.key
                     if let winnerID = winnerID {
-                        ctx.spawn {
-                            await ctx.sendEvent(GameOverEvent(winnerID: winnerID), to: .all)
-                        }
+                        ctx.emitEvent(GameOverEvent(winnerID: winnerID), to: .all)
                     }
                 }
             }
@@ -262,13 +260,11 @@ let gameLand = Land("multiplayer-game", using: GameState.self) {
             )
             state.scores[action.playerID] = 0
             
-            // Notify all players
-            ctx.spawn {
-                await ctx.sendEvent(
-                    PlayerJoinedEvent(playerID: action.playerID, name: action.name),
-                    to: .all
-                )
-            }
+            // Notify all players（deterministic output）
+            ctx.emitEvent(
+                PlayerJoinedEvent(playerID: action.playerID, name: action.name),
+                to: .all
+            )
             
             return JoinGameResponse(success: true, message: "Joined successfully")
         }
@@ -298,28 +294,24 @@ let gameLand = Land("multiplayer-game", using: GameState.self) {
             // Update score
             state.scores[action.attackerID] = (state.scores[action.attackerID] ?? 0) + action.damage
             
-            // Notify all players
+            // Notify all players（deterministic output）
             let newHP = state.players[action.targetID]?.hpCurrent ?? 0
-            ctx.spawn {
-                await ctx.sendEvent(
-                    DamageEvent(
-                        attackerID: action.attackerID,
-                        targetID: action.targetID,
-                        damage: action.damage,
-                        targetHP: newHP
-                    ),
-                    to: .all
-                )
-            }
+            ctx.emitEvent(
+                DamageEvent(
+                    attackerID: action.attackerID,
+                    targetID: action.targetID,
+                    damage: action.damage,
+                    targetHP: newHP
+                ),
+                to: .all
+            )
             
             return AttackResponse(success: true, message: "Attack successful")
         }
         
         HandleEvent(PingEvent.self) { state, event, ctx in
-            // Simple heartbeat handling
-            ctx.spawn {
-                await ctx.sendEvent(PongEvent(sentAt: event.sentAt), to: .player(ctx.playerID))
-            }
+            // Simple heartbeat handling（deterministic output）
+            ctx.emitEvent(PongEvent(sentAt: event.sentAt), to: .player(ctx.playerID))
         }
     }
 }
@@ -422,18 +414,16 @@ let lobbyLand = Land("lobby", using: LobbyState.self) {
                 state.chatMessages.removeFirst()
             }
             
-            // Broadcast to all players
-            ctx.spawn {
-                await ctx.sendEvent(
-                    ChatMessageBroadcastEvent(
-                        playerID: event.playerID,
-                        playerName: playerName,
-                        message: event.message,
-                        timestamp: event.timestamp
-                    ),
-                    to: .all
-                )
-            }
+            // Broadcast to all players（deterministic output）
+            ctx.emitEvent(
+                ChatMessageBroadcastEvent(
+                    playerID: event.playerID,
+                    playerName: playerName,
+                    message: event.message,
+                    timestamp: event.timestamp
+                ),
+                to: .all
+            )
         }
         
         HandleEvent(PlayerReadyEvent.self) { state, event, ctx in
@@ -445,13 +435,11 @@ let lobbyLand = Land("lobby", using: LobbyState.self) {
             let allReady = state.players.keys.allSatisfy { state.readyPlayers.contains($0) }
             
             if allReady && state.players.count >= 2 {
-                // Notify all players
-                ctx.spawn {
-                    await ctx.sendEvent(
-                        AllPlayersReadyEvent(readyPlayers: Array(state.readyPlayers)),
-                        to: .all
-                    )
-                }
+                // Notify all players（deterministic output）
+                ctx.emitEvent(
+                    AllPlayersReadyEvent(readyPlayers: Array(state.readyPlayers)),
+                    to: .all
+                )
             }
         }
     }
