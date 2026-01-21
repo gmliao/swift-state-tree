@@ -55,7 +55,7 @@
    - 提供 `getMetadata()` 用於 replay 初始化
    - 依 tickId 返回對應的 actions, clientEvents, lifecycleEvents, serverEvents
 
-4. **ReplayRunner (CLI)**
+4. **SwiftStateTreeReevaluationRunner (CLI)**
    - 由 `--input` 指定錄製檔案
    - 每 tick 驗證 state hash（使用既有 hash/快照機制）
    - 可設定 replay sink（例如輸出 event log 或傳送到 client）
@@ -80,7 +80,7 @@
 
 ## Deployment & Operations
 
-- ReplayRunner 以 CLI 方式執行，不影響 runtime server
+- SwiftStateTreeReevaluationRunner 以 CLI 方式執行，不影響 runtime server
 - 錄製檔案由 CLI 參數指定輸入路徑
 - 定期 flush 可調整以平衡效能與資料安全
 
@@ -90,4 +90,4 @@
 - 實作已完成，詳細實作見程式碼：
   - `Sources/SwiftStateTree/Runtime/ActionRecorder.swift`
   - `Sources/SwiftStateTree/Runtime/ActionSource.swift`
-  - `Tools/ReplayRunner/Sources/`
+  - `Tools/ReplayRunner/Sources/` (target name: `SwiftStateTreeReevaluationRunner`)

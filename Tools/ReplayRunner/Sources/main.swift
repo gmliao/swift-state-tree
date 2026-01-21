@@ -4,19 +4,19 @@ import Logging
 
 // MARK: - Main
 
-await ReplayRunner.main()
+await ReevaluationRunner.main()
 
-struct ReplayRunner {
-    /// Sink for replaying server events (can be extended to send to clients or write to file)
-    actor ReplaySink {
-        private var events: [RecordedServerEvent] = []
+struct ReevaluationRunner {
+    /// Sink for re-evaluation server events (can be extended to send to clients or write to file).
+    actor ReevaluationSink {
+        private var events: [ReevaluationRecordedServerEvent] = []
         
-        func record(_ event: RecordedServerEvent) {
+        func record(_ event: ReevaluationRecordedServerEvent) {
             events.append(event)
         }
         
-        func getAllEvents() -> [RecordedServerEvent] {
-            return events.sorted { $0.sequence < $1.sequence }
+        func getAllEvents() -> [ReevaluationRecordedServerEvent] {
+            events.sorted { $0.sequence < $1.sequence }
         }
         
         func printEvents() {
@@ -73,12 +73,12 @@ struct ReplayRunner {
                 i += 1
             case "--help", "-h":
                 print("""
-                ReplayRunner - Deterministic Replay Tool
+                ReevaluationRunner - Deterministic Re-evaluation Tool
                 
-                Usage: ReplayRunner [options]
+                Usage: ReevaluationRunner [options]
                 
                 Options:
-                  --input, -i <path>    Path to recording JSON file (required)
+                  --input, -i <path>    Path to re-evaluation record JSON file (required)
                   --verify, -v          Enable state hash verification
                   --help, -h            Show this help message
                 """)
@@ -98,21 +98,21 @@ struct ReplayRunner {
         
         // Create logger
         let logger = createColoredLogger(
-            loggerIdentifier: "com.swiftstatetree.replay",
-            scope: "ReplayRunner"
+            loggerIdentifier: "com.swiftstatetree.reevaluation",
+            scope: "ReevaluationRunner"
         )
         
-        logger.info("Starting replay", metadata: [
+        logger.info("Starting re-evaluation", metadata: [
             "inputFile": .string(inputFile),
             "verify": .stringConvertible(verify)
         ])
         
         // Load recording file
         do {
-            let actionSource = try JSONActionSource(filePath: inputFile)
-            let maxTickId = try await actionSource.getMaxTickId()
+            let source = try JSONReevaluationSource(filePath: inputFile)
+            let maxTickId = try await source.getMaxTickId()
             
-            logger.info("Recording loaded", metadata: [
+            logger.info("Record loaded", metadata: [
                 "maxTickId": .stringConvertible(maxTickId)
             ])
             
@@ -122,30 +122,30 @@ struct ReplayRunner {
             // 2. Or require the user to specify the land type
             // 3. Or infer from the recording file structure
             
-            logger.warning("ReplayRunner requires land definition to be specified")
+            logger.warning("ReevaluationRunner requires land definition to be specified")
             logger.warning("This is a simplified implementation - full version would:")
-            logger.warning("  1. Load land definition from recording metadata")
+            logger.warning("  1. Load land definition from record metadata")
             logger.warning("  2. Initialize LandKeeper with correct definition")
-            logger.warning("  3. Run replay loop with state hash verification")
+            logger.warning("  3. Run re-evaluation loop with state hash verification")
             
-            // TODO: Implement full replay loop
+            // TODO: Implement full re-evaluation loop
             // This would require:
             // - Land definition (from recording or user input)
             // - Initial state
-            // - Replay loop that:
-            //   1. Creates LandKeeper(mode: .replay, actionSource: actionSource)
+            // - Re-evaluation loop that:
+            //   1. Creates LandKeeper(mode: .reevaluation, reevaluationSource: source)
             //   2. Runs ticks from 0 to maxTickId
             //   3. Verifies state hash at each tick (if --verify is enabled)
-            //   4. Collects server events via replay sink
+            //   4. Collects server events via re-evaluation sink
             
-            print("\n✅ ReplayRunner basic structure complete")
-            print("⚠️  Full replay loop implementation pending")
+            print("\n✅ ReevaluationRunner basic structure complete")
+            print("⚠️  Full re-evaluation loop implementation pending")
             print("   - Requires land definition loading")
             print("   - Requires state hash verification")
-            print("   - Requires server event replay sink integration\n")
+            print("   - Requires server event re-evaluation sink integration\n")
             
         } catch {
-            logger.error("Failed to load recording", metadata: [
+            logger.error("Failed to load record", metadata: [
                 "error": .string(String(describing: error))
             ])
             exit(1)

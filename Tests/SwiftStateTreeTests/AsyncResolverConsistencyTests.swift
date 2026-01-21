@@ -1,8 +1,8 @@
 // Tests/SwiftStateTreeTests/AsyncResolverConsistencyTests.swift
 //
-// Deterministic replay consistency test:
+// Deterministic re-evaluation consistency test:
 // - Live mode: schedule random joins/leaves/actions over ticks, record, hash per tick
-// - Replay mode: load recording, step ticks deterministically, hash per tick, compare
+// - Re-evaluation mode: load record, step ticks deterministically, hash per tick, compare
 
 import Foundation
 import Testing
@@ -188,7 +188,7 @@ func testAsyncResolverConsistency() async throws {
         logger: logger
     )
 
-    let replayHashes = try await runReplay(
+    let replayHashes = try await runReevaluation(
         recordingFile: recordingFile.path,
         logger: logger
     )
@@ -234,9 +234,9 @@ private func runLive(
         autoStartLoops: false
     )
 
-    // Set recording metadata (required)
-    if let recorder = await keeper.getActionRecorder() {
-        let meta = RecordingMetadata(
+    // Set record metadata (required)
+    if let recorder = await keeper.getReevaluationRecorder() {
+        let meta = ReevaluationRecordMetadata(
             landID: "async-resolver-consistency-test:local",
             landType: "async-resolver-consistency-test",
             createdAt: Date(),
@@ -247,6 +247,9 @@ private func runLive(
             landDefinitionID: definition.id,
             initialStateHash: nil,
             landConfig: ["autoStartLoops": AnyCodable(false)],
+            rngSeed: seed,
+            ruleVariantId: nil,
+            ruleParams: nil,
             version: "1.0",
             extensions: nil
         )
@@ -309,9 +312,9 @@ private func runLive(
         hashes[tickId] = hashState(state)
     }
 
-    guard let recorder = await keeper.getActionRecorder() else {
+    guard let recorder = await keeper.getReevaluationRecorder() else {
         throw NSError(domain: "AsyncResolverConsistencyTest", code: 1, userInfo: [
-            NSLocalizedDescriptionKey: "ActionRecorder not available"
+            NSLocalizedDescriptionKey: "ReevaluationRecorder not available"
         ])
     }
     try await recorder.save(to: recordingFile)
@@ -320,19 +323,19 @@ private func runLive(
     return hashes
 }
 
-private func runReplay(
+private func runReevaluation(
     recordingFile: String,
     logger: Logger
 ) async throws -> [Int64: String] {
     let definition = createConsistencyTestLandDefinition()
-    let source = try JSONActionSource(filePath: recordingFile)
+    let source = try JSONReevaluationSource(filePath: recordingFile)
     let maxTickId = try await source.getMaxTickId()
 
     let keeper = LandKeeper<AsyncResolverConsistencyTestState>(
         definition: definition,
         initialState: AsyncResolverConsistencyTestState(),
-        mode: .replay,
-        actionSource: source,
+        mode: .reevaluation,
+        reevaluationSource: source,
         autoStartLoops: false
     )
 
@@ -343,7 +346,7 @@ private func runReplay(
         hashes[tickId] = hashState(state)
     }
 
-    logger.info("Replay completed", metadata: [
+    logger.info("Re-evaluation completed", metadata: [
         "maxTickId": .stringConvertible(maxTickId)
     ])
     return hashes

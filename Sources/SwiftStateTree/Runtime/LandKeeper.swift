@@ -30,7 +30,7 @@ import Logging
 ///     /// - Consider sync queue or debouncing for high-frequency sync scenarios
 public enum LandMode: Sendable {
     case live
-    case replay
+    case reevaluation
 }
 
 public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
@@ -188,11 +188,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Global sequence counter for deterministic ordering (Action + ClientEvent + ServerEvent)
     private var nextSequence: Int64 = 0
     
-    /// Action recorder for deterministic replay (only in .live mode)
-    private var actionRecorder: ActionRecorder?
+    /// Recorder for deterministic re-evaluation (only in .live mode).
+    private var reevaluationRecorder: ReevaluationRecorder?
     
-    /// Action source for reading recorded actions during replay (only in .replay mode)
-    private var actionSource: (any ActionSource)?
+    /// Source for reading recorded inputs during re-evaluation (only in .reevaluation mode).
+    private var reevaluationSource: (any ReevaluationSource)?
+
+    /// Optional sink for emitting recorded outputs during re-evaluation.
+    private var reevaluationSink: (any ReevaluationSink)?
     
     /// Actual land instance ID (e.g., "counter:550e8400-...")
     /// This is different from definition.id which is just the land type (e.g., "counter")
@@ -250,16 +253,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Initialized to -1 to indicate no ticks have been committed yet.
     private var lastCommittedTickId: Int64 = -1
 
-    private func recordServerEventForReplay(
+    private func recordServerEventForReevaluation(
         anyEvent: AnyServerEvent,
         target: EventTarget,
         tickId: Int64
     ) async {
-        guard let recorder = actionRecorder else { return }
+        guard let recorder = reevaluationRecorder else { return }
         let sequence = nextSequence
         nextSequence += 1
-        let targetRecord = EventTargetRecord.from(target)
-        let recordedServerEvent = RecordedServerEvent(
+        let targetRecord = ReevaluationEventTargetRecord.from(target)
+        let recordedServerEvent = ReevaluationRecordedServerEvent(
             kind: "serverEvent",
             sequence: sequence,
             tickId: tickId,
@@ -295,8 +298,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// - Parameters:
     ///   - definition: The Land definition containing all handlers and configuration.
     ///   - initialState: The initial state of the Land.
-    ///   - mode: The execution mode (live or replay). Defaults to .live.
-    ///   - actionSource: Optional action source for replay mode. Required when mode is .replay.
+    ///   - mode: The execution mode (live or re-evaluation). Defaults to .live.
+    ///   - reevaluationSource: Optional re-evaluation source. Required when mode is .reevaluation.
     ///   - transport: Optional transport interface for sending events and syncing state.
     ///                If not provided, operations will be no-ops (useful for testing).
     ///   - logger: Optional logger instance. If not provided, a default logger will be created.
@@ -304,7 +307,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         definition: LandDefinition<State>,
         initialState: State,
         mode: LandMode = .live,
-        actionSource: (any ActionSource)? = nil,
+        reevaluationSource: (any ReevaluationSource)? = nil,
+        reevaluationSink: (any ReevaluationSink)? = nil,
         services: LandServices = LandServices(),
         autoStartLoops: Bool = true,
         transport: LandKeeperTransport? = nil,
@@ -313,6 +317,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         self.definition = definition
         self.state = initialState
         self.mode = mode
+        self.reevaluationSink = reevaluationSink
         
         // Ensure DeterministicRngService is always registered for deterministic behavior
         // If not provided, create one based on definition.id (will be updated with actualLandID later)
@@ -332,14 +337,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     )
         self.logger = resolvedLogger
         
-        // Initialize ActionRecorder if in live mode
+        // Initialize recorder if in live mode
         if mode == .live {
-            self.actionRecorder = ActionRecorder(flushInterval: 60)
+            self.reevaluationRecorder = ReevaluationRecorder(flushInterval: 60)
         }
         
-        // Initialize ActionSource if in replay mode
-        if mode == .replay {
-            self.actionSource = actionSource
+        // Initialize source if in re-evaluation mode
+        if mode == .reevaluation {
+            self.reevaluationSource = reevaluationSource
         }
 
         // Execute OnInitialize handler and then start tick/sync loops.
@@ -417,14 +422,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 ])
             }
 
-            if let recorder = actionRecorder {
+            if let recorder = reevaluationRecorder {
                 let resolverOutputsDict = ctx.getAllResolverOutputs().mapValues { output in
-                    RecordedResolverOutput(
+                    ReevaluationRecordedResolverOutput(
                         typeIdentifier: String(describing: type(of: output)),
                         value: AnyCodable(output)
                     )
                 }
-                let recorded = RecordedLifecycleEvent(
+                let recorded = ReevaluationRecordedLifecycleEvent(
                     kind: LifecycleKind.initialize.rawValue,
                     sequence: sequence,
                     tickId: 0,
@@ -589,10 +594,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         players.count
     }
     
-    /// Get the ActionRecorder instance (for testing/debugging)
-    /// Returns nil if not in live mode or recorder is not available
-    public func getActionRecorder() -> ActionRecorder? {
-        return actionRecorder
+    /// Get the ReevaluationRecorder instance (for testing/debugging).
+    /// Returns nil if not in live mode or recorder is not available.
+    public func getReevaluationRecorder() -> ReevaluationRecorder? {
+        reevaluationRecorder
     }
 
     deinit {
@@ -962,7 +967,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Handles an action envelope by decoding and dispatching to the registered handler.
     ///
     /// This is used by transport adapters that receive type-erased `ActionEnvelope` payloads.
-    /// In `.live` mode, actions are queued and executed in ticks. In `.replay` mode, returns immediately.
+    /// In `.live` mode, actions are queued and executed in ticks. In `.reevaluation` mode, returns immediately.
     public func handleActionEnvelope(
         _ envelope: ActionEnvelope,
         playerID: PlayerID,
@@ -970,9 +975,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         sessionID: SessionID
     ) async throws -> AnyCodable {
         await ensureInitialized()
-        // In replay mode, actions come from ActionSource, not from transport
+        // In re-evaluation mode, actions come from ReevaluationSource, not from transport.
         guard mode == .live else {
-            // Return empty response in replay mode
+            // Return empty response in re-evaluation mode.
             return AnyCodable(())
         }
         
@@ -1120,7 +1125,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Handles a client event from a player.
     ///
-    /// In `.live` mode, events are queued and executed in ticks. In `.replay` mode, returns immediately.
+    /// In `.live` mode, events are queued and executed in ticks. In `.reevaluation` mode, returns immediately.
     ///
     /// - Parameters:
     ///   - event: The client event (type-erased).
@@ -1139,7 +1144,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         sessionID: SessionID
     ) async throws {
         await ensureInitialized()
-        // In replay mode, events come from ActionSource, not from transport
+        // In re-evaluation mode, events come from ReevaluationSource, not from transport.
         guard mode == .live else {
             return
         }
@@ -1234,6 +1239,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Use actual land instance ID if available, otherwise fall back to definition.id (land type)
         let landID = actualLandID ?? definition.id
         let eventRecordingTickId = tickId ?? lastCommittedTickId
+        let isLiveMode = (mode == .live)
         return LandContext(
             landID: landID,
             playerID: playerID,
@@ -1247,6 +1253,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             tickId: tickId,
             sendEventHandler: { [weak self] anyEvent, target in
                 guard let self = self else { return }
+                // In re-evaluation mode, server events are emitted from recorded data via ReevaluationSink.
+                // Avoid emitting (or recording) handler-produced events to prevent duplicates.
+                guard isLiveMode else { return }
                 #if DEBUG
                 if !self.definition.serverEventRegistry.registered.isEmpty {
                     // Check if the event type is registered by looking up the event name
@@ -1259,8 +1268,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 }
                 #endif
                 
-                // Record server event for replay (actor hop).
-                await self.recordServerEventForReplay(
+                // Record server event for deterministic re-evaluation (actor hop).
+                await self.recordServerEventForReevaluation(
                     anyEvent: anyEvent,
                     target: target,
                     tickId: eventRecordingTickId
@@ -1394,9 +1403,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         
         // Execute each item and track the last action response
         var lastActionResponse: AnyCodable? = nil
-        var recordedActions: [RecordedAction] = []
-        var recordedClientEvents: [RecordedClientEvent] = []
-        var recordedLifecycleEvents: [RecordedLifecycleEvent] = []
+        var recordedActions: [ReevaluationRecordedAction] = []
+        var recordedClientEvents: [ReevaluationRecordedClientEvent] = []
+        var recordedLifecycleEvents: [ReevaluationRecordedLifecycleEvent] = []
         var shouldSyncBroadcastOnly = false
         
         for item in sortedItems {
@@ -1432,14 +1441,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 }
                 lastActionResponse = response
                 
-                // Record action for replay
+                // Record action for deterministic re-evaluation
                 let resolverOutputsDict = actionItem.resolverOutputs.mapValues { output in
-                    RecordedResolverOutput(
+                    ReevaluationRecordedResolverOutput(
                         typeIdentifier: String(describing: type(of: output)),
                         value: AnyCodable(output)
                     )
                 }
-                let recordedAction = RecordedAction(
+                let recordedAction = ReevaluationRecordedAction(
                     kind: "action",
                     sequence: actionItem.sequence,
                     typeIdentifier: String(describing: actionItem.actionType),
@@ -1488,8 +1497,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     }
                 }
                 
-                // Record client event for replay
-                let recordedClientEvent = RecordedClientEvent(
+                // Record client event for deterministic re-evaluation
+                let recordedClientEvent = ReevaluationRecordedClientEvent(
                     kind: "clientEvent",
                     sequence: eventItem.sequence,
                     typeIdentifier: eventItem.event.type,
@@ -1559,14 +1568,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     shouldSyncBroadcastOnly = true
                 }
 
-                // Record lifecycle event for replay
+                // Record lifecycle event for deterministic re-evaluation
                 let resolverOutputsDict = lifecycleItem.resolverOutputs.mapValues { output in
-                    RecordedResolverOutput(
+                    ReevaluationRecordedResolverOutput(
                         typeIdentifier: String(describing: type(of: output)),
                         value: AnyCodable(output)
                     )
                 }
-                let recordedLifecycleEvent = RecordedLifecycleEvent(
+                let recordedLifecycleEvent = ReevaluationRecordedLifecycleEvent(
                     kind: lifecycleItem.kind.rawValue,
                     sequence: lifecycleItem.sequence,
                     tickId: executingTickId,
@@ -1608,8 +1617,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             return executedSequences.contains(sequence)
         }
         
-        // Record actions and client events to ActionRecorder
-        if let recorder = actionRecorder,
+        // Record inputs to ReevaluationRecorder
+        if let recorder = reevaluationRecorder,
            !recordedActions.isEmpty || !recordedClientEvents.isEmpty || !recordedLifecycleEvents.isEmpty {
             // Use the tick ID that was used for processing (nextTickId - 1, since we incremented it before processing)
             let recordingTickId = nextTickId - 1
@@ -1658,12 +1667,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let tickId = nextTickId
         nextTickId += 1
         
-        // In replay mode, load actions, client events, and lifecycle events from ActionSource
-        if mode == .replay, let source = actionSource {
+        // In re-evaluation mode, load actions, client events, lifecycle events, and server events from ReevaluationSource.
+        if mode == .reevaluation, let source = reevaluationSource {
             do {
                 let recordedActions = try await source.getActions(for: tickId)
                 let recordedClientEvents = try await source.getClientEvents(for: tickId)
                 let recordedLifecycleEvents = try await source.getLifecycleEvents(for: tickId)
+                let recordedServerEvents = try await source.getServerEvents(for: tickId)
                 
                 // Convert recorded actions to PendingItem
                 for recordedAction in recordedActions {
@@ -1699,8 +1709,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         continue
                     }
                     
-                    // Convert resolver outputs from RecordedResolverOutput back to ResolverOutput
-                    // In replay mode, we wrap them in AnyCodableResolverOutput for lazy decoding
+                    // Convert resolver outputs back to ResolverOutput.
+                    // In re-evaluation mode, we wrap them in AnyCodableResolverOutput for lazy decoding.
                     // The actual decoding happens when accessed via LandContext.subscript
                     var resolverOutputs: [String: any ResolverOutput] = [:]
                     for (key, recordedOutput) in recordedAction.resolverOutputs {
@@ -1771,8 +1781,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     )
                     pendingItems.append(pendingItem)
                 }
+
+                if let sink = reevaluationSink, !recordedServerEvents.isEmpty {
+                    let sorted = recordedServerEvents.sorted { $0.sequence < $1.sequence }
+                    await sink.onRecordedServerEvents(tickId: tickId, events: sorted)
+                }
             } catch {
-                logger.error("Error loading actions from ActionSource", metadata: [
+                logger.error("Error loading actions from ReevaluationSource", metadata: [
                     "tickId": .stringConvertible(tickId),
                     "error": .string(String(describing: error))
                 ])
@@ -1804,7 +1819,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         lastCommittedTickId = tickId
 
         // Ensure we have a frame for every tick in live mode, even if no inputs occurred.
-        if let recorder = actionRecorder {
+        if let recorder = reevaluationRecorder {
             await recorder.record(
                 tickId: tickId,
                 actions: [],

@@ -41,18 +41,18 @@
             "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:swift-state-tree}",
-            "name": "Debug ReplayRunner",
-            "program": "${workspaceFolder:swift-state-tree}/.build/debug/ReplayRunner",
-            "preLaunchTask": "swift: Build Debug ReplayRunner"
+            "name": "Debug SwiftStateTreeReevaluationRunner",
+            "program": "${workspaceFolder:swift-state-tree}/.build/debug/SwiftStateTreeReevaluationRunner",
+            "preLaunchTask": "swift: Build Debug SwiftStateTreeReevaluationRunner"
         },
         {
             "type": "lldb",
             "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:swift-state-tree}",
-            "name": "Release ReplayRunner",
-            "program": "${workspaceFolder:swift-state-tree}/.build/release/ReplayRunner",
-            "preLaunchTask": "swift: Build Release ReplayRunner"
+            "name": "Release SwiftStateTreeReevaluationRunner",
+            "program": "${workspaceFolder:swift-state-tree}/.build/release/SwiftStateTreeReevaluationRunner",
+            "preLaunchTask": "swift: Build Release SwiftStateTreeReevaluationRunner"
         }
     ]
 }

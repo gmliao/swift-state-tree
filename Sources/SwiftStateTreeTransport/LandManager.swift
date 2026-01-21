@@ -187,9 +187,9 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         // This ensures the RNG seed is updated to use the actual landID (not just definition.id)
         await keeper.setLandID(landID.stringValue)
 
-        // Configure recording metadata (deterministic replay)
-        if let recorder = await keeper.getActionRecorder() {
-            // Extract RNG seed from LandKeeper's services for deterministic replay
+        // Configure record metadata (deterministic re-evaluation)
+        if let recorder = await keeper.getReevaluationRecorder() {
+            // Extract RNG seed from LandKeeper's services for deterministic re-evaluation
             // RNG seed is critical when RNG is used in game logic (e.g., monster spawning, player positioning)
             // Note: DeterministicRngService is automatically registered by LandKeeper if not provided,
             // and setLandID() ensures it uses the actual landID seed
@@ -200,15 +200,17 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             // 2. These intervals are runtime configuration, not game logic
             // 3. Recording them could cause confusion if they change later
             // Only record configuration that affects game logic determinism
-            let recordingMetadata = RecordingMetadata(
+            let recordingMetadata = ReevaluationRecordMetadata(
                 landID: landID.stringValue,
                 landType: landID.landType,
                 createdAt: Date(),
                 metadata: metadata,
                 landDefinitionID: landDefinition.id,
                 initialStateHash: nil,
-                landConfig: nil, // No runtime config needed for replay
+                landConfig: nil, // No runtime config needed for re-evaluation
                 rngSeed: rngSeed,
+                ruleVariantId: nil,
+                ruleParams: nil,
                 version: "1.0",
                 extensions: nil
             )

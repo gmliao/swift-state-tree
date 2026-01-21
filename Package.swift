@@ -44,10 +44,10 @@ let package = Package(
             name: "SwiftStateTreeBenchmarks",
             targets: ["SwiftStateTreeBenchmarks"]
         ),
-        // 🔄 Replay Runner executable
+        // 🔄 Re-evaluation Runner executable (prefixed to avoid target-name conflicts)
         .executable(
-            name: "ReplayRunner",
-            targets: ["ReplayRunner"]
+            name: "SwiftStateTreeReevaluationRunner",
+            targets: ["SwiftStateTreeReevaluationRunner"]
         ),
     ],
     dependencies: [
@@ -226,9 +226,9 @@ let package = Package(
             ]
         ),
         
-        // 🔄 Replay Runner executable
+        // 🔄 Re-evaluation Runner executable (prefixed to avoid target-name conflicts)
         .executableTarget(
-            name: "ReplayRunner",
+            name: "SwiftStateTreeReevaluationRunner",
             dependencies: [
                 "SwiftStateTree",
                 .product(name: "Logging", package: "swift-log")
