@@ -1,6 +1,6 @@
 <template>
   <div class="resizable-log-panel" :style="{ height: `${props.height}px`, maxHeight: `${props.height}px`, minHeight: `${props.height}px` }">
-    <div class="resize-handle" @mousedown="startResize"></div>
+    <div v-if="!props.isFloating" class="resize-handle" @mousedown="startResize"></div>
     
     <!-- Mobile/Tablet: Use tabs -->
     <div class="log-panel-mobile">
@@ -44,6 +44,14 @@
                   hide-details
                   class="log-header-filter-input"
                 ></v-text-field>
+                <v-btn
+                  v-if="!props.isFloating"
+                  icon="mdi-arrow-expand"
+                  size="small"
+                  variant="text"
+                  @click="emit('undock')"
+                  title="Undock (移至獨立視窗)"
+                ></v-btn>
                 <v-btn
                   icon="mdi-delete-sweep"
                   size="small"
@@ -152,6 +160,14 @@
               class="log-header-filter-input"
             ></v-text-field>
             <v-btn
+              v-if="!props.isFloating"
+              icon="mdi-arrow-expand"
+              size="small"
+              variant="text"
+              @click="emit('undock')"
+              title="Undock (移至獨立視窗)"
+            ></v-btn>
+            <v-btn
               icon="mdi-delete-sweep"
               size="small"
               variant="text"
@@ -241,6 +257,7 @@ const props = defineProps<{
   logs: LogEntry[]
   stateUpdates: StateUpdateEntry[]
   height: number
+  isFloating?: boolean // Whether this panel is inside a floating window
 }>()
 
 const emit = defineEmits<{
@@ -248,6 +265,7 @@ const emit = defineEmits<{
   'update:height': [value: number]
   'clear-logs': []
   'clear-state-updates': []
+  'undock': []
 }>()
 
 const localLogTab = ref(props.logTab)
@@ -257,7 +275,7 @@ const stateUpdateViewMode = ref<'recording' | 'realtime'>('recording')
 
 type LogLevelFilter = 'all' | 'info' | 'warning' | 'error'
 
-const selectedLevel = ref<LogLevelFilter>('info')
+const selectedLevel = ref<LogLevelFilter>('warning')
 
 const levelOrder: LogLevelFilter[] = ['all', 'info', 'warning', 'error']
 

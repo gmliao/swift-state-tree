@@ -130,6 +130,8 @@ out/
 .cache/
 coverage/
 .eslintcache
+**/__pycache__/
+*.pyc
 
 # Env files
 .env

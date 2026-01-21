@@ -210,6 +210,7 @@
 ## Documentation
 - `docs/`: Official, complete documentation for users and developers.
 - `Notes/`: Development notes and design documents; may contain outdated or incorrect information.
+- `Notes/plans/`: Implementation plans and technical memos for specific features or refactors. AI agents should store their task-specific plans here.
 
 ### Bilingual Documentation
 - **README**: `README.md` (English, default) and `README.zh-TW.md` (Traditional Chinese)
