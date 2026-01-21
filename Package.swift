@@ -44,11 +44,6 @@ let package = Package(
             name: "SwiftStateTreeBenchmarks",
             targets: ["SwiftStateTreeBenchmarks"]
         ),
-        // 🔄 Re-evaluation Runner executable (prefixed to avoid target-name conflicts)
-        .executable(
-            name: "SwiftStateTreeReevaluationRunner",
-            targets: ["SwiftStateTreeReevaluationRunner"]
-        ),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-syntax.git", from: "509.0.0"),
@@ -224,16 +219,6 @@ let package = Package(
             exclude: [
                 "README.md"
             ]
-        ),
-        
-        // 🔄 Re-evaluation Runner executable (prefixed to avoid target-name conflicts)
-        .executableTarget(
-            name: "SwiftStateTreeReevaluationRunner",
-            dependencies: [
-                "SwiftStateTree",
-                .product(name: "Logging", package: "swift-log")
-            ],
-            path: "Tools/ReplayRunner/Sources"
         ),
     ]
 )
