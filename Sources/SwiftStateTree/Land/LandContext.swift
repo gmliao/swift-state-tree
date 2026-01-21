@@ -139,12 +139,14 @@ public struct LandContext: Sendable {
     /// ```
     public let playerSlot: Int32?
 
-    /// Send event handler closure (delegates to Runtime layer without exposing Transport)
-    /// Accepts AnyServerEvent (type-erased root type).
-    private let sendEventHandler: @Sendable (AnyServerEvent, EventTarget) async -> Void
+    /// Deterministic event emission handler (used from synchronous handlers).
+    private let emitEventHandler: @Sendable (AnyServerEvent, EventTarget) -> Void
 
-    /// Sync handler closure (delegates to Runtime layer without exposing Transport)
-    private let syncHandler: @Sendable () async -> Void
+    /// Deterministic sync request handler (used from synchronous handlers).
+    private let requestSyncNowHandler: @Sendable () -> Void
+
+    /// Deterministic broadcast-only sync request handler (used from synchronous handlers).
+    private let requestSyncBroadcastOnlyHandler: @Sendable () -> Void
 
     /// Storage for resolver outputs (dynamically populated based on @Resolvers declaration)
     private var resolverOutputs: [String: any ResolverOutput] = [:]
@@ -189,8 +191,9 @@ public struct LandContext: Sendable {
         metadata: [String: String] = [:],
         tickId: Int64? = nil,
         playerSlot: Int32? = nil,
-        sendEventHandler: @escaping @Sendable (AnyServerEvent, EventTarget) async -> Void,
-        syncHandler: @escaping @Sendable () async -> Void,
+        emitEventHandler: @escaping @Sendable (AnyServerEvent, EventTarget) -> Void,
+        requestSyncNowHandler: @escaping @Sendable () -> Void,
+        requestSyncBroadcastOnlyHandler: @escaping @Sendable () -> Void,
         resolverOutputs: [String: any ResolverOutput] = [:]
     ) {
         self.landID = landID
@@ -204,89 +207,31 @@ public struct LandContext: Sendable {
         self.logger = logger
         self.tickId = tickId
         self.playerSlot = playerSlot
-        self.sendEventHandler = sendEventHandler
-        self.syncHandler = syncHandler
+        self.emitEventHandler = emitEventHandler
+        self.requestSyncNowHandler = requestSyncNowHandler
+        self.requestSyncBroadcastOnlyHandler = requestSyncBroadcastOnlyHandler
         self.resolverOutputs = resolverOutputs
     }
 
     // MARK: - Public Methods
 
-    /// Send event to specified target
+    /// Emit a server event deterministically from synchronous handlers.
     ///
-    /// Events are sent through closure delegation, without exposing Transport details.
-    /// The actual implementation is handled by the Runtime layer (LandKeeper).
-    ///
-    /// The event is automatically converted to `AnyServerEvent` using the type name as the event identifier.
-    ///
-    /// - Parameters:
-    ///   - event: ServerEventPayload to send
-    ///   - target: EventTarget specifying recipients
-    public func sendEvent(_ event: any ServerEventPayload, to target: EventTarget) async {
-        // Convert to AnyServerEvent using the type name
+    /// This does NOT perform network I/O directly. The runtime will flush emitted events
+    /// in a deterministic order at the end of the current tick.
+    public func emitEvent(_ event: any ServerEventPayload, to target: EventTarget) {
         let anyEvent = AnyServerEvent(event)
-        await sendEventHandler(anyEvent, target)
+        emitEventHandler(anyEvent, target)
     }
 
-    /// Manually force immediate state synchronization (regardless of Tick configuration)
-    public func syncNow() async {
-        await syncHandler()
+    /// Request an immediate sync at the end of the current tick (deterministic).
+    public func requestSyncNow() {
+        requestSyncNowHandler()
     }
 
-    /// Spawn a background task without blocking the current handler.
-    ///
-    /// This method creates a new `Task` that executes asynchronously in the background,
-    /// allowing the current synchronous handler to continue immediately without waiting.
-    ///
-    /// **Important**: This method does NOT block the current execution. The handler
-    /// continues immediately after calling `spawn`, while the background task runs
-    /// concurrently. This is safe to use in synchronous Action/Event handlers.
-    ///
-    /// This is especially useful in:
-    /// - **Synchronous Action/Event handlers**: When you need to perform async operations
-    ///   (like sending events) without blocking the handler execution
-    /// - **OnTick handlers**: To maintain a stable tick rate while performing async I/O
-    ///
-    /// Example in Action handler:
-    /// ```swift
-    /// HandleAction(UpdateCart.self) { state, action, ctx in
-    ///     // Synchronous state mutation
-    ///     state.cart.items.append(item)
-    ///     
-    ///     // Spawn async operation without blocking
-    ///     ctx.spawn {
-    ///         await ctx.sendEvent(CartUpdatedEvent(), to: .all)
-    ///     }
-    ///     // Handler continues immediately, event is sent in background
-    /// }
-    /// ```
-    ///
-    /// Example in Event handler:
-    /// ```swift
-    /// HandleEvent(ChatEvent.self) { state, event, ctx in
-    ///     state.messages.append(event.message)
-    ///     
-    ///     ctx.spawn {
-    ///         await ctx.sendEvent(ChatMessageEvent(message: event.message), to: .all)
-    ///     }
-    /// }
-    /// ```
-    ///
-    /// Example in OnTick handler:
-    /// ```swift
-    /// OnTick(every: .milliseconds(50)) { state, ctx in
-    ///     state.stepSimulation()  // sync logic
-    ///     
-    ///     ctx.spawn {
-    ///         await ctx.flushMetricsIfNeeded()  // async I/O in background
-    ///     }
-    /// }
-    /// ```
-    public func spawn(_ operation: @escaping @Sendable () async -> Void) {
-        // Create a new Task that runs in the background
-        // This does NOT block - the handler continues immediately
-        Task {
-            await operation()
-        }
+    /// Request a broadcast-only sync at the end of the current tick (deterministic).
+    public func requestSyncBroadcastOnly() {
+        requestSyncBroadcastOnlyHandler()
     }
 
     // MARK: - Resolver Outputs

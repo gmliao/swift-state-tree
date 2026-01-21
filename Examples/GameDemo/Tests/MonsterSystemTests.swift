@@ -25,8 +25,9 @@ func createMonsterTestContext(tickId: Int64? = nil, seed: UInt64 = 12345) -> Lan
         services: services,
         logger: Logger(label: "test"),
         tickId: tickId,
-        sendEventHandler: { _, _ in },
-        syncHandler: { }
+        emitEventHandler: { _, _ in },
+        requestSyncNowHandler: { },
+        requestSyncBroadcastOnlyHandler: { }
     )
 }
 

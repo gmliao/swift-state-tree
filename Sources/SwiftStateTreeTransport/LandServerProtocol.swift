@@ -59,4 +59,10 @@ public protocol LandServerProtocol<State> {
     ///
     /// - Parameter landID: The unique identifier for the land to remove
     func removeLand(landID: LandID) async
+
+    /// Get the current re-evaluation record for a land (if recording is enabled).
+    ///
+    /// - Parameter landID: The unique identifier for the land.
+    /// - Returns: JSON data for the record, or nil if land/record not found.
+    func getReevaluationRecord(landID: LandID) async throws -> Data?
 }

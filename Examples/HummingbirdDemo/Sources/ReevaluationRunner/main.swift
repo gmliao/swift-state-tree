@@ -7,7 +7,7 @@ struct ReevaluationRunnerMain {
     actor CountingSink: ReevaluationSink {
         private(set) var totalEvents: Int = 0
         
-        func onRecordedServerEvents(tickId: Int64, events: [ReevaluationRecordedServerEvent]) async {
+        func onEmittedServerEvents(tickId: Int64, events: [ReevaluationRecordedServerEvent]) async {
             totalEvents += events.count
         }
     }
@@ -103,12 +103,27 @@ struct ReevaluationRunnerMain {
         )
         
         let eventCount = await sink.totalEvents
-        print("Re-evaluation finished. maxTickId=\(first.maxTickId) recordedServerEvents=\(eventCount)")
+        print("Re-evaluation finished. maxTickId=\(first.maxTickId) emittedServerEvents=\(eventCount)")
         if let last = first.tickHashes[first.maxTickId] {
             print("Final tick hash: \(last)")
         }
         
         guard verify else { return }
+
+        if first.recordedStateHashes.isEmpty {
+            print("❌ Verification failed: record does not contain any per-tick stateHash (enable live recording on the server)")
+            exit(4)
+        }
+        let recordedMismatches = diffAgainstRecorded(computed: first.tickHashes, recorded: first.recordedStateHashes)
+        if recordedMismatches.isEmpty {
+            print("✅ Verified: computed hashes match recorded ground truth")
+        } else {
+            print("❌ Verification failed: mismatched ticks vs recorded=\(recordedMismatches.count)")
+            for (tickId, computed, recorded) in recordedMismatches.prefix(10) {
+                print("  tick \(tickId): computed=\(computed) recorded=\(recorded)")
+            }
+            exit(5)
+        }
         
         let second = try await ReevaluationEngine.run(
             definition: definition,
@@ -126,6 +141,22 @@ struct ReevaluationRunnerMain {
             }
             exit(3)
         }
+    }
+
+    private static func diffAgainstRecorded(
+        computed: [Int64: String],
+        recorded: [Int64: String]
+    ) -> [(Int64, String, String)] {
+        let ticks = recorded.keys.sorted()
+        var out: [(Int64, String, String)] = []
+        for tickId in ticks {
+            let c = computed[tickId] ?? "missing"
+            let r = recorded[tickId] ?? "missing"
+            if c != r {
+                out.append((tickId, c, r))
+            }
+        }
+        return out
     }
     
     private static func diffHashes(

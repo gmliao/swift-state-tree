@@ -58,17 +58,15 @@ public enum HeroDefense {
                             continue
                         }
                         
-                        // Broadcast shoot event to all players
-                        ctx.spawn {
-                            await ctx.sendEvent(
-                                PlayerShootEvent(
-                                    playerID: playerID,
-                                    from: result.shooterPosition,
-                                    to: result.targetPosition
-                                ),
-                                to: .all
-                            )
-                        }
+                        // Broadcast shoot event to all players (deterministic output)
+                        ctx.emitEvent(
+                            PlayerShootEvent(
+                                playerID: playerID,
+                                from: result.shooterPosition,
+                                to: result.targetPosition
+                            ),
+                            to: .all
+                        )
                     }
                     
                     // Spawn monsters periodically (spawn speed increases over time)
@@ -133,17 +131,15 @@ public enum HeroDefense {
                             state.players[ownerID]?.resources += result.rewardGained
                         }
                         
-                        // Broadcast turret fire event to all players
-                        ctx.spawn {
-                            await ctx.sendEvent(
-                                TurretFireEvent(
-                                    turretID: turretID,
-                                    from: result.turretPosition,
-                                    to: result.targetPosition
-                                ),
-                                to: .all
-                            )
-                        }
+                        // Broadcast turret fire event to all players (deterministic output)
+                        ctx.emitEvent(
+                            TurretFireEvent(
+                                turretID: turretID,
+                                from: result.turretPosition,
+                                to: result.targetPosition
+                            ),
+                            to: .all
+                        )
                     }
                 }
 
@@ -288,17 +284,15 @@ public enum HeroDefense {
                             player.lastFireTick = tickId
                         }
                         
-                        // Broadcast shoot event
-                        ctx.spawn {
-                            await ctx.sendEvent(
-                                PlayerShootEvent(
-                                    playerID: playerID,
-                                    from: playerPos,
-                                    to: monsterPos
-                                ),
-                                to: .all
-                            )
-                        }
+                        // Broadcast shoot event (deterministic output)
+                        ctx.emitEvent(
+                            PlayerShootEvent(
+                                playerID: playerID,
+                                from: playerPos,
+                                to: monsterPos
+                            ),
+                            to: .all
+                        )
                     }
                     
                     state.players[playerID] = player

@@ -73,7 +73,8 @@ struct DemoServer {
             jwtConfig: jwtConfig,
             allowGuestMode: true,
             allowAutoCreateOnJoin: true,
-            transportEncoding: transportEncoding
+            transportEncoding: transportEncoding,
+            enableLiveStateHashRecording: true
         )
         
         logger.info("📡 Transport encoding: \(transportEncodingRaw) (message: \(transportEncoding.message.rawValue), stateUpdate: \(transportEncoding.stateUpdate.rawValue))")

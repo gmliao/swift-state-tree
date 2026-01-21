@@ -61,6 +61,11 @@ public struct LandServerConfiguration: Sendable {
     
     /// Factory for providing LandServices per land instance.
     public var servicesFactory: @Sendable (LandID, [String: String]) -> LandServices
+
+    /// Record live per-tick state hashes into the re-evaluation record (ground truth).
+    ///
+    /// When enabled, each tick frame will include an optional `stateHash` value.
+    public var enableLiveStateHashRecording: Bool = false
     
     public init(
         logger: Logger? = nil,
@@ -70,6 +75,7 @@ public struct LandServerConfiguration: Sendable {
         allowAutoCreateOnJoin: Bool = false,
         transportEncoding: TransportEncodingConfig = .json,
         // enableParallelEncoding: Bool? = nil, // Temporarily disabled as parallel encoding evaluation showed little benefit
+        enableLiveStateHashRecording: Bool = false,
         pathHashes: [String: UInt32]? = nil,
         eventHashes: [String: Int]? = nil,
         clientEventHashes: [String: Int]? = nil,
@@ -84,6 +90,7 @@ public struct LandServerConfiguration: Sendable {
         self.allowAutoCreateOnJoin = allowAutoCreateOnJoin
         self.transportEncoding = transportEncoding
         // enableParallelEncoding = false
+        self.enableLiveStateHashRecording = enableLiveStateHashRecording
         self.pathHashes = pathHashes
         self.eventHashes = eventHashes
         self.clientEventHashes = clientEventHashes

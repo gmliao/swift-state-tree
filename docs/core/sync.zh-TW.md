@@ -44,4 +44,4 @@ TransportAdapter 可在執行期切換 dirty tracking：
 
 ## 手動同步
 
-在 handler 內可透過 `ctx.syncNow()` 主動觸發同步。
+在 handler 內可透過 `ctx.requestSyncNow()`（或 `ctx.requestSyncBroadcastOnly()`）請求 deterministic 的同步。

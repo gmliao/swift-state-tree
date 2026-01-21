@@ -8,7 +8,7 @@ Land is the smallest runnable unit of server logic, responsible for defining joi
 ## Design Notes
 
 - Land DSL only describes behavior, doesn't expose Transport details
-- Handlers are defined synchronously, necessary async can be added via `ctx.spawn`
+- Handlers are synchronous; emit outputs via `ctx.emitEvent(...)` / `ctx.requestSync*()` and keep async I/O out-of-band (e.g., via Resolver).
 - Event type registration (Client/ServerEvents) used for schema and validation
 
 ## Basic Structure
@@ -80,7 +80,7 @@ Handlers receive `LandContext`, containing:
 - `landID`, `playerID`, `clientID`, `sessionID`, `deviceID`
 - `metadata` (from join/JWT/guest)
 - `services` (injected external services)
-- `sendEvent(...)`, `syncNow()`, `spawn { ... }`
+- `emitEvent(...)`, `requestSyncNow()`, `requestSyncBroadcastOnly()`
 
 LandContext is request-scoped, avoid saving references.
 

@@ -25,6 +25,7 @@ final class MockLandServer<State: StateNodeProtocol>: @unchecked Sendable, LandS
     private let _listLandsCallCount = ManagedAtomic<Int>(0)
     private let _getLandStatsCallCount = ManagedAtomic<Int>(0)
     private let _removeLandCallCount = ManagedAtomic<Int>(0)
+    private let _getReevaluationRecordCallCount = ManagedAtomic<Int>(0)
     
     /// Error to throw when shutdown fails
     var shutdownError: Error?
@@ -47,6 +48,10 @@ final class MockLandServer<State: StateNodeProtocol>: @unchecked Sendable, LandS
     
     var removeLandCallCount: Int {
         _removeLandCallCount.load(ordering: .relaxed)
+    }
+
+    var getReevaluationRecordCallCount: Int {
+        _getReevaluationRecordCallCount.load(ordering: .relaxed)
     }
     
     init(
@@ -89,6 +94,11 @@ final class MockLandServer<State: StateNodeProtocol>: @unchecked Sendable, LandS
         _removeLandCallCount.wrappingIncrement(ordering: .relaxed)
         mockLands.removeAll { $0 == landID }
         mockLandStats.removeValue(forKey: landID)
+    }
+
+    func getReevaluationRecord(landID: LandID) async throws -> Data? {
+        _getReevaluationRecordCallCount.wrappingIncrement(ordering: .relaxed)
+        return nil
     }
 }
 

@@ -122,22 +122,23 @@ public struct ReevaluationRecordedLifecycleEvent: Codable, Sendable {
 /// A single tick frame of recorded inputs and outputs for deterministic re-evaluation.
 public struct ReevaluationTickFrame: Codable, Sendable {
     public let tickId: Int64
+    /// Optional per-tick state hash recorded in live mode (ground truth).
+    public let stateHash: String?
     public let actions: [ReevaluationRecordedAction]
     public let clientEvents: [ReevaluationRecordedClientEvent]
-    public let serverEvents: [ReevaluationRecordedServerEvent]
     public let lifecycleEvents: [ReevaluationRecordedLifecycleEvent]
     
     public init(
         tickId: Int64,
+        stateHash: String? = nil,
         actions: [ReevaluationRecordedAction],
         clientEvents: [ReevaluationRecordedClientEvent],
-        serverEvents: [ReevaluationRecordedServerEvent],
         lifecycleEvents: [ReevaluationRecordedLifecycleEvent]
     ) {
         self.tickId = tickId
+        self.stateHash = stateHash
         self.actions = actions
         self.clientEvents = clientEvents
-        self.serverEvents = serverEvents
         self.lifecycleEvents = lifecycleEvents
     }
 }
@@ -301,9 +302,9 @@ public actor ReevaluationRecorder {
             currentTickId = tickId
             currentFrame = ReevaluationTickFrame(
                 tickId: tickId,
+                stateHash: nil,
                 actions: [],
                 clientEvents: [],
-                serverEvents: [],
                 lifecycleEvents: []
             )
         }
@@ -313,9 +314,9 @@ public actor ReevaluationRecorder {
             // Should not happen, but handle gracefully
             currentFrame = ReevaluationTickFrame(
                 tickId: tickId,
+                stateHash: nil,
                 actions: actions,
                 clientEvents: clientEvents,
-                serverEvents: [],
                 lifecycleEvents: lifecycleEvents
             )
             return
@@ -323,9 +324,9 @@ public actor ReevaluationRecorder {
         
         frame = ReevaluationTickFrame(
             tickId: frame.tickId,
+            stateHash: frame.stateHash,
             actions: frame.actions + actions,
             clientEvents: frame.clientEvents + clientEvents,
-            serverEvents: frame.serverEvents,
             lifecycleEvents: frame.lifecycleEvents + lifecycleEvents
         )
         currentFrame = frame
@@ -340,9 +341,9 @@ public actor ReevaluationRecorder {
             currentTickId = event.tickId
             currentFrame = ReevaluationTickFrame(
                 tickId: event.tickId,
+                stateHash: nil,
                 actions: [],
                 clientEvents: [],
-                serverEvents: [],
                 lifecycleEvents: []
             )
         }
@@ -350,9 +351,9 @@ public actor ReevaluationRecorder {
         guard var frame = currentFrame else {
             currentFrame = ReevaluationTickFrame(
                 tickId: event.tickId,
+                stateHash: nil,
                 actions: [],
                 clientEvents: [],
-                serverEvents: [],
                 lifecycleEvents: [event]
             )
             return
@@ -360,52 +361,49 @@ public actor ReevaluationRecorder {
 
         frame = ReevaluationTickFrame(
             tickId: frame.tickId,
+            stateHash: frame.stateHash,
             actions: frame.actions,
             clientEvents: frame.clientEvents,
-            serverEvents: frame.serverEvents,
             lifecycleEvents: frame.lifecycleEvents + [event]
         )
         currentFrame = frame
     }
 
-    /// Record a server event
-    public func recordServerEvent(_ event: ReevaluationRecordedServerEvent) {
-        // Find or create frame for this tick
-        if event.tickId != currentTickId {
-            // Finalize current frame if exists
+    /// Set the per-tick state hash (live ground truth).
+    public func setStateHash(tickId: Int64, stateHash: String) {
+        if tickId != currentTickId {
             if let frame = currentFrame {
                 frames.append(frame)
             }
-            currentTickId = event.tickId
+            currentTickId = tickId
             currentFrame = ReevaluationTickFrame(
-                tickId: event.tickId,
+                tickId: tickId,
+                stateHash: stateHash,
                 actions: [],
                 clientEvents: [],
-                serverEvents: [],
-                lifecycleEvents: []
-            )
-        }
-        
-        guard var frame = currentFrame else {
-            // Should not happen, but handle gracefully
-            currentFrame = ReevaluationTickFrame(
-                tickId: event.tickId,
-                actions: [],
-                clientEvents: [],
-                serverEvents: [event],
                 lifecycleEvents: []
             )
             return
         }
-        
-        frame = ReevaluationTickFrame(
+
+        guard let frame = currentFrame else {
+            currentFrame = ReevaluationTickFrame(
+                tickId: tickId,
+                stateHash: stateHash,
+                actions: [],
+                clientEvents: [],
+                lifecycleEvents: []
+            )
+            return
+        }
+
+        currentFrame = ReevaluationTickFrame(
             tickId: frame.tickId,
+            stateHash: stateHash,
             actions: frame.actions,
             clientEvents: frame.clientEvents,
-            serverEvents: frame.serverEvents + [event],
             lifecycleEvents: frame.lifecycleEvents
         )
-        currentFrame = frame
     }
     
     /// Flush frames to disk if needed (based on flushInterval)
@@ -454,6 +452,29 @@ public actor ReevaluationRecorder {
         // Write to file
         let url = URL(fileURLWithPath: filePath)
         try data.write(to: url)
+    }
+
+    /// Encode the current record into JSON data without mutating recorder state.
+    public func encode() throws -> Data {
+        guard let metadata = metadata else {
+            throw NSError(domain: "ReevaluationRecorder", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Re-evaluation record metadata must be set before encoding"
+            ])
+        }
+
+        let allFrames = frames + (currentFrame.map { [$0] } ?? [])
+        let sortedFrames = allFrames.sorted { $0.tickId < $1.tickId }
+
+        struct ReevaluationRecordFile: Codable {
+            let recordMetadata: ReevaluationRecordMetadata
+            let tickFrames: [ReevaluationTickFrame]
+        }
+        let recordingFile = ReevaluationRecordFile(recordMetadata: metadata, tickFrames: sortedFrames)
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(recordingFile)
     }
     
     /// Get all recorded frames (for testing/debugging)

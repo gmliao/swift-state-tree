@@ -192,8 +192,9 @@ func testContextResolver() async throws {
         logger: Logger(label: "test"),
         deviceID: nil,
         metadata: [:],
-        sendEventHandler: { _, _ in },
-        syncHandler: {}
+        emitEventHandler: { _, _ in },
+        requestSyncNowHandler: { },
+        requestSyncBroadcastOnlyHandler: { }
     )
 
     let resolverContext = ResolverContext(
@@ -222,8 +223,9 @@ func testParallelResolverExecutionAsyncLet() async throws {
         logger: Logger(label: "test"),
         deviceID: nil,
         metadata: [:],
-        sendEventHandler: { _, _ in },
-        syncHandler: {}
+        emitEventHandler: { _, _ in },
+        requestSyncNowHandler: { },
+        requestSyncBroadcastOnlyHandler: { }
     )
 
     let resolverContext = ResolverContext(
@@ -340,8 +342,9 @@ func testResolverErrorHandlingDirect() async throws {
         logger: Logger(label: "test"),
         deviceID: nil,
         metadata: [:],
-        sendEventHandler: { _, _ in },
-        syncHandler: {}
+        emitEventHandler: { _, _ in },
+        requestSyncNowHandler: { },
+        requestSyncBroadcastOnlyHandler: { }
     )
 
     let resolverContext = ResolverContext(
@@ -381,8 +384,9 @@ func testResolverErrorHandlingThroughExecutor() async throws {
         logger: Logger(label: "test"),
         deviceID: nil,
         metadata: [:],
-        sendEventHandler: { _, _ in },
-        syncHandler: {}
+        emitEventHandler: { _, _ in },
+        requestSyncNowHandler: { },
+        requestSyncBroadcastOnlyHandler: { }
     )
 
     let resolverContext = ResolverContext(

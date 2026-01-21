@@ -95,6 +95,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private var landMetadata: [LandID: [String: String]] = [:]
     
     private let enableParallelEncoding: Bool?
+    private let enableLiveStateHashRecording: Bool
     
     /// Initialize a LandManager.
     ///
@@ -115,6 +116,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         transport: WebSocketTransport? = nil,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         transportEncoding: TransportEncodingConfig = .json,
+        enableLiveStateHashRecording: Bool = false,
         pathHashes: [String: UInt32]? = nil,
         eventHashes: [String: Int]? = nil,
         clientEventHashes: [String: Int]? = nil,
@@ -127,6 +129,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         self.sharedTransport = transport
         self.createGuestSession = createGuestSession
         self.transportEncoding = transportEncoding
+        self.enableLiveStateHashRecording = enableLiveStateHashRecording
         self.pathHashes = pathHashes
         self.eventHashes = eventHashes
         self.clientEventHashes = clientEventHashes
@@ -180,6 +183,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             definition: landDefinition,
             initialState: initial,
             services: metadataServices,
+            enableLiveStateHashRecording: enableLiveStateHashRecording,
             logger: logger
         )
         
@@ -211,7 +215,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                 rngSeed: rngSeed,
                 ruleVariantId: nil,
                 ruleParams: nil,
-                version: "1.0",
+                version: "2.0",
                 extensions: nil
             )
             await recorder.setMetadata(recordingMetadata)

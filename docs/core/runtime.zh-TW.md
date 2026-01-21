@@ -138,9 +138,8 @@ func handleAction<A: ActionPayload>(_ action: A, ...) async throws -> AnyCodable
 
 - **識別資訊**：`playerID`、`clientID`、`sessionID`、`landID`
 - **服務存取**：`services` - 外部服務抽象（資料庫、日誌等）
-- **事件發送**：`sendEvent(_:to:)` - 發送事件給指定目標
-- **手動同步**：`syncNow()` - 手動觸發狀態同步
-- **背景任務**：`spawn(_:)` - 執行非同步背景任務
+- **Deterministic 事件**：`emitEvent(_:to:)` - 將事件排入佇列，於 tick 結尾以 deterministic 順序 flush
+- **Deterministic 同步**：`requestSyncNow()` / `requestSyncBroadcastOnly()` - 請求同步，於 tick 結尾以 deterministic 順序 flush
 - **Resolver 輸出**：透過 `@dynamicMemberLookup` 存取 resolver 結果
 
 ## Handler 執行流程
@@ -395,7 +394,7 @@ private func checkAutoDestroy() {
 
 ## 最佳實踐
 
-1. **避免長時間運行的 handler**：handler 應該快速執行，長時間操作使用 `ctx.spawn`
+1. **避免長時間運行的 handler**：handler 應該快速執行。非同步 I/O 請在 handler 之外處理（例如 Resolver + 快取輸出，或外部 pipeline）。
 2. **合理使用 Resolver**：將資料載入邏輯放在 Resolver 中，handler 保持同步
 3. **注意狀態變更範圍**：只在 handler 中變更狀態，不要在 Resolver 中變更
 4. **利用 Actor 序列化**：不需要額外的鎖機制，actor 自動保證線程安全

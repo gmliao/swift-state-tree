@@ -380,7 +380,8 @@ public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
     /// Use this for game state updates, physics simulation, AI logic, etc.
     /// Unlike `sync`, this handler can modify state and is the only source of state mutations
     /// for replay functionality. Network synchronization is handled separately by the `sync` mechanism.
-    /// For async operations (e.g., flushing metrics), use `ctx.spawn { await ... }`.
+    /// For deterministic outputs, use `ctx.emitEvent(...)` and `ctx.requestSyncNow()`.
+    /// Avoid performing async I/O inside handlers; use out-of-band pipelines instead.
     public var tickHandler: (@Sendable (inout State, LandContext) -> Void)?
     
     /// The interval at which network synchronization should be triggered.
@@ -488,8 +489,8 @@ public func Lifetime<State: StateNodeProtocol>(
 /// Use this for game state updates, physics simulation, AI logic, etc.
 /// The tick handler is the only source of state mutations for replay functionality.
 /// Network synchronization is handled separately by the `Sync` mechanism.
-/// If you need to perform async operations (e.g., flushing metrics), use `ctx.spawn`
-/// to execute them in the background without blocking the tick loop.
+/// If you need to emit server events or force a sync, use `ctx.emitEvent(...)` and
+/// `ctx.requestSyncNow()` / `ctx.requestSyncBroadcastOnly()`.
 ///
 /// Example:
 /// ```swift

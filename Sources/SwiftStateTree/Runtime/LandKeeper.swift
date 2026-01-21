@@ -181,12 +181,53 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private var transport: LandKeeperTransport?
     private let logger: Logger
     private let autoStartLoops: Bool
+    private let enableLiveStateHashRecording: Bool
     
     private var pendingItems: [PendingItem] = []
     private var mode: LandMode
     
-    /// Global sequence counter for deterministic ordering (Action + ClientEvent + ServerEvent)
-    private var nextSequence: Int64 = 0
+    private struct EmittedEvent: Sendable {
+        let sequence: Int64
+        let tickId: Int64
+        let event: AnyServerEvent
+        let target: EventTarget
+    }
+
+    private struct SyncRequests: Sendable {
+        var syncNow: Bool = false
+        var syncBroadcastOnly: Bool = false
+    }
+
+    private final class OutputCollector: @unchecked Sendable {
+        var nextSequence: Int64 = 0
+        var emittedEvents: [EmittedEvent] = []
+        var syncRequestsByTick: [Int64: SyncRequests] = [:]
+
+        func takeNextSequence() -> Int64 {
+            let s = nextSequence
+            nextSequence += 1
+            return s
+        }
+
+        func enqueueEmittedEvent(_ anyEvent: AnyServerEvent, to target: EventTarget, tickId: Int64) {
+            let seq = takeNextSequence()
+            emittedEvents.append(EmittedEvent(sequence: seq, tickId: tickId, event: anyEvent, target: target))
+        }
+
+        func requestSyncNow(tickId: Int64) {
+            var req = syncRequestsByTick[tickId] ?? SyncRequests()
+            req.syncNow = true
+            syncRequestsByTick[tickId] = req
+        }
+
+        func requestSyncBroadcastOnly(tickId: Int64) {
+            var req = syncRequestsByTick[tickId] ?? SyncRequests()
+            req.syncBroadcastOnly = true
+            syncRequestsByTick[tickId] = req
+        }
+    }
+
+    private let outputCollector = OutputCollector()
     
     /// Recorder for deterministic re-evaluation (only in .live mode).
     private var reevaluationRecorder: ReevaluationRecorder?
@@ -231,11 +272,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return services.get(DeterministicRngService.self)?.seed
     }
     
-    /// Internal helper to set nextSequence (for use in closures)
-    private func setNextSequence(_ value: Int64) {
-        self.nextSequence = value
-    }
-
     private var tickTask: Task<Void, Never>?
     private var syncTask: Task<Void, Never>?
     private var destroyTask: Task<Void, Never>?
@@ -253,24 +289,45 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Initialized to -1 to indicate no ticks have been committed yet.
     private var lastCommittedTickId: Int64 = -1
 
-    private func recordServerEventForReevaluation(
-        anyEvent: AnyServerEvent,
-        target: EventTarget,
-        tickId: Int64
-    ) async {
-        guard let recorder = reevaluationRecorder else { return }
-        let sequence = nextSequence
-        nextSequence += 1
-        let targetRecord = ReevaluationEventTargetRecord.from(target)
-        let recordedServerEvent = ReevaluationRecordedServerEvent(
-            kind: "serverEvent",
-            sequence: sequence,
-            tickId: tickId,
-            typeIdentifier: anyEvent.type,
-            payload: anyEvent.payload,
-            target: targetRecord
-        )
-        await recorder.recordServerEvent(recordedServerEvent)
+    private func flushOutputs(forTick tickId: Int64) async {
+        let toFlush = outputCollector.emittedEvents
+            .filter { $0.tickId == tickId }
+            .sorted { $0.sequence < $1.sequence }
+        if !toFlush.isEmpty {
+            // Remove flushed events first to keep deterministic behavior even if downstream awaits.
+            outputCollector.emittedEvents.removeAll { $0.tickId == tickId }
+        }
+
+        switch mode {
+        case .live:
+            for item in toFlush {
+                await transport?.sendEventToTransport(item.event, to: item.target)
+            }
+        case .reevaluation:
+            if let sink = reevaluationSink, !toFlush.isEmpty {
+                let records = toFlush.map { item in
+                    ReevaluationRecordedServerEvent(
+                        kind: "serverEvent",
+                        sequence: item.sequence,
+                        tickId: item.tickId,
+                        typeIdentifier: item.event.type,
+                        payload: item.event.payload,
+                        target: ReevaluationEventTargetRecord.from(item.target)
+                    )
+                }
+                await sink.onEmittedServerEvents(tickId: tickId, events: records)
+            }
+        }
+
+        if let req = outputCollector.syncRequestsByTick.removeValue(forKey: tickId) {
+            if mode == .live {
+                if req.syncNow {
+                    await transport?.syncNowFromTransport()
+                } else if req.syncBroadcastOnly {
+                    await transport?.syncBroadcastOnlyFromTransport()
+                }
+            }
+        }
     }
 
     /// Flag to prevent duplicate sync operations (for deduplication only).
@@ -310,6 +367,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         reevaluationSource: (any ReevaluationSource)? = nil,
         reevaluationSink: (any ReevaluationSink)? = nil,
         services: LandServices = LandServices(),
+        enableLiveStateHashRecording: Bool = false,
         autoStartLoops: Bool = true,
         transport: LandKeeperTransport? = nil,
         logger: Logger? = nil
@@ -331,6 +389,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         
         self.transport = transport
         self.autoStartLoops = autoStartLoops
+        self.enableLiveStateHashRecording = (mode == .live) ? enableLiveStateHashRecording : false
         let resolvedLogger = logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.runtime",
             scope: "LandKeeper"
@@ -381,8 +440,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Record it as a lifecycle event under tick 0 so replay can apply it deterministically
         // before the first tick handler runs.
         if mode == .live, let handler = definition.lifetimeHandlers.onInitialize {
-            let sequence = nextSequence
-            nextSequence += 1
+            let sequence = outputCollector.takeNextSequence()
 
             var ctx = makeContext(
                 playerID: systemPlayerID,
@@ -647,8 +705,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         guard isFirst, definition.lifetimeHandlers.onJoin != nil else { return }
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
-        let sequence = nextSequence
-        nextSequence += 1
+        let sequence = outputCollector.takeNextSequence()
 
         // Snapshot tick at request time; update after resolver completion for async determinism.
         var resolvedAtTick = lastCommittedTickId
@@ -805,8 +862,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         guard isFirst, definition.lifetimeHandlers.onJoin != nil else { return decision }
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
-        let sequence = nextSequence
-        nextSequence += 1
+        let sequence = outputCollector.takeNextSequence()
 
         // Snapshot tick at request time; update after resolver completion for async determinism.
         var resolvedAtTick = lastCommittedTickId
@@ -905,8 +961,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
-        let sequence = nextSequence
-        nextSequence += 1
+        let sequence = outputCollector.takeNextSequence()
 
         // Snapshot tick at request time; update after resolver completion for async determinism.
         var resolvedAtTick = lastCommittedTickId
@@ -1025,8 +1080,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let decodedAction = try decoder.decode(actionPayloadType, from: payloadData)
         
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent)
-        let sequence = nextSequence
-        nextSequence += 1
+        let sequence = outputCollector.takeNextSequence()
         
         // Bind action to lastCommittedTickId; if resolvers are async, update after they complete.
         var resolvedAtTick = lastCommittedTickId
@@ -1180,8 +1234,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
         
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent)
-        let sequence = nextSequence
-        nextSequence += 1
+        let sequence = outputCollector.takeNextSequence()
         
         // Bind event to lastCommittedTickId for replay logging
         let resolvedAtTick = lastCommittedTickId
@@ -1239,7 +1292,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Use actual land instance ID if available, otherwise fall back to definition.id (land type)
         let landID = actualLandID ?? definition.id
         let eventRecordingTickId = tickId ?? lastCommittedTickId
-        let isLiveMode = (mode == .live)
+        let collector = outputCollector
         return LandContext(
             landID: landID,
             playerID: playerID,
@@ -1251,35 +1304,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             isGuest: isGuest ?? playerSession?.isGuest ?? false,
             metadata: metadata.isEmpty ? (playerSession?.metadata ?? [:]) : metadata,
             tickId: tickId,
-            sendEventHandler: { [weak self] anyEvent, target in
-                guard let self = self else { return }
-                // In re-evaluation mode, server events are emitted from recorded data via ReevaluationSink.
-                // Avoid emitting (or recording) handler-produced events to prevent duplicates.
-                guard isLiveMode else { return }
-                #if DEBUG
-                if !self.definition.serverEventRegistry.registered.isEmpty {
-                    // Check if the event type is registered by looking up the event name
-                    if self.definition.serverEventRegistry.findDescriptor(for: anyEvent.type) == nil {
-                        self.logger.warning(
-                            "ServerEvent type '\(anyEvent.type)' was sent but not registered via ServerEvents { Register(...) } in the Land DSL. It will not be included in generated schemas.",
-                            metadata: ["eventType": .string(anyEvent.type)]
-                        )
-                    }
-                }
-                #endif
-                
-                // Record server event for deterministic re-evaluation (actor hop).
-                await self.recordServerEventForReevaluation(
-                    anyEvent: anyEvent,
-                    target: target,
-                    tickId: eventRecordingTickId
-                )
-                
-                await self.transport?.sendEventToTransport(anyEvent, to: target)
+            emitEventHandler: { anyEvent, target in
+                collector.enqueueEmittedEvent(anyEvent, to: target, tickId: eventRecordingTickId)
             },
-            syncHandler: { [weak self] in
-                guard let self = self else { return }
-                await self.transport?.syncNowFromTransport()
+            requestSyncNowHandler: {
+                collector.requestSyncNow(tickId: eventRecordingTickId)
+            },
+            requestSyncBroadcastOnlyHandler: {
+                collector.requestSyncBroadcastOnly(tickId: eventRecordingTickId)
             },
             resolverOutputs: resolverOutputs
         )
@@ -1636,6 +1668,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if shouldSyncBroadcastOnly {
             await transport?.syncBroadcastOnlyFromTransport()
         }
+
+        // Flush deterministic outputs produced while processing pending items.
+        await flushOutputs(forTick: executingTickId)
         
         return lastActionResponse
     }
@@ -1667,13 +1702,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let tickId = nextTickId
         nextTickId += 1
         
-        // In re-evaluation mode, load actions, client events, lifecycle events, and server events from ReevaluationSource.
+        // In re-evaluation mode, load actions, client events, and lifecycle events from ReevaluationSource.
         if mode == .reevaluation, let source = reevaluationSource {
             do {
                 let recordedActions = try await source.getActions(for: tickId)
                 let recordedClientEvents = try await source.getClientEvents(for: tickId)
                 let recordedLifecycleEvents = try await source.getLifecycleEvents(for: tickId)
-                let recordedServerEvents = try await source.getServerEvents(for: tickId)
                 
                 // Convert recorded actions to PendingItem
                 for recordedAction in recordedActions {
@@ -1781,11 +1815,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     )
                     pendingItems.append(pendingItem)
                 }
-
-                if let sink = reevaluationSink, !recordedServerEvents.isEmpty {
-                    let sorted = recordedServerEvents.sorted { $0.sequence < $1.sequence }
-                    await sink.onRecordedServerEvents(tickId: tickId, events: sorted)
-                }
             } catch {
                 logger.error("Error loading actions from ReevaluationSource", metadata: [
                     "tickId": .stringConvertible(tickId),
@@ -1817,6 +1846,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Update lastCommittedTickId after tick execution completes
         // This represents the world state's current committed tick
         lastCommittedTickId = tickId
+
+        // Optionally record live per-tick state hash as ground truth for deterministic re-evaluation.
+        if enableLiveStateHashRecording, let recorder = reevaluationRecorder {
+            let hash = ReevaluationEngine.calculateStateHash(state)
+            await recorder.setStateHash(tickId: tickId, stateHash: hash)
+        }
+
+        // Flush deterministic outputs (emitted events + sync requests) for this tick.
+        await flushOutputs(forTick: tickId)
 
         // Ensure we have a frame for every tick in live mode, even if no inputs occurred.
         if let recorder = reevaluationRecorder {

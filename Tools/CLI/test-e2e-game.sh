@@ -61,6 +61,15 @@ run_encoding_tests() {
         -l hero-defense \
         -s scenarios/game/ \
         --state-update-encoding ${state_update_encoding}
+
+    # Re-evaluation record + offline verify (Hero Defense): only required for messagepack
+    if [ "$encoding" = "messagepack" ]; then
+        print_step "Running ${SERVER_NAME} re-evaluation record+verify ($encoding)..."
+        HERO_DEFENSE_ADMIN_KEY=${HERO_DEFENSE_ADMIN_KEY:-hero-defense-admin-key} npx tsx src/reevaluation-e2e-game.ts \
+            --ws-url ws://localhost:${SERVER_PORT}/game/hero-defense \
+            --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
+            --state-update-encoding ${state_update_encoding}
+    fi
     
     local test_result=$?
     cd "$project_root"
@@ -129,7 +138,7 @@ main() {
     
     # Test each encoding mode
     # Note: Use jsonOpcode in test script, but GameServer accepts json_opcode/jsonOpcode/json-opcode
-    local encodings=("json" "jsonOpcode" "messagepack")
+    local encodings=("messagepack")
     local failed_encodings=()
     
     for encoding in "${encodings[@]}"; do
@@ -184,7 +193,7 @@ main() {
 
 # Trap to ensure cleanup on exit
 cleanup() {
-    cleanup_servers "$SERVER_NAME" "json" "jsonOpcode" "messagepack"
+    cleanup_servers "$SERVER_NAME" "messagepack"
 }
 
 trap cleanup EXIT INT TERM

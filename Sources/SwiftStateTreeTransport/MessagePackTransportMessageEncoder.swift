@@ -246,6 +246,12 @@ public struct MessagePackTransportMessageEncoder: TransportMessageEncoder {
         } else {
             actualPayload = payload
         }
+
+        // Support empty payloads in compressed mode.
+        // Some message variants may encode "no payload" as `Void` / `()`.
+        if actualPayload is Void {
+            return AnyCodable([AnyCodable]())
+        }
         
         // All payload types (ActionPayload, ResponsePayload, ClientEventPayload, ServerEventPayload)
         // must use @Payload macro which generates encodeAsArray() with correct field order.

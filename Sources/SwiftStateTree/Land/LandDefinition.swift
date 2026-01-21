@@ -77,7 +77,8 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
     /// Use this for game state updates, physics simulation, AI logic, etc.
     /// The tick handler is the only source of state mutations for replay functionality.
     /// Network synchronization is handled separately by the `syncInterval` mechanism.
-    /// For async operations (e.g., metrics, logging), use `ctx.spawn { await ... }`.
+    /// For deterministic outputs, use `ctx.emitEvent(...)` and `ctx.requestSyncNow()`.
+    /// Avoid performing async I/O inside handlers; use out-of-band pipelines instead.
     public var tickHandler: (@Sendable (inout State, LandContext) -> Void)?
     
     /// The interval at which network synchronization should be triggered.

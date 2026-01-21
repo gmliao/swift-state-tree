@@ -20,6 +20,14 @@ SERVER_PORT=${SERVER_PORT:-8080}
 SERVER_HOST=${SERVER_HOST:-localhost}
 TIMEOUT=${TIMEOUT:-30}
 
+# E2E artifacts directory (logs, pid files).
+# Default: <repoRoot>/tmp/e2e (repoRoot is the current working directory of the calling script).
+# Override with E2E_TMP_DIR (absolute path recommended).
+get_e2e_tmp_dir() {
+    local base_dir="${E2E_TMP_DIR:-$(pwd)/tmp/e2e}"
+    echo "$base_dir"
+}
+
 # Function to print colored output
 print_step() {
     echo -e "${BLUE}▶ $1${NC}"
@@ -71,13 +79,15 @@ start_server_impl() {
     local server_dir=$3
     local server_cmd=$4
     local server_name_lower=$(to_lowercase "$server_name")
-    local log_file="/tmp/${server_name_lower}-${encoding}.log"
-    local pid_file="/tmp/${server_name_lower}-${encoding}.pid"
     
     print_step "Starting ${server_name} ($encoding)..."
     
     # Get project root
     local project_root="$(pwd)"
+    local tmp_dir="${E2E_TMP_DIR:-${project_root}/tmp/e2e}"
+    mkdir -p "$tmp_dir"
+    local log_file="${tmp_dir}/${server_name_lower}-${encoding}.log"
+    local pid_file="${tmp_dir}/${server_name_lower}-${encoding}.pid"
     cd "$server_dir"
     
     # Kill any existing server on this port and SwiftPM processes
@@ -115,7 +125,8 @@ stop_server() {
     local server_name=$1
     local encoding=$2
     local server_name_lower=$(to_lowercase "$server_name")
-    local pid_file="/tmp/${server_name_lower}-${encoding}.pid"
+    local tmp_dir="$(get_e2e_tmp_dir)"
+    local pid_file="${tmp_dir}/${server_name_lower}-${encoding}.pid"
     
     if [ -f "$pid_file" ]; then
         local pid=$(cat "$pid_file")
@@ -145,7 +156,8 @@ show_logs() {
     local server_name=$1
     local encoding=$2
     local server_name_lower=$(to_lowercase "$server_name")
-    local log_file="/tmp/${server_name_lower}-${encoding}.log"
+    local tmp_dir="$(get_e2e_tmp_dir)"
+    local log_file="${tmp_dir}/${server_name_lower}-${encoding}.log"
     
     if [ -f "$log_file" ]; then
         echo ""

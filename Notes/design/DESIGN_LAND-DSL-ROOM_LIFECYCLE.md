@@ -179,10 +179,8 @@ Land("BattleRoom") {
     OnTick(every: .milliseconds(50)) { state, ctx in
         state.stepSimulation()
 
-        // 若有需要 async 的事情，用背景任務處理
-        ctx.spawn {
-            await ctx.flushMetricsIfNeeded()
-        }
+        // 若有需要 side effects，請用 deterministic output（例如 emitEvent / requestSync*），
+        // 並把真正的 async I/O 放在 handler 之外的 pipeline（例如 Resolver + 快取、或外部服務）。
     }
 }
 ```
@@ -258,10 +256,9 @@ Land("BattleRoom") {
 * v1.0：初版生命週期規格（未明確定義 async）。
 * v1.1：
 
-  * 將 `CanJoin` 定義為 `async throws`。
-  * 將 `OnJoin / OnLeave / On(ClientEvents)` 升級為 `async`。
-  * 建議 `OnTick` 維持同步邏輯，本身不直接 `await` 遠端；
-    如需 async，使用 `ctx.spawn` 類 API。
+  * handlers 以同步方式執行以維持 determinism。
+  * async 資料載入請透過 Resolver（在 handler 前完成），或在 handler 之外的 pipeline 進行。
+  * Tick 建議維持同步邏輯；輸出使用 `ctx.emitEvent(...)` / `ctx.requestSync*()`。
 
 詳細 async / Actor / 執行順序說明，請參考
 **`LAND-DSL-AsyncModel.md`**。
@@ -448,20 +445,10 @@ OnTick(every: .milliseconds(50)) { state, ctx in
   * 為了確保節奏與延遲穩定，預設為 **同步**（不 async）。
   * 若在 Tick 裡做大量 await，會使行為難以預測。
 
-* **如需 async 行為**，建議：
+* **如需 async 行為**，建議把 async I/O 移到 handler 之外（例如 Resolver / 外部 pipeline）；
+  Tick/Action/Event handlers 本身只做同步 state mutation 與 deterministic output。
 
-  ```swift
-  OnTick(every: .milliseconds(50)) { state, ctx in
-      state.stepSimulation()
-
-      ctx.spawn {
-          await ctx.flushMetricsIfNeeded()
-      }
-  }
-  ```
-
-  * `ctx.spawn { ... }` 由框架在背景 Task 中執行。
-  * 不阻塞 Tick 主迴圈。
+  例如：把需要的資料先由 Resolver 載入，或由外部服務訂閱 server events / metrics。
 
 ---
 
