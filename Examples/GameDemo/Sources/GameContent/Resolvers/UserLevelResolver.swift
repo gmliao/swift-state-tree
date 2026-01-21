@@ -30,12 +30,14 @@ public struct UserLevelResolver: ContextResolver {
     public static func resolve(
         ctx: ResolverContext
     ) async throws -> UserLevel {
-        // Hash the PlayerID string for deterministic level assignment
-        let hashValue = ctx.playerID.rawValue.hashValue
+        // IMPORTANT:
+        // Never use Swift's `hashValue` here — it is not stable across runs/platforms.
+        // Use DeterministicHash to guarantee deterministic re-evaluation.
+        let stable = DeterministicHash.stableInt32(ctx.playerID.rawValue)
         
-        // Map hash to level range (1-3) for turret level impact
-        // Use absolute value and modulo to ensure positive level
-        let level = abs(hashValue) % 3 + 1
+        // Map to level range (1-3).
+        // Use bitPattern to avoid issues with Int32.min abs overflow.
+        let level = Int(UInt32(bitPattern: stable) % 3) + 1
         
         return UserLevel(level: level)
     }

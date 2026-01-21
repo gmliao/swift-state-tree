@@ -151,7 +151,7 @@
 ### Replay 輸入來源
 
 **Q:** Replay 輸入的錄製檔案來源要怎麼指定？  
-**A:** 由 ReplayRunner 的 CLI 參數指定輸入檔路徑。
+**A:** 由 ReevaluationRunner 的 CLI 參數指定輸入檔路徑。
 
 ### Replay 驗證層級
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Tools/ReplayRunner/test-async-resolver-consistency.sh
 #
-# Script to test async resolver recording and replay consistency
+# Script to test async resolver recording and re-evaluation consistency
 # Now uses Swift Testing framework instead of standalone executable
 
 set -e
@@ -9,7 +9,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-echo "🔍 Testing async resolver recording and replay consistency..."
+echo "🔍 Testing async resolver recording and re-evaluation consistency..."
 echo ""
 
 cd "$PROJECT_ROOT"

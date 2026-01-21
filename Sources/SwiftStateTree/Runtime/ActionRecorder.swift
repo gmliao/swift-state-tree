@@ -1,9 +1,9 @@
 import Foundation
 
-// MARK: - Recording Data Structures
+// MARK: - Re-evaluation Record Data Structures
 
-/// Recorded resolver output with type information for replay validation
-public struct RecordedResolverOutput: Codable, Sendable {
+/// Recorded resolver output with type information for re-evaluation validation.
+public struct ReevaluationRecordedResolverOutput: Codable, Sendable {
     /// Type identifier of the resolver output (e.g., "SlowDeterministicOutput")
     public let typeIdentifier: String
     /// The actual resolver output value as AnyCodable
@@ -15,8 +15,8 @@ public struct RecordedResolverOutput: Codable, Sendable {
     }
 }
 
-/// Metadata describing the land instance and initialization parameters for a recording.
-public struct RecordingMetadata: Codable, Sendable {
+/// Metadata describing the land instance and initialization parameters for a re-evaluation record.
+public struct ReevaluationRecordMetadata: Codable, Sendable {
     public let landID: String
     public let landType: String
     public let createdAt: Date
@@ -34,10 +34,16 @@ public struct RecordingMetadata: Codable, Sendable {
     public let landConfig: [String: AnyCodable]?
 
     /// Optional RNG seed used for deterministic random number generation.
-    /// This is critical for replay determinism when RNG is used in game logic.
+    /// This is critical for deterministic re-evaluation when RNG is used in game logic.
     public let rngSeed: UInt64?
 
-    /// Optional recording format version.
+    /// Optional rule variant identifier (reserved for future Rule Re-evaluation).
+    public let ruleVariantId: String?
+
+    /// Optional rule parameters overlay (reserved for future Rule Re-evaluation).
+    public let ruleParams: [String: AnyCodable]?
+
+    /// Optional record format version.
     public let version: String?
 
     /// Optional extensions for future land-specific data.
@@ -52,6 +58,8 @@ public struct RecordingMetadata: Codable, Sendable {
         initialStateHash: String? = nil,
         landConfig: [String: AnyCodable]? = nil,
         rngSeed: UInt64? = nil,
+        ruleVariantId: String? = nil,
+        ruleParams: [String: AnyCodable]? = nil,
         version: String? = nil,
         extensions: [String: AnyCodable]? = nil
     ) {
@@ -63,13 +71,15 @@ public struct RecordingMetadata: Codable, Sendable {
         self.initialStateHash = initialStateHash
         self.landConfig = landConfig
         self.rngSeed = rngSeed
+        self.ruleVariantId = ruleVariantId
+        self.ruleParams = ruleParams
         self.version = version
         self.extensions = extensions
     }
 }
 
-/// Recorded lifecycle event for replay (initialize/join/leave).
-public struct RecordedLifecycleEvent: Codable, Sendable {
+/// Recorded lifecycle event for re-evaluation (initialize/join/leave).
+public struct ReevaluationRecordedLifecycleEvent: Codable, Sendable {
     public let kind: String // "initialize" | "join" | "leave" | "landCreated"
     public let sequence: Int64
     public let tickId: Int64
@@ -79,7 +89,7 @@ public struct RecordedLifecycleEvent: Codable, Sendable {
     public let deviceID: String?
     public let isGuest: Bool?
     public let metadata: [String: String]
-    public let resolverOutputs: [String: RecordedResolverOutput]
+    public let resolverOutputs: [String: ReevaluationRecordedResolverOutput]
     public let resolvedAtTick: Int64
 
     public init(
@@ -92,7 +102,7 @@ public struct RecordedLifecycleEvent: Codable, Sendable {
         deviceID: String?,
         isGuest: Bool?,
         metadata: [String: String],
-        resolverOutputs: [String: RecordedResolverOutput],
+        resolverOutputs: [String: ReevaluationRecordedResolverOutput],
         resolvedAtTick: Int64
     ) {
         self.kind = kind
@@ -109,20 +119,20 @@ public struct RecordedLifecycleEvent: Codable, Sendable {
     }
 }
 
-/// A single frame of recorded actions and server events for a specific tick
-public struct RecordingFrame: Codable, Sendable {
+/// A single tick frame of recorded inputs and outputs for deterministic re-evaluation.
+public struct ReevaluationTickFrame: Codable, Sendable {
     public let tickId: Int64
-    public let actions: [RecordedAction]
-    public let clientEvents: [RecordedClientEvent]
-    public let serverEvents: [RecordedServerEvent]
-    public let lifecycleEvents: [RecordedLifecycleEvent]
+    public let actions: [ReevaluationRecordedAction]
+    public let clientEvents: [ReevaluationRecordedClientEvent]
+    public let serverEvents: [ReevaluationRecordedServerEvent]
+    public let lifecycleEvents: [ReevaluationRecordedLifecycleEvent]
     
     public init(
         tickId: Int64,
-        actions: [RecordedAction],
-        clientEvents: [RecordedClientEvent],
-        serverEvents: [RecordedServerEvent],
-        lifecycleEvents: [RecordedLifecycleEvent]
+        actions: [ReevaluationRecordedAction],
+        clientEvents: [ReevaluationRecordedClientEvent],
+        serverEvents: [ReevaluationRecordedServerEvent],
+        lifecycleEvents: [ReevaluationRecordedLifecycleEvent]
     ) {
         self.tickId = tickId
         self.actions = actions
@@ -132,8 +142,8 @@ public struct RecordingFrame: Codable, Sendable {
     }
 }
 
-/// Recorded action for replay
-public struct RecordedAction: Codable, Sendable {
+/// Recorded action for re-evaluation.
+public struct ReevaluationRecordedAction: Codable, Sendable {
     public let kind: String // "action"
     public let sequence: Int64
     public let typeIdentifier: String
@@ -141,7 +151,7 @@ public struct RecordedAction: Codable, Sendable {
     public let playerID: String
     public let clientID: String
     public let sessionID: String
-    public let resolverOutputs: [String: RecordedResolverOutput]
+    public let resolverOutputs: [String: ReevaluationRecordedResolverOutput]
     public let resolvedAtTick: Int64
     
     public init(
@@ -152,7 +162,7 @@ public struct RecordedAction: Codable, Sendable {
         playerID: String,
         clientID: String,
         sessionID: String,
-        resolverOutputs: [String: RecordedResolverOutput],
+        resolverOutputs: [String: ReevaluationRecordedResolverOutput],
         resolvedAtTick: Int64
     ) {
         self.kind = kind
@@ -167,8 +177,8 @@ public struct RecordedAction: Codable, Sendable {
     }
 }
 
-/// Recorded client event for replay
-public struct RecordedClientEvent: Codable, Sendable {
+/// Recorded client event for re-evaluation.
+public struct ReevaluationRecordedClientEvent: Codable, Sendable {
     public let kind: String // "clientEvent"
     public let sequence: Int64
     public let typeIdentifier: String
@@ -199,14 +209,14 @@ public struct RecordedClientEvent: Codable, Sendable {
     }
 }
 
-/// Recorded server event for replay
-public struct RecordedServerEvent: Codable, Sendable {
+/// Recorded server event for re-evaluation.
+public struct ReevaluationRecordedServerEvent: Codable, Sendable {
     public let kind: String // "serverEvent"
     public let sequence: Int64
     public let tickId: Int64
     public let typeIdentifier: String
     public let payload: AnyCodable
-    public let target: EventTargetRecord
+    public let target: ReevaluationEventTargetRecord
     
     public init(
         kind: String,
@@ -214,7 +224,7 @@ public struct RecordedServerEvent: Codable, Sendable {
         tickId: Int64,
         typeIdentifier: String,
         payload: AnyCodable,
-        target: EventTargetRecord
+        target: ReevaluationEventTargetRecord
     ) {
         self.kind = kind
         self.sequence = sequence
@@ -225,8 +235,8 @@ public struct RecordedServerEvent: Codable, Sendable {
     }
 }
 
-/// Serializable representation of EventTarget
-public struct EventTargetRecord: Codable, Sendable {
+/// Serializable representation of EventTarget.
+public struct ReevaluationEventTargetRecord: Codable, Sendable {
     public let kind: String // "all" | "player" | "client" | "session" | "players"
     public let ids: [String]
     
@@ -235,30 +245,30 @@ public struct EventTargetRecord: Codable, Sendable {
         self.ids = ids
     }
     
-    /// Convert EventTarget to EventTargetRecord
-    public static func from(_ target: EventTarget) -> EventTargetRecord {
+    /// Convert EventTarget to ReevaluationEventTargetRecord.
+    public static func from(_ target: EventTarget) -> ReevaluationEventTargetRecord {
         switch target {
         case .all:
-            return EventTargetRecord(kind: "all", ids: [])
+            return ReevaluationEventTargetRecord(kind: "all", ids: [])
         case .player(let playerID):
-            return EventTargetRecord(kind: "player", ids: [playerID.rawValue])
+            return ReevaluationEventTargetRecord(kind: "player", ids: [playerID.rawValue])
         case .client(let clientID):
-            return EventTargetRecord(kind: "client", ids: [clientID.rawValue])
+            return ReevaluationEventTargetRecord(kind: "client", ids: [clientID.rawValue])
         case .session(let sessionID):
-            return EventTargetRecord(kind: "session", ids: [sessionID.rawValue])
+            return ReevaluationEventTargetRecord(kind: "session", ids: [sessionID.rawValue])
         case .players(let playerIDs):
-            return EventTargetRecord(kind: "players", ids: playerIDs.map { $0.rawValue })
+            return ReevaluationEventTargetRecord(kind: "players", ids: playerIDs.map { $0.rawValue })
         }
     }
 }
 
-// MARK: - ActionRecorder Actor
+// MARK: - ReevaluationRecorder Actor
 
-/// Actor responsible for recording actions, client events, and server events for deterministic replay
-public actor ActionRecorder {
-    private var metadata: RecordingMetadata?
-    private var frames: [RecordingFrame] = []
-    private var currentFrame: RecordingFrame?
+/// Actor responsible for recording inputs and outputs for deterministic re-evaluation.
+public actor ReevaluationRecorder {
+    private var metadata: ReevaluationRecordMetadata?
+    private var frames: [ReevaluationTickFrame] = []
+    private var currentFrame: ReevaluationTickFrame?
     private var currentTickId: Int64 = -1
     private let flushInterval: Int64
     private var lastFlushTick: Int64 = -1
@@ -267,21 +277,21 @@ public actor ActionRecorder {
         self.flushInterval = flushInterval
     }
 
-    /// Set recording metadata (required before saving).
-    public func setMetadata(_ metadata: RecordingMetadata) {
+    /// Set record metadata (required before saving).
+    public func setMetadata(_ metadata: ReevaluationRecordMetadata) {
         self.metadata = metadata
     }
 
-    public func getMetadata() -> RecordingMetadata? {
+    public func getMetadata() -> ReevaluationRecordMetadata? {
         metadata
     }
     
-    /// Record actions and client events for a specific tick
+    /// Record actions and client events for a specific tick.
     public func record(
         tickId: Int64,
-        actions: [RecordedAction],
-        clientEvents: [RecordedClientEvent],
-        lifecycleEvents: [RecordedLifecycleEvent]
+        actions: [ReevaluationRecordedAction],
+        clientEvents: [ReevaluationRecordedClientEvent],
+        lifecycleEvents: [ReevaluationRecordedLifecycleEvent]
     ) {
         // If this is a new tick, finalize the previous frame
         if tickId != currentTickId {
@@ -289,7 +299,7 @@ public actor ActionRecorder {
                 frames.append(frame)
             }
             currentTickId = tickId
-            currentFrame = RecordingFrame(
+            currentFrame = ReevaluationTickFrame(
                 tickId: tickId,
                 actions: [],
                 clientEvents: [],
@@ -301,7 +311,7 @@ public actor ActionRecorder {
         // Append actions and client events to current frame
         guard var frame = currentFrame else {
             // Should not happen, but handle gracefully
-            currentFrame = RecordingFrame(
+            currentFrame = ReevaluationTickFrame(
                 tickId: tickId,
                 actions: actions,
                 clientEvents: clientEvents,
@@ -311,7 +321,7 @@ public actor ActionRecorder {
             return
         }
         
-        frame = RecordingFrame(
+        frame = ReevaluationTickFrame(
             tickId: frame.tickId,
             actions: frame.actions + actions,
             clientEvents: frame.clientEvents + clientEvents,
@@ -321,14 +331,14 @@ public actor ActionRecorder {
         currentFrame = frame
     }
     
-    public func recordLifecycleEvent(_ event: RecordedLifecycleEvent) {
+    public func recordLifecycleEvent(_ event: ReevaluationRecordedLifecycleEvent) {
         // Find or create frame for this tick
         if event.tickId != currentTickId {
             if let frame = currentFrame {
                 frames.append(frame)
             }
             currentTickId = event.tickId
-            currentFrame = RecordingFrame(
+            currentFrame = ReevaluationTickFrame(
                 tickId: event.tickId,
                 actions: [],
                 clientEvents: [],
@@ -338,7 +348,7 @@ public actor ActionRecorder {
         }
 
         guard var frame = currentFrame else {
-            currentFrame = RecordingFrame(
+            currentFrame = ReevaluationTickFrame(
                 tickId: event.tickId,
                 actions: [],
                 clientEvents: [],
@@ -348,7 +358,7 @@ public actor ActionRecorder {
             return
         }
 
-        frame = RecordingFrame(
+        frame = ReevaluationTickFrame(
             tickId: frame.tickId,
             actions: frame.actions,
             clientEvents: frame.clientEvents,
@@ -359,7 +369,7 @@ public actor ActionRecorder {
     }
 
     /// Record a server event
-    public func recordServerEvent(_ event: RecordedServerEvent) {
+    public func recordServerEvent(_ event: ReevaluationRecordedServerEvent) {
         // Find or create frame for this tick
         if event.tickId != currentTickId {
             // Finalize current frame if exists
@@ -367,7 +377,7 @@ public actor ActionRecorder {
                 frames.append(frame)
             }
             currentTickId = event.tickId
-            currentFrame = RecordingFrame(
+            currentFrame = ReevaluationTickFrame(
                 tickId: event.tickId,
                 actions: [],
                 clientEvents: [],
@@ -378,7 +388,7 @@ public actor ActionRecorder {
         
         guard var frame = currentFrame else {
             // Should not happen, but handle gracefully
-            currentFrame = RecordingFrame(
+            currentFrame = ReevaluationTickFrame(
                 tickId: event.tickId,
                 actions: [],
                 clientEvents: [],
@@ -388,7 +398,7 @@ public actor ActionRecorder {
             return
         }
         
-        frame = RecordingFrame(
+        frame = ReevaluationTickFrame(
             tickId: frame.tickId,
             actions: frame.actions,
             clientEvents: frame.clientEvents,
@@ -411,11 +421,11 @@ public actor ActionRecorder {
         lastFlushTick = currentTick
     }
     
-    /// Save all recorded frames to a JSON file
+    /// Save all recorded tick frames to a JSON file.
     public func save(to filePath: String) async throws {
         guard let metadata = metadata else {
-            throw NSError(domain: "ActionRecorder", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "Recording metadata must be set before saving"
+            throw NSError(domain: "ReevaluationRecorder", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Re-evaluation record metadata must be set before saving"
             ])
         }
 
@@ -428,12 +438,12 @@ public actor ActionRecorder {
         // Sort frames by tickId
         let sortedFrames = frames.sorted { $0.tickId < $1.tickId }
 
-        struct RecordingFile: Codable {
-            let metadata: RecordingMetadata
-            let frames: [RecordingFrame]
+        struct ReevaluationRecordFile: Codable {
+            let recordMetadata: ReevaluationRecordMetadata
+            let tickFrames: [ReevaluationTickFrame]
         }
 
-        let recordingFile = RecordingFile(metadata: metadata, frames: sortedFrames)
+        let recordingFile = ReevaluationRecordFile(recordMetadata: metadata, tickFrames: sortedFrames)
 
         // Encode to JSON
         let encoder = JSONEncoder()
@@ -447,7 +457,7 @@ public actor ActionRecorder {
     }
     
     /// Get all recorded frames (for testing/debugging)
-    public func getAllFrames() -> [RecordingFrame] {
+    public func getAllFrames() -> [ReevaluationTickFrame] {
         var allFrames = frames
         if let frame = currentFrame {
             allFrames.append(frame)

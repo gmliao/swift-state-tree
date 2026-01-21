@@ -54,6 +54,34 @@ struct DeterministicTests {
         #expect(seed1 != seed3)
     }
     
+    @Test("UserLevelResolver is deterministic across runs")
+    func testUserLevelResolverDeterminism() async throws {
+        let landContext = LandContext(
+            landID: "hero-defense:test-room",
+            playerID: PlayerID("test-player"),
+            clientID: ClientID("test-client"),
+            sessionID: SessionID("test-session"),
+            services: LandServices(),
+            logger: createGameLogger(scope: "Test", logLevel: .error),
+            tickId: 0,
+            sendEventHandler: { _, _ in },
+            syncHandler: { }
+        )
+        
+        let resolverCtx = ResolverContext(
+            landContext: landContext,
+            currentState: HeroDefenseState()
+        )
+        
+        let output = try await UserLevelResolver.resolve(ctx: resolverCtx)
+        
+        let stable = DeterministicHash.stableInt32("test-player")
+        let expected = Int(UInt32(bitPattern: stable) % 3) + 1
+        
+        #expect(output.level == expected)
+        #expect((1...3).contains(output.level))
+    }
+    
     @Test("Simulation is deterministic with same seed")
     func testSimulationDeterminism() async throws {
         // Run two separate simulations with the same landID (same seed)

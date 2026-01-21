@@ -33,8 +33,7 @@ public enum MonsterSystem {
         nextID: Int,
         _ ctx: LandContext
     ) -> MonsterState {
-        guard let configService = ctx.services.get(GameConfigProviderService.self),
-              else {
+        guard let configService = ctx.services.get(GameConfigProviderService.self) else {
             return MonsterState()
         }
         let config = configService.provider

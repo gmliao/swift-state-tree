@@ -1,6 +1,6 @@
 // Tests/SwiftStateTreeTests/AsyncResolverReplayTests.swift
 //
-// Tests to verify async resolver recording and replay functionality
+// Tests to verify async resolver recording and re-evaluation functionality
 
 import Foundation
 import Testing
@@ -125,18 +125,18 @@ func testAsyncResolverRecording() async throws {
     #expect(state.resolverValue == expectedValue, "Resolver output should be deterministic")
 }
 
-@Test("Async resolver output is used directly in replay mode")
+@Test("Async resolver output is used directly in re-evaluation mode")
 func testAsyncResolverReplay() async throws {
     // This test would require:
     // 1. Recording actions with resolver outputs in live mode
-    // 2. Creating a JSONActionSource from the recording
-    // 3. Running replay mode and verifying resolver outputs are used directly
+    // 2. Creating a JSONReevaluationSource from the record
+    // 3. Running re-evaluation mode and verifying resolver outputs are used directly
     
     // For now, this is a placeholder test structure
     // Full implementation would require:
-    // - ActionRecorder.save() to create recording file
-    // - JSONActionSource to load recording
-    // - LandKeeper(mode: .replay, actionSource: ...) to run replay
+    // - ReevaluationRecorder.save() to create record file
+    // - JSONReevaluationSource to load record
+    // - LandKeeper(mode: .reevaluation, reevaluationSource: ...) to run re-evaluation
     
-    // TODO: Implement full replay test once ActionRecorder.save() is integrated
+    // TODO: Implement full re-evaluation test once ReevaluationRecorder.save() is integrated
 }
