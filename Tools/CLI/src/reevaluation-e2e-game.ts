@@ -1,4 +1,4 @@
-import { writeFileSync, mkdtempSync } from 'fs'
+import { writeFileSync, mkdtempSync, mkdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 import { execFileSync } from 'child_process'
@@ -67,13 +67,15 @@ async function main() {
     landID
   })
 
-  const dir = mkdtempSync(join(tmpdir(), 'swiftstatetree-reeval-game-'))
-  const recordPath = join(dir, `hero-defense-${landInstanceId}.reeval.json`)
+  const projectRoot = resolve(process.cwd(), '..', '..')
+  const parentDir = join(projectRoot, 'tmp', 'e2e')
+  mkdirSync(parentDir, { recursive: true })
+  const dir = mkdtempSync(join(parentDir, 'swiftstatetree-reeval-game-'))
+  const recordPath = resolve(dir, `hero-defense-${landInstanceId}.reeval.json`)
   writeFileSync(recordPath, JSON.stringify(record, null, 2), 'utf-8')
   console.log(chalk.green(`✅ Saved record: ${recordPath}`))
 
   // Offline verify using the GameDemo reevaluation runner.
-  const projectRoot = resolve(process.cwd(), '..', '..')
   const gameDemoDir = join(projectRoot, 'Examples', 'GameDemo')
   console.log(chalk.blue('🧪 Offline verify via GameDemo ReevaluationRunner...'))
   execFileSync('swift', ['run', 'ReevaluationRunner', '--input', recordPath, '--verify'], {

@@ -35,24 +35,6 @@
             "name": "Release SwiftStateTreeBenchmarks",
             "program": "${workspaceFolder:swift-state-tree}/.build/release/SwiftStateTreeBenchmarks",
             "preLaunchTask": "swift: Build Release SwiftStateTreeBenchmarks"
-        },
-        {
-            "type": "lldb",
-            "request": "launch",
-            "args": [],
-            "cwd": "${workspaceFolder:swift-state-tree}",
-            "name": "Debug SwiftStateTreeReevaluationRunner",
-            "program": "${workspaceFolder:swift-state-tree}/.build/debug/SwiftStateTreeReevaluationRunner",
-            "preLaunchTask": "swift: Build Debug SwiftStateTreeReevaluationRunner"
-        },
-        {
-            "type": "lldb",
-            "request": "launch",
-            "args": [],
-            "cwd": "${workspaceFolder:swift-state-tree}",
-            "name": "Release SwiftStateTreeReevaluationRunner",
-            "program": "${workspaceFolder:swift-state-tree}/.build/release/SwiftStateTreeReevaluationRunner",
-            "preLaunchTask": "swift: Build Release SwiftStateTreeReevaluationRunner"
         }
     ]
 }
