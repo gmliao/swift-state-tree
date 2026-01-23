@@ -235,116 +235,21 @@ function toggleTurretPlacement() {
   <v-main class="game-main">
     <!-- Floating UI overlay -->
     <div v-if="isJoined" class="game-overlay">
-      <!-- Game controls overlay -->
-      <div class="overlay-bottom">
-        <div class="controls-panel glass-card elevation-0">
-          <div
-            class="controls-section d-flex align-center justify-space-between mb-4"
-          >
-            <div class="d-flex gap-8">
-              <div class="stat-box">
-                <div
-                  class="text-caption text-secondary font-weight-semibold text-uppercase mb-1 tracking-wide"
-                >
-                  Resources
-                </div>
-                <div
-                  class="text-h4 font-weight-bold text-primary tracking-tight"
-                >
-                  {{ currentResources }}
-                </div>
-              </div>
-              <div class="stat-box">
-                <div
-                  class="text-caption text-secondary font-weight-semibold text-uppercase mb-1 tracking-wide"
-                >
-                  Weapon Rank
-                </div>
-                <div class="text-h4 font-weight-bold tracking-tight">
-                  Rank {{ weaponLevel }}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <v-divider class="mb-5" color="rgba(0,0,0,0.05)"></v-divider>
-
-          <div class="controls-actions d-flex gap-4">
-            <v-btn
-              class="btn-apple flex-grow-1"
-              @click="handleUpgradeWeapon"
-              :disabled="currentResources < 5"
-              rounded="lg"
-              size="large"
-              elevation="0"
-              height="44"
-            >
-              <v-icon start size="small" class="mr-1">mdi-sword-cross</v-icon>
-              Upgrade (5)
-            </v-btn>
-
-            <v-btn
-              class="btn-soft flex-grow-1"
-              @click="handleUpgradeTurret"
-              :disabled="currentResources < 10"
-              rounded="lg"
-              size="large"
-              elevation="0"
-              height="44"
-            >
-              <v-icon start size="small" class="mr-1">mdi-tower-fire</v-icon>
-              Turret (10)
-            </v-btn>
-
-            <v-btn
-              :class="turretPlacementMode ? 'btn-apple' : 'btn-soft'"
-              @click="toggleTurretPlacement"
-              :disabled="currentResources < 15"
-              rounded="lg"
-              size="large"
-              elevation="0"
-              height="44"
-              :color="turretPlacementMode ? 'error' : 'primary'"
-            >
-              <v-icon start size="small" class="mr-1">{{
-                turretPlacementMode ? "mdi-close" : "mdi-plus"
-              }}</v-icon>
-              {{ turretPlacementMode ? "Cancel" : "Place (15)" }}
-            </v-btn>
-          </div>
-        </div>
-      </div>
-
-      <!-- Controls hint -->
-      <div class="overlay-hint">
-        <div
-          class="hint-text glass-card py-3 px-5 text-caption font-weight-medium elevation-0"
-        >
-          <span class="text-primary font-weight-bold mr-2">Controls</span>
-          <span class="text-secondary"
-            >Left Click: Move • Auto-Shoot Active • T: Place Turret</span
-          >
-        </div>
-      </div>
-
-      <!-- Connection status and leave button -->
-      <div
-        class="overlay-top glass-card mx-6 my-6 px-5 py-3 d-flex align-center elevation-0"
-      >
-        <div class="d-flex align-center gap-3">
+      <div class="hud-scrim hud-scrim-top" aria-hidden="true"></div>
+      <div class="hud-scrim hud-scrim-bottom" aria-hidden="true"></div>
+      <div class="hud-status-badge glass-card" aria-live="polite">
+        <div class="d-flex align-center gap-2">
           <div
             class="status-indicator"
             :class="isConnected ? 'bg-success' : 'bg-error'"
           ></div>
-          <span
-            class="text-caption font-weight-bold text-uppercase tracking-wide text-secondary"
+          <span class="text-caption font-weight-bold text-uppercase tracking-wide"
             >{{ isConnected ? "Connected" : "Offline" }}</span
           >
         </div>
-        <v-spacer />
         <v-btn
-          class="btn-soft text-error px-4"
-          size="small"
+          class="hud-leave-btn"
+          size="x-small"
           rounded="lg"
           @click="handleLeave"
           elevation="0"
@@ -354,6 +259,93 @@ function toggleTurretPlacement() {
           Leave
         </v-btn>
       </div>
+
+      <!-- Game controls overlay - Compact Skill Bar -->
+      <div class="overlay-bottom">
+        <div class="controls-panel glass-card elevation-0">
+          <div class="skill-bar">
+            <!-- Resource Display -->
+            <div class="skill-bar-stats">
+              <div class="stat-compact">
+                <span class="text-body-2 font-weight-bold text-primary">{{
+                  currentResources
+                }}</span>
+                <span class="text-caption text-secondary ml-1">資源</span>
+              </div>
+              <div class="stat-compact">
+                <span class="text-body-2 font-weight-bold"
+                  >Rank {{ weaponLevel }}</span
+                >
+              </div>
+            </div>
+
+            <!-- Skill Buttons -->
+            <div class="skill-bar-actions">
+              <v-btn
+                class="skill-button btn-apple"
+                @click="handleUpgradeWeapon"
+                :disabled="currentResources < 5"
+                rounded="lg"
+                elevation="0"
+              >
+                <v-icon size="24">mdi-sword-cross</v-icon>
+                <span class="skill-button-key">Q</span>
+                <v-tooltip activator="parent" location="top"
+                  >升級武器 (5)</v-tooltip
+                >
+              </v-btn>
+
+              <v-btn
+                class="skill-button btn-soft"
+                @click="handleUpgradeTurret"
+                :disabled="currentResources < 10"
+                rounded="lg"
+                elevation="0"
+              >
+                <v-icon size="24">mdi-tower-fire</v-icon>
+                <span class="skill-button-key">W</span>
+                <v-tooltip activator="parent" location="top"
+                  >升級砲塔 (10)</v-tooltip
+                >
+              </v-btn>
+
+              <v-btn
+                :class="
+                  turretPlacementMode
+                    ? 'skill-button btn-apple'
+                    : 'skill-button btn-soft'
+                "
+                @click="toggleTurretPlacement"
+                :disabled="currentResources < 15"
+                rounded="lg"
+                elevation="0"
+                :color="turretPlacementMode ? 'error' : 'primary'"
+              >
+                <v-icon size="24">{{
+                  turretPlacementMode ? "mdi-close" : "mdi-plus"
+                }}</v-icon>
+                <span class="skill-button-key">T</span>
+                <v-tooltip activator="parent" location="top">
+                  {{ turretPlacementMode ? "取消放置" : "放置砲塔 (15)" }}
+                </v-tooltip>
+              </v-btn>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Controls hint -->
+      <div class="overlay-hint">
+        <div class="hint-text glass-card hud-hint">
+          <span class="text-caption font-weight-bold text-primary mr-2"
+            >Controls</span
+          >
+          <span class="text-caption text-secondary"
+            >Left Click: Move • Auto-Shoot Active • T: Place Turret</span
+          >
+        </div>
+      </div>
+
     </div>
 
     <!-- Game ready -->
@@ -408,8 +400,74 @@ function toggleTurretPlacement() {
   pointer-events: none;
 }
 
-.overlay-top {
+.hud-scrim {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+}
+
+.hud-scrim-top {
+  top: 0;
+  height: 120px;
+  background: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.85),
+    rgba(255, 255, 255, 0)
+  );
+}
+
+.hud-scrim-bottom {
+  bottom: 0;
+  height: 160px;
+  background: linear-gradient(
+    to top,
+    rgba(255, 255, 255, 0.9),
+    rgba(255, 255, 255, 0)
+  );
+}
+
+.game-overlay .glass-card {
+  background: rgba(248, 249, 252, 0.98);
+  border: 1px solid rgba(0, 0, 0, 0.12) !important;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.14);
+}
+
+.hud-status-badge {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 6px 10px;
+  border-radius: 999px;
   pointer-events: auto;
+}
+
+.hud-status-badge .text-caption {
+  color: var(--color-text);
+}
+
+.hint-text {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+}
+
+.hud-leave-btn {
+  color: #b4232c !important;
+  background: rgba(255, 59, 48, 0.12) !important;
+  border: 1px solid rgba(255, 59, 48, 0.2) !important;
+  font-weight: 600 !important;
+  text-transform: none !important;
+  letter-spacing: normal !important;
+}
+
+.hud-hint {
+  color: var(--color-text);
 }
 
 .status-indicator {
@@ -420,31 +478,75 @@ function toggleTurretPlacement() {
 
 .overlay-bottom {
   position: absolute;
-  bottom: 40px;
+  bottom: 16px;
   left: 0;
   right: 0;
   z-index: 1000;
   pointer-events: none;
-  display: flex; /* Enable flex to center children */
+  display: flex;
   justify-content: center;
 }
 
 .controls-panel {
-  padding: 24px 28px;
+  padding: 12px 16px;
   pointer-events: auto;
-  width: 100%;
-  max-width: 860px; /* Constrain width for better proportions */
-  margin: 0 24px; /* Ensure some margin on mobile */
+  width: auto;
+  max-width: 600px;
+  margin: 0 24px;
 }
 
-.stat-box {
-  min-width: 140px;
+
+.skill-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.skill-bar-stats {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-right: 16px;
+  padding-right: 16px;
+  border-right: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.stat-compact {
+  display: flex;
+  align-items: baseline;
+  white-space: nowrap;
+}
+
+.skill-bar-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.skill-button {
+  width: 48px;
+  height: 48px;
+  min-width: 48px !important;
+  padding: 0 !important;
+  position: relative;
+}
+
+.skill-button-key {
+  position: absolute;
+  bottom: 2px;
+  right: 2px;
+  font-size: 10px;
+  background: rgba(0, 0, 0, 0.3);
+  color: white;
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-weight: 600;
+  line-height: 1;
 }
 
 .overlay-hint {
   position: absolute;
-  top: 100px;
-  left: 40px;
+  top: 14px;
+  left: 16px;
   z-index: 1000;
   pointer-events: none;
 }
@@ -472,5 +574,66 @@ function toggleTurretPlacement() {
 }
 .gap-8 {
   gap: 32px;
+}
+
+@media (max-width: 960px) {
+  .overlay-hint {
+    left: 16px;
+    right: 16px;
+    top: 72px;
+  }
+
+  .controls-panel {
+    margin: 0 12px;
+    padding: 10px 12px;
+    max-width: 100%;
+  }
+
+  .skill-bar {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .skill-bar-stats {
+    width: 100%;
+    justify-content: space-between;
+    margin-right: 0;
+    padding-right: 0;
+    border-right: none;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+    padding-bottom: 8px;
+  }
+
+  .skill-bar-actions {
+    width: 100%;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 600px) {
+  .overlay-bottom {
+    bottom: 8px;
+  }
+
+  .skill-button {
+    width: 44px;
+    height: 44px;
+    min-width: 44px !important;
+  }
+
+  .overlay-hint {
+    display: none;
+  }
+}
+
+@media (max-height: 600px) {
+  .hud-scrim-top {
+    height: 90px;
+  }
+
+  .hud-scrim-bottom {
+    height: 200px;
+  }
 }
 </style>

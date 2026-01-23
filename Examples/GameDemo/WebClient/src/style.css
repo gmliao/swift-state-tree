@@ -22,3 +22,33 @@ html, body {
   height: 100vh;
   overflow: hidden;
 }
+
+@media (max-width: 960px) {
+  body {
+    overflow: auto;
+  }
+
+  html,
+  body {
+    overflow: auto;
+  }
+
+  #app {
+    overflow: auto;
+  }
+}
+
+@media (max-height: 520px) {
+  body {
+    overflow: auto;
+  }
+
+  html,
+  body {
+    overflow: auto;
+  }
+
+  #app {
+    overflow: auto;
+  }
+}
