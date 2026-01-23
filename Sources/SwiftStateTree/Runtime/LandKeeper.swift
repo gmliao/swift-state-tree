@@ -1267,11 +1267,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // This maintains backward compatibility for tests and simple use cases
         // Note: This is async, but we can't await in a non-async context
         // So we use Task to handle it asynchronously
+        // IMPORTANT: processPendingActions() will automatically advance tick counter
+        // if needed to ensure valid tick IDs for recording
         if definition.lifetimeHandlers.tickHandler == nil {
             Task { [weak self] in
                 guard let self = self else { return }
                 do {
-                    _ = try await self.processPendingActions()
+                    _ = try await self.processPendingActions(flushOutputsImmediately: true)
                 } catch {
                     self.logger.error("Error processing pending actions", metadata: [
                         "error": .string(String(describing: error)),
@@ -1347,6 +1349,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     // MARK: - Tick & Lifetime
 
+    /// Ensure tick ID is advanced for tickless lands (no tick handler)
+    /// This prevents all records from ending up with tickId = -1
+    private func ensureTickIdForTicklessLand() {
+        // Advance tick counter to ensure records use a valid tick ID
+        // Use max(lastCommittedTickId+1, 0) to ensure non-negative tick IDs
+        if nextTickId <= lastCommittedTickId {
+            nextTickId = max(lastCommittedTickId + 1, 0)
+        }
+    }
+
     private func configureTickLoop(interval: Duration) async {
         tickTask?.cancel()
         tickTask = Task { [weak self] in
@@ -1390,10 +1402,24 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Process pending actions and client events that are ready to execute
     /// Returns the response from the last executed action (if any)
-    private func processPendingActions() async throws -> AnyCodable? {
+    /// - Parameter flushOutputsImmediately: If true, flush outputs after processing. If false, defer flushing (caller should flush after tick handler).
+    private func processPendingActions(flushOutputsImmediately: Bool = true) async throws -> AnyCodable? {
         // The tick currently executing (best-effort).
         // In the normal tick loop, nextTickId has already been incremented for this tick.
-        let executingTickId = nextTickId - 1
+        // For tickless lands, ensure we have a valid tick ID for recording
+        var executingTickId = nextTickId - 1
+        
+        // If executingTickId is negative (e.g., nextTickId is 0 and hasn't been advanced),
+        // advance nextTickId to ensure valid tick IDs for recording
+        if executingTickId < 0 {
+            nextTickId = max(lastCommittedTickId + 1, 0)
+            executingTickId = nextTickId - 1
+            // If still negative (lastCommittedTickId was -1), use 0
+            if executingTickId < 0 {
+                nextTickId = 1
+                executingTickId = 0
+            }
+        }
 
         // Filter items that are ready to execute (resolvedAtTick < nextTickId)
         let readyItems = pendingItems.filter { item in
@@ -1683,7 +1709,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
 
         // Flush deterministic outputs produced while processing pending items.
-        await flushOutputs(forTick: executingTickId)
+        // Only flush immediately if requested (e.g., for tickless lands).
+        // In normal tick flow, flush is deferred until after tick handler to ensure
+        // outputs include state changes from the tick handler.
+        if flushOutputsImmediately {
+            await flushOutputs(forTick: executingTickId)
+        }
 
         return lastActionResponse
     }
@@ -1695,8 +1726,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         guard let handler = definition.lifetimeHandlers.tickHandler else {
             // Even if there's no tick handler, we still need to process pending actions
+            // processPendingActions() will automatically advance tick counter if needed
             do {
-                _ = try await processPendingActions()
+                _ = try await processPendingActions(flushOutputsImmediately: true)
             } catch {
                 logger.error("Error processing pending actions", metadata: [
                     "error": .string(String(describing: error)),
@@ -1837,8 +1869,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
 
         // Process pending actions before tick handler
+        // Don't flush outputs yet - defer until after tick handler to ensure
+        // outputs include state changes from the tick handler
         do {
-            _ = try await processPendingActions()
+            _ = try await processPendingActions(flushOutputsImmediately: false)
         } catch {
             logger.error("Error processing pending actions", metadata: [
                 "error": .string(String(describing: error)),
