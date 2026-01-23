@@ -64,6 +64,12 @@ export class LandClient {
     }
   }
 
+  onEvent(eventName: string, callback: (payload: any) => void) {
+    if (this.view) {
+      this.view.onServerEvent(eventName, callback);
+    }
+  }
+
   async sendAction(actionName: string, payload: any): Promise<void> {
     if (!this.view) throw new Error("Not connected");
 

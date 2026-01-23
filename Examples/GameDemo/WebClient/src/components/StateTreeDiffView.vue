@@ -1,17 +1,9 @@
 <template>
-  <v-card>
-    <v-card-title>
-      Tick #{{ tickId }} 狀態
-      <v-chip :color="isMatch ? 'success' : 'error'" class="ml-2" size="small">
-        {{ isMatch ? "✅ 匹配" : "❌ 不匹配" }}
-      </v-chip>
-    </v-card-title>
-    <v-card-text>
-      <div class="state-tree">
-        <StateNode :node="mergedState" :path="[]" :level="0" />
-      </div>
-    </v-card-text>
-  </v-card>
+  <div class="state-view-container pa-6">
+    <div class="state-tree">
+      <StateNode :node="mergedState" :path="[]" :level="0" />
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -67,8 +59,15 @@ function mergeStates(expected: any, actual: any): any {
 </script>
 
 <style scoped>
+.state-view-container {
+  background: transparent;
+}
+
 .state-tree {
-  font-family: "Monaco", "Menlo", monospace;
-  font-size: 14px;
+  font-family:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--color-text);
 }
 </style>

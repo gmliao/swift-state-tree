@@ -1,19 +1,19 @@
 // Examples/GameDemo/Sources/SchemaGen/main.swift
 
 import Foundation
-import SwiftStateTree
 import GameContent
+import SwiftStateTree
+import SwiftStateTreeReevaluationMonitor
 
 @main
 struct SchemaGen {
     static func main() {
         // Collect all LandDefinitions to generate schema for
         let landDefinitions = [
-            AnyLandDefinition(HeroDefense.makeLand())
-            // Add more lands here as needed:
-            // AnyLandDefinition(AnotherGame.makeLand()),
+            AnyLandDefinition(HeroDefense.makeLand()),
+            AnyLandDefinition(ReevaluationMonitor.makeLand()),
         ]
-        
+
         // Generate schema from command line arguments
         do {
             try SchemaGenCLI.generateFromArguments(landDefinitions: landDefinitions)

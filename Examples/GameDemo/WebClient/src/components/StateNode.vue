@@ -5,7 +5,11 @@
       <span class="bracket">{{ isArray ? "[" : "{" }}</span>
       <div v-for="(value, key) in node" :key="key" class="node-child">
         <span class="key">{{ key }}:</span>
-        <StateNode :node="value" :path="[...path, key]" :level="level + 1" />
+        <StateNode
+          :node="value"
+          :path="[...path, String(key)]"
+          :level="level + 1"
+        />
       </div>
       <span class="bracket">{{ isArray ? "]" : "}" }}</span>
     </div>
@@ -63,44 +67,54 @@ function formatValue(value: any): string {
 </script>
 
 <style scoped>
-.node-object {
-  display: flex;
-  flex-direction: column;
-}
-
 .node-child {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
+  padding-left: 20px;
+  border-left: 1px solid rgba(0, 0, 0, 0.05);
 }
 
 .key {
-  color: #0066cc;
-  font-weight: 500;
+  color: var(--color-secondary);
+  font-weight: 600;
+  margin-right: 8px;
+  font-size: 13px;
 }
 
 .bracket {
-  color: #666;
+  color: var(--color-text-muted);
+  font-weight: 400;
+  opacity: 0.6;
 }
 
 .node-value {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  background: rgba(0, 0, 0, 0.02);
+  padding: 1px 6px;
+  border-radius: 4px;
 }
 
 .value-match {
-  color: #2e7d32;
+  color: var(--color-success);
+  font-weight: 500;
 }
 
 .value-mismatch {
-  color: #c62828;
-  font-weight: bold;
+  color: var(--color-error);
+  font-weight: 700;
+  text-decoration: line-through;
+  opacity: 0.7;
 }
 
 .expected-value {
-  color: #666;
-  font-size: 12px;
-  font-style: italic;
+  margin-left: 8px;
+  color: var(--color-success);
+  font-weight: 700;
+  background: var(--color-primary-soft);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.node-object {
+  margin: 2px 0;
 }
 </style>
