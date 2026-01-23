@@ -3,23 +3,26 @@
 
 export const SCHEMA_VERSION = "0.1.0" as const
 
-export const LAND_IDS = ["hero-defense"] as const
+export const LAND_IDS = ["hero-defense","reevaluation-monitor"] as const
 export type LandID = (typeof LAND_IDS)[number]
 
 export const ACTION_IDS = {
   "hero-defense": ["Play"] as const,
+  "reevaluation-monitor": ["PauseVerification","ResumeVerification","StartVerification"] as const,
 } as const
 export type AnyActionID = (typeof ACTION_IDS)[LandID][number]
 export type ActionIDFor<L extends LandID> = (typeof ACTION_IDS)[L][number]
 
 export const CLIENT_EVENT_IDS = {
   "hero-defense": ["MoveTo","PlaceTurret","Shoot","UpdateRotation","UpgradeTurret","UpgradeWeapon"] as const,
+  "reevaluation-monitor": [] as const,
 } as const
 export type AnyClientEventID = (typeof CLIENT_EVENT_IDS)[LandID][number]
 export type ClientEventIDFor<L extends LandID> = (typeof CLIENT_EVENT_IDS)[L][number]
 
 export const SERVER_EVENT_IDS = {
   "hero-defense": ["PlayerShoot","TurretFire"] as const,
+  "reevaluation-monitor": ["TickProcessed","TickSummary","VerificationComplete","VerificationFailed","VerificationProgress"] as const,
 } as const
 export type AnyServerEventID = (typeof SERVER_EVENT_IDS)[LandID][number]
 export type ServerEventIDFor<L extends LandID> = (typeof SERVER_EVENT_IDS)[L][number]
@@ -46,6 +49,33 @@ export const SCHEMA = {
         "sync": {
           "policy": "broadcast"
         }
+      }
+    },
+    "Any": {
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "AnyCodable": {
+      "properties": {
+        "base": {
+          "additionalProperties": {
+            "$ref": "#/defs/Any"
+          },
+          "type": "object",
+          "x-stateTree": {
+            "keyType": "String",
+            "nodeKind": "map"
+          }
+        }
+      },
+      "required": [
+        "base"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
       }
     },
     "BaseState": {
@@ -289,6 +319,22 @@ export const SCHEMA = {
         }
       }
     },
+    "PauseVerificationAction": {
+      "properties": {},
+      "required": [],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "PauseVerificationResponse": {
+      "properties": {},
+      "required": [],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
     "PlaceTurretEvent": {
       "properties": {
         "position": {
@@ -428,7 +474,119 @@ export const SCHEMA = {
         }
       }
     },
+    "ReevaluationMonitorState": {
+      "properties": {
+        "correctTicks": {
+          "default": 0,
+          "type": "integer"
+        },
+        "currentActualHash": {
+          "default": "",
+          "type": "string"
+        },
+        "currentExpectedHash": {
+          "default": "",
+          "type": "string"
+        },
+        "currentIsMatch": {
+          "default": true,
+          "type": "boolean"
+        },
+        "currentTickId": {
+          "default": 0,
+          "type": "integer"
+        },
+        "errorMessage": {
+          "default": "",
+          "type": "string"
+        },
+        "isPaused": {
+          "default": false,
+          "type": "boolean"
+        },
+        "mismatchedTicks": {
+          "default": 0,
+          "type": "integer"
+        },
+        "processedTicks": {
+          "default": 0,
+          "type": "integer"
+        },
+        "recordFilePath": {
+          "default": "",
+          "type": "string"
+        },
+        "status": {
+          "default": "idle",
+          "type": "string"
+        },
+        "totalTicks": {
+          "default": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "recordFilePath",
+        "status",
+        "isPaused",
+        "totalTicks",
+        "processedTicks",
+        "correctTicks",
+        "mismatchedTicks",
+        "currentTickId",
+        "currentExpectedHash",
+        "currentActualHash",
+        "currentIsMatch",
+        "errorMessage"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "object"
+      }
+    },
+    "ResumeVerificationAction": {
+      "properties": {},
+      "required": [],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "ResumeVerificationResponse": {
+      "properties": {},
+      "required": [],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
     "ShootEvent": {
+      "properties": {},
+      "required": [],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "StartVerificationAction": {
+      "properties": {
+        "landType": {
+          "type": "string"
+        },
+        "recordFilePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "landType",
+        "recordFilePath"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "StartVerificationResponse": {
       "properties": {},
       "required": [],
       "type": "object",
@@ -462,6 +620,72 @@ export const SCHEMA = {
       },
       "required": [
         "patches"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "TickMismatch": {
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "TickProcessedEvent": {
+      "properties": {
+        "actualHash": {
+          "type": "string"
+        },
+        "actualState": {
+          "$ref": "#/defs/AnyCodable"
+        },
+        "expectedHash": {
+          "type": "string"
+        },
+        "expectedState": {
+          "$ref": "#/defs/AnyCodable"
+        },
+        "isMatch": {
+          "type": "boolean"
+        },
+        "tickId": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "actualHash",
+        "actualState",
+        "expectedHash",
+        "expectedState",
+        "isMatch",
+        "tickId"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "TickSummaryEvent": {
+      "properties": {
+        "actualHash": {
+          "type": "string"
+        },
+        "expectedHash": {
+          "type": "string"
+        },
+        "isMatch": {
+          "type": "boolean"
+        },
+        "tickId": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "actualHash",
+        "expectedHash",
+        "isMatch",
+        "tickId"
       ],
       "type": "object",
       "x-stateTree": {
@@ -568,6 +792,70 @@ export const SCHEMA = {
     "UpgradeWeaponEvent": {
       "properties": {},
       "required": [],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "VerificationCompleteEvent": {
+      "properties": {
+        "correctTicks": {
+          "type": "integer"
+        },
+        "mismatchedTicks": {
+          "type": "integer"
+        },
+        "mismatches": {
+          "items": {
+            "$ref": "#/defs/TickMismatch"
+          },
+          "type": "array",
+          "x-stateTree": {
+            "nodeKind": "array"
+          }
+        },
+        "totalTicks": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "correctTicks",
+        "mismatchedTicks",
+        "mismatches",
+        "totalTicks"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "VerificationFailedEvent": {
+      "properties": {
+        "errorMessage": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "errorMessage"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "VerificationProgressEvent": {
+      "properties": {
+        "processedTicks": {
+          "type": "integer"
+        },
+        "totalTicks": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "processedTicks",
+        "totalTicks"
+      ],
       "type": "object",
       "x-stateTree": {
         "nodeKind": "leaf"
@@ -686,9 +974,71 @@ export const SCHEMA = {
           "$ref": "#/defs/HeroDefenseState"
         }
       }
+    },
+    "reevaluation-monitor": {
+      "actions": {
+        "PauseVerification": {
+          "$ref": "#/defs/PauseVerificationAction"
+        },
+        "ResumeVerification": {
+          "$ref": "#/defs/ResumeVerificationAction"
+        },
+        "StartVerification": {
+          "$ref": "#/defs/StartVerificationAction"
+        }
+      },
+      "clientEventHashes": {},
+      "clientEvents": {},
+      "eventHashes": {
+        "TickProcessed": 1,
+        "TickSummary": 2,
+        "VerificationComplete": 3,
+        "VerificationFailed": 4,
+        "VerificationProgress": 5
+      },
+      "events": {
+        "TickProcessed": {
+          "$ref": "#/defs/TickProcessedEvent"
+        },
+        "TickSummary": {
+          "$ref": "#/defs/TickSummaryEvent"
+        },
+        "VerificationComplete": {
+          "$ref": "#/defs/VerificationCompleteEvent"
+        },
+        "VerificationFailed": {
+          "$ref": "#/defs/VerificationFailedEvent"
+        },
+        "VerificationProgress": {
+          "$ref": "#/defs/VerificationProgressEvent"
+        }
+      },
+      "pathHashes": {
+        "correctTicks": 1259194018,
+        "currentActualHash": 243447840,
+        "currentExpectedHash": 1484195928,
+        "currentIsMatch": 2001182898,
+        "currentTickId": 615060273,
+        "errorMessage": 909635121,
+        "isPaused": 1279898692,
+        "mismatchedTicks": 662698619,
+        "processedTicks": 1832690606,
+        "recordFilePath": 1272752956,
+        "status": 2819900738,
+        "totalTicks": 361385739
+      },
+      "stateType": "ReevaluationMonitorState",
+      "sync": {
+        "diff": {
+          "$ref": "#/defs/StateDiff"
+        },
+        "snapshot": {
+          "$ref": "#/defs/ReevaluationMonitorState"
+        }
+      }
     }
   },
-  "schemaHash": "ab31b0e196e3e0e6",
+  "schemaHash": "16147559c22b2551",
   "version": "0.1.0"
 } as const
 

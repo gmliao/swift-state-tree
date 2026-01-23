@@ -14,25 +14,39 @@ public enum ReevaluationMonitor {
 
             Lifetime {
                 Tick(every: .milliseconds(100)) { (state: inout ReevaluationMonitorState, ctx: LandContext) in
-                    if let service = ctx.services.get(ReevaluationRunnerService.self) {
-                        let status = service.getStatus()
+                    guard let service = ctx.services.get(ReevaluationRunnerService.self) else { return }
 
-                        // Sync status to state
-                        state.status = status.phase.rawValue
-                        state.currentTickId = status.currentTick
-                        state.totalTicks = Int(status.totalTicks)
-                        state.processedTicks = Int(status.currentTick) // Approximate
-                        state.correctTicks = status.correctTicks
-                        state.mismatchedTicks = status.mismatchedTicks
-                        state.errorMessage = status.errorMessage
-                        state.recordFilePath = status.recordFilePath
+                    // Sync status to state
+                    let status = service.getStatus()
 
-                        state.currentActualHash = status.currentActualHash
-                        state.currentExpectedHash = status.currentExpectedHash
-                        state.currentIsMatch = status.currentIsMatch
+                    state.status = status.phase.rawValue
+                    state.currentTickId = status.currentTick
+                    state.totalTicks = Int(status.totalTicks)
+                    state.processedTicks = Int(status.currentTick) + 1
+                    state.correctTicks = status.correctTicks
+                    state.mismatchedTicks = status.mismatchedTicks
+                    state.errorMessage = status.errorMessage
+                    state.recordFilePath = status.recordFilePath
 
-                        // Update paused state
-                        state.isPaused = (status.phase == .paused)
+                    state.currentActualHash = status.currentActualHash
+                    state.currentExpectedHash = status.currentExpectedHash
+                    state.currentIsMatch = status.currentIsMatch
+                    state.isPaused = (status.phase == .paused)
+
+                    // Consume results and emit events
+                    let newResults = service.consumeResults()
+                    if !newResults.isEmpty {
+                        print("DEBUG: [ReevaluationMonitor] Consuming \(newResults.count) results")
+                    }
+                    for result in newResults {
+                        print("DEBUG: [ReevaluationMonitor] Emitting TickSummaryEvent for tick \(result.tickId), match: \(result.isMatch)")
+                        let event = TickSummaryEvent(
+                            tickId: result.tickId,
+                            isMatch: result.isMatch,
+                            expectedHash: result.recordedHash ?? "?",
+                            actualHash: result.stateHash
+                        )
+                        ctx.emitEvent(event, to: .all)
                     }
                 }
             }
@@ -46,7 +60,7 @@ public enum ReevaluationMonitor {
                     }
 
                     state.status = "loading"
-                    // Start verification (non-blocking now)
+                    // Start verification (non-blocking)
                     service.startVerification(landType: action.landType, recordFilePath: action.recordFilePath)
 
                     return StartVerificationResponse()
@@ -65,6 +79,14 @@ public enum ReevaluationMonitor {
                     state.status = "verifying"
                     return ResumeVerificationResponse()
                 }
+            }
+
+            ServerEvents {
+                Register(TickSummaryEvent.self)
+                Register(TickProcessedEvent.self)
+                Register(VerificationProgressEvent.self)
+                Register(VerificationCompleteEvent.self)
+                Register(VerificationFailedEvent.self)
             }
         }
     }

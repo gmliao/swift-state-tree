@@ -1041,6 +1041,19 @@ function generateTestHelpers(
   }
   
   lines.push('')
+
+  // Generate ConnectOptions interface when composable exists (to match generated Vue composable signature)
+  if (composableName) {
+    lines.push('interface ConnectOptions {')
+    lines.push('  wsUrl: string')
+    lines.push('  playerName?: string')
+    lines.push('  playerID?: string')
+    lines.push('  deviceID?: string')
+    lines.push('  landID?: string')
+    lines.push('  metadata?: Record<string, any>')
+    lines.push('}')
+    lines.push('')
+  }
   
   // Generate createMockState function
   lines.push('/**')
@@ -1083,14 +1096,34 @@ function generateTestHelpers(
     lines.push('  const lastError = ref<string | null>(null)')
     lines.push('')
     
+    const wrapFn = testFramework === 'vitest' ? 'vi.fn' : testFramework === 'jest' ? 'jest.fn' : null
+
+    // Generate connect/disconnect mocks
+    if (wrapFn) {
+      lines.push(`  const connect = ${wrapFn}(async (_opts: ConnectOptions): Promise<void> => {`)
+    } else {
+      lines.push('  const connect = async (_opts: ConnectOptions): Promise<void> => {')
+    }
+    lines.push('    // Mock implementation - customize as needed')
+    lines.push('    isConnecting.value = true')
+    lines.push('    lastError.value = null')
+    lines.push('    isConnected.value = true')
+    lines.push('    isJoined.value = true')
+    lines.push('    isConnecting.value = false')
+    lines.push(wrapFn ? '  })' : '  }')
+    lines.push('')
+
     // Generate mock functions for client events
-    const mockFn = testFramework === 'vitest' ? 'vi.fn' : testFramework === 'jest' ? 'jest.fn' : '(() => {})'
     for (const event of clientEvents) {
       const eventName = event.propertyName
       const eventPayloadType = event.payloadType
-      lines.push(`  const ${eventName} = ${mockFn}(async (_payload: ${eventPayloadType}) => {`)
+      if (wrapFn) {
+        lines.push(`  const ${eventName} = ${wrapFn}(async (_payload: ${eventPayloadType}) => {`)
+      } else {
+        lines.push(`  const ${eventName} = async (_payload: ${eventPayloadType}) => {`)
+      }
       lines.push('    // Mock implementation - customize as needed')
-      lines.push('  })')
+      lines.push(wrapFn ? '  })' : '  }')
       lines.push('')
     }
     
@@ -1099,22 +1132,30 @@ function generateTestHelpers(
       const actionName = action.propertyName
       const actionPayloadType = action.payloadType
       const actionResponseType = action.responseType || 'any'
-      lines.push(`  const ${actionName} = ${mockFn}(async (_payload: ${actionPayloadType}): Promise<${actionResponseType}> => {`)
+      if (wrapFn) {
+        lines.push(`  const ${actionName} = ${wrapFn}(async (_payload: ${actionPayloadType}): Promise<${actionResponseType}> => {`)
+      } else {
+        lines.push(`  const ${actionName} = async (_payload: ${actionPayloadType}): Promise<${actionResponseType}> => {`)
+      }
       lines.push('    // Mock implementation - customize as needed')
       if (action.responseType) {
         lines.push(`    return {} as ${actionResponseType}`)
       } else {
         lines.push('    return {} as any')
       }
-      lines.push('  })')
+      lines.push(wrapFn ? '  })' : '  }')
       lines.push('')
     }
     
-    lines.push(`  const disconnect = ${mockFn}(async () => {`)
+    if (wrapFn) {
+      lines.push(`  const disconnect = ${wrapFn}(async () => {`)
+    } else {
+      lines.push('  const disconnect = async () => {')
+    }
     lines.push('    isConnected.value = false')
     lines.push('    isJoined.value = false')
     lines.push('    state.value = null')
-    lines.push('  })')
+    lines.push(wrapFn ? '  })' : '  }')
     lines.push('')
     
     lines.push('  return {')
@@ -1136,7 +1177,7 @@ function generateTestHelpers(
     }
     
     lines.push('    disconnect,')
-    lines.push(`    connect: ${mockFn}(),`)
+    lines.push('    connect,')
     lines.push('    tree: computed(() => null)')
     lines.push('  }')
     lines.push('}')

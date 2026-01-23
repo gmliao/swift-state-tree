@@ -11,6 +11,8 @@ export { Angle }
 export { Position2 }
 export { FIXED_POINT_SCALE }
 
+export type Any = { [key: string]: any }
+export type AnyCodable = { base: { [key: string]: Any } }
 // @ts-ignore - DeterministicMath classes (Position2) are used in type definitions
 export type BaseState = { health: number; maxHealth: number; position: Position2; radius: number }
 export type HeroDefenseState = { base: BaseState; monsters: { [key: string]: MonsterState }; nextMonsterID: number; nextTurretID: number; players: { [key: string]: PlayerState }; score: number; turrets: { [key: string]: TurretState } }
@@ -18,6 +20,8 @@ export type HeroDefenseState = { base: BaseState; monsters: { [key: string]: Mon
 export type MonsterState = { health: number; id: number; maxHealth: number; pathProgress: number; position: Position2; reward: number; rotation: Angle; spawnPosition: Position2 }
 // @ts-ignore - DeterministicMath classes (Position2) are used in type definitions
 export type MoveToEvent = { target: Position2 }
+export type PauseVerificationAction = { [key: string]: any }
+export type PauseVerificationResponse = { [key: string]: any }
 // @ts-ignore - DeterministicMath classes (Position2) are used in type definitions
 export type PlaceTurretEvent = { position: Position2 }
 export type PlayAction = { [key: string]: any }
@@ -28,8 +32,16 @@ export type PlayerID = { rawValue: string }
 export type PlayerShootEvent = { from: Position2; playerID: PlayerID; to: Position2 }
 // @ts-ignore - DeterministicMath classes (Angle, Position2) are used in type definitions
 export type PlayerState = { health: number; lastFireTick: number; maxHealth: number; position: Position2; resources: number; rotation: Angle; targetPosition: Optional<Position2>; weaponLevel: number }
+export type ReevaluationMonitorState = { correctTicks: number; currentActualHash: string; currentExpectedHash: string; currentIsMatch: boolean; currentTickId: number; errorMessage: string; isPaused: boolean; mismatchedTicks: number; processedTicks: number; recordFilePath: string; status: string; totalTicks: number }
+export type ResumeVerificationAction = { [key: string]: any }
+export type ResumeVerificationResponse = { [key: string]: any }
 export type ShootEvent = { [key: string]: any }
+export type StartVerificationAction = { landType: string; recordFilePath: string }
+export type StartVerificationResponse = { [key: string]: any }
 export type StateDiff = { patches: { op: string; path: string; value?: { [key: string]: any } }[] }
+export type TickMismatch = { [key: string]: any }
+export type TickProcessedEvent = { actualHash: string; actualState: AnyCodable; expectedHash: string; expectedState: AnyCodable; isMatch: boolean; tickId: number }
+export type TickSummaryEvent = { actualHash: string; expectedHash: string; isMatch: boolean; tickId: number }
 // @ts-ignore - DeterministicMath classes (Position2) are used in type definitions
 export type TurretFireEvent = { from: Position2; to: Position2; turretID: number }
 // @ts-ignore - DeterministicMath classes (Angle, Position2) are used in type definitions
@@ -38,6 +50,9 @@ export type TurretState = { id: number; lastFireTick: number; level: number; own
 export type UpdateRotationEvent = { rotation: Angle }
 export type UpgradeTurretEvent = { turretID: number }
 export type UpgradeWeaponEvent = { [key: string]: any }
+export type VerificationCompleteEvent = { correctTicks: number; mismatchedTicks: number; mismatches: TickMismatch[]; totalTicks: number }
+export type VerificationFailedEvent = { errorMessage: string }
+export type VerificationProgressEvent = { processedTicks: number; totalTicks: number }
 
 // Generic Optional type for all Optional<T> usages
 export type Optional<T> = T | null | undefined

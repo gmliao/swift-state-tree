@@ -2,6 +2,7 @@
 import { ref, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { useGameClient } from "../utils/gameClient";
+import "@/styles/ui-tokens.css";
 
 const router = useRouter();
 const { connect, isConnecting, lastError } = useGameClient();
@@ -63,86 +64,136 @@ function goToReevaluationMonitor() {
 </script>
 
 <template>
-  <v-container fluid class="fill-height d-flex align-center justify-center">
-    <v-card width="500" class="pa-6" elevation="4">
-      <v-card-title class="text-h4 mb-2"> 🎮 Hero Defense </v-card-title>
+  <v-container
+    fluid
+    class="connect-bg fill-height d-flex align-center justify-center"
+  >
+    <v-card class="glass-card main-card pa-10" width="440">
+      <div class="text-center mb-10">
+        <h1 class="text-h4 font-weight-bold mb-2 color-primary tracking-tight">
+          Hero Defense
+        </h1>
+        <p class="text-body-1 text-secondary font-weight-regular">
+          Battle for the High Ground
+        </p>
+      </div>
 
-      <v-card-subtitle class="mb-6 text-medium-emphasis">
-        輸入連接資訊開始遊戲
-      </v-card-subtitle>
+      <v-form @submit.prevent="handleConnect" class="connect-form">
+        <div class="input-section mb-8">
+          <label
+            class="text-caption font-weight-semibold text-secondary mb-2 d-block ml-1"
+            >Server Config</label
+          >
+          <v-text-field
+            v-model="wsUrl"
+            placeholder="ws://localhost:8080/game/hero-defense"
+            variant="solo"
+            flat
+            density="comfortable"
+            class="apple-input mb-5"
+            prepend-inner-icon="mdi-server"
+            rounded="lg"
+            bg-color="rgba(0,0,0,0.03)"
+          ></v-text-field>
 
-      <v-form @submit.prevent="handleConnect">
-        <v-text-field
-          v-model="wsUrl"
-          label="WebSocket 網址"
-          placeholder="ws://localhost:8080/game/hero-defense"
-          prepend-inner-icon="mdi-web"
-          variant="outlined"
-          class="mb-4"
-          :disabled="isConnecting"
-        />
+          <label
+            class="text-caption font-weight-semibold text-secondary mb-2 d-block ml-1"
+            >Pilot Identity</label
+          >
+          <v-text-field
+            v-model="playerName"
+            placeholder="Enter Hero Name"
+            variant="solo"
+            flat
+            density="comfortable"
+            class="apple-input"
+            prepend-inner-icon="mdi-account-circle-outline"
+            rounded="lg"
+            bg-color="rgba(0,0,0,0.03)"
+          ></v-text-field>
+        </div>
 
-        <v-text-field
-          v-model="playerName"
-          label="玩家名稱"
-          placeholder="輸入你的名稱"
-          prepend-inner-icon="mdi-account"
-          variant="outlined"
-          class="mb-4"
-          :disabled="isConnecting"
-          required
-        />
-
-        <v-text-field
-          v-model="roomId"
-          label="房間 ID (選填)"
-          placeholder="留空則自動創建新房間"
-          prepend-inner-icon="mdi-door"
-          variant="outlined"
-          class="mb-4"
-          :disabled="isConnecting"
-          hint="留空則自動創建新房間"
-          persistent-hint
-        />
-
-        <v-alert v-if="lastError" type="error" variant="tonal" class="mb-4">
-          <v-alert-title>連接失敗</v-alert-title>
+        <v-alert
+          v-if="lastError"
+          type="error"
+          variant="tonal"
+          class="mb-6 rounded-lg border-error"
+          density="compact"
+          icon="mdi-alert-circle-outline"
+        >
           {{ lastError }}
         </v-alert>
 
         <v-btn
           type="submit"
-          color="primary"
-          size="large"
+          class="btn-apple mb-3"
           block
+          size="large"
+          elevation="0"
           :loading="isConnecting"
-          :disabled="isConnecting"
-          variant="flat"
+          rounded="lg"
+          height="48"
         >
-          <v-icon start>mdi-play</v-icon>
-          開始遊戲
+          <v-icon start class="mr-2">mdi-sword-cross</v-icon>
+          Join Game
+        </v-btn>
+
+        <v-btn
+          @click="goToReevaluationMonitor"
+          class="btn-soft text-secondary"
+          block
+          size="large"
+          variant="text"
+          elevation="0"
+          rounded="lg"
+          height="48"
+        >
+          <v-icon start class="mr-2">mdi-chart-timeline-variant</v-icon>
+          Reevaluation
         </v-btn>
       </v-form>
 
-      <!-- Reevaluation Monitor entry -->
-      <v-divider class="my-4" />
-
-      <v-btn
-        color="secondary"
-        size="large"
-        block
-        variant="outlined"
-        @click="goToReevaluationMonitor"
-      >
-        <v-icon start>mdi-check-circle-outline</v-icon>
-        Reevaluation 驗證
-      </v-btn>
+      <div class="text-center mt-8">
+        <p class="text-caption text-tertiary">SwiftStateTree Protocol v1.4.2</p>
+      </div>
     </v-card>
   </v-container>
 </template>
 
 <style scoped>
-.fill-height {
-  height: 100vh;
+.connect-bg {
+  background: var(--color-bg);
+  background-image:
+    radial-gradient(at 50% 0%, rgba(0, 122, 255, 0.08) 0px, transparent 50%),
+    radial-gradient(at 50% 100%, rgba(52, 199, 89, 0.08) 0px, transparent 50%);
+}
+
+.main-card {
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.04) !important;
+  border: 1px solid rgba(0, 0, 0, 0.03) !important;
+}
+
+.color-primary {
+  color: var(--color-primary);
+}
+
+.text-tertiary {
+  color: var(--color-secondary);
+  opacity: 0.6;
+}
+
+.tracking-tight {
+  letter-spacing: -0.02em;
+}
+
+.apple-input :deep(.v-field) {
+  border: 1px solid transparent;
+  transition: all 0.2s ease;
+}
+
+.apple-input :deep(.v-field--focused) {
+  background: white !important;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 4px rgba(0, 122, 255, 0.1);
 }
 </style>

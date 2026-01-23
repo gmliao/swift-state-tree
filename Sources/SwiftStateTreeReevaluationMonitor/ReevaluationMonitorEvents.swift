@@ -2,6 +2,35 @@ import SwiftStateTree
 
 // MARK: - Server Events
 
+public struct TickSummary: Codable, Sendable {
+    public let tickId: Int64
+    public let isMatch: Bool
+    public let expectedHash: String
+    public let actualHash: String
+
+    public init(tickId: Int64, isMatch: Bool, expectedHash: String, actualHash: String) {
+        self.tickId = tickId
+        self.isMatch = isMatch
+        self.expectedHash = expectedHash
+        self.actualHash = actualHash
+    }
+}
+
+@Payload
+public struct TickSummaryEvent: ServerEventPayload {
+    public let tickId: Int64
+    public let isMatch: Bool
+    public let expectedHash: String
+    public let actualHash: String
+
+    public init(tickId: Int64, isMatch: Bool, expectedHash: String, actualHash: String) {
+        self.tickId = tickId
+        self.isMatch = isMatch
+        self.expectedHash = expectedHash
+        self.actualHash = actualHash
+    }
+}
+
 @Payload
 public struct TickProcessedPayload {
     public let tickId: Int64

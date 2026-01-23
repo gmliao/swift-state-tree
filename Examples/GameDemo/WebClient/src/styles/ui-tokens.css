@@ -1,0 +1,105 @@
+:root {
+  /* Apple-inspired Light Mode Palette */
+  --color-bg: #F5F5F7; /* Apple System Gray 6 / Standard Background */
+  --color-surface: #FFFFFF;
+  --color-primary: #007AFF; /* System Blue */
+  --color-primary-soft: rgba(0, 122, 255, 0.12);
+  --color-secondary: #86868B; /* Apple text secondary */
+  --color-accent: #FF2D55; /* System Pink/Red vibe */
+  --color-success: #34C759; /* System Green */
+  --color-error: #FF3B30;   /* System Red */
+  --color-text: #1D1D1F;    /* Apple Text Primary */
+  --color-text-muted: #86868B;
+  
+  /* Modern Effects - Refined */
+  --glass-blur: blur(25px) saturate(180%);
+  --glass-bg: rgba(255, 255, 255, 0.72);
+  --glass-border: 1px solid rgba(255, 255, 255, 0.5); /* Lighter border for that premium glass look */
+  --glass-shadow: 0 4px 24px rgba(0, 0, 0, 0.04);     /* Much softer shadow */
+  
+  /* Transitions */
+  --transition-fast: 0.2s cubic-bezier(0.25, 0.1, 0.25, 1);
+  --transition-normal: 0.3s cubic-bezier(0.25, 0.1, 0.25, 1); /* Standard Apple ease */
+}
+
+/* Base Styles */
+body {
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Icons", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  letter-spacing: -0.011em;
+  line-height: 1.47059;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-weight: 600;
+  letter-spacing: -0.022em;
+  color: var(--color-text);
+}
+
+/* Utility Classes */
+.glass-card {
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: var(--glass-border) !important;
+  box-shadow: var(--glass-shadow);
+  border-radius: 18px;
+  transition: var(--transition-normal);
+}
+
+.btn-apple {
+  background-color: var(--color-primary) !important;
+  color: white !important;
+  text-transform: none !important;
+  font-weight: 600 !important;
+  letter-spacing: normal !important;
+  box-shadow: none !important;
+  transition: var(--transition-fast) !important;
+  border-radius: 12px !important;
+}
+
+.btn-apple:hover {
+  filter: brightness(1.1);
+  box-shadow: 0 4px 12px rgba(0, 122, 255, 0.3) !important;
+}
+
+.btn-soft {
+  background-color: var(--color-primary-soft) !important;
+  color: var(--color-primary) !important;
+  text-transform: none !important;
+  font-weight: 600 !important;
+  box-shadow: none !important;
+  border-radius: 12px !important;
+}
+
+.bento-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 20px;
+}
+
+.bento-item {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.2);
+}
