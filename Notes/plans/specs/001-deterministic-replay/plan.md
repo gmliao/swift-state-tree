@@ -62,6 +62,26 @@
    - 可設定 replay sink（例如輸出 event log 或傳送到 client）
    - **注意**：`Tools/ReplayRunner` 中的通用 CLI 已移除，改由各應用程式自行實作 ReevaluationRunner 以支援特定 Land 類型載入。
 
+5. **SwiftStateTreeReevaluationMonitor (新增模組)**
+   - **ReevaluationMonitorLand**: 一個專用的 Land 定義，用於即時視覺化 Reevaluation 過程
+     - 使用 `Tick(every: .milliseconds(100))` 定期輪詢 ReevaluationRunnerService 狀態
+     - 支援 `StartVerificationAction`、`PauseVerificationAction`、`ResumeVerificationAction`
+     - 發送 `TickSummaryEvent`、`VerificationProgressEvent`、`VerificationCompleteEvent` 等 ServerEvent 到 Client
+   - **ReevaluationRunnerService**: 可注入的 Service，封裝 ReevaluationRunner 執行邏輯
+     - `startVerification(landType:recordFilePath:)`: 啟動驗證任務
+     - `pause()` / `resume()` / `stop()`: 控制執行流程
+     - `getStatus()`: 取得當前驗證狀態（phase、currentTick、correctTicks、mismatchedTicks 等）
+     - `consumeResults()`: 消費並返回累積的 tick 驗證結果（供 Land Tick handler 發送 event）
+   - **ReevaluationRunnerImpl**: 實作 `ReevaluationRunnerProtocol`
+     - 封裝 `LandKeeper` 在 `.reevaluation` 模式下的 step-by-step 執行
+     - 提供 `step()` 方法，每次呼叫執行一個 tick 並返回驗證結果
+     - 計算 state hash 並與錄製的 hash 比對
+   - **ReevaluationTargetFactory Protocol**: 應用程式實作此 protocol 以建立特定 Land 類型的 Runner
+   - **WebClient 整合**:
+     - 新增 `ReevaluationMonitorView.vue`: 提供即時驗證進度視覺化 UI
+     - 新增 `StateTreeDiffView.vue` / `StateNode.vue`: 狀態樹差異視覺化元件
+     - 新增 `useReevaluationMonitor.ts`: Vue composable for Monitor Land 連線管理
+
 ## Implementation Details
 
 - **排序規則**: `resolvedAtTick` 為主、`sequence` 為次
@@ -93,4 +113,16 @@
   - `Sources/SwiftStateTree/Runtime/ActionRecorder.swift`
   - `Sources/SwiftStateTree/Runtime/ActionSource.swift`
   - `Examples/GameDemo/Sources/ReevaluationRunner/` (Application-specific runner)
-
+  - **SwiftStateTreeReevaluationMonitor 模組**:
+    - `Sources/SwiftStateTreeReevaluationMonitor/ReevaluationMonitorLand.swift`
+    - `Sources/SwiftStateTreeReevaluationMonitor/ReevaluationMonitorState.swift`
+    - `Sources/SwiftStateTreeReevaluationMonitor/ReevaluationMonitorActions.swift`
+    - `Sources/SwiftStateTreeReevaluationMonitor/ReevaluationMonitorEvents.swift`
+    - `Sources/SwiftStateTreeReevaluationMonitor/ReevaluationRunnerService.swift`
+    - `Sources/SwiftStateTreeReevaluationMonitor/ReevaluationRunnerImpl.swift`
+    - `Sources/SwiftStateTreeReevaluationMonitor/ReevaluationInterfaces.swift`
+  - **WebClient 整合**:
+    - `Examples/GameDemo/WebClient/src/views/ReevaluationMonitorView.vue`
+    - `Examples/GameDemo/WebClient/src/components/StateTreeDiffView.vue`
+    - `Examples/GameDemo/WebClient/src/components/StateNode.vue`
+    - `Examples/GameDemo/WebClient/src/generated/reevaluation-monitor/`

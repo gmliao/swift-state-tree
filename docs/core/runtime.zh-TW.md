@@ -119,12 +119,12 @@ func handleAction<A: ActionPayload>(_ action: A, ...) async throws -> AnyCodable
         clientID: clientID,
         sessionID: sessionID
     )
-    
+
     // 執行 Resolver（如果有的話）
     if !handler.resolverExecutors.isEmpty {
         ctx = try await ResolverExecutor.executeResolvers(...)
     }
-    
+
     // 執行 handler
     return try withMutableStateSync { state in
         try handler.invoke(&state, action: action, ctx: ctx)
@@ -154,7 +154,7 @@ sequenceDiagram
     participant Resolver as ResolverExecutor
     participant Handler as ActionHandler
     participant State as StateNode
-    
+
     Client->>Adapter: 發送 Action
     Adapter->>Keeper: handleAction(action, ...)
     Keeper->>Keeper: makeContext(...)
@@ -176,12 +176,12 @@ Event handler 的流程類似，但沒有返回值：
 // Event handler 執行
 func handleEvent<E: EventPayload>(_ event: E, ...) async {
     var ctx = makeContext(...)
-    
+
     // 執行 Resolver（如果有的話）
     if !handler.resolverExecutors.isEmpty {
         ctx = try await ResolverExecutor.executeResolvers(...)
     }
-    
+
     // 執行 handler（無返回值）
     try withMutableStateSync { state in
         try handler.invoke(&state, event: event, ctx: ctx)
@@ -205,19 +205,19 @@ public func join(session: PlayerSession, ...) async throws -> JoinDecision {
     if let canJoinHandler = definition.lifetimeHandlers.canJoin {
         decision = try canJoinHandler(state, session, ctx)
     }
-    
+
     // 2. 如果被拒絕，直接返回
     guard case .allow(let playerID) = decision else {
         return decision
     }
-    
+
     // 3. 檢查人數上限
     if let maxPlayers = definition.config.maxPlayers {
         guard players.count < maxPlayers else {
             throw JoinError.roomIsFull
         }
     }
-    
+
     // 4. 執行 OnJoin handler（如果定義）
     if let onJoinHandler = definition.lifetimeHandlers.onJoin {
         // 執行 Resolver（如果有的話）
@@ -226,7 +226,7 @@ public func join(session: PlayerSession, ...) async throws -> JoinDecision {
             try onJoinHandler(&state, ctx)
         }
     }
-    
+
     return decision
 }
 ```
@@ -243,10 +243,10 @@ public func leave(playerID: PlayerID, ...) async throws {
             try onLeaveHandler(&state, ctx)
         }
     }
-    
+
     // 清理玩家資料
     players.removeValue(forKey: playerID)
-    
+
     // 檢查是否需要自動銷毀
     checkAutoDestroy()
 }
@@ -267,6 +267,84 @@ Lifetime {
 }
 ```
 
+### Event Queue 機制 (PendingItems)
+
+`LandKeeper` 使用統一的 `pendingItems` 佇列來管理所有輸入：
+
+- **Action**：客戶端發送的 Action
+- **ClientEvent**：客戶端發送的 Event
+- **Lifecycle Event**：`OnJoin`、`OnLeave`、`OnInitialize`
+
+```swift
+// 統一的 PendingItem 類型
+public enum PendingItem: Sendable {
+    case action(PendingActionItem)
+    case clientEvent(PendingClientEventItem)
+    case lifecycle(PendingLifecycleItem)
+}
+```
+
+每個 PendingItem 都會記錄：
+
+- `sequence`：全域遞增的序號（跨 Action/Event/Lifecycle 共用）
+- `resolvedAtTick`：Resolver 完成時的 tick ID
+- `resolverOutputs`：Resolver 輸出（Action 和 Lifecycle 有，ClientEvent 為空）
+
+### Tick 執行模型
+
+每個 Tick 的執行順序：
+
+```mermaid
+sequenceDiagram
+    participant Queue as PendingItems
+    participant Keeper as LandKeeper
+    participant Handler as Tick Handler
+    participant Output as Output Collector
+
+    Keeper->>Keeper: tickId = nextTickId++
+    Keeper->>Queue: processPendingActions()
+    Note over Queue: 1. 過濾 resolvedAtTick < tickId
+    Note over Queue: 2. 按 resolvedAtTick + sequence 排序
+    Queue->>Keeper: 依序執行 handlers
+    Keeper->>Handler: tickHandler(&state, ctx)
+    Keeper->>Keeper: lastCommittedTickId = tickId
+    Keeper->>Output: flushOutputs(tickId)
+    Note over Output: 發送 emitEvent 事件
+    Note over Output: 處理 sync 請求
+```
+
+排序規則確保 **Deterministic Replay**：
+
+1. **Primary**: `resolvedAtTick`（Resolver 完成的 tick）
+2. **Secondary**: `sequence`（接收順序）
+
+### Deterministic Output 機制
+
+Handler 中的事件發送和同步請求會被收集到 `OutputCollector`，在 tick 結尾統一 flush：
+
+```swift
+// ✅ 正確：使用 emitEvent（同步 API，deterministic）
+HandleAction(AttackAction.self) { state, action, ctx in
+    state.applyDamage(action.damage)
+
+    // 事件會排入佇列，在 tick 結尾發送
+    ctx.emitEvent(DamageEvent(damage: action.damage), to: .all)
+
+    return AttackResponse(success: true)
+}
+
+// ❌ 避免：使用 spawn + sendEvent（async，non-deterministic）
+// ctx.spawn { await ctx.sendEvent(...) }
+```
+
+`LandContext` 提供的 deterministic 方法：
+
+| 方法                         | 說明                        |
+| ---------------------------- | --------------------------- |
+| `emitEvent(_:to:)`           | 排入事件佇列，tick 結尾發送 |
+| `requestSyncNow()`           | 請求立即同步，tick 結尾執行 |
+| `requestSyncBroadcastOnly()` | 請求廣播同步，tick 結尾執行 |
+
 ### Tick 執行
 
 `LandKeeper` 會自動管理 Tick 任務：
@@ -278,27 +356,31 @@ Task {
     if let onInitializeHandler = definition.lifetimeHandlers.onInitialize {
         await executeOnInitialize(handler: onInitializeHandler)
     }
-    
+
     // 啟動 Tick loop
     if let interval = definition.lifetimeHandlers.tickInterval {
         await configureTickLoop(interval: interval)
     }
 }
 
-// Tick loop
-private func configureTickLoop(interval: Duration) async {
-    tickTask = Task {
-        while !Task.isCancelled {
-            try? await Task.sleep(for: interval)
-            
-            // 執行 Tick handler
-            if let tickHandler = definition.lifetimeHandlers.tickHandler {
-                try withMutableStateSync { state in
-                    try tickHandler(&state, makeContext(...))
-                }
-            }
-        }
+// Tick loop（簡化版）
+private func runTick() async {
+    let tickId = nextTickId
+    nextTickId += 1
+
+    // 1. 處理待執行的 Action/Event/Lifecycle
+    try await processPendingActions()
+
+    // 2. 執行 Tick handler
+    if let tickHandler = definition.lifetimeHandlers.tickHandler {
+        tickHandler(&state, makeContext(tickId: tickId))
     }
+
+    // 3. 更新已提交的 tick ID
+    lastCommittedTickId = tickId
+
+    // 4. Flush deterministic outputs
+    await flushOutputs(forTick: tickId)
 }
 ```
 
@@ -405,4 +487,3 @@ private func checkAutoDestroy() {
 - [同步規則](sync.zh-TW.md) - 深入了解同步機制
 - [Resolver 機制](resolver.zh-TW.md) - Resolver 使用指南
 - [Transport 層](../transport/README.zh-TW.md) - 了解 TransportAdapter 如何與 LandKeeper 互動
-

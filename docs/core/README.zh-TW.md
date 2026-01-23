@@ -26,6 +26,7 @@
 2. **[同步規則](sync.zh-TW.md)** - 理解狀態同步機制
 3. **[Runtime 運作機制](runtime.zh-TW.md)** - 深入了解 LandKeeper 的運作方式
 4. **[Resolver 使用指南](resolver.zh-TW.md)** - 學習如何使用 Resolver 載入資料
+5. **[Deterministic Re-evaluation](reevaluation.zh-TW.md)** - 錄製與重播機制
 
 ## Runtime（LandKeeper）
 

@@ -17,6 +17,7 @@ import {
 import { ChalkLogger } from "./logger";
 import { fetchSchema, printSchema } from "./schema";
 import * as admin from "./admin";
+import { evaluateAssertion } from "./scenarioAssertions.js";
 
 const program = new Command();
 
@@ -446,11 +447,9 @@ async function executeScript(
         console.log(chalk.blue(`📤 Sending event [${event}]...`));
         view.sendEvent(event, hydratePayload(payload || {}));
       } else if (type === "assert") {
-        const { path, equals, exists, greaterThanOrEqual, message } = assert;
+        const { path, equals } = assert;
         const state = view.getState();
-        const value = getNestedValue(state, path);
-        const normalizedValue = normalizeForCompare(value);
-        const normalizedEquals = normalizeForCompare(equals);
+        const { value } = evaluateAssertion(state, assert);
 
         console.log(chalk.magenta(`🔍 Asserting: ${path} ...`));
         console.log(
@@ -461,40 +460,6 @@ async function executeScript(
             `   Expected: ${JSON.stringify(equals)} (${typeof equals})`,
           ),
         );
-
-        if (exists !== undefined) {
-          // Check if value exists (not undefined) - null is considered as existing
-          const isPresent = value !== undefined;
-          if (isPresent !== exists) {
-            throw new Error(
-              message ||
-                `Assertion failed: path ${path} presence should be ${exists}, but got ${isPresent} (value: ${JSON.stringify(value)})`,
-            );
-          }
-        }
-
-        if (equals !== undefined) {
-          if (!deepEqual(normalizedValue, normalizedEquals)) {
-            throw new Error(
-              message ||
-                `Assertion failed: ${path} expected ${JSON.stringify(equals)}, but got ${JSON.stringify(value)} (type: ${typeof value})`,
-            );
-          }
-        }
-
-        if (greaterThanOrEqual !== undefined) {
-          const numValue = typeof value === "number" ? value : Number(value);
-          const numExpected =
-            typeof greaterThanOrEqual === "number"
-              ? greaterThanOrEqual
-              : Number(greaterThanOrEqual);
-          if (isNaN(numValue) || isNaN(numExpected) || numValue < numExpected) {
-            throw new Error(
-              message ||
-                `Assertion failed: ${path} expected >= ${greaterThanOrEqual}, but got ${value}`,
-            );
-          }
-        }
         console.log(chalk.green(`✅ Assertion passed: ${path}`));
       } else if (type === "log") {
         console.log(chalk.cyan(`ℹ️  ${step.message || ""}`));
@@ -542,57 +507,6 @@ function replacePlaceholder(obj: any, placeholder: string, value: string): any {
   return obj;
 }
 
-function getNestedValue(obj: any, path: string): any {
-  if (!path) return obj;
-  return path.split(".").reduce((o, i) => (o ? o[i] : undefined), obj);
-}
-
-function deepEqual(a: any, b: any): boolean {
-  if (a === b) return true;
-
-  if (
-    typeof a !== "object" ||
-    a === null ||
-    typeof b !== "object" ||
-    b === null
-  ) {
-    return false;
-  }
-
-  const keysA = Object.keys(a);
-  const keysB = Object.keys(b);
-
-  if (keysA.length !== keysB.length) return false;
-
-  for (const key of keysA) {
-    if (!keysB.includes(key)) return false;
-    if (!deepEqual(a[key], b[key])) return false;
-  }
-
-  return true;
-}
-
-function normalizeForCompare(value: any): any {
-  if (value === null || value === undefined) return value;
-
-  if (Array.isArray(value)) {
-    return value.map((item) => normalizeForCompare(item));
-  }
-
-  if (typeof value === "object") {
-    if (typeof (value as any).toJSON === "function") {
-      return normalizeForCompare((value as any).toJSON());
-    }
-
-    const result: any = {};
-    for (const [key, val] of Object.entries(value)) {
-      result[key] = normalizeForCompare(val);
-    }
-    return result;
-  }
-
-  return value;
-}
 
 function hydratePayload(payload: any): any {
   if (payload === null || payload === undefined) return payload;

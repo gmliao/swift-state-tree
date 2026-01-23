@@ -125,7 +125,7 @@ struct PathHasherTests {
         
         // Unknown dynamic path: /unknown/123
         // Should fallback to naive normalization: unknown.* -> FNV1a("unknown.*")
-        let (hash2, keys2) = hasher.split("/unknown/123")
+        let (_, keys2) = hasher.split("/unknown/123")
         #expect(keys2.isEmpty) // No wildcard segment in fallback for 2 components
         // Let's check fallback implementation:
         // normalizePathFallback returns (pattern, dynamicKey)
