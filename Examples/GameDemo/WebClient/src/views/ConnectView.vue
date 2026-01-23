@@ -66,14 +66,16 @@ function goToReevaluationMonitor() {
 <template>
   <v-container
     fluid
-    class="connect-bg fill-height d-flex align-center justify-center"
+    class="connect-bg connect-container fill-height d-flex align-center justify-center"
   >
-    <v-card class="glass-card main-card pa-10" width="440">
+    <v-card class="glass-card main-card pa-10">
       <div class="text-center mb-10">
-        <h1 class="text-h4 font-weight-bold mb-2 color-primary tracking-tight">
+        <h1
+          class="text-h4 font-weight-bold mb-2 color-primary tracking-tight connect-title"
+        >
           Hero Defense
         </h1>
-        <p class="text-body-1 text-secondary font-weight-regular">
+        <p class="text-body-1 text-secondary font-weight-regular connect-subtitle">
           Battle for the High Ground
         </p>
       </div>
@@ -168,9 +170,16 @@ function goToReevaluationMonitor() {
     radial-gradient(at 50% 100%, rgba(52, 199, 89, 0.08) 0px, transparent 50%);
 }
 
+.connect-container {
+  min-height: 100vh;
+  padding: 24px !important;
+  padding-block: 24px !important;
+}
+
 .main-card {
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.04) !important;
   border: 1px solid rgba(0, 0, 0, 0.03) !important;
+  width: min(440px, 92vw);
 }
 
 .color-primary {
@@ -195,5 +204,53 @@ function goToReevaluationMonitor() {
   background: white !important;
   border-color: var(--color-primary);
   box-shadow: 0 0 0 4px rgba(0, 122, 255, 0.1);
+}
+
+@media (max-width: 600px) {
+  .connect-container {
+    align-items: flex-start !important;
+    padding-block: 32px !important;
+  }
+
+  .main-card {
+    padding: 24px !important;
+  }
+}
+
+@media (max-height: 700px) {
+  .connect-container {
+    align-items: flex-start !important;
+    padding-block: 24px !important;
+  }
+
+  .main-card {
+    padding: 22px !important;
+  }
+
+  .connect-title {
+    font-size: 1.45rem !important;
+  }
+
+  .connect-subtitle {
+    font-size: 0.95rem !important;
+  }
+}
+
+@media (max-height: 600px) {
+  .connect-container {
+    padding-block: 18px !important;
+  }
+
+  .main-card {
+    padding: 18px !important;
+  }
+
+  .connect-title {
+    font-size: 1.3rem !important;
+  }
+
+  .connect-subtitle {
+    font-size: 0.9rem !important;
+  }
 }
 </style>

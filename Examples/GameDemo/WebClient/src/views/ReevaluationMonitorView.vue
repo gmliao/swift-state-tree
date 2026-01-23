@@ -22,25 +22,30 @@
             style="overflow: hidden; min-height: 0"
           >
             <div class="flex-grow-1 overflow-y-auto px-2">
-              <v-list v-if="records.length > 0" bg-color="transparent">
+              <v-list v-if="recordItems.length > 0" bg-color="transparent">
                 <v-list-item
-                  v-for="record in records"
-                  :key="record"
-                  @click="selectRecord(record)"
-                  :active="selectedRecord === record"
+                  v-for="item in recordItems"
+                  :key="item.record"
+                  @click="selectRecord(item.record)"
+                  :active="selectedRecord === item.record"
                   class="record-item mb-2 rounded-xl"
-                  :variant="selectedRecord === record ? 'flat' : 'text'"
-                  :color="selectedRecord === record ? 'primary' : ''"
+                  :variant="selectedRecord === item.record ? 'flat' : 'text'"
+                  :color="selectedRecord === item.record ? 'primary' : ''"
                 >
-                  <template v-slot:prepend>
-                    <v-icon
-                      :color="selectedRecord === record ? 'white' : 'secondary'"
+                  <v-list-item-title
+                    class="record-title-row text-body-2 font-weight-semibold"
+                    :title="item.display.tooltip"
+                  >
+                    <v-chip
+                      v-if="item.display.badge"
+                      size="x-small"
+                      color="secondary"
+                      variant="tonal"
+                      class="record-badge"
                     >
-                      mdi-file-clock-outline
-                    </v-icon>
-                  </template>
-                  <v-list-item-title class="text-body-2 font-weight-semibold">
-                    {{ getRecordName(record) }}
+                      {{ item.display.badge }}
+                    </v-chip>
+                    <span class="record-name">{{ item.display.title }}</span>
                   </v-list-item-title>
                 </v-list-item>
               </v-list>
@@ -62,7 +67,7 @@
             <div class="pa-4 flex-shrink-0">
               <v-btn
                 v-if="!isVerifying"
-                class="btn-apple"
+                class="btn-apple monitor-action-btn"
                 @click="startVerification"
                 block
                 rounded="xl"
@@ -76,7 +81,7 @@
 
               <v-btn
                 v-else
-                class="btn-soft text-error"
+                class="btn-soft text-error monitor-action-btn"
                 block
                 rounded="xl"
                 size="large"
@@ -143,49 +148,41 @@
                 rounded="pill"
                 class="apple-progress"
               />
+              <div class="progress-stats mt-4">
+                <div class="progress-stat">
+                  <div
+                    class="text-caption text-secondary font-weight-bold text-uppercase tracking-wide"
+                  >
+                    Total Ticks
+                  </div>
+                  <div class="text-h6 font-weight-bold">
+                    {{ monitorState?.totalTicks }}
+                  </div>
+                </div>
+                <div class="progress-stat">
+                  <div
+                    class="text-caption text-success font-weight-bold text-uppercase tracking-wide"
+                  >
+                    Correct
+                  </div>
+                  <div class="text-h6 font-weight-bold text-success">
+                    {{ monitorState?.correctTicks }}
+                  </div>
+                </div>
+                <div class="progress-stat">
+                  <div
+                    class="text-caption text-error font-weight-bold text-uppercase tracking-wide"
+                  >
+                    Mismatches
+                  </div>
+                  <div class="text-h6 font-weight-bold text-error">
+                    {{ monitorState?.mismatchedTicks }}
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </v-card>
-
-        <!-- Bento Grid Stats -->
-        <div
-          v-if="
-            monitorState?.status === 'completed' ||
-            monitorState?.status === 'verifying'
-          "
-          class="bento-grid mb-6"
-        >
-          <div class="glass-card bento-item">
-            <div
-              class="text-caption text-secondary font-weight-bold text-uppercase mb-1 tracking-wide"
-            >
-              Total Ticks
-            </div>
-            <div class="text-h3 font-weight-bold">
-              {{ monitorState?.totalTicks }}
-            </div>
-          </div>
-          <div class="glass-card bento-item">
-            <div
-              class="text-caption text-success font-weight-bold text-uppercase mb-1 tracking-wide"
-            >
-              Correct
-            </div>
-            <div class="text-h3 font-weight-bold text-success">
-              {{ monitorState?.correctTicks }}
-            </div>
-          </div>
-          <div class="glass-card bento-item">
-            <div
-              class="text-caption text-error font-weight-bold text-uppercase mb-1 tracking-wide"
-            >
-              Mismatches
-            </div>
-            <div class="text-h3 font-weight-bold text-error">
-              {{ monitorState?.mismatchedTicks }}
-            </div>
-          </div>
-        </div>
 
         <v-row>
           <v-col :cols="showTickList ? 8 : 12">
@@ -293,7 +290,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 import { LandClient } from "@/utils/LandClient";
 import StateTreeDiffView from "../components/StateTreeDiffView.vue";
@@ -315,8 +312,54 @@ const progress = computed(() => {
   );
 });
 
+type RecordDisplay = {
+  title: string;
+  badge?: string;
+  tooltip: string;
+};
+
+const recordItems = computed(() =>
+  records.value.map((record) => ({
+    record,
+    display: getRecordDisplay(record),
+  }))
+);
+
 function getRecordName(path: string) {
   return path.split("/").pop() || path;
+}
+
+function getRecordDisplay(path: string): RecordDisplay {
+  const fileName = getRecordName(path);
+  const baseName = fileName.replace(/\.json$/i, "");
+  const match = baseName.match(
+    /^(.+)-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z)-([A-Za-z0-9]+)$/
+  );
+  if (!match) {
+    return {
+      title: baseName,
+      tooltip: fileName,
+    };
+  }
+
+  const [, landType, timestamp, suffix] = match;
+  return {
+    title: formatRecordTimestamp(timestamp),
+    badge: `(${formatLandType(landType)})`,
+    tooltip: fileName,
+  };
+}
+
+function formatLandType(landType: string) {
+  return landType.replace(/defense$/i, "defences");
+}
+
+function formatRecordTimestamp(timestamp: string) {
+  const [datePart, timePartWithZone] = timestamp.split("T");
+  if (!timePartWithZone) return timestamp;
+  const timePart = timePartWithZone.replace("Z", "");
+  const normalizedTime = timePart.replace(/-/g, ":");
+  return `${datePart} ${normalizedTime}Z`;
 }
 
 function selectRecord(record: string) {
@@ -351,8 +394,14 @@ async function loadRecords() {
 async function startVerification() {
   if (!selectedRecord.value) return;
 
+  if (monitorClient.value) {
+    monitorClient.value.disconnect();
+    monitorClient.value = null;
+  }
+
   isVerifying.value = true;
   tickResults.value = []; // Clear previous results
+  monitorState.value = null;
 
   try {
     const response = await fetch(
@@ -407,6 +456,12 @@ async function togglePause() {
 onMounted(() => {
   loadRecords();
 });
+
+onUnmounted(() => {
+  if (monitorClient.value) {
+    monitorClient.value.disconnect();
+  }
+});
 </script>
 
 <style scoped>
@@ -415,14 +470,50 @@ onMounted(() => {
   min-height: 100vh;
 }
 
+.progress-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.progress-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .full-height-card {
   height: calc(100vh - 64px);
+}
+
+.record-title-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.record-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.85rem;
+}
+
+.record-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  background: rgba(52, 120, 246, 0.12) !important;
+  border: 1px solid rgba(52, 120, 246, 0.2);
 }
 
 .record-item {
   transition: var(--transition-fast);
   cursor: pointer;
-  padding: 12px 16px;
+  padding: 8px 12px;
 }
 
 .record-item:hover:not(.v-list-item--active) {
@@ -455,5 +546,27 @@ onMounted(() => {
 
 .mismatch-item {
   background: rgba(255, 59, 48, 0.03);
+}
+
+.monitor-action-btn {
+  font-size: 0.9rem;
+  height: 40px !important;
+}
+
+@media (max-width: 960px) {
+  .full-height-card {
+    height: auto;
+    min-height: 40vh;
+  }
+
+  .tick-list-container {
+    height: 360px;
+  }
+}
+
+@media (max-width: 600px) {
+  .tick-list-container {
+    height: 300px;
+  }
 }
 </style>
