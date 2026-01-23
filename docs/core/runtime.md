@@ -119,12 +119,12 @@ func handleAction<A: ActionPayload>(_ action: A, ...) async throws -> AnyCodable
         clientID: clientID,
         sessionID: sessionID
     )
-    
+
     // Execute Resolver (if any)
     if !handler.resolverExecutors.isEmpty {
         ctx = try await ResolverExecutor.executeResolvers(...)
     }
-    
+
     // Execute handler
     return try withMutableStateSync { state in
         try handler.invoke(&state, action: action, ctx: ctx)
@@ -154,7 +154,7 @@ sequenceDiagram
     participant Resolver as ResolverExecutor
     participant Handler as ActionHandler
     participant State as StateNode
-    
+
     Client->>Adapter: Send Action
     Adapter->>Keeper: handleAction(action, ...)
     Keeper->>Keeper: makeContext(...)
@@ -176,12 +176,12 @@ Event handler flow is similar, but has no return value:
 // Event handler execution
 func handleEvent<E: EventPayload>(_ event: E, ...) async {
     var ctx = makeContext(...)
-    
+
     // Execute Resolver (if any)
     if !handler.resolverExecutors.isEmpty {
         ctx = try await ResolverExecutor.executeResolvers(...)
     }
-    
+
     // Execute handler (no return value)
     try withMutableStateSync { state in
         try handler.invoke(&state, event: event, ctx: ctx)
@@ -205,19 +205,19 @@ public func join(session: PlayerSession, ...) async throws -> JoinDecision {
     if let canJoinHandler = definition.lifetimeHandlers.canJoin {
         decision = try canJoinHandler(state, session, ctx)
     }
-    
+
     // 2. If denied, return directly
     guard case .allow(let playerID) = decision else {
         return decision
     }
-    
+
     // 3. Check player limit
     if let maxPlayers = definition.config.maxPlayers {
         guard players.count < maxPlayers else {
             throw JoinError.roomIsFull
         }
     }
-    
+
     // 4. Execute OnJoin handler (if defined)
     if let onJoinHandler = definition.lifetimeHandlers.onJoin {
         // Execute Resolver (if any)
@@ -226,7 +226,7 @@ public func join(session: PlayerSession, ...) async throws -> JoinDecision {
             try onJoinHandler(&state, ctx)
         }
     }
-    
+
     return decision
 }
 ```
@@ -243,10 +243,10 @@ public func leave(playerID: PlayerID, ...) async throws {
             try onLeaveHandler(&state, ctx)
         }
     }
-    
+
     // Clean up player data
     players.removeValue(forKey: playerID)
-    
+
     // Check if auto-destruction is needed
     checkAutoDestroy()
 }
@@ -267,6 +267,84 @@ Lifetime {
 }
 ```
 
+### Event Queue Mechanism (PendingItems)
+
+`LandKeeper` uses a unified `pendingItems` queue to manage all inputs:
+
+- **Action**: Actions sent by clients
+- **ClientEvent**: Events sent by clients
+- **Lifecycle Event**: `OnJoin`, `OnLeave`, `OnInitialize`
+
+```swift
+// Unified PendingItem type
+public enum PendingItem: Sendable {
+    case action(PendingActionItem)
+    case clientEvent(PendingClientEventItem)
+    case lifecycle(PendingLifecycleItem)
+}
+```
+
+Each PendingItem records:
+
+- `sequence`: Globally incrementing sequence number (shared across Action/Event/Lifecycle)
+- `resolvedAtTick`: Tick ID when Resolver completed
+- `resolverOutputs`: Resolver outputs (Action and Lifecycle have, ClientEvent is empty)
+
+### Tick Execution Model
+
+Execution order for each Tick:
+
+```mermaid
+sequenceDiagram
+    participant Queue as PendingItems
+    participant Keeper as LandKeeper
+    participant Handler as Tick Handler
+    participant Output as Output Collector
+
+    Keeper->>Keeper: tickId = nextTickId++
+    Keeper->>Queue: processPendingActions()
+    Note over Queue: 1. Filter resolvedAtTick < tickId
+    Note over Queue: 2. Sort by resolvedAtTick + sequence
+    Queue->>Keeper: Execute handlers in order
+    Keeper->>Handler: tickHandler(&state, ctx)
+    Keeper->>Keeper: lastCommittedTickId = tickId
+    Keeper->>Output: flushOutputs(tickId)
+    Note over Output: Send emitEvent events
+    Note over Output: Process sync requests
+```
+
+Sorting rules ensure **Deterministic Replay**:
+
+1. **Primary**: `resolvedAtTick` (tick when Resolver completed)
+2. **Secondary**: `sequence` (receive order)
+
+### Deterministic Output Mechanism
+
+Event sends and sync requests from handlers are collected in `OutputCollector`, flushed uniformly at end of tick:
+
+```swift
+// ✅ Correct: Use emitEvent (sync API, deterministic)
+HandleAction(AttackAction.self) { state, action, ctx in
+    state.applyDamage(action.damage)
+
+    // Event is queued, sent at end of tick
+    ctx.emitEvent(DamageEvent(damage: action.damage), to: .all)
+
+    return AttackResponse(success: true)
+}
+
+// ❌ Avoid: Using spawn + sendEvent (async, non-deterministic)
+// ctx.spawn { await ctx.sendEvent(...) }
+```
+
+Deterministic methods provided by `LandContext`:
+
+| Method                       | Description                                     |
+| ---------------------------- | ----------------------------------------------- |
+| `emitEvent(_:to:)`           | Enqueue event, sent at end of tick              |
+| `requestSyncNow()`           | Request immediate sync, executed at end of tick |
+| `requestSyncBroadcastOnly()` | Request broadcast sync, executed at end of tick |
+
 ### Tick Execution
 
 `LandKeeper` automatically manages Tick tasks:
@@ -278,27 +356,31 @@ Task {
     if let onInitializeHandler = definition.lifetimeHandlers.onInitialize {
         await executeOnInitialize(handler: onInitializeHandler)
     }
-    
+
     // Start Tick loop
     if let interval = definition.lifetimeHandlers.tickInterval {
         await configureTickLoop(interval: interval)
     }
 }
 
-// Tick loop
-private func configureTickLoop(interval: Duration) async {
-    tickTask = Task {
-        while !Task.isCancelled {
-            try? await Task.sleep(for: interval)
-            
-            // Execute Tick handler
-            if let tickHandler = definition.lifetimeHandlers.tickHandler {
-                try withMutableStateSync { state in
-                    try tickHandler(&state, makeContext(...))
-                }
-            }
-        }
+// Tick loop (simplified)
+private func runTick() async {
+    let tickId = nextTickId
+    nextTickId += 1
+
+    // 1. Process pending Action/Event/Lifecycle
+    try await processPendingActions()
+
+    // 2. Execute Tick handler
+    if let tickHandler = definition.lifetimeHandlers.tickHandler {
+        tickHandler(&state, makeContext(tickId: tickId))
     }
+
+    // 3. Update committed tick ID
+    lastCommittedTickId = tickId
+
+    // 4. Flush deterministic outputs
+    await flushOutputs(forTick: tickId)
 }
 ```
 

@@ -481,20 +481,20 @@ public struct StateNodeBuilderMacro: MemberMacro {
                 codeLines.append("// Always attempt recursive clear for non-primitive types to ensure nested dirty flags are cleared")
 
                 if isOptional {
-                    // For optional types, unwrap first then check if it's a StateNodeProtocol
-                    // Use 'is' check to avoid compiler warning about always-succeeding cast
-                    codeLines.append("if let unwrapped = \(storageName).wrappedValue, unwrapped is any StateNodeProtocol {")
-                    codeLines.append("    var nestedState = unwrapped as! any StateNodeProtocol")
+                    // For optional types, unwrap first then attempt StateNodeProtocol cast via Any
+                    // Use Any to avoid compile-time always-true/always-succeed warnings
+                    codeLines.append("if let unwrapped = \(storageName).wrappedValue, var nestedState = (unwrapped as Any) as? any StateNodeProtocol {")
                 } else {
                     // For non-optional types, directly check if it's a StateNodeProtocol
                     // Note: Not all non-primitive types conform to StateNodeProtocol (e.g., DeterministicMath types, collections)
-                    // Use 'is' check to avoid compiler warning about always-succeeding cast
-                    codeLines.append("if \(storageName).wrappedValue is any StateNodeProtocol {")
-                    codeLines.append("    var nestedState = \(storageName).wrappedValue as! any StateNodeProtocol")
+                    // Use Any to avoid compile-time always-true/always-succeed warnings
+                    codeLines.append("if var nestedState = (\(storageName).wrappedValue as Any) as? any StateNodeProtocol {")
                 }
                 codeLines.append("    nestedState.clearDirty()")
                 codeLines.append("    // Update value without marking as dirty (using internal method)")
-                codeLines.append("    \(storageName).updateValueWithoutMarkingDirty(nestedState as! \(typeName))")
+                codeLines.append("    if let typedState = nestedState as? \(typeName) {")
+                codeLines.append("        \(storageName).updateValueWithoutMarkingDirty(typedState)")
+                codeLines.append("    }")
                 codeLines.append("}")
             }
         }
