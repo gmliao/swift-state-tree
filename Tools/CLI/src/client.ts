@@ -262,8 +262,33 @@ export class SwiftStateTreeClient {
       // Debug: print full message for unknown formats
       console.log(chalk.gray(`📨 Unknown message format:`));
       console.log(chalk.gray(JSON.stringify(json, null, 2).substring(0, 500)));
-    } catch (error) {
-      console.error(chalk.red(`❌ Failed to parse message: ${error}`));
+    } catch (error: any) {
+      // Show detailed error information for debugging
+      const errorMessage = error?.message || String(error);
+      console.error(chalk.red(`[ERROR] Failed to parse message: ${errorMessage}`));
+      
+      // For dynamic key slot errors, show additional context
+      if (errorMessage.includes("Dynamic key slot")) {
+        console.log(
+          chalk.yellow(
+            `⚠️  This may occur during reconnection or when message order is incorrect.`,
+          ),
+        );
+        console.log(
+          chalk.gray(
+            `   Tip: Ensure dynamic key slots are defined before use in opcode array format.`,
+          ),
+        );
+      }
+      
+      // Show raw message preview for debugging (if available)
+      try {
+        const text = typeof data === "string" ? data : data.toString();
+        const preview = text.substring(0, 200);
+        console.log(chalk.gray(`   Message preview: ${preview}...`));
+      } catch {
+        // Ignore if we can't show preview
+      }
     }
   }
 

@@ -1265,4 +1265,98 @@ describe('protocol', () => {
       expect(payload.metadata).toEqual({ version: '1.0' })
     })
   })
+
+  describe('Dynamic key slot error handling', () => {
+    beforeEach(() => {
+      // Setup mock pathHashes
+      pathHashReverseLookup.clear()
+      pathHashReverseLookup.set(222222, 'players.*.hp')
+    })
+
+    it('throws error when dynamic key slot is used before definition', () => {
+      // Create a state update where slot 0 is used before it's defined
+      // This simulates a malformed message where patches are out of order
+      const updateArray = [
+        StateUpdateOpcode.diff,
+        [222222, 0, StatePatchOpcode.replace, 100] // Uses slot 0 before it's defined
+      ]
+
+      const encoded = JSON.stringify(updateArray)
+      
+      // Create a dynamicKeyMap to enable slot-based resolution
+      // Slot 0 is NOT defined in the map, so it should throw
+      const dynamicKeyMap = new Map<number, string>()
+      // Don't define slot 0 - this should cause the error
+      
+      // Should throw error because slot 0 is not defined in dynamicKeyMap
+      expect(() => decodeMessage(encoded, {
+        message: MessageEncodingValues.json,
+        stateUpdate: StateUpdateEncodingValues.opcodeJsonArray,
+        stateUpdateDecoding: StateUpdateEncodingValues.opcodeJsonArray
+      }, dynamicKeyMap)).toThrow('Dynamic key slot 0 used before definition')
+    })
+
+    it('decodes correctly when dynamic key slot is defined before use', () => {
+      // Define slot 0 first, then use it
+      const updateArray = [
+        StateUpdateOpcode.diff,
+        [222222, [0, 'player-1'], StatePatchOpcode.replace, 100], // Define slot 0 = 'player-1'
+        [222222, 0, StatePatchOpcode.replace, 150] // Use slot 0
+      ]
+
+      const encoded = JSON.stringify(updateArray)
+      const dynamicKeyMap = new Map<number, string>()
+      
+      const decoded = decodeMessage(encoded, {
+        message: MessageEncodingValues.json,
+        stateUpdate: StateUpdateEncodingValues.opcodeJsonArray,
+        stateUpdateDecoding: StateUpdateEncodingValues.opcodeJsonArray
+      }, dynamicKeyMap)
+
+      expect(decoded).toHaveProperty('type', 'diff')
+      if ('type' in decoded && 'patches' in decoded) {
+        const update = decoded as StateUpdate
+        expect(update.patches.length).toBe(2)
+        // Both patches should resolve to the same path since slot 0 = 'player-1'
+        expect(update.patches[0]).toMatchObject({
+          path: '/players/player-1/hp',
+          op: 'replace',
+          value: 100
+        })
+        expect(update.patches[1]).toMatchObject({
+          path: '/players/player-1/hp',
+          op: 'replace',
+          value: 150
+        })
+      }
+    })
+
+    it('falls back to string conversion when dynamicKeyMap is not provided', () => {
+      // When dynamicKeyMap is not provided, number slots are converted to strings
+      const updateArray = [
+        StateUpdateOpcode.diff,
+        [222222, 0, StatePatchOpcode.replace, 100] // Slot 0 without map
+      ]
+
+      const encoded = JSON.stringify(updateArray)
+      
+      // No dynamicKeyMap provided - should fallback to String(0) = "0"
+      const decoded = decodeMessage(encoded, {
+        message: MessageEncodingValues.json,
+        stateUpdate: StateUpdateEncodingValues.opcodeJsonArray,
+        stateUpdateDecoding: StateUpdateEncodingValues.opcodeJsonArray
+      })
+
+      expect(decoded).toHaveProperty('type', 'diff')
+      if ('type' in decoded && 'patches' in decoded) {
+        const update = decoded as StateUpdate
+        expect(update.patches.length).toBe(1)
+        expect(update.patches[0]).toMatchObject({
+          path: '/players/0/hp', // Falls back to string "0"
+          op: 'replace',
+          value: 100
+        })
+      }
+    })
+  })
 })
