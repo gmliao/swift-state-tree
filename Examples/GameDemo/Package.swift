@@ -60,6 +60,16 @@ let package = Package(
             ],
             path: "Sources/ReevaluationRunner"
         ),
+        .executableTarget(
+            name: "EncodingBenchmark",
+            dependencies: [
+                "GameContent",
+                .product(name: "SwiftStateTree", package: "SwiftStateTree"),
+                .product(name: "SwiftStateTreeTransport", package: "SwiftStateTree"),
+                .product(name: "SwiftStateTreeMessagePack", package: "SwiftStateTree"),
+            ],
+            path: "Sources/EncodingBenchmark"
+        ),
         .testTarget(
             name: "GameContentTests",
             dependencies: [

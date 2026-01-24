@@ -156,3 +156,5 @@ temp/
 .worktrees/
 Examples/GameDemo/reevaluation-records/*
 
+docs/ALL.zh-TW.md
+docs/ALL.zh-TW.pdf
