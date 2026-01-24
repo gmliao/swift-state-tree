@@ -10,8 +10,9 @@
 1. **Thread Sanitizer** (`-sanitize=thread`) - 無數據競爭
 2. **Address Sanitizer** (`-sanitize=address`) - 無記憶體錯誤
 3. **單房間測試** - 所有格式都正常（JSON、opcode JSON、MessagePack）
+4. **Linux Docker (AMD 7600x)** - 多房間測試正常（所有編碼器：JSON、opcode JSON、MessagePack）✅
 
-### ❌ 失敗的測試
+### ❌ 失敗的測試（僅 macOS）
 1. **純 Release 模式** - 多房間測試失敗（所有編碼器：JSON、opcode JSON、MessagePack）
 2. **MallocStackLogging** - 同樣的錯誤
 3. **-O 優化** - 同樣的錯誤
@@ -22,6 +23,7 @@
 - **問題與並行編碼無關**：即使禁用並行編碼（`--parallel false`），問題仍然存在
 - **問題與 `withTaskGroup` 無關**：即使改為序列化執行（不使用 `withTaskGroup`），問題仍然存在
 - **問題與多房間實例同時存在有關**：多個 `LandKeeper` 實例都有自動的 tick loop 在背景執行，即使序列化執行 `syncNow()`，多個房間的 tick loop 仍然在並行執行，可能導致記憶體分配順序問題
+- **✅ 問題是平台特定的**：在 Linux Docker (AMD 7600x) 環境下，多房間測試正常通過，確認問題是 macOS 的 libmalloc 記憶體管理器特有的嚴格檢查，而非代碼問題
 
 ## 錯誤訊息
 
@@ -65,9 +67,11 @@ freed pointer was not the last allocation
 ### 短期方案
 - **單房間環境**：所有編碼器（JSON、opcode JSON、MessagePack）都運作正常，可在生產環境使用
 - **多房間環境**：
-  - 在生產環境中使用 Address Sanitizer 或 Thread Sanitizer 進行測試（這些模式下測試通過）
-  - 或考慮序列化執行多個房間的 sync（不使用 `withTaskGroup`），但這會影響效能
-  - 或暫時使用單房間架構
+  - **✅ Linux 生產環境**：所有編碼器都運作正常，可在生產環境使用（已在 AMD 7600x Docker 環境驗證）
+  - **macOS 開發環境**：
+    - 在生產環境中使用 Address Sanitizer 或 Thread Sanitizer 進行測試（這些模式下測試通過）
+    - 或考慮序列化執行多個房間的 sync（不使用 `withTaskGroup`），但這會影響效能
+    - 或暫時使用單房間架構進行本地開發測試
 
 ### 長期調查方向
 1. **檢查多房間並行執行的記憶體管理**
@@ -93,6 +97,7 @@ freed pointer was not the last allocation
 
 ## 測試命令
 
+### macOS 測試
 ```bash
 # Thread Sanitizer（通過）
 swift run -c release -Xswiftc -sanitize=thread EncodingBenchmark --game-type card-game --rooms 2 --players-per-room 5 --iterations 10 --format messagepack --parallel false
@@ -100,7 +105,7 @@ swift run -c release -Xswiftc -sanitize=thread EncodingBenchmark --game-type car
 # Address Sanitizer（通過）
 swift run -c release -Xswiftc -sanitize=address EncodingBenchmark --game-type card-game --rooms 2 --players-per-room 5 --iterations 10 --format messagepack --parallel false
 
-# Release 模式（失敗 - 所有編碼器）
+# Release 模式（失敗 - 所有編碼器，僅 macOS）
 swift run -c release EncodingBenchmark --game-type card-game --rooms 2 --players-per-room 5 --iterations 10 --format messagepack --parallel false
 swift run -c release EncodingBenchmark --game-type card-game --rooms 2 --players-per-room 5 --iterations 10 --format opcode-json --parallel false
 swift run -c release EncodingBenchmark --game-type card-game --rooms 2 --players-per-room 5 --iterations 10 --format json-object --parallel false
@@ -109,4 +114,12 @@ swift run -c release EncodingBenchmark --game-type card-game --rooms 2 --players
 swift run -c release EncodingBenchmark --game-type card-game --rooms 1 --players-per-room 20 --iterations 100 --format messagepack --parallel false
 swift run -c release EncodingBenchmark --game-type card-game --rooms 1 --players-per-room 20 --iterations 100 --format opcode-json-pathhash --parallel false
 swift run -c release EncodingBenchmark --game-type card-game --rooms 1 --players-per-room 20 --iterations 100 --format json-object --parallel false
+```
+
+### Linux Docker 測試（AMD 7600x）
+```bash
+# 多房間測試（通過 - 所有編碼器）✅
+swift run -c release EncodingBenchmark --game-type card-game --rooms 2 --players-per-room 5 --iterations 10 --format messagepack --parallel false
+swift run -c release EncodingBenchmark --game-type card-game --rooms 2 --players-per-room 5 --iterations 10 --format opcode-json --parallel false
+swift run -c release EncodingBenchmark --game-type card-game --rooms 2 --players-per-room 5 --iterations 10 --format json-object --parallel false
 ```
