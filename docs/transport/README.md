@@ -65,6 +65,8 @@ PlayerSession field priority:
 ## Parallel Encoding
 
 > **Status Note**: Parallel encoding feature has been implemented and tested, but current effects are unclear. In synthetic test environments, benefits mostly fall in the 1.0–1.2x range, with limited improvement. **Currently disabled by default**. Future real bot testing (including complete action/tick/transport/IO) is needed to more clearly define actual effects. To enable, explicitly pass `enableParallelEncoding: true` when creating `TransportAdapter`.
+>
+> **Note**: Parallel encoding is currently only supported for JSON encoders (`JSONStateUpdateEncoder`, `OpcodeJSONStateUpdateEncoder`). MessagePack encoders (`OpcodeMessagePackStateUpdateEncoder`) are thread-safe but parallel encoding is disabled due to potential release mode optimization issues. This may be re-enabled after further investigation.
 
 `TransportAdapter` supports parallel encoding of state updates to improve performance in multi-player scenarios.
 

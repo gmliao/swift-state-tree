@@ -12,6 +12,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private let codec: any TransportCodec
     private let messageEncoder: any TransportMessageEncoder
     private let stateUpdateEncoder: any StateUpdateEncoder
+    private let pathHashes: [String: UInt32]?  // Store pathHashes for creating new encoder instances in parallel encoding
     private var syncEngine = SyncEngine()
     private let logger: Logger
     private let enableLegacyJoin: Bool
@@ -115,6 +116,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 clientEventHashes: clientEventHashes
             )
             self.stateUpdateEncoder = encodingConfig.makeStateUpdateEncoder(pathHashes: pathHashes)
+            self.pathHashes = pathHashes  // Store for parallel encoding
             
             // Validate: Warn if opcodeJsonArray is used without pathHashes
             if encodingConfig.stateUpdate == .opcodeJsonArray && pathHashes == nil {
@@ -132,6 +134,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             self.codec = codec
             self.messageEncoder = JSONTransportMessageEncoder()
             self.stateUpdateEncoder = stateUpdateEncoder
+            self.pathHashes = pathHashes  // Store for parallel encoding
         }
         self.enableLegacyJoin = enableLegacyJoin
         self.enableDirtyTracking = enableDirtyTracking
@@ -1179,6 +1182,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private func parallelEncodingDecision(
         pendingUpdateCount: Int
     ) -> (useParallel: Bool, maxConcurrency: Int) {
+        // Check if encoder supports parallel encoding
+        // JSON encoders are thread-safe (JSONEncoder is thread-safe)
+        // MessagePack encoders: Currently disabled for parallel encoding due to potential release mode issues
+        // TODO: Re-enable after investigating release mode memory issues with shared keyTableStore
         guard stateUpdateEncoder is JSONStateUpdateEncoder
             || stateUpdateEncoder is OpcodeJSONStateUpdateEncoder
         else {
@@ -1314,7 +1321,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         return await withTaskGroup(of: [EncodedSyncUpdate].self, returning: [EncodedSyncUpdate].self) { group in
             let encodeUpdate: @Sendable (PendingSyncUpdate) -> EncodedSyncUpdate = { pending in
                 do {
-                    // Reuse the same encoder instance (JSONEncoder is thread-safe)
+                    // Reuse the same encoder instance for all encoders
+                    // JSONEncoder is thread-safe
+                    // OpcodeMessagePackStateUpdateEncoder uses NSLock for thread-safe access to shared state (keyTableStore)
+                    // The lock ensures that DynamicKeyTable.getSlot() and DynamicKeyTableStore.table() are thread-safe
                     let data = try stateUpdateEncoder.encode(
                         update: pending.update,
                         landID: landID,
