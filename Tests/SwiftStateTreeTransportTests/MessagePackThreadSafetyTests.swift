@@ -21,7 +21,7 @@ struct MessagePackThreadSafetyTests {
         let landID = "test-land"
         
         // Create many updates to stress test
-        let updateCount = 100
+        let updateCount = 500
         var updates: [(PlayerID, StateUpdate)] = []
         for i in 0 ..< updateCount {
             let playerID = PlayerID("player-\(i)")
@@ -145,8 +145,8 @@ struct MessagePackThreadSafetyTests {
         ]
         let update = StateUpdate.diff(patches)
         
-        // Run many concurrent encodings
-        let iterationCount = 1000
+        // Run many concurrent encodings (stress test)
+        let iterationCount = 10000
         let results = await withTaskGroup(of: Data.self, returning: [Data].self) { group in
             for _ in 0 ..< iterationCount {
                 group.addTask {

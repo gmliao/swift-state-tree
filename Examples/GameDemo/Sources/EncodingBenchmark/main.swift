@@ -318,6 +318,9 @@ func runMultiRoomBenchmarkCardGame(
             logger: benchmarkLogger
         )
         
+        // Only enable parallel encoding for JSON formats (MessagePack doesn't support it)
+        let shouldEnableParallel = parallel && (format == .jsonObject || format == .opcodeJson || format == .opcodeJsonPathHash)
+        
         let adapter = TransportAdapter<CardGameState>(
             keeper: keeper,
             transport: transport,
@@ -326,14 +329,14 @@ func runMultiRoomBenchmarkCardGame(
             enableDirtyTracking: true,
             encodingConfig: format.transportEncodingConfig,
             pathHashes: pathHashes,
-            enableParallelEncoding: parallel,
+            enableParallelEncoding: shouldEnableParallel,
             logger: benchmarkLogger
         )
         
         // Configure parallel encoding parameters for optimal performance
         // Note: Parallel encoding only works with JSON encoders, not MessagePack
-        // But we still configure it in case user tests with JSON format
-        if parallel {
+        // Only configure if using JSON format AND parallel is enabled
+        if parallel && (format == .jsonObject || format == .opcodeJson || format == .opcodeJsonPathHash) {
             // Set minimum player count (default: 20)
             await adapter.setParallelEncodingMinPlayerCount(20)
             // Set batch size (default: 12) - players per encoding task
@@ -390,16 +393,13 @@ func runMultiRoomBenchmarkCardGame(
         await room.transport.resetCounts()
     }
     
-    // Benchmark: Run iterations with parallel sync
+    // Benchmark: Run iterations with serial sync (not parallel to avoid libmalloc LIFO issues)
     let start = ContinuousClock.now
     for _ in 0 ..< iterations {
-        await withTaskGroup(of: Void.self) { group in
-            for room in rooms {
-                group.addTask { [room] in
-                    // CardGame tick runs automatically, we just need to sync
-                    await room.adapter.syncNow()
-                }
-            }
+        // Serial execution instead of withTaskGroup to avoid memory allocation order issues
+        for room in rooms {
+            // CardGame tick runs automatically, we just need to sync
+            await room.adapter.syncNow()
         }
     }
     let duration = start.duration(to: ContinuousClock.now)
@@ -472,6 +472,9 @@ func runMultiRoomBenchmark(
             logger: benchmarkLogger
         )
         
+        // Only enable parallel encoding for JSON formats (MessagePack doesn't support it)
+        let shouldEnableParallel = parallel && (format == .jsonObject || format == .opcodeJson || format == .opcodeJsonPathHash)
+        
         let adapter = TransportAdapter<HeroDefenseState>(
             keeper: keeper,
             transport: transport,
@@ -480,9 +483,21 @@ func runMultiRoomBenchmark(
             enableDirtyTracking: true,
             encodingConfig: format.transportEncodingConfig,
             pathHashes: pathHashes,
-            enableParallelEncoding: parallel,
+            enableParallelEncoding: shouldEnableParallel,
             logger: benchmarkLogger
         )
+        
+        // Configure parallel encoding parameters only for JSON formats
+        if shouldEnableParallel {
+            await adapter.setParallelEncodingMinPlayerCount(20)
+            await adapter.setParallelEncodingBatchSize(12)
+            await adapter.setParallelEncodingConcurrencyCaps(
+                lowPlayerCap: 2,
+                highPlayerCap: 4,
+                highPlayerThreshold: 30
+            )
+        }
+        
         await keeper.setTransport(adapter)
         await transport.setDelegate(adapter)
         
@@ -528,16 +543,13 @@ func runMultiRoomBenchmark(
         await room.transport.resetCounts()
     }
     
-    // Benchmark: Run iterations with parallel sync
+    // Benchmark: Run iterations with serial sync (not parallel to avoid libmalloc LIFO issues)
     let start = ContinuousClock.now
     for _ in 0 ..< iterations {
-        await withTaskGroup(of: Void.self) { group in
-            for room in rooms {
-                group.addTask { [room] in
-                    // HeroDefense tick runs automatically, we just need to sync
-                    await room.adapter.syncNow()
-                }
-            }
+        // Serial execution instead of withTaskGroup to avoid memory allocation order issues
+        for room in rooms {
+            // HeroDefense tick runs automatically, we just need to sync
+            await room.adapter.syncNow()
         }
     }
     let duration = start.duration(to: ContinuousClock.now)
@@ -621,6 +633,9 @@ func runBenchmark(
         logger: benchmarkLogger
     )
 
+    // Only enable parallel encoding for JSON formats (MessagePack doesn't support it)
+    let shouldEnableParallel = parallel && (format == .jsonObject || format == .opcodeJson || format == .opcodeJsonPathHash)
+    
     let adapter = TransportAdapter<BenchmarkState>(
         keeper: keeper,
         transport: mockTransport,
@@ -629,9 +644,21 @@ func runBenchmark(
         enableDirtyTracking: true,
         encodingConfig: format.transportEncodingConfig,
         pathHashes: pathHashes,
-        enableParallelEncoding: parallel,
+        enableParallelEncoding: shouldEnableParallel,
         logger: benchmarkLogger
     )
+    
+    // Configure parallel encoding parameters only for JSON formats
+    if shouldEnableParallel {
+        await adapter.setParallelEncodingMinPlayerCount(20)
+        await adapter.setParallelEncodingBatchSize(12)
+        await adapter.setParallelEncodingConcurrencyCaps(
+            lowPlayerCap: 2,
+            highPlayerCap: 4,
+            highPlayerThreshold: 30
+        )
+    }
+    
     await keeper.setTransport(adapter)
     await mockTransport.setDelegate(adapter)
 
