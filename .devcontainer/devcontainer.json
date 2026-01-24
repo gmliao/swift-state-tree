@@ -19,7 +19,10 @@
         "sswg.swift-lang"
       ],
       "settings": {
-        "swift.path": "/usr/bin/swift"
+        // Swift path will be auto-detected from PATH
+        // If auto-detection fails, uncomment and set manually:
+        // "swift.path": "/usr/bin/swift",
+        // "swift.sourcekit-lsp.serverPath": "/usr/bin/sourcekit-lsp"
       }
     }
   },
@@ -58,8 +61,13 @@
     "source=hummingbirddemo-swiftpm,target=/workspace/Examples/HummingbirdDemo/.swiftpm,type=volume"
   ],
 
+  // Environment variables
+  "containerEnv": {
+    "PATH": "/usr/bin:${containerEnv:PATH}"
+  },
+
   // Use 'postCreateCommand' to run commands after the container is created
-  "postCreateCommand": "swift --version && swift package resolve",
+  "postCreateCommand": ".devcontainer/configure-swift.sh && swift package resolve",
 
   // Comment out to connect as root instead. More info: https://aka.ms/vscode-remote/containers/non-root
   "remoteUser": "root",
