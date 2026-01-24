@@ -1,0 +1,191 @@
+[
+  {
+    "config" : {
+      "gameType" : "hero-defense",
+      "includeTick" : true,
+      "iterations" : 1000,
+      "playersPerRoom" : 5
+    },
+    "displayName" : "JSON Object",
+    "efficiency" : 107.10827625203052,
+    "format" : "json-object",
+    "parallel" : {
+      "avgCostPerSyncMs" : 0.394939012,
+      "bytesPerSync" : 1906,
+      "throughputSyncsPerSecond" : 2532.036516058333,
+      "timeMs" : 394.939012,
+      "totalBytes" : 1906529
+    },
+    "rooms" : 1,
+    "serial" : {
+      "avgCostPerSyncMs" : 0.42301236799999997,
+      "bytesPerSync" : 1904,
+      "throughputSyncsPerSecond" : 2363.997073485095,
+      "timeMs" : 423.012368,
+      "totalBytes" : 1904854
+    },
+    "speedup" : 1.0710827625203052
+  },
+  {
+    "config" : {
+      "gameType" : "hero-defense",
+      "includeTick" : true,
+      "iterations" : 1000,
+      "playersPerRoom" : 5
+    },
+    "displayName" : "JSON Object",
+    "efficiency" : 77.01511138071876,
+    "format" : "json-object",
+    "parallel" : {
+      "avgCostPerSyncMs" : 0.21869474149999998,
+      "bytesPerSync" : 3811,
+      "throughputSyncsPerSecond" : 4572.583653091631,
+      "timeMs" : 437.389483,
+      "totalBytes" : 3811038
+    },
+    "rooms" : 2,
+    "serial" : {
+      "avgCostPerSyncMs" : 0.3368559975,
+      "bytesPerSync" : 3815,
+      "throughputSyncsPerSecond" : 2968.6275661456793,
+      "timeMs" : 673.711995,
+      "totalBytes" : 3815598
+    },
+    "speedup" : 1.5403022276143754
+  },
+  {
+    "config" : {
+      "gameType" : "hero-defense",
+      "includeTick" : true,
+      "iterations" : 1000,
+      "playersPerRoom" : 5
+    },
+    "displayName" : "JSON Object",
+    "efficiency" : 71.0923633499732,
+    "format" : "json-object",
+    "parallel" : {
+      "avgCostPerSyncMs" : 0.12250790225,
+      "bytesPerSync" : 7701,
+      "throughputSyncsPerSecond" : 8162.738742838935,
+      "timeMs" : 490.031609,
+      "totalBytes" : 7701002
+    },
+    "rooms" : 4,
+    "serial" : {
+      "avgCostPerSyncMs" : 0.34837505199999996,
+      "bytesPerSync" : 7774,
+      "throughputSyncsPerSecond" : 2870.469611009918,
+      "timeMs" : 1393.500208,
+      "totalBytes" : 7774757
+    },
+    "speedup" : 2.843694533998928
+  },
+  {
+    "config" : {
+      "gameType" : "hero-defense",
+      "includeTick" : true,
+      "iterations" : 1000,
+      "playersPerRoom" : 5
+    },
+    "displayName" : "JSON Object",
+    "efficiency" : 47.84851896220147,
+    "format" : "json-object",
+    "parallel" : {
+      "avgCostPerSyncMs" : 0.09116400937500001,
+      "bytesPerSync" : 15565,
+      "throughputSyncsPerSecond" : 10969.241116705765,
+      "timeMs" : 729.312075,
+      "totalBytes" : 15565836
+    },
+    "rooms" : 8,
+    "serial" : {
+      "avgCostPerSyncMs" : 0.3489650265,
+      "bytesPerSync" : 15970,
+      "throughputSyncsPerSecond" : 2865.616678065588,
+      "timeMs" : 2791.720212,
+      "totalBytes" : 15970301
+    },
+    "speedup" : 3.8278815169761176
+  },
+  {
+    "config" : {
+      "gameType" : "hero-defense",
+      "includeTick" : true,
+      "iterations" : 1000,
+      "playersPerRoom" : 5
+    },
+    "displayName" : "JSON Object",
+    "efficiency" : 42.240007094712205,
+    "format" : "json-object",
+    "parallel" : {
+      "avgCostPerSyncMs" : 0.084766652,
+      "bytesPerSync" : 31175,
+      "throughputSyncsPerSecond" : 11797.092092300638,
+      "timeMs" : 1356.266432,
+      "totalBytes" : 31175991
+    },
+    "rooms" : 16,
+    "serial" : {
+      "avgCostPerSyncMs" : 0.3580543981875,
+      "bytesPerSync" : 32924,
+      "throughputSyncsPerSecond" : 2792.8717118462446,
+      "timeMs" : 5728.870371,
+      "totalBytes" : 32924687
+    },
+    "speedup" : 4.224000709471221
+  },
+  {
+    "config" : {
+      "gameType" : "hero-defense",
+      "includeTick" : true,
+      "iterations" : 1000,
+      "playersPerRoom" : 5
+    },
+    "displayName" : "JSON Object",
+    "efficiency" : 41.800600763318755,
+    "format" : "json-object",
+    "parallel" : {
+      "avgCostPerSyncMs" : 0.091051248125,
+      "bytesPerSync" : 63610,
+      "throughputSyncsPerSecond" : 10982.825832625016,
+      "timeMs" : 2913.63994,
+      "totalBytes" : 63610093
+    },
+    "rooms" : 32,
+    "serial" : {
+      "avgCostPerSyncMs" : 0.38059968718750004,
+      "bytesPerSync" : 70251,
+      "throughputSyncsPerSecond" : 2627.4325325636864,
+      "timeMs" : 12179.18999,
+      "totalBytes" : 70251234
+    },
+    "speedup" : 4.180060076331875
+  },
+  {
+    "config" : {
+      "gameType" : "hero-defense",
+      "includeTick" : true,
+      "iterations" : 1000,
+      "playersPerRoom" : 5
+    },
+    "displayName" : "JSON Object",
+    "efficiency" : 46.48655500752925,
+    "format" : "json-object",
+    "parallel" : {
+      "avgCostPerSyncMs" : 0.0907798463,
+      "bytesPerSync" : 101585,
+      "throughputSyncsPerSecond" : 11015.660862602717,
+      "timeMs" : 4538.9923149999995,
+      "totalBytes" : 101585531
+    },
+    "rooms" : 50,
+    "serial" : {
+      "avgCostPerSyncMs" : 0.42200423186,
+      "bytesPerSync" : 124290,
+      "throughputSyncsPerSecond" : 2369.644483403546,
+      "timeMs" : 21100.211593,
+      "totalBytes" : 124290841
+    },
+    "speedup" : 4.648655500752925
+  }
+]
