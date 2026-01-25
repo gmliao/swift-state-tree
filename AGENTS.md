@@ -93,6 +93,17 @@
 - **Return statements**: Omit `return` for single-expression functions; include `return` for multi-line function bodies.
 - **Cross-Platform Compatibility**: Always prioritize cross-platform solutions over platform-specific code. Avoid `#if os(macOS)` or `#if os(Linux)` conditionals unless absolutely necessary (e.g., when platform-specific APIs are required and no cross-platform alternative exists). Prefer using Foundation APIs that work on both macOS and Linux (e.g., `objCType` instead of `CFGetTypeID`). When platform-specific code is unavoidable, document why and consider future alternatives.
 
+### Safe String Formatting (avoid C varargs pitfalls)
+- **Avoid** C printf-style formatting with Swift objects: `String(format:)`, `NSString(format:)`, `printf/fprintf`, `NSLog`.
+  - **Never use `%s` with Swift `String`/`Substring`**. `%s` expects a C string pointer and can crash in release builds.
+- **Prefer**:
+  - **String interpolation**: `print("rooms=\(rooms), bytes=\(bytes)")`
+  - **SwiftLog `Logger`** with metadata for structured logs.
+  - For fixed-width tables, build columns via padding/truncation helpers instead of `String(format:)`.
+- **Allowed exception (with care)**:
+  - `String(format:)` for **numeric/hex-only** formatting (e.g., `%.3f`, `%02x`) when all arguments are numeric primitives and the format string exactly matches the argument types.
+  - If you must format a string with `String(format:)`, use `%@` (bridged object) or switch to interpolation.
+
 ### DeterministicMath Usage Guidelines
 - **Never use Swift's built-in math functions** (e.g., `cos`, `sin`, `atan2`, `sqrt`, `pow`) in game logic code.
   - These functions are platform-dependent and may produce different results across macOS, Linux, and other platforms.
@@ -153,8 +164,6 @@
 - Aim to cover new public APIs and concurrency paths; avoid shared mutable state between tests.
 - **WebClient tests**: `cd Examples/HummingbirdDemo/WebClient && npm test` (uses vitest for Vue component and business logic tests).
 - **Automated E2E Testing (CLI)**: 
-<<<<<<< HEAD
-  
   **Quick Command**: When user says "執行 e2e 測試" or "run e2e tests", AI should:
   1. **Start DemoServer**: `cd Examples/HummingbirdDemo && swift run DemoServer` (run in background, default: json encoding).
   2. **Wait for server**: Wait 2-3 seconds for server to start.
@@ -183,14 +192,14 @@
   - Each test uses unique land instance ID to ensure clean state.
   - Tests verify exact state values (not ranges) for precision.
   - **Connection Info**:
-     - **Base URL**: `http://localhost:8080`
-     - **WebSocket Endpoints**:
-       - `cookie`: `ws://localhost:8080/game/cookie` (DemoServer)
-       - `counter`: `ws://localhost:8080/game/counter` (DemoServer)
-       - `hero-defense`: `ws://localhost:8080/game/hero-defense` (GameServer)
-     - **Admin Keys**: 
-       - DemoServer: `demo-admin-key`
-       - GameServer: `hero-defense-admin-key`
+    - **Base URL**: `http://localhost:8080`
+    - **WebSocket Endpoints**:
+      - `cookie`: `ws://localhost:8080/game/cookie` (DemoServer)
+      - `counter`: `ws://localhost:8080/game/counter` (DemoServer)
+      - `hero-defense`: `ws://localhost:8080/game/hero-defense` (GameServer)
+    - **Admin Keys**: 
+      - DemoServer: `demo-admin-key`
+      - GameServer: `hero-defense-admin-key`
   - **Proactive Testing**: AI agents are encouraged to create new JSON scenarios in `Tools/CLI/scenarios/` (organized by Land subdirectories) to verify specific features or bug fixes. These scenarios should use the `assert` step to ensure correctness.
 
 ## Commit & Pull Request Guidelines
