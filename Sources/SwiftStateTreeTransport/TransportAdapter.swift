@@ -103,6 +103,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         pathHashes: [String: UInt32]? = nil,
         eventHashes: [String: Int]? = nil,
         clientEventHashes: [String: Int]? = nil,
+        suppressMissingPathHashesWarning: Bool = false,
         enableParallelEncoding: Bool? = nil,
         logger: Logger? = nil
     ) {
@@ -115,11 +116,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 eventHashes: eventHashes,
                 clientEventHashes: clientEventHashes
             )
-            self.stateUpdateEncoder = encodingConfig.makeStateUpdateEncoder(pathHashes: pathHashes)
+            self.stateUpdateEncoder = encodingConfig.makeStateUpdateEncoder(
+                pathHashes: pathHashes,
+                warnIfMissingPathHashes: !suppressMissingPathHashesWarning
+            )
             self.pathHashes = pathHashes  // Store for parallel encoding
             
             // Validate: Warn if opcodeJsonArray is used without pathHashes
-            if encodingConfig.stateUpdate == .opcodeJsonArray && pathHashes == nil {
+            if !suppressMissingPathHashesWarning,
+               encodingConfig.stateUpdate == .opcodeJsonArray,
+               pathHashes == nil
+            {
                 logger?.warning(
                     "⚠️ opcodeJsonArray encoding without pathHashes detected",
                     metadata: [

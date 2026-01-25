@@ -77,19 +77,25 @@ public struct TransportEncodingConfig: Sendable {
         )
     }
 
-    public func makeStateUpdateEncoder(pathHashes: [String: UInt32]? = nil) -> any StateUpdateEncoder {
-        stateUpdate.makeEncoder(pathHashes: pathHashes)
+    public func makeStateUpdateEncoder(
+        pathHashes: [String: UInt32]? = nil,
+        warnIfMissingPathHashes: Bool = true
+    ) -> any StateUpdateEncoder {
+        stateUpdate.makeEncoder(pathHashes: pathHashes, warnIfMissingPathHashes: warnIfMissingPathHashes)
     }
 }
 
 public extension StateUpdateEncoding {
-    func makeEncoder(pathHashes: [String: UInt32]? = nil) -> any StateUpdateEncoder {
+    func makeEncoder(
+        pathHashes: [String: UInt32]? = nil,
+        warnIfMissingPathHashes: Bool = true
+    ) -> any StateUpdateEncoder {
         switch self {
         case .jsonObject:
             return JSONStateUpdateEncoder()
         case .opcodeJsonArray:
             // Validate configuration: opcodeJsonArray should have pathHashes for compression
-            if pathHashes == nil {
+            if warnIfMissingPathHashes, pathHashes == nil {
                 // Log warning (using print as we don't have logger context here)
                 print("⚠️ WARNING: opcodeJsonArray encoding is configured but pathHashes is nil.")
                 print("   This will fall back to Legacy format (no PathHash compression).")
@@ -105,7 +111,7 @@ public extension StateUpdateEncoding {
             return OpcodeJSONStateUpdateEncoder()
         case .opcodeMessagePack:
             // Validate configuration: opcodeMessagePack should have pathHashes for compression (optional)
-            if pathHashes == nil {
+            if warnIfMissingPathHashes, pathHashes == nil {
                 print("⚠️ WARNING: opcodeMessagePack encoding is configured but pathHashes is nil.")
                 print("   This will use Legacy format (no PathHash compression).")
                 print("   To enable full compression, provide pathHashes from your Land schema.")
