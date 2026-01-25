@@ -46,7 +46,7 @@
 **圖（直接嵌入）**  
 以下圖表顯示 `rooms=50`、parallel 模式下的 `bytesPerSync` 對比（application payload）：
 
-![RQ1 Bytes per sync at 50 rooms (parallel)](out/rq1_bytes_per_sync_rooms50_parallel.svg)
+![RQ1 Bytes per sync at 50 rooms (parallel)](/deep-research/emse-artifacts/out/rq1_bytes_per_sync_rooms50_parallel.svg)
 
 **表（直接嵌入）**  
 （取自 `deep-research/emse-artifacts/out/rq1_network_efficiency.csv`）
