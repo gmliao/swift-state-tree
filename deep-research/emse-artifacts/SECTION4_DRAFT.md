@@ -65,8 +65,8 @@
 
 | 指標（rooms=50, parallel） | JSON Object | Opcode MsgPack (PathHash) | 改善幅度 |
 |----------------------------|-----------:|---------------------------:|--------:|
-| bytesPerSync               | 91400      | 23475                      | -74.3%  |
-| avgCostPerSyncMs           | 0.0801     | 0.0646                     | -19.4%  |
+| bytesPerSync (bytes)       | 91400      | 23475                      | -74.3%  |
+| avgCostPerSyncMs (ms)      | 0.0801     | 0.0646                     | -19.4%  |
 
 **關鍵結論（可直接用在論文的句型）**  
 在相同遊戲工作負載下，`Opcode MsgPack (PathHash)` 相較 `JSON Object` 在各房間規模下都能顯著降低 `bytesPerSync`，代表 SST 的 opcode-driven 編碼在頻寬成本上具有實質工程效益。
@@ -95,8 +95,8 @@
 **表（直接嵌入）**  
 （取自 `deep-research/emse-artifacts/artifacts/rq2_capacity_model.md`）
 
-| format                    | rooms | avgCostPerSyncMs(serial) | avgCostPerSyncMs(parallel) | MaxRooms(serial) | MaxRooms(parallel) | MaxPlayers(serial) | MaxPlayers(parallel) |
-| ------------------------- | ----- | ------------------------ | -------------------------- | ---------------- | ------------------ | ------------------ | -------------------- |
+| format                    | rooms | avgCostPerSyncMs(serial) [ms] | avgCostPerSyncMs(parallel) [ms] | MaxRooms(serial) | MaxRooms(parallel) | MaxPlayers(serial) | MaxPlayers(parallel) |
+| ------------------------- | ----- | ---------------------------- | ------------------------------ | ---------------- | ------------------ | ------------------ | -------------------- |
 | JSON Object               | 10    | 0.3385                   | 0.0776                     | 2481.4           | 10824.5            | 12407              | 54122                |
 | JSON Object               | 30    | 0.3483                   | 0.0701                     | 2411.9           | 11975.9            | 12060              | 59880                |
 | JSON Object               | 50    | 0.3834                   | 0.0801                     | 2191.2           | 10490.8            | 10956              | 52454                |
