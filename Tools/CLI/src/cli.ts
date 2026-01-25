@@ -382,11 +382,41 @@ async function executeScript(
         expectError,
         errorCode,
         errorMessage,
+        waitForState,
       } = step;
 
       if (wait) {
         console.log(chalk.gray(`⏳ Waiting ${wait}ms...`));
         await new Promise((resolve) => setTimeout(resolve, wait));
+      }
+
+      if (type === "waitForState" && waitForState) {
+        const timeout = waitForState.timeout || 3000; // Default 3 seconds
+        const interval = waitForState.interval || 100; // Default 100ms
+        const startWait = Date.now();
+        
+        console.log(chalk.gray(`⏳ Waiting for state condition (timeout: ${timeout}ms)...`));
+        
+        let conditionMet = false;
+        while (Date.now() - startWait < timeout) {
+          try {
+            const state = view.getState();
+            evaluateAssertion(state, waitForState);
+            conditionMet = true;
+            console.log(chalk.green(`✅ State condition met after ${Date.now() - startWait}ms`));
+            break;
+          } catch {
+            // Condition not met yet, wait and retry
+            await new Promise((resolve) => setTimeout(resolve, interval));
+          }
+        }
+        
+        if (!conditionMet) {
+          const state = view.getState();
+          throw new Error(
+            `Timeout waiting for state condition: ${waitForState.message || JSON.stringify(waitForState)} (current state: ${JSON.stringify(state)})`,
+          );
+        }
       }
 
       if (type === "action" && action) {

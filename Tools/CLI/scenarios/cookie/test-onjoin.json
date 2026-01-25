@@ -6,8 +6,14 @@
       "message": "Testing OnJoin handler - player state should be initialized"
     },
     {
-      "type": "wait",
-      "wait": 500
+      "type": "waitForState",
+      "waitForState": {
+        "path": "players",
+        "exists": true,
+        "timeout": 2000,
+        "interval": 50,
+        "message": "players map should exist after OnJoin"
+      }
     },
     {
       "type": "assert",
@@ -24,6 +30,16 @@
     {
       "type": "state",
       "message": "Current state after join - should show players map with initialized player"
+    },
+    {
+      "type": "waitForState",
+      "waitForState": {
+        "path": "privateStates",
+        "exists": true,
+        "timeout": 2000,
+        "interval": 50,
+        "message": "privateStates map should exist after OnJoin"
+      }
     },
     {
       "type": "assert",
