@@ -1,0 +1,144 @@
+{
+  "metadata" : {
+    "benchmarkConfig" : {
+      "formats" : [
+        "json-object"
+      ],
+      "gameType" : "hero-defense",
+      "iterations" : 200,
+      "mode" : "scalability-matrix",
+      "playersPerRoom" : [
+        5
+      ],
+      "roomCounts" : [
+        10,
+        30,
+        50
+      ],
+      "ticksPerSync" : 2
+    },
+    "build" : {
+      "configuration" : "release",
+      "swiftVersion" : "Swift version 6.2.3 (swift-6.2.3-RELEASE)"
+    },
+    "commandLine" : [
+      ".build\/x86_64-unknown-linux-gnu\/release\/EncodingBenchmark",
+      "--scalability",
+      "--format",
+      "json-object",
+      "--players-per-room",
+      "5",
+      "--room-counts",
+      "10,30,50",
+      "--iterations",
+      "200",
+      "--ticks-per-sync",
+      "2",
+      "--progress-every",
+      "50"
+    ],
+    "env" : {
+
+    },
+    "environment" : {
+      "arch" : "x86_64",
+      "container" : true,
+      "cpuActiveLogicalCores" : 12,
+      "cpuLogicalCores" : 12,
+      "cpuModel" : "AMD Ryzen 5 7600X 6-Core Processor",
+      "cpuPhysicalCores" : 6,
+      "kernelVersion" : "6.6.87.2-microsoft-standard-WSL2",
+      "memoryTotalMB" : 15865,
+      "osName" : "Linux",
+      "wsl" : true
+    },
+    "git" : {
+      "branch" : "feature\/messagepack-parallel-encoding-tests",
+      "commit" : "165cc7a2412b7ce89c7b8b7e344081bccfc9b20b"
+    },
+    "timestampUTC" : "2026-01-25T06:12:16.281Z"
+  },
+  "results" : [
+    {
+      "config" : {
+        "gameType" : "hero-defense",
+        "iterations" : 200,
+        "ticksPerSync" : 2
+      },
+      "displayName" : "JSON Object",
+      "efficiency" : 43.62273945612156,
+      "format" : "json-object",
+      "parallel" : {
+        "avgCostPerSyncMs" : 0.0776019,
+        "bytesPerSync" : 17656,
+        "throughputSyncsPerSecond" : 12886.282423497363,
+        "timeMs" : 155.2038,
+        "totalBytes" : 3531309
+      },
+      "playersPerRoom" : 5,
+      "rooms" : 10,
+      "serial" : {
+        "avgCostPerSyncMs" : 0.33852074649999997,
+        "bytesPerSync" : 18183,
+        "throughputSyncsPerSecond" : 2954.028697913202,
+        "timeMs" : 677.041493,
+        "totalBytes" : 3636659
+      },
+      "speedup" : 4.362273945612156
+    },
+    {
+      "config" : {
+        "gameType" : "hero-defense",
+        "iterations" : 200,
+        "ticksPerSync" : 2
+      },
+      "displayName" : "JSON Object",
+      "efficiency" : 41.377224677096564,
+      "format" : "json-object",
+      "parallel" : {
+        "avgCostPerSyncMs" : 0.07014076283333333,
+        "bytesPerSync" : 53978,
+        "throughputSyncsPerSecond" : 14257.044828214573,
+        "timeMs" : 420.844577,
+        "totalBytes" : 10795720
+      },
+      "playersPerRoom" : 5,
+      "rooms" : 30,
+      "serial" : {
+        "avgCostPerSyncMs" : 0.3482676123333333,
+        "bytesPerSync" : 58397,
+        "throughputSyncsPerSecond" : 2871.355143535086,
+        "timeMs" : 2089.605674,
+        "totalBytes" : 11679437
+      },
+      "speedup" : 4.965266961251587
+    },
+    {
+      "config" : {
+        "gameType" : "hero-defense",
+        "iterations" : 200,
+        "ticksPerSync" : 2
+      },
+      "displayName" : "JSON Object",
+      "efficiency" : 39.89783360572684,
+      "format" : "json-object",
+      "parallel" : {
+        "avgCostPerSyncMs" : 0.0800704957,
+        "bytesPerSync" : 91400,
+        "throughputSyncsPerSecond" : 12488.994744664731,
+        "timeMs" : 800.704957,
+        "totalBytes" : 18280166
+      },
+      "playersPerRoom" : 5,
+      "rooms" : 50,
+      "serial" : {
+        "avgCostPerSyncMs" : 0.38335671769999996,
+        "bytesPerSync" : 110387,
+        "throughputSyncsPerSecond" : 2608.5365244142167,
+        "timeMs" : 3833.567177,
+        "totalBytes" : 22077421
+      },
+      "speedup" : 4.78774003268722
+    }
+  ]
+}

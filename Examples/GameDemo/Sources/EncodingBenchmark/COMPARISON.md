@@ -77,13 +77,17 @@ await withTaskGroup(of: Void.self) { group in
 
 ### 工作負載（Benchmark 的「一輪」做什麼）
 
-- 每次 iteration：
-  - 每個房間先 `stepTickOnce()`（模擬遊戲 tick）
+- 每次 iteration（每個 room）：
+  - 先做 `stepTickOnce()` × `ticksPerSync`（模擬 tick）
   - 再 `syncNow()`（模擬同步狀態）
-- 測試 room counts：$1, 2, 4, 8, 16, 32, 50$
-- iterations：1000
-- encoding：JSON Object（避免把重點混到不同 encoding）
+- `ticksPerSync`：
+  - `1`：tick 與 sync 同頻（簡化，偏「最忙」）
+  - `2`：對應 tick=20Hz、sync=10Hz（本文件後面的承載估算採用這個設定）
+- room counts：
+  - Room scalability 曲線：$1, 2, 4, 8, 16, 32, 50$
+  - 也可用 `--room-counts 10,20,30,40,50` 做「大房間區間」對比
 - build：Release（`-c release`）
+- 結果來源：每次跑完會在 `results/*.json` 產生「單檔自描述（metadata + results）」的輸出，可直接用於版本化與復現
 
 ### 測試硬體（要跟數據放一起）
 
@@ -96,6 +100,7 @@ await withTaskGroup(of: Void.self) { group in
 | **作業系統** | Linux (WSL2) |
 
 備註：WSL2 可能帶來額外調度/IO 開銷，結果用於「趨勢與差距」展示很合適，但不同環境的絕對值會不同。
+另外：實際可用核心數以每次結果檔案內的 `metadata.environment.cpuLogicalCores` / `cpuActiveLogicalCores` 為準（例如你在環境中調整了 core 限制）。
 
 ---
 
@@ -124,6 +129,63 @@ await withTaskGroup(of: Void.self) { group in
   - 若要更嚴謹，可加 warmup、多次取平均/中位數（本文件先以單次結果呈現趨勢）。
 
 ---
+
+## Encoding impact under scaling（不同編碼格式在多房間下的差異）
+
+上面的表格刻意只用 **JSON Object**，目標是把「room-level 並行」的差異講清楚。  
+但實務上，吞吐量/成本也會受 **encoding format** 影響，因此另外提供一個「矩陣測試」：
+
+- 變數：
+  - formats：JSON Object / Opcode JSON（Legacy、PathHash）/ Opcode MessagePack（Legacy、PathHash）
+  - rooms：可用 `10,20,30,40,50`
+  - playersPerRoom：例如 `5,10`
+  - ticksPerSync：建議用 `2`（tick=20Hz、sync=10Hz）
+- 指標：
+  - **Bytes/Sync**：網路負載 proxy（不含 framing/壓縮）
+  - **Avg cost per sync (ms)**：每房間每次 sync 的平均 compute 成本
+  - **Parallel throughput (sync/s)**：在並行模式下的吞吐量
+
+建議命令（會產生一個矩陣 JSON）：
+
+```bash
+cd Examples/GameDemo
+swift run -c release EncodingBenchmark \
+  --scalability --all \
+  --players-per-room-list 5,10 \
+  --room-counts 10,20,30,40,50 \
+  --iterations 200 \
+  --ticks-per-sync 2 \
+  --progress-every 50
+```
+
+輸出檔案：`results/scalability-matrix-all-formats-ppr5+10-200iterations-tick2-*.json`  
+（註：legacy 格式會刻意不傳 `pathHashes`，這是測試設計的一部分；benchmark 會顯式抑制「缺 pathHashes」警告，避免輸出被淹沒。）
+
+---
+
+## Compute-side capacity estimate（僅估算計算側，tick=20Hz、sync=10Hz）
+
+目的：把 benchmark 變成「可用來做容量規劃的數字」。這裡只估算 **tick+sync+encoding** 的計算負載；網路、IO、業務邏輯、WS 排程等不在此模型內。
+
+定義（取自結果檔中的 `avgCostPerSyncMs`）：
+
+- `syncHz = 10`
+- 每房間每秒的計算成本（ms/s）：
+  - `costRoomMsPerSecond = avgCostPerSyncMs * syncHz`
+  - 注意：此 `avgCostPerSyncMs` 已經包含 `ticksPerSync=2` 的 tick 工作量（因為 benchmark 每次 sync 前會跑 2 次 tick）
+- CPU 可用預算（ms/s）：
+  - `cpuBudgetMsPerSecond = cpuLogicalCores * 1000 * utilizationTarget`
+  - `utilizationTarget` 建議用 `0.7`（保留 headroom 給 GC/allocator、OS 排程、尖峰等）
+- 可承載房間數（粗估）：
+  - `maxRooms ≈ cpuBudgetMsPerSecond / costRoomMsPerSecond`
+- 可承載總玩家數（粗估）：
+  - `maxPlayers ≈ maxRooms * playersPerRoom`
+
+如何落地到「序列 vs 並行」：
+
+- 用 **serial** 的 `avgCostPerSyncMs` 推 `maxRoomsSerial`
+- 用 **parallel** 的 `avgCostPerSyncMs` 推 `maxRoomsParallel`
+- 兩者差距就是「架構支援 room-level parallelism」在 compute-side 的承載差異（網路/IO 不變時，這差距仍然成立）
 
 ## 實作難度：不靠統一架構要做 Room parallel 有多麻煩？
 

@@ -120,14 +120,28 @@ struct BenchmarkConfig {
     var players: Int = 10
     var rooms: Int = 1
     var playersPerRoom: Int = 10
+    /// Optional list for matrix runs (e.g. "5,10"). If empty, uses `playersPerRoom`.
+    var playersPerRoomList: [Int] = []
+    /// Optional room counts override for scalability runs. If empty, uses default set.
+    var roomCounts: [Int] = []
     var iterations: Int = 100
     var output: OutputFormat = .table
     var parallel: Bool = true
     var runAll: Bool = false
     var compareParallel: Bool = false
     var scalabilityTest: Bool = false
-    var includeTick: Bool = false  // Whether to simulate tick execution in parallel with sync
+    /// Number of ticks to run per sync iteration. For tick=20Hz & sync=10Hz, use 2.
+    /// Set to 0 to disable tick simulation.
+    var ticksPerSync: Int = 0
+    /// Print progress every N iterations for long-running benchmarks. Set to 0 to disable.
+    var progressEvery: Int = 0
     var gameType: GameType = .heroDefense
+}
+
+func parseCSVInts(_ raw: String) -> [Int] {
+    raw.split(separator: ",")
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .compactMap(Int.init)
 }
 
 func parseArguments() -> BenchmarkConfig {
@@ -157,6 +171,16 @@ func parseArguments() -> BenchmarkConfig {
                 config.playersPerRoom = count
                 i += 1
             }
+        case "--players-per-room-list":
+            if i + 1 < args.count {
+                config.playersPerRoomList = parseCSVInts(args[i + 1])
+                i += 1
+            }
+        case "--room-counts":
+            if i + 1 < args.count {
+                config.roomCounts = parseCSVInts(args[i + 1])
+                i += 1
+            }
         case "--iterations":
             if i + 1 < args.count, let count = Int(args[i + 1]) {
                 config.iterations = count
@@ -179,7 +203,18 @@ func parseArguments() -> BenchmarkConfig {
         case "--scalability":
             config.scalabilityTest = true
         case "--include-tick":
-            config.includeTick = true
+            // Backward-compatible sugar: tick once per sync
+            config.ticksPerSync = max(config.ticksPerSync, 1)
+        case "--ticks-per-sync":
+            if i + 1 < args.count, let value = Int(args[i + 1]) {
+                config.ticksPerSync = max(0, value)
+                i += 1
+            }
+        case "--progress-every":
+            if i + 1 < args.count, let value = Int(args[i + 1]) {
+                config.progressEvery = max(0, value)
+                i += 1
+            }
         case "--game-type":
             if i + 1 < args.count, let gameType = GameType(rawValue: args[i + 1]) {
                 config.gameType = gameType
@@ -208,6 +243,7 @@ func printUsage() {
       --players <count>       Number of players (default: 10, single room mode)
       --rooms <count>         Number of rooms (default: 1, single room mode)
       --players-per-room <count>  Number of players per room (default: 10)
+      --players-per-room-list <csv>  Players per room list for matrix runs (e.g. 5,10)
       --iterations <count>    Number of iterations/syncs (default: 100)
       --output <format>       Output format: table or json (default: table)
       --parallel <bool>       Enable parallel encoding (default: true)
@@ -215,12 +251,16 @@ func printUsage() {
       --all                   Run benchmark for all formats
       --compare-parallel      Compare serial vs parallel encoding for each format
       --scalability           Run scalability test (different room counts)
-      --include-tick          Simulate tick execution in parallel with sync (more realistic)
+      --room-counts <csv>     Room counts override for scalability (e.g. 10,20,30,40,50)
+      --include-tick          Backward-compatible: equivalent to --ticks-per-sync 1
+      --ticks-per-sync <int>  Number of ticks per sync iteration (e.g. 2 for tick20/sync10)
+      --progress-every <int>  Print progress every N iterations (e.g. 50); 0 disables
       --help, -h              Show this help message
 
     Examples:
       swift run EncodingBenchmark --format messagepack-pathhash --players 10
       swift run EncodingBenchmark --rooms 4 --players-per-room 10
+      swift run EncodingBenchmark --rooms 50 --players-per-room 10 --ticks-per-sync 2
       swift run EncodingBenchmark --game-type card-game --players 20 --parallel true
       swift run EncodingBenchmark --all --output json
       swift run EncodingBenchmark --compare-parallel --rooms 4
@@ -314,7 +354,9 @@ func runMultiRoomBenchmarkCardGame(
     playersPerRoom: Int,
     iterations: Int,
     parallel: Bool,
-    includeTick: Bool = false
+    ticksPerSync: Int = 0,
+    progressEvery: Int = 0,
+    progressLabel: String? = nil
 ) async -> BenchmarkResult {
     // Extract pathHashes from schema
     let landDef = CardGame.makeLand()
@@ -356,6 +398,7 @@ func runMultiRoomBenchmarkCardGame(
             enableDirtyTracking: true,
             encodingConfig: format.transportEncodingConfig,
             pathHashes: pathHashes,
+            suppressMissingPathHashesWarning: !format.usesPathHash,
             enableParallelEncoding: shouldEnableParallel,
             logger: benchmarkLogger
         )
@@ -408,31 +451,39 @@ func runMultiRoomBenchmarkCardGame(
     // Note: parallel execution may trigger libmalloc LIFO issues in release mode on macOS
     // Use serial execution for stability, parallel for performance comparison
     let start = ContinuousClock.now
+    let label = progressLabel ?? (parallel ? "parallel" : "serial")
     if parallel {
         // Parallel execution using withTaskGroup (room-level parallelism)
-        for _ in 0 ..< iterations {
+        for iterationIndex in 0 ..< iterations {
             await withTaskGroup(of: Void.self) { group in
                 for room in rooms {
                     group.addTask { [room] in
-                        // Optionally simulate tick execution (more realistic)
-                        // In real server, tick and sync run concurrently for each room
-                        if includeTick {
-                            await room.keeper.stepTickOnce()
+                        if ticksPerSync > 0 {
+                            for _ in 0 ..< ticksPerSync {
+                                await room.keeper.stepTickOnce()
+                            }
                         }
                         await room.adapter.syncNow()
                     }
                 }
             }
+            if progressEvery > 0, (iterationIndex + 1) % progressEvery == 0 {
+                print("  [\(label)] iteration \(iterationIndex + 1)/\(iterations)")
+            }
         }
     } else {
         // Serial execution to avoid memory allocation order issues
-        for _ in 0 ..< iterations {
+        for iterationIndex in 0 ..< iterations {
             for room in rooms {
-                // Optionally simulate tick execution (more realistic)
-                if includeTick {
-                    await room.keeper.stepTickOnce()
+                if ticksPerSync > 0 {
+                    for _ in 0 ..< ticksPerSync {
+                        await room.keeper.stepTickOnce()
+                    }
                 }
                 await room.adapter.syncNow()
+            }
+            if progressEvery > 0, (iterationIndex + 1) % progressEvery == 0 {
+                print("  [\(label)] iteration \(iterationIndex + 1)/\(iterations)")
             }
         }
     }
@@ -476,7 +527,9 @@ func runMultiRoomBenchmark(
     playersPerRoom: Int,
     iterations: Int,
     parallel: Bool,
-    includeTick: Bool = false
+    ticksPerSync: Int = 0,
+    progressEvery: Int = 0,
+    progressLabel: String? = nil
 ) async -> BenchmarkResult {
     // Extract pathHashes from schema
     let landDef = HeroDefense.makeLand()
@@ -523,6 +576,7 @@ func runMultiRoomBenchmark(
             enableDirtyTracking: true,
             encodingConfig: format.transportEncodingConfig,
             pathHashes: pathHashes,
+            suppressMissingPathHashesWarning: !format.usesPathHash,
             enableParallelEncoding: shouldEnableParallel,
             logger: benchmarkLogger
         )
@@ -576,31 +630,39 @@ func runMultiRoomBenchmark(
     // Note: parallel execution may trigger libmalloc LIFO issues in release mode on macOS
     // Use serial execution for stability, parallel for performance comparison
     let start = ContinuousClock.now
+    let label = progressLabel ?? (parallel ? "parallel" : "serial")
     if parallel {
         // Parallel execution using withTaskGroup
-        for _ in 0 ..< iterations {
+        for iterationIndex in 0 ..< iterations {
             await withTaskGroup(of: Void.self) { group in
                 for room in rooms {
                     group.addTask { [room] in
-                        // Optionally simulate tick execution (more realistic)
-                        // In real server, tick and sync run concurrently for each room
-                        if includeTick {
-                            await room.keeper.stepTickOnce()
+                        if ticksPerSync > 0 {
+                            for _ in 0 ..< ticksPerSync {
+                                await room.keeper.stepTickOnce()
+                            }
                         }
                         await room.adapter.syncNow()
                     }
                 }
             }
+            if progressEvery > 0, (iterationIndex + 1) % progressEvery == 0 {
+                print("  [\(label)] iteration \(iterationIndex + 1)/\(iterations)")
+            }
         }
     } else {
         // Serial execution to avoid memory allocation order issues
-        for _ in 0 ..< iterations {
+        for iterationIndex in 0 ..< iterations {
             for room in rooms {
-                // Optionally simulate tick execution (more realistic)
-                if includeTick {
-                    await room.keeper.stepTickOnce()
+                if ticksPerSync > 0 {
+                    for _ in 0 ..< ticksPerSync {
+                        await room.keeper.stepTickOnce()
+                    }
                 }
                 await room.adapter.syncNow()
+            }
+            if progressEvery > 0, (iterationIndex + 1) % progressEvery == 0 {
+                print("  [\(label)] iteration \(iterationIndex + 1)/\(iterations)")
             }
         }
     }
@@ -701,6 +763,7 @@ func runBenchmark(
         enableDirtyTracking: true,
         encodingConfig: format.transportEncodingConfig,
         pathHashes: pathHashes,
+        suppressMissingPathHashesWarning: !format.usesPathHash,
         enableParallelEncoding: shouldEnableParallel,
         logger: benchmarkLogger
     )
@@ -845,18 +908,190 @@ func getResultsDirectory() -> URL {
     return resultsDir
 }
 
-/// Save benchmark results to JSON file
-func saveResultsToJSON(_ results: [[String: Any]], filename: String) {
+// MARK: - Results Metadata
+
+func runCommandCaptureStdout(_ launchPath: String, _ arguments: [String]) -> String? {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: launchPath)
+    process.arguments = arguments
+
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = Pipe()
+
+    do {
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    } catch {
+        return nil
+    }
+}
+
+func runCommandCaptureStdout(_ arguments: [String]) -> String? {
+    guard let executable = arguments.first else { return nil }
+    // Resolve common executables via PATH by trying /usr/bin and /bin first, then raw.
+    let candidates = ["/usr/bin/\(executable)", "/bin/\(executable)", executable]
+    for candidate in candidates {
+        let output = runCommandCaptureStdout(candidate, Array(arguments.dropFirst()))
+        if let output, !output.isEmpty {
+            return output
+        }
+    }
+    return nil
+}
+
+func readTextFile(_ path: String) -> String? {
+    try? String(contentsOfFile: path, encoding: .utf8)
+}
+
+func detectWSL() -> Bool {
+    if ProcessInfo.processInfo.environment["WSL_INTEROP"] != nil { return true }
+    if let osrelease = readTextFile("/proc/sys/kernel/osrelease"),
+       osrelease.lowercased().contains("microsoft") { return true }
+    return false
+}
+
+func detectContainer() -> Bool {
+    if FileManager.default.fileExists(atPath: "/.dockerenv") { return true }
+    if let cgroup = readTextFile("/proc/1/cgroup")?.lowercased() {
+        if cgroup.contains("docker") || cgroup.contains("containerd") || cgroup.contains("kubepods") { return true }
+    }
+    return false
+}
+
+func cpuModelName() -> String? {
+    guard let cpuinfo = readTextFile("/proc/cpuinfo") else { return nil }
+    for line in cpuinfo.split(separator: "\n") {
+        if line.lowercased().hasPrefix("model name") {
+            return line.split(separator: ":", maxSplits: 1).last?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+    return nil
+}
+
+func cpuPhysicalCoresHint() -> Int? {
+    // Best-effort on Linux: use the first 'cpu cores' entry.
+    guard let cpuinfo = readTextFile("/proc/cpuinfo") else { return nil }
+    for line in cpuinfo.split(separator: "\n") {
+        if line.lowercased().hasPrefix("cpu cores") {
+            if let value = line.split(separator: ":", maxSplits: 1).last?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               let cores = Int(value)
+            {
+                return cores
+            }
+        }
+    }
+    return nil
+}
+
+func unameInfo() -> [String: String] {
+    var uts = utsname()
+    uname(&uts)
+
+    func toString(_ value: Any) -> String {
+        let mirror = Mirror(reflecting: value)
+        let bytes = mirror.children.compactMap { $0.value as? Int8 }
+        let data = Data(bytes.map { UInt8(bitPattern: $0) })
+        return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .controlCharacters) ?? ""
+    }
+
+    return [
+        "sysname": toString(uts.sysname),
+        "nodename": toString(uts.nodename),
+        "release": toString(uts.release),
+        "version": toString(uts.version),
+        "machine": toString(uts.machine)
+    ]
+}
+
+func buildConfigurationName() -> String {
+#if DEBUG
+    return "debug"
+#else
+    return "release"
+#endif
+}
+
+func collectResultsMetadata(benchmarkConfig: [String: Any]) -> [String: Any] {
+    let iso = ISO8601DateFormatter()
+    iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+    let uname = unameInfo()
+    let env = ProcessInfo.processInfo.environment
+
+    // Minimal, safe allowlist (avoid secrets).
+    let allowEnvKeys = [
+        "TRANSPORT_ENCODING",
+        "WSL_DISTRO_NAME",
+        "WSL_INTEROP"
+    ]
+    var selectedEnv: [String: String] = [:]
+    for key in allowEnvKeys {
+        if let value = env[key] {
+            selectedEnv[key] = value
+        }
+    }
+
+    let cpuLogical = ProcessInfo.processInfo.processorCount
+    let cpuActive = ProcessInfo.processInfo.activeProcessorCount
+    let memoryMB = Int(ProcessInfo.processInfo.physicalMemory / 1024 / 1024)
+
+    let swiftVersion = runCommandCaptureStdout(["swift", "--version"])
+        .flatMap { $0.split(separator: "\n").first.map(String.init) }
+
+    let gitCommit = runCommandCaptureStdout(["git", "rev-parse", "HEAD"])
+    let gitBranch = runCommandCaptureStdout(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+
+    return [
+        "timestampUTC": iso.string(from: Date()),
+        "commandLine": CommandLine.arguments,
+        "build": [
+            "configuration": buildConfigurationName(),
+            "swiftVersion": swiftVersion as Any
+        ],
+        "git": [
+            "commit": gitCommit as Any,
+            "branch": gitBranch as Any
+        ],
+        "environment": [
+            "osName": uname["sysname"] as Any,
+            "kernelVersion": uname["release"] as Any,
+            "arch": uname["machine"] as Any,
+            "cpuModel": cpuModelName() as Any,
+            "cpuPhysicalCores": cpuPhysicalCoresHint() as Any,
+            "cpuLogicalCores": cpuLogical,
+            "cpuActiveLogicalCores": cpuActive,
+            "memoryTotalMB": memoryMB,
+            "wsl": detectWSL(),
+            "container": detectContainer()
+        ],
+        "env": selectedEnv,
+        "benchmarkConfig": benchmarkConfig
+    ]
+}
+
+/// Save benchmark results to JSON file as an envelope: { metadata, results }
+func saveResultsToJSON(_ results: Any, filename: String, benchmarkConfig: [String: Any] = [:]) {
     let resultsDir = getResultsDirectory()
     let fileURL = resultsDir.appendingPathComponent(filename)
     
     do {
-        let jsonData = try JSONSerialization.data(withJSONObject: results, options: [.prettyPrinted, .sortedKeys])
+        let metadata = collectResultsMetadata(benchmarkConfig: benchmarkConfig)
+        let envelope: [String: Any] = [
+            "metadata": metadata,
+            "results": results
+        ]
+        let jsonData = try JSONSerialization.data(withJSONObject: envelope, options: [.prettyPrinted, .sortedKeys])
         try jsonData.write(to: fileURL)
         print("")
-        print("📊 Results saved to: \(fileURL.path)")
+        print("Results saved to: \(fileURL.path)")
     } catch {
-        print("⚠️ Failed to save results to JSON: \(error)")
+        print("Failed to save results to JSON: \(error)")
     }
 }
 
@@ -986,7 +1221,7 @@ struct EncodingBenchmark {
             }
             
             // Collect results for JSON export
-            var json: [String: Any] = [
+            let json: [String: Any] = [
                 "format": result.format.rawValue,
                 "displayName": result.format.displayName,
                 "timeMs": result.timeMs,
@@ -1018,7 +1253,14 @@ struct EncodingBenchmark {
         let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
         let parallelSuffix = config.parallel ? "-parallel" : "-serial"
         let filename = "all-formats-\(config.players)players-\(config.iterations)iterations\(parallelSuffix)-\(timestamp).json"
-        saveResultsToJSON(allResults, filename: filename)
+        saveResultsToJSON(allResults, filename: filename, benchmarkConfig: [
+            "mode": "all-formats",
+            "rooms": 1,
+            "players": config.players,
+            "iterations": config.iterations,
+            "parallel": config.parallel,
+            "formatCount": EncodingFormat.allCases.count
+        ])
     }
     
     static func runAllFormatsMultiRoom(config: BenchmarkConfig) async {
@@ -1045,7 +1287,9 @@ struct EncodingBenchmark {
                     playersPerRoom: config.playersPerRoom,
                     iterations: config.iterations,
                     parallel: config.parallel,
-                    includeTick: config.includeTick
+                    ticksPerSync: config.ticksPerSync,
+                    progressEvery: config.progressEvery,
+                    progressLabel: "all/\(format.rawValue)"
                 )
             } else {
                 result = await runMultiRoomBenchmark(
@@ -1054,7 +1298,9 @@ struct EncodingBenchmark {
                     playersPerRoom: config.playersPerRoom,
                     iterations: config.iterations,
                     parallel: config.parallel,
-                    includeTick: config.includeTick
+                    ticksPerSync: config.ticksPerSync,
+                    progressEvery: config.progressEvery,
+                    progressLabel: "all/\(format.rawValue)"
                 )
             }
             
@@ -1072,7 +1318,7 @@ struct EncodingBenchmark {
             }
             
             // Collect results for JSON export
-            var json: [String: Any] = [
+            let json: [String: Any] = [
                 "format": result.format.rawValue,
                 "displayName": result.format.displayName,
                 "timeMs": result.timeMs,
@@ -1087,7 +1333,7 @@ struct EncodingBenchmark {
                 "avgCostPerSyncMs": result.avgCostPerSyncMs,
                 "throughputSyncsPerSecond": result.throughputSyncsPerSecond,
                 "config": [
-                    "includeTick": config.includeTick,
+                    "ticksPerSync": config.ticksPerSync,
                     "gameType": config.gameType.rawValue
                 ]
             ]
@@ -1109,9 +1355,19 @@ struct EncodingBenchmark {
         // Save results to JSON
         let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
         let parallelSuffix = config.parallel ? "-parallel" : "-serial"
-        let tickSuffix = config.includeTick ? "-tick" : ""
-        let filename = "all-formats-multiroom-\(config.rooms)rooms-\(config.iterations)iterations\(parallelSuffix)\(tickSuffix)-\(timestamp).json"
-        saveResultsToJSON(allResults, filename: filename)
+        let tickSuffix = config.ticksPerSync > 0 ? "-tick\(config.ticksPerSync)" : ""
+        let playerSuffix = "-ppr\(config.playersPerRoom)"
+        let filename = "all-formats-multiroom-\(config.rooms)rooms\(playerSuffix)-\(config.iterations)iterations\(parallelSuffix)\(tickSuffix)-\(timestamp).json"
+        saveResultsToJSON(allResults, filename: filename, benchmarkConfig: [
+            "mode": "all-formats-multiroom",
+            "rooms": config.rooms,
+            "playersPerRoom": config.playersPerRoom,
+            "iterations": config.iterations,
+            "parallel": config.parallel,
+            "ticksPerSync": config.ticksPerSync,
+            "gameType": config.gameType.rawValue,
+            "formatCount": EncodingFormat.allCases.count
+        ])
     }
 
     static func runSingleFormat(config: BenchmarkConfig) async {
@@ -1147,7 +1403,9 @@ struct EncodingBenchmark {
                 playersPerRoom: config.playersPerRoom,
                 iterations: config.iterations,
                 parallel: config.parallel,
-                includeTick: config.includeTick
+                ticksPerSync: config.ticksPerSync,
+                progressEvery: config.progressEvery,
+                progressLabel: "single/\(config.format.rawValue)"
             )
         } else {
             result = await runMultiRoomBenchmark(
@@ -1156,7 +1414,9 @@ struct EncodingBenchmark {
                 playersPerRoom: config.playersPerRoom,
                 iterations: config.iterations,
                 parallel: config.parallel,
-                includeTick: config.includeTick
+                ticksPerSync: config.ticksPerSync,
+                progressEvery: config.progressEvery,
+                progressLabel: "single/\(config.format.rawValue)"
             )
         }
 
@@ -1166,6 +1426,7 @@ struct EncodingBenchmark {
             print("  Format: \(config.format.displayName)")
             print("  Rooms: \(config.rooms), Players per room: \(config.playersPerRoom), Total players: \(result.playerCount)")
             print("  Iterations: \(config.iterations), Parallel: \(config.parallel)")
+            print("  Ticks per sync: \(config.ticksPerSync)")
             print("")
             print("  Total Time: \(String(format: "%.2f", result.timeMs))ms")
             print("  Time per Room: \(String(format: "%.2f", result.timePerRoomMs))ms")
@@ -1220,7 +1481,7 @@ struct EncodingBenchmark {
         print("")
         print("  ==================== Serial vs Parallel Comparison (Multi-Room) ====================")
         print("  Rooms: \(config.rooms), Players per room: \(config.playersPerRoom), Total players: \(config.rooms * config.playersPerRoom)")
-        print("  Iterations: \(config.iterations), Include Tick: \(config.includeTick)")
+        print("  Iterations: \(config.iterations), Ticks per sync: \(config.ticksPerSync)")
         print("")
         print("  Format                      | Serial (ms) | Parallel (ms) | Speedup | Throughput (syncs/s)")
         print("  -------------------------------------------------------------------------------------------")
@@ -1240,7 +1501,9 @@ struct EncodingBenchmark {
                     playersPerRoom: config.playersPerRoom,
                     iterations: config.iterations,
                     parallel: false,
-                    includeTick: config.includeTick
+                    ticksPerSync: config.ticksPerSync,
+                    progressEvery: config.progressEvery,
+                    progressLabel: "compare/serial/\(format.rawValue)"
                 )
                 parallelResult = await runMultiRoomBenchmarkCardGame(
                     format: format,
@@ -1248,7 +1511,9 @@ struct EncodingBenchmark {
                     playersPerRoom: config.playersPerRoom,
                     iterations: config.iterations,
                     parallel: true,
-                    includeTick: config.includeTick
+                    ticksPerSync: config.ticksPerSync,
+                    progressEvery: config.progressEvery,
+                    progressLabel: "compare/parallel/\(format.rawValue)"
                 )
             } else {
                 serialResult = await runMultiRoomBenchmark(
@@ -1257,7 +1522,9 @@ struct EncodingBenchmark {
                     playersPerRoom: config.playersPerRoom,
                     iterations: config.iterations,
                     parallel: false,
-                    includeTick: config.includeTick
+                    ticksPerSync: config.ticksPerSync,
+                    progressEvery: config.progressEvery,
+                    progressLabel: "compare/serial/\(format.rawValue)"
                 )
                 parallelResult = await runMultiRoomBenchmark(
                     format: format,
@@ -1265,7 +1532,9 @@ struct EncodingBenchmark {
                     playersPerRoom: config.playersPerRoom,
                     iterations: config.iterations,
                     parallel: true,
-                    includeTick: config.includeTick
+                    ticksPerSync: config.ticksPerSync,
+                    progressEvery: config.progressEvery,
+                    progressLabel: "compare/parallel/\(format.rawValue)"
                 )
             }
 
@@ -1309,7 +1578,7 @@ struct EncodingBenchmark {
                     "rooms": config.rooms,
                     "playersPerRoom": config.playersPerRoom,
                     "iterations": config.iterations,
-                    "includeTick": config.includeTick,
+                    "ticksPerSync": config.ticksPerSync,
                     "gameType": config.gameType.rawValue
                 ]
             ])
@@ -1320,9 +1589,18 @@ struct EncodingBenchmark {
         
         // Save results to JSON
         let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
-        let tickSuffix = config.includeTick ? "-tick" : ""
-        let filename = "parallel-comparison-multiroom-\(config.rooms)rooms-\(config.iterations)iterations\(tickSuffix)-\(timestamp).json"
-        saveResultsToJSON(allResults, filename: filename)
+        let tickSuffix = config.ticksPerSync > 0 ? "-tick\(config.ticksPerSync)" : ""
+        let playerSuffix = "-ppr\(config.playersPerRoom)"
+        let filename = "parallel-comparison-multiroom-\(config.rooms)rooms\(playerSuffix)-\(config.iterations)iterations\(tickSuffix)-\(timestamp).json"
+        saveResultsToJSON(allResults, filename: filename, benchmarkConfig: [
+            "mode": "parallel-comparison-multiroom",
+            "rooms": config.rooms,
+            "playersPerRoom": config.playersPerRoom,
+            "iterations": config.iterations,
+            "ticksPerSync": config.ticksPerSync,
+            "gameType": config.gameType.rawValue,
+            "formats": EncodingFormat.allCases.map(\.rawValue)
+        ])
         
         // Calculate additional metrics
         if let bestSpeedup = bestSpeedup {
@@ -1342,7 +1620,7 @@ struct EncodingBenchmark {
                     playersPerRoom: config.playersPerRoom,
                     iterations: config.iterations,
                     parallel: false,
-                    includeTick: config.includeTick
+                    ticksPerSync: config.ticksPerSync
                 )
                 parallelResult = await runMultiRoomBenchmarkCardGame(
                     format: bestSpeedup.format,
@@ -1350,7 +1628,7 @@ struct EncodingBenchmark {
                     playersPerRoom: config.playersPerRoom,
                     iterations: config.iterations,
                     parallel: true,
-                    includeTick: config.includeTick
+                    ticksPerSync: config.ticksPerSync
                 )
             } else {
                 serialResult = await runMultiRoomBenchmark(
@@ -1359,7 +1637,7 @@ struct EncodingBenchmark {
                     playersPerRoom: config.playersPerRoom,
                     iterations: config.iterations,
                     parallel: false,
-                    includeTick: config.includeTick
+                    ticksPerSync: config.ticksPerSync
                 )
                 parallelResult = await runMultiRoomBenchmark(
                     format: bestSpeedup.format,
@@ -1367,7 +1645,7 @@ struct EncodingBenchmark {
                     playersPerRoom: config.playersPerRoom,
                     iterations: config.iterations,
                     parallel: true,
-                    includeTick: config.includeTick
+                    ticksPerSync: config.ticksPerSync
                 )
             }
             
@@ -1421,195 +1699,144 @@ struct EncodingBenchmark {
     static func runScalabilityTest(config: BenchmarkConfig) async {
         print("")
         print("  ==================== 可擴展性測試 (Scalability Test) ====================")
-        print("  Players per room: \(config.playersPerRoom), Iterations: \(config.iterations), Include Tick: \(config.includeTick)")
+        print("  Players per room: \(config.playersPerRoom), Iterations: \(config.iterations), Ticks per sync: \(config.ticksPerSync)")
         print("  測試不同房間數下的性能變化，展示並行系統的可擴展性")
         print("")
-        
-        // Test room counts: 1, 2, 4, 8, 16, 32, 50
-        let roomCounts = [1, 2, 4, 8, 16, 32, 50]
-        let format = config.format
-        
-        print("  Format: \(format.displayName)")
+
+        let defaultRoomCounts = [1, 2, 4, 8, 10, 16, 20, 30, 32, 40, 50]
+        let roomCounts = config.roomCounts.isEmpty ? defaultRoomCounts : config.roomCounts
+        let playersPerRoomValues = config.playersPerRoomList.isEmpty ? [config.playersPerRoom] : config.playersPerRoomList
+        let formats = config.runAll ? Array(EncodingFormat.allCases) : [config.format]
+
+        print("  Room counts: \(roomCounts.map(String.init).joined(separator: ", "))")
+        print("  Formats: \(formats.map { $0.displayName }.joined(separator: ", "))")
+        print("  PlayersPerRoom: \(playersPerRoomValues.map(String.init).joined(separator: ", "))")
         print("")
-        print("  Rooms | Serial (ms) | Parallel (ms) | Speedup | Throughput (syncs/s) | Efficiency | Serial/Parallel Ratio")
-        print("  -----------------------------------------------------------------------------------------------------------------")
-        
-        var scalabilityData: [(rooms: Int, serial: Double, parallel: Double, speedup: Double, throughput: Double, efficiency: Double)] = []
+
+        let cpuCoreCount = Double(ProcessInfo.processInfo.processorCount)
         var allResults: [[String: Any]] = []
-        
-        for roomCount in roomCounts {
-            let serialResult: BenchmarkResult
-            let parallelResult: BenchmarkResult
-            
-            if config.gameType == .cardGame {
-                serialResult = await runMultiRoomBenchmarkCardGame(
-                    format: format,
-                    roomCount: roomCount,
-                    playersPerRoom: config.playersPerRoom,
-                    iterations: config.iterations,
-                    parallel: false,
-                    includeTick: config.includeTick
-                )
-                parallelResult = await runMultiRoomBenchmarkCardGame(
-                    format: format,
-                    roomCount: roomCount,
-                    playersPerRoom: config.playersPerRoom,
-                    iterations: config.iterations,
-                    parallel: true,
-                    includeTick: config.includeTick
-                )
-            } else {
-                serialResult = await runMultiRoomBenchmark(
-                    format: format,
-                    roomCount: roomCount,
-                    playersPerRoom: config.playersPerRoom,
-                    iterations: config.iterations,
-                    parallel: false,
-                    includeTick: config.includeTick
-                )
-                parallelResult = await runMultiRoomBenchmark(
-                    format: format,
-                    roomCount: roomCount,
-                    playersPerRoom: config.playersPerRoom,
-                    iterations: config.iterations,
-                    parallel: true,
-                    includeTick: config.includeTick
-                )
+
+        for playersPerRoom in playersPerRoomValues {
+            for format in formats {
+                if config.output == .table {
+                    print("  Format: \(format.displayName), PlayersPerRoom: \(playersPerRoom)")
+                    print("  Rooms | Serial (ms) | Parallel (ms) | Speedup | Parallel Throughput (syncs/s) | Efficiency")
+                    print("  ------------------------------------------------------------------------------------------------")
+                }
+
+                for roomCount in roomCounts {
+                    let serialResult: BenchmarkResult
+                    let parallelResult: BenchmarkResult
+
+                    if config.gameType == .cardGame {
+                        serialResult = await runMultiRoomBenchmarkCardGame(
+                            format: format,
+                            roomCount: roomCount,
+                            playersPerRoom: playersPerRoom,
+                            iterations: config.iterations,
+                            parallel: false,
+                            ticksPerSync: config.ticksPerSync,
+                            progressEvery: config.progressEvery,
+                            progressLabel: "scalability/serial/\(format.rawValue)/rooms\(roomCount)/ppr\(playersPerRoom)"
+                        )
+                        parallelResult = await runMultiRoomBenchmarkCardGame(
+                            format: format,
+                            roomCount: roomCount,
+                            playersPerRoom: playersPerRoom,
+                            iterations: config.iterations,
+                            parallel: true,
+                            ticksPerSync: config.ticksPerSync,
+                            progressEvery: config.progressEvery,
+                            progressLabel: "scalability/parallel/\(format.rawValue)/rooms\(roomCount)/ppr\(playersPerRoom)"
+                        )
+                    } else {
+                        serialResult = await runMultiRoomBenchmark(
+                            format: format,
+                            roomCount: roomCount,
+                            playersPerRoom: playersPerRoom,
+                            iterations: config.iterations,
+                            parallel: false,
+                            ticksPerSync: config.ticksPerSync,
+                            progressEvery: config.progressEvery,
+                            progressLabel: "scalability/serial/\(format.rawValue)/rooms\(roomCount)/ppr\(playersPerRoom)"
+                        )
+                        parallelResult = await runMultiRoomBenchmark(
+                            format: format,
+                            roomCount: roomCount,
+                            playersPerRoom: playersPerRoom,
+                            iterations: config.iterations,
+                            parallel: true,
+                            ticksPerSync: config.ticksPerSync,
+                            progressEvery: config.progressEvery,
+                            progressLabel: "scalability/parallel/\(format.rawValue)/rooms\(roomCount)/ppr\(playersPerRoom)"
+                        )
+                    }
+
+                    let speedup = serialResult.timeMs / max(parallelResult.timeMs, 0.001)
+                    let theoreticalSpeedup = min(Double(roomCount), cpuCoreCount)
+                    let efficiency = (speedup / max(theoreticalSpeedup, 0.001)) * 100.0
+
+                    if config.output == .table {
+                        print(String(format: "  %5d | %11.2f | %13.2f | %6.2fx | %27.1f | %9.1f%%",
+                                     roomCount,
+                                     serialResult.timeMs,
+                                     parallelResult.timeMs,
+                                     speedup,
+                                     parallelResult.throughputSyncsPerSecond,
+                                     efficiency))
+                    }
+
+                    allResults.append([
+                        "rooms": roomCount,
+                        "playersPerRoom": playersPerRoom,
+                        "format": format.rawValue,
+                        "displayName": format.displayName,
+                        "serial": [
+                            "timeMs": serialResult.timeMs,
+                            "totalBytes": serialResult.totalBytes,
+                            "bytesPerSync": serialResult.bytesPerSync,
+                            "throughputSyncsPerSecond": serialResult.throughputSyncsPerSecond,
+                            "avgCostPerSyncMs": serialResult.avgCostPerSyncMs
+                        ],
+                        "parallel": [
+                            "timeMs": parallelResult.timeMs,
+                            "totalBytes": parallelResult.totalBytes,
+                            "bytesPerSync": parallelResult.bytesPerSync,
+                            "throughputSyncsPerSecond": parallelResult.throughputSyncsPerSecond,
+                            "avgCostPerSyncMs": parallelResult.avgCostPerSyncMs
+                        ],
+                        "speedup": speedup,
+                        "efficiency": efficiency,
+                        "config": [
+                            "iterations": config.iterations,
+                            "ticksPerSync": config.ticksPerSync,
+                            "gameType": config.gameType.rawValue
+                        ]
+                    ])
+                }
+
+                if config.output == .table {
+                    print("")
+                }
             }
-            
-            let speedup = serialResult.timeMs / max(parallelResult.timeMs, 0.001)
-            // Standard parallel efficiency formula: E = Speedup / P
-            // where P is the number of processors (CPU cores), not the number of tasks (rooms)
-            // Theoretical max speedup = min(roomCount, cpuCoreCount)
-            let cpuCoreCount = Double(ProcessInfo.processInfo.processorCount)
-            let theoreticalSpeedup = min(Double(roomCount), cpuCoreCount)
-            let efficiency = (speedup / theoreticalSpeedup) * 100.0
-            
-            scalabilityData.append((
-                rooms: roomCount,
-                serial: serialResult.timeMs,
-                parallel: parallelResult.timeMs,
-                speedup: speedup,
-                throughput: parallelResult.throughputSyncsPerSecond,
-                efficiency: efficiency
-            ))
-            
-            let ratio = serialResult.timeMs / max(parallelResult.timeMs, 0.001)
-            print(String(format: "  %5d | %11.2f | %13.2f | %6.2fx | %21.1f | %9.1f%% | %18.2fx",
-                         roomCount,
-                         serialResult.timeMs,
-                         parallelResult.timeMs,
-                         speedup,
-                         parallelResult.throughputSyncsPerSecond,
-                         efficiency,
-                         ratio))
-            
-            // Collect results for JSON export
-            allResults.append([
-                "rooms": roomCount,
-                "format": format.rawValue,
-                "displayName": format.displayName,
-                "serial": [
-                    "timeMs": serialResult.timeMs,
-                    "totalBytes": serialResult.totalBytes,
-                    "bytesPerSync": serialResult.bytesPerSync,
-                    "throughputSyncsPerSecond": serialResult.throughputSyncsPerSecond,
-                    "avgCostPerSyncMs": serialResult.avgCostPerSyncMs
-                ],
-                "parallel": [
-                    "timeMs": parallelResult.timeMs,
-                    "totalBytes": parallelResult.totalBytes,
-                    "bytesPerSync": parallelResult.bytesPerSync,
-                    "throughputSyncsPerSecond": parallelResult.throughputSyncsPerSecond,
-                    "avgCostPerSyncMs": parallelResult.avgCostPerSyncMs
-                ],
-                "speedup": speedup,
-                "efficiency": efficiency,
-                "config": [
-                    "playersPerRoom": config.playersPerRoom,
-                    "iterations": config.iterations,
-                    "includeTick": config.includeTick,
-                    "gameType": config.gameType.rawValue
-                ]
-            ])
         }
-        
-        print("  -----------------------------------------------------------------------------------------------------------------")
-        print("")
-        
-        // Save results to JSON
+
+        // Save results to JSON (single matrix file)
         let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
-        let tickSuffix = config.includeTick ? "-tick" : ""
-        let filename = "scalability-test-\(format.rawValue)-\(config.iterations)iterations\(tickSuffix)-\(timestamp).json"
-        saveResultsToJSON(allResults, filename: filename)
-        
-        // Calculate scalability metrics
-        if scalabilityData.count >= 2 {
-            let first = scalabilityData[0]
-            let last = scalabilityData[scalabilityData.count - 1]
-            
-            let serialScaling = last.serial / first.serial  // How much slower serial gets
-            let parallelScaling = last.parallel / first.parallel  // How much slower parallel gets
-            
-            print("  📈 可擴展性分析:")
-            print("")
-            print("  1. 房間數增加時的性能變化:")
-            print("     - 從 \(first.rooms) 個房間增加到 \(last.rooms) 個房間:")
-            print("       • 序列化系統: 時間增加 \(String(format: "%.2f", serialScaling))x")
-            print("       • 並行系統: 時間增加 \(String(format: "%.2f", parallelScaling))x")
-            print("       • 並行系統的擴展效率: \(String(format: "%.1f", (1.0 / parallelScaling) * 100))%")
-            print("")
-            
-            print("  2. 吞吐量擴展:")
-            for data in scalabilityData {
-                print("     - \(data.rooms) 個房間: \(String(format: "%.1f", data.throughput)) syncs/sec")
-            }
-            print("")
-            
-            print("  3. 系統優勢總結:")
-            print("     - ✅ 並行系統隨著房間數增加，性能下降幅度遠小於序列化系統")
-            print("     - ✅ 在 \(last.rooms) 個房間時，並行系統比序列化系統快 \(String(format: "%.2f", last.speedup))x")
-            print("     - ✅ 並行效率: \(String(format: "%.1f", last.efficiency))% (接近理論最大值)")
-            print("     - ✅ 普通系統（不支援房間並行）在 \(last.rooms) 個房間時需要 \(String(format: "%.2f", last.serial / first.serial))x 的時間")
-            print("     - ✅ 並行系統在 \(last.rooms) 個房間時僅需 \(String(format: "%.2f", last.parallel / first.parallel))x 的時間")
-            print("")
-            
-            // Calculate scalability metrics for different room ranges
-            print("  4. 不同規模下的性能表現:")
-            if scalabilityData.count >= 4 {
-                let small = scalabilityData[2]  // 4 rooms
-                let medium = scalabilityData[4]  // 16 rooms
-                let large = scalabilityData[6]  // 50 rooms
-                
-                print("     - 小規模 (4 個房間):")
-                print("       • 序列化: \(String(format: "%.2f", small.serial))ms, 並行: \(String(format: "%.2f", small.parallel))ms")
-                print("       • 加速比: \(String(format: "%.2f", small.speedup))x, 效率: \(String(format: "%.1f", small.efficiency))%")
-                print("       • 吞吐量: \(String(format: "%.1f", small.throughput)) syncs/sec")
-                print("")
-                print("     - 中規模 (16 個房間):")
-                print("       • 序列化: \(String(format: "%.2f", medium.serial))ms, 並行: \(String(format: "%.2f", medium.parallel))ms")
-                print("       • 加速比: \(String(format: "%.2f", medium.speedup))x, 效率: \(String(format: "%.1f", medium.efficiency))%")
-                print("       • 吞吐量: \(String(format: "%.1f", medium.throughput)) syncs/sec")
-                print("")
-                print("     - 大規模 (50 個房間):")
-                print("       • 序列化: \(String(format: "%.2f", large.serial))ms, 並行: \(String(format: "%.2f", large.parallel))ms")
-                print("       • 加速比: \(String(format: "%.2f", large.speedup))x, 效率: \(String(format: "%.1f", large.efficiency))%")
-                print("       • 吞吐量: \(String(format: "%.1f", large.throughput)) syncs/sec")
-                print("")
-                
-                // Calculate scaling factor
-                let serialScalingFactor = large.serial / small.serial
-                let parallelScalingFactor = large.parallel / small.parallel
-                let scalingAdvantage = serialScalingFactor / parallelScalingFactor
-                
-                print("  5. 擴展性分析:")
-                print("     - 從 4 個房間擴展到 50 個房間:")
-                print("       • 序列化系統時間增加: \(String(format: "%.2f", serialScalingFactor))x")
-                print("       • 並行系統時間增加: \(String(format: "%.2f", parallelScalingFactor))x")
-                print("       • 並行系統的擴展優勢: \(String(format: "%.2f", scalingAdvantage))x")
-                print("       • 結論: 並行系統在規模擴展時表現更穩定，性能下降更緩慢")
-                print("")
-            }
-        }
+        let tickSuffix = config.ticksPerSync > 0 ? "-tick\(config.ticksPerSync)" : ""
+        let playersSuffix = playersPerRoomValues.isEmpty
+            ? ""
+            : "-ppr\(playersPerRoomValues.map(String.init).joined(separator: "+"))"
+        let formatsSuffix = config.runAll ? "-all-formats" : "-\(config.format.rawValue)"
+        let filename = "scalability-matrix\(formatsSuffix)\(playersSuffix)-\(config.iterations)iterations\(tickSuffix)-\(timestamp).json"
+        saveResultsToJSON(allResults, filename: filename, benchmarkConfig: [
+            "mode": "scalability-matrix",
+            "roomCounts": roomCounts,
+            "playersPerRoom": playersPerRoomValues,
+            "iterations": config.iterations,
+            "ticksPerSync": config.ticksPerSync,
+            "gameType": config.gameType.rawValue,
+            "formats": formats.map(\.rawValue)
+        ])
     }
 }

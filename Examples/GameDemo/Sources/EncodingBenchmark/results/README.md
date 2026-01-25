@@ -9,27 +9,62 @@
 ## 文件命名規則
 
 ### 並行比較測試（Parallel Comparison）
-- 格式：`parallel-comparison-multiroom-{rooms}rooms-{iterations}iterations{tick}-{timestamp}.json`
-- 範例：`parallel-comparison-multiroom-4rooms-1000iterations-2026-01-24T15-57-24Z.json`
+- 格式：`parallel-comparison-multiroom-{rooms}rooms-ppr{playersPerRoom}-{iterations}iterations{tickN}-{timestamp}.json`
+- 範例：`parallel-comparison-multiroom-4rooms-ppr5-1000iterations-tick2-2026-01-24T15-57-24Z.json`
 - 說明：測試不同編碼格式在序列化 vs 並行執行下的性能對比
 
 ### 可擴展性測試（Scalability Test）
-- 格式：`scalability-test-{format}-{iterations}iterations{tick}-{timestamp}.json`
-- 範例：`scalability-test-json-object-500iterations-2026-01-24T15-57-52Z.json`
-- 說明：測試不同房間數（1, 2, 4, 8, 16, 32, 50）下的性能變化
+- 格式：`scalability-matrix-{formatOrAll}{playersPerRoomList}-{iterations}iterations{tickN}-{timestamp}.json`
+- 範例：`scalability-matrix-all-formats-ppr5+10-1000iterations-tick2-2026-01-24T16-12-01Z.json`
+- 說明：可同時測試多個房間數、多個每房間人數、以及（可選）多個編碼格式的矩陣結果
 
 ### 所有格式測試（All Formats）
 - 格式：`all-formats-{players}players-{iterations}iterations{parallel}-{timestamp}.json`（單房間）
-- 格式：`all-formats-multiroom-{rooms}rooms-{iterations}iterations{parallel}{tick}-{timestamp}.json`（多房間）
-- 範例：`all-formats-multiroom-4rooms-1000iterations-parallel-2026-01-24T16-01-11Z.json`
+- 格式：`all-formats-multiroom-{rooms}rooms-ppr{playersPerRoom}-{iterations}iterations{parallel}{tickN}-{timestamp}.json`（多房間）
+- 範例：`all-formats-multiroom-4rooms-ppr5-1000iterations-parallel-tick2-2026-01-24T16-01-11Z.json`
 - 說明：測試所有編碼格式的性能對比
 
 ## JSON 結構
 
+所有結果檔案都使用「單檔自描述」的 envelope 結構：
+
+```json
+{
+  "metadata": {
+    "timestampUTC": "2026-01-24T16:12:01.123Z",
+    "build": {
+      "configuration": "release",
+      "swiftVersion": "Swift version ..."
+    },
+    "git": {
+      "commit": "1ffdd69...",
+      "branch": "feature/..."
+    },
+    "environment": {
+      "arch": "x86_64",
+      "cpuModel": "AMD Ryzen ...",
+      "cpuPhysicalCores": 6,
+      "cpuLogicalCores": 12,
+      "memoryTotalMB": 16384,
+      "wsl": true,
+      "container": false
+    },
+    "benchmarkConfig": {
+      "mode": "scalability-matrix",
+      "iterations": 1000,
+      "ticksPerSync": 2
+    }
+  },
+  "results": [ /* 以下各類測試的 result array */ ]
+}
+```
+
 ### 並行比較測試結果
 
 ```json
-[
+{
+  "metadata": { "...": "..." },
+  "results": [
   {
     "format": "json-object",
     "displayName": "JSON Object",
@@ -52,19 +87,23 @@
       "rooms": 4,
       "playersPerRoom": 5,
       "iterations": 1000,
-      "includeTick": false,
+      "ticksPerSync": 2,
       "gameType": "hero-defense"
     }
   }
-]
+  ]
+}
 ```
 
 ### 可擴展性測試結果
 
 ```json
-[
+{
+  "metadata": { "...": "..." },
+  "results": [
   {
     "rooms": 1,
+    "playersPerRoom": 5,
     "format": "json-object",
     "displayName": "JSON Object",
     "serial": {
@@ -84,13 +123,13 @@
     "speedup": 0.87,
     "efficiency": 87.3,
     "config": {
-      "playersPerRoom": 5,
       "iterations": 500,
-      "includeTick": false,
+      "ticksPerSync": 2,
       "gameType": "hero-defense"
     }
   }
-]
+  ]
+}
 ```
 
 ## 使用方式
@@ -104,7 +143,9 @@
 ### 所有格式測試結果
 
 ```json
-[
+{
+  "metadata": { "...": "..." },
+  "results": [
   {
     "format": "json-object",
     "displayName": "JSON Object",
@@ -120,11 +161,12 @@
     "avgCostPerSyncMs": 0.0153,
     "throughputSyncsPerSecond": 16326.5,
     "config": {
-      "includeTick": false,
+      "ticksPerSync": 2,
       "gameType": "hero-defense"
     }
   }
-]
+  ]
+}
 ```
 
 ## 運行測試生成 JSON
@@ -134,8 +176,8 @@
 # 多房間模式（並行）- 推薦用於性能對比
 swift run -c release EncodingBenchmark --all --rooms 4 --players-per-room 5 --iterations 1000
 
-# 包含 tick 模擬（更接近實際運行情況）
-swift run -c release EncodingBenchmark --all --rooms 4 --players-per-room 5 --iterations 1000 --include-tick
+# tick=20Hz, sync=10Hz（更接近實際運行情況）
+swift run -c release EncodingBenchmark --all --rooms 4 --players-per-room 5 --iterations 1000 --ticks-per-sync 2
 
 # 單房間模式
 swift run -c release EncodingBenchmark --all --players 10 --iterations 1000
@@ -146,17 +188,20 @@ swift run -c release EncodingBenchmark --all --players 10 --iterations 1000
 # 測試序列化 vs 並行執行的性能差異
 swift run -c release EncodingBenchmark --compare-parallel --rooms 4 --players-per-room 5 --iterations 1000
 
-# 包含 tick 模擬
-swift run -c release EncodingBenchmark --compare-parallel --rooms 4 --players-per-room 5 --iterations 1000 --include-tick
+# tick=20Hz, sync=10Hz
+swift run -c release EncodingBenchmark --compare-parallel --rooms 4 --players-per-room 5 --iterations 1000 --ticks-per-sync 2
 ```
 
 ### 可擴展性測試
 ```bash
-# 測試不同房間數（1, 2, 4, 8, 16, 32, 50）下的性能變化
-swift run -c release EncodingBenchmark --scalability --format json-object --players-per-room 5 --iterations 500
+# 單一格式：測試不同房間數下的性能變化（預設 roomCounts）
+swift run -c release EncodingBenchmark --scalability --format json-object --players-per-room 5 --iterations 1000 --ticks-per-sync 2
 
-# 包含 tick 模擬
-swift run -c release EncodingBenchmark --scalability --format json-object --players-per-room 5 --iterations 500 --include-tick
+# 全格式 × 多 playersPerRoom 的矩陣（推薦用於比較 encoding impact）
+swift run -c release EncodingBenchmark --scalability --all --players-per-room-list 5,10 --iterations 1000 --ticks-per-sync 2
+
+# 指定房間數（例如 10~50）
+swift run -c release EncodingBenchmark --scalability --all --players-per-room-list 5,10 --room-counts 10,20,30,40,50 --iterations 1000 --ticks-per-sync 2
 ```
 
 ## 注意事項
