@@ -70,14 +70,27 @@ public enum DeterministicHash {
     }
     
     // MARK: - Hex String Conversion
+
+    private static func paddedLowerHex<T: FixedWidthInteger & UnsignedInteger>(
+        _ value: T,
+        width: Int
+    ) -> String {
+        let hex = String(value, radix: 16, uppercase: false)
+        if hex.count >= width {
+            // FixedWidthInteger values should not exceed the requested width,
+            // but keep this defensive to avoid surprises.
+            return String(hex.suffix(width))
+        }
+        return String(repeating: "0", count: width - hex.count) + hex
+    }
     
     /// Convert 64-bit hash to 16-character hex string.
     public static func toHex64(_ hash: UInt64) -> String {
-        String(format: "%016llx", hash)
+        paddedLowerHex(hash, width: 16)
     }
     
     /// Convert 32-bit hash to 8-character hex string.
     public static func toHex32(_ hash: UInt32) -> String {
-        String(format: "%08x", hash)
+        paddedLowerHex(hash, width: 8)
     }
 }
