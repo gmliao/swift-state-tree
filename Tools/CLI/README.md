@@ -130,6 +130,13 @@ Test scenarios are defined in JSON files within the `scenarios/` directory.
   - `errorCode`: string (optional)
 - **`event`**: Send a client event.
 - **`wait`**: Wait for N milliseconds.
+- **`waitForState`**: Wait for a state condition to be met (with timeout).
+  - `path`: Dot-notation path to state field (e.g., `players.0.name`).
+  - `equals`: Expected value (optional).
+  - `exists`: boolean (optional).
+  - `timeout`: Maximum wait time in milliseconds (default: 3000ms).
+  - `interval`: Polling interval in milliseconds (default: 100ms).
+  - `message`: Error message if condition is not met (optional).
 - **`assert`**: Validate current state.
   - `path`: Dot-notation path to state field (e.g., `players.0.name`).
   - `equals`: Expected value.
