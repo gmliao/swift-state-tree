@@ -46,10 +46,10 @@
 **圖（直接嵌入）**  
 以下圖表顯示 `rooms=50`、parallel 模式下的 `bytesPerSync` 對比（application payload）：
 
-![RQ1 Bytes per sync at 50 rooms (parallel)](/deep-research/emse-artifacts/artifacts/rq1_bytes_per_sync_rooms50_parallel.svg)
+![RQ1 Bytes per sync at 50 rooms (parallel)](/deep-research/emse-artifacts/out/rq1_bytes_per_sync_rooms50_parallel.svg)
 
 **表（直接嵌入）**  
-（取自 `deep-research/emse-artifacts/artifacts/rq1_network_efficiency.csv`）
+（取自 `deep-research/emse-artifacts/out/rq1_network_efficiency.csv`）
 
 | Format                    | Rooms | playersPerRoom | ticksPerSync | iterations | bytesPerSync (serial) | bytesPerSync (parallel) | diff |
 |--------------------------|------:|---------------:|-------------:|-----------:|----------------------:|------------------------:|----:|
@@ -98,7 +98,11 @@
 本章採用 `cpuUsageLimit = 0.7`，保留 headroom 給遊戲邏輯、網路與 runtime overhead。
 
 **表（直接嵌入）**  
-（取自 `deep-research/emse-artifacts/artifacts/rq2_capacity_model.md`）
+（取自 `deep-research/emse-artifacts/out/rq2_capacity_model.md`）
+
+**原始資料（Benchmark JSON）**  
+- [JSON Object（raw）](/Examples/GameDemo/Sources/EncodingBenchmark/results/scalability-matrix-json-object-ppr5-200iterations-tick2-2026-01-25T10-01-01Z.json)
+- [Opcode MsgPack (PathHash)（raw）](/Examples/GameDemo/Sources/EncodingBenchmark/results/scalability-matrix-messagepack-pathhash-ppr5-200iterations-tick2-2026-01-25T10-01-03Z.json)
 
 **原始資料（Benchmark JSON）**  
 - [JSON Object（raw）](/Examples/GameDemo/Sources/EncodingBenchmark/results/scalability-matrix-json-object-ppr5-200iterations-tick2-2026-01-25T10-01-01Z.json)
