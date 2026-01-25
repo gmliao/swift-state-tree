@@ -113,6 +113,38 @@ struct ReevaluationRunnerMain {
         }
         print("")
         
+        // Display hardware information
+        if let recordedHardware = metadata.hardwareInfo {
+            print("📋 Recorded Hardware Info:")
+            print("   CPU Architecture: \(recordedHardware.cpuArchitecture)")
+            print("   OS: \(recordedHardware.osName) \(recordedHardware.osVersion)")
+            if let cpuModel = recordedHardware.cpuModel {
+                print("   CPU Model: \(cpuModel)")
+            }
+            if let cpuCores = recordedHardware.cpuCores {
+                print("   CPU Cores: \(cpuCores)")
+            }
+            if let swiftVersion = recordedHardware.swiftVersion {
+                print("   Swift Version: \(swiftVersion)")
+            }
+            print("")
+        }
+        
+        let currentHardware = HardwareInfoCollector.collect()
+        print("🖥️  Current Hardware Info:")
+        print("   CPU Architecture: \(currentHardware.cpuArchitecture)")
+        print("   OS: \(currentHardware.osName) \(currentHardware.osVersion)")
+        if let cpuModel = currentHardware.cpuModel {
+            print("   CPU Model: \(cpuModel)")
+        }
+        if let cpuCores = currentHardware.cpuCores {
+            print("   CPU Cores: \(cpuCores)")
+        }
+        if let swiftVersion = currentHardware.swiftVersion {
+            print("   Swift Version: \(swiftVersion)")
+        }
+        print("")
+        
         guard landType == "hero-defense" else {
             print("Unsupported landType for GameDemo ReevaluationRunner: \(landType)")
             printHelpAndExit(exitCode: 2)
