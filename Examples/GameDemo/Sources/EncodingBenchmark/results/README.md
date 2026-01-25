@@ -210,3 +210,9 @@ swift run -c release EncodingBenchmark --scalability --all --players-per-room-li
 - ✅ 文件名包含時間戳，避免覆蓋之前的結果
 - ✅ 所有數值都是實際測試結果，可以直接用於分析
 - ✅ 所有 JSON 文件都可以版本控制，方便追蹤性能變化
+
+### Release mode stability note (macOS)
+
+In older versions, `EncodingBenchmark --compare-parallel` could crash in `-c release` with exit code 139.
+The root cause was an invalid `String(format:)` usage: passing a Swift `String` to the C `%s` specifier
+(which expects a C string pointer). This has been fixed by using type-safe formatting (`%@` / interpolation).
