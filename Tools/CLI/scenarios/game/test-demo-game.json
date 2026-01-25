@@ -23,7 +23,7 @@
     },
     {
       "type": "action",
-      "action": "PlayAction",
+      "action": "Play",
       "payload": {}
     },
     {
@@ -80,7 +80,7 @@
     },
     {
       "type": "action",
-      "action": "PlayAction",
+      "action": "Play",
       "payload": {}
     },
     {
@@ -89,7 +89,7 @@
     },
     {
       "type": "action",
-      "action": "PlayAction",
+      "action": "Play",
       "payload": {}
     },
     {
@@ -98,7 +98,7 @@
     },
     {
       "type": "action",
-      "action": "PlayAction",
+      "action": "Play",
       "payload": {}
     },
     {
@@ -157,7 +157,7 @@
     },
     {
       "type": "action",
-      "action": "PlayAction",
+      "action": "Play",
       "payload": {}
     },
     {
@@ -166,7 +166,7 @@
     },
     {
       "type": "action",
-      "action": "PlayAction",
+      "action": "Play",
       "payload": {}
     },
     {

@@ -1,5 +1,6 @@
 import Foundation
 import GameContent
+import Logging
 import SwiftStateTree
 
 @main
@@ -47,6 +48,38 @@ struct ReevaluationRunnerMain {
         let source = try JSONReevaluationSource(filePath: inputFile)
         let metadata = try await source.getMetadata()
         let landType = metadata.landType
+        let maxTickId = try await source.getMaxTickId()
+        
+        // Calculate statistics from the record
+        var totalActions = 0
+        var totalClientEvents = 0
+        var totalLifecycleEvents = 0
+        var ticksWithStateHash = 0
+        
+        for tickId in 0...maxTickId {
+            let actions = try await source.getActions(for: tickId)
+            let clientEvents = try await source.getClientEvents(for: tickId)
+            let lifecycleEvents = try await source.getLifecycleEvents(for: tickId)
+            let stateHash = try await source.getStateHash(for: tickId)
+            
+            totalActions += actions.count
+            totalClientEvents += clientEvents.count
+            totalLifecycleEvents += lifecycleEvents.count
+            if stateHash != nil {
+                ticksWithStateHash += 1
+            }
+        }
+        
+        // Display record statistics
+        print("📊 Record Statistics:")
+        print("   Total Ticks: \(maxTickId + 1)")
+        print("   Actions: \(totalActions)")
+        print("   Client Events: \(totalClientEvents)")
+        print("   Lifecycle Events: \(totalLifecycleEvents)")
+        if ticksWithStateHash > 0 {
+            print("   Ticks with State Hash: \(ticksWithStateHash)")
+        }
+        print("")
         
         // Display hardware information
         if let recordedHardware = metadata.hardwareInfo {
@@ -91,6 +124,10 @@ struct ReevaluationRunnerMain {
             as: GameConfigProviderService.self
         )
         
+        // Use a logger that only shows errors to suppress info logs like "Player joined/left"
+        var logger = Logger(label: "reevaluation-runner")
+        logger.logLevel = .error
+        
         let sink = CountingSink()
         let first = try await ReevaluationEngine.run(
             definition: HeroDefense.makeLand(),
@@ -98,14 +135,22 @@ struct ReevaluationRunnerMain {
             recordFilePath: inputFile,
             services: services,
             sink: sink,
-            exportJsonlPath: exportJsonlPath
+            exportJsonlPath: exportJsonlPath,
+            logger: logger
         )
         
         let eventCount = await sink.totalEvents
-        print("Re-evaluation finished. maxTickId=\(first.maxTickId) emittedServerEvents=\(eventCount)")
-        if let last = first.tickHashes[first.maxTickId] {
-            print("Final tick hash: \(last)")
+        
+        // Display re-evaluation results
+        print("🔄 Re-evaluation Results:")
+        print("   Processed Ticks: \(first.maxTickId + 1)")
+        if eventCount > 0 {
+            print("   Emitted Server Events: \(eventCount)")
         }
+        if let last = first.tickHashes[first.maxTickId] {
+            print("   Final Tick Hash: \(last)")
+        }
+        print("")
         
         guard verify else { return }
 
@@ -136,7 +181,8 @@ struct ReevaluationRunnerMain {
             definition: HeroDefense.makeLand(),
             initialState: HeroDefenseState(),
             recordFilePath: inputFile,
-            services: services
+            services: services,
+            logger: logger
         )
         
         let mismatches = diffHashes(a: first.tickHashes, b: second.tickHashes)
