@@ -765,6 +765,7 @@ func runBenchmark(
     let keeper = LandKeeper(
         definition: landDef,
         initialState: BenchmarkState(),
+        autoStartLoops: false,
         transport: nil,
         logger: benchmarkLogger
     )

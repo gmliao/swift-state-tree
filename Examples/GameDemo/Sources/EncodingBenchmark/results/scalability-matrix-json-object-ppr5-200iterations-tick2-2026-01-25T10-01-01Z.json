@@ -2,7 +2,7 @@
   "metadata" : {
     "benchmarkConfig" : {
       "formats" : [
-        "messagepack-pathhash"
+        "json-object"
       ],
       "gameType" : "hero-defense",
       "iterations" : 200,
@@ -25,7 +25,7 @@
       ".build\/x86_64-unknown-linux-gnu\/release\/EncodingBenchmark",
       "--scalability",
       "--format",
-      "messagepack-pathhash",
+      "json-object",
       "--players-per-room",
       "5",
       "--room-counts",
@@ -54,9 +54,9 @@
     },
     "git" : {
       "branch" : "feature\/messagepack-parallel-encoding-tests",
-      "commit" : "165cc7a2412b7ce89c7b8b7e344081bccfc9b20b"
+      "commit" : "92dd6207beaf64f0c735d819fecb2190df1b0726"
     },
-    "timestampUTC" : "2026-01-25T06:12:37.788Z"
+    "timestampUTC" : "2026-01-25T10:01:01.841Z"
   },
   "results" : [
     {
@@ -65,26 +65,26 @@
         "iterations" : 200,
         "ticksPerSync" : 2
       },
-      "displayName" : "Opcode MsgPack (PathHash)",
-      "efficiency" : 28.428778794878546,
-      "format" : "messagepack-pathhash",
+      "displayName" : "JSON Object",
+      "efficiency" : 41.630424683316555,
+      "format" : "json-object",
       "parallel" : {
-        "avgCostPerSyncMs" : 0.104730473,
-        "bytesPerSync" : 4678,
-        "throughputSyncsPerSecond" : 9548.319332043884,
-        "timeMs" : 209.460946,
-        "totalBytes" : 935746
+        "avgCostPerSyncMs" : 0.085617279,
+        "bytesPerSync" : 17627,
+        "throughputSyncsPerSecond" : 11679.885318476427,
+        "timeMs" : 171.234558,
+        "totalBytes" : 3525499
       },
       "playersPerRoom" : 5,
       "rooms" : 10,
       "serial" : {
-        "avgCostPerSyncMs" : 0.297735945,
-        "bytesPerSync" : 4776,
-        "throughputSyncsPerSecond" : 3358.6807934796047,
-        "timeMs" : 595.47189,
-        "totalBytes" : 955350
+        "avgCostPerSyncMs" : 0.3564283685,
+        "bytesPerSync" : 17627,
+        "throughputSyncsPerSecond" : 2805.612819788782,
+        "timeMs" : 712.856737,
+        "totalBytes" : 3525514
       },
-      "speedup" : 2.8428778794878546
+      "speedup" : 4.163042468331655
     },
     {
       "config" : {
@@ -92,26 +92,26 @@
         "iterations" : 200,
         "ticksPerSync" : 2
       },
-      "displayName" : "Opcode MsgPack (PathHash)",
-      "efficiency" : 42.19085145745018,
-      "format" : "messagepack-pathhash",
+      "displayName" : "JSON Object",
+      "efficiency" : 38.79403819283891,
+      "format" : "json-object",
       "parallel" : {
-        "avgCostPerSyncMs" : 0.06318012066666666,
-        "bytesPerSync" : 14013,
-        "throughputSyncsPerSecond" : 15827.76337633037,
-        "timeMs" : 379.080724,
-        "totalBytes" : 2802766
+        "avgCostPerSyncMs" : 0.07816506316666666,
+        "bytesPerSync" : 52521,
+        "throughputSyncsPerSecond" : 12793.439415097255,
+        "timeMs" : 468.990379,
+        "totalBytes" : 10504287
       },
       "playersPerRoom" : 5,
       "rooms" : 30,
       "serial" : {
-        "avgCostPerSyncMs" : 0.31987477033333334,
-        "bytesPerSync" : 14933,
-        "throughputSyncsPerSecond" : 3126.2234247418937,
-        "timeMs" : 1919.248622,
-        "totalBytes" : 2986641
+        "avgCostPerSyncMs" : 0.3638806135,
+        "bytesPerSync" : 52521,
+        "throughputSyncsPerSecond" : 2748.1541002733306,
+        "timeMs" : 2183.283681,
+        "totalBytes" : 10504292
       },
-      "speedup" : 5.062902174894021
+      "speedup" : 4.65528458314067
     },
     {
       "config" : {
@@ -119,26 +119,26 @@
         "iterations" : 200,
         "ticksPerSync" : 2
       },
-      "displayName" : "Opcode MsgPack (PathHash)",
-      "efficiency" : 43.93267847119022,
-      "format" : "messagepack-pathhash",
+      "displayName" : "JSON Object",
+      "efficiency" : 43.91427256172818,
+      "format" : "json-object",
       "parallel" : {
-        "avgCostPerSyncMs" : 0.064569315,
-        "bytesPerSync" : 23475,
-        "throughputSyncsPerSecond" : 15487.23259647404,
-        "timeMs" : 645.69315,
-        "totalBytes" : 4695005
+        "avgCostPerSyncMs" : 0.07045343500000001,
+        "bytesPerSync" : 87611,
+        "throughputSyncsPerSecond" : 14193.772099259602,
+        "timeMs" : 704.53435,
+        "totalBytes" : 17522295
       },
       "playersPerRoom" : 5,
       "rooms" : 50,
       "serial" : {
-        "avgCostPerSyncMs" : 0.34040435459999996,
-        "bytesPerSync" : 27413,
-        "throughputSyncsPerSecond" : 2937.682748433325,
-        "timeMs" : 3404.043546,
-        "totalBytes" : 5482612
+        "avgCostPerSyncMs" : 0.3712693617,
+        "bytesPerSync" : 87611,
+        "throughputSyncsPerSecond" : 2693.462222202,
+        "timeMs" : 3712.693617,
+        "totalBytes" : 17522305
       },
-      "speedup" : 5.271921416542827
+      "speedup" : 5.269712707407382
     }
   ]
 }

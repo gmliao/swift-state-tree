@@ -40,33 +40,38 @@
 **資料來源（Evidence）**  
 - 演進敘事：`docs/transport_evolution.md`、`docs/transport_evolution.zh-TW.md`
 - 可重現的 benchmark 原始結果檔：
-  - `Examples/GameDemo/Sources/EncodingBenchmark/results/scalability-matrix-json-object-ppr5-200iterations-tick2-2026-01-25T06-12-16Z.json`
-  - `Examples/GameDemo/Sources/EncodingBenchmark/results/scalability-matrix-messagepack-pathhash-ppr5-200iterations-tick2-2026-01-25T06-12-37Z.json`
+  - [JSON Object（raw）](/Examples/GameDemo/Sources/EncodingBenchmark/results/scalability-matrix-json-object-ppr5-200iterations-tick2-2026-01-25T10-01-01Z.json)
+  - [Opcode MsgPack (PathHash)（raw）](/Examples/GameDemo/Sources/EncodingBenchmark/results/scalability-matrix-messagepack-pathhash-ppr5-200iterations-tick2-2026-01-25T10-01-03Z.json)
 
 **圖（直接嵌入）**  
 以下圖表顯示 `rooms=50`、parallel 模式下的 `bytesPerSync` 對比（application payload）：
 
-![RQ1 Bytes per sync at 50 rooms (parallel)](/deep-research/emse-artifacts/artifacts/rq1_bytes_per_sync_rooms50_parallel.svg)
+![RQ1 Bytes per sync at 50 rooms (parallel)](/deep-research/emse-artifacts/out/rq1_bytes_per_sync_rooms50_parallel.svg)
 
 **表（直接嵌入）**  
-（取自 `deep-research/emse-artifacts/artifacts/rq1_network_efficiency.csv`）
+（取自 `deep-research/emse-artifacts/out/rq1_network_efficiency.csv`）
 
-| Format                    | Rooms | playersPerRoom | ticksPerSync | iterations | serial bytesPerSync | parallel bytesPerSync |
-|--------------------------|------:|---------------:|-------------:|-----------:|--------------------:|----------------------:|
-| JSON Object              | 10    | 5              | 2            | 200        | 18183               | 17656                 |
-| JSON Object              | 30    | 5              | 2            | 200        | 58397               | 53978                 |
-| JSON Object              | 50    | 5              | 2            | 200        | 110387              | 91400                 |
-| Opcode MsgPack (PathHash)| 10    | 5              | 2            | 200        | 4776                | 4678                  |
-| Opcode MsgPack (PathHash)| 30    | 5              | 2            | 200        | 14933               | 14013                 |
-| Opcode MsgPack (PathHash)| 50    | 5              | 2            | 200        | 27413               | 23475                 |
+| Format                    | Rooms | playersPerRoom | ticksPerSync | iterations | bytesPerSync (serial) | bytesPerSync (parallel) | diff |
+|--------------------------|------:|---------------:|-------------:|-----------:|----------------------:|------------------------:|----:|
+| JSON Object              | 10    | 5              | 2            | 200        | 17627               | 17627                 | 0    |
+| JSON Object              | 30    | 5              | 2            | 200        | 52521               | 52521                 | 0    |
+| JSON Object              | 50    | 5              | 2            | 200        | 87611               | 87611                 | 0    |
+| Opcode MsgPack (PathHash)| 10    | 5              | 2            | 200        | 4572                | 4572                  | 0    |
+| Opcode MsgPack (PathHash)| 30    | 5              | 2            | 200        | 13612               | 13612                 | 0    |
+| Opcode MsgPack (PathHash)| 50    | 5              | 2            | 200        | 22713               | 22713                 | 0    |
+
+**一致性檢核（serial vs parallel）**  
+- `bytesPerSync` 由 `CountingTransport` 實際累計的 `totalBytes / iterations` 計算得到。  
+- 在相同 workload（同 `ticksPerSync`、`playersPerRoom`、`rooms`、`iterations`）下，serial 與 parallel 僅差在「room 間排程方式」，理論上不應改變每個 room 的狀態演進與 sync patch，故 `bytesPerSync` 應一致。  
+- 本次重跑中，所有組合皆觀察到 `diff = 0`，表示 serial 與 parallel 的 `bytesPerSync` 完全相同。
 
 **最終版總結（Final vs Baseline，rooms=50）**  
 為了讓讀者快速理解「最終版帶來的工程含義」，下表以 `rooms=50`、parallel 模式匯總 **Size + Compute** 的直覺對比（CPU 的完整推論與容量模型在 RQ2 展開）：  
 
 | 指標（rooms=50, parallel） | JSON Object | Opcode MsgPack (PathHash) | 改善幅度 |
 |----------------------------|-----------:|---------------------------:|--------:|
-| bytesPerSync (bytes)       | 91400      | 23475                      | -74.3%  |
-| avgCostPerSyncMs (ms)      | 0.0801     | 0.0646                     | -19.4%  |
+| bytesPerSync (bytes)       | 87611      | 22713                      | -74.1%  |
+| avgCostPerSyncMs (ms)      | 0.0705     | 0.0573                     | -18.7%  |
 
 **關鍵結論（可直接用在論文的句型）**  
 在相同遊戲工作負載下，`Opcode MsgPack (PathHash)` 相較 `JSON Object` 在各房間規模下都能顯著降低 `bytesPerSync`，代表 SST 的 opcode-driven 編碼在頻寬成本上具有實質工程效益。
@@ -93,16 +98,20 @@
 本章採用 `cpuUsageLimit = 0.7`，保留 headroom 給遊戲邏輯、網路與 runtime overhead。
 
 **表（直接嵌入）**  
-（取自 `deep-research/emse-artifacts/artifacts/rq2_capacity_model.md`）
+（取自 `deep-research/emse-artifacts/out/rq2_capacity_model.md`）
+
+**原始資料（Benchmark JSON）**  
+- [JSON Object（raw）](/Examples/GameDemo/Sources/EncodingBenchmark/results/scalability-matrix-json-object-ppr5-200iterations-tick2-2026-01-25T10-01-01Z.json)
+- [Opcode MsgPack (PathHash)（raw）](/Examples/GameDemo/Sources/EncodingBenchmark/results/scalability-matrix-messagepack-pathhash-ppr5-200iterations-tick2-2026-01-25T10-01-03Z.json)
 
 | format                    | rooms | avgCostPerSyncMs(serial) [ms] | avgCostPerSyncMs(parallel) [ms] | MaxRooms(serial) | MaxRooms(parallel) | MaxPlayers(serial) | MaxPlayers(parallel) |
 | ------------------------- | ----- | ---------------------------- | ------------------------------ | ---------------- | ------------------ | ------------------ | -------------------- |
-| JSON Object               | 10    | 0.3385                   | 0.0776                     | 2481.4           | 10824.5            | 12407              | 54122                |
-| JSON Object               | 30    | 0.3483                   | 0.0701                     | 2411.9           | 11975.9            | 12060              | 59880                |
-| JSON Object               | 50    | 0.3834                   | 0.0801                     | 2191.2           | 10490.8            | 10956              | 52454                |
-| Opcode MsgPack (PathHash) | 10    | 0.2977                   | 0.1047                     | 2821.3           | 8020.6             | 14106              | 40103                |
-| Opcode MsgPack (PathHash) | 30    | 0.3199                   | 0.0632                     | 2626.0           | 13295.3            | 13130              | 66477                |
-| Opcode MsgPack (PathHash) | 50    | 0.3404                   | 0.0646                     | 2467.7           | 13009.3            | 12338              | 65046                |
+| JSON Object               | 10    | 0.3564                   | 0.0856                     | 2356.7           | 9811.1             | 11784              | 49056                |
+| JSON Object               | 30    | 0.3639                   | 0.0782                     | 2308.4           | 10746.5            | 11542              | 53732                |
+| JSON Object               | 50    | 0.3713                   | 0.0705                     | 2262.5           | 11922.8            | 11313              | 59614                |
+| Opcode MsgPack (PathHash) | 10    | 0.3393                   | 0.1619                     | 2475.7           | 5187.2             | 12378              | 25936                |
+| Opcode MsgPack (PathHash) | 30    | 0.3104                   | 0.0626                     | 2706.0           | 13422.2            | 13530              | 67111                |
+| Opcode MsgPack (PathHash) | 50    | 0.3467                   | 0.0573                     | 2422.9           | 14653.4            | 12114              | 73267                |
 
 **重要說明（避免審稿人誤解）**  
 上表是「計算側」的容量估算：代表 tick+sync+encoding 的 CPU 近似上限；實際系統仍會受到網路、IO、其他遊戲邏輯、排程與 GC/allocator 影響，因此建議將此結果解讀為 **room-level parallelism 的可量化營運含義**，而不是完整 end-to-end 的壓測結論。
@@ -116,10 +125,12 @@
 
 **資料集（Datasets）**  
 - 含互動輸入（262 ticks；含 actions/client events）：
-  - `Examples/GameDemo/reevaluation-records/hero-defense-2026-01-25T05-17-26Z-CD3C81D9.json`
-  - `Examples/GameDemo/reevaluation-records/hero-defense-2026-01-25T05-17-35Z-C9517718.json`
+  - [hero-defense-2026-01-25T05-17-26Z-CD3C81D9.json](/Examples/GameDemo/reevaluation-records/hero-defense-2026-01-25T05-17-26Z-CD3C81D9.json)
+  - [hero-defense-2026-01-25T05-17-35Z-C9517718.json](/Examples/GameDemo/reevaluation-records/hero-defense-2026-01-25T05-17-35Z-C9517718.json)
 - 多 seed 重複（120 ticks；join + tick 演進）：
-  - `...F7E0C6B2.json`, `...7FD0D4DC.json`, `...0B596849.json`
+  - [hero-defense-2026-01-25T05-29-15Z-F7E0C6B2.json](/Examples/GameDemo/reevaluation-records/hero-defense-2026-01-25T05-29-15Z-F7E0C6B2.json)
+  - [hero-defense-2026-01-25T05-29-43Z-7FD0D4DC.json](/Examples/GameDemo/reevaluation-records/hero-defense-2026-01-25T05-29-43Z-7FD0D4DC.json)
+  - [hero-defense-2026-01-25T05-30-21Z-0B596849.json](/Examples/GameDemo/reevaluation-records/hero-defense-2026-01-25T05-30-21Z-0B596849.json)
 
 **程序（Procedure）**  
 1. Live mode 錄製並啟用 per-tick `stateHash`。
@@ -161,4 +172,19 @@ swift run -c release ReevaluationRunner --input <record.json> --verify
 - **RQ1（效率）**：opcode-driven（MsgPack+PathHash）在相同工作負載下顯著降低 `bytesPerSync`。
 - **RQ2（擴展性）**：room-level parallelism 可量化地提升「估算承載 rooms/players」。
 - **RQ3（正確性/能力）**：跨架構 re-evaluation 達成 0 mismatches（本次驗證五份 record 全數通過）。
+
+---
+
+## 附錄：原始資料連結（JSON）
+
+### Benchmark（RQ1/RQ2）
+- [JSON Object（raw）](/Examples/GameDemo/Sources/EncodingBenchmark/results/scalability-matrix-json-object-ppr5-200iterations-tick2-2026-01-25T10-01-01Z.json)
+- [Opcode MsgPack (PathHash)（raw）](/Examples/GameDemo/Sources/EncodingBenchmark/results/scalability-matrix-messagepack-pathhash-ppr5-200iterations-tick2-2026-01-25T10-01-03Z.json)
+
+### Re-evaluation records（RQ3）
+- [hero-defense-2026-01-25T05-17-26Z-CD3C81D9.json](/Examples/GameDemo/reevaluation-records/hero-defense-2026-01-25T05-17-26Z-CD3C81D9.json)
+- [hero-defense-2026-01-25T05-17-35Z-C9517718.json](/Examples/GameDemo/reevaluation-records/hero-defense-2026-01-25T05-17-35Z-C9517718.json)
+- [hero-defense-2026-01-25T05-29-15Z-F7E0C6B2.json](/Examples/GameDemo/reevaluation-records/hero-defense-2026-01-25T05-29-15Z-F7E0C6B2.json)
+- [hero-defense-2026-01-25T05-29-43Z-7FD0D4DC.json](/Examples/GameDemo/reevaluation-records/hero-defense-2026-01-25T05-29-43Z-7FD0D4DC.json)
+- [hero-defense-2026-01-25T05-30-21Z-0B596849.json](/Examples/GameDemo/reevaluation-records/hero-defense-2026-01-25T05-30-21Z-0B596849.json)
 
