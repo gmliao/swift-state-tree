@@ -382,6 +382,7 @@ func runMultiRoomBenchmarkCardGame(
             definition: CardGame.makeLand(),
             initialState: CardGameState(),
             services: services,
+            autoStartLoops: false,
             transport: nil,
             logger: benchmarkLogger
         )
@@ -437,12 +438,20 @@ func runMultiRoomBenchmarkCardGame(
             transport: transport
         ))
     }
-    
-    // Wait for a few ticks to let the game state develop (cards drawn, etc.)
-    // CardGame tick runs every 100ms, wait for ~5 ticks
-    try? await Task.sleep(for: .milliseconds(500))
-    
-    // Reset counters
+
+    // Deterministic warmup (avoid wall-clock tick/sync loops affecting workload).
+    // This makes serial vs parallel comparable on bytesPerSync.
+    let warmupTicks = 5
+    for _ in 0 ..< warmupTicks {
+        for room in rooms {
+            await room.keeper.stepTickOnce()
+        }
+    }
+    // Flush warmup dirtiness so the measured iterations start from a steady baseline.
+    for room in rooms {
+        await room.adapter.syncNow()
+    }
+    // Reset counters for measurement window.
     for room in rooms {
         await room.transport.resetCounts()
     }
@@ -560,6 +569,7 @@ func runMultiRoomBenchmark(
             definition: HeroDefense.makeLand(),
             initialState: HeroDefenseState(),
             services: services,
+            autoStartLoops: false,
             transport: nil,
             logger: benchmarkLogger
         )
@@ -616,12 +626,20 @@ func runMultiRoomBenchmark(
             transport: transport
         ))
     }
-    
-    // Wait for a few ticks to let the game state develop (monsters spawn, etc.)
-    // HeroDefense tick runs every 50ms, wait for ~4 ticks
-    try? await Task.sleep(for: .milliseconds(200))
-    
-    // Reset counters
+
+    // Deterministic warmup (avoid wall-clock tick/sync loops affecting workload).
+    // This makes serial vs parallel comparable on bytesPerSync.
+    let warmupTicks = 4
+    for _ in 0 ..< warmupTicks {
+        for room in rooms {
+            await room.keeper.stepTickOnce()
+        }
+    }
+    // Flush warmup dirtiness so the measured iterations start from a steady baseline.
+    for room in rooms {
+        await room.adapter.syncNow()
+    }
+    // Reset counters for measurement window.
     for room in rooms {
         await room.transport.resetCounts()
     }
