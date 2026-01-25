@@ -115,26 +115,50 @@
 驗證 SST 的 Deterministic Re-evaluation：將 live 錄製的 inputs + resolver outputs 固定化，於不同 CPU 架構上重播並逐 tick 比對 state hash。
 
 **資料集（Datasets）**  
-- 含互動輸入（262 ticks；含 actions/client events）：\n  - `Examples/GameDemo/reevaluation-records/hero-defense-2026-01-25T05-17-26Z-CD3C81D9.json`\n  - `Examples/GameDemo/reevaluation-records/hero-defense-2026-01-25T05-17-35Z-C9517718.json`\n- 多 seed 重複（120 ticks；join + tick 演進）：\n  - `...F7E0C6B2.json`, `...7FD0D4DC.json`, `...0B596849.json`
+- 含互動輸入（262 ticks；含 actions/client events）：
+  - `Examples/GameDemo/reevaluation-records/hero-defense-2026-01-25T05-17-26Z-CD3C81D9.json`
+  - `Examples/GameDemo/reevaluation-records/hero-defense-2026-01-25T05-17-35Z-C9517718.json`
+- 多 seed 重複（120 ticks；join + tick 演進）：
+  - `...F7E0C6B2.json`, `...7FD0D4DC.json`, `...0B596849.json`
 
 **程序（Procedure）**  
-1. Live mode 錄製並啟用 per-tick `stateHash`。\n2. Reevaluation mode 重播，跳過 resolver 執行並使用錄製的 `resolverOutputs`。\n3. 逐 tick 比對「計算出的 state hash」與「錄製的 ground truth」。\n4. 同一台機器連跑兩次 re-evaluation，驗證 run1 vs run2 的一致性。
+1. Live mode 錄製並啟用 per-tick `stateHash`。
+2. Reevaluation mode 重播，跳過 resolver 執行並使用錄製的 `resolverOutputs`。
+3. 逐 tick 比對「計算出的 state hash」與「錄製的 ground truth」。
+4. 同一台機器連跑兩次 re-evaluation，驗證 run1 vs run2 的一致性。
 
 **實作工具（現成）**  
-使用 `ReevaluationRunner`：\n`swift run -c release ReevaluationRunner --input <record.json> --verify`
+使用 `ReevaluationRunner`：
+```bash
+swift run -c release ReevaluationRunner --input <record.json> --verify
+```
 
 **結果摘要（本次驗證）**  
-- 5 份 record 全部驗證通過：\n  - `✅ Verified: computed hashes match recorded ground truth`\n  - `✅ Cross-architecture verification: arm64 → x86_64`\n  - `✅ Verified: hashes are identical across two re-evaluation runs`\n- 互動版（262 ticks）統計：Actions=6、Client Events=4、Lifecycle Events=2。\n- 多 seed 版（120 ticks）統計：Actions=0、Client Events=0、Lifecycle Events=2。
+- 5 份 record 全部驗證通過：
+  - ✅ Verified: computed hashes match recorded ground truth
+  - ✅ Cross-architecture verification: arm64 → x86_64
+  - ✅ Verified: hashes are identical across two re-evaluation runs
+- 互動版（262 ticks）統計：Actions=6、Client Events=4、Lifecycle Events=2。
+- 多 seed 版（120 ticks）統計：Actions=0、Client Events=0、Lifecycle Events=2。
 
 ---
 
 ### 4.5 有效性威脅（Threats to Validity）
 
-- **建構有效性（Construct validity）**：\n  - `bytesPerSync` 是 application payload bytes，不含 framing/TLS/傳輸層壓縮。\n  - 容量模型以 `cpuUsageLimit` 抽象化非 sync 的成本（IO、遊戲邏輯、排程等）。\n- **內部有效性（Internal validity）**：\n  - benchmark 可能受系統雜訊影響；可補多次重跑並報 median/IQR。\n- **外部有效性（External validity）**：\n  - 工作負載目前以 `hero-defense` 為主；可擴展到更多 land/scenario。\n  - 120-tick records 偏簡；以 262-tick（含互動輸入）作為主要 determinism 證據更強。
+- **建構有效性（Construct validity）**：
+  - `bytesPerSync` 是 application payload bytes，不含 framing/TLS/傳輸層壓縮。
+  - 容量模型以 `cpuUsageLimit` 抽象化非 sync 的成本（IO、遊戲邏輯、排程等）。
+- **內部有效性（Internal validity）**：
+  - benchmark 可能受系統雜訊影響；可補多次重跑並報 median/IQR。
+- **外部有效性（External validity）**：
+  - 工作負載目前以 `hero-defense` 為主；可擴展到更多 land/scenario。
+  - 120-tick records 偏簡；以 262-tick（含互動輸入）作為主要 determinism 證據更強。
 
 ---
 
 ### 4.6 小結（Summary）
 
-- **RQ1（效率）**：opcode-driven（MsgPack+PathHash）在相同工作負載下顯著降低 `bytesPerSync`。\n- **RQ2（擴展性）**：room-level parallelism 可量化地提升「估算承載 rooms/players」。\n- **RQ3（正確性/能力）**：跨架構 re-evaluation 達成 0 mismatches（本次驗證五份 record 全數通過）。\n
+- **RQ1（效率）**：opcode-driven（MsgPack+PathHash）在相同工作負載下顯著降低 `bytesPerSync`。
+- **RQ2（擴展性）**：room-level parallelism 可量化地提升「估算承載 rooms/players」。
+- **RQ3（正確性/能力）**：跨架構 re-evaluation 達成 0 mismatches（本次驗證五份 record 全數通過）。
 
