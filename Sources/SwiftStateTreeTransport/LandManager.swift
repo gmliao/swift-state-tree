@@ -204,6 +204,10 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             // 2. These intervals are runtime configuration, not game logic
             // 3. Recording them could cause confusion if they change later
             // Only record configuration that affects game logic determinism
+            
+            // Collect hardware information for cross-architecture verification
+            let hardwareInfo = HardwareInfoCollector.collect()
+            
             let recordingMetadata = ReevaluationRecordMetadata(
                 landID: landID.stringValue,
                 landType: landID.landType,
@@ -216,7 +220,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                 ruleVariantId: nil,
                 ruleParams: nil,
                 version: "2.0",
-                extensions: nil
+                extensions: nil,
+                hardwareInfo: hardwareInfo
             )
             await recorder.setMetadata(recordingMetadata)
         }
