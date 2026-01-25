@@ -48,6 +48,38 @@ struct ReevaluationRunnerMain {
         let metadata = try await source.getMetadata()
         let landType = metadata.landType
         
+        // Display hardware information
+        if let recordedHardware = metadata.hardwareInfo {
+            print("📋 Recorded Hardware Info:")
+            print("   CPU Architecture: \(recordedHardware.cpuArchitecture)")
+            print("   OS: \(recordedHardware.osName) \(recordedHardware.osVersion)")
+            if let cpuModel = recordedHardware.cpuModel {
+                print("   CPU Model: \(cpuModel)")
+            }
+            if let cpuCores = recordedHardware.cpuCores {
+                print("   CPU Cores: \(cpuCores)")
+            }
+            if let swiftVersion = recordedHardware.swiftVersion {
+                print("   Swift Version: \(swiftVersion)")
+            }
+            print("")
+        }
+        
+        let currentHardware = HardwareInfoCollector.collect()
+        print("🖥️  Current Hardware Info:")
+        print("   CPU Architecture: \(currentHardware.cpuArchitecture)")
+        print("   OS: \(currentHardware.osName) \(currentHardware.osVersion)")
+        if let cpuModel = currentHardware.cpuModel {
+            print("   CPU Model: \(cpuModel)")
+        }
+        if let cpuCores = currentHardware.cpuCores {
+            print("   CPU Cores: \(cpuCores)")
+        }
+        if let swiftVersion = currentHardware.swiftVersion {
+            print("   Swift Version: \(swiftVersion)")
+        }
+        print("")
+        
         guard landType == "hero-defense" else {
             print("Unsupported landType for GameDemo ReevaluationRunner: \(landType)")
             printHelpAndExit(exitCode: 2)
@@ -84,6 +116,14 @@ struct ReevaluationRunnerMain {
         let recordedMismatches = diffAgainstRecorded(computed: first.tickHashes, recorded: first.recordedStateHashes)
         if recordedMismatches.isEmpty {
             print("✅ Verified: computed hashes match recorded ground truth")
+            if let recordedHardware = metadata.hardwareInfo {
+                let hardwareMatch = recordedHardware.cpuArchitecture == currentHardware.cpuArchitecture
+                if hardwareMatch {
+                    print("   ✅ Same CPU architecture (\(currentHardware.cpuArchitecture))")
+                } else {
+                    print("   ✅ Cross-architecture verification: \(recordedHardware.cpuArchitecture) → \(currentHardware.cpuArchitecture)")
+                }
+            }
         } else {
             print("❌ Verification failed: mismatched ticks vs recorded=\(recordedMismatches.count)")
             for (tickId, computed, recorded) in recordedMismatches.prefix(10) {

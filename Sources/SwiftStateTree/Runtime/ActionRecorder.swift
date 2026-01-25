@@ -48,6 +48,10 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
 
     /// Optional extensions for future land-specific data.
     public let extensions: [String: AnyCodable]?
+    
+    /// Hardware information where the record was created.
+    /// Used to verify deterministic behavior across different CPU architectures.
+    public let hardwareInfo: HardwareInfo?
 
     public init(
         landID: String,
@@ -61,7 +65,8 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
         ruleVariantId: String? = nil,
         ruleParams: [String: AnyCodable]? = nil,
         version: String? = nil,
-        extensions: [String: AnyCodable]? = nil
+        extensions: [String: AnyCodable]? = nil,
+        hardwareInfo: HardwareInfo? = nil
     ) {
         self.landID = landID
         self.landType = landType
@@ -75,6 +80,7 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
         self.ruleParams = ruleParams
         self.version = version
         self.extensions = extensions
+        self.hardwareInfo = hardwareInfo
     }
 }
 
