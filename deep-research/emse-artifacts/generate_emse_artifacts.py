@@ -207,7 +207,7 @@ def compute_capacity(
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out-dir", required=True, help="Output directory")
+    ap.add_argument("--out-dir", default="artifacts", help="Output directory (default: artifacts)")
     ap.add_argument("--json-object", required=True, help="scalability-matrix json-object envelope path")
     ap.add_argument("--messagepack", required=True, help="scalability-matrix messagepack-pathhash envelope path")
     ap.add_argument("--sync-hz", type=float, default=10.0)
