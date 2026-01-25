@@ -457,8 +457,10 @@ func runMultiRoomBenchmarkCardGame(
     }
     
     // Benchmark: Run iterations with serial or parallel sync
-    // Note: parallel execution may trigger libmalloc LIFO issues in release mode on macOS
-    // Use serial execution for stability, parallel for performance comparison
+    // Note (macOS / release):
+    // A previous crash (exit 139) observed under `-c release --compare-parallel` was caused by
+    // using C printf-style `%s` with Swift `String` in `String(format:)` (invalid C varargs).
+    // That issue is fixed; keep output code type-safe (prefer interpolation or %@).
     let start = ContinuousClock.now
     let label = progressLabel ?? (parallel ? "parallel" : "serial")
     if parallel {
@@ -645,8 +647,10 @@ func runMultiRoomBenchmark(
     }
     
     // Benchmark: Run iterations with serial or parallel sync
-    // Note: parallel execution may trigger libmalloc LIFO issues in release mode on macOS
-    // Use serial execution for stability, parallel for performance comparison
+    // Note (macOS / release):
+    // A previous crash (exit 139) observed under `-c release --compare-parallel` was caused by
+    // using C printf-style `%s` with Swift `String` in `String(format:)` (invalid C varargs).
+    // That issue is fixed; keep output code type-safe (prefer interpolation or %@).
     let start = ContinuousClock.now
     let label = progressLabel ?? (parallel ? "parallel" : "serial")
     if parallel {
@@ -1130,7 +1134,9 @@ func printTableRow(_ result: BenchmarkResult, baselineBytes: Int?) {
         ratio = "  100%"
     }
 
-    print(String(format: "%-27s | %9.2f | %11d | %8d | %13.4f | %s",
+    // NOTE: Use %@ (Objective-C object) instead of %s. %s expects a C string pointer and can
+    // crash in release builds when passed a Swift String.
+    print(String(format: "%-27@ | %9.2f | %11d | %8d | %13.4f | %@",
                  result.format.displayName,
                  result.timeMs,
                  result.totalBytes,
@@ -1263,7 +1269,7 @@ struct EncodingBenchmark {
                let baseline = baselineBytes, baseline > 0
             {
                 let savings = (1.0 - Double(best.totalBytes) / Double(baseline)) * 100
-                print(String(format: "Best: %s saves %.1f%% vs JSON Object",
+                print(String(format: "Best: %@ saves %.1f%% vs JSON Object",
                              best.format.displayName, savings))
             }
         }
@@ -1366,7 +1372,7 @@ struct EncodingBenchmark {
                let baseline = baselineBytes, baseline > 0
             {
                 let savings = (1.0 - Double(best.totalBytes) / Double(baseline)) * 100
-                print(String(format: "Best: %s saves %.1f%% vs JSON Object",
+                print(String(format: "Best: %@ saves %.1f%% vs JSON Object",
                              best.format.displayName, savings))
             }
         }
@@ -1485,7 +1491,7 @@ struct EncodingBenchmark {
 
             let speedup = serialResult.timeMs / max(parallelResult.timeMs, 0.001)
 
-            print(String(format: "  %-27s | %11.2f | %13.2f | %6.2fx",
+            print(String(format: "  %-27@ | %11.2f | %13.2f | %6.2fx",
                          format.displayName,
                          serialResult.timeMs,
                          parallelResult.timeMs,
@@ -1567,7 +1573,7 @@ struct EncodingBenchmark {
                 bestThroughput = (format, parallelThroughput)
             }
 
-            print(String(format: "  %-27s | %11.2f | %13.2f | %6.2fx | %21.1f",
+            print(String(format: "  %-27@ | %11.2f | %13.2f | %6.2fx | %21.1f",
                          format.displayName,
                          serialResult.timeMs,
                          parallelResult.timeMs,
