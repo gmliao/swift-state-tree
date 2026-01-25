@@ -1,6 +1,6 @@
 [English version TBD]
 
-## 第 4 章 — 實證評估（EMSE 草稿，中文版）
+## 第 4 章 — 實證評估
 
 本章以軟體工程實證研究常用的「黃金鐵三角」為主軸，將評估拆成三個研究問題（RQ）：**效率（Efficiency）**、**擴展性（Scalability）**、**正確性/能力（Correctness & Capabilities）**。
 
