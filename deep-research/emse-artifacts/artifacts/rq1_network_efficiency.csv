@@ -1,0 +1,7 @@
+format,rooms,playersPerRoom,ticksPerSync,iterations,serial_bytesPerSync,parallel_bytesPerSync
+JSON Object,10,5,2,200,18183,17656
+JSON Object,30,5,2,200,58397,53978
+JSON Object,50,5,2,200,110387,91400
+Opcode MsgPack (PathHash),10,5,2,200,4776,4678
+Opcode MsgPack (PathHash),30,5,2,200,14933,14013
+Opcode MsgPack (PathHash),50,5,2,200,27413,23475
