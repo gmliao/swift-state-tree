@@ -57,24 +57,34 @@ def svg_bar_chart(
     labels: List[str],
     values: List[float],
     value_label: str,
-    width: int = 900,
-    height: int = 360,
+    width: int = 800,
+    height: int = 494,  # Golden ratio: 800 / 1.618 ≈ 494
     padding: int = 40,
+    unit: str = "",
+    improvement_pct: float | None = None,
 ) -> str:
     assert len(labels) == len(values)
     max_v = max(values) if values else 1.0
     max_v = max(max_v, 1e-9)
+    # Increase header area to avoid overlap with bar values
+    header_height = 70  # Increased from implicit 30+22=52 to 70
     bar_area_w = width - padding * 2
-    bar_area_h = height - padding * 2 - 40
+    bar_area_h = height - padding * 2 - header_height
     bar_w = bar_area_w / max(len(values), 1)
     gap = bar_w * 0.2
     inner_w = bar_w - gap
 
     def y_of(v: float) -> float:
-        return padding + 30 + (bar_area_h * (1.0 - v / max_v))
+        return padding + header_height + (bar_area_h * (1.0 - v / max_v))
 
     def h_of(v: float) -> float:
         return bar_area_h * (v / max_v)
+
+    # Format value with unit
+    def format_value(v: float) -> str:
+        if unit:
+            return f"{v:.0f} {unit}"
+        return f"{v:.1f}"
 
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">',
@@ -83,7 +93,7 @@ def svg_bar_chart(
         f'<text x="{padding}" y="{padding+22}" font-family="Arial" font-size="12" fill="#444">{escape_xml(value_label)}</text>',
     ]
     # Axis line
-    axis_y = padding + 30 + bar_area_h
+    axis_y = padding + header_height + bar_area_h
     parts.append(f'<line x1="{padding}" y1="{axis_y}" x2="{width-padding}" y2="{axis_y}" stroke="#333" stroke-width="1"/>')
 
     for i, (lab, v) in enumerate(zip(labels, values)):
@@ -91,7 +101,12 @@ def svg_bar_chart(
         y = y_of(v)
         h = h_of(v)
         parts.append(f'<rect x="{x:.2f}" y="{y:.2f}" width="{inner_w:.2f}" height="{h:.2f}" fill="#4C78A8"/>')
-        parts.append(f'<text x="{x + inner_w/2:.2f}" y="{y - 6:.2f}" text-anchor="middle" font-family="Arial" font-size="12">{v:.1f}</text>')
+        # Value above bar with unit
+        parts.append(f'<text x="{x + inner_w/2:.2f}" y="{y - 10:.2f}" text-anchor="middle" font-family="Arial" font-size="12">{escape_xml(format_value(v))}</text>')
+        # Improvement percentage for second bar (if provided)
+        if i == 1 and improvement_pct is not None:
+            improvement_y = y - 30
+            parts.append(f'<text x="{x + inner_w/2:.2f}" y="{improvement_y:.2f}" text-anchor="middle" font-family="Arial" font-size="11" fill="#2E7D32" font-weight="bold">{improvement_pct:.1f}% reduction</text>')
         parts.append(f'<text x="{x + inner_w/2:.2f}" y="{axis_y + 16:.2f}" text-anchor="middle" font-family="Arial" font-size="11" fill="#333">{escape_xml(lab)}</text>')
 
     parts.append("</svg>")
@@ -298,14 +313,27 @@ def main() -> int:
     # Simple SVG figure for RQ1: parallel bytes per sync at rooms=50
     rows_50 = [r for r in rows if r.rooms == 50]
     labels = [r.display for r in rows_50]
-    values = [float(r.parallel_bytes_per_sync) for r in rows_50]
-    svg = svg_bar_chart(
+    values_bytes = [float(r.parallel_bytes_per_sync) for r in rows_50]
+    values_time = [float(r.parallel_avg_cost_ms) for r in rows_50]
+    
+    # Calculate improvement percentages (baseline is first, optimized is second)
+    improvement_pct_bytes = None
+    improvement_pct_time = None
+    if len(values_bytes) == 2 and values_bytes[0] > 0:
+        improvement_pct_bytes = ((values_bytes[1] - values_bytes[0]) / values_bytes[0]) * 100.0
+    if len(values_time) == 2 and values_time[0] > 0:
+        improvement_pct_time = ((values_time[1] - values_time[0]) / values_time[0]) * 100.0
+    
+    # Single metric chart (bytes only) - RQ1 focuses on network efficiency
+    svg_bytes = svg_bar_chart(
         title="RQ1: Bytes per sync at 50 rooms (parallel)",
         labels=labels,
-        values=values,
+        values=values_bytes,
         value_label="bytesPerSync (application payload)",
+        unit="bytes",
+        improvement_pct=improvement_pct_bytes,
     )
-    write_text(out_dir / "rq1_bytes_per_sync_rooms50_parallel.svg", svg)
+    write_text(out_dir / "rq1_bytes_per_sync_rooms50_parallel.svg", svg_bytes)
 
     return 0
 
