@@ -200,7 +200,9 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
     
     /// Decode dynamic keys from raw format (supports slot, [slot, key], array of keys, or null)
     private func decodeDynamicKeys(_ raw: Any?, keyTable: DynamicKeyTable) throws -> [String] {
-        guard let raw = raw else {
+        // Treat nil and NSNull as empty list (no dynamic keys)
+        // In PathHash mode, encoder emits null for patches with no dynamic keys
+        guard let raw = raw, !(raw is NSNull) else {
             return []
         }
         
