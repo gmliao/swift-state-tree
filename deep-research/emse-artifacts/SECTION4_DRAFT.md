@@ -40,8 +40,8 @@
 **資料來源（Evidence）**  
 - 演進敘事：`docs/transport_evolution.md`、`docs/transport_evolution.zh-TW.md`
 - 可重現的 benchmark 原始結果檔：
-  - [JSON Object（raw）](/Examples/GameDemo/Sources/EncodingBenchmark/results/scalability-matrix-json-object-ppr5-200iterations-tick2-2026-01-25T10-01-01Z.json)
-  - [Opcode MsgPack (PathHash)（raw）](/Examples/GameDemo/Sources/EncodingBenchmark/results/scalability-matrix-messagepack-pathhash-ppr5-200iterations-tick2-2026-01-25T10-01-03Z.json)
+  - [JSON Object（raw）](/Examples/GameDemo/results/encoding-benchmark/scalability-matrix-json-object-ppr5-200iterations-tick2-2026-01-25T10-01-01Z.json)
+  - [Opcode MsgPack (PathHash)（raw）](/Examples/GameDemo/results/encoding-benchmark/scalability-matrix-messagepack-pathhash-ppr5-200iterations-tick2-2026-01-25T10-01-03Z.json)
 
 **圖（直接嵌入）**  
 以下圖表顯示 `rooms=50`、parallel 模式下的 `bytesPerSync` 對比（application payload）：

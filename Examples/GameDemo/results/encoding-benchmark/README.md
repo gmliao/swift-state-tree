@@ -2,7 +2,7 @@
 
 此目錄存放所有 benchmark 測試的 JSON 結果文件。
 
-**結果文件位置**：`Examples/GameDemo/Sources/EncodingBenchmark/results/`
+**結果文件位置**：`Examples/GameDemo/results/encoding-benchmark/`
 
 所有測試結果會自動保存在此目錄中，方便版本控制和分享。
 
@@ -206,7 +206,7 @@ swift run -c release EncodingBenchmark --scalability --all --players-per-room-li
 
 ## 注意事項
 
-- ✅ 結果文件會自動保存在源碼目錄的 `results/` 子目錄中
+- ✅ 結果文件會自動保存在 `Examples/GameDemo/results/encoding-benchmark/` 目錄中
 - ✅ 文件名包含時間戳，避免覆蓋之前的結果
 - ✅ 所有數值都是實際測試結果，可以直接用於分析
 - ✅ 所有 JSON 文件都可以版本控制，方便追蹤性能變化
