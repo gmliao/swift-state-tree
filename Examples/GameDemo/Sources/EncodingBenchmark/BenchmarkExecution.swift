@@ -26,6 +26,38 @@ struct CardGameRoomContext: Sendable {
     let transport: CountingTransport
 }
 
+// MARK: - Work Queue for Dynamic Worker Pool
+
+/// Thread-safe work queue for dynamic worker pool
+/// Workers pull work items from this shared queue until empty
+actor WorkQueue {
+    private var items: [(iteration: Int, roomIndex: Int)] = []
+    
+    func enqueue(_ newItems: [(Int, Int)]) {
+        items.append(contentsOf: newItems)
+    }
+    
+    func dequeue() -> (Int, Int)? {
+        guard !items.isEmpty else { return nil }
+        return items.removeFirst()
+    }
+    
+    func dequeueBatch(count: Int) -> [(Int, Int)] {
+        let batchSize = min(count, items.count)
+        let batch = Array(items.prefix(batchSize))
+        items.removeFirst(batchSize)
+        return batch
+    }
+    
+    var isEmpty: Bool {
+        items.isEmpty
+    }
+    
+    var count: Int {
+        items.count
+    }
+}
+
 // Benchmark Result
 struct BenchmarkResult {
     let format: EncodingFormat
@@ -241,6 +273,384 @@ enum BenchmarkRunner {
         timePerSyncMs: timePerSyncMs,
         avgCostPerSyncMs: avgCostPerSyncMs
     )
+    }
+    
+    static func runMultiRoomBenchmarkWithWorkerPool(
+        format: EncodingFormat,
+        roomCount: Int,
+        playersPerRoom: Int,
+        iterations: Int,
+        ticksPerSync: Int = 0,
+        workerCount: Int? = nil,
+        progressEvery: Int = 0,
+        progressLabel: String? = nil
+    ) async -> BenchmarkResult {
+        // Extract pathHashes from schema
+        let landDef = HeroDefense.makeLand()
+        let schema = SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(landDef)])
+        let pathHashes = format.usesPathHash ? schema.lands["hero-defense"]?.pathHashes : nil
+
+        let benchmarkLogger = createGameLogger(
+            scope: "EncodingBenchmark",
+            logLevel: .error
+        )
+
+        // Create rooms (same as regular multi-room benchmark)
+        var rooms: [HeroDefenseRoomContext] = []
+        rooms.reserveCapacity(roomCount)
+
+        for roomIndex in 0 ..< roomCount {
+            let landID = LandID(landType: "hero-defense", instanceId: "benchmark-\(roomIndex)")
+            let transport = CountingTransport()
+            
+            var services = LandServices()
+            let configProvider = DefaultGameConfigProvider()
+            let configService = GameConfigProviderService(provider: configProvider)
+            services.register(configService, as: GameConfigProviderService.self)
+            
+            let keeper = LandKeeper<HeroDefenseState>(
+                definition: landDef,
+                initialState: HeroDefenseState(),
+                mode: .live,
+                services: services,
+                enableLiveStateHashRecording: false,
+                transport: nil,
+                logger: benchmarkLogger
+            )
+            
+            let shouldEnableParallel = false
+            
+            let adapter = TransportAdapter<HeroDefenseState>(
+                keeper: keeper,
+                transport: transport,
+                landID: landID.stringValue,
+                createGuestSession: nil,
+                enableDirtyTracking: true,
+                encodingConfig: format.transportEncodingConfig,
+                pathHashes: pathHashes,
+                enableParallelEncoding: shouldEnableParallel,
+                logger: benchmarkLogger
+            )
+            
+            rooms.append(HeroDefenseRoomContext(
+                landID: landID,
+                keeper: keeper,
+                adapter: adapter,
+                transport: transport
+            ))
+        }
+
+        // Connect players to each room
+        for (roomIndex, room) in rooms.enumerated() {
+            let playerIDs = (0 ..< playersPerRoom).map { PlayerID("room\(roomIndex)-player-\($0)") }
+            for (playerIndex, playerID) in playerIDs.enumerated() {
+                let sessionID = SessionID("room\(roomIndex)-session-\(playerIndex)")
+                let clientID = ClientID("room\(roomIndex)-client-\(playerIndex)")
+                await room.adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: nil as AuthenticatedInfo?)
+                
+                let playerSession = PlayerSession(
+                    playerID: playerID.rawValue,
+                    deviceID: "device-\(roomIndex)-\(playerIndex)",
+                    metadata: [:]
+                )
+                if let result = try? await room.adapter.performJoin(
+                    playerSession: playerSession,
+                    clientID: clientID,
+                    sessionID: sessionID,
+                    authInfo: nil as AuthenticatedInfo?
+                ) {
+                    await room.adapter.syncStateForNewPlayer(playerID: result.playerID, sessionID: sessionID)
+                }
+            }
+        }
+        
+        // Initial sync
+        for room in rooms {
+            await room.adapter.syncNow()
+        }
+
+        // Warmup
+        let warmupTicks = 4
+        for _ in 0 ..< warmupTicks {
+            for room in rooms {
+                await room.keeper.stepTickOnce()
+            }
+        }
+        for room in rooms {
+            await room.adapter.syncNow()
+        }
+        for room in rooms {
+            await room.transport.resetCounts()
+        }
+
+        // Calculate worker count
+        let effectiveWorkerCount: Int
+        if let workerCount = workerCount {
+            effectiveWorkerCount = max(1, workerCount)
+        } else {
+            let cpuCores = ProcessInfo.processInfo.activeProcessorCount
+            effectiveWorkerCount = cpuCores * 2
+        }
+        
+        // Static assignment: divide rooms evenly among workers
+        let roomsPerWorker = (rooms.count + effectiveWorkerCount - 1) / effectiveWorkerCount
+        
+        let start = ContinuousClock.now
+        let label = progressLabel ?? "worker-pool"
+        
+        // Worker Pool execution with static room assignment
+        for iterationIndex in 0 ..< iterations {
+            await withTaskGroup(of: Void.self) { group in
+                for workerIndex in 0 ..< effectiveWorkerCount {
+                    let startIdx = workerIndex * roomsPerWorker
+                    let endIdx = min(startIdx + roomsPerWorker, rooms.count)
+                    
+                    guard startIdx < rooms.count else { break }
+                    
+                    let workerRooms = Array(rooms[startIdx..<endIdx])
+                    
+                    group.addTask { [workerRooms] in
+                        // Sequential processing within worker
+                        for room in workerRooms {
+                            if ticksPerSync > 0 {
+                                for _ in 0 ..< ticksPerSync {
+                                    await room.keeper.stepTickOnce()
+                                }
+                            }
+                            await room.adapter.syncNow()
+                        }
+                    }
+                }
+            }
+            
+            if progressEvery > 0, (iterationIndex + 1) % progressEvery == 0 {
+                print("  [\(label)] iteration \(iterationIndex + 1)/\(iterations)")
+            }
+        }
+        
+        let duration = start.duration(to: ContinuousClock.now)
+        let timeMs = Double(duration.components.seconds) * 1000.0 +
+            Double(duration.components.attoseconds) / 1_000_000_000_000_000.0
+        
+        // Aggregate stats
+        var totalBytes = 0
+        for room in rooms {
+            let stats = await room.transport.snapshotCounts()
+            totalBytes += stats.bytes
+        }
+        
+        let totalPlayers = roomCount * playersPerRoom
+        let timePerRoomMs = roomCount > 0 ? timeMs / Double(roomCount) : timeMs
+        let timePerSyncMs = iterations > 0 ? timeMs / Double(iterations) : timeMs
+        let avgCostPerSyncMs = (roomCount > 0 && iterations > 0) ? timeMs / Double(roomCount * iterations) : timeMs
+
+    return BenchmarkResult(
+        format: format,
+        timeMs: timeMs,
+        totalBytes: totalBytes,
+        bytesPerSync: iterations > 0 ? totalBytes / iterations : 0,
+        iterations: iterations,
+        parallel: true,  // Worker pool is a form of parallel execution
+        playerCount: totalPlayers,
+        roomCount: roomCount,
+        playersPerRoom: playersPerRoom,
+        timePerRoomMs: timePerRoomMs,
+        timePerSyncMs: timePerSyncMs,
+        avgCostPerSyncMs: avgCostPerSyncMs
+    )
+    }
+    
+    static func runMultiRoomBenchmarkWithDynamicWorkerPool(
+        format: EncodingFormat,
+        roomCount: Int,
+        playersPerRoom: Int,
+        iterations: Int,
+        ticksPerSync: Int = 0,
+        workerCount: Int? = nil,
+        progressEvery: Int = 0,
+        progressLabel: String? = nil
+    ) async -> BenchmarkResult {
+        // Extract pathHashes from schema
+        let landDef = HeroDefense.makeLand()
+        let schema = SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(landDef)])
+        let pathHashes = format.usesPathHash ? schema.lands["hero-defense"]?.pathHashes : nil
+
+        let benchmarkLogger = createGameLogger(
+            scope: "EncodingBenchmark",
+            logLevel: .error
+        )
+
+        // Create rooms (same setup as other benchmarks)
+        var rooms: [HeroDefenseRoomContext] = []
+        rooms.reserveCapacity(roomCount)
+
+        for roomIndex in 0 ..< roomCount {
+            let landID = LandID(landType: "hero-defense", instanceId: "benchmark-\(roomIndex)")
+            let transport = CountingTransport()
+            
+            var services = LandServices()
+            let configProvider = DefaultGameConfigProvider()
+            let configService = GameConfigProviderService(provider: configProvider)
+            services.register(configService, as: GameConfigProviderService.self)
+            
+            let keeper = LandKeeper<HeroDefenseState>(
+                definition: landDef,
+                initialState: HeroDefenseState(),
+                mode: .live,
+                services: services,
+                enableLiveStateHashRecording: false,
+                transport: nil,
+                logger: benchmarkLogger
+            )
+            
+            let shouldEnableParallel = false
+            
+            let adapter = TransportAdapter<HeroDefenseState>(
+                keeper: keeper,
+                transport: transport,
+                landID: landID.stringValue,
+                createGuestSession: nil,
+                enableDirtyTracking: true,
+                encodingConfig: format.transportEncodingConfig,
+                pathHashes: pathHashes,
+                enableParallelEncoding: shouldEnableParallel,
+                logger: benchmarkLogger
+            )
+            
+            rooms.append(HeroDefenseRoomContext(
+                landID: landID,
+                keeper: keeper,
+                adapter: adapter,
+                transport: transport
+            ))
+        }
+
+        // Connect players to each room
+        for (roomIndex, room) in rooms.enumerated() {
+            let playerIDs = (0 ..< playersPerRoom).map { PlayerID("room\(roomIndex)-player-\($0)") }
+            for (playerIndex, playerID) in playerIDs.enumerated() {
+                let sessionID = SessionID("room\(roomIndex)-session-\(playerIndex)")
+                let clientID = ClientID("room\(roomIndex)-client-\(playerIndex)")
+                await room.adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: nil as AuthenticatedInfo?)
+                
+                let playerSession = PlayerSession(
+                    playerID: playerID.rawValue,
+                    deviceID: "device-\(roomIndex)-\(playerIndex)",
+                    metadata: [:]
+                )
+                if let result = try? await room.adapter.performJoin(
+                    playerSession: playerSession,
+                    clientID: clientID,
+                    sessionID: sessionID,
+                    authInfo: nil as AuthenticatedInfo?
+                ) {
+                    await room.adapter.syncStateForNewPlayer(playerID: result.playerID, sessionID: sessionID)
+                }
+            }
+        }
+        
+        // Initial sync
+        for room in rooms {
+            await room.adapter.syncNow()
+        }
+
+        // Warmup
+        let warmupTicks = 4
+        for _ in 0 ..< warmupTicks {
+            for room in rooms {
+                await room.keeper.stepTickOnce()
+            }
+        }
+        for room in rooms {
+            await room.adapter.syncNow()
+        }
+        for room in rooms {
+            await room.transport.resetCounts()
+        }
+
+        // Calculate worker count
+        let effectiveWorkerCount: Int
+        if let workerCount = workerCount {
+            effectiveWorkerCount = max(1, workerCount)
+        } else {
+            let cpuCores = ProcessInfo.processInfo.activeProcessorCount
+            effectiveWorkerCount = cpuCores
+        }
+        
+        // Prepare all work items (iteration × room combinations)
+        let workItems = (0..<iterations).flatMap { iter in
+            (0..<rooms.count).map { roomIdx in (iter, roomIdx) }
+        }
+        
+        let workQueue = WorkQueue()
+        await workQueue.enqueue(workItems)
+        
+        let start = ContinuousClock.now
+        let label = progressLabel ?? "dynamic-pool"
+        
+        // Dynamic Worker Pool: Fixed number of long-lived workers pulling from shared queue
+        await withTaskGroup(of: Void.self) { group in
+            for workerID in 0..<effectiveWorkerCount {
+                group.addTask { [rooms, workQueue] in
+                    var processed = 0
+                    
+                    // Worker loop: continuously pull work until queue is empty
+                    while let (iteration, roomIdx) = await workQueue.dequeue() {
+                        let room = rooms[roomIdx]
+                        
+                        if ticksPerSync > 0 {
+                            for _ in 0 ..< ticksPerSync {
+                                await room.keeper.stepTickOnce()
+                            }
+                        }
+                        await room.adapter.syncNow()
+                        
+                        processed += 1
+                        
+                        // Progress reporting per worker
+                        if progressEvery > 0, processed % progressEvery == 0 {
+                            print("  [worker-\(workerID)] processed \(processed) tasks")
+                        }
+                    }
+                    
+                    // Worker completed
+                    if progressEvery > 0 {
+                        print("  [worker-\(workerID)] completed \(processed) tasks total")
+                    }
+                }
+            }
+        }
+        
+        let duration = start.duration(to: ContinuousClock.now)
+        let timeMs = Double(duration.components.seconds) * 1000.0 +
+            Double(duration.components.attoseconds) / 1_000_000_000_000_000.0
+        
+        // Aggregate stats
+        var totalBytes = 0
+        for room in rooms {
+            let stats = await room.transport.snapshotCounts()
+            totalBytes += stats.bytes
+        }
+        
+        let totalPlayers = roomCount * playersPerRoom
+        let timePerRoomMs = roomCount > 0 ? timeMs / Double(roomCount) : timeMs
+        let timePerSyncMs = iterations > 0 ? timeMs / Double(iterations) : timeMs
+        let avgCostPerSyncMs = (roomCount > 0 && iterations > 0) ? timeMs / Double(roomCount * iterations) : timeMs
+
+        return BenchmarkResult(
+            format: format,
+            timeMs: timeMs,
+            totalBytes: totalBytes,
+            bytesPerSync: iterations > 0 ? totalBytes / iterations : 0,
+            iterations: iterations,
+            parallel: true,  // Dynamic worker pool is parallel
+            playerCount: totalPlayers,
+            roomCount: roomCount,
+            playersPerRoom: playersPerRoom,
+            timePerRoomMs: timePerRoomMs,
+            timePerSyncMs: timePerSyncMs,
+            avgCostPerSyncMs: avgCostPerSyncMs
+        )
     }
     
     static func runMultiRoomBenchmark(

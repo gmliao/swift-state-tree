@@ -1189,7 +1189,9 @@ struct EncodingBenchmark {
         // Otherwise, use single-room mode (backward compatibility)
         let isMultiRoom = config.rooms > 1
         
-        if config.scalabilityTest {
+        if config.compareWorkerPool {
+            await runWorkerPoolComparison(config: config)
+        } else if config.scalabilityTest {
             await runScalabilityTest(config: config)
         } else if config.compareParallel {
             if isMultiRoom {
@@ -1203,6 +1205,8 @@ struct EncodingBenchmark {
             } else {
                 await runAllFormats(config: config)
             }
+        } else if config.useWorkerPool && isMultiRoom {
+            await runSingleFormatMultiRoomWorkerPool(config: config)
         } else {
             if isMultiRoom {
                 await runSingleFormatMultiRoom(config: config)
@@ -1863,5 +1867,224 @@ struct EncodingBenchmark {
             "gameType": config.gameType.rawValue,
             "formats": formats.map(\.rawValue)
         ])
+    }
+    
+    static func runSingleFormatMultiRoomWorkerPool(config: BenchmarkConfig) async {
+        let result = await BenchmarkRunner.runMultiRoomBenchmarkWithWorkerPool(
+            format: config.format,
+            roomCount: config.rooms,
+            playersPerRoom: config.playersPerRoom,
+            iterations: config.iterations,
+            ticksPerSync: config.ticksPerSync,
+            workerCount: config.workerCount,
+            progressEvery: config.progressEvery,
+            progressLabel: "worker-pool/\(config.format.rawValue)"
+        )
+
+        switch config.output {
+        case .table:
+            let cpuCores = ProcessInfo.processInfo.activeProcessorCount
+            let effectiveWorkers = config.workerCount ?? (cpuCores * 2)
+            
+            print("")
+            print("  Format: \(config.format.displayName)")
+            print("  Rooms: \(config.rooms), Players per room: \(config.playersPerRoom), Total players: \(result.playerCount)")
+            print("  Iterations: \(config.iterations), Worker Pool: \(effectiveWorkers) workers")
+            print("  Ticks per sync: \(config.ticksPerSync)")
+            print("")
+            print("  Total Time: \(String(format: "%.2f", result.timeMs))ms")
+            print("  Time per Room: \(String(format: "%.2f", result.timePerRoomMs))ms")
+            print("  Time per Sync: \(String(format: "%.4f", result.timePerSyncMs))ms")
+            print("  Avg Cost per Sync: \(String(format: "%.4f", result.avgCostPerSyncMs))ms")
+            print("  Throughput: \(String(format: "%.1f", result.throughputSyncsPerSecond)) syncs/sec")
+            print("  Total Bytes: \(result.totalBytes)")
+            print("  Bytes/Sync: \(result.bytesPerSync)")
+            print("")
+        case .json:
+            OutputFormatter.printJSON(result)
+        }
+    }
+    
+    static func runWorkerPoolComparison(config: BenchmarkConfig) async {
+        print("")
+        print("  ==================== Worker Pool Strategy Comparison ====================")
+        
+        let testRooms: [Int]
+        if !config.roomCounts.isEmpty {
+            testRooms = config.roomCounts
+        } else if config.rooms > 1 {
+            testRooms = [config.rooms]
+        } else {
+            testRooms = [50, 100, 200]  // Default test sizes
+        }
+        
+        let cpuCores = ProcessInfo.processInfo.activeProcessorCount
+        let workerCount = config.workerCount ?? (cpuCores * 2)
+        
+        print("  Players per room: \(config.playersPerRoom), Iterations: \(config.iterations)")
+        print("  Ticks per sync: \(config.ticksPerSync)")
+        print("  CPU Cores: \(cpuCores), Worker Count: \(workerCount)")
+        print("")
+        
+        for rooms in testRooms {
+            print("  Testing with \(rooms) rooms:")
+            print("  Strategy                    | Time (ms) | Tasks Created | Throughput | Avg Cost/Sync")
+            print("  --------------------------- | --------- | ------------- | ---------- | -------------")
+            
+            var allResults: [[String: Any]] = []
+            
+            // Test 1: Current implementation (unlimited parallelism)
+            let currentResult = await BenchmarkRunner.runMultiRoomBenchmark(
+                format: config.format,
+                roomCount: rooms,
+                playersPerRoom: config.playersPerRoom,
+                iterations: config.iterations,
+                parallel: true,
+                ticksPerSync: config.ticksPerSync,
+                progressEvery: config.progressEvery,
+                progressLabel: "current/\(rooms)rooms"
+            )
+            
+            let currentTasks = config.iterations * rooms
+            
+            // Test 2: Worker Pool implementation (static assignment)
+            let workerPoolResult = await BenchmarkRunner.runMultiRoomBenchmarkWithWorkerPool(
+                format: config.format,
+                roomCount: rooms,
+                playersPerRoom: config.playersPerRoom,
+                iterations: config.iterations,
+                ticksPerSync: config.ticksPerSync,
+                workerCount: workerCount,
+                progressEvery: config.progressEvery,
+                progressLabel: "static-pool/\(rooms)rooms"
+            )
+            
+            let workerPoolTasks = config.iterations * workerCount
+            
+            // Test 3: Dynamic Worker Pool (task reuse + work queue)
+            let dynamicPoolResult = await BenchmarkRunner.runMultiRoomBenchmarkWithDynamicWorkerPool(
+                format: config.format,
+                roomCount: rooms,
+                playersPerRoom: config.playersPerRoom,
+                iterations: config.iterations,
+                ticksPerSync: config.ticksPerSync,
+                workerCount: cpuCores,  // Use CPU cores for dynamic pool
+                progressEvery: config.progressEvery,
+                progressLabel: "dynamic-pool/\(rooms)rooms"
+            )
+            
+            let dynamicPoolTasks = cpuCores  // Only create this many tasks!
+            
+            // Calculate metrics
+            let staticSpeedup = currentResult.timeMs / workerPoolResult.timeMs
+            let dynamicSpeedup = currentResult.timeMs / dynamicPoolResult.timeMs
+            let taskReductionStatic = ((Double(currentTasks - workerPoolTasks) / Double(currentTasks)) * 100.0)
+            let taskReductionDynamic = ((Double(currentTasks - dynamicPoolTasks) / Double(currentTasks)) * 100.0)
+            
+            print(String(format: "  %-27s | %9.2f | %13d | %10.1f | %13.4f",
+                         "Current (Unlimited)",
+                         currentResult.timeMs,
+                         currentTasks,
+                         currentResult.throughputSyncsPerSecond,
+                         currentResult.avgCostPerSyncMs))
+            
+            print(String(format: "  %-27s | %9.2f | %13d | %10.1f | %13.4f",
+                         "Worker Pool (Static)",
+                         workerPoolResult.timeMs,
+                         workerPoolTasks,
+                         workerPoolResult.throughputSyncsPerSecond,
+                         workerPoolResult.avgCostPerSyncMs))
+            
+            print(String(format: "  %-27s | %9.2f | %13d | %10.1f | %13.4f",
+                         "Worker Pool (Dynamic)",
+                         dynamicPoolResult.timeMs,
+                         dynamicPoolTasks,
+                         dynamicPoolResult.throughputSyncsPerSecond,
+                         dynamicPoolResult.avgCostPerSyncMs))
+            
+            print("  ===================================================================================")
+            print("")
+            print("  Performance Summary:")
+            print(String(format: "  - Static Pool Speedup: %.2fx %s", 
+                         staticSpeedup,
+                         staticSpeedup > 1.0 ? "(Static FASTER ✓)" : "(Current FASTER)"))
+            print(String(format: "  - Dynamic Pool Speedup: %.2fx %s", 
+                         dynamicSpeedup,
+                         dynamicSpeedup > 1.0 ? "(Dynamic FASTER ✓)" : "(Current FASTER)"))
+            print(String(format: "  - Task Reduction (Static): %.1f%% (%d → %d)",
+                         taskReductionStatic,
+                         currentTasks,
+                         workerPoolTasks))
+            print(String(format: "  - Task Reduction (Dynamic): %.1f%% (%d → %d) **TRUE WORKER POOL**",
+                         taskReductionDynamic,
+                         currentTasks,
+                         dynamicPoolTasks))
+            print("")
+            
+            // Determine winner
+            let fastestTime = min(currentResult.timeMs, workerPoolResult.timeMs, dynamicPoolResult.timeMs)
+            var winner = "Current"
+            if dynamicPoolResult.timeMs == fastestTime {
+                winner = "Dynamic Pool"
+            } else if workerPoolResult.timeMs == fastestTime {
+                winner = "Static Pool"
+            }
+            print("  🏆 Winner: \(winner)")
+            print("")
+            
+            // Collect results for JSON
+            allResults.append([
+                "rooms": rooms,
+                "current": [
+                    "timeMs": currentResult.timeMs,
+                    "totalBytes": currentResult.totalBytes,
+                    "bytesPerSync": currentResult.bytesPerSync,
+                    "throughputSyncsPerSecond": currentResult.throughputSyncsPerSecond,
+                    "avgCostPerSyncMs": currentResult.avgCostPerSyncMs,
+                    "tasksCreated": currentTasks
+                ],
+                "staticWorkerPool": [
+                    "timeMs": workerPoolResult.timeMs,
+                    "totalBytes": workerPoolResult.totalBytes,
+                    "bytesPerSync": workerPoolResult.bytesPerSync,
+                    "throughputSyncsPerSecond": workerPoolResult.throughputSyncsPerSecond,
+                    "avgCostPerSyncMs": workerPoolResult.avgCostPerSyncMs,
+                    "tasksCreated": workerPoolTasks,
+                    "workerCount": workerCount
+                ],
+                "dynamicWorkerPool": [
+                    "timeMs": dynamicPoolResult.timeMs,
+                    "totalBytes": dynamicPoolResult.totalBytes,
+                    "bytesPerSync": dynamicPoolResult.bytesPerSync,
+                    "throughputSyncsPerSecond": dynamicPoolResult.throughputSyncsPerSecond,
+                    "avgCostPerSyncMs": dynamicPoolResult.avgCostPerSyncMs,
+                    "tasksCreated": dynamicPoolTasks,
+                    "workerCount": cpuCores
+                ],
+                "staticSpeedup": staticSpeedup,
+                "dynamicSpeedup": dynamicSpeedup,
+                "taskReductionStatic": taskReductionStatic,
+                "taskReductionDynamic": taskReductionDynamic,
+                "winner": winner
+            ])
+            
+            // Save results to JSON
+            let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+            let filename = "worker-pool-comparison-v2-rooms\(rooms)-ppr\(config.playersPerRoom)-iter\(config.iterations)-tick\(config.ticksPerSync)-\(timestamp).json"
+            ResultsManager.saveResultsToJSON(allResults, filename: filename, benchmarkConfig: [
+                "mode": "worker-pool-comparison-v2",
+                "rooms": rooms,
+                "playersPerRoom": config.playersPerRoom,
+                "iterations": config.iterations,
+                "ticksPerSync": config.ticksPerSync,
+                "format": config.format.rawValue,
+                "cpuCores": cpuCores,
+                "staticWorkerCount": workerCount,
+                "dynamicWorkerCount": cpuCores
+            ])
+        }
+        
+        print("  ✓ Worker Pool comparison complete!")
+        print("")
     }
 }
