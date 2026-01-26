@@ -398,8 +398,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         )
         self.logger = resolvedLogger
 
-        // Initialize recorder if in live mode
-        if mode == .live {
+        // Initialize recorder if in live mode AND recording is enabled
+        // This prevents unnecessary recorder creation in load tests or when recording is not needed
+        if mode == .live && enableLiveStateHashRecording {
             let recorder = ReevaluationRecorder(flushInterval: 60)
             reevaluationRecorder = recorder
 

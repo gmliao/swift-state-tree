@@ -20,6 +20,10 @@ let package = Package(
             name: "ReevaluationRunner",
             targets: ["ReevaluationRunner"]
         ),
+        .executable(
+            name: "ServerLoadTest",
+            targets: ["ServerLoadTest"]
+        ),
     ],
     dependencies: [
         .package(name: "SwiftStateTree", path: "../.."),
@@ -69,6 +73,17 @@ let package = Package(
                 .product(name: "SwiftStateTreeMessagePack", package: "SwiftStateTree"),
             ],
             path: "Sources/EncodingBenchmark"
+        ),
+        .executableTarget(
+            name: "ServerLoadTest",
+            dependencies: [
+                "GameContent",
+                .product(name: "SwiftStateTree", package: "SwiftStateTree"),
+                .product(name: "SwiftStateTreeHummingbird", package: "SwiftStateTree"),
+                .product(name: "SwiftStateTreeTransport", package: "SwiftStateTree"),
+                .product(name: "SwiftStateTreeMessagePack", package: "SwiftStateTree"),
+            ],
+            path: "Sources/ServerLoadTest"
         ),
         .testTarget(
             name: "GameContentTests",
