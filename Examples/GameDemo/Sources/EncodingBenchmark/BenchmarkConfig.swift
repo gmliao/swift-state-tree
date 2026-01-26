@@ -85,6 +85,11 @@ struct BenchmarkConfig {
     var ticksPerSync: Int = 0
     /// Print progress every N iterations for long-running benchmarks. Set to 0 to disable.
     var progressEvery: Int = 0
+    
+    // Worker Pool configuration
+    var useWorkerPool: Bool = false
+    var workerCount: Int? = nil
+    var compareWorkerPool: Bool = false
     var gameType: GameType = .heroDefense
 }
 
@@ -173,6 +178,15 @@ enum ArgumentParser {
                 config.gameType = gameType
                 i += 1
             }
+        case "--use-worker-pool":
+            config.useWorkerPool = true
+        case "--workers":
+            if i + 1 < args.count, let value = Int(args[i + 1]) {
+                config.workerCount = value
+                i += 1
+            }
+        case "--compare-worker-pool":
+            config.compareWorkerPool = true
         case "--help", "-h":
             printUsage()
             exit(0)

@@ -185,12 +185,15 @@ MONITORING_JSON_TEMP="$TEMP_DIR/monitoring.json"
 
 PARSE_SCRIPT="$GAMEDEMO_ROOT/scripts/server-loadtest/parse_monitoring.py"
 if [ -f "$PARSE_SCRIPT" ]; then
-    python3 "$PARSE_SCRIPT" \
-        --vmstat "$TEMP_DIR/vmstat.log" \
-        --pidstat "$PIDSTAT_LOG" \
-        --output "$MONITORING_JSON_TEMP" \
-        --html "$MONITORING_HTML_FINAL" \
-        --process-name "ServerLoadTest" 2>/dev/null || {
+    # Build parse command with optional test result JSON
+    PARSE_CMD="python3 \"$PARSE_SCRIPT\" --vmstat \"$TEMP_DIR/vmstat.log\" --pidstat \"$PIDSTAT_LOG\" --output \"$MONITORING_JSON_TEMP\" --html \"$MONITORING_HTML_FINAL\" --process-name \"ServerLoadTest\""
+    
+    # Add test result JSON if available
+    if [ -n "$TEST_RESULT_JSON" ] && [ -f "$TEST_RESULT_JSON" ]; then
+        PARSE_CMD="$PARSE_CMD --test-result-json \"$TEST_RESULT_JSON\""
+    fi
+    
+    eval "$PARSE_CMD" 2>/dev/null || {
         echo "Warning: Failed to parse monitoring data (python3 error)"
     }
     

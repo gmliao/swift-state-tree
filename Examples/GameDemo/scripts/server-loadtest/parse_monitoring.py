@@ -119,8 +119,14 @@ def parse_pidstat_log(pidstat_path: Path, process_name: str = "ServerLoadTest") 
     return samples
 
 
-def generate_html_report(data: Dict[str, Any], output_path: Path) -> None:
-    """Generate an interactive HTML report with charts for monitoring data."""
+def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_json: Optional[Dict[str, Any]] = None) -> None:
+    """Generate an interactive HTML report with charts for monitoring data.
+    
+    Args:
+        data: Monitoring data (vmstat, pidstat)
+        output_path: Path to save HTML report
+        test_result_json: Optional test result JSON data to embed in report
+    """
     vmstat_samples = data.get("vmstat", [])
     pidstat_samples = data.get("pidstat", [])
     vmstat_summary = data.get("vmstat_summary", {})
@@ -135,6 +141,15 @@ def generate_html_report(data: Dict[str, Any], output_path: Path) -> None:
     
     pidstat_times = list(range(len(pidstat_samples)))
     pidstat_cpu = [s.get("cpu_total_pct", 0) for s in pidstat_samples]
+    
+    # Extract test config and results if available
+    test_config = {}
+    test_samples = []
+    test_metadata = {}
+    if test_result_json:
+        test_metadata = test_result_json.get("metadata", {})
+        test_config = test_metadata.get("loadTestConfig", {})
+        test_samples = test_result_json.get("samples", [])
     
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
@@ -162,6 +177,13 @@ def generate_html_report(data: Dict[str, Any], output_path: Path) -> None:
             border-bottom: 2px solid #4CAF50;
             padding-bottom: 10px;
         }}
+        h2 {{
+            color: #555;
+            margin-top: 30px;
+            font-size: 20px;
+            border-bottom: 1px solid #ddd;
+            padding-bottom: 8px;
+        }}
         .summary {{
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -185,6 +207,11 @@ def generate_html_report(data: Dict[str, Any], output_path: Path) -> None:
             font-weight: bold;
             color: #333;
         }}
+        .summary-card .subvalue {{
+            font-size: 14px;
+            color: #777;
+            margin-top: 5px;
+        }}
         .chart-container {{
             margin: 30px 0;
             position: relative;
@@ -196,12 +223,116 @@ def generate_html_report(data: Dict[str, Any], output_path: Path) -> None:
             margin-bottom: 10px;
             color: #333;
         }}
+        .json-viewer {{
+            background: #f8f8f8;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 15px 0;
+            max-height: 400px;
+            overflow-y: auto;
+        }}
+        .json-viewer pre {{
+            margin: 0;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            line-height: 1.5;
+        }}
     </style>
 </head>
 <body>
     <div class="container">
         <h1>Server Load Test - System Monitoring Report</h1>
-        
+"""
+    
+    # Add test configuration section if available
+    if test_config:
+        html_content += f"""
+        <h2>📋 Test Configuration</h2>
+        <div class="summary">
+            <div class="summary-card">
+                <h3>Rooms</h3>
+                <div class="value">{test_config.get('rooms', 'N/A')}</div>
+            </div>
+            <div class="summary-card">
+                <h3>Players/Room</h3>
+                <div class="value">{test_config.get('playersPerRoom', 'N/A')}</div>
+            </div>
+            <div class="summary-card">
+                <h3>Total Players</h3>
+                <div class="value">{test_config.get('rooms', 0) * test_config.get('playersPerRoom', 0)}</div>
+            </div>
+            <div class="summary-card">
+                <h3>Test Duration</h3>
+                <div class="value">{test_config.get('steadySeconds', 'N/A')}s</div>
+                <div class="subvalue">+{test_config.get('rampUpSeconds', 0)}s ramp-up, +{test_config.get('rampDownSeconds', 0)}s ramp-down</div>
+            </div>
+            <div class="summary-card">
+                <h3>Actions/Player/Sec</h3>
+                <div class="value">{test_config.get('actionsPerPlayerPerSecond', 'N/A')}</div>
+            </div>
+            <div class="summary-card">
+                <h3>Land Type</h3>
+                <div class="value">{test_config.get('landType', 'N/A')}</div>
+            </div>
+        </div>
+"""
+    
+    # Add system environment section if available
+    if test_metadata:
+        env = test_metadata.get("environment", {})
+        if env:
+            html_content += f"""
+        <h2>💻 System Environment</h2>
+        <div class="summary">
+            <div class="summary-card">
+                <h3>OS</h3>
+                <div class="value">{env.get('osName', 'N/A')}</div>
+                <div class="subvalue">{env.get('kernelVersion', '')}</div>
+            </div>
+            <div class="summary-card">
+                <h3>CPU Cores</h3>
+                <div class="value">{env.get('cpuActiveLogicalCores', 'N/A')}</div>
+                <div class="subvalue">{env.get('arch', '')} architecture</div>
+            </div>
+            <div class="summary-card">
+                <h3>Total Memory</h3>
+                <div class="value">{env.get('memoryTotalMB', 'N/A')} MB</div>
+            </div>
+        </div>
+"""
+    
+    # Add test results section if available
+    if test_samples:
+        steady_samples = [s for s in test_samples if s.get('phase') == 'steady']
+        if steady_samples:
+            avg_sent_bps = sum(s.get('sentBytesPerSecond', 0) for s in steady_samples) / len(steady_samples)
+            avg_recv_bps = sum(s.get('recvBytesPerSecond', 0) for s in steady_samples) / len(steady_samples)
+            avg_sent_mps = sum(s.get('sentMessagesPerSecond', 0) for s in steady_samples) / len(steady_samples)
+            avg_recv_mps = sum(s.get('recvMessagesPerSecond', 0) for s in steady_samples) / len(steady_samples)
+            
+            html_content += f"""
+        <h2>📊 Test Results (Steady State)</h2>
+        <div class="summary">
+            <div class="summary-card">
+                <h3>Avg Send Rate</h3>
+                <div class="value">{avg_sent_bps / 1024:.1f} KB/s</div>
+                <div class="subvalue">{avg_sent_mps:.1f} msgs/s</div>
+            </div>
+            <div class="summary-card">
+                <h3>Avg Recv Rate</h3>
+                <div class="value">{avg_recv_bps / 1024:.1f} KB/s</div>
+                <div class="subvalue">{avg_recv_mps:.1f} msgs/s</div>
+            </div>
+            <div class="summary-card">
+                <h3>Steady Samples</h3>
+                <div class="value">{len(steady_samples)}</div>
+            </div>
+        </div>
+"""
+    
+    html_content += f"""
+        <h2>🖥️ System Monitoring</h2>
         <div class="summary">
             <div class="summary-card">
                 <h3>VMStat Samples</h3>
@@ -355,6 +486,26 @@ def generate_html_report(data: Dict[str, Any], output_path: Path) -> None:
         </script>
 """
     
+    # Add full JSON data section if test result is available
+    if test_result_json:
+        json_str = json.dumps(test_result_json, indent=2)
+        html_content += f"""
+        <h2>📄 Full Test Results (JSON)</h2>
+        <div class="json-viewer">
+            <pre>{json_str}</pre>
+        </div>
+"""
+    
+    # Add full monitoring JSON data
+    if data:
+        json_str = json.dumps(data, indent=2)
+        html_content += f"""
+        <h2>📈 Full Monitoring Data (JSON)</h2>
+        <div class="json-viewer">
+            <pre>{json_str}</pre>
+        </div>
+"""
+    
     html_content += """
     </div>
 </body>
@@ -372,6 +523,7 @@ def main() -> int:
     ap.add_argument("--pidstat", type=Path, help="pidstat log file path")
     ap.add_argument("--output", type=Path, help="Output JSON file path")
     ap.add_argument("--html", type=Path, help="Output HTML report file path")
+    ap.add_argument("--test-result-json", type=Path, help="Test result JSON file to embed in HTML report")
     ap.add_argument("--process-name", default="ServerLoadTest", help="Process name to filter in pidstat")
     
     args = ap.parse_args()
@@ -415,7 +567,18 @@ def main() -> int:
     
     if args.html:
         args.html.parent.mkdir(parents=True, exist_ok=True)
-        generate_html_report(result, args.html)
+        
+        # Load test result JSON if provided
+        test_result_data = None
+        if args.test_result_json and args.test_result_json.exists():
+            try:
+                with open(args.test_result_json, 'r') as f:
+                    test_result_data = json.load(f)
+                print(f"Loaded test result JSON from: {args.test_result_json}")
+            except Exception as e:
+                print(f"Warning: Failed to load test result JSON: {e}", file=sys.stderr)
+        
+        generate_html_report(result, args.html, test_result_data)
         print(f"HTML report saved to: {args.html}")
     
     if not args.output and not args.html:
