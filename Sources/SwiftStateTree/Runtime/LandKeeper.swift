@@ -1979,9 +1979,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     private func scheduleDestroyIfNeeded() {
         guard players.isEmpty, let delay = definition.config.destroyWhenEmptyAfter else { return }
+
         destroyTask?.cancel()
         destroyTask = Task { [weak self] in
-            try? await Task.sleep(for: delay)
+            do {
+                try await safeTaskSleep(for: delay)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
             await self?.shutdownIfIdle()
         }
     }

@@ -11,11 +11,32 @@ from typing import Dict, List, Any, Optional
 
 
 def parse_vmstat_log(vmstat_path: Path) -> List[Dict[str, Any]]:
-    """Parse vmstat output and return list of samples."""
+    """Parse vmstat output (Linux) or top output (macOS) and return list of samples."""
     if not vmstat_path.exists():
         return []
     
     samples = []
+    
+    # Try to detect format by reading first few lines
+    with open(vmstat_path, 'r') as f:
+        first_lines = [f.readline().strip() for _ in range(5)]
+        f.seek(0)
+        
+        # Check if it's macOS top output (contains "CPU usage:" or "PhysMem:")
+        is_macos_top = any("CPU usage:" in line or "PhysMem:" in line for line in first_lines)
+        # Check if it's macOS iostat output (contains "cpu" and "load average" in header, or "us sy id" in column header)
+        is_macos_iostat = any(
+            ("cpu" in line.lower() and "load average" in line.lower()) or
+            ("KB/t" in line and ("us" in line or "sy" in line))
+            for line in first_lines
+        )
+        
+        if is_macos_top:
+            return parse_macos_top_log(vmstat_path)
+        elif is_macos_iostat:
+            return parse_macos_iostat_log(vmstat_path)
+    
+    # Linux vmstat format
     header_found = False
     header_line = None
     
@@ -60,6 +81,130 @@ def parse_vmstat_log(vmstat_path: Path) -> List[Dict[str, Any]]:
                 }
                 if len(parts) > 17:
                     sample["cpu_gu_pct"] = float(parts[17]) if parts[17].replace('.', '').isdigit() else 0.0
+                samples.append(sample)
+            except (ValueError, IndexError):
+                continue
+    
+    return samples
+
+
+def parse_macos_top_log(top_path: Path) -> List[Dict[str, Any]]:
+    """Parse macOS top output and return list of samples in vmstat-compatible format."""
+    samples = []
+    current_sample = {}
+    
+    with open(top_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                # Empty line might indicate end of a sample block
+                if current_sample and "cpu_us_pct" in current_sample:
+                    samples.append(current_sample)
+                    current_sample = {}
+                continue
+            
+            # Parse CPU usage line: "CPU usage: 12.34% user, 5.67% sys, 82.00% idle"
+            if "CPU usage:" in line:
+                try:
+                    # Extract percentages
+                    import re
+                    cpu_match = re.search(r'(\d+\.?\d*)%\s+user.*?(\d+\.?\d*)%\s+sys.*?(\d+\.?\d*)%\s+idle', line)
+                    if cpu_match:
+                        cpu_us = float(cpu_match.group(1))
+                        cpu_sy = float(cpu_match.group(2))
+                        cpu_id = float(cpu_match.group(3))
+                        current_sample["cpu_us_pct"] = cpu_us
+                        current_sample["cpu_sy_pct"] = cpu_sy
+                        current_sample["cpu_id_pct"] = cpu_id
+                        current_sample["cpu_wa_pct"] = 0.0  # macOS top doesn't show wait
+                        current_sample["cpu_st_pct"] = 0.0  # macOS top doesn't show steal
+                except (ValueError, AttributeError):
+                    continue
+            
+            # Parse memory line: "PhysMem: 8192M used, 8192M free, 16384M wired, 0M compressed"
+            elif "PhysMem:" in line:
+                try:
+                    import re
+                    # Extract free memory (in MB, convert to KB)
+                    mem_match = re.search(r'(\d+)M\s+free', line)
+                    if mem_match:
+                        free_mb = int(mem_match.group(1))
+                        current_sample["memory_free_kb"] = free_mb * 1024
+                        # Also set other memory fields to 0 for compatibility
+                        current_sample["memory_swpd_kb"] = 0
+                        current_sample["memory_buff_kb"] = 0
+                        current_sample["memory_cache_kb"] = 0
+                except (ValueError, AttributeError):
+                    continue
+            
+            # When we see "Processes:" line, it might be start of new sample
+            # But we'll use empty lines as delimiters instead
+    
+    # Add last sample if exists
+    if current_sample and "cpu_us_pct" in current_sample:
+        samples.append(current_sample)
+    
+    return samples
+
+
+def parse_macos_iostat_log(iostat_path: Path) -> List[Dict[str, Any]]:
+    """Parse macOS iostat output and return list of samples in vmstat-compatible format.
+    
+    macOS iostat format:
+        disk0       cpu    load average
+    KB/t  tps  MB/s  us sy id   1m   5m   15m
+    4.49 4596 20.15  14 11 74  4.34 3.85 3.82
+    """
+    samples = []
+    header_found = False
+    column_header_found = False
+    
+    with open(iostat_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Look for main header: "disk0       cpu    load average"
+            if "cpu" in line.lower() and "load average" in line.lower():
+                header_found = True
+                continue
+            
+            if not header_found:
+                continue
+            
+            # Look for column header: "KB/t  tps  MB/s  us sy id   1m   5m   15m"
+            if header_found and ("KB/t" in line or "tps" in line) and ("us" in line or "sy" in line):
+                column_header_found = True
+                continue
+            
+            if not column_header_found:
+                continue
+            
+            # Parse data line: "4.49 4596 20.15  14 11 74  4.34 3.85 3.82"
+            parts = line.split()
+            if len(parts) < 6:
+                continue
+            
+            try:
+                # iostat format: [KB/t] [tps] [MB/s] [us] [sy] [id] [1m] [5m] [15m]
+                # CPU columns are at positions 3, 4, 5 (0-indexed)
+                cpu_us = float(parts[3])
+                cpu_sy = float(parts[4])
+                cpu_id = float(parts[5])
+                
+                sample = {
+                    "cpu_us_pct": cpu_us,
+                    "cpu_sy_pct": cpu_sy,
+                    "cpu_id_pct": cpu_id,
+                    "cpu_wa_pct": 0.0,  # macOS iostat doesn't show wait
+                    "cpu_st_pct": 0.0,  # macOS iostat doesn't show steal
+                    # Set memory fields to 0 (iostat doesn't provide memory info)
+                    "memory_free_kb": 0,
+                    "memory_swpd_kb": 0,
+                    "memory_buff_kb": 0,
+                    "memory_cache_kb": 0,
+                }
                 samples.append(sample)
             except (ValueError, IndexError):
                 continue
@@ -149,7 +294,41 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
     if test_result_json:
         test_metadata = test_result_json.get("metadata", {})
         test_config = test_metadata.get("loadTestConfig", {})
-        test_samples = test_result_json.get("samples", [])
+        # Samples are in results.seconds (not top-level samples)
+        results = test_result_json.get("results", {})
+        test_samples = results.get("seconds", [])
+    
+    # Prepare game data (tick-based) if available
+    # Hero-defense runs at 20Hz (50ms per tick), so tick = time_seconds * 20
+    # For other games, this can be adjusted via config
+    tick_interval_ms = 50  # Default for hero-defense (can be extracted from config if available)
+    ticks_per_second = 1000.0 / tick_interval_ms
+    
+    game_ticks = []
+    game_bytes_sent = []
+    game_bytes_recv = []
+    game_messages_sent = []
+    game_messages_recv = []
+    game_actions = []
+    game_active_players = []
+    game_active_rooms = []
+    game_rooms_created = []
+    game_rooms_target = []
+    
+    if test_samples:
+        for sample in test_samples:
+            time_sec = sample.get("t", 0)
+            tick = int(time_sec * ticks_per_second)
+            game_ticks.append(tick)
+            game_bytes_sent.append(sample.get("sentBytesPerSecond", 0))
+            game_bytes_recv.append(sample.get("recvBytesPerSecond", 0))
+            game_messages_sent.append(sample.get("sentMessagesPerSecond", 0))
+            game_messages_recv.append(sample.get("recvMessagesPerSecond", 0))
+            game_actions.append(sample.get("actionsSentThisSecond", 0))
+            game_active_players.append(sample.get("playersActiveExpected", 0))
+            game_active_rooms.append(sample.get("roomsActiveExpected", 0))
+            game_rooms_created.append(sample.get("roomsCreated", 0))
+            game_rooms_target.append(sample.get("roomsTarget", 0))
     
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
@@ -310,6 +489,7 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
             avg_recv_bps = sum(s.get('recvBytesPerSecond', 0) for s in steady_samples) / len(steady_samples)
             avg_sent_mps = sum(s.get('sentMessagesPerSecond', 0) for s in steady_samples) / len(steady_samples)
             avg_recv_mps = sum(s.get('recvMessagesPerSecond', 0) for s in steady_samples) / len(steady_samples)
+            avg_actions = sum(s.get('actionsSentThisSecond', 0) for s in steady_samples) / len(steady_samples)
             
             html_content += f"""
         <h2>📊 Test Results (Steady State)</h2>
@@ -323,6 +503,10 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
                 <h3>Avg Recv Rate</h3>
                 <div class="value">{avg_recv_bps / 1024:.1f} KB/s</div>
                 <div class="subvalue">{avg_recv_mps:.1f} msgs/s</div>
+            </div>
+            <div class="summary-card">
+                <h3>Avg Actions/Sec</h3>
+                <div class="value">{avg_actions:.1f}</div>
             </div>
             <div class="summary-card">
                 <h3>Steady Samples</h3>
@@ -373,6 +557,12 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
 """
     
     if vmstat_samples:
+        vmstat_times_json = json.dumps(vmstat_times)
+        vmstat_cpu_us_json = json.dumps(vmstat_cpu_us)
+        vmstat_cpu_sy_json = json.dumps(vmstat_cpu_sy)
+        vmstat_cpu_id_json = json.dumps(vmstat_cpu_id)
+        vmstat_memory_free_json = json.dumps(vmstat_memory_free)
+        
         html_content += f"""
         <div class="chart-container">
             <div class="chart-title">System CPU Usage Over Time</div>
@@ -389,25 +579,25 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
             new Chart(cpuCtx, {{
                 type: 'line',
                 data: {{
-                    labels: {json.dumps(vmstat_times)},
+                    labels: {vmstat_times_json},
                     datasets: [
                         {{
                             label: 'User %',
-                            data: {json.dumps(vmstat_cpu_us)},
+                            data: {vmstat_cpu_us_json},
                             borderColor: 'rgb(75, 192, 192)',
                             backgroundColor: 'rgba(75, 192, 192, 0.2)',
                             tension: 0.1
                         }},
                         {{
                             label: 'System %',
-                            data: {json.dumps(vmstat_cpu_sy)},
+                            data: {vmstat_cpu_sy_json},
                             borderColor: 'rgb(255, 99, 132)',
                             backgroundColor: 'rgba(255, 99, 132, 0.2)',
                             tension: 0.1
                         }},
                         {{
                             label: 'Idle %',
-                            data: {json.dumps(vmstat_cpu_id)},
+                            data: {vmstat_cpu_id_json},
                             borderColor: 'rgb(153, 102, 255)',
                             backgroundColor: 'rgba(153, 102, 255, 0.2)',
                             tension: 0.1
@@ -430,10 +620,10 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
             new Chart(memoryCtx, {{
                 type: 'line',
                 data: {{
-                    labels: {json.dumps(vmstat_times)},
+                    labels: {vmstat_times_json},
                     datasets: [{{
                         label: 'Free Memory (MB)',
-                        data: {json.dumps(vmstat_memory_free)},
+                        data: {vmstat_memory_free_json},
                         borderColor: 'rgb(54, 162, 235)',
                         backgroundColor: 'rgba(54, 162, 235, 0.2)',
                         tension: 0.1
@@ -453,6 +643,9 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
 """
     
     if pidstat_samples:
+        pidstat_times_json = json.dumps(pidstat_times)
+        pidstat_cpu_json = json.dumps(pidstat_cpu)
+        
         html_content += f"""
         <div class="chart-container">
             <div class="chart-title">Process CPU Usage Over Time</div>
@@ -464,10 +657,10 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
             new Chart(pidstatCtx, {{
                 type: 'line',
                 data: {{
-                    labels: {json.dumps(pidstat_times)},
+                    labels: {pidstat_times_json},
                     datasets: [{{
                         label: 'Process CPU %',
-                        data: {json.dumps(pidstat_cpu)},
+                        data: {pidstat_cpu_json},
                         borderColor: 'rgb(255, 159, 64)',
                         backgroundColor: 'rgba(255, 159, 64, 0.2)',
                         tension: 0.1
@@ -479,6 +672,428 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
                     scales: {{
                         y: {{
                             beginAtZero: true
+                        }}
+                    }}
+                }}
+            }});
+        </script>
+"""
+    
+    # Add game data charts (tick-based) if available
+    if game_ticks and len(game_ticks) > 0:
+        game_ticks_json = json.dumps(game_ticks)
+        game_bytes_sent_kb = [b / 1024.0 for b in game_bytes_sent]
+        game_bytes_sent_json = json.dumps(game_bytes_sent_kb)
+        game_bytes_recv_kb = [b / 1024.0 for b in game_bytes_recv]
+        game_bytes_recv_json = json.dumps(game_bytes_recv_kb)
+        game_messages_sent_json = json.dumps(game_messages_sent)
+        game_messages_recv_json = json.dumps(game_messages_recv)
+        game_actions_json = json.dumps(game_actions)
+        game_active_players_json = json.dumps(game_active_players)
+        game_active_rooms_json = json.dumps(game_active_rooms)
+        game_rooms_created_json = json.dumps(game_rooms_created)
+        game_rooms_target_json = json.dumps(game_rooms_target)
+        
+        peak_bytes = max(game_bytes_sent) if game_bytes_sent else 0
+        peak_messages = max(game_messages_sent) if game_messages_sent else 0
+        peak_actions = max(game_actions) if game_actions else 0
+        
+        html_content += f"""
+        <h2>🎮 Game Data (Tick-based)</h2>
+        <div class="summary">
+            <div class="summary-card">
+                <h3>Total Ticks</h3>
+                <div class="value">{game_ticks[-1] if game_ticks else 0}</div>
+                <div class="subvalue">{tick_interval_ms}ms per tick ({ticks_per_second:.1f} Hz)</div>
+            </div>
+            <div class="summary-card">
+                <h3>Peak Bytes/Sec</h3>
+                <div class="value">{peak_bytes / 1024:.1f} KB/s</div>
+            </div>
+            <div class="summary-card">
+                <h3>Peak Messages/Sec</h3>
+                <div class="value">{peak_messages:.1f}</div>
+            </div>
+            <div class="summary-card">
+                <h3>Peak Actions/Sec</h3>
+                <div class="value">{peak_actions:.0f}</div>
+            </div>
+        </div>
+        
+        <div class="chart-container">
+            <div class="chart-title">Network Traffic Over Ticks (Bytes/Second)</div>
+            <canvas id="gameBytesChart"></canvas>
+        </div>
+        
+        <div class="chart-container">
+            <div class="chart-title">Message Rate Over Ticks (Messages/Second)</div>
+            <canvas id="gameMessagesChart"></canvas>
+        </div>
+        
+        <div class="chart-container">
+            <div class="chart-title">Actions & Active Entities Over Ticks</div>
+            <canvas id="gameActionsChart"></canvas>
+        </div>
+        
+        <div class="chart-container">
+            <div class="chart-title">All Game Metrics Over Ticks (Click legend to toggle)</div>
+            <canvas id="gameAllMetricsChart"></canvas>
+        </div>
+        
+        <script>
+            const gameBytesCtx = document.getElementById('gameBytesChart').getContext('2d');
+            new Chart(gameBytesCtx, {{
+                type: 'line',
+                data: {{
+                    labels: {game_ticks_json},
+                    datasets: [
+                        {{
+                            label: 'Bytes Sent/sec',
+                            data: {game_bytes_sent_json},
+                            borderColor: 'rgb(75, 192, 192)',
+                            backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                            tension: 0.1,
+                            yAxisID: 'y'
+                        }},
+                        {{
+                            label: 'Bytes Recv/sec',
+                            data: {game_bytes_recv_json},
+                            borderColor: 'rgb(255, 99, 132)',
+                            backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                            tension: 0.1,
+                            yAxisID: 'y'
+                        }}
+                    ]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {{
+                        mode: 'index',
+                        intersect: false
+                    }},
+                    scales: {{
+                        x: {{
+                            title: {{
+                                display: true,
+                                text: 'Tick'
+                            }}
+                        }},
+                        y: {{
+                            beginAtZero: true,
+                            title: {{
+                                display: true,
+                                text: 'KB/s'
+                            }}
+                        }}
+                    }}
+                }}
+            }});
+            
+            const gameMessagesCtx = document.getElementById('gameMessagesChart').getContext('2d');
+            new Chart(gameMessagesCtx, {{
+                type: 'line',
+                data: {{
+                    labels: {game_ticks_json},
+                    datasets: [
+                        {{
+                            label: 'Messages Sent/sec',
+                            data: {game_messages_sent_json},
+                            borderColor: 'rgb(54, 162, 235)',
+                            backgroundColor: 'rgba(54, 162, 235, 0.2)',
+                            tension: 0.1
+                        }},
+                        {{
+                            label: 'Messages Recv/sec',
+                            data: {game_messages_recv_json},
+                            borderColor: 'rgb(255, 206, 86)',
+                            backgroundColor: 'rgba(255, 206, 86, 0.2)',
+                            tension: 0.1
+                        }}
+                    ]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {{
+                        mode: 'index',
+                        intersect: false
+                    }},
+                    scales: {{
+                        x: {{
+                            title: {{
+                                display: true,
+                                text: 'Tick'
+                            }}
+                        }},
+                        y: {{
+                            beginAtZero: true,
+                            title: {{
+                                display: true,
+                                text: 'Messages/sec'
+                            }}
+                        }}
+                    }}
+                }}
+            }});
+            
+            const gameActionsCtx = document.getElementById('gameActionsChart').getContext('2d');
+            new Chart(gameActionsCtx, {{
+                type: 'line',
+                data: {{
+                    labels: {game_ticks_json},
+                    datasets: [
+                        {{
+                            label: 'Actions/sec',
+                            data: {game_actions_json},
+                            borderColor: 'rgb(153, 102, 255)',
+                            backgroundColor: 'rgba(153, 102, 255, 0.2)',
+                            tension: 0.1,
+                            yAxisID: 'y'
+                        }},
+                        {{
+                            label: 'Active Players',
+                            data: {game_active_players_json},
+                            borderColor: 'rgb(255, 159, 64)',
+                            backgroundColor: 'rgba(255, 159, 64, 0.2)',
+                            tension: 0.1,
+                            yAxisID: 'y1'
+                        }},
+                        {{
+                            label: 'Active Rooms',
+                            data: {game_active_rooms_json},
+                            borderColor: 'rgb(201, 203, 207)',
+                            backgroundColor: 'rgba(201, 203, 207, 0.2)',
+                            tension: 0.1,
+                            yAxisID: 'y1'
+                        }}
+                    ]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {{
+                        mode: 'index',
+                        intersect: false
+                    }},
+                    scales: {{
+                        x: {{
+                            title: {{
+                                display: true,
+                                text: 'Tick'
+                            }}
+                        }},
+                        y: {{
+                            type: 'linear',
+                            display: true,
+                            position: 'left',
+                            beginAtZero: true,
+                            title: {{
+                                display: true,
+                                text: 'Actions/sec'
+                            }}
+                        }},
+                        y1: {{
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            beginAtZero: true,
+                            title: {{
+                                display: true,
+                                text: 'Count'
+                            }},
+                            grid: {{
+                                drawOnChartArea: false
+                            }}
+                        }}
+                    }}
+                }}
+            }});
+            
+            // Comprehensive game metrics chart with toggle support
+            const gameAllMetricsCtx = document.getElementById('gameAllMetricsChart').getContext('2d');
+            const gameAllMetricsChart = new Chart(gameAllMetricsCtx, {{
+                type: 'line',
+                data: {{
+                    labels: {game_ticks_json},
+                    datasets: [
+                        {{
+                            label: 'Bytes Sent/sec (KB)',
+                            data: {game_bytes_sent_json},
+                            borderColor: 'rgb(75, 192, 192)',
+                            backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                            tension: 0.1,
+                            yAxisID: 'y_bytes',
+                            hidden: false
+                        }},
+                        {{
+                            label: 'Bytes Recv/sec (KB)',
+                            data: {game_bytes_recv_json},
+                            borderColor: 'rgb(255, 99, 132)',
+                            backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                            tension: 0.1,
+                            yAxisID: 'y_bytes',
+                            hidden: false
+                        }},
+                        {{
+                            label: 'Messages Sent/sec',
+                            data: {game_messages_sent_json},
+                            borderColor: 'rgb(54, 162, 235)',
+                            backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                            tension: 0.1,
+                            yAxisID: 'y_messages',
+                            hidden: false
+                        }},
+                        {{
+                            label: 'Messages Recv/sec',
+                            data: {game_messages_recv_json},
+                            borderColor: 'rgb(255, 206, 86)',
+                            backgroundColor: 'rgba(255, 206, 86, 0.1)',
+                            tension: 0.1,
+                            yAxisID: 'y_messages',
+                            hidden: false
+                        }},
+                        {{
+                            label: 'Actions/sec',
+                            data: {game_actions_json},
+                            borderColor: 'rgb(153, 102, 255)',
+                            backgroundColor: 'rgba(153, 102, 255, 0.1)',
+                            tension: 0.1,
+                            yAxisID: 'y_actions',
+                            hidden: false
+                        }},
+                        {{
+                            label: 'Active Players',
+                            data: {game_active_players_json},
+                            borderColor: 'rgb(255, 159, 64)',
+                            backgroundColor: 'rgba(255, 159, 64, 0.1)',
+                            tension: 0.1,
+                            yAxisID: 'y_count',
+                            hidden: false
+                        }},
+                        {{
+                            label: 'Active Rooms',
+                            data: {game_active_rooms_json},
+                            borderColor: 'rgb(201, 203, 207)',
+                            backgroundColor: 'rgba(201, 203, 207, 0.1)',
+                            tension: 0.1,
+                            yAxisID: 'y_count',
+                            hidden: false
+                        }},
+                        {{
+                            label: 'Rooms Created',
+                            data: {game_rooms_created_json},
+                            borderColor: 'rgb(255, 99, 71)',
+                            backgroundColor: 'rgba(255, 99, 71, 0.1)',
+                            tension: 0.1,
+                            yAxisID: 'y_count',
+                            hidden: true
+                        }},
+                        {{
+                            label: 'Rooms Target',
+                            data: {game_rooms_target_json},
+                            borderColor: 'rgb(144, 238, 144)',
+                            backgroundColor: 'rgba(144, 238, 144, 0.1)',
+                            tension: 0.1,
+                            yAxisID: 'y_count',
+                            hidden: true
+                        }}
+                    ]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {{
+                        mode: 'index',
+                        intersect: false
+                    }},
+                    plugins: {{
+                        legend: {{
+                            display: true,
+                            position: 'top',
+                            onClick: function(e, legendItem) {{
+                                const index = legendItem.datasetIndex;
+                                const chart = this.chart;
+                                const meta = chart.getDatasetMeta(index);
+                                meta.hidden = meta.hidden === null ? !chart.data.datasets[index].hidden : null;
+                                chart.update();
+                            }}
+                        }},
+                        tooltip: {{
+                            callbacks: {{
+                                label: function(context) {{
+                                    let label = context.dataset.label || '';
+                                    if (label) {{
+                                        label += ': ';
+                                    }}
+                                    if (context.parsed.y !== null) {{
+                                        label += new Intl.NumberFormat('en-US', {{
+                                            maximumFractionDigits: 2
+                                        }}).format(context.parsed.y);
+                                    }}
+                                    return label;
+                                }}
+                            }}
+                        }}
+                    }},
+                    scales: {{
+                        x: {{
+                            title: {{
+                                display: true,
+                                text: 'Tick'
+                            }}
+                        }},
+                        y_bytes: {{
+                            type: 'linear',
+                            display: 'auto',
+                            position: 'left',
+                            beginAtZero: true,
+                            title: {{
+                                display: true,
+                                text: 'KB/s'
+                            }},
+                            grid: {{
+                                drawOnChartArea: true
+                            }}
+                        }},
+                        y_messages: {{
+                            type: 'linear',
+                            display: 'auto',
+                            position: 'right',
+                            beginAtZero: true,
+                            title: {{
+                                display: true,
+                                text: 'Messages/sec'
+                            }},
+                            grid: {{
+                                drawOnChartArea: false
+                            }}
+                        }},
+                        y_actions: {{
+                            type: 'linear',
+                            display: 'auto',
+                            position: 'left',
+                            beginAtZero: true,
+                            title: {{
+                                display: true,
+                                text: 'Actions/sec'
+                            }},
+                            grid: {{
+                                drawOnChartArea: false
+                            }}
+                        }},
+                        y_count: {{
+                            type: 'linear',
+                            display: 'auto',
+                            position: 'right',
+                            beginAtZero: true,
+                            title: {{
+                                display: true,
+                                text: 'Count'
+                            }},
+                            grid: {{
+                                drawOnChartArea: false
+                            }}
                         }}
                     }}
                 }}
@@ -519,8 +1134,9 @@ def main() -> int:
     import argparse
     
     ap = argparse.ArgumentParser(description="Parse vmstat/pidstat logs and convert to JSON/HTML")
-    ap.add_argument("--vmstat", type=Path, help="vmstat log file path")
-    ap.add_argument("--pidstat", type=Path, help="pidstat log file path")
+    ap.add_argument("--vmstat", type=Path, help="vmstat log file path (raw text or JSON)")
+    ap.add_argument("--pidstat", type=Path, help="pidstat log file path (raw text or JSON)")
+    ap.add_argument("--monitoring-json", type=Path, help="Pre-parsed monitoring JSON file (contains vmstat/pidstat)")
     ap.add_argument("--output", type=Path, help="Output JSON file path")
     ap.add_argument("--html", type=Path, help="Output HTML report file path")
     ap.add_argument("--test-result-json", type=Path, help="Test result JSON file to embed in HTML report")
@@ -533,11 +1149,51 @@ def main() -> int:
         "pidstat": [],
     }
     
-    if args.vmstat:
-        result["vmstat"] = parse_vmstat_log(args.vmstat)
-    
-    if args.pidstat:
-        result["pidstat"] = parse_pidstat_log(args.pidstat, args.process_name)
+    # If monitoring-json is provided, load it directly
+    if args.monitoring_json:
+        try:
+            with open(args.monitoring_json, 'r') as f:
+                monitoring_data = json.load(f)
+            result["vmstat"] = monitoring_data.get("vmstat", [])
+            result["pidstat"] = monitoring_data.get("pidstat", [])
+            print(f"Loaded monitoring data from JSON: {args.monitoring_json}")
+        except Exception as e:
+            print(f"Warning: Failed to load monitoring JSON: {e}", file=sys.stderr)
+    else:
+        # Otherwise, parse from raw log files
+        if args.vmstat:
+            # Try to detect if it's JSON or raw text
+            try:
+                with open(args.vmstat, 'r') as f:
+                    first_char = f.read(1)
+                    f.seek(0)
+                    if first_char == '{':
+                        # JSON format
+                        data = json.load(f)
+                        result["vmstat"] = data.get("vmstat", [])
+                        print(f"Loaded vmstat from JSON: {args.vmstat}")
+                    else:
+                        # Raw text format
+                        result["vmstat"] = parse_vmstat_log(args.vmstat)
+            except Exception as e:
+                print(f"Warning: Failed to parse vmstat: {e}", file=sys.stderr)
+        
+        if args.pidstat:
+            # Try to detect if it's JSON or raw text
+            try:
+                with open(args.pidstat, 'r') as f:
+                    first_char = f.read(1)
+                    f.seek(0)
+                    if first_char == '{':
+                        # JSON format
+                        data = json.load(f)
+                        result["pidstat"] = data.get("pidstat", [])
+                        print(f"Loaded pidstat from JSON: {args.pidstat}")
+                    else:
+                        # Raw text format
+                        result["pidstat"] = parse_pidstat_log(args.pidstat, args.process_name)
+            except Exception as e:
+                print(f"Warning: Failed to parse pidstat: {e}", file=sys.stderr)
     
     # Calculate summary statistics
     if result["vmstat"]:

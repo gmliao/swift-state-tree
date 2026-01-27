@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Server Load Test - System Monitoring Report</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            border-bottom: 2px solid #4CAF50;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #555;
+            margin-top: 30px;
+            font-size: 20px;
+            border-bottom: 1px solid #ddd;
+            padding-bottom: 8px;
+        }
+        .summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        .summary-card {
+            background: #f9f9f9;
+            padding: 15px;
+            border-radius: 6px;
+            border-left: 4px solid #4CAF50;
+        }
+        .summary-card h3 {
+            margin: 0 0 10px 0;
+            color: #666;
+            font-size: 14px;
+            text-transform: uppercase;
+        }
+        .summary-card .value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+        }
+        .summary-card .subvalue {
+            font-size: 14px;
+            color: #777;
+            margin-top: 5px;
+        }
+        .chart-container {
+            margin: 30px 0;
+            position: relative;
+            height: 300px;
+        }
+        .chart-title {
+            font-size: 18px;
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #333;
+        }
+        .json-viewer {
+            background: #f8f8f8;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 15px 0;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .json-viewer pre {
+            margin: 0;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Server Load Test - System Monitoring Report</h1>
+
+        <h2>📋 Test Configuration</h2>
+        <div class="summary">
+            <div class="summary-card">
+                <h3>Rooms</h3>
+                <div class="value">50</div>
+            </div>
+            <div class="summary-card">
+                <h3>Players/Room</h3>
+                <div class="value">2</div>
+            </div>
+            <div class="summary-card">
+                <h3>Total Players</h3>
+                <div class="value">100</div>
+            </div>
+            <div class="summary-card">
+                <h3>Test Duration</h3>
+                <div class="value">10s</div>
+                <div class="subvalue">+2s ramp-up, +2s ramp-down</div>
+            </div>
+            <div class="summary-card">
+                <h3>Actions/Player/Sec</h3>
+                <div class="value">1</div>
+            </div>
+            <div class="summary-card">
+                <h3>Land Type</h3>
+                <div class="value">hero-defense</div>
+            </div>
+        </div>
+
+        <h2>💻 System Environment</h2>
+        <div class="summary">
+            <div class="summary-card">
+                <h3>OS</h3>
+                <div class="value">Darwin</div>
+                <div class="subvalue">25.2.0</div>
+            </div>
+            <div class="summary-card">
+                <h3>CPU Cores</h3>
+                <div class="value">8</div>
+                <div class="subvalue">arm64 architecture</div>
+            </div>
+            <div class="summary-card">
+                <h3>Total Memory</h3>
+                <div class="value">16384 MB</div>
+            </div>
+        </div>
+
+        <h2>🖥️ System Monitoring</h2>
+        <div class="summary">
+            <div class="summary-card">
+                <h3>VMStat Samples</h3>
+                <div class="value">0</div>
+            </div>
+            <div class="summary-card">
+                <h3>Avg CPU User %</h3>
+                <div class="value">0.0%</div>
+            </div>
+            <div class="summary-card">
+                <h3>Avg CPU System %</h3>
+                <div class="value">0.0%</div>
+            </div>
+            <div class="summary-card">
+                <h3>Avg CPU Idle %</h3>
+                <div class="value">0.0%</div>
+            </div>
+
+        </div>
+
+        <h2>🎮 Game Data (Tick-based)</h2>
+        <div class="summary">
+            <div class="summary-card">
+                <h3>Total Ticks</h3>
+                <div class="value">260</div>
+                <div class="subvalue">50ms per tick (20.0 Hz)</div>
+            </div>
+            <div class="summary-card">
+                <h3>Peak Bytes/Sec</h3>
+                <div class="value">285.1 KB/s</div>
+            </div>
+            <div class="summary-card">
+                <h3>Peak Messages/Sec</h3>
+                <div class="value">3500.0</div>
+            </div>
+            <div class="summary-card">
+                <h3>Peak Actions/Sec</h3>
+                <div class="value">100</div>
+            </div>
+        </div>
+        
+        <div class="chart-container">
+            <div class="chart-title">Network Traffic Over Ticks (Bytes/Second)</div>
+            <canvas id="gameBytesChart"></canvas>
+        </div>
+        
+        <div class="chart-container">
+            <div class="chart-title">Message Rate Over Ticks (Messages/Second)</div>
+            <canvas id="gameMessagesChart"></canvas>
+        </div>
+        
+        <div class="chart-container">
+            <div class="chart-title">Actions & Active Entities Over Ticks</div>
+            <canvas id="gameActionsChart"></canvas>
+        </div>
+        
+        <div class="chart-container">
+            <div class="chart-title">All Game Metrics Over Ticks (Click legend to toggle)</div>
+            <canvas id="gameAllMetricsChart"></canvas>
+        </div>
+        
+        <script>
+            const gameBytesCtx = document.getElementById('gameBytesChart').getContext('2d');
+            new Chart(gameBytesCtx, {
+                type: 'line',
+                data: {
+                    labels: [0, 20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 220, 240, 260],
+                    datasets: [
+                        {
+                            label: 'Bytes Sent/sec',
+                            data: [16.9921875, 48.611328125, 86.357421875, 263.330078125, 285.1328125, 250.6171875, 180.87109375, 255.64453125, 134.640625, 172.96484375, 217.865234375, 185.048828125, 112.720703125, 51.73828125],
+                            borderColor: 'rgb(75, 192, 192)',
+                            backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                            tension: 0.1,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'Bytes Recv/sec',
+                            data: [6.435546875, 6.494140625, 9.08203125, 9.08203125, 9.08203125, 9.08203125, 9.08203125, 9.08203125, 9.08203125, 9.08203125, 9.08203125, 9.08203125, 9.08203125, 4.541015625],
+                            borderColor: 'rgb(255, 99, 132)',
+                            backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                            tension: 0.1,
+                            yAxisID: 'y'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Tick'
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'KB/s'
+                            }
+                        }
+                    }
+                }
+            });
+            
+            const gameMessagesCtx = document.getElementById('gameMessagesChart').getContext('2d');
+            new Chart(gameMessagesCtx, {
+                type: 'line',
+                data: {
+                    labels: [0, 20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 220, 240, 260],
+                    datasets: [
+                        {
+                            label: 'Messages Sent/sec',
+                            data: [100, 600, 1500, 3400, 3500, 2716, 2154, 3328, 1302, 1900, 2600, 2200, 1076, 524],
+                            borderColor: 'rgb(54, 162, 235)',
+                            backgroundColor: 'rgba(54, 162, 235, 0.2)',
+                            tension: 0.1
+                        },
+                        {
+                            label: 'Messages Recv/sec',
+                            data: [50, 50, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 50],
+                            borderColor: 'rgb(255, 206, 86)',
+                            backgroundColor: 'rgba(255, 206, 86, 0.2)',
+                            tension: 0.1
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Tick'
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Messages/sec'
+                            }
+                        }
+                    }
+                }
+            });
+            
+            const gameActionsCtx = document.getElementById('gameActionsChart').getContext('2d');
+            new Chart(gameActionsCtx, {
+                type: 'line',
+                data: {
+                    labels: [0, 20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 220, 240, 260],
+                    datasets: [
+                        {
+                            label: 'Actions/sec',
+                            data: [0, 0, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 50],
+                            borderColor: 'rgb(153, 102, 255)',
+                            backgroundColor: 'rgba(153, 102, 255, 0.2)',
+                            tension: 0.1,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'Active Players',
+                            data: [50, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 50, 0],
+                            borderColor: 'rgb(255, 159, 64)',
+                            backgroundColor: 'rgba(255, 159, 64, 0.2)',
+                            tension: 0.1,
+                            yAxisID: 'y1'
+                        },
+                        {
+                            label: 'Active Rooms',
+                            data: [25, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 25, 0],
+                            borderColor: 'rgb(201, 203, 207)',
+                            backgroundColor: 'rgba(201, 203, 207, 0.2)',
+                            tension: 0.1,
+                            yAxisID: 'y1'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Tick'
+                            }
+                        },
+                        y: {
+                            type: 'linear',
+                            display: true,
+                            position: 'left',
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Actions/sec'
+                            }
+                        },
+                        y1: {
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Count'
+                            },
+                            grid: {
+                                drawOnChartArea: false
+                            }
+                        }
+                    }
+                }
+            });
+            
+            // Comprehensive game metrics chart with toggle support
+            const gameAllMetricsCtx = document.getElementById('gameAllMetricsChart').getContext('2d');
+            const gameAllMetricsChart = new Chart(gameAllMetricsCtx, {
+                type: 'line',
+                data: {
+                    labels: [0, 20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 220, 240, 260],
+                    datasets: [
+                        {
+                            label: 'Bytes Sent/sec (KB)',
+                            data: [16.9921875, 48.611328125, 86.357421875, 263.330078125, 285.1328125, 250.6171875, 180.87109375, 255.64453125, 134.640625, 172.96484375, 217.865234375, 185.048828125, 112.720703125, 51.73828125],
+                            borderColor: 'rgb(75, 192, 192)',
+                            backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                            tension: 0.1,
+                            yAxisID: 'y_bytes',
+                            hidden: false
+                        },
+                        {
+                            label: 'Bytes Recv/sec (KB)',
+                            data: [6.435546875, 6.494140625, 9.08203125, 9.08203125, 9.08203125, 9.08203125, 9.08203125, 9.08203125, 9.08203125, 9.08203125, 9.08203125, 9.08203125, 9.08203125, 4.541015625],
+                            borderColor: 'rgb(255, 99, 132)',
+                            backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                            tension: 0.1,
+                            yAxisID: 'y_bytes',
+                            hidden: false
+                        },
+                        {
+                            label: 'Messages Sent/sec',
+                            data: [100, 600, 1500, 3400, 3500, 2716, 2154, 3328, 1302, 1900, 2600, 2200, 1076, 524],
+                            borderColor: 'rgb(54, 162, 235)',
+                            backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                            tension: 0.1,
+                            yAxisID: 'y_messages',
+                            hidden: false
+                        },
+                        {
+                            label: 'Messages Recv/sec',
+                            data: [50, 50, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 50],
+                            borderColor: 'rgb(255, 206, 86)',
+                            backgroundColor: 'rgba(255, 206, 86, 0.1)',
+                            tension: 0.1,
+                            yAxisID: 'y_messages',
+                            hidden: false
+                        },
+                        {
+                            label: 'Actions/sec',
+                            data: [0, 0, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 50],
+                            borderColor: 'rgb(153, 102, 255)',
+                            backgroundColor: 'rgba(153, 102, 255, 0.1)',
+                            tension: 0.1,
+                            yAxisID: 'y_actions',
+                            hidden: false
+                        },
+                        {
+                            label: 'Active Players',
+                            data: [50, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 50, 0],
+                            borderColor: 'rgb(255, 159, 64)',
+                            backgroundColor: 'rgba(255, 159, 64, 0.1)',
+                            tension: 0.1,
+                            yAxisID: 'y_count',
+                            hidden: false
+                        },
+                        {
+                            label: 'Active Rooms',
+                            data: [25, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 25, 0],
+                            borderColor: 'rgb(201, 203, 207)',
+                            backgroundColor: 'rgba(201, 203, 207, 0.1)',
+                            tension: 0.1,
+                            yAxisID: 'y_count',
+                            hidden: false
+                        },
+                        {
+                            label: 'Rooms Created',
+                            data: [25, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50],
+                            borderColor: 'rgb(255, 99, 71)',
+                            backgroundColor: 'rgba(255, 99, 71, 0.1)',
+                            tension: 0.1,
+                            yAxisID: 'y_count',
+                            hidden: true
+                        },
+                        {
+                            label: 'Rooms Target',
+                            data: [50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50],
+                            borderColor: 'rgb(144, 238, 144)',
+                            backgroundColor: 'rgba(144, 238, 144, 0.1)',
+                            tension: 0.1,
+                            yAxisID: 'y_count',
+                            hidden: true
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'top',
+                            onClick: function(e, legendItem) {
+                                const index = legendItem.datasetIndex;
+                                const chart = this.chart;
+                                const meta = chart.getDatasetMeta(index);
+                                meta.hidden = meta.hidden === null ? !chart.data.datasets[index].hidden : null;
+                                chart.update();
+                            }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    let label = context.dataset.label || '';
+                                    if (label) {
+                                        label += ': ';
+                                    }
+                                    if (context.parsed.y !== null) {
+                                        label += new Intl.NumberFormat('en-US', {
+                                            maximumFractionDigits: 2
+                                        }).format(context.parsed.y);
+                                    }
+                                    return label;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Tick'
+                            }
+                        },
+                        y_bytes: {
+                            type: 'linear',
+                            display: 'auto',
+                            position: 'left',
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'KB/s'
+                            },
+                            grid: {
+                                drawOnChartArea: true
+                            }
+                        },
+                        y_messages: {
+                            type: 'linear',
+                            display: 'auto',
+                            position: 'right',
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Messages/sec'
+                            },
+                            grid: {
+                                drawOnChartArea: false
+                            }
+                        },
+                        y_actions: {
+                            type: 'linear',
+                            display: 'auto',
+                            position: 'left',
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Actions/sec'
+                            },
+                            grid: {
+                                drawOnChartArea: false
+                            }
+                        },
+                        y_count: {
+                            type: 'linear',
+                            display: 'auto',
+                            position: 'right',
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Count'
+                            },
+                            grid: {
+                                drawOnChartArea: false
+                            }
+                        }
+                    }
+                }
+            });
+        </script>
+
+        <h2>📄 Full Test Results (JSON)</h2>
+        <div class="json-viewer">
+            <pre>{
+  "metadata": {
+    "build": {
+      "configuration": "release",
+      "swiftVersion": "Apple Swift version 6.2.3 (swiftlang-6.2.3.3.21 clang-1700.6.3.2)"
+    },
+    "commandLine": [
+      ".build/arm64-apple-macosx/release/ServerLoadTest",
+      "--rooms",
+      "50",
+      "--players-per-room",
+      "2",
+      "--duration-seconds",
+      "10",
+      "--ramp-up-seconds",
+      "2",
+      "--ramp-down-seconds",
+      "2",
+      "--actions-per-player-per-second",
+      "1",
+      "--tui",
+      "false",
+      "--log-level",
+      "error"
+    ],
+    "environment": {
+      "arch": "arm64",
+      "cpuActiveLogicalCores": 8,
+      "cpuLogicalCores": 8,
+      "kernelVersion": "25.2.0",
+      "memoryTotalMB": 16384,
+      "osName": "Darwin"
+    },
+    "git": {
+      "branch": "feat/server-loadtest-tui-json",
+      "commit": "eebbf4aeca2df830ca3c15ad8447a303c958bc8a"
+    },
+    "loadTestConfig": {
+      "actionsPerPlayerPerSecond": 1,
+      "description": "No-WebSocket load test using WebSocketTransport with in-process connections; MessagePack for steady-state messages; JSON-only join handshake; re-evaluation recording DISABLED",
+      "enableLiveStateHashRecording": false,
+      "landType": "hero-defense",
+      "logLevel": "error",
+      "phase": 1,
+      "playersPerRoom": 2,
+      "rampDownSeconds": 2,
+      "rampUpSeconds": 2,
+      "rooms": 50,
+      "steadySeconds": 10,
+      "totalSeconds": 14,
+      "transportEncoding": {
+        "message": "messagepack",
+        "stateUpdate": "opcodeMessagePack"
+      },
+      "tui": false
+    },
+    "timestampUTC": "2026-01-27T02:17:53.352Z"
+  },
+  "results": {
+    "seconds": [
+      {
+        "actionsSentThisSecond": 0,
+        "playersActiveExpected": 50,
+        "recvBytesPerSecond": 6590,
+        "recvMessagesPerSecond": 50,
+        "roomsActiveExpected": 25,
+        "roomsCreated": 25,
+        "roomsTarget": 50,
+        "sentBytesPerSecond": 17400,
+        "sentMessagesPerSecond": 100,
+        "t": 0
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "playersActiveExpected": 100,
+        "recvBytesPerSecond": 6650,
+        "recvMessagesPerSecond": 50,
+        "roomsActiveExpected": 50,
+        "roomsCreated": 50,
+        "roomsTarget": 50,
+        "sentBytesPerSecond": 49778,
+        "sentMessagesPerSecond": 600,
+        "t": 1
+      },
+      {
+        "actionsSentThisSecond": 100,
+        "playersActiveExpected": 100,
+        "recvBytesPerSecond": 9300,
+        "recvMessagesPerSecond": 100,
+        "roomsActiveExpected": 50,
+        "roomsCreated": 50,
+        "roomsTarget": 50,
+        "sentBytesPerSecond": 88430,
+        "sentMessagesPerSecond": 1500,
+        "t": 2
+      },
+      {
+        "actionsSentThisSecond": 100,
+        "playersActiveExpected": 100,
+        "recvBytesPerSecond": 9300,
+        "recvMessagesPerSecond": 100,
+        "roomsActiveExpected": 50,
+        "roomsCreated": 50,
+        "roomsTarget": 50,
+        "sentBytesPerSecond": 269650,
+        "sentMessagesPerSecond": 3400,
+        "t": 3
+      },
+      {
+        "actionsSentThisSecond": 100,
+        "playersActiveExpected": 100,
+        "recvBytesPerSecond": 9300,
+        "recvMessagesPerSecond": 100,
+        "roomsActiveExpected": 50,
+        "roomsCreated": 50,
+        "roomsTarget": 50,
+        "sentBytesPerSecond": 291976,
+        "sentMessagesPerSecond": 3500,
+        "t": 4
+      },
+      {
+        "actionsSentThisSecond": 100,
+        "playersActiveExpected": 100,
+        "recvBytesPerSecond": 9300,
+        "recvMessagesPerSecond": 100,
+        "roomsActiveExpected": 50,
+        "roomsCreated": 50,
+        "roomsTarget": 50,
+        "sentBytesPerSecond": 256632,
+        "sentMessagesPerSecond": 2716,
+        "t": 5
+      },
+      {
+        "actionsSentThisSecond": 100,
+        "playersActiveExpected": 100,
+        "recvBytesPerSecond": 9300,
+        "recvMessagesPerSecond": 100,
+        "roomsActiveExpected": 50,
+        "roomsCreated": 50,
+        "roomsTarget": 50,
+        "sentBytesPerSecond": 185212,
+        "sentMessagesPerSecond": 2154,
+        "t": 6
+      },
+      {
+        "actionsSentThisSecond": 100,
+        "playersActiveExpected": 100,
+        "recvBytesPerSecond": 9300,
+        "recvMessagesPerSecond": 100,
+        "roomsActiveExpected": 50,
+        "roomsCreated": 50,
+        "roomsTarget": 50,
+        "sentBytesPerSecond": 261780,
+        "sentMessagesPerSecond": 3328,
+        "t": 7
+      },
+      {
+        "actionsSentThisSecond": 100,
+        "playersActiveExpected": 100,
+        "recvBytesPerSecond": 9300,
+        "recvMessagesPerSecond": 100,
+        "roomsActiveExpected": 50,
+        "roomsCreated": 50,
+        "roomsTarget": 50,
+        "sentBytesPerSecond": 137872,
+        "sentMessagesPerSecond": 1302,
+        "t": 8
+      },
+      {
+        "actionsSentThisSecond": 100,
+        "playersActiveExpected": 100,
+        "recvBytesPerSecond": 9300,
+        "recvMessagesPerSecond": 100,
+        "roomsActiveExpected": 50,
+        "roomsCreated": 50,
+        "roomsTarget": 50,
+        "sentBytesPerSecond": 177116,
+        "sentMessagesPerSecond": 1900,
+        "t": 9
+      },
+      {
+        "actionsSentThisSecond": 100,
+        "playersActiveExpected": 100,
+        "recvBytesPerSecond": 9300,
+        "recvMessagesPerSecond": 100,
+        "roomsActiveExpected": 50,
+        "roomsCreated": 50,
+        "roomsTarget": 50,
+        "sentBytesPerSecond": 223094,
+        "sentMessagesPerSecond": 2600,
+        "t": 10
+      },
+      {
+        "actionsSentThisSecond": 100,
+        "playersActiveExpected": 100,
+        "recvBytesPerSecond": 9300,
+        "recvMessagesPerSecond": 100,
+        "roomsActiveExpected": 50,
+        "roomsCreated": 50,
+        "roomsTarget": 50,
+        "sentBytesPerSecond": 189490,
+        "sentMessagesPerSecond": 2200,
+        "t": 11
+      },
+      {
+        "actionsSentThisSecond": 100,
+        "playersActiveExpected": 50,
+        "recvBytesPerSecond": 9300,
+        "recvMessagesPerSecond": 100,
+        "roomsActiveExpected": 25,
+        "roomsCreated": 50,
+        "roomsTarget": 50,
+        "sentBytesPerSecond": 115426,
+        "sentMessagesPerSecond": 1076,
+        "t": 12
+      },
+      {
+        "actionsSentThisSecond": 50,
+        "playersActiveExpected": 0,
+        "recvBytesPerSecond": 4650,
+        "recvMessagesPerSecond": 50,
+        "roomsActiveExpected": 0,
+        "roomsCreated": 50,
+        "roomsTarget": 50,
+        "sentBytesPerSecond": 52980,
+        "sentMessagesPerSecond": 524,
+        "t": 13
+      }
+    ],
+    "summary": {
+      "avgRecvBytesPerSecond": 8585,
+      "avgRecvMessagesPerSecond": 89.28571428571429,
+      "avgSentBytesPerSecond": 165488.2857142857,
+      "avgSentMessagesPerSecond": 1921.4285714285713,
+      "playersCreated": 100,
+      "rampDownSeconds": 2,
+      "rampUpSeconds": 2,
+      "roomsCreated": 50,
+      "roomsTarget": 50,
+      "steadySeconds": 10,
+      "totalSeconds": 14,
+      "totalSentBytes": 2316836,
+      "totalSentMessages": 26900
+    }
+  }
+}</pre>
+        </div>
+
+        <h2>📈 Full Monitoring Data (JSON)</h2>
+        <div class="json-viewer">
+            <pre>{
+  "vmstat": [],
+  "pidstat": []
+}</pre>
+        </div>
+
+    </div>
+</body>
+</html>

@@ -111,7 +111,7 @@ struct EncodingBenchmark {
                let baseline = baselineBytes, baseline > 0
             {
                 let savings = (1.0 - Double(best.totalBytes) / Double(baseline)) * 100
-                print(String(format: "Best: %s saves %.1f%% vs JSON Object",
+                print(String(format: "Best: %@ saves %.1f%% vs JSON Object",
                              best.format.displayName, savings))
             }
         }
@@ -214,7 +214,7 @@ struct EncodingBenchmark {
                let baseline = baselineBytes, baseline > 0
             {
                 let savings = (1.0 - Double(best.totalBytes) / Double(baseline)) * 100
-                print(String(format: "Best: %s saves %.1f%% vs JSON Object",
+                print(String(format: "Best: %@ saves %.1f%% vs JSON Object",
                              best.format.displayName, savings))
             }
         }
@@ -843,10 +843,10 @@ struct EncodingBenchmark {
             print("  ===================================================================================")
             print("")
             print("  Performance Summary:")
-            print(String(format: "  - Static Pool Speedup: %.2fx %s", 
+            print(String(format: "  - Static Pool Speedup: %.2fx %@", 
                          staticSpeedup,
                          staticSpeedup > 1.0 ? "(Static FASTER ✓)" : "(Current FASTER)"))
-            print(String(format: "  - Dynamic Pool Speedup: %.2fx %s", 
+            print(String(format: "  - Dynamic Pool Speedup: %.2fx %@", 
                          dynamicSpeedup,
                          dynamicSpeedup > 1.0 ? "(Dynamic FASTER ✓)" : "(Current FASTER)"))
             print(String(format: "  - Task Reduction (Static): %.1f%% (%d → %d)",
