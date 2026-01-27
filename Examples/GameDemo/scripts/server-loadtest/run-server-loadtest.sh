@@ -109,11 +109,10 @@ GAMEDEMO_ROOT="$(pwd)"
 # (If you hit local-only issues, use --debug to fall back.)
 if [ -z "$BUILD_MODE" ]; then
     BUILD_MODE="release"
-    echo "Building ServerLoadTest in release mode..."
+    echo "Using build mode: release"
 else
-    echo "Building ServerLoadTest in $BUILD_MODE mode (user-specified)..."
+    echo "Using build mode: $BUILD_MODE (user-specified)"
 fi
-swift build -c "$BUILD_MODE"
 
 # Create temp directory for monitoring data
 TEMP_DIR=$(mktemp -d)
@@ -130,6 +129,10 @@ cleanup() {
         kill "$PIDSTAT_PID" 2>/dev/null || true
         wait "$PIDSTAT_PID" 2>/dev/null || true
     fi
+    if [ -n "$PS_SAMPLER_PID" ]; then
+        kill "$PS_SAMPLER_PID" 2>/dev/null || true
+        wait "$PS_SAMPLER_PID" 2>/dev/null || true
+    fi
     # Note: Monitoring files are already copied to results directory
     # TEMP_DIR will be cleaned up automatically by system
 }
@@ -139,9 +142,49 @@ trap cleanup EXIT
 VMSTAT_PID=""
 PIDSTAT_PID=""
 TOP_PID=""
+PS_SAMPLER_PID=""
 
 # Detect OS
 OS_TYPE=$(uname -s)
+if [ "$OS_TYPE" = "Darwin" ]; then
+    PIDSTAT_LOG="$TEMP_DIR/ps_cpu.csv"
+fi
+
+start_macos_ps_sampler() {
+    local log_path="$1"
+    local pattern="[S]erverLoadTest"
+    local interval_seconds=1
+
+    echo "timestamp_epoch_s,cpu_pct,pid" > "$log_path"
+
+    local pid=""
+    for _ in $(seq 1 50); do
+        pid=$(pgrep -n -f "$pattern" 2>/dev/null || true)
+        if [ -n "$pid" ]; then
+            break
+        fi
+        sleep 0.2
+    done
+
+    if [ -z "$pid" ]; then
+        echo "Warning: Failed to find ServerLoadTest process for CPU monitoring"
+        return 0
+    fi
+
+    while true; do
+        if ! ps -p "$pid" >/dev/null 2>&1; then
+            break
+        fi
+        local ts
+        ts=$(date +%s)
+        local cpu
+        cpu=$(ps -p "$pid" -o %cpu= 2>/dev/null | awk '{print $1}')
+        if [ -n "$cpu" ]; then
+            echo "$ts,$cpu,$pid" >> "$log_path"
+        fi
+        sleep "$interval_seconds"
+    done
+}
 
 if [ "$ENABLE_MONITORING" = "true" ]; then
     echo "Starting system monitoring..."
@@ -159,13 +202,13 @@ if [ "$ENABLE_MONITORING" = "true" ]; then
             echo "Started vmstat (system-wide monitoring)"
         fi
     elif [ "$OS_TYPE" = "Darwin" ]; then
-        # macOS: System monitoring disabled (vmstat/pidstat are Linux-only tools)
+        # macOS: System-wide monitoring disabled (vmstat/pidstat are Linux-only tools)
         # macOS alternatives (top/iostat) have higher overhead and less accurate data
-        # For accurate system monitoring, run tests on Linux
-        echo "⚠️  System monitoring disabled on macOS (use Linux for accurate monitoring)"
+        # For accurate system-wide monitoring, run tests on Linux
+        echo "⚠️  System-wide monitoring disabled on macOS (use Linux for accurate monitoring)"
         echo "  Note: macOS doesn't have Linux's vmstat/pidstat (sysstat package)"
         echo "  macOS alternatives (top/iostat) have higher overhead and less accurate data"
-        echo "  For production benchmarks, run load tests on Linux"
+        echo "  Process CPU monitoring will use ps sampling on macOS"
     fi
 fi
 
@@ -188,10 +231,14 @@ if [ "$ENABLE_MONITORING" = "true" ]; then
             echo "Started pidstat (will filter for ServerLoadTest process)"
         fi
     elif [ "$OS_TYPE" = "Darwin" ]; then
-        # macOS: Process monitoring disabled (pidstat is Linux-only)
-        # macOS ps monitoring has higher overhead and less accurate data
-        # For accurate process monitoring, run tests on Linux
-        echo "⚠️  Process monitoring disabled on macOS (use Linux for accurate monitoring)"
+        # macOS: Use low-overhead ps sampling for process CPU usage
+        if command -v pgrep >/dev/null 2>&1; then
+            start_macos_ps_sampler "$PIDSTAT_LOG" &
+            PS_SAMPLER_PID=$!
+            echo "Started ps sampler (process CPU monitoring)"
+        else
+            echo "⚠️  pgrep not found; process monitoring disabled on macOS"
+        fi
     fi
 fi
 
