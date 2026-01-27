@@ -463,7 +463,7 @@ private func checkAutoDestroy() {
     if players.isEmpty {
         // Start destruction timer
         destroyTask = Task {
-            try? await Task.sleep(for: destroyDelay)
+            try? await safeTaskSleep(for: destroyDelay)
             // Execute destruction logic
         }
     } else {

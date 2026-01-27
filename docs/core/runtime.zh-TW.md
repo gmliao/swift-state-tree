@@ -463,7 +463,7 @@ private func checkAutoDestroy() {
     if players.isEmpty {
         // 啟動銷毀計時器
         destroyTask = Task {
-            try? await Task.sleep(for: destroyDelay)
+            try? await safeTaskSleep(for: destroyDelay)
             // 執行銷毀邏輯
         }
     } else {

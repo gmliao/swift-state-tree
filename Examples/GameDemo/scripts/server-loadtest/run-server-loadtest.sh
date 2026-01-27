@@ -1,6 +1,15 @@
 #!/bin/bash
 # ServerLoadTest runner with external system monitoring
 # Uses pidstat/vmstat to avoid blocking system calls in the test process
+#
+# Note: This script requires bash (not sh) because it uses bash-specific features:
+#   - [[ ]] conditional expressions (sh only supports [ ])
+#   - $OSTYPE variable (bash-specific)
+#   - ${BASH_SOURCE[0]} for script path detection
+#   - Pattern matching with == (bash-specific)
+#
+# To run: bash run-server-loadtest.sh [options]
+# Or make it executable: chmod +x run-server-loadtest.sh && ./run-server-loadtest.sh [options]
 
 set -e
 
@@ -12,7 +21,8 @@ RAMP_UP_SECONDS=5
 RAMP_DOWN_SECONDS=5
 ACTIONS_PER_PLAYER_PER_SECOND=1
 TUI=false
-LOG_LEVEL=info
+LOG_LEVEL=error
+ENABLE_MONITORING=true  # Set to false to disable monitoring for precise benchmarks
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -49,6 +59,18 @@ while [[ $# -gt 0 ]]; do
             LOG_LEVEL="$2"
             shift 2
             ;;
+        --build-mode)
+            BUILD_MODE="$2"
+            shift 2
+            ;;
+        --release)
+            BUILD_MODE="release"
+            shift
+            ;;
+        --debug)
+            BUILD_MODE="debug"
+            shift
+            ;;
         --help|-h)
             echo "Usage: $0 [options]"
             echo "Options:"
@@ -56,10 +78,14 @@ while [[ $# -gt 0 ]]; do
             echo "  --players-per-room <N>              (default: $PLAYERS_PER_ROOM)"
             echo "  --duration-seconds <N>              (default: $DURATION_SECONDS)"
             echo "  --ramp-up-seconds <N>               (default: $RAMP_UP_SECONDS)"
+            echo "  --no-monitoring                     Disable system monitoring (for precise benchmarks)"
             echo "  --ramp-down-seconds <N>             (default: $RAMP_DOWN_SECONDS)"
             echo "  --actions-per-player-per-second <N>  (default: $ACTIONS_PER_PLAYER_PER_SECOND)"
             echo "  --tui <true|false>                  (default: $TUI)"
             echo "  --log-level <level>                 (default: $LOG_LEVEL)"
+            echo "  --build-mode <debug|release>        (default: auto-detect)"
+            echo "  --release                           (shortcut for --build-mode release)"
+            echo "  --debug                             (shortcut for --build-mode debug)"
             exit 0
             ;;
         *)
@@ -78,9 +104,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/../.."
 GAMEDEMO_ROOT="$(pwd)"
 
-# Build in release mode
-echo "Building ServerLoadTest in release mode..."
-swift build -c release
+# Auto-detect build mode if not specified
+# Default to release for realistic performance numbers.
+# (If you hit local-only issues, use --debug to fall back.)
+if [ -z "$BUILD_MODE" ]; then
+    BUILD_MODE="release"
+    echo "Building ServerLoadTest in release mode..."
+else
+    echo "Building ServerLoadTest in $BUILD_MODE mode (user-specified)..."
+fi
+swift build -c "$BUILD_MODE"
 
 # Create temp directory for monitoring data
 TEMP_DIR=$(mktemp -d)
@@ -103,15 +136,37 @@ cleanup() {
 trap cleanup EXIT
 
 # Start system monitoring (vmstat for system-wide, will add pidstat after test starts)
-echo "Starting system monitoring..."
 VMSTAT_PID=""
 PIDSTAT_PID=""
+TOP_PID=""
 
-# Start vmstat for system-wide monitoring (always useful)
-if command -v vmstat >/dev/null 2>&1; then
-    vmstat 1 > "$TEMP_DIR/vmstat.log" 2>&1 &
-    VMSTAT_PID=$!
-    echo "Started vmstat (system-wide monitoring)"
+# Detect OS
+OS_TYPE=$(uname -s)
+
+if [ "$ENABLE_MONITORING" = "true" ]; then
+    echo "Starting system monitoring..."
+else
+    echo "⚠️  Monitoring disabled (--no-monitoring). Use this for precise benchmarks."
+fi
+
+# Start system-wide monitoring
+if [ "$ENABLE_MONITORING" = "true" ]; then
+    if [ "$OS_TYPE" = "Linux" ]; then
+        # Linux: use vmstat
+        if command -v vmstat >/dev/null 2>&1; then
+            vmstat 1 > "$TEMP_DIR/vmstat.log" 2>&1 &
+            VMSTAT_PID=$!
+            echo "Started vmstat (system-wide monitoring)"
+        fi
+    elif [ "$OS_TYPE" = "Darwin" ]; then
+        # macOS: System monitoring disabled (vmstat/pidstat are Linux-only tools)
+        # macOS alternatives (top/iostat) have higher overhead and less accurate data
+        # For accurate system monitoring, run tests on Linux
+        echo "⚠️  System monitoring disabled on macOS (use Linux for accurate monitoring)"
+        echo "  Note: macOS doesn't have Linux's vmstat/pidstat (sysstat package)"
+        echo "  macOS alternatives (top/iostat) have higher overhead and less accurate data"
+        echo "  For production benchmarks, run load tests on Linux"
+    fi
 fi
 
 # Start the load test
@@ -122,16 +177,26 @@ echo "  Duration: $DURATION_SECONDS seconds"
 echo "  Total runtime: ~$TOTAL_SECONDS seconds"
 echo ""
 
-# Run the test and try to find the actual process PID for pidstat
-if command -v pidstat >/dev/null 2>&1; then
-    # Start pidstat monitoring all processes (we'll filter later)
-    pidstat 1 > "$PIDSTAT_LOG" 2>&1 &
-    PIDSTAT_PID=$!
-    echo "Started pidstat (will filter for ServerLoadTest process)"
+# Run the test and try to find the actual process PID for process monitoring
+if [ "$ENABLE_MONITORING" = "true" ]; then
+    if [ "$OS_TYPE" = "Linux" ]; then
+        # Linux: use pidstat
+        if command -v pidstat >/dev/null 2>&1; then
+            # Start pidstat monitoring all processes (we'll filter later)
+            pidstat 1 > "$PIDSTAT_LOG" 2>&1 &
+            PIDSTAT_PID=$!
+            echo "Started pidstat (will filter for ServerLoadTest process)"
+        fi
+    elif [ "$OS_TYPE" = "Darwin" ]; then
+        # macOS: Process monitoring disabled (pidstat is Linux-only)
+        # macOS ps monitoring has higher overhead and less accurate data
+        # For accurate process monitoring, run tests on Linux
+        echo "⚠️  Process monitoring disabled on macOS (use Linux for accurate monitoring)"
+    fi
 fi
 
 # Run the test (foreground, so we can see output)
-swift run -c release ServerLoadTest \
+swift run -c "$BUILD_MODE" ServerLoadTest \
     --rooms "$ROOMS" \
     --players-per-room "$PLAYERS_PER_ROOM" \
     --duration-seconds "$DURATION_SECONDS" \
@@ -177,6 +242,10 @@ if [ -n "$VMSTAT_PID" ]; then
     kill "$VMSTAT_PID" 2>/dev/null || true
     wait "$VMSTAT_PID" 2>/dev/null || true
 fi
+if [ -n "$TOP_PID" ]; then
+    kill "$TOP_PID" 2>/dev/null || true
+    wait "$TOP_PID" 2>/dev/null || true
+fi
 
 # Parse monitoring data to JSON
 echo ""
@@ -186,6 +255,7 @@ MONITORING_JSON_TEMP="$TEMP_DIR/monitoring.json"
 PARSE_SCRIPT="$GAMEDEMO_ROOT/scripts/server-loadtest/parse_monitoring.py"
 if [ -f "$PARSE_SCRIPT" ]; then
     # Build parse command with optional test result JSON
+    # Note: On macOS, vmstat.log and pidstat.csv may be empty (monitoring disabled)
     PARSE_CMD="python3 \"$PARSE_SCRIPT\" --vmstat \"$TEMP_DIR/vmstat.log\" --pidstat \"$PIDSTAT_LOG\" --output \"$MONITORING_JSON_TEMP\" --html \"$MONITORING_HTML_FINAL\" --process-name \"ServerLoadTest\""
     
     # Add test result JSON if available

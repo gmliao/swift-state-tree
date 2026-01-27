@@ -123,6 +123,14 @@
 - If a needed helper method doesn't exist, **propose adding it to the DeterministicMath library** rather than implementing workarounds in game logic.
 - This ensures code clarity, maintainability, and consistency across the codebase.
 
+### Safe Task.sleep Usage (avoid Swift Concurrency runtime bug)
+- **Never use `Task.sleep(for: Duration)` directly in library code** (`Sources/SwiftStateTree`).
+  - `Task.sleep(for:)` has a known bug in Swift Concurrency runtime that can cause crashes (`SIGABRT` in `swift_task_dealloc`) on macOS release builds under load.
+  - **Always use `safeTaskSleep(for: Duration)` instead** (defined in `Sources/SwiftStateTree/Support/SafeTaskSleep.swift`).
+  - This helper converts `Duration` to nanoseconds and uses `Task.sleep(nanoseconds:)` to work around the runtime bug.
+- **Exceptions**: `Task.sleep(for:)` is acceptable in `Tests/`, `Examples/`, and documentation code, but library runtime code must use `safeTaskSleep(for:)`.
+- **Rationale**: This ensures stability in production server environments where release builds are used and load conditions can trigger the bug.
+
 #### Collision Detection Range Limits
 
 ##### ICircle (Invariants)
@@ -238,3 +246,33 @@
 - This applies to all source files in `Sources/` directory
 - Documentation comments should follow Swift API Design Guidelines
 - Use clear, concise English for all code annotations
+
+## Debugging & Troubleshooting
+
+When encountering bugs, test failures, or unexpected behavior, refer to the comprehensive debugging guide:
+
+**📖 See: `Notes/guides/DEBUGGING_TECHNIQUES.md`** for detailed debugging techniques, Swift build system reference, and common debug patterns.
+
+### Quick Reference
+
+**When debugging gets stuck:**
+1. **Refer to the guide**: `Notes/guides/DEBUGGING_TECHNIQUES.md` contains:
+   - Code search techniques (`codebase_search`, `grep`, pattern matching)
+   - Data flow verification methods
+   - Incremental testing strategies
+   - Swift build system reference (`-c release`, build configurations)
+   - Common debug patterns and solutions
+   - Real-world examples from this project
+
+2. **Use systematic debugging skill**: `.agent/skills/Superpowers/systematic-debugging/` for structured approach
+
+3. **Check platform differences**: macOS vs Linux (tools, Swift runtime bugs, etc.)
+
+4. **Test in both modes**: Always test in both `debug` and `release` builds (`swift build -c release`)
+
+**Swift Build System Quick Reference:**
+- `swift build`: Debug build (default)
+- `swift build -c release`: Release build (optimized, for production/benchmarks)
+- `swift run -c release ServerLoadTest`: Run with release configuration
+- `swift test -c release`: Run tests in release mode
+- **Important**: Release builds can expose bugs not visible in debug (e.g., Swift Concurrency runtime bugs on macOS)

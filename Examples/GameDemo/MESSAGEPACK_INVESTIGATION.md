@@ -4,6 +4,8 @@
 
 在 Release 模式下運行多房間 benchmark 時，會出現 "freed pointer was not the last allocation" 錯誤。此錯誤僅在多房間環境下出現，單房間測試正常。
 
+**✅ 已解決：** 問題的根本原因是 `String(format:)` 使用不當，將 Swift `String` 傳遞給 C `printf`-style 的 `%s` 格式說明符，導致 ABI 不匹配和記憶體錯誤。
+
 ## 測試結果
 
 ### ✅ 通過的測試
@@ -31,28 +33,57 @@
 freed pointer was not the last allocation
 ```
 
-這是 macOS 的 `libmalloc` 記憶體管理器特有的檢查錯誤，它要求記憶體必須按照 LIFO（後進先出）順序釋放。
+**實際根因：** 這是 `String(format:)` 使用不當導致的 ABI 不匹配問題，而非 libmalloc 的 LIFO 限制。
 
-## 可能的原因
+## 根本原因
 
-### 1. 多房間並行執行導致的記憶體分配順序問題
-- 每個 `LandKeeper` 實例都有自動的 tick loop 在背景執行（`configureTickLoop`）
-- 即使序列化執行 `syncNow()`，多個房間的 tick loop 仍然在並行執行
-- 多個 `TransportAdapter` 實例同時進行編碼操作（來自 tick loop 和 sync 操作）
-- 記憶體分配/釋放的順序可能不符合 macOS libmalloc 的 LIFO 要求
-- Swift 的 ARC 和 libmalloc 的交互可能導致問題
+### ✅ 已確認：`String(format:)` 的 ABI 不匹配問題
 
-### 2. Data 的 COW（Copy-on-Write）機制
-- `Data` 類型使用 COW 機制，在多房間並行環境下可能導致記憶體共享
-- `pack()` 函數創建的 `Data` 實例在多房間環境下可能共享底層緩衝區
-- JSONEncoder 也可能有類似的記憶體管理問題
+在 Release 模式下，當使用 `String(format: "%s", swiftString)` 時：
+- `%s` 是 C `printf`-style 格式說明符，期望 `char*` (C 字符串)
+- Swift `String` 在 Release 模式下的記憶體佈局與 C 字符串不同
+- 這導致 ABI 不匹配，進而觸發記憶體錯誤（表現為 "freed pointer was not the last allocation"）
 
-### 3. Release 模式優化
-- Release 模式的優化可能改變記憶體分配/釋放的時機
-- 編譯器優化可能導致記憶體管理器的檢查更嚴格
-- 多個房間並行執行時，優化可能導致記憶體分配順序不符合預期
+**問題代碼示例：**
+```swift
+// ❌ 錯誤：將 Swift String 傳遞給 %s
+print(String(format: "Best: %s saves %.1f%% vs JSON Object",
+             best.format.displayName, savings))
+
+// ✅ 正確：使用 %@ (Objective-C 對象) 或字符串插值
+print(String(format: "Best: %@ saves %.1f%% vs JSON Object",
+             best.format.displayName, savings))
+// 或
+print("Best: \(best.format.displayName) saves \(String(format: "%.1f", savings))% vs JSON Object")
+```
+
+### 為什麼只在 Release 模式出現？
+
+- Debug 模式下，Swift 編譯器可能使用不同的記憶體佈局或額外的檢查
+- Release 模式的優化導致 ABI 不匹配問題更容易暴露
+- 多房間環境下，並行執行增加了觸發問題的機率
 
 ## 已實施的修復
+
+### ✅ 主要修復：修正 `String(format:)` 使用
+
+1. **`EncodingBenchmark/main.swift`**
+   - 將所有 `String(format: "%s", swiftString)` 改為 `String(format: "%@", swiftString)`
+   - 或使用字符串插值替代 `String(format:)`
+   - 修復位置：
+     - 第 114 行：`"Best: %s saves..."` → `"Best: %@ saves..."`
+     - 第 217 行：`"Best: %s saves..."` → `"Best: %@ saves..."`
+     - 其他表格輸出中的 `%s` 格式說明符
+
+2. **`DeterministicHash.swift`**
+   - 移除 `String(format: "%016llx", ...)` 和 `String(format: "%08x", ...)`
+   - 改用純 Swift 實現的 `paddedLowerHex` 輔助函數
+
+3. **`TransportAdapter.swift`**
+   - 移除 `String(format: "%02x", ...)` 用於 hex 預覽
+   - 改用自定義的 `HexEncoding.lowercaseHexString` 輔助函數
+
+### 其他修復
 
 1. **延遲初始化 `keyTableStore`**
    - 只在有 `pathHasher` 時才初始化，減少不必要的記憶體分配
@@ -62,38 +93,42 @@ freed pointer was not the last allocation
    - 已在 `TransportAdapter.parallelEncodingDecision` 中禁用
    - 避免潛在的並行編碼問題
 
-## 建議
+## 解決方案
 
-### 短期方案
-- **單房間環境**：所有編碼器（JSON、opcode JSON、MessagePack）都運作正常，可在生產環境使用
-- **多房間環境**：
-  - **✅ Linux 生產環境**：所有編碼器都運作正常，可在生產環境使用（已在 AMD 7600x Docker 環境驗證）
-  - **macOS 開發環境**：
-    - 在生產環境中使用 Address Sanitizer 或 Thread Sanitizer 進行測試（這些模式下測試通過）
-    - 或考慮序列化執行多個房間的 sync（不使用 `withTaskGroup`），但這會影響效能
-    - 或暫時使用單房間架構進行本地開發測試
+### ✅ 已解決
 
-### 長期調查方向
-1. **檢查多房間並行執行的記憶體管理**
-   - 確認 `withTaskGroup` 並行執行多個房間時，記憶體分配/釋放的順序
-   - 考慮序列化執行或使用更細粒度的同步機制
+修復所有不安全的 `String(format:)` 使用後，Release 模式下的 crash 問題已解決。
 
-2. **檢查 `Data` 的 COW 行為**
-   - 確認多房間環境下 `Data` 實例是否共享底層緩衝區
-   - 考慮使用 `Data(unsafeUninitializedCapacity:initializingWith:)` 來避免 COW
+### 最佳實踐
 
-3. **記憶體分配策略**
-   - 考慮為每個房間使用獨立的記憶體池
-   - 或使用自定義的記憶體分配器
+1. **避免使用 `%s` 格式化 Swift `String`**
+   - 使用 `%@` (Objective-C 對象格式) 替代 `%s`
+   - 或使用字符串插值 `"\(variable)"` 替代 `String(format:)`
 
-4. **與 Swift 團隊聯繫**
-   - 如果確認是 Swift 編譯器、ARC 或 Swift Concurrency 的問題，可以報告給 Swift 團隊
+2. **數字格式化是安全的**
+   - `String(format: "%.1f", doubleValue)` 是安全的
+   - `String(format: "%d", intValue)` 是安全的
+
+3. **Hex 格式化**
+   - 避免使用 `String(format: "%x", ...)` 或 `String(format: "%02x", ...)`
+   - 使用純 Swift 實現的 hex 轉換函數
+
+### 相關文檔
+
+- `AGENTS.md` 中的 "Safe String Formatting" 章節提供了詳細的指導原則
+- `Examples/GameDemo/Sources/EncodingBenchmark/results/README.md` 包含 Release 模式穩定性說明
 
 ## 相關代碼位置
 
+### 已修復的文件
+- `Examples/GameDemo/Sources/EncodingBenchmark/main.swift` - 修正 `String(format: "%s", ...)` 為 `%@`
+- `Sources/SwiftStateTree/Core/DeterministicHash.swift` - 移除 `String(format:)`，改用純 Swift hex 轉換
+- `Sources/SwiftStateTreeTransport/TransportAdapter.swift` - 移除 `String(format: "%02x", ...)`，改用自定義 hex 函數
+
+### 其他相關文件
 - `Sources/SwiftStateTreeMessagePack/MessagePackValue.swift` - `pack()` 函數
 - `Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift` - `OpcodeMessagePackStateUpdateEncoder`
-- `Sources/SwiftStateTreeTransport/TransportAdapter.swift` - 並行編碼決策
+- `AGENTS.md` - Safe String Formatting 章節
 
 ## 測試命令
 

@@ -21,13 +21,13 @@ enum OutputFormatter {
         ratio = "  100%"
     }
 
-    print(String(format: "%-27s | %9.2f | %11d | %8d | %13.4f | %s",
+    print(String(format: "%-27@ | %9.2f | %11d | %8d | %13.4f | %@",
                  result.format.displayName,
                  result.timeMs,
                  result.totalBytes,
                  result.bytesPerSync,
                  result.avgCostPerSyncMs,
-                     ratio))
+                 ratio))
     }
 
     static func printTableFooter() {
