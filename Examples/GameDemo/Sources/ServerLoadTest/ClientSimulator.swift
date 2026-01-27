@@ -107,9 +107,6 @@ actor ClientSimulator {
 
         guard playersToJoinThisSecond > 0 else { return }
 
-        // Spread joins over 900ms within the second
-        let delayPerPlayerNs = UInt64(900_000_000) / UInt64(max(1, playersToJoinThisSecond))
-
         // Calculate maxConcurrentJoins based on target join rate
         // Use 1.5x multiplier to ensure we can meet the target rate even with network latency
         let maxConcurrentJoins = max(20, Int(Double(playersPerSecondUp) * 1.5))
@@ -124,13 +121,7 @@ actor ClientSimulator {
             while submitted < playersToJoinThisSecond || completed < submitted {
                 // Fill worker pool up to maxConcurrentJoins
                 while submitted < playersToJoinThisSecond, (submitted - completed) < maxConcurrentJoins {
-                    let playerOffset = submitted
-                    let delayNs = UInt64(playerOffset) * delayPerPlayerNs
-
                     group.addTask { [self] in
-                        // Stagger timing
-                        try? await Task.sleep(nanoseconds: delayNs)
-
                         guard let (roomIndex, playerIndexInRoom, sessionID) = await roomManager.assignPlayer() else {
                             return false // Assignment failed
                         }
@@ -147,7 +138,7 @@ actor ClientSimulator {
 
                         do {
                             let joinData = try makeJoinData(roomIndex, playerIndexInRoom)
-                            await traffic.recordReceived(bytes: joinData.count)
+                            await traffic.recordSent(bytes: joinData.count) // Client sends Join
                             await transport.handleIncomingMessage(sessionID: sessionID, data: joinData)
                             return true // Assignment succeeded
                         } catch {
@@ -174,28 +165,18 @@ actor ClientSimulator {
         let connectedSessions = await roomManager.getJoinedSessions()
         guard !connectedSessions.isEmpty else { return }
 
-        // Spread actions over 900ms within the second
         let actionsPerPlayer = config.actionsPerPlayerPerSecond
-        let totalActions = connectedSessions.count * actionsPerPlayer
-        let delayPerActionNs = UInt64(900_000_000) / UInt64(max(1, totalActions))
 
         do {
             let payloadData = try makeClientEventData(t)
 
-            var actionIndex = 0
             for _ in 0 ..< actionsPerPlayer {
                 await withTaskGroup(of: Void.self) { group in
                     for sessionID in connectedSessions {
-                        let currentActionIndex = actionIndex
                         group.addTask { [self] in
-                            // Stagger timing
-                            let delayNs = UInt64(currentActionIndex) * delayPerActionNs
-                            try? await Task.sleep(nanoseconds: delayNs)
-
-                            await traffic.recordReceived(bytes: payloadData.count)
+                            await traffic.recordSent(bytes: payloadData.count) // Client sends Action
                             await transport.handleIncomingMessage(sessionID: sessionID, data: payloadData)
                         }
-                        actionIndex += 1
                     }
                 }
             }
@@ -228,7 +209,8 @@ struct CountingWebSocketConnection: WebSocketConnection, Sendable {
     let onJoinSuccess: (@Sendable (SessionID) async -> Void)?
 
     func send(_ data: Data) async throws {
-        await counter.recordSent(bytes: data.count)
+        // Server sends to Client = Client receives
+        await counter.recordReceived(bytes: data.count)
 
         // Detect JoinResponse message to mark session as joined
         if let onJoinSuccess = onJoinSuccess {
