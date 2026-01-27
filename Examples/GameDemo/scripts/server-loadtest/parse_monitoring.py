@@ -314,6 +314,12 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
     game_active_rooms = []
     game_rooms_created = []
     game_rooms_target = []
+    # Performance metrics
+    game_estimated_ticks_per_second = []
+    game_estimated_syncs_per_second = []
+    game_estimated_updates_per_second = []
+    game_avg_message_size = []
+    game_phases = []
     
     if test_samples:
         for sample in test_samples:
@@ -329,6 +335,12 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
             game_active_rooms.append(sample.get("roomsActiveExpected", 0))
             game_rooms_created.append(sample.get("roomsCreated", 0))
             game_rooms_target.append(sample.get("roomsTarget", 0))
+            # Performance metrics
+            game_estimated_ticks_per_second.append(sample.get("estimatedTicksPerSecond", 0))
+            game_estimated_syncs_per_second.append(sample.get("estimatedSyncsPerSecond", 0))
+            game_estimated_updates_per_second.append(sample.get("estimatedUpdatesPerSecond", 0))
+            game_avg_message_size.append(sample.get("avgMessageSize", 0))
+            game_phases.append(sample.get("phase", "unknown"))
     
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
@@ -491,6 +503,18 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
             avg_recv_mps = sum(s.get('recvMessagesPerSecond', 0) for s in steady_samples) / len(steady_samples)
             avg_actions = sum(s.get('actionsSentThisSecond', 0) for s in steady_samples) / len(steady_samples)
             
+            # Performance metrics
+            avg_ticks_per_sec = sum(s.get('estimatedTicksPerSecond', 0) for s in steady_samples) / len(steady_samples)
+            avg_syncs_per_sec = sum(s.get('estimatedSyncsPerSecond', 0) for s in steady_samples) / len(steady_samples)
+            avg_updates_per_sec = sum(s.get('estimatedUpdatesPerSecond', 0) for s in steady_samples) / len(steady_samples)
+            avg_msg_size = sum(s.get('avgMessageSize', 0) for s in steady_samples) / len(steady_samples)
+            
+            # Calculate average update time (ms per update)
+            # If we have N updates per second, each update takes 1000/N ms
+            avg_update_time_ms = (1000.0 / avg_updates_per_sec) if avg_updates_per_sec > 0 else 0
+            avg_tick_time_ms = (1000.0 / avg_ticks_per_sec) if avg_ticks_per_sec > 0 else 0
+            avg_sync_time_ms = (1000.0 / avg_syncs_per_sec) if avg_syncs_per_sec > 0 else 0
+            
             html_content += f"""
         <h2>📊 Test Results (Steady State)</h2>
         <div class="summary">
@@ -511,6 +535,35 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
             <div class="summary-card">
                 <h3>Steady Samples</h3>
                 <div class="value">{len(steady_samples)}</div>
+            </div>
+        </div>
+        
+        <h2>⚡ Performance Metrics (Steady State)</h2>
+        <div class="summary">
+            <div class="summary-card">
+                <h3>Avg Ticks/Sec</h3>
+                <div class="value">{avg_ticks_per_sec:,.0f}</div>
+                <div class="subvalue">~{avg_tick_time_ms:.2f} ms/tick</div>
+            </div>
+            <div class="summary-card">
+                <h3>Avg Syncs/Sec</h3>
+                <div class="value">{avg_syncs_per_sec:,.0f}</div>
+                <div class="subvalue">~{avg_sync_time_ms:.2f} ms/sync</div>
+            </div>
+            <div class="summary-card">
+                <h3>Total Updates/Sec</h3>
+                <div class="value">{avg_updates_per_sec:,.0f}</div>
+                <div class="subvalue">~{avg_update_time_ms:.3f} ms/update</div>
+            </div>
+            <div class="summary-card">
+                <h3>Avg Message Size</h3>
+                <div class="value">{avg_msg_size:.0f} B</div>
+                <div class="subvalue">{avg_msg_size/1024:.2f} KB</div>
+            </div>
+            <div class="summary-card">
+                <h3>Update Rate</h3>
+                <div class="value">{avg_update_time_ms:.2f} ms</div>
+                <div class="subvalue">{"🟢 正常" if avg_update_time_ms < 10 else "🟡 稍慢" if avg_update_time_ms < 50 else "🟠 可能 lag"}</div>
             </div>
         </div>
 """
@@ -693,6 +746,21 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
         game_active_rooms_json = json.dumps(game_active_rooms)
         game_rooms_created_json = json.dumps(game_rooms_created)
         game_rooms_target_json = json.dumps(game_rooms_target)
+        
+        # Performance metrics JSON
+        game_estimated_ticks_per_second_json = json.dumps(game_estimated_ticks_per_second)
+        game_estimated_syncs_per_second_json = json.dumps(game_estimated_syncs_per_second)
+        game_estimated_updates_per_second_json = json.dumps(game_estimated_updates_per_second)
+        game_avg_message_size_json = json.dumps([s / 1024.0 for s in game_avg_message_size])  # Convert to KB
+        
+        # Calculate update times (ms)
+        game_update_times_ms = []
+        for updates_per_sec in game_estimated_updates_per_second:
+            if updates_per_sec > 0:
+                game_update_times_ms.append(1000.0 / updates_per_sec)
+            else:
+                game_update_times_ms.append(0)
+        game_update_times_ms_json = json.dumps(game_update_times_ms)
         
         peak_bytes = max(game_bytes_sent) if game_bytes_sent else 0
         peak_messages = max(game_messages_sent) if game_messages_sent else 0
@@ -1093,6 +1161,233 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
                             }},
                             grid: {{
                                 drawOnChartArea: false
+                            }}
+                        }}
+                    }}
+                }}
+            }});
+        </script>
+"""
+        
+        # Add performance metrics charts
+        if game_estimated_ticks_per_second and len(game_estimated_ticks_per_second) > 0:
+            html_content += f"""
+        <h2>⚡ Performance Metrics (Update Speed & Latency)</h2>
+        
+        <div class="chart-container">
+            <div class="chart-title">Update Rate Over Time (Ticks & Syncs per Second)</div>
+            <canvas id="updateRateChart"></canvas>
+        </div>
+        
+        <div class="chart-container">
+            <div class="chart-title">Average Update Time (ms) - Lower is Better (Indicates Lag if > 50ms)</div>
+            <canvas id="updateTimeChart"></canvas>
+        </div>
+        
+        <div class="chart-container">
+            <div class="chart-title">Message Size Distribution Over Time (KB)</div>
+            <canvas id="messageSizeChart"></canvas>
+        </div>
+        
+        <script>
+            // Update Rate Chart
+            const updateRateCtx = document.getElementById('updateRateChart').getContext('2d');
+            new Chart(updateRateCtx, {{
+                type: 'line',
+                data: {{
+                    labels: {game_ticks_json},
+                    datasets: [
+                        {{
+                            label: 'Ticks/sec',
+                            data: {game_estimated_ticks_per_second_json},
+                            borderColor: 'rgb(75, 192, 192)',
+                            backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                            tension: 0.1,
+                            yAxisID: 'y'
+                        }},
+                        {{
+                            label: 'Syncs/sec',
+                            data: {game_estimated_syncs_per_second_json},
+                            borderColor: 'rgb(255, 99, 132)',
+                            backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                            tension: 0.1,
+                            yAxisID: 'y'
+                        }},
+                        {{
+                            label: 'Total Updates/sec',
+                            data: {game_estimated_updates_per_second_json},
+                            borderColor: 'rgb(153, 102, 255)',
+                            backgroundColor: 'rgba(153, 102, 255, 0.2)',
+                            tension: 0.1,
+                            yAxisID: 'y',
+                            borderWidth: 2
+                        }}
+                    ]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {{
+                        x: {{
+                            title: {{
+                                display: true,
+                                text: 'Time (seconds)'
+                            }}
+                        }},
+                        y: {{
+                            beginAtZero: true,
+                            title: {{
+                                display: true,
+                                text: 'Updates per Second'
+                            }}
+                        }}
+                    }},
+                    plugins: {{
+                        tooltip: {{
+                            callbacks: {{
+                                label: function(context) {{
+                                    let label = context.dataset.label || '';
+                                    if (label) {{
+                                        label += ': ';
+                                    }}
+                                    if (context.parsed.y !== null) {{
+                                        label += new Intl.NumberFormat('en-US', {{
+                                            maximumFractionDigits: 0
+                                        }}).format(context.parsed.y);
+                                    }}
+                                    return label;
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+            }});
+            
+            // Update Time Chart (Latency indicator)
+            const updateTimeCtx = document.getElementById('updateTimeChart').getContext('2d');
+            new Chart(updateTimeCtx, {{
+                type: 'line',
+                data: {{
+                    labels: {game_ticks_json},
+                    datasets: [{{
+                        label: 'Avg Update Time (ms)',
+                        data: {game_update_times_ms_json},
+                        borderColor: 'rgb(54, 162, 235)',
+                        backgroundColor: 'rgba(54, 162, 235, 0.2)',
+                        tension: 0.1,
+                        fill: true
+                    }}]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {{
+                        x: {{
+                            title: {{
+                                display: true,
+                                text: 'Time (seconds)'
+                            }}
+                        }},
+                        y: {{
+                            beginAtZero: true,
+                            title: {{
+                                display: true,
+                                text: 'Update Time (ms)'
+                            }},
+                            ticks: {{
+                                callback: function(value) {{
+                                    return value.toFixed(2) + ' ms';
+                                }}
+                            }}
+                        }}
+                    }},
+                    plugins: {{
+                        annotation: {{
+                            annotations: {{
+                                line1: {{
+                                    type: 'line',
+                                    yMin: 10,
+                                    yMax: 10,
+                                    borderColor: 'rgb(255, 99, 132)',
+                                    borderWidth: 2,
+                                    borderDash: [5, 5],
+                                    label: {{
+                                        content: 'Warning: > 10ms may indicate lag',
+                                        enabled: true,
+                                        position: 'end'
+                                    }}
+                                }},
+                                line2: {{
+                                    type: 'line',
+                                    yMin: 50,
+                                    yMax: 50,
+                                    borderColor: 'rgb(255, 165, 0)',
+                                    borderWidth: 2,
+                                    borderDash: [5, 5],
+                                    label: {{
+                                        content: 'Critical: > 50ms indicates significant lag',
+                                        enabled: true,
+                                        position: 'end'
+                                    }}
+                                }}
+                            }}
+                        }},
+                        tooltip: {{
+                            callbacks: {{
+                                label: function(context) {{
+                                    let label = context.dataset.label || '';
+                                    if (label) {{
+                                        label += ': ';
+                                    }}
+                                    if (context.parsed.y !== null) {{
+                                        const ms = context.parsed.y;
+                                        label += ms.toFixed(3) + ' ms';
+                                        if (ms > 50) {{
+                                            label += ' (🔴 Lag detected)';
+                                        }} else if (ms > 10) {{
+                                            label += ' (🟡 Possible lag)';
+                                        }} else {{
+                                            label += ' (🟢 Normal)';
+                                        }}
+                                    }}
+                                    return label;
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+            }});
+            
+            // Message Size Chart
+            const messageSizeCtx = document.getElementById('messageSizeChart').getContext('2d');
+            new Chart(messageSizeCtx, {{
+                type: 'line',
+                data: {{
+                    labels: {game_ticks_json},
+                    datasets: [{{
+                        label: 'Avg Message Size (KB)',
+                        data: {game_avg_message_size_json},
+                        borderColor: 'rgb(255, 159, 64)',
+                        backgroundColor: 'rgba(255, 159, 64, 0.2)',
+                        tension: 0.1,
+                        fill: true
+                    }}]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {{
+                        x: {{
+                            title: {{
+                                display: true,
+                                text: 'Time (seconds)'
+                            }}
+                        }},
+                        y: {{
+                            beginAtZero: true,
+                            title: {{
+                                display: true,
+                                text: 'Message Size (KB)'
                             }}
                         }}
                     }}

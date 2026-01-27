@@ -143,16 +143,16 @@ struct EncodingBenchmark {
         }
 
         var allResults: [[String: Any]] = []
-        
+
         for format in EncodingFormat.allCases {
             let result: BenchmarkResult
             
             if config.gameType == .cardGame {
                 result = await BenchmarkRunner.runMultiRoomBenchmarkCardGame(
-                    format: format,
-                    roomCount: config.rooms,
-                    playersPerRoom: config.playersPerRoom,
-                    iterations: config.iterations,
+                format: format,
+                roomCount: config.rooms,
+                playersPerRoom: config.playersPerRoom,
+                iterations: config.iterations,
                     parallel: config.parallel,
                     ticksPerSync: config.ticksPerSync,
                     progressEvery: config.progressEvery,
