@@ -3,6 +3,7 @@
 Parse vmstat/pidstat monitoring output and convert to JSON format.
 """
 
+import csv
 import json
 import re
 import sys
@@ -212,11 +213,71 @@ def parse_macos_iostat_log(iostat_path: Path) -> List[Dict[str, Any]]:
     return samples
 
 
+def parse_macos_ps_csv(ps_path: Path) -> List[Dict[str, Any]]:
+    """Parse macOS ps CSV output and return list of samples in pidstat-compatible format."""
+    if not ps_path.exists():
+        return []
+
+    samples = []
+    with open(ps_path, 'r') as f:
+        reader = csv.reader(f)
+        rows = list(reader)
+
+    if not rows:
+        return []
+
+    header = [c.strip().lower() for c in rows[0]]
+    has_header = any("cpu" in c for c in header) or any("timestamp" in c for c in header)
+    start_idx = 1 if has_header else 0
+
+    # Default column order for non-header CSV: timestamp_epoch_s,cpu_pct,pid
+    if has_header:
+        header_map = {name: idx for idx, name in enumerate(header)}
+        ts_idx = header_map.get("timestamp_epoch_s", header_map.get("timestamp", 0))
+        cpu_idx = header_map.get("cpu_pct", header_map.get("%cpu", header_map.get("cpu", 1)))
+        pid_idx = header_map.get("pid", 2)
+    else:
+        ts_idx = 0
+        cpu_idx = 1
+        pid_idx = 2
+
+    for row in rows[start_idx:]:
+        if len(row) <= max(ts_idx, cpu_idx, pid_idx):
+            continue
+        try:
+            ts_raw = row[ts_idx].strip()
+            cpu_raw = row[cpu_idx].strip()
+            pid_raw = row[pid_idx].strip()
+
+            cpu_val = float(cpu_raw.replace(",", ".")) if cpu_raw else 0.0
+            pid_val = int(pid_raw) if pid_raw.isdigit() else 0
+            ts_val = int(float(ts_raw)) if ts_raw else 0
+
+            samples.append({
+                "pid": pid_val,
+                "cpu_total_pct": cpu_val,
+                "timestamp_epoch_s": ts_val,
+            })
+        except (ValueError, IndexError):
+            continue
+
+    return samples
+
+
 def parse_pidstat_log(pidstat_path: Path, process_name: str = "ServerLoadTest") -> List[Dict[str, Any]]:
     """Parse pidstat output and return list of samples for the target process."""
     if not pidstat_path.exists():
         return []
     
+    # macOS ps CSV format detection
+    try:
+        with open(pidstat_path, 'r') as f:
+            first_line = f.readline().strip()
+        if "," in first_line and "PID" not in first_line and "Average" not in first_line:
+            return parse_macos_ps_csv(pidstat_path)
+    except Exception:
+        pass
+
     samples = []
     header_found = False
     
