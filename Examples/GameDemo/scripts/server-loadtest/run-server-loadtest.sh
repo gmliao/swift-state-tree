@@ -16,9 +16,9 @@ set -e
 # Defaults
 ROOMS=500
 PLAYERS_PER_ROOM=5
-DURATION_SECONDS=30
-RAMP_UP_SECONDS=5
-RAMP_DOWN_SECONDS=5
+DURATION_SECONDS=60
+RAMP_UP_SECONDS=30  # Increased from 5 to 30 for more realistic ramp-up
+RAMP_DOWN_SECONDS=10  # Increased from 5 to 10 for smoother ramp-down
 ACTIONS_PER_PLAYER_PER_SECOND=1
 TUI=false
 LOG_LEVEL=error

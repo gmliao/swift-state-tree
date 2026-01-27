@@ -28,6 +28,7 @@ struct LoadTestConfig: Sendable {
     var rampUpSeconds: Int = 5
     var rampDownSeconds: Int = 5
     var actionsPerPlayerPerSecond: Int = 1
+    var createRoomsFirst: Bool = false  // If true, create all rooms first, then join players gradually
     var tui: Bool = false  // Deprecated: TUI removed, using Logger instead
     var logLevel: Logger.Level = .info  // Set to .info to show progress logs
 }
@@ -118,27 +119,87 @@ actor TrafficCounter {
     private var recvBytes: Int = 0
     private var sentMessages: Int = 0
     private var recvMessages: Int = 0
+    private var messageSizes: [Int] = []  // Track message sizes for statistics
+    private var messageSizesLimit: Int = 10000  // Limit to avoid memory issues
 
     func recordSent(bytes: Int) {
         sentBytes += bytes
         sentMessages += 1
+        if messageSizes.count < messageSizesLimit {
+            messageSizes.append(bytes)
+        }
     }
 
     func recordReceived(bytes: Int) {
         recvBytes += bytes
         recvMessages += 1
+        if messageSizes.count < messageSizesLimit {
+            messageSizes.append(bytes)
+        }
     }
 
-    func snapshot() -> (sentBytes: Int, recvBytes: Int, sentMessages: Int, recvMessages: Int) {
-        (sentBytes, recvBytes, sentMessages, recvMessages)
+    func snapshot() -> (sentBytes: Int, recvBytes: Int, sentMessages: Int, recvMessages: Int, avgMessageSize: Double) {
+        let avgSize = messageSizes.isEmpty ? 0.0 : Double(messageSizes.reduce(0, +)) / Double(messageSizes.count)
+        return (sentBytes, recvBytes, sentMessages, recvMessages, avgSize)
+    }
+    
+    func reset() {
+        messageSizes.removeAll(keepingCapacity: true)
     }
 }
 
 struct CountingWebSocketConnection: WebSocketConnection, Sendable {
     let counter: TrafficCounter
+    let sessionID: SessionID
+    let onJoinSuccess: (@Sendable (SessionID) async -> Void)?
 
     func send(_ data: Data) async throws {
         await counter.recordSent(bytes: data.count)
+        
+        // Detect JoinResponse message to mark session as joined
+        // JoinResponse can be in two formats:
+        // 1. JSON object: {"kind": "joinResponse", "payload": {"success": true, ...}}
+        // 2. JSON opcode array: [105, requestID, success(0/1), ...] (opcode 105)
+        if let onJoinSuccess = onJoinSuccess {
+            // Try to parse as JSON
+            if let json = try? JSONSerialization.jsonObject(with: data) {
+                var isJoinResponse = false
+                
+                // Format 1: JSON object format
+                // Structure: {"kind": "joinResponse", "payload": {"joinResponse": {"success": true, ...}}}
+                if let dict = json as? [String: Any],
+                   let kind = dict["kind"] as? String,
+                   kind == "joinResponse",
+                   let payload = dict["payload"] as? [String: Any],
+                   let joinResponsePayload = payload["joinResponse"] as? [String: Any] {
+                    // Check success field (can be Bool or Int)
+                    if let successBool = joinResponsePayload["success"] as? Bool, successBool == true {
+                        isJoinResponse = true
+                    } else if let successInt = joinResponsePayload["success"] as? Int, successInt == 1 {
+                        isJoinResponse = true
+                    }
+                }
+                
+                // Format 2: JSON opcode array format
+                if !isJoinResponse,
+                   let array = json as? [Any],
+                   array.count >= 3,
+                   let opcode = array[0] as? Int,
+                   opcode == 105 {  // JoinResponse opcode
+                    // Check success (can be Int 0/1 or Bool)
+                    if let successInt = array[2] as? Int, successInt == 1 {
+                        isJoinResponse = true
+                    } else if let successBool = array[2] as? Bool, successBool == true {
+                        isJoinResponse = true
+                    }
+                }
+                
+                
+                if isJoinResponse {
+                    await onJoinSuccess(sessionID)
+                }
+            }
+        }
     }
 
     func close() async throws {}
@@ -159,6 +220,11 @@ struct SecondSample: Sendable {
     let recvMessagesPerSecond: Int
     let processCPUSeconds: Double?
     let processRSSBytes: UInt64?
+    // Performance metrics
+    let avgMessageSize: Double
+    let estimatedTicksPerSecond: Double  // Based on tick interval (50ms = 20 Hz)
+    let estimatedSyncsPerSecond: Double   // Based on sync interval (100ms = 10 Hz)
+    let estimatedUpdatesPerSecond: Double  // Total state updates (ticks + syncs)
 }
 
 struct LoadTestSummary: Sendable {
@@ -403,14 +469,11 @@ struct ServerLoadTest {
         let joinCodec = TransportEncoding.json.makeCodec()
         let messagePackCodec = TransportEncoding.messagepack.makeCodec()
 
-        func makeSessionID(roomIndex: Int, playerIndex: Int) -> SessionID {
-            SessionID("s-\(roomIndex)-\(playerIndex)")
-        }
-
-        func makeJoinData(roomIndex: Int, playerIndex: Int) throws -> Data {
-            let requestID = "join-\(roomIndex)-\(playerIndex)"
+        // Make joinData function @Sendable so it can be called from TaskGroup
+        let makeJoinData: @Sendable (Int, Int) throws -> Data = { roomIndex, playerIndexInRoom in
+            let requestID = "join-\(roomIndex)-\(playerIndexInRoom)"
             let instanceId = "room-\(roomIndex)"
-            let playerID = "p-\(roomIndex)-\(playerIndex)"
+            let playerID = "p-\(roomIndex)-\(playerIndexInRoom)"
             let payload = TransportJoinPayload(
                 requestID: requestID,
                 landType: config.landType,
@@ -440,13 +503,131 @@ struct ServerLoadTest {
         // Timeline
         let steadySeconds = config.durationSeconds
         let totalSeconds = config.rampUpSeconds + steadySeconds + config.rampDownSeconds
-        let roomsPerSecondUp = max(1, config.rooms / max(1, config.rampUpSeconds))
-        let sessionsPerSecondDown = max(1, (config.rooms * config.playersPerRoom) / max(1, config.rampDownSeconds))
+        let totalPlayers = config.rooms * config.playersPerRoom
+        let playersPerSecondUp = max(1, totalPlayers / max(1, config.rampUpSeconds))
+        let sessionsPerSecondDown = max(1, totalPlayers / max(1, config.rampDownSeconds))
 
-        // State
-        var activeRoomCount = 0
-        var connectedSessions: [SessionID] = []
-        connectedSessions.reserveCapacity(config.rooms * config.playersPerRoom)
+        // Modular room and player state management
+        struct PlayerState: Sendable {
+            let sessionID: SessionID
+            let roomIndex: Int
+            let playerIndexInRoom: Int
+            var hasJoined: Bool = false  // Track if join has completed
+        }
+        
+        struct RoomState: Sendable {
+            let roomIndex: Int
+            var players: [PlayerState] = []
+            var isActive: Bool = false  // Track if room is active (has at least one player)
+            
+            var playerCount: Int { players.count }
+            var hasSpace: Bool { playerCount < 5 }  // config.playersPerRoom
+            var joinedPlayers: [PlayerState] { players.filter { $0.hasJoined } }
+        }
+        
+        // Thread-safe room manager
+        actor RoomManager {
+            private var rooms: [Int: RoomState] = [:]
+            private var nextAvailableRoomIndex = 0
+            let maxRooms: Int
+            let maxPlayersPerRoom: Int
+            
+            init(maxRooms: Int, maxPlayersPerRoom: Int) {
+                self.maxRooms = maxRooms
+                self.maxPlayersPerRoom = maxPlayersPerRoom
+            }
+            
+            // Find or create a room for a new player
+            func assignPlayer() -> (roomIndex: Int, playerIndexInRoom: Int, sessionID: SessionID)? {
+                // First, try to find an existing room with available space
+                for (roomIndex, var room) in rooms {
+                    if room.hasSpace, roomIndex < maxRooms {
+                        let playerIndexInRoom = room.playerCount
+                        let sessionID = SessionID("s-\(roomIndex)-\(playerIndexInRoom)")
+                        let player = PlayerState(
+                            sessionID: sessionID,
+                            roomIndex: roomIndex,
+                            playerIndexInRoom: playerIndexInRoom,
+                            hasJoined: false
+                        )
+                        room.players.append(player)
+                        room.isActive = true
+                        rooms[roomIndex] = room
+                        return (roomIndex: roomIndex, playerIndexInRoom: playerIndexInRoom, sessionID: sessionID)
+                    }
+                }
+                
+                // No room with space found, create a new room
+                if nextAvailableRoomIndex < maxRooms {
+                    let roomIndex = nextAvailableRoomIndex
+                    nextAvailableRoomIndex += 1
+                    let sessionID = SessionID("s-\(roomIndex)-0")
+                    let player = PlayerState(
+                        sessionID: sessionID,
+                        roomIndex: roomIndex,
+                        playerIndexInRoom: 0,
+                        hasJoined: false
+                    )
+                    let newRoom = RoomState(roomIndex: roomIndex, players: [player], isActive: true)
+                    rooms[roomIndex] = newRoom
+                    return (roomIndex: roomIndex, playerIndexInRoom: 0, sessionID: sessionID)
+                }
+                
+                // All rooms are full
+                return nil
+            }
+            
+            // Mark a player as successfully joined
+            func markPlayerJoined(sessionID: SessionID) {
+                for (roomIndex, var room) in rooms {
+                    if let playerIndex = room.players.firstIndex(where: { $0.sessionID == sessionID }) {
+                        room.players[playerIndex].hasJoined = true
+                        rooms[roomIndex] = room
+                        return
+                    }
+                }
+            }
+            
+            // Get all assigned sessions (regardless of join status)
+            func getAllAssignedSessions() -> [SessionID] {
+                var all: [SessionID] = []
+                for room in rooms.values {
+                    all.append(contentsOf: room.players.map { $0.sessionID })
+                }
+                return all
+            }
+            
+            // Get all sessions that have successfully joined
+            func getJoinedSessions() -> [SessionID] {
+                var joined: [SessionID] = []
+                for room in rooms.values {
+                    joined.append(contentsOf: room.joinedPlayers.map { $0.sessionID })
+                }
+                return joined
+            }
+            
+            // Get active room count
+            func getActiveRoomCount() -> Int {
+                rooms.values.filter { $0.isActive }.count
+            }
+            
+            // Remove a session
+            func removeSession(_ sessionID: SessionID) {
+                for (roomIndex, var room) in rooms {
+                    if let playerIndex = room.players.firstIndex(where: { $0.sessionID == sessionID }) {
+                        room.players.remove(at: playerIndex)
+                        if room.players.isEmpty {
+                            room.isActive = false
+                        }
+                        rooms[roomIndex] = room
+                        return
+                    }
+                }
+            }
+        }
+        
+        let roomManager = RoomManager(maxRooms: config.rooms, maxPlayersPerRoom: config.playersPerRoom)
+        var totalPlayersAssigned = 0
 
         var seconds: [SecondSample] = []
         seconds.reserveCapacity(totalSeconds + 10)
@@ -471,36 +652,84 @@ struct ServerLoadTest {
 
             var actionsSent = 0
 
-            // Ramp up
-            if isRampUp, activeRoomCount < config.rooms {
-                let target = min(config.rooms, activeRoomCount + roomsPerSecondUp)
-                while activeRoomCount < target {
-                    let roomIndex = activeRoomCount
-                    for playerIndex in 0..<config.playersPerRoom {
-                        let sessionID = makeSessionID(roomIndex: roomIndex, playerIndex: playerIndex)
-                        let conn = CountingWebSocketConnection(counter: traffic)
-                        await transport.handleConnection(sessionID: sessionID, connection: conn, authInfo: nil)
+            // Ramp up: Players join gradually, rooms are created on-demand (realistic matchmaking)
+            if isRampUp, totalPlayersAssigned < totalPlayers {
+                let targetPlayersThisSecond = min(totalPlayers, totalPlayersAssigned + playersPerSecondUp)
+                let playersToJoinThisSecond = targetPlayersThisSecond - totalPlayersAssigned
+                
+                // Join players in parallel (simulating real-world concurrent connections)
+                await withTaskGroup(of: Void.self) { group in
+                    for _ in 0..<playersToJoinThisSecond {
+                        group.addTask {
+                            // Find or create a room (matchmaking logic) - thread-safe via actor
+                            guard let (roomIndex, playerIndexInRoom, sessionID) = await roomManager.assignPlayer() else {
+                                return  // All rooms are full
+                            }
+                            
+                            // Create connection with join success callback
+                            let conn = CountingWebSocketConnection(
+                                counter: traffic,
+                                sessionID: sessionID,
+                                onJoinSuccess: { sessionID in
+                                    // Mark session as joined when we receive JoinResponse
+                                    await roomManager.markPlayerJoined(sessionID: sessionID)
+                                }
+                            )
+                            await transport.handleConnection(sessionID: sessionID, connection: conn, authInfo: nil)
 
-                        let joinData = try makeJoinData(roomIndex: roomIndex, playerIndex: playerIndex)
-                        await traffic.recordReceived(bytes: joinData.count)
-                        await transport.handleIncomingMessage(sessionID: sessionID, data: joinData)
-
-                        connectedSessions.append(sessionID)
+                            do {
+                                let joinData = try makeJoinData(roomIndex, playerIndexInRoom)
+                                await traffic.recordReceived(bytes: joinData.count)
+                                await transport.handleIncomingMessage(sessionID: sessionID, data: joinData)
+                                
+                                // Don't mark as joined immediately - we'll verify join status later
+                                // Join is async and may take time to complete
+                            } catch {
+                                // Log error but continue
+                            }
+                        }
                     }
-                    activeRoomCount += 1
+                    // Wait for all tasks to complete
+                    for await _ in group {}
                 }
+                
+                // Update counter after all assignments complete
+                totalPlayersAssigned = targetPlayersThisSecond
+            }
+            
+            // After ramp-up completes, wait for JoinResponse messages to arrive
+            // JoinResponse messages will automatically mark sessions as joined via callback
+            if t == config.rampUpSeconds - 1 {
+                // Wait 3 seconds for JoinResponse messages to arrive and be processed
+                // The CountingWebSocketConnection will automatically mark sessions as joined
+                // when it receives JoinResponse messages
+                // This ensures all async join operations complete before steady state begins
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
             }
 
+            // Get current connected sessions that have successfully joined
+            let connectedSessions = await roomManager.getJoinedSessions()
+            let activeRoomCount = await roomManager.getActiveRoomCount()
+
             // Steady + ramp down: inject client events
+            // Note: In production, each WebSocket connection processes messages independently and concurrently.
+            // We simulate this by processing all sessions in parallel using TaskGroup.
+            // Only send to sessions that we've marked as joined to avoid warnings
             if isSteady || isRampDown {
                 if config.actionsPerPlayerPerSecond > 0, !connectedSessions.isEmpty {
                     let payloadData = try makeClientEventData(second: t)
                     for _ in 0..<config.actionsPerPlayerPerSecond {
-                        for sessionID in connectedSessions {
-                            await traffic.recordReceived(bytes: payloadData.count)
-                            await transport.handleIncomingMessage(sessionID: sessionID, data: payloadData)
-                            actionsSent += 1
+                        // Process all sessions in parallel (matching production behavior)
+                        // Only send to sessions marked as joined
+                        await withTaskGroup(of: Void.self) { group in
+                            for sessionID in connectedSessions {
+                                group.addTask {
+                                    await traffic.recordReceived(bytes: payloadData.count)
+                                    await transport.handleIncomingMessage(sessionID: sessionID, data: payloadData)
+                                }
+                            }
                         }
+                        actionsSent += connectedSessions.count
                     }
                 }
             }
@@ -508,11 +737,11 @@ struct ServerLoadTest {
             // Ramp down
             if isRampDown, !connectedSessions.isEmpty {
                 let sessionsToClose = min(connectedSessions.count, sessionsPerSecondDown)
-                let closing = connectedSessions.prefix(sessionsToClose)
+                let closing = Array(connectedSessions.prefix(sessionsToClose))
                 for sessionID in closing {
                     await transport.handleDisconnection(sessionID: sessionID)
+                    await roomManager.removeSession(sessionID)
                 }
-                connectedSessions.removeFirst(sessionsToClose)
             }
 
             // Metrics snapshot
@@ -521,6 +750,17 @@ struct ServerLoadTest {
             let recvDeltaBytes = nowTraffic.recvBytes - lastTraffic.recvBytes
             let sentDeltaMsgs = nowTraffic.sentMessages - lastTraffic.sentMessages
             let recvDeltaMsgs = nowTraffic.recvMessages - lastTraffic.recvMessages
+            
+            // Calculate performance metrics
+            // Hero Defense: Tick every 50ms (20 Hz), Sync every 100ms (10 Hz)
+            let tickIntervalMs = 50.0
+            let syncIntervalMs = 100.0
+            let ticksPerSecond = 1000.0 / tickIntervalMs  // 20 ticks/s per room
+            let syncsPerSecond = 1000.0 / syncIntervalMs  // 10 syncs/s per room
+            let estimatedTicksPerSecond = Double(activeRoomCount) * ticksPerSecond
+            let estimatedSyncsPerSecond = Double(activeRoomCount) * syncsPerSecond
+            let estimatedUpdatesPerSecond = estimatedTicksPerSecond + estimatedSyncsPerSecond
+            
             lastTraffic = nowTraffic
 
             // Skip CPU/RSS sampling to avoid potential blocking from system calls
@@ -541,7 +781,11 @@ struct ServerLoadTest {
                 sentMessagesPerSecond: sentDeltaMsgs,
                 recvMessagesPerSecond: recvDeltaMsgs,
                 processCPUSeconds: cpuTime,
-                processRSSBytes: rssBytes
+                processRSSBytes: rssBytes,
+                avgMessageSize: nowTraffic.avgMessageSize,
+                estimatedTicksPerSecond: estimatedTicksPerSecond,
+                estimatedSyncsPerSecond: estimatedSyncsPerSecond,
+                estimatedUpdatesPerSecond: estimatedUpdatesPerSecond
             )
             seconds.append(sample)
             logProgress(sample: sample)
@@ -550,23 +794,24 @@ struct ServerLoadTest {
         }
 
         // Final cleanup
-        for sessionID in connectedSessions {
+        let finalConnectedSessions = await roomManager.getJoinedSessions()
+        for sessionID in finalConnectedSessions {
             await transport.handleDisconnection(sessionID: sessionID)
         }
-        connectedSessions.removeAll()
 
         try? await Task.sleep(nanoseconds: 6_000_000_000)
 
         let finalTraffic = await traffic.snapshot()
         // Skip RSS sampling - use external monitoring tools instead
 
+        let finalActiveRoomCount = await roomManager.getActiveRoomCount()
         let summary = LoadTestSummary(
             totalSeconds: totalSeconds,
             rampUpSeconds: config.rampUpSeconds,
             steadySeconds: steadySeconds,
             rampDownSeconds: config.rampDownSeconds,
             roomsTarget: config.rooms,
-            roomsCreated: activeRoomCount,
+            roomsCreated: finalActiveRoomCount,
             playersCreated: config.rooms * config.playersPerRoom,
             totalSentBytes: finalTraffic.sentBytes,
             totalReceivedBytes: finalTraffic.recvBytes,
@@ -576,10 +821,22 @@ struct ServerLoadTest {
             endRSSBytes: nil    // Use external monitoring (pidstat/vmstat)
         )
 
+        // Determine phase for each sample
+        func getPhase(for t: Int) -> String {
+            if t < config.rampUpSeconds {
+                return "ramp-up"
+            } else if t < (config.rampUpSeconds + steadySeconds) {
+                return "steady"
+            } else {
+                return "ramp-down"
+            }
+        }
+        
         let results: [String: Any] = [
             "seconds": seconds.map { sample in
                 var dict: [String: Any] = [
                     "t": sample.t,
+                    "phase": getPhase(for: sample.t),
                     "roomsTarget": sample.roomsTarget,
                     "roomsCreated": sample.roomsCreated,
                     "roomsActiveExpected": sample.roomsActiveExpected,
@@ -589,6 +846,10 @@ struct ServerLoadTest {
                     "recvBytesPerSecond": sample.recvBytesPerSecond,
                     "sentMessagesPerSecond": sample.sentMessagesPerSecond,
                     "recvMessagesPerSecond": sample.recvMessagesPerSecond,
+                    "avgMessageSize": sample.avgMessageSize,
+                    "estimatedTicksPerSecond": sample.estimatedTicksPerSecond,
+                    "estimatedSyncsPerSecond": sample.estimatedSyncsPerSecond,
+                    "estimatedUpdatesPerSecond": sample.estimatedUpdatesPerSecond,
                 ]
                 if let cpu = sample.processCPUSeconds {
                     dict["processCPUSeconds"] = cpu
