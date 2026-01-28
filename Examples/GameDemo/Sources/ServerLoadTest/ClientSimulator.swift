@@ -29,6 +29,7 @@ actor ClientSimulator {
     private(set) var phase: Phase = .rampUp
     private(set) var totalPlayersAssigned = 0
     private(set) var totalActionsSent = 0
+    private var actionsSentInWindow = 0
     private(set) var elapsedSeconds = 0
 
     init(
@@ -182,9 +183,16 @@ actor ClientSimulator {
             }
 
             totalActionsSent += connectedSessions.count * actionsPerPlayer
+            actionsSentInWindow += connectedSessions.count * actionsPerPlayer
         } catch {
             // Log error but continue
         }
+    }
+
+    func getAndResetActionCount() -> Int {
+        let count = actionsSentInWindow
+        actionsSentInWindow = 0
+        return count
     }
 
     private func performRampDown() async {

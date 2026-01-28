@@ -15,32 +15,33 @@ def parse_vmstat_log(vmstat_path: Path) -> List[Dict[str, Any]]:
     """Parse vmstat output (Linux) or top output (macOS) and return list of samples."""
     if not vmstat_path.exists():
         return []
-    
+
     samples = []
-    
+
     # Try to detect format by reading first few lines
     with open(vmstat_path, 'r') as f:
         first_lines = [f.readline().strip() for _ in range(5)]
         f.seek(0)
-        
+
         # Check if it's macOS top output (contains "CPU usage:" or "PhysMem:")
-        is_macos_top = any("CPU usage:" in line or "PhysMem:" in line for line in first_lines)
+        is_macos_top = any(
+            "CPU usage:" in line or "PhysMem:" in line for line in first_lines)
         # Check if it's macOS iostat output (contains "cpu" and "load average" in header, or "us sy id" in column header)
         is_macos_iostat = any(
             ("cpu" in line.lower() and "load average" in line.lower()) or
             ("KB/t" in line and ("us" in line or "sy" in line))
             for line in first_lines
         )
-        
+
         if is_macos_top:
             return parse_macos_top_log(vmstat_path)
         elif is_macos_iostat:
             return parse_macos_iostat_log(vmstat_path)
-    
+
     # Linux vmstat format
     header_found = False
     header_line = None
-    
+
     with open(vmstat_path, 'r') as f:
         for line in f:
             line = line.strip()
@@ -50,15 +51,15 @@ def parse_vmstat_log(vmstat_path: Path) -> List[Dict[str, Any]]:
                     header_line = line
                     header_found = True
                 continue
-            
+
             if not header_found:
                 continue
-            
+
             # Parse data line
             parts = line.split()
             if len(parts) < 17:  # vmstat has many columns
                 continue
-            
+
             try:
                 # vmstat format: r b swpd free buff cache si so bi bo in cs us sy id wa st gu
                 sample = {
@@ -81,11 +82,12 @@ def parse_vmstat_log(vmstat_path: Path) -> List[Dict[str, Any]]:
                     "cpu_st_pct": float(parts[16]) if len(parts) > 16 and parts[16].replace('.', '').isdigit() else 0.0,
                 }
                 if len(parts) > 17:
-                    sample["cpu_gu_pct"] = float(parts[17]) if parts[17].replace('.', '').isdigit() else 0.0
+                    sample["cpu_gu_pct"] = float(parts[17]) if parts[17].replace(
+                        '.', '').isdigit() else 0.0
                 samples.append(sample)
             except (ValueError, IndexError):
                 continue
-    
+
     return samples
 
 
@@ -93,7 +95,7 @@ def parse_macos_top_log(top_path: Path) -> List[Dict[str, Any]]:
     """Parse macOS top output and return list of samples in vmstat-compatible format."""
     samples = []
     current_sample = {}
-    
+
     with open(top_path, 'r') as f:
         for line in f:
             line = line.strip()
@@ -103,13 +105,14 @@ def parse_macos_top_log(top_path: Path) -> List[Dict[str, Any]]:
                     samples.append(current_sample)
                     current_sample = {}
                 continue
-            
+
             # Parse CPU usage line: "CPU usage: 12.34% user, 5.67% sys, 82.00% idle"
             if "CPU usage:" in line:
                 try:
                     # Extract percentages
                     import re
-                    cpu_match = re.search(r'(\d+\.?\d*)%\s+user.*?(\d+\.?\d*)%\s+sys.*?(\d+\.?\d*)%\s+idle', line)
+                    cpu_match = re.search(
+                        r'(\d+\.?\d*)%\s+user.*?(\d+\.?\d*)%\s+sys.*?(\d+\.?\d*)%\s+idle', line)
                     if cpu_match:
                         cpu_us = float(cpu_match.group(1))
                         cpu_sy = float(cpu_match.group(2))
@@ -117,11 +120,13 @@ def parse_macos_top_log(top_path: Path) -> List[Dict[str, Any]]:
                         current_sample["cpu_us_pct"] = cpu_us
                         current_sample["cpu_sy_pct"] = cpu_sy
                         current_sample["cpu_id_pct"] = cpu_id
-                        current_sample["cpu_wa_pct"] = 0.0  # macOS top doesn't show wait
-                        current_sample["cpu_st_pct"] = 0.0  # macOS top doesn't show steal
+                        # macOS top doesn't show wait
+                        current_sample["cpu_wa_pct"] = 0.0
+                        # macOS top doesn't show steal
+                        current_sample["cpu_st_pct"] = 0.0
                 except (ValueError, AttributeError):
                     continue
-            
+
             # Parse memory line: "PhysMem: 8192M used, 8192M free, 16384M wired, 0M compressed"
             elif "PhysMem:" in line:
                 try:
@@ -137,20 +142,20 @@ def parse_macos_top_log(top_path: Path) -> List[Dict[str, Any]]:
                         current_sample["memory_cache_kb"] = 0
                 except (ValueError, AttributeError):
                     continue
-            
+
             # When we see "Processes:" line, it might be start of new sample
             # But we'll use empty lines as delimiters instead
-    
+
     # Add last sample if exists
     if current_sample and "cpu_us_pct" in current_sample:
         samples.append(current_sample)
-    
+
     return samples
 
 
 def parse_macos_iostat_log(iostat_path: Path) -> List[Dict[str, Any]]:
     """Parse macOS iostat output and return list of samples in vmstat-compatible format.
-    
+
     macOS iostat format:
         disk0       cpu    load average
     KB/t  tps  MB/s  us sy id   1m   5m   15m
@@ -159,41 +164,41 @@ def parse_macos_iostat_log(iostat_path: Path) -> List[Dict[str, Any]]:
     samples = []
     header_found = False
     column_header_found = False
-    
+
     with open(iostat_path, 'r') as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            
+
             # Look for main header: "disk0       cpu    load average"
             if "cpu" in line.lower() and "load average" in line.lower():
                 header_found = True
                 continue
-            
+
             if not header_found:
                 continue
-            
+
             # Look for column header: "KB/t  tps  MB/s  us sy id   1m   5m   15m"
             if header_found and ("KB/t" in line or "tps" in line) and ("us" in line or "sy" in line):
                 column_header_found = True
                 continue
-            
+
             if not column_header_found:
                 continue
-            
+
             # Parse data line: "4.49 4596 20.15  14 11 74  4.34 3.85 3.82"
             parts = line.split()
             if len(parts) < 6:
                 continue
-            
+
             try:
                 # iostat format: [KB/t] [tps] [MB/s] [us] [sy] [id] [1m] [5m] [15m]
                 # CPU columns are at positions 3, 4, 5 (0-indexed)
                 cpu_us = float(parts[3])
                 cpu_sy = float(parts[4])
                 cpu_id = float(parts[5])
-                
+
                 sample = {
                     "cpu_us_pct": cpu_us,
                     "cpu_sy_pct": cpu_sy,
@@ -209,7 +214,7 @@ def parse_macos_iostat_log(iostat_path: Path) -> List[Dict[str, Any]]:
                 samples.append(sample)
             except (ValueError, IndexError):
                 continue
-    
+
     return samples
 
 
@@ -227,14 +232,17 @@ def parse_macos_ps_csv(ps_path: Path) -> List[Dict[str, Any]]:
         return []
 
     header = [c.strip().lower() for c in rows[0]]
-    has_header = any("cpu" in c for c in header) or any("timestamp" in c for c in header)
+    has_header = any("cpu" in c for c in header) or any(
+        "timestamp" in c for c in header)
     start_idx = 1 if has_header else 0
 
     # Default column order for non-header CSV: timestamp_epoch_s,cpu_pct,pid
     if has_header:
         header_map = {name: idx for idx, name in enumerate(header)}
-        ts_idx = header_map.get("timestamp_epoch_s", header_map.get("timestamp", 0))
-        cpu_idx = header_map.get("cpu_pct", header_map.get("%cpu", header_map.get("cpu", 1)))
+        ts_idx = header_map.get("timestamp_epoch_s",
+                                header_map.get("timestamp", 0))
+        cpu_idx = header_map.get("cpu_pct", header_map.get(
+            "%cpu", header_map.get("cpu", 1)))
         pid_idx = header_map.get("pid", 2)
     else:
         ts_idx = 0
@@ -268,7 +276,7 @@ def parse_pidstat_log(pidstat_path: Path, process_name: str = "ServerLoadTest") 
     """Parse pidstat output and return list of samples for the target process."""
     if not pidstat_path.exists():
         return []
-    
+
     # macOS ps CSV format detection
     try:
         with open(pidstat_path, 'r') as f:
@@ -280,29 +288,29 @@ def parse_pidstat_log(pidstat_path: Path, process_name: str = "ServerLoadTest") 
 
     samples = []
     header_found = False
-    
+
     with open(pidstat_path, 'r') as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            
+
             # Look for header
             if 'PID' in line and 'CPU' in line:
                 header_found = True
                 continue
-            
+
             if not header_found:
                 continue
-            
+
             # Parse data line - pidstat format varies, try to match process name
             if process_name.lower() not in line.lower():
                 continue
-            
+
             parts = line.split()
             if len(parts) < 8:
                 continue
-            
+
             try:
                 # pidstat format: Time PID %usr %system %guest %CPU CPU Command
                 # Or: Time UID PID %usr %system %guest %wait %CPU CPU Command
@@ -321,8 +329,175 @@ def parse_pidstat_log(pidstat_path: Path, process_name: str = "ServerLoadTest") 
                 samples.append(sample)
             except (ValueError, IndexError):
                 continue
-    
+
     return samples
+
+
+def calculate_steady_stats(test_samples: list) -> Optional[Dict[str, Any]]:
+    """計算穩定狀態的統計數據"""
+    if not test_samples:
+        return None
+
+    steady_samples = [s for s in test_samples if s.get('phase') == 'steady']
+    if not steady_samples:
+        return None
+
+    count = len(steady_samples)
+
+    avg_sent_bps = sum(s.get('sentBytesPerSecond', 0)
+                       for s in steady_samples) / count
+    avg_recv_bps = sum(s.get('recvBytesPerSecond', 0)
+                       for s in steady_samples) / count
+    avg_sent_mps = sum(s.get('sentMessagesPerSecond', 0)
+                       for s in steady_samples) / count
+    avg_recv_mps = sum(s.get('recvMessagesPerSecond', 0)
+                       for s in steady_samples) / count
+    avg_actions = sum(s.get('actionsSentThisSecond', 0)
+                      for s in steady_samples) / count
+
+    avg_ticks_per_sec = sum(s.get('estimatedTicksPerSecond', 0)
+                            for s in steady_samples) / count
+    avg_syncs_per_sec = sum(s.get('estimatedSyncsPerSecond', 0)
+                            for s in steady_samples) / count
+    avg_updates_per_sec = sum(s.get('estimatedUpdatesPerSecond', 0)
+                              for s in steady_samples) / count
+    avg_msg_size = sum(s.get('avgMessageSize', 0)
+                       for s in steady_samples) / count
+
+    avg_update_time_ms = (
+        1000.0 / avg_updates_per_sec) if avg_updates_per_sec > 0 else 0
+    avg_tick_time_ms = (
+        1000.0 / avg_ticks_per_sec) if avg_ticks_per_sec > 0 else 0
+    avg_sync_time_ms = (
+        1000.0 / avg_syncs_per_sec) if avg_syncs_per_sec > 0 else 0
+
+    return {
+        "sample_count": count,
+        "avg_sent_bps": avg_sent_bps,
+        "avg_recv_bps": avg_recv_bps,
+        "avg_sent_mps": avg_sent_mps,
+        "avg_recv_mps": avg_recv_mps,
+        "avg_actions": avg_actions,
+        "avg_ticks_per_sec": avg_ticks_per_sec,
+        "avg_syncs_per_sec": avg_syncs_per_sec,
+        "avg_updates_per_sec": avg_updates_per_sec,
+        "avg_msg_size": avg_msg_size,
+        "avg_update_time_ms": avg_update_time_ms,
+        "avg_tick_time_ms": avg_tick_time_ms,
+        "avg_sync_time_ms": avg_sync_time_ms
+    }
+
+
+def prepare_vmstat_chart_data(vmstat_samples: list) -> Dict[str, list]:
+    """準備 vmstat 圖表數據"""
+    if not vmstat_samples:
+        return {}
+
+    return {
+        "times": list(range(len(vmstat_samples))),
+        "cpu_us": [s.get("cpu_us_pct", 0) for s in vmstat_samples],
+        "cpu_sy": [s.get("cpu_sy_pct", 0) for s in vmstat_samples],
+        "cpu_id": [s.get("cpu_id_pct", 0) for s in vmstat_samples],
+        "memory_free": [s.get("memory_free_kb", 0) / 1024.0 for s in vmstat_samples]
+    }
+
+
+def prepare_pidstat_chart_data(pidstat_samples: list) -> Dict[str, list]:
+    """準備 pidstat 圖表數據"""
+    if not pidstat_samples:
+        return {}
+
+    return {
+        "times": list(range(len(pidstat_samples))),
+        "cpu": [s.get("cpu_total_pct", 0) for s in pidstat_samples]
+    }
+
+
+def prepare_game_chart_data(test_samples: list) -> Dict[str, list]:
+    """準備遊戲數據圖表"""
+    if not test_samples:
+        return {}
+
+    tick_interval_ms = 50
+    ticks_per_second = 1000.0 / tick_interval_ms
+
+    ticks = [int(s.get("t", 0) * ticks_per_second) for s in test_samples]
+
+    return {
+        "ticks": ticks,
+        "bytes_sent_kb": [s.get("sentBytesPerSecond", 0) / 1024.0 for s in test_samples],
+        "bytes_recv_kb": [s.get("recvBytesPerSecond", 0) / 1024.0 for s in test_samples],
+        "messages_sent": [s.get("sentMessagesPerSecond", 0) for s in test_samples],
+        "messages_recv": [s.get("recvMessagesPerSecond", 0) for s in test_samples],
+        "actions": [s.get("actionsSentThisSecond", 0) for s in test_samples],
+        "active_players": [s.get("playersActiveExpected", 0) for s in test_samples],
+        "active_rooms": [s.get("roomsActiveExpected", 0) for s in test_samples],
+        "ticks_per_second": [s.get("estimatedTicksPerSecond", 0) for s in test_samples],
+        "syncs_per_second": [s.get("estimatedSyncsPerSecond", 0) for s in test_samples],
+        "updates_per_second": [s.get("estimatedUpdatesPerSecond", 0) for s in test_samples],
+        "update_times_ms": [
+            (1000.0 / s.get("estimatedUpdatesPerSecond", 1)
+             ) if s.get("estimatedUpdatesPerSecond", 0) > 0 else 0
+            for s in test_samples
+        ],
+        "avg_message_size_kb": [s.get("avgMessageSize", 0) / 1024.0 for s in test_samples]
+    }
+
+
+def prepare_template_data(
+    data: Dict[str, Any],
+    test_result_json: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """準備模板所需的數據"""
+    vmstat_samples = data.get("vmstat", [])
+    pidstat_samples = data.get("pidstat", [])
+    vmstat_summary = data.get("vmstat_summary", {})
+    pidstat_summary = data.get("pidstat_summary", {})
+    cpu_cores = data.get("cpu_cores", 1)
+
+    # Prepare data for charts
+    vmstat_times = list(range(len(vmstat_samples)))
+    vmstat_cpu_us = [s.get("cpu_us_pct", 0) for s in vmstat_samples]
+    vmstat_cpu_sy = [s.get("cpu_sy_pct", 0) for s in vmstat_samples]
+    vmstat_cpu_id = [s.get("cpu_id_pct", 0) for s in vmstat_samples]
+    vmstat_memory_free = [
+        # Convert to MB
+        s.get("memory_free_kb", 0) / 1024.0 for s in vmstat_samples]
+
+    pidstat_times = list(range(len(pidstat_samples)))
+    pidstat_cpu = [s.get("cpu_total_pct", 0) for s in pidstat_samples]
+
+    # 提取測試配置和結果
+    test_config = {}
+    test_metadata = {}
+    test_samples = []
+    steady_stats = None
+
+    if test_result_json:
+        test_metadata = test_result_json.get("metadata", {})
+        test_config = test_metadata.get("loadTestConfig", {})
+        results = test_result_json.get("results", {})
+        test_samples = results.get("seconds", [])
+
+        # 計算穩定狀態統計
+        steady_stats = calculate_steady_stats(test_samples)
+
+    # 準備圖表數據
+    chart_data = {
+        "vmstat": prepare_vmstat_chart_data(vmstat_samples),
+        "pidstat": prepare_pidstat_chart_data(pidstat_samples),
+        "game": prepare_game_chart_data(test_samples)
+    }
+
+    return {
+        "test_config": test_config,
+        "test_metadata": test_metadata,
+        "vmstat_summary": vmstat_summary,
+        "pidstat_summary": pidstat_summary,
+        "cpu_cores": cpu_cores,
+        "steady_stats": steady_stats,
+        "chart_data": chart_data
+    }
 
 
 def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_json: Optional[Dict[str, Any]] = None) -> None:
@@ -403,103 +578,13 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
             game_avg_message_size.append(sample.get("avgMessageSize", 0))
             game_phases.append(sample.get("phase", "unknown"))
     
-    html_content = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Server Load Test - System Monitoring Report</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <style>
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            margin: 20px;
-            background: #f5f5f5;
-        }}
-        .container {{
-            max-width: 1200px;
-            margin: 0 auto;
-            background: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }}
-        h1 {{
-            color: #333;
-            border-bottom: 2px solid #4CAF50;
-            padding-bottom: 10px;
-        }}
-        h2 {{
-            color: #555;
-            margin-top: 30px;
-            font-size: 20px;
-            border-bottom: 1px solid #ddd;
-            padding-bottom: 8px;
-        }}
-        .summary {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-            margin: 20px 0;
-        }}
-        .summary-card {{
-            background: #f9f9f9;
-            padding: 15px;
-            border-radius: 6px;
-            border-left: 4px solid #4CAF50;
-        }}
-        .summary-card h3 {{
-            margin: 0 0 10px 0;
-            color: #666;
-            font-size: 14px;
-            text-transform: uppercase;
-        }}
-        .summary-card .value {{
-            font-size: 24px;
-            font-weight: bold;
-            color: #333;
-        }}
-        .summary-card .subvalue {{
-            font-size: 14px;
-            color: #777;
-            margin-top: 5px;
-        }}
-        .chart-container {{
-            margin: 30px 0;
-            position: relative;
-            height: 300px;
-        }}
-        .chart-title {{
-            font-size: 18px;
-            font-weight: bold;
-            margin-bottom: 10px;
-            color: #333;
-        }}
-        .json-viewer {{
-            background: #f8f8f8;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            padding: 15px;
-            margin: 15px 0;
-            max-height: 400px;
-            overflow-y: auto;
-        }}
-        .json-viewer pre {{
-            margin: 0;
-            font-family: 'Courier New', monospace;
-            font-size: 12px;
-            line-height: 1.5;
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Server Load Test - System Monitoring Report</h1>
-"""
-    
+    script_dir = Path(__file__).parent
+    template_path = script_dir / "monitoring_report_template.html"
+    content = ""
+
     # Add test configuration section if available
     if test_config:
-        html_content += f"""
+        content += f"""
         <h2>📋 Test Configuration</h2>
         <div class="summary">
             <div class="summary-card">
@@ -534,7 +619,7 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
     if test_metadata:
         env = test_metadata.get("environment", {})
         if env:
-            html_content += f"""
+            content += f"""
         <h2>💻 System Environment</h2>
         <div class="summary">
             <div class="summary-card">
@@ -576,18 +661,18 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
             avg_tick_time_ms = (1000.0 / avg_ticks_per_sec) if avg_ticks_per_sec > 0 else 0
             avg_sync_time_ms = (1000.0 / avg_syncs_per_sec) if avg_syncs_per_sec > 0 else 0
             
-            html_content += f"""
-        <h2>📊 Test Results (Steady State)</h2>
+            content += f"""
+        <h2>📊 Test Results (Steady State) — Server view</h2>
         <div class="summary">
             <div class="summary-card">
-                <h3>Avg Send Rate</h3>
+                <h3>Avg Ingress</h3>
                 <div class="value">{avg_sent_bps / 1024:.1f} KB/s</div>
-                <div class="subvalue">{avg_sent_mps:.1f} msgs/s</div>
+                <div class="subvalue">{avg_sent_mps:.1f} msgs/s from clients</div>
             </div>
             <div class="summary-card">
-                <h3>Avg Recv Rate</h3>
+                <h3>Avg Egress</h3>
                 <div class="value">{avg_recv_bps / 1024:.1f} KB/s</div>
-                <div class="subvalue">{avg_recv_mps:.1f} msgs/s</div>
+                <div class="subvalue">{avg_recv_mps:.1f} msgs/s to clients</div>
             </div>
             <div class="summary-card">
                 <h3>Avg Actions/Sec</h3>
@@ -598,6 +683,14 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
                 <div class="value">{len(steady_samples)}</div>
             </div>
         </div>
+        <table class="traffic-table" style="border-collapse:collapse; margin:1em 0; border:1px solid #ddd;">
+            <caption style="text-align:left; font-weight:bold; margin-bottom:6px;">Ingress vs Egress (separate axes in charts)</caption>
+            <thead><tr style="background:#f5f5f5;"><th style="padding:8px 12px; border:1px solid #ddd;"></th><th style="padding:8px 12px; border:1px solid #ddd;">Ingress</th><th style="padding:8px 12px; border:1px solid #ddd;">Egress</th></tr></thead>
+            <tbody>
+                <tr><td style="padding:8px 12px; border:1px solid #ddd;">KB/s</td><td style="padding:8px 12px; border:1px solid #ddd;">{avg_sent_bps / 1024:.1f}</td><td style="padding:8px 12px; border:1px solid #ddd;">{avg_recv_bps / 1024:.1f}</td></tr>
+                <tr><td style="padding:8px 12px; border:1px solid #ddd;">msgs/s</td><td style="padding:8px 12px; border:1px solid #ddd;">{avg_sent_mps:.1f}</td><td style="padding:8px 12px; border:1px solid #ddd;">{avg_recv_mps:.1f}</td></tr>
+            </tbody>
+        </table>
         
         <h2>⚡ Performance Metrics (Steady State)</h2>
         <div class="summary">
@@ -629,7 +722,7 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
         </div>
 """
     
-    html_content += f"""
+    content += f"""
         <h2>🖥️ System Monitoring</h2>
         <div class="summary">
             <div class="summary-card">
@@ -651,7 +744,7 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
 """
     
     if pidstat_summary:
-        html_content += f"""
+        content += f"""
             <div class="summary-card">
                 <h3>PidStat Samples</h3>
                 <div class="value">{pidstat_summary.get('sample_count', 0)}</div>
@@ -666,7 +759,7 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
             </div>
 """
     
-    html_content += """
+    content += """
         </div>
 """
     
@@ -677,7 +770,7 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
         vmstat_cpu_id_json = json.dumps(vmstat_cpu_id)
         vmstat_memory_free_json = json.dumps(vmstat_memory_free)
         
-        html_content += f"""
+        content += f"""
         <div class="chart-container">
             <div class="chart-title">System CPU Usage Over Time</div>
             <canvas id="cpuChart"></canvas>
@@ -760,7 +853,7 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
         pidstat_times_json = json.dumps(pidstat_times)
         pidstat_cpu_json = json.dumps(pidstat_cpu)
         
-        html_content += f"""
+        content += f"""
         <div class="chart-container">
             <div class="chart-title">Process CPU Usage Over Time</div>
             <canvas id="pidstatChart"></canvas>
@@ -827,7 +920,7 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
         peak_messages = max(game_messages_sent) if game_messages_sent else 0
         peak_actions = max(game_actions) if game_actions else 0
         
-        html_content += f"""
+        content += f"""
         <h2>🎮 Game Data (Tick-based)</h2>
         <div class="summary">
             <div class="summary-card">
@@ -836,12 +929,14 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
                 <div class="subvalue">{tick_interval_ms}ms per tick ({ticks_per_second:.1f} Hz)</div>
             </div>
             <div class="summary-card">
-                <h3>Peak Bytes/Sec</h3>
-                <div class="value">{peak_bytes / 1024:.1f} KB/s</div>
+                <h3>Peak Ingress (KB/s)</h3>
+                <div class="value">{peak_bytes / 1024:.1f}</div>
+                <div class="subvalue">from clients</div>
             </div>
             <div class="summary-card">
-                <h3>Peak Messages/Sec</h3>
+                <h3>Peak Ingress (msgs/s)</h3>
                 <div class="value">{peak_messages:.1f}</div>
+                <div class="subvalue">from clients</div>
             </div>
             <div class="summary-card">
                 <h3>Peak Actions/Sec</h3>
@@ -850,12 +945,12 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
         </div>
         
         <div class="chart-container">
-            <div class="chart-title">Network Traffic Over Ticks (Bytes/Second)</div>
+            <div class="chart-title">Server Ingress vs Egress Over Ticks (KB/s)</div>
             <canvas id="gameBytesChart"></canvas>
         </div>
         
         <div class="chart-container">
-            <div class="chart-title">Message Rate Over Ticks (Messages/Second)</div>
+            <div class="chart-title">Server Ingress vs Egress Message Rate Over Ticks (msgs/s)</div>
             <canvas id="gameMessagesChart"></canvas>
         </div>
         
@@ -877,43 +972,43 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
                     labels: {game_ticks_json},
                     datasets: [
                         {{
-                            label: 'Bytes Sent/sec',
+                            label: 'Ingress (KB/s)',
                             data: {game_bytes_sent_json},
                             borderColor: 'rgb(75, 192, 192)',
                             backgroundColor: 'rgba(75, 192, 192, 0.2)',
                             tension: 0.1,
-                            yAxisID: 'y'
+                            yAxisID: 'y_ingress'
                         }},
                         {{
-                            label: 'Bytes Recv/sec',
+                            label: 'Egress (KB/s)',
                             data: {game_bytes_recv_json},
                             borderColor: 'rgb(255, 99, 132)',
                             backgroundColor: 'rgba(255, 99, 132, 0.2)',
                             tension: 0.1,
-                            yAxisID: 'y'
+                            yAxisID: 'y_egress'
                         }}
                     ]
                 }},
                 options: {{
                     responsive: true,
                     maintainAspectRatio: false,
-                    interaction: {{
-                        mode: 'index',
-                        intersect: false
-                    }},
+                    interaction: {{ mode: 'index', intersect: false }},
                     scales: {{
-                        x: {{
-                            title: {{
-                                display: true,
-                                text: 'Tick'
-                            }}
-                        }},
-                        y: {{
+                        x: {{ title: {{ display: true, text: 'Tick' }} }},
+                        y_ingress: {{
+                            type: 'linear',
+                            display: true,
+                            position: 'left',
                             beginAtZero: true,
-                            title: {{
-                                display: true,
-                                text: 'KB/s'
-                            }}
+                            title: {{ display: true, text: 'Ingress (KB/s)' }}
+                        }},
+                        y_egress: {{
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            beginAtZero: true,
+                            grid: {{ drawOnChartArea: false }},
+                            title: {{ display: true, text: 'Egress (KB/s)' }}
                         }}
                     }}
                 }}
@@ -926,41 +1021,43 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
                     labels: {game_ticks_json},
                     datasets: [
                         {{
-                            label: 'Messages Sent/sec',
+                            label: 'Ingress (msgs/s)',
                             data: {game_messages_sent_json},
                             borderColor: 'rgb(54, 162, 235)',
                             backgroundColor: 'rgba(54, 162, 235, 0.2)',
-                            tension: 0.1
+                            tension: 0.1,
+                            yAxisID: 'y_ingress'
                         }},
                         {{
-                            label: 'Messages Recv/sec',
+                            label: 'Egress (msgs/s)',
                             data: {game_messages_recv_json},
                             borderColor: 'rgb(255, 206, 86)',
                             backgroundColor: 'rgba(255, 206, 86, 0.2)',
-                            tension: 0.1
+                            tension: 0.1,
+                            yAxisID: 'y_egress'
                         }}
                     ]
                 }},
                 options: {{
                     responsive: true,
                     maintainAspectRatio: false,
-                    interaction: {{
-                        mode: 'index',
-                        intersect: false
-                    }},
+                    interaction: {{ mode: 'index', intersect: false }},
                     scales: {{
-                        x: {{
-                            title: {{
-                                display: true,
-                                text: 'Tick'
-                            }}
-                        }},
-                        y: {{
+                        x: {{ title: {{ display: true, text: 'Tick' }} }},
+                        y_ingress: {{
+                            type: 'linear',
+                            display: true,
+                            position: 'left',
                             beginAtZero: true,
-                            title: {{
-                                display: true,
-                                text: 'Messages/sec'
-                            }}
+                            title: {{ display: true, text: 'Ingress (msgs/s)' }}
+                        }},
+                        y_egress: {{
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            beginAtZero: true,
+                            grid: {{ drawOnChartArea: false }},
+                            title: {{ display: true, text: 'Egress (msgs/s)' }}
                         }}
                     }}
                 }}
@@ -1047,7 +1144,7 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
                     labels: {game_ticks_json},
                     datasets: [
                         {{
-                            label: 'Bytes Sent/sec (KB)',
+                            label: 'Ingress (KB/s)',
                             data: {game_bytes_sent_json},
                             borderColor: 'rgb(75, 192, 192)',
                             backgroundColor: 'rgba(75, 192, 192, 0.1)',
@@ -1056,7 +1153,7 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
                             hidden: false
                         }},
                         {{
-                            label: 'Bytes Recv/sec (KB)',
+                            label: 'Egress (KB/s)',
                             data: {game_bytes_recv_json},
                             borderColor: 'rgb(255, 99, 132)',
                             backgroundColor: 'rgba(255, 99, 132, 0.1)',
@@ -1065,7 +1162,7 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
                             hidden: false
                         }},
                         {{
-                            label: 'Messages Sent/sec',
+                            label: 'Ingress (msgs/s)',
                             data: {game_messages_sent_json},
                             borderColor: 'rgb(54, 162, 235)',
                             backgroundColor: 'rgba(54, 162, 235, 0.1)',
@@ -1074,7 +1171,7 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
                             hidden: false
                         }},
                         {{
-                            label: 'Messages Recv/sec',
+                            label: 'Egress (msgs/s)',
                             data: {game_messages_recv_json},
                             borderColor: 'rgb(255, 206, 86)',
                             backgroundColor: 'rgba(255, 206, 86, 0.1)',
@@ -1232,7 +1329,7 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
         
         # Add performance metrics charts
         if game_estimated_ticks_per_second and len(game_estimated_ticks_per_second) > 0:
-            html_content += f"""
+            content += f"""
         <h2>⚡ Performance Metrics (Update Speed & Latency)</h2>
         
         <div class="chart-container">
@@ -1460,7 +1557,7 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
     # Add full JSON data section if test result is available
     if test_result_json:
         json_str = json.dumps(test_result_json, indent=2)
-        html_content += f"""
+        content += f"""
         <h2>📄 Full Test Results (JSON)</h2>
         <div class="json-viewer">
             <pre>{json_str}</pre>
@@ -1470,41 +1567,45 @@ def generate_html_report(data: Dict[str, Any], output_path: Path, test_result_js
     # Add full monitoring JSON data
     if data:
         json_str = json.dumps(data, indent=2)
-        html_content += f"""
+        content += f"""
         <h2>📈 Full Monitoring Data (JSON)</h2>
         <div class="json-viewer">
             <pre>{json_str}</pre>
         </div>
 """
     
-    html_content += """
-    </div>
-</body>
-</html>
-"""
-    
-    output_path.write_text(html_content, encoding='utf-8')
+    html = template_path.read_text(encoding='utf-8').replace('{{CONTENT}}', content)
+    output_path.write_text(html, encoding='utf-8')
 
 
 def main() -> int:
     import argparse
-    
-    ap = argparse.ArgumentParser(description="Parse vmstat/pidstat logs and convert to JSON/HTML")
-    ap.add_argument("--vmstat", type=Path, help="vmstat log file path (raw text or JSON)")
-    ap.add_argument("--pidstat", type=Path, help="pidstat log file path (raw text or JSON)")
-    ap.add_argument("--monitoring-json", type=Path, help="Pre-parsed monitoring JSON file (contains vmstat/pidstat)")
+
+    ap = argparse.ArgumentParser(
+        description="Parse vmstat/pidstat logs and convert to JSON/HTML")
+    ap.add_argument("--vmstat", type=Path,
+                    help="vmstat log file path (raw text or JSON)")
+    ap.add_argument("--pidstat", type=Path,
+                    help="pidstat log file path (raw text or JSON)")
+    ap.add_argument("--monitoring-json", type=Path,
+                    help="Pre-parsed monitoring JSON file (contains vmstat/pidstat)")
     ap.add_argument("--output", type=Path, help="Output JSON file path")
     ap.add_argument("--html", type=Path, help="Output HTML report file path")
-    ap.add_argument("--test-result-json", type=Path, help="Test result JSON file to embed in HTML report")
-    ap.add_argument("--process-name", default="ServerLoadTest", help="Process name to filter in pidstat")
-    
+    ap.add_argument("--test-result-json", type=Path,
+                    help="Test result JSON file to embed in HTML report")
+    ap.add_argument("--process-name", default="ServerLoadTest",
+                    help="Process name to filter in pidstat")
+    ap.add_argument("--cpu-cores", type=int, default=1,
+                    help="Number of CPU cores for normalization")
+
     args = ap.parse_args()
-    
+
     result: Dict[str, Any] = {
         "vmstat": [],
         "pidstat": [],
+        "cpu_cores": args.cpu_cores,
     }
-    
+
     # If monitoring-json is provided, load it directly
     if args.monitoring_json:
         try:
@@ -1514,7 +1615,8 @@ def main() -> int:
             result["pidstat"] = monitoring_data.get("pidstat", [])
             print(f"Loaded monitoring data from JSON: {args.monitoring_json}")
         except Exception as e:
-            print(f"Warning: Failed to load monitoring JSON: {e}", file=sys.stderr)
+            print(
+                f"Warning: Failed to load monitoring JSON: {e}", file=sys.stderr)
     else:
         # Otherwise, parse from raw log files
         if args.vmstat:
@@ -1533,7 +1635,7 @@ def main() -> int:
                         result["vmstat"] = parse_vmstat_log(args.vmstat)
             except Exception as e:
                 print(f"Warning: Failed to parse vmstat: {e}", file=sys.stderr)
-        
+
         if args.pidstat:
             # Try to detect if it's JSON or raw text
             try:
@@ -1547,10 +1649,12 @@ def main() -> int:
                         print(f"Loaded pidstat from JSON: {args.pidstat}")
                     else:
                         # Raw text format
-                        result["pidstat"] = parse_pidstat_log(args.pidstat, args.process_name)
+                        result["pidstat"] = parse_pidstat_log(
+                            args.pidstat, args.process_name)
             except Exception as e:
-                print(f"Warning: Failed to parse pidstat: {e}", file=sys.stderr)
-    
+                print(
+                    f"Warning: Failed to parse pidstat: {e}", file=sys.stderr)
+
     # Calculate summary statistics
     if result["vmstat"]:
         vmstat_samples = result["vmstat"]
@@ -1561,7 +1665,7 @@ def main() -> int:
             "avg_cpu_id_pct": sum(s["cpu_id_pct"] for s in vmstat_samples) / len(vmstat_samples) if vmstat_samples else 0.0,
             "peak_memory_free_kb": min(s["memory_free_kb"] for s in vmstat_samples) if vmstat_samples else 0,
         }
-    
+
     if result["pidstat"]:
         pidstat_samples = result["pidstat"]
         result["pidstat_summary"] = {
@@ -1569,17 +1673,17 @@ def main() -> int:
             "avg_cpu_total_pct": sum(s["cpu_total_pct"] for s in pidstat_samples) / len(pidstat_samples) if pidstat_samples else 0.0,
             "peak_cpu_total_pct": max(s["cpu_total_pct"] for s in pidstat_samples) if pidstat_samples else 0.0,
         }
-    
+
     output_json = json.dumps(result, indent=2)
-    
+
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(output_json)
         print(f"Monitoring data saved to: {args.output}")
-    
+
     if args.html:
         args.html.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # Load test result JSON if provided
         test_result_data = None
         if args.test_result_json and args.test_result_json.exists():
@@ -1588,14 +1692,15 @@ def main() -> int:
                     test_result_data = json.load(f)
                 print(f"Loaded test result JSON from: {args.test_result_json}")
             except Exception as e:
-                print(f"Warning: Failed to load test result JSON: {e}", file=sys.stderr)
-        
+                print(
+                    f"Warning: Failed to load test result JSON: {e}", file=sys.stderr)
+
         generate_html_report(result, args.html, test_result_data)
         print(f"HTML report saved to: {args.html}")
-    
+
     if not args.output and not args.html:
         print(output_json)
-    
+
     return 0
 
 

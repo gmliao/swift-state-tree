@@ -1,0 +1,2469 @@
+{
+  "metadata": {
+    "build": {
+      "configuration": "release",
+      "swiftVersion": "Apple Swift version 6.2.3 (swiftlang-6.2.3.3.21 clang-1700.6.3.2)"
+    },
+    "commandLine": [
+      ".build/arm64-apple-macosx/release/ServerLoadTest",
+      "--rooms",
+      "500",
+      "--players-per-room",
+      "5",
+      "--duration-seconds",
+      "60",
+      "--ramp-up-seconds",
+      "30",
+      "--ramp-down-seconds",
+      "10",
+      "--actions-per-player-per-second",
+      "1",
+      "--tui",
+      "false",
+      "--log-level",
+      "error"
+    ],
+    "environment": {
+      "arch": "arm64",
+      "cpuActiveLogicalCores": 8,
+      "cpuLogicalCores": 8,
+      "kernelVersion": "25.2.0",
+      "memoryTotalMB": 16384,
+      "osName": "Darwin"
+    },
+    "git": {
+      "branch": "feat/server-loadtest-tui-json",
+      "commit": "f8b1cc2683314fa5795574af3864f794fc45a327"
+    },
+    "loadTestConfig": {
+      "actionsPerPlayerPerSecond": 1,
+      "description": "No-WebSocket load test using WebSocketTransport with in-process connections; MessagePack for steady-state messages; JSON-only join handshake; re-evaluation recording DISABLED",
+      "enableLiveStateHashRecording": false,
+      "landType": "hero-defense",
+      "logLevel": "error",
+      "phase": 1,
+      "playersPerRoom": 5,
+      "rampDownSeconds": 10,
+      "rampUpSeconds": 30,
+      "rooms": 500,
+      "steadySeconds": 60,
+      "totalSeconds": 100,
+      "transportEncoding": {
+        "message": "messagepack",
+        "stateUpdate": "opcodeMessagePack"
+      },
+      "tui": false
+    },
+    "timestampUTC": "2026-01-28T11:37:18.784Z",
+    "systemMonitoring": {
+      "vmstat": [],
+      "pidstat": [
+        {
+          "pid": 54551,
+          "cpu_total_pct": 0.0,
+          "timestamp_epoch_s": 1769600098
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 5.9,
+          "timestamp_epoch_s": 1769600099
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 4.2,
+          "timestamp_epoch_s": 1769600100
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 3.9,
+          "timestamp_epoch_s": 1769600102
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 1.0,
+          "timestamp_epoch_s": 1769600103
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 1.5,
+          "timestamp_epoch_s": 1769600104
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 1.0,
+          "timestamp_epoch_s": 1769600105
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 0.6,
+          "timestamp_epoch_s": 1769600106
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 1.9,
+          "timestamp_epoch_s": 1769600107
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 0.5,
+          "timestamp_epoch_s": 1769600108
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 0.3,
+          "timestamp_epoch_s": 1769600109
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 2.1,
+          "timestamp_epoch_s": 1769600110
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 2.1,
+          "timestamp_epoch_s": 1769600111
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 4.5,
+          "timestamp_epoch_s": 1769600112
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 0.4,
+          "timestamp_epoch_s": 1769600113
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 1.6,
+          "timestamp_epoch_s": 1769600114
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 89.7,
+          "timestamp_epoch_s": 1769600115
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 94.2,
+          "timestamp_epoch_s": 1769600116
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 96.0,
+          "timestamp_epoch_s": 1769600117
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 94.9,
+          "timestamp_epoch_s": 1769600118
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 13.1,
+          "timestamp_epoch_s": 1769600119
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 32.3,
+          "timestamp_epoch_s": 1769600120
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 57.4,
+          "timestamp_epoch_s": 1769600121
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 100.6,
+          "timestamp_epoch_s": 1769600122
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 114.2,
+          "timestamp_epoch_s": 1769600123
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 123.5,
+          "timestamp_epoch_s": 1769600124
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 199.5,
+          "timestamp_epoch_s": 1769600125
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 237.4,
+          "timestamp_epoch_s": 1769600126
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 309.3,
+          "timestamp_epoch_s": 1769600127
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 321.1,
+          "timestamp_epoch_s": 1769600128
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 338.1,
+          "timestamp_epoch_s": 1769600129
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 304.2,
+          "timestamp_epoch_s": 1769600130
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 381.5,
+          "timestamp_epoch_s": 1769600131
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 374.5,
+          "timestamp_epoch_s": 1769600132
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 374.4,
+          "timestamp_epoch_s": 1769600133
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 389.1,
+          "timestamp_epoch_s": 1769600134
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 391.6,
+          "timestamp_epoch_s": 1769600135
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 403.1,
+          "timestamp_epoch_s": 1769600136
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 418.5,
+          "timestamp_epoch_s": 1769600137
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 316.0,
+          "timestamp_epoch_s": 1769600138
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 403.1,
+          "timestamp_epoch_s": 1769600139
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 442.7,
+          "timestamp_epoch_s": 1769600140
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 377.7,
+          "timestamp_epoch_s": 1769600141
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 441.3,
+          "timestamp_epoch_s": 1769600142
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 429.0,
+          "timestamp_epoch_s": 1769600144
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 425.5,
+          "timestamp_epoch_s": 1769600145
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 441.8,
+          "timestamp_epoch_s": 1769600146
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 465.6,
+          "timestamp_epoch_s": 1769600147
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 477.3,
+          "timestamp_epoch_s": 1769600148
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 490.1,
+          "timestamp_epoch_s": 1769600149
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 455.0,
+          "timestamp_epoch_s": 1769600150
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 470.3,
+          "timestamp_epoch_s": 1769600151
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 373.8,
+          "timestamp_epoch_s": 1769600152
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 341.5,
+          "timestamp_epoch_s": 1769600153
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 126.0,
+          "timestamp_epoch_s": 1769600154
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 387.3,
+          "timestamp_epoch_s": 1769600155
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 356.5,
+          "timestamp_epoch_s": 1769600156
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 502.6,
+          "timestamp_epoch_s": 1769600157
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 486.8,
+          "timestamp_epoch_s": 1769600158
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 538.5,
+          "timestamp_epoch_s": 1769600159
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 370.9,
+          "timestamp_epoch_s": 1769600160
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 476.3,
+          "timestamp_epoch_s": 1769600161
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 518.5,
+          "timestamp_epoch_s": 1769600162
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 501.3,
+          "timestamp_epoch_s": 1769600163
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 493.0,
+          "timestamp_epoch_s": 1769600164
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 508.5,
+          "timestamp_epoch_s": 1769600165
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 478.9,
+          "timestamp_epoch_s": 1769600167
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 511.0,
+          "timestamp_epoch_s": 1769600168
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 503.6,
+          "timestamp_epoch_s": 1769600169
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 521.2,
+          "timestamp_epoch_s": 1769600170
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 503.3,
+          "timestamp_epoch_s": 1769600171
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 520.8,
+          "timestamp_epoch_s": 1769600172
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 505.1,
+          "timestamp_epoch_s": 1769600173
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 523.9,
+          "timestamp_epoch_s": 1769600174
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 333.8,
+          "timestamp_epoch_s": 1769600175
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 496.3,
+          "timestamp_epoch_s": 1769600176
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 527.1,
+          "timestamp_epoch_s": 1769600177
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 529.7,
+          "timestamp_epoch_s": 1769600178
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 509.4,
+          "timestamp_epoch_s": 1769600179
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 545.8,
+          "timestamp_epoch_s": 1769600180
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 524.2,
+          "timestamp_epoch_s": 1769600181
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 499.8,
+          "timestamp_epoch_s": 1769600182
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 467.3,
+          "timestamp_epoch_s": 1769600183
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 473.6,
+          "timestamp_epoch_s": 1769600184
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 448.0,
+          "timestamp_epoch_s": 1769600185
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 482.5,
+          "timestamp_epoch_s": 1769600186
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 506.4,
+          "timestamp_epoch_s": 1769600187
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 524.7,
+          "timestamp_epoch_s": 1769600188
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 513.0,
+          "timestamp_epoch_s": 1769600189
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 533.0,
+          "timestamp_epoch_s": 1769600190
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 533.1,
+          "timestamp_epoch_s": 1769600191
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 525.6,
+          "timestamp_epoch_s": 1769600192
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 518.0,
+          "timestamp_epoch_s": 1769600193
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 494.0,
+          "timestamp_epoch_s": 1769600194
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 231.5,
+          "timestamp_epoch_s": 1769600196
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 458.8,
+          "timestamp_epoch_s": 1769600197
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 522.5,
+          "timestamp_epoch_s": 1769600198
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 539.9,
+          "timestamp_epoch_s": 1769600199
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 531.7,
+          "timestamp_epoch_s": 1769600200
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 529.3,
+          "timestamp_epoch_s": 1769600201
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 536.9,
+          "timestamp_epoch_s": 1769600202
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 536.1,
+          "timestamp_epoch_s": 1769600203
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 542.8,
+          "timestamp_epoch_s": 1769600204
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 519.2,
+          "timestamp_epoch_s": 1769600205
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 506.4,
+          "timestamp_epoch_s": 1769600206
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 511.9,
+          "timestamp_epoch_s": 1769600207
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 510.8,
+          "timestamp_epoch_s": 1769600208
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 510.8,
+          "timestamp_epoch_s": 1769600209
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 482.8,
+          "timestamp_epoch_s": 1769600210
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 506.6,
+          "timestamp_epoch_s": 1769600211
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 505.3,
+          "timestamp_epoch_s": 1769600212
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 527.0,
+          "timestamp_epoch_s": 1769600213
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 518.1,
+          "timestamp_epoch_s": 1769600214
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 511.1,
+          "timestamp_epoch_s": 1769600215
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 485.1,
+          "timestamp_epoch_s": 1769600216
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 522.4,
+          "timestamp_epoch_s": 1769600217
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 518.6,
+          "timestamp_epoch_s": 1769600218
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 532.6,
+          "timestamp_epoch_s": 1769600219
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 499.3,
+          "timestamp_epoch_s": 1769600220
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 470.1,
+          "timestamp_epoch_s": 1769600221
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 498.6,
+          "timestamp_epoch_s": 1769600222
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 489.9,
+          "timestamp_epoch_s": 1769600224
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 366.1,
+          "timestamp_epoch_s": 1769600225
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 522.7,
+          "timestamp_epoch_s": 1769600226
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 500.1,
+          "timestamp_epoch_s": 1769600227
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 532.3,
+          "timestamp_epoch_s": 1769600228
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 517.3,
+          "timestamp_epoch_s": 1769600229
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 520.5,
+          "timestamp_epoch_s": 1769600230
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 505.3,
+          "timestamp_epoch_s": 1769600231
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 464.2,
+          "timestamp_epoch_s": 1769600232
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 459.3,
+          "timestamp_epoch_s": 1769600233
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 447.2,
+          "timestamp_epoch_s": 1769600234
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 469.4,
+          "timestamp_epoch_s": 1769600235
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 476.0,
+          "timestamp_epoch_s": 1769600236
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 458.2,
+          "timestamp_epoch_s": 1769600237
+        },
+        {
+          "pid": 54551,
+          "cpu_total_pct": 451.4,
+          "timestamp_epoch_s": 1769600238
+        }
+      ],
+      "cpu_cores": 8,
+      "pidstat_summary": {
+        "sample_count": 136,
+        "avg_cpu_total_pct": 380.18970588235294,
+        "peak_cpu_total_pct": 545.8
+      }
+    }
+  },
+  "results": {
+    "seconds": [
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 0,
+        "estimatedSyncsPerSecond": 0,
+        "estimatedTicksPerSecond": 0,
+        "estimatedUpdatesPerSecond": 0,
+        "phase": "ramp-up",
+        "playersActiveExpected": 0,
+        "recvBytesPerSecond": 0,
+        "recvMessagesPerSecond": 0,
+        "roomsActiveExpected": 0,
+        "roomsCreated": 0,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 0,
+        "sentMessagesPerSecond": 0,
+        "t": 0
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 80.36546184738955,
+        "estimatedSyncsPerSecond": 170,
+        "estimatedTicksPerSecond": 340,
+        "estimatedUpdatesPerSecond": 510,
+        "phase": "ramp-up",
+        "playersActiveExpected": 83,
+        "recvBytesPerSecond": 69155,
+        "recvMessagesPerSecond": 913,
+        "roomsActiveExpected": 17,
+        "roomsCreated": 17,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 10889,
+        "sentMessagesPerSecond": 83,
+        "t": 1
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 71.92833662064432,
+        "estimatedSyncsPerSecond": 340,
+        "estimatedTicksPerSecond": 680,
+        "estimatedUpdatesPerSecond": 1020,
+        "phase": "ramp-up",
+        "playersActiveExpected": 166,
+        "recvBytesPerSecond": 127723,
+        "recvMessagesPerSecond": 1963,
+        "roomsActiveExpected": 34,
+        "roomsCreated": 34,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11039,
+        "sentMessagesPerSecond": 83,
+        "t": 2
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 500,
+        "estimatedTicksPerSecond": 1000,
+        "estimatedUpdatesPerSecond": 1500,
+        "phase": "ramp-up",
+        "playersActiveExpected": 249,
+        "recvBytesPerSecond": 951101,
+        "recvMessagesPerSecond": 17325,
+        "roomsActiveExpected": 50,
+        "roomsCreated": 50,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11039,
+        "sentMessagesPerSecond": 83,
+        "t": 3
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 670,
+        "estimatedTicksPerSecond": 1340,
+        "estimatedUpdatesPerSecond": 2010,
+        "phase": "ramp-up",
+        "playersActiveExpected": 332,
+        "recvBytesPerSecond": 2446868,
+        "recvMessagesPerSecond": 45584,
+        "roomsActiveExpected": 67,
+        "roomsCreated": 67,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11039,
+        "sentMessagesPerSecond": 83,
+        "t": 4
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 830,
+        "estimatedTicksPerSecond": 1660,
+        "estimatedUpdatesPerSecond": 2490,
+        "phase": "ramp-up",
+        "playersActiveExpected": 415,
+        "recvBytesPerSecond": 4206492,
+        "recvMessagesPerSecond": 77809,
+        "roomsActiveExpected": 83,
+        "roomsCreated": 83,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11039,
+        "sentMessagesPerSecond": 83,
+        "t": 5
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 1000,
+        "estimatedTicksPerSecond": 2000,
+        "estimatedUpdatesPerSecond": 3000,
+        "phase": "ramp-up",
+        "playersActiveExpected": 498,
+        "recvBytesPerSecond": 6420188,
+        "recvMessagesPerSecond": 119599,
+        "roomsActiveExpected": 100,
+        "roomsCreated": 100,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11039,
+        "sentMessagesPerSecond": 83,
+        "t": 6
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 1170,
+        "estimatedTicksPerSecond": 2340,
+        "estimatedUpdatesPerSecond": 3510,
+        "phase": "ramp-up",
+        "playersActiveExpected": 581,
+        "recvBytesPerSecond": 11007315,
+        "recvMessagesPerSecond": 205482,
+        "roomsActiveExpected": 117,
+        "roomsCreated": 117,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11282,
+        "sentMessagesPerSecond": 83,
+        "t": 7
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 1330,
+        "estimatedTicksPerSecond": 2660,
+        "estimatedUpdatesPerSecond": 3990,
+        "phase": "ramp-up",
+        "playersActiveExpected": 664,
+        "recvBytesPerSecond": 15738691,
+        "recvMessagesPerSecond": 296142,
+        "roomsActiveExpected": 133,
+        "roomsCreated": 133,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11288,
+        "sentMessagesPerSecond": 83,
+        "t": 8
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 1500,
+        "estimatedTicksPerSecond": 3000,
+        "estimatedUpdatesPerSecond": 4500,
+        "phase": "ramp-up",
+        "playersActiveExpected": 747,
+        "recvBytesPerSecond": 18667253,
+        "recvMessagesPerSecond": 350804,
+        "roomsActiveExpected": 150,
+        "roomsCreated": 150,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11288,
+        "sentMessagesPerSecond": 83,
+        "t": 9
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 1660,
+        "estimatedTicksPerSecond": 3320,
+        "estimatedUpdatesPerSecond": 4980,
+        "phase": "ramp-up",
+        "playersActiveExpected": 830,
+        "recvBytesPerSecond": 15261538,
+        "recvMessagesPerSecond": 285213,
+        "roomsActiveExpected": 166,
+        "roomsCreated": 166,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11288,
+        "sentMessagesPerSecond": 83,
+        "t": 10
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 1830,
+        "estimatedTicksPerSecond": 3660,
+        "estimatedUpdatesPerSecond": 5490,
+        "phase": "ramp-up",
+        "playersActiveExpected": 913,
+        "recvBytesPerSecond": 18758534,
+        "recvMessagesPerSecond": 350811,
+        "roomsActiveExpected": 183,
+        "roomsCreated": 183,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11288,
+        "sentMessagesPerSecond": 83,
+        "t": 11
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 2000,
+        "estimatedTicksPerSecond": 4000,
+        "estimatedUpdatesPerSecond": 6000,
+        "phase": "ramp-up",
+        "playersActiveExpected": 996,
+        "recvBytesPerSecond": 17737712,
+        "recvMessagesPerSecond": 331994,
+        "roomsActiveExpected": 200,
+        "roomsCreated": 200,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11288,
+        "sentMessagesPerSecond": 83,
+        "t": 12
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 2160,
+        "estimatedTicksPerSecond": 4320,
+        "estimatedUpdatesPerSecond": 6480,
+        "phase": "ramp-up",
+        "playersActiveExpected": 1079,
+        "recvBytesPerSecond": 20212241,
+        "recvMessagesPerSecond": 375712,
+        "roomsActiveExpected": 216,
+        "roomsCreated": 216,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11288,
+        "sentMessagesPerSecond": 83,
+        "t": 13
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 2330,
+        "estimatedTicksPerSecond": 4660,
+        "estimatedUpdatesPerSecond": 6990,
+        "phase": "ramp-up",
+        "playersActiveExpected": 1162,
+        "recvBytesPerSecond": 16595627,
+        "recvMessagesPerSecond": 308671,
+        "roomsActiveExpected": 233,
+        "roomsCreated": 233,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11288,
+        "sentMessagesPerSecond": 83,
+        "t": 14
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 2490,
+        "estimatedTicksPerSecond": 4980,
+        "estimatedUpdatesPerSecond": 7470,
+        "phase": "ramp-up",
+        "playersActiveExpected": 1245,
+        "recvBytesPerSecond": 14067138,
+        "recvMessagesPerSecond": 261232,
+        "roomsActiveExpected": 249,
+        "roomsCreated": 249,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11288,
+        "sentMessagesPerSecond": 83,
+        "t": 15
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 2660,
+        "estimatedTicksPerSecond": 5320,
+        "estimatedUpdatesPerSecond": 7980,
+        "phase": "ramp-up",
+        "playersActiveExpected": 1328,
+        "recvBytesPerSecond": 19117386,
+        "recvMessagesPerSecond": 356061,
+        "roomsActiveExpected": 266,
+        "roomsCreated": 266,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11288,
+        "sentMessagesPerSecond": 83,
+        "t": 16
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 2830,
+        "estimatedTicksPerSecond": 5660,
+        "estimatedUpdatesPerSecond": 8490,
+        "phase": "ramp-up",
+        "playersActiveExpected": 1411,
+        "recvBytesPerSecond": 14414302,
+        "recvMessagesPerSecond": 268505,
+        "roomsActiveExpected": 283,
+        "roomsCreated": 283,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11288,
+        "sentMessagesPerSecond": 83,
+        "t": 17
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 2990,
+        "estimatedTicksPerSecond": 5980,
+        "estimatedUpdatesPerSecond": 8970,
+        "phase": "ramp-up",
+        "playersActiveExpected": 1494,
+        "recvBytesPerSecond": 15216380,
+        "recvMessagesPerSecond": 283905,
+        "roomsActiveExpected": 299,
+        "roomsCreated": 299,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11288,
+        "sentMessagesPerSecond": 83,
+        "t": 18
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 3160,
+        "estimatedTicksPerSecond": 6320,
+        "estimatedUpdatesPerSecond": 9480,
+        "phase": "ramp-up",
+        "playersActiveExpected": 1577,
+        "recvBytesPerSecond": 14942694,
+        "recvMessagesPerSecond": 278611,
+        "roomsActiveExpected": 316,
+        "roomsCreated": 316,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11288,
+        "sentMessagesPerSecond": 83,
+        "t": 19
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 3320,
+        "estimatedTicksPerSecond": 6640,
+        "estimatedUpdatesPerSecond": 9960,
+        "phase": "ramp-up",
+        "playersActiveExpected": 1660,
+        "recvBytesPerSecond": 7499418,
+        "recvMessagesPerSecond": 139071,
+        "roomsActiveExpected": 332,
+        "roomsCreated": 332,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11288,
+        "sentMessagesPerSecond": 83,
+        "t": 20
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 3490,
+        "estimatedTicksPerSecond": 6980,
+        "estimatedUpdatesPerSecond": 10470,
+        "phase": "ramp-up",
+        "playersActiveExpected": 1743,
+        "recvBytesPerSecond": 10889668,
+        "recvMessagesPerSecond": 202365,
+        "roomsActiveExpected": 349,
+        "roomsCreated": 349,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11288,
+        "sentMessagesPerSecond": 83,
+        "t": 21
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 3660,
+        "estimatedTicksPerSecond": 7320,
+        "estimatedUpdatesPerSecond": 10980,
+        "phase": "ramp-up",
+        "playersActiveExpected": 1826,
+        "recvBytesPerSecond": 13447620,
+        "recvMessagesPerSecond": 249659,
+        "roomsActiveExpected": 366,
+        "roomsCreated": 366,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11288,
+        "sentMessagesPerSecond": 83,
+        "t": 22
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 3820,
+        "estimatedTicksPerSecond": 7640,
+        "estimatedUpdatesPerSecond": 11460,
+        "phase": "ramp-up",
+        "playersActiveExpected": 1909,
+        "recvBytesPerSecond": 4451742,
+        "recvMessagesPerSecond": 81688,
+        "roomsActiveExpected": 382,
+        "roomsCreated": 382,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11288,
+        "sentMessagesPerSecond": 83,
+        "t": 23
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 3990,
+        "estimatedTicksPerSecond": 7980,
+        "estimatedUpdatesPerSecond": 11970,
+        "phase": "ramp-up",
+        "playersActiveExpected": 1992,
+        "recvBytesPerSecond": 10730569,
+        "recvMessagesPerSecond": 198936,
+        "roomsActiveExpected": 399,
+        "roomsCreated": 399,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11288,
+        "sentMessagesPerSecond": 83,
+        "t": 24
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 4150,
+        "estimatedTicksPerSecond": 8300,
+        "estimatedUpdatesPerSecond": 12450,
+        "phase": "ramp-up",
+        "playersActiveExpected": 2075,
+        "recvBytesPerSecond": 9010057,
+        "recvMessagesPerSecond": 167114,
+        "roomsActiveExpected": 415,
+        "roomsCreated": 415,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11288,
+        "sentMessagesPerSecond": 83,
+        "t": 25
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 4320,
+        "estimatedTicksPerSecond": 8640,
+        "estimatedUpdatesPerSecond": 12960,
+        "phase": "ramp-up",
+        "playersActiveExpected": 2075,
+        "recvBytesPerSecond": 8288636,
+        "recvMessagesPerSecond": 153615,
+        "roomsActiveExpected": 415,
+        "roomsCreated": 432,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11288,
+        "sentMessagesPerSecond": 83,
+        "t": 26
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 4320,
+        "estimatedTicksPerSecond": 8640,
+        "estimatedUpdatesPerSecond": 12960,
+        "phase": "ramp-up",
+        "playersActiveExpected": 2158,
+        "recvBytesPerSecond": 9033441,
+        "recvMessagesPerSecond": 167616,
+        "roomsActiveExpected": 432,
+        "roomsCreated": 432,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 0,
+        "sentMessagesPerSecond": 0,
+        "t": 27
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 4490,
+        "estimatedTicksPerSecond": 8980,
+        "estimatedUpdatesPerSecond": 13470,
+        "phase": "ramp-up",
+        "playersActiveExpected": 2241,
+        "recvBytesPerSecond": 8240567,
+        "recvMessagesPerSecond": 152956,
+        "roomsActiveExpected": 449,
+        "roomsCreated": 449,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11288,
+        "sentMessagesPerSecond": 83,
+        "t": 28
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 4650,
+        "estimatedTicksPerSecond": 9300,
+        "estimatedUpdatesPerSecond": 13950,
+        "phase": "ramp-up",
+        "playersActiveExpected": 2324,
+        "recvBytesPerSecond": 7612276,
+        "recvMessagesPerSecond": 141140,
+        "roomsActiveExpected": 465,
+        "roomsCreated": 465,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11288,
+        "sentMessagesPerSecond": 83,
+        "t": 29
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 4820,
+        "estimatedTicksPerSecond": 9640,
+        "estimatedUpdatesPerSecond": 14460,
+        "phase": "steady",
+        "playersActiveExpected": 2407,
+        "recvBytesPerSecond": 6275582,
+        "recvMessagesPerSecond": 116082,
+        "roomsActiveExpected": 482,
+        "roomsCreated": 482,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11288,
+        "sentMessagesPerSecond": 83,
+        "t": 30
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 4980,
+        "estimatedTicksPerSecond": 9960,
+        "estimatedUpdatesPerSecond": 14940,
+        "phase": "steady",
+        "playersActiveExpected": 2490,
+        "recvBytesPerSecond": 8869978,
+        "recvMessagesPerSecond": 164426,
+        "roomsActiveExpected": 498,
+        "roomsCreated": 498,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 11288,
+        "sentMessagesPerSecond": 83,
+        "t": 31
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 4544646,
+        "recvMessagesPerSecond": 83645,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 233860,
+        "sentMessagesPerSecond": 2510,
+        "t": 32
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 3667825,
+        "recvMessagesPerSecond": 67694,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 33
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 4834856,
+        "recvMessagesPerSecond": 89564,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 0,
+        "sentMessagesPerSecond": 0,
+        "t": 34
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 681946,
+        "recvMessagesPerSecond": 12592,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 35
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 5744766,
+        "recvMessagesPerSecond": 107004,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 0,
+        "sentMessagesPerSecond": 0,
+        "t": 36
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 8341941,
+        "recvMessagesPerSecond": 155602,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 37
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 6633798,
+        "recvMessagesPerSecond": 123279,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 38
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 9059897,
+        "recvMessagesPerSecond": 168168,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 39
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 2696057,
+        "recvMessagesPerSecond": 50080,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 40
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7111506,
+        "recvMessagesPerSecond": 132415,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 0,
+        "sentMessagesPerSecond": 0,
+        "t": 41
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 8348042,
+        "recvMessagesPerSecond": 155618,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 42
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7072590,
+        "recvMessagesPerSecond": 131667,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 43
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7495796,
+        "recvMessagesPerSecond": 139892,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 44
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 6262980,
+        "recvMessagesPerSecond": 116535,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 45
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7849090,
+        "recvMessagesPerSecond": 146091,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 46
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7573161,
+        "recvMessagesPerSecond": 140394,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 47
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7150536,
+        "recvMessagesPerSecond": 132563,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 0,
+        "sentMessagesPerSecond": 0,
+        "t": 48
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 8983913,
+        "recvMessagesPerSecond": 167353,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 49
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 6338665,
+        "recvMessagesPerSecond": 117437,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 50
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7520249,
+        "recvMessagesPerSecond": 138819,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 51
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 9001536,
+        "recvMessagesPerSecond": 167373,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 52
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 6827202,
+        "recvMessagesPerSecond": 126522,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 53
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 6135953,
+        "recvMessagesPerSecond": 114041,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 54
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7603060,
+        "recvMessagesPerSecond": 141616,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 55
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7861475,
+        "recvMessagesPerSecond": 145775,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 0,
+        "sentMessagesPerSecond": 0,
+        "t": 56
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 8373355,
+        "recvMessagesPerSecond": 154982,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 57
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 8064696,
+        "recvMessagesPerSecond": 149573,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 58
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 9053593,
+        "recvMessagesPerSecond": 166949,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 59
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7033752,
+        "recvMessagesPerSecond": 129637,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 60
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7816975,
+        "recvMessagesPerSecond": 144911,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 61
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 5875507,
+        "recvMessagesPerSecond": 108169,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 62
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 3193386,
+        "recvMessagesPerSecond": 58919,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 63
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 6121913,
+        "recvMessagesPerSecond": 113251,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 0,
+        "sentMessagesPerSecond": 0,
+        "t": 64
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7498519,
+        "recvMessagesPerSecond": 139072,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 65
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 5977571,
+        "recvMessagesPerSecond": 110128,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 66
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7763137,
+        "recvMessagesPerSecond": 143774,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 67
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 8208674,
+        "recvMessagesPerSecond": 152056,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 68
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7884935,
+        "recvMessagesPerSecond": 145167,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 69
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 8295688,
+        "recvMessagesPerSecond": 153322,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 70
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7458561,
+        "recvMessagesPerSecond": 137017,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 0,
+        "sentMessagesPerSecond": 0,
+        "t": 71
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 6982238,
+        "recvMessagesPerSecond": 128825,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 72
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 1760354,
+        "recvMessagesPerSecond": 32447,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 73
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 6282725,
+        "recvMessagesPerSecond": 115746,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 0,
+        "sentMessagesPerSecond": 0,
+        "t": 74
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7705690,
+        "recvMessagesPerSecond": 142099,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 75
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 6394747,
+        "recvMessagesPerSecond": 116623,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 76
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7815467,
+        "recvMessagesPerSecond": 143697,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 77
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7756877,
+        "recvMessagesPerSecond": 143235,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 78
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 8269614,
+        "recvMessagesPerSecond": 152700,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 79
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7765737,
+        "recvMessagesPerSecond": 143052,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 0,
+        "sentMessagesPerSecond": 0,
+        "t": 80
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7748868,
+        "recvMessagesPerSecond": 142563,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 81
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 9341421,
+        "recvMessagesPerSecond": 172322,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 82
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 5876142,
+        "recvMessagesPerSecond": 108188,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 83
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7639078,
+        "recvMessagesPerSecond": 140602,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 84
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 8264840,
+        "recvMessagesPerSecond": 152421,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 85
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7652121,
+        "recvMessagesPerSecond": 141001,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 86
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 6990072,
+        "recvMessagesPerSecond": 128351,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 87
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 6180537,
+        "recvMessagesPerSecond": 113159,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 0,
+        "sentMessagesPerSecond": 0,
+        "t": 88
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "steady",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 8390214,
+        "recvMessagesPerSecond": 154153,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 89
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "ramp-down",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 6643773,
+        "recvMessagesPerSecond": 122340,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 90
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "ramp-down",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 6603016,
+        "recvMessagesPerSecond": 121155,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 91
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "ramp-down",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7186297,
+        "recvMessagesPerSecond": 131236,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 92
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "ramp-down",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 5847654,
+        "recvMessagesPerSecond": 107135,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 93
+      },
+      {
+        "actionsSentThisSecond": 0,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "ramp-down",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7497648,
+        "recvMessagesPerSecond": 137274,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 94
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "ramp-down",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7652020,
+        "recvMessagesPerSecond": 140251,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 0,
+        "sentMessagesPerSecond": 0,
+        "t": 95
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "ramp-down",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 8098521,
+        "recvMessagesPerSecond": 149046,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 96
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "ramp-down",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 6703752,
+        "recvMessagesPerSecond": 123132,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 97
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "ramp-down",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 6454694,
+        "recvMessagesPerSecond": 118365,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 98
+      },
+      {
+        "actionsSentThisSecond": 2500,
+        "avgMessageSize": 61.9325,
+        "estimatedSyncsPerSecond": 5000,
+        "estimatedTicksPerSecond": 10000,
+        "estimatedUpdatesPerSecond": 15000,
+        "phase": "ramp-down",
+        "playersActiveExpected": 2500,
+        "recvBytesPerSecond": 7087077,
+        "recvMessagesPerSecond": 130451,
+        "roomsActiveExpected": 500,
+        "roomsCreated": 500,
+        "roomsTarget": 500,
+        "sentBytesPerSecond": 232500,
+        "sentMessagesPerSecond": 2500,
+        "t": 99
+      }
+    ],
+    "summary": {
+      "avgRecvBytesPerSecond": 9467328.46,
+      "avgRecvMessagesPerSecond": 175394.94,
+      "avgSentBytesPerSecond": 138233.5,
+      "avgSentMessagesPerSecond": 1475,
+      "playersCreated": 2500,
+      "rampDownSeconds": 10,
+      "rampUpSeconds": 30,
+      "roomsCreated": 500,
+      "roomsTarget": 500,
+      "steadySeconds": 60,
+      "totalSeconds": 100,
+      "totalSentBytes": 13823350,
+      "totalSentMessages": 147500
+    }
+  }
+}

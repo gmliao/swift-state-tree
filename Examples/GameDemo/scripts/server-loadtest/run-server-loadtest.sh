@@ -1,15 +1,17 @@
 #!/bin/bash
-# ServerLoadTest runner with external system monitoring
-# Uses pidstat/vmstat to avoid blocking system calls in the test process
+# ServerLoadTest runner with optional external system monitoring.
+# When monitoring is enabled, uses pidstat/vmstat (Linux) or ps sampling (macOS)
+# so that metrics are collected outside the test process.
 #
-# Note: This script requires bash (not sh) because it uses bash-specific features:
-#   - [[ ]] conditional expressions (sh only supports [ ])
-#   - $OSTYPE variable (bash-specific)
-#   - ${BASH_SOURCE[0]} for script path detection
-#   - Pattern matching with == (bash-specific)
+# Script structure:
+#   1. Parse options (--rooms, --no-monitoring, etc.)
+#   2. Start system monitoring in background (if not --no-monitoring)
+#   3. Run swift run ServerLoadTest (foreground, tee to temp log)
+#   4. Stop monitoring, parse logs to JSON/HTML, merge into test result
 #
-# To run: bash run-server-loadtest.sh [options]
-# Or make it executable: chmod +x run-server-loadtest.sh && ./run-server-loadtest.sh [options]
+# Requires bash (not sh): [[ ]], ${BASH_SOURCE[0]}, arrays. Run:
+#   bash run-server-loadtest.sh [options]
+#   ./run-server-loadtest.sh [options]   # after chmod +x
 
 set -e
 
@@ -58,6 +60,10 @@ while [[ $# -gt 0 ]]; do
         --log-level)
             LOG_LEVEL="$2"
             shift 2
+            ;;
+        --no-monitoring)
+            ENABLE_MONITORING=false
+            shift
             ;;
         --build-mode)
             BUILD_MODE="$2"
@@ -141,7 +147,6 @@ trap cleanup EXIT
 # Start system monitoring (vmstat for system-wide, will add pidstat after test starts)
 VMSTAT_PID=""
 PIDSTAT_PID=""
-TOP_PID=""
 PS_SAMPLER_PID=""
 
 # Detect OS
@@ -205,15 +210,23 @@ if [ "$ENABLE_MONITORING" = "true" ]; then
         # macOS: System-wide monitoring disabled (vmstat/pidstat are Linux-only tools)
         # macOS alternatives (top/iostat) have higher overhead and less accurate data
         # For accurate system-wide monitoring, run tests on Linux
-        echo "⚠️  System-wide monitoring disabled on macOS (use Linux for accurate monitoring)"
-        echo "  Note: macOS doesn't have Linux's vmstat/pidstat (sysstat package)"
-        echo "  macOS alternatives (top/iostat) have higher overhead and less accurate data"
-        echo "  Process CPU monitoring will use ps sampling on macOS"
+        # macOS: System-wide monitoring limited
+        # Note: macOS doesn't have Linux's vmstat/pidstat (sysstat package)
+        # Using ps sampling for process CPU monitoring
+        :
     fi
 fi
 
+# Detect CPU cores for normalization
+CPU_CORES=""
+if [ "$OS_TYPE" = "Darwin" ]; then
+    CPU_CORES=$(sysctl -n hw.ncpu 2>/dev/null || echo "1")
+elif [ "$OS_TYPE" = "Linux" ]; then
+    CPU_CORES=$(nproc 2>/dev/null || echo "1")
+fi
+
 # Start the load test
-echo "Starting ServerLoadTest..."
+echo "Starting ServerLoadTest (Client Simulator)..."
 echo "  Rooms: $ROOMS"
 echo "  Players per room: $PLAYERS_PER_ROOM"
 echo "  Duration: $DURATION_SECONDS seconds"
@@ -269,7 +282,7 @@ else
     # Fallback: use results directory at GameDemo/results/server-loadtest
     RESULTS_DIR="$GAMEDEMO_ROOT/results/server-loadtest"
     mkdir -p "$RESULTS_DIR"
-    TIMESTAMP=$(date -u +"%Y-%m-%dT%H-%M-%S.%3NZ")
+    TIMESTAMP=$(date -u +"%Y-%m-%dT%H-%M-%SZ")
     MONITORING_JSON_FINAL="$RESULTS_DIR/monitoring-${TIMESTAMP}.json"
     MONITORING_HTML_FINAL="$RESULTS_DIR/monitoring-${TIMESTAMP}.html"
 fi
@@ -278,39 +291,38 @@ if [ $TEST_EXIT_CODE -ne 0 ]; then
     echo "Warning: ServerLoadTest exited with code $TEST_EXIT_CODE"
 fi
 
-# Stop monitoring
-echo ""
-echo "Stopping system monitoring..."
-if [ -n "$PIDSTAT_PID" ]; then
-    kill "$PIDSTAT_PID" 2>/dev/null || true
-    wait "$PIDSTAT_PID" 2>/dev/null || true
-fi
-if [ -n "$VMSTAT_PID" ]; then
-    kill "$VMSTAT_PID" 2>/dev/null || true
-    wait "$VMSTAT_PID" 2>/dev/null || true
-fi
-if [ -n "$TOP_PID" ]; then
-    kill "$TOP_PID" 2>/dev/null || true
-    wait "$TOP_PID" 2>/dev/null || true
+# Stop monitoring (no-op if monitoring was disabled)
+if [ "$ENABLE_MONITORING" = "true" ]; then
+    echo ""
+    echo "Stopping system monitoring..."
+    if [ -n "$PIDSTAT_PID" ]; then
+        kill "$PIDSTAT_PID" 2>/dev/null || true
+        wait "$PIDSTAT_PID" 2>/dev/null || true
+    fi
+    if [ -n "$VMSTAT_PID" ]; then
+        kill "$VMSTAT_PID" 2>/dev/null || true
+        wait "$VMSTAT_PID" 2>/dev/null || true
+    fi
+    if [ -n "$PS_SAMPLER_PID" ]; then
+        kill "$PS_SAMPLER_PID" 2>/dev/null || true
+        wait "$PS_SAMPLER_PID" 2>/dev/null || true
+    fi
 fi
 
-# Parse monitoring data to JSON
+# Parse monitoring data to JSON (only when monitoring was enabled)
+MONITORING_JSON_TEMP="$TEMP_DIR/monitoring.json"
+PARSE_SCRIPT="$GAMEDEMO_ROOT/scripts/server-loadtest/parse_monitoring.py"
+
+if [ "$ENABLE_MONITORING" = "true" ]; then
 echo ""
 echo "Converting monitoring data to JSON..."
-MONITORING_JSON_TEMP="$TEMP_DIR/monitoring.json"
-
-PARSE_SCRIPT="$GAMEDEMO_ROOT/scripts/server-loadtest/parse_monitoring.py"
 if [ -f "$PARSE_SCRIPT" ]; then
-    # Build parse command with optional test result JSON
-    # Note: On macOS, vmstat.log and pidstat.csv may be empty (monitoring disabled)
-    PARSE_CMD="python3 \"$PARSE_SCRIPT\" --vmstat \"$TEMP_DIR/vmstat.log\" --pidstat \"$PIDSTAT_LOG\" --output \"$MONITORING_JSON_TEMP\" --html \"$MONITORING_HTML_FINAL\" --process-name \"ServerLoadTest\""
-    
-    # Add test result JSON if available
+    parse_args=(python3 "$PARSE_SCRIPT" --vmstat "$TEMP_DIR/vmstat.log" --pidstat "$PIDSTAT_LOG" --output "$MONITORING_JSON_TEMP" --html "$MONITORING_HTML_FINAL" --process-name "ServerLoadTest")
+    [ -n "$CPU_CORES" ] && parse_args+=(--cpu-cores "$CPU_CORES")
     if [ -n "$TEST_RESULT_JSON" ] && [ -f "$TEST_RESULT_JSON" ]; then
-        PARSE_CMD="$PARSE_CMD --test-result-json \"$TEST_RESULT_JSON\""
+        parse_args+=(--test-result-json "$TEST_RESULT_JSON")
     fi
-    
-    eval "$PARSE_CMD" 2>/dev/null || {
+    "${parse_args[@]}" 2>/dev/null || {
         echo "Warning: Failed to parse monitoring data (python3 error)"
     }
     
@@ -404,3 +416,7 @@ if [ -f "$MONITORING_HTML_FINAL" ]; then
 fi
 echo ""
 echo "Raw monitoring logs (temporary): $TEMP_DIR"
+else
+    echo ""
+    echo "Monitoring was disabled (--no-monitoring). Test results (if any) are above."
+fi
