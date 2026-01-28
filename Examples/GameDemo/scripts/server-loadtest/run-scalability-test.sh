@@ -7,14 +7,14 @@ set +e
 
 # Defaults
 PLAYERS_PER_ROOM=5
-DURATION_SECONDS=60
+DURATION_SECONDS=80
 RAMP_UP_SECONDS=30  # Increased for more realistic ramp-up (avoids peak spikes)
-RAMP_DOWN_SECONDS=10  # Increased for smoother ramp-down
+RAMP_DOWN_SECONDS=30  # Increased for smoother ramp-down
 ACTIONS_PER_PLAYER_PER_SECOND=1
 LOG_LEVEL=warning
-START_ROOMS=100
-MAX_ROOMS=2000
-ROOM_INCREMENT=400  # Test 100, 500, 1000, 1500, 2000 by default
+START_ROOMS=200
+MAX_ROOMS=800
+ROOM_INCREMENT=300 
 CPU_THRESHOLD=80.0  # Stop if average CPU usage exceeds this percentage
 FAILURE_THRESHOLD=3  # Stop after N consecutive failures
 
