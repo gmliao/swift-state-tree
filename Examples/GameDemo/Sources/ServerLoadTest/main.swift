@@ -159,7 +159,7 @@ func runServerLoadTest() async throws {
             roomsCreated: activeRoomCount,
             roomsActiveExpected: Int(ceil(Double(connectedSessions.count) / Double(config.playersPerRoom))),
             playersActiveExpected: connectedSessions.count,
-            actionsSentThisSecond: 0,
+            actionsSentThisSecond: await clientSimulator.getAndResetActionCount(),
             sentBytesPerSecond: sentDeltaBytes,
             recvBytesPerSecond: recvDeltaBytes,
             sentMessagesPerSecond: sentDeltaMsgs,
