@@ -1,298 +1,1118 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Server Load Test - System Monitoring Report</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 20px; background: #f5f5f5; }
-        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        h1 { color: #333; border-bottom: 2px solid #4CAF50; padding-bottom: 10px; }
-        h2 { color: #555; margin-top: 30px; font-size: 20px; border-bottom: 1px solid #ddd; padding-bottom: 8px; }
-        .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin: 20px 0; }
-        .summary-card { background: #f9f9f9; padding: 15px; border-radius: 6px; border-left: 4px solid #4CAF50; }
-        .summary-card h3 { margin: 0 0 10px 0; color: #666; font-size: 14px; text-transform: uppercase; }
-        .summary-card .value { font-size: 24px; font-weight: bold; color: #333; }
-        .summary-card .subvalue { font-size: 14px; color: #777; margin-top: 5px; }
-        .chart-container { margin: 30px 0; position: relative; height: 300px; }
-        .chart-title { font-size: 18px; font-weight: bold; margin-bottom: 10px; color: #333; }
-        .json-viewer { background: #f8f8f8; border: 1px solid #ddd; border-radius: 4px; padding: 15px; margin: 15px 0; max-height: 400px; overflow-y: auto; }
-        .json-viewer pre { margin: 0; font-family: 'Courier New', monospace; font-size: 12px; line-height: 1.5; }
-        .report-meta { color: #666; margin-bottom: 1em; }
-        table.traffic-table { border-collapse: collapse; margin: 1em 0; border: 1px solid #ddd; }
-        table.traffic-table th, table.traffic-table td { padding: 8px 12px; border: 1px solid #ddd; }
-        table.traffic-table thead tr { background: #f5f5f5; }
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        margin: 20px;
+        background: #f5f5f5;
+      }
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+        background: white;
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      }
+      h1 {
+        color: #333;
+        border-bottom: 2px solid #4caf50;
+        padding-bottom: 10px;
+      }
+      h2 {
+        color: #555;
+        margin-top: 30px;
+        font-size: 20px;
+        border-bottom: 1px solid #ddd;
+        padding-bottom: 8px;
+      }
+      .summary {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 15px;
+        margin: 20px 0;
+      }
+      .summary-card {
+        background: #f9f9f9;
+        padding: 15px;
+        border-radius: 6px;
+        border-left: 4px solid #4caf50;
+      }
+      .summary-card h3 {
+        margin: 0 0 10px 0;
+        color: #666;
+        font-size: 14px;
+        text-transform: uppercase;
+      }
+      .summary-card .value {
+        font-size: 24px;
+        font-weight: bold;
+        color: #333;
+      }
+      .summary-card .subvalue {
+        font-size: 14px;
+        color: #777;
+        margin-top: 5px;
+      }
+      .chart-container {
+        margin: 30px 0;
+        position: relative;
+        height: 300px;
+      }
+      .chart-title {
+        font-size: 18px;
+        font-weight: bold;
+        margin-bottom: 10px;
+        color: #333;
+      }
+      .json-viewer {
+        background: #f8f8f8;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        padding: 15px;
+        margin: 15px 0;
+        max-height: 400px;
+        overflow-y: auto;
+      }
+      .json-viewer pre {
+        margin: 0;
+        font-family: "Courier New", monospace;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .report-meta {
+        color: #666;
+        margin-bottom: 1em;
+      }
+      table.traffic-table {
+        border-collapse: collapse;
+        margin: 1em 0;
+        border: 1px solid #ddd;
+        width: 100%;
+      }
+      table.traffic-table th,
+      table.traffic-table td {
+        padding: 8px 12px;
+        border: 1px solid #ddd;
+        text-align: left;
+      }
+      table.traffic-table thead tr {
+        background: #f5f5f5;
+      }
     </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Server Load Test - System Monitoring Report</h1>
-        <div id="report-root"></div>
+  </head>
+  <body>
+    <div id="app" class="container">
+      <h1>Server Load Test - System Monitoring Report</h1>
+
+      <p v-if="meta.timestampUTC" class="report-meta">
+        Test run: <strong>{{ meta.timestampUTC }}</strong>
+      </p>
+
+      <!-- Test Run Summary -->
+      <section-block v-if="hasRunSummary" title="📌 Test Run Summary">
+        <summary-card
+          title="Total Duration"
+          :value="(run.totalSeconds ?? 'N/A') + 's'"
+          :subvalue="`ramp-up ${run.rampUpSeconds || 0}s · steady ${run.steadySeconds || 0}s · ramp-down ${run.rampDownSeconds || 0}s`"
+        ></summary-card>
+        <summary-card
+          title="Total Sent"
+          :value="totalSentMb + ' MB'"
+          :subvalue="(run.totalSentMessages || 0).toLocaleString() + ' messages'"
+        ></summary-card>
+        <summary-card
+          title="Rooms Created"
+          :value="run.roomsCreated ?? 'N/A'"
+          :subvalue="'target ' + (run.roomsTarget ?? 'N/A')"
+        ></summary-card>
+        <summary-card
+          title="Players Created"
+          :value="run.playersCreated ?? 'N/A'"
+        ></summary-card>
+      </section-block>
+
+      <!-- Phase Breakdown -->
+      <section-block v-if="hasPhases" title="⏱️ Phase Breakdown">
+        <summary-card
+          v-for="p in stepsPhases"
+          :key="p.key"
+          :title="p.label"
+          :value="phases[p.key] + ' samples'"
+          :subvalue="phases[p.key] + ' sec'"
+        ></summary-card>
+      </section-block>
+
+      <!-- Test Configuration -->
+      <section-block v-if="hasConfig" title="📋 Test Configuration">
+        <summary-card title="Rooms" :value="cfg.rooms ?? 'N/A'"></summary-card>
+        <summary-card
+          title="Players/Room"
+          :value="cfg.playersPerRoom ?? 'N/A'"
+        ></summary-card>
+        <summary-card
+          title="Total Players"
+          :value="totalPlayersConfig"
+        ></summary-card>
+        <summary-card
+          title="Test Duration"
+          :value="(cfg.steadySeconds ?? 'N/A') + 's'"
+          :subvalue="`+${cfg.rampUpSeconds || 0}s ramp-up, +${cfg.rampDownSeconds || 0}s ramp-down`"
+        ></summary-card>
+        <summary-card
+          title="Actions/Player/Sec"
+          :value="cfg.actionsPerPlayerPerSecond ?? 'N/A'"
+        ></summary-card>
+        <summary-card
+          title="Land Type"
+          :value="cfg.landType ?? 'N/A'"
+        ></summary-card>
+      </section-block>
+
+      <!-- System Environment -->
+      <section-block v-if="hasEnv" title="💻 System Environment">
+        <summary-card
+          title="OS"
+          :value="env.osName ?? 'N/A'"
+          :subvalue="env.kernelVersion"
+        ></summary-card>
+        <summary-card
+          title="CPU Cores"
+          :value="env.cpuActiveLogicalCores ?? 'N/A'"
+          :subvalue="(env.arch || '') + ' architecture'"
+        ></summary-card>
+        <summary-card
+          title="Total Memory"
+          :value="(env.memoryTotalMB ?? 'N/A') + ' MB'"
+        ></summary-card>
+      </section-block>
+
+      <!-- Steady State Results -->
+      <div v-if="steady">
+        <h2>📊 Test Results (Steady State) — Server view</h2>
+        <div class="summary">
+          <summary-card
+            title="Avg Ingress"
+            :value="steadyIngressKB + ' KB/s'"
+            :subvalue="steady.avg_sent_mps.toFixed(1) + ' msgs/s from clients'"
+          ></summary-card>
+          <summary-card
+            title="Avg Egress"
+            :value="steadyEgressKB + ' KB/s'"
+            :subvalue="steady.avg_recv_mps.toFixed(1) + ' msgs/s to clients'"
+          ></summary-card>
+          <summary-card
+            title="Avg Actions/Sec"
+            :value="steady.avg_actions.toFixed(1)"
+          ></summary-card>
+          <summary-card
+            title="Steady Samples"
+            :value="steady.sample_count"
+          ></summary-card>
+        </div>
+
+        <table class="traffic-table">
+          <caption
+            style="text-align: left; font-weight: bold; margin-bottom: 6px"
+          >
+            Ingress vs Egress (separate axes in charts)
+          </caption>
+          <thead>
+            <tr>
+              <th></th>
+              <th>Ingress</th>
+              <th>Egress</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>KB/s</td>
+              <td>{{ steadyIngressKB }}</td>
+              <td>{{ steadyEgressKB }}</td>
+            </tr>
+            <tr>
+              <td>msgs/s</td>
+              <td>{{ steady.avg_sent_mps.toFixed(1) }}</td>
+              <td>{{ steady.avg_recv_mps.toFixed(1) }}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>⚡ Performance Metrics (Steady State)</h2>
+        <div class="summary">
+          <summary-card
+            title="Avg Ticks/Sec"
+            :value="steady.avg_ticks_per_sec.toLocaleString()"
+            :subvalue="'~' + steady.avg_tick_time_ms.toFixed(2) + ' ms/tick'"
+          ></summary-card>
+          <summary-card
+            title="Avg Syncs/Sec"
+            :value="steady.avg_syncs_per_sec.toLocaleString()"
+            :subvalue="'~' + steady.avg_sync_time_ms.toFixed(2) + ' ms/sync'"
+          ></summary-card>
+          <summary-card
+            title="Total Updates/Sec"
+            :value="steady.avg_updates_per_sec.toLocaleString()"
+            :subvalue="'~' + steady.avg_update_time_ms.toFixed(3) + ' ms/update'"
+          ></summary-card>
+          <summary-card
+            title="Avg Message Size"
+            :value="Math.round(steady.avg_msg_size) + ' B'"
+            :subvalue="(steady.avg_msg_size/1024).toFixed(2) + ' KB'"
+          ></summary-card>
+          <summary-card
+            title="Update Rate"
+            :value="steady.avg_update_time_ms.toFixed(2) + ' ms'"
+            :subvalue="steadyRateLabel"
+          ></summary-card>
+        </div>
+      </div>
+
+      <!-- System Monitoring -->
+      <section-block title="🖥️ System Monitoring">
+        <summary-card
+          title="VMStat Samples"
+          :value="vms.sample_count ?? 0"
+        ></summary-card>
+        <summary-card
+          title="Avg CPU User %"
+          :value="(vms.avg_cpu_us_pct ?? 0).toFixed(1) + '%'"
+        ></summary-card>
+        <summary-card
+          title="Avg CPU System %"
+          :value="(vms.avg_cpu_sy_pct ?? 0).toFixed(1) + '%'"
+        ></summary-card>
+        <summary-card
+          title="Avg CPU Idle %"
+          :value="(vms.avg_cpu_id_pct ?? 0).toFixed(1) + '%'"
+        ></summary-card>
+        <summary-card
+          v-if="pds && (pds.sample_count || pds.avg_cpu_total_pct != null)"
+          title="PidStat Samples"
+          :value="pds.sample_count ?? 0"
+        ></summary-card>
+        <summary-card
+          v-if="pds && (pds.sample_count || pds.avg_cpu_total_pct != null)"
+          title="Avg Process CPU %"
+          :value="(pds.avg_cpu_total_pct ?? 0).toFixed(1) + '%'"
+        ></summary-card>
+        <summary-card
+          v-if="pds && (pds.sample_count || pds.avg_cpu_total_pct != null)"
+          title="Peak Process CPU %"
+          :value="(pds.peak_cpu_total_pct ?? 0).toFixed(1) + '%'"
+        ></summary-card>
+      </section-block>
+
+      <!-- Charts: OS Metrics -->
+      <div v-if="charts.vmstat?.times?.length">
+        <div class="chart-container">
+          <div class="chart-title">System CPU Usage Over Time</div>
+          <canvas ref="cpuChart"></canvas>
+        </div>
+        <div class="chart-container">
+          <div class="chart-title">Free Memory Over Time (MB)</div>
+          <canvas ref="memoryChart"></canvas>
+        </div>
+      </div>
+
+      <div v-if="charts.pidstat?.times?.length">
+        <div class="chart-container">
+          <div class="chart-title">Process CPU Usage Over Time</div>
+          <canvas ref="pidstatChart"></canvas>
+        </div>
+      </div>
+
+      <!-- Charts: Game Metrics -->
+      <div v-if="charts.game?.ticks?.length">
+        <h2>🎮 Game Data (Tick-based)</h2>
+        <div class="summary">
+          <summary-card
+            title="Total Ticks"
+            :value="gs ? gs.total_ticks : (charts.game.ticks[charts.game.ticks.length-1] || 0)"
+            :subvalue="gs ? gs.tick_interval_ms + 'ms per tick (' + gs.ticks_per_second + ' Hz)' : ''"
+          ></summary-card>
+          <summary-card
+            title="Peak Ingress (KB/s)"
+            :value="gs ? gs.peak_ingress_kb.toFixed(1) : 'N/A'"
+            subvalue="from clients"
+          ></summary-card>
+          <summary-card
+            title="Peak Ingress (msgs/s)"
+            :value="gs ? gs.peak_msgs.toFixed(1) : 'N/A'"
+            subvalue="from clients"
+          ></summary-card>
+          <summary-card
+            title="Peak Actions/Sec"
+            :value="gs ? gs.peak_actions.toFixed(0) : 'N/A'"
+          ></summary-card>
+        </div>
+
+        <div class="chart-container">
+          <div class="chart-title">
+            Server Ingress vs Egress Over Ticks (KB/s)
+          </div>
+          <canvas ref="gameBytesChart"></canvas>
+        </div>
+        <div class="chart-container">
+          <div class="chart-title">
+            Server Ingress vs Egress Message Rate Over Ticks (msgs/s)
+          </div>
+          <canvas ref="gameMessagesChart"></canvas>
+        </div>
+        <div class="chart-container">
+          <div class="chart-title">Actions & Active Entities Over Ticks</div>
+          <canvas ref="gameActionsChart"></canvas>
+        </div>
+        <div class="chart-container">
+          <div class="chart-title">
+            All Game Metrics Over Ticks (Click legend to toggle)
+          </div>
+          <canvas ref="gameAllMetricsChart"></canvas>
+        </div>
+      </div>
+
+      <!-- Charts: Performance Update Rate -->
+      <div v-if="charts.game?.ticks_per_second?.length">
+        <h2>⚡ Performance Metrics (Update Speed & Latency)</h2>
+        <div class="chart-container">
+          <div class="chart-title">
+            Update Rate Over Time (Ticks & Syncs per Second)
+          </div>
+          <canvas ref="updateRateChart"></canvas>
+        </div>
+        <div class="chart-container">
+          <div class="chart-title">
+            Average Update Time (ms) - Lower is Better (Indicates Lag if > 50ms)
+          </div>
+          <canvas ref="updateTimeChart"></canvas>
+        </div>
+        <div class="chart-container">
+          <div class="chart-title">
+            Message Size Distribution Over Time (KB)
+          </div>
+          <canvas ref="messageSizeChart"></canvas>
+        </div>
+      </div>
+
+      <!-- JSON Dumps -->
+      <div v-if="test_result">
+        <h2>📄 Full Test Results (JSON)</h2>
+        <json-viewer :data="test_result"></json-viewer>
+      </div>
+
+      <div v-if="monitoring && Object.keys(monitoring).length">
+        <h2>📈 Full Monitoring Data (JSON)</h2>
+        <json-viewer :data="monitoring"></json-viewer>
+      </div>
     </div>
-    <script type="application/json" id="report-payload">{{REPORT_DATA}}</script>
-    <script>
-(function() {
-    var payloadEl = document.getElementById('report-payload');
-    var raw = (payloadEl && payloadEl.textContent || '').trim();
-    function getDefaultReportData() {
-        return {
-            metadata: { timestampUTC: null, environment: {}, loadTestConfig: {} },
-            run_summary: {},
-            phase_breakdown: {},
-            config: {},
-            env: {},
-            steady_stats: null,
-            vmstat_summary: { sample_count: 0, avg_cpu_us_pct: 0, avg_cpu_sy_pct: 0, avg_cpu_id_pct: 0 },
-            pidstat_summary: {},
-            charts: {
-                vmstat: { times: [0,1,2,3,4], cpu_us: [5,10,8,12,7], cpu_sy: [2,3,2,4,2], cpu_id: [93,87,90,84,91], memory_free: [4096,4080,4060,4050,4040] },
-                pidstat: { times: [], cpu: [] },
-                game: {}
-            },
-            game_summary: null,
-            test_result: null,
-            monitoring: {}
-        };
-    }
-    var REPORT_DATA = (function(){ try { var o = raw ? JSON.parse(raw) : null; return (o && typeof o === 'object') ? o : getDefaultReportData(); } catch(e) { return getDefaultReportData(); } })();
 
-    function card(t, v, sub) {
-        var d = document.createElement('div'); d.className = 'summary-card';
-        d.innerHTML = '<h3>' + (t || '') + '</h3><div class="value">' + (v != null ? v : 'N/A') + '</div>' + (sub ? '<div class="subvalue">' + sub + '</div>' : '');
-        return d;
-    }
-    function section(title, el) {
-        var wrap = document.createElement('div');
-        wrap.innerHTML = '<h2>' + title + '</h2>';
-        if (el && el.nodeType) wrap.appendChild(el); else if (el) wrap.appendChild(typeof el === 'string' ? document.createTextNode(el) : el);
-        return wrap;
-    }
-    function summaryRow() {
-        var g = document.createElement('div'); g.className = 'summary';
-        for (var i = 0; i < arguments.length; i++) g.appendChild(arguments[i]);
-        return g;
-    }
-
-    var root = document.getElementById('report-root');
-    var D = REPORT_DATA;
-    var meta = D.metadata || {};
-    var run = D.run_summary || {};
-    var phases = D.phase_breakdown || {};
-    var cfg = D.config || {};
-    var env = D.env || {};
-    var steady = D.steady_stats;
-    var vms = D.vmstat_summary || {};
-    var pds = D.pidstat_summary || {};
-    var charts = D.charts || {};
-    var gs = D.game_summary;
-
-    if (meta.timestampUTC) {
-        var p = document.createElement('p'); p.className = 'report-meta';
-        p.innerHTML = 'Test run: <strong>' + String(meta.timestampUTC) + '</strong>';
-        root.appendChild(p);
-    }
-
-    if (Object.keys(run).length) {
-        var totalSentMb = ((run.totalSentBytes || 0) / 1024 / 1024).toFixed(2);
-        root.appendChild(section('📌 Test Run Summary', summaryRow(
-            card('Total Duration', (run.totalSeconds != null ? run.totalSeconds : 'N/A') + 's', 'ramp-up ' + (run.rampUpSeconds || 0) + 's · steady ' + (run.steadySeconds || 0) + 's · ramp-down ' + (run.rampDownSeconds || 0) + 's'),
-            card('Total Sent', totalSentMb + ' MB', (run.totalSentMessages || 0).toLocaleString() + ' messages'),
-            card('Rooms Created', run.roomsCreated != null ? run.roomsCreated : 'N/A', 'target ' + (run.roomsTarget != null ? run.roomsTarget : 'N/A')),
-            card('Players Created', run.playersCreated != null ? run.playersCreated : 'N/A')
-        )));
-    }
-
-    if (Object.keys(phases).length) {
-        var phaseWrap = document.createElement('div'); phaseWrap.className = 'summary';
-        [['ramp-up','Ramp-up'],['steady','Steady'],['ramp-down','Ramp-down']].forEach(function(p) {
-            var n = phases[p[0]] || 0;
-            phaseWrap.appendChild(card(p[1], n + ' samples', n + ' sec'));
-        });
-        root.appendChild(section('⏱️ Phase Breakdown', phaseWrap));
-    }
-
-    if (Object.keys(cfg).length) {
-        var tot = (cfg.rooms || 0) * (cfg.playersPerRoom || 0);
-        root.appendChild(section('📋 Test Configuration', summaryRow(
-            card('Rooms', cfg.rooms != null ? cfg.rooms : 'N/A'),
-            card('Players/Room', cfg.playersPerRoom != null ? cfg.playersPerRoom : 'N/A'),
-            card('Total Players', tot),
-            card('Test Duration', (cfg.steadySeconds != null ? cfg.steadySeconds : 'N/A') + 's', '+' + (cfg.rampUpSeconds || 0) + 's ramp-up, +' + (cfg.rampDownSeconds || 0) + 's ramp-down'),
-            card('Actions/Player/Sec', cfg.actionsPerPlayerPerSecond != null ? cfg.actionsPerPlayerPerSecond : 'N/A'),
-            card('Land Type', cfg.landType != null ? cfg.landType : 'N/A')
-        )));
-    }
-
-    if (Object.keys(env).length) {
-        root.appendChild(section('💻 System Environment', summaryRow(
-            card('OS', env.osName != null ? env.osName : 'N/A', env.kernelVersion || ''),
-            card('CPU Cores', env.cpuActiveLogicalCores != null ? env.cpuActiveLogicalCores : 'N/A', (env.arch || '') + ' architecture'),
-            card('Total Memory', (env.memoryTotalMB != null ? env.memoryTotalMB : 'N/A') + ' MB')
-        )));
-    }
-
-    if (steady) {
-        var sb = (steady.avg_sent_bps / 1024).toFixed(1), rb = (steady.avg_recv_bps / 1024).toFixed(1);
-        root.appendChild(section('📊 Test Results (Steady State) — Server view', (function(){
-            var w = document.createElement('div');
-            w.appendChild(summaryRow(
-                card('Avg Ingress', sb + ' KB/s', steady.avg_sent_mps.toFixed(1) + ' msgs/s from clients'),
-                card('Avg Egress', rb + ' KB/s', steady.avg_recv_mps.toFixed(1) + ' msgs/s to clients'),
-                card('Avg Actions/Sec', steady.avg_actions.toFixed(1)),
-                card('Steady Samples', steady.sample_count)
-            ));
-            var tbl = document.createElement('table'); tbl.className = 'traffic-table';
-            tbl.innerHTML = '<caption style="text-align:left;font-weight:bold;margin-bottom:6px;">Ingress vs Egress (separate axes in charts)</caption><thead><tr><th></th><th>Ingress</th><th>Egress</th></tr></thead><tbody><tr><td>KB/s</td><td>' + sb + '</td><td>' + rb + '</td></tr><tr><td>msgs/s</td><td>' + steady.avg_sent_mps.toFixed(1) + '</td><td>' + steady.avg_recv_mps.toFixed(1) + '</td></tr></tbody>';
-            w.appendChild(tbl);
-            var updateMs = steady.avg_update_time_ms;
-            var rateLabel = updateMs < 10 ? '🟢 正常' : (updateMs < 50 ? '🟡 稍慢' : '🟠 可能 lag');
-            w.appendChild(document.createElement('h2')).innerHTML = '⚡ Performance Metrics (Steady State)';
-            w.appendChild(summaryRow(
-                card('Avg Ticks/Sec', steady.avg_ticks_per_sec.toLocaleString(), '~' + steady.avg_tick_time_ms.toFixed(2) + ' ms/tick'),
-                card('Avg Syncs/Sec', steady.avg_syncs_per_sec.toLocaleString(), '~' + steady.avg_sync_time_ms.toFixed(2) + ' ms/sync'),
-                card('Total Updates/Sec', steady.avg_updates_per_sec.toLocaleString(), '~' + updateMs.toFixed(3) + ' ms/update'),
-                card('Avg Message Size', Math.round(steady.avg_msg_size) + ' B', (steady.avg_msg_size/1024).toFixed(2) + ' KB'),
-                card('Update Rate', updateMs.toFixed(2) + ' ms', rateLabel)
-            ));
-            return w;
-        })()));
-    }
-
-    var sysWrap = document.createElement('div');
-    sysWrap.appendChild(summaryRow(
-        card('VMStat Samples', vms.sample_count != null ? vms.sample_count : 0),
-        card('Avg CPU User %', (vms.avg_cpu_us_pct != null ? vms.avg_cpu_us_pct : 0).toFixed(1) + '%'),
-        card('Avg CPU System %', (vms.avg_cpu_sy_pct != null ? vms.avg_cpu_sy_pct : 0).toFixed(1) + '%'),
-        card('Avg CPU Idle %', (vms.avg_cpu_id_pct != null ? vms.avg_cpu_id_pct : 0).toFixed(1) + '%')
-    ));
-    if (pds && (pds.sample_count || pds.avg_cpu_total_pct != null)) {
-        sysWrap.querySelector('.summary').appendChild(card('PidStat Samples', pds.sample_count != null ? pds.sample_count : 0));
-        sysWrap.querySelector('.summary').appendChild(card('Avg Process CPU %', (pds.avg_cpu_total_pct != null ? pds.avg_cpu_total_pct : 0).toFixed(1) + '%'));
-        sysWrap.querySelector('.summary').appendChild(card('Peak Process CPU %', (pds.peak_cpu_total_pct != null ? pds.peak_cpu_total_pct : 0).toFixed(1) + '%'));
-    }
-    root.appendChild(section('🖥️ System Monitoring', sysWrap));
-
-    var cv = charts.vmstat;
-    if (cv && cv.times && cv.times.length) {
-        var cvWrap = document.createElement('div');
-        cvWrap.innerHTML = '<div class="chart-container"><div class="chart-title">System CPU Usage Over Time</div><canvas id="cpuChart"></canvas></div><div class="chart-container"><div class="chart-title">Free Memory Over Time (MB)</div><canvas id="memoryChart"></canvas></div>';
-        root.appendChild(cvWrap);
-        var cpuCtx = document.getElementById('cpuChart').getContext('2d');
-        new Chart(cpuCtx, { type: 'line', data: { labels: cv.times, datasets: [
-            { label: 'User %', data: cv.cpu_us || [], borderColor: 'rgb(75, 192, 192)', backgroundColor: 'rgba(75, 192, 192, 0.2)', tension: 0.1 },
-            { label: 'System %', data: cv.cpu_sy || [], borderColor: 'rgb(255, 99, 132)', backgroundColor: 'rgba(255, 99, 132, 0.2)', tension: 0.1 },
-            { label: 'Idle %', data: cv.cpu_id || [], borderColor: 'rgb(153, 102, 255)', backgroundColor: 'rgba(153, 102, 255, 0.2)', tension: 0.1 }
-        ]}, options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, max: 100 } } } });
-        var memCtx = document.getElementById('memoryChart').getContext('2d');
-        new Chart(memCtx, { type: 'line', data: { labels: cv.times, datasets: [{ label: 'Free Memory (MB)', data: cv.memory_free || [], borderColor: 'rgb(54, 162, 235)', backgroundColor: 'rgba(54, 162, 235, 0.2)', tension: 0.1 }]}, options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } } });
-    }
-
-    var cp = charts.pidstat;
-    if (cp && cp.times && cp.times.length) {
-        var cpWrap = document.createElement('div');
-        cpWrap.innerHTML = '<div class="chart-container"><div class="chart-title">Process CPU Usage Over Time</div><canvas id="pidstatChart"></canvas></div>';
-        root.appendChild(cpWrap);
-        var pidCtx = document.getElementById('pidstatChart').getContext('2d');
-        new Chart(pidCtx, { type: 'line', data: { labels: cp.times, datasets: [{ label: 'Process CPU %', data: cp.cpu || [], borderColor: 'rgb(255, 159, 64)', backgroundColor: 'rgba(255, 159, 64, 0.2)', tension: 0.1 }]}, options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } } });
-    }
-
-    var cg = charts.game;
-    if (cg && cg.ticks && cg.ticks.length) {
-        var gWrap = document.createElement('div');
-        gWrap.appendChild(section('🎮 Game Data (Tick-based)', summaryRow(
-            card('Total Ticks', gs ? gs.total_ticks : (cg.ticks[cg.ticks.length-1] || 0), gs ? gs.tick_interval_ms + 'ms per tick (' + gs.ticks_per_second + ' Hz)' : ''),
-            card('Peak Ingress (KB/s)', gs ? gs.peak_ingress_kb.toFixed(1) : 'N/A', 'from clients'),
-            card('Peak Ingress (msgs/s)', gs ? gs.peak_msgs.toFixed(1) : 'N/A', 'from clients'),
-            card('Peak Actions/Sec', gs ? gs.peak_actions.toFixed(0) : 'N/A')
-        )));
-        var html = '<div class="chart-container"><div class="chart-title">Server Ingress vs Egress Over Ticks (KB/s)</div><canvas id="gameBytesChart"></canvas></div>' +
-            '<div class="chart-container"><div class="chart-title">Server Ingress vs Egress Message Rate Over Ticks (msgs/s)</div><canvas id="gameMessagesChart"></canvas></div>' +
-            '<div class="chart-container"><div class="chart-title">Actions & Active Entities Over Ticks</div><canvas id="gameActionsChart"></canvas></div>' +
-            '<div class="chart-container"><div class="chart-title">All Game Metrics Over Ticks (Click legend to toggle)</div><canvas id="gameAllMetricsChart"></canvas></div>';
-        gWrap.insertAdjacentHTML('beforeend', html);
-        root.appendChild(gWrap);
-
-        var ticks = cg.ticks;
-        var gbCtx = document.getElementById('gameBytesChart').getContext('2d');
-        new Chart(gbCtx, { type: 'line', data: { labels: ticks, datasets: [
-            { label: 'Ingress (KB/s)', data: cg.bytes_sent_kb || [], borderColor: 'rgb(75, 192, 192)', backgroundColor: 'rgba(75, 192, 192, 0.2)', tension: 0.1, yAxisID: 'y_ingress' },
-            { label: 'Egress (KB/s)', data: cg.bytes_recv_kb || [], borderColor: 'rgb(255, 99, 132)', backgroundColor: 'rgba(255, 99, 132, 0.2)', tension: 0.1, yAxisID: 'y_egress' }
-        ]}, options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, scales: {
-            x: { title: { display: true, text: 'Tick' } },
-            y_ingress: { type: 'linear', display: true, position: 'left', beginAtZero: true, title: { display: true, text: 'Ingress (KB/s)' } },
-            y_egress: { type: 'linear', display: true, position: 'right', beginAtZero: true, grid: { drawOnChartArea: false }, title: { display: true, text: 'Egress (KB/s)' } }
-        }}});
-
-        var gmCtx = document.getElementById('gameMessagesChart').getContext('2d');
-        new Chart(gmCtx, { type: 'line', data: { labels: ticks, datasets: [
-            { label: 'Ingress (msgs/s)', data: cg.messages_sent || [], borderColor: 'rgb(54, 162, 235)', backgroundColor: 'rgba(54, 162, 235, 0.2)', tension: 0.1, yAxisID: 'y_ingress' },
-            { label: 'Egress (msgs/s)', data: cg.messages_recv || [], borderColor: 'rgb(255, 206, 86)', backgroundColor: 'rgba(255, 206, 86, 0.2)', tension: 0.1, yAxisID: 'y_egress' }
-        ]}, options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, scales: {
-            x: { title: { display: true, text: 'Tick' } },
-            y_ingress: { type: 'linear', display: true, position: 'left', beginAtZero: true, title: { display: true, text: 'Ingress (msgs/s)' } },
-            y_egress: { type: 'linear', display: true, position: 'right', beginAtZero: true, grid: { drawOnChartArea: false }, title: { display: true, text: 'Egress (msgs/s)' } }
-        }}});
-
-        var gaCtx = document.getElementById('gameActionsChart').getContext('2d');
-        new Chart(gaCtx, { type: 'line', data: { labels: ticks, datasets: [
-            { label: 'Actions/sec', data: cg.actions || [], borderColor: 'rgb(153, 102, 255)', backgroundColor: 'rgba(153, 102, 255, 0.2)', tension: 0.1, yAxisID: 'y' },
-            { label: 'Active Players', data: cg.active_players || [], borderColor: 'rgb(255, 159, 64)', backgroundColor: 'rgba(255, 159, 64, 0.2)', tension: 0.1, yAxisID: 'y1' },
-            { label: 'Active Rooms', data: cg.active_rooms || [], borderColor: 'rgb(201, 203, 207)', backgroundColor: 'rgba(201, 203, 207, 0.2)', tension: 0.1, yAxisID: 'y1' }
-        ]}, options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, scales: {
-            x: { title: { display: true, text: 'Tick' } },
-            y: { type: 'linear', display: true, position: 'left', beginAtZero: true, title: { display: true, text: 'Actions/sec' } },
-            y1: { type: 'linear', display: true, position: 'right', beginAtZero: true, title: { display: true, text: 'Count' }, grid: { drawOnChartArea: false } }
-        }}});
-
-        var dsAll = [
-            { label: 'Ingress (KB/s)', data: cg.bytes_sent_kb || [], borderColor: 'rgb(75, 192, 192)', backgroundColor: 'rgba(75, 192, 192, 0.1)', tension: 0.1, yAxisID: 'y_bytes', hidden: false },
-            { label: 'Egress (KB/s)', data: cg.bytes_recv_kb || [], borderColor: 'rgb(255, 99, 132)', backgroundColor: 'rgba(255, 99, 132, 0.1)', tension: 0.1, yAxisID: 'y_bytes', hidden: false },
-            { label: 'Ingress (msgs/s)', data: cg.messages_sent || [], borderColor: 'rgb(54, 162, 235)', backgroundColor: 'rgba(54, 162, 235, 0.1)', tension: 0.1, yAxisID: 'y_messages', hidden: false },
-            { label: 'Egress (msgs/s)', data: cg.messages_recv || [], borderColor: 'rgb(255, 206, 86)', backgroundColor: 'rgba(255, 206, 86, 0.1)', tension: 0.1, yAxisID: 'y_messages', hidden: false },
-            { label: 'Actions/sec', data: cg.actions || [], borderColor: 'rgb(153, 102, 255)', backgroundColor: 'rgba(153, 102, 255, 0.1)', tension: 0.1, yAxisID: 'y_actions', hidden: false },
-            { label: 'Active Players', data: cg.active_players || [], borderColor: 'rgb(255, 159, 64)', backgroundColor: 'rgba(255, 159, 64, 0.1)', tension: 0.1, yAxisID: 'y_count', hidden: false },
-            { label: 'Active Rooms', data: cg.active_rooms || [], borderColor: 'rgb(201, 203, 207)', backgroundColor: 'rgba(201, 203, 207, 0.1)', tension: 0.1, yAxisID: 'y_count', hidden: false },
-            { label: 'Rooms Created', data: cg.rooms_created || [], borderColor: 'rgb(255, 99, 71)', backgroundColor: 'rgba(255, 99, 71, 0.1)', tension: 0.1, yAxisID: 'y_count', hidden: true },
-            { label: 'Rooms Target', data: cg.rooms_target || [], borderColor: 'rgb(144, 238, 144)', backgroundColor: 'rgba(144, 238, 144, 0.1)', tension: 0.1, yAxisID: 'y_count', hidden: true }
-        ];
-        var gallCtx = document.getElementById('gameAllMetricsChart').getContext('2d');
-        new Chart(gallCtx, { type: 'line', data: { labels: ticks, datasets: dsAll }, options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, plugins: { legend: { display: true, position: 'top', onClick: function(e, item) { var meta = this.chart.getDatasetMeta(item.datasetIndex); meta.hidden = meta.hidden === null ? !this.chart.data.datasets[item.datasetIndex].hidden : null; this.chart.update(); } } }, scales: {
-            x: { title: { display: true, text: 'Tick' } },
-            y_bytes: { type: 'linear', display: 'auto', position: 'left', beginAtZero: true, title: { display: true, text: 'KB/s' }, grid: { drawOnChartArea: true } },
-            y_messages: { type: 'linear', display: 'auto', position: 'right', beginAtZero: true, title: { display: true, text: 'Messages/sec' }, grid: { drawOnChartArea: false } },
-            y_actions: { type: 'linear', display: 'auto', position: 'left', beginAtZero: true, title: { display: true, text: 'Actions/sec' }, grid: { drawOnChartArea: false } },
-            y_count: { type: 'linear', display: 'auto', position: 'right', beginAtZero: true, title: { display: true, text: 'Count' }, grid: { drawOnChartArea: false } }
-        }}});
-
-        if (cg.ticks_per_second && cg.ticks_per_second.length) {
-            var updWrap = document.createElement('div');
-            updWrap.innerHTML = '<h2>⚡ Performance Metrics (Update Speed & Latency)</h2><div class="chart-container"><div class="chart-title">Update Rate Over Time (Ticks & Syncs per Second)</div><canvas id="updateRateChart"></canvas></div><div class="chart-container"><div class="chart-title">Average Update Time (ms) - Lower is Better (Indicates Lag if &gt; 50ms)</div><canvas id="updateTimeChart"></canvas></div><div class="chart-container"><div class="chart-title">Message Size Distribution Over Time (KB)</div><canvas id="messageSizeChart"></canvas></div>';
-            root.appendChild(updWrap);
-            var urCtx = document.getElementById('updateRateChart').getContext('2d');
-            new Chart(urCtx, { type: 'line', data: { labels: ticks, datasets: [
-                { label: 'Ticks/sec', data: cg.ticks_per_second || [], borderColor: 'rgb(75, 192, 192)', backgroundColor: 'rgba(75, 192, 192, 0.2)', tension: 0.1 },
-                { label: 'Syncs/sec', data: cg.syncs_per_second || [], borderColor: 'rgb(255, 99, 132)', backgroundColor: 'rgba(255, 99, 132, 0.2)', tension: 0.1 },
-                { label: 'Total Updates/sec', data: cg.updates_per_second || [], borderColor: 'rgb(153, 102, 255)', backgroundColor: 'rgba(153, 102, 255, 0.2)', tension: 0.1, borderWidth: 2 }
-            ]}, options: { responsive: true, maintainAspectRatio: false, scales: { x: { title: { display: true, text: 'Time (seconds)' } }, y: { beginAtZero: true, title: { display: true, text: 'Updates per Second' } } } } });
-            var utCtx = document.getElementById('updateTimeChart').getContext('2d');
-            new Chart(utCtx, { type: 'line', data: { labels: ticks, datasets: [{ label: 'Avg Update Time (ms)', data: cg.update_times_ms || [], borderColor: 'rgb(54, 162, 235)', backgroundColor: 'rgba(54, 162, 235, 0.2)', tension: 0.1, fill: true }]}, options: { responsive: true, maintainAspectRatio: false, scales: { x: { title: { display: true, text: 'Time (seconds)' } }, y: { beginAtZero: true, title: { display: true, text: 'Update Time (ms)' }, ticks: { callback: function(v){ return v.toFixed(2)+' ms'; } } } } } });
-            var msCtx = document.getElementById('messageSizeChart').getContext('2d');
-            new Chart(msCtx, { type: 'line', data: { labels: ticks, datasets: [{ label: 'Avg Message Size (KB)', data: cg.avg_message_size_kb || [], borderColor: 'rgb(255, 159, 64)', backgroundColor: 'rgba(255, 159, 64, 0.2)', tension: 0.1, fill: true }]}, options: { responsive: true, maintainAspectRatio: false, scales: { x: { title: { display: true, text: 'Time (seconds)' } }, y: { beginAtZero: true, title: { display: true, text: 'Message Size (KB)' } } } } });
-        }
-    }
-
-    if (D.test_result) {
-        var j1 = document.createElement('div'); j1.className = 'json-viewer';
-        j1.appendChild(document.createElement('pre')).textContent = JSON.stringify(D.test_result, null, 2);
-        root.appendChild(section('📄 Full Test Results (JSON)', j1));
-    }
-    if (D.monitoring && Object.keys(D.monitoring).length) {
-        var j2 = document.createElement('div'); j2.className = 'json-viewer';
-        j2.appendChild(document.createElement('pre')).textContent = JSON.stringify(D.monitoring, null, 2);
-        root.appendChild(section('📈 Full Monitoring Data (JSON)', j2));
-    }
-})();
+    <!-- Data Injection Point -->
+    <script type="application/json" id="report-payload">
+      {{REPORT_DATA}}
     </script>
-</body>
+
+    <script>
+      const { createApp, ref, computed, onMounted, nextTick } = Vue;
+
+      const SummaryCard = {
+        props: ["title", "value", "subvalue"],
+        template: `
+                <div class="summary-card">
+                    <h3>{{ title }}</h3>
+                    <div class="value">{{ value }}</div>
+                    <div v-if="subvalue" class="subvalue">{{ subvalue }}</div>
+                </div>
+            `,
+      };
+
+      const SectionBlock = {
+        props: ["title"],
+        template: `
+                <div>
+                    <h2>{{ title }}</h2>
+                    <div class="summary">
+                        <slot></slot>
+                    </div>
+                </div>
+            `,
+      };
+
+      const JsonViewer = {
+        props: ["data"],
+        template: `
+                <div class="json-viewer">
+                    <pre>{{ JSON.stringify(data, null, 2) }}</pre>
+                </div>
+            `,
+      };
+
+      createApp({
+        components: { SummaryCard, SectionBlock, JsonViewer },
+        setup() {
+          const data = ref(getDefaultReportData());
+
+          // Refs for charts
+          const cpuChart = ref(null);
+          const memoryChart = ref(null);
+          const pidstatChart = ref(null);
+          const gameBytesChart = ref(null);
+          const gameMessagesChart = ref(null);
+          const gameActionsChart = ref(null);
+          const gameAllMetricsChart = ref(null);
+          const updateRateChart = ref(null);
+          const updateTimeChart = ref(null);
+          const messageSizeChart = ref(null);
+
+          function getDefaultReportData() {
+            return {
+              metadata: {
+                timestampUTC: null,
+                environment: {},
+                loadTestConfig: {},
+              },
+              run_summary: {},
+              phase_breakdown: {},
+              config: {},
+              env: {},
+              steady_stats: null,
+              vmstat_summary: {
+                sample_count: 0,
+                avg_cpu_us_pct: 0,
+                avg_cpu_sy_pct: 0,
+                avg_cpu_id_pct: 0,
+              },
+              pidstat_summary: {},
+              charts: {
+                vmstat: {
+                  times: [0, 1, 2, 3, 4],
+                  cpu_us: [5, 10, 8, 12, 7],
+                  cpu_sy: [2, 3, 2, 4, 2],
+                  cpu_id: [93, 87, 90, 84, 91],
+                  memory_free: [4096, 4080, 4060, 4050, 4040],
+                },
+                pidstat: { times: [], cpu: [] },
+                game: {},
+              },
+              game_summary: null,
+              test_result: null,
+              monitoring: {},
+            };
+          }
+
+          // Load Data
+          const payloadEl = document.getElementById("report-payload");
+          if (payloadEl) {
+            try {
+              const raw = payloadEl.textContent.trim();
+              if (raw) {
+                data.value = JSON.parse(raw);
+              }
+            } catch (e) {
+              console.error("Failed to parse report data", e);
+            }
+          }
+
+          // Computed
+          const meta = computed(() => data.value.metadata || {});
+          const run = computed(() => data.value.run_summary || {});
+          const phases = computed(() => data.value.phase_breakdown || {});
+          const cfg = computed(() => data.value.config || {});
+          const env = computed(() => data.value.env || {});
+          const steady = computed(() => data.value.steady_stats);
+          const vms = computed(() => data.value.vmstat_summary || {});
+          const pds = computed(() => data.value.pidstat_summary || {});
+          const charts = computed(() => data.value.charts || {});
+          const gs = computed(() => data.value.game_summary);
+          const test_result = computed(() => data.value.test_result);
+          const monitoring = computed(() => data.value.monitoring);
+
+          const hasRunSummary = computed(
+            () => Object.keys(run.value).length > 0,
+          );
+          const hasPhases = computed(
+            () => Object.keys(phases.value).length > 0,
+          );
+          const hasConfig = computed(() => Object.keys(cfg.value).length > 0);
+          const hasEnv = computed(() => Object.keys(env.value).length > 0);
+
+          const totalSentMb = computed(() =>
+            ((run.value.totalSentBytes || 0) / 1024 / 1024).toFixed(2),
+          );
+          const stepsPhases = [
+            { key: "ramp-up", label: "Ramp-up" },
+            { key: "steady", label: "Steady" },
+            { key: "ramp-down", label: "Ramp-down" },
+          ];
+          const totalPlayersConfig = computed(
+            () => (cfg.value.rooms || 0) * (cfg.value.playersPerRoom || 0),
+          );
+
+          const steadyIngressKB = computed(() =>
+            steady.value ? (steady.value.avg_sent_bps / 1024).toFixed(1) : 0,
+          );
+          const steadyEgressKB = computed(() =>
+            steady.value ? (steady.value.avg_recv_bps / 1024).toFixed(1) : 0,
+          );
+          const steadyRateLabel = computed(() => {
+            if (!steady.value) return "";
+            const ms = steady.value.avg_update_time_ms;
+            return ms < 10 ? "🟢 正常" : ms < 50 ? "🟡 稍慢" : "🟠 可能 lag";
+          });
+
+          // Chart Rendering
+          onMounted(async () => {
+            await nextTick();
+            renderCharts();
+          });
+
+          function renderCharts() {
+            const cv = charts.value.vmstat;
+            if (cv && cv.times && cv.times.length && cpuChart.value) {
+              new Chart(cpuChart.value.getContext("2d"), {
+                type: "line",
+                data: {
+                  labels: cv.times,
+                  datasets: [
+                    {
+                      label: "User %",
+                      data: cv.cpu_us || [],
+                      borderColor: "rgb(75, 192, 192)",
+                      backgroundColor: "rgba(75, 192, 192, 0.2)",
+                      tension: 0.1,
+                    },
+                    {
+                      label: "System %",
+                      data: cv.cpu_sy || [],
+                      borderColor: "rgb(255, 99, 132)",
+                      backgroundColor: "rgba(255, 99, 132, 0.2)",
+                      tension: 0.1,
+                    },
+                    {
+                      label: "Idle %",
+                      data: cv.cpu_id || [],
+                      borderColor: "rgb(153, 102, 255)",
+                      backgroundColor: "rgba(153, 102, 255, 0.2)",
+                      tension: 0.1,
+                    },
+                  ],
+                },
+                options: {
+                  responsive: true,
+                  maintainAspectRatio: false,
+                  scales: { y: { beginAtZero: true, max: 100 } },
+                },
+              });
+
+              new Chart(memoryChart.value.getContext("2d"), {
+                type: "line",
+                data: {
+                  labels: cv.times,
+                  datasets: [
+                    {
+                      label: "Free Memory (MB)",
+                      data: cv.memory_free || [],
+                      borderColor: "rgb(54, 162, 235)",
+                      backgroundColor: "rgba(54, 162, 235, 0.2)",
+                      tension: 0.1,
+                    },
+                  ],
+                },
+                options: {
+                  responsive: true,
+                  maintainAspectRatio: false,
+                  scales: { y: { beginAtZero: true } },
+                },
+              });
+            }
+
+            const cp = charts.value.pidstat;
+            if (cp && cp.times && cp.times.length && pidstatChart.value) {
+              new Chart(pidstatChart.value.getContext("2d"), {
+                type: "line",
+                data: {
+                  labels: cp.times,
+                  datasets: [
+                    {
+                      label: "Process CPU %",
+                      data: cp.cpu || [],
+                      borderColor: "rgb(255, 159, 64)",
+                      backgroundColor: "rgba(255, 159, 64, 0.2)",
+                      tension: 0.1,
+                    },
+                  ],
+                },
+                options: {
+                  responsive: true,
+                  maintainAspectRatio: false,
+                  scales: { y: { beginAtZero: true } },
+                },
+              });
+            }
+
+            const cg = charts.value.game;
+            if (cg && cg.ticks && cg.ticks.length) {
+              const ticks = cg.ticks;
+
+              if (gameBytesChart.value) {
+                new Chart(gameBytesChart.value.getContext("2d"), {
+                  type: "line",
+                  data: {
+                    labels: ticks,
+                    datasets: [
+                      {
+                        label: "Ingress (KB/s)",
+                        data: cg.bytes_sent_kb || [],
+                        borderColor: "rgb(75, 192, 192)",
+                        backgroundColor: "rgba(75, 192, 192, 0.2)",
+                        tension: 0.1,
+                        yAxisID: "y_ingress",
+                      },
+                      {
+                        label: "Egress (KB/s)",
+                        data: cg.bytes_recv_kb || [],
+                        borderColor: "rgb(255, 99, 132)",
+                        backgroundColor: "rgba(255, 99, 132, 0.2)",
+                        tension: 0.1,
+                        yAxisID: "y_egress",
+                      },
+                    ],
+                  },
+                  options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: "index", intersect: false },
+                    scales: {
+                      x: { title: { display: true, text: "Tick" } },
+                      y_ingress: {
+                        type: "linear",
+                        display: true,
+                        position: "left",
+                        beginAtZero: true,
+                        title: { display: true, text: "Ingress (KB/s)" },
+                      },
+                      y_egress: {
+                        type: "linear",
+                        display: true,
+                        position: "right",
+                        beginAtZero: true,
+                        grid: { drawOnChartArea: false },
+                        title: { display: true, text: "Egress (KB/s)" },
+                      },
+                    },
+                  },
+                });
+              }
+
+              if (gameMessagesChart.value) {
+                new Chart(gameMessagesChart.value.getContext("2d"), {
+                  type: "line",
+                  data: {
+                    labels: ticks,
+                    datasets: [
+                      {
+                        label: "Ingress (msgs/s)",
+                        data: cg.messages_sent || [],
+                        borderColor: "rgb(54, 162, 235)",
+                        backgroundColor: "rgba(54, 162, 235, 0.2)",
+                        tension: 0.1,
+                        yAxisID: "y_ingress",
+                      },
+                      {
+                        label: "Egress (msgs/s)",
+                        data: cg.messages_recv || [],
+                        borderColor: "rgb(255, 206, 86)",
+                        backgroundColor: "rgba(255, 206, 86, 0.2)",
+                        tension: 0.1,
+                        yAxisID: "y_egress",
+                      },
+                    ],
+                  },
+                  options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: "index", intersect: false },
+                    scales: {
+                      x: { title: { display: true, text: "Tick" } },
+                      y_ingress: {
+                        type: "linear",
+                        display: true,
+                        position: "left",
+                        beginAtZero: true,
+                        title: { display: true, text: "Ingress (msgs/s)" },
+                      },
+                      y_egress: {
+                        type: "linear",
+                        display: true,
+                        position: "right",
+                        beginAtZero: true,
+                        grid: { drawOnChartArea: false },
+                        title: { display: true, text: "Egress (msgs/s)" },
+                      },
+                    },
+                  },
+                });
+              }
+
+              if (gameActionsChart.value) {
+                new Chart(gameActionsChart.value.getContext("2d"), {
+                  type: "line",
+                  data: {
+                    labels: ticks,
+                    datasets: [
+                      {
+                        label: "Actions/sec",
+                        data: cg.actions || [],
+                        borderColor: "rgb(153, 102, 255)",
+                        backgroundColor: "rgba(153, 102, 255, 0.2)",
+                        tension: 0.1,
+                        yAxisID: "y",
+                      },
+                      {
+                        label: "Active Players",
+                        data: cg.active_players || [],
+                        borderColor: "rgb(255, 159, 64)",
+                        backgroundColor: "rgba(255, 159, 64, 0.2)",
+                        tension: 0.1,
+                        yAxisID: "y1",
+                      },
+                      {
+                        label: "Active Rooms",
+                        data: cg.active_rooms || [],
+                        borderColor: "rgb(201, 203, 207)",
+                        backgroundColor: "rgba(201, 203, 207, 0.2)",
+                        tension: 0.1,
+                        yAxisID: "y1",
+                      },
+                    ],
+                  },
+                  options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: "index", intersect: false },
+                    scales: {
+                      x: { title: { display: true, text: "Tick" } },
+                      y: {
+                        type: "linear",
+                        display: true,
+                        position: "left",
+                        beginAtZero: true,
+                        title: { display: true, text: "Actions/sec" },
+                      },
+                      y1: {
+                        type: "linear",
+                        display: true,
+                        position: "right",
+                        beginAtZero: true,
+                        title: { display: true, text: "Count" },
+                        grid: { drawOnChartArea: false },
+                      },
+                    },
+                  },
+                });
+              }
+
+              if (gameAllMetricsChart.value) {
+                const dsAll = [
+                  {
+                    label: "Ingress (KB/s)",
+                    data: cg.bytes_sent_kb || [],
+                    borderColor: "rgb(75, 192, 192)",
+                    backgroundColor: "rgba(75, 192, 192, 0.1)",
+                    tension: 0.1,
+                    yAxisID: "y_bytes",
+                    hidden: false,
+                  },
+                  {
+                    label: "Egress (KB/s)",
+                    data: cg.bytes_recv_kb || [],
+                    borderColor: "rgb(255, 99, 132)",
+                    backgroundColor: "rgba(255, 99, 132, 0.1)",
+                    tension: 0.1,
+                    yAxisID: "y_bytes",
+                    hidden: false,
+                  },
+                  {
+                    label: "Ingress (msgs/s)",
+                    data: cg.messages_sent || [],
+                    borderColor: "rgb(54, 162, 235)",
+                    backgroundColor: "rgba(54, 162, 235, 0.1)",
+                    tension: 0.1,
+                    yAxisID: "y_messages",
+                    hidden: false,
+                  },
+                  {
+                    label: "Egress (msgs/s)",
+                    data: cg.messages_recv || [],
+                    borderColor: "rgb(255, 206, 86)",
+                    backgroundColor: "rgba(255, 206, 86, 0.1)",
+                    tension: 0.1,
+                    yAxisID: "y_messages",
+                    hidden: false,
+                  },
+                  {
+                    label: "Actions/sec",
+                    data: cg.actions || [],
+                    borderColor: "rgb(153, 102, 255)",
+                    backgroundColor: "rgba(153, 102, 255, 0.1)",
+                    tension: 0.1,
+                    yAxisID: "y_actions",
+                    hidden: false,
+                  },
+                  {
+                    label: "Active Players",
+                    data: cg.active_players || [],
+                    borderColor: "rgb(255, 159, 64)",
+                    backgroundColor: "rgba(255, 159, 64, 0.1)",
+                    tension: 0.1,
+                    yAxisID: "y_count",
+                    hidden: false,
+                  },
+                  {
+                    label: "Active Rooms",
+                    data: cg.active_rooms || [],
+                    borderColor: "rgb(201, 203, 207)",
+                    backgroundColor: "rgba(201, 203, 207, 0.1)",
+                    tension: 0.1,
+                    yAxisID: "y_count",
+                    hidden: false,
+                  },
+                  {
+                    label: "Rooms Created",
+                    data: cg.rooms_created || [],
+                    borderColor: "rgb(255, 99, 71)",
+                    backgroundColor: "rgba(255, 99, 71, 0.1)",
+                    tension: 0.1,
+                    yAxisID: "y_count",
+                    hidden: true,
+                  },
+                  {
+                    label: "Rooms Target",
+                    data: cg.rooms_target || [],
+                    borderColor: "rgb(144, 238, 144)",
+                    backgroundColor: "rgba(144, 238, 144, 0.1)",
+                    tension: 0.1,
+                    yAxisID: "y_count",
+                    hidden: true,
+                  },
+                ];
+                new Chart(gameAllMetricsChart.value.getContext("2d"), {
+                  type: "line",
+                  data: { labels: ticks, datasets: dsAll },
+                  options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: "index", intersect: false },
+                    plugins: {
+                      legend: {
+                        display: true,
+                        position: "top",
+                        onClick: function (e, item) {
+                          var meta = this.chart.getDatasetMeta(
+                            item.datasetIndex,
+                          );
+                          meta.hidden =
+                            meta.hidden === null
+                              ? !this.chart.data.datasets[item.datasetIndex]
+                                  .hidden
+                              : null;
+                          this.chart.update();
+                        },
+                      },
+                    },
+                    scales: {
+                      x: { title: { display: true, text: "Tick" } },
+                      y_bytes: {
+                        type: "linear",
+                        display: "auto",
+                        position: "left",
+                        beginAtZero: true,
+                        title: { display: true, text: "KB/s" },
+                        grid: { drawOnChartArea: true },
+                      },
+                      y_messages: {
+                        type: "linear",
+                        display: "auto",
+                        position: "right",
+                        beginAtZero: true,
+                        title: { display: true, text: "Messages/sec" },
+                        grid: { drawOnChartArea: false },
+                      },
+                      y_actions: {
+                        type: "linear",
+                        display: "auto",
+                        position: "left",
+                        beginAtZero: true,
+                        title: { display: true, text: "Actions/sec" },
+                        grid: { drawOnChartArea: false },
+                      },
+                      y_count: {
+                        type: "linear",
+                        display: "auto",
+                        position: "right",
+                        beginAtZero: true,
+                        title: { display: true, text: "Count" },
+                        grid: { drawOnChartArea: false },
+                      },
+                    },
+                  },
+                });
+              }
+
+              if (cg.ticks_per_second && cg.ticks_per_second.length) {
+                if (updateRateChart.value) {
+                  new Chart(updateRateChart.value.getContext("2d"), {
+                    type: "line",
+                    data: {
+                      labels: ticks,
+                      datasets: [
+                        {
+                          label: "Ticks/sec",
+                          data: cg.ticks_per_second || [],
+                          borderColor: "rgb(75, 192, 192)",
+                          backgroundColor: "rgba(75, 192, 192, 0.2)",
+                          tension: 0.1,
+                        },
+                        {
+                          label: "Syncs/sec",
+                          data: cg.syncs_per_second || [],
+                          borderColor: "rgb(255, 99, 132)",
+                          backgroundColor: "rgba(255, 99, 132, 0.2)",
+                          tension: 0.1,
+                        },
+                        {
+                          label: "Total Updates/sec",
+                          data: cg.updates_per_second || [],
+                          borderColor: "rgb(153, 102, 255)",
+                          backgroundColor: "rgba(153, 102, 255, 0.2)",
+                          tension: 0.1,
+                          borderWidth: 2,
+                        },
+                      ],
+                    },
+                    options: {
+                      responsive: true,
+                      maintainAspectRatio: false,
+                      scales: {
+                        x: { title: { display: true, text: "Time (seconds)" } },
+                        y: {
+                          beginAtZero: true,
+                          title: { display: true, text: "Updates per Second" },
+                        },
+                      },
+                    },
+                  });
+                }
+                if (updateTimeChart.value) {
+                  new Chart(updateTimeChart.value.getContext("2d"), {
+                    type: "line",
+                    data: {
+                      labels: ticks,
+                      datasets: [
+                        {
+                          label: "Avg Update Time (ms)",
+                          data: cg.update_times_ms || [],
+                          borderColor: "rgb(54, 162, 235)",
+                          backgroundColor: "rgba(54, 162, 235, 0.2)",
+                          tension: 0.1,
+                          fill: true,
+                        },
+                      ],
+                    },
+                    options: {
+                      responsive: true,
+                      maintainAspectRatio: false,
+                      scales: {
+                        x: { title: { display: true, text: "Time (seconds)" } },
+                        y: {
+                          beginAtZero: true,
+                          title: { display: true, text: "Update Time (ms)" },
+                          ticks: {
+                            callback: function (v) {
+                              return v.toFixed(2) + " ms";
+                            },
+                          },
+                        },
+                      },
+                    },
+                  });
+                }
+                if (messageSizeChart.value) {
+                  new Chart(messageSizeChart.value.getContext("2d"), {
+                    type: "line",
+                    data: {
+                      labels: ticks,
+                      datasets: [
+                        {
+                          label: "Avg Message Size (KB)",
+                          data: cg.avg_message_size_kb || [],
+                          borderColor: "rgb(255, 159, 64)",
+                          backgroundColor: "rgba(255, 159, 64, 0.2)",
+                          tension: 0.1,
+                          fill: true,
+                        },
+                      ],
+                    },
+                    options: {
+                      responsive: true,
+                      maintainAspectRatio: false,
+                      scales: {
+                        x: { title: { display: true, text: "Time (seconds)" } },
+                        y: {
+                          beginAtZero: true,
+                          title: { display: true, text: "Message Size (KB)" },
+                        },
+                      },
+                    },
+                  });
+                }
+              }
+            }
+          }
+
+          return {
+            data,
+            meta,
+            run,
+            phases,
+            cfg,
+            env,
+            steady,
+            vms,
+            pds,
+            charts,
+            gs,
+            test_result,
+            monitoring,
+            hasRunSummary,
+            hasPhases,
+            hasConfig,
+            hasEnv,
+            totalSentMb,
+            stepsPhases,
+            totalPlayersConfig,
+            steadyIngressKB,
+            steadyEgressKB,
+            steadyRateLabel,
+            cpuChart,
+            memoryChart,
+            pidstatChart,
+            gameBytesChart,
+            gameMessagesChart,
+            gameActionsChart,
+            gameAllMetricsChart,
+            updateRateChart,
+            updateTimeChart,
+            messageSizeChart,
+          };
+        },
+      }).mount("#app");
+    </script>
+  </body>
 </html>
