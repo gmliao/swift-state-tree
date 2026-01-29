@@ -22,6 +22,7 @@ actor ClientSimulator {
     private let roomManager: RoomManager
     private let traffic: TrafficCounter
     private let transport: WebSocketTransport
+    private let messageKindRecorder: MessageKindRecorder
     private let makeJoinData: @Sendable (Int, Int) throws -> Data
     private let makeClientEventData: @Sendable (Int) throws -> Data
 
@@ -38,7 +39,8 @@ actor ClientSimulator {
         traffic: TrafficCounter,
         transport: WebSocketTransport,
         makeJoinData: @escaping @Sendable (Int, Int) throws -> Data,
-        makeClientEventData: @escaping @Sendable (Int) throws -> Data
+        makeClientEventData: @escaping @Sendable (Int) throws -> Data,
+        messageKindRecorder: MessageKindRecorder
     ) {
         self.config = config
         self.roomManager = roomManager
@@ -46,6 +48,7 @@ actor ClientSimulator {
         self.transport = transport
         self.makeJoinData = makeJoinData
         self.makeClientEventData = makeClientEventData
+        self.messageKindRecorder = messageKindRecorder
     }
 
     func stop() {
@@ -133,7 +136,8 @@ actor ClientSimulator {
                             sessionID: sessionID,
                             onJoinSuccess: { [roomManager] sessionID in
                                 await roomManager.markPlayerJoined(sessionID: sessionID)
-                            }
+                            },
+                            messageKindRecorder: messageKindRecorder
                         )
                         await transport.handleConnection(sessionID: sessionID, connection: conn, authInfo: nil)
 
@@ -215,10 +219,12 @@ struct CountingWebSocketConnection: WebSocketConnection, Sendable {
     let counter: TrafficCounter
     let sessionID: SessionID
     let onJoinSuccess: (@Sendable (SessionID) async -> Void)?
+    let messageKindRecorder: MessageKindRecorder
 
     func send(_ data: Data) async throws {
         // Server sends to Client = Client receives
         await counter.recordReceived(bytes: data.count)
+        await messageKindRecorder.record(data: data)
 
         // Detect JoinResponse message to mark session as joined
         if let onJoinSuccess = onJoinSuccess {

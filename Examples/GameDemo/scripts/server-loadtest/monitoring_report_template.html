@@ -868,6 +868,7 @@
             () => (cfg.value.rooms || 0) * (cfg.value.playersPerRoom || 0),
           );
 
+          // Test semantics: sent = client→server (Ingress), recv = server→client (Egress)
           const steadyIngressKB = computed(() =>
             steady.value ? (steady.value.avg_sent_bps / 1024).toFixed(1) : 0,
           );
@@ -1011,6 +1012,7 @@
             if (cg && cg.ticks && cg.ticks.length) {
               const ticks = cg.ticks;
 
+              // Test: sent = Ingress (client→server), recv = Egress (server→client)
               createChart(gameBytesChart.value, "line", {
                 labels: ticks,
                 datasets: [

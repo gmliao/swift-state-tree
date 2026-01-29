@@ -65,6 +65,7 @@ func runServerLoadTest() async throws {
     // Create shared components
     let traffic = TrafficCounter()
     let roomManager = RoomManager(maxRooms: config.rooms, maxPlayersPerRoom: config.playersPerRoom)
+    let messageKindRecorder = MessageKindRecorder()
 
     // Create message factories
     let joinCodec = TransportEncoding.json.makeCodec()
@@ -107,7 +108,8 @@ func runServerLoadTest() async throws {
         traffic: traffic,
         transport: transport,
         makeJoinData: makeJoinData,
-        makeClientEventData: makeClientEventData
+        makeClientEventData: makeClientEventData,
+        messageKindRecorder: messageKindRecorder
     )
 
     // Start client simulation in background task
@@ -282,6 +284,14 @@ func runServerLoadTest() async throws {
             "enableLiveStateHashRecording": false,
         ]
     )
+
+    let kindSummary = await messageKindRecorder.summary()
+    let kindFilename = "message-kinds-rooms\(config.rooms)-ppr\(config.playersPerRoom)-\(timestamp).json"
+    let kindURL = getResultsDirectory().appendingPathComponent(kindFilename)
+    if let data = try? JSONSerialization.data(withJSONObject: kindSummary, options: [.prettyPrinted, .sortedKeys]) {
+        try? data.write(to: kindURL)
+        print("Message kind breakdown (egress) saved to: \(kindURL.path)")
+    }
 }
 
 // Top-level entry point
