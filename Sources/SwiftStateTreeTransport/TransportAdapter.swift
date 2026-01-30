@@ -97,6 +97,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         Set(sessionToPlayer.keys)
     }
 
+    /// Pending server events to be merged with the next state update (opcode 107).
+    /// Cleared after each sync. Only used when state update encoding is opcode/MessagePack.
+    private var pendingServerEventsForNextSync: [(SwiftStateTree.EventTarget, AnyServerEvent)] = []
+
+    /// Whether to merge server events with state update (opcode 107). True when state update encoding is opcodeMessagePack.
+    private var useStateUpdateWithEvents: Bool {
+        stateUpdateEncoder.encoding == .opcodeMessagePack
+    }
+
     /// Closure to create PlayerSession for guest users (when JWT validation is enabled but no token is provided).
     /// Only used when JWT validation is enabled, allowGuestMode is true, and no JWT token is provided.
     /// Default implementation uses the sessionID as playerID for deterministic guest identities.
@@ -600,10 +609,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 return
 
             default:
-                // For other messages, require player to be joined
+                // For other messages, require player to be joined.
+                // Under load, clients may send (e.g. MoveTo) before join ack is processed; log at debug to avoid noise.
                 guard let playerID = sessionToPlayer[sessionID],
                       let clientID = sessionToClient[sessionID] else {
-                    logger.warning("Message received from session that has not joined: \(sessionID.rawValue)")
+                    if logger.logLevel <= .debug {
+                        logger.debug("Message received from session that has not joined: \(sessionID.rawValue)")
+                    }
                     return
                 }
 
@@ -767,8 +779,21 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     // MARK: - Helper Methods
 
-    /// Send server event to specified target
+    /// Send server event to specified target. When opcode 107 is enabled (opcodeMessagePack),
+    /// events are queued and sent merged with the next state update instead of separate frames.
     public func sendEvent(_ event: AnyServerEvent, to target: SwiftStateTree.EventTarget) async {
+        if useStateUpdateWithEvents {
+            switch target {
+            case .players(let playerIDs):
+                for playerID in playerIDs {
+                    pendingServerEventsForNextSync.append((.player(playerID), event))
+                }
+            default:
+                pendingServerEventsForNextSync.append((target, event))
+            }
+            return
+        }
+
         do {
             let transportMsg = TransportMessage.event(
                 event: .fromServer(event: event)
@@ -852,6 +877,86 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "eventType": .string(event.type),
                 "error": .string("\(error)")
             ])
+        }
+    }
+
+    /// Opcode for state update with events (107). Same numeric range as MessageKindOpcode.
+    private let opcodeStateUpdateWithEvents: Int64 = 107
+
+    /// Events for a given client (sessionID + playerID). Matches .session(sessionID), .player(playerID), or .all.
+    private func pendingEvents(for sessionID: SessionID, playerID: PlayerID) -> [AnyServerEvent] {
+        pendingServerEventsForNextSync.compactMap { target, event in
+            switch target {
+            case .session(let s): return s == sessionID ? event : nil
+            case .player(let p): return p == playerID ? event : nil
+            case .all: return event
+            case .client, .players: return nil
+            }
+        }
+    }
+
+    /// When TRANSPORT_DEBUG_SYNC107=1, print one NDJSON line to stderr for sync/107 profiling.
+    /// Set TRANSPORT_DEBUG_SYNC107_MIN_MS=1000 to only log syncBroadcastOnly when duration >= 1s (small log).
+    /// Set TRANSPORT_DEBUG_SYNC107_BUILD_MIN_MS=100 to only log buildStateUpdateWithEvents when duration >= 100ms.
+    private func debugSync107Log(_ fields: [String: Any], durationMs: Int64? = nil, isSyncBroadcastOnly: Bool = false, isBuildStateUpdate: Bool = false) {
+        guard ProcessInfo.processInfo.environment["TRANSPORT_DEBUG_SYNC107"] == "1" else { return }
+        let env = ProcessInfo.processInfo.environment
+        let syncMinMs = Int64(env["TRANSPORT_DEBUG_SYNC107_MIN_MS"] ?? "0") ?? 0
+        let buildMinMs = Int64(env["TRANSPORT_DEBUG_SYNC107_BUILD_MIN_MS"] ?? "0") ?? 0
+        if let ms = durationMs {
+            if isSyncBroadcastOnly, syncMinMs > 0, ms < syncMinMs { return }
+            if isBuildStateUpdate, buildMinMs > 0, ms < buildMinMs { return }
+        } else {
+            // For begin/enter: only log when we're not in "min only" mode (otherwise we'd spam)
+            if isSyncBroadcastOnly, syncMinMs > 0 { return }
+            if isBuildStateUpdate, buildMinMs > 0 { return }
+        }
+        var dict = fields
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        dict["ts"] = formatter.string(from: Date())
+        if let data = try? JSONSerialization.data(withJSONObject: dict),
+           let line = String(data: data, encoding: .utf8) {
+            fputs(line + "\n", stderr)
+        }
+    }
+
+    /// Build MessagePack frame [107, stateUpdatePayload, eventsArray]. Returns nil on failure (caller should send state only).
+    private func buildStateUpdateWithEvents(stateUpdateData: Data, events: [AnyServerEvent]) -> Data? {
+        guard !events.isEmpty else { return nil }
+        let buildStart = ContinuousClock.now
+        debugSync107Log(["event": "buildStateUpdateWithEvents_enter", "events_count": events.count], isBuildStateUpdate: true)
+        defer {
+            let elapsed = ContinuousClock.now - buildStart
+            let (s, atto) = elapsed.components
+            let ms = s * 1000 + atto / 1_000_000_000_000_000
+            debugSync107Log(["event": "buildStateUpdateWithEvents_exit", "duration_ms": ms], durationMs: ms, isBuildStateUpdate: true)
+        }
+        do {
+            let stateUnpacked = try unpack(stateUpdateData)
+            guard case .array(let stateArr) = stateUnpacked else { return nil }
+
+            var eventBodies: [MessagePackValue] = []
+            for event in events {
+                let transportMsg = TransportMessage.event(event: .fromServer(event: event))
+                let eventData = try messageEncoder.encode(transportMsg)
+                let eventUnpacked = try unpack(eventData)
+                guard case .array(let eventArr) = eventUnpacked, eventArr.count >= 2 else { continue }
+                // Drop opcode (first element, 103) so body is [direction, type, payload, ...]
+                eventBodies.append(.array(Array(eventArr.dropFirst())))
+            }
+            if eventBodies.isEmpty { return nil }
+
+            let combined: MessagePackValue = .array([
+                .int(opcodeStateUpdateWithEvents),
+                .array(stateArr),
+                .array(eventBodies)
+            ])
+            return try pack(combined)
+        } catch {
+            logger.warning("Failed to build opcode 107 frame", metadata: ["error": .string("\(error)")])
+            return nil
         }
     }
 
@@ -1009,6 +1114,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 }
             }
 
+            pendingServerEventsForNextSync.removeAll()
+
             // Release sync lock after successful sync
             // Only clear dirty flags if dirty tracking is enabled
             await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
@@ -1043,6 +1150,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// - Debounce rapid broadcast changes to reduce sync frequency
     /// - Consider allowing concurrent broadcast-only syncs (read-only operation)
     public func syncBroadcastOnly() async {
+        let syncStart = ContinuousClock.now
+        debugSync107Log(["event": "syncBroadcastOnly_begin"], isSyncBroadcastOnly: true)
         // Note: Even if no players are connected, we still need to update the broadcast cache
         // This ensures that when a player reconnects, they see the correct state (not stale cache)
         let hasPlayers = !sessionToPlayer.isEmpty
@@ -1056,6 +1165,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             if logger.logLevel <= .debug {
                 logger.debug("⏭️ Broadcast-only sync skipped: another sync operation is in progress")
             }
+            let elapsed = ContinuousClock.now - syncStart
+            let (s, atto) = elapsed.components
+            let ms = s * 1000 + atto / 1_000_000_000_000_000
+            debugSync107Log(["event": "syncBroadcastOnly_end", "duration_ms": ms, "skipped": true], durationMs: ms, isSyncBroadcastOnly: true)
             return
         }
 
@@ -1098,6 +1211,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     ])
                 }
                 await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
+                let elapsed = ContinuousClock.now - syncStart
+                let (s, atto) = elapsed.components
+                let ms = s * 1000 + atto / 1_000_000_000_000_000
+                debugSync107Log(["event": "syncBroadcastOnly_end", "duration_ms": ms, "no_send": true], durationMs: ms, isSyncBroadcastOnly: true)
                 return
             }
 
@@ -1120,20 +1237,32 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         playerSlot: playerSlot
                     )
                     lastUpdateSize = updateData.count
+
+                    let dataToSend: Data
+                    if useStateUpdateWithEvents {
+                        let eventsForClient = pendingEvents(for: sessionID, playerID: playerID)
+                        if let combined = buildStateUpdateWithEvents(stateUpdateData: updateData, events: eventsForClient) {
+                            dataToSend = combined
+                        } else {
+                            dataToSend = updateData
+                        }
+                    } else {
+                        dataToSend = updateData
+                    }
                     
                     // Debug: Log first few bytes to verify encoding format
                     if logger.logLevel <= .trace,
                        lastUpdateSize == updateData.count,
-                       let preview = String(data: updateData.prefix(100), encoding: .utf8)
+                       let preview = String(data: dataToSend.prefix(100), encoding: .utf8)
                     {
                         logger.trace("📤 Encoded update preview", metadata: [
                             "playerID": .string(playerID.rawValue),
-                            "bytes": .string("\(updateData.count)"),
+                            "bytes": .string("\(dataToSend.count)"),
                             "preview": .string(preview)
                         ])
                     }
                     
-                    try await transport.send(updateData, to: .session(sessionID))
+                    try await transport.send(dataToSend, to: .session(sessionID))
                 } catch {
                     // Log error but continue sending to other players
                     logger.warning("Failed to send broadcast update to session", metadata: [
@@ -1142,6 +1271,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     ])
                 }
             }
+
+            pendingServerEventsForNextSync.removeAll()
 
             // Only compute logging metadata if debug logging is enabled
             if logger.logLevel <= .debug {
@@ -1156,6 +1287,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Release sync lock after successful sync
             // Only clear dirty flags if dirty tracking is enabled
             await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
+            let elapsed = ContinuousClock.now - syncStart
+            let (s, atto) = elapsed.components
+            let ms = s * 1000 + atto / 1_000_000_000_000_000
+            debugSync107Log(["event": "syncBroadcastOnly_end", "duration_ms": ms], durationMs: ms, isSyncBroadcastOnly: true)
         } catch {
             logger.error("❌ Failed to sync broadcast-only", metadata: [
                 "error": .string("\(error)")
@@ -1164,6 +1299,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Always release sync lock, even if error occurred
             // Only clear dirty flags if dirty tracking is enabled
             await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
+            let elapsed = ContinuousClock.now - syncStart
+            let (s, atto) = elapsed.components
+            let msErr = s * 1000 + atto / 1_000_000_000_000_000
+            debugSync107Log(["event": "syncBroadcastOnly_end", "duration_ms": msErr, "error": true], durationMs: msErr, isSyncBroadcastOnly: true)
         }
     }
 
@@ -1397,7 +1536,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-    /// Send encoded update to transport
+    /// Send encoded update to transport. When opcode 107 is enabled and there are pending events for this client, sends combined frame.
     private func sendEncodedUpdate(
         sessionID: SessionID,
         playerID: PlayerID,
@@ -1405,7 +1544,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         patchCount: Int,
         updateData: Data
     ) async {
-        let updateSize = updateData.count
+        let dataToSend: Data
+        if useStateUpdateWithEvents {
+            let eventsForClient = pendingEvents(for: sessionID, playerID: playerID)
+            if let combined = buildStateUpdateWithEvents(stateUpdateData: updateData, events: eventsForClient) {
+                dataToSend = combined
+            } else {
+                dataToSend = updateData
+            }
+        } else {
+            dataToSend = updateData
+        }
+
+        let updateSize = dataToSend.count
 
         // Verbose per-player state update logging can be noisy at debug level,
         // especially when ticks are running frequently. Use trace instead,
@@ -1422,7 +1573,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
 
         // Log update preview (first 500 chars) - only compute if trace logging is enabled
-        if let preview = logger.safePreview(from: updateData, maxLength: 500) {
+        if let preview = logger.safePreview(from: dataToSend, maxLength: 500) {
             logger.trace("📤 Update preview", metadata: [
                 "playerID": .string(playerID.rawValue),
                 "type": .string(updateType),
@@ -1431,7 +1582,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
 
         do {
-            try await transport.send(updateData, to: .session(sessionID))
+            try await transport.send(dataToSend, to: .session(sessionID))
         } catch {
             logger.error("❌ Failed to sync state", metadata: [
                 "playerID": .string(playerID.rawValue),

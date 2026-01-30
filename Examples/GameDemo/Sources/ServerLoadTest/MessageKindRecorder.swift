@@ -62,6 +62,7 @@ actor MessageKindRecorder {
         case 104: return "join"
         case 105: return "joinResponse"
         case 106: return "error"
+        case 107: return "stateUpdateWithEvents"
         default: return "opcode\(opcode)"
         }
     }

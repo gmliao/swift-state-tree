@@ -25,7 +25,7 @@ import {
   EventDirection
 } from './protocol'
 import { MessageEncodingValues, StateUpdateEncodingValues } from '../types/transport'
-import type { TransportMessage, StateUpdate, StateSnapshot } from '../types/transport'
+import type { TransportMessage, StateUpdate, StateSnapshot, StateUpdateWithEvents } from '../types/transport'
 
 describe('protocol', () => {
   describe('encodeMessage', () => {
@@ -243,6 +243,30 @@ describe('protocol', () => {
         expect(update.patches.length).toBe(1)
         expect(update.patches[0]).toMatchObject({ path: '/score', op: 'replace', value: 10 })
       }
+    })
+
+    it('decodes opcode 107 (stateUpdateWithEvents) from JSON array', () => {
+      const statePayload = [StateUpdateOpcode.diff, ['/score', StatePatchOpcode.replace, 10]]
+      const eventsPayload = [[EventDirection.fromServer, 'GameStarted', { gameID: 'g1' }]]
+      const payload107 = [MessageKindOpcode.stateUpdateWithEvents, statePayload, eventsPayload]
+      const encoded = JSON.stringify(payload107)
+      const decoded = decodeMessage(encoded, {
+        message: MessageEncodingValues.opcodeJsonArray,
+        stateUpdate: StateUpdateEncodingValues.opcodeJsonArray
+      })
+
+      expect(decoded).toHaveProperty('type', 'stateUpdateWithEvents')
+      const combined = decoded as StateUpdateWithEvents
+      expect(combined.stateUpdate).toBeDefined()
+      expect(combined.stateUpdate.type).toBe('diff')
+      expect(combined.stateUpdate.patches.length).toBe(1)
+      expect(combined.stateUpdate.patches[0]).toMatchObject({ path: '/score', op: 'replace', value: 10 })
+      expect(Array.isArray(combined.events)).toBe(true)
+      expect(combined.events.length).toBe(1)
+      expect(combined.events[0].kind).toBe('event')
+      expect((combined.events[0].payload as any).fromServer).toBeDefined()
+      expect((combined.events[0].payload as any).fromServer.type).toBe('GameStarted')
+      expect((combined.events[0].payload as any).fromServer.payload).toEqual({ gameID: 'g1' })
     })
 
     it('decodes opcode array StateUpdate with nested object', () => {

@@ -128,3 +128,13 @@ export interface StateUpdate {
 export interface StateSnapshot {
   values: Record<string, any>
 }
+
+/**
+ * Combined state update and server events (opcode 107).
+ * Client should apply stateUpdate first, then dispatch each event.
+ */
+export interface StateUpdateWithEvents {
+  type: 'stateUpdateWithEvents'
+  stateUpdate: StateUpdate
+  events: TransportMessage[]
+}

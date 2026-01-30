@@ -1,4 +1,4 @@
-import type { TransportMessage, StateUpdate, StateSnapshot, TransportEncodingConfig, MessageEncoding } from '../types/transport'
+import type { TransportMessage, StateUpdate, StateSnapshot, StateUpdateWithEvents, TransportEncodingConfig, MessageEncoding } from '../types/transport'
 import { MessageEncodingValues, StateUpdateEncodingValues } from '../types/transport'
 import { createWebSocket, type WebSocketConnection } from './websocket'
 import { decodeMessage, encodeMessageToFormat } from './protocol'
@@ -342,7 +342,7 @@ export class StateTreeRuntime {
       let messageSize: number
 
       // Calculate actual message size (bytes) before decoding
-      let decoded: TransportMessage | StateUpdate | StateSnapshot
+      let decoded: TransportMessage | StateUpdate | StateSnapshot | StateUpdateWithEvents
       
       if (typeof data === 'string') {
         // UTF-8 encoding: each character is 1-4 bytes, but for ASCII it's 1 byte
@@ -392,6 +392,29 @@ export class StateTreeRuntime {
         }
         
         this.routeTransportMessage(message)
+        return
+      }
+
+      // Opcode 107: state update with events merged — dispatch events first, then apply state
+      // So notification events (e.g. "attack hit") are processed before state (e.g. monster dead),
+      // giving cause-then-effect ordering: show attack feedback, then apply outcome.
+      if ((decoded as StateUpdateWithEvents).type === 'stateUpdateWithEvents' && 'stateUpdate' in decoded && 'events' in decoded) {
+        const combined = decoded as StateUpdateWithEvents
+        this.logger.info(`📥 Received StateUpdateWithEvents: patches=${combined.stateUpdate.patches.length}, events=${combined.events.length}`)
+        if (this.statisticsCallback) {
+          this.statisticsCallback({
+            messageType: 'stateUpdate',
+            messageSize,
+            direction: 'inbound',
+            patchCount: combined.stateUpdate.patches.length
+          })
+        }
+        for (const event of combined.events) {
+          this.routeTransportMessage(event)
+        }
+        for (const view of this.views.values()) {
+          view.handleStateUpdate(combined.stateUpdate)
+        }
         return
       }
 

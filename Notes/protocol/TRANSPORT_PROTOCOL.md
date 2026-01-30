@@ -555,6 +555,17 @@ const path = pattern.replace('*', dynamicKey)          // "players.42.hp"
 const jsonPointer = '/' + path.replace(/\./g, '/')     // "/players/42/hp"
 ```
 
+#### 3. Opcode 107: State Update with Events (MessagePack only)
+
+When using MessagePack state update encoding, the server may send a **combined frame** (opcode 107) that includes both the state update and the server events for that tick in one message. This reduces egress message count and preserves ordering within one frame.
+
+**Wire format:** `[107, stateUpdatePayload, eventsArray]`
+
+- `stateUpdatePayload`: Same structure as a standalone state update (opcode 0/1/2 array).
+- `eventsArray`: Array of event bodies, each `[direction, type, payload, rawBody?]` (same as opcode 103 body without the leading 103).
+
+**Client handling:** If the first element of the decoded array is 107, decode `payload[1]` as a state update (reuse existing state update decoder) and `payload[2]` as an array of events (each entry is the body of a 103 message). **Dispatch each event first, then apply the state update.** This order gives cause-then-effect: notification events (e.g. "attack hit") are processed before the resulting state (e.g. monster dead), so the client can show attack feedback and then apply the outcome. Optional: clients that do not support 107 may ignore or treat as unsupported.
+
 #### 編碼配置
 
 **Swift 端 (Server):**

@@ -231,6 +231,7 @@ private func runLive(
     let keeper = LandKeeper<AsyncResolverConsistencyTestState>(
         definition: definition,
         initialState: AsyncResolverConsistencyTestState(),
+        enableLiveStateHashRecording: true,
         autoStartLoops: false
     )
 
