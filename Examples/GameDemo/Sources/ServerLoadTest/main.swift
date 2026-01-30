@@ -175,7 +175,9 @@ func runServerLoadTest() async throws {
         )
         seconds.append(sample)
         logProgress(sample: sample)
-
+        // #region agent log
+        _debugLog(location: "main.swift:mainLoop", message: "loop end", data: ["t": t, "sentMsgs": sentDeltaMsgs, "recvMsgs": recvDeltaMsgs], hypothesisId: "H2")
+        // #endregion
         try? await Task.sleep(nanoseconds: 1_000_000_000)
     }
 

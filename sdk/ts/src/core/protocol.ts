@@ -6,6 +6,7 @@ import type {
   StatePatch,
   StateUpdate,
   StateSnapshot,
+  StateUpdateWithEvents,
   TransportEncodingConfig,
   StateUpdateDecoding,
   MessageEncoding
@@ -28,7 +29,9 @@ export const MessageKindOpcode = {
   event: 103,
   join: 104,
   joinResponse: 105,
-  error: 106
+  error: 106,
+  /** State update with events merged (107). Same wire range as MessageKindOpcode. */
+  stateUpdateWithEvents: 107
 } as const
 
 /**
@@ -296,10 +299,14 @@ function classifyAndDecode(
   decoded: any,
   config: TransportEncodingConfig | undefined,
   dynamicKeyMap: Map<number, string> | undefined
-): TransportMessage | StateUpdate | StateSnapshot {
+): TransportMessage | StateUpdate | StateSnapshot | StateUpdateWithEvents {
   if (Array.isArray(decoded)) {
-    // Check if first element is a TransportMessage opcode (101-106)
     const firstElement = decoded[0]
+    // Opcode 107: state update with events merged
+    if (typeof firstElement === 'number' && firstElement === MessageKindOpcode.stateUpdateWithEvents) {
+      return decodeStateUpdateWithEventsArray(decoded, dynamicKeyMap)
+    }
+    // Check if first element is a TransportMessage opcode (101-106)
     if (typeof firstElement === 'number' && 
         firstElement >= MessageKindOpcode.action && 
         firstElement <= MessageKindOpcode.error) {
@@ -344,7 +351,7 @@ export function decodeMessage(
   data: string | ArrayBuffer | Uint8Array,
   config?: TransportEncodingConfig,
   dynamicKeyMap?: Map<number, string>
-): TransportMessage | StateUpdate | StateSnapshot {
+): TransportMessage | StateUpdate | StateSnapshot | StateUpdateWithEvents {
   const knownEncoding = config?.message
   
   // Handle binary data (ArrayBuffer or Uint8Array)
@@ -846,6 +853,29 @@ function decodeJoinArray(payload: unknown[]): TransportMessage {
       }
     }
   } as TransportMessage
+}
+
+// [107, stateUpdatePayload, eventsArray] where eventsArray is [[direction, type, payload], ...]
+function decodeStateUpdateWithEventsArray(
+  payload: unknown[],
+  dynamicKeyMap?: Map<number, string>
+): StateUpdateWithEvents {
+  if (payload.length < 3) {
+    throw new Error(`Invalid opcode 107 payload: expected [107, statePayload, eventsArray], got ${payload.length} elements`)
+  }
+  const statePayload = payload[1] as unknown[]
+  const eventsList = payload[2] as unknown[]
+  const stateUpdate = decodeStateUpdateArray(statePayload, dynamicKeyMap)
+  const events: TransportMessage[] = []
+  if (Array.isArray(eventsList)) {
+    for (const entry of eventsList) {
+      if (!Array.isArray(entry)) continue
+      // Event body is [direction, type, payload, rawBody?]; prepend opcode 103 for decodeEventArray
+      const fullEventArray = [MessageKindOpcode.event, ...entry]
+      events.push(decodeEventArray(fullEventArray))
+    }
+  }
+  return { type: 'stateUpdateWithEvents', stateUpdate, events }
 }
 
 // [MessageKindOpcode.event, direction(EventDirection.fromClient/fromServer), type, payload, rawBody?]

@@ -62,11 +62,15 @@ actor ClientSimulator {
         let totalPlayers = config.totalPlayers
         let steadySeconds = config.durationSeconds
         let totalSeconds = config.totalSeconds
-
+        // #region agent log
+        _debugLog(location: "ClientSimulator:run", message: "start", data: ["totalPlayers": totalPlayers, "totalSeconds": totalSeconds], hypothesisId: "H1")
+        // #endregion
         for t in 0 ..< totalSeconds {
             guard isRunning else { break }
             elapsedSeconds = t
-
+            // #region agent log
+            _debugLog(location: "ClientSimulator:run", message: "tick", data: ["t": t, "totalPlayersAssigned": totalPlayersAssigned, "phase": "\(phase)"], hypothesisId: "H1")
+            // #endregion
             // Determine phase
             let isRampUp = t < config.rampUpSeconds
             let isSteady = t >= config.rampUpSeconds && t < (config.rampUpSeconds + steadySeconds)
@@ -98,7 +102,9 @@ actor ClientSimulator {
             // Wait for the next second
             try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
-
+        // #region agent log
+        _debugLog(location: "ClientSimulator:run", message: "done", data: ["totalPlayersAssigned": totalPlayersAssigned], hypothesisId: "H1")
+        // #endregion
         phase = .done
     }
 
@@ -110,7 +116,9 @@ actor ClientSimulator {
         let playersToJoinThisSecond = targetPlayersThisSecond - totalPlayersAssigned
 
         guard playersToJoinThisSecond > 0 else { return }
-
+        // #region agent log
+        _debugLog(location: "ClientSimulator:performRampUp", message: "entry", data: ["playersToJoinThisSecond": playersToJoinThisSecond, "totalPlayersAssigned": totalPlayersAssigned, "totalPlayers": totalPlayers], hypothesisId: "H3")
+        // #endregion
         // Calculate maxConcurrentJoins based on target join rate
         // Use 1.5x multiplier to ensure we can meet the target rate even with network latency
         let maxConcurrentJoins = max(20, Int(Double(playersPerSecondUp) * 1.5))
@@ -121,8 +129,15 @@ actor ClientSimulator {
         await withTaskGroup(of: Bool.self) { group in
             var submitted = 0
             var completed = 0
+            var lastLoggedCompleted = -1
 
             while submitted < playersToJoinThisSecond || completed < submitted {
+                // #region agent log
+                if completed > lastLoggedCompleted && (completed % 50 == 0 || completed == submitted) {
+                    _debugLog(location: "ClientSimulator:performRampUp", message: "waiting", data: ["submitted": submitted, "completed": completed, "playersToJoinThisSecond": playersToJoinThisSecond], hypothesisId: "H3")
+                    lastLoggedCompleted = completed
+                }
+                // #endregion
                 // Fill worker pool up to maxConcurrentJoins
                 while submitted < playersToJoinThisSecond, (submitted - completed) < maxConcurrentJoins {
                     group.addTask { [self] in
@@ -160,7 +175,9 @@ actor ClientSimulator {
                 }
             }
         }
-
+        // #region agent log
+        _debugLog(location: "ClientSimulator:performRampUp", message: "exit", data: ["successfulAssignments": successfulAssignments, "totalPlayersAssigned": totalPlayersAssigned + successfulAssignments], hypothesisId: "H3")
+        // #endregion
         totalPlayersAssigned += successfulAssignments
     }
 
@@ -168,6 +185,9 @@ actor ClientSimulator {
         guard config.actionsPerPlayerPerSecond > 0 else { return }
 
         let connectedSessions = await roomManager.getJoinedSessions()
+        // #region agent log
+        _debugLog(location: "ClientSimulator:performActions", message: "entry", data: ["t": t, "connectedCount": connectedSessions.count], hypothesisId: "H4")
+        // #endregion
         guard !connectedSessions.isEmpty else { return }
 
         let actionsPerPlayer = config.actionsPerPlayerPerSecond
