@@ -292,19 +292,36 @@ function tryDecodeAsJson(data: string | ArrayBuffer | Uint8Array): any | null {
   }
 }
 
+type DynamicKeyMaps = {
+  broadcast?: Map<number, string>
+  perPlayer?: Map<number, string>
+}
+
+type DynamicKeyMapInput = Map<number, string> | DynamicKeyMaps
+
+function resolveDynamicKeyMap(
+  input: DynamicKeyMapInput | undefined,
+  scope: 'broadcast' | 'perPlayer'
+): Map<number, string> | undefined {
+  if (!input) return undefined
+  if (input instanceof Map) return input
+  return scope === 'broadcast' ? input.broadcast : input.perPlayer
+}
+
 /**
  * Classify decoded data and route to appropriate decoder
  */
 function classifyAndDecode(
   decoded: any,
   config: TransportEncodingConfig | undefined,
-  dynamicKeyMap: Map<number, string> | undefined
+  dynamicKeyMap: DynamicKeyMapInput | undefined
 ): TransportMessage | StateUpdate | StateSnapshot | StateUpdateWithEvents {
   if (Array.isArray(decoded)) {
     const firstElement = decoded[0]
     // Opcode 107: state update with events merged
     if (typeof firstElement === 'number' && firstElement === MessageKindOpcode.stateUpdateWithEvents) {
-      return decodeStateUpdateWithEventsArray(decoded, dynamicKeyMap)
+      const broadcastMap = resolveDynamicKeyMap(dynamicKeyMap, 'broadcast')
+      return decodeStateUpdateWithEventsArray(decoded, broadcastMap)
     }
     // Check if first element is a TransportMessage opcode (101-106)
     if (typeof firstElement === 'number' && 
@@ -318,7 +335,8 @@ function classifyAndDecode(
     if (decoding === StateUpdateDecodingValues.jsonObject) {
       throw new Error(`Unknown message format: ${JSON.stringify(decoded).substring(0, 100)}`)
     }
-    return decodeStateUpdateArray(decoded, dynamicKeyMap)
+    const perPlayerMap = resolveDynamicKeyMap(dynamicKeyMap, 'perPlayer')
+    return decodeStateUpdateArray(decoded, perPlayerMap)
   }
 
   // Check for TransportMessage with kind field
@@ -350,7 +368,7 @@ function classifyAndDecode(
 export function decodeMessage(
   data: string | ArrayBuffer | Uint8Array,
   config?: TransportEncodingConfig,
-  dynamicKeyMap?: Map<number, string>
+  dynamicKeyMap?: DynamicKeyMapInput
 ): TransportMessage | StateUpdate | StateSnapshot | StateUpdateWithEvents {
   const knownEncoding = config?.message
   

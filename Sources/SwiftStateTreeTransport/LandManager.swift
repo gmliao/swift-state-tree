@@ -298,6 +298,19 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         landMetadata.removeValue(forKey: landID)
         logger.info("Removed land: \(landID.stringValue)")
     }
+
+    /// Force shutdown all active lands.
+    /// Intended for benchmarks or test harnesses that need to end quickly.
+    public func shutdownAllLands() async {
+        let containers = Array(lands.values)
+        await withTaskGroup(of: Void.self) { group in
+            for container in containers {
+                group.addTask {
+                    await container.keeper.forceShutdown()
+                }
+            }
+        }
+    }
     
     /// List all active land IDs.
     ///

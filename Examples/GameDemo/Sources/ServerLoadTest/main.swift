@@ -65,7 +65,7 @@ func runServerLoadTest() async throws {
     // Create shared components
     let traffic = TrafficCounter()
     let roomManager = RoomManager(maxRooms: config.rooms, maxPlayersPerRoom: config.playersPerRoom)
-    let messageKindRecorder = MessageKindRecorder()
+    let messageKindRecorder: MessageKindRecorder? = (config.rooms == 1) ? MessageKindRecorder() : nil
 
     // Create message factories
     let joinCodec = TransportEncoding.json.makeCodec()
@@ -175,9 +175,6 @@ func runServerLoadTest() async throws {
         )
         seconds.append(sample)
         logProgress(sample: sample)
-        // #region agent log
-        _debugLog(location: "main.swift:mainLoop", message: "loop end", data: ["t": t, "sentMsgs": sentDeltaMsgs, "recvMsgs": recvDeltaMsgs], hypothesisId: "H2")
-        // #endregion
         try? await Task.sleep(nanoseconds: 1_000_000_000)
     }
 
@@ -186,12 +183,11 @@ func runServerLoadTest() async throws {
     clientTask.cancel()
 
     // Final cleanup
-    let finalConnectedSessions = await roomManager.getJoinedSessions()
-    for sessionID in finalConnectedSessions {
-        await transport.handleDisconnection(sessionID: sessionID)
+    if let landManager = server.landManager {
+        await landManager.shutdownAllLands()
     }
-
-    try? await Task.sleep(nanoseconds: 6_000_000_000)
+    try? await transport.stop()
+    try? await Task.sleep(nanoseconds: 2_000_000_000)
 
     // Generate summary and save results
     let finalTraffic = await traffic.snapshot()
@@ -287,12 +283,14 @@ func runServerLoadTest() async throws {
         ]
     )
 
-    let kindSummary = await messageKindRecorder.summary()
-    let kindFilename = "message-kinds-rooms\(config.rooms)-ppr\(config.playersPerRoom)-\(timestamp).json"
-    let kindURL = getResultsDirectory().appendingPathComponent(kindFilename)
-    if let data = try? JSONSerialization.data(withJSONObject: kindSummary, options: [.prettyPrinted, .sortedKeys]) {
-        try? data.write(to: kindURL)
-        print("Message kind breakdown (egress) saved to: \(kindURL.path)")
+    if let messageKindRecorder {
+        let kindSummary = await messageKindRecorder.summary()
+        let kindFilename = "message-kinds-rooms\(config.rooms)-ppr\(config.playersPerRoom)-\(timestamp).json"
+        let kindURL = getResultsDirectory().appendingPathComponent(kindFilename)
+        if let data = try? JSONSerialization.data(withJSONObject: kindSummary, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: kindURL)
+            print("Message kind breakdown (egress) saved to: \(kindURL.path)")
+        }
     }
 }
 

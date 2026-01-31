@@ -728,6 +728,36 @@ public struct SyncEngine: Sendable {
             return .diff(mergedPatches)
         }
     }
+
+    /// Generate a per-player-only update using a pre-extracted per-player snapshot.
+    ///
+    /// Use this when broadcast patches are sent separately.
+    ///
+    /// - Parameters:
+    ///   - playerID: The player ID.
+    ///   - perPlayerSnapshot: Pre-extracted per-player snapshot for this player.
+    ///   - perPlayerMode: Snapshot mode used to extract perPlayerSnapshot (for dirty tracking).
+    ///   - onlyPaths: Optional set of paths to limit diff calculation (JSON Pointer format).
+    /// - Returns: `.diff([StatePatch])` with changes, or `.noChange` if none.
+    package mutating func generatePerPlayerUpdateFromSnapshot(
+        for playerID: PlayerID,
+        perPlayerSnapshot: StateSnapshot,
+        perPlayerMode: SnapshotMode = .all,
+        onlyPaths: Set<String>? = nil
+    ) -> StateUpdate {
+        let perPlayerDiff = computePerPlayerDiffFromSnapshot(
+            for: playerID,
+            currentPerPlayer: perPlayerSnapshot,
+            onlyPaths: onlyPaths,
+            mode: perPlayerMode
+        )
+
+        if perPlayerDiff.isEmpty {
+            return .noChange
+        } else {
+            return .diff(perPlayerDiff)
+        }
+    }
     
     /// Generate a diff update for a specific player.
     ///

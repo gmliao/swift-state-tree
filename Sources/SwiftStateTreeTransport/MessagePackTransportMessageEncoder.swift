@@ -46,6 +46,21 @@ public struct MessagePackTransportMessageEncoder: TransportMessageEncoder {
         // Serialize with MessagePack
         return try pack(.array(messagePackArray))
     }
+
+    /// Encode a server event body (opcode removed) directly to MessagePackValue.
+    /// This avoids an extra pack/unpack cycle when building opcode 107 frames.
+    func encodeServerEventBody(_ event: AnyServerEvent) throws -> MessagePackValue {
+        let transportMsg = TransportMessage.event(event: .fromServer(event: event))
+        let array = try encodeToArray(transportMsg)
+        let messagePackArray = try array.map { try anyCodableToMessagePackValue($0) }
+        guard messagePackArray.count >= 2 else {
+            throw EncodingError.invalidValue(event, .init(
+                codingPath: [],
+                debugDescription: "MessagePack event array is too short"
+            ))
+        }
+        return .array(Array(messagePackArray.dropFirst()))
+    }
     
     // MARK: - Array Encoding (same logic as OpcodeTransportMessageEncoder)
     

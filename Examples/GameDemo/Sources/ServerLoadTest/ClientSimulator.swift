@@ -22,7 +22,7 @@ actor ClientSimulator {
     private let roomManager: RoomManager
     private let traffic: TrafficCounter
     private let transport: WebSocketTransport
-    private let messageKindRecorder: MessageKindRecorder
+    private let messageKindRecorder: MessageKindRecorder?
     private let makeJoinData: @Sendable (Int, Int) throws -> Data
     private let makeClientEventData: @Sendable (Int) throws -> Data
 
@@ -40,7 +40,7 @@ actor ClientSimulator {
         transport: WebSocketTransport,
         makeJoinData: @escaping @Sendable (Int, Int) throws -> Data,
         makeClientEventData: @escaping @Sendable (Int) throws -> Data,
-        messageKindRecorder: MessageKindRecorder
+        messageKindRecorder: MessageKindRecorder?
     ) {
         self.config = config
         self.roomManager = roomManager
@@ -62,15 +62,9 @@ actor ClientSimulator {
         let totalPlayers = config.totalPlayers
         let steadySeconds = config.durationSeconds
         let totalSeconds = config.totalSeconds
-        // #region agent log
-        _debugLog(location: "ClientSimulator:run", message: "start", data: ["totalPlayers": totalPlayers, "totalSeconds": totalSeconds], hypothesisId: "H1")
-        // #endregion
         for t in 0 ..< totalSeconds {
             guard isRunning else { break }
             elapsedSeconds = t
-            // #region agent log
-            _debugLog(location: "ClientSimulator:run", message: "tick", data: ["t": t, "totalPlayersAssigned": totalPlayersAssigned, "phase": "\(phase)"], hypothesisId: "H1")
-            // #endregion
             // Determine phase
             let isRampUp = t < config.rampUpSeconds
             let isSteady = t >= config.rampUpSeconds && t < (config.rampUpSeconds + steadySeconds)
@@ -102,9 +96,6 @@ actor ClientSimulator {
             // Wait for the next second
             try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
-        // #region agent log
-        _debugLog(location: "ClientSimulator:run", message: "done", data: ["totalPlayersAssigned": totalPlayersAssigned], hypothesisId: "H1")
-        // #endregion
         phase = .done
     }
 
@@ -116,9 +107,6 @@ actor ClientSimulator {
         let playersToJoinThisSecond = targetPlayersThisSecond - totalPlayersAssigned
 
         guard playersToJoinThisSecond > 0 else { return }
-        // #region agent log
-        _debugLog(location: "ClientSimulator:performRampUp", message: "entry", data: ["playersToJoinThisSecond": playersToJoinThisSecond, "totalPlayersAssigned": totalPlayersAssigned, "totalPlayers": totalPlayers], hypothesisId: "H3")
-        // #endregion
         // Calculate maxConcurrentJoins based on target join rate
         // Use 1.5x multiplier to ensure we can meet the target rate even with network latency
         let maxConcurrentJoins = max(20, Int(Double(playersPerSecondUp) * 1.5))
@@ -132,12 +120,9 @@ actor ClientSimulator {
             var lastLoggedCompleted = -1
 
             while submitted < playersToJoinThisSecond || completed < submitted {
-                // #region agent log
                 if completed > lastLoggedCompleted && (completed % 50 == 0 || completed == submitted) {
-                    _debugLog(location: "ClientSimulator:performRampUp", message: "waiting", data: ["submitted": submitted, "completed": completed, "playersToJoinThisSecond": playersToJoinThisSecond], hypothesisId: "H3")
                     lastLoggedCompleted = completed
                 }
-                // #endregion
                 // Fill worker pool up to maxConcurrentJoins
                 while submitted < playersToJoinThisSecond, (submitted - completed) < maxConcurrentJoins {
                     group.addTask { [self] in
@@ -175,9 +160,6 @@ actor ClientSimulator {
                 }
             }
         }
-        // #region agent log
-        _debugLog(location: "ClientSimulator:performRampUp", message: "exit", data: ["successfulAssignments": successfulAssignments, "totalPlayersAssigned": totalPlayersAssigned + successfulAssignments], hypothesisId: "H3")
-        // #endregion
         totalPlayersAssigned += successfulAssignments
     }
 
@@ -185,9 +167,6 @@ actor ClientSimulator {
         guard config.actionsPerPlayerPerSecond > 0 else { return }
 
         let connectedSessions = await roomManager.getJoinedSessions()
-        // #region agent log
-        _debugLog(location: "ClientSimulator:performActions", message: "entry", data: ["t": t, "connectedCount": connectedSessions.count], hypothesisId: "H4")
-        // #endregion
         guard !connectedSessions.isEmpty else { return }
 
         let actionsPerPlayer = config.actionsPerPlayerPerSecond
@@ -239,12 +218,14 @@ struct CountingWebSocketConnection: WebSocketConnection, Sendable {
     let counter: TrafficCounter
     let sessionID: SessionID
     let onJoinSuccess: (@Sendable (SessionID) async -> Void)?
-    let messageKindRecorder: MessageKindRecorder
+    let messageKindRecorder: MessageKindRecorder?
 
     func send(_ data: Data) async throws {
         // Server sends to Client = Client receives
         await counter.recordReceived(bytes: data.count)
-        await messageKindRecorder.record(data: data)
+        if let messageKindRecorder {
+            await messageKindRecorder.record(data: data)
+        }
 
         // Detect JoinResponse message to mark session as joined
         if let onJoinSuccess = onJoinSuccess {

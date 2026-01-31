@@ -18,6 +18,12 @@ public enum StateUpdateOpcode: Int, Sendable {
     case diff = 2
 }
 
+/// Scope for dynamic key tables when encoding opcode state updates.
+public enum StateUpdateKeyScope: Sendable {
+    case broadcast
+    case perPlayer
+}
+
 /// Opcode for state patch operations.
 public enum StatePatchOpcode: Int, Sendable {
     case set = 1
@@ -31,4 +37,15 @@ public protocol StateUpdateEncoder: Sendable {
     func encode(update: StateUpdate, landID: String, playerID: PlayerID) throws -> Data
     /// Encode with optional playerSlot for compression (uses playerSlot if provided, otherwise falls back to playerID)
     func encode(update: StateUpdate, landID: String, playerID: PlayerID, playerSlot: Int32?) throws -> Data
+}
+
+/// Encoders that support broadcast/per-player scoped dynamic key tables.
+public protocol StateUpdateEncoderWithScope: StateUpdateEncoder {
+    func encode(
+        update: StateUpdate,
+        landID: String,
+        playerID: PlayerID,
+        playerSlot: Int32?,
+        scope: StateUpdateKeyScope
+    ) throws -> Data
 }

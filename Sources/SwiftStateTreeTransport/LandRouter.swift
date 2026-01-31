@@ -154,8 +154,11 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         // If session was bound to a land, notify the TransportAdapter
         if let landID = boundLandID {
             if let container = await landManager.getLand(landID: landID) {
-                await container.transportAdapter.onDisconnect(sessionID: sessionID, clientID: clientID)
-                logger.info("Client disconnected: session=\(sessionID.rawValue), landID=\(landID.rawValue)")
+                let log = logger
+                Task {
+                    await container.transportAdapter.onDisconnect(sessionID: sessionID, clientID: clientID)
+                    log.info("Client disconnected: session=\(sessionID.rawValue), landID=\(landID.rawValue)")
+                }
             }
         } else {
             logger.info("Client disconnected (was not joined): session=\(sessionID.rawValue)")

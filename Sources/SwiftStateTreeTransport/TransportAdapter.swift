@@ -97,9 +97,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         Set(sessionToPlayer.keys)
     }
 
-    /// Pending server events to be merged with the next state update (opcode 107).
-    /// Cleared after each sync. Only used when state update encoding is opcode/MessagePack.
-    private var pendingServerEventsForNextSync: [(SwiftStateTree.EventTarget, AnyServerEvent)] = []
+    /// Pending targeted server event bodies (non-broadcast).
+    /// Encoded once when queued to avoid per-session re-encoding. Cleared after each sync.
+    private struct PendingEventBody: Sendable {
+        let target: SwiftStateTree.EventTarget
+        let body: MessagePackValue
+    }
+    private var pendingServerEventBodies: [PendingEventBody] = []
+    private var pendingBroadcastEventBodies: [MessagePackValue] = []
+    private var hasTargetedEventBodies: Bool = false
 
     /// Whether to merge server events with state update (opcode 107). True when state update encoding is opcodeMessagePack.
     private var useStateUpdateWithEvents: Bool {
@@ -180,7 +186,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         self.enableDirtyTracking = enableDirtyTracking
         self.expectedSchemaHash = expectedSchemaHash
         self.onLandDestroyedCallback = onLandDestroyed
-
         // Default parallel encoding: disabled unless explicitly enabled.
         if let explicitValue = enableParallelEncoding {
             self.enableParallelEncoding = explicitValue
@@ -783,13 +788,25 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// events are queued and sent merged with the next state update instead of separate frames.
     public func sendEvent(_ event: AnyServerEvent, to target: SwiftStateTree.EventTarget) async {
         if useStateUpdateWithEvents {
+            guard let body = encodeServerEventBody(event) else { return }
             switch target {
+            case .all:
+                pendingBroadcastEventBodies.append(body)
             case .players(let playerIDs):
+                hasTargetedEventBodies = true
                 for playerID in playerIDs {
-                    pendingServerEventsForNextSync.append((.player(playerID), event))
+                    pendingServerEventBodies.append(PendingEventBody(target: .player(playerID), body: body))
+                }
+            case .client(let clientID):
+                hasTargetedEventBodies = true
+                if let sessionID = sessionID(for: clientID) {
+                    pendingServerEventBodies.append(PendingEventBody(target: .session(sessionID), body: body))
+                } else {
+                    logger.warning("No session found for client: \(clientID.rawValue)")
                 }
             default:
-                pendingServerEventsForNextSync.append((target, event))
+                hasTargetedEventBodies = true
+                pendingServerEventBodies.append(PendingEventBody(target: target, body: body))
             }
             return
         }
@@ -882,71 +899,94 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Opcode for state update with events (107). Same numeric range as MessageKindOpcode.
     private let opcodeStateUpdateWithEvents: Int64 = 107
+    /// Opcode for event message (103).
+    private let opcodeEvent: Int64 = 103
 
-    /// Events for a given client (sessionID + playerID). Matches .session(sessionID), .player(playerID), or .all.
-    private func pendingEvents(for sessionID: SessionID, playerID: PlayerID) -> [AnyServerEvent] {
-        pendingServerEventsForNextSync.compactMap { target, event in
-            switch target {
-            case .session(let s): return s == sessionID ? event : nil
-            case .player(let p): return p == playerID ? event : nil
-            case .all: return event
-            case .client, .players: return nil
+    /// Resolve sessionID for a clientID.
+    private func sessionID(for clientID: ClientID) -> SessionID? {
+        sessionToClient.first(where: { $0.value == clientID })?.key
+    }
+
+    /// Encoded targeted event bodies for a given client (sessionID + playerID).
+    private func pendingTargetedEventBodies(for sessionID: SessionID, playerID: PlayerID) -> [MessagePackValue] {
+        guard !pendingServerEventBodies.isEmpty else { return [] }
+        var bodies: [MessagePackValue] = []
+        bodies.reserveCapacity(pendingServerEventBodies.count)
+        let clientID = sessionToClient[sessionID]
+        for entry in pendingServerEventBodies {
+            switch entry.target {
+            case .session(let s) where s == sessionID:
+                bodies.append(entry.body)
+            case .player(let p) where p == playerID:
+                bodies.append(entry.body)
+            case .client(let c):
+                if clientID == c {
+                    bodies.append(entry.body)
+                }
+            case .players(let playerIDs):
+                if playerIDs.contains(playerID) {
+                    bodies.append(entry.body)
+                }
+            default:
+                continue
             }
+        }
+        return bodies
+    }
+
+    /// Encode a server event body without opcode (MessagePack array [direction, type, payload, ...]).
+    private func encodeServerEventBody(_ event: AnyServerEvent) -> MessagePackValue? {
+        do {
+            if let mpEncoder = messageEncoder as? MessagePackTransportMessageEncoder {
+                return try mpEncoder.encodeServerEventBody(event)
+            }
+            let transportMsg = TransportMessage.event(event: .fromServer(event: event))
+            let eventData = try messageEncoder.encode(transportMsg)
+            let eventUnpacked = try unpack(eventData)
+            guard case .array(let eventArr) = eventUnpacked, eventArr.count >= 2 else { return nil }
+            return .array(Array(eventArr.dropFirst()))
+        } catch {
+            logger.warning("Failed to encode server event for opcode 107", metadata: ["error": .string("\(error)")])
+            return nil
         }
     }
 
-    /// When TRANSPORT_DEBUG_SYNC107=1, print one NDJSON line to stderr for sync/107 profiling.
-    /// Set TRANSPORT_DEBUG_SYNC107_MIN_MS=1000 to only log syncBroadcastOnly when duration >= 1s (small log).
-    /// Set TRANSPORT_DEBUG_SYNC107_BUILD_MIN_MS=100 to only log buildStateUpdateWithEvents when duration >= 100ms.
-    private func debugSync107Log(_ fields: [String: Any], durationMs: Int64? = nil, isSyncBroadcastOnly: Bool = false, isBuildStateUpdate: Bool = false) {
-        guard ProcessInfo.processInfo.environment["TRANSPORT_DEBUG_SYNC107"] == "1" else { return }
-        let env = ProcessInfo.processInfo.environment
-        let syncMinMs = Int64(env["TRANSPORT_DEBUG_SYNC107_MIN_MS"] ?? "0") ?? 0
-        let buildMinMs = Int64(env["TRANSPORT_DEBUG_SYNC107_BUILD_MIN_MS"] ?? "0") ?? 0
-        if let ms = durationMs {
-            if isSyncBroadcastOnly, syncMinMs > 0, ms < syncMinMs { return }
-            if isBuildStateUpdate, buildMinMs > 0, ms < buildMinMs { return }
-        } else {
-            // For begin/enter: only log when we're not in "min only" mode (otherwise we'd spam)
-            if isSyncBroadcastOnly, syncMinMs > 0 { return }
-            if isBuildStateUpdate, buildMinMs > 0 { return }
+    private func encodeStateUpdate(
+        update: StateUpdate,
+        playerID: PlayerID,
+        playerSlot: Int32?,
+        scope: StateUpdateKeyScope
+    ) throws -> Data {
+        if let scopedEncoder = stateUpdateEncoder as? StateUpdateEncoderWithScope {
+            return try scopedEncoder.encode(
+                update: update,
+                landID: landID,
+                playerID: playerID,
+                playerSlot: playerSlot,
+                scope: scope
+            )
         }
-        var dict = fields
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        dict["ts"] = formatter.string(from: Date())
-        if let data = try? JSONSerialization.data(withJSONObject: dict),
-           let line = String(data: data, encoding: .utf8) {
-            fputs(line + "\n", stderr)
-        }
+
+        return try stateUpdateEncoder.encode(
+            update: update,
+            landID: landID,
+            playerID: playerID,
+            playerSlot: playerSlot
+        )
     }
 
     /// Build MessagePack frame [107, stateUpdatePayload, eventsArray]. Returns nil on failure (caller should send state only).
-    private func buildStateUpdateWithEvents(stateUpdateData: Data, events: [AnyServerEvent]) -> Data? {
-        guard !events.isEmpty else { return nil }
-        let buildStart = ContinuousClock.now
-        debugSync107Log(["event": "buildStateUpdateWithEvents_enter", "events_count": events.count], isBuildStateUpdate: true)
-        defer {
-            let elapsed = ContinuousClock.now - buildStart
-            let (s, atto) = elapsed.components
-            let ms = s * 1000 + atto / 1_000_000_000_000_000
-            debugSync107Log(["event": "buildStateUpdateWithEvents_exit", "duration_ms": ms], durationMs: ms, isBuildStateUpdate: true)
+    private func buildStateUpdateWithEventBodies(
+        stateUpdateData: Data,
+        eventBodies: [MessagePackValue],
+        allowEmptyEvents: Bool = false
+    ) -> Data? {
+        if eventBodies.isEmpty, !allowEmptyEvents {
+            return nil
         }
         do {
             let stateUnpacked = try unpack(stateUpdateData)
             guard case .array(let stateArr) = stateUnpacked else { return nil }
-
-            var eventBodies: [MessagePackValue] = []
-            for event in events {
-                let transportMsg = TransportMessage.event(event: .fromServer(event: event))
-                let eventData = try messageEncoder.encode(transportMsg)
-                let eventUnpacked = try unpack(eventData)
-                guard case .array(let eventArr) = eventUnpacked, eventArr.count >= 2 else { continue }
-                // Drop opcode (first element, 103) so body is [direction, type, payload, ...]
-                eventBodies.append(.array(Array(eventArr.dropFirst())))
-            }
-            if eventBodies.isEmpty { return nil }
 
             let combined: MessagePackValue = .array([
                 .int(opcodeStateUpdateWithEvents),
@@ -957,6 +997,60 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         } catch {
             logger.warning("Failed to build opcode 107 frame", metadata: ["error": .string("\(error)")])
             return nil
+        }
+    }
+
+    private func buildStateUpdateWithEventBodies(
+        stateUpdateArray: [MessagePackValue],
+        eventBodies: [MessagePackValue],
+        allowEmptyEvents: Bool = false
+    ) -> Data? {
+        if eventBodies.isEmpty, !allowEmptyEvents {
+            return nil
+        }
+        let combined: MessagePackValue = .array([
+            .int(opcodeStateUpdateWithEvents),
+            .array(stateUpdateArray),
+            .array(eventBodies)
+        ])
+        return try? pack(combined)
+    }
+
+    private func sendEventBodiesSeparately(_ eventBodies: [MessagePackValue], to sessionID: SessionID) async {
+        for body in eventBodies {
+            guard case .array(let bodyArray) = body else { continue }
+            let frame: MessagePackValue = .array([.int(opcodeEvent)] + bodyArray)
+            if let data = try? pack(frame) {
+                try? await transport.send(data, to: .session(sessionID))
+            }
+        }
+    }
+
+    private func sendEventBody(_ body: MessagePackValue, to target: SwiftStateTree.EventTarget) async {
+        guard case .array(let bodyArray) = body else { return }
+        let frame: MessagePackValue = .array([.int(opcodeEvent)] + bodyArray)
+        guard let data = try? pack(frame) else { return }
+
+        switch target {
+        case .all:
+            try? await transport.send(data, to: .broadcast)
+        case .player(let playerID):
+            try? await transport.send(data, to: .player(playerID))
+        case .client(let clientID):
+            if let sessionID = sessionID(for: clientID) {
+                try? await transport.send(data, to: .session(sessionID))
+            } else {
+                logger.warning("No session found for client: \(clientID.rawValue)")
+            }
+        case .session(let sessionID):
+            try? await transport.send(data, to: .session(sessionID))
+        case .players(let playerIDs):
+            for playerID in playerIDs {
+                let sessionIDs = sessionToPlayer.filter({ $0.value == playerID }).map({ $0.key })
+                for sessionID in sessionIDs {
+                    try? await transport.send(data, to: .session(sessionID))
+                }
+            }
         }
     }
 
@@ -1037,85 +1131,222 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 mode: broadcastMode
             )
 
-            // Collect all pending updates first (diff computation is serial, but encoding can be parallelized)
-            var pendingUpdates: [PendingSyncUpdate] = []
-            pendingUpdates.reserveCapacity(sessionToPlayer.count)
+            if useStateUpdateWithEvents {
+                let shouldSendBroadcastUpdate = !broadcastDiff.isEmpty || !pendingBroadcastEventBodies.isEmpty
+                if shouldSendBroadcastUpdate {
+                    if let firstSession = sessionToPlayer.first(where: { !initialSyncingPlayers.contains($0.value) }) {
+                        let broadcastUpdate: StateUpdate = broadcastDiff.isEmpty ? .noChange : .diff(broadcastDiff)
+                        let dataToSend: Data
+                        if let mpEncoder = stateUpdateEncoder as? OpcodeMessagePackStateUpdateEncoder {
+                            let updateArray = try mpEncoder.encodeToMessagePackArray(
+                                update: broadcastUpdate,
+                                landID: landID,
+                                playerID: firstSession.value,
+                                playerSlot: nil,
+                                scope: .broadcast
+                            )
+                            if let combined = buildStateUpdateWithEventBodies(
+                                stateUpdateArray: updateArray,
+                                eventBodies: pendingBroadcastEventBodies,
+                                allowEmptyEvents: true
+                            ) {
+                                dataToSend = combined
+                            } else {
+                                dataToSend = try pack(.array(updateArray))
+                            }
+                        } else {
+                            let updateData = try encodeStateUpdate(
+                                update: broadcastUpdate,
+                                playerID: firstSession.value,
+                                playerSlot: nil,
+                                scope: .broadcast
+                            )
+                            if let combined = buildStateUpdateWithEventBodies(
+                                stateUpdateData: updateData,
+                                eventBodies: pendingBroadcastEventBodies,
+                                allowEmptyEvents: true
+                            ) {
+                                dataToSend = combined
+                            } else {
+                                dataToSend = updateData
+                            }
+                        }
 
-            for (sessionID, playerID) in sessionToPlayer {
-                if initialSyncingPlayers.contains(playerID) {
-                    continue
+                        for (sessionID, playerID) in sessionToPlayer {
+                            if initialSyncingPlayers.contains(playerID) {
+                                continue
+                            }
+                            try await transport.send(dataToSend, to: .session(sessionID))
+                        }
+                    }
                 }
 
-                // Extract per-player snapshot (specific to this player)
-                let perPlayerSnapshot = try syncEngine.extractPerPlayerSnapshot(
-                    for: playerID,
-                    from: state,
-                    mode: perPlayerMode
-                )
+                // Collect per-player updates (per-player diff only)
+                var pendingUpdates: [PendingSyncUpdate] = []
+                pendingUpdates.reserveCapacity(sessionToPlayer.count)
 
-                // Broadcast diff is precomputed once per sync cycle and reused for all players.
-                let update = syncEngine.generateUpdateFromBroadcastDiff(
-                    for: playerID,
-                    broadcastDiff: broadcastDiff,
-                    perPlayerSnapshot: perPlayerSnapshot,
-                    perPlayerMode: perPlayerMode,
-                    onlyPaths: nil
-                )
+                for (sessionID, playerID) in sessionToPlayer {
+                    if initialSyncingPlayers.contains(playerID) {
+                        continue
+                    }
 
-                // Skip only if noChange - firstSync should always be sent (even if patches are empty)
-                if case .noChange = update {
-                    continue
-                }
-
-                let (updateType, patchCount) = describeUpdate(update)
-                let playerSlot = getPlayerSlot(for: playerID)
-                pendingUpdates.append(PendingSyncUpdate(
-                    sessionID: sessionID,
-                    playerID: playerID,
-                    playerSlot: playerSlot,
-                    update: update,
-                    updateType: updateType,
-                    patchCount: patchCount
-                ))
-            }
-
-            if !pendingUpdates.isEmpty {
-                let encodedUpdates: [EncodedSyncUpdate]
-                let decision = parallelEncodingDecision(pendingUpdateCount: pendingUpdates.count)
-                let useParallel = decision.useParallel
-
-
-                if useParallel {
-                    // JSON encoding is independent per player, so we can parallelize it safely.
-                    encodedUpdates = await encodeUpdatesInParallel(
-                        pendingUpdates,
-                        maxConcurrency: decision.maxConcurrency
+                    let perPlayerSnapshot = try syncEngine.extractPerPlayerSnapshot(
+                        for: playerID,
+                        from: state,
+                        mode: perPlayerMode
                     )
-                } else {
-                    encodedUpdates = encodeUpdatesSerially(pendingUpdates)
+
+                    let update = syncEngine.generatePerPlayerUpdateFromSnapshot(
+                        for: playerID,
+                        perPlayerSnapshot: perPlayerSnapshot,
+                        perPlayerMode: perPlayerMode,
+                        onlyPaths: nil
+                    )
+
+                    if case .noChange = update {
+                        continue
+                    }
+
+                    let (updateType, patchCount) = describeUpdate(update)
+                    let playerSlot = getPlayerSlot(for: playerID)
+                    pendingUpdates.append(PendingSyncUpdate(
+                        sessionID: sessionID,
+                        playerID: playerID,
+                        playerSlot: playerSlot,
+                        update: update,
+                        updateType: updateType,
+                        patchCount: patchCount
+                    ))
                 }
 
-                for encoded in encodedUpdates {
-                    if let payload = encoded.payload {
-                        await sendEncodedUpdate(
-                            sessionID: encoded.sessionID,
-                            playerID: encoded.playerID,
-                            updateType: encoded.updateType,
-                            patchCount: encoded.patchCount,
-                            updateData: payload
+                if !pendingUpdates.isEmpty {
+                    let encodedUpdates: [EncodedSyncUpdate]
+                    let decision = parallelEncodingDecision(pendingUpdateCount: pendingUpdates.count)
+                    let useParallel = decision.useParallel
+
+                    if useParallel {
+                        encodedUpdates = await encodeUpdatesInParallel(
+                            pendingUpdates,
+                            maxConcurrency: decision.maxConcurrency
                         )
-                    } else if let errorMessage = encoded.errorMessage {
-                        logger.error("❌ Failed to encode state update", metadata: [
-                            "playerID": .string(encoded.playerID.rawValue),
-                            "sessionID": .string(encoded.sessionID.rawValue),
-                            "error": .string(errorMessage)
-                        ])
+                    } else {
+                        encodedUpdates = encodeUpdatesSerially(pendingUpdates)
+                    }
+
+                    for encoded in encodedUpdates {
+                        if let payload = encoded.payload {
+                            await sendEncodedUpdate(
+                                sessionID: encoded.sessionID,
+                                playerID: encoded.playerID,
+                                updateType: encoded.updateType,
+                                patchCount: encoded.patchCount,
+                                updateData: payload,
+                                mergeEvents: false
+                            )
+                        } else if let errorMessage = encoded.errorMessage {
+                            logger.error("❌ Failed to encode state update", metadata: [
+                                "playerID": .string(encoded.playerID.rawValue),
+                                "sessionID": .string(encoded.sessionID.rawValue),
+                                "error": .string(errorMessage)
+                            ])
+                        }
+                    }
+                }
+
+                if hasTargetedEventBodies {
+                    for (sessionID, playerID) in sessionToPlayer {
+                        if initialSyncingPlayers.contains(playerID) {
+                            continue
+                        }
+                        let eventBodies = pendingTargetedEventBodies(for: sessionID, playerID: playerID)
+                        if !eventBodies.isEmpty {
+                            await sendEventBodiesSeparately(eventBodies, to: sessionID)
+                        }
+                    }
+                }
+            } else {
+                // Collect all pending updates first (diff computation is serial, but encoding can be parallelized)
+                var pendingUpdates: [PendingSyncUpdate] = []
+                pendingUpdates.reserveCapacity(sessionToPlayer.count)
+
+                for (sessionID, playerID) in sessionToPlayer {
+                    if initialSyncingPlayers.contains(playerID) {
+                        continue
+                    }
+
+                    // Extract per-player snapshot (specific to this player)
+                    let perPlayerSnapshot = try syncEngine.extractPerPlayerSnapshot(
+                        for: playerID,
+                        from: state,
+                        mode: perPlayerMode
+                    )
+
+                    // Broadcast diff is precomputed once per sync cycle and reused for all players.
+                    let update = syncEngine.generateUpdateFromBroadcastDiff(
+                        for: playerID,
+                        broadcastDiff: broadcastDiff,
+                        perPlayerSnapshot: perPlayerSnapshot,
+                        perPlayerMode: perPlayerMode,
+                        onlyPaths: nil
+                    )
+
+                    // Skip only if noChange - firstSync should always be sent (even if patches are empty)
+                    if case .noChange = update {
+                        continue
+                    }
+
+                    let (updateType, patchCount) = describeUpdate(update)
+                    let playerSlot = getPlayerSlot(for: playerID)
+                    pendingUpdates.append(PendingSyncUpdate(
+                        sessionID: sessionID,
+                        playerID: playerID,
+                        playerSlot: playerSlot,
+                        update: update,
+                        updateType: updateType,
+                        patchCount: patchCount
+                    ))
+                }
+
+                if !pendingUpdates.isEmpty {
+                    let encodedUpdates: [EncodedSyncUpdate]
+                    let decision = parallelEncodingDecision(pendingUpdateCount: pendingUpdates.count)
+                    let useParallel = decision.useParallel
+
+
+                    if useParallel {
+                        // JSON encoding is independent per player, so we can parallelize it safely.
+                        encodedUpdates = await encodeUpdatesInParallel(
+                            pendingUpdates,
+                            maxConcurrency: decision.maxConcurrency
+                        )
+                    } else {
+                        encodedUpdates = encodeUpdatesSerially(pendingUpdates)
+                    }
+
+                    for encoded in encodedUpdates {
+                        if let payload = encoded.payload {
+                            await sendEncodedUpdate(
+                                sessionID: encoded.sessionID,
+                                playerID: encoded.playerID,
+                                updateType: encoded.updateType,
+                                patchCount: encoded.patchCount,
+                                updateData: payload,
+                                mergeEvents: false
+                            )
+                        } else if let errorMessage = encoded.errorMessage {
+                            logger.error("❌ Failed to encode state update", metadata: [
+                                "playerID": .string(encoded.playerID.rawValue),
+                                "sessionID": .string(encoded.sessionID.rawValue),
+                                "error": .string(errorMessage)
+                            ])
+                        }
                     }
                 }
             }
 
-            pendingServerEventsForNextSync.removeAll()
-
+            pendingServerEventBodies.removeAll()
+            pendingBroadcastEventBodies.removeAll()
+            hasTargetedEventBodies = false
             // Release sync lock after successful sync
             // Only clear dirty flags if dirty tracking is enabled
             await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
@@ -1150,8 +1381,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// - Debounce rapid broadcast changes to reduce sync frequency
     /// - Consider allowing concurrent broadcast-only syncs (read-only operation)
     public func syncBroadcastOnly() async {
-        let syncStart = ContinuousClock.now
-        debugSync107Log(["event": "syncBroadcastOnly_begin"], isSyncBroadcastOnly: true)
         // Note: Even if no players are connected, we still need to update the broadcast cache
         // This ensures that when a player reconnects, they see the correct state (not stale cache)
         let hasPlayers = !sessionToPlayer.isEmpty
@@ -1165,10 +1394,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             if logger.logLevel <= .debug {
                 logger.debug("⏭️ Broadcast-only sync skipped: another sync operation is in progress")
             }
-            let elapsed = ContinuousClock.now - syncStart
-            let (s, atto) = elapsed.components
-            let ms = s * 1000 + atto / 1_000_000_000_000_000
-            debugSync107Log(["event": "syncBroadcastOnly_end", "duration_ms": ms, "skipped": true], durationMs: ms, isSyncBroadcastOnly: true)
             return
         }
 
@@ -1211,69 +1436,122 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     ])
                 }
                 await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
-                let elapsed = ContinuousClock.now - syncStart
-                let (s, atto) = elapsed.components
-                let ms = s * 1000 + atto / 1_000_000_000_000_000
-                debugSync107Log(["event": "syncBroadcastOnly_end", "duration_ms": ms, "no_send": true], durationMs: ms, isSyncBroadcastOnly: true)
                 return
             }
 
             let update = StateUpdate.diff(broadcastDiff)
             var lastUpdateSize: Int?
 
-            // Send to all connected players
-            // Handle each send separately to avoid one failure stopping all updates
-            for (sessionID, playerID) in sessionToPlayer {
-                if initialSyncingPlayers.contains(playerID) {
-                    continue
-                }
-
-                do {
-                    let playerSlot = getPlayerSlot(for: playerID)
-                    let updateData = try stateUpdateEncoder.encode(
-                        update: update,
-                        landID: landID,
-                        playerID: playerID,
-                        playerSlot: playerSlot
-                    )
-                    lastUpdateSize = updateData.count
-
+            if useStateUpdateWithEvents {
+                if let firstSession = sessionToPlayer.first(where: { !initialSyncingPlayers.contains($0.value) }) {
                     let dataToSend: Data
-                    if useStateUpdateWithEvents {
-                        let eventsForClient = pendingEvents(for: sessionID, playerID: playerID)
-                        if let combined = buildStateUpdateWithEvents(stateUpdateData: updateData, events: eventsForClient) {
+                    if let mpEncoder = stateUpdateEncoder as? OpcodeMessagePackStateUpdateEncoder {
+                        let updateArray = try mpEncoder.encodeToMessagePackArray(
+                            update: update,
+                            landID: landID,
+                            playerID: firstSession.value,
+                            playerSlot: nil,
+                            scope: .broadcast
+                        )
+                        if let combined = buildStateUpdateWithEventBodies(
+                            stateUpdateArray: updateArray,
+                            eventBodies: pendingBroadcastEventBodies,
+                            allowEmptyEvents: true
+                        ) {
+                            dataToSend = combined
+                        } else {
+                            dataToSend = try pack(.array(updateArray))
+                        }
+                        lastUpdateSize = dataToSend.count
+                    } else {
+                        let updateData = try encodeStateUpdate(
+                            update: update,
+                            playerID: firstSession.value,
+                            playerSlot: nil,
+                            scope: .broadcast
+                        )
+                        lastUpdateSize = updateData.count
+                        if let combined = buildStateUpdateWithEventBodies(
+                            stateUpdateData: updateData,
+                            eventBodies: pendingBroadcastEventBodies,
+                            allowEmptyEvents: true
+                        ) {
                             dataToSend = combined
                         } else {
                             dataToSend = updateData
                         }
-                    } else {
-                        dataToSend = updateData
                     }
-                    
-                    // Debug: Log first few bytes to verify encoding format
-                    if logger.logLevel <= .trace,
-                       lastUpdateSize == updateData.count,
-                       let preview = String(data: dataToSend.prefix(100), encoding: .utf8)
-                    {
-                        logger.trace("📤 Encoded update preview", metadata: [
-                            "playerID": .string(playerID.rawValue),
-                            "bytes": .string("\(dataToSend.count)"),
-                            "preview": .string(preview)
+
+                    for (sessionID, playerID) in sessionToPlayer {
+                        if initialSyncingPlayers.contains(playerID) {
+                            continue
+                        }
+                        do {
+                            try await transport.send(dataToSend, to: .session(sessionID))
+                        } catch {
+                            logger.warning("Failed to send broadcast update to session", metadata: [
+                                "sessionID": .string(sessionID.rawValue),
+                                "error": .string("\(error)")
+                            ])
+                        }
+                    }
+                }
+            } else {
+                // Send to all connected players
+                // Handle each send separately to avoid one failure stopping all updates
+                for (sessionID, playerID) in sessionToPlayer {
+                    if initialSyncingPlayers.contains(playerID) {
+                        continue
+                    }
+
+                    do {
+                        let playerSlot = getPlayerSlot(for: playerID)
+                        let updateData = try stateUpdateEncoder.encode(
+                            update: update,
+                            landID: landID,
+                            playerID: playerID,
+                            playerSlot: playerSlot
+                        )
+                        lastUpdateSize = updateData.count
+
+                        // Debug: Log first few bytes to verify encoding format
+                        if logger.logLevel <= .trace,
+                           lastUpdateSize == updateData.count,
+                           let preview = String(data: updateData.prefix(100), encoding: .utf8)
+                        {
+                            logger.trace("📤 Encoded update preview", metadata: [
+                                "playerID": .string(playerID.rawValue),
+                                "bytes": .string("\(updateData.count)"),
+                                "preview": .string(preview)
+                            ])
+                        }
+
+                        try await transport.send(updateData, to: .session(sessionID))
+                    } catch {
+                        // Log error but continue sending to other players
+                        logger.warning("Failed to send broadcast update to session", metadata: [
+                            "sessionID": .string(sessionID.rawValue),
+                            "error": .string("\(error)")
                         ])
                     }
-                    
-                    try await transport.send(dataToSend, to: .session(sessionID))
-                } catch {
-                    // Log error but continue sending to other players
-                    logger.warning("Failed to send broadcast update to session", metadata: [
-                        "sessionID": .string(sessionID.rawValue),
-                        "error": .string("\(error)")
-                    ])
                 }
             }
 
-            pendingServerEventsForNextSync.removeAll()
+            if useStateUpdateWithEvents, hasTargetedEventBodies {
+                for (sessionID, playerID) in sessionToPlayer {
+                    if initialSyncingPlayers.contains(playerID) {
+                        continue
+                    }
+                    let eventBodies = pendingTargetedEventBodies(for: sessionID, playerID: playerID)
+                    if !eventBodies.isEmpty {
+                        await sendEventBodiesSeparately(eventBodies, to: sessionID)
+                    }
+                }
+            }
 
+            pendingServerEventBodies.removeAll()
+            pendingBroadcastEventBodies.removeAll()
+            hasTargetedEventBodies = false
             // Only compute logging metadata if debug logging is enabled
             if logger.logLevel <= .debug {
                 logger.debug("📤 Broadcast-only sync", metadata: [
@@ -1287,10 +1565,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Release sync lock after successful sync
             // Only clear dirty flags if dirty tracking is enabled
             await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
-            let elapsed = ContinuousClock.now - syncStart
-            let (s, atto) = elapsed.components
-            let ms = s * 1000 + atto / 1_000_000_000_000_000
-            debugSync107Log(["event": "syncBroadcastOnly_end", "duration_ms": ms], durationMs: ms, isSyncBroadcastOnly: true)
         } catch {
             logger.error("❌ Failed to sync broadcast-only", metadata: [
                 "error": .string("\(error)")
@@ -1299,10 +1573,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Always release sync lock, even if error occurred
             // Only clear dirty flags if dirty tracking is enabled
             await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
-            let elapsed = ContinuousClock.now - syncStart
-            let (s, atto) = elapsed.components
-            let msErr = s * 1000 + atto / 1_000_000_000_000_000
-            debugSync107Log(["event": "syncBroadcastOnly_end", "duration_ms": msErr, "error": true], durationMs: msErr, isSyncBroadcastOnly: true)
         }
     }
 
@@ -1536,23 +1806,34 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-    /// Send encoded update to transport. When opcode 107 is enabled and there are pending events for this client, sends combined frame.
+    /// Send encoded update to transport.
     private func sendEncodedUpdate(
         sessionID: SessionID,
         playerID: PlayerID,
         updateType: String,
         patchCount: Int,
-        updateData: Data
+        updateData: Data,
+        mergeEvents: Bool
     ) async {
         let dataToSend: Data
-        if useStateUpdateWithEvents {
-            let eventsForClient = pendingEvents(for: sessionID, playerID: playerID)
-            if let combined = buildStateUpdateWithEvents(stateUpdateData: updateData, events: eventsForClient) {
+        if mergeEvents, useStateUpdateWithEvents {
+            let eventBodies = pendingBroadcastEventBodies
+            if let combined = buildStateUpdateWithEventBodies(
+                stateUpdateData: updateData,
+                eventBodies: eventBodies,
+                allowEmptyEvents: true
+            ) {
                 dataToSend = combined
             } else {
                 dataToSend = updateData
             }
         } else {
+            if useStateUpdateWithEvents {
+                let eventBodies = pendingTargetedEventBodies(for: sessionID, playerID: playerID)
+                if !eventBodies.isEmpty {
+                    await sendEventBodiesSeparately(eventBodies, to: sessionID)
+                }
+            }
             dataToSend = updateData
         }
 

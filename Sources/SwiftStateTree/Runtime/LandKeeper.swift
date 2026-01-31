@@ -1029,6 +1029,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         scheduleDestroyIfNeeded()
     }
 
+    /// Force shutdown the land immediately, clearing all players and pending items.
+    /// Intended for benchmarks or test harnesses that need to end quickly.
+    public func forceShutdown() async {
+        await ensureInitialized()
+        players.removeAll()
+        pendingItems.removeAll()
+        await shutdownIfIdle()
+    }
+
     // MARK: - Action & Event Handling
 
     /// Handles an action envelope by decoding and dispatching to the registered handler.
