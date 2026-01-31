@@ -42,8 +42,9 @@ export class StateTreeRuntime {
   private statisticsCallback: StatisticsCallback | null = null
   
   // Mapping for dynamic key compression (Slot ID -> Original Key)
-  // Managed per-connection to match server session state
-  private dynamicKeyMap = new Map<number, string>()
+  // Broadcast and per-player scopes are tracked separately.
+  private broadcastDynamicKeyMap = new Map<number, string>()
+  private perPlayerDynamicKeyMap = new Map<number, string>()
   
   /**
    * Determine StateUpdate encoding based on Message encoding
@@ -147,7 +148,8 @@ export class StateTreeRuntime {
       this.isConnected = true
       this.logger.info('WebSocket connected')
       // Reset dynamic key map on new connection
-      this.dynamicKeyMap.clear()
+      this.broadcastDynamicKeyMap.clear()
+      this.perPlayerDynamicKeyMap.clear()
       connectionResolved = true
       resolve()
     }
@@ -161,7 +163,8 @@ export class StateTreeRuntime {
 
     this.ws.onclose = (event) => {
       this.isConnected = false
-      this.dynamicKeyMap.clear() // Clear map on close
+      this.broadcastDynamicKeyMap.clear()
+      this.perPlayerDynamicKeyMap.clear()
       closeCode = event.code
       closeReason = event.reason || 'No reason provided'
       wasClean = event.wasClean
@@ -217,7 +220,8 @@ export class StateTreeRuntime {
       this.ws = null
     }
     this.isConnected = false
-    this.dynamicKeyMap.clear()
+    this.broadcastDynamicKeyMap.clear()
+    this.perPlayerDynamicKeyMap.clear()
     // Clean up all views
     this.views.clear()
     // Clear disconnect callback
@@ -348,22 +352,34 @@ export class StateTreeRuntime {
         // UTF-8 encoding: each character is 1-4 bytes, but for ASCII it's 1 byte
         // Use TextEncoder to get accurate byte length
         messageSize = new TextEncoder().encode(data).length
-        decoded = decodeMessage(data, this.transportEncoding, this.dynamicKeyMap)
+        decoded = decodeMessage(data, this.transportEncoding, {
+          broadcast: this.broadcastDynamicKeyMap,
+          perPlayer: this.perPlayerDynamicKeyMap
+        })
       } else if (data instanceof ArrayBuffer) {
         messageSize = data.byteLength
         // MessagePack binary data - decode directly
-        decoded = decodeMessage(data, this.transportEncoding, this.dynamicKeyMap)
+        decoded = decodeMessage(data, this.transportEncoding, {
+          broadcast: this.broadcastDynamicKeyMap,
+          perPlayer: this.perPlayerDynamicKeyMap
+        })
       } else if (ArrayBuffer.isView(data)) {
         messageSize = data.byteLength
         // MessagePack binary data - decode directly
         // Convert ArrayBufferView to Uint8Array for decodeMessage
         const uint8Array = new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
-        decoded = decodeMessage(uint8Array, this.transportEncoding, this.dynamicKeyMap)
+        decoded = decodeMessage(uint8Array, this.transportEncoding, {
+          broadcast: this.broadcastDynamicKeyMap,
+          perPlayer: this.perPlayerDynamicKeyMap
+        })
       } else if (typeof Blob !== 'undefined' && data instanceof Blob) {
         messageSize = data.size
         const arrayBuffer = await data.arrayBuffer()
         // MessagePack binary data - decode directly
-        decoded = decodeMessage(arrayBuffer, this.transportEncoding, this.dynamicKeyMap)
+        decoded = decodeMessage(arrayBuffer, this.transportEncoding, {
+          broadcast: this.broadcastDynamicKeyMap,
+          perPlayer: this.perPlayerDynamicKeyMap
+        })
       } else {
         // Fallback: try to convert to string
         // This handles unexpected types as best effort
@@ -371,7 +387,10 @@ export class StateTreeRuntime {
         this.logger.warn(`Unexpected data type: ${typeName}, attempting to convert to string`)
         const text = String(data)
         messageSize = new TextEncoder().encode(text).length
-        decoded = decodeMessage(text, this.transportEncoding, this.dynamicKeyMap)
+        decoded = decodeMessage(text, this.transportEncoding, {
+          broadcast: this.broadcastDynamicKeyMap,
+          perPlayer: this.perPlayerDynamicKeyMap
+        })
       }
 
       // Debug: log raw message structure

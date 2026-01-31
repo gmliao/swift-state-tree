@@ -8,7 +8,7 @@ import SwiftStateTree
 /// 2. PathHash: `[updateOpcode, playerID, [pathHash, dynamicKey, op, value?], ...]`
 ///
 /// Format is determined by presence of PathHasher during initialization.
-public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoder {
+public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
     public let encoding: StateUpdateEncoding = .opcodeJsonArray
 
     /// Per-instance JSONEncoder for encoding operations.
@@ -43,17 +43,16 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoder {
         /// Actually getSlot logic is fine, we handle "isNew" vs "forceDefinition" at call site.
     }
 
-    private struct DynamicKeyScope: Hashable {
-        let landID: String
-        let playerID: String
+    private enum DynamicKeyScope: Hashable {
+        case broadcast(landID: String)
+        case perPlayer(landID: String, playerID: String)
     }
 
     private final class DynamicKeyTableStore: @unchecked Sendable {
         private var tables: [DynamicKeyScope: DynamicKeyTable] = [:]
         private let lock = NSLock()
 
-        func table(for landID: String, playerID: PlayerID, reset: Bool) -> DynamicKeyTable {
-            let scope = DynamicKeyScope(landID: landID, playerID: playerID.rawValue)
+        func table(for scope: DynamicKeyScope, reset: Bool) -> DynamicKeyTable {
             lock.lock()
             defer { lock.unlock() }
             
@@ -82,10 +81,26 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoder {
     }
     
     public func encode(update: StateUpdate, landID: String, playerID: PlayerID, playerSlot: Int32?) throws -> Data {
+        try encode(
+            update: update,
+            landID: landID,
+            playerID: playerID,
+            playerSlot: playerSlot,
+            scope: .perPlayer
+        )
+    }
+
+    public func encode(
+        update: StateUpdate,
+        landID: String,
+        playerID: PlayerID,
+        playerSlot: Int32?,
+        scope: StateUpdateKeyScope
+    ) throws -> Data {
         let opcode: StateUpdateOpcode
         let patches: [StatePatch]
         let forceDefinition: Bool
-        
+
         switch update {
         case .noChange:
             opcode = .noChange
@@ -103,6 +118,15 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoder {
             forceDefinition = false
         }
 
+        let keyScope: DynamicKeyScope = {
+            switch scope {
+            case .broadcast:
+                return .broadcast(landID: landID)
+            case .perPlayer:
+                return .perPlayer(landID: landID, playerID: playerID.rawValue)
+            }
+        }()
+
         // Optimized: Direct encoding without recursion
         // Use custom Codable struct to encode array directly
         let payload = OpcodePayloadArray(
@@ -110,11 +134,10 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoder {
             patches: patches,
             pathHasher: pathHasher,
             keyTableStore: pathHasher != nil ? keyTableStore : nil,
-            landID: landID,
-            playerID: playerID,
+            keyTableScope: keyScope,
             forceDefinition: forceDefinition
         )
-        
+
         return try encoder.encode(payload)
     }
     
@@ -127,8 +150,7 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoder {
         let patches: [StatePatch]
         let pathHasher: PathHasher?
         let keyTableStore: DynamicKeyTableStore?
-        let landID: String
-        let playerID: PlayerID
+        let keyTableScope: DynamicKeyScope
         let forceDefinition: Bool
         
         func encode(to encoder: Encoder) throws {
@@ -139,7 +161,7 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoder {
             
             // Encode patches directly without recursion
             if let hasher = pathHasher, let keyTableStore = keyTableStore {
-                let keyTable = keyTableStore.table(for: landID, playerID: playerID, reset: forceDefinition)
+                let keyTable = keyTableStore.table(for: keyTableScope, reset: forceDefinition)
                 for patch in patches {
                     var patchContainer = container.nestedUnkeyedContainer()
                     try encodePatchWithHashDirect(
@@ -235,16 +257,14 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoder {
             patches: [StatePatch],
             pathHasher: PathHasher?,
             keyTableStore: DynamicKeyTableStore?,
-            landID: String,
-            playerID: PlayerID,
+            keyTableScope: DynamicKeyScope,
             forceDefinition: Bool
         ) {
             self.opcode = opcode
             self.patches = patches
             self.pathHasher = pathHasher
             self.keyTableStore = keyTableStore
-            self.landID = landID
-            self.playerID = playerID
+            self.keyTableScope = keyTableScope
             self.forceDefinition = forceDefinition
         }
         

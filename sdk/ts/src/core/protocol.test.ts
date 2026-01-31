@@ -626,6 +626,30 @@ describe('protocol', () => {
       }
     })
 
+    it('uses broadcast dynamic key map for opcode 107 only', () => {
+      pathHashReverseLookup.clear()
+      pathHashReverseLookup.set(222222, 'players.*.hp')
+
+      const broadcastMap = new Map<number, string>()
+      const perPlayerMap = new Map<number, string>()
+
+      const broadcast = [
+        MessageKindOpcode.stateUpdateWithEvents,
+        [StateUpdateOpcode.diff, [222222, [0, 'foo'], StatePatchOpcode.replace, 1]],
+        []
+      ]
+      const perPlayer = [
+        StateUpdateOpcode.diff,
+        [222222, [0, 'bar'], StatePatchOpcode.replace, 1]
+      ]
+
+      decodeMessage(JSON.stringify(broadcast), undefined, { broadcast: broadcastMap, perPlayer: perPlayerMap })
+      decodeMessage(JSON.stringify(perPlayer), undefined, { broadcast: broadcastMap, perPlayer: perPlayerMap })
+
+      expect(broadcastMap.get(0)).toBe('foo')
+      expect(perPlayerMap.get(0)).toBe('bar')
+    })
+
     it('decodes PathHash format with multiple dynamic keys (multi-wildcard pattern)', () => {
       const updateArray = [
         StateUpdateOpcode.diff,

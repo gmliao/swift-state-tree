@@ -9,7 +9,7 @@ import SwiftStateTreeMessagePack
 /// - PathHash: `[updateOpcode, playerID|playerSlot, [pathHash, dynamicKey, op, value?], ...]`
 ///
 /// This is intended for `TRANSPORT_ENCODING=messagepack` where state updates should also be binary.
-public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoder {
+public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
     public let encoding: StateUpdateEncoding = .opcodeMessagePack
 
     /// Optional path hasher for compression (nil = legacy format)
@@ -37,17 +37,16 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoder {
         }
     }
 
-    private struct DynamicKeyScope: Hashable {
-        let landID: String
-        let playerID: String
+    private enum DynamicKeyScope: Hashable {
+        case broadcast(landID: String)
+        case perPlayer(landID: String, playerID: String)
     }
 
     private final class DynamicKeyTableStore: @unchecked Sendable {
         private var tables: [DynamicKeyScope: DynamicKeyTable] = [:]
         private let lock = NSLock()
 
-        func table(for landID: String, playerID: PlayerID, reset: Bool) -> DynamicKeyTable {
-            let scope = DynamicKeyScope(landID: landID, playerID: playerID.rawValue)
+        func table(for scope: DynamicKeyScope, reset: Bool) -> DynamicKeyTable {
             lock.lock()
             defer { lock.unlock() }
 
@@ -73,6 +72,40 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoder {
     }
 
     public func encode(update: StateUpdate, landID: String, playerID: PlayerID, playerSlot: Int32?) throws -> Data {
+        try encode(
+            update: update,
+            landID: landID,
+            playerID: playerID,
+            playerSlot: playerSlot,
+            scope: .perPlayer
+        )
+    }
+
+    public func encode(
+        update: StateUpdate,
+        landID: String,
+        playerID: PlayerID,
+        playerSlot: Int32?,
+        scope: StateUpdateKeyScope
+    ) throws -> Data {
+        try pack(.array(try encodeToMessagePackArray(
+            update: update,
+            landID: landID,
+            playerID: playerID,
+            playerSlot: playerSlot,
+            scope: scope
+        )))
+    }
+
+    /// Encode a state update into a MessagePack array without serializing to Data.
+    /// This is used to build opcode 107 frames without an extra unpack step.
+    func encodeToMessagePackArray(
+        update: StateUpdate,
+        landID: String,
+        playerID: PlayerID,
+        playerSlot: Int32?,
+        scope: StateUpdateKeyScope
+    ) throws -> [MessagePackValue] {
         let opcode: StateUpdateOpcode
         let patches: [StatePatch]
         let forceDefinition: Bool
@@ -100,7 +133,15 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoder {
         ]
 
         if let hasher = pathHasher {
-            let keyTable = keyTableStore.table(for: landID, playerID: playerID, reset: forceDefinition)
+            let keyScope: DynamicKeyScope = {
+                switch scope {
+                case .broadcast:
+                    return .broadcast(landID: landID)
+                case .perPlayer:
+                    return .perPlayer(landID: landID, playerID: playerID.rawValue)
+                }
+            }()
+            let keyTable = keyTableStore.table(for: keyScope, reset: forceDefinition)
             for patch in patches {
                 payload.append(.array(encodePatchWithHashDirect(
                     patch,
@@ -115,7 +156,7 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoder {
             }
         }
 
-        return try pack(.array(payload))
+        return payload
     }
 
     // MARK: - Optimized Direct Encoding (without AnyCodable)
