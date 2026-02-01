@@ -831,9 +831,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Send server event to specified target. When opcode 107 is enabled (opcodeMessagePack),
     /// events are queued and sent merged with the next state update instead of separate frames.
+    /// When body encoding fails (e.g. message encoder is JSON in a hybrid config), falls back to sending a separate frame.
     public func sendEvent(_ event: AnyServerEvent, to target: SwiftStateTree.EventTarget) async {
-        if useStateUpdateWithEvents {
-            guard let body = encodeServerEventBody(event) else { return }
+        if useStateUpdateWithEvents, let body = encodeServerEventBody(event) {
             switch target {
             case .all:
                 pendingBroadcastEventBodies.append(body)
