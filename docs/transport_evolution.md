@@ -337,6 +337,19 @@ Based on performance test results on `2026-01-15` (GameServer: hero-defense, dur
 
 ---
 
+### Q6: How does opcode 107 merge broadcast updates and events? (Broadcast Merge + Dynamic Keys)
+
+**A: Opcode 107 merges only broadcast state updates with broadcast events, once per room.**
+
+- **Broadcast-only merge**: The server encodes the broadcast diff once and sends the same payload to all sessions.
+- **Per-player stays per-session**: Per-player diffs and targeted events are still encoded/sent per session (opcode 2/103).
+- **Dynamic key scope**:
+  - Broadcast updates use a **broadcast key table** (scoped by land).
+  - Per-player updates use a **per-player key table** (scoped by land + player).
+- **Late-join rule**: A client that joins after broadcast keys already exist must receive **dynamic key definitions** before any slot-only broadcast updates. This can be done by forcing definitions or sending a broadcast firstSync after join.
+
+---
+
 ## Comprehensive Evolution Example
 
 Using "Updating a player's Health (HP)" as an example, observe how the same semantic is represented across different stages and its packet size:
