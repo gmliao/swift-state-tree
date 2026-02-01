@@ -832,6 +832,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Send server event to specified target. When opcode 107 is enabled (opcodeMessagePack),
     /// events are queued and sent merged with the next state update instead of separate frames.
     /// When body encoding fails (e.g. message encoder is JSON in a hybrid config), falls back to sending a separate frame.
+    ///
+    /// **When fallback is used:** In typical production the message encoder is MessagePack (clients use the encoding
+    /// from joinResponse, so with `TransportEncodingConfig.messagepack` body encoding succeeds and events are merged).
+    /// The fallback matters for hybrid configs only: `message: .json` or `.opcodeJsonArray` with `stateUpdate: .opcodeMessagePack`
+    /// (e.g. debugging or migration), where `encodeServerEventBody` returns nil.
+    ///
+    /// **Core issue (why fallback is required):** Opcode 107 merges events with state updates as a MessagePack array.
+    /// That requires an event "body" as `MessagePackValue`. `encodeServerEventBody` can only produce that when the
+    /// message encoder is MessagePack. If the message encoder is JSON or opcodeJsonArray, it encodes to JSON bytes
+    /// then tries `unpack(JSON bytes)` as MessagePack, which fails → returns nil. Without fallback, the event would
+    /// be dropped silently. We therefore fall through to the normal send path and send the event as a separate frame.
     public func sendEvent(_ event: AnyServerEvent, to target: SwiftStateTree.EventTarget) async {
         if useStateUpdateWithEvents, let body = encodeServerEventBody(event) {
             switch target {
@@ -1079,6 +1090,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// Encode a server event body without opcode (MessagePack array [direction, type, payload, ...]).
+    /// Succeeds only when the message encoder is MessagePack (typical production: clients use encoding from joinResponse).
+    /// Returns nil when the message encoder is JSON or opcodeJsonArray: we encode to bytes then try MessagePack unpack,
+    /// which fails. Caller must then send the event as a separate frame (see sendEvent).
     private func encodeServerEventBody(_ event: AnyServerEvent) -> MessagePackValue? {
         do {
             if let mpEncoder = messageEncoder as? MessagePackTransportMessageEncoder {

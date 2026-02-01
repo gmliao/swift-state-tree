@@ -138,3 +138,66 @@ func testTransportAdapterOnlyMergesBroadcastEventsIntoOpcode107() async throws {
     #expect(opcode103Count == 1, "Expected one standalone event frame")
     #expect(opcode107EventCount == 0, "Expected no merged targeted events")
 }
+
+@Test("TransportAdapter sends event as separate frame when opcode 107 is on but message encoder is JSON (encodeServerEventBody returns nil)")
+func testSendEventFallbackWhenBodyEncodingFails() async throws {
+    // Hybrid config: state update is opcodeMessagePack (so useStateUpdateWithEvents = true),
+    // but message encoder is JSON. encodeServerEventBody then returns nil (JSON bytes can't be MessagePack-unpacked).
+    // We must fall back to sending the event as a separate frame instead of dropping it.
+    let definition = Land(
+        "opcode107-fallback-test",
+        using: Opcode107TestState.self
+    ) {
+        ClientEvents {
+            Register(Opcode107IncrementEvent.self)
+        }
+        ServerEvents {
+            Register(Opcode107MessageEvent.self)
+        }
+        Rules {
+            HandleEvent(Opcode107IncrementEvent.self) { (state: inout Opcode107TestState, _: Opcode107IncrementEvent, _) in
+                state.count += 1
+            }
+        }
+    }
+
+    let transport = Opcode107RecordingTransport()
+    let keeper = LandKeeper<Opcode107TestState>(definition: definition, initialState: Opcode107TestState())
+    let encodingConfig = TransportEncodingConfig(message: .json, stateUpdate: .opcodeMessagePack)
+    let adapter = TransportAdapter<Opcode107TestState>(
+        keeper: keeper,
+        transport: transport,
+        landID: "opcode107-fallback-test",
+        encodingConfig: encodingConfig
+    )
+    await transport.setDelegate(adapter)
+
+    let sessionID = SessionID("sess-fallback")
+    let clientID = ClientID("cli-fallback")
+    let playerID = PlayerID("player-fallback")
+
+    await adapter.onConnect(sessionID: sessionID, clientID: clientID)
+    try await simulateRouterJoin(
+        adapter: adapter,
+        keeper: keeper,
+        sessionID: sessionID,
+        clientID: clientID,
+        playerID: playerID
+    )
+    await transport.clearMessages()
+
+    let serverEvent = AnyServerEvent(Opcode107MessageEvent(message: "fallback-test"))
+    await adapter.sendEvent(serverEvent, to: .client(clientID))
+
+    let messages = await transport.recordedMessages()
+    var foundEventFrame = false
+    for message in messages {
+        guard let obj = try? JSONSerialization.jsonObject(with: message) as? [String: Any],
+              let kind = obj["kind"] as? String, kind == "event" else {
+            continue
+        }
+        foundEventFrame = true
+        break
+    }
+    #expect(foundEventFrame, "Event must be sent as a separate JSON frame when body encoding fails (no silent drop)")
+}
