@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fork } from "node:child_process";
-import type { PhaseName, Scenario, ActionConfig } from "./types";
+import type { PhaseName, Scenario, ActionConfig, PhaseConfig } from "./types";
 import { parseScenario } from "./scenario";
 import { buildPhases, computeAssignments } from "./orchestrator";
 
@@ -10,10 +10,12 @@ export interface WorkerReport {
     stateUpdateIntervalsMs: number[];
     errorCount: number;
     disconnectCount: number;
+    actionsSent: number;
 }
 
 export interface PhaseResult {
     name: PhaseName;
+    config: PhaseConfig;
     report: WorkerReport;
 }
 
@@ -46,7 +48,7 @@ export async function runScenario(filePath: string, workers: number): Promise<Ru
             assignments
         );
         const aggregated = aggregateReports(reports);
-        results.push({ name: phase.name, report: aggregated });
+        results.push({ name: phase.name, config: phase.config, report: aggregated });
     }
 
     return { scenarioName: scenario.name, phases: results };
@@ -118,7 +120,8 @@ function aggregateReports(reports: WorkerReport[]): WorkerReport {
         rttMs: [],
         stateUpdateIntervalsMs: [],
         errorCount: 0,
-        disconnectCount: 0
+        disconnectCount: 0,
+        actionsSent: 0
     };
 
     for (const report of reports) {
@@ -126,6 +129,7 @@ function aggregateReports(reports: WorkerReport[]): WorkerReport {
         aggregated.stateUpdateIntervalsMs.push(...report.stateUpdateIntervalsMs);
         aggregated.errorCount += report.errorCount;
         aggregated.disconnectCount += report.disconnectCount;
+        aggregated.actionsSent += report.actionsSent;
     }
 
     return aggregated;

@@ -24,6 +24,12 @@ describe("worker helpers", () => {
         expect(session.metrics.rttMs).toEqual([100]);
     });
 
+    it("tracks actions sent", () => {
+        const session = new WorkerSession();
+        session.recordSend("req-1", 1000);
+        expect(session.metrics.actionsSent).toBe(1);
+    });
+
     it("records state update cadence", () => {
         const session = new WorkerSession();
         session.handleDecodedMessage({ type: "stateUpdate" }, 1000);

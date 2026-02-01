@@ -80,7 +80,8 @@ function aggregateSessions(sessions: WorkerSession[]) {
         rttMs: [] as number[],
         stateUpdateIntervalsMs: [] as number[],
         errorCount: 0,
-        disconnectCount: 0
+        disconnectCount: 0,
+        actionsSent: 0
     };
 
     for (const session of sessions) {
@@ -88,6 +89,7 @@ function aggregateSessions(sessions: WorkerSession[]) {
         report.stateUpdateIntervalsMs.push(...session.metrics.stateUpdateIntervalsMs);
         report.errorCount += session.metrics.errorCount;
         report.disconnectCount += session.metrics.disconnectCount;
+        report.actionsSent += session.metrics.actionsSent;
     }
 
     return report;
