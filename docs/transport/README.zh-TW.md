@@ -51,6 +51,13 @@ PlayerSession 欄位優先序：
 - diff：只傳變更（path-based patches）
 - firstSync：玩家首次建立 cache 後送出一次
 
+### Broadcast 與 Per-Player 更新
+
+- **Broadcast**：每次 sync 只編碼一次並送給所有 session（MessagePack 時為 opcode **107**）。
+- **Per-player**：以標準 StateUpdate opcode（0/1/2）逐玩家送出，與 broadcast 分離。
+- **firstSync**：仍維持單一合併更新（該玩家完整狀態）。
+- **Events**：broadcast events 可合併進 opcode 107；targeted events 仍獨立送出。
+
 ## 錯誤處理
 
 - join/action/event 錯誤會回傳 `ErrorPayload`
