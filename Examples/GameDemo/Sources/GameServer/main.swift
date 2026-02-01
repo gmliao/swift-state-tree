@@ -39,6 +39,7 @@ struct GameServer {
 
         let host = getEnvString(key: "HOST", defaultValue: "localhost")
         let port = getEnvUInt16(key: "PORT", defaultValue: 8080)
+        let enableReevaluation = getEnvBool(key: "ENABLE_REEVALUATION", defaultValue: true)
 
         // Single TRANSPORT_ENCODING controls both message and stateUpdate encoding
         let transportEncodingEnv = getEnvString(key: "TRANSPORT_ENCODING", defaultValue: "messagepack")
@@ -69,9 +70,11 @@ struct GameServer {
             logger: logger
         ))
 
-        // Create Reevaluation Services
-        let reevaluationFactory = GameReevaluationFactory()
-        let reevaluationService = ReevaluationRunnerService(factory: reevaluationFactory)
+        if enableReevaluation {
+            logger.info("✅ Reevaluation enabled")
+        } else {
+            logger.info("⚠️ Reevaluation disabled (ENABLE_REEVALUATION=false)")
+        }
 
         let serverConfig = LandServerConfiguration(
             logger: logger,
@@ -80,7 +83,7 @@ struct GameServer {
             allowGuestMode: true,
             allowAutoCreateOnJoin: true,
             transportEncoding: transportEncoding,
-            enableLiveStateHashRecording: true,
+            enableLiveStateHashRecording: enableReevaluation,
             pathHashes: pathHashes, // Enable PathHash compression
             eventHashes: nil,
             clientEventHashes: nil,
@@ -92,8 +95,11 @@ struct GameServer {
                 let configService = GameConfigProviderService(provider: configProvider)
                 services.register(configService, as: GameConfigProviderService.self)
 
-                // Inject Reevaluation Service
-                services.register(reevaluationService, as: ReevaluationRunnerService.self)
+                if enableReevaluation {
+                    let reevaluationFactory = GameReevaluationFactory()
+                    let reevaluationService = ReevaluationRunnerService(factory: reevaluationFactory)
+                    services.register(reevaluationService, as: ReevaluationRunnerService.self)
+                }
 
                 return services
             }
@@ -108,14 +114,16 @@ struct GameServer {
             configuration: serverConfig
         )
 
-        // Register Reevaluation Monitor
-        try await landHost.register(
-            landType: "reevaluation-monitor",
-            land: ReevaluationMonitor.makeLand(),
-            initialState: ReevaluationMonitorState(),
-            webSocketPath: "/reevaluation-monitor",
-            configuration: serverConfig
-        )
+        if enableReevaluation {
+            // Register Reevaluation Monitor
+            try await landHost.register(
+                landType: "reevaluation-monitor",
+                land: ReevaluationMonitor.makeLand(),
+                initialState: ReevaluationMonitorState(),
+                webSocketPath: "/reevaluation-monitor",
+                configuration: serverConfig
+            )
+        }
 
         // Register admin routes
         let adminAuth = AdminAuthMiddleware(
