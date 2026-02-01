@@ -3,10 +3,11 @@ import { buildActionMessage, buildJoinMessage, WorkerClient, WorkerSession } fro
 
 describe("worker helpers", () => {
     it("builds join message object", () => {
-        const msg = buildJoinMessage("hero-defense", "room-1", "join-1");
+        const msg = buildJoinMessage("hero-defense", "room-1", "join-1", { foo: "bar" });
         expect(msg.kind).toBe("join");
         expect(msg.payload.join.landType).toBe("hero-defense");
         expect(msg.payload.join.landInstanceId).toBe("room-1");
+        expect(msg.payload.join.metadata).toEqual({ foo: "bar" });
     });
 
     it("builds action opcode array", () => {
@@ -58,6 +59,7 @@ describe("worker helpers", () => {
             })
         );
         expect(client.getMessageEncoding()).toBe("messagepack");
+        expect(client.isJoined()).toBe(true);
     });
 });
 

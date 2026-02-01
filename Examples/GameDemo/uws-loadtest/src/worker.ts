@@ -12,6 +12,7 @@ export interface WorkerConfig {
     landType: string;
     landInstanceId: string;
     actions: ActionConfig[];
+    joinMetadata?: Record<string, unknown>;
 }
 
 export interface WorkerOptions {
@@ -33,14 +34,20 @@ export interface JoinMessage {
     };
 }
 
-export function buildJoinMessage(landType: string, landInstanceId: string, requestID: string): JoinMessage {
+export function buildJoinMessage(
+    landType: string,
+    landInstanceId: string,
+    requestID: string,
+    metadata?: Record<string, unknown>
+): JoinMessage {
     return {
         kind: "join",
         payload: {
             join: {
                 requestID,
                 landType,
-                landInstanceId
+                landInstanceId,
+                metadata
             }
         }
     };
@@ -137,6 +144,7 @@ export class WorkerSession {
 export class WorkerClient {
     private socket?: WebSocketLike;
     private messageEncoding: "json" | "messagepack" = "json";
+    private joined = false;
     private readonly session = new WorkerSession();
     private readonly now: () => number;
     private readonly createSocket: (url: string) => WebSocketLike;
@@ -171,6 +179,10 @@ export class WorkerClient {
         return this.messageEncoding;
     }
 
+    isJoined(): boolean {
+        return this.joined;
+    }
+
     getSession(): WorkerSession {
         return this.session;
     }
@@ -192,17 +204,26 @@ export class WorkerClient {
         }
     }
 
-    private sendJoin(): void {
+    private sendJoin(metadata?: Record<string, unknown>): void {
         if (!this.socket) {
             return;
         }
-        const msg = buildJoinMessage(this.config.landType, this.config.landInstanceId, "join-1");
+        const msg = buildJoinMessage(
+            this.config.landType,
+            this.config.landInstanceId,
+            "join-1",
+            metadata ?? this.config.joinMetadata
+        );
         this.socket.send(JSON.stringify(msg));
     }
 
     private handleMessage(data: any): void {
         const decoded = decodeMessage(data);
         if (decoded && decoded.kind === "joinResponse") {
+            const success = decoded.success ?? decoded.payload?.joinResponse?.success;
+            if (success) {
+                this.joined = true;
+            }
             const encoding = decoded.encoding ?? decoded.payload?.joinResponse?.encoding;
             if (encoding) {
                 this.messageEncoding = encoding === "messagepack" ? "messagepack" : "json";
