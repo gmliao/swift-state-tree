@@ -9,7 +9,7 @@
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "uwebsockets.js": "^19.0.0-docs",
+    "ws": "^8.17.0",
     "@msgpack/msgpack": "^3.0.0"
   },
   "devDependencies": {
