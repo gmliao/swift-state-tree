@@ -16,4 +16,11 @@ describe("protocol decoding", () => {
         expect((msg as any).kind).toBe("actionResponse");
         expect((msg as any).requestID).toBe("req-1");
     });
+
+    it("decodes JSON when binary frame contains text", () => {
+        const json = JSON.stringify({ kind: "joinResponse", payload: { joinResponse: { success: true } } });
+        const buf = new TextEncoder().encode(json);
+        const msg = decodeMessage(buf);
+        expect((msg as any).kind).toBe("joinResponse");
+    });
 });

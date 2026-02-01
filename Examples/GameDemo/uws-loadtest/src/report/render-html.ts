@@ -3,10 +3,7 @@ import path from "node:path";
 import { percentile, evaluateThresholds } from "../metrics";
 import type { RunResult, PhaseResult } from "../run";
 import type { Thresholds } from "../types";
-
-export interface SystemMetrics {
-    system: Array<Record<string, unknown>>;
-}
+import type { SystemMetrics } from "../system-metrics";
 
 export interface PhaseSummary {
     name: string;
@@ -27,7 +24,7 @@ export interface Report {
         generatedAt: string;
     };
     phases: PhaseSummary[];
-    system: Array<Record<string, unknown>>;
+    system: SystemMetrics["system"];
 }
 
 export function buildReport(run: RunResult, systemMetrics: SystemMetrics): Report {

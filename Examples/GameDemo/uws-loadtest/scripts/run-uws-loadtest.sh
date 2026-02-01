@@ -4,6 +4,7 @@ set -euo pipefail
 SCENARIO="scenarios/hero-defense/default.json"
 WORKERS=""
 OUTPUT_DIR="results"
+STARTUP_TIMEOUT=60
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -19,8 +20,12 @@ while [[ $# -gt 0 ]]; do
       OUTPUT_DIR="$2"
       shift 2
       ;;
+    --startup-timeout)
+      STARTUP_TIMEOUT="$2"
+      shift 2
+      ;;
     --help|-h)
-      echo "Usage: $0 [--scenario <path>] [--workers <N>] [--output-dir <dir>]"
+      echo "Usage: $0 [--scenario <path>] [--workers <N>] [--output-dir <dir>] [--startup-timeout <seconds>]"
       exit 0
       ;;
     *)
@@ -52,7 +57,7 @@ SERVER_PID=$!
 
 echo "Waiting for server to listen on 8080..."
 READY=false
-for _ in $(seq 1 30); do
+for _ in $(seq 1 "$STARTUP_TIMEOUT"); do
   if nc -z localhost 8080 >/dev/null 2>&1; then
     READY=true
     break
@@ -62,6 +67,8 @@ done
 
 if [ "$READY" = false ]; then
   echo "Server did not start in time. Killing..."
+  echo "---- GameServer log (tail) ----"
+  tail -n 50 /tmp/uws-loadtest-gameserver.log || true
   kill -9 "$SERVER_PID" || true
   exit 1
 fi
