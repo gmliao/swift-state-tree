@@ -104,6 +104,35 @@ public func getEnvStringOptional(key: String) -> String? {
     return value?.isEmpty == false ? value : nil
 }
 
+/// Get a Bool value from environment variable with default fallback.
+///
+/// Accepted truthy values: "1", "true", "yes", "y", "on"
+/// Accepted falsy values: "0", "false", "no", "n", "off"
+/// Any other value falls back to the default.
+///
+/// - Parameters:
+///   - key: The environment variable key
+///   - defaultValue: The default value to return if the environment variable is not set or invalid
+///   - environment: The environment dictionary to read from (defaults to process environment)
+/// - Returns: Parsed Bool or default value
+public func getEnvBool(
+    key: String,
+    defaultValue: Bool,
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) -> Bool {
+    guard let raw = environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else {
+        return defaultValue
+    }
+    switch raw {
+    case "1", "true", "yes", "y", "on":
+        return true
+    case "0", "false", "no", "n", "off":
+        return false
+    default:
+        return defaultValue
+    }
+}
+
 // MARK: - Transport Encoding Helpers
 
 /// Resolve transport encoding from environment variable string.

@@ -52,7 +52,7 @@ TIMEOUT=$((TOTAL_DURATION + 30))
 
 echo "Starting GameServer..."
 cd "$GAMEDEMO_DIR"
-swift run GameServer >/tmp/uws-loadtest-gameserver.log 2>&1 &
+ENABLE_REEVALUATION=false swift run GameServer >/tmp/uws-loadtest-gameserver.log 2>&1 &
 SERVER_PID=$!
 
 echo "Waiting for server to listen on 8080..."
