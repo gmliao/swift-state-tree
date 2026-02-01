@@ -51,6 +51,13 @@ PlayerSession field priority:
 - diff: Only send changes (path-based patches)
 - firstSync: Sent once after player's cache is first established
 
+### Broadcast vs Per-Player Updates
+
+- **Broadcast**: Encoded once per sync tick and sent to all sessions (opcode **107** when using MessagePack).
+- **Per-player**: Sent as standard StateUpdate opcodes (0/1/2) per player, separate from broadcast.
+- **firstSync**: Remains a single combined update (full state for that player).
+- **Events**: Broadcast events can be merged into opcode 107; targeted events are sent separately.
+
 ## Error Handling
 
 - join/action/event errors return `ErrorPayload`

@@ -115,8 +115,11 @@ A runtime compression mechanism was introduced for dynamic data that cannot be p
 To eliminate overhead caused by long strings (Dynamic Path Keys), the server maintains a dynamic mapping table of `String <-> Int Slot`.
 
 - **Dynamic Key (Body Layer)**: Maps dynamic strings in the State Path (e.g., `players["user-123"]`, `inventory["item-abcdef"]`) to an `Int`.
-- **Scope**: The slot table is **not global**. It is scoped per `(landID, playerID)` so different players do not share the same mapping.
-- **Reset**: On `firstSync`, the table is reset and keys are (re)defined to avoid unbounded growth and to keep decoding deterministic.
+- **Scope**: The slot table is **not global**. It is scoped in two ways:
+  - **Broadcast scope**: per `landID`, used only for opcode **107** broadcast updates.
+  - **Per-player scope**: per `(landID, playerID)`, used for per-player state updates.
+  Clients must keep **separate** dynamic key maps for these scopes and never mix them.
+- **Reset**: On `firstSync`, the **per-player** table is reset and keys are (re)defined to avoid unbounded growth and to keep decoding deterministic. Broadcast tables reset when the land is recreated (or if a broadcast firstSync is ever sent explicitly).
 
 #### 1.1 Dynamic Key Wire Format (Opcode Patch)
 

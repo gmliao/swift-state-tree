@@ -115,8 +115,11 @@
 為了消除長字串 (Dynamic Path Keys) 帶來的 Overhead，伺服器維護了 `String <-> Int Slot` 的動態映射表。
 
 - **Dynamic Key (Body Layer)**: 將 State Path 中的動態字串（例如 `players["user-123"]`、`inventory["item-abcdef"]`）映射為 `Int`。
-- **Scope**：slot 表格 **不是全域共用**，而是以 `(landID, playerID)` 為單位各自維護，避免不同玩家互相污染。
-- **Reset**：在 `firstSync` 時會重置表格並重新定義 keys，避免無限制成長，並確保解碼決定性。
+- **Scope**：slot 表格 **不是全域共用**，分成兩種範圍：
+  - **Broadcast scope**：以 `landID` 為範圍，**只**用於 opcode **107** 的 broadcast 更新。
+  - **Per-player scope**：以 `(landID, playerID)` 為範圍，使用於 per‑player state update。
+  客戶端必須為這兩個 scope **分開**維護 dynamic key map，不能互相混用。
+- **Reset**：`firstSync` 只會重置 **per‑player** table 並重新定義 keys，避免無限制成長，並確保解碼決定性。Broadcast table 會在 land 重新建立時重置（或當有明確 broadcast firstSync 時）。
 
 #### 1.1 Dynamic Key 封包格式（Opcode Patch）
 
