@@ -61,7 +61,12 @@ export function decodeMessage(data: string | ArrayBuffer | Uint8Array): any {
         return classifyDecoded(JSON.parse(data));
     }
     const buffer = data instanceof Uint8Array ? data : new Uint8Array(data);
-    return classifyDecoded(msgpackDecode(buffer));
+    try {
+        return classifyDecoded(msgpackDecode(buffer));
+    } catch {
+        const text = new TextDecoder().decode(buffer);
+        return classifyDecoded(JSON.parse(text));
+    }
 }
 
 export function encodeMessageToMessagePack(payload: unknown): Uint8Array {

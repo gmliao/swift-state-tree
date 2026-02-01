@@ -1,4 +1,5 @@
 import { WorkerClient, WorkerSession, selectAction } from "./worker";
+import { sendMessageWithAck } from "./ipc";
 import { renderTemplateObject } from "./payload";
 import type { ActionConfig } from "./types";
 
@@ -64,14 +65,25 @@ async function runWorker(config: StartConfig): Promise<void> {
         }
     }, intervalMs);
 
-    setTimeout(() => {
+    setTimeout(async () => {
         clearInterval(timer);
         const report = aggregateSessions(sessions);
-        process.send?.({ type: "report", report });
-        for (const client of clients) {
-            client.getSession();
+        const send = (message: unknown, callback?: (error?: Error | null) => void) => {
+            if (!process.send) {
+                return false;
+            }
+            return process.send(message, undefined, undefined, callback);
+        };
+        if (!process.send) {
+            process.exit(1);
+            return;
         }
-        process.exit(0);
+        try {
+            await sendMessageWithAck(send, { type: "report", report });
+            process.exit(0);
+        } catch {
+            process.exit(1);
+        }
     }, config.durationSeconds * 1000);
 }
 
