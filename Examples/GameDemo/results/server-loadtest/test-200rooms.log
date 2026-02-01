@@ -1,0 +1,265 @@
+Using build mode: release
+Starting system monitoring...
+Started vmstat (system-wide monitoring)
+Starting ServerLoadTest (Client Simulator)...
+  Rooms: 200
+  Players per room: 5
+  Duration: 80 seconds
+  Total runtime: ~150 seconds
+
+[0/1] Planning build
+Building for production...
+[0/5] Write sources
+[0/5] Write swift-version-24593BA9C3E375BF.txt
+[2/6] Write sources
+[5/7] Compiling SwiftStateTree ActionPayload.swift
+/workspace/Sources/SwiftStateTree/Runtime/ReevaluationJsonlExporter.swift:28:29: warning: result of call to 'createFile(atPath:contents:attributes:)' is unused [#no-usage]
+26 |         }
+27 |         
+28 |         FileManager.default.createFile(atPath: outputPath, contents: nil)
+   |                             `- warning: result of call to 'createFile(atPath:contents:attributes:)' is unused [#no-usage]
+29 |         self.handle = try FileHandle(forWritingTo: url)
+30 |         
+[6/10] Compiling SwiftStateTreeReevaluationMonitor ReevaluationInterfaces.swift
+[7/10] Compiling SwiftStateTreeDeterministicMath IAABB2.swift
+[8/10] Compiling SwiftStateTreeMessagePack MessagePackDirectDecoder.swift
+[9/11] Compiling SwiftStateTreeTransport JSONStateUpdateEncoder.swift
+[10/12] Compiling SwiftStateTreeMatchmaking LobbyContainer.swift
+[11/13] Compiling SwiftStateTreeHummingbird AdminAPIResponse.swift
+[12/14] Compiling GameContent GameActions.swift
+[13/15] Compiling ServerLoadTest ClientSimulator.swift
+[13/15] Write Objects.LinkFileList
+[14/15] Linking ServerLoadTest
+Build of product 'ServerLoadTest' complete! (36.48s)
+2026-02-01 02:02:38.387 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:38.388 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:38.388 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:38.388 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:38.390 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:38.390 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:39.414 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:39.415 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:39.415 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:39.415 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:39.415 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:39.416 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:39.416 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:40.439 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:40.440 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:40.440 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:40.440 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:40.441 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:40.441 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:41.469 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:41.470 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:41.470 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:41.472 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:41.472 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:41.473 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:41.473 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:42.498 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:42.499 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:42.499 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:42.499 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:42.499 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:42.500 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:42.500 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:43.521 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:43.521 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:43.522 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:43.522 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:43.523 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:43.523 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:44.552 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:44.553 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:44.554 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:44.554 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:44.556 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:44.557 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:44.557 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:45.581 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:45.581 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:45.582 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:45.582 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:45.582 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:45.583 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:46.606 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:46.606 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:46.606 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:46.606 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:46.607 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:46.607 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:46.607 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:47.627 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:47.627 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:47.627 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:47.629 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:47.629 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:47.629 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:47.629 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:48.648 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:48.648 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:48.648 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:48.651 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:48.652 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:48.652 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:49.679 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:49.682 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:49.682 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:49.683 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:49.684 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:49.684 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:49.684 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:50.710 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:50.710 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:50.710 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:50.710 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:50.710 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:50.711 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:51.729 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:51.729 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:51.730 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:51.730 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:51.730 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:51.730 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:51.730 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:52.747 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:52.748 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:52.749 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:52.751 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:52.752 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:52.752 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:52.752 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:53.769 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:53.770 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:53.772 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:53.772 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:53.772 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:53.772 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:54.792 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:54.792 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:54.792 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:54.793 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:54.793 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:54.793 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:54.794 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:55.805 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:55.805 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:55.805 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:55.805 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:55.806 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:55.806 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:56.821 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:56.821 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:56.821 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:56.821 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:56.821 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:56.822 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:56.822 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:57.832 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:57.832 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:57.832 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:57.833 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:57.833 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:57.833 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:57.834 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:58.842 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:58.842 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:58.842 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:58.845 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:58.845 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:58.845 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:59.860 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:59.860 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:59.861 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:59.862 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:59.862 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:59.862 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:02:59.863 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:00.872 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:00.873 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:00.873 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:00.873 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:00.873 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:00.873 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.269 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.270 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.270 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.270 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.270 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.270 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.270 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.270 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.270 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.270 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.270 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.270 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.270 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.270 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.270 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.270 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.270 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.270 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.270 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.270 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.270 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+2026-02-01 02:03:01.270 [0;33mWARNI[0m [0;36m[ServerLoadTest][0m ReevaluationRecorderService not found. Cannot save record.[0m
+
+Results saved to: /workspace/Examples/GameDemo/results/server-loadtest/server-loadtest-messagepack-rooms200-ppr5-steady80s-2026-02-01T02-03-03Z.json
+
+Stopping system monitoring...
+
+Converting monitoring data to JSON...
+Monitoring data saved to: /tmp/tmp.dDdu8zTFwW/monitoring.json
+Loaded test result JSON from: /workspace/Examples/GameDemo/results/server-loadtest/server-loadtest-messagepack-rooms200-ppr5-steady80s-2026-02-01T02-03-03Z.json
+HTML report saved to: /workspace/Examples/GameDemo/results/server-loadtest/server-loadtest-messagepack-rooms200-ppr5-steady80s-2026-02-01T02-03-03Z-monitoring.html
+Monitoring JSON saved to: /workspace/Examples/GameDemo/results/server-loadtest/server-loadtest-messagepack-rooms200-ppr5-steady80s-2026-02-01T02-03-03Z-monitoring.json
+Merging monitoring data into test result JSON...
+Merged monitoring data into: /workspace/Examples/GameDemo/results/server-loadtest/server-loadtest-messagepack-rooms200-ppr5-steady80s-2026-02-01T02-03-03Z.json
+
+=== Monitoring Summary (from JSON) ===
+vmstat: 189 samples, avg CPU us=24.2%, sy=3.2%, id=72.4%
+
+=== Raw Monitoring Data ===
+
+vmstat data: /tmp/tmp.dDdu8zTFwW/vmstat.log
+Last 5 lines:
+ 7  0      0 13446364  24900 1309600    0    0     0    56 35275 65330 52  3 45  0  0  0
+ 6  0      0 13444852  24908 1309584    0    0     0    60 32713 59730 51  3 46  0  0  0
+ 9  0      0 13446708  24916 1309584    0    0     0    56 32596 60063 52  3 45  0  0  0
+ 6  0      0 13445952  24932 1309584    0    0     0   116 31701 58731 53  2 45  0  0  0
+11  0      0 13445208  24932 1309600    0    0     0     0 30851 57056 53  3 44  0  0  0
+
+Monitoring data files:
+  Monitoring JSON: /workspace/Examples/GameDemo/results/server-loadtest/server-loadtest-messagepack-rooms200-ppr5-steady80s-2026-02-01T02-03-03Z-monitoring.json
+  Monitoring HTML: /workspace/Examples/GameDemo/results/server-loadtest/server-loadtest-messagepack-rooms200-ppr5-steady80s-2026-02-01T02-03-03Z-monitoring.html
+    (Open in browser to view interactive charts)
+
+Raw monitoring logs (temporary): /tmp/tmp.dDdu8zTFwW
