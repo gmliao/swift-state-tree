@@ -82,6 +82,7 @@ export interface WorkerMetrics {
     stateUpdateIntervalsMs: number[];
     errorCount: number;
     disconnectCount: number;
+    actionsSent: number;
 }
 
 export class WorkerSession {
@@ -91,11 +92,13 @@ export class WorkerSession {
         rttMs: [],
         stateUpdateIntervalsMs: [],
         errorCount: 0,
-        disconnectCount: 0
+        disconnectCount: 0,
+        actionsSent: 0
     };
 
     recordSend(requestID: string, sentAt: number): void {
         this.pendingRequests.set(requestID, sentAt);
+        this.metrics.actionsSent += 1;
     }
 
     handleDecodedMessage(message: any, now: number): void {
