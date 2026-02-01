@@ -64,7 +64,7 @@ public enum ReevaluationRecordSaver {
         filenamePrefix: String = "reevaluation"
     ) async throws {
         guard let service = ctx.services.get(ReevaluationRecorderService.self) else {
-            ctx.logger.warning("ReevaluationRecorderService not found. Cannot save record.")
+            ctx.logger.debug("Reevaluation recording disabled (ReevaluationRecorderService not registered); skip saving.")
             return
         }
 
