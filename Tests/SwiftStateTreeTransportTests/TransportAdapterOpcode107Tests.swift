@@ -96,6 +96,7 @@ func testTransportAdapterOnlyMergesBroadcastEventsIntoOpcode107() async throws {
     let encoder = MessagePackTransportMessageEncoder()
     let clientData = try encoder.encode(clientMessage)
     await adapter.onMessage(clientData, from: sessionID)
+    try await Task.sleep(for: .milliseconds(50))
 
     let serverEvent = AnyServerEvent(Opcode107MessageEvent(message: "hello"))
     await adapter.sendEvent(serverEvent, to: .client(clientID))

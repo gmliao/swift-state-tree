@@ -79,6 +79,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     // Track JWT payload information for each session
     private var sessionToAuthInfo: [SessionID: AuthenticatedInfo] = [:]
     private var initialSyncingPlayers: Set<PlayerID> = []
+
+    // Membership queue + version stamps prevent stale join/leave work from delivering after rejoin.
+    // See docs/plans/2026-02-01-membership-queue-reconnect.md.
+    private struct MembershipStamp: Sendable, Equatable {
+        let playerID: PlayerID
+        let version: UInt64
+    }
+    private var membershipVersionByPlayer: [PlayerID: UInt64] = [:]
+    private var membershipVersionBySession: [SessionID: UInt64] = [:]
+    private var membershipQueueTail: Task<Void, Never>?
     
     // MARK: - PlayerSlot Tracking
     
@@ -102,6 +112,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private struct PendingEventBody: Sendable {
         let target: SwiftStateTree.EventTarget
         let body: MessagePackValue
+        let stamp: MembershipStamp?
     }
     private var pendingServerEventBodies: [PendingEventBody] = []
     private var pendingBroadcastEventBodies: [MessagePackValue] = []
@@ -303,6 +314,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     public func onDisconnect(sessionID: SessionID, clientID: ClientID) async {
+        do {
+            try await enqueueMembership {
+                await self.handleDisconnectQueued(sessionID: sessionID, clientID: clientID)
+            }
+        } catch {
+            logger.error("❌ Membership queue failed during disconnect", metadata: [
+                "sessionID": .string(sessionID.rawValue),
+                "error": .string(String(describing: error))
+            ])
+        }
+    }
+
+    private func handleDisconnectQueued(sessionID: SessionID, clientID: ClientID) async {
         // Remove from connected sessions
         sessionToClient.removeValue(forKey: sessionID)
         // Clear JWT payload information
@@ -313,6 +337,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             if logger.logLevel <= .debug {
                 logger.debug("Player \(playerID.rawValue) disconnecting: session=\(sessionID.rawValue), clientID=\(clientID.rawValue)")
             }
+
+            invalidateMembership(sessionID: sessionID, playerID: playerID)
 
             // Remove from sessionToPlayer BEFORE calling keeper.leave()
             // This ensures syncBroadcastOnly() only sends to remaining players
@@ -338,7 +364,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // This ensures reconnection behaves like first connection
             syncEngine.clearCacheForDisconnectedPlayer(playerID)
             initialSyncingPlayers.remove(playerID)
-            
+
             // Release playerSlot for this player
             if let slot = playerToSlot[playerID] {
                 slotToPlayer.removeValue(forKey: slot)
@@ -364,6 +390,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         if let authInfo = authInfo {
             sessionToAuthInfo[sessionID] = authInfo
         }
+        _ = bindMembership(sessionID: sessionID, playerID: playerID)
 
         // Register with transport for player-based targeting (if supported)
         if let webSocketTransport = transport as? WebSocketTransport {
@@ -482,6 +509,22 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     public func performJoin(
+        playerSession: PlayerSession,
+        clientID: ClientID,
+        sessionID: SessionID,
+        authInfo: AuthenticatedInfo?
+    ) async throws -> JoinResult? {
+        try await enqueueMembership {
+            try await self.performJoinQueued(
+                playerSession: playerSession,
+                clientID: clientID,
+                sessionID: sessionID,
+                authInfo: authInfo
+            )
+        }
+    }
+
+    private func performJoinQueued(
         playerSession: PlayerSession,
         clientID: ClientID,
         sessionID: SessionID,
@@ -617,7 +660,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 // For other messages, require player to be joined.
                 // Under load, clients may send (e.g. MoveTo) before join ack is processed; log at debug to avoid noise.
                 guard let playerID = sessionToPlayer[sessionID],
-                      let clientID = sessionToClient[sessionID] else {
+                      let clientID = sessionToClient[sessionID],
+                      let sessionVersion = membershipVersionBySession[sessionID],
+                      isSessionCurrent(sessionID, expected: sessionVersion) else {
                     if logger.logLevel <= .debug {
                         logger.debug("Message received from session that has not joined: \(sessionID.rawValue)")
                     }
@@ -795,18 +840,21 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             case .players(let playerIDs):
                 hasTargetedEventBodies = true
                 for playerID in playerIDs {
-                    pendingServerEventBodies.append(PendingEventBody(target: .player(playerID), body: body))
+                    let stamp = currentMembershipStamp(for: playerID)
+                    pendingServerEventBodies.append(PendingEventBody(target: .player(playerID), body: body, stamp: stamp))
                 }
             case .client(let clientID):
                 hasTargetedEventBodies = true
                 if let sessionID = sessionID(for: clientID) {
-                    pendingServerEventBodies.append(PendingEventBody(target: .session(sessionID), body: body))
+                    let stamp = currentMembershipStamp(for: sessionID)
+                    pendingServerEventBodies.append(PendingEventBody(target: .session(sessionID), body: body, stamp: stamp))
                 } else {
                     logger.warning("No session found for client: \(clientID.rawValue)")
                 }
             default:
                 hasTargetedEventBodies = true
-                pendingServerEventBodies.append(PendingEventBody(target: target, body: body))
+                let stamp = currentMembershipStamp(for: target)
+                pendingServerEventBodies.append(PendingEventBody(target: target, body: body, stamp: stamp))
             }
             return
         }
@@ -827,11 +875,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 transportTarget = .broadcast
                 targetDescription = "broadcast(all)"
             case .player(let playerID):
+                guard let stamp = currentMembershipStamp(for: playerID),
+                      isPlayerCurrent(playerID, expected: stamp.version) else {
+                    return
+                }
                 transportTarget = .player(playerID)
                 targetDescription = "player(\(playerID.rawValue))"
             case .client(let clientID):
                 // Find session for this client
                 if let sessionID = sessionToClient.first(where: { $0.value == clientID })?.key {
+                    guard let stamp = currentMembershipStamp(for: sessionID),
+                          isSessionCurrent(sessionID, expected: stamp.version) else {
+                        return
+                    }
                     transportTarget = .session(sessionID)
                     targetDescription = "client(\(clientID.rawValue)) -> session(\(sessionID.rawValue))"
                 } else {
@@ -839,6 +895,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     return
                 }
             case .session(let sessionID):
+                guard let stamp = currentMembershipStamp(for: sessionID),
+                      isSessionCurrent(sessionID, expected: stamp.version) else {
+                    return
+                }
                 transportTarget = .session(sessionID)
                 targetDescription = "session(\(sessionID.rawValue))"
             case .players(let playerIDs):
@@ -851,6 +911,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 ])
 
                 for playerID in playerIDs {
+                    guard let stamp = currentMembershipStamp(for: playerID),
+                          isPlayerCurrent(playerID, expected: stamp.version) else {
+                        continue
+                    }
                     let sessionIDs = sessionToPlayer.filter({ $0.value == playerID }).map({ $0.key })
                     for sessionID in sessionIDs {
                         try await transport.send(data, to: .session(sessionID))
@@ -902,6 +966,68 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Opcode for event message (103).
     private let opcodeEvent: Int64 = 103
 
+    private func enqueueMembership<T: Sendable>(
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        let previous = membershipQueueTail
+        let task: Task<T, Error> = Task {
+            if let previous { _ = await previous.result }
+            return try await operation()
+        }
+        membershipQueueTail = Task { _ = await task.result }
+        return try await task.value
+    }
+
+    private func nextMembershipVersion(for playerID: PlayerID) -> UInt64 {
+        let next = (membershipVersionByPlayer[playerID] ?? 0) + 1
+        membershipVersionByPlayer[playerID] = next
+        return next
+    }
+
+    private func bindMembership(sessionID: SessionID, playerID: PlayerID) -> MembershipStamp {
+        let version = nextMembershipVersion(for: playerID)
+        membershipVersionBySession[sessionID] = version
+        return MembershipStamp(playerID: playerID, version: version)
+    }
+
+    private func invalidateMembership(sessionID: SessionID, playerID: PlayerID) {
+        _ = nextMembershipVersion(for: playerID)
+        membershipVersionBySession.removeValue(forKey: sessionID)
+    }
+
+    private func currentMembershipStamp(for playerID: PlayerID) -> MembershipStamp? {
+        guard let version = membershipVersionByPlayer[playerID] else { return nil }
+        return MembershipStamp(playerID: playerID, version: version)
+    }
+
+    private func currentMembershipStamp(for sessionID: SessionID) -> MembershipStamp? {
+        guard let playerID = sessionToPlayer[sessionID],
+              let version = membershipVersionBySession[sessionID] else { return nil }
+        return MembershipStamp(playerID: playerID, version: version)
+    }
+
+    private func currentMembershipStamp(for target: SwiftStateTree.EventTarget) -> MembershipStamp? {
+        switch target {
+        case .player(let playerID):
+            return currentMembershipStamp(for: playerID)
+        case .session(let sessionID):
+            return currentMembershipStamp(for: sessionID)
+        case .client(let clientID):
+            guard let sessionID = sessionID(for: clientID) else { return nil }
+            return currentMembershipStamp(for: sessionID)
+        default:
+            return nil
+        }
+    }
+
+    private func isSessionCurrent(_ sessionID: SessionID, expected: UInt64) -> Bool {
+        membershipVersionBySession[sessionID] == expected
+    }
+
+    private func isPlayerCurrent(_ playerID: PlayerID, expected: UInt64) -> Bool {
+        membershipVersionByPlayer[playerID] == expected
+    }
+
     /// Resolve sessionID for a clientID.
     private func sessionID(for clientID: ClientID) -> SessionID? {
         sessionToClient.first(where: { $0.value == clientID })?.key
@@ -913,18 +1039,36 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         var bodies: [MessagePackValue] = []
         bodies.reserveCapacity(pendingServerEventBodies.count)
         let clientID = sessionToClient[sessionID]
+        let currentPlayerVersion = membershipVersionByPlayer[playerID]
+        let currentSessionVersion = membershipVersionBySession[sessionID]
         for entry in pendingServerEventBodies {
             switch entry.target {
             case .session(let s) where s == sessionID:
+                guard let stamp = entry.stamp,
+                      let expected = currentSessionVersion,
+                      stamp.version == expected,
+                      isSessionCurrent(sessionID, expected: expected) else { continue }
                 bodies.append(entry.body)
             case .player(let p) where p == playerID:
+                guard let stamp = entry.stamp,
+                      let expected = currentPlayerVersion,
+                      stamp.version == expected,
+                      isPlayerCurrent(playerID, expected: expected) else { continue }
                 bodies.append(entry.body)
             case .client(let c):
                 if clientID == c {
+                    guard let stamp = entry.stamp,
+                          let expected = currentSessionVersion,
+                          stamp.version == expected,
+                          isSessionCurrent(sessionID, expected: expected) else { continue }
                     bodies.append(entry.body)
                 }
             case .players(let playerIDs):
                 if playerIDs.contains(playerID) {
+                    guard let stamp = entry.stamp,
+                          let expected = currentPlayerVersion,
+                          stamp.version == expected,
+                          isPlayerCurrent(playerID, expected: expected) else { continue }
                     bodies.append(entry.body)
                 }
             default:

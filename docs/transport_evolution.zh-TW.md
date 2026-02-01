@@ -337,6 +337,19 @@ let results = await withTaskGroup(of: Data.self) { group in
 
 ---
 
+### Q6: Opcode 107 如何合併廣播更新與事件？ (Broadcast Merge + Dynamic Keys)
+
+**A: Opcode 107 只合併廣播狀態更新與廣播事件，每個房間只編碼一次。**
+
+- **廣播只編碼一次**：伺服器將 broadcast diff 編碼一次後送給所有 session。
+- **Per-player 仍然逐 session**：per-player diff 與 targeted event 仍是每個 session 各自編碼與送出（opcode 2/103）。
+- **Dynamic key scope**：
+  - broadcast 更新使用 **broadcast key table**（以 land 為範圍）
+  - per-player 更新使用 **per-player key table**（以 land + player 為範圍）
+- **Late-join 規則**：新加入的 client 若在 broadcast keys 已存在之後加入，必須先收到 **dynamic key 定義**，才能接收 slot-only broadcast 更新。可透過強制定義或 join 後傳一次 broadcast firstSync。
+
+---
+
 ## 綜合演進範例 (Comprehensive Evolution Example)
 
 以「更新某個玩家的生命值 (HP)」為例，觀察同一個語意在不同階段的表達方式與封包大小：
