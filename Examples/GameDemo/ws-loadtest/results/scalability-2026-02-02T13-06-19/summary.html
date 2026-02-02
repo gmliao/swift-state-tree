@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WS Load Test – Scalability Summary</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+    <script>
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            fontFamily: { sans: ["Inter", "sans-serif"] },
+            colors: {
+              primary: "#3b82f6",
+              secondary: "#8b5cf6",
+              success: "#10b981",
+              warning: "#f59e0b",
+              danger: "#ef4444",
+              surface: "#1e293b",
+              background: "#0f172a",
+            },
+          },
+        },
+      };
+    </script>
+    <style>
+      body { font-family: "Inter", sans-serif; }
+      .glass-panel {
+        background: rgba(30, 41, 59, 0.7);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .animate-fade-in { animation: fadeIn 0.5s ease-out forwards; }
+      @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      ::-webkit-scrollbar { width: 8px; height: 8px; }
+      ::-webkit-scrollbar-track { background: #0f172a; }
+      ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+    </style>
+  </head>
+  <body class="bg-background text-slate-100 min-h-screen antialiased">
+    <div id="app">
+      <header class="glass-panel sticky top-0 z-50 border-b border-white/5 shadow-2xl backdrop-blur-xl">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+          <div class="flex items-center space-x-3">
+            <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-secondary flex items-center justify-center text-white font-bold shadow-lg">🚀</div>
+            <h1 class="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400">WS Load Test – Scalability Summary</h1>
+          </div>
+          <div class="text-sm font-medium text-slate-400 bg-slate-800/50 px-3 py-1.5 rounded-full border border-white/5">
+            Invalid Date
+          </div>
+        </div>
+      </header>
+
+      <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+        <!-- Summary cards -->
+        <section class="animate-fade-in" style="animation-delay: 0.1s">
+          <div class="flex items-center space-x-2 mb-4">
+            <h2 class="text-lg font-semibold text-white">Summary</h2>
+            <div class="h-px flex-1 bg-gradient-to-r from-white/10 to-transparent"></div>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div class="glass-panel rounded-xl p-5 hover:bg-white/5 transition-all duration-300">
+              <h3 class="text-sm font-medium text-slate-400 uppercase tracking-wide mb-2">Total Runs</h3>
+              <div class="font-bold text-2xl text-slate-100">3</div>
+            </div>
+            <div class="glass-panel rounded-xl p-5 hover:bg-white/5 transition-all duration-300">
+              <h3 class="text-sm font-medium text-slate-400 uppercase tracking-wide mb-2">Passed</h3>
+              <div class="font-bold text-2xl text-slate-100">1</div>
+            </div>
+            <div class="glass-panel rounded-xl p-5 hover:bg-white/5 transition-all duration-300">
+              <h3 class="text-sm font-medium text-slate-400 uppercase tracking-wide mb-2">Failed</h3>
+              <div class="font-bold text-2xl text-slate-100">2</div>
+            </div>
+            <div class="glass-panel rounded-xl p-5 hover:bg-white/5 transition-all duration-300">
+              <h3 class="text-sm font-medium text-slate-400 uppercase tracking-wide mb-2">Pass Rate</h3>
+              <div class="font-bold text-2xl text-slate-100">33.3%</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Per-run table -->
+        <section class="animate-fade-in" style="animation-delay: 0.15s">
+          <div class="flex items-center space-x-2 mb-4">
+            <h2 class="text-lg font-semibold text-white">Per-Run Data</h2>
+            <div class="h-px flex-1 bg-gradient-to-r from-white/10 to-transparent"></div>
+          </div>
+          <div class="glass-panel rounded-xl overflow-hidden">
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead>
+                  <tr class="border-b border-white/10 bg-white/[0.02] text-slate-400 text-left">
+                    <th class="px-4 py-3 font-semibold">Run</th>
+                    <th class="px-4 py-3 font-semibold">Rooms</th>
+                    <th class="px-4 py-3 font-semibold">Status</th>
+                    <th class="px-4 py-3 font-semibold">Duration</th>
+                    <th class="px-4 py-3 font-semibold">Report</th>
+                    <th class="px-4 py-3 font-semibold">Preflight</th>
+                    <th class="px-4 py-3 font-semibold">Steady</th>
+                    <th class="px-4 py-3 font-semibold">Postflight</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-white/5">
+                  <tr class="hover:bg-white/5 transition-colors">
+      <td class="px-4 py-2 font-medium">1</td>
+      <td class="px-4 py-2">300</td>
+      <td class="px-4 py-2"><span class="text-success font-medium">PASS</span></td>
+      <td class="px-4 py-2">344s</td>
+      <td class="px-4 py-2"><a href="run-1/ws-loadtest-1770037921970.html" class="text-primary hover:underline" target="_blank">HTML</a>
+         <a href="run-1/ws-loadtest-1770037921970.json" class="text-slate-400 hover:underline ml-1" target="_blank">JSON</a></td>
+      <td class="px-4 py-2 text-slate-300"><span><span class="text-success">✓</span> err 0.00% rtt 5 upd 101</span></td>
+      <td class="px-4 py-2 text-slate-300"><span><span class="text-success">✓</span> err 0.00% rtt 11 upd 104</span></td>
+      <td class="px-4 py-2 text-slate-300"><span><span class="text-success">✓</span> err 0.00% rtt 3 upd 101</span></td>
+    </tr>
+<tr class="hover:bg-white/5 transition-colors">
+      <td class="px-4 py-2 font-medium">2</td>
+      <td class="px-4 py-2">500</td>
+      <td class="px-4 py-2"><span class="text-danger font-medium">FAIL</span></td>
+      <td class="px-4 py-2">89s</td>
+      <td class="px-4 py-2"><a href="run-2/ws-loadtest-1770038015496.html" class="text-primary hover:underline" target="_blank">HTML</a>
+         <a href="run-2/ws-loadtest-1770038015496.json" class="text-slate-400 hover:underline ml-1" target="_blank">JSON</a></td>
+      <td class="px-4 py-2 text-slate-300"><span><span class="text-success">✓</span> err 0.00% rtt 6 upd 101</span></td>
+      <td class="px-4 py-2 text-slate-300"><span><span class="text-danger">✗</span> err 0.00% rtt 366 upd 136</span></td>
+      <td class="px-4 py-2 text-slate-300"><span><span class="text-success">✓</span> err 0.00% rtt 6 upd 102</span></td>
+    </tr>
+<tr class="hover:bg-white/5 transition-colors">
+      <td class="px-4 py-2 font-medium">3</td>
+      <td class="px-4 py-2">700</td>
+      <td class="px-4 py-2"><span class="text-danger font-medium">FAIL</span></td>
+      <td class="px-4 py-2">99s</td>
+      <td class="px-4 py-2"><a href="run-3/ws-loadtest-1770038110237.html" class="text-primary hover:underline" target="_blank">HTML</a>
+         <a href="run-3/ws-loadtest-1770038110237.json" class="text-slate-400 hover:underline ml-1" target="_blank">JSON</a></td>
+      <td class="px-4 py-2 text-slate-300"><span><span class="text-success">✓</span> err 0.00% rtt 10 upd 102</span></td>
+      <td class="px-4 py-2 text-slate-300"><span><span class="text-danger">✗</span> err 0.00% rtt 36213 upd 719</span></td>
+      <td class="px-4 py-2 text-slate-300"><span><span class="text-success">✓</span> err 0.00% rtt 0 upd 0</span></td>
+    </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- Configuration -->
+        <section class="animate-fade-in" style="animation-delay: 0.2s">
+          <div class="flex items-center space-x-2 mb-4">
+            <h2 class="text-lg font-semibold text-white">Configuration</h2>
+            <div class="h-px flex-1 bg-gradient-to-r from-white/10 to-transparent"></div>
+          </div>
+          <div class="glass-panel rounded-xl p-5 space-y-4">
+            <div class="grid grid-cols-2 gap-4">
+              <div class="flex flex-col">
+                <span class="text-xs text-slate-500 uppercase">Scenario</span>
+                <span class="text-base text-slate-200 font-medium">scenarios/hero-defense/default.json</span>
+              </div>
+              <div class="flex flex-col">
+                <span class="text-xs text-slate-500 uppercase">Runs</span>
+                <span class="text-base text-slate-200 font-medium">3</span>
+              </div>
+              <div class="flex flex-col">
+                <span class="text-xs text-slate-500 uppercase">Room counts</span>
+                <span class="text-base text-slate-200 font-medium">300, 500, 700</span>
+              </div>
+              <div class="flex flex-col">
+                <span class="text-xs text-slate-500 uppercase">Startup timeout (s)</span>
+                <span class="text-base text-slate-200 font-medium">60</span>
+              </div>
+              <div class="flex flex-col">
+                <span class="text-xs text-slate-500 uppercase">Delay between runs (s)</span>
+                <span class="text-base text-slate-200 font-medium">5</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="animate-fade-in" style="animation-delay: 0.25s">
+          <div class="flex items-center space-x-2 mb-4">
+            <h2 class="text-lg font-semibold text-white">Raw JSON</h2>
+            <div class="h-px flex-1 bg-gradient-to-r from-white/10 to-transparent"></div>
+          </div>
+          <div class="glass-panel rounded-xl p-5">
+            <pre class="bg-slate-900/80 rounded-lg p-4 text-xs text-slate-300 overflow-x-auto max-h-80">{
+  &quot;timestamp&quot;: &quot;2026-02-02T13-06-19&quot;,
+  &quot;config&quot;: {
+    &quot;scenario&quot;: &quot;scenarios/hero-defense/default.json&quot;,
+    &quot;runs&quot;: 3,
+    &quot;roomCounts&quot;: [
+      300,
+      500,
+      700
+    ],
+    &quot;startupTimeout&quot;: 60,
+    &quot;delayBetweenRuns&quot;: 5
+  },
+  &quot;runs&quot;: [
+    {
+      &quot;runIndex&quot;: 1,
+      &quot;exitCode&quot;: 0,
+      &quot;success&quot;: true,
+      &quot;durationSeconds&quot;: 344,
+      &quot;reportJson&quot;: &quot;results/scalability-2026-02-02T13-06-19/run-1/ws-loadtest-1770037921970.json&quot;,
+      &quot;phases&quot;: [
+        {
+          &quot;name&quot;: &quot;preflight&quot;,
+          &quot;passed&quot;: true,
+          &quot;errorRate&quot;: 0,
+          &quot;disconnectRate&quot;: 0,
+          &quot;rttP95&quot;: 5,
+          &quot;updateP95&quot;: 101
+        },
+        {
+          &quot;name&quot;: &quot;steady&quot;,
+          &quot;passed&quot;: true,
+          &quot;errorRate&quot;: 0,
+          &quot;disconnectRate&quot;: 0,
+          &quot;rttP95&quot;: 11,
+          &quot;updateP95&quot;: 104
+        },
+        {
+          &quot;name&quot;: &quot;postflight&quot;,
+          &quot;passed&quot;: true,
+          &quot;errorRate&quot;: 0,
+          &quot;disconnectRate&quot;: 0,
+          &quot;rttP95&quot;: 3,
+          &quot;updateP95&quot;: 101
+        }
+      ],
+      &quot;rooms&quot;: 300
+    },
+    {
+      &quot;runIndex&quot;: 2,
+      &quot;exitCode&quot;: 0,
+      &quot;success&quot;: false,
+      &quot;durationSeconds&quot;: 89,
+      &quot;reportJson&quot;: &quot;results/scalability-2026-02-02T13-06-19/run-2/ws-loadtest-1770038015496.json&quot;,
+      &quot;phases&quot;: [
+        {
+          &quot;name&quot;: &quot;preflight&quot;,
+          &quot;passed&quot;: true,
+          &quot;errorRate&quot;: 0,
+          &quot;disconnectRate&quot;: 0,
+          &quot;rttP95&quot;: 6,
+          &quot;updateP95&quot;: 101
+        },
+        {
+          &quot;name&quot;: &quot;steady&quot;,
+          &quot;passed&quot;: false,
+          &quot;errorRate&quot;: 0,
+          &quot;disconnectRate&quot;: 0,
+          &quot;rttP95&quot;: 366,
+          &quot;updateP95&quot;: 136
+        },
+        {
+          &quot;name&quot;: &quot;postflight&quot;,
+          &quot;passed&quot;: true,
+          &quot;errorRate&quot;: 0,
+          &quot;disconnectRate&quot;: 0,
+          &quot;rttP95&quot;: 6,
+          &quot;updateP95&quot;: 102
+        }
+      ],
+      &quot;rooms&quot;: 500
+    },
+    {
+      &quot;runIndex&quot;: 3,
+      &quot;exitCode&quot;: 0,
+      &quot;success&quot;: false,
+      &quot;durationSeconds&quot;: 99,
+      &quot;reportJson&quot;: &quot;results/scalability-2026-02-02T13-06-19/run-3/ws-loadtest-1770038110237.json&quot;,
+      &quot;phases&quot;: [
+        {
+          &quot;name&quot;: &quot;preflight&quot;,
+          &quot;passed&quot;: true,
+          &quot;errorRate&quot;: 0,
+          &quot;disconnectRate&quot;: 0,
+          &quot;rttP95&quot;: 10,
+          &quot;updateP95&quot;: 102
+        },
+        {
+          &quot;name&quot;: &quot;steady&quot;,
+          &quot;passed&quot;: false,
+          &quot;errorRate&quot;: 0,
+          &quot;disconnectRate&quot;: 0,
+          &quot;rttP95&quot;: 36213,
+          &quot;updateP95&quot;: 719
+        },
+        {
+          &quot;name&quot;: &quot;postflight&quot;,
+          &quot;passed&quot;: true,
+          &quot;errorRate&quot;: 0,
+          &quot;disconnectRate&quot;: 0,
+          &quot;rttP95&quot;: 0,
+          &quot;updateP95&quot;: 0
+        }
+      ],
+      &quot;rooms&quot;: 700
+    }
+  ],
+  &quot;summary&quot;: {
+    &quot;totalRuns&quot;: 3,
+    &quot;passed&quot;: 1,
+    &quot;failed&quot;: 2,
+    &quot;passRate&quot;: 0.3333333333333333
+  }
+}</pre>
+          </div>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>
