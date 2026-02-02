@@ -1,10 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Auto-adjust system parameters for optimal WebSocket performance
+# Auto-adjust system parameters for optimal WebSocket performance (Linux only).
+# macOS uses BSD TCP stack and does not have /proc or these sysctl names; adjustments are skipped.
 check_and_adjust_system_params() {
+  case "$(uname -s)" in
+    Linux)
+      _check_and_adjust_linux
+      ;;
+    Darwin)
+      echo "macOS detected: Linux TCP tuning (tcp_max_syn_backlog, somaxconn, etc.) not applicable; using defaults."
+      ;;
+    *)
+      echo "OS $(uname -s): Linux TCP tuning not applicable; using defaults."
+      ;;
+  esac
+}
+
+_check_and_adjust_linux() {
   local adjusted=false
-  
+
   # Check TCP SYN backlog (recommended: 4096 for high connection count)
   local current_syn_backlog=$(cat /proc/sys/net/ipv4/tcp_max_syn_backlog 2>/dev/null || echo "0")
   if [ "$current_syn_backlog" -lt 4096 ]; then
@@ -12,7 +27,7 @@ check_and_adjust_system_params() {
     sysctl -w net.ipv4.tcp_max_syn_backlog=4096 >/dev/null 2>&1 || echo "  (failed, need sudo)"
     adjusted=true
   fi
-  
+
   # Check somaxconn (listen backlog)
   local current_somaxconn=$(cat /proc/sys/net/core/somaxconn 2>/dev/null || echo "0")
   if [ "$current_somaxconn" -lt 4096 ]; then
@@ -20,7 +35,7 @@ check_and_adjust_system_params() {
     sysctl -w net.core.somaxconn=4096 >/dev/null 2>&1 || echo "  (failed, need sudo)"
     adjusted=true
   fi
-  
+
   # Enable TCP TIME_WAIT reuse (faster cleanup between tests)
   local current_tw_reuse=$(cat /proc/sys/net/ipv4/tcp_tw_reuse 2>/dev/null || echo "0")
   if [ "$current_tw_reuse" != "1" ]; then
@@ -28,7 +43,7 @@ check_and_adjust_system_params() {
     sysctl -w net.ipv4.tcp_tw_reuse=1 >/dev/null 2>&1 || echo "  (failed, need sudo)"
     adjusted=true
   fi
-  
+
   # Reduce FIN timeout (faster cleanup, default 60s -> 30s)
   local current_fin_timeout=$(cat /proc/sys/net/ipv4/tcp_fin_timeout 2>/dev/null || echo "60")
   if [ "$current_fin_timeout" -gt 30 ]; then
@@ -36,7 +51,7 @@ check_and_adjust_system_params() {
     sysctl -w net.ipv4.tcp_fin_timeout=30 >/dev/null 2>&1 || echo "  (failed, need sudo)"
     adjusted=true
   fi
-  
+
   if [ "$adjusted" = false ]; then
     echo "System parameters already optimal"
   fi
