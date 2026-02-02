@@ -31,7 +31,7 @@ Notes:
 - To run the same scenario N times, use: `bash scripts/run-scalability-test.sh --no-scale-by-rooms --runs <N>`.
 - To control client-side worker processes, use: `--workers <N>` (default: CPU cores).
 
-Options: `--runs <N>`, `--no-scale-by-rooms`, `--room-counts "N1 N2 N3"` (scale by room count), `--workers <N>`, `--scenario <path>`, `--output-dir <dir>`, `--startup-timeout <s>`, `--delay <s>` (seconds between runs). Output is written to `results/scalability-<timestamp>/` with a `summary.json`, per-run logs/reports, and a **summary.html**. The summary report is generated as a **static HTML** (no runtime Vue/JS required): the template is `scripts/scalability_summary_template.html` and `scripts/render-summary-html.js` renders `summary.json` into the final HTML, so you can edit the template and re-run the script to change the report layout.
+Options: `--runs <N>`, `--no-scale-by-rooms`, `--room-counts "N1 N2 N3"` (scale by room count), `--workers <N>`, `--scenario <path>`, `--output-dir <dir>`, `--startup-timeout <s>`, `--delay <s>` (seconds between runs), `--profile` (enable transport profiling). Output is written to `results/scalability-<timestamp>/` with a `summary.json`, per-run logs/reports, and a **summary.html**. The summary report is generated as a **static HTML** (no runtime Vue/JS required): the template is `scripts/scalability_summary_template.html` and `scripts/render-summary-html.js` renders `summary.json` into the final HTML, so you can edit the template and re-run the script to change the report layout.
 
 ## CLI
 
@@ -75,6 +75,16 @@ LOG_LEVEL=error swift run GameServer
 ```
 
 Optional: `NO_COLOR=1` for plain text logs (e.g. when redirecting to a file).
+
+## Transport profiling (server-side)
+
+When `--profile` is used with `run-ws-loadtest.sh` or `run-scalability-test.sh`, the GameServer writes **JSONL** to `<output-dir>/transport-profile.jsonl` every second. Each line contains:
+
+- **counters**: actions, stateUpdates, messagesReceived, bytesReceived, disconnects, errors, connectedSessions, joinedSessions
+- **lag_ms**: actor ticker drift (expected 1000ms interval vs actual)
+- **decode_ms**, **handle_ms**, **encode_ms**, **send_ms**: latency percentiles (p50/p95/p99/max) when samples exist (1% sampling to minimize overhead)
+
+Environment variables (optional): `TRANSPORT_PROFILE_JSONL_PATH`, `TRANSPORT_PROFILE_INTERVAL_MS` (default 1000), `TRANSPORT_PROFILE_SAMPLE_RATE` (default 0.01), `TRANSPORT_PROFILE_MAX_SAMPLES_PER_INTERVAL` (default 500).
 
 ## Notes
 

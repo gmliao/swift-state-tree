@@ -82,6 +82,7 @@ let package = Package(
                 "SwiftStateTree",
                 "SwiftStateTreeMessagePack",
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "Atomics", package: "swift-atomics"),
             ],
             path: "Sources/SwiftStateTreeTransport"
         ),

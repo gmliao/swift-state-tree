@@ -18,6 +18,7 @@ WORKERS=""
 OUTPUT_BASE_DIR="results"
 STARTUP_TIMEOUT=60
 DELAY_BETWEEN_RUNS=5
+ENABLE_PROFILING=false
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -69,6 +70,10 @@ while [[ $# -gt 0 ]]; do
       DELAY_BETWEEN_RUNS="$2"
       shift 2
       ;;
+    --profile)
+      ENABLE_PROFILING=true
+      shift
+      ;;
     --help|-h)
       echo "Usage: $0 [options]"
       echo ""
@@ -90,6 +95,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --output-dir <dir>        Base output dir; creates scalability-<timestamp>/run-1, ... (default: $OUTPUT_BASE_DIR)"
       echo "  --startup-timeout <s>     Server startup timeout per run (default: $STARTUP_TIMEOUT)"
       echo "  --delay <s>               Seconds between runs (default: $DELAY_BETWEEN_RUNS)"
+      echo "  --profile                 Enable transport profiling (JSONL to monitoring/transport-profile.jsonl)"
       echo ""
       echo "Examples:"
       echo "  # Same scenario 5 times"
@@ -215,11 +221,16 @@ for ((i=0; i<TOTAL_RUNS; i++)); do
   if [ -n "$WORKERS" ]; then
     WORKERS_ARGS+=(--workers "$WORKERS")
   fi
+  PROFILE_ARGS=()
+  if [ "$ENABLE_PROFILING" = true ]; then
+    PROFILE_ARGS+=(--profile)
+  fi
   bash "$SCRIPT_DIR/run-ws-loadtest.sh" \
     --scenario "$SCENARIO_TO_USE" \
     --output-dir "$RUN_OUTPUT_DIR" \
     --startup-timeout "$STARTUP_TIMEOUT" \
     "${WORKERS_ARGS[@]}" \
+    "${PROFILE_ARGS[@]}" \
     2>&1 | tee "$SUITE_DIR/run-${RUN_INDEX}.log"
   EXIT_CODE=${PIPESTATUS[0]}
   END_TIME=$(date +%s)

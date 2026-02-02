@@ -5,6 +5,7 @@ SCENARIO="scenarios/hero-defense/default.json"
 WORKERS=""
 OUTPUT_DIR="results"
 STARTUP_TIMEOUT=60
+ENABLE_PROFILING=false
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -24,8 +25,12 @@ while [[ $# -gt 0 ]]; do
       STARTUP_TIMEOUT="$2"
       shift 2
       ;;
+    --profile)
+      ENABLE_PROFILING=true
+      shift
+      ;;
     --help|-h)
-      echo "Usage: $0 [--scenario <path>] [--workers <N>] [--output-dir <dir>] [--startup-timeout <seconds>]"
+      echo "Usage: $0 [--scenario <path>] [--workers <N>] [--output-dir <dir>] [--startup-timeout <seconds>] [--profile]"
       exit 0
       ;;
     *)
@@ -69,6 +74,14 @@ export NO_COLOR=1
 export REEVALUATION_RECORDS_DIR="/tmp/ws-loadtest-reevaluation-records"
 rm -rf "$REEVALUATION_RECORDS_DIR" >/dev/null 2>&1 || true
 mkdir -p "$REEVALUATION_RECORDS_DIR" >/dev/null 2>&1 || true
+
+# Transport profiling: when --profile is used, server writes JSONL (per-run when output-dir is used)
+if [ "$ENABLE_PROFILING" = true ]; then
+  export TRANSPORT_PROFILE_JSONL_PATH="$ROOT_DIR/$OUTPUT_DIR/transport-profile.jsonl"
+  mkdir -p "$(dirname "$TRANSPORT_PROFILE_JSONL_PATH")" 2>/dev/null || true
+  rm -f "$TRANSPORT_PROFILE_JSONL_PATH" 2>/dev/null || true
+  echo "Transport profiling enabled: $TRANSPORT_PROFILE_JSONL_PATH"
+fi
 
 echo "Starting GameServer (release, LOG_LEVEL=error, ENABLE_REEVALUATION=false; log file: /tmp/ws-loadtest-gameserver.log)..."
 cd "$GAMEDEMO_DIR"

@@ -123,6 +123,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         stateUpdateEncoder.encoding == .opcodeMessagePack
     }
 
+    /// Optional transport profiler (when TRANSPORT_PROFILE_JSONL_PATH is set). Low-overhead: counters use atomics; latency uses sampling.
+    private let profiler: TransportProfilingActor?
+    private let profilerCounters: TransportProfilerCounters?
+    /// Sample 1 in N latency measurements to reduce overhead. Used only when profiler is set.
+    private var latencySampleCounter: UInt64 = 0
+
     /// Closure to create PlayerSession for guest users (when JWT validation is enabled but no token is provided).
     /// Only used when JWT validation is enabled, allowGuestMode is true, and no JWT token is provided.
     /// Default implementation uses the sessionID as playerID for deterministic guest identities.
@@ -220,6 +226,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         self.logger = resolvedLogger
         if let createGuestSession = createGuestSession {
             self.createGuestSession = createGuestSession
+        }
+        if let config = TransportProfilingConfig.fromEnvironment(), config.isEnabled {
+            let p = TransportProfilingActor.shared(config: config)
+            self.profiler = p
+            self.profilerCounters = p.getCounters()
+        } else {
+            self.profiler = nil
+            self.profilerCounters = nil
         }
         resolvedLogger.info("Transport encoding configured", metadata: [
             "landID": .string(landID),
@@ -327,6 +341,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     private func handleDisconnectQueued(sessionID: SessionID, clientID: ClientID) async {
+        profilerCounters?.incrementDisconnects()
         // Remove from connected sessions
         sessionToClient.removeValue(forKey: sessionID)
         // Clear JWT payload information
@@ -570,6 +585,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     public func onMessage(_ message: Data, from sessionID: SessionID) async {
         let messageSize = message.count
+        profilerCounters?.incrementMessagesReceived()
+        profilerCounters?.addBytesReceived(Int64(messageSize))
 
         // Only compute logging metadata if debug logging is enabled
         if logger.logLevel <= .debug {
@@ -593,7 +610,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Try to detect if message is in opcode array format
             // If it's an array starting with 101-106, use opcode decoder
             let transportMsg: TransportMessage
-            
+            let decodeStart = ContinuousClock.now
+
             // For MessagePack, the codec now handles both opcode array and map formats internally
             // No need for special conversion logic here
             if codec.encoding == .messagepack {
@@ -609,6 +627,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             } else {
                 // Standard JSON object format
                 transportMsg = try codec.decode(TransportMessage.self, from: message)
+            }
+
+            if let profiler {
+                let decodeElapsed = ContinuousClock.now - decodeStart
+                let decodeMs = Double(decodeElapsed.components.seconds) * 1000 + Double(decodeElapsed.components.attoseconds) / 1e15
+                latencySampleCounter += 1
+                if latencySampleCounter % 100 == 0 {
+                    Task { await profiler.recordDecode(durationMs: decodeMs, bytes: messageSize) }
+                }
             }
 
             switch transportMsg.kind {
@@ -780,7 +807,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                                 )
                                 let errorResponse = TransportMessage.error(errorPayload)
                                 if let errorData = try? messageEncoder.encode(errorResponse) {
-                                    try? await transport.send(errorData, to: .session(sessionID))
+                                    await transport.send(errorData, to: .session(sessionID))
+                                    await Task.yield()
                                 }
                             }
                         } else if case .fromServer = event {
@@ -796,6 +824,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 }
             }
         } catch {
+            profilerCounters?.incrementErrors()
             // Compute messagePreview for error logging (only when error occurs)
             let messagePreview = String(data: message, encoding: .utf8) ?? "<non-UTF8 payload>"
 
@@ -817,7 +846,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 )
                 let errorResponse = TransportMessage.error(errorPayload)
                 let errorData = try messageEncoder.encode(errorResponse)
-                try await transport.send(errorData, to: .session(sessionID))
+                await transport.send(errorData, to: .session(sessionID))
+                await Task.yield()
             } catch {
                 logger.error("❌ Failed to send decode error to client", metadata: [
                     "sessionID": .string(sessionID.rawValue),
@@ -928,9 +958,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     }
                     let sessionIDs = sessionToPlayer.filter({ $0.value == playerID }).map({ $0.key })
                     for sessionID in sessionIDs {
-                        try await transport.send(data, to: .session(sessionID))
+                        await transport.send(data, to: .session(sessionID))
                     }
                 }
+                await Task.yield()
                 return
             }
 
@@ -963,7 +994,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 ])
             }
 
-            try await transport.send(data, to: transportTarget)
+            await transport.send(data, to: transportTarget)
+            await Task.yield()
         } catch {
             logger.error("❌ Failed to send event", metadata: [
                 "eventType": .string(event.type),
@@ -1179,9 +1211,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             guard case .array(let bodyArray) = body else { continue }
             let frame: MessagePackValue = .array([.int(opcodeEvent)] + bodyArray)
             if let data = try? pack(frame) {
-                try? await transport.send(data, to: .session(sessionID))
+                await transport.send(data, to: .session(sessionID))
             }
         }
+        await Task.yield()
     }
 
     private func sendEventBody(_ body: MessagePackValue, to target: SwiftStateTree.EventTarget) async {
@@ -1191,25 +1224,26 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
         switch target {
         case .all:
-            try? await transport.send(data, to: .broadcast)
+            await transport.send(data, to: .broadcast)
         case .player(let playerID):
-            try? await transport.send(data, to: .player(playerID))
+            await transport.send(data, to: .player(playerID))
         case .client(let clientID):
             if let sessionID = sessionID(for: clientID) {
-                try? await transport.send(data, to: .session(sessionID))
+                await transport.send(data, to: .session(sessionID))
             } else {
                 logger.warning("No session found for client: \(clientID.rawValue)")
             }
         case .session(let sessionID):
-            try? await transport.send(data, to: .session(sessionID))
+            await transport.send(data, to: .session(sessionID))
         case .players(let playerIDs):
             for playerID in playerIDs {
                 let sessionIDs = sessionToPlayer.filter({ $0.value == playerID }).map({ $0.key })
                 for sessionID in sessionIDs {
-                    try? await transport.send(data, to: .session(sessionID))
+                    await transport.send(data, to: .session(sessionID))
                 }
             }
         }
+        await Task.yield()
     }
 
     /// Trigger immediate state synchronization
@@ -1224,6 +1258,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// - Cache per-player snapshots if state hasn't changed
     /// - Consider incremental sync for large state trees
     public func syncNow() async {
+        profilerCounters?.setSessionCounts(connected: connectedSessions.count, joined: joinedSessions.count)
         // Early return if no players connected (no one to sync to)
         // This avoids unnecessary snapshot extraction when no players are online
         guard !sessionToPlayer.isEmpty else {
@@ -1334,8 +1369,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                             if initialSyncingPlayers.contains(playerID) {
                                 continue
                             }
-                            try await transport.send(dataToSend, to: .session(sessionID))
+                            profilerCounters?.incrementStateUpdates()
+                            Task { await transport.send(dataToSend, to: .session(sessionID)) }
                         }
+                        await Task.yield()
                     }
                 }
 
@@ -1644,15 +1681,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         if initialSyncingPlayers.contains(playerID) {
                             continue
                         }
-                        do {
-                            try await transport.send(dataToSend, to: .session(sessionID))
-                        } catch {
-                            logger.warning("Failed to send broadcast update to session", metadata: [
-                                "sessionID": .string(sessionID.rawValue),
-                                "error": .string("\(error)")
-                            ])
+                        profilerCounters?.incrementStateUpdates()
+                        let sendStart = ContinuousClock.now
+                        await transport.send(dataToSend, to: .session(sessionID))
+                        if let profiler {
+                            let sendElapsed = ContinuousClock.now - sendStart
+                            let sendMs = Double(sendElapsed.components.seconds) * 1000 + Double(sendElapsed.components.attoseconds) / 1e15
+                            latencySampleCounter += 1
+                            if latencySampleCounter % 100 == 0 {
+                                Task { await profiler.recordSend(durationMs: sendMs) }
+                            }
                         }
                     }
+                    await Task.yield()
                 }
             } else {
                 // Send to all connected players
@@ -1684,7 +1725,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                             ])
                         }
 
-                        try await transport.send(updateData, to: .session(sessionID))
+                        profilerCounters?.incrementStateUpdates()
+                        let sendStart = ContinuousClock.now
+                        await transport.send(updateData, to: .session(sessionID))
+                        if let profiler {
+                            let sendElapsed = ContinuousClock.now - sendStart
+                            let sendMs = Double(sendElapsed.components.seconds) * 1000 + Double(sendElapsed.components.attoseconds) / 1e15
+                            latencySampleCounter += 1
+                            if latencySampleCounter % 100 == 0 {
+                                Task { await profiler.recordSend(durationMs: sendMs) }
+                            }
+                        }
                     } catch {
                         // Log error but continue sending to other players
                         logger.warning("Failed to send broadcast update to session", metadata: [
@@ -1693,6 +1744,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         ])
                     }
                 }
+                await Task.yield()
             }
 
             if useStateUpdateWithEvents, hasTargetedEventBodies {
@@ -1871,7 +1923,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private func encodeUpdatesSerially(
         _ pendingUpdates: [PendingSyncUpdate]
     ) -> [EncodedSyncUpdate] {
-        pendingUpdates.map { pending in
+        let encodeStart = ContinuousClock.now
+        let result = pendingUpdates.map { pending in
             do {
                 let data = try stateUpdateEncoder.encode(
                     update: pending.update,
@@ -1898,6 +1951,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 )
             }
         }
+        if let profiler, !pendingUpdates.isEmpty {
+            let encodeElapsed = ContinuousClock.now - encodeStart
+            let encodeMs = Double(encodeElapsed.components.seconds) * 1000 + Double(encodeElapsed.components.attoseconds) / 1e15
+            latencySampleCounter += 1
+            if latencySampleCounter % 100 == 0 {
+                Task { await profiler.recordEncode(durationMs: encodeMs) }
+            }
+        }
+        return result
     }
 
     /// Encode updates in parallel using TaskGroup
@@ -1909,6 +1971,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         guard !pendingUpdates.isEmpty else {
             return []
         }
+        let encodeStart = ContinuousClock.now
         // Capture encoder once before parallel execution
         let stateUpdateEncoder = self.stateUpdateEncoder
         let landID = self.landID
@@ -1916,7 +1979,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let workerCount = min(maxConcurrency, pendingUpdates.count)
         let chunkSize = (pendingUpdates.count + workerCount - 1) / workerCount
 
-        return await withTaskGroup(of: [EncodedSyncUpdate].self, returning: [EncodedSyncUpdate].self) { group in
+        let result = await withTaskGroup(of: [EncodedSyncUpdate].self, returning: [EncodedSyncUpdate].self) { group in
             let encodeUpdate: @Sendable (PendingSyncUpdate) -> EncodedSyncUpdate = { pending in
                 do {
                     // Reuse the same encoder instance for all encoders
@@ -1962,6 +2025,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
             return results
         }
+        if let profiler {
+            let encodeElapsed = ContinuousClock.now - encodeStart
+            let encodeMs = Double(encodeElapsed.components.seconds) * 1000 + Double(encodeElapsed.components.attoseconds) / 1e15
+            latencySampleCounter += 1
+            if latencySampleCounter % 100 == 0 {
+                Task { await profiler.recordEncode(durationMs: encodeMs) }
+            }
+        }
+        return result
     }
 
     /// Send encoded update to transport.
@@ -2020,14 +2092,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
         }
 
-        do {
-            try await transport.send(dataToSend, to: .session(sessionID))
-        } catch {
-            logger.error("❌ Failed to sync state", metadata: [
-                "playerID": .string(playerID.rawValue),
-                "sessionID": .string(sessionID.rawValue),
-                "error": .string("\(error)")
-            ])
+        profilerCounters?.incrementStateUpdates()
+        let sendStart = ContinuousClock.now
+        await transport.send(dataToSend, to: .session(sessionID))
+        await Task.yield()
+        if let profiler {
+            let sendElapsed = ContinuousClock.now - sendStart
+            let sendMs = Double(sendElapsed.components.seconds) * 1000 + Double(sendElapsed.components.attoseconds) / 1e15
+            latencySampleCounter += 1
+            if latencySampleCounter % 100 == 0 {
+                Task { await profiler.recordSend(durationMs: sendMs) }
+            }
         }
     }
 
@@ -2115,7 +2190,18 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 ])
             }
 
-            try await transport.send(updateData, to: .session(sessionID))
+            profilerCounters?.incrementStateUpdates()
+            let sendStart = ContinuousClock.now
+            await transport.send(updateData, to: .session(sessionID))
+            await Task.yield()
+            if let profiler {
+                let sendElapsed = ContinuousClock.now - sendStart
+                let sendMs = Double(sendElapsed.components.seconds) * 1000 + Double(sendElapsed.components.attoseconds) / 1e15
+                latencySampleCounter += 1
+                if latencySampleCounter % 100 == 0 {
+                    Task { await profiler.recordSend(durationMs: sendMs) }
+                }
+            }
         } catch {
             logger.error("❌ Failed to sync state", metadata: [
                 "playerID": .string(playerID.rawValue),
@@ -2176,8 +2262,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
 
             // Send encoded update (OpArray format)
-            try await transport.send(updateData, to: .session(sessionID))
-            
+            profilerCounters?.incrementStateUpdates()
+            let sendStart = ContinuousClock.now
+            await transport.send(updateData, to: .session(sessionID))
+            await Task.yield()
+            if let profiler {
+                let sendElapsed = ContinuousClock.now - sendStart
+                let sendMs = Double(sendElapsed.components.seconds) * 1000 + Double(sendElapsed.components.attoseconds) / 1e15
+                latencySampleCounter += 1
+                if latencySampleCounter % 100 == 0 {
+                    Task { await profiler.recordSend(durationMs: sendMs) }
+                }
+            }
+
             // Mark as synced so subsequent updates use diffs
             syncEngine.markFirstSyncReceived(for: playerID)
             
@@ -2209,6 +2306,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ) async {
         do {
             let typeIdentifier = envelope.typeIdentifier
+            let handleStart = ContinuousClock.now
 
             let response = try await keeper.handleActionEnvelope(
                 envelope,
@@ -2216,6 +2314,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 clientID: clientID,
                 sessionID: sessionID
             )
+
+            profilerCounters?.incrementActions()
+            if let profiler {
+                let handleElapsed = ContinuousClock.now - handleStart
+                let handleMs = Double(handleElapsed.components.seconds) * 1000 + Double(handleElapsed.components.attoseconds) / 1e15
+                latencySampleCounter += 1
+                if latencySampleCounter % 100 == 0 {
+                    Task { await profiler.recordHandle(durationMs: handleMs) }
+                }
+            }
 
             // Send action response
             let actionResponse = TransportMessage.actionResponse(
@@ -2245,9 +2353,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 ])
             }
 
-            try await transport.send(responseData, to: .session(sessionID))
+            await transport.send(responseData, to: .session(sessionID))
+            await Task.yield()
 
         } catch {
+            profilerCounters?.incrementErrors()
             logger.error("❌ Failed to handle action", metadata: [
                 "requestID": .string(requestID),
                 "actionType": .string(envelope.typeIdentifier),
@@ -2284,7 +2394,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 )
                 let errorResponse = TransportMessage.error(errorPayload)
                 let errorData = try messageEncoder.encode(errorResponse)
-                try await transport.send(errorData, to: .session(sessionID))
+                await transport.send(errorData, to: .session(sessionID))
+                await Task.yield()
             } catch {
                 logger.error("❌ Failed to send error response", metadata: [
                     "requestID": .string(requestID),
@@ -2472,7 +2583,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let errorPayload = ErrorPayload(code: code, message: message, details: errorDetails)
             let errorResponse = TransportMessage.error(errorPayload)
             let errorData = try messageEncoder.encode(errorResponse)
-            try await transport.send(errorData, to: .session(sessionID))
+            await transport.send(errorData, to: .session(sessionID))
+            await Task.yield()
 
             if logger.logLevel <= .debug {
                 logger.debug("📤 Sent join error", metadata: [
@@ -2511,7 +2623,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 reason: reason
             )
             let responseData = try messageEncoder.encode(response)
-            try await transport.send(responseData, to: .session(sessionID))
+            await transport.send(responseData, to: .session(sessionID))
+            await Task.yield()
 
             if logger.logLevel <= .debug {
                 logger.debug("📤 Sent join response", metadata: [
