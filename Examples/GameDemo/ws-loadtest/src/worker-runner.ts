@@ -33,14 +33,16 @@ async function runWorker(config: StartConfig): Promise<void> {
     const sessions: WorkerSession[] = [];
 
     for (let i = 0; i < config.connectionCount; i += 1) {
+        const playerId = `${config.workerIndex}-${i}`;
         const landInstanceId = `${config.phaseName}-${config.workerIndex}-${i}`;
         const joinMetadata = config.joinPayloadTemplate
-            ? renderTemplateObject(config.joinPayloadTemplate, { playerId: `${config.workerIndex}-${i}` })
+            ? renderTemplateObject(config.joinPayloadTemplate, { playerId })
             : undefined;
         const client = new WorkerClient({
             serverUrl: config.serverUrl,
             landType: config.landType,
             landInstanceId,
+            playerId,
             actions: config.actions,
             joinMetadata
         });
@@ -59,7 +61,7 @@ async function runWorker(config: StartConfig): Promise<void> {
             }
             const action = selectAction(config.actions, actionCounter++);
             const payload = renderTemplateObject(action.payloadTemplate ?? {}, {
-                playerId: String(actionCounter)
+                playerId: client.getPlayerId()
             });
             client.sendAction(`action-${process.pid}-${actionCounter}`, action.name, payload);
         }
@@ -88,21 +90,40 @@ async function runWorker(config: StartConfig): Promise<void> {
 }
 
 function aggregateSessions(sessions: WorkerSession[]) {
-    const report = {
-        rttMs: [] as number[],
-        stateUpdateIntervalsMs: [] as number[],
-        errorCount: 0,
-        disconnectCount: 0,
-        actionsSent: 0
-    };
+    // Do NOT use push(...arr) - with large loads, spreading can overflow the JS call stack.
+    let totalRtt = 0;
+    let totalUpd = 0;
+    let errorCount = 0;
+    let disconnectCount = 0;
+    let actionsSent = 0;
 
     for (const session of sessions) {
-        report.rttMs.push(...session.metrics.rttMs);
-        report.stateUpdateIntervalsMs.push(...session.metrics.stateUpdateIntervalsMs);
-        report.errorCount += session.metrics.errorCount;
-        report.disconnectCount += session.metrics.disconnectCount;
-        report.actionsSent += session.metrics.actionsSent;
+        totalRtt += session.metrics.rttMs.length;
+        totalUpd += session.metrics.stateUpdateIntervalsMs.length;
+        errorCount += session.metrics.errorCount;
+        disconnectCount += session.metrics.disconnectCount;
+        actionsSent += session.metrics.actionsSent;
     }
 
-    return report;
+    const rttMs: number[] = new Array(totalRtt);
+    const stateUpdateIntervalsMs: number[] = new Array(totalUpd);
+    let rttIndex = 0;
+    let updIndex = 0;
+
+    for (const session of sessions) {
+        for (let i = 0; i < session.metrics.rttMs.length; i += 1) {
+            rttMs[rttIndex++] = session.metrics.rttMs[i];
+        }
+        for (let i = 0; i < session.metrics.stateUpdateIntervalsMs.length; i += 1) {
+            stateUpdateIntervalsMs[updIndex++] = session.metrics.stateUpdateIntervalsMs[i];
+        }
+    }
+
+    return {
+        rttMs,
+        stateUpdateIntervalsMs,
+        errorCount,
+        disconnectCount,
+        actionsSent
+    };
 }
