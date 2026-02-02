@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WS Load Test Report – hero-defense-baseline</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = { theme: { extend: { fontFamily: { sans: ["Inter", "sans-serif"] }, colors: { primary: "#3b82f6", success: "#10b981", danger: "#ef4444", surface: "#1e293b", background: "#0f172a" } } } };
+  </script>
+  <style>
+    body { font-family: Inter, sans-serif; }
+    .glass-panel { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.08); }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+  </style>
+</head>
+<body class="bg-[#0f172a] text-slate-100 min-h-screen antialiased">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <header class="glass-panel rounded-xl px-6 py-4 mb-8 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-violet-500 flex items-center justify-center text-white font-bold">WS</div>
+        <h1 class="text-xl font-bold text-white">WS Load Test Report</h1>
+      </div>
+      <div class="text-sm text-slate-400">hero-defense-baseline</div>
+    </header>
+    
+    <section class="glass-panel rounded-xl overflow-hidden mb-8">
+      <div class="px-6 py-4 border-b border-white/10 bg-white/[0.02]">
+        <h2 class="text-lg font-semibold text-white">System Metrics (Client)</h2>
+      </div>
+      <div class="p-6 grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div class="text-center">
+          <div class="text-xs text-slate-500 mb-1">Avg CPU</div>
+          <div class="text-2xl font-bold text-blue-400">407.8%</div>
+        </div>
+        <div class="text-center">
+          <div class="text-xs text-slate-500 mb-1">Peak CPU</div>
+          <div class="text-2xl font-bold text-rose-400">547.0%</div>
+        </div>
+        <div class="text-center">
+          <div class="text-xs text-slate-500 mb-1">Avg Memory</div>
+          <div class="text-2xl font-bold text-emerald-400">177.6 MB</div>
+        </div>
+        <div class="text-center">
+          <div class="text-xs text-slate-500 mb-1">Peak Memory</div>
+          <div class="text-2xl font-bold text-amber-400">205.3 MB</div>
+        </div>
+      </div>
+      <div class="p-6 pt-0 grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div class="glass-panel rounded-lg p-4">
+          <h3 class="text-sm font-semibold text-slate-300 mb-4">CPU Usage (%)</h3>
+          <div style="height: 250px; position: relative;">
+            <canvas id="cpuChart"></canvas>
+          </div>
+        </div>
+        <div class="glass-panel rounded-lg p-4">
+          <h3 class="text-sm font-semibold text-slate-300 mb-4">Memory (MB)</h3>
+          <div style="height: 250px; position: relative;">
+            <canvas id="memoryChart"></canvas>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section class="glass-panel rounded-xl overflow-hidden mb-8">
+      <div class="px-6 py-4 border-b border-white/10 bg-white/[0.02]">
+        <h2 class="text-lg font-semibold text-white">Phases</h2>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="border-b border-white/10 bg-white/[0.02] text-slate-400 text-left">
+              <th class="px-4 py-3 font-semibold">Phase</th>
+              <th class="px-4 py-3 font-semibold">Connections</th>
+              <th class="px-4 py-3 font-semibold">Actions Sent</th>
+              <th class="px-4 py-3 font-semibold">Error Rate</th>
+              <th class="px-4 py-3 font-semibold">Disconnect Rate</th>
+              <th class="px-4 py-3 font-semibold">RTT p95</th>
+              <th class="px-4 py-3 font-semibold">RTT p99</th>
+              <th class="px-4 py-3 font-semibold">Update p95</th>
+              <th class="px-4 py-3 font-semibold">Update p99</th>
+              <th class="px-4 py-3 font-semibold">Status</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-white/5">
+                  <tr class="hover:bg-white/5 transition-colors">
+                    <td class="px-4 py-2 font-medium text-slate-200">preflight</td>
+                    <td class="px-4 py-2 text-slate-300">600</td>
+                    <td class="px-4 py-2 text-slate-300">5266</td>
+                    <td class="px-4 py-2 text-slate-300">0.0000</td>
+                    <td class="px-4 py-2 text-slate-300">0.0000</td>
+                    <td class="px-4 py-2 text-slate-300">5.00</td>
+                    <td class="px-4 py-2 text-slate-300">6.00</td>
+                    <td class="px-4 py-2 text-slate-300">101.00</td>
+                    <td class="px-4 py-2 text-slate-300">102.00</td>
+                    <td class="px-4 py-2"><span class="text-green-500 font-medium">PASS</span></td>
+                  </tr>
+                  <tr class="hover:bg-white/5 transition-colors">
+                    <td class="px-4 py-2 font-medium text-slate-200">steady</td>
+                    <td class="px-4 py-2 text-slate-300">1500</td>
+                    <td class="px-4 py-2 text-slate-300">88058</td>
+                    <td class="px-4 py-2 text-slate-300">0.0000</td>
+                    <td class="px-4 py-2 text-slate-300">0.0000</td>
+                    <td class="px-4 py-2 text-slate-300">11.00</td>
+                    <td class="px-4 py-2 text-slate-300">23.00</td>
+                    <td class="px-4 py-2 text-slate-300">104.00</td>
+                    <td class="px-4 py-2 text-slate-300">109.00</td>
+                    <td class="px-4 py-2"><span class="text-green-500 font-medium">PASS</span></td>
+                  </tr>
+                  <tr class="hover:bg-white/5 transition-colors">
+                    <td class="px-4 py-2 font-medium text-slate-200">postflight</td>
+                    <td class="px-4 py-2 text-slate-300">600</td>
+                    <td class="px-4 py-2 text-slate-300">5386</td>
+                    <td class="px-4 py-2 text-slate-300">0.0000</td>
+                    <td class="px-4 py-2 text-slate-300">0.0000</td>
+                    <td class="px-4 py-2 text-slate-300">3.00</td>
+                    <td class="px-4 py-2 text-slate-300">4.00</td>
+                    <td class="px-4 py-2 text-slate-300">101.00</td>
+                    <td class="px-4 py-2 text-slate-300">102.00</td>
+                    <td class="px-4 py-2"><span class="text-green-500 font-medium">PASS</span></td>
+                  </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <section class="glass-panel rounded-xl p-6 mb-8">
+      <h2 class="text-lg font-semibold text-white mb-2">Client delay (indirect)</h2>
+      <div class="text-slate-300 text-sm [&_code]:bg-slate-700 [&_code]:px-1 [&_code]:rounded [&_strong]:text-white [&_strong]:font-medium">No direct metric for client processing delay (Node.js <code>ws</code> does not expose packet arrival time). For phases <strong>preflight, steady, postflight</strong>: RTT p95 is low (&lt; 15ms) and update p50 ≈ sync interval (100ms) → server is on time; update p95 above 100ms is consistent with client event-loop jitter, not systematic client delay.</div>
+    </section>
+    <section class="glass-panel rounded-xl p-6">
+      <h2 class="text-lg font-semibold text-white mb-4">Raw JSON</h2>
+      <pre class="bg-slate-900/80 rounded-lg p-4 text-xs text-slate-300 overflow-x-auto max-h-96">{
+  "meta": {
+    "scenarioName": "hero-defense-baseline",
+    "generatedAt": "2026-02-02T13:12:01.969Z",
+    "syncIntervalMs": 100
+  },
+  "phases": [
+    {
+      "name": "preflight",
+      "connections": 600,
+      "actionsSent": 5266,
+      "errorRate": 0,
+      "disconnectRate": 0,
+      "rtt": {
+        "p50": 2,
+        "p95": 5,
+        "p99": 6
+      },
+      "update": {
+        "p50": 100,
+        "p95": 101,
+        "p99": 102
+      },
+      "thresholds": {
+        "errorRate": 0.001,
+        "disconnectRate": 0.001,
+        "rttP95": 100,
+        "rttP99": 250,
+        "updateP95": 120,
+        "updateP99": 250
+      },
+      "passed": true,
+      "failures": []
+    },
+    {
+      "name": "steady",
+      "connections": 1500,
+      "actionsSent": 88058,
+      "errorRate": 0,
+      "disconnectRate": 0,
+      "rtt": {
+        "p50": 3,
+        "p95": 11,
+        "p99": 23
+      },
+      "update": {
+        "p50": 100,
+        "p95": 104,
+        "p99": 109
+      },
+      "thresholds": {
+        "errorRate": 0.001,
+        "disconnectRate": 0.001,
+        "rttP95": 100,
+        "rttP99": 250,
+        "updateP95": 120,
+        "updateP99": 250
+      },
+      "passed": true,
+      "failures": []
+    },
+    {
+      "name": "postflight",
+      "connections": 600,
+      "actionsSent": 5386,
+      "errorRate": 0,
+      "disconnectRate": 0,
+      "rtt": {
+        "p50": 1,
+        "p95": 3,
+        "p99": 4
+      },
+      "update": {
+        "p50": 100,
+        "p95": 101,
+        "p99": 102
+      },
+      "thresholds": {
+        "errorRate": 0.001,
+        "disconnectRate": 0.001,
+        "rttP95": 100,
+        "rttP99": 250,
+        "updateP95": 120,
+        "updateP99": 250
+      },
+      "passed": true,
+      "failures": []
+    }
+  ],
+  "system": [
+    {
+      "ts": 1770037838,
+      "cpuPct": 0.9,
+      "rssMb": 34.12,
+      "load1": 1.21
+    },
+    {
+      "ts": 1770037839,
+      "cpuPct": 0.4,
+      "rssMb": 34.12,
+      "load1": 1.21
+    },
+    {
+      "ts": 1770037840,
+      "cpuPct": 0.3,
+      "rssMb": 34.12,
+      "load1": 1.21
+    },
+    {
+      "ts": 1770037841,
+      "cpuPct": 55.6,
+      "rssMb": 81.88,
+      "load1": 1.21
+    },
+    {
+      "ts": 1770037842,
+      "cpuPct": 92.4,
+      "rssMb": 87.25,
+      "load1": 1.28
+    },
+    {
+      "ts": 1770037843,
+      "cpuPct": 117,
+      "rssMb": 87.25,
+      "load1": 1.28
+    },
+    {
+      "ts": 1770037844,
+      "cpuPct": 138,
+      "rssMb": 87.88,
+      "load1": 1.28
+    },
+    {
+      "ts": 1770037845,
+      "cpuPct": 154,
+      "rssMb": 88.62,
+      "load1": 1.28
+    },
+    {
+      "ts": 1770037846,
+      "cpuPct": 167,
+      "rssMb": 88.88,
+      "load1": 1.17
+    },
+    {
+      "ts": 1770037847,
+      "cpuPct": 177,
+      "rssMb": 89.38,
+      "load1": 1.17
+    },
+    {
+      "ts": 1770037848,
+      "cpuPct": 186,
+      "rssMb": 89.62,
+      "load1": 1.17
+    },
+    {
+      "ts": 1770037849,
+      "cpuPct": 194,
+      "rssMb": 89.88,
+      "load1": 1.17
+    },
+    {
+      "ts": 1770037850,
+      "cpuPct": 197,
+      "rssMb": 90.25,
+      "load1": 1.17
+    },
+    {
+      "ts": 1770037851,
+      "cpuPct": 211,
+      "rssMb": 152.25,
+      "load1": 1.24
+    },
+    {
+      "ts": 1770037852,
+      "cpuPct": 234,
+      "rssMb": 191.62,
+      "load1": 1.24
+    },
+    {
+      "ts": 1770037853,
+      "cpuPct": 256,
+      "rssMb": 194.12,
+      "load1": 1.24
+    },
+    {
+      "ts": 1770037854,
+      "cpuPct": 277,
+      "rssMb": 195.25,
+      "load1": 1.24
+    },
+    {
+      "ts": 1770037855,
+      "cpuPct": 296,
+      "rssMb": 195.5,
+      "load1": 1.24
+    },
+    {
+      "ts": 1770037856,
+      "cpuPct": 313,
+      "rssMb": 195.5,
+      "load1": 1.22
+    },
+    {
+      "ts": 1770037857,
+      "cpuPct": 327,
+      "rssMb": 195.5,
+      "load1": 1.22
+    },
+    {
+      "ts": 1770037858,
+      "cpuPct": 339,
+      "rssMb": 195.5,
+      "load1": 1.22
+    },
+    {
+      "ts": 1770037859,
+      "cpuPct": 352,
+      "rssMb": 195.5,
+      "load1": 1.22
+    },
+    {
+      "ts": 1770037860,
+      "cpuPct": 364,
+      "rssMb": 195.5,
+      "load1": 1.22
+    },
+    {
+      "ts": 1770037861,
+      "cpuPct": 374,
+      "rssMb": 195.5,
+      "load1": 2.16
+    },
+    {
+      "ts": 1770037863,
+      "cpuPct": 382,
+      "rssMb": 195.5,
+      "load1": 2.16
+    },
+    {
+      "ts": 1770037864,
+      "cpuPct": 389,
+      "rssMb": 195.5,
+      "load1": 2.16
+    },
+    {
+      "ts": 1770037865,
+      "cpuPct": 395,
+      "rssMb": 195.5,
+      "load1": 2.16
+    },
+    {
+      "ts": 1770037866,
+      "cpuPct": 402,
+      "rssMb": 195.5,
+      "load1": 2.16
+    },
+    {
+      "ts": 1770037867,
+      "cpuPct": 408,
+      "rssMb": 195.5,
+      "load1": 2.39
+    },
+    {
+      "ts": 1770037868,
+      "cpuPct": 414,
+      "rssMb": 195.5,
+      "load1": 2.39
+    },
+    {
+      "ts": 1770037869,
+      "cpuPct": 421,
+      "rssMb": 195.5,
+      "load1": 2.39
+    },
+    {
+      "ts": 1770037870,
+      "cpuPct": 427,
+      "rssMb": 195.5,
+      "load1": 2.39
+    },
+    {
+      "ts": 1770037871,
+      "cpuPct": 433,
+      "rssMb": 195.5,
+      "load1": 2.39
+    },
+    {
+      "ts": 1770037872,
+      "cpuPct": 439,
+      "rssMb": 195.5,
+      "load1": 2.76
+    },
+    {
+      "ts": 1770037873,
+      "cpuPct": 444,
+      "rssMb": 195.5,
+      "load1": 2.76
+    },
+    {
+      "ts": 1770037874,
+      "cpuPct": 450,
+      "rssMb": 195.5,
+      "load1": 2.76
+    },
+    {
+      "ts": 1770037875,
+      "cpuPct": 455,
+      "rssMb": 195.5,
+      "load1": 2.76
+    },
+    {
+      "ts": 1770037876,
+      "cpuPct": 461,
+      "rssMb": 195.5,
+      "load1": 3.5
+    },
+    {
+      "ts": 1770037877,
+      "cpuPct": 465,
+      "rssMb": 195.5,
+      "load1": 3.5
+    },
+    {
+      "ts": 1770037878,
+      "cpuPct": 470,
+      "rssMb": 196.75,
+      "load1": 3.5
+    },
+    {
+      "ts": 1770037879,
+      "cpuPct": 475,
+      "rssMb": 196.88,
+      "load1": 3.5
+    },
+    {
+      "ts": 1770037880,
+      "cpuPct": 479,
+      "rssMb": 196.88,
+      "load1": 3.5
+    },
+    {
+      "ts": 1770037881,
+      "cpuPct": 483,
+      "rssMb": 197,
+      "load1": 5.38
+    },
+    {
+      "ts": 1770037882,
+      "cpuPct": 486,
+      "rssMb": 197.25,
+      "load1": 5.38
+    },
+    {
+      "ts": 1770037883,
+      "cpuPct": 490,
+      "rssMb": 197.25,
+      "load1": 5.38
+    },
+    {
+      "ts": 1770037884,
+      "cpuPct": 493,
+      "rssMb": 197.25,
+      "load1": 5.38
+    },
+    {
+      "ts": 1770037885,
+      "cpuPct": 496,
+      "rssMb": 197.38,
+      "load1": 5.38
+    },
+    {
+      "ts": 1770037886,
+      "cpuPct": 500,
+      "rssMb": 197.38,
+      "load1": 6.71
+    },
+    {
+      "ts": 1770037887,
+      "cpuPct": 502,
+      "rssMb": 197.38,
+      "load1": 6.71
+    },
+    {
+      "ts": 1770037889,
+      "cpuPct": 505,
+      "rssMb": 197.38,
+      "load1": 6.71
+    },
+    {
+      "ts": 1770037890,
+      "cpuPct": 508,
+      "rssMb": 197.38,
+      "load1": 6.71
+    },
+    {
+      "ts": 1770037891,
+      "cpuPct": 511,
+      "rssMb": 197.38,
+      "load1": 6.71
+    },
+    {
+      "ts": 1770037892,
+      "cpuPct": 513,
+      "rssMb": 197.38,
+      "load1": 8.02
+    },
+    {
+      "ts": 1770037893,
+      "cpuPct": 515,
+      "rssMb": 197.38,
+      "load1": 8.02
+    },
+    {
+      "ts": 1770037894,
+      "cpuPct": 517,
+      "rssMb": 197.38,
+      "load1": 8.02
+    },
+    {
+      "ts": 1770037895,
+      "cpuPct": 519,
+      "rssMb": 197.38,
+      "load1": 8.02
+    },
+    {
+      "ts": 1770037896,
+      "cpuPct": 521,
+      "rssMb": 197.5,
+      "load1": 8.02
+    },
+    {
+      "ts": 1770037897,
+      "cpuPct": 523,
+      "rssMb": 197.5,
+      "load1": 9.62
+    },
+    {
+      "ts": 1770037898,
+      "cpuPct": 526,
+      "rssMb": 197.5,
+      "load1": 9.62
+    },
+    {
+      "ts": 1770037899,
+      "cpuPct": 527,
+      "rssMb": 197.5,
+      "load1": 9.62
+    },
+    {
+      "ts": 1770037900,
+      "cpuPct": 529,
+      "rssMb": 197.62,
+      "load1": 9.62
+    },
+    {
+      "ts": 1770037901,
+      "cpuPct": 531,
+      "rssMb": 197.62,
+      "load1": 10.69
+    },
+    {
+      "ts": 1770037902,
+      "cpuPct": 532,
+      "rssMb": 197.62,
+      "load1": 10.69
+    },
+    {
+      "ts": 1770037903,
+      "cpuPct": 534,
+      "rssMb": 197.62,
+      "load1": 10.69
+    },
+    {
+      "ts": 1770037904,
+      "cpuPct": 536,
+      "rssMb": 197.62,
+      "load1": 10.69
+    },
+    {
+      "ts": 1770037905,
+      "cpuPct": 538,
+      "rssMb": 197.75,
+      "load1": 10.69
+    },
+    {
+      "ts": 1770037906,
+      "cpuPct": 540,
+      "rssMb": 197.75,
+      "load1": 11.2
+    },
+    {
+      "ts": 1770037907,
+      "cpuPct": 542,
+      "rssMb": 197.75,
+      "load1": 11.2
+    },
+    {
+      "ts": 1770037908,
+      "cpuPct": 544,
+      "rssMb": 197.88,
+      "load1": 11.2
+    },
+    {
+      "ts": 1770037909,
+      "cpuPct": 546,
+      "rssMb": 197.88,
+      "load1": 11.2
+    },
+    {
+      "ts": 1770037910,
+      "cpuPct": 547,
+      "rssMb": 199.25,
+      "load1": 11.2
+    },
+    {
+      "ts": 1770037911,
+      "cpuPct": 545,
+      "rssMb": 203.25,
+      "load1": 12.46
+    },
+    {
+      "ts": 1770037912,
+      "cpuPct": 543,
+      "rssMb": 203.88,
+      "load1": 12.46
+    },
+    {
+      "ts": 1770037913,
+      "cpuPct": 541,
+      "rssMb": 204.75,
+      "load1": 12.46
+    },
+    {
+      "ts": 1770037915,
+      "cpuPct": 540,
+      "rssMb": 205.12,
+      "load1": 12.46
+    },
+    {
+      "ts": 1770037916,
+      "cpuPct": 538,
+      "rssMb": 205.25,
+      "load1": 12.46
+    },
+    {
+      "ts": 1770037917,
+      "cpuPct": 535,
+      "rssMb": 205.25,
+      "load1": 11.62
+    },
+    {
+      "ts": 1770037918,
+      "cpuPct": 532,
+      "rssMb": 205.25,
+      "load1": 11.62
+    },
+    {
+      "ts": 1770037919,
+      "cpuPct": 528,
+      "rssMb": 205.25,
+      "load1": 11.62
+    },
+    {
+      "ts": 1770037920,
+      "cpuPct": 525,
+      "rssMb": 205.25,
+      "load1": 11.62
+    },
+    {
+      "ts": 1770037921,
+      "cpuPct": 522,
+      "rssMb": 205.25,
+      "load1": 11.62
+    }
+  ]
+}</pre>
+    </section>
+  </div>
+  
+  <script>
+    Chart.defaults.color = "#94a3b8";
+    Chart.defaults.borderColor = "#334155";
+    Chart.defaults.font.family = "'Inter', sans-serif";
+    
+    const systemData = [{"ts":1770037838,"cpuPct":0.9,"rssMb":34.12,"load1":1.21},{"ts":1770037839,"cpuPct":0.4,"rssMb":34.12,"load1":1.21},{"ts":1770037840,"cpuPct":0.3,"rssMb":34.12,"load1":1.21},{"ts":1770037841,"cpuPct":55.6,"rssMb":81.88,"load1":1.21},{"ts":1770037842,"cpuPct":92.4,"rssMb":87.25,"load1":1.28},{"ts":1770037843,"cpuPct":117,"rssMb":87.25,"load1":1.28},{"ts":1770037844,"cpuPct":138,"rssMb":87.88,"load1":1.28},{"ts":1770037845,"cpuPct":154,"rssMb":88.62,"load1":1.28},{"ts":1770037846,"cpuPct":167,"rssMb":88.88,"load1":1.17},{"ts":1770037847,"cpuPct":177,"rssMb":89.38,"load1":1.17},{"ts":1770037848,"cpuPct":186,"rssMb":89.62,"load1":1.17},{"ts":1770037849,"cpuPct":194,"rssMb":89.88,"load1":1.17},{"ts":1770037850,"cpuPct":197,"rssMb":90.25,"load1":1.17},{"ts":1770037851,"cpuPct":211,"rssMb":152.25,"load1":1.24},{"ts":1770037852,"cpuPct":234,"rssMb":191.62,"load1":1.24},{"ts":1770037853,"cpuPct":256,"rssMb":194.12,"load1":1.24},{"ts":1770037854,"cpuPct":277,"rssMb":195.25,"load1":1.24},{"ts":1770037855,"cpuPct":296,"rssMb":195.5,"load1":1.24},{"ts":1770037856,"cpuPct":313,"rssMb":195.5,"load1":1.22},{"ts":1770037857,"cpuPct":327,"rssMb":195.5,"load1":1.22},{"ts":1770037858,"cpuPct":339,"rssMb":195.5,"load1":1.22},{"ts":1770037859,"cpuPct":352,"rssMb":195.5,"load1":1.22},{"ts":1770037860,"cpuPct":364,"rssMb":195.5,"load1":1.22},{"ts":1770037861,"cpuPct":374,"rssMb":195.5,"load1":2.16},{"ts":1770037863,"cpuPct":382,"rssMb":195.5,"load1":2.16},{"ts":1770037864,"cpuPct":389,"rssMb":195.5,"load1":2.16},{"ts":1770037865,"cpuPct":395,"rssMb":195.5,"load1":2.16},{"ts":1770037866,"cpuPct":402,"rssMb":195.5,"load1":2.16},{"ts":1770037867,"cpuPct":408,"rssMb":195.5,"load1":2.39},{"ts":1770037868,"cpuPct":414,"rssMb":195.5,"load1":2.39},{"ts":1770037869,"cpuPct":421,"rssMb":195.5,"load1":2.39},{"ts":1770037870,"cpuPct":427,"rssMb":195.5,"load1":2.39},{"ts":1770037871,"cpuPct":433,"rssMb":195.5,"load1":2.39},{"ts":1770037872,"cpuPct":439,"rssMb":195.5,"load1":2.76},{"ts":1770037873,"cpuPct":444,"rssMb":195.5,"load1":2.76},{"ts":1770037874,"cpuPct":450,"rssMb":195.5,"load1":2.76},{"ts":1770037875,"cpuPct":455,"rssMb":195.5,"load1":2.76},{"ts":1770037876,"cpuPct":461,"rssMb":195.5,"load1":3.5},{"ts":1770037877,"cpuPct":465,"rssMb":195.5,"load1":3.5},{"ts":1770037878,"cpuPct":470,"rssMb":196.75,"load1":3.5},{"ts":1770037879,"cpuPct":475,"rssMb":196.88,"load1":3.5},{"ts":1770037880,"cpuPct":479,"rssMb":196.88,"load1":3.5},{"ts":1770037881,"cpuPct":483,"rssMb":197,"load1":5.38},{"ts":1770037882,"cpuPct":486,"rssMb":197.25,"load1":5.38},{"ts":1770037883,"cpuPct":490,"rssMb":197.25,"load1":5.38},{"ts":1770037884,"cpuPct":493,"rssMb":197.25,"load1":5.38},{"ts":1770037885,"cpuPct":496,"rssMb":197.38,"load1":5.38},{"ts":1770037886,"cpuPct":500,"rssMb":197.38,"load1":6.71},{"ts":1770037887,"cpuPct":502,"rssMb":197.38,"load1":6.71},{"ts":1770037889,"cpuPct":505,"rssMb":197.38,"load1":6.71},{"ts":1770037890,"cpuPct":508,"rssMb":197.38,"load1":6.71},{"ts":1770037891,"cpuPct":511,"rssMb":197.38,"load1":6.71},{"ts":1770037892,"cpuPct":513,"rssMb":197.38,"load1":8.02},{"ts":1770037893,"cpuPct":515,"rssMb":197.38,"load1":8.02},{"ts":1770037894,"cpuPct":517,"rssMb":197.38,"load1":8.02},{"ts":1770037895,"cpuPct":519,"rssMb":197.38,"load1":8.02},{"ts":1770037896,"cpuPct":521,"rssMb":197.5,"load1":8.02},{"ts":1770037897,"cpuPct":523,"rssMb":197.5,"load1":9.62},{"ts":1770037898,"cpuPct":526,"rssMb":197.5,"load1":9.62},{"ts":1770037899,"cpuPct":527,"rssMb":197.5,"load1":9.62},{"ts":1770037900,"cpuPct":529,"rssMb":197.62,"load1":9.62},{"ts":1770037901,"cpuPct":531,"rssMb":197.62,"load1":10.69},{"ts":1770037902,"cpuPct":532,"rssMb":197.62,"load1":10.69},{"ts":1770037903,"cpuPct":534,"rssMb":197.62,"load1":10.69},{"ts":1770037904,"cpuPct":536,"rssMb":197.62,"load1":10.69},{"ts":1770037905,"cpuPct":538,"rssMb":197.75,"load1":10.69},{"ts":1770037906,"cpuPct":540,"rssMb":197.75,"load1":11.2},{"ts":1770037907,"cpuPct":542,"rssMb":197.75,"load1":11.2},{"ts":1770037908,"cpuPct":544,"rssMb":197.88,"load1":11.2},{"ts":1770037909,"cpuPct":546,"rssMb":197.88,"load1":11.2},{"ts":1770037910,"cpuPct":547,"rssMb":199.25,"load1":11.2},{"ts":1770037911,"cpuPct":545,"rssMb":203.25,"load1":12.46},{"ts":1770037912,"cpuPct":543,"rssMb":203.88,"load1":12.46},{"ts":1770037913,"cpuPct":541,"rssMb":204.75,"load1":12.46},{"ts":1770037915,"cpuPct":540,"rssMb":205.12,"load1":12.46},{"ts":1770037916,"cpuPct":538,"rssMb":205.25,"load1":12.46},{"ts":1770037917,"cpuPct":535,"rssMb":205.25,"load1":11.62},{"ts":1770037918,"cpuPct":532,"rssMb":205.25,"load1":11.62},{"ts":1770037919,"cpuPct":528,"rssMb":205.25,"load1":11.62},{"ts":1770037920,"cpuPct":525,"rssMb":205.25,"load1":11.62},{"ts":1770037921,"cpuPct":522,"rssMb":205.25,"load1":11.62}];
+    const timestamps = systemData.map((s, i) => i);
+    const cpuData = systemData.map(s => s.cpuPct);
+    const memData = systemData.map(s => s.rssMb);
+    
+    new Chart(document.getElementById('cpuChart'), {
+      type: 'line',
+      data: {
+        labels: timestamps,
+        datasets: [{
+          label: 'CPU %',
+          data: cpuData,
+          borderColor: '#3b82f6',
+          backgroundColor: 'rgba(59, 130, 246, 0.1)',
+          tension: 0.3,
+          fill: true
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { grid: { display: false }, title: { display: true, text: 'Time (s)' } },
+          y: { min: 0, max: Math.max(100, Math.max(...cpuData) * 1.2), grid: { color: 'rgba(255,255,255,0.05)' }, title: { display: true, text: 'CPU %' } }
+        }
+      }
+    });
+    
+    new Chart(document.getElementById('memoryChart'), {
+      type: 'line',
+      data: {
+        labels: timestamps,
+        datasets: [{
+          label: 'Memory (MB)',
+          data: memData,
+          borderColor: '#10b981',
+          backgroundColor: 'rgba(16, 185, 129, 0.1)',
+          tension: 0.3,
+          fill: true
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { grid: { display: false }, title: { display: true, text: 'Time (s)' } },
+          y: { min: 0, grid: { color: 'rgba(255,255,255,0.05)' }, title: { display: true, text: 'Memory (MB)' } }
+        }
+      }
+    });
+  </script>
+</body>
+</html>

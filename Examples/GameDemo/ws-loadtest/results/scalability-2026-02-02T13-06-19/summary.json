@@ -1,0 +1,124 @@
+{
+  "timestamp": "2026-02-02T13-06-19",
+  "config": {
+    "scenario": "scenarios/hero-defense/default.json",
+    "runs": 3,
+    "roomCounts": [
+      300,
+      500,
+      700
+    ],
+    "startupTimeout": 60,
+    "delayBetweenRuns": 5
+  },
+  "runs": [
+    {
+      "runIndex": 1,
+      "exitCode": 0,
+      "success": true,
+      "durationSeconds": 344,
+      "reportJson": "results/scalability-2026-02-02T13-06-19/run-1/ws-loadtest-1770037921970.json",
+      "phases": [
+        {
+          "name": "preflight",
+          "passed": true,
+          "errorRate": 0,
+          "disconnectRate": 0,
+          "rttP95": 5,
+          "updateP95": 101
+        },
+        {
+          "name": "steady",
+          "passed": true,
+          "errorRate": 0,
+          "disconnectRate": 0,
+          "rttP95": 11,
+          "updateP95": 104
+        },
+        {
+          "name": "postflight",
+          "passed": true,
+          "errorRate": 0,
+          "disconnectRate": 0,
+          "rttP95": 3,
+          "updateP95": 101
+        }
+      ],
+      "rooms": 300
+    },
+    {
+      "runIndex": 2,
+      "exitCode": 0,
+      "success": false,
+      "durationSeconds": 89,
+      "reportJson": "results/scalability-2026-02-02T13-06-19/run-2/ws-loadtest-1770038015496.json",
+      "phases": [
+        {
+          "name": "preflight",
+          "passed": true,
+          "errorRate": 0,
+          "disconnectRate": 0,
+          "rttP95": 6,
+          "updateP95": 101
+        },
+        {
+          "name": "steady",
+          "passed": false,
+          "errorRate": 0,
+          "disconnectRate": 0,
+          "rttP95": 366,
+          "updateP95": 136
+        },
+        {
+          "name": "postflight",
+          "passed": true,
+          "errorRate": 0,
+          "disconnectRate": 0,
+          "rttP95": 6,
+          "updateP95": 102
+        }
+      ],
+      "rooms": 500
+    },
+    {
+      "runIndex": 3,
+      "exitCode": 0,
+      "success": false,
+      "durationSeconds": 99,
+      "reportJson": "results/scalability-2026-02-02T13-06-19/run-3/ws-loadtest-1770038110237.json",
+      "phases": [
+        {
+          "name": "preflight",
+          "passed": true,
+          "errorRate": 0,
+          "disconnectRate": 0,
+          "rttP95": 10,
+          "updateP95": 102
+        },
+        {
+          "name": "steady",
+          "passed": false,
+          "errorRate": 0,
+          "disconnectRate": 0,
+          "rttP95": 36213,
+          "updateP95": 719
+        },
+        {
+          "name": "postflight",
+          "passed": true,
+          "errorRate": 0,
+          "disconnectRate": 0,
+          "rttP95": 0,
+          "updateP95": 0
+        }
+      ],
+      "rooms": 700
+    }
+  ],
+  "summary": {
+    "totalRuns": 3,
+    "passed": 1,
+    "failed": 2,
+    "passRate": 0.3333333333333333
+  }
+}
