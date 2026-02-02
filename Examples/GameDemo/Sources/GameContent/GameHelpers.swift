@@ -6,23 +6,49 @@ import SwiftStateTreeTransport
 
 // MARK: - Game Helper Functions
 
+/// Whether to use ANSI color codes in log output, from environment.
+///
+/// Disables colors when:
+/// - `NO_COLOR` is set (any value; see https://no-color.org/)
+/// - `LOG_USE_COLORS` is 0, false, no, or off
+///
+/// Use this when logging to a file or in CI so logs stay plain text.
+public func getEnvUseColors(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+    if environment["NO_COLOR"] != nil {
+        return false
+    }
+    guard let raw = environment["LOG_USE_COLORS"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else {
+        return true
+    }
+    switch raw {
+    case "0", "false", "no", "off": return false
+    default: return true
+    }
+}
+
 /// Create a logger for game demo applications with consistent configuration.
 ///
 /// This helper provides a standardized way to create loggers for game demo applications,
 /// using the same logger identifier and allowing customization of scope and log level.
+/// When output is redirected to a file (e.g. load tests), set `NO_COLOR=1` or
+/// `LOG_USE_COLORS=0` so logs are plain text without ANSI control codes.
 ///
 /// - Parameters:
 ///   - scope: The scope/context name for the logger (e.g., "GameServer", "GameDemo")
 ///   - logLevel: The minimum log level to output (default: `.info`)
+///   - useColors: When nil, derived from env (NO_COLOR / LOG_USE_COLORS); otherwise use this value.
 /// - Returns: A configured Logger instance
 public func createGameLogger(
     scope: String,
-    logLevel: Logger.Level = .info
+    logLevel: Logger.Level = .info,
+    useColors: Bool? = nil
 ) -> Logger {
+    let colors = useColors ?? getEnvUseColors()
     return createColoredLogger(
         loggerIdentifier: "com.swiftstatetree.gamedemo",
         scope: scope,
-        logLevel: logLevel
+        logLevel: logLevel,
+        useColors: colors
     )
 }
 
@@ -102,6 +128,36 @@ public func getEnvString(key: String, defaultValue: String) -> String {
 public func getEnvStringOptional(key: String) -> String? {
     let value = ProcessInfo.processInfo.environment[key]
     return value?.isEmpty == false ? value : nil
+}
+
+/// Get a Logger.Level value from environment variable with default fallback.
+///
+/// Accepted values (case-insensitive): trace, debug, info, notice, warning, error, critical.
+/// Any other value falls back to the default.
+///
+/// - Parameters:
+///   - key: The environment variable key (e.g. "LOG_LEVEL")
+///   - defaultValue: The default level if not set or invalid
+///   - environment: The environment dictionary to read from (defaults to process environment)
+/// - Returns: Parsed Logger.Level or default value
+public func getEnvLogLevel(
+    key: String,
+    defaultValue: Logger.Level = .info,
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) -> Logger.Level {
+    guard let raw = environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !raw.isEmpty else {
+        return defaultValue
+    }
+    switch raw {
+    case "trace": return .trace
+    case "debug": return .debug
+    case "info": return .info
+    case "notice": return .notice
+    case "warning": return .warning
+    case "error": return .error
+    case "critical": return .critical
+    default: return defaultValue
+    }
 }
 
 /// Get a Bool value from environment variable with default fallback.

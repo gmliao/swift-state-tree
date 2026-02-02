@@ -98,21 +98,6 @@ struct ReevaluationRunnerMain {
             print("")
         }
         
-        let currentHardware = HardwareInfoCollector.collect()
-        print("🖥️  Current Hardware Info:")
-        print("   CPU Architecture: \(currentHardware.cpuArchitecture)")
-        print("   OS: \(currentHardware.osName) \(currentHardware.osVersion)")
-        if let cpuModel = currentHardware.cpuModel {
-            print("   CPU Model: \(cpuModel)")
-        }
-        if let cpuCores = currentHardware.cpuCores {
-            print("   CPU Cores: \(cpuCores)")
-        }
-        if let swiftVersion = currentHardware.swiftVersion {
-            print("   Swift Version: \(swiftVersion)")
-        }
-        print("")
-        
         // Display hardware information
         if let recordedHardware = metadata.hardwareInfo {
             print("📋 Recorded Hardware Info:")
@@ -278,4 +263,3 @@ struct ReevaluationRunnerMain {
         exit(exitCode)
     }
 }
-

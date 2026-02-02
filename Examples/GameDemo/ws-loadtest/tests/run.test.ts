@@ -6,7 +6,7 @@ import { loadScenario } from "../src/run";
 
 describe("loadScenario", () => {
     it("loads scenario from file", () => {
-        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "uws-loadtest-"));
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ws-loadtest-"));
         const filePath = path.join(tempDir, "scenario.json");
         fs.writeFileSync(filePath, JSON.stringify({ name: "test-scenario", phases: { steady: { durationSeconds: 10 } } }));
 

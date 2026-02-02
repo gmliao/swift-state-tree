@@ -8,6 +8,8 @@ set -e  # Exit on error
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/e2e-test-common.sh"
 
+# Use release server when E2E_BUILD_MODE=release (e.g. E2E_BUILD_MODE=release ./test-e2e-ci.sh)
+
 # Server-specific configuration
 SERVER_NAME="DemoServer"
 SERVER_DIR_NAME="HummingbirdDemo"
@@ -98,10 +100,14 @@ main() {
     build_sdk "$project_root"
     build_cli "$project_root"
     
-    # Build DemoServer
-    print_step "Building ${SERVER_NAME}..."
+    # Build DemoServer (use -c release when E2E_BUILD_MODE=release)
+    print_step "Building ${SERVER_NAME} (${E2E_BUILD_MODE:-debug})..."
     cd "$server_dir"
-    swift build
+    if [ "$E2E_BUILD_MODE" = "release" ]; then
+        swift build -c release
+    else
+        swift build
+    fi
     cd "$project_root"
     print_success "${SERVER_NAME} built successfully"
     echo ""

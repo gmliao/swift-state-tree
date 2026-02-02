@@ -128,10 +128,14 @@ main() {
     build_sdk "$project_root"
     build_cli "$project_root"
     
-    # Build GameServer
-    print_step "Building ${SERVER_NAME}..."
+    # Build GameServer (use -c release when E2E_BUILD_MODE=release)
+    print_step "Building ${SERVER_NAME} (${E2E_BUILD_MODE:-debug})..."
     cd "$server_dir"
-    swift build
+    if [ "$E2E_BUILD_MODE" = "release" ]; then
+        swift build -c release
+    else
+        swift build
+    fi
     cd "$project_root"
     print_success "${SERVER_NAME} built successfully"
     echo ""

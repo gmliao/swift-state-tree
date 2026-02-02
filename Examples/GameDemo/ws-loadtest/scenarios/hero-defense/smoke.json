@@ -1,0 +1,55 @@
+{
+  "name": "hero-defense-smoke",
+  "serverUrl": "ws://localhost:8080/game/hero-defense",
+  "syncIntervalMs": 100,
+  "actions": [
+    { "name": "PlayAction", "weight": 1, "payloadTemplate": {} }
+  ],
+  "phases": {
+    "preflight": {
+      "durationSeconds": 3,
+      "rooms": 1,
+      "playersPerRoom": 2,
+      "actionsPerSecond": 1,
+      "verify": true,
+      "thresholds": {
+        "errorRate": 0.001,
+        "disconnectRate": 0.001,
+        "rttP95": 100,
+        "rttP99": 250,
+        "updateP95": 120,
+        "updateP99": 250
+      }
+    },
+    "steady": {
+      "durationSeconds": 5,
+      "rooms": 1,
+      "playersPerRoom": 2,
+      "actionsPerSecond": 1,
+      "verify": false,
+      "thresholds": {
+        "errorRate": 0.001,
+        "disconnectRate": 0.001,
+        "rttP95": 100,
+        "rttP99": 250,
+        "updateP95": 120,
+        "updateP99": 250
+      }
+    },
+    "postflight": {
+      "durationSeconds": 3,
+      "rooms": 1,
+      "playersPerRoom": 2,
+      "actionsPerSecond": 1,
+      "verify": true,
+      "thresholds": {
+        "errorRate": 0.001,
+        "disconnectRate": 0.001,
+        "rttP95": 100,
+        "rttP99": 250,
+        "updateP95": 120,
+        "updateP99": 250
+      }
+    }
+  }
+}

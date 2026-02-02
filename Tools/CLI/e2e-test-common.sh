@@ -19,6 +19,8 @@ NC='\033[0m' # No Color
 SERVER_PORT=${SERVER_PORT:-8080}
 SERVER_HOST=${SERVER_HOST:-localhost}
 TIMEOUT=${TIMEOUT:-30}
+# E2E_BUILD_MODE=release to run server in release (default: debug)
+E2E_BUILD_MODE=${E2E_BUILD_MODE:-}
 
 # E2E artifacts directory (logs, pid files).
 # Default: <repoRoot>/tmp/e2e (repoRoot is the current working directory of the calling script).
@@ -101,8 +103,12 @@ start_server_impl() {
         server_encoding="json_opcode"  # GameServer uses underscore
     fi
     
-    # Start server in background
-    TRANSPORT_ENCODING=${server_encoding} swift run ${server_cmd} > "${log_file}" 2>&1 &
+    # Start server in background (use -c release when E2E_BUILD_MODE=release)
+    local swift_run_cmd="swift run"
+    if [ "$E2E_BUILD_MODE" = "release" ]; then
+        swift_run_cmd="swift run -c release"
+    fi
+    TRANSPORT_ENCODING=${server_encoding} $swift_run_cmd ${server_cmd} > "${log_file}" 2>&1 &
     local pid=$!
     
     # Check if process is still running (quick validation)

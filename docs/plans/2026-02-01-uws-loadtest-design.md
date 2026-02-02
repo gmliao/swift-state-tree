@@ -1,4 +1,4 @@
-[English](2026-02-01-uws-loadtest-design.md) | [中文版](2026-02-01-uws-loadtest-design.zh-TW.md)
+[English](2026-02-01-ws-loadtest-design.md) | [中文版](2026-02-01-ws-loadtest-design.zh-TW.md)
 
 # UWS Load Test for Hero Defense (Design)
 
@@ -14,10 +14,10 @@
 - Support non-`messagepack` encodings in the first iteration.
 
 ## Location & Structure
-Root: `Examples/GameDemo/uws-loadtest/`
+Root: `Examples/GameDemo/ws-loadtest/`
 Suggested layout:
 ```
-uws-loadtest/
+ws-loadtest/
   package.json
   src/
     cli.ts
@@ -28,13 +28,13 @@ uws-loadtest/
     report/
       render-html.ts
   scripts/
-    run-uws-loadtest.sh
+    run-ws-loadtest.sh
   scenarios/
     hero-defense/
       default.json
   results/
-    uws-loadtest-<timestamp>.json
-    uws-loadtest-<timestamp>.html
+    ws-loadtest-<timestamp>.json
+    ws-loadtest-<timestamp>.html
   monitoring/
     collect-system-metrics.sh
 ```
@@ -71,13 +71,13 @@ Threshold behavior:
 - If thresholds fail, mark report as failed but **do not** change exit code.
 
 ## Reporting
-- New JSON schema tailored to uws load test.
+- New JSON schema tailored to ws load test.
 - HTML renderer that visualizes:
   - RTT percentiles over time
   - State update cadence
   - Error/disconnect rates
   - Server CPU/memory charts
-- Output to `results/uws-loadtest-<timestamp>.{json,html}`.
+- Output to `results/ws-loadtest-<timestamp>.{json,html}`.
 
 ## Runtime Defaults
 - Encoding: `messagepack` only.
