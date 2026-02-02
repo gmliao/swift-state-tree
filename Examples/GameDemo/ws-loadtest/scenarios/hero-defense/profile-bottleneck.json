@@ -1,0 +1,11 @@
+{
+  "name": "profile-bottleneck",
+  "serverUrl": "ws://localhost:8080/game/hero-defense",
+  "syncIntervalMs": 100,
+  "actions": [{ "name": "PlayAction", "weight": 1, "payloadTemplate": {} }],
+  "phases": {
+    "preflight": { "durationSeconds": 15, "rooms": 100, "playersPerRoom": 2, "actionsPerSecond": 2, "verify": true, "thresholds": { "errorRate": 0.01, "disconnectRate": 0.01, "rttP95": 150, "rttP99": 300, "updateP95": 150, "updateP99": 300 } },
+    "steady": { "durationSeconds": 30, "rooms": 100, "playersPerRoom": 2, "actionsPerSecond": 2, "verify": false, "thresholds": { "errorRate": 0.01, "disconnectRate": 0.01, "rttP95": 150, "rttP99": 300, "updateP95": 150, "updateP99": 300 } },
+    "postflight": { "durationSeconds": 10, "rooms": 100, "playersPerRoom": 2, "actionsPerSecond": 2, "verify": true, "thresholds": { "errorRate": 0.01, "disconnectRate": 0.01, "rttP95": 150, "rttP99": 300, "updateP95": 150, "updateP99": 300 } }
+  }
+}

@@ -1,0 +1,10 @@
+{"ts":1770014971823,"counters":{"errors":0,"disconnects":0,"bytesReceived":116,"stateUpdates":0,"messagesReceived":4,"joinedSessions":1,"connectedSessions":0,"actions":4},"lag_ms":1.96}
+{"ts":1770014972868,"counters":{"errors":0,"disconnects":0,"bytesReceived":116,"stateUpdates":0,"messagesReceived":4,"joinedSessions":1,"connectedSessions":0,"actions":4},"lag_ms":44.920000000000002}
+{"counters":{"errors":0,"disconnects":2,"bytesReceived":58,"stateUpdates":0,"messagesReceived":2,"joinedSessions":1,"connectedSessions":0,"actions":2},"ts":1770014973870,"lag_ms":2.0299999999999998}
+{"counters":{"errors":0,"disconnects":0,"bytesReceived":58,"stateUpdates":0,"messagesReceived":2,"joinedSessions":0,"connectedSessions":0,"actions":2},"lag_ms":5.3200000000000003,"ts":1770014974875}
+{"counters":{"errors":0,"disconnects":0,"bytesReceived":174,"stateUpdates":0,"messagesReceived":6,"joinedSessions":0,"connectedSessions":0,"actions":6},"lag_ms":7.9199999999999999,"ts":1770014975883}
+{"counters":{"errors":0,"disconnects":0,"bytesReceived":116,"stateUpdates":0,"messagesReceived":4,"joinedSessions":1,"connectedSessions":0,"actions":4},"ts":1770014976885,"lag_ms":2.4500000000000002}
+{"counters":{"errors":0,"disconnects":0,"bytesReceived":116,"stateUpdates":0,"messagesReceived":4,"joinedSessions":1,"connectedSessions":0,"actions":4},"lag_ms":36.159999999999997,"ts":1770014977921}
+{"counters":{"errors":0,"disconnects":2,"bytesReceived":58,"stateUpdates":0,"messagesReceived":2,"joinedSessions":1,"connectedSessions":0,"actions":2},"lag_ms":2.6000000000000001,"ts":1770014978924}
+{"lag_ms":8.9700000000000006,"counters":{"errors":0,"disconnects":0,"bytesReceived":58,"stateUpdates":0,"messagesReceived":2,"joinedSessions":0,"connectedSessions":0,"actions":2},"ts":1770014979933}
+{"counters":{"errors":0,"disconnects":0,"bytesReceived":116,"stateUpdates":0,"messagesReceived":4,"joinedSessions":0,"connectedSessions":0,"actions":4},"ts":1770014980937,"lag_ms":3.8500000000000001}

@@ -34,12 +34,12 @@ public protocol Transport: Actor {
     /// Stops the transport.
     func stop() async throws
     
-    /// Sends a message to a specific target.
+    /// Enqueues a message for delivery. Returns immediately; delivery is asynchronous.
     ///
     /// - Parameters:
     ///   - message: The message payload (already encoded as Data or TransportMessage).
     ///   - target: The recipients of the message.
-    func send(_ message: Data, to target: EventTarget) async throws
+    func send(_ message: Data, to target: EventTarget)
 }
 
 // MARK: - Transport Delegate

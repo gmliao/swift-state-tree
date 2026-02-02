@@ -1,0 +1,11 @@
+{
+  "name": "profile-smoke",
+  "serverUrl": "ws://localhost:8080/game/hero-defense",
+  "syncIntervalMs": 100,
+  "actions": [{ "name": "PlayAction", "weight": 1, "payloadTemplate": {} }],
+  "phases": {
+    "preflight": { "durationSeconds": 3, "rooms": 1, "playersPerRoom": 2, "actionsPerSecond": 2, "verify": false },
+    "steady": { "durationSeconds": 5, "rooms": 1, "playersPerRoom": 2, "actionsPerSecond": 2, "verify": false },
+    "postflight": { "durationSeconds": 2, "rooms": 1, "playersPerRoom": 2, "actionsPerSecond": 2, "verify": false }
+  }
+}

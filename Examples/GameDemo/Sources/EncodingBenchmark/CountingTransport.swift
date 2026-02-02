@@ -16,7 +16,7 @@ actor CountingTransport: Transport {
     func start() async throws {}
     func stop() async throws {}
 
-    func send(_ message: Data, to _: SwiftStateTreeTransport.EventTarget) async throws {
+    func send(_ message: Data, to _: SwiftStateTreeTransport.EventTarget) {
         sentBytes += message.count
         sentMessages += 1
     }

@@ -34,7 +34,7 @@ actor Opcode107RecordingTransport: Transport {
     func start() async throws { }
     func stop() async throws { }
 
-    func send(_ message: Data, to target: SwiftStateTreeTransport.EventTarget) async throws {
+    func send(_ message: Data, to target: SwiftStateTreeTransport.EventTarget) {
         sentMessages.append(message)
     }
 

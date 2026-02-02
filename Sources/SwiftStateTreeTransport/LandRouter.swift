@@ -592,7 +592,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             }
             
             let responseData = try encoder.encode(response)
-            try await transport.send(responseData, to: .session(sessionID))
+            await transport.send(responseData, to: .session(sessionID))
+            await Task.yield()
         } catch {
             logger.error("Failed to send join response", metadata: [
                 "requestID": .string(requestID),
@@ -627,7 +628,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             }
             
             let errorData = try encoder.encode(errorResponse)
-            try await transport.send(errorData, to: .session(sessionID))
+            await transport.send(errorData, to: .session(sessionID))
+            await Task.yield()
         } catch {
             logger.error("Failed to send join error", metadata: [
                 "requestID": .string(requestID),
@@ -658,7 +660,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             }
             
             let errorData = try encoder.encode(errorResponse)
-            try await transport.send(errorData, to: .session(sessionID))
+            await transport.send(errorData, to: .session(sessionID))
+            await Task.yield()
         } catch {
             logger.error("Failed to send error", metadata: [
                 "sessionID": .string(sessionID.rawValue),

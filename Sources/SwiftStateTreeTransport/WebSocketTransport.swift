@@ -2,14 +2,43 @@ import Foundation
 import Logging
 import SwiftStateTree
 
+/// Per-session send queue: enqueue returns immediately; a drain Task sends to the connection.
+private struct SessionSendQueue: Sendable {
+    let connection: WebSocketConnection
+    let continuation: AsyncStream<Data>.Continuation
+    let drainTask: Task<Void, Never>
+
+    static func create(sessionID: SessionID, connection: WebSocketConnection, logger: Logger) -> Self {
+        var continuation: AsyncStream<Data>.Continuation!
+        let stream = AsyncStream(Data.self) { continuation = $0 }
+        let drainTask = Task {
+            for await data in stream {
+                do {
+                    try await connection.send(data)
+                } catch {
+                    if logger.logLevel <= .debug {
+                        logger.debug("WS drain send failed (connection likely closed)", metadata: [
+                            "session": .string(sessionID.rawValue),
+                            "error": .string("\(error)"),
+                        ])
+                    }
+                    break
+                }
+            }
+        }
+        return Self(connection: connection, continuation: continuation, drainTask: drainTask)
+    }
+}
+
 /// A Transport implementation using WebSockets.
 ///
+/// Uses per-session queues: Adapter enqueues and returns immediately; drain Tasks send to connections.
 /// This is a base implementation that needs to be connected to a concrete WebSocket server
 /// (e.g., Vapor, Hummingbird, or NIO).
 public actor WebSocketTransport: Transport {
     public var delegate: TransportDelegate?
 
-    private var sessions: [SessionID: WebSocketConnection] = [:]
+    private var sessionQueues: [SessionID: SessionSendQueue] = [:]
     private var sessionToClientID: [SessionID: ClientID] = [:]
     private var playerSessions: [PlayerID: Set<SessionID>] = [:]
     private var lastMissingSessionLogAt: [SessionID: Date] = [:]
@@ -42,46 +71,47 @@ public actor WebSocketTransport: Transport {
     }
 
     public func stop() async throws {
-        // Close all connections
-        for session in sessions.values {
-            try? await session.close()
+        // Finish all continuations so drain tasks exit, then close connections
+        for (_, queue) in sessionQueues {
+            queue.continuation.finish()
+            queue.drainTask.cancel()
+            try? await queue.connection.close()
         }
-        sessions.removeAll()
+        sessionQueues.removeAll()
         sessionToClientID.removeAll()
         playerSessions.removeAll()
         logger.info("WebSocketTransport stopped")
     }
 
-    public func send(_ message: Data, to target: EventTarget) async throws {
+    /// Enqueue message and return. Drain Tasks send to connections asynchronously.
+    public func send(_ message: Data, to target: EventTarget) {
         logOutgoing(message, target: target)
 
         switch target {
         case let .session(sessionID):
-            if sessions[sessionID] == nil {
+            guard let queue = sessionQueues[sessionID] else {
                 logDropMissingSession(sessionID: sessionID, bytes: message.count)
                 return
             }
-            try await sessions[sessionID]?.send(message)
+            queue.continuation.yield(message)
 
         case let .player(playerID):
-            if playerSessions[playerID] == nil {
+            guard let sessionIDs = playerSessions[playerID] else {
                 logDropMissingPlayer(playerID: playerID, bytes: message.count)
                 return
             }
-            if let sessionIDs = playerSessions[playerID] {
-                for sessionID in sessionIDs {
-                    try await sessions[sessionID]?.send(message)
-                }
+            for sessionID in sessionIDs {
+                sessionQueues[sessionID]?.continuation.yield(message)
             }
 
         case .broadcast:
-            for session in sessions.values {
-                try await session.send(message)
+            for queue in sessionQueues.values {
+                queue.continuation.yield(message)
             }
 
         case let .broadcastExcept(excludedSessionID):
-            for (id, session) in sessions where id != excludedSessionID {
-                try await session.send(message)
+            for (id, queue) in sessionQueues where id != excludedSessionID {
+                queue.continuation.yield(message)
             }
         }
     }
@@ -89,7 +119,8 @@ public actor WebSocketTransport: Transport {
     // MARK: - Connection Management (Called by the concrete server integration)
 
     public func handleConnection(sessionID: SessionID, connection: WebSocketConnection, authInfo: AuthenticatedInfo? = nil) async {
-        sessions[sessionID] = connection
+        let queue = SessionSendQueue.create(sessionID: sessionID, connection: connection, logger: logger)
+        sessionQueues[sessionID] = queue
         lastMissingSessionLogAt.removeValue(forKey: sessionID)
         // Generate short client ID (6 characters) for better identification
         let clientIDString = String(UUID().uuidString.prefix(6))
@@ -99,7 +130,11 @@ public actor WebSocketTransport: Transport {
     }
 
     public func handleDisconnection(sessionID: SessionID) async {
-        sessions.removeValue(forKey: sessionID)
+        if let queue = sessionQueues[sessionID] {
+            queue.continuation.finish()
+            queue.drainTask.cancel()
+        }
+        sessionQueues.removeValue(forKey: sessionID)
         let clientID = sessionToClientID.removeValue(forKey: sessionID) ?? ClientID("disconnected")
         // Cleanup player mapping
         for (playerID, sessionIDs) in playerSessions {
