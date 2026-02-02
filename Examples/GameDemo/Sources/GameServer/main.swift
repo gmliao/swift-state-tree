@@ -13,6 +13,8 @@ import SwiftStateTreeTransport
 /// **Configuration**:
 /// - Port: Set via `PORT` environment variable (default: 8080)
 /// - Host: Set via `HOST` environment variable (default: "localhost")
+/// - Log level: Set via `LOG_LEVEL` (trace, debug, info, notice, warning, error, critical; default: info)
+/// - Reevaluation recording: Off by default; set `ENABLE_REEVALUATION=true` to enable writing reevaluation records (for replay/verification).
 /// - Guest mode: Enabled (allows connections without JWT)
 /// - Auto-create rooms: Enabled (clients can create rooms dynamically)
 /// - Admin routes: Enabled at `/admin/*` (API Key: `hero-defense-admin-key`)
@@ -25,21 +27,25 @@ import SwiftStateTreeTransport
 /// # Run on custom port
 /// PORT=3000 swift run GameServer
 ///
-/// # Run on custom host and port
-/// HOST=0.0.0.0 PORT=3000 swift run GameServer
+/// # Run with minimal logs (e.g. for load tests)
+/// LOG_LEVEL=error swift run GameServer
+///
+/// # Enable reevaluation recording (for replay/verification)
+/// ENABLE_REEVALUATION=true swift run GameServer
 /// ```
 @main
 struct GameServer {
     static func main() async throws {
         let jwtConfig = createGameJWTConfig()
+        let logLevel = getEnvLogLevel(key: "LOG_LEVEL", defaultValue: .info)
         let logger = createGameLogger(
             scope: "HeroDefenseServer",
-            logLevel: .info
+            logLevel: logLevel
         )
 
         let host = getEnvString(key: "HOST", defaultValue: "localhost")
         let port = getEnvUInt16(key: "PORT", defaultValue: 8080)
-        let enableReevaluation = getEnvBool(key: "ENABLE_REEVALUATION", defaultValue: true)
+        let enableReevaluation = getEnvBool(key: "ENABLE_REEVALUATION", defaultValue: false)
 
         // Single TRANSPORT_ENCODING controls both message and stateUpdate encoding
         let transportEncodingEnv = getEnvString(key: "TRANSPORT_ENCODING", defaultValue: "messagepack")
@@ -71,9 +77,9 @@ struct GameServer {
         ))
 
         if enableReevaluation {
-            logger.info("✅ Reevaluation enabled")
+            logger.info("✅ Reevaluation enabled (recording for replay/verification)")
         } else {
-            logger.info("⚠️ Reevaluation disabled (ENABLE_REEVALUATION=false)")
+            logger.info("Reevaluation disabled (set ENABLE_REEVALUATION=true to enable)")
         }
 
         let serverConfig = LandServerConfiguration(

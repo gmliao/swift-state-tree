@@ -28,6 +28,8 @@ export interface ActionConfig {
 export interface Scenario {
     name: string;
     serverUrl: string;
+    /** Server StateSync interval in ms (e.g. 100 for 10 Hz). Used to derive default updateP95/updateP99 = interval + margin. */
+    syncIntervalMs?: number;
     phases: Record<PhaseName, PhaseConfig>;
     actions: ActionConfig[];
 }

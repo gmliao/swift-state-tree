@@ -21,6 +21,8 @@ export interface PhaseResult {
 
 export interface RunResult {
     scenarioName: string;
+    /** Server StateSync interval in ms (e.g. 100). Used in report for client-jitter hint. */
+    syncIntervalMs?: number;
     phases: PhaseResult[];
 }
 
@@ -51,7 +53,11 @@ export async function runScenario(filePath: string, workers: number): Promise<Ru
         results.push({ name: phase.name, config: phase.config, report: aggregated });
     }
 
-    return { scenarioName: scenario.name, phases: results };
+    return {
+        scenarioName: scenario.name,
+        syncIntervalMs: scenario.syncIntervalMs,
+        phases: results
+    };
 }
 
 async function runPhaseWorkers(
@@ -116,23 +122,45 @@ async function runPhaseWorkers(
 }
 
 function aggregateReports(reports: WorkerReport[]): WorkerReport {
-    const aggregated: WorkerReport = {
-        rttMs: [],
-        stateUpdateIntervalsMs: [],
-        errorCount: 0,
-        disconnectCount: 0,
-        actionsSent: 0
-    };
+    // IMPORTANT:
+    // Do NOT use `array.push(...bigArray)` here.
+    // With large loads, each worker can produce very large sample arrays; spreading them
+    // can overflow the JS call stack / argument limit ("Maximum call stack size exceeded").
+    let totalRtt = 0;
+    let totalUpd = 0;
+    let errorCount = 0;
+    let disconnectCount = 0;
+    let actionsSent = 0;
 
-    for (const report of reports) {
-        aggregated.rttMs.push(...report.rttMs);
-        aggregated.stateUpdateIntervalsMs.push(...report.stateUpdateIntervalsMs);
-        aggregated.errorCount += report.errorCount;
-        aggregated.disconnectCount += report.disconnectCount;
-        aggregated.actionsSent += report.actionsSent;
+    for (const r of reports) {
+        totalRtt += r.rttMs.length;
+        totalUpd += r.stateUpdateIntervalsMs.length;
+        errorCount += r.errorCount;
+        disconnectCount += r.disconnectCount;
+        actionsSent += r.actionsSent;
     }
 
-    return aggregated;
+    const rttMs: number[] = new Array(totalRtt);
+    const stateUpdateIntervalsMs: number[] = new Array(totalUpd);
+    let rttIndex = 0;
+    let updIndex = 0;
+
+    for (const r of reports) {
+        for (let i = 0; i < r.rttMs.length; i += 1) {
+            rttMs[rttIndex++] = r.rttMs[i];
+        }
+        for (let i = 0; i < r.stateUpdateIntervalsMs.length; i += 1) {
+            stateUpdateIntervalsMs[updIndex++] = r.stateUpdateIntervalsMs[i];
+        }
+    }
+
+    return {
+        rttMs,
+        stateUpdateIntervalsMs,
+        errorCount,
+        disconnectCount,
+        actionsSent
+    };
 }
 
 function resolveWorkerScript(): { scriptPath: string; execArgv: string[] } {

@@ -55,7 +55,7 @@ export async function main(): Promise<void> {
     const systemMetrics = metricsPath && fs.existsSync(metricsPath) ? readSystemMetrics(metricsPath) : { system: [] };
     const report = buildReport(result, systemMetrics);
     const outputDirectory = outputDir ? path.resolve(process.cwd(), outputDir) : path.resolve(process.cwd(), "results");
-    const baseName = outputName ?? `uws-loadtest-${Date.now()}`;
+    const baseName = outputName ?? `ws-loadtest-${Date.now()}`;
     writeReportFiles(report, outputDirectory, baseName);
     console.log(`Report written to ${outputDirectory}/${baseName}.{json,html}`);
 }

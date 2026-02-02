@@ -1,5 +1,5 @@
 {
-  "name": "uws-loadtest",
+  "name": "ws-loadtest",
   "private": true,
   "scripts": {
     "dev": "tsx src/cli.ts",

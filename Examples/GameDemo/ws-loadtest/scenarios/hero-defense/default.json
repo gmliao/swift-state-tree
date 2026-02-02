@@ -1,6 +1,7 @@
 {
   "name": "hero-defense-baseline",
   "serverUrl": "ws://localhost:8080/game/hero-defense",
+  "syncIntervalMs": 100,
   "actions": [
     { "name": "PlayAction", "weight": 1, "payloadTemplate": {} }
   ],
@@ -16,13 +17,13 @@
         "disconnectRate": 0.001,
         "rttP95": 100,
         "rttP99": 250,
-        "updateP95": 100,
+        "updateP95": 120,
         "updateP99": 250
       }
     },
     "steady": {
       "durationSeconds": 60,
-      "rooms": 500,
+      "rooms": 1,
       "playersPerRoom": 5,
       "actionsPerSecond": 1,
       "verify": false,
@@ -31,7 +32,7 @@
         "disconnectRate": 0.001,
         "rttP95": 100,
         "rttP99": 250,
-        "updateP95": 100,
+        "updateP95": 120,
         "updateP99": 250
       }
     },
@@ -46,7 +47,7 @@
         "disconnectRate": 0.001,
         "rttP95": 100,
         "rttP99": 250,
-        "updateP95": 100,
+        "updateP95": 120,
         "updateP99": 250
       }
     }

@@ -30,6 +30,12 @@ const DEFAULT_ACTIONS: ActionConfig[] = [
     { name: "PlayAction", weight: 1, payloadTemplate: {} }
 ];
 
+/** Default server sync interval (Hero Defense StateSync 100ms = 10 Hz). */
+const DEFAULT_SYNC_INTERVAL_MS = 100;
+/** Margin for client-observed update interval (event-loop jitter). updateP95 = syncIntervalMs + this. */
+const UPDATE_P95_MARGIN_MS = 20;
+const DEFAULT_UPDATE_P99_MS = 250;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null;
 }
@@ -42,9 +48,34 @@ function coerceBoolean(value: unknown, fallback: boolean): boolean {
     return typeof value === "boolean" ? value : fallback;
 }
 
-function parsePhase(name: PhaseName, rawPhase: unknown): PhaseConfig {
+function parsePhase(name: PhaseName, rawPhase: unknown, syncIntervalMs: number): PhaseConfig {
     const defaults = DEFAULT_PHASES[name];
     const phase = isRecord(rawPhase) ? rawPhase : {};
+
+    const derivedUpdateP95 = syncIntervalMs + UPDATE_P95_MARGIN_MS;
+    const derivedUpdateP99 = DEFAULT_UPDATE_P99_MS;
+
+    let thresholds: PhaseConfig["thresholds"];
+    if (isRecord(phase.thresholds)) {
+        const t = phase.thresholds as Record<string, unknown>;
+        thresholds = {
+            errorRate: coerceNumber(t.errorRate, 0.001),
+            disconnectRate: coerceNumber(t.disconnectRate, 0.001),
+            rttP95: coerceNumber(t.rttP95, 100),
+            rttP99: coerceNumber(t.rttP99, 250),
+            updateP95: coerceNumber(t.updateP95, derivedUpdateP95),
+            updateP99: coerceNumber(t.updateP99, derivedUpdateP99)
+        };
+    } else {
+        thresholds = {
+            errorRate: 0.001,
+            disconnectRate: 0.001,
+            rttP95: 100,
+            rttP99: 250,
+            updateP95: derivedUpdateP95,
+            updateP99: derivedUpdateP99
+        };
+    }
 
     return {
         durationSeconds: coerceNumber(phase.durationSeconds, defaults.durationSeconds),
@@ -53,7 +84,7 @@ function parsePhase(name: PhaseName, rawPhase: unknown): PhaseConfig {
         actionsPerSecond: coerceNumber(phase.actionsPerSecond, defaults.actionsPerSecond),
         verify: coerceBoolean(phase.verify, defaults.verify),
         joinPayloadTemplate: isRecord(phase.joinPayloadTemplate) ? phase.joinPayloadTemplate : undefined,
-        thresholds: isRecord(phase.thresholds) ? (phase.thresholds as any) : undefined
+        thresholds
     };
 }
 
@@ -78,17 +109,19 @@ export function parseScenario(raw: unknown): Scenario {
         throw new Error("Scenario must be an object");
     }
 
+    const syncIntervalMs = coerceNumber(raw.syncIntervalMs, DEFAULT_SYNC_INTERVAL_MS);
     const phasesRaw = isRecord(raw.phases) ? raw.phases : {};
 
     const phases: Record<PhaseName, PhaseConfig> = {
-        preflight: parsePhase("preflight", phasesRaw.preflight),
-        steady: parsePhase("steady", phasesRaw.steady),
-        postflight: parsePhase("postflight", phasesRaw.postflight)
+        preflight: parsePhase("preflight", phasesRaw.preflight, syncIntervalMs),
+        steady: parsePhase("steady", phasesRaw.steady, syncIntervalMs),
+        postflight: parsePhase("postflight", phasesRaw.postflight, syncIntervalMs)
     };
 
     return {
         name: typeof raw.name === "string" ? raw.name : "hero-defense-loadtest",
         serverUrl: typeof raw.serverUrl === "string" ? raw.serverUrl : DEFAULT_SERVER_URL,
+        syncIntervalMs,
         phases,
         actions: parseActions(raw.actions)
     };

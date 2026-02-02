@@ -1,4 +1,4 @@
-[English](2026-02-01-uws-loadtest-design.md) | [中文版](2026-02-01-uws-loadtest-design.zh-TW.md)
+[English](2026-02-01-ws-loadtest-design.md) | [中文版](2026-02-01-ws-loadtest-design.zh-TW.md)
 
 # Hero Defense 的 UWS 壓測工具（設計）
 
@@ -14,10 +14,10 @@
 - 第一版只支援 `messagepack` 編碼。
 
 ## 目錄與結構
-根目錄：`Examples/GameDemo/uws-loadtest/`
+根目錄：`Examples/GameDemo/ws-loadtest/`
 建議結構：
 ```
-uws-loadtest/
+ws-loadtest/
   package.json
   src/
     cli.ts
@@ -28,13 +28,13 @@ uws-loadtest/
     report/
       render-html.ts
   scripts/
-    run-uws-loadtest.sh
+    run-ws-loadtest.sh
   scenarios/
     hero-defense/
       default.json
   results/
-    uws-loadtest-<timestamp>.json
-    uws-loadtest-<timestamp>.html
+    ws-loadtest-<timestamp>.json
+    ws-loadtest-<timestamp>.html
   monitoring/
     collect-system-metrics.sh
 ```
@@ -75,7 +75,7 @@ uws-loadtest/
   - State update 節奏
   - 錯誤/斷線率
   - 伺服器 CPU/記憶體曲線
-- 輸出到 `results/uws-loadtest-<timestamp>.{json,html}`。
+- 輸出到 `results/ws-loadtest-<timestamp>.{json,html}`。
 
 ## 執行預設
 - 編碼：僅 `messagepack`。

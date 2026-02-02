@@ -13,19 +13,19 @@
 ### Task 1: Scaffold new tool and baseline scenario parser
 
 **Files:**
-- Create: `Examples/GameDemo/uws-loadtest/package.json`
-- Create: `Examples/GameDemo/uws-loadtest/tsconfig.json`
-- Create: `Examples/GameDemo/uws-loadtest/vitest.config.ts`
-- Create: `Examples/GameDemo/uws-loadtest/src/types.ts`
-- Create: `Examples/GameDemo/uws-loadtest/src/scenario.ts`
-- Create: `Examples/GameDemo/uws-loadtest/tests/scenario.test.ts`
+- Create: `Examples/GameDemo/ws-loadtest/package.json`
+- Create: `Examples/GameDemo/ws-loadtest/tsconfig.json`
+- Create: `Examples/GameDemo/ws-loadtest/vitest.config.ts`
+- Create: `Examples/GameDemo/ws-loadtest/src/types.ts`
+- Create: `Examples/GameDemo/ws-loadtest/src/scenario.ts`
+- Create: `Examples/GameDemo/ws-loadtest/tests/scenario.test.ts`
 
 **Step 1: Create tool config files**
 
-`Examples/GameDemo/uws-loadtest/package.json`:
+`Examples/GameDemo/ws-loadtest/package.json`:
 ```json
 {
-  "name": "uws-loadtest",
+  "name": "ws-loadtest",
   "private": true,
   "scripts": {
     "dev": "tsx src/cli.ts",
@@ -47,7 +47,7 @@
 }
 ```
 
-`Examples/GameDemo/uws-loadtest/tsconfig.json`:
+`Examples/GameDemo/ws-loadtest/tsconfig.json`:
 ```json
 {
   "compilerOptions": {
@@ -65,7 +65,7 @@
 }
 ```
 
-`Examples/GameDemo/uws-loadtest/vitest.config.ts`:
+`Examples/GameDemo/ws-loadtest/vitest.config.ts`:
 ```ts
 import { defineConfig } from "vitest/config";
 export default defineConfig({ test: { environment: "node" } });
@@ -73,7 +73,7 @@ export default defineConfig({ test: { environment: "node" } });
 
 **Step 2: Install dependencies**
 
-Run: `cd Examples/GameDemo/uws-loadtest && npm install`  
+Run: `cd Examples/GameDemo/ws-loadtest && npm install`  
 Expected: packages installed, no fatal errors
 
 **Step 3: Write the failing tests for scenario defaults**
@@ -92,7 +92,7 @@ describe("parseScenario", () => {
 
 **Step 4: Run test to verify it fails**
 
-Run: `cd Examples/GameDemo/uws-loadtest && npm test`  
+Run: `cd Examples/GameDemo/ws-loadtest && npm test`  
 Expected: FAIL with "parseScenario is not defined"
 
 **Step 5: Write minimal scenario parser**
@@ -139,14 +139,14 @@ export function parseScenario(raw: unknown): Scenario {
 
 **Step 6: Run test to verify it passes**
 
-Run: `cd Examples/GameDemo/uws-loadtest && npm test`  
+Run: `cd Examples/GameDemo/ws-loadtest && npm test`  
 Expected: PASS
 
 **Step 7: Commit**
 
 ```bash
-git add Examples/GameDemo/uws-loadtest/package.json Examples/GameDemo/uws-loadtest/tsconfig.json Examples/GameDemo/uws-loadtest/vitest.config.ts Examples/GameDemo/uws-loadtest/src/types.ts Examples/GameDemo/uws-loadtest/src/scenario.ts Examples/GameDemo/uws-loadtest/tests/scenario.test.ts
-git commit -m "feat: scaffold uws-loadtest and scenario defaults"
+git add Examples/GameDemo/ws-loadtest/package.json Examples/GameDemo/ws-loadtest/tsconfig.json Examples/GameDemo/ws-loadtest/vitest.config.ts Examples/GameDemo/ws-loadtest/src/types.ts Examples/GameDemo/ws-loadtest/src/scenario.ts Examples/GameDemo/ws-loadtest/tests/scenario.test.ts
+git commit -m "feat: scaffold ws-loadtest and scenario defaults"
 ```
 
 ---
@@ -154,8 +154,8 @@ git commit -m "feat: scaffold uws-loadtest and scenario defaults"
 ### Task 2: Template rendering for join/action payloads
 
 **Files:**
-- Create: `Examples/GameDemo/uws-loadtest/src/template.ts`
-- Create: `Examples/GameDemo/uws-loadtest/tests/template.test.ts`
+- Create: `Examples/GameDemo/ws-loadtest/src/template.ts`
+- Create: `Examples/GameDemo/ws-loadtest/tests/template.test.ts`
 
 **Step 1: Write failing tests**
 
@@ -176,7 +176,7 @@ it("supports randInt", () => {
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd Examples/GameDemo/uws-loadtest && npm test`  
+Run: `cd Examples/GameDemo/ws-loadtest && npm test`  
 Expected: FAIL with "renderTemplate is not defined"
 
 **Step 3: Implement minimal template renderer**
@@ -187,13 +187,13 @@ export function renderTemplate(value: string, ctx: Record<string, string>): stri
 
 **Step 4: Run test to verify it passes**
 
-Run: `cd Examples/GameDemo/uws-loadtest && npm test`  
+Run: `cd Examples/GameDemo/ws-loadtest && npm test`  
 Expected: PASS
 
 **Step 5: Commit**
 
 ```bash
-git add Examples/GameDemo/uws-loadtest/src/template.ts Examples/GameDemo/uws-loadtest/tests/template.test.ts
+git add Examples/GameDemo/ws-loadtest/src/template.ts Examples/GameDemo/ws-loadtest/tests/template.test.ts
 git commit -m "feat: add payload template renderer"
 ```
 
@@ -202,8 +202,8 @@ git commit -m "feat: add payload template renderer"
 ### Task 3: Metrics aggregation and threshold evaluation
 
 **Files:**
-- Create: `Examples/GameDemo/uws-loadtest/src/metrics.ts`
-- Create: `Examples/GameDemo/uws-loadtest/tests/metrics.test.ts`
+- Create: `Examples/GameDemo/ws-loadtest/src/metrics.ts`
+- Create: `Examples/GameDemo/ws-loadtest/tests/metrics.test.ts`
 
 **Step 1: Write failing tests**
 
@@ -226,7 +226,7 @@ it("evaluates thresholds", () => {
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd Examples/GameDemo/uws-loadtest && npm test`  
+Run: `cd Examples/GameDemo/ws-loadtest && npm test`  
 Expected: FAIL
 
 **Step 3: Implement metrics helpers**
@@ -238,13 +238,13 @@ export function evaluateThresholds(actual: Metrics, thresholds: Thresholds): Thr
 
 **Step 4: Run test to verify it passes**
 
-Run: `cd Examples/GameDemo/uws-loadtest && npm test`  
+Run: `cd Examples/GameDemo/ws-loadtest && npm test`  
 Expected: PASS
 
 **Step 5: Commit**
 
 ```bash
-git add Examples/GameDemo/uws-loadtest/src/metrics.ts Examples/GameDemo/uws-loadtest/tests/metrics.test.ts
+git add Examples/GameDemo/ws-loadtest/src/metrics.ts Examples/GameDemo/ws-loadtest/tests/metrics.test.ts
 git commit -m "feat: add metrics aggregation and thresholds"
 ```
 
@@ -253,9 +253,9 @@ git commit -m "feat: add metrics aggregation and thresholds"
 ### Task 4: Worker process with ws connections and message handling
 
 **Files:**
-- Create: `Examples/GameDemo/uws-loadtest/src/worker.ts`
-- Create: `Examples/GameDemo/uws-loadtest/src/protocol.ts`
-- Create: `Examples/GameDemo/uws-loadtest/tests/protocol.test.ts`
+- Create: `Examples/GameDemo/ws-loadtest/src/worker.ts`
+- Create: `Examples/GameDemo/ws-loadtest/src/protocol.ts`
+- Create: `Examples/GameDemo/ws-loadtest/tests/protocol.test.ts`
 
 **Step 1: Write failing tests for message decoding**
 
@@ -273,7 +273,7 @@ it("decodes messagepack transport messages", () => {
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd Examples/GameDemo/uws-loadtest && npm test`  
+Run: `cd Examples/GameDemo/ws-loadtest && npm test`  
 Expected: FAIL
 
 **Step 3: Implement minimal decoder and worker skeleton**
@@ -284,7 +284,7 @@ export function decodeMessage(buf: Uint8Array): any { /* @msgpack/msgpack decode
 
 **Step 4: Run test to verify it passes**
 
-Run: `cd Examples/GameDemo/uws-loadtest && npm test`  
+Run: `cd Examples/GameDemo/ws-loadtest && npm test`  
 Expected: PASS
 
 **Step 5: Implement worker core**
@@ -302,8 +302,8 @@ Expected: PASS
 **Step 6: Commit**
 
 ```bash
-git add Examples/GameDemo/uws-loadtest/src/worker.ts Examples/GameDemo/uws-loadtest/src/protocol.ts Examples/GameDemo/uws-loadtest/tests/protocol.test.ts
-git commit -m "feat: add uws worker and protocol decoder"
+git add Examples/GameDemo/ws-loadtest/src/worker.ts Examples/GameDemo/ws-loadtest/src/protocol.ts Examples/GameDemo/ws-loadtest/tests/protocol.test.ts
+git commit -m "feat: add ws worker and protocol decoder"
 ```
 
 ---
@@ -311,10 +311,10 @@ git commit -m "feat: add uws worker and protocol decoder"
 ### Task 5: Orchestrator, CLI, and phase scheduling
 
 **Files:**
-- Create: `Examples/GameDemo/uws-loadtest/src/cli.ts`
-- Create: `Examples/GameDemo/uws-loadtest/src/orchestrator.ts`
-- Modify: `Examples/GameDemo/uws-loadtest/src/scenario.ts`
-- Create: `Examples/GameDemo/uws-loadtest/tests/orchestrator.test.ts`
+- Create: `Examples/GameDemo/ws-loadtest/src/cli.ts`
+- Create: `Examples/GameDemo/ws-loadtest/src/orchestrator.ts`
+- Modify: `Examples/GameDemo/ws-loadtest/src/scenario.ts`
+- Create: `Examples/GameDemo/ws-loadtest/tests/orchestrator.test.ts`
 
 **Step 1: Write failing tests for phase defaults**
 
@@ -330,7 +330,7 @@ it("builds phases with default ordering", () => {
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd Examples/GameDemo/uws-loadtest && npm test`  
+Run: `cd Examples/GameDemo/ws-loadtest && npm test`  
 Expected: FAIL
 
 **Step 3: Implement orchestrator**
@@ -342,13 +342,13 @@ Expected: FAIL
 
 **Step 4: Run test to verify it passes**
 
-Run: `cd Examples/GameDemo/uws-loadtest && npm test`  
+Run: `cd Examples/GameDemo/ws-loadtest && npm test`  
 Expected: PASS
 
 **Step 5: Commit**
 
 ```bash
-git add Examples/GameDemo/uws-loadtest/src/cli.ts Examples/GameDemo/uws-loadtest/src/orchestrator.ts Examples/GameDemo/uws-loadtest/src/scenario.ts Examples/GameDemo/uws-loadtest/tests/orchestrator.test.ts
+git add Examples/GameDemo/ws-loadtest/src/cli.ts Examples/GameDemo/ws-loadtest/src/orchestrator.ts Examples/GameDemo/ws-loadtest/src/scenario.ts Examples/GameDemo/ws-loadtest/tests/orchestrator.test.ts
 git commit -m "feat: add orchestrator and phase scheduling"
 ```
 
@@ -357,12 +357,12 @@ git commit -m "feat: add orchestrator and phase scheduling"
 ### Task 6: Monitoring + report generation + default scenario
 
 **Files:**
-- Create: `Examples/GameDemo/uws-loadtest/monitoring/collect-system-metrics.sh`
-- Create: `Examples/GameDemo/uws-loadtest/scripts/run-uws-loadtest.sh`
-- Create: `Examples/GameDemo/uws-loadtest/src/report/render-html.ts`
-- Create: `Examples/GameDemo/uws-loadtest/scenarios/hero-defense/default.json`
-- Create: `Examples/GameDemo/uws-loadtest/results/.gitkeep`
-- Create: `Examples/GameDemo/uws-loadtest/README.md`
+- Create: `Examples/GameDemo/ws-loadtest/monitoring/collect-system-metrics.sh`
+- Create: `Examples/GameDemo/ws-loadtest/scripts/run-ws-loadtest.sh`
+- Create: `Examples/GameDemo/ws-loadtest/src/report/render-html.ts`
+- Create: `Examples/GameDemo/ws-loadtest/scenarios/hero-defense/default.json`
+- Create: `Examples/GameDemo/ws-loadtest/results/.gitkeep`
+- Create: `Examples/GameDemo/ws-loadtest/README.md`
 
 **Step 1: Write failing test for report JSON shape**
 
@@ -378,7 +378,7 @@ it("includes thresholds and phase summary", () => {
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd Examples/GameDemo/uws-loadtest && npm test`  
+Run: `cd Examples/GameDemo/ws-loadtest && npm test`  
 Expected: FAIL
 
 **Step 3: Implement report generator**
@@ -389,11 +389,11 @@ Expected: FAIL
 **Step 4: Add monitoring script**
 
 - Copy logic from `Examples/GameDemo/scripts/server-loadtest/run-server-loadtest.sh` for ps/vmstat/pidstat sampling.
-- Integrate with `run-uws-loadtest.sh` to auto-start `GameServer`, wait for readiness, and enforce timeout.
+- Integrate with `run-ws-loadtest.sh` to auto-start `GameServer`, wait for readiness, and enforce timeout.
 
 **Step 5: Add default scenario**
 
-`Examples/GameDemo/uws-loadtest/scenarios/hero-defense/default.json`:
+`Examples/GameDemo/ws-loadtest/scenarios/hero-defense/default.json`:
 ```json
 {
   "name": "hero-defense-baseline",
@@ -453,13 +453,13 @@ Expected: FAIL
 
 **Step 6: Run tests**
 
-Run: `cd Examples/GameDemo/uws-loadtest && npm test`  
+Run: `cd Examples/GameDemo/ws-loadtest && npm test`  
 Expected: PASS
 
 **Step 7: Commit**
 
 ```bash
-git add Examples/GameDemo/uws-loadtest/monitoring/collect-system-metrics.sh Examples/GameDemo/uws-loadtest/scripts/run-uws-loadtest.sh Examples/GameDemo/uws-loadtest/src/report/render-html.ts Examples/GameDemo/uws-loadtest/scenarios/hero-defense/default.json Examples/GameDemo/uws-loadtest/README.md
+git add Examples/GameDemo/ws-loadtest/monitoring/collect-system-metrics.sh Examples/GameDemo/ws-loadtest/scripts/run-ws-loadtest.sh Examples/GameDemo/ws-loadtest/src/report/render-html.ts Examples/GameDemo/ws-loadtest/scenarios/hero-defense/default.json Examples/GameDemo/ws-loadtest/README.md
 git commit -m "feat: add monitoring, reporting, and default scenario"
 ```
 
@@ -471,12 +471,12 @@ git commit -m "feat: add monitoring, reporting, and default scenario"
 
 Run:
 ```
-cd Examples/GameDemo/uws-loadtest
+cd Examples/GameDemo/ws-loadtest
 npm install
 npm run build
-bash scripts/run-uws-loadtest.sh --scenario scenarios/hero-defense/default.json
+bash scripts/run-ws-loadtest.sh --scenario scenarios/hero-defense/default.json
 ```
-Expected: JSON+HTML report in `Examples/GameDemo/uws-loadtest/results/`.
+Expected: JSON+HTML report in `Examples/GameDemo/ws-loadtest/results/`.
 
 **Step 2: Sanity check**
 - Verify report marks pass/fail using scenario thresholds.
@@ -485,6 +485,6 @@ Expected: JSON+HTML report in `Examples/GameDemo/uws-loadtest/results/`.
 **Step 3: Commit**
 
 ```bash
-git add Examples/GameDemo/uws-loadtest/results/.gitkeep
-git commit -m "chore: document uws-loadtest manual run"
+git add Examples/GameDemo/ws-loadtest/results/.gitkeep
+git commit -m "chore: document ws-loadtest manual run"
 ```
