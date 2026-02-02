@@ -1,6 +1,20 @@
 import type { ActionConfig } from "./types";
 import { MessageKindOpcode, decodeMessage, encodeMessageToMessagePack } from "./protocol";
 
+/** Extract requestID from actionResponse or error message. Handles both JSON (nested payload) and MessagePack (normalized top-level). */
+function extractRequestID(message: any, kind: "actionResponse" | "error"): string | undefined {
+    if (kind === "actionResponse") {
+        return (
+            message.requestID ??
+            message.payload?.actionResponse?.requestID
+        );
+    }
+    return (
+        message.details?.requestID ??
+        message.payload?.error?.details?.requestID
+    );
+}
+
 export interface WebSocketLike {
     on(event: "open" | "message" | "close" | "error", handler: (data?: any) => void): void;
     send(data: string | Uint8Array): void;
@@ -11,6 +25,7 @@ export interface WorkerConfig {
     serverUrl: string;
     landType: string;
     landInstanceId: string;
+    playerId: string;
     actions: ActionConfig[];
     joinMetadata?: Record<string, unknown>;
 }
@@ -104,12 +119,13 @@ export class WorkerSession {
     handleDecodedMessage(message: any, now: number): void {
         if (message && typeof message === "object") {
             if (message.kind === "actionResponse") {
-                this.recordRTT(message.requestID, now);
+                const requestID = extractRequestID(message, "actionResponse");
+                this.recordRTT(requestID, now);
                 return;
             }
             if (message.kind === "error") {
                 this.metrics.errorCount += 1;
-                const requestID = message.details?.requestID;
+                const requestID = extractRequestID(message, "error");
                 if (typeof requestID === "string") {
                     this.recordRTT(requestID, now);
                 }
@@ -188,6 +204,10 @@ export class WorkerClient {
 
     getSession(): WorkerSession {
         return this.session;
+    }
+
+    getPlayerId(): string {
+        return this.config.playerId;
     }
 
     sendAction(requestID: string, actionName: string, payload: Record<string, unknown>): void {
