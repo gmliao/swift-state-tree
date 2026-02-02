@@ -17,6 +17,7 @@ MAX_ROOMS=800
 ROOM_INCREMENT=300 
 CPU_THRESHOLD=80.0  # Stop if average CPU usage exceeds this percentage
 FAILURE_THRESHOLD=3  # Stop after N consecutive failures
+ENABLE_PROFILING=false  # Enable transport profiling (decode/handle/encode/send JSONL)
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -66,6 +67,10 @@ while [[ $# -gt 0 ]]; do
             TEST_ROOMS="$2"
             shift 2
             ;;
+        --profile)
+            ENABLE_PROFILING=true
+            shift
+            ;;
         --help|-h)
             echo "Usage: $0 [options]"
             echo ""
@@ -75,6 +80,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --room-increment <N>                 Increment between tests (default: $ROOM_INCREMENT)"
             echo "  --test-rooms \"N1 N2 N3\"              Custom room list (overrides start/max/increment)"
             echo "  --cpu-threshold <N>                  Stop if avg CPU > N% (default: $CPU_THRESHOLD)"
+            echo "  --profile                            Enable transport profiling (decode/handle/encode/send)"
             echo ""
             echo "Test Configuration (passed to run-server-loadtest.sh):"
             echo "  --players-per-room <N>               (default: $PLAYERS_PER_ROOM)"
@@ -170,6 +176,8 @@ for ROOMS in "${ROOM_LIST[@]}"; do
     TEST_LOG_FILE="$SUMMARY_DIR/test-${ROOMS}rooms.log"
     
     # Run test and capture exit code (don't fail script on test failure)
+    PROFILE_ARGS=""
+    [ "$ENABLE_PROFILING" = "true" ] && PROFILE_ARGS="--profile"
     bash "$SCRIPT_DIR/run-server-loadtest.sh" \
         --rooms "$ROOMS" \
         --players-per-room "$PLAYERS_PER_ROOM" \
@@ -178,6 +186,7 @@ for ROOMS in "${ROOM_LIST[@]}"; do
         --ramp-down-seconds "$RAMP_DOWN_SECONDS" \
         --actions-per-player-per-second "$ACTIONS_PER_PLAYER_PER_SECOND" \
         --log-level "$LOG_LEVEL" \
+        $PROFILE_ARGS \
         2>&1 | tee "$TEST_LOG_FILE"
     
     TEST_EXIT_CODE=${PIPESTATUS[0]}

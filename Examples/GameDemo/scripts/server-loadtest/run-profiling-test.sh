@@ -59,9 +59,10 @@ GAMEDEMO_ROOT="$(pwd)"
 # Build executable
 echo "Building ServerLoadTest..."
 swift build -c release
-EXECUTABLE=".build/x86_64-unknown-linux-gnu/release/ServerLoadTest"
+BIN_DIR=$(swift build -c release --show-bin-path 2>/dev/null)
+EXECUTABLE="${BIN_DIR}/ServerLoadTest"
 
-if [ ! -f "$EXECUTABLE" ]; then
+if [ -z "$BIN_DIR" ] || [ ! -x "$EXECUTABLE" ]; then
     echo "Error: Executable not found at $EXECUTABLE"
     exit 1
 fi
@@ -71,6 +72,11 @@ RESULTS_DIR="$GAMEDEMO_ROOT/results/server-loadtest/profiling"
 mkdir -p "$RESULTS_DIR"
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H-%M-%S")
 PREFIX="profile-rooms${ROOMS}-${TIMESTAMP}"
+
+# Enable transport profiling (decode/handle/encode/send JSONL) for application-level analysis
+export TRANSPORT_PROFILE_JSONL_PATH="$RESULTS_DIR/${PREFIX}-transport.jsonl"
+rm -f "$TRANSPORT_PROFILE_JSONL_PATH"
+echo "Transport profiling: $TRANSPORT_PROFILE_JSONL_PATH"
 
 echo ""
 echo "=========================================="
@@ -84,12 +90,23 @@ echo ""
 TIMEOUT_SECONDS=300
 TEST_DURATION=$((DURATION_SECONDS + 20))  # Add buffer for ramp up/down
 
+# Resolve perf binary (WSL2: /usr/bin/perf may refuse kernel mismatch; prefer /usr/local/bin or linux-tools)
+PERF_BIN=""
+if [ -x /usr/local/bin/perf ]; then
+    PERF_BIN=/usr/local/bin/perf
+elif ls /usr/lib/linux-tools/*/perf 1>/dev/null 2>&1; then
+    PERF_BIN=$(ls /usr/lib/linux-tools/*/perf 2>/dev/null | head -n1)
+elif command -v perf >/dev/null 2>&1 && perf record -e cycles -o /tmp/perf-check-$$.data -- sleep 0.5 2>/dev/null; then
+    PERF_BIN=$(command -v perf)
+    rm -f /tmp/perf-check-$$.data
+fi
+
 if [ "$PROFILE_TOOL" = "perf" ] || [ "$PROFILE_TOOL" = "both" ]; then
-    if command -v perf >/dev/null 2>&1; then
-        echo "Running with perf profiler..."
+    if [ -n "$PERF_BIN" ]; then
+        echo "Running with perf profiler ($PERF_BIN)..."
         echo "  (This will record CPU usage and call stacks)"
         
-        timeout $TIMEOUT_SECONDS perf record -g --call-graph dwarf \
+        timeout $TIMEOUT_SECONDS "$PERF_BIN" record -g --call-graph dwarf \
             -o "$RESULTS_DIR/${PREFIX}.perf.data" \
             "$EXECUTABLE" \
             --rooms "$ROOMS" \
@@ -118,11 +135,11 @@ if [ "$PROFILE_TOOL" = "perf" ] || [ "$PROFILE_TOOL" = "both" ]; then
         if [ -f "$RESULTS_DIR/${PREFIX}.perf.data" ]; then
             echo ""
             echo "Generating perf report..."
-            perf report --stdio -i "$RESULTS_DIR/${PREFIX}.perf.data" > "$RESULTS_DIR/${PREFIX}.perf.report.txt" 2>&1
+            "$PERF_BIN" report --stdio -i "$RESULTS_DIR/${PREFIX}.perf.data" > "$RESULTS_DIR/${PREFIX}.perf.report.txt" 2>&1
             
             echo ""
             echo "Top 20 functions by CPU usage:"
-            perf report --stdio -i "$RESULTS_DIR/${PREFIX}.perf.data" 2>/dev/null | head -n 50 | grep -E "^[[:space:]]*[0-9]" | head -n 20
+            "$PERF_BIN" report --stdio -i "$RESULTS_DIR/${PREFIX}.perf.data" 2>/dev/null | head -n 50 | grep -E "^[[:space:]]*[0-9]" | head -n 20
             
             echo ""
             echo "📊 Perf data saved to: $RESULTS_DIR/${PREFIX}.perf.data"
@@ -132,7 +149,16 @@ if [ "$PROFILE_TOOL" = "perf" ] || [ "$PROFILE_TOOL" = "both" ]; then
             echo "  perf report -i $RESULTS_DIR/${PREFIX}.perf.data"
         fi
     else
-        echo "⚠️  perf not found, skipping perf profiling"
+        echo "⚠️  perf not found, running test without perf (transport profiling still active)"
+        timeout $TIMEOUT_SECONDS "$EXECUTABLE" \
+            --rooms "$ROOMS" \
+            --players-per-room "$PLAYERS_PER_ROOM" \
+            --duration-seconds "$DURATION_SECONDS" \
+            --ramp-up-seconds 5 \
+            --ramp-down-seconds 5 \
+            --actions-per-player-per-second 1 \
+            --log-level "$LOG_LEVEL" \
+            2>&1 | tee "$RESULTS_DIR/${PREFIX}.log"
     fi
 fi
 
@@ -162,4 +188,8 @@ echo "=========================================="
 echo "Profiling complete"
 echo "=========================================="
 echo "Results directory: $RESULTS_DIR"
+echo ""
+echo "Output files:"
+echo "  - perf: $RESULTS_DIR/${PREFIX}.perf.data (use: perf report -i <file>)"
+echo "  - transport: $RESULTS_DIR/${PREFIX}-transport.jsonl (decode/handle/encode/send latencies)"
 echo ""

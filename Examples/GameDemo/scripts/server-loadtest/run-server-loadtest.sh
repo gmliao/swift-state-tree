@@ -25,6 +25,7 @@ ACTIONS_PER_PLAYER_PER_SECOND=1
 TUI=false
 LOG_LEVEL=error
 ENABLE_MONITORING=true  # Set to false to disable monitoring for precise benchmarks
+ENABLE_PROFILING=false  # Enable transport profiling (TRANSPORT_PROFILE_JSONL_PATH)
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -65,6 +66,10 @@ while [[ $# -gt 0 ]]; do
             ENABLE_MONITORING=false
             shift
             ;;
+        --profile)
+            ENABLE_PROFILING=true
+            shift
+            ;;
         --build-mode)
             BUILD_MODE="$2"
             shift 2
@@ -85,6 +90,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --duration-seconds <N>              (default: $DURATION_SECONDS)"
             echo "  --ramp-up-seconds <N>               (default: $RAMP_UP_SECONDS)"
             echo "  --no-monitoring                     Disable system monitoring (for precise benchmarks)"
+            echo "  --profile                           Enable transport profiling (decode/handle/encode/send JSONL)"
             echo "  --ramp-down-seconds <N>             (default: $RAMP_DOWN_SECONDS)"
             echo "  --actions-per-player-per-second <N>  (default: $ACTIONS_PER_PLAYER_PER_SECOND)"
             echo "  --tui <true|false>                  (default: $TUI)"
@@ -223,6 +229,15 @@ if [ "$OS_TYPE" = "Darwin" ]; then
     CPU_CORES=$(sysctl -n hw.ncpu 2>/dev/null || echo "1")
 elif [ "$OS_TYPE" = "Linux" ]; then
     CPU_CORES=$(nproc 2>/dev/null || echo "1")
+fi
+
+# Transport profiling: when --profile is used, ServerLoadTest (LandServer) writes JSONL
+if [ "$ENABLE_PROFILING" = "true" ]; then
+    PROFILE_TIMESTAMP=$(date -u +"%Y-%m-%dT%H-%M-%SZ")
+    export TRANSPORT_PROFILE_JSONL_PATH="$GAMEDEMO_ROOT/results/server-loadtest/transport-profile-${PROFILE_TIMESTAMP}.jsonl"
+    mkdir -p "$(dirname "$TRANSPORT_PROFILE_JSONL_PATH")"
+    rm -f "$TRANSPORT_PROFILE_JSONL_PATH"
+    echo "Transport profiling enabled: $TRANSPORT_PROFILE_JSONL_PATH"
 fi
 
 # Start the load test

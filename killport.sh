@@ -12,7 +12,7 @@ Examples:
   ./killport.sh 8080 --force
 
 Behavior:
-  - Finds processes LISTENing on the given TCP port (macOS: lsof).
+  - Finds processes LISTENing on the given TCP port (lsof on macOS/most Linux, ss on Linux).
   - Sends SIGTERM first, waits briefly, then sends SIGKILL if still running.
   - With --force, skips SIGTERM and sends SIGKILL immediately.
 EOF
@@ -49,14 +49,38 @@ if ! [[ "$PORT" =~ ^[0-9]+$ ]] || (( PORT < 1 || PORT > 65535 )); then
   exit 2
 fi
 
-if ! command -v lsof >/dev/null 2>&1; then
-  echo "Missing dependency: lsof" >&2
+if ! command -v lsof >/dev/null 2>&1 && ! command -v ss >/dev/null 2>&1 && [[ ! -f /proc/net/tcp ]]; then
+  echo "Missing dependency: lsof, ss, or /proc (install lsof: apt install lsof / brew install lsof)" >&2
   exit 1
 fi
 
+# Get PIDs listening on TCP port. Prefer lsof (macOS + most Linux); fallback to ss, then /proc (Linux).
 get_pids() {
-  # -t prints only PIDs; if nothing is listening, exits with 1, so we swallow errors.
-  lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null || true
+  if command -v lsof >/dev/null 2>&1; then
+    # -t prints only PIDs; -sTCP:LISTEN filters to listening sockets (works on macOS and Linux).
+    lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null || true
+  elif command -v ss >/dev/null 2>&1; then
+    # Linux: ss -tlnp shows listeners; extract PIDs from "pid=123" in the output.
+    ss -tlnp 2>/dev/null | grep -E ":$PORT[^0-9]|:$PORT\$" | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | grep -E '^[0-9]+$' | sort -u || true
+  elif [[ -f /proc/net/tcp ]]; then
+    # Linux fallback: parse /proc/net/tcp for inode, then find pid via /proc/*/fd (avoids
+    # per-process net/tcp which can show shared namespace and false positives).
+    local hex_be hex_le inode
+    hex_be=$(printf '%04X' "$PORT")
+    hex_le=$(printf '%02X%02X' $((PORT & 0xFF)) $((PORT >> 8)))
+    while read -r inode; do
+      [[ -z "$inode" ]] || [[ "$inode" -lt 10000 ]] && continue
+      for fd in /proc/[0-9]*/fd/*; do
+        [[ -L "$fd" ]] || continue
+        [[ "$(readlink "$fd" 2>/dev/null)" == "socket:[$inode]" ]] || continue
+        pid=${fd#/proc/}; pid=${pid%%/*}
+        echo "$pid"
+      done 2>/dev/null
+    done < <(awk -v be=":$hex_be" -v le=":$hex_le" '
+      NR>1 && $4=="0A" && ($2 ~ be || $2 ~ le) { print $10 }
+    ' /proc/net/tcp 2>/dev/null)
+    sort -u || true
+  fi
 }
 
 PIDS="$(get_pids)"

@@ -307,9 +307,11 @@ public struct SyncEngine: Sendable {
     }
     
     /// Escape a key for JSON Pointer format (RFC 6901).
+    /// Short-circuit when key contains no special chars to avoid allocating strings for common keys (x, y, players, etc.).
     private func escapeJsonPointer(_ key: String) -> String {
+        if !key.contains("~"), !key.contains("/") { return key }
         return key.replacingOccurrences(of: "~", with: "~0")
-                  .replacingOccurrences(of: "/", with: "~1")
+            .replacingOccurrences(of: "/", with: "~1")
     }
     
     /// Check if a path matches any path in the onlyPaths set (including prefix matches).

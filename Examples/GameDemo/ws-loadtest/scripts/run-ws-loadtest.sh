@@ -1,6 +1,51 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Auto-adjust system parameters for optimal WebSocket performance
+check_and_adjust_system_params() {
+  local adjusted=false
+  
+  # Check TCP SYN backlog (recommended: 4096 for high connection count)
+  local current_syn_backlog=$(cat /proc/sys/net/ipv4/tcp_max_syn_backlog 2>/dev/null || echo "0")
+  if [ "$current_syn_backlog" -lt 4096 ]; then
+    echo "Adjusting tcp_max_syn_backlog: $current_syn_backlog -> 4096"
+    sysctl -w net.ipv4.tcp_max_syn_backlog=4096 >/dev/null 2>&1 || echo "  (failed, need sudo)"
+    adjusted=true
+  fi
+  
+  # Check somaxconn (listen backlog)
+  local current_somaxconn=$(cat /proc/sys/net/core/somaxconn 2>/dev/null || echo "0")
+  if [ "$current_somaxconn" -lt 4096 ]; then
+    echo "Adjusting somaxconn: $current_somaxconn -> 4096"
+    sysctl -w net.core.somaxconn=4096 >/dev/null 2>&1 || echo "  (failed, need sudo)"
+    adjusted=true
+  fi
+  
+  # Enable TCP TIME_WAIT reuse (faster cleanup between tests)
+  local current_tw_reuse=$(cat /proc/sys/net/ipv4/tcp_tw_reuse 2>/dev/null || echo "0")
+  if [ "$current_tw_reuse" != "1" ]; then
+    echo "Enabling tcp_tw_reuse for faster connection cleanup"
+    sysctl -w net.ipv4.tcp_tw_reuse=1 >/dev/null 2>&1 || echo "  (failed, need sudo)"
+    adjusted=true
+  fi
+  
+  # Reduce FIN timeout (faster cleanup, default 60s -> 30s)
+  local current_fin_timeout=$(cat /proc/sys/net/ipv4/tcp_fin_timeout 2>/dev/null || echo "60")
+  if [ "$current_fin_timeout" -gt 30 ]; then
+    echo "Adjusting tcp_fin_timeout: ${current_fin_timeout}s -> 30s"
+    sysctl -w net.ipv4.tcp_fin_timeout=30 >/dev/null 2>&1 || echo "  (failed, need sudo)"
+    adjusted=true
+  fi
+  
+  if [ "$adjusted" = false ]; then
+    echo "System parameters already optimal"
+  fi
+}
+
+echo "Checking system parameters..."
+check_and_adjust_system_params
+echo ""
+
 SCENARIO="scenarios/hero-defense/default.json"
 WORKERS=""
 OUTPUT_DIR="results"
@@ -55,10 +100,24 @@ fi
 TOTAL_DURATION=$(node -e "const fs=require('fs'); const s=JSON.parse(fs.readFileSync('$SCENARIO_PATH','utf-8')); const p=s.phases||{}; const sum=(p.preflight?.durationSeconds||0)+(p.steady?.durationSeconds||0)+(p.postflight?.durationSeconds||0); console.log(sum||60);")
 TIMEOUT=$((TOTAL_DURATION + 30))
 
+# Check if server is listening on 8080. Use nc, curl, or bash /dev/tcp (nc may be unavailable in minimal envs).
+check_port_8080() {
+  if command -v nc >/dev/null 2>&1 && nc -z localhost 8080 >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v curl >/dev/null 2>&1 && curl -s -o /dev/null -w "%{http_code}" --connect-timeout 1 http://localhost:8080/health 2>/dev/null | grep -q 200; then
+    return 0
+  fi
+  if (echo >/dev/tcp/localhost/8080) 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
 # Safety: ensure we connect to the server we start.
 # If 8080 is already in use, the test may accidentally run against an existing GameServer
 # (and could generate reevaluation records, noisy logs, etc.).
-if nc -z localhost 8080 >/dev/null 2>&1; then
+if check_port_8080; then
   echo "Port 8080 is already in use. Please stop the existing server before running this script."
   echo "Tip: check with: lsof -nP -iTCP:8080 -sTCP:LISTEN"
   exit 1
@@ -96,13 +155,19 @@ if [ -z "$BIN_DIR" ] || [ ! -x "$SERVER_BIN" ]; then
   tail -n 120 /tmp/ws-loadtest-gameserver.build.log 2>/dev/null || true
   exit 1
 fi
-"$SERVER_BIN" >/tmp/ws-loadtest-gameserver.log 2>&1 &
+# Use stdbuf (Linux) to force line-buffered output so logs appear immediately when
+# server crashes or is killed. On macOS stdbuf may not work; fallback to direct run.
+if command -v stdbuf >/dev/null 2>&1; then
+  stdbuf -oL -eL "$SERVER_BIN" >/tmp/ws-loadtest-gameserver.log 2>&1 &
+else
+  "$SERVER_BIN" >/tmp/ws-loadtest-gameserver.log 2>&1 &
+fi
 SERVER_PID=$!
 
 echo "Waiting for server to listen on 8080..."
 READY=false
 for _ in $(seq 1 "$STARTUP_TIMEOUT"); do
-  if nc -z localhost 8080 >/dev/null 2>&1; then
+  if check_port_8080; then
     READY=true
     break
   fi
@@ -112,8 +177,17 @@ done
 if [ "$READY" = false ]; then
   echo "Server did not start in time. Killing..."
   echo "---- GameServer log (tail) ----"
-  tail -n 50 /tmp/ws-loadtest-gameserver.log || true
-  kill -9 "$SERVER_PID" || true
+  tail -n 50 /tmp/ws-loadtest-gameserver.log 2>/dev/null || true
+  # If log is empty (e.g. server crashed before flushing, or LOG_LEVEL=error hides startup msgs),
+  # show build log as fallback to help debug.
+  if [ ! -s /tmp/ws-loadtest-gameserver.log ]; then
+    echo "(GameServer log empty - showing build log as fallback)"
+    tail -n 80 /tmp/ws-loadtest-gameserver.build.log 2>/dev/null || true
+    echo ""
+    echo "Tip: Run manually with LOG_LEVEL=info to see startup logs:"
+    echo "  cd $GAMEDEMO_DIR && LOG_LEVEL=info $SERVER_BIN"
+  fi
+  kill -9 "$SERVER_PID" 2>/dev/null || true
   exit 1
 fi
 
@@ -139,25 +213,79 @@ SECONDS=0
 while kill -0 "$CLI_PID" >/dev/null 2>&1; do
   if [ "$SECONDS" -gt "$TIMEOUT" ]; then
     echo "Load test timed out after ${TIMEOUT}s. Killing..."
-    kill -9 "$CLI_PID" || true
+    kill -9 "$CLI_PID" 2>/dev/null || true
+    # Kill any child processes spawned by CLI
+    pkill -9 -P "$CLI_PID" 2>/dev/null || true
     break
   fi
   sleep 1
 done
 
-wait "$CLI_PID" || true
+# Ensure CLI process is truly dead
+if kill -0 "$CLI_PID" 2>/dev/null; then
+  kill -9 "$CLI_PID" 2>/dev/null || true
+  pkill -9 -P "$CLI_PID" 2>/dev/null || true
+fi
+wait "$CLI_PID" 2>/dev/null || true
 
 echo "Stopping monitoring..."
 kill "$MONITOR_PID" >/dev/null 2>&1 || true
-wait "$MONITOR_PID" >/dev/null 2>&1 || true
+# Give monitoring process time to exit gracefully
+for _ in $(seq 1 3); do
+  if ! kill -0 "$MONITOR_PID" 2>/dev/null; then
+    break
+  fi
+  sleep 1
+done
+# Force kill if still running
+if kill -0 "$MONITOR_PID" 2>/dev/null; then
+  kill -9 "$MONITOR_PID" 2>/dev/null || true
+fi
 
 echo "Stopping GameServer..."
 # If server already exited (e.g. Abort trap: 6 = SIGABRT during load), kill is no-op; wait reports status.
 # Abort trap: 6 means GameServer crashed during the test, not from this kill.
 kill "$SERVER_PID" >/dev/null 2>&1 || true
-if ! wait "$SERVER_PID" 2>/dev/null; then
-    echo "---- GameServer log (tail, may show crash) ----"
-    tail -n 80 /tmp/ws-loadtest-gameserver.log 2>/dev/null || true
+
+# Wait with timeout (max 10 seconds) to avoid blocking forever on unresponsive servers.
+# Under extreme load (e.g., 700 rooms), the server may become unresponsive and never exit.
+WAIT_TIMEOUT=10
+WAITED=0
+while kill -0 "$SERVER_PID" 2>/dev/null && [ "$WAITED" -lt "$WAIT_TIMEOUT" ]; do
+  sleep 1
+  WAITED=$((WAITED + 1))
+done
+
+# Check if server exited abnormally (non-zero exit code or still running after timeout)
+if kill -0 "$SERVER_PID" 2>/dev/null; then
+  echo "GameServer did not terminate after ${WAIT_TIMEOUT}s. Forcing shutdown with SIGKILL..."
+  kill -9 "$SERVER_PID" 2>/dev/null || true
+  sleep 1
+elif ! wait "$SERVER_PID" 2>/dev/null; then
+  echo "---- GameServer log (tail, may show crash) ----"
+  tail -n 80 /tmp/ws-loadtest-gameserver.log 2>/dev/null || true
+  if [ ! -s /tmp/ws-loadtest-gameserver.log ]; then
+    echo "(GameServer log empty - showing build log as fallback)"
+    tail -n 80 /tmp/ws-loadtest-gameserver.build.log 2>/dev/null || true
+  fi
+fi
+
+# Final check: ensure process is truly dead
+if kill -0 "$SERVER_PID" 2>/dev/null; then
+  echo "WARNING: GameServer still running after SIGKILL. This should not happen."
+  kill -9 "$SERVER_PID" 2>/dev/null || true
+  sleep 2
+fi
+
+# Verify port 8080 is released (fallback: kill any process still holding it)
+if check_port_8080; then
+  echo "WARNING: Port 8080 still in use after stopping GameServer. Attempting cleanup..."
+  STALE_PID=$(lsof -t -i:8080 2>/dev/null | head -1)
+  if [ -n "$STALE_PID" ]; then
+    echo "Killing stale process on port 8080 (PID: $STALE_PID)"
+    kill -9 "$STALE_PID" 2>/dev/null || true
+    sleep 1
+  fi
 fi
 
 REEVAL_COUNT=$(ls -1 "$REEVALUATION_RECORDS_DIR" 2>/dev/null | wc -l | tr -d ' ')

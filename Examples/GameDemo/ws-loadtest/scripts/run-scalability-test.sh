@@ -295,6 +295,59 @@ for ((i=0; i<TOTAL_RUNS; i++)); do
     echo ""
     echo "Waiting ${DELAY_BETWEEN_RUNS}s before next run..."
     sleep "$DELAY_BETWEEN_RUNS"
+    
+    # Safety: Ensure no GameServer processes are still running from previous test.
+    # Sometimes processes don't terminate cleanly; kill any stragglers.
+    STALE_SERVERS=$(ps aux | grep -E '/GameServer$' | grep -v grep | awk '{print $2}')
+    if [ -n "$STALE_SERVERS" ]; then
+      echo "WARNING: Found stale GameServer process(es): $STALE_SERVERS"
+      echo "Killing stale processes..."
+      echo "$STALE_SERVERS" | xargs kill -9 2>/dev/null || true
+      sleep 2
+    fi
+    
+    # Check for stale node processes (ws-loadtest CLI)
+    STALE_NODES=$(ps aux | grep -E 'node.*cli.js|node.*ws-loadtest' | grep -v grep | awk '{print $2}')
+    if [ -n "$STALE_NODES" ]; then
+      echo "WARNING: Found stale node process(es): $STALE_NODES"
+      echo "Killing stale node processes..."
+      echo "$STALE_NODES" | xargs kill -9 2>/dev/null || true
+      sleep 1
+    fi
+    
+    # Verify port 8080 is free before next run
+    if lsof -i:8080 2>/dev/null | grep -q LISTEN; then
+      echo "WARNING: Port 8080 still in use. Attempting cleanup..."
+      STALE_PID=$(lsof -t -i:8080 2>/dev/null | head -1)
+      if [ -n "$STALE_PID" ]; then
+        echo "Killing process on port 8080 (PID: $STALE_PID)"
+        kill -9 "$STALE_PID" 2>/dev/null || true
+        sleep 1
+      fi
+    fi
+    
+    # Wait for TIME_WAIT connections to clear (prevents connection exhaustion)
+    # High load tests can leave thousands of TIME_WAIT connections that interfere with next test
+    echo "Checking TIME_WAIT connections..."
+    TIMEWAIT_COUNT=$(ss -tan 2>/dev/null | grep TIME-WAIT | wc -l || echo "0")
+    TIMEWAIT_COUNT=$(echo "$TIMEWAIT_COUNT" | tr -d ' \n')
+    if [ "$TIMEWAIT_COUNT" -gt 1000 ] 2>/dev/null; then
+      echo "Found $TIMEWAIT_COUNT TIME_WAIT connections. Waiting for cleanup..."
+      for i in {1..30}; do
+        sleep 2
+        TIMEWAIT_COUNT=$(ss -tan 2>/dev/null | grep TIME-WAIT | wc -l || echo "0")
+        TIMEWAIT_COUNT=$(echo "$TIMEWAIT_COUNT" | tr -d ' \n')
+        if [ "$TIMEWAIT_COUNT" -lt 500 ] 2>/dev/null; then
+          echo "TIME_WAIT connections reduced to $TIMEWAIT_COUNT. Continuing..."
+          break
+        fi
+        if [ $((i % 5)) -eq 0 ]; then
+          echo "  Still waiting... ($TIMEWAIT_COUNT TIME_WAIT connections remaining)"
+        fi
+      done
+    else
+      echo "TIME_WAIT connections: $TIMEWAIT_COUNT (acceptable)"
+    fi
   fi
 done
 
