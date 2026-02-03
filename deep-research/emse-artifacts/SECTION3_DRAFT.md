@@ -8,21 +8,31 @@
 
 StateTree 模型透過引入一個以 **單一權威 StateTree** 為中心的反應式程式設計觀點來解決這些挑戰。
 
+為避免名詞混淆，本章的 **Action** 採用廣義定義：泛指任何會觸發狀態轉換的 handler（包含客戶端送出的指令，以及伺服器端的 Tick、生命週期事件等）。在此定義下，「狀態只能透過 Action 改動」等價於「狀態只能透過明確的轉換處理器改動」。
+
 ```mermaid
 flowchart LR
   %% Programming model (language-agnostic)
 
-  S["StateTree Snapshot<br/>s"]
-  R["Resolver<br/>resolve(s) -> r"]
-  A["Action<br/>action(s, r) -> s_next"]
+  C["Client"]
+  I["Action Input<br/>a"]
 
-  S --> R --> A --> S
+  S0["StateTree Snapshot<br/>s"]
+  R["Resolver<br/>resolve(s, a) -> r"]
+  A["Action Handler<br/>action(s, a, r) -> s'"]
+  S1["StateTree Snapshot<br/>s'"]
+
+  C --> I
+  I --> R
+  S0 --> R
+  I --> A
+  S0 --> A
+  R --> A
+  A --> S1
 
   P["Sync Policy<br/>filter"]
-  V["View<br/>subset of s"]
-  C["Client"]
-
-  S --> P --> V --> C
+  V["Client View<br/>subset of s'"]
+  S1 --> P --> V --> C
 ```
 
 ### 3.1.1 單一事實來源與狀態節點 (Single Source of Truth and State Nodes)
@@ -72,15 +82,27 @@ $$
 
 在上述限制下，我們可推論出一些重要特性，例如：狀態演化路徑單一而可追蹤、可透過輸入與上下文重建（replay/debuggability），以及以狀態差異為基礎的自動化同步（sync-friendliness）。在後續章節中，我們會進一步說明這些語意如何被落地為可部署系統，並討論實作層面對「決定性」的支援方式與其限制。
 
+### 3.1.5 輸入、決定性與失敗語意 (Inputs, Determinism, and Failure Semantics)
+
+為避免將「模型語意」與「特定實作細節」混淆，本節補充幾個在 programming model 層級需要被明確化的要點：
+
+*   **輸入的範疇 (Inputs)**：$I_t$ 不僅包含客戶端送出的 Action，也可包含系統驅動的 Tick、生命週期事件（join/leave）或其他伺服器端事件；它們在模型層級上同樣被視為狀態轉換的觸發輸入。
+*   **決定性的成立條件 (Determinism)**：若要讓重評估可重現，狀態轉換不應直接讀取非決定性來源（時間、亂數、外部 I/O、平台相依運算）。任何非決定性資訊應被提升為可觀測且可重放的輸入/脈絡（$I_t$ 或 $C_t$）的一部分；實作層也可透過 deterministic math 等方式降低數值運算的不一致風險。
+*   **失敗語意 (Failure Semantics)**：當 Resolver 解析外部資料失敗時，對應的狀態轉換應被中止（Action handler 不應在缺失脈絡下繼續執行），並回傳可被客戶端理解的錯誤結果；此行為將錯誤處理從業務邏輯中抽離，避免導致隱性不一致的狀態更新。
+*   **同步的安全邊界 (Sync as a Security Boundary)**：Sync policy 決定每個客戶端可觀測的 view，是資料最小揭露與 per-player 權限邊界的一部分；因此其語意應獨立於業務邏輯，並可被清楚審查。
+
 ## 3.2 系統架構 (System Architecture)
 
 為了將 3.1 節的 StateTree 模型落地並可部署，我們以 Swift 實作了 SwiftStateTree，並採用嚴謹的分層架構以強制落實伺服器權威、模組化與可擴展性。如 **圖 1**（系統堆疊圖）所示，架構被組織為不同層級，每層封裝特定職責。
+
+在一致性與並發的觀點上，本系統以「房間/實例」作為主要隔離單元：單一房間內的狀態轉換被序列化以維持一致性；不同房間之間則可併行執行以提升吞吐量。此設計使 programming model 的約束能在實務上以清晰的邊界落地。
 
 ```mermaid
 flowchart TB
   %% Implementation view (SwiftStateTree runtime)
 
   Client[Client] -->|WebSocket msg| Adapter[TransportAdapter]
+  Server["Server<br/>(tick / lifecycle events)"] --> Keeper
   Adapter -->|route to land/room| Keeper["LandKeeper<br/>(room runtime, serialized)"]
 
   subgraph Room["Per Room / Land Instance"]
@@ -101,7 +123,7 @@ flowchart TB
     Rn --> Rex
 
     Rex -->|fill outputs| Ctx2["LandContext + ResolverOutputs<br/>(not persisted, not synced)"]
-    Ctx2 --> H["Handler (sync)<br/>(Action / Event / Tick)"]
+    Ctx2 --> H["Transition Handler (sync)<br/>(Action / Tick / Lifecycle)"]
     H -->|mutate| S["Authoritative StateTree<br/>StateNode"]
   end
 
