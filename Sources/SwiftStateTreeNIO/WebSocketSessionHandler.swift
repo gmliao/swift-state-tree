@@ -35,7 +35,10 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
     private var flushScheduled: Bool = false
     /// Maximum messages per batch before immediate flush
     private static let maxBatchSize = 64
-    
+
+    /// Fragment reassembly: buffer for accumulating fragmented message payloads
+    private var fragmentBuffer: ByteBuffer?
+
     // MARK: - Ping/Pong Keepalive
     
     /// Ping interval in seconds (default: 30 seconds)
@@ -118,11 +121,8 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         let frame = unwrapInboundIn(data)
 
         switch frame.opcode {
-        case .binary:
-            handleBinaryFrame(frame, context: context)
-
-        case .text:
-            handleTextFrame(frame, context: context)
+        case .binary, .text, .continuation:
+            handleDataFrame(frame, context: context)
 
         case .ping:
             handlePing(frame, context: context)
@@ -132,10 +132,6 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
 
         case .connectionClose:
             handleClose(frame, context: context)
-
-        case .continuation:
-            // TODO: Handle fragmented messages if needed
-            logger.warning("Received continuation frame, fragmented messages not yet supported")
 
         default:
             logger.warning("Received unknown opcode: \(frame.opcode)")
@@ -157,47 +153,39 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
 
     // MARK: - Frame Handlers
 
-    private func handleBinaryFrame(_ frame: WebSocketFrame, context: ChannelHandlerContext) {
-        // Get the unmasked data (server receives masked frames from client)
-        var frameData = frame.unmaskedData
+    private func handleDataFrame(_ frame: WebSocketFrame, context: ChannelHandlerContext) {
+        let result = WebSocketFragmentReassembler.process(frame: frame, fragmentBuffer: &fragmentBuffer)
 
-        // Direct bytes extraction - avoid intermediate copy
-        guard let bytes = frameData.readBytes(length: frameData.readableBytes) else {
-            return
-        }
-        let data = Data(bytes)
+        switch result {
+        case .complete(let data):
+            enqueueMessage(data, context: context)
 
-        // Batch messages instead of creating a Task per message
-        pendingMessages.append(data)
+        case .incomplete:
+            break
 
-        // Immediate flush if batch is full
-        if pendingMessages.count >= Self.maxBatchSize {
-            flushPendingMessages()
-        } else if !flushScheduled {
-            // Schedule deferred flush on next event loop tick
-            flushScheduled = true
-            context.eventLoop.execute { [weak self] in
-                self?.flushPendingMessages()
-            }
+        case .ignored:
+            logger.warning(
+                "WebSocket frame ignored",
+                metadata: [
+                    "opcode": .string(String(describing: frame.opcode)),
+                    "sessionID": .string(sessionID.rawValue),
+                ]
+            )
+
+        case .exceededMaxSize:
+            logger.warning(
+                "Fragmented message exceeded max size (\(WebSocketFragmentReassembler.maxFragmentSize))",
+                metadata: ["sessionID": .string(sessionID.rawValue)]
+            )
         }
     }
 
-    private func handleTextFrame(_ frame: WebSocketFrame, context: ChannelHandlerContext) {
-        var frameData = frame.unmaskedData
-
-        guard let bytes = frameData.readBytes(length: frameData.readableBytes) else {
-            return
-        }
-        let data = Data(bytes)
-
-        // Batch messages instead of creating a Task per message
+    private func enqueueMessage(_ data: Data, context: ChannelHandlerContext) {
         pendingMessages.append(data)
 
-        // Immediate flush if batch is full
         if pendingMessages.count >= Self.maxBatchSize {
             flushPendingMessages()
         } else if !flushScheduled {
-            // Schedule deferred flush on next event loop tick
             flushScheduled = true
             context.eventLoop.execute { [weak self] in
                 self?.flushPendingMessages()
