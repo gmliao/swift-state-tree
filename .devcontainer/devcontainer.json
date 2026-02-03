@@ -30,6 +30,14 @@
   // Use 'forwardPorts' to make a list of ports inside the container available locally
   "forwardPorts": [8080,5173],
 
+  // Docker run arguments for optimal network performance
+  "runArgs": [
+    "--sysctl", "net.ipv4.tcp_max_syn_backlog=4096",
+    "--sysctl", "net.core.somaxconn=4096",
+    "--sysctl", "net.ipv4.tcp_tw_reuse=1",
+    "--sysctl", "net.ipv4.tcp_fin_timeout=30"
+  ],
+
   // Mount configuration:
   // 1. Workspace: bind mount for source code (needs to sync with host)
   // 2. .build and .swiftpm: Docker volumes (isolated in container, not copied to host)

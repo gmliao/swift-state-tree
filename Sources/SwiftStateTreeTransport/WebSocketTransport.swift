@@ -2,6 +2,51 @@ import Foundation
 import Logging
 import SwiftStateTree
 
+// MARK: - WebSocket Transport Send Queue
+
+/// Lock-based queue for non-blocking enqueue. Drain task batches and dispatches to the actor.
+private final class WebSocketTransportSendQueue: @unchecked Sendable, TransportSendQueue {
+    private let lock = NSLock()
+    private var buffer: [(Data, EventTarget)] = []
+    private let maxBatchSize: Int
+    private let drainIntervalNanoseconds: UInt64
+
+    init(maxBatchSize: Int = 64, drainIntervalMs: Double = 1.0) {
+        self.maxBatchSize = maxBatchSize
+        self.drainIntervalNanoseconds = UInt64(drainIntervalMs * 1_000_000)
+    }
+
+    func enqueue(_ message: Data, to target: EventTarget) {
+        lock.lock()
+        defer { lock.unlock() }
+        buffer.append((message, target))
+    }
+
+    func enqueueBatch(_ updates: [(Data, EventTarget)]) {
+        guard !updates.isEmpty else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        buffer.append(contentsOf: updates)
+    }
+
+    /// Remove and return up to maxBatchSize items. Capacity is reused for the returned array.
+    func drainBatch() -> [(Data, EventTarget)] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !buffer.isEmpty else { return [] }
+        let count = min(buffer.count, maxBatchSize)
+        var batch: [(Data, EventTarget)] = []
+        batch.reserveCapacity(count)
+        for i in 0..<count {
+            batch.append(buffer[i])
+        }
+        buffer.removeFirst(count)
+        return batch
+    }
+}
+
+// MARK: - Per-Session Send Queue
+
 /// Per-session send queue: enqueue returns immediately; a drain Task sends to the connection.
 private struct SessionSendQueue: Sendable {
     let connection: WebSocketConnection
@@ -45,8 +90,18 @@ public actor WebSocketTransport: Transport {
     private var lastMissingPlayerLogAt: [PlayerID: Date] = [:]
     private let logger: Logger
 
+    /// Queue-based send path: producers enqueue without await; drain task batches and dispatches.
+    private let sendQueue: WebSocketTransportSendQueue
+    /// Drain task started in init; must be nonisolated(unsafe) for init assignment.
+    private nonisolated(unsafe) var drainTask: Task<Void, Never>?
+    private static let drainBatchSize = 64
+    private static let drainIntervalNanoseconds: UInt64 = 1_000_000  // 1 ms
+
     private static let missingTargetLogIntervalSeconds: TimeInterval = 2.0
     private static let missingTargetLogMapSoftLimit: Int = 5000
+
+    /// Non-blocking send queue. When set, TransportAdapter uses enqueueBatch instead of await sendBatch.
+    public nonisolated var transportSendQueue: (any TransportSendQueue)? { sendQueue }
 
     public init(logger: Logger? = nil) {
         // Create logger with scope if not provided
@@ -58,6 +113,22 @@ public actor WebSocketTransport: Transport {
                 scope: "WebSocketTransport"
             )
         }
+        self.sendQueue = WebSocketTransportSendQueue(
+            maxBatchSize: Self.drainBatchSize,
+            drainIntervalMs: Double(Self.drainIntervalNanoseconds) / 1_000_000
+        )
+        let sq = self.sendQueue
+        self.drainTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                let batch = sq.drainBatch()
+                if !batch.isEmpty {
+                    await self.dispatchBatch(batch)
+                } else {
+                    try? await Task.sleep(nanoseconds: Self.drainIntervalNanoseconds)
+                }
+            }
+        }
     }
 
     /// Set delegate from outside the actor.
@@ -66,11 +137,12 @@ public actor WebSocketTransport: Transport {
     }
 
     public func start() async throws {
-        // In a real implementation, this would start the server or bind to a port.
         logger.info("WebSocketTransport started")
     }
 
     public func stop() async throws {
+        drainTask?.cancel()
+        drainTask = nil
         // Finish all continuations so drain tasks exit, then close connections
         for (_, queue) in sessionQueues {
             queue.continuation.finish()
@@ -112,6 +184,42 @@ public actor WebSocketTransport: Transport {
         case let .broadcastExcept(excludedSessionID):
             for (id, queue) in sessionQueues where id != excludedSessionID {
                 queue.continuation.yield(message)
+            }
+        }
+    }
+
+    /// Batch send: yields all messages in one actor call to reduce contention.
+    public func sendBatch(_ updates: [(Data, EventTarget)]) async {
+        dispatchBatch(updates)
+    }
+
+    /// Internal: dispatch batch to session queues. Used by drain task and sendBatch.
+    private func dispatchBatch(_ updates: [(Data, EventTarget)]) {
+        for (message, target) in updates {
+            logOutgoing(message, target: target)
+            switch target {
+            case let .session(sessionID):
+                if let queue = sessionQueues[sessionID] {
+                    queue.continuation.yield(message)
+                } else {
+                    logDropMissingSession(sessionID: sessionID, bytes: message.count)
+                }
+            case let .player(playerID):
+                if let sessionIDs = playerSessions[playerID] {
+                    for sessionID in sessionIDs {
+                        sessionQueues[sessionID]?.continuation.yield(message)
+                    }
+                } else {
+                    logDropMissingPlayer(playerID: playerID, bytes: message.count)
+                }
+            case .broadcast:
+                for queue in sessionQueues.values {
+                    queue.continuation.yield(message)
+                }
+            case let .broadcastExcept(excludedSessionID):
+                for (id, queue) in sessionQueues where id != excludedSessionID {
+                    queue.continuation.yield(message)
+                }
             }
         }
     }
