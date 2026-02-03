@@ -17,6 +17,17 @@
   - Baseline：`JSON Object`
   - Optimized：`Opcode MsgPack (PathHash)`
 
+#### `hero-defense` 遊戲案例摘要（Game Scenario）
+
+`hero-defense` 是一個以 tick 驅動的 tower-defense 類 land，用來代表「持續演化、狀態差分頻繁」的多人即時工作負載：
+
+- **核心目標**：玩家共同防守基地；怪物週期性生成並向基地移動，命中/到達基地會影響基地狀態。
+- **主要實體（State 的動態集合）**：玩家（players）、怪物（monsters）、砲塔（turrets）等，以動態 key 的集合/字典形式存在並隨時間增減。
+- **每 tick 的典型演化**：更新玩家/怪物移動、週期性生成怪物、執行玩家與砲塔的自動射擊與命中結算，因而持續產生狀態差分並觸發同步。
+- **互動來源（Action / Client Events）**：玩家可移動、射擊、放置砲塔、升級等（本章 benchmark 的比較中，除編碼格式與 room-level 排程方式外，其餘工作負載保持一致）。
+
+本章採用基準設定 `playersPerRoom = 5`、tick=20Hz、sync=10Hz（等價於 `ticksPerSync = 2`），以代表小隊規模並涵蓋動態 key 與 per-player 視圖等同步特性。
+
 ---
 
 ### 4.2 RQ1 — 網路效率（Network Efficiency）：opcode-driven 編碼能節省多少 payload？
