@@ -19,6 +19,8 @@ start_server() {
     local project_root="$(pwd)"
     local server_dir="$project_root/Examples/${SERVER_DIR_NAME}"
     # Normalize encoding: GameServer accepts json_opcode, jsonOpcode, json-opcode
+    # Enable reevaluation for reevaluation E2E tests
+    export ENABLE_REEVALUATION=true
     start_server_impl "$encoding" "$SERVER_NAME" "$server_dir" "$SERVER_CMD"
 }
 

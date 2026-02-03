@@ -1,5 +1,5 @@
 {
-  "originHash" : "a0fe1a917b41d5fa1ace8c437f914fbcb4b819b97269fe556a4a89251957d4c1",
+  "originHash" : "1bc2b62510db0b835105db568c457bbc041c347589882b6edc327fa67ecb54ac",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -242,6 +242,15 @@
       "state" : {
         "revision" : "395a77f0aa927f0ff73941d7ac35f2b46d47c9db",
         "version" : "1.6.3"
+      }
+    },
+    {
+      "identity" : "swift-websocket",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/hummingbird-project/swift-websocket.git",
+      "state" : {
+        "revision" : "7c0ea7b877386d117441877a7cb24005326750a7",
+        "version" : "1.3.2"
       }
     }
   ],

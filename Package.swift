@@ -39,6 +39,11 @@ let package = Package(
             name: "SwiftStateTreeDeterministicMath",
             targets: ["SwiftStateTreeDeterministicMath"]
         ),
+        // ⚡ Pure NIO WebSocket: High-performance WebSocket transport without Hummingbird
+        .library(
+            name: "SwiftStateTreeNIO",
+            targets: ["SwiftStateTreeNIO"]
+        ),
         // 🔍 Reevaluation Monitor: Built-in Land for monitoring reevaluation verification
         .library(
             name: "SwiftStateTreeReevaluationMonitor",
@@ -57,6 +62,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-atomics.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
+        .package(url: "https://github.com/apple/swift-nio.git", from: "2.77.0"),
     ],
     targets: [
         // 🔹 Core Library: Pure Swift game logic, no network dependency
@@ -144,6 +150,21 @@ let package = Package(
             path: "Sources/SwiftStateTreeReevaluationMonitor"
         ),
 
+        // ⚡ Pure NIO WebSocket: High-performance WebSocket transport
+        .target(
+            name: "SwiftStateTreeNIO",
+            dependencies: [
+                "SwiftStateTree",
+                "SwiftStateTreeTransport",
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+                .product(name: "NIOHTTP1", package: "swift-nio"),
+                .product(name: "NIOWebSocket", package: "swift-nio"),
+                .product(name: "Logging", package: "swift-log"),
+            ],
+            path: "Sources/SwiftStateTreeNIO"
+        ),
+
         // 🔹 Macro Implementation: Compile-time macro expansion
         .macro(
             name: "SwiftStateTreeMacros",
@@ -188,6 +209,17 @@ let package = Package(
                 .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket"),
             ],
             path: "Tests/SwiftStateTreeHummingbirdTests"
+        ),
+
+        // ⚡ NIO tests
+        .testTarget(
+            name: "SwiftStateTreeNIOTests",
+            dependencies: [
+                "SwiftStateTreeNIO",
+                "SwiftStateTreeTransport",
+                "SwiftStateTree",
+            ],
+            path: "Tests/SwiftStateTreeNIOTests"
         ),
 
         // 🔹 Macro tests
