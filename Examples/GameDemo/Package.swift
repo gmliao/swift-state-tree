@@ -44,6 +44,7 @@ let package = Package(
             dependencies: [
                 "GameContent",
                 .product(name: "SwiftStateTreeHummingbird", package: "SwiftStateTree"),
+                .product(name: "SwiftStateTreeNIO", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeTransport", package: "SwiftStateTree"),
             ],
             path: "Sources/GameServer"
