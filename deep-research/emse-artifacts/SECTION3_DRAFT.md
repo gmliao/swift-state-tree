@@ -15,14 +15,16 @@ flowchart LR
   %% Programming model (language-agnostic)
 
   C["Client"]
-  I["Action Input<br/>a"]
+  Srv["Server<br/>tick / lifecycle"]
+  I["Input<br/>a"]
 
   S0["StateTree Snapshot<br/>s"]
   R["Resolver<br/>resolve(s, a) -> r"]
-  A["Action Handler<br/>action(s, a, r) -> s'"]
+  A["Transition Handler<br/>action(s, a, r) -> s'"]
   S1["StateTree Snapshot<br/>s'"]
 
   C --> I
+  Srv --> I
   I --> R
   S0 --> R
   I --> A
@@ -34,6 +36,8 @@ flowchart LR
   V["Client View<br/>subset of s'"]
   S1 --> P --> V --> C
 ```
+
+圖中的符號可與 3.1.2 節的形式化定義對應：$s \equiv S_t$、$s' \equiv S_{t+1}$、$a \equiv I_t$、$r \equiv C_t$。
 
 ### 3.1.1 單一事實來源與狀態節點 (Single Source of Truth and State Nodes)
 
@@ -52,9 +56,9 @@ $$
 
 其中：
 *   $S_t$ 代表時間 $t$ 的權威 **StateTree 快照**。
-*   $I_t$ 代表觸發轉換的 **輸入**（例如客戶端 Action、生命週期事件或系統 Tick）。
+*   $I_t$ 代表觸發轉換的 **輸入**（例如客戶端指令、生命週期事件或系統 Tick）。
 *   $C_t$ 代表 **執行脈絡**，由 Resolver 填充（見 3.1.3 節）。
-*   $\delta$ 是由 Land DSL 定義的 **轉換函數**；在滿足本模型的限制（特別是非決定性隔離與可重放輸入/脈絡）時，它應保持決定性以支援可重現的重評估。
+*   $\delta$ 是由應用程式的規則規格所定義的 **轉換函數**；在滿足本模型的限制（特別是非決定性隔離與可重放輸入/脈絡）時，它應保持決定性以支援可重現的重評估。
 
 在此模型中，**重播 (Replay)** 被定義為對轉換函數 $\delta$ 的受控 **重評估 (Re-evaluation)**，而非單純的快照還原或副作用回放。當系統保存輸入 ($I_t$) 與解析後的脈絡 ($C_t$) 並確保其可重放時，即可重建狀態演進的歷史。此特性稱為 **決定性重評估 (Deterministic Re-evaluation)**，對於分散式系統中的除錯、稽核與正確性驗證至關重要。
 
@@ -65,7 +69,7 @@ $$
 為了確保轉換函數 $\delta$ 的純粹性，此模型嚴格區分了三種職責：
 
 1.  **State (事實 Truth)**：需要同步的持久化權威資料結構。它作為系統的「記憶」。
-2.  **Action (意圖 Intent)**：修改狀態的唯一合法入口。Action 處理器是同步函數，根據輸入對 StateTree 應用變更。
+2.  **Action (狀態轉換 Transition)**：修改狀態的唯一合法入口。Action handler 是同步函數，根據輸入與脈絡對 StateTree 應用變更。
 3.  **Resolver (脈絡 Context)**：處理外部副作用與非決定性資料來源（如資料庫讀取、亂數生成、時間獲取）的機制。
     *   **積極平行執行 (Eager Parallel Execution)**：在 Action 處理器被調用之前，所有宣告的 Resolver 會平行執行以獲取必要資料。
     *   **脈絡注入 (Context Injection)**：結果被注入至執行脈絡 ($C_t$) 中。Action 處理器隨後從此不可變脈絡中讀取資料。
@@ -76,7 +80,7 @@ $$
 為了讓上述語意能被清楚檢查與討論，我們將 StateTree programming model 的核心限制（constraints）概括如下：
 
 1.  **單一權威狀態樹 (Single Source of Truth)**：權威狀態在任一時間點皆由單一 StateTree 快照 $S_t$ 定義。
-2.  **單一路徑的狀態變更 (Action-only Mutation)**：狀態變更只能透過 Action（或生命週期事件）驅動的轉換函數 $\delta$ 發生。
+2.  **單一路徑的狀態變更 (Action-only Mutation)**：狀態變更只能透過 Action 驅動的轉換函數 $\delta$ 發生。
 3.  **非決定性隔離 (Non-determinism Isolation)**：任何外部 I/O、時間、亂數、或其他非決定性來源，必須被隔離並以上下文 $C_t$ 的形式提供，且可被保存以支援重評估。
 4.  **同步語意分離 (Sync Policy Separation)**：哪些資料應被同步給哪些客戶端，屬於資料的宣告式同步語意；其配置不應與「如何演化狀態」的業務邏輯耦合。
 
@@ -86,7 +90,7 @@ $$
 
 為避免將「模型語意」與「特定實作細節」混淆，本節補充幾個在 programming model 層級需要被明確化的要點：
 
-*   **輸入的範疇 (Inputs)**：$I_t$ 不僅包含客戶端送出的 Action，也可包含系統驅動的 Tick、生命週期事件（join/leave）或其他伺服器端事件；它們在模型層級上同樣被視為狀態轉換的觸發輸入。
+*   **輸入的範疇 (Inputs)**：$I_t$ 表示任何會觸發狀態轉換的輸入，來源可以是客戶端指令，也可以是伺服器端的 Tick、生命週期事件（join/leave）或其他系統事件。
 *   **決定性的成立條件 (Determinism)**：若要讓重評估可重現，狀態轉換不應直接讀取非決定性來源（時間、亂數、外部 I/O、平台相依運算）。任何非決定性資訊應被提升為可觀測且可重放的輸入/脈絡（$I_t$ 或 $C_t$）的一部分；實作層也可透過 deterministic math 等方式降低數值運算的不一致風險。
 *   **失敗語意 (Failure Semantics)**：當 Resolver 解析外部資料失敗時，對應的狀態轉換應被中止（Action handler 不應在缺失脈絡下繼續執行），並回傳可被客戶端理解的錯誤結果；此行為將錯誤處理從業務邏輯中抽離，避免導致隱性不一致的狀態更新。
 *   **同步的安全邊界 (Sync as a Security Boundary)**：Sync policy 決定每個客戶端可觀測的 view，是資料最小揭露與 per-player 權限邊界的一部分；因此其語意應獨立於業務邏輯，並可被清楚審查。
@@ -113,8 +117,8 @@ flowchart TB
   %% Implementation view (SwiftStateTree runtime)
 
   Client[Client] -->|WebSocket msg| Adapter[TransportAdapter]
-  Server["Server<br/>(tick / lifecycle events)"] --> Keeper
   Adapter -->|route to land/room| Keeper["LandKeeper<br/>(room runtime, serialized)"]
+  Server["Server<br/>(tick / lifecycle events)"] --> Keeper
 
   subgraph Room["Per Room / Land Instance"]
     Keeper --> Ctx["Create LandContext<br/>(request-scoped)"]
