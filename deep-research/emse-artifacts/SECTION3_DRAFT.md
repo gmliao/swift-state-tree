@@ -16,11 +16,11 @@ flowchart LR
 
   C["Client"]
   Srv["Server<br/>tick / lifecycle"]
-  I["Input<br/>a"]
+  I["Action<br/>a"]
 
   S0["StateTree Snapshot<br/>s"]
-  R["Resolver<br/>resolve(s, a) -> r"]
-  A["Transition Handler<br/>action(s, a, r) -> s'"]
+  R["Resolver<br/>resolve(s, a) -> c"]
+  A["Transition Handler<br/>action(s, a, c) -> s'"]
   S1["StateTree Snapshot<br/>s'"]
 
   C --> I
@@ -37,7 +37,7 @@ flowchart LR
   S1 --> P --> V --> C
 ```
 
-圖中的符號可與 3.1.2 節的形式化定義對應：$s \equiv S_t$、$s' \equiv S_{t+1}$、$a \equiv I_t$、$r \equiv C_t$。
+圖中的符號可與 3.1.2 節的形式化定義對應：$s \equiv S_t$、$s' \equiv S_{t+1}$、$a \equiv A_t$、$c \equiv C_t$。
 
 ### 3.1.1 單一事實來源與狀態節點 (Single Source of Truth and State Nodes)
 
@@ -51,25 +51,25 @@ flowchart LR
 StateTree 模型的一項關鍵設計是其對決定性（Determinism）的處理方式。我們將狀態轉換定義為一個決定性函數，而非僅是程式碼執行的副作用。形式上，權威狀態的演進可表示為：
 
 $$
-S_{t+1} = \delta(S_t, I_t, C_t)
+S_{t+1} = \delta(S_t, A_t, C_t)
 $$
 
 其中：
 *   $S_t$ 代表時間 $t$ 的權威 **StateTree 快照**。
-*   $I_t$ 代表觸發轉換的 **輸入**（例如客戶端指令、生命週期事件或系統 Tick）。
-*   $C_t$ 代表 **執行脈絡**，由 Resolver 填充（見 3.1.3 節）。
-*   $\delta$ 是由應用程式的規則規格所定義的 **轉換函數**；在滿足本模型的限制（特別是非決定性隔離與可重放輸入/脈絡）時，它應保持決定性以支援可重現的重評估。
+*   $A_t$ 代表觸發轉換的 **Action**（例如客戶端指令、生命週期事件或系統 Tick）。
+*   $C_t$ 代表 **執行脈絡 (Context)**，由 Resolver 填充（見 3.1.3 節）。
+*   $\delta$ 是由應用程式的規則規格所定義的 **轉換函數**；在滿足本模型的限制（特別是非決定性隔離與可重放 Action/脈絡）時，它應保持決定性以支援可重現的重評估。
 
-在此模型中，**重播 (Replay)** 被定義為對轉換函數 $\delta$ 的受控 **重評估 (Re-evaluation)**，而非單純的快照還原或副作用回放。當系統保存輸入 ($I_t$) 與解析後的脈絡 ($C_t$) 並確保其可重放時，即可重建狀態演進的歷史。此特性稱為 **決定性重評估 (Deterministic Re-evaluation)**，對於分散式系統中的除錯、稽核與正確性驗證至關重要。
+在此模型中，**重播 (Replay)** 被定義為對轉換函數 $\delta$ 的受控 **重評估 (Re-evaluation)**，而非單純的快照還原或副作用回放。當系統保存 Action ($A_t$) 與解析後的脈絡 ($C_t$) 並確保其可重放時，即可重建狀態演進的歷史。此特性稱為 **決定性重評估 (Deterministic Re-evaluation)**，對於分散式系統中的除錯、稽核與正確性驗證至關重要。
 
-需要強調的是：上述形式化定義描述的是 **programming model 的語意目標**。若系統在狀態轉換中引入非決定性來源（例如直接讀取時間、亂數、或任何平台相依的運算），則該非決定性必須被提升為可觀測、可重放的輸入（$I_t$ 或 $C_t$）的一部分；否則「重評估」將不再保證可重現。
+需要強調的是：上述形式化定義描述的是 **programming model 的語意目標**。若系統在狀態轉換中引入非決定性來源（例如直接讀取時間、亂數、或任何平台相依的運算），則該非決定性必須被提升為可觀測、可重放的 Action 或脈絡（$A_t$ 或 $C_t$）的一部分；否則「重評估」將不再保證可重現。
 
 ### 3.1.3 關注點分離：State、Action 與 Resolver
 
 為了確保轉換函數 $\delta$ 的純粹性，此模型嚴格區分了三種職責：
 
 1.  **State (事實 Truth)**：需要同步的持久化權威資料結構。它作為系統的「記憶」。
-2.  **Action (狀態轉換 Transition)**：修改狀態的唯一合法入口。Action handler 是同步函數，根據輸入與脈絡對 StateTree 應用變更。
+2.  **Action (狀態轉換 Transition)**：修改狀態的唯一合法入口。Action handler 是同步函數，根據 Action 與脈絡對 StateTree 應用變更。
 3.  **Resolver (脈絡 Context)**：處理外部副作用與非決定性資料來源（如資料庫讀取、亂數生成、時間獲取）的機制。
     *   **積極平行執行 (Eager Parallel Execution)**：在 Action 處理器被調用之前，所有宣告的 Resolver 會平行執行以獲取必要資料。
     *   **脈絡注入 (Context Injection)**：結果被注入至執行脈絡 ($C_t$) 中。Action 處理器隨後從此不可變脈絡中讀取資料。
@@ -84,15 +84,15 @@ $$
 3.  **非決定性隔離 (Non-determinism Isolation)**：任何外部 I/O、時間、亂數、或其他非決定性來源，必須被隔離並以上下文 $C_t$ 的形式提供，且可被保存以支援重評估。
 4.  **同步語意分離 (Sync Policy Separation)**：哪些資料應被同步給哪些客戶端，屬於資料的宣告式同步語意；其配置不應與「如何演化狀態」的業務邏輯耦合。
 
-在上述限制下，我們可推論出一些重要特性，例如：狀態演化路徑單一而可追蹤、可透過輸入與上下文重建（replay/debuggability），以及以狀態差異為基礎的自動化同步（sync-friendliness）。在後續章節中，我們會進一步說明這些語意如何被落地為可部署系統，並討論實作層面對「決定性」的支援方式與其限制。
+在上述限制下，我們可推論出一些重要特性，例如：狀態演化路徑單一而可追蹤、可透過 Action 與上下文重建（replay/debuggability），以及以狀態差異為基礎的自動化同步（sync-friendliness）。在後續章節中，我們會進一步說明這些語意如何被落地為可部署系統，並討論實作層面對「決定性」的支援方式與其限制。
 
-### 3.1.5 輸入、決定性與失敗語意 (Inputs, Determinism, and Failure Semantics)
+### 3.1.5 Action、決定性與失敗語意 (Actions, Determinism, and Failure Semantics)
 
 為避免將「模型語意」與「特定實作細節」混淆，本節補充幾個在 programming model 層級需要被明確化的要點：
 
-*   **輸入的範疇 (Inputs)**：$I_t$ 表示任何會觸發狀態轉換的輸入，來源可以是客戶端指令，也可以是伺服器端的 Tick、生命週期事件（join/leave）或其他系統事件。
-*   **決定性的成立條件 (Determinism)**：若要讓重評估可重現，狀態轉換不應直接讀取非決定性來源（時間、亂數、外部 I/O、平台相依運算）。任何非決定性資訊應被提升為可觀測且可重放的輸入/脈絡（$I_t$ 或 $C_t$）的一部分；實作層也可透過 deterministic math 等方式降低數值運算的不一致風險。
-*   **失敗語意 (Failure Semantics)**：當 Resolver 解析外部資料失敗時，對應的狀態轉換應被中止（Action handler 不應在缺失脈絡下繼續執行），並回傳可被客戶端理解的錯誤結果；此行為將錯誤處理從業務邏輯中抽離，避免導致隱性不一致的狀態更新。
+*   **Action 的範疇 (Actions)**：$A_t$ 表示任何會觸發狀態轉換的 Action，來源可以是客戶端指令，也可以是伺服器端的 Tick、生命週期事件（join/leave）或其他系統事件。
+*   **決定性的成立條件 (Determinism)**：若要讓重評估可重現，狀態轉換不應直接讀取非決定性來源（時間、亂數、外部 I/O、平台相依運算）。任何非決定性資訊應被提升為可觀測且可重放的 Action/脈絡（$A_t$ 或 $C_t$）的一部分；實作層也可透過 deterministic math 等方式降低數值運算的不一致風險。
+*   **失敗語意 (Failure Semantics)**：Resolver 是 handler 的前置條件。若 Resolver 解析外部資料失敗，系統應在 **handler 執行前**中止該次 transition（不提交狀態變更、不中途套用 diff），並回傳結構化錯誤結果（例如 error payload/錯誤碼）給客戶端；如此可將錯誤處理與業務狀態更新解耦，避免產生難以追蹤的部分更新。
 *   **同步的安全邊界 (Sync as a Security Boundary)**：Sync policy 決定每個客戶端可觀測的 view，是資料最小揭露與 per-player 權限邊界的一部分；因此其語意應獨立於業務邏輯，並可被清楚審查。
 
 ## 3.2 系統架構 (System Architecture)
@@ -157,8 +157,8 @@ flowchart TB
 
 ### 3.2.1 規則定義層 (Rule Definition Layer: Land DSL)
 位於基礎的是由 **Land DSL** 建構的 **規則定義層**。
-*   **宣告式與無狀態 (Declarative & Stateless)**：一個 `Land` 定義以純宣告方式描述應用程式的領域邏輯（存取控制、生命週期掛勾、Action 處理器）。它不包含任何執行期狀態或傳輸相依性。
-*   **可攜性 (Portability)**：由於 `Land` 是一份可執行的規格說明，它可以被隔離測試或部署至不同環境而無需修改。
+*   **宣告式規格與靜態定義 (Declarative Specification & Static Definition)**：一個 `Land` 是一份可執行的規格，用於以宣告式方式描述領域規則（存取控制、生命週期掛勾、Action 處理器、Resolver 宣告與同步語意等）。它是靜態定義：**描述「狀態樹如何演化」與其型別**，但不持有任何房間/實例的執行期 StateTree 狀態，亦不依賴特定傳輸實作。
+*   **可攜性 (Portability)**：由於 `Land` 為與執行期狀態與傳輸解耦的規格定義，因此可被隔離測試，並能在不同宿主/部署環境中重用而無需修改。
 
 ### 3.2.2 狀態管理層 (State Management Layer: LandKeeper)
 **狀態管理層** 由 `LandKeeper` 實現。
