@@ -97,6 +97,17 @@ $$
 
 在一致性與並發的觀點上，本系統以「房間/實例」作為主要隔離單元：單一房間內的狀態轉換被序列化以維持一致性；不同房間之間則可併行執行以提升吞吐量。此設計使 programming model 的約束能在實務上以清晰的邊界落地。
 
+為了便於閱讀，下表快速區分本節專有名詞的角色與生命週期：
+
+| 名稱 | 角色 | 生命週期 / 範圍 |
+|---|---|---|
+| `Land` | 靜態規格：定義 State/handlers/resolvers/sync policy | 應用程式啟動後常駐；不持有執行期狀態 |
+| `LandKeeper` | 房間執行器：持有單一房間的權威 StateTree，執行 transition handlers 並觸發同步 | 每個房間/實例一個；房間建立到銷毀 |
+| `LandRouter` | 路由器：將連線/landID 導向正確的 `LandKeeper` | 服務層常駐；管理多房間映射 |
+| `LandManager` | 房間管理：建立/查詢/銷毀同類型的 `LandKeeper` | 服務層常駐；管理一組房間 |
+| `LandServer` | 組合單元：組裝 Manager/Router/Transport，提供特定遊戲/服務的完整入口 | 服務層常駐；可同時存在多個 |
+| `LandHost` | 主機整合：HTTP/WebSocket 入口，掛載多個 `LandServer` | 程序常駐；通常一個 |
+
 ```mermaid
 flowchart TB
   %% Implementation view (SwiftStateTree runtime)
