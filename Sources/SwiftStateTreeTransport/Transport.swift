@@ -40,6 +40,21 @@ public protocol Transport: Actor {
     ///   - message: The message payload (already encoded as Data or TransportMessage).
     ///   - target: The recipients of the message.
     func send(_ message: Data, to target: EventTarget)
+
+    /// Enqueues multiple messages in a single actor call. Reduces actor contention when sending many updates.
+    /// Default implementation falls back to individual sends. Override for batch optimization (e.g. WebSocketTransport).
+    ///
+    /// - Parameter updates: Pairs of (message, target) to send.
+    func sendBatch(_ updates: [(Data, EventTarget)]) async
+}
+
+extension Transport {
+    /// Default: send each update individually.
+    public func sendBatch(_ updates: [(Data, EventTarget)]) async {
+        for (data, target) in updates {
+            await send(data, to: target)
+        }
+    }
 }
 
 // MARK: - Transport Delegate
@@ -58,6 +73,14 @@ public protocol TransportDelegate: Sendable {
     
     /// Called when a message is received from a client.
     func onMessage(_ message: Data, from sessionID: SessionID) async
+}
+
+// MARK: - Transport Send Queue
+
+/// Thread-safe queue for non-blocking send. When available, producers enqueue without awaiting the transport actor.
+public protocol TransportSendQueue: Sendable {
+    func enqueue(_ message: Data, to target: EventTarget)
+    func enqueueBatch(_ updates: [(Data, EventTarget)])
 }
 
 // MARK: - Event Target

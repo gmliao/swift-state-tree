@@ -21,6 +21,13 @@ actor CountingTransport: Transport {
         sentMessages += 1
     }
 
+    func sendBatch(_ updates: [(Data, SwiftStateTreeTransport.EventTarget)]) async {
+        for (message, _) in updates {
+            sentBytes += message.count
+            sentMessages += 1
+        }
+    }
+
     func setDelegate(_ delegate: TransportDelegate?) {
         self.delegate = delegate
     }

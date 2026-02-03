@@ -32,6 +32,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     private let keeper: LandKeeper<State>
     private let transport: any Transport
+    /// When set, sync uses enqueueBatch (no await) instead of transport.sendBatch.
+    private let transportSendQueue: (any TransportSendQueue)?
     private let landID: String
     private let codec: any TransportCodec
     private let messageEncoder: any TransportMessageEncoder
@@ -147,6 +149,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     public init(
         keeper: LandKeeper<State>,
         transport: any Transport,
+        transportSendQueue: (any TransportSendQueue)? = nil,
         landID: String,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         onLandDestroyed: (@Sendable () async -> Void)? = nil,
@@ -165,6 +168,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ) {
         self.keeper = keeper
         self.transport = transport
+        self.transportSendQueue = transportSendQueue
         self.landID = landID
         if let encodingConfig = encodingConfig {
             self.codec = encodingConfig.makeCodec()
@@ -1217,6 +1221,59 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         await Task.yield()
     }
 
+    /// Build batch of (Data, EventTarget) for encoded updates. Includes event bodies first when useStateUpdateWithEvents.
+    private func buildSendBatch(
+        from encodedUpdates: [EncodedSyncUpdate],
+        mergeEvents: Bool
+    ) -> [(Data, EventTarget)] {
+        var batch: [(Data, EventTarget)] = []
+        batch.reserveCapacity(encodedUpdates.count * 2)  // room for event bodies + updates
+        for encoded in encodedUpdates {
+            guard let updateData = encoded.payload else { continue }
+            if !mergeEvents, useStateUpdateWithEvents {
+                let eventBodies = pendingTargetedEventBodies(for: encoded.sessionID, playerID: encoded.playerID)
+                for body in eventBodies {
+                    guard case .array(let bodyArray) = body else { continue }
+                    let frame: MessagePackValue = .array([.int(opcodeEvent)] + bodyArray)
+                    if let data = try? pack(frame) {
+                        batch.append((data, .session(encoded.sessionID)))
+                    }
+                }
+            }
+            batch.append((updateData, .session(encoded.sessionID)))
+        }
+        return batch
+    }
+
+    /// Send encoded updates in a single transport call. Reduces WebSocketTransport actor contention.
+    /// When transportSendQueue is set, enqueues without await (queue-based path).
+    private func sendEncodedUpdatesBatch(
+        _ encodedUpdates: [EncodedSyncUpdate],
+        mergeEvents: Bool
+    ) async {
+        let batch = buildSendBatch(from: encodedUpdates, mergeEvents: mergeEvents)
+        guard !batch.isEmpty else { return }
+        let stateUpdateCount = encodedUpdates.filter { $0.payload != nil }.count
+        profilerCounters?.incrementStateUpdates(by: stateUpdateCount)
+        let sendStart = ContinuousClock.now
+        if let queue = transportSendQueue {
+            queue.enqueueBatch(batch)
+        } else {
+            await transport.sendBatch(batch)
+        }
+        await Task.yield()
+        if let profiler {
+            let sendElapsed = ContinuousClock.now - sendStart
+            let sendMs = Double(sendElapsed.components.seconds) * 1000 + Double(sendElapsed.components.attoseconds) / 1e15
+            for _ in 0..<stateUpdateCount {
+                latencySampleCounter += 1
+                if latencySampleCounter % 100 == 0 {
+                    Task { await profiler.recordSend(durationMs: sendMs / Double(stateUpdateCount)) }
+                }
+            }
+        }
+    }
+
     private func sendEventBody(_ body: MessagePackValue, to target: SwiftStateTree.EventTarget) async {
         guard case .array(let bodyArray) = body else { return }
         let frame: MessagePackValue = .array([.int(opcodeEvent)] + bodyArray)
@@ -1428,17 +1485,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         encodedUpdates = encodeUpdatesSerially(pendingUpdates)
                     }
 
-                    for encoded in encodedUpdates {
-                        if let payload = encoded.payload {
-                            await sendEncodedUpdate(
-                                sessionID: encoded.sessionID,
-                                playerID: encoded.playerID,
-                                updateType: encoded.updateType,
-                                patchCount: encoded.patchCount,
-                                updateData: payload,
-                                mergeEvents: false
-                            )
-                        } else if let errorMessage = encoded.errorMessage {
+                    let successfulUpdates = encodedUpdates.filter { $0.payload != nil }
+                    if !successfulUpdates.isEmpty {
+                        await sendEncodedUpdatesBatch(successfulUpdates, mergeEvents: false)
+                    }
+                    for encoded in encodedUpdates where encoded.errorMessage != nil {
+                        if let errorMessage = encoded.errorMessage {
                             logger.error("❌ Failed to encode state update", metadata: [
                                 "playerID": .string(encoded.playerID.rawValue),
                                 "sessionID": .string(encoded.sessionID.rawValue),
@@ -1518,17 +1570,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         encodedUpdates = encodeUpdatesSerially(pendingUpdates)
                     }
 
-                    for encoded in encodedUpdates {
-                        if let payload = encoded.payload {
-                            await sendEncodedUpdate(
-                                sessionID: encoded.sessionID,
-                                playerID: encoded.playerID,
-                                updateType: encoded.updateType,
-                                patchCount: encoded.patchCount,
-                                updateData: payload,
-                                mergeEvents: false
-                            )
-                        } else if let errorMessage = encoded.errorMessage {
+                    let successfulUpdates = encodedUpdates.filter { $0.payload != nil }
+                    if !successfulUpdates.isEmpty {
+                        await sendEncodedUpdatesBatch(successfulUpdates, mergeEvents: false)
+                    }
+                    for encoded in encodedUpdates where encoded.errorMessage != nil {
+                        if let errorMessage = encoded.errorMessage {
                             logger.error("❌ Failed to encode state update", metadata: [
                                 "playerID": .string(encoded.playerID.rawValue),
                                 "sessionID": .string(encoded.sessionID.rawValue),
@@ -2037,13 +2084,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// Send encoded update to transport.
+    ///
+    /// - Parameter yieldAfterSend: When true, yields to the executor after sending.
+    ///   Set to false when sending in a batch to reduce context switch overhead (yield every N sends instead).
     private func sendEncodedUpdate(
         sessionID: SessionID,
         playerID: PlayerID,
         updateType: String,
         patchCount: Int,
         updateData: Data,
-        mergeEvents: Bool
+        mergeEvents: Bool,
+        yieldAfterSend: Bool = true
     ) async {
         let dataToSend: Data
         if mergeEvents, useStateUpdateWithEvents {
@@ -2095,7 +2146,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         profilerCounters?.incrementStateUpdates()
         let sendStart = ContinuousClock.now
         await transport.send(dataToSend, to: .session(sessionID))
-        await Task.yield()
+        if yieldAfterSend {
+            await Task.yield()
+        }
         if let profiler {
             let sendElapsed = ContinuousClock.now - sendStart
             let sendMs = Double(sendElapsed.components.seconds) * 1000 + Double(sendElapsed.components.attoseconds) / 1e15
