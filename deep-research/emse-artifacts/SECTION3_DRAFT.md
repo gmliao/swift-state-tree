@@ -257,4 +257,14 @@ func makeLand() -> LandDefinition<CounterState> {
     *   **MessagePack**：採用二進制格式消除文字解析開銷並縮減整數大小。
     *   **動態鍵壓縮 (Dynamic Key Compression)**：針對無法在編譯期雜湊的動態 Map Key（如玩家 ID），系統維護一個執行期的「Slot ID」映射表。36-byte 的 UUID 字串只需傳送一次，後續更新僅需使用 1-byte 的整數 Slot 索引。
 
+以下表格展示同一筆狀態更新（更新某玩家的 HP）在各階段的格式範例與封包大小：
+
+| 階段 | 格式範例 | 封包大小 | 節省比例 |
+|------|----------|----------|----------|
+| 原始 JSON | `{"kind":"stateUpdate","payload":{"type":"diff","patches":[{"path":"players/user-123/hp","op":"set","value":100}]}}` | 117 bytes | — |
+| Opcode Array | `[2, [["players/user-123/hp", 1, 100]]]` | 38 bytes | 67.5% |
+| + PathHash | `[2, [[3358665268, "user-123", 1, 100]]]` | 38 bytes | (為二進制準備) |
+| + Dynamic Key | `[2, [[3358665268, 1, 1, 100]]]` | 26 bytes | 77.8% |
+| + MessagePack | `92 02 91 94 CE C8 31 2A 34 01 01 64` (hex) | 12 bytes | **89.7%** |
+
 此演進確保 SwiftStateTree 在保留開發者友善的「全狀態樹」抽象的同時，能達到與高度優化、手寫網路協定相當的傳輸效率。
