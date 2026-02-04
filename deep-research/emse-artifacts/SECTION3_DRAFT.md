@@ -62,6 +62,22 @@ $$
 
 在此模型中，**重播 (Replay)** 被定義為對轉換函數 $\delta$ 的受控 **重評估 (Re-evaluation)**，而非單純的快照還原或副作用回放。當系統保存 Action ($A_t$) 與解析後的脈絡 ($C_t$) 並確保其可重放時，即可重建狀態演進的歷史。此特性稱為 **決定性重評估 (Deterministic Re-evaluation)**，對於分散式系統中的除錯、稽核與正確性驗證至關重要。
 
+為了把「Resolver 產生脈絡」與「轉換函數」的角色更清楚地分離，我們也可將每一個時間步的演進寫成兩段式：先由 Resolver 機制解析外部環境並生成脈絡，接著由決定性的轉換函數更新權威狀態。令 $\rho$ 表示 Resolver（可並行）的脈絡生成機制，$E_t$ 表示外部環境/非決定性來源（例如資料庫、時間、亂數與 I/O），則 live 執行可表示為：
+
+$$
+C^{live}_t = \rho(S^{live}_t, A^{live}_t, E_t), \quad
+S^{live}_{t+1} = \delta(S^{live}_t, A^{live}_t, C^{live}_t)
+$$
+
+而在 re-evaluation 中，系統跳過 Resolver 的實際執行，改以錄製的脈絡作為 $C_t$ 的來源：
+
+$$
+C^{replay}_t = C^{recorded}_t, \quad
+S^{replay}_{t+1} = \delta(S^{replay}_t, A^{recorded}_t, C^{recorded}_t)
+$$
+
+在 $\delta$ 具決定性的前提下，只要初始狀態 $S_0$ 以及每一步的 $(A_t, C_t)$ 與 live 錄製一致，即可透過逐步重評估重建相同的狀態序列（可用數學歸納法證明對所有 $t$ 皆成立）。
+
 需要強調的是：上述形式化定義描述的是 **programming model 的語意目標**。若系統在狀態轉換中引入非決定性來源（例如直接讀取時間、亂數、或任何平台相依的運算），則該非決定性必須被提升為可觀測、可重放的 Action 或脈絡（$A_t$ 或 $C_t$）的一部分；否則「重評估」將不再保證可重現。
 
 ### 3.1.3 關注點分離：State、Action 與 Resolver
