@@ -6,9 +6,11 @@
 
 多人遊戲伺服器架構的根本挑戰，在於如何在處理即時互動與網路延遲的同時，管理共享狀態的一致性。傳統方法通常將狀態分散在各種實體物件中（OOP），或是將狀態完全解耦為原始數據陣列（ECS）。這兩種方式在定義「哪些資料應同步給誰」以及「狀態如何演變至當前形式」時，往往會帶來複雜性。
 
-StateTree 模型透過引入一個以 **單一權威 StateTree** 為中心的反應式程式設計觀點來解決這些挑戰。
+現有的多人遊戲伺服器框架（如 Colyseus、Photon、Mirror 等）已提供 schema-based 自動同步或標記式欄位同步（如 `@type()`、`[SyncVar]`），大幅降低了手動序列化的負擔。然而，這些框架主要聚焦於「如何同步」，較少在 programming model 層級定義「狀態如何演化」與「非決定性如何隔離」。例如，狀態變更通常直接發生在業務邏輯中，而外部 I/O（資料庫、時間、亂數）的結果也往往直接寫入狀態，使得狀態序列難以被完整重播或跨架構驗證。
 
-為避免名詞混淆，本章的 **Action** 採用廣義定義：泛指任何會觸發狀態轉換的 handler（包含客戶端送出的指令，以及伺服器端的 Tick、生命週期事件等）。在此定義下，「狀態只能透過 Action 改動」等價於「狀態只能透過明確的轉換處理器改動」。
+StateTree 模型透過引入一個以 **單一權威 StateTree** 為中心的反應式程式設計觀點來解決這些挑戰。與上述框架不同，StateTree 將「狀態演化規則」與「同步語意」從業務邏輯中抽離為宣告式規格，並以明確的轉換函數與 resolver 機制隔離非決定性來源，使得狀態序列可被重播與驗證。
+
+為避免名詞混淆，本章的 **Action** 採用廣義定義：泛指任何會觸發狀態轉換的輸入（包含客戶端送出的指令，以及伺服器端的 Tick、生命週期事件等）。處理這些輸入的函數統稱為 **Action handler**（或「Action 處理器」）。在此定義下，「狀態只能透過 Action 改動」等價於「狀態只能透過 Action handler 改動」。
 
 ```mermaid
 flowchart LR
@@ -20,7 +22,7 @@ flowchart LR
 
   S0["StateTree Snapshot<br/>s"]
   R["Resolver<br/>resolve(s, a) -> c"]
-  A["Transition Handler<br/>action(s, a, c) -> s'"]
+  A["Action Handler<br/>action(s, a, c) -> s'"]
   S1["StateTree Snapshot<br/>s'"]
 
   C --> I
@@ -87,9 +89,9 @@ $$
 1.  **State (事實 Truth)**：需要同步的持久化權威資料結構。它作為系統的「記憶」。
 2.  **Action (狀態轉換 Transition)**：修改狀態的唯一合法入口。Action handler 是同步函數，根據 Action 與脈絡對 StateTree 應用變更。
 3.  **Resolver (脈絡 Context)**：處理外部副作用與非決定性資料來源（如資料庫讀取、亂數生成、時間獲取）的機制。
-    *   **積極平行執行 (Eager Parallel Execution)**：在 Action 處理器被調用之前，所有宣告的 Resolver 會平行執行以獲取必要資料。
-    *   **脈絡注入 (Context Injection)**：結果被注入至執行脈絡 ($C_t$) 中。Action 處理器隨後從此不可變脈絡中讀取資料。
-    *   **隔離 (Isolation)**：此設計確保 Action 處理器本身保持純粹且具決定性，因為所有非決定性因素皆在處理器運行 *之前* 被解析並捕捉於 $C_t$ 中。
+    *   **積極平行執行 (Eager Parallel Execution)**：在 Action handler 被調用之前，所有宣告的 Resolver 會平行執行以獲取必要資料。
+    *   **脈絡注入 (Context Injection)**：結果被注入至執行脈絡 ($C_t$) 中。Action handler 隨後從此不可變脈絡中讀取資料。
+    *   **隔離 (Isolation)**：此設計確保 Action handler 本身保持純粹且具決定性，因為所有非決定性因素皆在 Action handler 運行 *之前* 被解析並捕捉於 $C_t$ 中。
 
 ### 3.1.4 模型限制與可推論特性 (Constraints and Derived Properties)
 
@@ -108,7 +110,8 @@ $$
 
 *   **Action 的範疇 (Actions)**：$A_t$ 表示任何會觸發狀態轉換的 Action，來源可以是客戶端指令，也可以是伺服器端的 Tick、生命週期事件（join/leave）或其他系統事件。
 *   **決定性的成立條件 (Determinism)**：若要讓重評估可重現，狀態轉換不應直接讀取非決定性來源（時間、亂數、外部 I/O、平台相依運算）。任何非決定性資訊應被提升為可觀測且可重放的 Action/脈絡（$A_t$ 或 $C_t$）的一部分；實作層也可透過 deterministic math 等方式降低數值運算的不一致風險。
-*   **失敗語意 (Failure Semantics)**：Resolver 是 handler 的前置條件。若 Resolver 解析外部資料失敗，系統應在 **handler 執行前**中止該次 transition（不提交狀態變更、不中途套用 diff），並回傳結構化錯誤結果（例如 error payload/錯誤碼）給客戶端；如此可將錯誤處理與業務狀態更新解耦，避免產生難以追蹤的部分更新。
+*   **決定性保證的範圍與限制 (Scope and Limitations of Determinism)**：本模型在以下層級提供決定性保證：(1) **轉換函數的純粹性**——Action handler 執行期間只能讀取 $S_t$、$A_t$、$C_t$，不得直接存取外部狀態；(2) **resolver 輸出的可錄製性**——所有非決定性來源皆被封裝於 $C_t$ 並可被保存以供重播。然而，本框架**目前未以編譯器或型別系統強制禁止非決定性操作**（如直接呼叫系統時間或浮點運算），因此決定性的完整實現仍依賴開發者遵循框架指引（例如使用 deterministic math 函式庫）。此設計選擇是為了降低學習曲線與 API 複雜度，但也意味著決定性驗證需透過 runtime re-evaluation（如第 4 章的決定性驗證實驗）而非編譯期靜態分析來確認。
+*   **失敗語意 (Failure Semantics)**：Resolver 是 Action handler 的前置條件。若 Resolver 解析外部資料失敗，系統應在 **Action handler 執行前**中止該次 transition（不提交狀態變更、不中途套用 diff），並回傳結構化錯誤結果（例如 error payload/錯誤碼）給客戶端；如此可將錯誤處理與業務狀態更新解耦，避免產生難以追蹤的部分更新。
 *   **同步的安全邊界 (Sync as a Security Boundary)**：Sync policy 決定每個客戶端可觀測的 view，是資料最小揭露與 per-player 權限邊界的一部分；因此其語意應獨立於業務邏輯，並可被清楚審查。
 
 ## 3.2 系統架構 (System Architecture)
@@ -121,8 +124,8 @@ $$
 
 | 名稱 | 角色 | 生命週期 / 範圍 |
 |---|---|---|
-| `Land` | 靜態規格：定義 State/handlers/resolvers/sync policy | 應用程式啟動後常駐；不持有執行期狀態 |
-| `LandKeeper` | 房間執行器：持有單一房間的權威 StateTree，執行 transition handlers 並觸發同步 | 每個房間/實例一個；房間建立到銷毀 |
+| `Land` | 靜態規格：定義 State/Action handlers/resolvers/sync policy | 應用程式啟動後常駐；不持有執行期狀態 |
+| `LandKeeper` | 房間執行器：持有單一房間的權威 StateTree，執行 Action handlers 並觸發同步 | 每個房間/實例一個；房間建立到銷毀 |
 | `LandRouter` | 路由器：將連線/landID 導向正確的 `LandKeeper` | 服務層常駐；管理多房間映射 |
 | `LandManager` | 房間管理：建立/查詢/銷毀同類型的 `LandKeeper` | 服務層常駐；管理一組房間 |
 | `LandServer` | 組合單元：組裝 Manager/Router/Transport，提供特定遊戲/服務的完整入口 | 服務層常駐；可同時存在多個 |
@@ -154,7 +157,7 @@ flowchart TB
     Rn --> Rex
 
     Rex -->|fill outputs| Ctx2["LandContext + ResolverOutputs<br/>(not persisted, not synced)"]
-    Ctx2 --> H["Transition Handler (sync)<br/>(Action / Tick / Lifecycle)"]
+    Ctx2 --> H["Action Handler (sync)<br/>(Action / Tick / Lifecycle)"]
     H -->|mutate| S["Authoritative StateTree<br/>StateNode"]
   end
 
@@ -176,10 +179,53 @@ flowchart TB
 *   **宣告式規格與靜態定義 (Declarative Specification & Static Definition)**：一個 `Land` 是一份可執行的規格，用於以宣告式方式描述領域規則（存取控制、生命週期掛勾、Action 處理器、Resolver 宣告與同步語意等）。它是靜態定義：**描述「狀態樹如何演化」與其型別**，但不持有任何房間/實例的執行期 StateTree 狀態，亦不依賴特定傳輸實作。
 *   **可攜性 (Portability)**：由於 `Land` 為與執行期狀態與傳輸解耦的規格定義，因此可被隔離測試，並能在不同宿主/部署環境中重用而無需修改。
 
+以下為一個最小的 Land DSL 範例（Counter），展示 State、Action 與 Land 定義的基本結構：
+
+```swift
+// State：使用 @StateNodeBuilder 定義狀態結構，@Sync 宣告同步語意
+@StateNodeBuilder
+struct CounterState: StateNodeProtocol {
+    @Sync(.broadcast) var count: Int = 0
+}
+
+// Action：使用 @Payload 定義 Action 與 Response
+@Payload
+struct IncrementAction: ActionPayload {
+    typealias Response = IncrementResponse
+}
+@Payload
+struct IncrementResponse: ResponsePayload {
+    let newCount: Int
+}
+
+// Land：宣告式描述存取控制、生命週期與 Action handler
+func makeLand() -> LandDefinition<CounterState> {
+    Land("counter", using: CounterState.self) {
+        AccessControl {
+            AllowPublic(true)
+            MaxPlayers(10)
+        }
+        Lifetime {
+            Tick(every: .milliseconds(100)) { (state: inout CounterState, ctx) in }
+            StateSync(every: .milliseconds(100)) { (state, ctx) in }
+        }
+        Rules {
+            HandleAction(IncrementAction.self) { (state: inout CounterState, _, _) in
+                state.count += 1
+                return IncrementResponse(newCount: state.count)
+            }
+        }
+    }
+}
+```
+
+此範例展示了 Land DSL 的三個核心區塊：`AccessControl`（存取控制）、`Lifetime`（生命週期與同步）、`Rules`（Action handler）。開發者只需宣告「規則是什麼」，而非「如何執行」；runtime 會根據這份規格自動協調 resolver、狀態更新與同步。
+
 ### 3.2.2 狀態管理層 (State Management Layer: LandKeeper)
 **狀態管理層** 由 `LandKeeper` 實現。
 *   **執行期封裝 (Runtime Encapsulation)**：每個 `LandKeeper` 管理特定房間的單一、隔離的 StateTree 實例。
 *   **並發模型 (Concurrency Model)**：作為 Swift **Actor** 實作，LandKeeper 將房間內的執行序列化，無需手動鎖定即可確保狀態轉換的執行緒安全。它協調「Resolver → Action → State Update」的循環。
+*   **房間級平行化 (Room-level Parallelism)**：由於每個 `LandKeeper` 是獨立的 Actor，不同房間之間可在伺服器執行緒池上平行執行，不會相互阻塞。此架構設計使得承載能力有機會隨 CPU 核心數提升，是支撐高擴展性的關鍵前提。
 
 ### 3.2.3 路由與房間管理層 (Routing and Room Management Layer)
 *   **LandRouter**：管理客戶端連線與房間識別碼之間的映射。確保來自特定客戶端的訊息能一致地導向至正確的 LandKeeper。
@@ -203,7 +249,7 @@ flowchart TB
 ### 3.3.2 同步引擎與傳輸優化 (SyncEngine and Transport Optimization)
 `SyncEngine` 負責狀態變更的反應式傳播。引擎不發送手動更新封包，而是自動計算當前幀快照 ($S_{t+1}$) 與前一幀快照 ($S_t$) 之間的差異。
 
-為了最小化頻寬使用——這是擴展性（RQ1）的關鍵因素——我們實作了一個多階段編碼管線：
+為了最小化頻寬使用——這是擴展性的關鍵因素——我們實作了一個多階段編碼管線：
 
 1.  **Opcode-driven JSON Arrays**：將冗長的 JSON Objects（如 `{"kind": "action", ...}`）替換為緊湊的陣列（如 `[101, ...]`），移除重複的欄位名稱。
 2.  **路徑雜湊 (Path Hashing)**：將長字串路徑（如 `players.user-123.position`）替換為 4-byte 整數雜湊，顯著降低深層狀態樹的 Overhead。
