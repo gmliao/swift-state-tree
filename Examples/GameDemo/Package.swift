@@ -27,6 +27,7 @@ let package = Package(
     ],
     dependencies: [
         .package(name: "SwiftStateTree", path: "../.."),
+        .package(url: "https://github.com/apple/swift-profile-recorder.git", .upToNextMinor(from: "0.3.0")),
     ],
     targets: [
         .target(
@@ -46,6 +47,7 @@ let package = Package(
                 .product(name: "SwiftStateTreeHummingbird", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeNIO", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeTransport", package: "SwiftStateTree"),
+                .product(name: "ProfileRecorderServer", package: "swift-profile-recorder"),
             ],
             path: "Sources/GameServer"
         ),

@@ -1,6 +1,7 @@
 import Foundation
 import GameContent
 import Logging
+import ProfileRecorderServer
 import SwiftStateTree
 import SwiftStateTreeHummingbird
 import SwiftStateTreeNIO
@@ -43,6 +44,10 @@ import SwiftStateTreeTransport
 struct GameServer {
     static func main() async throws {
         let jwtConfig = createGameJWTConfig()
+        let logLevelForProfile = getEnvLogLevel(key: "LOG_LEVEL", defaultValue: .info)
+        let loggerForProfile = createGameLogger(scope: "HeroDefenseServer", logLevel: logLevelForProfile)
+        // Run Swift Profile Recorder in background when PROFILE_RECORDER_SERVER_URL_PATTERN is set.
+        async let _ = ProfileRecorderServer(configuration: .parseFromEnvironment()).runIgnoringFailures(logger: loggerForProfile)
         let logLevel = getEnvLogLevel(key: "LOG_LEVEL", defaultValue: .info)
         let logger = createGameLogger(
             scope: "HeroDefenseServer",
