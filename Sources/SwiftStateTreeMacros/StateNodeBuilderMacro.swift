@@ -45,6 +45,9 @@ public struct StateNodeBuilderMacro: MemberMacro {
         // Generate broadcastSnapshot() method
         let broadcastSnapshotMethod = try generateBroadcastSnapshotMethod(propertiesWithNodes: propertiesWithNodes)
 
+        // Generate snapshotForSync() method (one-pass broadcast + per-player extraction)
+        let snapshotForSyncMethod = try generateSnapshotForSyncMethod(propertiesWithNodes: propertiesWithNodes)
+
         // Generate dirty tracking methods (isDirty, getDirtyFields, clearDirty)
         let isDirtyMethod = try generateIsDirtyMethod(propertiesWithNodes: propertiesWithNodes)
         let getDirtyFieldsMethod = try generateGetDirtyFieldsMethod(propertiesWithNodes: propertiesWithNodes)
@@ -58,6 +61,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
             DeclSyntax(validateSyncFieldsMethod),
             DeclSyntax(snapshotMethod),
             DeclSyntax(broadcastSnapshotMethod),
+            DeclSyntax(snapshotForSyncMethod),
             DeclSyntax(isDirtyMethod),
             DeclSyntax(getDirtyFieldsMethod),
             DeclSyntax(clearDirtyMethod),
@@ -365,6 +369,123 @@ public struct StateNodeBuilderMacro: MemberMacro {
             }
             """
         )
+    }
+
+    /// Generate snapshotForSync(playerIDs:dirtyFields:) method
+    /// One-pass extraction: broadcast fields and per-player fields in a single tree walk.
+    /// For nested single StateNode (not container), calls snapshotForSync recursively; otherwise uses SnapshotValue conversion.
+    private static func generateSnapshotForSyncMethod(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> FunctionDeclSyntax {
+        let syncProperties = propertiesWithNodes.filter { $0.0.hasSync }
+        let broadcastProperties = syncProperties.filter { $0.0.policyType == .broadcast }
+        let perPlayerProperties = syncProperties.filter { prop in
+            guard let pt = prop.0.policyType else { return false }
+            return pt != .broadcast && pt != .serverOnly
+        }
+
+        var codeLines: [String] = []
+        if broadcastProperties.isEmpty {
+            codeLines.append("let broadcastResult: [String: SnapshotValue] = [:]")
+        } else {
+            codeLines.append("var broadcastResult: [String: SnapshotValue] = [:]")
+        }
+        if perPlayerProperties.isEmpty {
+            codeLines.append("let perPlayerResult: [PlayerID: [String: SnapshotValue]] = [:]")
+        } else {
+            codeLines.append("var perPlayerResult: [PlayerID: [String: SnapshotValue]] = [:]")
+            codeLines.append("for playerID in playerIDs {")
+            codeLines.append("    perPlayerResult[playerID] = [:]")
+            codeLines.append("}")
+        }
+        codeLines.append("")
+
+        // Broadcast part: same dirty check as broadcastSnapshot; per field either recursive snapshotForSync or generateConversionCode
+        for (property, _) in broadcastProperties {
+            let propertyName = property.name
+            let fieldName = propertyName
+            let storageName = "_\(propertyName)"
+            let typeName = property.typeName
+
+            codeLines.append("if dirtyFields == nil || dirtyFields?.contains(\"\(fieldName)\") == true {")
+            if let typeName = typeName, isSingleStateNodeType(typeName) {
+                // Runtime check: only call snapshotForSync when value conforms to StateNodeProtocol (e.g. BaseState).
+                // Otherwise use SnapshotValue.make (e.g. Vec2, Position2).
+                let normalizedType = typeName.trimmingCharacters(in: .whitespacesAndNewlines)
+                let isOptional = normalizedType.hasSuffix("?") || (normalizedType.hasPrefix("Optional<") && normalizedType.hasSuffix(">"))
+                if isOptional {
+                    codeLines.append("    if let unwrapped = \(storageName).wrappedValue {")
+                    codeLines.append("        if let node = (unwrapped as Any) as? any StateNodeProtocol {")
+                    codeLines.append("            let (subB, _) = try node.snapshotForSync(playerIDs: playerIDs, dirtyFields: dirtyFields)")
+                    codeLines.append("            broadcastResult[\"\(fieldName)\"] = .object(subB.values)")
+                    codeLines.append("        } else {")
+                    codeLines.append("            broadcastResult[\"\(fieldName)\"] = try SnapshotValue.make(from: unwrapped as Any)")
+                    codeLines.append("        }")
+                    codeLines.append("    } else {")
+                    codeLines.append("        broadcastResult[\"\(fieldName)\"] = .null")
+                    codeLines.append("    }")
+                } else {
+                    codeLines.append("    if let node = (self.\(storageName).wrappedValue as Any) as? any StateNodeProtocol {")
+                    codeLines.append("        let (subB, _) = try node.snapshotForSync(playerIDs: playerIDs, dirtyFields: dirtyFields)")
+                    codeLines.append("        broadcastResult[\"\(fieldName)\"] = .object(subB.values)")
+                    codeLines.append("    } else {")
+                    codeLines.append("        broadcastResult[\"\(fieldName)\"] = try SnapshotValue.make(from: self.\(storageName).wrappedValue as Any)")
+                    codeLines.append("    }")
+                }
+            } else {
+                let (conversionCode, needsTry) = generateConversionCode(for: typeName, valueName: "self.\(storageName).wrappedValue", isAnyType: false, playerID: nil)
+                if needsTry {
+                    codeLines.append("    do {")
+                    codeLines.append("        broadcastResult[\"\(fieldName)\"] = try \(conversionCode)")
+                    codeLines.append("    } catch {")
+                    codeLines.append("        throw error")
+                    codeLines.append("    }")
+                } else {
+                    codeLines.append("    broadcastResult[\"\(fieldName)\"] = \(conversionCode)")
+                }
+            }
+            codeLines.append("}")
+            codeLines.append("")
+        }
+
+        // Per-player part: for each per-player property and each playerID, filteredValue then convert
+        for (property, _) in perPlayerProperties {
+            let propertyName = property.name
+            let fieldName = propertyName
+            let storageName = "_\(propertyName)"
+
+            codeLines.append("for playerID in playerIDs {")
+            codeLines.append("    if let value = self.\(storageName).policy.filteredValue(self.\(storageName).wrappedValue, for: playerID) {")
+            let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: "value", isAnyType: false, playerID: "playerID")
+            if needsTry {
+                codeLines.append("        do {")
+                codeLines.append("            perPlayerResult[playerID]![\"\(fieldName)\"] = try \(conversionCode)")
+                codeLines.append("        } catch {")
+                codeLines.append("            throw error")
+                codeLines.append("        }")
+            } else {
+                codeLines.append("        perPlayerResult[playerID]![\"\(fieldName)\"] = \(conversionCode)")
+            }
+            codeLines.append("    }")
+            codeLines.append("}")
+            codeLines.append("")
+        }
+
+        codeLines.append("return (StateSnapshot(values: broadcastResult), perPlayerResult.mapValues { StateSnapshot(values: $0) })")
+        let body = codeLines.joined(separator: "\n")
+
+        return try FunctionDeclSyntax(
+            """
+            public func snapshotForSync(playerIDs: [PlayerID], dirtyFields: Set<String>?) throws -> (broadcast: StateSnapshot, perPlayer: [PlayerID: StateSnapshot]) {
+                \(raw: body)
+            }
+            """
+        )
+    }
+
+    /// Returns true if the type is a single (non-container) non-primitive type, i.e. possibly a StateNode for recursive snapshotForSync.
+    private static func isSingleStateNodeType(_ typeName: String) -> Bool {
+        if isPrimitiveType(typeName) { return false }
+        if case .none = detectContainerType(from: typeName) { return true }
+        return false
     }
 
     /// Generate isDirty() method

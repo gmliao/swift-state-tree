@@ -6,6 +6,7 @@
 import Foundation
 import GameContent
 import Logging
+import ProfileRecorderServer
 import SwiftStateTree
 import SwiftStateTreeDeterministicMath
 import SwiftStateTreeHummingbird
@@ -16,6 +17,9 @@ import SwiftStateTreeTransport
 func runServerLoadTest() async throws {
     let config = parseArguments()
     let logger = createGameLogger(scope: "ServerLoadTest", logLevel: config.logLevel)
+
+    // Run Swift Profile Recorder in background when PROFILE_RECORDER_SERVER_URL_PATTERN is set (e.g. for Instruments).
+    async let _ = ProfileRecorderServer(configuration: .parseFromEnvironment()).runIgnoringFailures(logger: logger)
 
     if config.rooms == 0 || config.playersPerRoom == 0 {
         print("Nothing to do: rooms=\(config.rooms), playersPerRoom=\(config.playersPerRoom)")

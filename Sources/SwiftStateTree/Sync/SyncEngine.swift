@@ -139,6 +139,27 @@ public struct SyncEngine: Sendable {
         return StateSnapshot(values: perPlayerValues)
     }
     
+    /// Extract using state.snapshotForSync (one tree walk for broadcast + all per-player).
+    ///
+    /// Calls the state's snapshotForSync (macro-generated or hand-written), which does one pass
+    /// over root fields and fills both broadcast and per-player snapshots.
+    ///
+    /// **Performance**: One tree walk instead of 1 broadcast + N per-player extractions (1+N tree walks).
+    ///
+    /// - Parameters:
+    ///   - state: The StateNode instance (must have snapshotForSync implementation).
+    ///   - playerIDs: All player IDs that need per-player snapshots.
+    ///   - mode: Snapshot mode (e.g. `.all` or `.dirtyTracking(dirtyFields)`).
+    /// - Returns: (broadcastSnapshot, perPlayerSnapshotByPlayerID).
+    /// - Throws: `SyncError` if value conversion fails.
+    public func extractWithSnapshotForSync<State: StateNodeProtocol>(
+        from state: State,
+        playerIDs: [PlayerID],
+        mode: SnapshotMode = .all
+    ) throws -> (broadcast: StateSnapshot, perPlayer: [PlayerID: StateSnapshot]) {
+        return try state.snapshotForSync(playerIDs: playerIDs, dirtyFields: mode.fields)
+    }
+    
     // MARK: - Snapshot Comparison
     
     /// Compare two snapshots and generate patches.

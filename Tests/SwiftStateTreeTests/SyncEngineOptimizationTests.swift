@@ -543,3 +543,45 @@ func testWarmupCache_OnlyWarmsBroadcastCache() throws {
     }
 }
 
+// MARK: - extractWithSnapshotForSync equivalence
+
+@Test("extractWithSnapshotForSync produces same broadcast and per-player snapshots as old path")
+func testExtractWithSnapshotForSync_EquivalentToOldPath() throws {
+    // Arrange: state and player list
+    let syncEngine = SyncEngine()
+    var state = OptimizationTestStateRootNode()
+    let alice = PlayerID("alice")
+    let bob = PlayerID("bob")
+    state.players[alice] = "Alice"
+    state.players[bob] = "Bob"
+    state.hands[alice] = ["card1", "card2"]
+    state.hands[bob] = ["card3"]
+    state.round = 1
+    state.turn = alice
+    let playerIDs = [alice, bob]
+
+    // Act - old path: 1 broadcast + N per-player extractions
+    let broadcastOld = try syncEngine.extractBroadcastSnapshot(from: state, mode: .all)
+    var perPlayerOld: [PlayerID: StateSnapshot] = [:]
+    for pid in playerIDs {
+        perPlayerOld[pid] = try syncEngine.extractPerPlayerSnapshot(for: pid, from: state, mode: .all)
+    }
+
+    // Act - new path: one-pass snapshotForSync
+    let (broadcastNew, perPlayerNew) = try syncEngine.extractWithSnapshotForSync(
+        from: state,
+        playerIDs: playerIDs,
+        mode: .all
+    )
+
+    // Assert - same broadcast snapshot
+    #expect(broadcastNew == broadcastOld, "Broadcast snapshot from snapshotForSync should equal extractBroadcastSnapshot")
+
+    // Assert - same per-player snapshots for each player
+    #expect(perPlayerNew.count == perPlayerOld.count)
+    for pid in playerIDs {
+        #expect(perPlayerNew[pid] != nil, "Per-player snapshot should exist for \(pid)")
+        #expect(perPlayerNew[pid] == perPlayerOld[pid], "Per-player snapshot for \(pid) from snapshotForSync should equal extractPerPlayerSnapshot")
+    }
+}
+

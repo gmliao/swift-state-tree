@@ -143,6 +143,12 @@ export ENABLE_REEVALUATION=false
 export LOG_LEVEL=error
 export NO_COLOR=1
 
+# Pass through USE_NIO if set (for NIO WebSocket transport testing)
+if [ -n "${USE_NIO:-}" ]; then
+  export USE_NIO
+  echo "USE_NIO=$USE_NIO (using pure NIO WebSocket transport)"
+fi
+
 # Isolate reevaluation outputs during load tests so we can verify "no writes" deterministically
 # and avoid polluting the repo working tree.
 export REEVALUATION_RECORDS_DIR="/tmp/ws-loadtest-reevaluation-records"

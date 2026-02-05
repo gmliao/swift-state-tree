@@ -53,6 +53,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     // - 高更新比例（幾乎每幀都在改大部分欄位）時，關閉 dirty tracking 可能更快
     // - 中低更新比例（多數遊戲實際情境）時，建議保持開啟以節省序列化與 diff 成本
     private var enableDirtyTracking: Bool
+    
+    /// When true, use one-pass extraction (state.snapshotForSync) instead of separate broadcast + per-player extractions.
+    /// Default is true; set USE_SNAPSHOT_FOR_SYNC=false to use the legacy path.
+    private let useSnapshotForSync: Bool
 
     /// Whether to enable parallel encoding for JSON codec.
     /// When enabled, multiple player updates are encoded in parallel using TaskGroup.
@@ -205,6 +209,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         self.enableLegacyJoin = enableLegacyJoin
         self.enableDirtyTracking = enableDirtyTracking
+        self.useSnapshotForSync = ProcessInfo.processInfo.environment["USE_SNAPSHOT_FOR_SYNC"] != "false"
         self.expectedSchemaHash = expectedSchemaHash
         self.onLandDestroyedCallback = onLandDestroyed
         // Default parallel encoding: disabled unless explicitly enabled.
@@ -1369,8 +1374,35 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 perPlayerMode = .all
             }
 
-            // Extract broadcast snapshot once (shared across all players).
-            let broadcastSnapshot = try syncEngine.extractBroadcastSnapshot(from: state, mode: broadcastMode)
+            // Dual-mode extraction: one-pass (snapshotForSync) vs separate broadcast + per-player (USE_SNAPSHOT_FOR_SYNC)
+            let broadcastSnapshot: StateSnapshot
+            let perPlayerByPlayer: [PlayerID: StateSnapshot]
+            
+            if useSnapshotForSync {
+                // New: one-pass extraction using snapshotForSync
+                let fullMode: SnapshotMode = (enableDirtyTracking && state.isDirty())
+                    ? .dirtyTracking(state.getDirtyFields())
+                    : .all
+                let playerIDsToSync = sessionToPlayer.values.filter { !initialSyncingPlayers.contains($0) }
+                (broadcastSnapshot, perPlayerByPlayer) = try syncEngine.extractWithSnapshotForSync(
+                    from: state,
+                    playerIDs: Array(playerIDsToSync),
+                    mode: fullMode
+                )
+            } else {
+                // Old: 1 broadcast + N per-player extractions
+                broadcastSnapshot = try syncEngine.extractBroadcastSnapshot(from: state, mode: broadcastMode)
+                var perPlayerTemp: [PlayerID: StateSnapshot] = [:]
+                for (_, playerID) in sessionToPlayer {
+                    if initialSyncingPlayers.contains(playerID) { continue }
+                    perPlayerTemp[playerID] = try syncEngine.extractPerPlayerSnapshot(
+                        for: playerID,
+                        from: state,
+                        mode: perPlayerMode
+                    )
+                }
+                perPlayerByPlayer = perPlayerTemp
+            }
 
             // Compute broadcast diff ONCE, then reuse for all players.
             // This avoids updating the broadcast cache per player, which would cause only the first player
@@ -1442,11 +1474,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         continue
                     }
 
-                    let perPlayerSnapshot = try syncEngine.extractPerPlayerSnapshot(
-                        for: playerID,
-                        from: state,
-                        mode: perPlayerMode
-                    )
+                    guard let perPlayerSnapshot = perPlayerByPlayer[playerID] else {
+                        // Player might have joined after we built playerIDsToSync, skip this sync cycle
+                        continue
+                    }
 
                     let update = syncEngine.generatePerPlayerUpdateFromSnapshot(
                         for: playerID,
@@ -1521,12 +1552,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         continue
                     }
 
-                    // Extract per-player snapshot (specific to this player)
-                    let perPlayerSnapshot = try syncEngine.extractPerPlayerSnapshot(
-                        for: playerID,
-                        from: state,
-                        mode: perPlayerMode
-                    )
+                    // Use pre-extracted per-player snapshot (from dual-mode extraction above)
+                    guard let perPlayerSnapshot = perPlayerByPlayer[playerID] else {
+                        // Player might have joined after we built playerIDsToSync, skip this sync cycle
+                        continue
+                    }
 
                     // Broadcast diff is precomputed once per sync cycle and reused for all players.
                     let update = syncEngine.generateUpdateFromBroadcastDiff(

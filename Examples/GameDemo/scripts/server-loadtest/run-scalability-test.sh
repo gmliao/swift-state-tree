@@ -163,7 +163,13 @@ echo "$SUMMARY_DATA" > "$SUMMARY_FILE"
 CONSECUTIVE_FAILURES=0
 LAST_TEST_PASSED=true
 
-# Run tests
+# Last room count (portable: no ${arr[-1]} for Bash 3.x on macOS)
+ROOM_LIST_LEN=${#ROOM_LIST[@]}
+LAST_ROOM_INDEX=$((ROOM_LIST_LEN > 0 ? ROOM_LIST_LEN - 1 : 0))
+LAST_ROOM_IN_LIST="${ROOM_LIST[$LAST_ROOM_INDEX]}"
+
+# Each test runs a single ServerLoadTest process (in-process server + client simulator).
+# When the process exits, the next test starts a new process. No separate server to stop.
 for ROOMS in "${ROOM_LIST[@]}"; do
     echo ""
     echo "=========================================="
@@ -331,7 +337,7 @@ with open('$SUMMARY_FILE', 'w') as f:
     fi
     
     # Small delay between tests
-    if [ "$ROOMS" != "${ROOM_LIST[-1]}" ]; then
+    if [ "$ROOMS" != "$LAST_ROOM_IN_LIST" ]; then
         echo ""
         echo "Waiting 5 seconds before next test..."
         sleep 5

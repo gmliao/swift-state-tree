@@ -52,7 +52,7 @@ extension Transport {
     /// Default: send each update individually.
     public func sendBatch(_ updates: [(Data, EventTarget)]) async {
         for (data, target) in updates {
-            await send(data, to: target)
+            send(data, to: target)
         }
     }
 }

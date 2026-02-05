@@ -85,6 +85,7 @@ let package = Package(
                 .product(name: "SwiftStateTreeHummingbird", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeTransport", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeMessagePack", package: "SwiftStateTree"),
+                .product(name: "ProfileRecorderServer", package: "swift-profile-recorder"),
             ],
             path: "Sources/ServerLoadTest"
         ),
