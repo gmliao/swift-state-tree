@@ -136,6 +136,22 @@ public protocol StateNodeProtocol: Sendable, SchemaMetadataProvider {
     /// ```
     func broadcastSnapshot(dirtyFields: Set<String>?) throws -> StateSnapshot
     
+    /// Extract once and classify: one tree walk yields broadcast + per-player for all players.
+    ///
+    /// Typically implemented by the `@StateNodeBuilder` macro; hand-written implementations are also supported.
+    /// Reduces redundant tree walks: one pass fills both broadcast and per-player snapshots instead of
+    /// 1 broadcast extraction + N per-player extractions (1+N tree walks).
+    ///
+    /// - Parameters:
+    ///   - playerIDs: All players that need per-player snapshots (e.g. connected, non-initial-syncing players).
+    ///   - dirtyFields: Optional dirty field filter (same semantics as snapshot/broadcastSnapshot).
+    /// - Returns: (broadcastSnapshot, perPlayerSnapshotByPlayerID)
+    /// - Throws: `SyncError` if value conversion fails.
+    ///
+    /// **Default implementation**: Falls back to calling broadcastSnapshot() + snapshot(for:) for each player.
+    /// Hand-written or macro-generated implementations should do one tree walk for better performance.
+    func snapshotForSync(playerIDs: [PlayerID], dirtyFields: Set<String>?) throws -> (broadcast: StateSnapshot, perPlayer: [PlayerID: StateSnapshot])
+    
     // MARK: - Dirty Tracking
     
     /// Check if any @Sync field has been modified since last clear
@@ -177,3 +193,31 @@ public protocol StateNodeProtocol: Sendable, SchemaMetadataProvider {
     mutating func clearDirty()
 }
 
+// MARK: - Default Implementation for snapshotForSync
+
+extension StateNodeProtocol {
+    /// Default implementation: falls back to 1 broadcast + N per-player extractions.
+    ///
+    /// Hand-written or macro-generated implementations should override this to do one tree walk
+    /// for better performance (avoiding 1+N tree walks).
+    public func snapshotForSync(playerIDs: [PlayerID], dirtyFields: Set<String>?) throws -> (broadcast: StateSnapshot, perPlayer: [PlayerID: StateSnapshot]) {
+        let broadcast = try broadcastSnapshot(dirtyFields: dirtyFields)
+        var perPlayer: [PlayerID: StateSnapshot] = [:]
+        perPlayer.reserveCapacity(playerIDs.count)
+        for playerID in playerIDs {
+            let fullSnapshot = try snapshot(for: playerID, dirtyFields: dirtyFields)
+            // Filter to per-player fields only
+            let syncFields = getSyncFields()
+            let perPlayerFieldNames = Set(
+                syncFields.filter { $0.policyType != .broadcast && $0.policyType != .serverOnly }
+                    .map { $0.name }
+            )
+            var perPlayerValues: [String: SnapshotValue] = [:]
+            for (key, value) in fullSnapshot.values where perPlayerFieldNames.contains(key) {
+                perPlayerValues[key] = value
+            }
+            perPlayer[playerID] = StateSnapshot(values: perPlayerValues)
+        }
+        return (broadcast, perPlayer)
+    }
+}

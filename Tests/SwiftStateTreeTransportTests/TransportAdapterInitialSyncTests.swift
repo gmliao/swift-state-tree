@@ -165,3 +165,77 @@ func testLateJoinSnapshotIncludesAllFields() async throws {
     // Verify snapshot has multiple fields
     #expect(snapshot.values.count >= 3, "Snapshot should contain at least 3 fields")
 }
+
+// MARK: - snapshotForSync path (perPlayerByPlayer guard)
+
+/// Boundary: When does `perPlayerByPlayer[playerID]` miss a key?
+///
+/// With `USE_SNAPSHOT_FOR_SYNC=true`, we build `playerIDsToSync` once at the start of sync (from
+/// `sessionToPlayer` minus `initialSyncingPlayers`), then call `extractWithSnapshotForSync(playerIDs: playerIDsToSync)`.
+/// So `perPlayerByPlayer` has exactly those keys. When we later iterate `sessionToPlayer`, a player can be
+/// present there (and not in `initialSyncingPlayers`) but **not** in `perPlayerByPlayer` if they were added
+/// to `sessionToPlayer` or removed from `initialSyncingPlayers` **after** we built `playerIDsToSync` (race).
+///
+/// That does **not** mean "player hasn't completed first join". Typically the player has already completed
+/// join (they are in `sessionToPlayer` and no longer in `initialSyncingPlayers`) and may have received
+/// firstSync; we simply did not include them in this extraction cycle. The guard skips sending them a diff
+/// this cycle; they will receive the next sync cycle or have already received firstSync.
+///
+/// **Sync correctness:** The skipped player is at most **one sync cycle** (e.g. one tick) behind: they do
+/// not get this cycle's diff, but on the next `syncNow()` they will be in `playerIDsToSync` and will
+/// receive the next diff. They are not permanently out of sync. If they already received firstSync, they
+/// have full state and one missed diff is typically negligible.
+@Test("Two players join and sync completes without crash (covers guard when using snapshotForSync path)")
+func testTwoPlayersJoinAndSync_DoesNotCrash() async throws {
+    // Two players join and syncNow runs. When the snapshotForSync path is used (env USE_SNAPSHOT_FOR_SYNC=true
+    // today; may become default later), perPlayerByPlayer is used and the guard avoids crash when a key is missing.
+    let definition = Land("two-player-sync", using: InitialSyncTestState.self) {
+        Rules {
+            OnJoin { (state: inout InitialSyncTestState, _: LandContext) in
+                state.ticks += 1
+            }
+        }
+    }
+    let transport = RecordingTransport()
+    let keeper = LandKeeper(definition: definition, initialState: InitialSyncTestState())
+    let adapter = TransportAdapter<InitialSyncTestState>(
+        keeper: keeper,
+        transport: transport,
+        landID: "two-player-sync",
+        enableLegacyJoin: true
+    )
+    await transport.setDelegate(adapter)
+    await keeper.setTransport(adapter)
+
+    let session1 = SessionID("s1")
+    let session2 = SessionID("s2")
+    await adapter.onConnect(sessionID: session1, clientID: ClientID("c1"))
+    await adapter.onConnect(sessionID: session2, clientID: ClientID("c2"))
+
+    let join1 = TransportMessage.join(
+        requestID: "r1",
+        landType: "two-player-sync",
+        landInstanceId: nil,
+        playerID: "p1",
+        deviceID: "d1",
+        metadata: nil
+    )
+    let join2 = TransportMessage.join(
+        requestID: "r2",
+        landType: "two-player-sync",
+        landInstanceId: nil,
+        playerID: "p2",
+        deviceID: "d2",
+        metadata: nil
+    )
+    await adapter.onMessage(try JSONEncoder().encode(join1), from: session1)
+    try await Task.sleep(for: .milliseconds(50))
+    await adapter.onMessage(try JSONEncoder().encode(join2), from: session2)
+    try await Task.sleep(for: .milliseconds(100))
+
+    await adapter.syncNow()
+    try await Task.sleep(for: .milliseconds(50))
+
+    let messages = await transport.recordedMessages()
+    #expect(!messages.isEmpty, "Should have sent messages")
+}

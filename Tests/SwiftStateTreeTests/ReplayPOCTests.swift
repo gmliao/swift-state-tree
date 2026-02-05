@@ -81,7 +81,7 @@ struct ReplayPOCTests {
                 }
                 
                 // 3. Remove executed actions from queue
-                //    (Optimization: could use a more efficient data structure, but array is fine for POC)
+                //    (Optimization: could use a more efficient data structure; array is sufficient here)
                 if !actionsToExecute.isEmpty {
                     // Rebuild queue excluding executed ones
                     // Since MockAction is Equatable, we can filter.
