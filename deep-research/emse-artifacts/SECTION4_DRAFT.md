@@ -166,8 +166,8 @@
 | Rooms | 總人數 | 通過率 | errorRate | disconnectRate | rtt p95 (steady) | update p95 (steady) |
 |------:|------:|-------:|----------:|----------------|-----------------|---------------------|
 | 100   | 500  | 3/3    | 0         | 0              | 3 ms            | 101 ms              |
-| 300   | 1500 | 3/3    | 0         | 0              | 11 ms           | 103 ms              |
-| 500   | 2500 | 3/3    | 0         | 0              | 77 ms           | 115 ms              |
+| 300   | 1500 | 3/3    | 0         | 0              | 12 ms           | 102 ms              |
+| 500   | 2500 | 3/3    | 0         | 0              | 83 ms           | 114 ms              |
 
 三組 room count 皆全數通過（preflight/steady/postflight 皆 `passed`），errorRate 與 disconnectRate 皆為 0。
 
@@ -245,7 +245,7 @@ swift run -c release ReevaluationRunner --input <record.json> --verify
 
 ### In-Memory 與 Socket 測試輸出（RQ2 Stage 2/3）
 - `run-server-loadtest.sh` 結果目錄：`/Examples/GameDemo/results/server-loadtest/`
-- `run-ws-loadtest.sh` 結果目錄：`/Examples/GameDemo/ws-loadtest/results-hummingbird/`（Stage 3 數據取自 `rq3-rerun-2026-02-06/scalability-2026-02-06T12-57-57/summary.json`）
+- `run-scalability-test.sh` 結果目錄：`/Examples/GameDemo/ws-loadtest/results/`；Stage 3 證據：`/deep-research/emse-artifacts/evidence-2026-02-06-nio-stage3-100-300-500/scalability-2026-02-06T14-24-28/summary.json`
 
 ### Re-evaluation records（RQ3）
 - [hero-defense-2026-01-25T05-17-26Z-CD3C81D9.json](/Examples/GameDemo/reevaluation-records/hero-defense-2026-01-25T05-17-26Z-CD3C81D9.json)
@@ -270,4 +270,4 @@ swift run -c release ReevaluationRunner --input <record.json> --verify
 - Stage 1（100/300/500 rooms）：`cd Examples/GameDemo && USE_SNAPSHOT_FOR_SYNC=false swift run -c release EncodingBenchmark --scalability --format json-object --players-per-room 5 --room-counts 100,300,500 --iterations 200 --ticks-per-sync 2`（JSON）；同指令改 `--format messagepack-pathhash`（MsgPack）
 - 物件數量取樣：`cd Examples/GameDemo && swift run -c release ObjectCountSampler`
 - RQ2 Stage 2：`bash Examples/GameDemo/scripts/server-loadtest/run-server-loadtest.sh --rooms 500 --players-per-room 5 ...`
-- RQ2 Stage 3：`cd Examples/GameDemo/ws-loadtest && bash scripts/run-ws-loadtest.sh --scenario scenarios/hero-defense/default.json --workers 8`
+- RQ2 Stage 3：`cd Examples/GameDemo/ws-loadtest && bash scripts/run-scalability-test.sh --room-counts "100 300 500" --runs 3 --output-dir results`

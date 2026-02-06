@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-02-06T12-57-57",
+  "timestamp": "2026-02-06T14-24-28",
   "server": "gamedemo-nio",
   "config": {
     "scenario": "scenarios/hero-defense/default.json",
@@ -17,8 +17,8 @@
       "runIndex": 1,
       "exitCode": 0,
       "success": true,
-      "durationSeconds": 110,
-      "reportJson": "results-hummingbird/rq3-rerun-2026-02-06/scalability-2026-02-06T12-57-57/run-1/ws-loadtest-1770382785730.json",
+      "durationSeconds": 126,
+      "reportJson": "results/scalability-2026-02-06T14-24-28/run-1/ws-loadtest-1770387992702.json",
       "phases": [
         {
           "name": "preflight",
@@ -26,7 +26,7 @@
           "errorRate": 0,
           "disconnectRate": 0,
           "rttP95": 1,
-          "updateP95": 100
+          "updateP95": 101
         },
         {
           "name": "steady",
@@ -52,7 +52,7 @@
       "exitCode": 0,
       "success": true,
       "durationSeconds": 99,
-      "reportJson": "results-hummingbird/rq3-rerun-2026-02-06/scalability-2026-02-06T12-57-57/run-2/ws-loadtest-1770382890018.json",
+      "reportJson": "results/scalability-2026-02-06T14-24-28/run-2/ws-loadtest-1770388096765.json",
       "phases": [
         {
           "name": "preflight",
@@ -67,15 +67,15 @@
           "passed": true,
           "errorRate": 0,
           "disconnectRate": 0,
-          "rttP95": 11,
-          "updateP95": 103
+          "rttP95": 12,
+          "updateP95": 102
         },
         {
           "name": "postflight",
           "passed": true,
           "errorRate": 0,
           "disconnectRate": 0,
-          "rttP95": 2,
+          "rttP95": 4,
           "updateP95": 101
         }
       ],
@@ -85,15 +85,15 @@
       "runIndex": 3,
       "exitCode": 0,
       "success": true,
-      "durationSeconds": 98,
-      "reportJson": "results-hummingbird/rq3-rerun-2026-02-06/scalability-2026-02-06T12-57-57/run-3/ws-loadtest-1770382993618.json",
+      "durationSeconds": 99,
+      "reportJson": "results/scalability-2026-02-06T14-24-28/run-3/ws-loadtest-1770388200797.json",
       "phases": [
         {
           "name": "preflight",
           "passed": true,
           "errorRate": 0,
           "disconnectRate": 0,
-          "rttP95": 6,
+          "rttP95": 5,
           "updateP95": 101
         },
         {
@@ -101,16 +101,16 @@
           "passed": true,
           "errorRate": 0,
           "disconnectRate": 0,
-          "rttP95": 77,
-          "updateP95": 115
+          "rttP95": 83,
+          "updateP95": 114
         },
         {
           "name": "postflight",
           "passed": true,
           "errorRate": 0,
           "disconnectRate": 0,
-          "rttP95": 5,
-          "updateP95": 102
+          "rttP95": 9,
+          "updateP95": 103
         }
       ],
       "rooms": 500
