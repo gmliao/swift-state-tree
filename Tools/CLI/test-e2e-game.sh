@@ -8,6 +8,10 @@ set -e  # Exit on error
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/e2e-test-common.sh"
 
+# GameServer startup can be slower (plugin/tooling + fresh container builds),
+# so allow a longer readiness window than the common default.
+TIMEOUT=${TIMEOUT:-120}
+
 # Server-specific configuration
 SERVER_NAME="GameServer"
 SERVER_DIR_NAME="GameDemo"
@@ -144,7 +148,7 @@ main() {
     
     # Test each encoding mode
     # Note: Use jsonOpcode in test script, but GameServer accepts json_opcode/jsonOpcode/json-opcode
-    local encodings=("messagepack")
+    local encodings=("json" "jsonOpcode" "messagepack")
     local failed_encodings=()
     
     for encoding in "${encodings[@]}"; do
@@ -199,7 +203,7 @@ main() {
 
 # Trap to ensure cleanup on exit
 cleanup() {
-    cleanup_servers "$SERVER_NAME" "messagepack"
+    cleanup_servers "$SERVER_NAME" "json" "jsonOpcode" "messagepack"
 }
 
 trap cleanup EXIT INT TERM

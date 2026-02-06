@@ -346,6 +346,12 @@ async function executeScript(
   script?: any,
   playerID?: string,
 ) {
+  const patchHistory: Array<{ op: string; path: string }> = [];
+  let lastPatchCheckIndex = 0;
+  const unsubscribePatch = view.onPatch((patch) => {
+    patchHistory.push({ op: patch.op, path: patch.path });
+  });
+
   try {
     // If script is already parsed, use it; otherwise read from file
     if (!script) {
@@ -383,6 +389,7 @@ async function executeScript(
         errorCode,
         errorMessage,
         waitForState,
+        assertNoPatch,
       } = step;
 
       if (wait) {
@@ -491,6 +498,57 @@ async function executeScript(
           ),
         );
         console.log(chalk.green(`✅ Assertion passed: ${path}`));
+      } else if (type === "assertNoPatch" && assertNoPatch) {
+        const {
+          op,
+          path,
+          paths,
+          pathStartsWith,
+          sinceLastCheck = true,
+          message,
+        } = assertNoPatch as {
+          op?: string;
+          path?: string;
+          paths?: string[];
+          pathStartsWith?: string;
+          sinceLastCheck?: boolean;
+          message?: string;
+        };
+
+        const checkFrom = sinceLastCheck ? lastPatchCheckIndex : 0;
+        const checkPatches = patchHistory.slice(checkFrom);
+
+        const matchesRule = (seen: { op: string; path: string }) => {
+          if (op !== undefined && seen.op !== op) {
+            return false;
+          }
+          if (path !== undefined && seen.path !== path) {
+            return false;
+          }
+          if (pathStartsWith !== undefined && !seen.path.startsWith(pathStartsWith)) {
+            return false;
+          }
+          if (paths !== undefined && paths.length > 0 && !paths.includes(seen.path)) {
+            return false;
+          }
+          return true;
+        };
+
+        const matched = checkPatches.find(matchesRule);
+        if (matched) {
+          throw new Error(
+            message ||
+              `Assertion failed: unexpected patch detected op=${matched.op}, path=${matched.path}`,
+          );
+        }
+
+        const scopeLabel = sinceLastCheck ? "since last patch check" : "from scenario start";
+        console.log(
+          chalk.green(
+            `✅ Patch assertion passed (${scopeLabel}): no matching patch found`,
+          ),
+        );
+        lastPatchCheckIndex = patchHistory.length;
       } else if (type === "log") {
         console.log(chalk.cyan(`ℹ️  ${step.message || ""}`));
       } else if (type === "state") {
@@ -509,6 +567,8 @@ async function executeScript(
       chalk.red(`❌ Scenario failed: ${basename(scriptPath)}: ${error}`),
     );
     throw error;
+  } finally {
+    unsubscribePatch();
   }
 }
 

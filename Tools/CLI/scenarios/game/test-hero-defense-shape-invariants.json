@@ -1,0 +1,190 @@
+{
+  "maxDuration": 45000,
+  "steps": [
+    {
+      "type": "log",
+      "message": "Shape invariant regression test for nested Position2 fields"
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "base.position.v.x",
+        "exists": true,
+        "message": "base.position.v.x must exist after firstSync"
+      }
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "base.position.v.y",
+        "exists": true,
+        "message": "base.position.v.y must exist after firstSync"
+      }
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "base.radius",
+        "exists": true,
+        "message": "base.radius must exist after firstSync"
+      }
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "base.maxHealth",
+        "exists": true,
+        "message": "base.maxHealth must exist after firstSync"
+      }
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "players.[PLAYER_ID].position.v.x",
+        "exists": true,
+        "message": "player position.v.x must exist after firstSync"
+      }
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "players.[PLAYER_ID].position.v.y",
+        "exists": true,
+        "message": "player position.v.y must exist after firstSync"
+      }
+    },
+    {
+      "type": "assertNoPatch",
+      "assertNoPatch": {
+        "op": "remove",
+        "paths": [
+          "/base/position",
+          "/base/radius",
+          "/base/maxHealth"
+        ],
+        "sinceLastCheck": false,
+        "message": "base shape fields must never be removed after firstSync"
+      }
+    },
+    {
+      "type": "event",
+      "event": "MoveTo",
+      "payload": {
+        "target": {
+          "__type": "Position2",
+          "value": {
+            "x": 70000,
+            "y": 35000
+          }
+        }
+      }
+    },
+    {
+      "type": "wait",
+      "wait": 300
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "base.position.v.x",
+        "exists": true,
+        "message": "base.position.v.x must remain after movement diffs"
+      }
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "players.[PLAYER_ID].position.v.x",
+        "exists": true,
+        "message": "player position.v.x must remain after movement diffs"
+      }
+    },
+    {
+      "type": "assertNoPatch",
+      "assertNoPatch": {
+        "op": "remove",
+        "paths": [
+          "/base/position",
+          "/base/radius",
+          "/base/maxHealth"
+        ],
+        "message": "base shape fields must not be removed during movement updates"
+      }
+    },
+    {
+      "type": "waitForState",
+      "waitForState": {
+        "path": "monsters.1",
+        "exists": true,
+        "timeout": 8000,
+        "interval": 100,
+        "message": "monster 1 should appear for nested shape assertions"
+      }
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "monsters.1.position.v.x",
+        "exists": true,
+        "message": "monster position.v.x must exist"
+      }
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "monsters.1.position.v.y",
+        "exists": true,
+        "message": "monster position.v.y must exist"
+      }
+    },
+    {
+      "type": "action",
+      "action": "Play",
+      "payload": {}
+    },
+    {
+      "type": "wait",
+      "wait": 300
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "score",
+        "greaterThanOrEqual": 1,
+        "message": "score should update while shape invariants remain valid"
+      }
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "base.position.v.x",
+        "exists": true,
+        "message": "base.position.v.x must still exist after additional diffs"
+      }
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "base.position.v.y",
+        "exists": true,
+        "message": "base.position.v.y must still exist after additional diffs"
+      }
+    },
+    {
+      "type": "assertNoPatch",
+      "assertNoPatch": {
+        "op": "remove",
+        "paths": [
+          "/base/position",
+          "/base/radius",
+          "/base/maxHealth"
+        ],
+        "message": "base shape fields must not be removed after score/action diffs"
+      }
+    }
+  ]
+}
