@@ -1,0 +1,97 @@
+Checking system parameters...
+System parameters already optimal
+
+Starting GameServer (release, LOG_LEVEL=error, ENABLE_REEVALUATION=false; log file: /tmp/ws-loadtest-gameserver.log)...
+Waiting for server to listen on 8080...
+Starting system monitoring...
+
+> build
+> tsc -p tsconfig.json
+
+Running load test...
+Report written to /workspace/Examples/GameDemo/ws-loadtest/results/scalability-2026-02-06T14-24-28/run-2/ws-loadtest-1770388096765.{json,html}
+Stopping monitoring...
+Stopping GameServer...
+---- GameServer log (tail, may show crash) ----
+2026-02-06 14:28:05.943 ERROR [HeroDefenseServer] WebSocket error sessionID=53081BF4-213C-4181-A64D-D92FA6EC3CCA, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.943 ERROR [HeroDefenseServer] WebSocket error sessionID=EA26C1A9-B710-4E15-8724-04BD466FFD49, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.943 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=3ED76991-5270-4694-98E1-4087B6326972
+2026-02-06 14:28:05.943 ERROR [HeroDefenseServer] WebSocket error sessionID=7E3505C1-E8EC-4A03-8D44-8CC0DA3B2BE0, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.943 ERROR [HeroDefenseServer] WebSocket error sessionID=9B772E53-7C70-41F2-A8AA-27FEAF4308E1, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.943 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=3BF049E8-015A-4FF1-A92E-E3044F57B4E4
+2026-02-06 14:28:05.943 ERROR [HeroDefenseServer] WebSocket error sessionID=DB02B773-8865-4C9D-9011-6089C9D280AE, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.943 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=A9CF908C-B6C2-40F2-9782-DDDA3AEFE98A
+2026-02-06 14:28:05.943 ERROR [HeroDefenseServer] WebSocket error sessionID=7E3F6A43-038B-40EC-9687-75578E9397AD, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.943 ERROR [HeroDefenseServer] WebSocket error sessionID=2E7BBDE3-6713-4BE9-8A41-65091963A818, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.943 ERROR [HeroDefenseServer] WebSocket error sessionID=15295407-AD18-44D5-BB2D-3AF0C6A9F727, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.943 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=C1746C85-101C-4135-BBCF-600F5968F0D3
+2026-02-06 14:28:05.943 ERROR [HeroDefenseServer] WebSocket error sessionID=F1E6D2B8-46A9-4D6C-8B4A-ADBA54D17746, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.943 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=14D9952D-6938-4D54-A475-A75B16D5E659
+2026-02-06 14:28:05.943 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=306C2FCB-2381-4142-B329-F7D965DD8C45
+2026-02-06 14:28:05.943 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=ABCCFEC0-E28B-486A-A66B-7ECF78EB2899
+2026-02-06 14:28:05.943 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=B9498948-2CB3-48A1-9C44-AB7CA431843C
+2026-02-06 14:28:05.943 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=1FA4C26C-C759-4580-A00E-8B6B3A2088F2
+2026-02-06 14:28:05.943 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=FDF3BDAF-3BF0-4F46-A994-95157F49530E
+2026-02-06 14:28:05.943 ERROR [HeroDefenseServer] WebSocket error sessionID=CDD8F68E-8D0F-4E8A-81B9-8E1F09FD1967, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.943 ERROR [HeroDefenseServer] WebSocket error sessionID=6594C4CB-2698-4080-85A5-55048566684F, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.943 ERROR [HeroDefenseServer] WebSocket error sessionID=F5A6C7E7-5CE5-4844-977A-509DAB690B58, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.943 ERROR [HeroDefenseServer] WebSocket error sessionID=F18E0393-8E43-4D5E-A98D-DFBA5BAAF31A, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.943 ERROR [HeroDefenseServer] WebSocket error sessionID=AC08A2DB-A9A2-4351-89B6-4A05C10C97AE, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.944 ERROR [HeroDefenseServer] WebSocket error sessionID=5347760C-EA6F-4CE9-AAD6-75A3E107951E, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.944 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=A49B40A1-5181-4247-9B62-209FECDA21DB
+2026-02-06 14:28:05.944 ERROR [HeroDefenseServer] WebSocket error sessionID=5EF35181-7DE0-4492-8583-52E5087532A9, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.944 ERROR [HeroDefenseServer] WebSocket error sessionID=3C98E50B-9C31-4B7A-A3FA-3736663C7656, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.944 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=18A87C67-F8AA-48EB-BFA6-D3F922A0D913
+2026-02-06 14:28:05.944 ERROR [HeroDefenseServer] WebSocket error sessionID=1CBE3E9D-E0DF-49FF-9576-68BDFBE5FBF1, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.944 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=0E04CE4F-FC40-4744-8AFC-54FEB12623CB
+2026-02-06 14:28:05.944 ERROR [HeroDefenseServer] WebSocket error sessionID=EF6C827A-41AA-4B28-9160-91FB04DB3C4D, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.945 ERROR [HeroDefenseServer] WebSocket error sessionID=0E86DF17-CE34-4A99-8CC1-B6A46F6B1A5C, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.945 ERROR [HeroDefenseServer] WebSocket error sessionID=C37EAB07-01BE-4238-97BE-806E6669B36C, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.945 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=E7DA3386-5438-4690-AED7-1AC4CDF3DB81
+2026-02-06 14:28:05.945 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=E41C9903-5781-4CA0-9E38-82E8B4479C93
+2026-02-06 14:28:05.945 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=914F51A9-03E2-4FEF-8B8D-9F8D48B96D58
+2026-02-06 14:28:05.945 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=51DAADA2-592B-4B43-A847-32FC8555A8CC
+2026-02-06 14:28:05.946 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=43384316-5DED-4B11-990C-4F91D5E6C4D5
+2026-02-06 14:28:05.946 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=50593F0F-D25C-4336-BA69-56DFFAD315BB
+2026-02-06 14:28:05.946 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=52709A4B-B4BC-48B3-B964-28D95806275E
+2026-02-06 14:28:05.946 ERROR [HeroDefenseServer] WebSocket error sessionID=3AF5930A-1AAE-4499-9567-DC3BE6D3E953, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.946 ERROR [HeroDefenseServer] WebSocket error sessionID=2A438240-77DC-4DF8-B4CF-5CD904BF9DEC, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.946 ERROR [HeroDefenseServer] WebSocket error sessionID=98358A05-DC6C-4241-A2C1-86C7627252F4, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.946 ERROR [HeroDefenseServer] WebSocket error sessionID=01202B34-1E5D-4B2C-8B6C-AAA9A12F4EC1, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.946 ERROR [HeroDefenseServer] WebSocket error sessionID=DBC0B5CA-AC21-456E-8D91-82ADC2211468, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.947 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=074DFC8A-2714-445D-8D8E-2EC85BE1ECAC
+2026-02-06 14:28:05.947 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=51595AD7-6882-45BF-AC9C-62FF728A9F95
+2026-02-06 14:28:05.947 ERROR [HeroDefenseServer] WebSocket error sessionID=70ADB831-3EC5-45EE-A58A-C9068CE3BDEE, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.947 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=BD3261EB-F8A7-4C36-843D-014C8F3F6DF0
+2026-02-06 14:28:05.947 ERROR [HeroDefenseServer] WebSocket error sessionID=3A2308E8-BCEF-42CA-AED4-4A24192973FF, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.947 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=6F9FAAE4-DC1A-4EBD-9108-133784BE77CF
+2026-02-06 14:28:05.947 ERROR [HeroDefenseServer] WebSocket error sessionID=2171FA8A-AA2A-42BF-AE44-96DE0439B251, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.982 ERROR [HeroDefenseServer] WebSocket error sessionID=D0C20E52-DDCE-4D6D-84F7-9776BCBFDC61, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.982 ERROR [HeroDefenseServer] WebSocket error sessionID=BAA8C297-93A2-4E74-9628-F962FD01A9B6, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.982 ERROR [HeroDefenseServer] WebSocket error sessionID=4BF8718C-D3BA-4BAD-A4F8-0EBE7D06B42F, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.982 ERROR [HeroDefenseServer] WebSocket error sessionID=C1B38C91-5E0F-4F7A-9BEC-B65EC37BB9B6, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.982 ERROR [HeroDefenseServer] WebSocket error sessionID=57B9A946-4994-4585-A9C4-1280A0D21459, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.982 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=F59682F8-8AF3-4BB3-A044-C68B2F2548DC
+2026-02-06 14:28:05.982 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=DF23B982-0F17-4D1B-83B7-30FA85C4F245
+2026-02-06 14:28:05.982 ERROR [HeroDefenseServer] WebSocket error sessionID=CB42FE4F-E188-404C-BAC3-C71335AC748D, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.982 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=FC422E20-4F31-4988-8EBF-23AC7C150D8E
+2026-02-06 14:28:05.982 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=A9098093-32DA-461E-B3EA-CC84442A1441
+2026-02-06 14:28:05.982 ERROR [HeroDefenseServer] WebSocket error sessionID=D44E9119-80D1-4391-A879-D046DA58CC48, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.982 ERROR [HeroDefenseServer] WebSocket error sessionID=E643B130-3054-420C-8FCF-6E7D19924E96, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.983 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=DFEAA900-EFDE-4E94-801D-9F52DC22F0A7
+2026-02-06 14:28:05.983 ERROR [HeroDefenseServer] WebSocket error sessionID=878BFEA7-7BF1-477C-A4B9-718F6DF3D719, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.983 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=DDE81304-7993-4571-82C6-474B03CE83C7
+2026-02-06 14:28:05.983 ERROR [HeroDefenseServer] WebSocket error sessionID=5657574F-8D4C-4565-B8E3-9A8EF158A391, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.983 ERROR [HeroDefenseServer] WebSocket error sessionID=E347AA1B-890D-48DB-BE51-5197B845E66C, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.983 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=7F3228FE-1321-49CC-991E-C809EB323B0B
+2026-02-06 14:28:05.983 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=CA057BBC-C984-4F77-B6EC-F7B12CCE7464
+2026-02-06 14:28:05.983 ERROR [HeroDefenseServer] WebSocket error sessionID=244F1765-809E-40B1-9047-89239F74BF14, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.983 ERROR [HeroDefenseServer] WebSocket error sessionID=3B2E8271-C2A8-4E2B-A45E-551C1F384FC3, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.983 ERROR [HeroDefenseServer] WebSocket error sessionID=A5D3A5F4-CAA0-471F-93FF-2C6697D39545, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:05.983 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=7291A9B8-F6FC-47B1-A85D-9F0006B4CD9E
+2026-02-06 14:28:05.983 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=11356FB3-19ED-4394-825E-7E7AE9FE4664
+2026-02-06 14:28:16.443 ERROR [HeroDefenseServer] WebSocket error sessionID=12FE6AC8-40DE-429A-85DE-184FA171785D, error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104)
+2026-02-06 14:28:16.443 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=50C86562-861C-4661-A404-8AD08B78BF1A
+2026-02-06 14:28:16.443 ERROR [HeroDefenseServer] WebSocket error error=read(descriptor:pointer:size:): Connection reset by peer) (errno: 104), sessionID=D97FC44C-8EBB-443A-B4A8-593FC2718BF8
+Reevaluation: no records generated (as expected).
+Done. Reports in /workspace/Examples/GameDemo/ws-loadtest/results/scalability-2026-02-06T14-24-28/run-2
