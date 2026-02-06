@@ -201,3 +201,32 @@ jobs:
             echo ""
           fi
         done
+
+  e2e-game-tests:
+    runs-on: ubuntu-22.04 # Linux runner (production target)
+    container:
+      image: swift:6.2
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Node.js
+      run: |
+        apt-get update
+        apt-get install -y curl
+        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+        apt-get install -y nodejs
+        node --version && npm --version
+
+    - name: Setup npm cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.npm
+        key: ${{ runner.os }}-node-${{ hashFiles('sdk/ts/package-lock.json') }}
+        restore-keys: |
+          ${{ runner.os }}-node-
+
+    - name: Run GameServer E2E tests (includes shape invariants)
+      run: |
+        cd Tools/CLI
+        ./test-e2e-game.sh

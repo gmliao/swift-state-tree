@@ -414,7 +414,10 @@ public struct StateNodeBuilderMacro: MemberMacro {
                 if isOptional {
                     codeLines.append("    if let unwrapped = \(storageName).wrappedValue {")
                     codeLines.append("        if let node = (unwrapped as Any) as? any StateNodeProtocol {")
-                    codeLines.append("            let (subB, _) = try node.snapshotForSync(playerIDs: playerIDs, dirtyFields: dirtyFields)")
+                    codeLines.append("            // Parent dirtyFields contains parent-level names (e.g. \"base\"),")
+                    codeLines.append("            // which do not match nested field names (e.g. \"position\").")
+                    codeLines.append("            // Pass nil here to avoid producing empty nested objects like {}.")
+                    codeLines.append("            let (subB, _) = try node.snapshotForSync(playerIDs: playerIDs, dirtyFields: nil)")
                     codeLines.append("            broadcastResult[\"\(fieldName)\"] = .object(subB.values)")
                     codeLines.append("        } else {")
                     codeLines.append("            broadcastResult[\"\(fieldName)\"] = try SnapshotValue.make(from: unwrapped as Any)")
@@ -424,7 +427,10 @@ public struct StateNodeBuilderMacro: MemberMacro {
                     codeLines.append("    }")
                 } else {
                     codeLines.append("    if let node = (self.\(storageName).wrappedValue as Any) as? any StateNodeProtocol {")
-                    codeLines.append("        let (subB, _) = try node.snapshotForSync(playerIDs: playerIDs, dirtyFields: dirtyFields)")
+                    codeLines.append("        // Parent dirtyFields contains parent-level names (e.g. \"base\"),")
+                    codeLines.append("        // which do not match nested field names (e.g. \"position\").")
+                    codeLines.append("        // Pass nil here to avoid producing empty nested objects like {}.")
+                    codeLines.append("        let (subB, _) = try node.snapshotForSync(playerIDs: playerIDs, dirtyFields: nil)")
                     codeLines.append("        broadcastResult[\"\(fieldName)\"] = .object(subB.values)")
                     codeLines.append("    } else {")
                     codeLines.append("        broadcastResult[\"\(fieldName)\"] = try SnapshotValue.make(from: self.\(storageName).wrappedValue as Any)")
