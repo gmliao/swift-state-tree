@@ -70,6 +70,13 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
 
     /// Explicitly set parallel encoding mode (nil = use default based on codec)
     let enableParallelEncoding: Bool?
+
+    /// Incremental sync mode for A/B performance comparison.
+    ///
+    /// - off:    diff-only path
+    /// - shadow: diff path + incremental patch metrics collection
+    /// - on:     reserved for full incremental transport path
+    let incrementalSyncMode: TransportAdapter<BenchmarkStateForSync>.IncrementalSyncMode
     
     /// Store all results for multi-player-count benchmarks
     var allCollectedResults: [BenchmarkResult] = []
@@ -80,7 +87,8 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
         broadcastPlayerRatio: Double = 0.0,
         enableDirtyTracking: Bool = true,
         compareEncodingModes: Bool = false,
-        enableParallelEncoding: Bool? = nil
+        enableParallelEncoding: Bool? = nil,
+        incrementalSyncMode: TransportAdapter<BenchmarkStateForSync>.IncrementalSyncMode = .off
     ) {
         self.playerCounts = playerCounts
         self.dirtyPlayerRatio = dirtyPlayerRatio
@@ -88,6 +96,7 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
         self.enableDirtyTracking = enableDirtyTracking
         self.compareEncodingModes = compareEncodingModes
         self.enableParallelEncoding = enableParallelEncoding
+        self.incrementalSyncMode = incrementalSyncMode
     }
 
     mutating func run(
@@ -343,6 +352,7 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
             createGuestSession: nil,
             enableLegacyJoin: false,
             enableDirtyTracking: enableDirtyTracking,
+            incrementalSyncMode: incrementalSyncMode,
             codec: JSONTransportCodec(),  // Use JSON codec to enable parallel encoding option
             enableParallelEncoding: enableParallelEncoding,  // Control parallel encoding via parameter
             logger: benchmarkLogger
@@ -441,6 +451,7 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
         } else {
             modeLabel += ", Encoding: Default"
         }
+        modeLabel += ", Incremental: \(incrementalSyncMode.rawValue)"
 
         return BenchmarkResult(
             config: BenchmarkConfig(

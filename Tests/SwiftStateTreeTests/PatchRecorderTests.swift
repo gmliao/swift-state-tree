@@ -15,6 +15,7 @@ func testPatchRecorder_RecordAndTake() {
     
     // Assert
     #expect(recorder.hasPatches == true)
+    #expect(recorder.patchCount == 2)
     let patches = recorder.takePatches()
     #expect(patches.count == 2)
     #expect(patches[0].path == "/score")
@@ -22,6 +23,7 @@ func testPatchRecorder_RecordAndTake() {
     
     // After take, should be empty
     #expect(recorder.hasPatches == false)
+    #expect(recorder.patchCount == 0)
     #expect(recorder.takePatches().isEmpty == true)
 }
 

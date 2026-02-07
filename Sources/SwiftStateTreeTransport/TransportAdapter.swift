@@ -30,6 +30,17 @@ private enum HexEncoding {
 /// Adapts Transport events to LandKeeper calls.
 public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
+    /// Controls how sync uses incremental patches.
+    ///
+    /// - `off`: Ignore incremental patches and use diff-based sync only.
+    /// - `shadow`: Keep diff-based sync, but collect incremental patch metrics for comparison.
+    /// - `on`: Reserved for full incremental sync path; currently falls back to diff path when needed.
+    public enum IncrementalSyncMode: String, Sendable {
+        case off
+        case shadow
+        case on
+    }
+
     private let keeper: LandKeeper<State>
     private let transport: any Transport
     /// When set, sync uses enqueueBatch (no await) instead of transport.sendBatch.
@@ -53,6 +64,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     // - 高更新比例（幾乎每幀都在改大部分欄位）時，關閉 dirty tracking 可能更快
     // - 中低更新比例（多數遊戲實際情境）時，建議保持開啟以節省序列化與 diff 成本
     private var enableDirtyTracking: Bool
+    private var incrementalSyncMode: IncrementalSyncMode
     
     /// When true, use one-pass extraction (state.snapshotForSync) instead of separate broadcast + per-player extractions.
     /// Default is true; set USE_SNAPSHOT_FOR_SYNC=false to use the legacy path.
@@ -159,6 +171,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         onLandDestroyed: (@Sendable () async -> Void)? = nil,
         enableLegacyJoin: Bool = false,
         enableDirtyTracking: Bool = true,
+        incrementalSyncMode: IncrementalSyncMode? = nil,
         expectedSchemaHash: String? = nil,
         codec: any TransportCodec = JSONTransportCodec(),
         stateUpdateEncoder: any StateUpdateEncoder = JSONStateUpdateEncoder(),
@@ -209,6 +222,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         self.enableLegacyJoin = enableLegacyJoin
         self.enableDirtyTracking = enableDirtyTracking
+        if let incrementalSyncMode {
+            self.incrementalSyncMode = incrementalSyncMode
+        } else if let modeString = ProcessInfo.processInfo.environment["SST_INCREMENTAL_SYNC_MODE"],
+                  let parsedMode = IncrementalSyncMode(rawValue: modeString.lowercased()) {
+            self.incrementalSyncMode = parsedMode
+        } else {
+            self.incrementalSyncMode = .off
+        }
         self.useSnapshotForSync = ProcessInfo.processInfo.environment["USE_SNAPSHOT_FOR_SYNC"] != "false"
         self.expectedSchemaHash = expectedSchemaHash
         self.onLandDestroyedCallback = onLandDestroyed
@@ -271,6 +292,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///   `false` to disable and always generate full diffs.
     public func setDirtyTrackingEnabled(_ enabled: Bool) {
         enableDirtyTracking = enabled
+    }
+
+    /// Get incremental sync mode.
+    public func getIncrementalSyncMode() -> IncrementalSyncMode {
+        incrementalSyncMode
+    }
+
+    /// Set incremental sync mode at runtime.
+    public func setIncrementalSyncMode(_ mode: IncrementalSyncMode) {
+        incrementalSyncMode = mode
     }
     
     // MARK: - PlayerSlot Allocation
@@ -1345,6 +1376,18 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
 
         do {
+            // Always drain accumulated incremental patches to avoid unbounded growth.
+            // In `.shadow` mode, we only collect metrics and still use diff-based sync.
+            // In `.on` mode, incremental transport path is not fully enabled yet, so we currently
+            // keep diff-based sync for correctness.
+            let incrementalPatches = await keeper.takeAccumulatedPatches()
+            if incrementalSyncMode == .shadow, !incrementalPatches.isEmpty, logger.logLevel <= .debug {
+                logger.debug("Incremental sync shadow metrics", metadata: [
+                    "patchCount": .stringConvertible(incrementalPatches.count),
+                    "landID": .string(landID)
+                ])
+            }
+
             // Determine snapshot modes based on dirty tracking (same logic as SyncEngine.generateDiffFromSnapshots).
             let broadcastMode: SnapshotMode
             let perPlayerMode: SnapshotMode

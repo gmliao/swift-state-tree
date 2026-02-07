@@ -176,6 +176,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     public let definition: LandDefinition<State>
 
     private var state: State
+    private let patchRecorder = LandPatchRecorder()
     private var players: [PlayerID: InternalPlayerSession] = [:]
     private var services: LandServices
 
@@ -376,6 +377,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ) {
         self.definition = definition
         state = initialState
+        state._$parentPath = ""
+        state._$patchRecorder = patchRecorder
         self.mode = mode
         self.reevaluationSink = reevaluationSink
 
@@ -655,6 +658,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if clearDirtyFlags {
             state.clearDirty()
         }
+    }
+
+    /// Drain and return accumulated incremental patches recorded since the last drain.
+    public func takeAccumulatedPatches() -> [StatePatch] {
+        patchRecorder.takePatches()
+    }
+
+    /// Current count of accumulated incremental patches.
+    public func accumulatedPatchCount() -> Int {
+        patchRecorder.patchCount
     }
 
     /// Returns the current number of players in the land.

@@ -16,6 +16,9 @@ public protocol PatchRecorder: AnyObject, Sendable {
     
     /// Check if there are any patches accumulated.
     var hasPatches: Bool { get }
+
+    /// Current number of accumulated patches.
+    var patchCount: Int { get }
 }
 
 /// Land-scoped patch recorder.
@@ -39,5 +42,9 @@ public final class LandPatchRecorder: PatchRecorder, @unchecked Sendable {
     
     public var hasPatches: Bool {
         !patches.isEmpty
+    }
+
+    public var patchCount: Int {
+        patches.count
     }
 }

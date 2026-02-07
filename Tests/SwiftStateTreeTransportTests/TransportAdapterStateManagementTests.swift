@@ -69,6 +69,37 @@ func testConnectedSessionsComputedProperty() async throws {
     #expect(!joined2, "Session 2 should not be joined")
 }
 
+@Test("Incremental sync mode can be configured at runtime")
+func testIncrementalSyncModeRuntimeConfig() async throws {
+    let definition = Land(
+        "state-management-test",
+        using: StateManagementTestState.self
+    ) {
+        Rules {}
+    }
+
+    let transport = WebSocketTransport()
+    let keeper = LandKeeper<StateManagementTestState>(
+        definition: definition,
+        initialState: StateManagementTestState()
+    )
+    let adapter = TransportAdapter<StateManagementTestState>(
+        keeper: keeper,
+        transport: transport,
+        landID: "state-management-test",
+        enableLegacyJoin: true
+    )
+
+    // Default should remain backward-compatible.
+    #expect(await adapter.getIncrementalSyncMode() == .off)
+
+    await adapter.setIncrementalSyncMode(.shadow)
+    #expect(await adapter.getIncrementalSyncMode() == .shadow)
+
+    await adapter.setIncrementalSyncMode(.on)
+    #expect(await adapter.getIncrementalSyncMode() == .on)
+}
+
 @Test("Joined sessions computed property correctly reflects joined sessions")
 func testJoinedSessionsComputedProperty() async throws {
     // Arrange
@@ -266,4 +297,3 @@ func testStateQueryMethods() async throws {
         #expect(sessions.count == 1, "PlayerID should map to exactly one session")
     }
 }
-
