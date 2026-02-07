@@ -303,6 +303,23 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     public func setIncrementalSyncMode(_ mode: IncrementalSyncMode) {
         incrementalSyncMode = mode
     }
+
+    private func unescapeJSONPointerSegment(_ segment: String) -> String {
+        segment
+            .replacingOccurrences(of: "~1", with: "/")
+            .replacingOccurrences(of: "~0", with: "~")
+    }
+
+    private func rootFieldName(from patchPath: String) -> String? {
+        guard patchPath.hasPrefix("/") else { return nil }
+        let firstSlashIndex = patchPath.index(after: patchPath.startIndex)
+        let remainder = patchPath[firstSlashIndex...]
+        guard !remainder.isEmpty else { return nil }
+        let endIndex = remainder.firstIndex(of: "/") ?? remainder.endIndex
+        let segment = String(remainder[..<endIndex])
+        guard !segment.isEmpty else { return nil }
+        return unescapeJSONPointerSegment(segment)
+    }
     
     // MARK: - PlayerSlot Allocation
     
@@ -1378,8 +1395,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         do {
             // Always drain accumulated incremental patches to avoid unbounded growth.
             // In `.shadow` mode, we only collect metrics and still use diff-based sync.
-            // In `.on` mode, incremental transport path is not fully enabled yet, so we currently
-            // keep diff-based sync for correctness.
             let incrementalPatches = await keeper.takeAccumulatedPatches()
             if incrementalSyncMode == .shadow, !incrementalPatches.isEmpty, logger.logLevel <= .debug {
                 logger.debug("Incremental sync shadow metrics", metadata: [
@@ -1388,16 +1403,59 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 ])
             }
 
+            let syncFields = state.getSyncFields()
+            let broadcastFieldNames = Set(syncFields.filter { $0.policyType == .broadcast }.map { $0.name })
+            let perPlayerFieldNames = Set(syncFields.filter { $0.policyType != .broadcast && $0.policyType != .serverOnly }.map { $0.name })
+            let serverOnlyFieldNames = Set(syncFields.filter { $0.policyType == .serverOnly }.map { $0.name })
+
+            var incrementalBroadcastDiff: [StatePatch]? = nil
+            if incrementalSyncMode == .on, !incrementalPatches.isEmpty {
+                var canUseBroadcastOnlyIncremental = true
+                var broadcastOnlyPatches: [StatePatch] = []
+                broadcastOnlyPatches.reserveCapacity(incrementalPatches.count)
+
+                for patch in incrementalPatches {
+                    guard let rootField = rootFieldName(from: patch.path) else {
+                        canUseBroadcastOnlyIncremental = false
+                        break
+                    }
+
+                    if broadcastFieldNames.contains(rootField) {
+                        broadcastOnlyPatches.append(patch)
+                        continue
+                    }
+
+                    if perPlayerFieldNames.contains(rootField) || serverOnlyFieldNames.contains(rootField) {
+                        canUseBroadcastOnlyIncremental = false
+                        break
+                    }
+
+                    canUseBroadcastOnlyIncremental = false
+                    break
+                }
+
+                if canUseBroadcastOnlyIncremental, !broadcastOnlyPatches.isEmpty {
+                    incrementalBroadcastDiff = broadcastOnlyPatches
+                    if logger.logLevel <= .debug {
+                        logger.debug("Incremental sync ON: using broadcast-only incremental patches", metadata: [
+                            "patchCount": .stringConvertible(broadcastOnlyPatches.count),
+                            "landID": .string(landID)
+                        ])
+                    }
+                } else if logger.logLevel <= .debug {
+                    logger.debug("Incremental sync ON: fallback to diff path", metadata: [
+                        "patchCount": .stringConvertible(incrementalPatches.count),
+                        "landID": .string(landID)
+                    ])
+                }
+            }
+
             // Determine snapshot modes based on dirty tracking (same logic as SyncEngine.generateDiffFromSnapshots).
             let broadcastMode: SnapshotMode
             let perPlayerMode: SnapshotMode
 
             if enableDirtyTracking && state.isDirty() {
                 let dirtyFields = state.getDirtyFields()
-                let syncFields = state.getSyncFields()
-                let broadcastFieldNames = Set(syncFields.filter { $0.policyType == .broadcast }.map { $0.name })
-                let perPlayerFieldNames = Set(syncFields.filter { $0.policyType != .broadcast && $0.policyType != .serverOnly }.map { $0.name })
-
                 let broadcastFields = dirtyFields.intersection(broadcastFieldNames)
                 let perPlayerFields = dirtyFields.intersection(perPlayerFieldNames)
 
@@ -1450,11 +1508,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Compute broadcast diff ONCE, then reuse for all players.
             // This avoids updating the broadcast cache per player, which would cause only the first player
             // to receive broadcast patches.
-            let broadcastDiff = syncEngine.computeBroadcastDiffFromSnapshot(
-                currentBroadcast: broadcastSnapshot,
-                onlyPaths: nil,
-                mode: broadcastMode
-            )
+            let broadcastDiff: [StatePatch]
+            if let incrementalBroadcastDiff {
+                broadcastDiff = incrementalBroadcastDiff
+            } else {
+                broadcastDiff = syncEngine.computeBroadcastDiffFromSnapshot(
+                    currentBroadcast: broadcastSnapshot,
+                    onlyPaths: nil,
+                    mode: broadcastMode
+                )
+            }
 
             if useStateUpdateWithEvents {
                 let shouldSendBroadcastUpdate = !broadcastDiff.isEmpty || !pendingBroadcastEventBodies.isEmpty
