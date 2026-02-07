@@ -61,6 +61,27 @@ private struct NestedInitialSyncState: StateNodeProtocol {
     var playerScores: [PlayerID: Int] = [:]
 }
 
+// Counter-like state and action for "action then diff" encoding tests (reproduces e2e Counter sync behavior).
+@StateNodeBuilder
+private struct ActionSyncCounterState: StateNodeProtocol {
+    @Sync(.broadcast)
+    var count: Int = 0
+
+    init() {}
+}
+
+@Payload
+private struct ActionSyncIncrementAction: ActionPayload {
+    typealias Response = ActionSyncIncrementResponse
+    init() {}
+}
+
+@Payload
+private struct ActionSyncIncrementResponse: ResponsePayload {
+    let newCount: Int
+    init(newCount: Int) { self.newCount = newCount }
+}
+
 @Payload
 private struct NestedMoveBaseEvent: ClientEventPayload {
     let x: Int
@@ -527,4 +548,155 @@ func testTransportAdapterDiffAfterFirstSyncKeepsNestedPositionV() async throws {
         return false
     }
     #expect(hasPositionV, "Diff should keep base.position.v shape after firstSync. Patches: \(patchSummary)")
+}
+
+// MARK: - Action then diff (Counter-like) – reproduces e2e json/jsonOpcode state sync behavior
+
+@Test("TransportAdapter sends diff with count after Increment action (jsonObject state encoding)")
+func testTransportAdapterSendsDiffAfterIncrementActionJsonObject() async throws {
+    let definition = Land(
+        "action-sync-counter",
+        using: ActionSyncCounterState.self
+    ) {
+        Rules {
+            HandleAction(ActionSyncIncrementAction.self) { (state: inout ActionSyncCounterState, _: ActionSyncIncrementAction, _: LandContext) in
+                state.count += 1
+                return ActionSyncIncrementResponse(newCount: state.count)
+            }
+        }
+    }
+
+    let transport = RecordingTransport()
+    let keeper = LandKeeper(definition: definition, initialState: ActionSyncCounterState())
+    let encodingConfig = TransportEncodingConfig(message: .json, stateUpdate: .jsonObject)
+    let adapter = TransportAdapter<ActionSyncCounterState>(
+        keeper: keeper,
+        transport: transport,
+        landID: "action-sync-counter",
+        encodingConfig: encodingConfig
+    )
+    await transport.setDelegate(adapter)
+
+    let sessionID = SessionID("action-sync-sess-1")
+    let clientID = ClientID("action-sync-cli-1")
+    let playerID = PlayerID("action-sync-player-1")
+
+    await adapter.onConnect(sessionID: sessionID, clientID: clientID)
+    try await simulateRouterJoin(
+        adapter: adapter,
+        keeper: keeper,
+        sessionID: sessionID,
+        clientID: clientID,
+        playerID: playerID
+    )
+    await transport.clearMessages()
+
+    let actionEnvelope = ActionEnvelope(typeIdentifier: "ActionSyncIncrementAction", payload: AnyCodable([:]))
+    let actionMessage = TransportMessage.action(requestID: "req-increment-1", action: actionEnvelope)
+    let actionData = try JSONEncoder().encode(actionMessage)
+    await adapter.onMessage(actionData, from: sessionID)
+    try await Task.sleep(for: .milliseconds(20))
+    await adapter.syncNow()
+    try await Task.sleep(for: .milliseconds(50))
+
+    let messages = await transport.recordedMessages()
+    #expect(!messages.isEmpty, "Expected at least one message after Increment (actionResponse or diff)")
+
+    let updates = messages.compactMap { try? JSONDecoder().decode(StateUpdate.self, from: $0) }
+    let diffUpdates = updates.filter { if case .diff = $0 { return true }; return false }
+    #expect(!diffUpdates.isEmpty, "Expected a diff update after Increment (jsonObject). Got \(updates.count) state updates: \(updates)")
+
+    guard case .diff(let patches) = diffUpdates.first else {
+        Issue.record("Expected diff with patches")
+        return
+    }
+    let countPatch = patches.first { $0.path == "/count" }
+    #expect(countPatch != nil, "Expected patch for /count, got paths: \(patches.map(\.path))")
+    if case .set(let value) = countPatch?.operation, case .int(let n) = value {
+        #expect(n == 1, "Expected count to be 1 after one Increment, got \(n)")
+    } else {
+        Issue.record("Expected /count patch with .set(.int(1)), got \(String(describing: countPatch))")
+    }
+}
+
+@Test("TransportAdapter sends diff with count after Increment action (opcodeJsonArray state encoding)")
+func testTransportAdapterSendsDiffAfterIncrementActionOpcodeJsonArray() async throws {
+    let definition = Land(
+        "action-sync-counter-opcode",
+        using: ActionSyncCounterState.self
+    ) {
+        Rules {
+            HandleAction(ActionSyncIncrementAction.self) { (state: inout ActionSyncCounterState, _: ActionSyncIncrementAction, _: LandContext) in
+                state.count += 1
+                return ActionSyncIncrementResponse(newCount: state.count)
+            }
+        }
+    }
+
+    let transport = RecordingTransport()
+    let keeper = LandKeeper(definition: definition, initialState: ActionSyncCounterState())
+    let encodingConfig = TransportEncodingConfig(message: .json, stateUpdate: .opcodeJsonArray)
+    let adapter = TransportAdapter<ActionSyncCounterState>(
+        keeper: keeper,
+        transport: transport,
+        landID: "action-sync-counter-opcode",
+        encodingConfig: encodingConfig
+    )
+    await transport.setDelegate(adapter)
+
+    let sessionID = SessionID("action-sync-sess-2")
+    let clientID = ClientID("action-sync-cli-2")
+    let playerID = PlayerID("action-sync-player-2")
+
+    await adapter.onConnect(sessionID: sessionID, clientID: clientID)
+    try await simulateRouterJoin(
+        adapter: adapter,
+        keeper: keeper,
+        sessionID: sessionID,
+        clientID: clientID,
+        playerID: playerID
+    )
+    await transport.clearMessages()
+
+    let actionEnvelope = ActionEnvelope(typeIdentifier: "ActionSyncIncrementAction", payload: AnyCodable([:]))
+    let actionMessage = TransportMessage.action(requestID: "req-increment-2", action: actionEnvelope)
+    let actionData = try JSONEncoder().encode(actionMessage)
+    await adapter.onMessage(actionData, from: sessionID)
+    try await Task.sleep(for: .milliseconds(20))
+    await adapter.syncNow()
+    try await Task.sleep(for: .milliseconds(50))
+
+    let messages = await transport.recordedMessages()
+    #expect(!messages.isEmpty, "Expected at least one message after Increment (opcodeJsonArray)")
+
+    // Opcode format: [opcode, patch1, patch2, ...]; diff opcode is StateUpdateOpcode.diff.rawValue
+    let diffOpcode = StateUpdateOpcode.diff.rawValue
+    let diffMessages = messages.filter { data in
+        guard let payload = try? JSONSerialization.jsonObject(with: data) as? [Any],
+              let first = payload.first as? Int else { return false }
+        return first == diffOpcode
+    }
+    #expect(!diffMessages.isEmpty, "Expected a diff (opcode \(diffOpcode)) after Increment. Message opcodes: \(messages.compactMap { (try? JSONSerialization.jsonObject(with: $0) as? [Any]).flatMap { $0.first as? Int } })")
+
+    guard let firstDiff = diffMessages.first,
+          let payload = try? JSONSerialization.jsonObject(with: firstDiff) as? [Any],
+          payload.count >= 2 else {
+        Issue.record("Expected opcode diff payload with at least one patch")
+        return
+    }
+    let paths = try decodeOpcodePatchPaths(from: firstDiff)
+    #expect(paths.contains("/count"), "Expected /count in diff patches, got: \(paths)")
+    // Decode patch values: legacy format [path, opcode, value]; StatePatchOpcode.set = 1
+    var foundCountOne = false
+    for entry in payload.dropFirst(1) {
+        guard let patch = entry as? [Any], patch.count >= 3,
+              let path = patch[0] as? String, path == "/count",
+              let setOpcode = patch[1] as? Int, setOpcode == StatePatchOpcode.set.rawValue,
+              let value = patch[2] as? Int else { continue }
+        if value == 1 {
+            foundCountOne = true
+            break
+        }
+    }
+    #expect(foundCountOne, "Expected one patch with /count set to 1 in opcode diff")
 }
