@@ -142,6 +142,17 @@ public struct ReactiveDictionary<Key: Hashable & Sendable, Value: Sendable>: @un
     ///   - body: Closure that mutates the value
     public mutating func mutateValue(for key: Key, _ body: (inout Value) -> Void) {
         guard var value = _storage[key] else { return }
+
+        // Inject path context for PatchableState values
+        if var patchable = value as? any PatchableState {
+            let path = makePath(for: key)
+            patchable._$parentPath = path
+            patchable._$patchRecorder = _$patchRecorder
+            if let castedValue = patchable as? Value {
+                value = castedValue
+            }
+        }
+
         body(&value)
         _storage[key] = value
         _isDirty = true

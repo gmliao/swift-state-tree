@@ -260,6 +260,29 @@ func testReactiveDictionary_MutateValue_TriggersOnChange() async {
     #expect(invoked == true, "onChange callback should be invoked")
 }
 
+@Test("ReactiveDictionary mutateValue injects path context during mutation")
+func testReactiveDictionary_MutateValue_InjectsPathContext() {
+    var dict = ReactiveDictionary<String, TestPatchableState>()
+    dict._$parentPath = "/players"
+    let recorder = LandPatchRecorder()
+    dict._$patchRecorder = recorder
+
+    dict["A"] = TestPatchableState(value: 100)
+    _ = recorder.takePatches()
+
+    var capturedPath: String = ""
+    var capturedRecorder: PatchRecorder? = nil
+
+    dict.mutateValue(for: "A") { state in
+        capturedPath = state._$parentPath
+        capturedRecorder = state._$patchRecorder
+        state.value = 200
+    }
+
+    #expect(capturedPath == "/players/A")
+    #expect(capturedRecorder === recorder)
+}
+
 // MARK: - Collection Properties Tests
 
 @Test("ReactiveDictionary keys returns all keys")
