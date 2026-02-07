@@ -60,10 +60,11 @@ public struct ReactiveDictionary<Key: Hashable & Sendable, Value: Sendable>: @un
     public subscript(key: Key) -> Value? {
         get {
             guard let value = _storage[key] else { return nil }
+            let path = makePath(for: key)
 
             // Inject path context for PatchableState values
             if var patchable = value as? any PatchableState {
-                patchable._$parentPath = "\(_$parentPath)/\(key)"
+                patchable._$parentPath = path
                 patchable._$patchRecorder = _$patchRecorder
                 if let castedValue = patchable as? Value {
                     return castedValue
@@ -79,11 +80,16 @@ public struct ReactiveDictionary<Key: Hashable & Sendable, Value: Sendable>: @un
 
             // Record patch if recorder is available
             if let recorder = _$patchRecorder {
-                let path = "\(_$parentPath)/\(key)"
+                let path = makePath(for: key)
 
                 if let newValue {
-                    if let snapshotValue = try? SnapshotValue.make(from: newValue) {
+                    do {
+                        let snapshotValue = try SnapshotValue.make(from: newValue)
                         recorder.record(StatePatch(path: path, operation: .set(snapshotValue)))
+                    } catch {
+                        let message = "ReactiveDictionary failed to convert value to SnapshotValue at path '\(path)'. Recording null fallback. Error: \(error)"
+                        print("⚠️ Warning: \(message)")
+                        recorder.record(StatePatch(path: path, operation: .set(.null)))
                     }
                 } else {
                     recorder.record(StatePatch(path: path, operation: .delete))
@@ -192,5 +198,15 @@ public struct ReactiveDictionary<Key: Hashable & Sendable, Value: Sendable>: @un
     /// - Returns: A dictionary containing all key-value pairs
     public func toDictionary() -> [Key: Value] {
         _storage
+    }
+
+    private func makePath(for key: Key) -> String {
+        "\(_$parentPath)/\(Self.escapeJsonPointerSegment(String(describing: key)))"
+    }
+
+    private static func escapeJsonPointerSegment(_ segment: String) -> String {
+        segment
+            .replacingOccurrences(of: "~", with: "~0")
+            .replacingOccurrences(of: "/", with: "~1")
     }
 }

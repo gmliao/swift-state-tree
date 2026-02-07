@@ -432,6 +432,11 @@ func testReactiveDictionary_SubscriptSet_RecordsPatch() {
     let patches = recorder.takePatches()
     #expect(patches.count == 1)
     #expect(patches[0].path == "/scores/player1")
+    if case .set(let value) = patches[0].operation {
+        #expect(value == .int(100))
+    } else {
+        Issue.record("Expected set operation")
+    }
 }
 
 @Test("ReactiveDictionary subscript set nil records delete patch")
@@ -458,6 +463,64 @@ func testReactiveDictionary_SubscriptSetNil_RecordsDeletePatch() {
         // Expected
     } else {
         Issue.record("Expected delete operation")
+    }
+}
+
+@Test("ReactiveDictionary escapes JSON Pointer key segment for patch path")
+func testReactiveDictionary_SubscriptSet_EscapesJsonPointerKeyInPatchPath() {
+    // Arrange
+    var dict = ReactiveDictionary<String, Int>()
+    dict._$parentPath = "/scores"
+    let recorder = LandPatchRecorder()
+    dict._$patchRecorder = recorder
+
+    // Act
+    dict["a/b~c"] = 1
+
+    // Assert
+    let patches = recorder.takePatches()
+    #expect(patches.count == 1)
+    guard patches.count == 1 else { return }
+    #expect(patches[0].path == "/scores/a~1b~0c")
+}
+
+@Test("ReactiveDictionary subscript get injects escaped JSON Pointer key segment")
+func testReactiveDictionary_SubscriptGet_InjectsEscapedPathContext() {
+    // Arrange
+    var dict = ReactiveDictionary<String, TestPatchableState>()
+    dict._$parentPath = "/players"
+    dict["a/b~c"] = TestPatchableState(value: 100)
+    dict.clearDirty()
+
+    // Act
+    let retrieved = dict["a/b~c"]
+
+    // Assert
+    #expect(retrieved != nil)
+    #expect(retrieved?._$parentPath == "/players/a~1b~0c")
+}
+
+@Test("ReactiveDictionary records fallback patch when SnapshotValue conversion fails")
+func testReactiveDictionary_SubscriptSet_ConversionFailure_RecordsFallbackSetNullPatch() {
+    // Arrange
+    typealias Callback = @Sendable () -> Void
+    var dict = ReactiveDictionary<String, Callback>()
+    dict._$parentPath = "/callbacks"
+    let recorder = LandPatchRecorder()
+    dict._$patchRecorder = recorder
+
+    // Act
+    dict["onJoin"] = {}
+
+    // Assert
+    let patches = recorder.takePatches()
+    #expect(patches.count == 1)
+    guard patches.count == 1 else { return }
+    #expect(patches[0].path == "/callbacks/onJoin")
+    if case .set(let value) = patches[0].operation {
+        #expect(value == .null)
+    } else {
+        Issue.record("Expected set operation with null fallback")
     }
 }
 
@@ -499,4 +562,3 @@ func testReactiveDictionary_Integration_MultipleOperations() async {
     #expect(dict.isDirty == false, "Dictionary should not be dirty after clear")
     #expect(dict.dirtyKeys.isEmpty == true, "Dirty keys should be empty")
 }
-
