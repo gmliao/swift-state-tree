@@ -39,8 +39,12 @@ async function main() {
   console.log(chalk.blue(`🔌 WS: ${wsUrl}`))
   console.log(chalk.blue(`🛠️  Admin: ${adminUrl}`))
 
-  // Drive a short live session using existing game scenarios.
+  // Drive a short live session using a specific scenario file.
   // We pass a full landID (contains ':') so the scenario runner uses it as-is.
+  // NOTE: We use a single scenario file instead of the whole directory to avoid
+  // a race condition where multiple clients join the same land in quick succession.
+  // For lands with tick handlers, lifecycle events (OnJoin/OnLeave) are queued
+  // and processed in the next tick, which can cause stale state in firstSync.
   console.log(chalk.blue('🎮 Running Hero Defense scenario...'))
   execFileSync(
     'npx',
@@ -53,7 +57,7 @@ async function main() {
       '-l',
       landID,
       '-s',
-      'scenarios/game/',
+      'scenarios/game/test-hero-defense-shape-invariants.json',
       '--state-update-encoding',
       stateUpdateEncoding
     ],
