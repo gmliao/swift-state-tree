@@ -51,10 +51,27 @@ print_warning() {
 wait_for_server() {
     local server_name=$1
     local encoding=$2
-    print_step "Waiting for ${server_name} ($encoding) to start..."
+    local server_name_lower=$(to_lowercase "$server_name")
+    local tmp_dir="$(get_e2e_tmp_dir)"
+    local pid_file="${tmp_dir}/${server_name_lower}-${encoding}.pid"
+    local log_file="${tmp_dir}/${server_name_lower}-${encoding}.log"
+    
+    print_step "Waiting for ${server_name} ($encoding) to start (timeout: ${TIMEOUT}s)..."
     
     local elapsed=0
     while [ $elapsed -lt $TIMEOUT ]; do
+        # Check if process is still running
+        if [ -f "$pid_file" ]; then
+            local pid=$(cat "$pid_file")
+            if ! kill -0 $pid 2>/dev/null; then
+                print_error "${server_name} ($encoding) process died unexpectedly"
+                echo "=== ${server_name} ($encoding) logs ==="
+                cat "$log_file" 2>/dev/null || echo "(no logs available)"
+                return 1
+            fi
+        fi
+        
+        # Check if server is ready via health endpoint
         if curl -s http://${SERVER_HOST}:${SERVER_PORT}/schema > /dev/null 2>&1; then
             print_success "${server_name} ($encoding) is ready!"
             return 0
@@ -65,6 +82,8 @@ wait_for_server() {
     done
     
     print_error "${server_name} ($encoding) failed to start within $TIMEOUT seconds"
+    echo "=== ${server_name} ($encoding) logs ==="
+    cat "$log_file" 2>/dev/null || echo "(no logs available)"
     return 1
 }
 
@@ -93,7 +112,12 @@ start_server_impl() {
     cd "$server_dir"
     
     # Kill any existing server on this port and SwiftPM processes
-    lsof -ti:${SERVER_PORT} | xargs kill -9 2>/dev/null || true
+    # Use fuser if available, otherwise try lsof (fuser is more common in minimal containers)
+    if command -v fuser &> /dev/null; then
+        fuser -k ${SERVER_PORT}/tcp 2>/dev/null || true
+    elif command -v lsof &> /dev/null; then
+        lsof -ti:${SERVER_PORT} | xargs kill -9 2>/dev/null || true
+    fi
     pkill -f "swift.*${server_cmd}" 2>/dev/null || true
     sleep 2  # Give SwiftPM time to release build directory
     
@@ -153,8 +177,12 @@ stop_server() {
         rm -f "$pid_file"
     fi
     
-    # Ensure port is released
-    lsof -ti:${SERVER_PORT} | xargs kill -9 2>/dev/null || true
+    # Ensure port is released (use fuser if available, otherwise lsof)
+    if command -v fuser &> /dev/null; then
+        fuser -k ${SERVER_PORT}/tcp 2>/dev/null || true
+    elif command -v lsof &> /dev/null; then
+        lsof -ti:${SERVER_PORT} | xargs kill -9 2>/dev/null || true
+    fi
     sleep 1
 }
 

@@ -4,13 +4,14 @@
 
 set -e  # Exit on error
 
+# GameServer startup can be slower (plugin/tooling + fresh container builds),
+# so allow a longer readiness window than the common default.
+# Must be set BEFORE sourcing e2e-test-common.sh to override its default.
+export TIMEOUT=${TIMEOUT:-120}
+
 # Load common functions
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/e2e-test-common.sh"
-
-# GameServer startup can be slower (plugin/tooling + fresh container builds),
-# so allow a longer readiness window than the common default.
-TIMEOUT=${TIMEOUT:-120}
 
 # Server-specific configuration
 SERVER_NAME="GameServer"
