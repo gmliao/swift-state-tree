@@ -22,7 +22,6 @@
 /// }
 /// ```
 @attached(member, names: arbitrary)
-@attached(extension, conformances: PatchableState)
 public macro StateNodeBuilder() = #externalMacro(
     module: "SwiftStateTreeMacros",
     type: "StateNodeBuilderMacro"

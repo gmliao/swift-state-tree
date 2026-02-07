@@ -49,9 +49,6 @@ final class StateNodeBuilderMacroTests {
                     return true
                 }
             }
-
-            extension TestStateNode: PatchableState {
-            }
             """,
             macros: testMacros
         )

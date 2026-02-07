@@ -13,7 +13,7 @@ import SwiftSyntaxMacros
 /// 1. Validates that all stored properties have @Sync or @Internal markers
 /// 2. Generates `getSyncFields()` method implementation
 /// 3. Generates `validateSyncFields()` method implementation
-public struct StateNodeBuilderMacro: MemberMacro, ExtensionMacro {
+public struct StateNodeBuilderMacro: MemberMacro {
     public static func expansion(
         of node: AttributeSyntax,
         providingMembersOf declaration: some DeclGroupSyntax,
@@ -73,34 +73,6 @@ public struct StateNodeBuilderMacro: MemberMacro, ExtensionMacro {
             DeclSyntax(clearDirtyMethod),
             DeclSyntax(try generateGetFieldMetadata(properties: properties))
         ] + containerHelperMethods
-    }
-
-    public static func expansion(
-        of node: AttributeSyntax,
-        attachedTo declaration: some DeclGroupSyntax,
-        providingExtensionsOf type: some TypeSyntaxProtocol,
-        conformingTo protocols: [TypeSyntax],
-        in context: some MacroExpansionContext
-    ) throws -> [ExtensionDeclSyntax] {
-        guard declaration.as(StructDeclSyntax.self) != nil else {
-            let error = MacroError.onlyStructsSupported(node: Syntax(declaration))
-            error.diagnose(context: context)
-            throw error
-        }
-
-        guard !protocols.isEmpty else {
-            return []
-        }
-
-        let protocolConformances = protocols.map { $0.description }.joined(separator: ", ")
-        let extensionDecl = try ExtensionDeclSyntax(
-            """
-            extension \(type.trimmed): \(raw: protocolConformances) {
-            }
-            """
-        )
-
-        return [extensionDecl]
     }
 
     /// Collect all stored properties from a struct declaration
