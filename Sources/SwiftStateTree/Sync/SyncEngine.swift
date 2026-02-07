@@ -581,6 +581,25 @@ public struct SyncEngine: Sendable {
         
         return patches
     }
+
+    /// Update internal broadcast snapshot cache without computing diff patches.
+    ///
+    /// This is useful when patches are supplied by an external incremental recorder,
+    /// but SyncEngine cache coherence still needs to be maintained for fallback diff paths.
+    public mutating func updateBroadcastCacheFromSnapshot(
+        currentBroadcast: StateSnapshot,
+        mode: SnapshotMode = .all
+    ) {
+        if case .dirtyTracking(let dirtyFields) = mode, !dirtyFields.isEmpty, var cachedSnapshot = lastBroadcastSnapshot {
+            for key in dirtyFields {
+                cachedSnapshot.values[key] = currentBroadcast.values[key]
+            }
+            lastBroadcastSnapshot = cachedSnapshot
+            return
+        }
+
+        lastBroadcastSnapshot = currentBroadcast
+    }
     
     /// Compute per-player diff using pre-extracted snapshot.
     private mutating func computePerPlayerDiffFromSnapshot(

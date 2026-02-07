@@ -1510,6 +1510,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // to receive broadcast patches.
             let broadcastDiff: [StatePatch]
             if let incrementalBroadcastDiff {
+                syncEngine.updateBroadcastCacheFromSnapshot(
+                    currentBroadcast: broadcastSnapshot,
+                    mode: broadcastMode
+                )
                 broadcastDiff = incrementalBroadcastDiff
             } else {
                 broadcastDiff = syncEngine.computeBroadcastDiffFromSnapshot(
