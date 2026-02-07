@@ -209,6 +209,26 @@ public struct StateNodeBuilderMacro: MemberMacro {
                 error.diagnose(context: context)
                 throw error
             }
+
+            // For @Sync fields, reject plain Swift mutable containers because
+            // nested mutations are not reliably tracked for incremental patches.
+            if property.hasSync {
+#if SWIFT_STATE_TREE_ENABLE_SYNC_CONTAINER_GUARD
+                let containerType = detectContainerType(from: property.typeName)
+                if case .none = containerType {
+                    // allowed
+                } else {
+                    let normalizedType = property.typeName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown"
+                    let error = MacroError.untrackableSyncContainer(
+                        propertyName: property.name,
+                        typeName: normalizedType,
+                        node: node
+                    )
+                    error.diagnose(context: context)
+                    throw error
+                }
+#endif
+            }
         }
     }
 
@@ -1173,6 +1193,7 @@ private func detectContainerType(from typeName: String?) -> ContainerType {
 private enum MacroError: Error, @unchecked Sendable {
     case onlyStructsSupported(node: Syntax)
     case missingMarker(propertyName: String, structName: String, node: Syntax)
+    case untrackableSyncContainer(propertyName: String, typeName: String, node: Syntax)
 
     func diagnose(context: some MacroExpansionContext) {
         switch self {
@@ -1188,6 +1209,13 @@ private enum MacroError: Error, @unchecked Sendable {
                 Diagnostic(
                     node: node,
                     message: StateNodeBuilderDiagnostic.missingMarker(propertyName: propertyName, structName: structName)
+                )
+            )
+        case .untrackableSyncContainer(let propertyName, let typeName, let node):
+            context.diagnose(
+                Diagnostic(
+                    node: node,
+                    message: StateNodeBuilderDiagnostic.untrackableSyncContainer(propertyName: propertyName, typeName: typeName)
                 )
             )
         }
@@ -1210,6 +1238,14 @@ private struct StateNodeBuilderDiagnostic: DiagnosticMessage, @unchecked Sendabl
         StateNodeBuilderDiagnostic(
             message: "Stored property '\(propertyName)' in \(structName) must be marked with @Sync or @Internal",
             diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "missingMarker"),
+            severity: .error
+        )
+    }
+
+    static func untrackableSyncContainer(propertyName: String, typeName: String) -> StateNodeBuilderDiagnostic {
+        StateNodeBuilderDiagnostic(
+            message: "@Sync field '\(propertyName)' uses untrackable container '\(typeName)'. Use ReactiveDictionary/ReactiveSet for incremental patch tracking.",
+            diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "untrackableSyncContainer"),
             severity: .error
         )
     }
