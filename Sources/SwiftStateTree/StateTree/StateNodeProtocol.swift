@@ -14,6 +14,7 @@
 /// - `validateSyncFields()` method implementation
 /// - `snapshot(for:)` method implementation
 /// - `broadcastSnapshot()` method implementation (for efficient broadcast snapshot generation)
+/// - `_$parentPath` and `_$patchRecorder` properties (for `PatchableState` conformance)
 ///
 /// Example:
 /// ```swift
@@ -33,7 +34,7 @@
 ///     }
 /// }
 /// ```
-public protocol StateNodeProtocol: Sendable, SchemaMetadataProvider {
+public protocol StateNodeProtocol: Sendable, SchemaMetadataProvider, PatchableState {
     /// Initialize a new instance of the StateNode.
     ///
     /// All StateNode types must provide a parameterless initializer.
