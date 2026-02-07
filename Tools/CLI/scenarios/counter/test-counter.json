@@ -11,8 +11,14 @@
             "payload": {}
         },
         {
-            "type": "wait",
-            "wait": 200
+            "type": "waitForState",
+            "waitForState": {
+                "path": "count",
+                "equals": 1,
+                "timeout": 3000,
+                "interval": 50,
+                "message": "Count should be 1 after one increment"
+            }
         },
         {
             "type": "assert",
