@@ -36,6 +36,10 @@ public struct StateNodeBuilderMacro: MemberMacro {
         // Generate getSyncFields() method
         let getSyncFieldsMethod = try generateGetSyncFields(properties: properties)
 
+        // Generate patch tracking members required by PatchableState
+        let parentPathMember = try generateParentPathMember()
+        let patchRecorderMember = try generatePatchRecorderMember()
+
         // Generate validateSyncFields() method
         let validateSyncFieldsMethod = try generateValidateSyncFields(properties: properties)
 
@@ -57,6 +61,8 @@ public struct StateNodeBuilderMacro: MemberMacro {
         let containerHelperMethods = try generateContainerHelperMethods(propertiesWithNodes: propertiesWithNodes)
 
         return [
+            DeclSyntax(parentPathMember),
+            DeclSyntax(patchRecorderMember),
             DeclSyntax(getSyncFieldsMethod),
             DeclSyntax(validateSyncFieldsMethod),
             DeclSyntax(snapshotMethod),
@@ -236,6 +242,24 @@ public struct StateNodeBuilderMacro: MemberMacro {
             public func getSyncFields() -> [SyncFieldInfo] {
                 return \(arrayExpr)
             }
+            """
+        )
+    }
+
+    /// Generate _$parentPath storage required by PatchableState
+    private static func generateParentPathMember() throws -> VariableDeclSyntax {
+        return try VariableDeclSyntax(
+            """
+            public var _$parentPath: String = ""
+            """
+        )
+    }
+
+    /// Generate _$patchRecorder storage required by PatchableState
+    private static func generatePatchRecorderMember() throws -> VariableDeclSyntax {
+        return try VariableDeclSyntax(
+            """
+            public var _$patchRecorder: PatchRecorder? = nil
             """
         )
     }

@@ -36,6 +36,10 @@ final class StateNodeBuilderMacroTests {
                 
                 @Internal
                 var cache: [String: String] = [:]
+
+                public var _$parentPath: String = ""
+
+                public var _$patchRecorder: PatchRecorder? = nil
             
                 public func getSyncFields() -> [SyncFieldInfo] {
                     return [SyncFieldInfo(name: "players", policyType: .broadcast), SyncFieldInfo(name: "hiddenData", policyType: .serverOnly)]
@@ -81,4 +85,3 @@ final class StateNodeBuilderMacroTests {
         )
     }
 }
-

@@ -6,7 +6,7 @@ import Foundation
 ///
 /// Implementations should be reference types to enable patch recording
 /// across struct copies (Swift COW semantics).
-public protocol PatchRecorder: AnyObject {
+public protocol PatchRecorder: AnyObject, Sendable {
     /// Record a single patch.
     func record(_ patch: StatePatch)
     
@@ -22,7 +22,7 @@ public protocol PatchRecorder: AnyObject {
 ///
 /// Thread-safety: Not required because all mutations happen synchronously
 /// within the `LandKeeper` actor. Only one action handler executes at a time.
-public final class LandPatchRecorder: PatchRecorder {
+public final class LandPatchRecorder: PatchRecorder, @unchecked Sendable {
     private var patches: [StatePatch] = []
     
     public init() {}
