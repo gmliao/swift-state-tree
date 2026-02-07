@@ -1553,10 +1553,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     }
 
                     // Use pre-extracted per-player snapshot (from dual-mode extraction above)
-                    guard let perPlayerSnapshot = perPlayerByPlayer[playerID] else {
-                        // Player might have joined after we built playerIDsToSync, skip this sync cycle
-                        continue
-                    }
+                    // If no per-player snapshot exists (e.g., state has only broadcast fields),
+                    // use an empty snapshot - broadcast diff will still be sent
+                    let perPlayerSnapshot = perPlayerByPlayer[playerID] ?? StateSnapshot(values: [:])
 
                     // Broadcast diff is precomputed once per sync cycle and reused for all players.
                     let update = syncEngine.generateUpdateFromBroadcastDiff(
