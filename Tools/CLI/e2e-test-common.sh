@@ -288,8 +288,12 @@ cleanup_servers() {
     for encoding in "${encodings[@]}"; do
         stop_server "$server_name" "$encoding"
     done
-    # Kill any remaining processes on the port
-    lsof -ti:${SERVER_PORT} | xargs kill -9 2>/dev/null || true
+    # Kill any remaining processes on the port (use fuser if available, otherwise lsof)
+    if command -v fuser &> /dev/null; then
+        fuser -k ${SERVER_PORT}/tcp 2>/dev/null || true
+    elif command -v lsof &> /dev/null; then
+        lsof -ti:${SERVER_PORT} | xargs kill -9 2>/dev/null || true
+    fi
 }
 
 # Function to normalize encoding names
