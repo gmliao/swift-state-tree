@@ -6,8 +6,14 @@
       "message": "Shape invariant regression test for nested Position2 fields"
     },
     {
-      "type": "wait",
-      "wait": 500
+      "type": "waitForState",
+      "waitForState": {
+        "path": "players.[PLAYER_ID]",
+        "exists": true,
+        "timeout": 3000,
+        "interval": 50,
+        "message": "player record must exist after join and firstSync"
+      }
     },
     {
       "type": "assert",
