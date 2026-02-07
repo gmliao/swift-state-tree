@@ -109,13 +109,13 @@
 - 在相同 workload（同 `ticksPerSync`、`playersPerRoom`、`rooms`、`iterations`）下，serial 與 parallel 僅差在「room 間排程方式」，理論上不應改變每個 room 的狀態演進與 sync patch，故 `bytesPerSync` 應一致。  
 - 本次重跑中，所有組合皆觀察到 `diff = 0`，表示 serial 與 parallel 的 `bytesPerSync` 完全相同。
 
-**最終版總結（Final vs Baseline，rooms=50、總人數 250）**  
-為了讓讀者快速理解「最終版帶來的工程含義」，下表以 `rooms=50`、parallel 模式匯總 **Size + Compute** 的直覺對比（後續由 RQ2 的 Stage 2/Stage 3 實測補足端到端差異）：  
+**最終版總結（Final vs Baseline，rooms=100、總人數 500）**  
+為了讓讀者快速理解「最終版帶來的工程含義」，下表以 `rooms=100`、parallel 模式匯總 **Size + Compute** 的直覺對比（後續由 RQ2 的 Stage 2/Stage 3 實測補足端到端差異）：  
 
-| 指標（rooms=50, 總人數 250, parallel） | JSON Object | Opcode MsgPack (PathHash) | 改善幅度 |
-|---------------------------------------|-----------:|---------------------------:|--------:|
-| bytesPerSync (bytes)                  | 87611      | 22713                      | -74.1%  |
-| avgCostPerSyncMs (ms)                 | 0.0705     | 0.0573                     | -18.7%  |
+| 指標（rooms=100, 總人數 500, parallel） | JSON Object | Opcode MsgPack (PathHash) | 改善幅度 |
+|----------------------------------------|-----------:|---------------------------:|--------:|
+| bytesPerSync (bytes)                   | 175471     | 49851                      | -71.6%  |
+| avgCostPerSyncMs (ms)                  | 0.0809     | 0.0566                     | -30.0%  |
 
 **關鍵結論（可直接用在論文的句型）**  
 在相同遊戲工作負載下，`Opcode MsgPack (PathHash)` 相較 `JSON Object` 在各房間規模下都能顯著降低 `bytesPerSync`，代表 SST 的 opcode-driven 編碼在頻寬成本上具有實質工程效益。
