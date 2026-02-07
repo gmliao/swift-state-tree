@@ -377,6 +377,90 @@ func testReactiveDictionary_ToDictionary() {
     #expect(result["c"] == 3, "Should contain correct value for 'c'")
 }
 
+// MARK: - Patch Recording Tests
+
+/// Test state for patch recording
+struct TestPatchableState: PatchableState, Equatable {
+    var _$parentPath: String = ""
+    var _$patchRecorder: PatchRecorder? = nil
+    var value: Int = 0
+    
+    static func == (lhs: TestPatchableState, rhs: TestPatchableState) -> Bool {
+        // Compare only value, not the injected properties
+        lhs.value == rhs.value
+    }
+}
+
+// MARK: - @unchecked Sendable conformance for testing
+// Required because PatchRecorder is not Sendable, but this struct is only used in tests
+extension TestPatchableState: @unchecked Sendable {}
+
+@Test("ReactiveDictionary subscript get injects path context into PatchableState")
+func testReactiveDictionary_SubscriptGet_InjectsPathContext() {
+    // Arrange
+    var dict = ReactiveDictionary<String, TestPatchableState>()
+    dict._$parentPath = "/players"
+    let recorder = LandPatchRecorder()
+    dict._$patchRecorder = recorder
+    
+    // Set up initial value
+    dict["A"] = TestPatchableState(value: 100)
+    dict.clearDirty()
+    
+    // Act
+    let retrieved = dict["A"]
+    
+    // Assert
+    #expect(retrieved != nil)
+    #expect(retrieved?._$parentPath == "/players/A")
+    #expect(retrieved?._$patchRecorder === recorder)
+}
+
+@Test("ReactiveDictionary subscript set records patch")
+func testReactiveDictionary_SubscriptSet_RecordsPatch() {
+    // Arrange
+    var dict = ReactiveDictionary<String, Int>()
+    dict._$parentPath = "/scores"
+    let recorder = LandPatchRecorder()
+    dict._$patchRecorder = recorder
+    
+    // Act
+    dict["player1"] = 100
+    
+    // Assert
+    #expect(recorder.hasPatches == true)
+    let patches = recorder.takePatches()
+    #expect(patches.count == 1)
+    #expect(patches[0].path == "/scores/player1")
+}
+
+@Test("ReactiveDictionary subscript set nil records delete patch")
+func testReactiveDictionary_SubscriptSetNil_RecordsDeletePatch() {
+    // Arrange
+    var dict = ReactiveDictionary<String, Int>()
+    dict._$parentPath = "/scores"
+    let recorder = LandPatchRecorder()
+    dict._$patchRecorder = recorder
+    
+    // Set initial value
+    dict["player1"] = 100
+    _ = recorder.takePatches() // Clear initial patch
+    
+    // Act
+    dict["player1"] = nil
+    
+    // Assert
+    #expect(recorder.hasPatches == true)
+    let patches = recorder.takePatches()
+    #expect(patches.count == 1)
+    #expect(patches[0].path == "/scores/player1")
+    if case .delete = patches[0].operation {
+        // Expected
+    } else {
+        Issue.record("Expected delete operation")
+    }
+}
+
 // MARK: - Integration Tests
 
 @Test("ReactiveDictionary maintains state across multiple operations")

@@ -28,6 +28,16 @@ public struct ReactiveDictionary<Key: Hashable & Sendable, Value: Sendable>: @un
     
     /// Optional callback invoked when the dictionary changes
     private var onChange: (@Sendable () -> Void)?
+
+    // MARK: - Patch Recording Context
+
+    /// Path to this dictionary from root state.
+    /// Injected by parent container or LandKeeper.
+    public var _$parentPath: String = ""
+
+    /// Shared patch recorder reference.
+    /// Injected by parent container or LandKeeper.
+    public var _$patchRecorder: PatchRecorder? = nil
     
     // MARK: - Initialization
     
@@ -45,17 +55,41 @@ public struct ReactiveDictionary<Key: Hashable & Sendable, Value: Sendable>: @un
     
     /// Accesses the value associated with the given key for reading and writing.
     ///
-    /// Setting a value marks the dictionary as dirty and adds the key to dirtyKeys.
-    /// Getting a value does not affect dirty state.
+    /// - Getting: Returns the value with injected path context if it's a `PatchableState`.
+    /// - Setting: Marks the dictionary as dirty, records patch, and triggers onChange.
     public subscript(key: Key) -> Value? {
         get {
-            _storage[key]
+            guard let value = _storage[key] else { return nil }
+
+            // Inject path context for PatchableState values
+            if var patchable = value as? any PatchableState {
+                patchable._$parentPath = "\(_$parentPath)/\(key)"
+                patchable._$patchRecorder = _$patchRecorder
+                if let castedValue = patchable as? Value {
+                    return castedValue
+                }
+            }
+
+            return value
         }
         set {
             _storage[key] = newValue
-            // Simplified: mark as dirty on any set, without == comparison
             _isDirty = true
             _dirtyKeys.insert(key)
+
+            // Record patch if recorder is available
+            if let recorder = _$patchRecorder {
+                let path = "\(_$parentPath)/\(key)"
+
+                if let newValue {
+                    if let snapshotValue = try? SnapshotValue.make(from: newValue) {
+                        recorder.record(StatePatch(path: path, operation: .set(snapshotValue)))
+                    }
+                } else {
+                    recorder.record(StatePatch(path: path, operation: .delete))
+                }
+            }
+
             onChange?()
         }
     }
@@ -160,4 +194,3 @@ public struct ReactiveDictionary<Key: Hashable & Sendable, Value: Sendable>: @un
         _storage
     }
 }
-
