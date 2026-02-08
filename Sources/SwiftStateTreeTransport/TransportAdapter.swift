@@ -57,6 +57,31 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// When true, use one-pass extraction (state.snapshotForSync) instead of separate broadcast + per-player extractions.
     /// Default is true; set USE_SNAPSHOT_FOR_SYNC=false to use the legacy path.
     private let useSnapshotForSync: Bool
+    
+    /// Enable logging of changed-vs-unchanged object ratio per sync.
+    /// Disabled by default. Enable with ENABLE_CHANGE_OBJECT_METRICS=true.
+    private let enableChangeObjectMetrics: Bool
+    /// Log interval (sync cycles) for change-object metrics.
+    private let changeObjectMetricsLogEvery: Int
+    /// EMA alpha for changeRate smoothing.
+    private let changeObjectMetricsEmaAlpha: Double
+    /// Sync counter for periodic logging.
+    private var changeObjectMetricsSyncCount: UInt64 = 0
+    /// Smoothed changeRate (changedObjects / totalObjects).
+    private var changeObjectRateEma: Double = 0
+    private var hasChangeObjectRateEma: Bool = false
+    
+    /// Auto-switch dirty tracking based on changeRateEma (hysteresis).
+    /// Enabled by default. Set AUTO_DIRTY_TRACKING=false to disable.
+    private let enableAutoDirtyTracking: Bool
+    /// When dirty tracking is ON and EMA >= this threshold for N consecutive samples, switch OFF.
+    private let autoDirtyOffThreshold: Double
+    /// When dirty tracking is OFF and EMA <= this threshold for N consecutive samples, switch ON.
+    private let autoDirtyOnThreshold: Double
+    /// Required consecutive samples before switching dirty tracking mode.
+    private let autoDirtyRequiredConsecutiveSamples: Int
+    private var autoDirtyOffCandidateCount: Int = 0
+    private var autoDirtyOnCandidateCount: Int = 0
 
     /// Whether to enable parallel encoding for JSON codec.
     /// When enabled, multiple player updates are encoded in parallel using TaskGroup.
@@ -208,8 +233,46 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             self.pathHashes = pathHashes  // Store for parallel encoding
         }
         self.enableLegacyJoin = enableLegacyJoin
-        self.enableDirtyTracking = enableDirtyTracking
-        self.useSnapshotForSync = ProcessInfo.processInfo.environment["USE_SNAPSHOT_FOR_SYNC"] != "false"
+        // Runtime override for dirty tracking (default keeps initializer behavior).
+        // ENABLE_DIRTY_TRACKING=false (or 0/no) forces dirty tracking off.
+        let dirtyTrackingEnabled: Bool
+        if let override = ProcessInfo.processInfo.environment["ENABLE_DIRTY_TRACKING"]?.lowercased() {
+            dirtyTrackingEnabled = !(override == "false" || override == "0" || override == "no")
+        } else {
+            dirtyTrackingEnabled = enableDirtyTracking
+        }
+        self.enableDirtyTracking = dirtyTrackingEnabled
+
+        let snapshotForSyncEnabled = ProcessInfo.processInfo.environment["USE_SNAPSHOT_FOR_SYNC"] != "false"
+        self.useSnapshotForSync = snapshotForSyncEnabled
+        
+        let env = ProcessInfo.processInfo.environment
+        let changeMetricsEnabled: Bool
+        if let raw = env["ENABLE_CHANGE_OBJECT_METRICS"]?.lowercased() {
+            changeMetricsEnabled = raw == "true" || raw == "1" || raw == "yes" || raw == "on"
+        } else {
+            changeMetricsEnabled = false
+        }
+        let changeMetricsLogEvery = max(1, Int(env["CHANGE_OBJECT_METRICS_LOG_EVERY"] ?? "") ?? 10)
+        let changeMetricsAlpha = min(1.0, max(0.01, Double(env["CHANGE_OBJECT_METRICS_EMA_ALPHA"] ?? "") ?? 0.2))
+        let autoDirtyTrackingEnabled: Bool
+        if let raw = env["AUTO_DIRTY_TRACKING"]?.lowercased() {
+            autoDirtyTrackingEnabled = raw == "true" || raw == "1" || raw == "yes" || raw == "on"
+        } else {
+            autoDirtyTrackingEnabled = true
+        }
+        let parsedOffThreshold = min(1.0, max(0.0, Double(env["AUTO_DIRTY_OFF_THRESHOLD"] ?? "") ?? 0.55))
+        let parsedOnThreshold = min(1.0, max(0.0, Double(env["AUTO_DIRTY_ON_THRESHOLD"] ?? "") ?? 0.30))
+        let resolvedOffThreshold = max(parsedOffThreshold, parsedOnThreshold + 0.01)
+        let resolvedOnThreshold = min(parsedOnThreshold, resolvedOffThreshold - 0.01)
+        let autoDirtyRequiredSamples = max(1, Int(env["AUTO_DIRTY_REQUIRED_SAMPLES"] ?? "") ?? 30)
+        self.enableChangeObjectMetrics = changeMetricsEnabled || autoDirtyTrackingEnabled
+        self.changeObjectMetricsLogEvery = changeMetricsLogEvery
+        self.changeObjectMetricsEmaAlpha = changeMetricsAlpha
+        self.enableAutoDirtyTracking = autoDirtyTrackingEnabled
+        self.autoDirtyOffThreshold = resolvedOffThreshold
+        self.autoDirtyOnThreshold = resolvedOnThreshold
+        self.autoDirtyRequiredConsecutiveSamples = autoDirtyRequiredSamples
         self.expectedSchemaHash = expectedSchemaHash
         self.onLandDestroyedCallback = onLandDestroyed
         // Default parallel encoding: disabled unless explicitly enabled.
@@ -247,7 +310,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         resolvedLogger.info("Transport encoding configured", metadata: [
             "landID": .string(landID),
             "messageEncoding": .string(self.messageEncoder.encoding.rawValue),
-            "stateUpdateEncoding": .string(self.stateUpdateEncoder.encoding.rawValue)
+            "stateUpdateEncoding": .string(self.stateUpdateEncoder.encoding.rawValue),
+            "dirtyTracking": .string(dirtyTrackingEnabled ? "on" : "off"),
+            "snapshotForSync": .string(snapshotForSyncEnabled ? "on" : "off"),
+            "changeObjectMetrics": .string((changeMetricsEnabled || autoDirtyTrackingEnabled) ? "on" : "off"),
+            "autoDirtyTracking": .string(autoDirtyTrackingEnabled ? "on" : "off"),
+            "autoDirtyOffThreshold": .string(String(format: "%.3f", resolvedOffThreshold)),
+            "autoDirtyOnThreshold": .string(String(format: "%.3f", resolvedOnThreshold)),
+            "autoDirtyRequiredSamples": .string("\(autoDirtyRequiredSamples)")
         ])
     }
 
@@ -1412,12 +1482,20 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 onlyPaths: nil,
                 mode: broadcastMode
             )
+            
+            var metricUpdates: [StateUpdate] = []
+            if enableChangeObjectMetrics {
+                metricUpdates.reserveCapacity(sessionToPlayer.count + 1)
+            }
 
             if useStateUpdateWithEvents {
                 let shouldSendBroadcastUpdate = !broadcastDiff.isEmpty || !pendingBroadcastEventBodies.isEmpty
                 if shouldSendBroadcastUpdate {
                     if let firstSession = sessionToPlayer.first(where: { !initialSyncingPlayers.contains($0.value) }) {
                         let broadcastUpdate: StateUpdate = broadcastDiff.isEmpty ? .noChange : .diff(broadcastDiff)
+                        if enableChangeObjectMetrics {
+                            metricUpdates.append(broadcastUpdate)
+                        }
                         let dataToSend: Data
                         if let mpEncoder = stateUpdateEncoder as? OpcodeMessagePackStateUpdateEncoder {
                             let updateArray = try mpEncoder.encodeToMessagePackArray(
@@ -1500,6 +1578,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         updateType: updateType,
                         patchCount: patchCount
                     ))
+                    if enableChangeObjectMetrics {
+                        metricUpdates.append(update)
+                    }
                 }
 
                 if !pendingUpdates.isEmpty {
@@ -1581,6 +1662,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         updateType: updateType,
                         patchCount: patchCount
                     ))
+                    if enableChangeObjectMetrics {
+                        metricUpdates.append(update)
+                    }
                 }
 
                 if !pendingUpdates.isEmpty {
@@ -1618,6 +1702,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             pendingServerEventBodies.removeAll()
             pendingBroadcastEventBodies.removeAll()
             hasTargetedEventBodies = false
+            if enableChangeObjectMetrics {
+                logChangeObjectMetrics(
+                    updates: metricUpdates,
+                    broadcastSnapshot: broadcastSnapshot
+                )
+            }
             // Release sync lock after successful sync
             // Only clear dirty flags if dirty tracking is enabled
             await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
@@ -1992,6 +2082,165 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             return ("firstSync", patches.count)
         case .diff(let patches):
             return ("diff", patches.count)
+        }
+    }
+    
+    private func extractPatches(from update: StateUpdate) -> [StatePatch] {
+        switch update {
+        case .noChange:
+            return []
+        case .firstSync(let patches), .diff(let patches):
+            return patches
+        }
+    }
+    
+    private func isLikelyCollectionObject(_ object: [String: SnapshotValue]) -> Bool {
+        if object.isEmpty {
+            return false
+        }
+        var nestedCount = 0
+        for value in object.values {
+            switch value {
+            case .object, .array:
+                nestedCount += 1
+            default:
+                break
+            }
+        }
+        return nestedCount > 0 && nestedCount * 2 >= object.count
+    }
+    
+    private func estimateTotalSyncObjects(from snapshot: StateSnapshot) -> Int {
+        var total = 0
+        for value in snapshot.values.values {
+            switch value {
+            case .object(let object):
+                if isLikelyCollectionObject(object) {
+                    total += object.count
+                } else {
+                    total += 1
+                }
+            default:
+                total += 1
+            }
+        }
+        return max(0, total)
+    }
+    
+    private func objectKeyFromPatchPath(_ path: String, snapshot: StateSnapshot) -> String? {
+        let segments = path
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .map(String.init)
+        guard let top = segments.first else { return nil }
+        
+        guard let topValue = snapshot.values[top] else {
+            return "/\(top)"
+        }
+        
+        if case .object(let object) = topValue,
+           segments.count >= 2 {
+            let second = segments[1]
+            if let child = object[second] {
+                switch child {
+                case .object, .array:
+                    return "/\(top)/\(second)"
+                default:
+                    break
+                }
+            }
+            if isLikelyCollectionObject(object) {
+                return "/\(top)/\(second)"
+            }
+        }
+        
+        return "/\(top)"
+    }
+    
+    private func logChangeObjectMetrics(
+        updates: [StateUpdate],
+        broadcastSnapshot: StateSnapshot
+    ) {
+        changeObjectMetricsSyncCount += 1
+        
+        var changedObjectKeys = Set<String>()
+        changedObjectKeys.reserveCapacity(64)
+        for update in updates {
+            let patches = extractPatches(from: update)
+            for patch in patches {
+                if let objectKey = objectKeyFromPatchPath(patch.path, snapshot: broadcastSnapshot) {
+                    changedObjectKeys.insert(objectKey)
+                }
+            }
+        }
+        
+        let changedObjects = changedObjectKeys.count
+        let estimatedTotalObjects = max(estimateTotalSyncObjects(from: broadcastSnapshot), changedObjects)
+        let unchangedObjects = max(0, estimatedTotalObjects - changedObjects)
+        let changeRate = estimatedTotalObjects > 0
+            ? Double(changedObjects) / Double(estimatedTotalObjects)
+            : 0
+        if hasChangeObjectRateEma {
+            changeObjectRateEma = (changeObjectMetricsEmaAlpha * changeRate) + ((1 - changeObjectMetricsEmaAlpha) * changeObjectRateEma)
+        } else {
+            changeObjectRateEma = changeRate
+            hasChangeObjectRateEma = true
+        }
+        
+        maybeAutoSwitchDirtyTracking(changeRateEma: changeObjectRateEma)
+        
+        if Int(changeObjectMetricsSyncCount % UInt64(changeObjectMetricsLogEvery)) == 0 {
+            logger.info("📊 Change-object metrics", metadata: [
+                "landID": .string(landID),
+                "changedObjects": .string("\(changedObjects)"),
+                "unchangedObjects": .string("\(unchangedObjects)"),
+                "estimatedTotalObjects": .string("\(estimatedTotalObjects)"),
+                "changeRate": .string(String(format: "%.4f", changeRate)),
+                "changeRateEma": .string(String(format: "%.4f", changeObjectRateEma)),
+                "dirtyTracking": .string(enableDirtyTracking ? "on" : "off"),
+                "samples": .string("\(changeObjectMetricsSyncCount)")
+            ])
+        }
+    }
+    
+    private func maybeAutoSwitchDirtyTracking(changeRateEma: Double) {
+        guard enableAutoDirtyTracking else { return }
+        
+        if enableDirtyTracking {
+            autoDirtyOnCandidateCount = 0
+            if changeRateEma >= autoDirtyOffThreshold {
+                autoDirtyOffCandidateCount += 1
+                if autoDirtyOffCandidateCount >= autoDirtyRequiredConsecutiveSamples {
+                    enableDirtyTracking = false
+                    autoDirtyOffCandidateCount = 0
+                    logger.notice("🔄 Auto-switch dirty tracking", metadata: [
+                        "landID": .string(landID),
+                        "newMode": .string("off"),
+                        "changeRateEma": .string(String(format: "%.4f", changeRateEma)),
+                        "offThreshold": .string(String(format: "%.4f", autoDirtyOffThreshold)),
+                        "requiredSamples": .string("\(autoDirtyRequiredConsecutiveSamples)")
+                    ])
+                }
+            } else {
+                autoDirtyOffCandidateCount = 0
+            }
+        } else {
+            autoDirtyOffCandidateCount = 0
+            if changeRateEma <= autoDirtyOnThreshold {
+                autoDirtyOnCandidateCount += 1
+                if autoDirtyOnCandidateCount >= autoDirtyRequiredConsecutiveSamples {
+                    enableDirtyTracking = true
+                    autoDirtyOnCandidateCount = 0
+                    logger.notice("🔄 Auto-switch dirty tracking", metadata: [
+                        "landID": .string(landID),
+                        "newMode": .string("on"),
+                        "changeRateEma": .string(String(format: "%.4f", changeRateEma)),
+                        "onThreshold": .string(String(format: "%.4f", autoDirtyOnThreshold)),
+                        "requiredSamples": .string("\(autoDirtyRequiredConsecutiveSamples)")
+                    ])
+                }
+            } else {
+                autoDirtyOnCandidateCount = 0
+            }
         }
     }
 
