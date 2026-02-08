@@ -95,7 +95,9 @@ public actor WebSocketTransport: Transport {
     /// Drain task started in init; must be nonisolated(unsafe) for init assignment.
     private nonisolated(unsafe) var drainTask: Task<Void, Never>?
     private static let drainBatchSize = 64
-    private static let drainIntervalNanoseconds: UInt64 = 1_000_000  // 1 ms
+    /// Drain idle sleep interval. Lower = less client-perceived latency, higher = less CPU when idle.
+    /// Default 0.2ms balances responsiveness (5x faster than 1ms) with idle CPU.
+    private let drainIntervalNanoseconds: UInt64
 
     private static let missingTargetLogIntervalSeconds: TimeInterval = 2.0
     private static let missingTargetLogMapSoftLimit: Int = 5000
@@ -103,7 +105,12 @@ public actor WebSocketTransport: Transport {
     /// Non-blocking send queue. When set, TransportAdapter uses enqueueBatch instead of await sendBatch.
     public nonisolated var transportSendQueue: (any TransportSendQueue)? { sendQueue }
 
-    public init(logger: Logger? = nil) {
+    /// - Parameters:
+    ///   - logger: Optional logger. If nil, a default colored logger is created.
+    ///   - drainIntervalMs: Idle sleep interval for the send queue drain task (default 0.2ms).
+    ///     Lower values reduce client-perceived latency but increase CPU when idle.
+    ///     P1 queue-based send uses this; if clients feel laggy, try 0.1 or 0.05.
+    public init(logger: Logger? = nil, drainIntervalMs: Double = 0.2) {
         // Create logger with scope if not provided
         if let logger = logger {
             self.logger = logger.withScope("WebSocketTransport")
@@ -113,11 +120,13 @@ public actor WebSocketTransport: Transport {
                 scope: "WebSocketTransport"
             )
         }
+        self.drainIntervalNanoseconds = UInt64(max(0.01, drainIntervalMs) * 1_000_000)
         self.sendQueue = WebSocketTransportSendQueue(
             maxBatchSize: Self.drainBatchSize,
-            drainIntervalMs: Double(Self.drainIntervalNanoseconds) / 1_000_000
+            drainIntervalMs: Double(self.drainIntervalNanoseconds) / 1_000_000
         )
         let sq = self.sendQueue
+        let intervalNs = self.drainIntervalNanoseconds
         self.drainTask = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
@@ -125,7 +134,7 @@ public actor WebSocketTransport: Transport {
                 if !batch.isEmpty {
                     await self.dispatchBatch(batch)
                 } else {
-                    try? await Task.sleep(nanoseconds: Self.drainIntervalNanoseconds)
+                    try? await Task.sleep(nanoseconds: intervalNs)
                 }
             }
         }
