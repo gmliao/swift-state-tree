@@ -70,7 +70,7 @@ public nonisolated var sendQueue: TransportSendQueue? { get }
 ### 實作要點
 
 - SendQueue 內部用 NSLock + [Item]，或 Deque
-- Drain 每 16–64 筆或每 1ms 觸發一次 dispatch
+- Drain 每 16–64 筆或每 0.2ms（預設）觸發一次 dispatch；可透過 `WebSocketTransport(drainIntervalMs:)` 調整
 - Connection/disconnection 仍在 actor 內處理
 - sessionQueues 僅由 drain（在 actor 內）存取
 
