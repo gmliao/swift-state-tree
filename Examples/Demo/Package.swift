@@ -3,7 +3,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "HummingbirdDemo",
+    name: "Demo",
     platforms: [
         .macOS(.v14)
     ],
@@ -26,7 +26,7 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "HummingbirdDemoContent",
+            name: "DemoContent",
             dependencies: [
                 .product(name: "SwiftStateTree", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeDeterministicMath", package: "SwiftStateTree")
@@ -36,7 +36,7 @@ let package = Package(
         .executableTarget(
             name: "DemoServer",
             dependencies: [
-                "HummingbirdDemoContent",
+                "DemoContent",
                 .product(name: "SwiftStateTree", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeNIO", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeTransport", package: "SwiftStateTree")
@@ -46,7 +46,7 @@ let package = Package(
         .executableTarget(
             name: "SchemaGen",
             dependencies: [
-                "HummingbirdDemoContent",
+                "DemoContent",
                 .product(name: "SwiftStateTree", package: "SwiftStateTree")
             ],
             path: "Sources/SchemaGen"
@@ -54,7 +54,7 @@ let package = Package(
         .executableTarget(
             name: "ReevaluationRunner",
             dependencies: [
-                "HummingbirdDemoContent",
+                "DemoContent",
                 .product(name: "SwiftStateTree", package: "SwiftStateTree")
             ],
             path: "Sources/ReevaluationRunner"

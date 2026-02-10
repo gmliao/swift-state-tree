@@ -59,12 +59,12 @@ jobs:
       run: npm run build
 
     - name: Build DemoServer
-      working-directory: Examples/HummingbirdDemo
+      working-directory: Examples/Demo
       run: swift build
 
     # Test jsonObject encoding
     - name: Start DemoServer (jsonObject)
-      working-directory: Examples/HummingbirdDemo
+      working-directory: Examples/Demo
       env:
         TRANSPORT_ENCODING: json
       run: |
@@ -107,7 +107,7 @@ jobs:
 
     # Test opcodeJsonArray encoding
     - name: Start DemoServer (opcodeJsonArray)
-      working-directory: Examples/HummingbirdDemo
+      working-directory: Examples/Demo
       env:
         TRANSPORT_ENCODING: jsonOpcode
       run: |
@@ -150,7 +150,7 @@ jobs:
 
     # Test messagepack encoding
     - name: Start DemoServer (messagepack)
-      working-directory: Examples/HummingbirdDemo
+      working-directory: Examples/Demo
       env:
         TRANSPORT_ENCODING: messagepack
       run: |

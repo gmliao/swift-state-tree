@@ -320,11 +320,11 @@ func testCollection() {
 
 ### WebClient Tests
 
-**Location:** `Examples/HummingbirdDemo/WebClient`
+**Location:** `Examples/Demo/WebClient`
 
 **Command:**
 ```bash
-cd Examples/HummingbirdDemo/WebClient && npm test
+cd Examples/Demo/WebClient && npm test
 ```
 
 **Framework:** Vitest (for Vue component and business logic tests)

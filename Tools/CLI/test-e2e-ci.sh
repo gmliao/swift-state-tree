@@ -12,7 +12,7 @@ source "${SCRIPT_DIR}/e2e-test-common.sh"
 
 # Server-specific configuration
 SERVER_NAME="DemoServer"
-SERVER_DIR_NAME="HummingbirdDemo"
+SERVER_DIR_NAME="Demo"
 SERVER_CMD="DemoServer"
 
 # Function to start DemoServer

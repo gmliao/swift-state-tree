@@ -14,7 +14,7 @@ Cookie Clicker is a complete multiplayer game example showcasing SwiftStateTree'
 
 **1. Start the server:**
 ```bash
-cd Examples/HummingbirdDemo
+cd Examples/Demo
 swift run DemoServer
 ```
 
@@ -256,6 +256,6 @@ async function handleBuy(upgradeID: string) {
 
 ## Complete Source Code
 
-- **Server-side definition**: [`Examples/HummingbirdDemo/Sources/DemoContent/CookieDemoDefinitions.swift`](../../Examples/HummingbirdDemo/Sources/DemoContent/CookieDemoDefinitions.swift)
-- **Server main program**: [`Examples/HummingbirdDemo/Sources/DemoServer/main.swift`](../../Examples/HummingbirdDemo/Sources/DemoServer/main.swift)
-- **Client Vue component**: [`Examples/HummingbirdDemo/WebClient/src/views/CookieGamePage.vue`](../../Examples/HummingbirdDemo/WebClient/src/views/CookieGamePage.vue)
+- **Server-side definition**: [`Examples/Demo/Sources/DemoContent/CookieDemoDefinitions.swift`](../../Examples/Demo/Sources/DemoContent/CookieDemoDefinitions.swift)
+- **Server main program**: [`Examples/Demo/Sources/DemoServer/main.swift`](../../Examples/Demo/Sources/DemoServer/main.swift)
+- **Client Vue component**: [`Examples/Demo/WebClient/src/views/CookieGamePage.vue`](../../Examples/Demo/WebClient/src/views/CookieGamePage.vue)

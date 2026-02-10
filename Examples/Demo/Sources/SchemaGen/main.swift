@@ -1,8 +1,8 @@
-// Examples/HummingbirdDemo/Sources/SchemaGen/main.swift
+// Examples/Demo/Sources/SchemaGen/main.swift
 
 import Foundation
 import SwiftStateTree
-import HummingbirdDemoContent
+import DemoContent
 
 @main
 struct SchemaGen {

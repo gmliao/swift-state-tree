@@ -10,7 +10,7 @@
 ## 方案 A：直接跑 Demo
 
 ```bash
-cd Examples/HummingbirdDemo
+cd Examples/Demo
 swift run DemoServer
 ```
 

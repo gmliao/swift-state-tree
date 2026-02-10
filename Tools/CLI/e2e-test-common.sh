@@ -5,7 +5,7 @@
 # Usage:
 #   source "$(dirname "$0")/e2e-test-common.sh"
 #   SERVER_NAME="DemoServer"  # or "GameServer"
-#   SERVER_DIR="Examples/HummingbirdDemo"  # or "Examples/GameDemo"
+#   SERVER_DIR="Examples/Demo"  # or "Examples/GameDemo"
 #   SERVER_CMD="DemoServer"  # or "GameServer"
 
 # Colors for output

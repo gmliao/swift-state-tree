@@ -24,7 +24,7 @@ Generate JSON schema from LandDefinitions and TypeScript client SDK from schema 
 
 **Command:**
 ```bash
-cd Examples/HummingbirdDemo && swift run SchemaGen --output schema.json
+cd Examples/Demo && swift run SchemaGen --output schema.json
 ```
 
 **What it does:**
@@ -32,7 +32,7 @@ cd Examples/HummingbirdDemo && swift run SchemaGen --output schema.json
 - Extracts types using `@StateNodeBuilder` and `@Payload` macro metadata
 - Outputs to `schema.json` (or specified path)
 
-**Output location:** `Examples/HummingbirdDemo/schema.json`
+**Output location:** `Examples/Demo/schema.json`
 
 **How it works:**
 - Uses macro metadata to extract type information
@@ -44,7 +44,7 @@ cd Examples/HummingbirdDemo && swift run SchemaGen --output schema.json
 
 **Command:**
 ```bash
-cd Examples/HummingbirdDemo/WebClient && npm run codegen
+cd Examples/Demo/WebClient && npm run codegen
 ```
 
 **What it does:**
@@ -52,7 +52,7 @@ cd Examples/HummingbirdDemo/WebClient && npm run codegen
 - Creates type definitions for actions, events, and state
 - Updates client SDK with latest schema
 
-**Output location:** `Examples/HummingbirdDemo/WebClient/src/generated/`
+**Output location:** `Examples/Demo/WebClient/src/generated/`
 
 **Generated files:**
 - Type definitions for Land types
@@ -65,12 +65,12 @@ cd Examples/HummingbirdDemo/WebClient && npm run codegen
 
 **Check generated files:**
 ```bash
-ls -la Examples/HummingbirdDemo/WebClient/src/generated/
+ls -la Examples/Demo/WebClient/src/generated/
 ```
 
 **Verify schema is valid:**
 ```bash
-cat Examples/HummingbirdDemo/schema.json | jq .
+cat Examples/Demo/schema.json | jq .
 ```
 
 ### Step 4: Commit Generated Files
@@ -78,8 +78,8 @@ cat Examples/HummingbirdDemo/schema.json | jq .
 **Important:** Generated files should be committed to version control.
 
 ```bash
-git add Examples/HummingbirdDemo/schema.json
-git add Examples/HummingbirdDemo/WebClient/src/generated/
+git add Examples/Demo/schema.json
+git add Examples/Demo/WebClient/src/generated/
 git commit -m "chore: regenerate schema and client SDK"
 ```
 

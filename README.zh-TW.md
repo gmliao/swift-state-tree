@@ -102,7 +102,7 @@ swift build
 
 啟動 DemoServer（包含 Cookie 遊戲和 Counter 範例）：
 ```bash
-cd Examples/HummingbirdDemo
+cd Examples/Demo
 swift run DemoServer
 ```
 
@@ -110,7 +110,7 @@ swift run DemoServer
 
 在另一個終端生成客戶端代碼並啟動 WebClient：
 ```bash
-cd Examples/HummingbirdDemo/WebClient
+cd Examples/Demo/WebClient
 npm install  # 首次運行需要安裝依賴
 npm run codegen  # 生成客戶端代碼
 npm run dev
@@ -131,9 +131,9 @@ WebClient 會運行在另一個端口（通常是 `http://localhost:5173`），�
 ### 4. 最簡單範例
 
 以下是一個簡化的計數器範例，展示核心概念。完整可運行的原始碼請參考：
-- **伺服器端定義**：[`Examples/HummingbirdDemo/Sources/DemoContent/CounterDemoDefinitions.swift`](Examples/HummingbirdDemo/Sources/DemoContent/CounterDemoDefinitions.swift)
-- **伺服器主程式**：[`Examples/HummingbirdDemo/Sources/DemoServer/main.swift`](Examples/HummingbirdDemo/Sources/DemoServer/main.swift)
-- **客戶端 Vue 組件**：[`Examples/HummingbirdDemo/WebClient/src/views/CounterPage.vue`](Examples/HummingbirdDemo/WebClient/src/views/CounterPage.vue)
+- **伺服器端定義**：[`Examples/Demo/Sources/DemoContent/CounterDemoDefinitions.swift`](Examples/Demo/Sources/DemoContent/CounterDemoDefinitions.swift)
+- **伺服器主程式**：[`Examples/Demo/Sources/DemoServer/main.swift`](Examples/Demo/Sources/DemoServer/main.swift)
+- **客戶端 Vue 組件**：[`Examples/Demo/WebClient/src/views/CounterPage.vue`](Examples/Demo/WebClient/src/views/CounterPage.vue)
 
 #### 伺服器端（Swift）
 
@@ -298,7 +298,7 @@ onUnmounted(async () => {
 
 **1. 啟動伺服器：**
 ```bash
-cd Examples/HummingbirdDemo
+cd Examples/Demo
 swift run DemoServer
 ```
 伺服器會在 `http://localhost:8080` 啟動，提供兩個遊戲端點：
@@ -334,7 +334,7 @@ SwiftStateTree/
 │   └── SwiftStateTreeBenchmarks/    # 基準測試
 ├── Tests/                           # 單元測試
 ├── Examples/                        # 範例專案
-│   └── HummingbirdDemo/
+│   └── Demo/
 ├── docs/                            # 正式文檔
 └── Notes/                           # 設計與開發筆記
 ```

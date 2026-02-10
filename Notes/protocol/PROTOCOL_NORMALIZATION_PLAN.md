@@ -314,7 +314,7 @@ public enum ErrorCode: String {
 **影響範圍：**
 - `Sources/SwiftStateTree/Sync/SnapshotValue.swift`
 - `Sources/SwiftStateTree/Sync/StatePatch.swift` (value 欄位)
-- `Examples/HummingbirdDemo/schema.json` (default 值)
+- `Examples/Demo/schema.json` (default 值)
 - `Examples/Playground/src/composables/useWebSocket.ts` (decodeSnapshotValue)
 - `docs/protocol/TRANSPORT_PROTOCOL.md`
 - `docs/protocol/SCHEMA_DEFINITION.md`

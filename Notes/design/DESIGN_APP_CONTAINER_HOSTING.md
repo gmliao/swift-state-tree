@@ -48,7 +48,7 @@ SwiftStateTree/
 ├── Tests/
 │   └── SwiftStateTreeTests/
 └── Examples/                               # ✅ Demo 專案獨立於此
-    └── HummingbirdDemo/
+    └── Demo/
 ```
 
 ### Core（SwiftStateTree）
@@ -301,7 +301,7 @@ try await host.run()
 import SwiftStateTreeHummingbird
 
 @main
-struct HummingbirdDemo {
+struct Demo {
     static func main() async throws {
         typealias DemoLandServer = LandServer<DemoGameState>
         let server = try await DemoLandServer.makeServer(
@@ -486,16 +486,16 @@ public protocol WebSocketConnection: Sendable {
 
 ### 當前狀況
 
-目前 Demo 專案已獨立至 `Examples/HummingbirdDemo`：
+目前 Demo 專案已獨立至 `Examples/Demo`：
 
 ```
 Examples/
-  HummingbirdDemo/
+  Demo/
     ├── Package.swift                    # 獨立的 Package，依賴主專案的 library
     └── Sources/
         ├── DemoContent/
         │   └── DemoDefinitions.swift    # Demo 專用 Land DSL / actions / events
-        └── HummingbirdDemo/
+        └── Demo/
             └── main.swift               # Demo 啟動程式（呼叫泛用 AppContainer）
 ```
 
@@ -605,7 +605,7 @@ Examples/
    - 重構為應用層級容器，支援多房間架構
 
 4. **Demo 專案獨立**（✅ 已完成）：
-  - Hummingbird Demo 位於 `Examples/HummingbirdDemo`
+  - Hummingbird Demo 位於 `Examples/Demo`
   - 主專案 `Sources/` 僅保留 library/transport 程式碼
 
 ### 設計優勢

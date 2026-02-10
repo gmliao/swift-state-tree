@@ -10,7 +10,7 @@
 ## Option A: Run Demo Directly
 
 ```bash
-cd Examples/HummingbirdDemo
+cd Examples/Demo
 swift run DemoServer
 ```
 

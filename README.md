@@ -104,7 +104,7 @@ swift build
 
 Start the DemoServer (includes Cookie game and Counter example):
 ```bash
-cd Examples/HummingbirdDemo
+cd Examples/Demo
 swift run DemoServer
 ```
 
@@ -112,7 +112,7 @@ The server runs on `http://localhost:8080` by default.
 
 In another terminal, generate client code and start WebClient:
 ```bash
-cd Examples/HummingbirdDemo/WebClient
+cd Examples/Demo/WebClient
 npm install  # Install dependencies on first run
 npm run codegen  # Generate client code
 npm run dev
@@ -133,9 +133,9 @@ WebClient will run on another port (usually `http://localhost:5173`), accessible
 ### 4. Simplest Example
 
 The following is a simplified counter example demonstrating core concepts. For complete runnable source code, please refer to:
-- **Server-side definition**: [`Examples/HummingbirdDemo/Sources/DemoContent/CounterDemoDefinitions.swift`](Examples/HummingbirdDemo/Sources/DemoContent/CounterDemoDefinitions.swift)
-- **Server main program**: [`Examples/HummingbirdDemo/Sources/DemoServer/main.swift`](Examples/HummingbirdDemo/Sources/DemoServer/main.swift)
-- **Client Vue component**: [`Examples/HummingbirdDemo/WebClient/src/views/CounterPage.vue`](Examples/HummingbirdDemo/WebClient/src/views/CounterPage.vue)
+- **Server-side definition**: [`Examples/Demo/Sources/DemoContent/CounterDemoDefinitions.swift`](Examples/Demo/Sources/DemoContent/CounterDemoDefinitions.swift)
+- **Server main program**: [`Examples/Demo/Sources/DemoServer/main.swift`](Examples/Demo/Sources/DemoServer/main.swift)
+- **Client Vue component**: [`Examples/Demo/WebClient/src/views/CounterPage.vue`](Examples/Demo/WebClient/src/views/CounterPage.vue)
 
 #### Server-side (Swift)
 
@@ -301,7 +301,7 @@ onUnmounted(async () => {
 
 **1. Start the server:**
 ```bash
-cd Examples/HummingbirdDemo
+cd Examples/Demo
 swift run DemoServer
 ```
 The server will start on `http://localhost:8080`, providing two game endpoints:
@@ -339,7 +339,7 @@ SwiftStateTree/
 │   └── SwiftStateTreeHummingbird/   # Archived Hummingbird integration (reference only)
 ├── Tests/                           # Unit tests
 ├── Examples/                        # Example projects
-│   └── HummingbirdDemo/
+│   └── Demo/
 ├── docs/                            # Official documentation
 └── Notes/                           # Design and development notes
 ```

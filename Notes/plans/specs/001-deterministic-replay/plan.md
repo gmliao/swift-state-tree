@@ -56,7 +56,7 @@
    - 依 tickId 返回對應的 actions, clientEvents, lifecycleEvents, serverEvents
 
 4. **ReevaluationRunner (Application-Specific CLI)**
-   - 位於各應用程式（如 `Examples/GameDemo` 或 `Examples/HummingbirdDemo`）中，作為獨立 target
+   - 位於各應用程式（如 `Examples/GameDemo` 或 `Examples/Demo`）中，作為獨立 target
    - 由 `--input` 指定錄製檔案
    - 每 tick 驗證 state hash（使用既有 hash/快照機制）
    - 可設定 replay sink（例如輸出 event log 或傳送到 client）
