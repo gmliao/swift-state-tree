@@ -49,7 +49,7 @@
 ## Project Structure & Module Organization
 - `Sources/SwiftStateTree`: core library (Land DSL, Runtime, Sync, StateTree).
 - `Sources/SwiftStateTreeTransport`: transport abstraction layer (WebSocket, Land management, routing).
-- `Sources/SwiftStateTreeHummingbird`: Hummingbird integration (LandHost, LandServer, WebSocket adapter).
+- `Sources/SwiftStateTreeNIO`: NIO-based hosting (NIOLandHost, NIOLandServer, WebSocket). Default server integration; no Hummingbird dependency.
 - `Sources/SwiftStateTreeMatchmaking`: matchmaking service and lobby functionality.
 - `Sources/SwiftStateTreeMacros`: compile-time macros (`@StateNodeBuilder`, `@Payload`, `@SnapshotConvertible`).
 - `Sources/SwiftStateTreeDeterministicMath`: deterministic math library for server-authoritative games.
@@ -60,7 +60,8 @@
   - `Overflow/`: Overflow handling policies (`OverflowPolicy`).
   - All operations use Int32 fixed-point arithmetic for deterministic behavior across platforms.
 - `Sources/SwiftStateTreeBenchmarks`: benchmark executable.
-- `Examples/HummingbirdDemo`: demo project with unified `DemoServer` and web client.
+- `Examples/HummingbirdDemo`: demo project with unified `DemoServer` (NIO) and web client.
+- `Archive/SwiftStateTreeHummingbird`: archived Hummingbird integration (reference only; see Archive README).
 - `Tests/SwiftStateTreeTests`: unit tests for the library.
 
 ## Build, Test, and Development Commands
@@ -161,7 +162,7 @@
 
 ## Testing Guidelines
 - **Framework: Swift Testing** (Swift 6's new testing framework, not XCTest).
-- **Test modules**: `SwiftStateTreeTests` (core), `SwiftStateTreeTransportTests` (transport), `SwiftStateTreeHummingbirdTests` (Hummingbird), `SwiftStateTreeMacrosTests` (macros), `SwiftStateTreeMatchmakingTests` (matchmaking), `SwiftStateTreeDeterministicMathTests` (deterministic math).
+- **Test modules**: `SwiftStateTreeTests` (core), `SwiftStateTreeTransportTests` (transport), `SwiftStateTreeNIOTests` (NIO), `SwiftStateTreeMacrosTests` (macros), `SwiftStateTreeMatchmakingTests` (matchmaking), `SwiftStateTreeDeterministicMathTests` (deterministic math).
 - Add tests under appropriate test module, mirroring the type under test (e.g., `StateTreeTests.swift`).
 - Use `@Test` attribute with descriptive names: `@Test("Description of what is being tested")`.
 - Use `#expect()` for assertions instead of `XCTAssert*`.

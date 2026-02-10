@@ -47,11 +47,16 @@ public struct NIOWebSocketServerConfiguration: Sendable {
 ///
 /// This server provides a high-performance WebSocket transport layer
 /// without the overhead of Hummingbird's HTTP framework.
+///
+/// Auth is resolved via `AuthInfoResolverProtocol` from SwiftStateTreeTransport;
+/// use `ClosureAuthInfoResolver` to wrap a closure if needed.
 public actor NIOWebSocketServer {
     private let configuration: NIOWebSocketServerConfiguration
     private let transportResolver: @Sendable (String) -> WebSocketTransport?
     private let pathMatcher: @Sendable (String) -> Bool
     private let httpRouter: NIOHTTPRouter?
+    private let authInfoResolver: (any AuthInfoResolverProtocol)?
+
 
     private var group: MultiThreadedEventLoopGroup?
     private var serverChannel: Channel?
@@ -72,6 +77,7 @@ public actor NIOWebSocketServer {
         self.transportResolver = { _ in transport }
         self.pathMatcher = pathMatcher
         self.httpRouter = nil
+        self.authInfoResolver = nil
     }
     
     /// Creates a new NIO WebSocket server with multiple transports.
@@ -81,16 +87,19 @@ public actor NIOWebSocketServer {
     ///   - transportResolver: Resolves the transport for a given WebSocket path.
     ///   - pathMatcher: A closure that returns true if a given path should be upgraded to WebSocket.
     ///   - httpRouter: Optional HTTP router for handling non-WebSocket requests.
+    ///   - authInfoResolver: Optional auth resolver (e.g. JWT). If it throws, the upgrade is rejected. Use `ClosureAuthInfoResolver` to wrap a closure.
     public init(
         configuration: NIOWebSocketServerConfiguration = .init(),
         transportResolver: @escaping @Sendable (String) -> WebSocketTransport?,
         pathMatcher: @escaping @Sendable (String) -> Bool,
-        httpRouter: NIOHTTPRouter? = nil
+        httpRouter: NIOHTTPRouter? = nil,
+        authInfoResolver: (any AuthInfoResolverProtocol)? = nil
     ) {
         self.configuration = configuration
         self.transportResolver = transportResolver
         self.pathMatcher = pathMatcher
         self.httpRouter = httpRouter
+        self.authInfoResolver = authInfoResolver
     }
 
     /// Starts the WebSocket server.
@@ -105,6 +114,7 @@ public actor NIOWebSocketServer {
 
         let transportResolver = self.transportResolver
         let pathMatcher = self.pathMatcher
+        let authInfoResolver = self.authInfoResolver
         let maxFrameSize = self.configuration.maxFrameSize
         let logger = self.configuration.logger
         let schemaProvider = self.configuration.schemaProvider ?? { nil }
@@ -114,7 +124,6 @@ public actor NIOWebSocketServer {
             maxFrameSize: maxFrameSize,
             automaticErrorHandling: true,
             shouldUpgrade: { channel, head in
-                // Check if path matches
                 let path = head.uri.components(separatedBy: "?").first ?? head.uri
                 if pathMatcher(path) {
                     return channel.eventLoop.makeSucceededFuture(HTTPHeaders())
@@ -123,22 +132,48 @@ public actor NIOWebSocketServer {
             },
             upgradePipelineHandler: { channel, head in
                 let path = head.uri.components(separatedBy: "?").first ?? head.uri
+                let fullURI = head.uri
                 let sessionID = SessionID(UUID().uuidString)
-                
-                // Get transport for this path
+
                 guard let transport = transportResolver(path) else {
                     logger.error("No transport found for path", metadata: ["path": .string(path)])
                     return channel.close()
                 }
 
-                // Create handler and connection
+                if let resolver = authInfoResolver {
+                    let promise = channel.eventLoop.makePromise(of: AuthenticatedInfo?.self)
+                    Task {
+                        do {
+                            let authInfo = try await resolver.resolve(path: path, uri: fullURI)
+                            promise.succeed(authInfo)
+                        } catch {
+                            logger.debug("Auth resolution failed", metadata: ["path": .string(path), "error": .string(String(describing: error))])
+                            promise.fail(error)
+                        }
+                    }
+                    return promise.futureResult
+                        .flatMap { authInfo in
+                            channel.pipeline.addHandler(WebSocketSessionHandler(
+                                sessionID: sessionID,
+                                path: path,
+                                transport: transport,
+                                authInfo: authInfo,
+                                logger: logger
+                            ))
+                        }
+                        .flatMapError { error in
+                            logger.warning("JWT/auth validation failed, rejecting upgrade", metadata: ["path": .string(path), "error": .string(String(describing: error))])
+                            return channel.close()
+                        }
+                }
+
                 let handler = WebSocketSessionHandler(
                     sessionID: sessionID,
                     path: path,
                     transport: transport,
+                    authInfo: nil,
                     logger: logger
                 )
-
                 return channel.pipeline.addHandler(handler)
             }
         )

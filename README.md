@@ -65,7 +65,7 @@ SwiftStateTree adopts the following core design:
 |--------|-------------|
 | **SwiftStateTree** | Core module (StateTree, Land DSL, Sync, Runtime, SchemaGen) |
 | **SwiftStateTreeTransport** | Transport layer (WebSocketTransport, TransportAdapter, Land management) |
-| **SwiftStateTreeHummingbird** | Hummingbird integration (LandServer, JWT/Guest, Admin routes) |
+| **SwiftStateTreeNIO** | NIO-based server hosting (NIOLandHost, NIOLandServer, WebSocket) |
 | **SwiftStateTreeBenchmarks** | Benchmark executable |
 
 ## 🚚 Transport Encodings
@@ -141,7 +141,7 @@ The following is a simplified counter example demonstrating core concepts. For c
 
 ```swift
 import SwiftStateTree
-import SwiftStateTreeHummingbird
+import SwiftStateTreeNIO
 
 // 1. Define state
 @StateNodeBuilder
@@ -186,10 +186,11 @@ let counterLand = Land("counter", using: CounterState.self) {
 @main
 struct DemoServer {
     static func main() async throws {
-        // Create LandHost to manage HTTP server and game logic
-        let host = LandHost(configuration: LandHost.HostConfiguration(
+        // Create NIOLandHost to manage HTTP server and game logic
+        let host = NIOLandHost(configuration: NIOLandHostConfiguration(
             host: "localhost",
-            port: 8080
+            port: 8080,
+            adminAPIKey: "demo-admin-key"
         ))
 
         // Register land type
@@ -198,11 +199,11 @@ struct DemoServer {
             land: counterLand,
             initialState: CounterState(),
             webSocketPath: "/game/counter",
-            configuration: LandServerConfiguration(
-                allowGuestMode: true,
+            configuration: NIOLandServerConfiguration(
                 allowAutoCreateOnJoin: true
             )
         )
+        await host.registerAdminRoutes()
 
         // Run unified server
         try await host.run()
@@ -332,8 +333,10 @@ SwiftStateTree/
 ├── Sources/
 │   ├── SwiftStateTree/              # Core module
 │   ├── SwiftStateTreeTransport/     # Transport layer
-│   ├── SwiftStateTreeHummingbird/   # Hummingbird integration
+│   ├── SwiftStateTreeNIO/           # NIO-based server hosting
 │   └── SwiftStateTreeBenchmarks/    # Benchmarks
+├── Archive/
+│   └── SwiftStateTreeHummingbird/   # Archived Hummingbird integration (reference only)
 ├── Tests/                           # Unit tests
 ├── Examples/                        # Example projects
 │   └── HummingbirdDemo/
@@ -397,7 +400,7 @@ Complete documentation is available at [docs/index.md](docs/index.md), including
 - 🏛️ [Land DSL](docs/core/land-dsl.md) - Domain definition guide
 - 🔄 [Sync Rules](docs/core/sync.md) - State synchronization details
 - 🌐 [Transport](docs/transport/README.md) - Network transport layer
-- 🐦 [Hummingbird](docs/hummingbird/README.md) - Server integration
+- 🌐 [Server hosting (NIO)](docs/overview.md) - NIOLandHost, NIOLandServer
 
 Design and development notes are available in the `Notes/` directory.
 
