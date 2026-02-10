@@ -13,7 +13,7 @@
 *.sh text eol=lf
 
 # Generated files should always use LF
-Examples/HummingbirdDemo/WebClient/src/generated/** text eol=lf
+Examples/Demo/WebClient/src/generated/** text eol=lf
 
 # Denote all files that are truly binary and should not be modified
 *.png binary

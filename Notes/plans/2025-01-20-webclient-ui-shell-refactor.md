@@ -22,17 +22,17 @@
 ## Task 1: Create Shared UI Components
 
 **Files:**
-- Create: `Examples/HummingbirdDemo/WebClient/src/components/demo/DemoLayout.vue`
-- Create: `Examples/HummingbirdDemo/WebClient/src/components/demo/ConnectionStatusCard.vue`
-- Create: `Examples/HummingbirdDemo/WebClient/src/components/demo/AuthorityHint.vue`
-- Create: `Examples/HummingbirdDemo/WebClient/src/components/demo/MetricGrid.vue`
+- Create: `Examples/Demo/WebClient/src/components/demo/DemoLayout.vue`
+- Create: `Examples/Demo/WebClient/src/components/demo/ConnectionStatusCard.vue`
+- Create: `Examples/Demo/WebClient/src/components/demo/AuthorityHint.vue`
+- Create: `Examples/Demo/WebClient/src/components/demo/MetricGrid.vue`
 
 ### Step 1: Create DemoLayout component
 
 **Purpose:** Provides consistent page structure for all demos (title, roomId, type-safe badge, navigation)
 
 ```vue
-<!-- Examples/HummingbirdDemo/WebClient/src/components/demo/DemoLayout.vue -->
+<!-- Examples/Demo/WebClient/src/components/demo/DemoLayout.vue -->
 <script setup lang="ts">
 interface Props {
   title: string
@@ -83,7 +83,7 @@ defineProps<Props>()
 **Purpose:** Shows connection state, room status, last state update time, and errors
 
 ```vue
-<!-- Examples/HummingbirdDemo/WebClient/src/components/demo/ConnectionStatusCard.vue -->
+<!-- Examples/Demo/WebClient/src/components/demo/ConnectionStatusCard.vue -->
 <script setup lang="ts">
 interface Props {
   connected: boolean
@@ -182,7 +182,7 @@ const formatLastUpdate = (date?: Date) => {
 **Purpose:** Persistent reminder that state is server-authoritative
 
 ```vue
-<!-- Examples/HummingbirdDemo/WebClient/src/components/demo/AuthorityHint.vue -->
+<!-- Examples/Demo/WebClient/src/components/demo/AuthorityHint.vue -->
 <script setup lang="ts">
 // No props needed - this is a static hint component
 </script>
@@ -216,7 +216,7 @@ const formatLastUpdate = (date?: Date) => {
 **Purpose:** Reusable grid for displaying key-value pairs (used by state inspectors)
 
 ```vue
-<!-- Examples/HummingbirdDemo/WebClient/src/components/demo/MetricGrid.vue -->
+<!-- Examples/Demo/WebClient/src/components/demo/MetricGrid.vue -->
 <script setup lang="ts">
 interface Metric {
   label: string
@@ -275,7 +275,7 @@ withDefaults(defineProps<Props>(), {
 ### Step 5: Commit shared components
 
 ```bash
-git add Examples/HummingbirdDemo/WebClient/src/components/demo/
+git add Examples/Demo/WebClient/src/components/demo/
 git commit -m "feat(webclient): add shared demo UI shell components
 
 - Add DemoLayout for consistent page structure
@@ -292,14 +292,14 @@ core demo logic (actions/state/events) explicit in each page."
 ## Task 2: Create Counter-Specific Components
 
 **Files:**
-- Create: `Examples/HummingbirdDemo/WebClient/src/components/demo/counter/CounterStateInspector.vue`
+- Create: `Examples/Demo/WebClient/src/components/demo/counter/CounterStateInspector.vue`
 
 ### Step 1: Create CounterStateInspector component
 
 **Purpose:** Shows Counter-specific state (count) with server authority proof
 
 ```vue
-<!-- Examples/HummingbirdDemo/WebClient/src/components/demo/counter/CounterStateInspector.vue -->
+<!-- Examples/Demo/WebClient/src/components/demo/counter/CounterStateInspector.vue -->
 <script setup lang="ts">
 import { computed } from 'vue'
 import MetricGrid from '../MetricGrid.vue'
@@ -382,7 +382,7 @@ const metrics = computed(() => {
 ### Step 2: Commit Counter inspector
 
 ```bash
-git add Examples/HummingbirdDemo/WebClient/src/components/demo/counter/
+git add Examples/Demo/WebClient/src/components/demo/counter/
 git commit -m "feat(webclient): add CounterStateInspector component
 
 Shows Counter-specific state (count, last updated) with
@@ -395,14 +395,14 @@ Includes expandable full snapshot JSON for advanced users."
 ## Task 3: Create Cookie-Specific Components
 
 **Files:**
-- Create: `Examples/HummingbirdDemo/WebClient/src/components/demo/cookie/CookieStateInspector.vue`
+- Create: `Examples/Demo/WebClient/src/components/demo/cookie/CookieStateInspector.vue`
 
 ### Step 1: Create CookieStateInspector component
 
 **Purpose:** Shows Cookie-specific state (cookies, cps, upgrades) with server authority proof
 
 ```vue
-<!-- Examples/HummingbirdDemo/WebClient/src/components/demo/cookie/CookieStateInspector.vue -->
+<!-- Examples/Demo/WebClient/src/components/demo/cookie/CookieStateInspector.vue -->
 <script setup lang="ts">
 import { computed } from 'vue'
 import MetricGrid from '../MetricGrid.vue'
@@ -499,7 +499,7 @@ const metrics = computed(() => {
 ### Step 2: Commit Cookie inspector
 
 ```bash
-git add Examples/HummingbirdDemo/WebClient/src/components/demo/cookie/
+git add Examples/Demo/WebClient/src/components/demo/cookie/
 git commit -m "feat(webclient): add CookieStateInspector component
 
 Shows Cookie-specific state (cookies, cps, upgrades) with
@@ -512,11 +512,11 @@ Includes expandable full snapshot JSON for advanced users."
 ## Task 4: Refactor CounterPage to Use New Components
 
 **Files:**
-- Modify: `Examples/HummingbirdDemo/WebClient/src/views/CounterPage.vue`
+- Modify: `Examples/Demo/WebClient/src/views/CounterPage.vue`
 
 ### Step 1: Read current CounterPage implementation
 
-Read `Examples/HummingbirdDemo/WebClient/src/views/CounterPage.vue` to understand current structure.
+Read `Examples/Demo/WebClient/src/views/CounterPage.vue` to understand current structure.
 
 ### Step 2: Refactor CounterPage to use new components
 
@@ -620,7 +620,7 @@ async function increment() {
 ### Step 3: Commit CounterPage refactor
 
 ```bash
-git add Examples/HummingbirdDemo/WebClient/src/views/CounterPage.vue
+git add Examples/Demo/WebClient/src/views/CounterPage.vue
 git commit -m "refactor(webclient): use shared components in CounterPage
 
 Replace custom connection status and state display with:
@@ -637,11 +637,11 @@ Core demo logic (increment action) remains explicit and unchanged."
 ## Task 5: Refactor CookieGamePage to Use New Components
 
 **Files:**
-- Modify: `Examples/HummingbirdDemo/WebClient/src/views/CookieGamePage.vue`
+- Modify: `Examples/Demo/WebClient/src/views/CookieGamePage.vue`
 
 ### Step 1: Read current CookieGamePage implementation
 
-Read `Examples/HummingbirdDemo/WebClient/src/views/CookieGamePage.vue` to understand current structure.
+Read `Examples/Demo/WebClient/src/views/CookieGamePage.vue` to understand current structure.
 
 ### Step 2: Refactor CookieGamePage to use new components
 
@@ -666,7 +666,7 @@ Read `Examples/HummingbirdDemo/WebClient/src/views/CookieGamePage.vue` to unders
 ### Step 3: Commit CookieGamePage refactor
 
 ```bash
-git add Examples/HummingbirdDemo/WebClient/src/views/CookieGamePage.vue
+git add Examples/Demo/WebClient/src/views/CookieGamePage.vue
 git commit -m "refactor(webclient): use shared components in CookieGamePage
 
 Replace custom connection status and state display with:
@@ -683,9 +683,9 @@ Core demo logic (click cookie, buy upgrades) remains explicit and unchanged."
 ## Task 6: Update Tests
 
 **Files:**
-- Modify: `Examples/HummingbirdDemo/WebClient/src/test/components/CounterPage.test.ts` (if exists)
-- Modify: `Examples/HummingbirdDemo/WebClient/src/test/components/CookieGamePage.test.ts`
-- Modify: `Examples/HummingbirdDemo/WebClient/src/test/components/HomeView.test.ts`
+- Modify: `Examples/Demo/WebClient/src/test/components/CounterPage.test.ts` (if exists)
+- Modify: `Examples/Demo/WebClient/src/test/components/CookieGamePage.test.ts`
+- Modify: `Examples/Demo/WebClient/src/test/components/HomeView.test.ts`
 
 ### Step 1: Update test stubs to include new components
 
@@ -700,7 +700,7 @@ Add stubs for new components:
 ### Step 2: Run tests to verify nothing broke
 
 ```bash
-cd Examples/HummingbirdDemo/WebClient
+cd Examples/Demo/WebClient
 npm test
 ```
 
@@ -709,7 +709,7 @@ npm test
 ### Step 3: Commit test updates
 
 ```bash
-git add Examples/HummingbirdDemo/WebClient/src/test/
+git add Examples/Demo/WebClient/src/test/
 git commit -m "test(webclient): update test stubs for new demo components
 
 Add stubs for DemoLayout, ConnectionStatusCard, AuthorityHint,
@@ -725,14 +725,14 @@ All 30 tests passing."
 ### Step 1: Start DemoServer
 
 ```bash
-cd Examples/HummingbirdDemo
+cd Examples/Demo
 swift run DemoServer
 ```
 
 ### Step 2: Start WebClient dev server
 
 ```bash
-cd Examples/HummingbirdDemo/WebClient
+cd Examples/Demo/WebClient
 npm run dev
 ```
 

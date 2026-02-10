@@ -9,7 +9,7 @@
     - Tests all three encoding modes sequentially
     - Shows server logs on failure
  2. **Option 2 - Manual steps**:
-    - Start server: `cd Examples/HummingbirdDemo && swift run DemoServer` (background)
+    - Start server: `cd Examples/Demo && swift run DemoServer` (background)
     - Wait 2-3 seconds for server startup
     - Run tests: `cd Tools/CLI && npm test`
     - Verify all tests pass before proceeding
@@ -36,7 +36,7 @@
 - **Unit Tests**: `swift test` (Swift Testing framework)
 - **E2E Tests**: `cd Tools/CLI && npm test` (requires DemoServer)
 - **Protocol Tests**: `cd Tools/CLI && npm run test:protocol`
-- **WebClient Tests**: `cd Examples/HummingbirdDemo/WebClient && npm test`
+- **WebClient Tests**: `cd Examples/Demo/WebClient && npm test`
 
 ### Before Submitting PRs
 - ✅ All `swift test` must pass
@@ -60,7 +60,7 @@
   - `Overflow/`: Overflow handling policies (`OverflowPolicy`).
   - All operations use Int32 fixed-point arithmetic for deterministic behavior across platforms.
 - `Sources/SwiftStateTreeBenchmarks`: benchmark executable.
-- `Examples/HummingbirdDemo`: demo project with unified `DemoServer` (NIO) and web client.
+- `Examples/Demo`: demo project with unified `DemoServer` (NIO) and web client.
 - `Archive/SwiftStateTreeHummingbird`: archived Hummingbird integration (reference only; see Archive README).
 - `Tests/SwiftStateTreeTests`: unit tests for the library.
 
@@ -68,14 +68,14 @@
 - `swift build`: compile all targets; use `-c release` for performance checks.
 - `swift test`: run all library tests; use `swift test --filter StateTreeTests.testGetSyncFields` for a single case.
 - `swift test list`: list all available tests.
-- `swift run DemoServer`: start the unified demo server (from `Examples/HummingbirdDemo`).
+- `swift run DemoServer`: start the unified demo server (from `Examples/Demo`).
 - `swift run GameServer`: start the Hero Defense game server (from `Examples/GameDemo`).
 - `swift package resolve`: refresh dependencies if `Package.resolved` drifts.
 - **E2E Testing**: `cd Tools/CLI && npm test` (requires DemoServer running). See "Testing Guidelines" section for details.
 
 ## Schema Generation & Codegen
-- **Generate schema**: `cd Examples/HummingbirdDemo && swift run SchemaGen --output schema.json` (generates JSON schema from LandDefinitions).
-- **Generate client SDK**: `cd Examples/HummingbirdDemo/WebClient && npm run codegen` (generates TypeScript client code from `schema.json`).
+- **Generate schema**: `cd Examples/Demo && swift run SchemaGen --output schema.json` (generates JSON schema from LandDefinitions).
+- **Generate client SDK**: `cd Examples/Demo/WebClient && npm run codegen` (generates TypeScript client code from `schema.json`).
 - Schema generation uses `@StateNodeBuilder` and `@Payload` macro metadata to extract types automatically.
 - Generated files in `WebClient/src/generated/` should be committed to version control.
 
@@ -90,7 +90,7 @@
 - Swift 6, macOS 13+; follow Swift API Design Guidelines and prefer `Sendable` on public types.
 - Indent with 4 spaces; keep line length reasonable (~120 chars).
 - Types: `UpperCamelCase`; methods/variables: `lowerCamelCase`; enums use verb-like cases for commands (`.join`, `.attack`).
-- Place new game logic in `Sources/SwiftStateTree`; keep demo-only code inside `Examples/HummingbirdDemo`.
+- Place new game logic in `Sources/SwiftStateTree`; keep demo-only code inside `Examples/Demo`.
 - **Return statements**: Omit `return` for single-expression functions; include `return` for multi-line function bodies.
 - **Cross-Platform Compatibility**: Always prioritize cross-platform solutions over platform-specific code. Avoid `#if os(macOS)` or `#if os(Linux)` conditionals unless absolutely necessary (e.g., when platform-specific APIs are required and no cross-platform alternative exists). Prefer using Foundation APIs that work on both macOS and Linux (e.g., `objCType` instead of `CFGetTypeID`). When platform-specific code is unavoidable, document why and consider future alternatives.
 
@@ -171,17 +171,17 @@
 - Use Arrange‑Act‑Assert structure; keep test files suffixed with `*Tests.swift` matching the type under test.
 - When adding public APIs or core game logic, add/refresh tests and run `swift test` before sending changes out.
 - Aim to cover new public APIs and concurrency paths; avoid shared mutable state between tests.
-- **WebClient tests**: `cd Examples/HummingbirdDemo/WebClient && npm test` (uses vitest for Vue component and business logic tests).
+- **WebClient tests**: `cd Examples/Demo/WebClient && npm test` (uses vitest for Vue component and business logic tests).
 - **Automated E2E Testing (CLI)**: 
   **Quick Command**: When user says "執行 e2e 測試" or "run e2e tests", AI should:
-  1. **Start DemoServer**: `cd Examples/HummingbirdDemo && swift run DemoServer` (run in background, default: json encoding).
+  1. **Start DemoServer**: `cd Examples/Demo && swift run DemoServer` (run in background, default: json encoding).
   2. **Wait for server**: Wait 2-3 seconds for server to start.
   3. **Run E2E tests**: `cd Tools/CLI && npm test` (runs protocol tests + counter/cookie E2E tests in both jsonObject and opcodeJsonArray modes).
   4. **Note**: Tests automatically start servers with correct encoding modes via environment variables.
   5. **Verify results**: All tests must pass. If any test fails, investigate and fix before proceeding.
   
   **Full Test Suite** (including game tests):
-  1. **Start DemoServer**: `cd Examples/HummingbirdDemo && swift run DemoServer`.
+  1. **Start DemoServer**: `cd Examples/Demo && swift run DemoServer`.
   2. **Start GameServer** (optional): `cd Examples/GameDemo && swift run GameServer` (runs on same port 8080, different endpoint).
   3. **Run all tests**: `cd Tools/CLI && npm run test:e2e:with-game` (requires both servers running).
   

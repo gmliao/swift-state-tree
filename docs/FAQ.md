@@ -36,7 +36,7 @@ swift test
 If the tests pass, the project runs correctly. You can also try running the examples:
 
 ```bash
-cd Examples/HummingbirdDemo
+cd Examples/Demo
 swift run DemoServer
 ```
 

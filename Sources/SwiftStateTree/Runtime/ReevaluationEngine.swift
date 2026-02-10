@@ -4,7 +4,7 @@ import Logging
 /// A small helper for running deterministic re-evaluation from a recorded timeline.
 ///
 /// This is intentionally generic and is meant to be used by demo-specific runners
-/// (e.g., `Examples/HummingbirdDemo` and `Examples/GameDemo`) that can import their own land definitions.
+/// (e.g., `Examples/Demo` and `Examples/GameDemo`) that can import their own land definitions.
 public enum ReevaluationEngine {
     private actor CapturingSink: ReevaluationSink {
         private var eventsByTick: [Int64: [ReevaluationRecordedServerEvent]] = [:]

@@ -1,5 +1,5 @@
 import Foundation
-import HummingbirdDemoContent
+import DemoContent
 import SwiftStateTree
 import SwiftStateTreeNIO
 import SwiftStateTreeTransport
@@ -45,21 +45,21 @@ import SwiftStateTreeTransport
 struct DemoServer {
     static func main() async throws {
         // Create logger with custom log level
-        let logger = HummingbirdDemoContent.createDemoLogger(
+        let logger = DemoContent.createDemoLogger(
             scope: "DemoServer",
             logLevel: .debug
         )
 
         // Get configuration from environment variables
-        let host = HummingbirdDemoContent.getEnvString(key: "HOST", defaultValue: "localhost")
-        let port = HummingbirdDemoContent.getEnvUInt16(key: "PORT", defaultValue: 8080)
-        let transportEncodingRaw = HummingbirdDemoContent.getEnvString(key: "TRANSPORT_ENCODING", defaultValue: "json")
+        let host = DemoContent.getEnvString(key: "HOST", defaultValue: "localhost")
+        let port = DemoContent.getEnvUInt16(key: "PORT", defaultValue: 8080)
+        let transportEncodingRaw = DemoContent.getEnvString(key: "TRANSPORT_ENCODING", defaultValue: "json")
         let transportEncoding = resolveTransportEncoding(rawValue: transportEncodingRaw)
 
         // Schema for /schema endpoint (used by E2E CLI and WebClient codegen)
         let demoLandDefinitions: [AnyLandDefinition] = [
-            AnyLandDefinition(HummingbirdDemoContent.CookieGame.makeLand()),
-            AnyLandDefinition(HummingbirdDemoContent.CounterDemo.makeLand()),
+            AnyLandDefinition(DemoContent.CookieGame.makeLand()),
+            AnyLandDefinition(DemoContent.CounterDemo.makeLand()),
         ]
         let protocolSchema = SchemaGenCLI.generateSchema(landDefinitions: demoLandDefinitions, version: "0.1.0")
         let schemaEncoder = JSONEncoder()
@@ -88,7 +88,7 @@ struct DemoServer {
         // Register Cookie Game server
         try await landHost.register(
             landType: "cookie",
-            land: HummingbirdDemoContent.CookieGame.makeLand(),
+            land: DemoContent.CookieGame.makeLand(),
             initialState: CookieGameState(),
             webSocketPath: "/game/cookie",
             configuration: serverConfig
@@ -97,7 +97,7 @@ struct DemoServer {
         // Register Counter Demo server
         try await landHost.register(
             landType: "counter",
-            land: HummingbirdDemoContent.CounterDemo.makeLand(),
+            land: DemoContent.CounterDemo.makeLand(),
             initialState: CounterState(),
             webSocketPath: "/game/counter",
             configuration: serverConfig

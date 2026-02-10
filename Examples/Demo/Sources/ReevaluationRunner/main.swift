@@ -1,5 +1,5 @@
 import Foundation
-import HummingbirdDemoContent
+import DemoContent
 import SwiftStateTree
 
 @main
@@ -119,7 +119,7 @@ struct ReevaluationRunnerMain {
             return
         }
         
-        print("Unsupported landType for HummingbirdDemo ReevaluationRunner: \(landType)")
+        print("Unsupported landType for Demo ReevaluationRunner: \(landType)")
         printHelpAndExit(exitCode: 2)
     }
     
@@ -226,7 +226,7 @@ struct ReevaluationRunnerMain {
     
     private static func printHelpAndExit(exitCode: Int32 = 0) -> Never {
         print("""
-        ReevaluationRunner (HummingbirdDemo)
+        ReevaluationRunner (Demo)
         
         Usage:
           swift run ReevaluationRunner --input <path> [--verify] [--export-jsonl <path>]

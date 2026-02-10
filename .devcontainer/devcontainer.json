@@ -64,9 +64,9 @@
     "source=gamedemo-build,target=/workspace/Examples/GameDemo/.build,type=volume",
     "source=gamedemo-swiftpm,target=/workspace/Examples/GameDemo/.swiftpm,type=volume",
     
-    // HummingbirdDemo project: Swift build artifacts and SPM cache
-    "source=hummingbirddemo-build,target=/workspace/Examples/HummingbirdDemo/.build,type=volume",
-    "source=hummingbirddemo-swiftpm,target=/workspace/Examples/HummingbirdDemo/.swiftpm,type=volume"
+    // Demo project: Swift build artifacts and SPM cache
+    "source=demo-build,target=/workspace/Examples/Demo/.build,type=volume",
+    "source=demo-swiftpm,target=/workspace/Examples/Demo/.swiftpm,type=volume"
   ],
 
   // Environment variables

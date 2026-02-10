@@ -36,7 +36,7 @@ swift test
 如果測試通過，表示專案可以正常運行。你也可以嘗試運行範例：
 
 ```bash
-cd Examples/HummingbirdDemo
+cd Examples/Demo
 swift run DemoServer
 ```
 

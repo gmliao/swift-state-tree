@@ -1,4 +1,4 @@
-// Examples/HummingbirdDemo/Sources/DemoContent/DeterministicMathDemoDefinitions.swift
+// Examples/Demo/Sources/DemoContent/DeterministicMathDemoDefinitions.swift
 //
 // Demo definitions using DeterministicMath types to test codegen.
 

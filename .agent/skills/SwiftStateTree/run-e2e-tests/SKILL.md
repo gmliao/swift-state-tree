@@ -39,7 +39,7 @@ cd Tools/CLI && ./test-e2e-ci.sh
 
 **Step 1: Start DemoServer**
 ```bash
-cd Examples/HummingbirdDemo && swift run DemoServer
+cd Examples/Demo && swift run DemoServer
 ```
 - Run in background
 - Default encoding: JSON
@@ -61,7 +61,7 @@ cd Tools/CLI && npm test
 
 **Step 1: Start DemoServer**
 ```bash
-cd Examples/HummingbirdDemo && swift run DemoServer
+cd Examples/Demo && swift run DemoServer
 ```
 
 **Step 2: Start GameServer (Optional)**

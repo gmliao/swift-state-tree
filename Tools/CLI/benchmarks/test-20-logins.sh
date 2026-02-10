@@ -18,7 +18,7 @@ echo ""
 # Check if server is running
 if ! nc -z localhost 8080 2>/dev/null; then
     echo "⚠️  Warning: Server does not appear to be running on port 8080"
-    echo "   Please start the server first with: swift run HummingbirdDemo"
+    echo "   Please start the server first with: cd Examples/Demo && swift run DemoServer"
     echo ""
     echo "   Attempting test anyway..."
     echo ""

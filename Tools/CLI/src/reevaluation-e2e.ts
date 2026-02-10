@@ -116,7 +116,7 @@ async function main() {
 
   // Run offline re-evaluation verify using the demo runner (Swift).
   const projectRoot = resolve(process.cwd(), '..', '..')
-  const demoDir = join(projectRoot, 'Examples', 'HummingbirdDemo')
+  const demoDir = join(projectRoot, 'Examples', 'Demo')
   console.log(chalk.blue(`🧪 Offline verify via ReevaluationRunner...`))
   execFileSync('swift', ['run', 'ReevaluationRunner', '--input', recordPath, '--verify'], {
     cwd: demoDir,
