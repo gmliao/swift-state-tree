@@ -1070,37 +1070,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         return try await task.value
     }
 
-    // Transitional wrappers during MembershipCoordinator migration.
-    private var sessionToPlayer: [SessionID: PlayerID] { membershipCoordinator.sessionToPlayerSnapshot }
-    private var sessionToClient: [SessionID: ClientID] { membershipCoordinator.sessionToClientSnapshot }
-    private var sessionToAuthInfo: [SessionID: AuthenticatedInfo] { membershipCoordinator.sessionToAuthInfoSnapshot }
-    private var connectedSessions: Set<SessionID> { membershipCoordinator.connectedSessions }
-    private var joinedSessions: Set<SessionID> { membershipCoordinator.joinedSessions }
-
-    private func currentMembershipStamp(for playerID: PlayerID) -> MembershipStamp? {
-        membershipCoordinator.currentMembershipStamp(for: playerID)
-    }
-
-    private func currentMembershipStamp(for sessionID: SessionID) -> MembershipStamp? {
-        membershipCoordinator.currentMembershipStamp(for: sessionID)
-    }
-
-    private func currentMembershipStamp(for target: SwiftStateTree.EventTarget) -> MembershipStamp? {
-        membershipCoordinator.currentMembershipStamp(for: target)
-    }
-
-    private func isSessionCurrent(_ sessionID: SessionID, expected: UInt64) -> Bool {
-        membershipCoordinator.isSessionCurrent(sessionID, expected: expected)
-    }
-
-    private func isPlayerCurrent(_ playerID: PlayerID, expected: UInt64) -> Bool {
-        membershipCoordinator.isPlayerCurrent(playerID, expected: expected)
-    }
-
-    private func sessionID(for clientID: ClientID) -> SessionID? {
-        membershipCoordinator.sessionID(for: clientID)
-    }
-
     /// Encoded targeted event bodies for a given client (sessionID + playerID).
     private func pendingTargetedEventBodies(for sessionID: SessionID, playerID: PlayerID) -> [MessagePackValue] {
         guard !pendingServerEventBodies.isEmpty else { return [] }
@@ -1268,7 +1237,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         case .player(let playerID):
             await transport.send(data, to: .player(playerID))
         case .client(let clientID):
-            if let sessionID = sessionID(for: clientID) {
+            if let sessionID = membershipCoordinator.sessionID(for: clientID) {
                 await transport.send(data, to: .session(sessionID))
             } else {
                 logger.warning("No session found for client: \(clientID.rawValue)")
@@ -1277,7 +1246,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             await transport.send(data, to: .session(sessionID))
         case .players(let playerIDs):
             for playerID in playerIDs {
-                let sessionIDs = sessionToPlayer.filter({ $0.value == playerID }).map({ $0.key })
+                let sessionIDs = membershipCoordinator.sessionIDs(for: playerID)
                 for sessionID in sessionIDs {
                     await transport.send(data, to: .session(sessionID))
                 }
@@ -1298,338 +1267,379 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// - Cache per-player snapshots if state hasn't changed
     /// - Consider incremental sync for large state trees
     func _syncNowImpl() async {
-        profilerCounters?.setSessionCounts(connected: connectedSessions.count, joined: joinedSessions.count)
-        // Early return if no players connected (no one to sync to)
-        // This avoids unnecessary snapshot extraction when no players are online
-        guard !sessionToPlayer.isEmpty else {
+        profilerCounters?.setSessionCounts(
+            connected: membershipCoordinator.connectedSessions.count,
+            joined: membershipCoordinator.joinedCount()
+        )
+        guard !membershipCoordinator.isEmpty else {
             return
         }
 
-        // Note: When multiple players leave simultaneously, syncBroadcastOnly() is called
-        //       for each leave operation. While this is more efficient than syncNow() (only
-        //       processes dirty broadcast fields), there's still room for further optimization
-        //       by batching or debouncing multiple leave operations into a single sync call.
+        await withSyncState(
+            skipLogMessage: "⏭️ Sync skipped: another sync operation is in progress",
+            errorLogMessage: "❌ Failed to extract broadcast snapshot"
+        ) { state in
+            try await runSyncNowCycle(state: state)
+        }
+    }
 
-        // Acquire sync lock to prevent state mutations during sync
-        // This ensures we work with a consistent state snapshot
+    private func withSyncState(
+        skipLogMessage: String,
+        errorLogMessage: String,
+        operation: (State) async throws -> Void
+    ) async {
         guard let state = await keeper.beginSync() else {
-            // Sync already in progress, skip this sync request
-            // TODO: Consider implementing sync queue to handle concurrent sync requests
-            // TODO: Add metrics/logging for skipped sync operations
             if logger.logLevel <= .debug {
-                logger.debug("⏭️ Sync skipped: another sync operation is in progress")
+                logger.debug("Sync skipped", metadata: ["message": .string(skipLogMessage)])
             }
             return
         }
 
         do {
-            // Determine snapshot modes based on dirty tracking (same logic as SyncEngine.generateDiffFromSnapshots).
-            let broadcastMode: SnapshotMode
-            let perPlayerMode: SnapshotMode
-
-            if enableDirtyTracking && state.isDirty() {
-                let dirtyFields = state.getDirtyFields()
-                let syncFields = state.getSyncFields()
-                let broadcastFieldNames = Set(syncFields.filter { $0.policyType == .broadcast }.map { $0.name })
-                let perPlayerFieldNames = Set(syncFields.filter { $0.policyType != .broadcast && $0.policyType != .serverOnly }.map { $0.name })
-
-                let broadcastFields = dirtyFields.intersection(broadcastFieldNames)
-                let perPlayerFields = dirtyFields.intersection(perPlayerFieldNames)
-
-                // TODO: Optimization (large player counts):
-                // - If `perPlayerFields` is empty, we can skip extracting per-player snapshots and computing per-player diffs
-                //   for all players, and send only the shared `broadcastDiff` (while keeping per-player caches intact).
-                // - If `broadcastFields` is empty, we could avoid comparing the full broadcast snapshot by tracking
-                //   whether any broadcast fields are dirty (already available here) and short-circuit to `broadcastDiff = []`.
-                // - For per-player changes, the current model still checks each player. To avoid O(players) work when
-                //   a per-player mutation affects only a subset, we need higher-level information (e.g. affected PlayerIDs)
-                //   or more granular dirty tracking (e.g. per-player dictionary keys).
-                broadcastMode = broadcastFields.isEmpty ? .all : .dirtyTracking(broadcastFields)
-                perPlayerMode = perPlayerFields.isEmpty ? .all : .dirtyTracking(perPlayerFields)
-            } else {
-                // Dirty tracking disabled or state not dirty: always use .all mode
-                broadcastMode = .all
-                perPlayerMode = .all
-            }
-
-            // Dual-mode extraction: one-pass (snapshotForSync) vs separate broadcast + per-player (USE_SNAPSHOT_FOR_SYNC)
-            let broadcastSnapshot: StateSnapshot
-            let perPlayerByPlayer: [PlayerID: StateSnapshot]
-            
-            if useSnapshotForSync {
-                // New: one-pass extraction using snapshotForSync
-                let fullMode: SnapshotMode = (enableDirtyTracking && state.isDirty())
-                    ? .dirtyTracking(state.getDirtyFields())
-                    : .all
-                let playerIDsToSync = sessionToPlayer.values.filter { !initialSyncingPlayers.contains($0) }
-                (broadcastSnapshot, perPlayerByPlayer) = try syncEngine.extractWithSnapshotForSync(
-                    from: state,
-                    playerIDs: Array(playerIDsToSync),
-                    mode: fullMode
-                )
-            } else {
-                // Old: 1 broadcast + N per-player extractions
-                broadcastSnapshot = try syncEngine.extractBroadcastSnapshot(from: state, mode: broadcastMode)
-                var perPlayerTemp: [PlayerID: StateSnapshot] = [:]
-                for (_, playerID) in sessionToPlayer {
-                    if initialSyncingPlayers.contains(playerID) { continue }
-                    perPlayerTemp[playerID] = try syncEngine.extractPerPlayerSnapshot(
-                        for: playerID,
-                        from: state,
-                        mode: perPlayerMode
-                    )
-                }
-                perPlayerByPlayer = perPlayerTemp
-            }
-
-            // Compute broadcast diff ONCE, then reuse for all players.
-            // This avoids updating the broadcast cache per player, which would cause only the first player
-            // to receive broadcast patches.
-            let broadcastDiff = syncEngine.computeBroadcastDiffFromSnapshot(
-                currentBroadcast: broadcastSnapshot,
-                onlyPaths: nil,
-                mode: broadcastMode
-            )
-            
-            var metricUpdates: [StateUpdate] = []
-            if enableChangeObjectMetrics {
-                metricUpdates.reserveCapacity(sessionToPlayer.count + 1)
-            }
-
-            if useStateUpdateWithEvents {
-                let shouldSendBroadcastUpdate = !broadcastDiff.isEmpty || !pendingBroadcastEventBodies.isEmpty
-                if shouldSendBroadcastUpdate {
-                    if let firstSession = sessionToPlayer.first(where: { !initialSyncingPlayers.contains($0.value) }) {
-                        let broadcastUpdate: StateUpdate = broadcastDiff.isEmpty ? .noChange : .diff(broadcastDiff)
-                        if enableChangeObjectMetrics {
-                            metricUpdates.append(broadcastUpdate)
-                        }
-                        let dataToSend: Data
-                        if let mpEncoder = stateUpdateEncoder as? OpcodeMessagePackStateUpdateEncoder {
-                            let updateArray = try mpEncoder.encodeToMessagePackArray(
-                                update: broadcastUpdate,
-                                landID: landID,
-                                playerID: firstSession.value,
-                                playerSlot: nil,
-                                scope: .broadcast
-                            )
-                            if let combined = buildStateUpdateWithEventBodies(
-                                stateUpdateArray: updateArray,
-                                eventBodies: pendingBroadcastEventBodies,
-                                allowEmptyEvents: true
-                            ) {
-                                dataToSend = combined
-                            } else {
-                                dataToSend = try pack(.array(updateArray))
-                            }
-                        } else {
-                            let updateData = try encodeStateUpdate(
-                                update: broadcastUpdate,
-                                playerID: firstSession.value,
-                                playerSlot: nil,
-                                scope: .broadcast
-                            )
-                            if let combined = buildStateUpdateWithEventBodies(
-                                stateUpdateData: updateData,
-                                eventBodies: pendingBroadcastEventBodies,
-                                allowEmptyEvents: true
-                            ) {
-                                dataToSend = combined
-                            } else {
-                                dataToSend = updateData
-                            }
-                        }
-
-                        for (sessionID, playerID) in sessionToPlayer {
-                            if initialSyncingPlayers.contains(playerID) {
-                                continue
-                            }
-                            profilerCounters?.incrementStateUpdates()
-                            Task { await transport.send(dataToSend, to: .session(sessionID)) }
-                        }
-                        await Task.yield()
-                    }
-                }
-
-                // Collect per-player updates (per-player diff only)
-                var pendingUpdates: [PendingSyncUpdate] = []
-                pendingUpdates.reserveCapacity(sessionToPlayer.count)
-
-                for (sessionID, playerID) in sessionToPlayer {
-                    if initialSyncingPlayers.contains(playerID) {
-                        continue
-                    }
-
-                    guard let perPlayerSnapshot = perPlayerByPlayer[playerID] else {
-                        // Player might have joined after we built playerIDsToSync, skip this sync cycle
-                        continue
-                    }
-
-                    let update = syncEngine.generatePerPlayerUpdateFromSnapshot(
-                        for: playerID,
-                        perPlayerSnapshot: perPlayerSnapshot,
-                        perPlayerMode: perPlayerMode,
-                        onlyPaths: nil
-                    )
-
-                    if case .noChange = update {
-                        continue
-                    }
-
-                    let (updateType, patchCount) = describeUpdate(update)
-                    let playerSlot = getPlayerSlot(for: playerID)
-                    pendingUpdates.append(PendingSyncUpdate(
-                        sessionID: sessionID,
-                        playerID: playerID,
-                        playerSlot: playerSlot,
-                        update: update,
-                        updateType: updateType,
-                        patchCount: patchCount
-                    ))
-                    if enableChangeObjectMetrics {
-                        metricUpdates.append(update)
-                    }
-                }
-
-                if !pendingUpdates.isEmpty {
-                    let encodedUpdates: [EncodedSyncUpdate]
-                    let decision = parallelEncodingDecision(pendingUpdateCount: pendingUpdates.count)
-                    let useParallel = decision.useParallel
-
-                    if useParallel {
-                        encodedUpdates = await encodeUpdatesInParallel(
-                            pendingUpdates,
-                            maxConcurrency: decision.maxConcurrency
-                        )
-                    } else {
-                        encodedUpdates = encodeUpdatesSerially(pendingUpdates)
-                    }
-
-                    let successfulUpdates = encodedUpdates.filter { $0.payload != nil }
-                    if !successfulUpdates.isEmpty {
-                        await sendEncodedUpdatesBatch(successfulUpdates, mergeEvents: false)
-                    }
-                    for encoded in encodedUpdates where encoded.errorMessage != nil {
-                        if let errorMessage = encoded.errorMessage {
-                            logger.error("❌ Failed to encode state update", metadata: [
-                                "playerID": .string(encoded.playerID.rawValue),
-                                "sessionID": .string(encoded.sessionID.rawValue),
-                                "error": .string(errorMessage)
-                            ])
-                        }
-                    }
-                }
-
-                if hasTargetedEventBodies {
-                    for (sessionID, playerID) in sessionToPlayer {
-                        if initialSyncingPlayers.contains(playerID) {
-                            continue
-                        }
-                        let eventBodies = pendingTargetedEventBodies(for: sessionID, playerID: playerID)
-                        if !eventBodies.isEmpty {
-                            await sendEventBodiesSeparately(eventBodies, to: sessionID)
-                        }
-                    }
-                }
-            } else {
-                // Collect all pending updates first (diff computation is serial, but encoding can be parallelized)
-                var pendingUpdates: [PendingSyncUpdate] = []
-                pendingUpdates.reserveCapacity(sessionToPlayer.count)
-
-                for (sessionID, playerID) in sessionToPlayer {
-                    if initialSyncingPlayers.contains(playerID) {
-                        continue
-                    }
-
-                    // Use pre-extracted per-player snapshot (from dual-mode extraction above)
-                    // If no per-player snapshot exists (e.g., state has only broadcast fields),
-                    // use an empty snapshot - broadcast diff will still be sent
-                    let perPlayerSnapshot = perPlayerByPlayer[playerID] ?? StateSnapshot(values: [:])
-
-                    // Broadcast diff is precomputed once per sync cycle and reused for all players.
-                    let update = syncEngine.generateUpdateFromBroadcastDiff(
-                        for: playerID,
-                        broadcastDiff: broadcastDiff,
-                        perPlayerSnapshot: perPlayerSnapshot,
-                        perPlayerMode: perPlayerMode,
-                        onlyPaths: nil
-                    )
-
-                    // Skip only if noChange - firstSync should always be sent (even if patches are empty)
-                    if case .noChange = update {
-                        continue
-                    }
-
-                    let (updateType, patchCount) = describeUpdate(update)
-                    let playerSlot = getPlayerSlot(for: playerID)
-                    pendingUpdates.append(PendingSyncUpdate(
-                        sessionID: sessionID,
-                        playerID: playerID,
-                        playerSlot: playerSlot,
-                        update: update,
-                        updateType: updateType,
-                        patchCount: patchCount
-                    ))
-                    if enableChangeObjectMetrics {
-                        metricUpdates.append(update)
-                    }
-                }
-
-                if !pendingUpdates.isEmpty {
-                    let encodedUpdates: [EncodedSyncUpdate]
-                    let decision = parallelEncodingDecision(pendingUpdateCount: pendingUpdates.count)
-                    let useParallel = decision.useParallel
-
-
-                    if useParallel {
-                        // JSON encoding is independent per player, so we can parallelize it safely.
-                        encodedUpdates = await encodeUpdatesInParallel(
-                            pendingUpdates,
-                            maxConcurrency: decision.maxConcurrency
-                        )
-                    } else {
-                        encodedUpdates = encodeUpdatesSerially(pendingUpdates)
-                    }
-
-                    let successfulUpdates = encodedUpdates.filter { $0.payload != nil }
-                    if !successfulUpdates.isEmpty {
-                        await sendEncodedUpdatesBatch(successfulUpdates, mergeEvents: false)
-                    }
-                    for encoded in encodedUpdates where encoded.errorMessage != nil {
-                        if let errorMessage = encoded.errorMessage {
-                            logger.error("❌ Failed to encode state update", metadata: [
-                                "playerID": .string(encoded.playerID.rawValue),
-                                "sessionID": .string(encoded.sessionID.rawValue),
-                                "error": .string(errorMessage)
-                            ])
-                        }
-                    }
-                }
-            }
-
-            pendingServerEventBodies.removeAll()
-            pendingBroadcastEventBodies.removeAll()
-            hasTargetedEventBodies = false
-            if enableChangeObjectMetrics || enableAutoDirtyTracking {
-                logChangeObjectMetrics(
-                    updates: metricUpdates,
-                    broadcastSnapshot: broadcastSnapshot
-                )
-            }
-            // Release sync lock after successful sync
-            // Only clear dirty flags if dirty tracking is enabled
-            await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
+            try await operation(state)
         } catch {
-            logger.error("❌ Failed to extract broadcast snapshot", metadata: [
+            logger.error("Sync operation failed", metadata: [
+                "message": .string(errorLogMessage),
                 "error": .string("\(error)")
             ])
-            // TODO: Consider re-syncing after error recovery
-            // TODO: Add error metrics to track sync failure rates
-
-            // Always release sync lock, even if error occurred
-            // Only clear dirty flags if dirty tracking is enabled
-            await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
         }
+
+        await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
+    }
+
+    private func runSyncNowCycle(state: State) async throws {
+        let shouldCollectChangeMetrics = enableChangeObjectMetrics || enableAutoDirtyTracking
+        let (broadcastMode, perPlayerMode) = computeSyncModes(for: state)
+        let (broadcastSnapshot, perPlayerByPlayer) = try extractSyncSnapshots(
+            from: state,
+            broadcastMode: broadcastMode,
+            perPlayerMode: perPlayerMode
+        )
+
+        let broadcastDiff = syncEngine.computeBroadcastDiffFromSnapshot(
+            currentBroadcast: broadcastSnapshot,
+            onlyPaths: nil,
+            mode: broadcastMode
+        )
+
+        var metricUpdates = makeMetricUpdatesBuffer(shouldCollect: shouldCollectChangeMetrics)
+
+        if useStateUpdateWithEvents {
+            if shouldCollectChangeMetrics,
+               let broadcastMetric = try await sendMergedBroadcastUpdateIfNeeded(broadcastDiff: broadcastDiff) {
+                metricUpdates.append(broadcastMetric)
+            }
+
+            let pendingUpdates = collectPerPlayerOnlyPendingUpdates(
+                perPlayerByPlayer: perPlayerByPlayer,
+                perPlayerMode: perPlayerMode
+            )
+            appendMetricUpdates(
+                from: pendingUpdates,
+                into: &metricUpdates,
+                shouldCollect: shouldCollectChangeMetrics
+            )
+            await encodeAndSendPendingUpdates(pendingUpdates)
+            await flushTargetedEventBodiesIfNeeded()
+        } else {
+            let pendingUpdates = collectCombinedPendingUpdates(
+                broadcastDiff: broadcastDiff,
+                perPlayerByPlayer: perPlayerByPlayer,
+                perPlayerMode: perPlayerMode
+            )
+            appendMetricUpdates(
+                from: pendingUpdates,
+                into: &metricUpdates,
+                shouldCollect: shouldCollectChangeMetrics
+            )
+            await encodeAndSendPendingUpdates(pendingUpdates)
+        }
+
+        cleanupPendingSyncEvents()
+        if shouldCollectChangeMetrics {
+            logChangeObjectMetrics(
+                updates: metricUpdates,
+                broadcastSnapshot: broadcastSnapshot
+            )
+        }
+    }
+
+    private func computeSyncModes(for state: State) -> (broadcastMode: SnapshotMode, perPlayerMode: SnapshotMode) {
+        if enableDirtyTracking && state.isDirty() {
+            let dirtyFields = state.getDirtyFields()
+            let syncFields = state.getSyncFields()
+            let broadcastFieldNames = Set(syncFields.filter { $0.policyType == .broadcast }.map { $0.name })
+            let perPlayerFieldNames = Set(syncFields.filter { $0.policyType != .broadcast && $0.policyType != .serverOnly }.map { $0.name })
+
+            let broadcastFields = dirtyFields.intersection(broadcastFieldNames)
+            let perPlayerFields = dirtyFields.intersection(perPlayerFieldNames)
+            let broadcastMode: SnapshotMode = broadcastFields.isEmpty ? .all : .dirtyTracking(broadcastFields)
+            let perPlayerMode: SnapshotMode = perPlayerFields.isEmpty ? .all : .dirtyTracking(perPlayerFields)
+            return (broadcastMode, perPlayerMode)
+        }
+
+        return (.all, .all)
+    }
+
+    private func extractSyncSnapshots(
+        from state: State,
+        broadcastMode: SnapshotMode,
+        perPlayerMode: SnapshotMode
+    ) throws -> (broadcastSnapshot: StateSnapshot, perPlayerByPlayer: [PlayerID: StateSnapshot]) {
+        if useSnapshotForSync {
+            let fullMode: SnapshotMode = (enableDirtyTracking && state.isDirty())
+                ? .dirtyTracking(state.getDirtyFields())
+                : .all
+            let playerIDsToSync = membershipCoordinator.joinedPlayerIDs().filter { !initialSyncingPlayers.contains($0) }
+            let extracted = try syncEngine.extractWithSnapshotForSync(
+                from: state,
+                playerIDs: Array(playerIDsToSync),
+                mode: fullMode
+            )
+            return (broadcastSnapshot: extracted.broadcast, perPlayerByPlayer: extracted.perPlayer)
+        }
+
+        let broadcastSnapshot = try syncEngine.extractBroadcastSnapshot(from: state, mode: broadcastMode)
+        var perPlayerByPlayer: [PlayerID: StateSnapshot] = [:]
+        perPlayerByPlayer.reserveCapacity(membershipCoordinator.joinedCount())
+        for (_, playerID) in membershipCoordinator.allJoinedEntries() {
+            if initialSyncingPlayers.contains(playerID) {
+                continue
+            }
+            perPlayerByPlayer[playerID] = try syncEngine.extractPerPlayerSnapshot(
+                for: playerID,
+                from: state,
+                mode: perPlayerMode
+            )
+        }
+        return (broadcastSnapshot: broadcastSnapshot, perPlayerByPlayer: perPlayerByPlayer)
+    }
+
+    private func sendMergedBroadcastUpdateIfNeeded(
+        broadcastDiff: [StatePatch]
+    ) async throws -> StateUpdate? {
+        let shouldSendBroadcastUpdate = !broadcastDiff.isEmpty || !pendingBroadcastEventBodies.isEmpty
+        guard shouldSendBroadcastUpdate else {
+            return nil
+        }
+
+        guard let firstSession = membershipCoordinator.firstJoined(where: { _, playerID in
+            !initialSyncingPlayers.contains(playerID)
+        }) else {
+            return nil
+        }
+
+        let broadcastUpdate: StateUpdate = broadcastDiff.isEmpty ? .noChange : .diff(broadcastDiff)
+        let dataToSend: Data
+        if let mpEncoder = stateUpdateEncoder as? OpcodeMessagePackStateUpdateEncoder {
+            let updateArray = try mpEncoder.encodeToMessagePackArray(
+                update: broadcastUpdate,
+                landID: landID,
+                playerID: firstSession.playerID,
+                playerSlot: nil,
+                scope: .broadcast
+            )
+            if let combined = buildStateUpdateWithEventBodies(
+                stateUpdateArray: updateArray,
+                eventBodies: pendingBroadcastEventBodies,
+                allowEmptyEvents: true
+            ) {
+                dataToSend = combined
+            } else {
+                dataToSend = try pack(.array(updateArray))
+            }
+        } else {
+            let updateData = try encodeStateUpdate(
+                update: broadcastUpdate,
+                playerID: firstSession.playerID,
+                playerSlot: nil,
+                scope: .broadcast
+            )
+            if let combined = buildStateUpdateWithEventBodies(
+                stateUpdateData: updateData,
+                eventBodies: pendingBroadcastEventBodies,
+                allowEmptyEvents: true
+            ) {
+                dataToSend = combined
+            } else {
+                dataToSend = updateData
+            }
+        }
+
+        for (sessionID, playerID) in membershipCoordinator.allJoinedEntries() {
+            if initialSyncingPlayers.contains(playerID) {
+                continue
+            }
+            profilerCounters?.incrementStateUpdates()
+            Task { await transport.send(dataToSend, to: .session(sessionID)) }
+        }
+        await Task.yield()
+        return broadcastUpdate
+    }
+
+    private func collectPerPlayerOnlyPendingUpdates(
+        perPlayerByPlayer: [PlayerID: StateSnapshot],
+        perPlayerMode: SnapshotMode
+    ) -> [PendingSyncUpdate] {
+        var pendingUpdates: [PendingSyncUpdate] = []
+        pendingUpdates.reserveCapacity(membershipCoordinator.joinedCount())
+
+        for (sessionID, playerID) in membershipCoordinator.allJoinedEntries() {
+            if initialSyncingPlayers.contains(playerID) {
+                continue
+            }
+
+            guard let perPlayerSnapshot = perPlayerByPlayer[playerID] else {
+                continue
+            }
+
+            let update = syncEngine.generatePerPlayerUpdateFromSnapshot(
+                for: playerID,
+                perPlayerSnapshot: perPlayerSnapshot,
+                perPlayerMode: perPlayerMode,
+                onlyPaths: nil
+            )
+
+            if case .noChange = update {
+                continue
+            }
+
+            pendingUpdates.append(makePendingSyncUpdate(
+                sessionID: sessionID,
+                playerID: playerID,
+                update: update
+            ))
+        }
+
+        return pendingUpdates
+    }
+
+    private func collectCombinedPendingUpdates(
+        broadcastDiff: [StatePatch],
+        perPlayerByPlayer: [PlayerID: StateSnapshot],
+        perPlayerMode: SnapshotMode
+    ) -> [PendingSyncUpdate] {
+        var pendingUpdates: [PendingSyncUpdate] = []
+        pendingUpdates.reserveCapacity(membershipCoordinator.joinedCount())
+
+        for (sessionID, playerID) in membershipCoordinator.allJoinedEntries() {
+            if initialSyncingPlayers.contains(playerID) {
+                continue
+            }
+
+            let perPlayerSnapshot = perPlayerByPlayer[playerID] ?? StateSnapshot(values: [:])
+            let update = syncEngine.generateUpdateFromBroadcastDiff(
+                for: playerID,
+                broadcastDiff: broadcastDiff,
+                perPlayerSnapshot: perPlayerSnapshot,
+                perPlayerMode: perPlayerMode,
+                onlyPaths: nil
+            )
+
+            if case .noChange = update {
+                continue
+            }
+
+            pendingUpdates.append(makePendingSyncUpdate(
+                sessionID: sessionID,
+                playerID: playerID,
+                update: update
+            ))
+        }
+
+        return pendingUpdates
+    }
+
+    private func makePendingSyncUpdate(
+        sessionID: SessionID,
+        playerID: PlayerID,
+        update: StateUpdate
+    ) -> PendingSyncUpdate {
+        let (updateType, patchCount) = describeUpdate(update)
+        let playerSlot = getPlayerSlot(for: playerID)
+        return PendingSyncUpdate(
+            sessionID: sessionID,
+            playerID: playerID,
+            playerSlot: playerSlot,
+            update: update,
+            updateType: updateType,
+            patchCount: patchCount
+        )
+    }
+
+    private func makeMetricUpdatesBuffer(shouldCollect: Bool) -> [StateUpdate] {
+        var updates: [StateUpdate] = []
+        if shouldCollect {
+            updates.reserveCapacity(membershipCoordinator.joinedCount() + 1)
+        }
+        return updates
+    }
+
+    private func appendMetricUpdates(
+        from pendingUpdates: [PendingSyncUpdate],
+        into metricUpdates: inout [StateUpdate],
+        shouldCollect: Bool
+    ) {
+        guard shouldCollect else {
+            return
+        }
+        for pending in pendingUpdates {
+            metricUpdates.append(pending.update)
+        }
+    }
+
+    private func encodeAndSendPendingUpdates(_ pendingUpdates: [PendingSyncUpdate]) async {
+        guard !pendingUpdates.isEmpty else {
+            return
+        }
+
+        let decision = parallelEncodingDecision(pendingUpdateCount: pendingUpdates.count)
+        let encodedUpdates: [EncodedSyncUpdate]
+        if decision.useParallel {
+            encodedUpdates = await encodeUpdatesInParallel(
+                pendingUpdates,
+                maxConcurrency: decision.maxConcurrency
+            )
+        } else {
+            encodedUpdates = encodeUpdatesSerially(pendingUpdates)
+        }
+
+        let successfulUpdates = encodedUpdates.filter { $0.payload != nil }
+        if !successfulUpdates.isEmpty {
+            await sendEncodedUpdatesBatch(successfulUpdates, mergeEvents: false)
+        }
+
+        for encoded in encodedUpdates where encoded.errorMessage != nil {
+            if let errorMessage = encoded.errorMessage {
+                logger.error("❌ Failed to encode state update", metadata: [
+                    "playerID": .string(encoded.playerID.rawValue),
+                    "sessionID": .string(encoded.sessionID.rawValue),
+                    "error": .string(errorMessage)
+                ])
+            }
+        }
+    }
+
+    private func flushTargetedEventBodiesIfNeeded() async {
+        guard hasTargetedEventBodies else {
+            return
+        }
+
+        for (sessionID, playerID) in membershipCoordinator.allJoinedEntries() {
+            if initialSyncingPlayers.contains(playerID) {
+                continue
+            }
+            let eventBodies = pendingTargetedEventBodies(for: sessionID, playerID: playerID)
+            if !eventBodies.isEmpty {
+                await sendEventBodiesSeparately(eventBodies, to: sessionID)
+            }
+        }
+    }
+
+    private func cleanupPendingSyncEvents() {
+        pendingServerEventBodies.removeAll()
+        pendingBroadcastEventBodies.removeAll()
+        hasTargetedEventBodies = false
     }
 
     /// Sync only broadcast changes to all connected players.
@@ -1652,21 +1662,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     func _syncBroadcastOnlyImpl() async {
         // Note: Even if no players are connected, we still need to update the broadcast cache
         // This ensures that when a player reconnects, they see the correct state (not stale cache)
-        let hasPlayers = !sessionToPlayer.isEmpty
+        let hasPlayers = !membershipCoordinator.isEmpty
 
-        // Acquire sync lock to prevent state mutations during sync
-        // This ensures we work with a consistent state snapshot
-        guard let state = await keeper.beginSync() else {
-            // Sync already in progress, skip this sync request
-            // TODO: For broadcast-only sync, consider allowing concurrent execution
-            // since it's read-only (but cache updates need coordination)
-            if logger.logLevel <= .debug {
-                logger.debug("⏭️ Broadcast-only sync skipped: another sync operation is in progress")
-            }
-            return
-        }
-
-        do {
+        await withSyncState(
+            skipLogMessage: "⏭️ Broadcast-only sync skipped: another sync operation is in progress",
+            errorLogMessage: "❌ Failed to sync broadcast-only"
+        ) { state in
 
             // Determine snapshot mode based on dirty tracking
             let broadcastMode: SnapshotMode
@@ -1704,7 +1705,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         "mode": .string("\(broadcastMode)")
                     ])
                 }
-                await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
                 return
             }
 
@@ -1712,13 +1712,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             var lastUpdateSize: Int?
 
             if useStateUpdateWithEvents {
-                if let firstSession = sessionToPlayer.first(where: { !initialSyncingPlayers.contains($0.value) }) {
+                if let firstSession = membershipCoordinator.firstJoined(where: { _, playerID in
+                    !initialSyncingPlayers.contains(playerID)
+                }) {
                     let dataToSend: Data
                     if let mpEncoder = stateUpdateEncoder as? OpcodeMessagePackStateUpdateEncoder {
                         let updateArray = try mpEncoder.encodeToMessagePackArray(
                             update: update,
                             landID: landID,
-                            playerID: firstSession.value,
+                            playerID: firstSession.1,
                             playerSlot: nil,
                             scope: .broadcast
                         )
@@ -1735,7 +1737,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     } else {
                         let updateData = try encodeStateUpdate(
                             update: update,
-                            playerID: firstSession.value,
+                            playerID: firstSession.1,
                             playerSlot: nil,
                             scope: .broadcast
                         )
@@ -1751,7 +1753,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         }
                     }
 
-                    for (sessionID, playerID) in sessionToPlayer {
+                    for (sessionID, playerID) in membershipCoordinator.allJoinedEntries() {
                         if initialSyncingPlayers.contains(playerID) {
                             continue
                         }
@@ -1772,7 +1774,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             } else {
                 // Send to all connected players
                 // Handle each send separately to avoid one failure stopping all updates
-                for (sessionID, playerID) in sessionToPlayer {
+                for (sessionID, playerID) in membershipCoordinator.allJoinedEntries() {
                     if initialSyncingPlayers.contains(playerID) {
                         continue
                     }
@@ -1822,7 +1824,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
 
             if useStateUpdateWithEvents, hasTargetedEventBodies {
-                for (sessionID, playerID) in sessionToPlayer {
+                for (sessionID, playerID) in membershipCoordinator.allJoinedEntries() {
                     if initialSyncingPlayers.contains(playerID) {
                         continue
                     }
@@ -1833,30 +1835,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 }
             }
 
-            pendingServerEventBodies.removeAll()
-            pendingBroadcastEventBodies.removeAll()
-            hasTargetedEventBodies = false
+            cleanupPendingSyncEvents()
             // Only compute logging metadata if debug logging is enabled
             if logger.logLevel <= .debug {
                 logger.debug("📤 Broadcast-only sync", metadata: [
-                    "players": .string("\(sessionToPlayer.count)"),
+                    "players": .string("\(membershipCoordinator.joinedCount())"),
                     "patches": .string("\(broadcastDiff.count)"),
                     "bytes": .string("\(lastUpdateSize ?? 0)"),
                     "mode": .string("\(broadcastMode)")
                 ])
             }
-
-            // Release sync lock after successful sync
-            // Only clear dirty flags if dirty tracking is enabled
-            await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
-        } catch {
-            logger.error("❌ Failed to sync broadcast-only", metadata: [
-                "error": .string("\(error)")
-            ])
-
-            // Always release sync lock, even if error occurred
-            // Only clear dirty flags if dirty tracking is enabled
-            await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
         }
     }
 
@@ -2653,46 +2641,105 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         deviceID: String?,
         metadata: [String: AnyCodable]?
     ) async {
-        // Phase 1: Validation (no state modification)
-        guard let clientID = sessionToClient[sessionID] else {
+        guard let clientID = await validateJoinRequest(
+            requestID: requestID,
+            requestLandID: landID,
+            sessionID: sessionID,
+            metadata: metadata
+        ) else {
+            return
+        }
+
+        let (playerSession, jwtAuthInfo) = prepareJoinRequestContext(
+            sessionID: sessionID,
+            clientID: clientID,
+            requestedPlayerID: requestedPlayerID,
+            deviceID: deviceID,
+            metadata: metadata
+        )
+
+        await handleDuplicateLoginIfNeeded(for: playerSession)
+        await finalizeJoinRequest(
+            requestID: requestID,
+            sessionID: sessionID,
+            clientID: clientID,
+            playerSession: playerSession,
+            jwtAuthInfo: jwtAuthInfo
+        )
+    }
+
+    private func validateJoinRequest(
+        requestID: String,
+        requestLandID: String,
+        sessionID: SessionID,
+        metadata: [String: AnyCodable]?
+    ) async -> ClientID? {
+        guard let clientID = membershipCoordinator.clientID(for: sessionID) else {
             logger.warning("Join request from unknown session: \(sessionID.rawValue)")
-            await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinSessionNotConnected, message: "Session not connected")
-            return
+            await sendJoinError(
+                requestID: requestID,
+                sessionID: sessionID,
+                code: .joinSessionNotConnected,
+                message: "Session not connected"
+            )
+            return nil
         }
 
-        // Check if already joined
-        if sessionToPlayer[sessionID] != nil {
+        if membershipCoordinator.hasPlayer(sessionID: sessionID) {
             logger.warning("Join request from already joined session: \(sessionID.rawValue)")
-            await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinAlreadyJoined, message: "Already joined")
-            return
+            await sendJoinError(
+                requestID: requestID,
+                sessionID: sessionID,
+                code: .joinAlreadyJoined,
+                message: "Already joined"
+            )
+            return nil
         }
 
-        // Verify landID matches
-        guard landID == self.landID else {
-            logger.warning("Join request with mismatched landID: expected=\(self.landID), received=\(landID)")
-            await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinLandIDMismatch, message: "Land ID mismatch", details: [
-                "expected": AnyCodable(self.landID),
-                "received": AnyCodable(landID)
-            ])
-            return
+        guard requestLandID == self.landID else {
+            logger.warning("Join request with mismatched landID: expected=\(self.landID), received=\(requestLandID)")
+            await sendJoinError(
+                requestID: requestID,
+                sessionID: sessionID,
+                code: .joinLandIDMismatch,
+                message: "Land ID mismatch",
+                details: [
+                    "expected": AnyCodable(self.landID),
+                    "received": AnyCodable(requestLandID)
+                ]
+            )
+            return nil
         }
 
-        // Verify schemaHash matches (if configured)
         if let expected = expectedSchemaHash {
             let clientSchemaHash = metadata?["schemaHash"]?.base as? String
             if clientSchemaHash != expected {
                 logger.warning("Join request with mismatched schemaHash: expected=\(expected), received=\(clientSchemaHash ?? "nil")")
-                await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinSchemaHashMismatch, message: "Schema version mismatch", details: [
-                    "expected": AnyCodable(expected),
-                    "received": AnyCodable(clientSchemaHash ?? "nil")
-                ])
-                return
+                await sendJoinError(
+                    requestID: requestID,
+                    sessionID: sessionID,
+                    code: .joinSchemaHashMismatch,
+                    message: "Schema version mismatch",
+                    details: [
+                        "expected": AnyCodable(expected),
+                        "received": AnyCodable(clientSchemaHash ?? "nil")
+                    ]
+                )
+                return nil
             }
         }
 
-        // Phase 2: Preparation (no state modification)
-        // Use shared helper to prepare PlayerSession
-        let jwtAuthInfo = sessionToAuthInfo[sessionID]
+        return clientID
+    }
+
+    private func prepareJoinRequestContext(
+        sessionID: SessionID,
+        clientID: ClientID,
+        requestedPlayerID: String?,
+        deviceID: String?,
+        metadata: [String: AnyCodable]?
+    ) -> (playerSession: PlayerSession, jwtAuthInfo: AuthenticatedInfo?) {
+        let jwtAuthInfo = membershipCoordinator.authInfo(for: sessionID)
         let playerSession = preparePlayerSession(
             sessionID: sessionID,
             clientID: clientID,
@@ -2702,7 +2749,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             authInfo: jwtAuthInfo
         )
 
-        // Log metadata sources for debugging
         if let jwtAuthInfo = jwtAuthInfo, logger.logLevel <= .debug {
             logger.debug("Using JWT payload for join", metadata: [
                 "sessionID": .string(sessionID.rawValue),
@@ -2713,24 +2759,30 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
         }
 
-        // Phase 3: Check for duplicate playerID and kick old session (Kick Old strategy)
+        return (playerSession, jwtAuthInfo)
+    }
+
+    private func handleDuplicateLoginIfNeeded(for playerSession: PlayerSession) async {
         let targetPlayerID = PlayerID(playerSession.playerID)
-        let existingSessions = getSessions(for: targetPlayerID)
-        if let oldSessionID = existingSessions.first {
+        if let oldSessionID = membershipCoordinator.firstSession(for: targetPlayerID) {
             logger.info("Duplicate playerID login detected: \(playerSession.playerID), kicking old session: \(oldSessionID.rawValue)")
-            // Get old clientID before disconnecting
-            if let oldClientID = sessionToClient[oldSessionID] {
-                // Disconnect old session (this will call keeper.leave() and clean up state)
+            if let oldClientID = membershipCoordinator.clientID(for: oldSessionID) {
                 await onDisconnect(sessionID: oldSessionID, clientID: oldClientID)
             }
         }
+    }
 
-        // Phase 4: Atomic join operation (with rollback on failure)
+    private func finalizeJoinRequest(
+        requestID: String,
+        sessionID: SessionID,
+        clientID: ClientID,
+        playerSession: PlayerSession,
+        jwtAuthInfo: AuthenticatedInfo?
+    ) async {
         var joinSucceeded = false
         var playerID: PlayerID?
 
         defer {
-            // Rollback sessionToPlayer if join failed
             if !joinSucceeded, let pid = playerID {
                 membershipCoordinator.removeJoinedPlayer(sessionID: sessionID)
                 logger.warning("Rolled back join state for session \(sessionID.rawValue), player \(pid.rawValue)")
@@ -2738,7 +2790,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
 
         do {
-            // Use shared helper to perform join
             if let joinResult = try await performJoin(
                 playerSession: playerSession,
                 clientID: clientID,
@@ -2747,63 +2798,80 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ) {
                 playerID = joinResult.playerID
                 joinSucceeded = true
-                
-                // Use withInitialSync to protect the entire initial sync process
-                // This ensures syncNow() called during joinResponse won't send diff to this player
-                await withInitialSync(for: joinResult.playerID) {
-                    // IMPORTANT: Send JoinResponse FIRST, then StateSnapshot
-                    // This ensures client knows join succeeded before receiving state
-
-                    // 1. Send join response with playerSlot
-                    await sendJoinResponse(requestID: requestID, sessionID: sessionID, success: true, playerID: joinResult.playerID.rawValue, playerSlot: joinResult.playerSlot)
-
-                    // 2. Send initial state snapshot AFTER JoinResponse
-                    // Use internal version to avoid double withInitialSync wrapping
-                    await _syncStateForNewPlayer(playerID: joinResult.playerID, sessionID: joinResult.sessionID)
-                }
-
-                logger.info("Client joined: session=\(sessionID.rawValue), player=\(joinResult.playerID.rawValue), playerID=\(playerSession.playerID)")
+                await completeJoinSuccess(
+                    requestID: requestID,
+                    sessionID: sessionID,
+                    playerSession: playerSession,
+                    joinResult: joinResult
+                )
             } else {
-                // Join denied
                 logger.warning("Join denied for session \(sessionID.rawValue)")
-                await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinDenied, message: "Join denied")
+                await sendJoinError(
+                    requestID: requestID,
+                    sessionID: sessionID,
+                    code: .joinDenied,
+                    message: "Join denied"
+                )
             }
         } catch {
-            // Join failed (e.g., JoinError.roomIsFull)
             logger.error("Join failed for session \(sessionID.rawValue): \(error)")
-            let errorCode: ErrorCode
-            let errorMessage: String
-            if error.localizedDescription.contains("full") || error.localizedDescription.contains("Full") {
-                errorCode = .joinRoomFull
-                errorMessage = "Room is full"
-            } else {
-                errorCode = .joinDenied
-                errorMessage = "\(error)"
-            }
-            await sendJoinError(requestID: requestID, sessionID: sessionID, code: errorCode, message: errorMessage)
+            let (errorCode, errorMessage) = mapJoinFailure(error)
+            await sendJoinError(
+                requestID: requestID,
+                sessionID: sessionID,
+                code: errorCode,
+                message: errorMessage
+            )
         }
+    }
+
+    private func completeJoinSuccess(
+        requestID: String,
+        sessionID: SessionID,
+        playerSession: PlayerSession,
+        joinResult: JoinResult
+    ) async {
+        await withInitialSync(for: joinResult.playerID) {
+            await sendJoinResponse(
+                requestID: requestID,
+                sessionID: sessionID,
+                success: true,
+                playerID: joinResult.playerID.rawValue,
+                playerSlot: joinResult.playerSlot
+            )
+            await _syncStateForNewPlayer(playerID: joinResult.playerID, sessionID: joinResult.sessionID)
+        }
+
+        logger.info("Client joined: session=\(sessionID.rawValue), player=\(joinResult.playerID.rawValue), playerID=\(playerSession.playerID)")
+    }
+
+    private func mapJoinFailure(_ error: Error) -> (ErrorCode, String) {
+        if error.localizedDescription.localizedCaseInsensitiveContains("full") {
+            return (.joinRoomFull, "Room is full")
+        }
+        return (.joinDenied, "\(error)")
     }
 
     // MARK: - State Query Methods
 
     /// Check if a session is connected (but may not have joined)
     func _isConnectedImpl(sessionID: SessionID) -> Bool {
-        sessionToClient[sessionID] != nil
+        membershipCoordinator.hasClient(sessionID: sessionID)
     }
 
     /// Check if a session has joined
     func _isJoinedImpl(sessionID: SessionID) -> Bool {
-        sessionToPlayer[sessionID] != nil
+        membershipCoordinator.hasPlayer(sessionID: sessionID)
     }
 
     /// Get the playerID for a session (if joined)
     func _getPlayerIDImpl(for sessionID: SessionID) -> PlayerID? {
-        sessionToPlayer[sessionID]
+        membershipCoordinator.playerID(for: sessionID)
     }
 
     /// Get all sessions for a playerID
     func _getSessionsImpl(for playerID: PlayerID) -> [SessionID] {
-        sessionToPlayer.filter { $0.value == playerID }.map { $0.key }
+        membershipCoordinator.sessionIDs(for: playerID)
     }
 
     /// Send join error to client using unified error format
