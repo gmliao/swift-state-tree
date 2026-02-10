@@ -71,8 +71,10 @@ wait_for_server() {
             fi
         fi
         
-        # Check if server is ready via health endpoint
-        if curl -s http://${SERVER_HOST}:${SERVER_PORT}/schema > /dev/null 2>&1; then
+        # Check if server is ready via /schema (must return 200 for E2E CLI)
+        local http_code
+        http_code=$(curl -s -o /dev/null -w "%{http_code}" http://${SERVER_HOST}:${SERVER_PORT}/schema 2>/dev/null || echo "000")
+        if [ "$http_code" = "200" ]; then
             print_success "${server_name} ($encoding) is ready!"
             return 0
         fi

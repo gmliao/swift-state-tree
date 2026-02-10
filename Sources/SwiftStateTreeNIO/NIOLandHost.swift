@@ -45,11 +45,20 @@ public struct NIOLandHostConfiguration: Sendable {
 
 /// Configuration for a Land registered with NIOLandHost.
 ///
-/// This is a simplified configuration without JWT authentication support.
-/// For JWT authentication, use `LandServerConfiguration` from `SwiftStateTreeHummingbird`.
+/// Supports JWT validation during WebSocket handshake.
+/// Client must include `token` query parameter: `ws://host:port/path?token=<jwt-token>`
 public struct NIOLandServerConfiguration: Sendable {
     /// Logger for land events.
     public var logger: Logger?
+
+    /// JWT configuration (if provided, creates DefaultJWTAuthValidator when jwtValidator is nil).
+    public var jwtConfig: JWTConfiguration?
+    /// Custom JWT validator (takes precedence over jwtConfig when set).
+    public var jwtValidator: JWTAuthValidator?
+    /// When true and JWT is enabled: connections without token use createGuestSession; when false, they are rejected.
+    public var allowGuestMode: Bool
+    /// Factory for guest sessions when allowGuestMode is true and no JWT token is provided.
+    public var createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)?
 
     /// Allow auto-creating land when join with instanceId but land doesn't exist (default: false).
     public var allowAutoCreateOnJoin: Bool
@@ -74,17 +83,25 @@ public struct NIOLandServerConfiguration: Sendable {
 
     public init(
         logger: Logger? = nil,
+        jwtConfig: JWTConfiguration? = nil,
+        jwtValidator: JWTAuthValidator? = nil,
+        allowGuestMode: Bool = false,
         allowAutoCreateOnJoin: Bool = false,
         transportEncoding: TransportEncodingConfig = .json,
         enableLiveStateHashRecording: Bool = false,
         pathHashes: [String: UInt32]? = nil,
         eventHashes: [String: Int]? = nil,
         clientEventHashes: [String: Int]? = nil,
+        createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         servicesFactory: @Sendable @escaping (LandID, [String: String]) -> LandServices = { _, _ in
             LandServices()
         }
     ) {
         self.logger = logger
+        self.jwtConfig = jwtConfig
+        self.jwtValidator = jwtValidator
+        self.allowGuestMode = allowGuestMode
+        self.createGuestSession = createGuestSession
         self.allowAutoCreateOnJoin = allowAutoCreateOnJoin
         self.transportEncoding = transportEncoding
         self.enableLiveStateHashRecording = enableLiveStateHashRecording
@@ -123,6 +140,9 @@ public actor NIOLandHost {
     
     /// Path to transport mapping (each land type can have its own transport).
     private var pathToTransport: [String: WebSocketTransport] = [:]
+    
+    /// Path to server configuration (for JWT auth resolution per path).
+    private var pathToServerConfig: [String: NIOLandServerConfiguration] = [:]
     
     /// Registered land encodings for logging.
     private var registeredLandEncodings: [String: TransportEncodingConfig] = [:]
@@ -172,6 +192,7 @@ public actor NIOLandHost {
         // Store path mappings
         pathToLandType[webSocketPath] = landType
         pathToTransport[webSocketPath] = transport
+        pathToServerConfig[webSocketPath] = configuration
         registeredLandEncodings[landType] = configuration.transportEncoding
 
         self.configuration.logger.info(
@@ -236,19 +257,36 @@ public actor NIOLandHost {
         // Register admin routes if configured
         await registerAdminRoutes()
 
-        // Create path matcher and transport resolver
+        // Create path matcher, transport resolver, and optional JWT auth resolver
         let paths = pathToLandType
         let transports = pathToTransport
-        
+        let configs = pathToServerConfig
+
         let pathMatcher: @Sendable (String) -> Bool = { path in
             let cleanPath = path.components(separatedBy: "?").first ?? path
             return paths.keys.contains(cleanPath)
         }
-        
+
         let transportResolver: @Sendable (String) -> WebSocketTransport? = { path in
             let cleanPath = path.components(separatedBy: "?").first ?? path
             return transports[cleanPath]
         }
+
+        func makeAuthResolver(_ configs: [String: NIOLandServerConfiguration]) -> some AuthInfoResolverProtocol {
+            ClosureAuthInfoResolver { (path: String, uri: String) async throws -> AuthenticatedInfo? in
+                guard let config = configs[path] else { return nil }
+                let validator = config.jwtValidator
+                    ?? config.jwtConfig.map { DefaultJWTAuthValidator(config: $0, logger: config.logger) }
+                guard let validator = validator else { return nil }
+                let token = extractTokenFromURI(uri)
+                if let token = token {
+                    return try await validator.validate(token: token)
+                }
+                if config.allowGuestMode { return nil }
+                throw JWTValidationError.custom("Missing token; JWT required and guest mode disabled")
+            }
+        }
+        let authInfoResolver: (any AuthInfoResolverProtocol)? = configs.isEmpty ? nil : makeAuthResolver(configs)
 
         // Create and start server with HTTP router
         let serverConfig = NIOWebSocketServerConfiguration(
@@ -263,7 +301,8 @@ public actor NIOLandHost {
             configuration: serverConfig,
             transportResolver: transportResolver,
             pathMatcher: pathMatcher,
-            httpRouter: httpRouter
+            httpRouter: httpRouter,
+            authInfoResolver: authInfoResolver
         )
         self.server = server
 

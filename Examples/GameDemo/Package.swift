@@ -34,9 +34,9 @@ let package = Package(
             name: "GameContent",
             dependencies: [
                 .product(name: "SwiftStateTree", package: "SwiftStateTree"),
-                .product(name: "SwiftStateTreeHummingbird", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeDeterministicMath", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeReevaluationMonitor", package: "SwiftStateTree"),
+                .product(name: "SwiftStateTreeTransport", package: "SwiftStateTree"),
             ],
             path: "Sources/GameContent"
         ),
@@ -44,7 +44,6 @@ let package = Package(
             name: "GameServer",
             dependencies: [
                 "GameContent",
-                .product(name: "SwiftStateTreeHummingbird", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeNIO", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeTransport", package: "SwiftStateTree"),
                 .product(name: "ProfileRecorderServer", package: "swift-profile-recorder"),
@@ -82,7 +81,7 @@ let package = Package(
             dependencies: [
                 "GameContent",
                 .product(name: "SwiftStateTree", package: "SwiftStateTree"),
-                .product(name: "SwiftStateTreeHummingbird", package: "SwiftStateTree"),
+                .product(name: "SwiftStateTreeNIO", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeTransport", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeMessagePack", package: "SwiftStateTree"),
                 .product(name: "ProfileRecorderServer", package: "swift-profile-recorder"),

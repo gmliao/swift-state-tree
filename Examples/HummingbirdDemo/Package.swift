@@ -29,7 +29,6 @@ let package = Package(
             name: "HummingbirdDemoContent",
             dependencies: [
                 .product(name: "SwiftStateTree", package: "SwiftStateTree"),
-                .product(name: "SwiftStateTreeHummingbird", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeDeterministicMath", package: "SwiftStateTree")
             ],
             path: "Sources/DemoContent"
@@ -38,7 +37,8 @@ let package = Package(
             name: "DemoServer",
             dependencies: [
                 "HummingbirdDemoContent",
-                .product(name: "SwiftStateTreeHummingbird", package: "SwiftStateTree"),
+                .product(name: "SwiftStateTree", package: "SwiftStateTree"),
+                .product(name: "SwiftStateTreeNIO", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeTransport", package: "SwiftStateTree")
             ],
             path: "Sources/DemoServer"

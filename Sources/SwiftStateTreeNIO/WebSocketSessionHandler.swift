@@ -23,6 +23,7 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
     let sessionID: SessionID
     let path: String
     let transport: WebSocketTransport
+    let authInfo: AuthenticatedInfo?
     let logger: Logger
 
     private var context: ChannelHandlerContext?
@@ -56,11 +57,13 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         sessionID: SessionID,
         path: String,
         transport: WebSocketTransport,
+        authInfo: AuthenticatedInfo? = nil,
         logger: Logger
     ) {
         self.sessionID = sessionID
         self.path = path
         self.transport = transport
+        self.authInfo = authInfo
         self.logger = logger
     }
 
@@ -81,7 +84,7 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
             await self.transport.handleConnection(
                 sessionID: self.sessionID,
                 connection: connection,
-                authInfo: nil  // TODO: Extract from query params
+                authInfo: self.authInfo
             )
 
             self.logger.info(

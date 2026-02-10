@@ -146,7 +146,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                 metadata: [
                     "encoding": .string(transportEncoding.stateUpdate.rawValue),
                     "issue": .string("PathHash compression disabled for all lands"),
-                    "solution": .string("Provide pathHashes in LandServerConfiguration")
+                    "solution": .string("Provide pathHashes in server configuration (e.g. NIOLandServerConfiguration)")
                 ]
             )
         }

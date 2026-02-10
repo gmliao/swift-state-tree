@@ -9,7 +9,7 @@ import Logging
 import ProfileRecorderServer
 import SwiftStateTree
 import SwiftStateTreeDeterministicMath
-import SwiftStateTreeHummingbird
+import SwiftStateTreeNIO
 import SwiftStateTreeTransport
 
 // MARK: - Main Entry Point
@@ -34,11 +34,8 @@ func runServerLoadTest() async throws {
     let schema = SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(landDef)])
     let pathHashes = schema.lands[config.landType]?.pathHashes
 
-    let serverConfig = LandServerConfiguration(
+    let nioServerConfig = NIOLandServerConfiguration(
         logger: logger,
-        jwtConfig: nil,
-        jwtValidator: nil,
-        allowGuestMode: true,
         allowAutoCreateOnJoin: true,
         transportEncoding: transportEncoding,
         enableLiveStateHashRecording: false,
@@ -54,17 +51,15 @@ func runServerLoadTest() async throws {
         }
     )
 
-    let server = try await LandServer<HeroDefenseState>.create(
-        configuration: serverConfig,
+    let transport = WebSocketTransport(logger: logger)
+    let server = NIOLandServer<HeroDefenseState>(
+        landType: config.landType,
         landFactory: { _ in landDef },
         initialStateFactory: { _ in HeroDefenseState() },
-        createGuestSession: nil,
-        lobbyIDs: []
+        configuration: nioServerConfig,
+        transport: transport
     )
-
-    guard let transport = server.transport else {
-        throw NSError(domain: "ServerLoadTest", code: 1, userInfo: [NSLocalizedDescriptionKey: "LandServer did not provide transport"])
-    }
+    await transport.setDelegate(server.landRouter)
 
     // Create shared components
     let traffic = TrafficCounter()
@@ -187,9 +182,7 @@ func runServerLoadTest() async throws {
     clientTask.cancel()
 
     // Final cleanup
-    if let landManager = server.landManager {
-        await landManager.shutdownAllLands()
-    }
+    await server.landManager.shutdownAllLands()
     try? await transport.stop()
     try? await Task.sleep(nanoseconds: 2_000_000_000)
 

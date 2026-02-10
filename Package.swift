@@ -24,11 +24,6 @@ let package = Package(
             name: "SwiftStateTreeTransport",
             targets: ["SwiftStateTreeTransport"]
         ),
-        // 🕊️ Hummingbird integration
-        .library(
-            name: "SwiftStateTreeHummingbird",
-            targets: ["SwiftStateTreeHummingbird"]
-        ),
         // 🎯 Matchmaking & Lobby: Matchmaking service and lobby functionality
         .library(
             name: "SwiftStateTreeMatchmaking",
@@ -57,8 +52,6 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-syntax.git", from: "509.0.0"),
-        .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
-        .package(url: "https://github.com/hummingbird-project/hummingbird-websocket.git", from: "2.0.0"),
         .package(url: "https://github.com/apple/swift-atomics.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
@@ -102,21 +95,6 @@ let package = Package(
             path: "Sources/SwiftStateTreeMessagePack"
         ),
 
-        // 🕊️ Hummingbird integration
-        .target(
-            name: "SwiftStateTreeHummingbird",
-            dependencies: [
-                "SwiftStateTree",
-                "SwiftStateTreeTransport",
-                "SwiftStateTreeMatchmaking",
-                .product(name: "Hummingbird", package: "hummingbird"),
-                .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket"),
-                .product(name: "Logging", package: "swift-log"),
-                .product(name: "Crypto", package: "swift-crypto"),
-            ],
-            path: "Sources/SwiftStateTreeHummingbird"
-        ),
-
         // 🎯 Matchmaking & Lobby: Matchmaking service and lobby functionality
         .target(
             name: "SwiftStateTreeMatchmaking",
@@ -156,6 +134,7 @@ let package = Package(
             dependencies: [
                 "SwiftStateTree",
                 "SwiftStateTreeTransport",
+                .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "NIOHTTP1", package: "swift-nio"),
@@ -192,23 +171,9 @@ let package = Package(
             dependencies: [
                 "SwiftStateTreeTransport",
                 "SwiftStateTree",
-                "SwiftStateTreeHummingbird",
                 .product(name: "Atomics", package: "swift-atomics"),
             ],
             path: "Tests/SwiftStateTreeTransportTests"
-        ),
-
-        // 🕊️ Hummingbird tests
-        .testTarget(
-            name: "SwiftStateTreeHummingbirdTests",
-            dependencies: [
-                "SwiftStateTreeHummingbird",
-                "SwiftStateTreeTransport",
-                "SwiftStateTree",
-                .product(name: "Hummingbird", package: "hummingbird"),
-                .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket"),
-            ],
-            path: "Tests/SwiftStateTreeHummingbirdTests"
         ),
 
         // ⚡ NIO tests

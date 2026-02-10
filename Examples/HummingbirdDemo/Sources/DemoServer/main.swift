@@ -1,15 +1,15 @@
 import Foundation
 import HummingbirdDemoContent
 import SwiftStateTree
-import SwiftStateTreeHummingbird
+import SwiftStateTreeNIO
 import SwiftStateTreeTransport
 
-/// Hummingbird Demo Server
+/// Demo Server (NIO WebSocket)
 ///
 /// A unified demo server that showcases SwiftStateTree capabilities:
 /// - Multiple land types (cookie game and counter demo)
 /// - Multi-room support with dynamic room creation
-/// - Unified HTTP server and game logic management via LandHost
+/// - Unified HTTP server and game logic management via NIOLandHost
 ///
 /// **Land Types**:
 /// - `cookie`: Cookie Clicker game (CookieGameState) at `/game/cookie`
@@ -23,7 +23,7 @@ import SwiftStateTreeTransport
 ///   - `jsonOpcode`: JSON messages + opcode JSON array state updates
 ///   - `opcode`: Opcode JSON array for both messages and state updates
 ///   - `messagepack`: MessagePack binary encoding for both
-/// - Guest mode: Enabled (allows connections without JWT)
+/// - Guest mode: Enabled (all connections allowed; NIO has no JWT)
 /// - Auto-create rooms: Enabled (clients can create rooms dynamically)
 /// - Admin routes: Enabled at `/admin/*` (API Key: `demo-admin-key`)
 ///
@@ -44,9 +44,6 @@ import SwiftStateTreeTransport
 @main
 struct DemoServer {
     static func main() async throws {
-        // JWT Configuration for demo/testing purposes
-        let jwtConfig = HummingbirdDemoContent.createDemoJWTConfig()
-
         // Create logger with custom log level
         let logger = HummingbirdDemoContent.createDemoLogger(
             scope: "DemoServer",
@@ -59,24 +56,33 @@ struct DemoServer {
         let transportEncodingRaw = HummingbirdDemoContent.getEnvString(key: "TRANSPORT_ENCODING", defaultValue: "json")
         let transportEncoding = resolveTransportEncoding(rawValue: transportEncodingRaw)
 
-        // Create LandHost to manage both game logic and HTTP server
-        let landHost = LandHost(configuration: LandHost.HostConfiguration(
+        // Schema for /schema endpoint (used by E2E CLI and WebClient codegen)
+        let demoLandDefinitions: [AnyLandDefinition] = [
+            AnyLandDefinition(HummingbirdDemoContent.CookieGame.makeLand()),
+            AnyLandDefinition(HummingbirdDemoContent.CounterDemo.makeLand()),
+        ]
+        let protocolSchema = SchemaGenCLI.generateSchema(landDefinitions: demoLandDefinitions, version: "0.1.0")
+        let schemaEncoder = JSONEncoder()
+        schemaEncoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let schemaData = try schemaEncoder.encode(protocolSchema)
+
+        // Create NIOLandHost to manage both game logic and HTTP server
+        let landHost = NIOLandHost(configuration: NIOLandHostConfiguration(
             host: host,
             port: port,
-            logger: logger
+            logger: logger,
+            schemaProvider: { schemaData },
+            adminAPIKey: "demo-admin-key"
         ))
 
         // Shared server configuration for all land types
-        // Enable parallel encoding for better performance with multiple players
-        let serverConfig = LandServerConfiguration(
+        let serverConfig = NIOLandServerConfiguration(
             logger: logger,
-            jwtConfig: jwtConfig,
-            allowGuestMode: true,
             allowAutoCreateOnJoin: true,
             transportEncoding: transportEncoding,
             enableLiveStateHashRecording: true
         )
-        
+
         logger.info("📡 Transport encoding: \(transportEncodingRaw) (message: \(transportEncoding.message.rawValue), stateUpdate: \(transportEncoding.stateUpdate.rawValue))")
 
         // Register Cookie Game server
@@ -97,22 +103,14 @@ struct DemoServer {
             configuration: serverConfig
         )
 
-        // Register admin routes for managing lands
-        // Use API key for demo (in production, use JWT with adminRole)
-        let adminAuth = AdminAuthMiddleware(
-            jwtValidator: nil, // Can use JWT validator if needed
-            apiKey: "demo-admin-key" // Demo API key (change in production!)
-        )
-        await landHost.registerAdminRoutes(
-            adminAuth: adminAuth,
-            logger: logger
-        )
+        // Register admin routes (uses adminAPIKey from NIOLandHostConfiguration)
+        await landHost.registerAdminRoutes()
         logger.info("✅ Admin routes registered at /admin/* (API Key: demo-admin-key)")
 
-        // Run unified server (LandHost will automatically print connection info)
+        // Run unified server
         do {
             try await landHost.run()
-        } catch let error as LandHostError {
+        } catch let error as NIOLandHostError {
             logger.error("❌ Server startup failed: \(error)", metadata: [
                 "error": .string(String(describing: error)),
             ])

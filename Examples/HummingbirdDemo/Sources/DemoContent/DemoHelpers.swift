@@ -1,7 +1,6 @@
 import Foundation
 import Logging
 import SwiftStateTree
-import SwiftStateTreeHummingbird
 
 // MARK: - Demo Helper Functions
 
@@ -19,28 +18,9 @@ public func createDemoLogger(
     logLevel: Logger.Level = .info
 ) -> Logger {
     return createColoredLogger(
-        loggerIdentifier: "com.swiftstatetree.hummingbird",
+        loggerIdentifier: "com.swiftstatetree.demo",
         scope: scope,
         logLevel: logLevel
-    )
-}
-
-/// Create a JWT configuration for demo/testing purposes.
-///
-/// This helper provides a standardized JWT configuration for all demo applications.
-/// ⚠️ WARNING: This uses a demo secret key. CHANGE THIS IN PRODUCTION!
-///
-/// In production, use environment variables or secure key management:
-/// ```bash
-/// export JWT_SECRET_KEY="your-secure-secret-key-here"
-/// ```
-///
-/// - Returns: A JWTConfiguration instance suitable for demo/testing
-public func createDemoJWTConfig() -> JWTConfiguration {
-    return JWTConfiguration(
-        secretKey: "demo-secret-key-change-in-production",
-        algorithm: .HS256,
-        validateExpiration: true
     )
 }
 
