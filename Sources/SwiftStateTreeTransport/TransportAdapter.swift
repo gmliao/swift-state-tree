@@ -48,6 +48,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     
     // Message routing table (centralizes all routing logic)
     private let routingTable: MessageRoutingTable
+    
+    // Encoding pipeline (centralizes all encoding logic)
+    private let encodingPipeline: EncodingPipeline
 
     // Dirty tracking toggle - default is enabled.
     //
@@ -323,6 +326,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         
         // Initialize message routing table
         self.routingTable = MessageRoutingTable()
+        
+        // Initialize encoding pipeline
+        self.encodingPipeline = EncodingPipeline(
+            stateUpdateEncoder: self.stateUpdateEncoder,
+            messageEncoder: self.messageEncoder,
+            landID: landID
+        )
         resolvedLogger.info("Transport encoding configured", metadata: [
             "landID": .string(landID),
             "messageEncoding": .string(self.messageEncoder.encoding.rawValue),
@@ -1091,8 +1101,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-    /// Opcode for state update with events (107). Same numeric range as MessageKindOpcode.
-    private let opcodeStateUpdateWithEvents: Int64 = 107
     /// Opcode for event message (103).
     private let opcodeEvent: Int64 = 103
 
@@ -1213,19 +1221,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Returns nil when the message encoder is JSON or opcodeJsonArray: we encode to bytes then try MessagePack unpack,
     /// which fails. Caller must then send the event as a separate frame (see sendEvent).
     private func encodeServerEventBody(_ event: AnyServerEvent) -> MessagePackValue? {
-        do {
-            if let mpEncoder = messageEncoder as? MessagePackTransportMessageEncoder {
-                return try mpEncoder.encodeServerEventBody(event)
-            }
-            let transportMsg = TransportMessage.event(event: .fromServer(event: event))
-            let eventData = try messageEncoder.encode(transportMsg)
-            let eventUnpacked = try unpack(eventData)
-            guard case .array(let eventArr) = eventUnpacked, eventArr.count >= 2 else { return nil }
-            return .array(Array(eventArr.dropFirst()))
-        } catch {
-            logger.warning("Failed to encode server event for opcode 107", metadata: ["error": .string("\(error)")])
-            return nil
-        }
+        return encodingPipeline.encodeServerEventBody(event)
     }
 
     private func encodeStateUpdate(
@@ -1234,21 +1230,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         playerSlot: Int32?,
         scope: StateUpdateKeyScope
     ) throws -> Data {
-        if let scopedEncoder = stateUpdateEncoder as? StateUpdateEncoderWithScope {
-            return try scopedEncoder.encode(
-                update: update,
-                landID: landID,
-                playerID: playerID,
-                playerSlot: playerSlot,
-                scope: scope
-            )
-        }
-
-        return try stateUpdateEncoder.encode(
+        return try encodingPipeline.encodeStateUpdate(
             update: update,
-            landID: landID,
             playerID: playerID,
-            playerSlot: playerSlot
+            playerSlot: playerSlot,
+            scope: scope
         )
     }
 
@@ -1258,23 +1244,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         eventBodies: [MessagePackValue],
         allowEmptyEvents: Bool = false
     ) -> Data? {
-        if eventBodies.isEmpty, !allowEmptyEvents {
-            return nil
-        }
-        do {
-            let stateUnpacked = try unpack(stateUpdateData)
-            guard case .array(let stateArr) = stateUnpacked else { return nil }
-
-            let combined: MessagePackValue = .array([
-                .int(opcodeStateUpdateWithEvents),
-                .array(stateArr),
-                .array(eventBodies)
-            ])
-            return try pack(combined)
-        } catch {
-            logger.warning("Failed to build opcode 107 frame", metadata: ["error": .string("\(error)")])
-            return nil
-        }
+        return encodingPipeline.buildStateUpdateWithEventBodies(
+            stateUpdateData: stateUpdateData,
+            eventBodies: eventBodies,
+            allowEmptyEvents: allowEmptyEvents
+        )
     }
 
     private func buildStateUpdateWithEventBodies(
@@ -1282,15 +1256,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         eventBodies: [MessagePackValue],
         allowEmptyEvents: Bool = false
     ) -> Data? {
-        if eventBodies.isEmpty, !allowEmptyEvents {
-            return nil
-        }
-        let combined: MessagePackValue = .array([
-            .int(opcodeStateUpdateWithEvents),
-            .array(stateUpdateArray),
-            .array(eventBodies)
-        ])
-        return try? pack(combined)
+        return encodingPipeline.buildStateUpdateWithEventBodies(
+            stateUpdateArray: stateUpdateArray,
+            eventBodies: eventBodies,
+            allowEmptyEvents: allowEmptyEvents
+        )
     }
 
     private func sendEventBodiesSeparately(_ eventBodies: [MessagePackValue], to sessionID: SessionID) async {
