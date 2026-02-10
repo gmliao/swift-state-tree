@@ -267,3 +267,76 @@ func testStateQueryMethods() async throws {
     }
 }
 
+@Test("State query methods remain consistent across disconnect and reconnect")
+func testStateQueryMethodsAcrossReconnectLifecycle() async throws {
+    let definition = Land(
+        "state-management-test",
+        using: StateManagementTestState.self
+    ) {
+        Rules {
+            OnJoin { (state: inout StateManagementTestState, ctx: LandContext) in
+                state.players[ctx.playerID] = "Joined"
+            }
+        }
+    }
+
+    let transport = WebSocketTransport()
+    let keeper = LandKeeper<StateManagementTestState>(
+        definition: definition,
+        initialState: StateManagementTestState()
+    )
+    let adapter = TransportAdapter<StateManagementTestState>(
+        keeper: keeper,
+        transport: transport,
+        landID: "state-management-test",
+        enableLegacyJoin: true
+    )
+    await keeper.setTransport(adapter)
+    await transport.setDelegate(adapter)
+
+    let session = SessionID("sess-reconnect")
+    let firstClient = ClientID("cli-first")
+    let secondClient = ClientID("cli-second")
+    let player = PlayerID("p-reconnect")
+
+    await adapter.onConnect(sessionID: session, clientID: firstClient)
+    try await simulateRouterJoin(
+        adapter: adapter,
+        keeper: keeper,
+        sessionID: session,
+        clientID: firstClient,
+        playerID: player
+    )
+
+    #expect(await adapter.isConnected(sessionID: session), "Session should be connected after first connect")
+    #expect(await adapter.isJoined(sessionID: session), "Session should be joined after first join")
+    #expect(await adapter.getPlayerID(for: session) == player, "Session should map to player after first join")
+    #expect(await adapter.getSessions(for: player) == [session], "Player should map to one active session after first join")
+
+    await adapter.onDisconnect(sessionID: session, clientID: firstClient)
+
+    #expect(!(await adapter.isConnected(sessionID: session)), "Session should not be connected after disconnect")
+    #expect(!(await adapter.isJoined(sessionID: session)), "Session should not be joined after disconnect")
+    #expect(await adapter.getPlayerID(for: session) == nil, "Disconnected session should not map to player")
+    #expect(await adapter.getSessions(for: player).isEmpty, "Player should not have active sessions after disconnect")
+
+    await adapter.onConnect(sessionID: session, clientID: secondClient)
+
+    #expect(await adapter.isConnected(sessionID: session), "Session should be connected after reconnect")
+    #expect(!(await adapter.isJoined(sessionID: session)), "Reconnected session should not be joined yet")
+    #expect(await adapter.getPlayerID(for: session) == nil, "Reconnected session should not map to player before join")
+    #expect(await adapter.getSessions(for: player).isEmpty, "Player should have no mapped sessions before rejoin")
+
+    try await simulateRouterJoin(
+        adapter: adapter,
+        keeper: keeper,
+        sessionID: session,
+        clientID: secondClient,
+        playerID: player
+    )
+
+    #expect(await adapter.isConnected(sessionID: session), "Session should remain connected after rejoin")
+    #expect(await adapter.isJoined(sessionID: session), "Session should be joined after rejoin")
+    #expect(await adapter.getPlayerID(for: session) == player, "Session should remap to player after rejoin")
+    #expect(await adapter.getSessions(for: player) == [session], "Player should map to rejoined session")
+}

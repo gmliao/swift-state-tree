@@ -204,6 +204,10 @@ final class MembershipCoordinator: Sendable {
     func sessionID(for clientID: ClientID) -> SessionID? {
         sessionToClient.first(where: { $0.value == clientID })?.key
     }
+
+    func firstSession(for playerID: PlayerID) -> SessionID? {
+        sessionToPlayer.first(where: { $0.value == playerID })?.key
+    }
     
     func sessionIDs(for playerID: PlayerID) -> [SessionID] {
         sessionToPlayer.filter { $0.value == playerID }.map { $0.key }
@@ -216,6 +220,24 @@ final class MembershipCoordinator: Sendable {
     func hasPlayer(sessionID: SessionID) -> Bool {
         sessionToPlayer[sessionID] != nil
     }
+
+    func allJoinedEntries() -> [(sessionID: SessionID, playerID: PlayerID)] {
+        sessionToPlayer.map { (sessionID: $0.key, playerID: $0.value) }
+    }
+
+    func joinedPlayerIDs() -> [PlayerID] {
+        Array(sessionToPlayer.values)
+    }
+
+    func joinedCount() -> Int {
+        sessionToPlayer.count
+    }
+
+    func firstJoined(where predicate: (SessionID, PlayerID) -> Bool) -> (sessionID: SessionID, playerID: PlayerID)? {
+        sessionToPlayer.first(where: { predicate($0.key, $0.value) }).map {
+            (sessionID: $0.key, playerID: $0.value)
+        }
+    }
     
     var connectedSessions: Set<SessionID> {
         Set(sessionToClient.keys).subtracting(Set(sessionToPlayer.keys))
@@ -227,18 +249,5 @@ final class MembershipCoordinator: Sendable {
     
     var isEmpty: Bool {
         sessionToPlayer.isEmpty
-    }
-
-    // Transitional snapshots for in-place TransportAdapter migration.
-    var sessionToPlayerSnapshot: [SessionID: PlayerID] {
-        sessionToPlayer
-    }
-
-    var sessionToClientSnapshot: [SessionID: ClientID] {
-        sessionToClient
-    }
-
-    var sessionToAuthInfoSnapshot: [SessionID: AuthenticatedInfo] {
-        sessionToAuthInfo
     }
 }
