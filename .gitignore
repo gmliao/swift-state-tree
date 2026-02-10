@@ -158,6 +158,7 @@ temp/
 docs/ALL.zh-TW.md
 docs/ALL.zh-TW.pdf
 Examples/GameDemo/ws-loadtest/results/*
+Examples/GameDemo/ws-loadtest/monitoring/*.json
 .vscode/launch.json
 
 # Reevaluation records: keep existing committed files as examples; ignore new local runs
