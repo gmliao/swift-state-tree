@@ -21,7 +21,7 @@ public struct JWTPayload: Codable, Sendable {
     public let iat: Int64?
     public let nbf: Int64?
 
-    /// Player ID (can also be in 'sub')
+    /// Resolved player ID: from `playerID` claim if present, otherwise from standard `sub` claim.
     public let playerID: String
     public let deviceID: String?
     public let metadata: [String: String]?
@@ -65,7 +65,16 @@ public struct JWTPayload: Codable, Sendable {
         exp = try container.decodeIfPresent(Int64.self, forKey: .exp)
         iat = try container.decodeIfPresent(Int64.self, forKey: .iat)
         nbf = try container.decodeIfPresent(Int64.self, forKey: .nbf)
-        playerID = try container.decode(String.self, forKey: .playerID)
+        let decodedPlayerID = try container.decodeIfPresent(String.self, forKey: .playerID)
+        let decodedSub = sub
+        guard let resolved = decodedPlayerID ?? decodedSub, !resolved.isEmpty else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .playerID,
+                in: container,
+                debugDescription: "JWT payload must contain non-empty 'playerID' or 'sub' claim"
+            )
+        }
+        playerID = resolved
         deviceID = try container.decodeIfPresent(String.self, forKey: .deviceID)
         metadata = try container.decodeIfPresent([String: String].self, forKey: .metadata)
 

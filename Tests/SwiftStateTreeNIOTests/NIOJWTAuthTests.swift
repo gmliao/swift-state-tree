@@ -75,6 +75,44 @@ struct NIOJWTAuthValidatorTests {
     }
 }
 
+// MARK: - JWTPayload Decoding Tests (sub fallback)
+
+@Suite("NIO JWTPayload Decoding Tests")
+struct NIOJWTPayloadDecodingTests {
+
+    @Test("JWTPayload accepts sub claim when playerID is missing")
+    func testSubClaimFallback() throws {
+        let json = """
+        {"sub": "user-123"}
+        """
+        let data = Data(json.utf8)
+        let payload = try JSONDecoder().decode(JWTPayload.self, from: data)
+        #expect(payload.playerID == "user-123")
+    }
+
+    @Test("JWTPayload prefers playerID over sub when both present")
+    func testPlayerIDPreferred() throws {
+        let json = """
+        {"sub": "sub-id", "playerID": "player-id"}
+        """
+        let data = Data(json.utf8)
+        let payload = try JSONDecoder().decode(JWTPayload.self, from: data)
+        #expect(payload.playerID == "player-id")
+    }
+
+    @Test("JWTPayload throws when both playerID and sub are missing")
+    func testMissingPlayerIDAndSub() throws {
+        let json = "{}"
+        let data = Data(json.utf8)
+        do {
+            _ = try JSONDecoder().decode(JWTPayload.self, from: data)
+            Issue.record("Should have thrown")
+        } catch {
+            #expect(error is DecodingError)
+        }
+    }
+}
+
 // MARK: - Token Extraction Tests
 
 @Suite("NIO Token Extraction Tests")
