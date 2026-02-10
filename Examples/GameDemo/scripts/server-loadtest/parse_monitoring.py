@@ -2,7 +2,6 @@
 """
 Parse vmstat/pidstat monitoring output and convert to JSON format.
 """
-
 import csv
 import json
 import re
@@ -94,8 +93,8 @@ def parse_vmstat_log(vmstat_path: Path) -> List[Dict[str, Any]]:
 
 def parse_macos_top_log(top_path: Path) -> List[Dict[str, Any]]:
     """Parse macOS top output and return list of samples in vmstat-compatible format."""
-    samples = []
-    current_sample = {}
+    samples: List[Dict[str, Any]] = []
+    current_sample: dict[str, Any] = {}
 
     with open(top_path, 'r') as f:
         for line in f:
@@ -104,7 +103,7 @@ def parse_macos_top_log(top_path: Path) -> List[Dict[str, Any]]:
                 # Empty line might indicate end of a sample block
                 if current_sample and "cpu_us_pct" in current_sample:
                     samples.append(current_sample)
-                    current_sample = {}
+                    current_sample.clear()
                 continue
 
             # Parse CPU usage line: "CPU usage: 12.34% user, 5.67% sys, 82.00% idle"
