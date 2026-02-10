@@ -266,7 +266,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let resolvedOffThreshold = max(parsedOffThreshold, parsedOnThreshold + 0.01)
         let resolvedOnThreshold = min(parsedOnThreshold, resolvedOffThreshold - 0.01)
         let autoDirtyRequiredSamples = max(1, Int(env["AUTO_DIRTY_REQUIRED_SAMPLES"] ?? "") ?? 30)
-        self.enableChangeObjectMetrics = changeMetricsEnabled || autoDirtyTrackingEnabled
+        self.enableChangeObjectMetrics = changeMetricsEnabled
         self.changeObjectMetricsLogEvery = changeMetricsLogEvery
         self.changeObjectMetricsEmaAlpha = changeMetricsAlpha
         self.enableAutoDirtyTracking = autoDirtyTrackingEnabled
@@ -313,7 +313,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             "stateUpdateEncoding": .string(self.stateUpdateEncoder.encoding.rawValue),
             "dirtyTracking": .string(dirtyTrackingEnabled ? "on" : "off"),
             "snapshotForSync": .string(snapshotForSyncEnabled ? "on" : "off"),
-            "changeObjectMetrics": .string((changeMetricsEnabled || autoDirtyTrackingEnabled) ? "on" : "off"),
+            "changeObjectMetrics": .string(changeMetricsEnabled ? "on" : "off"),
             "autoDirtyTracking": .string(autoDirtyTrackingEnabled ? "on" : "off"),
             "autoDirtyOffThreshold": .string(String(format: "%.3f", resolvedOffThreshold)),
             "autoDirtyOnThreshold": .string(String(format: "%.3f", resolvedOnThreshold)),
@@ -1702,7 +1702,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             pendingServerEventBodies.removeAll()
             pendingBroadcastEventBodies.removeAll()
             hasTargetedEventBodies = false
-            if enableChangeObjectMetrics {
+            if enableChangeObjectMetrics || enableAutoDirtyTracking {
                 logChangeObjectMetrics(
                     updates: metricUpdates,
                     broadcastSnapshot: broadcastSnapshot
@@ -2188,7 +2188,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         
         maybeAutoSwitchDirtyTracking(changeRateEma: changeObjectRateEma)
         
-        if Int(changeObjectMetricsSyncCount % UInt64(changeObjectMetricsLogEvery)) == 0 {
+        if enableChangeObjectMetrics, Int(changeObjectMetricsSyncCount % UInt64(changeObjectMetricsLogEvery)) == 0 {
             logger.info("📊 Change-object metrics", metadata: [
                 "landID": .string(landID),
                 "changedObjects": .string("\(changedObjects)"),
