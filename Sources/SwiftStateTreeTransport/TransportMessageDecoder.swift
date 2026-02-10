@@ -6,7 +6,7 @@ import Foundation
 import SwiftStateTree
 
 /// Decodes TransportMessage from opcode array format.
-public struct OpcodeTransportMessageDecoder {
+public struct OpcodeTransportMessageDecoder: Sendable {
     public init() {}
     
     /// Decode a TransportMessage from opcode array format.

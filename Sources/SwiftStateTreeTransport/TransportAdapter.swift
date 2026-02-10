@@ -42,6 +42,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private var syncEngine = SyncEngine()
     private let logger: Logger
     private let enableLegacyJoin: Bool
+    
+    // Message decoding pipeline (centralizes all decoding logic)
+    private let decodingPipeline: MessageDecodingPipeline
 
     // Dirty tracking toggle - default is enabled.
     //
@@ -307,6 +310,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             self.profiler = nil
             self.profilerCounters = nil
         }
+        
+        // Initialize message decoding pipeline
+        self.decodingPipeline = MessageDecodingPipeline(
+            codec: self.codec,
+            opcodeDecoder: OpcodeTransportMessageDecoder(),
+            enableLegacyJoin: enableLegacyJoin
+        )
         resolvedLogger.info("Transport encoding configured", metadata: [
             "landID": .string(landID),
             "messageEncoding": .string(self.messageEncoder.encoding.rawValue),
@@ -686,27 +696,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Compute messagePreview for error logging (only if needed)
         // We compute it lazily in the catch block to avoid unnecessary work
         do {
-            // Try to detect if message is in opcode array format
-            // If it's an array starting with 101-106, use opcode decoder
+            // Use decoding pipeline for all message decoding (centralizes format detection)
             let transportMsg: TransportMessage
             let decodeStart = ContinuousClock.now
-
-            // For MessagePack, the codec now handles both opcode array and map formats internally
-            // No need for special conversion logic here
-            if codec.encoding == .messagepack {
-                transportMsg = try codec.decode(TransportMessage.self, from: message)
-            } else if let json = try? JSONSerialization.jsonObject(with: message),
-               let array = json as? [Any],
-               array.count >= 1,
-               let firstElement = array[0] as? Int,
-               firstElement >= 101 && firstElement <= 106 {
-                // This is a JSON opcode array format message
-                let decoder = OpcodeTransportMessageDecoder()
-                transportMsg = try decoder.decode(from: message)
-            } else {
-                // Standard JSON object format
-                transportMsg = try codec.decode(TransportMessage.self, from: message)
-            }
+            
+            transportMsg = try decodingPipeline.decode(message)
 
             if let profiler {
                 let decodeElapsed = ContinuousClock.now - decodeStart
