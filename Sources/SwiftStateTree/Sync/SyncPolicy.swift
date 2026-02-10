@@ -92,6 +92,17 @@ public extension SyncPolicy {
     }
 }
 
+/// Optional patch context so that any @Sync field (including scalars and nested StateNode fields)
+/// can record a patch when set, enabling full incremental sync equivalence with diff-based sync.
+public struct SyncPatchContext: Sendable {
+    public let recorder: any PatchRecorder
+    public let path: String
+    public init(recorder: any PatchRecorder, path: String) {
+        self.recorder = recorder
+        self.path = path
+    }
+}
+
 /// Marks a StateNode field with a synchronization policy.
 ///
 /// **Type Requirements**: The `Value` type must conform to `Sendable`.
@@ -99,6 +110,9 @@ public extension SyncPolicy {
 /// **Dirty Tracking**: Any assignment to `wrappedValue` will automatically mark the field as dirty.
 /// This is a simple and efficient approach that avoids the overhead of value comparison.
 /// Use `clearDirty()` to reset the dirty flag after synchronization.
+///
+/// **Patch Recording**: When `patchContext` is set (by macro-generated `_$propagatePatchContext()`),
+/// any assignment to `wrappedValue` records a patch so incremental sync matches diff-based sync.
 ///
 /// Most types used with `@Sync` naturally conform to `Sendable`:
 /// - Basic types: `Int`, `String`, `Bool`, etc.
@@ -110,13 +124,26 @@ public struct Sync<Value: Sendable>: Sendable {
     public let policy: SyncPolicy<Value>
     private var _wrappedValue: Value
     private var _isDirty: Bool = false
-    
+
+    /// When set, the setter records a patch so incremental sync sees the same change as diff.
+    /// Set by macro-generated `_$propagatePatchContext()` for broadcast @Sync fields.
+    public var patchContext: SyncPatchContext? = nil
+
     public var wrappedValue: Value {
         get { _wrappedValue }
         set {
-            // Mark as dirty whenever value is set (no comparison needed)
             _wrappedValue = newValue
             _isDirty = true
+            if let ctx = patchContext {
+                // Skip recording only for ReactiveDictionary/ReactiveSet: they record per-key patches;
+                // struct writeback would duplicate (e.g. /items and /items/x). Nested StateNode replacement
+                // (e.g. state.base.position = newPos) has no per-key recording, so we must record the whole object.
+                let typeName = String(describing: type(of: newValue as Any))
+                if typeName.contains("ReactiveDictionary") || typeName.contains("ReactiveSet") {
+                    return
+                }
+                recordPatch(value: newValue, path: ctx.path, recorder: ctx.recorder)
+            }
         }
     }
 
@@ -124,6 +151,14 @@ public struct Sync<Value: Sendable>: Sendable {
         self._wrappedValue = wrappedValue
         self.policy = policy
         self._isDirty = false
+    }
+
+    /// Record a patch for the new value so incremental and diff produce the same result.
+    private func recordPatch(value: Value, path: String, recorder: any PatchRecorder) {
+        guard let snapshotValue = try? SnapshotValue.make(from: value as Any) else {
+            return
+        }
+        recorder.record(StatePatch(path: path, operation: .set(snapshotValue)))
     }
     
     // MARK: - Dirty Tracking

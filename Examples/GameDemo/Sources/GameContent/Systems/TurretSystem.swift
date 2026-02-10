@@ -10,7 +10,7 @@ public enum TurretSystem {
     public static func isValidTurretPosition(
         _ position: Position2,
         basePosition: Position2,
-        existingTurrets: [Int: TurretState],
+        existingTurrets: ReactiveDictionary<Int, TurretState>,
         _ ctx: LandContext
     ) -> Bool {
         guard let configService = ctx.services.get(GameConfigProviderService.self) else {
@@ -25,7 +25,7 @@ public enum TurretSystem {
         }
         
         // Check if too close to existing turrets
-        for (_, turret) in existingTurrets {
+        for (_, turret) in existingTurrets.toDictionary() {
             let distance = position.v.distance(to: turret.position.v)
             if distance < 3.0 {  // Minimum spacing
                 return false

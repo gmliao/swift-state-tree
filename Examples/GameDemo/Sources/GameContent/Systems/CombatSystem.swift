@@ -41,12 +41,12 @@ public enum CombatSystem {
     public static func findNearestMonsterInRange(
         from position: Position2,
         range: Float,
-        monsters: [Int: MonsterState]
+        monsters: ReactiveDictionary<Int, MonsterState>
     ) -> (id: Int, monster: MonsterState)? {
         var nearest: (id: Int, monster: MonsterState)? = nil
         var nearestDistance: Float = Float.greatestFiniteMagnitude
         
-        for (id, monster) in monsters {
+        for (id, monster) in monsters.toDictionary() {
             let distance = position.v.distance(to: monster.position.v)
             if distance <= range && distance < nearestDistance {
                 nearest = (id, monster)
@@ -90,7 +90,7 @@ public enum CombatSystem {
     /// - Returns: ShootResult if shot was fired, nil if no target in range
     public static func processPlayerShoot(
         player: inout PlayerState,
-        monsters: inout [Int: MonsterState],
+        monsters: inout ReactiveDictionary<Int, MonsterState>,
         _ ctx: LandContext
     ) -> ShootResult? {
         guard let tickId = ctx.tickId else {
@@ -178,7 +178,7 @@ public enum CombatSystem {
     public static func findNearestMonsterInTurretRange(
         from position: Position2,
         range: Float,
-        monsters: [Int: MonsterState]
+        monsters: ReactiveDictionary<Int, MonsterState>
     ) -> (id: Int, monster: MonsterState)? {
         return findNearestMonsterInRange(from: position, range: range, monsters: monsters)
     }
@@ -215,7 +215,7 @@ public enum CombatSystem {
     /// - Returns: TurretShootResult if shot was fired, nil if no target in range
     public static func processTurretShoot(
         turret: inout TurretState,
-        monsters: inout [Int: MonsterState],
+        monsters: inout ReactiveDictionary<Int, MonsterState>,
         _ ctx: LandContext
     ) -> TurretShootResult? {
         guard let tickId = ctx.tickId else {

@@ -1,5 +1,5 @@
 {
-  "originHash" : "1bc2b62510db0b835105db568c457bbc041c347589882b6edc327fa67ecb54ac",
+  "originHash" : "0c4cb390b33d355d9654b2698bdf93e29bc6ab3b3ad3e738ca2e8651b193e5e6",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -44,6 +44,15 @@
       "state" : {
         "revision" : "87e50f483c54e6efd60e885f7f5aa946cee68023",
         "version" : "1.2.1"
+      }
+    },
+    {
+      "identity" : "swift-argument-parser",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-argument-parser.git",
+      "state" : {
+        "revision" : "c5d11a805e765f52ba34ec7284bd4fcd6ba68615",
+        "version" : "1.7.0"
       }
     },
     {
@@ -206,6 +215,24 @@
       "state" : {
         "revision" : "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
         "version" : "1.1.1"
+      }
+    },
+    {
+      "identity" : "swift-profile-recorder",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-profile-recorder.git",
+      "state" : {
+        "revision" : "c7521b1c48a8e6d2f78c37963a89a9a61a2abe37",
+        "version" : "0.3.13"
+      }
+    },
+    {
+      "identity" : "swift-protobuf",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-protobuf.git",
+      "state" : {
+        "revision" : "c169a5744230951031770e27e475ff6eefe51f9d",
+        "version" : "1.33.3"
       }
     },
     {

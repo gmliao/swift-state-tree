@@ -379,6 +379,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         state = initialState
         state._$parentPath = ""
         state._$patchRecorder = patchRecorder
+        state._$propagatePatchContext()
         self.mode = mode
         self.reevaluationSink = reevaluationSink
 

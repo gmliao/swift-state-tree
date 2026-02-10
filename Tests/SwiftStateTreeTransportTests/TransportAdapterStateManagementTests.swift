@@ -90,8 +90,8 @@ func testIncrementalSyncModeRuntimeConfig() async throws {
         enableLegacyJoin: true
     )
 
-    // Default should remain backward-compatible.
-    #expect(await adapter.getIncrementalSyncMode() == .off)
+    // Default is .on (incremental sync enabled by default).
+    #expect(await adapter.getIncrementalSyncMode() == .on)
 
     await adapter.setIncrementalSyncMode(.shadow)
     #expect(await adapter.getIncrementalSyncMode() == .shadow)

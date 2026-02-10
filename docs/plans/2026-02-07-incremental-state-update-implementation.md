@@ -753,3 +753,41 @@ If issues are found:
 1. Revert macro changes first (most likely source of issues)
 2. Keep PatchRecorder and PatchableState (safe additions)
 3. ReactiveDictionary changes are backward compatible
+
+---
+
+## Additional Requirement (2026-02-07)
+
+Add a compile-time macro guard in `@StateNodeBuilder` to reject containers that cannot be reliably tracked by incremental patching.
+
+Planned rule (default):
+- Disallow plain Swift containers in `@Sync` fields when used for mutable state graphs that need fine-grained patch tracking:
+  - `[Key: Value]` (Dictionary)
+  - `[Element]` (Array)
+  - `Set<Element>`
+- Allow reactive containers:
+  - `ReactiveDictionary<Key, Value>`
+  - `ReactiveSet<Element>`
+
+Implementation notes:
+- Emit a macro diagnostic error with actionable guidance (e.g., "Use `ReactiveDictionary`/`ReactiveSet` or explicit update methods").
+- Add macro tests for both reject and allow cases.
+
+---
+
+## Two-path separation and validate mode (2026-02-07)
+
+**Requirement:** Use incremental as the primary path; keep diff path separate (fallback or verification only).
+
+**Implemented:**
+
+1. **IncrementalSyncMode**
+   - `on`: Use incremental for broadcast when patches exist and pass safety check; otherwise fall back to diff. Two paths are separate in code (incremental path vs diff path).
+   - `validate`: Same as `on`, but also compute diff-based broadcast diff and log a warning when it differs from the incremental result (correctness verification). Env: `SST_INCREMENTAL_SYNC_MODE=validate`.
+
+2. **Code structure (TransportAdapter sync)**
+   - `needDiffPath = (incrementalBroadcastDiff == nil) || (incrementalSyncMode == .validate)`.
+   - Diff path: `diffBasedBroadcastDiff = computeBroadcastDiffFromSnapshot(...)` only when `needDiffPath`.
+   - Broadcast diff for send: `broadcastDiff = incrementalBroadcastDiff ?? diffBasedBroadcastDiff`.
+   - When using incremental: `updateBroadcastCacheFromSnapshot(...)` so cache matches sent state.
+   - When `validate` and incremental was used: compare sorted patch arrays; log warning with path sets if they differ.

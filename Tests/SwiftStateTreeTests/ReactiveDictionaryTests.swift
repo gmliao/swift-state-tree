@@ -283,6 +283,54 @@ func testReactiveDictionary_MutateValue_InjectsPathContext() {
     #expect(capturedRecorder === recorder)
 }
 
+@Test("ReactiveDictionary mutateValue records patch for incremental sync")
+func testReactiveDictionary_MutateValue_RecordsPatch() {
+    // Arrange
+    var dict = ReactiveDictionary<String, Int>()
+    dict._$parentPath = "/scores"
+    let recorder = LandPatchRecorder()
+    dict._$patchRecorder = recorder
+    dict["alice"] = 10
+    _ = recorder.takePatches()
+
+    // Act
+    dict.mutateValue(for: "alice") { value in
+        value += 5
+    }
+
+    // Assert: incremental sync path relies on this patch
+    #expect(recorder.hasPatches == true)
+    let patches = recorder.takePatches()
+    #expect(patches.count == 1)
+    #expect(patches[0].path == "/scores/alice", "Patch path must be correct for incremental sync")
+    if case .set(let v) = patches[0].operation {
+        #expect(v == .int(15), "Patch value must reflect mutated value")
+    } else {
+        Issue.record("Expected .set operation")
+    }
+}
+
+@Test("ReactiveDictionary mutateValue records patch with JSON Pointer escaped key")
+func testReactiveDictionary_MutateValue_EscapesKeyInPatchPath() {
+    var dict = ReactiveDictionary<String, Int>()
+    dict._$parentPath = "/data"
+    let recorder = LandPatchRecorder()
+    dict._$patchRecorder = recorder
+    dict["a/b~c"] = 1
+    _ = recorder.takePatches()
+
+    dict.mutateValue(for: "a/b~c") { $0 += 1 }
+
+    let patches = recorder.takePatches()
+    #expect(patches.count == 1)
+    #expect(patches[0].path == "/data/a~1b~0c")
+    if case .set(let v) = patches[0].operation {
+        #expect(v == .int(2))
+    } else {
+        Issue.record("Expected .set operation")
+    }
+}
+
 // MARK: - Collection Properties Tests
 
 @Test("ReactiveDictionary keys returns all keys")
@@ -500,11 +548,16 @@ func testReactiveDictionary_SubscriptSet_EscapesJsonPointerKeyInPatchPath() {
     // Act
     dict["a/b~c"] = 1
 
-    // Assert
+    // Assert: path uses JSON Pointer escaping; patch value is correct for incremental sync
     let patches = recorder.takePatches()
     #expect(patches.count == 1)
     guard patches.count == 1 else { return }
-    #expect(patches[0].path == "/scores/a~1b~0c")
+    #expect(patches[0].path == "/scores/a~1b~0c", "Path must be correctly escaped for patch")
+    if case .set(let value) = patches[0].operation {
+        #expect(value == .int(1), "Patch value must match written value")
+    } else {
+        Issue.record("Expected .set operation")
+    }
 }
 
 @Test("ReactiveDictionary subscript get injects escaped JSON Pointer key segment")

@@ -9,15 +9,15 @@ import SwiftStateTree
 public struct HeroDefenseState: StateNodeProtocol {
     /// Online players and their states
     @Sync(.broadcast)
-    var players: [PlayerID: PlayerState] = [:]
+    var players: ReactiveDictionary<PlayerID, PlayerState> = ReactiveDictionary<PlayerID, PlayerState>()
 
     /// Active monsters in the world
     @Sync(.broadcast)
-    var monsters: [Int: MonsterState] = [:]
+    var monsters: ReactiveDictionary<Int, MonsterState> = ReactiveDictionary<Int, MonsterState>()
 
     /// Placed turrets
     @Sync(.broadcast)
-    var turrets: [Int: TurretState] = [:]
+    var turrets: ReactiveDictionary<Int, TurretState> = ReactiveDictionary<Int, TurretState>()
     
     /// Next monster ID counter (for generating unique IDs)
     @Sync(.serverOnly)

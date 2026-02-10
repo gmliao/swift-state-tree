@@ -60,6 +60,9 @@ public struct StateNodeBuilderMacro: MemberMacro {
         // Generate helper methods for container types (Dictionary, Array, Set)
         let containerHelperMethods = try generateContainerHelperMethods(propertiesWithNodes: propertiesWithNodes)
 
+        // Generate _$propagatePatchContext() to propagate recorder and path to children
+        let propagateMethod = try generatePropagatePatchContextMethod(propertiesWithNodes: propertiesWithNodes)
+
         return [
             DeclSyntax(parentPathMember),
             DeclSyntax(patchRecorderMember),
@@ -71,7 +74,8 @@ public struct StateNodeBuilderMacro: MemberMacro {
             DeclSyntax(isDirtyMethod),
             DeclSyntax(getDirtyFieldsMethod),
             DeclSyntax(clearDirtyMethod),
-            DeclSyntax(try generateGetFieldMetadata(properties: properties))
+            DeclSyntax(try generateGetFieldMetadata(properties: properties)),
+            DeclSyntax(propagateMethod)
         ] + containerHelperMethods
     }
 
@@ -675,6 +679,96 @@ public struct StateNodeBuilderMacro: MemberMacro {
         return try FunctionDeclSyntax(
             """
             public mutating func clearDirty() {
+                \(raw: body)
+            }
+            """
+        )
+    }
+
+    /// Generate `_$propagatePatchContext()` method.
+    ///
+    /// Propagates `_$patchRecorder` and `_$parentPath` from the parent StateNode
+    /// to all @Sync children that conform to `PatchableState` (e.g., `ReactiveDictionary`,
+    /// nested `StateNodeProtocol` types).
+    ///
+    /// This ensures that when a `ReactiveDictionary` subscript setter records a patch,
+    /// the `_$patchRecorder` is available and the path is correct.
+    private static func generatePropagatePatchContextMethod(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> FunctionDeclSyntax {
+        let syncProperties = propertiesWithNodes.filter { $0.0.hasSync }
+
+        if syncProperties.isEmpty {
+            return try FunctionDeclSyntax(
+                """
+                public mutating func _$propagatePatchContext() {
+                }
+                """
+            )
+        }
+
+        var codeLines: [String] = []
+
+        for (property, _) in syncProperties {
+            let propertyName = property.name
+            let storageName = "_\(propertyName)"
+
+            // Build the child path for every @Sync field (used for both patchContext and PatchableState propagation)
+            codeLines.append("// \(propertyName)")
+            codeLines.append("do {")
+            codeLines.append("    let childPath = _$parentPath.isEmpty ? \"/\(propertyName)\" : \"\\(_$parentPath)/\(propertyName)\"")
+            // Set patchContext only for broadcast scalar/leaf fields (Int, String, Bool, Optional<*>, etc.).
+            // Do NOT set for ReactiveDictionary/ReactiveSet (they record their own patches; Sync setter also fires on struct writeback and would duplicate).
+            // Do NOT set for nested StateNode (leaf Syncs record; whole-object would duplicate).
+            let isBroadcast = property.policyType == .broadcast
+            let typeNameForPatch = property.typeName ?? ""
+            let isScalarForPatch = isPrimitiveType(typeNameForPatch)
+                && !typeNameForPatch.contains("ReactiveDictionary")
+                && !typeNameForPatch.contains("ReactiveSet")
+            if isBroadcast, isScalarForPatch {
+                codeLines.append("    if let recorder = _$patchRecorder {")
+                codeLines.append("        \(storageName).patchContext = SyncPatchContext(recorder: recorder, path: childPath)")
+                codeLines.append("    }")
+            }
+            // Propagate to PatchableState children (ReactiveDictionary, nested StateNode)
+            guard let typeName = property.typeName, !isPrimitiveType(typeName) else {
+                codeLines.append("}")
+                continue
+            }
+
+            let normalizedType = typeName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let isOptional = normalizedType.hasSuffix("?") || (normalizedType.hasPrefix("Optional<") && normalizedType.hasSuffix(">"))
+
+            if isOptional {
+                codeLines.append("    if let unwrapped = \(storageName).wrappedValue,")
+                codeLines.append("       var patchable = (unwrapped as Any) as? any PatchableState {")
+            } else {
+                codeLines.append("    if var patchable = (\(storageName).wrappedValue as Any) as? any PatchableState {")
+            }
+
+            codeLines.append("        patchable._$patchRecorder = _$patchRecorder")
+            codeLines.append("        patchable._$parentPath = childPath")
+            codeLines.append("        patchable._$propagatePatchContext()")
+            let baseType: String
+            if isOptional {
+                if normalizedType.hasSuffix("?") {
+                    baseType = String(normalizedType.dropLast())
+                } else {
+                    baseType = String(normalizedType.dropFirst("Optional<".count).dropLast())
+                }
+            } else {
+                baseType = normalizedType
+            }
+            codeLines.append("        if let typed = patchable as? \(baseType) {")
+            codeLines.append("            \(storageName).updateValueWithoutMarkingDirty(typed)")
+            codeLines.append("        }")
+            codeLines.append("    }")
+            codeLines.append("}")
+        }
+
+        let body = codeLines.joined(separator: "\n")
+
+        return try FunctionDeclSyntax(
+            """
+            public mutating func _$propagatePatchContext() {
                 \(raw: body)
             }
             """

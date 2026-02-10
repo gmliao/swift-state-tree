@@ -32,13 +32,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Controls how sync uses incremental patches.
     ///
-    /// - `off`: Ignore incremental patches and use diff-based sync only.
-    /// - `shadow`: Keep diff-based sync, but collect incremental patch metrics for comparison.
-    /// - `on`: Reserved for full incremental sync path; currently falls back to diff path when needed.
+    /// - `off`: Use diff-based sync only (incremental path disabled). Use for comparison or legacy behavior.
+    /// - `shadow`: Use diff-based sync; collect incremental patch metrics for comparison only.
+    /// - `on`: Full incremental sync — all @Sync changes record patches (ReactiveDictionary, scalars, nested StateNode). Broadcast = patches or []; no diff fallback.
+    /// - `validate`: Same as `on` for sending; also compute diff and log when it differs from incremental (for CI/correctness verification).
     public enum IncrementalSyncMode: String, Sendable {
         case off
         case shadow
         case on
+        case validate
     }
 
     private let keeper: LandKeeper<State>
@@ -228,7 +230,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                   let parsedMode = IncrementalSyncMode(rawValue: modeString.lowercased()) {
             self.incrementalSyncMode = parsedMode
         } else {
-            self.incrementalSyncMode = .off
+            self.incrementalSyncMode = .on
         }
         self.useSnapshotForSync = ProcessInfo.processInfo.environment["USE_SNAPSHOT_FOR_SYNC"] != "false"
         self.expectedSchemaHash = expectedSchemaHash
@@ -1409,7 +1411,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let serverOnlyFieldNames = Set(syncFields.filter { $0.policyType == .serverOnly }.map { $0.name })
 
             var incrementalBroadcastDiff: [StatePatch]? = nil
-            if incrementalSyncMode == .on, !incrementalPatches.isEmpty {
+            let useIncrementalPath = (incrementalSyncMode == .on || incrementalSyncMode == .validate)
+            if useIncrementalPath, !incrementalPatches.isEmpty {
                 var canUseBroadcastOnlyIncremental = true
                 var broadcastOnlyPatches: [StatePatch] = []
                 broadcastOnlyPatches.reserveCapacity(incrementalPatches.count)
@@ -1425,26 +1428,28 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         continue
                     }
 
+                    // Per-player or serverOnly patch: skip for broadcast diff; we still use
+                    // incremental for broadcast by using only broadcastOnlyPatches. Per-player
+                    // diff is still computed from snapshot (no incremental per-player path yet).
                     if perPlayerFieldNames.contains(rootField) || serverOnlyFieldNames.contains(rootField) {
-                        canUseBroadcastOnlyIncremental = false
-                        break
+                        continue
                     }
 
                     canUseBroadcastOnlyIncremental = false
                     break
                 }
 
+                // Equivalence of incremental vs diff is guaranteed by unit tests; no runtime safety check or fallback.
                 if canUseBroadcastOnlyIncremental, !broadcastOnlyPatches.isEmpty {
                     incrementalBroadcastDiff = broadcastOnlyPatches
                     if logger.logLevel <= .debug {
-                        logger.debug("Incremental sync ON: using broadcast-only incremental patches", metadata: [
+                        logger.debug("Incremental sync: using incremental path (broadcast-only patches)", metadata: [
                             "patchCount": .stringConvertible(broadcastOnlyPatches.count),
                             "landID": .string(landID)
                         ])
                     }
                 } else if logger.logLevel <= .debug {
-                    logger.debug("Incremental sync ON: fallback to diff path", metadata: [
-                        "patchCount": .stringConvertible(incrementalPatches.count),
+                    logger.debug("Incremental sync: no broadcast patches this cycle", metadata: [
                         "landID": .string(landID)
                     ])
                 }
@@ -1505,22 +1510,45 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 perPlayerByPlayer = perPlayerTemp
             }
 
-            // Compute broadcast diff ONCE, then reuse for all players.
-            // This avoids updating the broadcast cache per player, which would cause only the first player
-            // to receive broadcast patches.
-            let broadcastDiff: [StatePatch]
-            if let incrementalBroadcastDiff {
-                syncEngine.updateBroadcastCacheFromSnapshot(
-                    currentBroadcast: broadcastSnapshot,
-                    mode: broadcastMode
-                )
-                broadcastDiff = incrementalBroadcastDiff
-            } else {
-                broadcastDiff = syncEngine.computeBroadcastDiffFromSnapshot(
+            // Full incremental: all @Sync changes (ReactiveDictionary, scalars, nested StateNode) record patches;
+            // no diff-based fallback in .on mode. Diff path only used for .off or .validate (verification).
+            let useDiffPath = (incrementalSyncMode == .off) || (incrementalSyncMode == .validate)
+            let diffBasedBroadcastDiff: [StatePatch] = useDiffPath
+                ? syncEngine.computeBroadcastDiffFromSnapshot(
                     currentBroadcast: broadcastSnapshot,
                     onlyPaths: nil,
                     mode: broadcastMode
                 )
+                : []
+
+            let broadcastDiff: [StatePatch]
+            if useIncrementalPath {
+                broadcastDiff = incrementalBroadcastDiff ?? []
+            } else {
+                broadcastDiff = diffBasedBroadcastDiff
+            }
+
+            if incrementalBroadcastDiff != nil {
+                syncEngine.updateBroadcastCacheFromSnapshot(
+                    currentBroadcast: broadcastSnapshot,
+                    mode: broadcastMode
+                )
+            }
+
+            if incrementalSyncMode == .validate, let incremental = incrementalBroadcastDiff, !incremental.isEmpty {
+                let incSorted = incremental.sorted { $0.path < $1.path }
+                let diffSorted = diffBasedBroadcastDiff.sorted { $0.path < $1.path }
+                if incSorted != diffSorted {
+                    let incPaths = Set(incSorted.map(\.path))
+                    let diffPaths = Set(diffSorted.map(\.path))
+                    logger.warning("Incremental vs diff verification mismatch: patches differ", metadata: [
+                        "landID": .string(landID),
+                        "incrementalCount": .stringConvertible(incSorted.count),
+                        "diffCount": .stringConvertible(diffSorted.count),
+                        "onlyInIncremental": .string(incPaths.subtracting(diffPaths).sorted().joined(separator: ",")),
+                        "onlyInDiff": .string(diffPaths.subtracting(incPaths).sorted().joined(separator: ","))
+                    ])
+                }
             }
 
             if useStateUpdateWithEvents {

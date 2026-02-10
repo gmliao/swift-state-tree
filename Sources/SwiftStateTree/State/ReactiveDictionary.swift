@@ -2,9 +2,16 @@
 
 /// A reactive dictionary that tracks changes and supports change notifications.
 ///
-/// This dictionary maintains dirty state tracking for efficient synchronization.
+/// This dictionary maintains both:
+/// - **Dirty tracking** (`_isDirty`, `_dirtyKeys`): Required even when incremental sync is on.
+///   TransportAdapter uses `getDirtyFields()` for (1) safety check that all dirty broadcast
+///   fields are covered by patches before using the incremental path, and (2) snapshot mode
+///   (`.dirtyTracking`) when falling back to the diff path. Do not remove dirty tracking.
+/// - **Patch recording** (when `_$patchRecorder` is set): Feeds incremental sync so the server
+///   can send only changed keys instead of full diff.
+///
 /// When values are set, removed, or updated, the dictionary marks itself as dirty
-/// and tracks which keys have been modified.
+/// and records a patch when a recorder is available.
 ///
 /// Example:
 /// ```swift
@@ -33,10 +40,16 @@ public struct ReactiveDictionary<Key: Hashable & Sendable, Value: Sendable>: @un
 
     /// Path to this dictionary from root state.
     /// Injected by parent container or LandKeeper.
+    ///
+    /// Must be `public`: macro-generated `_$propagatePatchContext()` runs in the consumer module
+    /// (e.g. GameDemo) and assigns to this on values cast as `any PatchableState`; cross-module
+    /// access requires public API.
     public var _$parentPath: String = ""
 
     /// Shared patch recorder reference.
     /// Injected by parent container or LandKeeper.
+    ///
+    /// Must be `public`: same cross-module requirement as `_$parentPath` (see above).
     public var _$patchRecorder: PatchRecorder? = nil
     
     // MARK: - Initialization
@@ -157,9 +170,23 @@ public struct ReactiveDictionary<Key: Hashable & Sendable, Value: Sendable>: @un
         _storage[key] = value
         _isDirty = true
         _dirtyKeys.insert(key)
+
+        // Record patch so incremental sync sees this mutation (same as subscript setter)
+        if let recorder = _$patchRecorder {
+            let path = makePath(for: key)
+            do {
+                let snapshotValue = try SnapshotValue.make(from: value)
+                recorder.record(StatePatch(path: path, operation: .set(snapshotValue)))
+            } catch {
+                let message = "ReactiveDictionary failed to convert value to SnapshotValue at path '\(path)'. Recording null fallback. Error: \(error)"
+                print("⚠️ Warning: \(message)")
+                recorder.record(StatePatch(path: path, operation: .set(.null)))
+            }
+        }
+
         onChange?()
     }
-    
+
     // MARK: - Collection Properties
     
     /// A collection containing just the keys of the dictionary
@@ -219,5 +246,17 @@ public struct ReactiveDictionary<Key: Hashable & Sendable, Value: Sendable>: @un
         segment
             .replacingOccurrences(of: "~", with: "~0")
             .replacingOccurrences(of: "/", with: "~1")
+    }
+}
+
+// MARK: - PatchableState Conformance
+
+extension ReactiveDictionary: PatchableState {}
+
+// MARK: - SnapshotValueConvertible Conformance
+
+extension ReactiveDictionary: SnapshotValueConvertible {
+    public func toSnapshotValue() throws -> SnapshotValue {
+        try SnapshotValue.make(from: _storage)
     }
 }

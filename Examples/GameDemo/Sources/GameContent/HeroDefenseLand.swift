@@ -41,34 +41,40 @@ public enum HeroDefense {
                     let config = configService.provider
 
                     // Update all player systems
-                    for (playerID, var player) in state.players {
-                        defer { state.players[playerID] = player }
+                    let playerIDs = Array(state.players.keys)
+                    for playerID in playerIDs {
+                        guard var player = state.players[playerID] else {
+                            continue
+                        }
 
                         // Update movement (this also updates rotation towards movement target)
                         MovementSystem.updatePlayerMovement(&player, ctx)
 
                         // Auto-shoot: Check if there's a monster in range and fire automatically
-                        guard CombatSystem.canPlayerFire(player, ctx) else {
-                            continue
+                        let shootResult: CombatSystem.ShootResult?
+                        if CombatSystem.canPlayerFire(player, ctx) {
+                            shootResult = CombatSystem.processPlayerShoot(
+                                player: &player,
+                                monsters: &state.monsters,
+                                ctx
+                            )
+                        } else {
+                            shootResult = nil
                         }
 
-                        guard let result = CombatSystem.processPlayerShoot(
-                            player: &player,
-                            monsters: &state.monsters,
-                            ctx
-                        ) else {
-                            continue
-                        }
+                        state.players[playerID] = player
 
-                        // Broadcast shoot event to all players (deterministic output)
-                        ctx.emitEvent(
-                            PlayerShootEvent(
-                                playerID: playerID,
-                                from: result.shooterPosition,
-                                to: result.targetPosition
-                            ),
-                            to: .all
-                        )
+                        if let result = shootResult {
+                            // Broadcast shoot event to all players (deterministic output)
+                            ctx.emitEvent(
+                                PlayerShootEvent(
+                                    playerID: playerID,
+                                    from: result.shooterPosition,
+                                    to: result.targetPosition
+                                ),
+                                to: .all
+                            )
+                        }
                     }
 
                     // Spawn monsters periodically (spawn speed increases over time)
@@ -86,21 +92,27 @@ public enum HeroDefense {
 
                     // Update all monsters
                     var monstersToRemove: [Int] = []
-                    for (monsterID, var monster) in state.monsters {
+                    let monsterIDs = Array(state.monsters.keys)
+                    for monsterID in monsterIDs {
+                        guard var monster = state.monsters[monsterID] else {
+                            continue
+                        }
                         // Update movement
                         MovementSystem.updateMonsterMovement(
                             &monster,
                             basePosition: state.base.position,
                             ctx
                         )
+
                         state.monsters[monsterID] = monster
 
                         // Check if reached base
-                        if MonsterSystem.checkMonsterReachedBase(
+                        let reachedBase = MonsterSystem.checkMonsterReachedBase(
                             monster,
                             base: &state.base,
                             ctx
-                        ) {
+                        )
+                        if reachedBase {
                             monstersToRemove.append(monsterID)
                         }
                     }
@@ -111,26 +123,35 @@ public enum HeroDefense {
                     }
 
                     // Update turrets (auto-target and fire)
-                    for (turretID, var turret) in state.turrets {
-                        defer { state.turrets[turretID] = turret }
-
-                        // Check fire rate
-                        guard CombatSystem.canTurretFire(turret, ctx) else {
+                    let turretIDs = Array(state.turrets.keys)
+                    for turretID in turretIDs {
+                        guard var turret = state.turrets[turretID] else {
                             continue
                         }
 
-                        // Try to shoot at nearest monster
-                        guard let result = CombatSystem.processTurretShoot(
-                            turret: &turret,
-                            monsters: &state.monsters,
-                            ctx
-                        ) else {
+                        // Check fire rate
+                        let fireResult: CombatSystem.TurretShootResult?
+                        if CombatSystem.canTurretFire(turret, ctx) {
+                            fireResult = CombatSystem.processTurretShoot(
+                                turret: &turret,
+                                monsters: &state.monsters,
+                                ctx
+                            )
+                        } else {
+                            fireResult = nil
+                        }
+                        let ownerID = turret.ownerID
+                        state.turrets[turretID] = turret
+
+                        guard let result = fireResult else {
                             continue
                         }
 
                         // Give resources to turret owner if monster was defeated
-                        if result.defeated, let ownerID = turret.ownerID {
-                            state.players[ownerID]?.resources += result.rewardGained
+                        if result.defeated, let ownerID,
+                           var player = state.players[ownerID] {
+                            player.resources += result.rewardGained
+                            state.players[ownerID] = player
                         }
 
                         // Broadcast turret fire event to all players (deterministic output)

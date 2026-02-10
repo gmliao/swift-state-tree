@@ -86,6 +86,17 @@ When `--profile` is used with `run-ws-loadtest.sh` or `run-scalability-test.sh`,
 
 Environment variables (optional): `TRANSPORT_PROFILE_JSONL_PATH`, `TRANSPORT_PROFILE_INTERVAL_MS` (default 1000), `TRANSPORT_PROFILE_SAMPLE_RATE` (default 0.01), `TRANSPORT_PROFILE_MAX_SAMPLES_PER_INTERVAL` (default 500).
 
+## Swift Profile Recorder (CPU profiling)
+
+Run ws-loadtest with **Swift Profile Recorder** to collect CPU samples during steady state and save a `.perf` file for [Speedscope](https://speedscope.app) or [Firefox Profiler](https://profiler.firefox.com):
+
+```bash
+cd Examples/GameDemo/ws-loadtest
+bash scripts/run-ws-loadtest-with-profiler.sh --scenario scenarios/hero-defense/profile-300rooms.json
+```
+
+Options: `--scenario <path>` (default: `profile-300rooms.json`), `--samples N` (default: 800), `--ramp-wait N` (seconds before collect, default: 25), `--output-dir <dir>`. Output: `results/ws-loadtest-profiling/profile-<rooms>rooms-<timestamp>.perf`.
+
 ## Notes
 
 - Join messages always use JSON.

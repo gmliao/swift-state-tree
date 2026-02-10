@@ -40,6 +40,9 @@ final class StateNodeBuilderMacroTests {
                 public var _$parentPath: String = ""
 
                 public var _$patchRecorder: PatchRecorder? = nil
+
+                public mutating func _$propagatePatchContext() {
+                }
             
                 public func getSyncFields() -> [SyncFieldInfo] {
                     return [SyncFieldInfo(name: "gameName", policyType: .broadcast), SyncFieldInfo(name: "hiddenData", policyType: .serverOnly)]
@@ -178,6 +181,33 @@ final class StateNodeBuilderMacroTests {
                 public var _$parentPath: String = ""
 
                 public var _$patchRecorder: PatchRecorder? = nil
+
+                public mutating func _$propagatePatchContext() {
+                    // Propagate to players
+                    do {
+                        let childPath = _$parentPath.isEmpty ? "/players" : "\\(_$parentPath)/players"
+                        if var patchable = (_players.wrappedValue as Any) as? any PatchableState {
+                            patchable._$patchRecorder = _$patchRecorder
+                            patchable._$parentPath = childPath
+                            patchable._$propagatePatchContext()
+                            if let typed = patchable as? ReactiveDictionary<String, Int> {
+                                _players.updateValueWithoutMarkingDirty(typed)
+                            }
+                        }
+                    }
+                    // Propagate to ids
+                    do {
+                        let childPath = _$parentPath.isEmpty ? "/ids" : "\\(_$parentPath)/ids"
+                        if var patchable = (_ids.wrappedValue as Any) as? any PatchableState {
+                            patchable._$patchRecorder = _$patchRecorder
+                            patchable._$parentPath = childPath
+                            patchable._$propagatePatchContext()
+                            if let typed = patchable as? ReactiveSet<String> {
+                                _ids.updateValueWithoutMarkingDirty(typed)
+                            }
+                        }
+                    }
+                }
 
                 public func getSyncFields() -> [SyncFieldInfo] {
                     return [SyncFieldInfo(name: "players", policyType: .broadcast), SyncFieldInfo(name: "ids", policyType: .broadcast)]
