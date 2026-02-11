@@ -153,9 +153,9 @@ final class MembershipCoordinator: Sendable {
             return existingSlot
         }
         
-        // Hash-based slot allocation
-        let hash = accountKey.hashValue
-        let candidateSlot = Int32(abs(hash) % 1000)
+        // Hash-based slot allocation (deterministic FNV-1a via SwiftStateTree)
+        let hash = DeterministicHash.stableInt32(accountKey)
+        let candidateSlot = Int32(truncatingIfNeeded: UInt32(bitPattern: hash) % 1000)
         
         // Find first available slot starting from candidate
         var slot = candidateSlot
