@@ -19,9 +19,6 @@ struct EncodingPipeline: Sendable {
     let messageEncoder: any TransportMessageEncoder
     let landID: String
     
-    /// Opcode for state update with events (107). Same numeric range as MessageKindOpcode.
-    private let opcodeStateUpdateWithEvents: Int64 = 107
-    
     /// Encode a state update.
     ///
     /// - Parameters:
@@ -78,7 +75,7 @@ struct EncodingPipeline: Sendable {
             guard case .array(let stateArr) = stateUnpacked else { return nil }
 
             let combined: MessagePackValue = .array([
-                .int(opcodeStateUpdateWithEvents),
+                .int(MessageKindOpcode.stateUpdateWithEvents),
                 .array(stateArr),
                 .array(eventBodies)
             ])
@@ -107,7 +104,7 @@ struct EncodingPipeline: Sendable {
             return nil
         }
         let combined: MessagePackValue = .array([
-            .int(opcodeStateUpdateWithEvents),
+            .int(MessageKindOpcode.stateUpdateWithEvents),
             .array(stateUpdateArray),
             .array(eventBodies)
         ])

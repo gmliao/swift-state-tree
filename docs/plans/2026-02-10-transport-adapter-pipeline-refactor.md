@@ -14,7 +14,7 @@ The current `TransportAdapter` (2600+ lines) has accumulated too many responsibi
 - Message decoding and routing (200+ lines in `onMessage`)
 - Membership management (join/leave, session tracking, membership queue)
 - State synchronization (syncNow, syncBroadcastOnly, dirty tracking)
-- Encoding management (JSON/MessagePack switching, parallel encoding)
+- Encoding management (JSON/MessagePack switching)
 - Event queueing (pending events, merge logic)
 - Profiling and metrics
 
@@ -141,7 +141,7 @@ Pipeline/
 │  │    ├─ encodeStateUpdate()                          │    │
 │  │    ├─ encodeServerEvent()                          │    │
 │  │    ├─ mergeEventsWithUpdate() [opcode 107]         │    │
-│  │    └─ parallelEncodingDecision()                   │    │
+│  │    └─ (encoding: serial per sync cycle)           │    │
 │  │                                                     │    │
 │  └────────────────────────────────────────────────────┘    │
 │                                                              │
@@ -305,7 +305,7 @@ struct MessageRoutingTable: Sendable {
 
 **Responsibility**: Unified encoding logic for state updates and events.
 
-**Why struct**: Stateless transformation, supports both serial and parallel encoding.
+**Why struct**: Stateless transformation for encoding.
 
 ```swift
 struct EncodingPipeline: Sendable {
@@ -362,7 +362,7 @@ Join and JoinResponse encoding is **NOT** handled by TransportAdapter's Encoding
 - ✅ Centralizes all encoding format logic (except join handshake)
 - ✅ Simplifies syncNow/syncBroadcastOnly (reuse encoding logic)
 - ✅ Easy to switch encoding formats (single configuration point)
-- ✅ Supports both serial and parallel encoding strategies
+- ✅ Encoding strategy (serial per sync cycle)
 - ✅ Preserves join/joinResponse special handling (LandRouter responsibility)
 
 #### 4. MembershipCoordinator (Sendable class)
@@ -738,7 +738,7 @@ To ensure zero performance regression, we will benchmark:
 2. **Sync Operation Throughput**:
    - Measure: `syncNow` duration for 50 players
    - Target: ≤ 5% variance from current implementation
-   - Test: Run benchmark with parallel encoding enabled/disabled
+   - Test: Run TransportAdapter sync benchmark
 
 3. **Memory Allocation**:
    - Measure: Total allocations during 1000 sync operations
@@ -823,7 +823,7 @@ Each phase is independently verifiable and reversible:
 ### Performance
 - ✅ **Zero overhead**: All components are value types or actor-isolated
 - ✅ **No actor hopping**: All hot paths remain in single actor
-- ✅ **Parallel encoding**: Unchanged (still supported for JSON encoders)
+- ✅ **Encoding**: Serial per sync cycle
 - ✅ **Memory efficiency**: Structs have minimal allocation overhead
 
 ### API Compatibility

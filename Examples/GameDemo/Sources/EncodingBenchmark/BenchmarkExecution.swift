@@ -132,10 +132,6 @@ enum BenchmarkRunner {
             logger: benchmarkLogger
         )
         
-        // Disable per-player parallel encoding in benchmark to focus on room-level parallelism
-        // Only room-level parallelism (withTaskGroup) is used for comparison
-        let shouldEnableParallel = false  // Always disable per-player encoding parallelism
-        
         let adapter = TransportAdapter<CardGameState>(
             keeper: keeper,
             transport: transport,
@@ -144,9 +140,7 @@ enum BenchmarkRunner {
             enableDirtyTracking: true,
             encodingConfig: format.transportEncodingConfig,
             pathHashes: pathHashes,
-            suppressMissingPathHashesWarning: !format.usesPathHash,
-            enableParallelEncoding: shouldEnableParallel,
-            logger: benchmarkLogger
+            suppressMissingPathHashesWarning: !format.usesPathHash
         )
         await keeper.setTransport(adapter)
         await transport.setDelegate(adapter)
@@ -318,8 +312,6 @@ enum BenchmarkRunner {
                 logger: benchmarkLogger
             )
             
-            let shouldEnableParallel = false
-            
             let adapter = TransportAdapter<HeroDefenseState>(
                 keeper: keeper,
                 transport: transport,
@@ -327,9 +319,7 @@ enum BenchmarkRunner {
                 createGuestSession: nil,
                 enableDirtyTracking: true,
                 encodingConfig: format.transportEncodingConfig,
-                pathHashes: pathHashes,
-                enableParallelEncoding: shouldEnableParallel,
-                logger: benchmarkLogger
+                pathHashes: pathHashes
             )
             
             rooms.append(HeroDefenseRoomContext(
@@ -503,8 +493,6 @@ enum BenchmarkRunner {
                 logger: benchmarkLogger
             )
             
-            let shouldEnableParallel = false
-            
             let adapter = TransportAdapter<HeroDefenseState>(
                 keeper: keeper,
                 transport: transport,
@@ -512,9 +500,7 @@ enum BenchmarkRunner {
                 createGuestSession: nil,
                 enableDirtyTracking: true,
                 encodingConfig: format.transportEncodingConfig,
-                pathHashes: pathHashes,
-                enableParallelEncoding: shouldEnableParallel,
-                logger: benchmarkLogger
+                pathHashes: pathHashes
             )
             
             rooms.append(HeroDefenseRoomContext(
@@ -673,7 +659,7 @@ enum BenchmarkRunner {
         logLevel: .error
     )
 
-    // Create rooms manually (similar to TransportAdapterMultiRoomParallelEncodingBenchmarkRunner)
+    // Create rooms manually (multi-room benchmark)
     // This gives us control over CountingTransport per room
     var rooms: [HeroDefenseRoomContext] = []
     rooms.reserveCapacity(roomCount)
@@ -697,10 +683,6 @@ enum BenchmarkRunner {
             logger: benchmarkLogger
         )
         
-        // Disable per-player parallel encoding in benchmark to focus on room-level parallelism
-        // Only room-level parallelism (withTaskGroup) is used for comparison
-        let shouldEnableParallel = false  // Always disable per-player encoding parallelism
-        
         let adapter = TransportAdapter<HeroDefenseState>(
             keeper: keeper,
             transport: transport,
@@ -709,9 +691,7 @@ enum BenchmarkRunner {
             enableDirtyTracking: true,
             encodingConfig: format.transportEncodingConfig,
             pathHashes: pathHashes,
-            suppressMissingPathHashesWarning: !format.usesPathHash,
-            enableParallelEncoding: shouldEnableParallel,
-            logger: benchmarkLogger
+            suppressMissingPathHashesWarning: !format.usesPathHash
         )
         
         await keeper.setTransport(adapter)
@@ -895,10 +875,6 @@ enum BenchmarkRunner {
         logger: benchmarkLogger
     )
 
-    // Disable per-player parallel encoding in benchmark to focus on room-level parallelism
-    // Only room-level parallelism (withTaskGroup) is used for comparison
-    let shouldEnableParallel = false  // Always disable per-player encoding parallelism
-    
     let adapter = TransportAdapter<BenchmarkState>(
         keeper: keeper,
         transport: mockTransport,
@@ -907,10 +883,8 @@ enum BenchmarkRunner {
         enableDirtyTracking: true,
         encodingConfig: format.transportEncodingConfig,
         pathHashes: pathHashes,
-        suppressMissingPathHashesWarning: !format.usesPathHash,
-        enableParallelEncoding: shouldEnableParallel,
-        logger: benchmarkLogger
-    )
+            suppressMissingPathHashesWarning: !format.usesPathHash
+        )
     
     await keeper.setTransport(adapter)
     await mockTransport.setDelegate(adapter)

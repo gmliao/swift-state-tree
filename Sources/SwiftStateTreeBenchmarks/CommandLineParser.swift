@@ -25,16 +25,6 @@ struct CommandLineParser {
     /// Optional override for player counts to test (e.g., "4,10,20,30,50").
     /// If nil, uses each suite's default player counts.
     let playerCountsOverride: [Int]?
-    /// Optional override for room counts in multi-room benchmarks (e.g., "1,2,4,8").
-    /// If nil, uses each suite's default room counts.
-    let roomCountsOverride: [Int]?
-    /// Optional override for multi-room tick mode ("synchronized" or "staggered").
-    /// If nil, uses each suite's default tick mode.
-    let tickModeOverride: TransportAdapterMultiRoomParallelEncodingBenchmarkRunner.TickMode?
-    /// Optional override for multi-room tick strides (e.g., "1,2,3,4").
-    /// If nil, uses each suite's default tick strides.
-    let tickStridesOverride: [Int]?
-
     init() {
         let arguments = CommandLine.arguments.dropFirst()
 
@@ -46,9 +36,6 @@ struct CommandLineParser {
         var skipWaitForEnter = false
         var suiteNameFilter: String? = nil
         var playerCountsOverride: [Int]? = nil
-        var roomCountsOverride: [Int]? = nil
-        var tickModeOverride: TransportAdapterMultiRoomParallelEncodingBenchmarkRunner.TickMode? = nil
-        var tickStridesOverride: [Int]? = nil
 
         // Parse suite types from arguments (exclude flags)
         var types: [BenchmarkSuiteType] = []
@@ -109,51 +96,6 @@ struct CommandLineParser {
                 }
                 continue
             }
-            if arg.hasPrefix("--room-counts=") {
-                let parts = arg.split(separator: "=", maxSplits: 1)
-                if parts.count == 2 {
-                    let countsString = String(parts[1])
-                    let counts = countsString.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
-                    if !counts.isEmpty {
-                        roomCountsOverride = counts
-                    } else {
-                        invalidArgs.append(arg)
-                    }
-                } else {
-                    invalidArgs.append(arg)
-                }
-                continue
-            }
-            if arg.hasPrefix("--tick-mode=") {
-                let parts = arg.split(separator: "=", maxSplits: 1)
-                if parts.count == 2 {
-                    let value = String(parts[1]).lowercased()
-                    if let mode = TransportAdapterMultiRoomParallelEncodingBenchmarkRunner.TickMode(rawValue: value) {
-                        tickModeOverride = mode
-                    } else {
-                        invalidArgs.append(arg)
-                    }
-                } else {
-                    invalidArgs.append(arg)
-                }
-                continue
-            }
-            if arg.hasPrefix("--tick-strides=") {
-                let parts = arg.split(separator: "=", maxSplits: 1)
-                if parts.count == 2 {
-                    let countsString = String(parts[1])
-                    let counts = countsString.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
-                    if !counts.isEmpty {
-                        tickStridesOverride = counts
-                    } else {
-                        invalidArgs.append(arg)
-                    }
-                } else {
-                    invalidArgs.append(arg)
-                }
-                continue
-            }
-
             // Suite type argument
             if let suiteType = BenchmarkSuiteType(rawValue: arg.lowercased()) {
                 types.append(suiteType)
@@ -174,9 +116,6 @@ struct CommandLineParser {
             self.skipWaitForEnter = skipWaitForEnter
             self.suiteNameFilter = suiteNameFilter
             self.playerCountsOverride = playerCountsOverride
-            self.roomCountsOverride = roomCountsOverride
-            self.tickModeOverride = tickModeOverride
-            self.tickStridesOverride = tickStridesOverride
             return
         }
 
@@ -195,9 +134,6 @@ struct CommandLineParser {
         self.skipWaitForEnter = skipWaitForEnter
         self.suiteNameFilter = suiteNameFilter
         self.playerCountsOverride = playerCountsOverride
-        self.roomCountsOverride = roomCountsOverride
-        self.tickModeOverride = tickModeOverride
-        self.tickStridesOverride = tickStridesOverride
     }
 
     static func printUsage() {
@@ -211,8 +147,6 @@ struct CommandLineParser {
           transport-sync - TransportAdapter Sync Performance
           transport-sync-players - TransportAdapter Sync (broadcast players mutated each tick)
           transport-concurrent-stability - TransportAdapter Concurrent Sync Stability Test
-          transport-parallel-tuning - TransportAdapter Parallel Encoding Tuning
-          transport-multiroom-parallel-tuning - TransportAdapter Multi-Room Parallel Encoding Tuning
           all            - Run all suites (default)
 
         Examples:

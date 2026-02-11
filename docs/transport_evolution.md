@@ -208,28 +208,13 @@ Position update again (Diff):
 
 > **Final Benefit**: Completely removes text parsing costs and compresses packet size to the extreme.
 
-#### Parallel Encoding Support
+#### Thread Safety
 
-`OpcodeMessagePackStateUpdateEncoder` and `MessagePackSerializer` are both **`Sendable`** types, supporting safe parallel encoding in multi-threaded environments:
-
-```swift
-// Safe parallel encoding in TaskGroup
-let results = await withTaskGroup(of: Data.self) { group in
-    for update in updates {
-        group.addTask {
-            try! encoder.encode(update: update, landID: landID, playerID: playerID)
-        }
-    }
-    // ...
-}
-```
-
-**Unit Test Verification**: Parallel encoding results are identical to serial encoding, with better performance.
+`OpcodeMessagePackStateUpdateEncoder` and `MessagePackSerializer` are both **`Sendable`** types, safe for use across concurrency domains. State updates are encoded serially per sync cycle.
 
 - **Source Code**:
-  - Server Encoder: [StateUpdateEncoder.swift:L329](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift#L329)
+  - Server Encoder: [StateUpdateEncoder.swift](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift)
   - Client Decoder: [protocol.ts:L304](../sdk/ts/src/core/protocol.ts#L304)
-  - Parallel Encoding Tests: [TransportAdapterParallelEncodingPerformanceTests.swift](../Tests/SwiftStateTreeTransportTests/TransportAdapterParallelEncodingPerformanceTests.swift)
 
 ---
 
@@ -320,13 +305,11 @@ Based on performance test results on `2026-01-15` (GameServer: hero-defense, dur
 - **Status**: Although the server-side has been fully optimized to Tuple Arrays (e.g., `[100, 200]`), current Client SDKs still use Object structures when sending Actions (e.g., `{ "x": 100, "y": 200 }`).
 - **Future Optimization**: This is a known optimization point. In the future, Client SDKs can also implement a mechanism similar to `@Payload` to convert Action Payloads into Array format, further saving upstream traffic.
 
-### Q5: Does the MessagePack encoder support parallel encoding? (Parallel Encoding)
+### Q5: Is the MessagePack encoder thread-safe?
 
-**A: Yes! The MessagePack encoder fully supports parallel encoding.**
+**A: Yes. `OpcodeMessagePackStateUpdateEncoder` and `MessagePackSerializer` are both `Sendable` types.** State updates are encoded serially per sync cycle. The encoder is safe for concurrent access (e.g. from multiple tasks) when needed.
 
-- **Technical Reason**: `OpcodeMessagePackStateUpdateEncoder` and `MessagePackSerializer` are both `Sendable` types, enabling safe parallel execution in `TaskGroup`.
-- **Test Verification**: Unit test `testOpcodeMessagePackParallelEncoding` verifies that parallel encoding results are identical to serial encoding.
-- **Performance Comparison** (50 updates × 3 patches):
+**Performance** (50 updates × 3 patches, serial encoding):
 
 | Format                        | Per Update   | vs JSON   |
 | ----------------------------- | ------------ | --------- |

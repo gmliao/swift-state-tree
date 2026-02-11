@@ -17,7 +17,6 @@ struct TransportAdapterConcurrentStabilityBenchmarkRunner: BenchmarkRunner {
     let concurrentSyncs: Int  // Number of concurrent sync operations per iteration
     let iterations: Int  // Number of test iterations
     let enableDirtyTracking: Bool
-    let enableParallelEncoding: Bool?
     
     /// Store all results for multi-player-count benchmarks
     var allCollectedResults: [BenchmarkResult] = []
@@ -26,14 +25,12 @@ struct TransportAdapterConcurrentStabilityBenchmarkRunner: BenchmarkRunner {
         playerCounts: [Int] = [4, 10, 20, 30, 50],
         concurrentSyncs: Int = 5,
         iterations: Int = 100,
-        enableDirtyTracking: Bool = true,
-        enableParallelEncoding: Bool? = nil
+        enableDirtyTracking: Bool = true
     ) {
         self.playerCounts = playerCounts
         self.concurrentSyncs = concurrentSyncs
         self.iterations = iterations
         self.enableDirtyTracking = enableDirtyTracking
-        self.enableParallelEncoding = enableParallelEncoding
     }
     
     mutating func run(
@@ -148,7 +145,6 @@ struct TransportAdapterConcurrentStabilityBenchmarkRunner: BenchmarkRunner {
             enableLegacyJoin: false,
             enableDirtyTracking: enableDirtyTracking,
             codec: JSONTransportCodec(),
-            enableParallelEncoding: enableParallelEncoding,
             logger: benchmarkLogger
         )
         await keeper.setTransport(adapter)
@@ -291,11 +287,6 @@ struct TransportAdapterConcurrentStabilityBenchmarkRunner: BenchmarkRunner {
         
         // Build mode label with stability metrics
         var modeLabel = enableDirtyTracking ? "DirtyTracking: On" : "DirtyTracking: Off"
-        if let enableParallel = enableParallelEncoding {
-            modeLabel += ", Encoding: \(enableParallel ? "Parallel" : "Serial")"
-        } else {
-            modeLabel += ", Encoding: Default"
-        }
         modeLabel += ", Concurrent: \(concurrentSyncs)"
         modeLabel += ", Success: \(String(format: "%.1f", successRate * 100))%"
         if consistencyErrors > 0 {

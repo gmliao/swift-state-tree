@@ -21,7 +21,7 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
     private final class DynamicKeyTable: @unchecked Sendable {
         private var keyToSlot: [String: Int] = [:]
         private var nextSlot: Int = 0
-        /// Lock for thread-safety (synchronous access in parallel encoding)
+        /// Lock for thread-safety
         private let lock = NSLock()
         
         /// Get existing slot or assign new one

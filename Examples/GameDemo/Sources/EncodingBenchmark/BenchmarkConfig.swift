@@ -213,10 +213,10 @@ enum ArgumentParser {
       --players-per-room-list <csv>  Players per room list for matrix runs (e.g. 5,10)
       --iterations <count>    Number of iterations/syncs (default: 100)
       --output <format>       Output format: table or json (default: table)
-      --parallel <bool>       Enable parallel encoding (default: true)
+      --parallel <bool>       Enable parallel execution across rooms (default: true)
       --game-type <type>      Game type: hero-defense or card-game (default: hero-defense)
       --all                   Run benchmark for all formats
-      --compare-parallel      Compare serial vs parallel encoding for each format
+      --compare-parallel      Compare serial vs parallel execution for each format
       --scalability           Run scalability test (different room counts)
       --room-counts <csv>     Room counts override for scalability (e.g. 10,20,30,40,50)
       --include-tick          Backward-compatible: equivalent to --ticks-per-sync 1

@@ -1,6 +1,6 @@
 // Examples/GameDemo/Sources/GameContent/CardGameLand.swift
 //
-// Card game land definition for benchmarking parallel encoding.
+// Card game land definition for benchmarking multi-player sync.
 
 import Foundation
 import SwiftStateTree
@@ -15,7 +15,7 @@ public enum CardGame {
         ) {
             AccessControl {
                 AllowPublic(true)
-                MaxPlayers(50)  // Support many players for parallel encoding tests
+                MaxPlayers(50)  // Support many players for sync benchmark tests
             }
             
             Rules {

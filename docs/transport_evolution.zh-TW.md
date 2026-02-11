@@ -208,28 +208,13 @@
 
 > **最終效益**：徹底移除文字解析成本，將封包大小壓縮至極限。
 
-#### 平行編碼支援 (Parallel Encoding Support)
+#### 執行緒安全 (Thread Safety)
 
-`OpcodeMessagePackStateUpdateEncoder` 和 `MessagePackSerializer` 都是 **`Sendable`** 類型，支援在多線程環境中安全地平行編碼：
+`OpcodeMessagePackStateUpdateEncoder` 和 `MessagePackSerializer` 都是 **`Sendable`** 類型，可在不同並發域中安全使用。狀態更新在每個 sync 週期內以串行方式編碼。
 
-```swift
-// 在 TaskGroup 中安全地平行編碼
-let results = await withTaskGroup(of: Data.self) { group in
-    for update in updates {
-        group.addTask {
-            try! encoder.encode(update: update, landID: landID, playerID: playerID)
-        }
-    }
-    // ...
-}
-```
-
-**單元測試驗證**：平行編碼結果與串行編碼完全一致，且效能更佳。
-
-- **相關分析程式碼**:
-  - Server 端編碼 (MessagePack): [StateUpdateEncoder.swift:L329](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift#L329)
+- **相關程式碼**:
+  - Server 端編碼: [StateUpdateEncoder.swift](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift)
   - Client 端解碼: [protocol.ts:L304](../sdk/ts/src/core/protocol.ts#L304)
-  - 平行編碼測試: [TransportAdapterParallelEncodingPerformanceTests.swift](../Tests/SwiftStateTreeTransportTests/TransportAdapterParallelEncodingPerformanceTests.swift)
 
 ---
 
@@ -320,13 +305,11 @@ let results = await withTaskGroup(of: Data.self) { group in
 - **現況**：雖然 Server 端已全面優化為 Tuple Array (e.g. `[100, 200]`)，但目前的 Client SDK 在發送 Action 時，Payload 部分仍採用 Object 結構 (e.g. `{ "x": 100, "y": 200 }`)。
 - **未來優化**：這是一個已知的優化點。後續可以讓 Client 端也實作類似 `@Payload` 的機制，將 Action Payload 也轉為 Array 傳輸，進一步節省上行流量。
 
-### Q5: MessagePack 編碼器支援平行編碼嗎？ (Parallel Encoding)
+### Q5: MessagePack 編碼器是否具備執行緒安全？
 
-**A: 支援！MessagePack 編碼器完全支援平行編碼。**
+**A: 是。`OpcodeMessagePackStateUpdateEncoder` 和 `MessagePackSerializer` 皆為 `Sendable` 類型。** 狀態更新在每個 sync 週期內以串行方式編碼；編碼器在需要時可安全地於並發環境中使用。
 
-- **技術原因**：`OpcodeMessagePackStateUpdateEncoder` 和 `MessagePackSerializer` 都是 `Sendable` 類型，可以在 `TaskGroup` 中安全地並行執行。
-- **測試驗證**：單元測試 `testOpcodeMessagePackParallelEncoding` 驗證了平行編碼結果與串行編碼完全一致。
-- **效能比較**（50 updates × 3 patches）：
+**效能**（50 updates × 3 patches，串行編碼）：
 
 | 格式                          | 每個更新     | vs JSON   |
 | ----------------------------- | ------------ | --------- |

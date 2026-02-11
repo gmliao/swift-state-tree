@@ -63,5 +63,32 @@ public enum StateUpdate: Equatable, Sendable, Codable {
             )
         }
     }
+    
+    /// Get the update type as a string (for logging).
+    public var updateType: String {
+        switch self {
+        case .noChange: return "noChange"
+        case .firstSync: return "firstSync"
+        case .diff: return "diff"
+        }
+    }
+    
+    /// Get the patch count (for logging).
+    public var patchCount: Int {
+        switch self {
+        case .noChange: return 0
+        case .firstSync(let patches): return patches.count
+        case .diff(let patches): return patches.count
+        }
+    }
+    
+    /// Get both update type and patch count (for logging).
+    public func typeAndPatchCount() -> (type: String, count: Int) {
+        switch self {
+        case .noChange: return ("noChange", 0)
+        case .firstSync(let patches): return ("firstSync", patches.count)
+        case .diff(let patches): return ("diff", patches.count)
+        }
+    }
 }
 

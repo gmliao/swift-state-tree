@@ -40,7 +40,7 @@ struct MessagePackThreadSafetyTests {
             serialResults.append(data)
         }
         
-        // Parallel encoding with high concurrency (simulating multiple rooms)
+        // High concurrency (simulating multiple rooms)
         let parallelResults = await withTaskGroup(of: (Int, Data).self, returning: [Data].self) { group in
             for (index, (playerID, update)) in updates.enumerated() {
                 group.addTask { [index] in

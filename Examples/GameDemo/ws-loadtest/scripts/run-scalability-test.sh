@@ -11,7 +11,7 @@ RUNS=3
 ROOM_COUNTS=""
 # Default to scaling by rooms (100 → 300 → 500 → 700 unless overridden)
 SCALE_BY_ROOMS=true
-START_ROOMS=100
+START_ROOMS=300
 MAX_ROOMS=700
 ROOM_INCREMENT=200
 WORKERS=""

@@ -89,9 +89,8 @@ print("Best: \(best.format.displayName) saves \(String(format: "%.1f", savings))
    - 只在有 `pathHasher` 時才初始化，減少不必要的記憶體分配
    - 確認問題不在 `keyTableStore`
 
-2. **暫時禁用 MessagePack 的並行編碼**
-   - 已在 `TransportAdapter.parallelEncodingDecision` 中禁用
-   - 避免潛在的並行編碼問題
+2. **狀態更新編碼**
+   - 狀態更新以串行方式編碼（per-player parallel encoding 已移除）
 
 ## 解決方案
 

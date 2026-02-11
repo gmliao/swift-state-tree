@@ -838,7 +838,7 @@ struct LandRouterTests {
         try await Task.sleep(for: .milliseconds(50))
         
         // If we got here without error, messagepack was accepted post-handshake
-        #expect(true, "MessagePack action should be accepted after handshake")
+        #expect(Bool(true), "MessagePack action should be accepted after handshake")
     }
     
     @Test("Handshake error responses use JSON encoding")
