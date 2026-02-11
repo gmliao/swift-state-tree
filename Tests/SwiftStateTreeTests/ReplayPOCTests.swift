@@ -9,11 +9,20 @@ struct ReplayPOCTests {
         let resolverOutput: String
     }
 
-    // Mock Resolver that simulates async work
+    /// Mock resolver that uses a predetermined schedule (action -> resolveAtTick) instead of real time.
+    /// Deterministic: no Task.sleep, no scheduling races.
     actor MockAsyncResolver {
-        func resolve(action: String, delay: Duration) async -> String {
-            try? await Task.sleep(for: delay)
-            return "\(action)-Resolved"
+        /// Schedule: action name -> tick when it "resolves"
+        let schedule: [String: Int64]
+
+        init(schedule: [String: Int64] = [:]) {
+            self.schedule = schedule
+        }
+
+        /// Resolve immediately with mock result. resolvedAt comes from schedule.
+        func resolve(action: String, resolvesAtTick: Int64) -> (output: String, resolvedAt: Int64) {
+            let resolvedAt = schedule[action] ?? resolvesAtTick
+            return ("\(action)-Resolved", resolvedAt)
         }
     }
 
@@ -27,9 +36,10 @@ struct ReplayPOCTests {
         // For recording/replay
         var recorder: [Int64: [MockAction]] = [:]
         let isReplay: Bool
-        let resolver = MockAsyncResolver()
+        let resolver: MockAsyncResolver
         
-        init(replayData: [Int64: [MockAction]]? = nil) {
+        init(replayData: [Int64: [MockAction]]? = nil, resolverSchedule: [String: Int64] = [:]) {
+            self.resolver = MockAsyncResolver(schedule: resolverSchedule)
             if let data = replayData {
                 self.isReplay = true
                 self.recorder = data
@@ -38,17 +48,15 @@ struct ReplayPOCTests {
             }
         }
         
-        func handleAction(name: String, delay: Duration) {
+        func handleAction(name: String, resolvesAtTick: Int64) {
             let task = Task {
-                let output = await resolver.resolve(action: name, delay: delay)
-                self.enqueueResolvedAction(name: name, output: output)
+                let (output, resolvedAt) = await resolver.resolve(action: name, resolvesAtTick: resolvesAtTick)
+                await self.enqueueResolvedAction(name: name, output: output, resolvedAt: resolvedAt)
             }
             pendingTasks.append(task)
         }
         
-        private func enqueueResolvedAction(name: String, output: String) {
-            // The action is "resolved" at the current tick
-            let resolvedAt = self.tickId
+        private func enqueueResolvedAction(name: String, output: String, resolvedAt: Int64) {
             let action = MockAction(name: name, resolvedAt: resolvedAt, resolverOutput: output)
             actionQueue.append(action)
         }
@@ -119,34 +127,27 @@ struct ReplayPOCTests {
 
     @Test("Verify deterministic execution order in Live Mode")
     func testLiveModeExecution() async throws {
-        let keeper = MockLandKeeper()
+        // Use mock schedule: Fast resolves at tick 2, Slow at tick 5.
+        // No real time - deterministic, no scheduling races.
+        let keeper = MockLandKeeper(resolverSchedule: ["Fast": 2, "Slow": 5])
         
-        // Send "Slow" first, then "Fast"
-        // Slow takes 100ms, Fast takes 10ms.
-        // Fast should resolve earlier and thus execute in an earlier tick.
-        await keeper.handleAction(name: "Slow", delay: .milliseconds(100))
-        await keeper.handleAction(name: "Fast", delay: .milliseconds(10))
+        // Send "Slow" first, then "Fast" - order of submission doesn't matter;
+        // execution order is determined by resolvedAt (mock schedule).
+        await keeper.handleAction(name: "Slow", resolvesAtTick: 5)
+        await keeper.handleAction(name: "Fast", resolvesAtTick: 2)
         
-        // Run ticks for a while
-        // We need to allow time for the async tasks to complete in the background
-        // In a real game loop, runTick happens periodically.
-        // Here we simulate the loop.
+        // Let async tasks enqueue (they complete immediately with mock)
+        await keeper.waitForPendingTasks()
         
-        for _ in 0..<20 {
-            try await Task.sleep(for: .milliseconds(10))
+        // Run ticks - Fast (resolvedAt 2) executes at tick 3, Slow (resolvedAt 5) at tick 6
+        for _ in 0..<10 {
             await keeper.runTick()
         }
         
-        // Wait for any stragglers if necessary (though the loop should cover it)
-        await keeper.waitForPendingTasks()
-        
         let history = await keeper.getHistory()
         
-        // Expectation: Fast executes before Slow
-        // And history is not empty
         #expect(!history.isEmpty, "History should not be empty")
         
-        // We expect specific messages
         let fastIndex = history.firstIndex { $0.contains("Fast") }
         let slowIndex = history.firstIndex { $0.contains("Slow") }
         
@@ -154,22 +155,22 @@ struct ReplayPOCTests {
         #expect(slowIndex != nil, "Slow action missing")
         
         if let f = fastIndex, let s = slowIndex {
-            #expect(f < s, "Fast action should execute before Slow action")
+            #expect(f < s, "Fast action should execute before Slow action (Fast resolvedAt=2 < Slow resolvedAt=5)")
         }
     }
 
     @Test("Verify Replay Mode matches Live Mode")
     func testReplayMode() async throws {
-        // 1. Live Run
-        let liveKeeper = MockLandKeeper()
-        await liveKeeper.handleAction(name: "Action1", delay: .milliseconds(20))
-        await liveKeeper.handleAction(name: "Action2", delay: .milliseconds(50))
+        // 1. Live Run - use mock schedule, no real time
+        let liveKeeper = MockLandKeeper(resolverSchedule: ["Action1": 2, "Action2": 4])
+        await liveKeeper.handleAction(name: "Action1", resolvesAtTick: 2)
+        await liveKeeper.handleAction(name: "Action2", resolvesAtTick: 4)
         
-        for _ in 0..<10 {
-            try await Task.sleep(for: .milliseconds(10))
+        await liveKeeper.waitForPendingTasks()
+        
+        for _ in 0..<8 {
             await liveKeeper.runTick()
         }
-        await liveKeeper.waitForPendingTasks()
         
         let liveHistory = await liveKeeper.getHistory()
         let recordedData = await liveKeeper.getRecorder()
@@ -179,11 +180,7 @@ struct ReplayPOCTests {
         // 2. Replay Run
         let replayKeeper = MockLandKeeper(replayData: recordedData)
         
-        // In replay, we don't call handleAction. We just run ticks.
-        // And we expect the exact same history.
-        
-        for _ in 0..<10 {
-            try await Task.sleep(for: .milliseconds(10))
+        for _ in 0..<8 {
             await replayKeeper.runTick()
         }
         

@@ -25,9 +25,7 @@ public enum ReevaluationRecordSaver {
         filenamePrefix: String = "reevaluation"
     ) async throws {
         // Determine records directory
-        let dir = recordsDir
-            ?? ProcessInfo.processInfo.environment["REEVALUATION_RECORDS_DIR"]
-            ?? "./reevaluation-records"
+        let dir = recordsDir ?? ReevaluationEnvConfig.fromEnvironment().recordsDir
 
         // Create directory if it doesn't exist
         let fileManager = FileManager.default

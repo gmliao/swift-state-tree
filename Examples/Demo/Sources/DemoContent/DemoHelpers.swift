@@ -41,15 +41,7 @@ public func createDemoLogger(
 /// let port = getEnvUInt16(key: "PORT", defaultValue: 8080)
 /// ```
 public func getEnvUInt16(key: String, defaultValue: UInt16) -> UInt16 {
-    guard
-        let raw = ProcessInfo.processInfo.environment[key],
-        let value = Int(raw),
-        value >= 0,
-        value <= Int(UInt16.max)
-    else {
-        return defaultValue
-    }
-    return UInt16(value)
+    EnvHelpers.getEnvUInt16(key: key, defaultValue: defaultValue)
 }
 
 /// Get a String value from environment variable with default fallback.
@@ -64,7 +56,7 @@ public func getEnvUInt16(key: String, defaultValue: UInt16) -> UInt16 {
 /// let host = getEnvString(key: "HOST", defaultValue: "localhost")
 /// ```
 public func getEnvString(key: String, defaultValue: String) -> String {
-    return ProcessInfo.processInfo.environment[key] ?? defaultValue
+    EnvHelpers.getEnvString(key: key, defaultValue: defaultValue)
 }
 
 /// Get an optional String value from environment variable.
@@ -79,6 +71,5 @@ public func getEnvString(key: String, defaultValue: String) -> String {
 /// }
 /// ```
 public func getEnvStringOptional(key: String) -> String? {
-    let value = ProcessInfo.processInfo.environment[key]
-    return value?.isEmpty == false ? value : nil
+    EnvHelpers.getEnvStringOptional(key: key)
 }

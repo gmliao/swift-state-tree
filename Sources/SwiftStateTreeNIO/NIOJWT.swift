@@ -195,11 +195,12 @@ public struct JWTConfiguration: Sendable {
     }
 
     public static func fromEnvironment() -> JWTConfiguration? {
-        guard let secretKey = ProcessInfo.processInfo.environment["JWT_SECRET_KEY"], !secretKey.isEmpty else { return nil }
-        let algorithmString = ProcessInfo.processInfo.environment["JWT_ALGORITHM"] ?? "HS256"
+        let env = ProcessInfo.processInfo.environment
+        guard let secretKey = env[NIOEnvKeys.JWT.secretKey], !secretKey.isEmpty else { return nil }
+        let algorithmString = env[NIOEnvKeys.JWT.algorithm] ?? "HS256"
         guard let algorithm = JWTAlgorithm(rawValue: algorithmString) else { return nil }
-        let expectedIssuer = ProcessInfo.processInfo.environment["JWT_ISSUER"]
-        let expectedAudience = ProcessInfo.processInfo.environment["JWT_AUDIENCE"]
+        let expectedIssuer = env[NIOEnvKeys.JWT.issuer]
+        let expectedAudience = env[NIOEnvKeys.JWT.audience]
         return JWTConfiguration(
             secretKey: secretKey,
             algorithm: algorithm,

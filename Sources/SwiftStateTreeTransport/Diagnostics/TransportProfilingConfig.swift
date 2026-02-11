@@ -3,6 +3,7 @@
 // Configuration for TransportProfilingActor, read from environment variables.
 
 import Foundation
+import SwiftStateTree
 
 /// Configuration for transport profiling. Read from environment when enabled.
 public struct TransportProfilingConfig: Sendable {
@@ -16,20 +17,29 @@ public struct TransportProfilingConfig: Sendable {
     let maxSamplesPerInterval: Int
 
     /// Create config from environment. Returns nil (disabled) when TRANSPORT_PROFILE_JSONL_PATH is not set.
-    static func fromEnvironment() -> TransportProfilingConfig? {
-        guard let path = ProcessInfo.processInfo.environment["TRANSPORT_PROFILE_JSONL_PATH"],
+    static func fromEnvironment(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> TransportProfilingConfig? {
+        guard let path = EnvHelpers.getEnvStringOptional(key: TransportEnvKeys.Profiling.jsonlPath, environment: environment),
               !path.isEmpty
         else {
             return nil
         }
-        let intervalMs = Int(ProcessInfo.processInfo.environment["TRANSPORT_PROFILE_INTERVAL_MS"] ?? "1000") ?? 1000
-        let sampleRate = Double(ProcessInfo.processInfo.environment["TRANSPORT_PROFILE_SAMPLE_RATE"] ?? "0.01") ?? 0.01
-        let maxSamples = Int(ProcessInfo.processInfo.environment["TRANSPORT_PROFILE_MAX_SAMPLES_PER_INTERVAL"] ?? "500") ?? 500
+        let intervalMs = max(100, EnvHelpers.getEnvInt(key: TransportEnvKeys.Profiling.intervalMs, defaultValue: 1000, environment: environment))
+        let sampleRate = EnvHelpers.getEnvDouble(
+            key: TransportEnvKeys.Profiling.sampleRate,
+            defaultValue: 0.01,
+            min: 0.001,
+            max: 1.0,
+            environment: environment
+        )
+        let maxSamples = EnvHelpers.getEnvInt(key: TransportEnvKeys.Profiling.maxSamplesPerInterval, defaultValue: 500, environment: environment)
+        let clampedMaxSamples = max(10, min(10_000, maxSamples))
         return TransportProfilingConfig(
             jsonlPath: path,
-            intervalMs: max(100, intervalMs),
-            sampleRate: min(1.0, max(0.001, sampleRate)),
-            maxSamplesPerInterval: max(10, min(10_000, maxSamples))
+            intervalMs: intervalMs,
+            sampleRate: sampleRate,
+            maxSamplesPerInterval: clampedMaxSamples
         )
     }
 
