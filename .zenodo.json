@@ -1,12 +1,11 @@
 {
   "creators": [
     {
-      "name": "Liao, Guan-Ming",
-      "affiliation": ""
+      "name": "Liao, Guan-Ming"
     }
   ],
   "title": "SwiftStateTree",
-  "description": "A Swift-based multiplayer game server framework that adopts the design philosophy of Single StateTree + Sync Rules + Land DSL. StateTree combines state management concepts from frontend frameworks with backend data filtering, expressing server state through a state tree for reactive synchronization to clients.",
+  "description": "A Swift-based multiplayer game server framework that adopts the design philosophy of Single StateTree + Sync Rules + Land DSL. StateTree combines state management concepts from frontend frameworks with backend data filtering for reactive synchronization to clients.",
   "license": "mit",
   "keywords": [
     "swift",
@@ -18,15 +17,13 @@
     "sync rules",
     "land dsl"
   ],
-  "notes": "Paper baseline: dynamic dirty tracking, queue-based send, P2 metrics (baseline-v0.1)",
+  "upload_type": "software",
+  "access_right": "open",
   "related_identifiers": [
     {
       "identifier": "https://github.com/gmliao/swift-state-tree",
-      "relation": "isSupplementTo",
+      "relation": "isIdenticalTo",
       "resource_type": "other"
     }
-  ],
-  "upload_type": "software",
-  "access_right": "open",
-  "language": "swift"
+  ]
 }
