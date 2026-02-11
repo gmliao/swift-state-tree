@@ -226,13 +226,13 @@ public struct NIOAdminRoutes: Sendable {
         }
         
         // GET /admin/reevaluation/records - List all reevaluation records
-        await router.get("/admin/reevaluation/records") { [self] request in
+        let nioEnvConfig = NIOEnvConfig.fromEnvironment()
+        await router.get("/admin/reevaluation/records") { [self, nioEnvConfig] request in
             guard adminAuth.hasRequiredRole(from: request, requiredRole: .viewer) else {
                 return try unauthorizedResponse()
             }
             
-            let recordsDir = ProcessInfo.processInfo.environment["REEVALUATION_RECORDS_DIR"]
-                ?? "./reevaluation-records"
+            let recordsDir = nioEnvConfig.reevaluationRecordsDir
             
             let fileManager = FileManager.default
             guard let files = try? fileManager.contentsOfDirectory(atPath: recordsDir) else {

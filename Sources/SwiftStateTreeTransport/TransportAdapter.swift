@@ -31,9 +31,9 @@ private enum HexEncoding {
 public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     private let keeper: LandKeeper<State>
-    private let transport: any Transport
+    let transport: any Transport
     /// When set, sync uses enqueueBatch (no await) instead of transport.sendBatch.
-    private let transportSendQueue: (any TransportSendQueue)?
+    let transportSendQueue: (any TransportSendQueue)?
     private let landID: String
     private let codec: any TransportCodec
     private let messageEncoder: any TransportMessageEncoder
@@ -115,10 +115,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// Optional transport profiler (when TRANSPORT_PROFILE_JSONL_PATH is set). Low-overhead: counters use atomics; latency uses sampling.
-    private let profiler: TransportProfilingActor?
-    private let profilerCounters: TransportProfilerCounters?
+    /// Internal for TransportAdapter+Profiling extension access.
+    let profiler: TransportProfilingActor?
+    let profilerCounters: TransportProfilerCounters?
     /// Sample 1 in N latency measurements to reduce overhead. Used only when profiler is set.
-    private var latencySampleCounter: UInt64 = 0
+    var latencySampleCounter: UInt64 = 0
 
     /// Closure to create PlayerSession for guest users (when JWT validation is enabled but no token is provided).
     /// Only used when JWT validation is enabled, allowGuestMode is true, and no JWT token is provided.
@@ -208,44 +209,18 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
 
         self.enableLegacyJoin = enableLegacyJoin
-        let dirtyTrackingEnabled: Bool
-        if let override = ProcessInfo.processInfo.environment["ENABLE_DIRTY_TRACKING"]?.lowercased() {
-            dirtyTrackingEnabled = !(override == "false" || override == "0" || override == "no")
-        } else {
-            dirtyTrackingEnabled = enableDirtyTracking
-        }
-        self.enableDirtyTracking = dirtyTrackingEnabled
-        let snapshotForSyncEnabled = ProcessInfo.processInfo.environment["USE_SNAPSHOT_FOR_SYNC"] != "false"
-        self.useSnapshotForSync = snapshotForSyncEnabled
 
-        let env = ProcessInfo.processInfo.environment
-        let changeMetricsEnabled: Bool
-        if let raw = env["ENABLE_CHANGE_OBJECT_METRICS"]?.lowercased() {
-            changeMetricsEnabled = raw == "true" || raw == "1" || raw == "yes" || raw == "on"
-        } else {
-            changeMetricsEnabled = false
-        }
-        let changeMetricsLogEvery = max(1, Int(env["CHANGE_OBJECT_METRICS_LOG_EVERY"] ?? "") ?? 10)
-        let changeMetricsAlpha = min(1.0, max(0.01, Double(env["CHANGE_OBJECT_METRICS_EMA_ALPHA"] ?? "") ?? 0.2))
-        let autoDirtyTrackingEnabled: Bool
-        if let raw = env["AUTO_DIRTY_TRACKING"]?.lowercased() {
-            autoDirtyTrackingEnabled = raw == "true" || raw == "1" || raw == "yes" || raw == "on"
-        } else {
-            autoDirtyTrackingEnabled = true
-        }
-        let parsedOffThreshold = min(1.0, max(0.0, Double(env["AUTO_DIRTY_OFF_THRESHOLD"] ?? "") ?? 0.55))
-        let parsedOnThreshold = min(1.0, max(0.0, Double(env["AUTO_DIRTY_ON_THRESHOLD"] ?? "") ?? 0.30))
-        let resolvedOffThreshold = max(parsedOffThreshold, parsedOnThreshold + 0.01)
-        let resolvedOnThreshold = min(parsedOnThreshold, resolvedOffThreshold - 0.01)
-        let autoDirtyRequiredSamples = max(1, Int(env["AUTO_DIRTY_REQUIRED_SAMPLES"] ?? "") ?? 30)
-        self.enableChangeObjectMetrics = changeMetricsEnabled
-        self.changeObjectMetricsLogEvery = changeMetricsLogEvery
-        self.dirtyTrackingMetrics = DirtyTrackingMetrics(emaAlpha: changeMetricsAlpha)
+        let envConfig = TransportEnvConfig.fromEnvironment(enableDirtyTrackingDefault: enableDirtyTracking)
+        self.enableDirtyTracking = envConfig.enableDirtyTracking
+        self.useSnapshotForSync = envConfig.useSnapshotForSync
+        self.enableChangeObjectMetrics = envConfig.enableChangeObjectMetrics
+        self.changeObjectMetricsLogEvery = envConfig.changeObjectMetricsLogEvery
+        self.dirtyTrackingMetrics = DirtyTrackingMetrics(emaAlpha: envConfig.changeObjectMetricsEmaAlpha)
         self.dirtyTrackingMetricsState = DirtyTrackingMetrics.State()
-        self.enableAutoDirtyTracking = autoDirtyTrackingEnabled
-        self.autoDirtyOffThreshold = resolvedOffThreshold
-        self.autoDirtyOnThreshold = resolvedOnThreshold
-        self.autoDirtyRequiredConsecutiveSamples = autoDirtyRequiredSamples
+        self.enableAutoDirtyTracking = envConfig.enableAutoDirtyTracking
+        self.autoDirtyOffThreshold = envConfig.autoDirtyOffThreshold
+        self.autoDirtyOnThreshold = envConfig.autoDirtyOnThreshold
+        self.autoDirtyRequiredConsecutiveSamples = envConfig.autoDirtyRequiredConsecutiveSamples
         self.expectedSchemaHash = expectedSchemaHash
         self.onLandDestroyedCallback = onLandDestroyed
 
@@ -253,7 +228,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             self.createGuestSession = createGuestSession
         }
 
-        if let config = TransportProfilingConfig.fromEnvironment(), config.isEnabled {
+        if let config = envConfig.profilingConfig, config.isEnabled {
             let p = TransportProfilingActor.shared(config: config)
             self.profiler = p
             self.profilerCounters = p.getCounters()
@@ -287,13 +262,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             "landID": .string(landID),
             "messageEncoding": .string(self.messageEncoder.encoding.rawValue),
             "stateUpdateEncoding": .string(self.stateUpdateEncoder.encoding.rawValue),
-            "dirtyTracking": .string(dirtyTrackingEnabled ? "on" : "off"),
-            "snapshotForSync": .string(snapshotForSyncEnabled ? "on" : "off"),
-            "changeObjectMetrics": .string(changeMetricsEnabled ? "on" : "off"),
-            "autoDirtyTracking": .string(autoDirtyTrackingEnabled ? "on" : "off"),
-            "autoDirtyOffThreshold": .string(String(format: "%.3f", resolvedOffThreshold)),
-            "autoDirtyOnThreshold": .string(String(format: "%.3f", resolvedOnThreshold)),
-            "autoDirtyRequiredSamples": .string("\(autoDirtyRequiredSamples)")
+            "dirtyTracking": .string(envConfig.enableDirtyTracking ? "on" : "off"),
+            "snapshotForSync": .string(envConfig.useSnapshotForSync ? "on" : "off"),
+            "changeObjectMetrics": .string(envConfig.enableChangeObjectMetrics ? "on" : "off"),
+            "autoDirtyTracking": .string(envConfig.enableAutoDirtyTracking ? "on" : "off"),
+            "autoDirtyOffThreshold": .string(String(format: "%.3f", envConfig.autoDirtyOffThreshold)),
+            "autoDirtyOnThreshold": .string(String(format: "%.3f", envConfig.autoDirtyOnThreshold)),
+            "autoDirtyRequiredSamples": .string("\(envConfig.autoDirtyRequiredConsecutiveSamples)")
         ])
     }
 
@@ -885,95 +860,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             break
         }
     }
-    
-    // MARK: - Profiling Helpers
-    
-    /// Record profiling metrics for an operation.
-    ///
-    /// Tracks operation latency (sampled 1 in 100) based on operation type.
-    ///
-    /// - Parameters:
-    ///   - startTime: Operation start time
-    ///   - operation: Operation type (determines which profiler method to call)
-    private func recordProfiling(startTime: ContinuousClock.Instant, operation: ProfilingOperation) async {
-        guard let profiler else { return }
-        
-        let elapsed = ContinuousClock.now - startTime
-        let durationMs = Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15
-        latencySampleCounter += 1
-        
-        if latencySampleCounter % 100 == 0 {
-            switch operation {
-            case .send:
-                Task { await profiler.recordSend(durationMs: durationMs) }
-            case .handle:
-                Task { await profiler.recordHandle(durationMs: durationMs) }
-            }
-        }
-    }
-    
-    /// Profiling operation type.
-    private enum ProfilingOperation {
-        case send
-        case handle
-    }
-    
-    /// Send data to transport with profiling instrumentation.
-    ///
-    /// Tracks send latency (sampled 1 in 100) and increments state update counter.
-    ///
-    /// - Parameters:
-    ///   - data: Data to send
-    ///   - target: Transport target
-    ///   - yieldAfterSend: Whether to yield after send (default: false)
-    private func sendWithProfiling(
-        _ data: Data,
-        to target: EventTarget,
-        yieldAfterSend: Bool = false
-    ) async {
-        profilerCounters?.incrementStateUpdates()
-        let sendStart = ContinuousClock.now
-        await transport.send(data, to: target)
-        if yieldAfterSend {
-            await Task.yield()
-        }
-        await recordProfiling(startTime: sendStart, operation: .send)
-    }
-    
-    /// Send batch to transport with profiling instrumentation.
-    ///
-    /// Tracks send latency (sampled 1 in 100) and increments state update counter.
-    /// Records average latency per update in batch.
-    ///
-    /// - Parameters:
-    ///   - batch: Batch of messages to send
-    ///   - stateUpdateCount: Number of state updates in batch
-    private func sendBatchWithProfiling(
-        _ batch: [(Data, EventTarget)],
-        stateUpdateCount: Int
-    ) async {
-        profilerCounters?.incrementStateUpdates(by: stateUpdateCount)
-        let sendStart = ContinuousClock.now
-        if let queue = transportSendQueue {
-            queue.enqueueBatch(batch)
-        } else {
-            await transport.sendBatch(batch)
-        }
-        await Task.yield()
-        if let profiler {
-            let sendElapsed = ContinuousClock.now - sendStart
-            let sendMs = Double(sendElapsed.components.seconds) * 1000 + Double(sendElapsed.components.attoseconds) / 1e15
-            // Sample latency for each update in batch (distributed)
-            for _ in 0..<stateUpdateCount {
-                latencySampleCounter += 1
-                if latencySampleCounter % 100 == 0 {
-                    // Record average latency per update
-                    Task { await profiler.recordSend(durationMs: sendMs / Double(stateUpdateCount)) }
-                }
-            }
-        }
-    }
-    
+
     // MARK: - Helper Methods
 
     /// Send server event to specified target. When opcode 107 is enabled (opcodeMessagePack),

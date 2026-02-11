@@ -14,18 +14,10 @@ import SwiftStateTree
 /// - DIFF_BENCHMARK_MODE=optimized: Only run optimized diff (with dirty tracking)
 /// - DIFF_BENCHMARK_MODE=both: Run both and compare (default)
 struct DiffBenchmarkRunner: BenchmarkRunner {
-    enum Mode: String {
-        case standard = "standard"
-        case optimized = "optimized"
-        case both = "both"
-        
-        static var current: Mode {
-            if let envValue = ProcessInfo.processInfo.environment["DIFF_BENCHMARK_MODE"]?.lowercased(),
-               let mode = Mode(rawValue: envValue) {
-                return mode
-            }
-            return .both
-        }
+    typealias Mode = BenchmarkEnvConfig.DiffBenchmarkMode
+
+    static var currentMode: Mode {
+        BenchmarkEnvConfig.fromEnvironment().diffBenchmarkMode
     }
     
     mutating func run(
@@ -33,7 +25,7 @@ struct DiffBenchmarkRunner: BenchmarkRunner {
         state: BenchmarkStateRootNode,
         playerID: PlayerID
     ) async -> BenchmarkResult {
-        let mode = Mode.current
+        let mode = Self.currentMode
         let iterations = 100  // Use fixed iterations for diff comparison (warmup + measurement)
         
         // Update description to reflect actual iterations

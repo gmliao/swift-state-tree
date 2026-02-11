@@ -13,16 +13,7 @@ import SwiftStateTreeTransport
 ///
 /// Use this when logging to a file or in CI so logs stay plain text.
 public func getEnvUseColors(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
-    if environment["NO_COLOR"] != nil {
-        return false
-    }
-    guard let raw = environment["LOG_USE_COLORS"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else {
-        return true
-    }
-    switch raw {
-    case "0", "false", "no", "off": return false
-    default: return true
-    }
+    EnvHelpers.getEnvUseColors(environment: environment)
 }
 
 /// Create a logger for game demo applications with consistent configuration.
@@ -68,15 +59,7 @@ public func createGameLogger(
 /// let port = getEnvUInt16(key: "PORT", defaultValue: 8080)
 /// ```
 public func getEnvUInt16(key: String, defaultValue: UInt16) -> UInt16 {
-    guard
-        let raw = ProcessInfo.processInfo.environment[key],
-        let value = Int(raw),
-        value >= 0,
-        value <= Int(UInt16.max)
-    else {
-        return defaultValue
-    }
-    return UInt16(value)
+    EnvHelpers.getEnvUInt16(key: key, defaultValue: defaultValue)
 }
 
 /// Get a String value from environment variable with default fallback.
@@ -91,7 +74,7 @@ public func getEnvUInt16(key: String, defaultValue: UInt16) -> UInt16 {
 /// let host = getEnvString(key: "HOST", defaultValue: "localhost")
 /// ```
 public func getEnvString(key: String, defaultValue: String) -> String {
-    return ProcessInfo.processInfo.environment[key] ?? defaultValue
+    EnvHelpers.getEnvString(key: key, defaultValue: defaultValue)
 }
 
 /// Get an optional String value from environment variable.
@@ -106,8 +89,7 @@ public func getEnvString(key: String, defaultValue: String) -> String {
 /// }
 /// ```
 public func getEnvStringOptional(key: String) -> String? {
-    let value = ProcessInfo.processInfo.environment[key]
-    return value?.isEmpty == false ? value : nil
+    EnvHelpers.getEnvStringOptional(key: key)
 }
 
 /// Get a Logger.Level value from environment variable with default fallback.
@@ -156,17 +138,7 @@ public func getEnvBool(
     defaultValue: Bool,
     environment: [String: String] = ProcessInfo.processInfo.environment
 ) -> Bool {
-    guard let raw = environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else {
-        return defaultValue
-    }
-    switch raw {
-    case "1", "true", "yes", "y", "on":
-        return true
-    case "0", "false", "no", "n", "off":
-        return false
-    default:
-        return defaultValue
-    }
+    EnvHelpers.getEnvBool(key: key, defaultValue: defaultValue, environment: environment)
 }
 
 // MARK: - Transport Encoding Helpers
