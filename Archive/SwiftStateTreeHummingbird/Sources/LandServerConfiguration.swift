@@ -35,16 +35,6 @@ public struct LandServerConfiguration: Sendable {
     /// This is useful for demo/testing but should be `false` in production.
     public var allowAutoCreateOnJoin: Bool = false
 
-    /// Enable parallel encoding for state updates (default: nil, uses codec default).
-    ///
-    /// When `true`, enables parallel JSON encoding for multiple player updates, which can improve
-    /// performance when syncing to many players simultaneously. Only effective for JSON codec.
-    /// When `nil`, uses the default behavior based on codec type.
-    /// temporary disabled
-    public var enableParallelEncoding: Bool {
-        return false
-    }
-
     /// Encoding configuration for transport messages and state updates.
     public var transportEncoding: TransportEncodingConfig = .messagepack
 
@@ -74,7 +64,6 @@ public struct LandServerConfiguration: Sendable {
         allowGuestMode: Bool = false,
         allowAutoCreateOnJoin: Bool = false,
         transportEncoding: TransportEncodingConfig = .json,
-        // enableParallelEncoding: Bool? = nil, // Temporarily disabled as parallel encoding evaluation showed little benefit
         enableLiveStateHashRecording: Bool = false,
         pathHashes: [String: UInt32]? = nil,
         eventHashes: [String: Int]? = nil,
@@ -89,7 +78,6 @@ public struct LandServerConfiguration: Sendable {
         self.allowGuestMode = allowGuestMode
         self.allowAutoCreateOnJoin = allowAutoCreateOnJoin
         self.transportEncoding = transportEncoding
-        // enableParallelEncoding = false
         self.enableLiveStateHashRecording = enableLiveStateHashRecording
         self.pathHashes = pathHashes
         self.eventHashes = eventHashes

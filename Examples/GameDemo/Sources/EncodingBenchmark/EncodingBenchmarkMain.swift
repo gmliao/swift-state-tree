@@ -50,10 +50,6 @@ func runMultiRoomBenchmarkCardGame(
             logger: benchmarkLogger
         )
         
-        // Disable per-player parallel encoding in benchmark to focus on room-level parallelism
-        // Only room-level parallelism (withTaskGroup) is used for comparison
-        let shouldEnableParallel = false  // Always disable per-player encoding parallelism
-        
         let adapter = TransportAdapter<CardGameState>(
             keeper: keeper,
             transport: transport,
@@ -62,9 +58,7 @@ func runMultiRoomBenchmarkCardGame(
             enableDirtyTracking: true,
             encodingConfig: format.transportEncodingConfig,
             pathHashes: pathHashes,
-            suppressMissingPathHashesWarning: !format.usesPathHash,
-            enableParallelEncoding: shouldEnableParallel,
-            logger: benchmarkLogger
+            suppressMissingPathHashesWarning: !format.usesPathHash
         )
         await keeper.setTransport(adapter)
         await transport.setDelegate(adapter)
@@ -215,7 +209,7 @@ func runMultiRoomBenchmark(
         logLevel: .error
     )
 
-    // Create rooms manually (similar to TransportAdapterMultiRoomParallelEncodingBenchmarkRunner)
+    // Create rooms manually (multi-room benchmark)
     // This gives us control over CountingTransport per room
     var rooms: [HeroDefenseRoomContext] = []
     rooms.reserveCapacity(roomCount)
@@ -239,10 +233,6 @@ func runMultiRoomBenchmark(
             logger: benchmarkLogger
         )
         
-        // Disable per-player parallel encoding in benchmark to focus on room-level parallelism
-        // Only room-level parallelism (withTaskGroup) is used for comparison
-        let shouldEnableParallel = false  // Always disable per-player encoding parallelism
-        
         let adapter = TransportAdapter<HeroDefenseState>(
             keeper: keeper,
             transport: transport,
@@ -251,9 +241,7 @@ func runMultiRoomBenchmark(
             enableDirtyTracking: true,
             encodingConfig: format.transportEncodingConfig,
             pathHashes: pathHashes,
-            suppressMissingPathHashesWarning: !format.usesPathHash,
-            enableParallelEncoding: shouldEnableParallel,
-            logger: benchmarkLogger
+            suppressMissingPathHashesWarning: !format.usesPathHash
         )
         
         await keeper.setTransport(adapter)
@@ -437,10 +425,6 @@ func runBenchmark(
         logger: benchmarkLogger
     )
 
-    // Disable per-player parallel encoding in benchmark to focus on room-level parallelism
-    // Only room-level parallelism (withTaskGroup) is used for comparison
-    let shouldEnableParallel = false  // Always disable per-player encoding parallelism
-    
     let adapter = TransportAdapter<BenchmarkState>(
         keeper: keeper,
         transport: mockTransport,
@@ -450,7 +434,6 @@ func runBenchmark(
         encodingConfig: format.transportEncodingConfig,
         pathHashes: pathHashes,
         suppressMissingPathHashesWarning: !format.usesPathHash,
-        enableParallelEncoding: shouldEnableParallel,
         logger: benchmarkLogger
     )
     

@@ -57,7 +57,7 @@
 
 ## 3. 多房間擴展性測試
 
-### MessagePack (PathHash) - Parallel Encoding
+### MessagePack (PathHash) - Multi-Room
 
 | 房間數 | 每房間玩家數 | 總玩家數 | 執行時間 | 總 Bytes | Bytes/Sync | 每房間 Bytes/Sync |
 |--------|------------|---------|---------|----------|------------|------------------|

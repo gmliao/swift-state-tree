@@ -94,7 +94,6 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private var landCreatedAt: [LandID: Date] = [:]
     private var landMetadata: [LandID: [String: String]] = [:]
     
-    private let enableParallelEncoding: Bool?
     private let enableLiveStateHashRecording: Bool
     
     /// Initialize a LandManager.
@@ -105,7 +104,6 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     ///   - transport: Optional shared WebSocketTransport instance.
     ///   - createGuestSession: Optional closure to create PlayerSession for guest users.
     ///   - transportEncoding: Encoding configuration for transport messages and state updates.
-    ///   - enableParallelEncoding: Enable parallel encoding for state updates (default: nil, uses codec default).
     ///   - logger: Optional logger instance.
     public init(
         landFactory: @escaping @Sendable (LandID) -> LandDefinition<State>,
@@ -120,7 +118,6 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         pathHashes: [String: UInt32]? = nil,
         eventHashes: [String: Int]? = nil,
         clientEventHashes: [String: Int]? = nil,
-        enableParallelEncoding: Bool? = nil,
         logger: Logger? = nil
     ) {
         self.landFactory = landFactory
@@ -133,7 +130,6 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         self.pathHashes = pathHashes
         self.eventHashes = eventHashes
         self.clientEventHashes = clientEventHashes
-        self.enableParallelEncoding = enableParallelEncoding
         self.logger = logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.runtime",
             scope: "LandManager"
@@ -246,7 +242,6 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             pathHashes: pathHashes,
             eventHashes: eventHashes,
             clientEventHashes: clientEventHashes,
-            enableParallelEncoding: enableParallelEncoding,
             logger: logger
         )
         

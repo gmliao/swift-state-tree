@@ -5,10 +5,14 @@
 import Foundation
 import SwiftStateTree
 
-// MARK: - Message Kind Opcodes
+// MARK: - Transport Protocol Opcodes
 
 /// Opcode values for MessageKind in opcode array format.
 /// Uses 101+ range to avoid conflict with StateUpdateOpcode (0-2).
+///
+/// ## Opcode Ranges
+/// - **101-106**: Message type opcodes (enum cases)
+/// - **107+**: Special frame opcodes (static constants)
 public enum MessageKindOpcode: Int, Sendable {
     case action = 101
     case actionResponse = 102
@@ -38,6 +42,16 @@ public enum MessageKindOpcode: Int, Sendable {
         case .error: return .error
         }
     }
+    
+    // MARK: Special Frame Opcodes (107+)
+    
+    /// State update with merged events (opcode 107).
+    /// Format: [107, stateUpdatePayload, eventsArray]
+    /// Used to merge broadcast events with state updates for efficiency.
+    ///
+    /// Note: This is not a MessageKind opcode, but a special frame format
+    /// for optimizing state updates with events.
+    public static let stateUpdateWithEvents: Int64 = 107
 }
 
 // MARK: - TransportMessageEncoder Protocol

@@ -1,6 +1,6 @@
 // Examples/GameDemo/Sources/GameContent/States/CardGameState.swift
 //
-// Card game state for benchmarking parallel encoding with per-player state.
+// Card game state for benchmarking multi-player sync with per-player state.
 
 import Foundation
 import SwiftStateTree

@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# DEPRECATED: Per-player parallel encoding was removed. This script invoked
+# TransportAdapterParallelEncodingTuningBenchmarkRunner which no longer exists.
+# Use TransportAdapter sync benchmarks instead: swift run SwiftStateTreeBenchmarks transport-sync
+#
 # Fix Windows line endings if present (for Windows Docker compatibility)
 # Re-execute script with CR characters removed if needed
 if [ -z "$_CRLF_FIXED" ]; then

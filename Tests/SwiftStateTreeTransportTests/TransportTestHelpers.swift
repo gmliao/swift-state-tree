@@ -56,7 +56,7 @@ func simulateRouterJoin<State: StateNodeProtocol>(
     )
     
     // 3. Allocate playerSlot (simulates what performJoin does)
-    let playerSlot = await adapter.allocatePlayerSlot(accountKey: finalPlayerID.rawValue, for: finalPlayerID)
+    _ = await adapter.allocatePlayerSlot(accountKey: finalPlayerID.rawValue, for: finalPlayerID)
     
     // 4. Send initial state snapshot
     // In production this happens AFTER JoinResponse is sent to ensure correct message order.

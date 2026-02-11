@@ -17,8 +17,7 @@ Benchmark 程式碼已模組化，方便擴展新的測試：
 - **DiffBenchmarkRunner.swift**: Standard vs Optimized Diff 比較
 - **MirrorVsMacroComparisonRunner.swift**: Mirror vs Macro 效能比較
 - **TransportAdapterSyncBenchmarkRunner.swift**: TransportAdapter 完整 sync 流程性能測試
-- **TransportAdapterParallelEncodingTuningBenchmarkRunner.swift**: TransportAdapter 平行編碼並行度調校測試（比較不同 maxConcurrency）
-- **TransportAdapterMultiRoomParallelEncodingBenchmarkRunner.swift**: TransportAdapter 多房間平行編碼測試（固定每房間人數、掃描房間數與並行度）
+- **TransportAdapterConcurrentStabilityBenchmarkRunner.swift**: TransportAdapter 並發穩定性測試
 
 ### 組織檔案
 - **BenchmarkSuite.swift**: Benchmark suite 執行邏輯
