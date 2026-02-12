@@ -1,0 +1,17 @@
+# nginx LB for testing path-hash routing
+# GameServers run on host (ports 8080,8081,8082); nginx proxies from 9090
+# Usage: See test-nginx-lb.sh or run manually:
+#   1. Start GameServers: PORT=8080 swift run -C Examples/GameDemo GameServer & (x3)
+#   2. docker compose -f docs/deploy/docker-compose.nginx.yml up -d
+#   3. Client: ws://localhost:9090/game/hero-defense/room-abc
+
+services:
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./nginx-websocket-path-routing.docker.conf:/etc/nginx/nginx.conf:ro
+    extra_hosts:
+      # Linux: make host.docker.internal work
+      - "host.docker.internal:host-gateway"
