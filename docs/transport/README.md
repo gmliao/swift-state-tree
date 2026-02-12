@@ -71,6 +71,14 @@ PlayerSession field priority:
 - `LandRouter` routes connections to corresponding land
 - In multi-room mode, join routes based on landType + instanceId
 
+## WebSocket Path for LB / K8s
+
+Server accepts both:
+- `/game/{landType}` (e.g. `/game/hero-defense`)
+- `/game/{landType}/{instanceId}` (e.g. `/game/hero-defense/room-abc`) — for path-based routing
+
+Client must send Join with `landID: "landType:instanceId"`. See [Deploy & LB](../deploy/README.md).
+
 ## State Update Encoding
 
 State updates are encoded serially per sync cycle. Per-player updates within a room are encoded one after another; for multi-room scenarios, each `TransportAdapter` manages one room independently.

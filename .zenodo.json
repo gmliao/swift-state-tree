@@ -1,0 +1,29 @@
+{
+  "creators": [
+    {
+      "name": "Liao, Guan-Ming"
+    }
+  ],
+  "title": "SwiftStateTree",
+  "description": "A Swift-based multiplayer game server framework that adopts the design philosophy of Single StateTree + Sync Rules + Land DSL. StateTree combines state management concepts from frontend frameworks with backend data filtering for reactive synchronization to clients.",
+  "license": "mit",
+  "keywords": [
+    "swift",
+    "game server",
+    "state management",
+    "multiplayer",
+    "websocket",
+    "state tree",
+    "sync rules",
+    "land dsl"
+  ],
+  "upload_type": "software",
+  "access_right": "open",
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/gmliao/swift-state-tree",
+      "relation": "isIdenticalTo",
+      "resource_type": "other"
+    }
+  ]
+}

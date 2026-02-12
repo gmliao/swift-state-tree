@@ -258,23 +258,37 @@ public actor NIOLandHost {
         await registerAdminRoutes()
 
         // Create path matcher, transport resolver, and optional JWT auth resolver
+        // Supports both exact paths (/game/hero-defense) and path-with-instanceId (/game/hero-defense/room-abc)
+        // for K8s path-based routing: Ingress can route /game/{landType}/{instanceId} to specific pods
         let paths = pathToLandType
         let transports = pathToTransport
         let configs = pathToServerConfig
 
-        let pathMatcher: @Sendable (String) -> Bool = { path in
+        /// Resolve request path to base path (registered webSocketPath).
+        /// Matches exact path or prefix: /game/hero-defense/room-abc -> /game/hero-defense
+        let resolveBasePath: @Sendable (String) -> String? = { path in
             let cleanPath = path.components(separatedBy: "?").first ?? path
-            return paths.keys.contains(cleanPath)
+            if paths.keys.contains(cleanPath) { return cleanPath }
+            // Longest-prefix match: /game/hero-defense/room-abc matches /game/hero-defense
+            let sorted = paths.keys.sorted { $0.count > $1.count }
+            return sorted.first { key in
+                cleanPath.hasPrefix(key + "/") && cleanPath.count > key.count
+            }
+        }
+
+        let pathMatcher: @Sendable (String) -> Bool = { path in
+            resolveBasePath(path) != nil
         }
 
         let transportResolver: @Sendable (String) -> WebSocketTransport? = { path in
-            let cleanPath = path.components(separatedBy: "?").first ?? path
-            return transports[cleanPath]
+            guard let basePath = resolveBasePath(path) else { return nil }
+            return transports[basePath]
         }
 
         func makeAuthResolver(_ configs: [String: NIOLandServerConfiguration]) -> some AuthInfoResolverProtocol {
             ClosureAuthInfoResolver { (path: String, uri: String) async throws -> AuthenticatedInfo? in
-                guard let config = configs[path] else { return nil }
+                guard let basePath = resolveBasePath(path) else { return nil }
+                guard let config = configs[basePath] else { return nil }
                 let validator = config.jwtValidator
                     ?? config.jwtConfig.map { DefaultJWTAuthValidator(config: $0, logger: config.logger) }
                 guard let validator = validator else { return nil }

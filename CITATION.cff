@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+title: SwiftStateTree
+message: "If you use this software, please cite it as below."
+version: baseline-v0.1.1
+date-released: 2026-02-11
+type: software
+authors:
+  - family-names: Liao
+    given-names: Guan-Ming
+url: https://github.com/gmliao/swift-state-tree
+repository-code: https://github.com/gmliao/swift-state-tree
+license: MIT
+keywords:
+  - swift
+  - game server
+  - state management
+  - multiplayer
+  - websocket
+  - state tree
+abstract: >-
+  A Swift-based multiplayer game server framework that adopts the design
+  philosophy of Single StateTree + Sync Rules + Land DSL.
+  StateTree combines state management concepts from frontend frameworks
+  with backend data filtering for reactive synchronization to clients.
