@@ -12,20 +12,34 @@ ADMIN_KEY="hero-defense-admin-key"
 # GameServer uses X-API-Key header
 BACKENDS="8080 8081 8082"
 
-# Which backend has this land? (200 + land stats, not 404)
-which_backend_has() {
+# Which backend(s) have this land? Returns space-separated ports (200 = found).
+# Used to verify exactly one backend has the land (no split-room).
+which_backends_have() {
   local land_id="$1"
+  local found=""
   for port in $BACKENDS; do
     local resp
     resp=$(curl -s -w "\n%{http_code}" -H "X-API-Key: $ADMIN_KEY" "http://localhost:$port/admin/lands/$(echo "$land_id" | sed 's/:/%3A/g')")
     local code
     code=$(echo "$resp" | tail -1)
     if [ "$code" = "200" ]; then
-      echo "$port"
-      return
+      found="$found $port"
     fi
   done
-  echo ""
+  echo "$found" | xargs
+}
+
+# Convenience: return first backend that has the land, or empty if none/exactly-one expected
+which_backend_has() {
+  local found
+  found=$(which_backends_have "$1")
+  local count
+  count=$(echo "$found" | wc -w)
+  if [ "$count" -gt 1 ]; then
+    echo "SPLIT:$found"  # Signal: land on multiple backends (bug)
+    return 1
+  fi
+  echo "$found"
 }
 
 # List all lands on a backend
@@ -68,8 +82,12 @@ timeout 15 npm run dev -- connect \
 cd "$REPO_ROOT"
 sleep 1
 
-# Find which backend has room A
+# Find which backend(s) have room A - must be exactly one
 BACKEND_A=$(which_backend_has "hero-defense:$ROOM_A")
+if [[ "$BACKEND_A" == SPLIT:* ]]; then
+  echo "   FAIL: land on multiple backends: ${BACKEND_A#SPLIT:}"
+  exit 1
+fi
 if [ -z "$BACKEND_A" ]; then
   echo "   FAIL: land not found on any backend (join may have failed)"
   exit 1
@@ -88,8 +106,12 @@ timeout 15 npm run dev -- connect \
 cd "$REPO_ROOT"
 sleep 1
 
-# Still only one backend should have it (same process)
+# Still exactly one backend should have it (same process)
 BACKEND_A2=$(which_backend_has "hero-defense:$ROOM_A")
+if [[ "$BACKEND_A2" == SPLIT:* ]]; then
+  echo "   FAIL: Room A split across backends: ${BACKEND_A2#SPLIT:}"
+  exit 1
+fi
 if [ -n "$BACKEND_A2" ] && [ "$BACKEND_A" = "$BACKEND_A2" ]; then
   echo "   Room A still on :$BACKEND_A (same process)"
 else
@@ -109,6 +131,10 @@ cd "$REPO_ROOT"
 sleep 1
 
 BACKEND_B=$(which_backend_has "hero-defense:$ROOM_B")
+if [[ "$BACKEND_B" == SPLIT:* ]]; then
+  echo "   FAIL: Room B split across backends: ${BACKEND_B#SPLIT:}"
+  exit 1
+fi
 echo "   Room B -> backend :${BACKEND_B:-unknown}"
 
 echo ""

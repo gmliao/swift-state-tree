@@ -11,7 +11,7 @@ SwiftStateTree supports WebSocket paths with instanceId for load balancing:
 
 The server accepts both. Client must send Join with `landID: "landType:instanceId"` (e.g. `hero-defense:room-abc`).
 
-**LB requirement**: Same room must hit same server (players in one room share state). Use path-hash: `hash $request_uri consistent` so `/game/hero-defense/room-abc` always routes to the same backend.
+**LB requirement**: Same room must hit same server (players in one room share state). Use path-hash: `hash $uri consistent` (path only, no query) so `/game/hero-defense/room-abc` always routes to the same backend.
 
 ### nginx Example
 
@@ -39,7 +39,7 @@ PORT=8080 swift run -C Examples/GameDemo GameServer &
 PORT=8081 swift run -C Examples/GameDemo GameServer &
 PORT=8082 swift run -C Examples/GameDemo GameServer &
 
-# 2. nginx (hash $request_uri consistent)
+# 2. nginx (hash $uri consistent)
 nginx -p $(pwd) -c docs/deploy/nginx-websocket-path-routing.conf
 
 # 3. Same path (same room) -> same server
@@ -47,7 +47,7 @@ nginx -p $(pwd) -c docs/deploy/nginx-websocket-path-routing.conf
 # Different rooms distribute across backends
 ```
 
-The config uses `hash $request_uri consistent` so all connections to the same room path hit the same server.
+The config uses `hash $uri consistent` (path only; excludes query e.g. ?token=) so all connections to the same room path hit the same server.
 
 ### Docker + Test Script
 
