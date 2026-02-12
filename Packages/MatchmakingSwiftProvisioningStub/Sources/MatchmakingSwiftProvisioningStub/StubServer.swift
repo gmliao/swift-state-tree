@@ -3,13 +3,8 @@ import NIOCore
 import NIOPosix
 import NIOHTTP1
 
-import Foundation
-import NIOCore
-import NIOPosix
-import NIOHTTP1
-
 struct StubServer {
-    func run() async throws {
+    func run(port: Int) async throws {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
 
         let bootstrap = ServerBootstrap(group: group)
@@ -25,8 +20,8 @@ struct StubServer {
             .childChannelOption(ChannelOptions.recvAllocator, value: AdaptiveRecvByteBufferAllocator())
 
         let host = "127.0.0.1"
-        let port = 8080
 
+        // Use async get() extension as direct await is not available without stricter concurrency checks
         let channel = try await bootstrap.bind(host: host, port: port).get()
 
         print("🚀 Stub Server started on http://\(host):\(port)")
@@ -34,6 +29,7 @@ struct StubServer {
         print("  GET /health")
         print("  POST /v1/provisioning/allocate")
 
+        // Use async get() extension
         try await channel.closeFuture.get()
         try await group.shutdownGracefully()
     }
