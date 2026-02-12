@@ -59,9 +59,8 @@ npm run dev -- connect \
   -l hero-defense:room-test \
   --once \
   --timeout 5
-cd "$REPO_ROOT"
-
 CODE=$?
+cd "$REPO_ROOT"
 if [ $CODE -eq 0 ]; then
   echo ""
   echo "=== 4. Verify same room -> same process ==="
