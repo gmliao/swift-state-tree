@@ -97,10 +97,7 @@ Use the unified env pattern instead of scattered `ProcessInfo.processInfo.enviro
   - `ProvisioningEnvKeys` (SwiftStateTreeNIOProvisioning): Provisioning
   - `TransportEnvKeys` (SwiftStateTreeTransport): Transport config
 
-- **HTTP fetch**: Use `HTTPHelpers` (`Sources/SwiftStateTree/Support/HTTPHelpers.swift`) for outbound HTTP:
-  - `HTTPHelpers.fetch(url:method:body:headers:)` – raw Data body
-  - `HTTPHelpers.fetch(url:method:jsonObject:headers:)` – JSON from [String: Any]
-  - `HTTPHelpers.fetch(url:method:jsonBody:encoder:headers:)` – JSON from Encodable
+- **HTTP fetch (provisioning)**: Use `ProvisioningHTTPClient` (`Sources/SwiftStateTreeNIOProvisioning/ProvisioningHTTPClient.swift`) for control plane register/deregister. Cross-platform (AsyncHTTPClient, no `#if`).
   - **Prefer DTOs**: Use `jsonBody` with `Codable` structs (DTOs) instead of `jsonObject` with `[String: Any]`. DTOs provide type safety, align with API contracts (e.g. control plane ServerRegisterDto), and avoid serialization errors.
   - **Status checks**: Use `HTTPURLResponse.isSuccess` (2xx) instead of raw range checks; use `HTTPStatusCode` enum when branching on specific codes.
 

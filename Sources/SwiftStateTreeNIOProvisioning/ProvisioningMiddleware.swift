@@ -120,11 +120,7 @@ public struct ProvisioningMiddleware: HostMiddleware, Sendable {
         }
         let body = ServerRegisterRequest(serverId: serverId, host: host, port: port, landType: landType, connectHost: connectHost, connectPort: connectPort, connectScheme: connectScheme)
         do {
-            let (data, response) = try await HTTPHelpers.fetch(url: url, method: "POST", jsonBody: body)
-            guard let http = response else {
-                logger.warning("Provisioning register: no HTTP response")
-                return
-            }
+            let (data, http) = try await ProvisioningHTTPClient.fetch(url: url, method: "POST", jsonBody: body)
             if http.isSuccess {
                 logger.debug("Provisioning heartbeat OK")
             } else {
@@ -143,11 +139,7 @@ public struct ProvisioningMiddleware: HostMiddleware, Sendable {
             return
         }
         do {
-            let (data, response) = try await HTTPHelpers.fetch(url: url, method: "DELETE")
-            guard let http = response else {
-                logger.warning("Provisioning deregister: no HTTP response")
-                return
-            }
+            let (data, http) = try await ProvisioningHTTPClient.fetch(url: url, method: "DELETE")
             if http.isSuccess {
                 logger.info("Deregistered from provisioning at \(baseUrl)")
             } else {
