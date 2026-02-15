@@ -4,10 +4,11 @@ import {
   MatchmakingService,
   MatchmakingConfig,
 } from './matchmaking.service';
-import { InMemoryMatchStorage } from '../storage/inmemory-match-storage';
 import { DefaultMatchStrategy } from './strategies/default.strategy';
 import { ProvisioningModule } from '../provisioning/provisioning.module';
+import { QueueModule } from '../queue/queue.module';
 import { SecurityModule } from '../security/security.module';
+import { RedisMatchStorage } from '../storage/redis-match-storage';
 
 const matchmakingConfig: MatchmakingConfig = {
   intervalMs: parseInt(process.env.MATCHMAKING_INTERVAL_MS ?? '3000', 10),
@@ -16,14 +17,14 @@ const matchmakingConfig: MatchmakingConfig = {
 
 /** Matchmaking module: queue, strategy, provisioning (internal registry), JWT. */
 @Module({
-  imports: [SecurityModule, ProvisioningModule],
+  imports: [QueueModule, SecurityModule, ProvisioningModule],
   controllers: [MatchmakingController],
   providers: [
     { provide: 'MatchmakingConfig', useValue: matchmakingConfig },
     MatchmakingService,
     {
       provide: 'MatchStoragePort',
-      useClass: InMemoryMatchStorage,
+      useClass: RedisMatchStorage,
     },
     {
       provide: 'MatchStrategyPort',
