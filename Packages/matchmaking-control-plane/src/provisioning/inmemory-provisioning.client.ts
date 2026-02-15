@@ -16,7 +16,12 @@ export class InMemoryProvisioningClient implements ProvisioningClientPort {
   constructor(private readonly registry: ServerRegistryService) {}
 
   async allocate(request: ProvisioningAllocateRequest): Promise<AssignmentResult> {
-    const landType = request.region ?? 'hero-defense';
+    // Derive landType from queueKey (e.g. "hero-defense:asia" -> "hero-defense").
+    // region is a geographic hint, not the server selector; servers register by landType.
+    const landType =
+      request.queueKey.includes(':')
+        ? request.queueKey.split(':')[0]
+        : request.queueKey || 'hero-defense';
     const server = this.registry.pickServer(landType);
     if (!server) {
       throw new Error(`No server available for landType: ${landType}`);

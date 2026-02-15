@@ -406,11 +406,15 @@ public actor NIOLandHost {
 
     /// Shuts down the server.
     public func shutdown() async throws {
-        // Cancel middleware background tasks
-        for task in middlewareTasks {
-            task.cancel()
-        }
+        // Cancel middleware background tasks and wait for them to finish.
+        // This prevents in-flight operations (e.g. provisioning heartbeat) from completing
+        // after deregistration and re-adding a dead server to the registry.
+        let tasks = middlewareTasks
         middlewareTasks = []
+        for task in tasks {
+            task.cancel()
+            _ = await task.value
+        }
 
         // Run middleware onShutdown pipeline (reverse order)
         let context = HostContext(
