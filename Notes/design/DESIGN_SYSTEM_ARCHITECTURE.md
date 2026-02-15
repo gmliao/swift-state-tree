@@ -26,14 +26,13 @@
            │
            ├─────────────────┬─────────────────┬─────────────────┐
            │                 │                 │                 │
-┌──────────▼──────────┐ ┌───▼──────────┐ ┌───▼──────────┐ ┌───▼──────────────┐
-│ MatchmakingService │ │ LandManager  │ │ AdminRoutes  │ │ Other Services  │
-│ (配對服務)          │ │ (房間管理)    │ │ (管理員API)  │ │ (其他服務)       │
-│                    │ │              │ │               │ │                 │
-│ - 配對邏輯          │ │ - 管理多個   │ │ - HTTP API    │ │ - Metrics       │
-│ - 房間選擇          │ │   遊戲房間   │ │ - 認證授權    │ │ - Logging       │
-│ - 規則匹配          │ │ - 路由連線   │ │ - 查詢管理    │ │ - Persistence   │
-└────────────────────┘ └──────────────┘ └───────────────┘ └─────────────────┘
+┌────────────────────┐ ┌───▼──────────┐ ┌───▼──────────┐ ┌───▼──────────────┐
+│ Control Plane      │ │ LandManager  │ │ AdminRoutes  │ │ Other Services  │
+│ (NestJS 配對)      │ │ (房間管理)    │ │ (管理員API)  │ │ (其他服務)       │
+│ - enqueue/poll     │ │ - 管理多個   │ │ - HTTP API    │ │ - Metrics       │
+│ - connectUrl 分配  │ │   遊戲房間   │ │ - 認證授權    │ │ - Logging       │
+└────────────────────┘ │ - 路由連線   │ │ - 查詢管理    │ │ - Persistence   │
+           │           └──────────────┘ └───────────────┘ └─────────────────┘
            │                 │
            └─────────┬───────┘
                      │
@@ -43,14 +42,6 @@
            │  - LandKeeper     │
            │  - Transport      │
            │  - State          │
-           └───────────────────┘
-                     │
-           ┌─────────▼─────────┐
-           │  LobbyContainer    │
-           │  (大廳容器)        │
-           │  - 配對功能        │
-           │  - 房間創建        │
-           │  - 房間列表        │
            └───────────────────┘
 ```
 
@@ -263,32 +254,32 @@
 1. **協議抽象**: 使用協議（`LandKeeperProtocol`、`LandManagerProtocol`、`MatchmakingServiceProtocol`）而非具體類型
 2. **Sendable 和 Codable**: 所有通訊介面的參數和返回值都符合 `Sendable` 和 `Codable`
 3. **ID 系統**: 使用結構化的 `LandID` 而非簡單字串
-4. **依賴注入**: `MatchmakingService` 依賴 `LandManagerRegistry`，未來可替換為 distributed actor
+4. **依賴注入**: `LandRouter` 依賴 `LandManagerRegistry`，未來可替換為 distributed actor
 
 ### 遷移路徑
 
 **目前（單進程模式）**:
 - `LandKeeper`: local actor
 - `LandManager`: local actor
-- `MatchmakingService`: local actor
 
 **未來（多伺服器模式）**:
 - `LandKeeper`: distributed actor（實作 `LandKeeperProtocol`）
 - `LandManager`: distributed actor（實作 `LandManagerProtocol`）
-- `MatchmakingService`: distributed actor（實作 `MatchmakingServiceProtocol`）
 
 **遷移步驟**:
-1. 實作 distributed actor 版本的 `LandKeeper`、`LandManager`、`MatchmakingService`（實作對應的 protocol）
+1. 實作 distributed actor 版本的 `LandKeeper`、`LandManager`（實作對應的 protocol）
 2. 更新依賴注入，使用 protocol 類型而非具體類型
 3. 配置 distributed actor system（ActorSystem）
 4. 更新 ID 系統以支援跨機器定位
 
+**配對**：Matchmaking 已由 NestJS control plane 處理，無需 Swift 端 distributed actor。
+
 ### 關鍵設計點
 
-- **MatchmakingService 與 LandManager 的溝通**: 目前使用 `LandManagerRegistry`（protocol），而非具體的 `LandManager<State>` 類型。所有方法參數都是 `Sendable` 和 `Codable`，確保可以跨進程序列化。
+- **LandManagerRegistry**: `LandRouter` 使用 `LandManagerRegistry`（protocol），而非具體的 `LandManager<State>` 類型。所有方法參數都是 `Sendable` 和 `Codable`，確保可以跨進程序列化。
 
-- **協議抽象**: 通過協議抽象（`LandKeeperProtocol`、`LandManagerProtocol`、`MatchmakingServiceProtocol`）定義了清晰的介面，未來可以：
-  1. 創建 distributed actor 實作對應的 protocol
+- **協議抽象**: 通過協議抽象（`LandKeeperProtocol`、`LandManagerProtocol`）定義了清晰的介面，未來可以：
+  1. 創建 distributed actor 實作對應的 protocol（LandKeeper、LandManager）
   2. 更新依賴注入，使用 protocol 類型而非具體類型
   3. 注入 distributed actor 實例
   4. 代碼邏輯無需修改，因為協議介面保持一致
@@ -302,28 +293,24 @@ SwiftStateTree (核心)
 SwiftStateTreeTransport
     ├── 依賴 SwiftStateTree
     ├── 包含: LandContainer, LandManager, LandManagerProtocol, LandManagerRegistry
-    ├── 包含: LandTypeRegistry, MatchmakingStrategyProtocol (協議)
-    ├── 包含: LandRealm, LandServerProtocol
+    ├── 包含: LandTypeRegistry, LandRealm, LandServerProtocol
     └── 提供: Transport 抽象層、多房間管理
     ↑
     │
-SwiftStateTreeMatchmaking
-    ├── 依賴 SwiftStateTree
+SwiftStateTreeNIO
     ├── 依賴 SwiftStateTreeTransport
-    ├── 包含: MatchmakingService, MatchmakingServiceProtocol
-    ├── 包含: DefaultMatchmakingStrategy (實作)
-    ├── 包含: LobbyContainer, LobbyTypes, LobbyLandFactory
-    ├── 包含: MatchmakingTypes (MatchmakingResult, MatchmakingStatus)
-    └── 提供: 配對服務、大廳功能
+    ├── 包含: NIOLandServer, NIOLandHost, WebSocket
+    └── 提供: 預設 WebSocket 伺服器
     ↑
     │
-SwiftStateTreeHummingbird
-    ├── 依賴 SwiftStateTree
-    ├── 依賴 SwiftStateTreeTransport
-    ├── 依賴 SwiftStateTreeMatchmaking
-    ├── 包含: LandServer、路由配置
-    └── 提供: Hummingbird 整合
+SwiftStateTreeNIOProvisioning
+    ├── 依賴 SwiftStateTreeNIO
+    └── 提供: 向 NestJS matchmaking control plane 註冊
 ```
+
+**配對**：由 NestJS control plane（`Packages/matchmaking-control-plane`）處理，非 Swift 模組。詳見 `docs/matchmaking-two-plane.md`。
+
+**已歸檔**：SwiftStateTreeMatchmaking、SwiftStateTreeHummingbird 已移至 `Archive/`，僅供參考。
 
 ### 模組職責
 
@@ -335,18 +322,12 @@ SwiftStateTreeHummingbird
   - **底層傳輸抽象**：Transport 協議、WebSocketTransport、TransportAdapter（網路抽象）
   - **狀態傳輸管理**：多房間管理（LandManager、LandContainer）、路由（LandRouter）
   - **框架抽象**：LandRealm、LandServerProtocol（框架無關的伺服器管理）
-  - **配對協議**：MatchmakingStrategy 協議、MatchmakingPreferences、MatchmakingRequest（用於 LandTypeRegistry）
   - **說明**：這是框架無關的抽象 transport 層，提供從底層傳輸到高層服務的完整抽象
 
-- **SwiftStateTreeMatchmaking**: 配對與大廳服務（可選模組）
-  - **配對服務**：MatchmakingService、MatchmakingServiceProtocol、DefaultMatchmakingStrategy
-  - **大廳功能**：LobbyContainer、LobbyTypes、LobbyLandFactory
-  - **配對類型**：MatchmakingResult、MatchmakingStatus
-  - **說明**：這是可選的配對與大廳服務模組，依賴 SwiftStateTreeTransport
+- **SwiftStateTreeNIO**: 預設 WebSocket 伺服器
+  - NIOLandServer、NIOLandHost、JWT/Guest 認證、Admin 路由
 
-- **SwiftStateTreeHummingbird**: Hummingbird 整合
-  - LandServer、路由配置
-  - 管理員功能（AdminAuth、AdminRoutes）
+- **SwiftStateTreeNIOProvisioning**: 向 matchmaking control plane 註冊 GameServer
 
 ## 使用範例
 

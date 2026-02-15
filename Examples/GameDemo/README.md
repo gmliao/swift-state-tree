@@ -217,12 +217,6 @@ func testCanPlayerFireWhenReady() {
 }
 ```
 
-#### 延伸閱讀
-
-關於封裝觀察、研究整理與驗證困難性的完整說明，已獨立整理為文件：
-- [docs/ai-agent-architecture-observations.md](../../docs/ai-agent-architecture-observations.md)
-- [docs/ai-agent-architecture-observations.zh-TW.md](../../docs/ai-agent-architecture-observations.zh-TW.md)
-
 ### Context Pattern（上下文模式）
 
 Systems 透過 `LandContext` 訪問服務與元資料：

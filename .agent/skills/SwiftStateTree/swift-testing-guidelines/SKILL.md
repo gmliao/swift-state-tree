@@ -35,9 +35,8 @@ Tests are organized by module:
 
 - **SwiftStateTreeTests**: Core library tests
 - **SwiftStateTreeTransportTests**: Transport layer tests
-- **SwiftStateTreeHummingbirdTests**: Hummingbird integration tests
+- **SwiftStateTreeNIOTests**: NIO hosting (WebSocket, LandHost)
 - **SwiftStateTreeMacrosTests**: Macro tests
-- **SwiftStateTreeMatchmakingTests**: Matchmaking service tests
 - **SwiftStateTreeDeterministicMathTests**: Deterministic math tests
 
 ## Test File Structure
@@ -333,9 +332,16 @@ cd Examples/Demo/WebClient && npm test
 
 **Location:** `Tools/CLI`
 
-**Command:**
+**Basic E2E (DemoServer):**
 ```bash
-cd Tools/CLI && npm test
+cd Tools/CLI && ./test-e2e-ci.sh   # Recommended: auto server + all encodings
+cd Tools/CLI && npm test           # Requires DemoServer running
+```
+
+**Matchmaking E2E (Control Plane + GameServer):**
+```bash
+cd Tools/CLI && npm run test:e2e:game:matchmaking:full   # Direct, no LB
+cd Tools/CLI && npm run test:e2e:game:matchmaking:nginx # With nginx LB (requires Docker)
 ```
 
 **See:** `SwiftStateTree/run-e2e-tests` skill for details

@@ -1,5 +1,7 @@
 # Matchmaking Control Plane Design
 
+> **Status (2026-02):** NestJS control plane MVP implemented. Swift in-process matchmaking (`SwiftStateTreeMatchmaking`) archived; see `Archive/SwiftStateTreeMatchmaking/README.md`.
+
 ## Goal
 
 Define a clear architecture for matchmaking that keeps game runtime concerns separated, supports future cross-language integration, and allows fast MVP iteration.
@@ -166,5 +168,6 @@ gameServers:
 ## Implementation Status (MVP)
 
 - **Control Plane**: NestJS service in `Packages/matchmaking-control-plane` with InMemory storage, JWT/JWKS, and built-in provisioning (in-memory server registry).
+- **Two-plane architecture**: See [Matchmaking Two-Plane Architecture](../matchmaking-two-plane.md) for system design and plane relationship.
 - **Provisioning**: Game servers register via `POST /v1/provisioning/servers/register`. Allocate is internal (no external HTTP).
 - **Runbook**: See `docs/operations/matchmaking-control-plane-mvp.md`.

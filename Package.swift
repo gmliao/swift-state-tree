@@ -24,11 +24,6 @@ let package = Package(
             name: "SwiftStateTreeTransport",
             targets: ["SwiftStateTreeTransport"]
         ),
-        // 🎯 Matchmaking & Lobby: Matchmaking service and lobby functionality
-        .library(
-            name: "SwiftStateTreeMatchmaking",
-            targets: ["SwiftStateTreeMatchmaking"]
-        ),
         // 🔢 Deterministic Math: Fixed-point math for server-authoritative games
         .library(
             name: "SwiftStateTreeDeterministicMath",
@@ -98,17 +93,6 @@ let package = Package(
                 "SwiftStateTree",
             ],
             path: "Sources/SwiftStateTreeMessagePack"
-        ),
-
-        // 🎯 Matchmaking & Lobby: Matchmaking service and lobby functionality
-        .target(
-            name: "SwiftStateTreeMatchmaking",
-            dependencies: [
-                "SwiftStateTree",
-                "SwiftStateTreeTransport",
-                .product(name: "Logging", package: "swift-log"),
-            ],
-            path: "Sources/SwiftStateTreeMatchmaking"
         ),
 
         // 🔢 Deterministic Math: Fixed-point math for server-authoritative games
@@ -210,18 +194,6 @@ let package = Package(
                 .product(name: "SwiftSyntaxMacrosTestSupport", package: "swift-syntax"),
             ],
             path: "Tests/SwiftStateTreeMacrosTests"
-        ),
-
-        // 🎯 Matchmaking tests
-        .testTarget(
-            name: "SwiftStateTreeMatchmakingTests",
-            dependencies: [
-                "SwiftStateTreeMatchmaking",
-                "SwiftStateTreeTransport",
-                "SwiftStateTree",
-                .product(name: "Atomics", package: "swift-atomics"),
-            ],
-            path: "Tests/SwiftStateTreeMatchmakingTests"
         ),
 
         // 🔢 Deterministic Math tests

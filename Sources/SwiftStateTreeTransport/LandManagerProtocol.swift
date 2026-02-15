@@ -3,9 +3,8 @@ import SwiftStateTree
 
 /// Protocol abstraction for LandManager operations.
 ///
-/// This protocol allows LandManager to be abstracted for future distributed actor support.
-/// MatchmakingService should depend on this protocol rather than the concrete LandManager implementation,
-/// making it easy to replace with a distributed actor in the future.
+/// This protocol allows LandManager to be abstracted for future distributed actor support,
+/// making it easy to replace with a distributed actor when scaling to multiple processes.
 ///
 /// All method parameters and return values must be Sendable and Codable to support
 /// serialization across process boundaries.

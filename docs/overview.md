@@ -13,11 +13,13 @@ SwiftStateTree adopts a modular design with clear responsibilities for each modu
 |--------|-------------|------------------|
 | **SwiftStateTree** | Core module | StateNode, Sync, Land DSL, Runtime (LandKeeper), Schema generation |
 | **SwiftStateTreeTransport** | Transport layer | Transport abstraction, WebSocketTransport, Land management, multi-room routing |
-| **SwiftStateTreeHummingbird** | Hummingbird integration | WebSocket Hosting, JWT/Guest authentication, Admin routes |
-| **SwiftStateTreeMatchmaking** | Matchmaking service | MatchmakingService, Lobby support |
+| **SwiftStateTreeNIO** | NIO server | WebSocket hosting, JWT/Guest auth, Admin routes (default server) |
+| **SwiftStateTreeNIOProvisioning** | Provisioning | Registers GameServer with matchmaking control plane on startup |
 | **SwiftStateTreeMacros** | Compile-time tools | `@StateNodeBuilder`, `@Payload`, `@SnapshotConvertible` |
 | **SwiftStateTreeDeterministicMath** | Deterministic math | Fixed-point arithmetic, collision detection, vector operations for server-authoritative games |
 | **SwiftStateTreeBenchmarks** | Benchmarks | Performance test executable |
+
+Matchmaking is handled by the NestJS control plane (`Packages/matchmaking-control-plane`). See [Matchmaking Two-Plane Architecture](matchmaking-two-plane.md).
 
 ### Module Dependencies
 
@@ -25,28 +27,27 @@ SwiftStateTree adopts a modular design with clear responsibilities for each modu
 graph TD
     Core[SwiftStateTree<br/>Core Module]
     Transport[SwiftStateTreeTransport<br/>Transport Layer]
-    Matchmaking[SwiftStateTreeMatchmaking<br/>Matchmaking Service]
-    Hummingbird[SwiftStateTreeHummingbird<br/>Hummingbird Integration]
+    NIO[SwiftStateTreeNIO<br/>NIO Server]
+    Provisioning[SwiftStateTreeNIOProvisioning<br/>Provisioning]
     Macros[SwiftStateTreeMacros<br/>Compile-time Macro]
     
     Core --> Transport
     Core --> Macros
-    Transport --> Matchmaking
-    Transport --> Hummingbird
-    Matchmaking --> Hummingbird
+    Transport --> NIO
+    NIO --> Provisioning
     
     style Core fill:#e1f5ff
     style Transport fill:#fff4e1
-    style Hummingbird fill:#e8f5e9
-    style Matchmaking fill:#f3e5f5
+    style NIO fill:#e8f5e9
+    style Provisioning fill:#f3e5f5
     style Macros fill:#fce4ec
 ```
 
 **Notes**:
 - **SwiftStateTree** is the core module, network-independent, provides core logic
 - **SwiftStateTreeTransport** provides network abstraction and room management
-- **SwiftStateTreeMatchmaking** is an optional matchmaking service module
-- **SwiftStateTreeHummingbird** provides Hummingbird framework integration
+- **SwiftStateTreeNIO** is the default WebSocket server (replaces archived Hummingbird integration)
+- **SwiftStateTreeNIOProvisioning** registers with the NestJS matchmaking control plane
 - **SwiftStateTreeMacros** is a compile-time dependency, automatically generates metadata
 
 ## System Data Flow
@@ -261,4 +262,4 @@ In multi-room mode:
 - **[Architecture Layers](architecture.md)** - Component layered architecture and relationship descriptions
 - **[Core Concepts](core/README.md)** - StateNode, Sync, Land DSL details
 - **[Transport Layer](transport/README.md)** - Network transport and connection management
-- **[Hummingbird Integration](hummingbird/README.md)** - Server deployment guide
+- **[Deploy & Load Balancing](deploy/README.md)** - Server deployment, nginx LB

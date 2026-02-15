@@ -31,6 +31,7 @@
 
 ### 整合與部署
 
+- **[配對雙層架構](matchmaking-two-plane.zh-TW.md)** - Control Plane（NestJS）與 Runtime Plane（Swift）關係、客戶端流程、connectUrl
 - **[Transport 層](transport/README.zh-TW.md)** - WebSocket、連線管理、多房間支援
 - **[傳輸層演進](transport_evolution.zh-TW.md)** - 從 JSON 到 MessagePack 二進位編碼的演進歷程
 - **[Hummingbird 整合](hummingbird/README.zh-TW.md)** - 伺服器設定、單房間/多房間模式
@@ -43,10 +44,6 @@
 ### 遊戲開發
 
 - **[確定性數學運算](deterministic-math/README.zh-TW.md)** - 固定點運算、碰撞檢測和向量運算，用於伺服器權威遊戲
-
-### AI 輔助開發
-
-- **[AI Agent 架構觀察](ai-agent-architecture-observations.zh-TW.md)** - ECS-inspired systems 與 AI workflow 的個人觀察與研究背景
 
 ### 客戶端 SDK
 
@@ -69,6 +66,11 @@
 
 1. [同步規則](core/sync.zh-TW.md) - 同步策略詳解
 2. [核心模組](core/README.zh-TW.md) - Runtime 與 SyncEngine
+
+### 我想實作配對系統
+
+1. [配對雙層架構](matchmaking-two-plane.zh-TW.md) - Control Plane 與 Runtime Plane、客戶端流程
+2. [Matchmaking Control Plane MVP Runbook](operations/matchmaking-control-plane-mvp.md) - 本地執行說明
 
 ### 我想實作多房間架構
 

@@ -31,6 +31,7 @@ If this is your first time with SwiftStateTree, we recommend reading in the foll
 
 ### Integration & Deployment
 
+- **[Matchmaking Two-Plane Architecture](matchmaking-two-plane.md)** - Control plane (NestJS) and Runtime plane (Swift) relationship, client flow, connectUrl
 - **[Transport Layer](transport/README.md)** - WebSocket, connection management, multi-room support
 - **[Transport Evolution](transport_evolution.md)** - Evolution history from JSON to MessagePack binary encoding
 - **[Hummingbird Integration](hummingbird/README.md)** - Server configuration, single-room/multi-room modes
@@ -43,10 +44,6 @@ If this is your first time with SwiftStateTree, we recommend reading in the foll
 ### Game Development
 
 - **[Deterministic Math](deterministic-math/README.md)** - Fixed-point arithmetic, collision detection, and vector operations for server-authoritative games
-
-### AI-Assisted Development
-
-- **[AI-Agent Architecture Observations](ai-agent-architecture-observations.md)** - Personal observations and research context for ECS-inspired systems and AI workflows
 
 ### Client SDK
 
@@ -69,6 +66,11 @@ If this is your first time with SwiftStateTree, we recommend reading in the foll
 
 1. [Sync Rules](core/sync.md) - Sync strategy details
 2. [Core Module](core/README.md) - Runtime and SyncEngine
+
+### I want to implement matchmaking
+
+1. [Matchmaking Two-Plane Architecture](matchmaking-two-plane.md) - Control plane vs Runtime plane, client flow
+2. [Matchmaking Control Plane MVP Runbook](operations/matchmaking-control-plane-mvp.md) - Local run instructions
 
 ### I want to implement multi-room architecture
 
