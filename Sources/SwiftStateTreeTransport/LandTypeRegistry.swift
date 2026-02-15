@@ -9,9 +9,6 @@ import SwiftStateTree
 ///
 /// Each land type can have its own independent configuration, allowing different
 /// behaviors for different types of lands.
-///
-/// **Note**: This registry is focused on land creation and does not include matchmaking
-/// strategies. Matchmaking strategies should be managed separately by MatchmakingService.
 public struct LandTypeRegistry<State: StateNodeProtocol>: Sendable {
     /// Factory: (landType, landID) -> LandDefinition
     /// The LandDefinition.id must match the landType.

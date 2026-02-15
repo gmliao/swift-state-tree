@@ -347,35 +347,6 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             }
         }
     }
-    
-    // MARK: - Lobby Management
-    
-    /// Check if a landID represents a lobby.
-    ///
-    /// Uses naming convention: landID starting with "lobby-"
-    /// - Parameter landID: The land ID to check.
-    /// - Returns: `true` if the land is a lobby, `false` otherwise.
-    public func isLobby(landID: LandID) -> Bool {
-        return landID.stringValue.hasPrefix("lobby-")
-    }
-    
-    /// List all lobbies (lands with landID starting with "lobby-").
-    ///
-    /// - Returns: Array of all lobby land IDs.
-    public func listLobbies() async -> [LandID] {
-        return lands.keys.filter { isLobby(landID: $0) }
-    }
-    
-    /// Get a specific lobby by landID.
-    ///
-    /// - Parameter landID: The unique identifier for the lobby.
-    /// - Returns: The LandContainer if it exists and is a lobby, nil otherwise.
-    public func getLobby(landID: LandID) async -> LandContainer<State>? {
-        guard isLobby(landID: landID) else {
-            return nil
-        }
-        return lands[landID]
-    }
 }
 
 // MARK: - Typealias for backward compatibility

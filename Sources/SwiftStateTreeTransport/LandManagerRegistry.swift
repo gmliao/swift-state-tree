@@ -6,9 +6,7 @@ import SwiftStateTree
 /// In single-process mode, this wraps a single LandManager.
 /// In multi-process mode, this aggregates multiple distributed LandManagers.
 ///
-/// This abstraction allows MatchmakingService to work with either a single
-/// LandManager (current) or multiple distributed LandManagers (future) without
-/// changing its implementation.
+/// Used by LandRouter for multi-room routing and land creation.
 public protocol LandManagerRegistry: Actor {
     associatedtype State: StateNodeProtocol
     

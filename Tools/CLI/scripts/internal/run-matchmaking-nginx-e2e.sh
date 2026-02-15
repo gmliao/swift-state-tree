@@ -15,7 +15,10 @@ CONTROL_PLANE_PORT="${MATCHMAKING_CONTROL_PLANE_PORT:-3000}"
 GAME_PORT="${SERVER_PORT:-8080}"
 NGINX_PORT="${NGINX_PORT:-9090}"
 
-export MATCHMAKING_CONTROL_PLANE_URL="${MATCHMAKING_CONTROL_PLANE_URL:-http://127.0.0.1:$CONTROL_PLANE_PORT}"
+# Client-facing URL: through LB (single entry) when nginx is used
+export MATCHMAKING_CONTROL_PLANE_URL="${MATCHMAKING_CONTROL_PLANE_URL:-http://127.0.0.1:$NGINX_PORT/match}"
+# Server-to-server: GameServer registers directly to control plane (internal)
+export PROVISIONING_BASE_URL="${PROVISIONING_BASE_URL:-http://127.0.0.1:$CONTROL_PLANE_PORT}"
 
 CP_PID=""
 GAME_PID=""
@@ -89,7 +92,8 @@ if ! docker info &>/dev/null; then
     echo "Docker not running. Start Docker and retry."
     exit 1
 fi
-sed "s/host.docker.internal:8080/host.docker.internal:$GAME_PORT/g" \
+sed -e "s/__GAME_PORT__/$GAME_PORT/g" \
+    -e "s/__CONTROL_PLANE_PORT__/$CONTROL_PLANE_PORT/g" \
     "$DEPLOY_DIR/nginx-matchmaking-e2e.docker.conf" \
     > "$DEPLOY_DIR/nginx-matchmaking-e2e.generated.conf"
 
@@ -107,7 +111,7 @@ sleep 2
 echo "Starting GameServer (registering with connectHost=localhost, connectPort=$NGINX_PORT)..."
 export HOST=0.0.0.0
 export PORT=$GAME_PORT
-export PROVISIONING_BASE_URL=$MATCHMAKING_CONTROL_PLANE_URL
+export PROVISIONING_BASE_URL
 export PROVISIONING_CONNECT_HOST=localhost
 export PROVISIONING_CONNECT_PORT=$NGINX_PORT
 export PROVISIONING_CONNECT_SCHEME=ws
@@ -116,13 +120,17 @@ GAME_PID=$!
 npx wait-on "http-get://127.0.0.1:$GAME_PORT/schema" -t 15000 || exit 1
 sleep 3
 
-# 4. Verify nginx LB routes to game server (schema via nginx)
-echo "Verifying nginx LB routes to game server..."
+# 4. Verify nginx LB single entry: /match/* -> control plane, /game/* -> game server
+echo "Verifying nginx LB single entry..."
+if ! curl -s --connect-timeout 3 "http://127.0.0.1:$NGINX_PORT/match/health" | grep -q 'ok'; then
+    echo "Error: nginx ($NGINX_PORT) did not proxy /match/health to control plane"
+    exit 1
+fi
 if ! curl -s --connect-timeout 3 "http://127.0.0.1:$NGINX_PORT/schema" | head -1 | grep -q '{'; then
     echo "Error: nginx ($NGINX_PORT) did not proxy /schema to game server"
     exit 1
 fi
-echo "nginx LB OK: /schema proxied to game server"
+echo "nginx LB OK: /match/* -> control plane, /game/* -> game server"
 
 # 5. Run MVP test (client must connect via nginx)
 echo "Running matchmaking MVP test (client connects via nginx)..."

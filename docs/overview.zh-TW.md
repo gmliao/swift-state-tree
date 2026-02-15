@@ -13,11 +13,13 @@ SwiftStateTree 採用模組化設計，各模組職責明確：
 |------|------|------|
 | **SwiftStateTree** | 核心模組 | StateNode、Sync、Land DSL、Runtime（LandKeeper）、Schema 生成 |
 | **SwiftStateTreeTransport** | Transport 層 | Transport 抽象、WebSocketTransport、Land 管理、多房間路由 |
-| **SwiftStateTreeHummingbird** | Hummingbird 整合 | WebSocket Hosting、JWT/Guest 認證、Admin 路由 |
-| **SwiftStateTreeMatchmaking** | 配對服務 | MatchmakingService、Lobby 支援 |
+| **SwiftStateTreeNIO** | NIO 伺服器 | WebSocket Hosting、JWT/Guest 認證、Admin 路由（預設伺服器） |
+| **SwiftStateTreeNIOProvisioning** | Provisioning | 啟動時向 matchmaking control plane 註冊 GameServer |
 | **SwiftStateTreeMacros** | 編譯期工具 | `@StateNodeBuilder`、`@Payload`、`@SnapshotConvertible` |
 | **SwiftStateTreeDeterministicMath** | 確定性數學運算 | 固定點運算、碰撞檢測、向量運算，用於伺服器權威遊戲 |
 | **SwiftStateTreeBenchmarks** | 基準測試 | 效能測試執行檔 |
+
+配對由 NestJS control plane（`Packages/matchmaking-control-plane`）處理。詳見 [Matchmaking 雙平面架構](matchmaking-two-plane.zh-TW.md)。
 
 ### 模組依賴關係
 
@@ -25,28 +27,27 @@ SwiftStateTree 採用模組化設計，各模組職責明確：
 graph TD
     Core[SwiftStateTree<br/>核心模組]
     Transport[SwiftStateTreeTransport<br/>Transport 層]
-    Matchmaking[SwiftStateTreeMatchmaking<br/>配對服務]
-    Hummingbird[SwiftStateTreeHummingbird<br/>Hummingbird 整合]
+    NIO[SwiftStateTreeNIO<br/>NIO 伺服器]
+    Provisioning[SwiftStateTreeNIOProvisioning<br/>Provisioning]
     Macros[SwiftStateTreeMacros<br/>編譯期 Macro]
     
     Core --> Transport
     Core --> Macros
-    Transport --> Matchmaking
-    Transport --> Hummingbird
-    Matchmaking --> Hummingbird
+    Transport --> NIO
+    NIO --> Provisioning
     
     style Core fill:#e1f5ff
     style Transport fill:#fff4e1
-    style Hummingbird fill:#e8f5e9
-    style Matchmaking fill:#f3e5f5
+    style NIO fill:#e8f5e9
+    style Provisioning fill:#f3e5f5
     style Macros fill:#fce4ec
 ```
 
 **說明**：
 - **SwiftStateTree** 是核心模組，不依賴網路，提供核心邏輯
 - **SwiftStateTreeTransport** 提供網路抽象和房間管理
-- **SwiftStateTreeMatchmaking** 是可選的配對服務模組
-- **SwiftStateTreeHummingbird** 提供 Hummingbird 框架整合
+- **SwiftStateTreeNIO** 為預設 WebSocket 伺服器（取代已歸檔的 Hummingbird 整合）
+- **SwiftStateTreeNIOProvisioning** 向 NestJS matchmaking control plane 註冊
 - **SwiftStateTreeMacros** 是編譯時依賴，自動生成 metadata
 
 ## 系統資料流
@@ -261,4 +262,4 @@ graph TD
 - **[架構分層](architecture.zh-TW.md)** - 組件分層架構與關係說明
 - **[核心概念](core/README.zh-TW.md)** - StateNode、Sync、Land DSL 詳解
 - **[Transport 層](transport/README.zh-TW.md)** - 網路傳輸與連線管理
-- **[Hummingbird 整合](hummingbird/README.zh-TW.md)** - 伺服器部署指南
+- **[部署與負載均衡](deploy/README.md)** - 伺服器部署、nginx LB
