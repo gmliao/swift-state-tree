@@ -39,6 +39,11 @@ let package = Package(
             name: "SwiftStateTreeNIO",
             targets: ["SwiftStateTreeNIO"]
         ),
+        // 📡 NIO Provisioning Middleware: Optional middleware for control plane registration
+        .library(
+            name: "SwiftStateTreeNIOProvisioning",
+            targets: ["SwiftStateTreeNIOProvisioning"]
+        ),
         // 🔍 Reevaluation Monitor: Built-in Land for monitoring reevaluation verification
         .library(
             name: "SwiftStateTreeReevaluationMonitor",
@@ -142,6 +147,16 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
             ],
             path: "Sources/SwiftStateTreeNIO"
+        ),
+
+        // 📡 NIO Provisioning: Middleware + HTTP client for control plane registration
+        .target(
+            name: "SwiftStateTreeNIOProvisioning",
+            dependencies: [
+                "SwiftStateTreeNIO",
+                .product(name: "Logging", package: "swift-log"),
+            ],
+            path: "Sources/SwiftStateTreeNIOProvisioning"
         ),
 
         // 🔹 Macro Implementation: Compile-time macro expansion

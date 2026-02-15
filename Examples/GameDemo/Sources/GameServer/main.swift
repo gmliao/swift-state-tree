@@ -4,6 +4,7 @@ import Logging
 import ProfileRecorderServer
 import SwiftStateTree
 import SwiftStateTreeNIO
+import SwiftStateTreeNIOProvisioning
 import SwiftStateTreeReevaluationMonitor
 import SwiftStateTreeTransport
 
@@ -17,6 +18,8 @@ import SwiftStateTreeTransport
 /// - Host: Set via `HOST` environment variable (default: "localhost")
 /// - Log level: Set via `LOG_LEVEL` (trace, debug, info, notice, warning, error, critical; default: info)
 /// - Reevaluation recording: Off by default; set `ENABLE_REEVALUATION=true` to enable writing reevaluation records (for replay/verification).
+/// - Matchmaking: Set `PROVISIONING_BASE_URL` (e.g. http://127.0.0.1:3000) to register with matchmaking control plane on startup.
+/// - Client-facing URL (K8s/nginx): Set `PROVISIONING_CONNECT_HOST`, `PROVISIONING_CONNECT_PORT`, `PROVISIONING_CONNECT_SCHEME` when behind Ingress or LB.
 /// - Guest mode: Enabled (all connections allowed; NIO has no JWT)
 /// - Auto-create rooms: Enabled (clients can create rooms dynamically)
 /// - Admin routes: Enabled at `/admin/*` (API Key: `hero-defense-admin-key`)
@@ -85,12 +88,30 @@ struct GameServer {
         let schemaData: Data? = try? JSONEncoder().encode(schema)
         let schemaProvider: @Sendable () -> Data? = { schemaData }
 
+        var middlewareBuilder = HostMiddlewareBuilder()
+        if let provBaseUrl = getEnvStringOptional(key: ProvisioningEnvKeys.baseUrl) {
+            let connectHost = getEnvStringOptional(key: ProvisioningEnvKeys.connectHost)
+            let connectPort = getEnvStringOptional(key: ProvisioningEnvKeys.connectPort).flatMap { Int($0) }
+            let connectScheme = getEnvStringOptional(key: ProvisioningEnvKeys.connectScheme)
+            middlewareBuilder.add(NIOLandHostConfiguration.provisioningMiddleware(
+                baseUrl: provBaseUrl,
+                serverId: "game-1",
+                landType: "hero-defense",
+                heartbeatIntervalSeconds: 30,
+                connectHost: connectHost,
+                connectPort: connectPort,
+                connectScheme: (connectScheme == "ws" || connectScheme == "wss") ? connectScheme : nil
+            ))
+        }
+        let middlewares = middlewareBuilder.build()
+
         let nioHost = NIOLandHost(configuration: NIOLandHostConfiguration(
             host: host,
             port: port,
             logger: logger,
             schemaProvider: schemaProvider,
-            adminAPIKey: "hero-defense-admin-key"
+            adminAPIKey: "hero-defense-admin-key",
+            middlewares: middlewares
         ))
 
         let nioServerConfig = NIOLandServerConfiguration(

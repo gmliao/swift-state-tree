@@ -1,0 +1,12 @@
+{
+  "maxDuration": 30000,
+  "steps": [
+    {"type": "log", "message": "Two-player: connected to same game"},
+    {"type": "wait", "wait": 500},
+    {"type": "assert", "assert": {"path": "score", "exists": true, "message": "Score field exists"}},
+    {"type": "action", "action": "Play", "payload": {}},
+    {"type": "wait", "wait": 500},
+    {"type": "assert", "assert": {"path": "score", "greaterThanOrEqual": 1, "message": "Score >= 1 after PlayAction (one or both players)"}},
+    {"type": "log", "message": "Two-player matchmaking: PASS"}
+  ]
+}

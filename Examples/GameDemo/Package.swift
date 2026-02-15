@@ -8,6 +8,10 @@ let package = Package(
         .macOS(.v14),
     ],
     products: [
+        .library(
+            name: "GameContent",
+            targets: ["GameContent"]
+        ),
         .executable(
             name: "GameServer",
             targets: ["GameServer"]
@@ -45,6 +49,7 @@ let package = Package(
             dependencies: [
                 "GameContent",
                 .product(name: "SwiftStateTreeNIO", package: "SwiftStateTree"),
+                .product(name: "SwiftStateTreeNIOProvisioning", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeTransport", package: "SwiftStateTree"),
                 .product(name: "ProfileRecorderServer", package: "swift-profile-recorder"),
             ],

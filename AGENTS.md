@@ -86,8 +86,37 @@
 - **SDK structure**: `core/` (runtime, view), `codegen/` (code generation), `types/` (transport types).
 - **Usage**: SDK can be used as npm package `@swiftstatetree/sdk` or via local path in demo projects.
 
+## Environment Configuration
+
+Use the unified env pattern instead of scattered `ProcessInfo.processInfo.environment["KEY"]`:
+
+- **EnvHelpers** (`Sources/SwiftStateTree/Support/EnvHelpers.swift`): Core parsing (`getEnvString`, `getEnvBool`, `getEnvInt`, `getEnvUInt16`, etc.).
+- **Env keys**: Use constants from `*EnvKeys` enums to avoid typos and enable refactoring:
+  - `EnvKeys` (SwiftStateTree): Reevaluation, Logging
+  - `NIOEnvKeys` (SwiftStateTreeNIO): JWT
+  - `ProvisioningEnvKeys` (SwiftStateTreeNIOProvisioning): Provisioning
+  - `TransportEnvKeys` (SwiftStateTreeTransport): Transport config
+
+- **HTTP fetch**: Use `HTTPHelpers` (`Sources/SwiftStateTree/Support/HTTPHelpers.swift`) for outbound HTTP:
+  - `HTTPHelpers.fetch(url:method:body:headers:)` – raw Data body
+  - `HTTPHelpers.fetch(url:method:jsonObject:headers:)` – JSON from [String: Any]
+  - `HTTPHelpers.fetch(url:method:jsonBody:encoder:headers:)` – JSON from Encodable
+  - **Prefer DTOs**: Use `jsonBody` with `Codable` structs (DTOs) instead of `jsonObject` with `[String: Any]`. DTOs provide type safety, align with API contracts (e.g. control plane ServerRegisterDto), and avoid serialization errors.
+  - **Status checks**: Use `HTTPURLResponse.isSuccess` (2xx) instead of raw range checks; use `HTTPStatusCode` enum when branching on specific codes.
+
+**Example** (GameServer):
+```swift
+let host = getEnvString(key: "HOST", defaultValue: "localhost")
+let port = getEnvUInt16(key: "PORT", defaultValue: 8080)
+if let provBaseUrl = getEnvStringOptional(key: ProvisioningEnvKeys.baseUrl) {
+    middlewareBuilder.add(NIOLandHostConfiguration.provisioningMiddleware(...))
+}
+// For K8s/nginx: set PROVISIONING_CONNECT_HOST, PROVISIONING_CONNECT_PORT, PROVISIONING_CONNECT_SCHEME for client-facing connectUrl.
+```
+
 ## Coding Style & Naming Conventions
 - Swift 6, macOS 13+; follow Swift API Design Guidelines and prefer `Sendable` on public types.
+- **DTOs for API payloads**: Define `Codable` structs for HTTP request/response bodies instead of using `[String: Any]`. Align field names with the API contract (e.g. matchmaking-control-plane DTOs).
 - Indent with 4 spaces; keep line length reasonable (~120 chars).
 - Types: `UpperCamelCase`; methods/variables: `lowerCamelCase`; enums use verb-like cases for commands (`.join`, `.attack`).
 - Place new game logic in `Sources/SwiftStateTree`; keep demo-only code inside `Examples/Demo`.

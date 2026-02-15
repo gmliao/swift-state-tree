@@ -1,0 +1,13 @@
+{
+  "maxDuration": 30000,
+  "steps": [
+    {"type": "log", "message": "Matchmaking assignment flow: connected with token"},
+    {"type": "wait", "wait": 500},
+    {"type": "assert", "assert": {"path": "score", "exists": true, "message": "Score field exists"}},
+    {"type": "log", "message": "Sending PlayAction"},
+    {"type": "action", "action": "Play", "payload": {}},
+    {"type": "wait", "wait": 500},
+    {"type": "assert", "assert": {"path": "score", "equals": 1, "message": "Score should be 1 after PlayAction"}},
+    {"type": "log", "message": "Matchmaking assignment flow: PASS"}
+  ]
+}

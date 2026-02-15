@@ -1,0 +1,13 @@
+# nginx for matchmaking E2E: single backend to GameServer
+# Usage: run-matchmaking-nginx-e2e.sh
+# Script generates nginx-matchmaking-e2e.generated.conf with correct GAME_PORT before running.
+
+services:
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./nginx-matchmaking-e2e.generated.conf:/etc/nginx/nginx.conf:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
