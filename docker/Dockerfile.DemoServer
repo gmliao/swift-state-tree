@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile for DemoServer
 # Stage 1: Build - compiles the Swift binary
-# Stage 2: Run - minimal runtime image for deployment (k8s-ready)
+# Stage 2: Run - minimal runtime (~150MB vs ~450MB swift:slim)
 
 # -----------------------------------------------------------------------------
 # Stage 1: Build Image
@@ -16,32 +16,39 @@ COPY . .
 RUN swift build -c release --package-path Examples/Demo --product DemoServer
 
 # -----------------------------------------------------------------------------
-# Stage 2: Run Image
-# Minimal runtime - only binary + Swift runtime libs. Suitable for k8s deployment.
+# Stage 2: Run Image (minimal - ubuntu noble + Swift runtime libs only)
+# Must match swift:6.2 base (Ubuntu 24.04) for libicu/ABI compatibility.
 # -----------------------------------------------------------------------------
-FROM swift:6.2-slim AS runtime
+FROM ubuntu:24.04 AS runtime
+
+# Swift runtime dependencies (minimal set for Foundation/Networking)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libatomic1 \
+    libcurl4 \
+    libicu74 \
+    libxml2 \
+    tzdata \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user for k8s security context
-RUN adduser --disabled-password --gecos "" appuser
+RUN useradd -r -s /bin/false appuser
 
 WORKDIR /app
+
+# Copy Swift runtime libs from builder (required for Swift binaries)
+COPY --from=builder /usr/lib/swift/linux /usr/lib/swift/linux
 
 # Copy only the compiled binary from builder
 COPY --from=builder /workspace/Examples/Demo/.build/release/DemoServer /app/DemoServer
 
-# Ensure executable
 RUN chmod +x /app/DemoServer
 
 USER appuser
 
-# Default: listen on all interfaces (container-friendly)
 ENV HOST=0.0.0.0
 ENV PORT=8080
 
 EXPOSE 8080
-
-# Health check for k8s liveness/readiness probes (adjust path if your server has /health)
-# HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-#   CMD curl -f http://localhost:8080/ || exit 1
 
 CMD ["./DemoServer"]
