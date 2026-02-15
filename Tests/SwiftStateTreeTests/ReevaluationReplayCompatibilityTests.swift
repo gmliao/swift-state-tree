@@ -178,7 +178,7 @@ struct ReevaluationReplayCompatibilityTests {
         }
 
         do {
-            _ = try await ReevaluationEngine.run(
+            _ = try await ConcreteReevaluationRunner(
                 definition: definition,
                 initialState: ReevaluationEngineTestState(),
                 recordFilePath: recordingFile.path
@@ -214,11 +214,14 @@ private func encodeJSONObjectToString(_ object: [String: Any]) throws -> String 
 }
 
 private func hasSchemaMismatchErrorSignature(_ error: Error) -> Bool {
-    let nsError = error as NSError
-    let expectedDomain = "ReevaluationEngine"
-    let expectedCode = 1001
+    guard let compatibilityError = error as? ReevaluationReplayCompatibilityError else {
+        return false
+    }
 
-    return nsError.domain == expectedDomain && nsError.code == expectedCode
+    if case .schemaMismatch = compatibilityError {
+        return true
+    }
+    return false
 }
 
 private func hasSchemaMismatchContext(
@@ -226,27 +229,9 @@ private func hasSchemaMismatchContext(
     expectedRecordedLandDefinitionID: String,
     expectedRuntimeLandDefinitionID: String
 ) -> Bool {
-    let nsError = error as NSError
-
-    let recordedKeys = [
-        "recordedLandDefinitionID",
-        "recordLandDefinitionID",
-        "recordedDefinitionID",
-        "recordDefinitionID",
-    ]
-    let runtimeKeys = [
-        "runtimeLandDefinitionID",
-        "currentLandDefinitionID",
-        "expectedLandDefinitionID",
-        "runtimeDefinitionID",
-    ]
-
-    let recordedID = recordedKeys
-        .compactMap { nsError.userInfo[$0] as? String }
-        .first
-    let runtimeID = runtimeKeys
-        .compactMap { nsError.userInfo[$0] as? String }
-        .first
+    guard case let .schemaMismatch(runtimeID, recordedID)? = (error as? ReevaluationReplayCompatibilityError) else {
+        return false
+    }
 
     return recordedID == expectedRecordedLandDefinitionID && runtimeID == expectedRuntimeLandDefinitionID
 }

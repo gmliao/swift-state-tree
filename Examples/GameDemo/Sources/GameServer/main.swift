@@ -51,6 +51,9 @@ struct GameServer {
         let host = getEnvString(key: "HOST", defaultValue: "localhost")
         let port = getEnvUInt16(key: "PORT", defaultValue: 8080)
         let enableReevaluation = getEnvBool(key: "ENABLE_REEVALUATION", defaultValue: false)
+        let requiredReplayRecordVersion = ProcessInfo.processInfo.environment[
+            "REEVALUATION_REPLAY_REQUIRED_RECORD_VERSION"
+        ] ?? "2.0"
 
         // Single TRANSPORT_ENCODING controls both message and stateUpdate encoding
         let transportEncodingEnv = getEnvString(key: "TRANSPORT_ENCODING", defaultValue: "messagepack")
@@ -115,7 +118,9 @@ struct GameServer {
                 services.register(configService, as: GameConfigProviderService.self)
 
                 if enableReevaluation {
-                    let reevaluationFactory = GameReevaluationFactory()
+                    let reevaluationFactory = GameServerReevaluationFactory(
+                        requiredRecordVersion: requiredReplayRecordVersion
+                    )
                     let reevaluationService = ReevaluationRunnerService(factory: reevaluationFactory)
                     services.register(reevaluationService, as: ReevaluationRunnerService.self)
                 }
@@ -166,6 +171,31 @@ struct GameServer {
                 "error": .string(String(describing: error)),
             ])
             exit(1)
+        }
+    }
+}
+
+private struct GameServerReevaluationFactory: ReevaluationTargetFactory {
+    let requiredRecordVersion: String
+
+    func createRunner(landType: String, recordFilePath: String) async throws -> any ReevaluationRunnerProtocol {
+        switch landType {
+        case "hero-defense":
+            var services = LandServices()
+            services.register(
+                GameConfigProviderService(provider: DefaultGameConfigProvider()),
+                as: GameConfigProviderService.self
+            )
+
+            return try await ConcreteReevaluationRunner(
+                definition: HeroDefense.makeLand(),
+                initialState: HeroDefenseState(),
+                recordFilePath: recordFilePath,
+                requiredRecordVersion: requiredRecordVersion,
+                services: services
+            )
+        default:
+            throw ReevaluationError.unknownLandType(landType)
         }
     }
 }

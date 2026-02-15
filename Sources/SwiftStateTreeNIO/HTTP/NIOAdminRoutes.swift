@@ -8,6 +8,56 @@ import NIOHTTP1
 import SwiftStateTree
 import SwiftStateTreeTransport
 
+private enum ReplayStartCompatibilityError: Error, Sendable {
+    case landTypeMismatch(expected: String, actual: String)
+    case schemaMismatch(expectedLandDefinitionID: String, recordedLandDefinitionID: String?)
+    case recordVersionMismatch(expectedVersion: String, recordedVersion: String?)
+
+    var apiCode: String {
+        switch self {
+        case .landTypeMismatch:
+            return "LAND_TYPE_MISMATCH"
+        case .schemaMismatch:
+            return "SCHEMA_MISMATCH"
+        case .recordVersionMismatch:
+            return "RECORD_VERSION_MISMATCH"
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .landTypeMismatch(let expected, let actual):
+            return "Replay record landType mismatch: expected \(expected), got \(actual)."
+        case .schemaMismatch(let expected, let actual):
+            let actualValue = actual ?? "nil"
+            return "Replay record schema mismatch: expected landDefinitionID \(expected), got \(actualValue)."
+        case .recordVersionMismatch(let expected, let actual):
+            let actualValue = actual ?? "nil"
+            return "Replay record version mismatch: expected \(expected), got \(actualValue)."
+        }
+    }
+
+    var details: [String: AnyCodable] {
+        switch self {
+        case .landTypeMismatch(let expected, let actual):
+            return [
+                "expectedLandType": AnyCodable(expected),
+                "recordedLandType": AnyCodable(actual),
+            ]
+        case .schemaMismatch(let expected, let actual):
+            return [
+                "expectedLandDefinitionID": AnyCodable(expected),
+                "recordedLandDefinitionID": AnyCodable(actual),
+            ]
+        case .recordVersionMismatch(let expected, let actual):
+            return [
+                "expectedRecordVersion": AnyCodable(expected),
+                "recordedRecordVersion": AnyCodable(actual),
+            ]
+        }
+    }
+}
+
 /// Admin HTTP routes for managing lands across all land types.
 ///
 /// Provides endpoints for querying, creating, and managing lands.
@@ -273,7 +323,7 @@ public struct NIOAdminRoutes: Sendable {
             else {
                 let response = AdminAPIAnyResponse.error(
                     code: .invalidRequest,
-                    message: "Invalid JSON body. Expect { landType, recordFilePath }."
+                    message: "Invalid JSON body. Expect { landType, recordFilePath, expectedLandDefinitionID?, expectedRecordVersion? }."
                 )
                 return try NIOHTTPResponse.json(response, status: .badRequest).withCORS()
             }
@@ -310,6 +360,33 @@ public struct NIOAdminRoutes: Sendable {
                 return try NIOHTTPResponse.json(response, status: .notFound).withCORS()
             }
 
+            do {
+                let source = try JSONReevaluationSource(filePath: resolvedRecordPath.path)
+                let metadata = try await source.getMetadata()
+                try validateReplayCompatibility(
+                    metadata: metadata,
+                    expectedLandType: payload.landType,
+                    expectedLandDefinitionID: payload.expectedLandDefinitionID ?? payload.landType,
+                    expectedRecordVersion: payload.expectedRecordVersion
+                )
+            } catch let compatibilityError as ReplayStartCompatibilityError {
+                let response = AdminAPIAnyResponse.error(
+                    AdminAPIError(
+                        code: compatibilityError.apiCode,
+                        message: compatibilityError.message,
+                        details: compatibilityError.details
+                    )
+                )
+                return try NIOHTTPResponse.json(response, status: .conflict).withCORS()
+            } catch {
+                logger.error("Failed to validate replay record compatibility: \(error)")
+                let response = AdminAPIAnyResponse.error(
+                    code: .invalidRequest,
+                    message: "Failed to read reevaluation record metadata"
+                )
+                return try NIOHTTPResponse.json(response, status: .badRequest).withCORS()
+            }
+
             let pathToken = encodeBase64URL(resolvedRecordPath.path)
             let landID = LandID(landType: replayLandType, instanceId: "\(UUID().uuidString.lowercased()).\(pathToken)")
             let webSocketPath = "/game/\(replayLandType)"
@@ -332,6 +409,35 @@ public struct NIOAdminRoutes: Sendable {
 private struct StartReevaluationReplayRequest: Decodable {
     let landType: String
     let recordFilePath: String
+    let expectedLandDefinitionID: String?
+    let expectedRecordVersion: String?
+}
+
+private func validateReplayCompatibility(
+    metadata: ReevaluationRecordMetadata,
+    expectedLandType: String,
+    expectedLandDefinitionID: String,
+    expectedRecordVersion: String?
+) throws {
+    if metadata.landType != expectedLandType {
+        throw ReplayStartCompatibilityError.landTypeMismatch(expected: expectedLandType, actual: metadata.landType)
+    }
+
+    if let recordedLandDefinitionID = metadata.landDefinitionID,
+       recordedLandDefinitionID != expectedLandDefinitionID {
+        throw ReplayStartCompatibilityError.schemaMismatch(
+            expectedLandDefinitionID: expectedLandDefinitionID,
+            recordedLandDefinitionID: recordedLandDefinitionID
+        )
+    }
+
+    if let expectedRecordVersion,
+       metadata.version != expectedRecordVersion {
+        throw ReplayStartCompatibilityError.recordVersionMismatch(
+            expectedVersion: expectedRecordVersion,
+            recordedVersion: metadata.version
+        )
+    }
 }
 
 private func resolveReevaluationRecordPath(rawPath: String, recordsDir: String) -> URL? {

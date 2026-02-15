@@ -2,6 +2,61 @@ import Foundation
 import Logging
 import SwiftStateTree
 
+public enum ReevaluationReplayCompatibilityError: Error, Sendable, CustomNSError, LocalizedError {
+    case landTypeMismatch(expected: String, actual: String)
+    case schemaMismatch(expectedLandDefinitionID: String, recordedLandDefinitionID: String?)
+    case recordVersionMismatch(expectedVersion: String, recordedVersion: String?)
+
+    public static var errorDomain: String { "ReevaluationReplayCompatibility" }
+
+    public var errorCode: Int {
+        switch self {
+        case .landTypeMismatch:
+            return 2001
+        case .schemaMismatch:
+            return 2002
+        case .recordVersionMismatch:
+            return 2003
+        }
+    }
+
+    public var errorDescription: String? {
+        switch self {
+        case .landTypeMismatch(let expected, let actual):
+            return "Replay record landType mismatch: expected \(expected), got \(actual)."
+        case .schemaMismatch(let expected, let actual):
+            let actualValue = actual ?? "nil"
+            return "Replay record landDefinitionID mismatch: expected \(expected), got \(actualValue)."
+        case .recordVersionMismatch(let expected, let actual):
+            let actualValue = actual ?? "nil"
+            return "Replay record version mismatch: expected \(expected), got \(actualValue)."
+        }
+    }
+
+    public var errorUserInfo: [String: Any] {
+        switch self {
+        case .landTypeMismatch(let expected, let actual):
+            return [
+                "code": "LAND_TYPE_MISMATCH",
+                "expectedLandType": expected,
+                "recordedLandType": actual,
+            ]
+        case .schemaMismatch(let expected, let actual):
+            return [
+                "code": "SCHEMA_MISMATCH",
+                "expectedLandDefinitionID": expected,
+                "recordedLandDefinitionID": actual as Any,
+            ]
+        case .recordVersionMismatch(let expected, let actual):
+            return [
+                "code": "RECORD_VERSION_MISMATCH",
+                "expectedRecordVersion": expected,
+                "recordedRecordVersion": actual as Any,
+            ]
+        }
+    }
+}
+
 public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationRunnerProtocol {
     private let keeper: LandKeeper<State>
     private let source: JSONReevaluationSource
@@ -13,10 +68,17 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
 
     public init(
         definition: LandDefinition<State>,
-        recordFilePath: String
+        recordFilePath: String,
+        requiredRecordVersion: String? = nil
     ) async throws {
         source = try JSONReevaluationSource(filePath: recordFilePath)
         let metadata = try await source.getMetadata()
+        try Self.validateReplayCompatibility(
+            metadata: metadata,
+            expectedLandType: definition.id,
+            expectedLandDefinitionID: definition.id,
+            requiredRecordVersion: requiredRecordVersion
+        )
         maxTickId = try await source.getMaxTickId()
 
         let initialState = State() // Assuming generic init or we need to pass it
@@ -59,10 +121,17 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         definition: LandDefinition<State>,
         initialState: State,
         recordFilePath: String,
+        requiredRecordVersion: String? = nil,
         services: LandServices = LandServices()
     ) async throws {
         source = try JSONReevaluationSource(filePath: recordFilePath)
         let metadata = try await source.getMetadata()
+        try Self.validateReplayCompatibility(
+            metadata: metadata,
+            expectedLandType: definition.id,
+            expectedLandDefinitionID: definition.id,
+            requiredRecordVersion: requiredRecordVersion
+        )
         maxTickId = try await source.getMaxTickId()
 
         // Use provided services as base
@@ -150,5 +219,35 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
 
     public func setPaused(_: Bool) {
         // Not used in step model
+    }
+
+    private static func validateReplayCompatibility(
+        metadata: ReevaluationRecordMetadata,
+        expectedLandType: String,
+        expectedLandDefinitionID: String,
+        requiredRecordVersion: String?
+    ) throws {
+        if metadata.landType != expectedLandType {
+            throw ReevaluationReplayCompatibilityError.landTypeMismatch(
+                expected: expectedLandType,
+                actual: metadata.landType
+            )
+        }
+
+        if let recordedLandDefinitionID = metadata.landDefinitionID,
+           recordedLandDefinitionID != expectedLandDefinitionID {
+            throw ReevaluationReplayCompatibilityError.schemaMismatch(
+                expectedLandDefinitionID: expectedLandDefinitionID,
+                recordedLandDefinitionID: recordedLandDefinitionID
+            )
+        }
+
+        if let requiredRecordVersion,
+           metadata.version != requiredRecordVersion {
+            throw ReevaluationReplayCompatibilityError.recordVersionMismatch(
+                expectedVersion: requiredRecordVersion,
+                recordedVersion: metadata.version
+            )
+        }
     }
 }
