@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { WsAdapter } from '@nestjs/platform-ws';
 import * as request from 'supertest';
 import { AppModule } from '../src/app.module';
 
@@ -48,6 +49,7 @@ describe('MatchmakingController (e2e)', () => {
       .compile();
 
     app = moduleFixture.createNestApplication();
+    app.useWebSocketAdapter(new WsAdapter(app));
     app.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,
@@ -105,6 +107,7 @@ describe('MatchmakingController (e2e)', () => {
       .compile();
 
     const testApp = moduleFixture.createNestApplication();
+    testApp.useWebSocketAdapter(new WsAdapter(testApp));
     testApp.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,
