@@ -3,10 +3,10 @@
 > 本文檔說明 SwiftStateTree 的多房間架構設計、房間管理、配對服務，以及相關的命名與職責分界。
 >
 > **狀態說明**：
-> - ✅ 多房間架構：已部分實作，`LandManager`、`LandRouter`、`LandContainer` 已實作
+> - ✅ 多房間架構：已實作，`LandManager`、`LandRouter`、`LandContainer` 已實作
 > - ✅ `AppContainer`（未來 `LandServer`）：已支援單房間和多房間兩種模式
-> - 📅 配對服務：規劃中，`MatchmakingService` 已實作但功能仍在擴展
-> - 📅 配對大廳：規劃中，`LobbyContainer` 已實作但功能仍在擴展
+> - ✅ 配對服務：由 NestJS control plane 處理（`Packages/matchmaking-control-plane`）
+> - 📦 配對大廳：Swift 端 `LobbyContainer`、`MatchmakingService` 已歸檔至 `Archive/`
 >
 > 相關文檔：
 > - [DESIGN_APP_CONTAINER_HOSTING.md](./DESIGN_APP_CONTAINER_HOSTING.md) - AppContainer 與 Hosting 設計
@@ -537,29 +537,21 @@ await gameWS.connect()
 await gameWS.send(JoinMessage(...))
 ```
 
-### 3. 多個大廳管理
+### 3. 多房間與配對
+
+配對由 NestJS control plane 處理。Client 透過 enqueue → poll 取得 connectUrl，再連線至 GameServer。
 
 ```swift
-// === 伺服器端設定 ===
-// 1. 建立多個大廳
-let container = try await LandServer<State>.makeMultiRoomServer(
-    configuration: config,
-    landFactory: { landID in ... },
-    initialStateFactory: { landID in ... },
-    lobbyIDs: ["lobby-asia", "lobby-europe", "lobby-casual"] // 預先建立多個大廳
+// === 伺服器端：NIOLandHost + LandRouter ===
+// LandRouter 根據 Join 訊息中的 landType、landInstanceId 路由
+// 多個 land 由 LandManager 管理，LandTypeRegistry 提供 land 定義
+let host = NIOLandHost(
+    landRouter: LandRouter(
+        landManagerRegistry: SingleLandManagerRegistry(landManager: landManager),
+        landTypeRegistry: landTypeRegistry
+    ),
+    ...
 )
-
-// 2. 取得特定大廳
-let asiaLobby = await container.getLobby(
-    landID: LandID("lobby-asia"),
-    matchmakingService: matchmakingService,
-    landManagerRegistry: registry,
-    landTypeRegistry: landTypeRegistry
-)
-
-// 3. 列出所有大廳（需要從 LandManager 獲取）
-let allLobbies = await container.landManager?.listLands()
-// 返回: [LandID("lobby-asia"), LandID("lobby-europe"), LandID("lobby-casual")]
 ```
 
 ### 4. 房間路由
@@ -584,42 +576,16 @@ let allLobbies = await container.landManager?.listLands()
 - `LandRouter` 使用 `LandManager` 管理現有的 land
 - 所有路由邏輯都在 `LandRouter` 內部處理，無需手動配置
 
-### 5. 大廳如何呼叫 MatchmakingService
+### 5. 配對流程（Control Plane）
 
-```swift
-// 在 LobbyContainer 中：
-public func requestMatchmaking(
-    playerID: PlayerID,
-    preferences: MatchmakingPreferences
-) async throws -> MatchmakingResult {
-    // 1. 呼叫 MatchmakingService
-    let result = try await matchmakingService.matchmake(
-        playerID: playerID,
-        preferences: preferences
-    )
-    
-    // 2. 透過 Event 推送結果給玩家
-    await sendMatchmakingResult(playerID: playerID, result: result)
-    
-    return result
-}
+配對由 NestJS control plane 處理，非 Swift 端：
 
-// 在 LandDefinition 的 Action handler 中：
-HandleAction(RequestMatchmakingAction.self) { state, action, ctx in
-    // 從 LandServices 取得 LobbyContainer（需要預先註冊）
-    guard let lobbyContainer = ctx.services.get(LobbyContainer.self) else {
-        return MatchmakingResponse(result: .failed(reason: "LobbyContainer not available"))
-    }
-    
-    // 呼叫 LobbyContainer
-    let result = try await lobbyContainer.requestMatchmaking(
-        playerID: ctx.playerID,
-        preferences: action.preferences
-    )
-    
-    return MatchmakingResponse(result: result)
-}
-```
+1. Client 呼叫 control plane：`POST /match/enqueue`（landType、playerId 等）
+2. Client 輪詢：`GET /match/poll/{ticketId}` 直到 `status: "matched"`
+3. 回應含 `connectUrl`（GameServer WebSocket URL）
+4. Client 以 connectUrl 連線至 GameServer，發送 Join 訊息
+
+詳見 `docs/matchmaking-two-plane.md`。
 
 ## 並行執行模式
 

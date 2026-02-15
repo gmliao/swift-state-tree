@@ -230,3 +230,50 @@ jobs:
       run: |
         cd Tools/CLI
         ./test-e2e-game.sh
+
+  e2e-matchmaking-tests:
+    runs-on: ubuntu-22.04 # Linux runner (production target)
+    container:
+      image: swift:6.2
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Node.js and lsof
+      run: |
+        apt-get update
+        apt-get install -y curl lsof
+        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+        apt-get install -y nodejs
+        node --version && npm --version
+
+    - name: Setup npm cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.npm
+        key: ${{ runner.os }}-node-${{ hashFiles('sdk/ts/package-lock.json', 'Packages/matchmaking-control-plane/package-lock.json') }}
+        restore-keys: |
+          ${{ runner.os }}-node-
+
+    - name: Build SDK (required by CLI)
+      working-directory: sdk/ts
+      run: |
+        npm ci
+        npm run build
+
+    - name: Install CLI dependencies
+      working-directory: Tools/CLI
+      run: npm ci
+
+    - name: Build matchmaking control plane
+      working-directory: Packages/matchmaking-control-plane
+      run: |
+        npm ci
+        npm run build
+
+    - name: Build GameServer
+      run: swift build --package-path Examples/GameDemo
+
+    - name: Run Matchmaking E2E (control plane + GameServer, no nginx)
+      run: |
+        bash Tools/CLI/scripts/internal/run-matchmaking-full-with-test.sh

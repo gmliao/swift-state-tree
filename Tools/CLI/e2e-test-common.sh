@@ -134,8 +134,8 @@ start_server_impl() {
     if [ "$E2E_BUILD_MODE" = "release" ]; then
         swift_run_cmd="swift run -c release"
     fi
-    # Pass ENABLE_REEVALUATION from parent environment if set
-    TRANSPORT_ENCODING=${server_encoding} ENABLE_REEVALUATION=${ENABLE_REEVALUATION:-} $swift_run_cmd ${server_cmd} > "${log_file}" 2>&1 &
+    # Pass ENABLE_REEVALUATION, MATCHMAKING_MODE from parent environment if set
+    TRANSPORT_ENCODING=${server_encoding} ENABLE_REEVALUATION=${ENABLE_REEVALUATION:-} MATCHMAKING_MODE=${MATCHMAKING_MODE:-direct} $swift_run_cmd ${server_cmd} > "${log_file}" 2>&1 &
     local pid=$!
     
     # Check if process is still running (quick validation)

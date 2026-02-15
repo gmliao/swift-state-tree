@@ -24,11 +24,6 @@ let package = Package(
             name: "SwiftStateTreeTransport",
             targets: ["SwiftStateTreeTransport"]
         ),
-        // 🎯 Matchmaking & Lobby: Matchmaking service and lobby functionality
-        .library(
-            name: "SwiftStateTreeMatchmaking",
-            targets: ["SwiftStateTreeMatchmaking"]
-        ),
         // 🔢 Deterministic Math: Fixed-point math for server-authoritative games
         .library(
             name: "SwiftStateTreeDeterministicMath",
@@ -38,6 +33,11 @@ let package = Package(
         .library(
             name: "SwiftStateTreeNIO",
             targets: ["SwiftStateTreeNIO"]
+        ),
+        // 📡 NIO Provisioning Middleware: Optional middleware for control plane registration
+        .library(
+            name: "SwiftStateTreeNIOProvisioning",
+            targets: ["SwiftStateTreeNIOProvisioning"]
         ),
         // 🔍 Reevaluation Monitor: Built-in Land for monitoring reevaluation verification
         .library(
@@ -56,6 +56,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.77.0"),
+        .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.21.0"),
     ],
     targets: [
         // 🔹 Core Library: Pure Swift game logic, no network dependency
@@ -95,17 +96,6 @@ let package = Package(
             path: "Sources/SwiftStateTreeMessagePack"
         ),
 
-        // 🎯 Matchmaking & Lobby: Matchmaking service and lobby functionality
-        .target(
-            name: "SwiftStateTreeMatchmaking",
-            dependencies: [
-                "SwiftStateTree",
-                "SwiftStateTreeTransport",
-                .product(name: "Logging", package: "swift-log"),
-            ],
-            path: "Sources/SwiftStateTreeMatchmaking"
-        ),
-
         // 🔢 Deterministic Math: Fixed-point math for server-authoritative games
         .target(
             name: "SwiftStateTreeDeterministicMath",
@@ -142,6 +132,17 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
             ],
             path: "Sources/SwiftStateTreeNIO"
+        ),
+
+        // 📡 NIO Provisioning: Middleware + HTTP client for control plane registration
+        .target(
+            name: "SwiftStateTreeNIOProvisioning",
+            dependencies: [
+                "SwiftStateTreeNIO",
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "AsyncHTTPClient", package: "async-http-client"),
+            ],
+            path: "Sources/SwiftStateTreeNIOProvisioning"
         ),
 
         // 🔹 Macro Implementation: Compile-time macro expansion
@@ -195,18 +196,6 @@ let package = Package(
                 .product(name: "SwiftSyntaxMacrosTestSupport", package: "swift-syntax"),
             ],
             path: "Tests/SwiftStateTreeMacrosTests"
-        ),
-
-        // 🎯 Matchmaking tests
-        .testTarget(
-            name: "SwiftStateTreeMatchmakingTests",
-            dependencies: [
-                "SwiftStateTreeMatchmaking",
-                "SwiftStateTreeTransport",
-                "SwiftStateTree",
-                .product(name: "Atomics", package: "swift-atomics"),
-            ],
-            path: "Tests/SwiftStateTreeMatchmakingTests"
         ),
 
         // 🔢 Deterministic Math tests

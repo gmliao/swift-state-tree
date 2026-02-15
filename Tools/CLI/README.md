@@ -74,6 +74,11 @@ npm run test:e2e:counter  # Counter demo tests (requires DemoServer)
 npm run test:e2e:cookie   # Cookie game tests (requires DemoServer)
 npm run test:e2e:game     # Game demo tests (requires GameServer on ws://localhost:8080/game/hero-defense)
 npm run test:e2e:game:ci  # Game demo tests with CI script (automatically starts/stops GameServer, tests all encoding modes)
+
+# Matchmaking E2E (control plane + GameServer)
+npm run test:e2e:game:matchmaking:full   # Control plane + GameServer, single client
+npm run test:e2e:game:matchmaking:nginx  # + nginx LB, single client + two-player same-game (requires Docker)
+npm run test:e2e:game:matchmaking:two-players  # Two players in same game (requires stack already running)
 ```
 
 **Note**: 

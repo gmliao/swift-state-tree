@@ -63,10 +63,11 @@ run_encoding_tests() {
     # Normalize encoding for server (GameServer accepts json_opcode)
     local server_encoding=$(normalize_encoding_for_server "$encoding" "gameserver")
     
+    local scenario_path="${E2E_SCENARIO:-scenarios/game/}"
     TRANSPORT_ENCODING=${server_encoding} npx tsx src/cli.ts script \
         -u ws://localhost:${SERVER_PORT}/game/hero-defense \
         -l hero-defense \
-        -s scenarios/game/ \
+        -s "$scenario_path" \
         --state-update-encoding ${state_update_encoding}
 
     # Re-evaluation record + offline verify (Hero Defense): only required for messagepack
