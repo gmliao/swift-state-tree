@@ -1,6 +1,7 @@
 import { getQueueToken } from '@nestjs/bullmq';
 import { Test, TestingModule } from '@nestjs/testing';
 import { MatchmakingService } from '../src/matchmaking/matchmaking.service';
+import { RealtimeGateway } from '../src/realtime/realtime.gateway';
 import { InMemoryMatchStorage } from '../src/storage/inmemory-match-storage';
 import { DefaultMatchStrategy } from '../src/matchmaking/strategies/default.strategy';
 import { JwtIssuerService } from '../src/security/jwt-issuer.service';
@@ -8,6 +9,10 @@ import { JwtIssuerService } from '../src/security/jwt-issuer.service';
 const mockTickQueue = {
   add: jest.fn().mockResolvedValue({}),
   removeRepeatable: jest.fn().mockResolvedValue(undefined),
+};
+
+const mockRealtimeGateway = {
+  pushMatchAssigned: jest.fn(),
 };
 
 const mockProvisioning = {
@@ -57,6 +62,7 @@ describe('MatchmakingService', () => {
         { provide: 'ProvisioningClientPort', useValue: mockProvisioning },
         { provide: 'MatchmakingConfig', useValue: testConfig },
         { provide: getQueueToken('matchmaking-tick'), useValue: mockTickQueue },
+        { provide: RealtimeGateway, useValue: mockRealtimeGateway },
         JwtIssuerService,
       ],
     }).compile();
@@ -97,6 +103,7 @@ describe('MatchmakingService', () => {
         { provide: 'ProvisioningClientPort', useValue: mockProvisioning },
         { provide: 'MatchmakingConfig', useValue: testConfig },
         { provide: getQueueToken('matchmaking-tick'), useValue: mockTickQueue },
+        { provide: RealtimeGateway, useValue: mockRealtimeGateway },
         JwtIssuerService,
       ],
     }).compile();

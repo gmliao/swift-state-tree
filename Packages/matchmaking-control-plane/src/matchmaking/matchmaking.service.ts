@@ -10,6 +10,8 @@ import { Queue } from 'bullmq';
 import { AssignmentResult } from '../contracts/assignment.dto';
 import { EnqueueRequest, StatusResponse } from '../contracts/matchmaking.dto';
 import { ProvisioningClientPort } from '../provisioning/provisioning-client.port';
+import { buildMatchAssignedEnvelope } from '../realtime/ws-envelope.dto';
+import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { JwtIssuerService } from '../security/jwt-issuer.service';
 import { MatchStoragePort, QueuedTicket } from '../storage/match-storage.port';
 import { MatchStrategyPort } from './match-strategy.port';
@@ -43,6 +45,7 @@ export class MatchmakingService implements OnModuleInit, OnModuleDestroy {
     private readonly jwtIssuer: JwtIssuerService,
     @Inject('MatchmakingConfig') private readonly config: MatchmakingConfig,
     @InjectQueue('matchmaking-tick') private readonly tickQueue: Queue,
+    private readonly realtimeGateway: RealtimeGateway,
   ) {}
 
   /** Starts the periodic matchmaking tick via BullMQ repeatable job. */
@@ -116,6 +119,10 @@ export class MatchmakingService implements OnModuleInit, OnModuleDestroy {
         try {
           const assignment = await this.processMatch(current);
           await this.storage.updateAssignment(current.ticketId, assignment);
+          this.realtimeGateway.pushMatchAssigned(
+            current.ticketId,
+            buildMatchAssignedEnvelope(current.ticketId, assignment),
+          );
         } catch (err) {
           console.error(
             `[Matchmaking] failed to assign ticket ${ticket.ticketId}:`,
