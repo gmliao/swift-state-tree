@@ -8,6 +8,7 @@ import { DefaultMatchStrategy } from './strategies/default.strategy';
 import { MatchmakingTickProcessor } from './matchmaking-tick.processor';
 import { ProvisioningModule } from '../provisioning/provisioning.module';
 import { QueueModule } from '../queue/queue.module';
+import { RealtimeModule } from '../realtime/realtime.module';
 import { SecurityModule } from '../security/security.module';
 import { RedisMatchStorage } from '../storage/redis-match-storage';
 
@@ -18,7 +19,7 @@ const matchmakingConfig: MatchmakingConfig = {
 
 /** Matchmaking module: queue, strategy, provisioning (internal registry), JWT. */
 @Module({
-  imports: [QueueModule, SecurityModule, ProvisioningModule],
+  imports: [QueueModule, RealtimeModule, SecurityModule, ProvisioningModule],
   controllers: [MatchmakingController],
   providers: [
     { provide: 'MatchmakingConfig', useValue: matchmakingConfig },
