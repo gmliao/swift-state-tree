@@ -1,24 +1,47 @@
 import SwiftStateTree
 
+public struct ProjectedReplayFrame: Sendable {
+    public let tickID: Int64
+    public let stateObject: [String: AnyCodable]
+    public let serverEvents: [AnyCodable]
+
+    public init(
+        tickID: Int64,
+        stateObject: [String: AnyCodable],
+        serverEvents: [AnyCodable] = []
+    ) {
+        self.tickID = tickID
+        self.stateObject = stateObject
+        self.serverEvents = serverEvents
+    }
+}
+
+public protocol ReevaluationReplayProjecting: Sendable {
+    func project(_ result: ReevaluationStepResult) throws -> ProjectedReplayFrame
+}
+
 public struct ReevaluationStepResult: Sendable {
     public let tickId: Int64
     public let stateHash: String
     public let recordedHash: String?
     public let isMatch: Bool
     public let actualState: AnyCodable?
+    public let projectedFrame: ProjectedReplayFrame?
 
     public init(
         tickId: Int64,
         stateHash: String,
         recordedHash: String?,
         isMatch: Bool,
-        actualState: AnyCodable? = nil
+        actualState: AnyCodable? = nil,
+        projectedFrame: ProjectedReplayFrame? = nil
     ) {
         self.tickId = tickId
         self.stateHash = stateHash
         self.recordedHash = recordedHash
         self.isMatch = isMatch
         self.actualState = actualState
+        self.projectedFrame = projectedFrame
     }
 }
 
