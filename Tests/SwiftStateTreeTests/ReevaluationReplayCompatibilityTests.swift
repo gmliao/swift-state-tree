@@ -36,24 +36,70 @@ struct ReevaluationReplayCompatibilityTests {
         #expect(projected.stateObject["currentStateJSON"] == nil)
     }
 
-    @Test("Replay projection preserves tick ordering")
-    func deterministicTickOrderingContract() throws {
-        let projector = HeroDefenseReplayProjector()
+    @Test("Replay runner pipeline preserves tick ordering through service queue")
+    func replayRunnerPipelineOrderingContract() async throws {
         let orderedTickIDs: [Int64] = [1, 2, 3, 4]
-
-        let projectedTickIDs = try orderedTickIDs.map { tickID in
+        let results = try orderedTickIDs.map { tickID in
             let jsonText = try encodeJSONObjectToString(["score": Int(tickID)])
-            let result = ReevaluationStepResult(
+            return ReevaluationStepResult(
                 tickId: tickID,
                 stateHash: "hash-\(tickID)",
-                recordedHash: nil,
+                recordedHash: "hash-\(tickID)",
                 isMatch: true,
                 actualState: AnyCodable(jsonText)
             )
-            return try projector.project(result).tickID
         }
+        let runner = ScriptedRunner(results: results)
+        let factory = ScriptedFactory(runner: runner)
+        let service = ReevaluationRunnerService(
+            factory: factory,
+            projectorResolver: { _ in HeroDefenseReplayProjector() }
+        )
 
-        #expect(projectedTickIDs == orderedTickIDs)
+        service.startVerification(landType: "ordering-contract", recordFilePath: "/tmp/record.json")
+        try await waitForTerminalStatus(of: service)
+
+        let queuedTickIDs = service.consumeResults().map(\.tickId)
+        #expect(queuedTickIDs == orderedTickIDs)
+        #expect(service.getStatus().phase == .completed)
+    }
+
+    @Test("Projector failure terminates replay run without completion overwrite")
+    func projectorFailureTerminatesRunDeterministically() async throws {
+        let results = [
+            ReevaluationStepResult(
+                tickId: 1,
+                stateHash: "hash-1",
+                recordedHash: "hash-1",
+                isMatch: true,
+                actualState: AnyCodable("{}")
+            ),
+            ReevaluationStepResult(
+                tickId: 2,
+                stateHash: "hash-2",
+                recordedHash: "hash-2",
+                isMatch: true,
+                actualState: AnyCodable("{}")
+            ),
+        ]
+        let runner = ScriptedRunner(results: results)
+        let factory = ScriptedFactory(runner: runner)
+        let service = ReevaluationRunnerService(
+            factory: factory,
+            projectorResolver: { _ in FailingProjector() }
+        )
+
+        service.startVerification(landType: "failure-contract", recordFilePath: "/tmp/record.json")
+        try await waitForTerminalStatus(of: service)
+
+        let terminalStatus = service.getStatus()
+        #expect(terminalStatus.phase == .failed)
+        #expect(!terminalStatus.errorMessage.isEmpty)
+        #expect(service.consumeResults().isEmpty)
+        #expect(await runner.getStepCalls() == 1)
+
+        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(service.getStatus().phase == .failed)
     }
 
     @Test("Replay start rejects schema mismatch")
@@ -210,6 +256,79 @@ private func createRecordingFile(
     }
     try await recorder.save(to: recordingFile.path)
     return recordingFile
+}
+
+private final class ScriptedFactory: ReevaluationTargetFactory, @unchecked Sendable {
+    private let runner: ScriptedRunner
+
+    init(runner: ScriptedRunner) {
+        self.runner = runner
+    }
+
+    func createRunner(landType _: String, recordFilePath _: String) async throws -> any ReevaluationRunnerProtocol {
+        runner
+    }
+}
+
+private actor ScriptedRunner: ReevaluationRunnerProtocol {
+    nonisolated let maxTickId: Int64
+    private let results: [ReevaluationStepResult]
+    private var index = 0
+    private var stepCalls = 0
+
+    init(results: [ReevaluationStepResult]) {
+        self.results = results
+        self.maxTickId = results.last?.tickId ?? 0
+    }
+
+    func prepare() async throws {}
+
+    func step() async throws -> ReevaluationStepResult? {
+        stepCalls += 1
+        guard index < results.count else {
+            return nil
+        }
+
+        let result = results[index]
+        index += 1
+        return result
+    }
+
+    func getStepCalls() -> Int {
+        stepCalls
+    }
+}
+
+private struct FailingProjector: ReevaluationReplayProjecting {
+    enum Failure: Error {
+        case projectionFailed
+    }
+
+    func project(_ result: ReevaluationStepResult) throws -> ProjectedReplayFrame {
+        _ = result
+        throw Failure.projectionFailed
+    }
+}
+
+private func waitForTerminalStatus(
+    of service: ReevaluationRunnerService,
+    timeoutNanoseconds: UInt64 = 2_000_000_000
+) async throws {
+    let start = DispatchTime.now().uptimeNanoseconds
+
+    while true {
+        let phase = service.getStatus().phase
+        if phase == .completed || phase == .failed {
+            return
+        }
+
+        let elapsed = DispatchTime.now().uptimeNanoseconds - start
+        if elapsed > timeoutNanoseconds {
+            Issue.record("Timed out waiting for terminal status, phase=\(phase.rawValue)")
+            return
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
 }
 
 private let stableFixtureDate = Date(timeIntervalSince1970: 1_700_000_000)
