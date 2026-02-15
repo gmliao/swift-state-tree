@@ -161,6 +161,7 @@ let package = Package(
                 "SwiftStateTree",
                 "SwiftStateTreeMacros",
                 "SwiftStateTreeTransport",
+                "SwiftStateTreeReevaluationMonitor",
             ],
             path: "Tests/SwiftStateTreeTests"
         ),

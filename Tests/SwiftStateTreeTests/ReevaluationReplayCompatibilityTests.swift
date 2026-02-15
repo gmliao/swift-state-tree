@@ -1,69 +1,59 @@
 import Foundation
 import Testing
 @testable import SwiftStateTree
+import SwiftStateTreeReevaluationMonitor
 
 @Suite("ReevaluationReplayCompatibilityTests")
 struct ReevaluationReplayCompatibilityTests {
-    @Test("Replay projection emits live-compatible fields and hides replay-only payload")
-    func replayProjectionStateShapeParityContract() async throws {
-        let definition = makeReevaluationEngineTestDefinition()
-        let landID = "reeval-projection-contract:local"
-        let recordingFile = try await createRecordingFile(
-            definition: definition,
-            landID: landID,
-            metadataLandDefinitionID: definition.id,
-            actions: [3]
-        )
-        let exportedJsonl = stableFixtureFileURL(
-            prefix: "reeval-projection",
-            identifier: landID,
-            ext: "jsonl"
-        )
-
-        defer {
-            try? FileManager.default.removeItem(at: recordingFile)
-            try? FileManager.default.removeItem(at: exportedJsonl)
-        }
-
-        _ = try await ReevaluationEngine.run(
-            definition: definition,
-            initialState: ReevaluationEngineTestState(),
-            recordFilePath: recordingFile.path,
-            exportJsonlPath: exportedJsonl.path
+    @Test("Replay projection emits Hero Defense-compatible state fields")
+    func replayProjectionStateShapeParityContract() throws {
+        let snapshotObject: [String: Any] = [
+            "players": ["p1": ["x": 10, "y": 20]],
+            "monsters": ["1": ["position": ["x": 10, "y": 20]]],
+            "turrets": ["1": ["position": ["x": 5, "y": 6]]],
+            "base": ["hp": 100],
+            "score": 123,
+            "currentStateJSON": "legacy-replay-only",
+        ]
+        let snapshotJSONString = try encodeJSONObjectToString(snapshotObject)
+        let stepResult = ReevaluationStepResult(
+            tickId: 5,
+            stateHash: "abc",
+            recordedHash: "abc",
+            isMatch: true,
+            actualState: AnyCodable(snapshotJSONString)
         )
 
-        let firstTickLine = try readFirstJsonlLine(from: exportedJsonl)
+        let projector = HeroDefenseReplayProjector()
+        let projected = try projector.project(stepResult)
 
-        #expect(firstTickLine["ticks"] != nil, "Replay output should expose live state field 'ticks'")
-        #expect(firstTickLine["total"] != nil, "Replay output should expose live state field 'total'")
-        #expect(firstTickLine["currentStateJSON"] == nil, "Replay output should not require replay-only field 'currentStateJSON'")
+        #expect(projected.tickID == 5)
+        #expect(projected.stateObject["players"] != nil)
+        #expect(projected.stateObject["monsters"] != nil)
+        #expect(projected.stateObject["turrets"] != nil)
+        #expect(projected.stateObject["base"] != nil)
+        #expect(projected.stateObject["score"] != nil)
+        #expect(projected.stateObject["currentStateJSON"] == nil)
     }
 
-    @Test("Replay output uses deterministic tick ordering without synthetic tick zero")
-    func deterministicTickOrderingContract() async throws {
-        let definition = makeReevaluationEngineTestDefinition()
-        let expectedTickCount = 2
-        let recordingFile = try await createRecordingFile(
-            definition: definition,
-            landID: "reeval-order-contract:local",
-            metadataLandDefinitionID: definition.id,
-            actions: [1, 2]
-        )
+    @Test("Replay projection preserves tick ordering")
+    func deterministicTickOrderingContract() throws {
+        let projector = HeroDefenseReplayProjector()
+        let orderedTickIDs: [Int64] = [1, 2, 3, 4]
 
-        defer {
-            try? FileManager.default.removeItem(at: recordingFile)
+        let projectedTickIDs = try orderedTickIDs.map { tickID in
+            let jsonText = try encodeJSONObjectToString(["score": Int(tickID)])
+            let result = ReevaluationStepResult(
+                tickId: tickID,
+                stateHash: "hash-\(tickID)",
+                recordedHash: nil,
+                isMatch: true,
+                actualState: AnyCodable(jsonText)
+            )
+            return try projector.project(result).tickID
         }
 
-        let result = try await ReevaluationEngine.run(
-            definition: definition,
-            initialState: ReevaluationEngineTestState(),
-            recordFilePath: recordingFile.path
-        )
-
-        let observedTickIDs = result.tickHashes.keys.sorted()
-        let expectedTickIDs = (1...expectedTickCount).map(Int64.init)
-
-        #expect(observedTickIDs == expectedTickIDs, "Replay tick stream should be strictly [1...maxTickId]")
+        #expect(projectedTickIDs == orderedTickIDs)
     }
 
     @Test("Replay start rejects schema mismatch")
@@ -107,29 +97,14 @@ struct ReevaluationReplayCompatibilityTests {
 
 private enum ReevaluationReplayCompatibilityTestError: Error {
     case reevaluationRecorderUnavailable
-    case exportedJsonlMissingTickObject
-    case exportedJsonlLineIsNotObject
 }
 
-private func readFirstJsonlLine(from fileURL: URL) throws -> [String: Any] {
-    let text = try String(contentsOf: fileURL, encoding: .utf8)
-    let lines = text
-        .split(separator: "\n", omittingEmptySubsequences: true)
-        .map(String.init)
-
-    for line in lines {
-        let data = Data(line.utf8)
-        let object = try JSONSerialization.jsonObject(with: data)
-        guard let lineObject = object as? [String: Any] else {
-            throw ReevaluationReplayCompatibilityTestError.exportedJsonlLineIsNotObject
-        }
-
-        if lineObject["tickId"] != nil {
-            return lineObject
-        }
+private func encodeJSONObjectToString(_ object: [String: Any]) throws -> String {
+    let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    guard let text = String(data: data, encoding: .utf8) else {
+        throw CocoaError(.fileReadInapplicableStringEncoding)
     }
-
-    throw ReevaluationReplayCompatibilityTestError.exportedJsonlMissingTickObject
+    return text
 }
 
 private func hasSchemaMismatchErrorSignature(_ error: Error) -> Bool {

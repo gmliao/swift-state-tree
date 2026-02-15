@@ -17,6 +17,21 @@ public struct HeroDefenseReplayState: StateNodeProtocol {
     var currentStateJSON: String = ""
 
     @Sync(.broadcast)
+    var players: [String: AnyCodable] = [:]
+
+    @Sync(.broadcast)
+    var monsters: [String: AnyCodable] = [:]
+
+    @Sync(.broadcast)
+    var turrets: [String: AnyCodable] = [:]
+
+    @Sync(.broadcast)
+    var base: [String: AnyCodable] = [:]
+
+    @Sync(.broadcast)
+    var score: Int = 0
+
+    @Sync(.broadcast)
     var errorMessage: String = ""
 
     public init() {}
@@ -78,7 +93,13 @@ public enum HeroDefenseReplay {
                             state.status = ReevaluationStatus.Phase.verifying.rawValue
                         }
                         state.currentTickId = result.tickId
-                        if let jsonText = result.actualState?.base as? String {
+
+                        if let projectedFrame = result.projectedFrame {
+                            applyProjectedState(projectedFrame.stateObject, to: &state)
+                        }
+
+                        if state.currentStateJSON.isEmpty,
+                           let jsonText = result.actualState?.base as? String {
                             state.currentStateJSON = jsonText
                         }
 
@@ -101,6 +122,43 @@ public enum HeroDefenseReplay {
             }
         }
     }
+}
+
+private func applyProjectedState(
+    _ projectedState: [String: AnyCodable],
+    to state: inout HeroDefenseReplayState
+) {
+    if let players = projectedState["players"] {
+        state.players = dictionaryValue(from: players)
+    }
+    if let monsters = projectedState["monsters"] {
+        state.monsters = dictionaryValue(from: monsters)
+    }
+    if let turrets = projectedState["turrets"] {
+        state.turrets = dictionaryValue(from: turrets)
+    }
+    if let base = projectedState["base"] {
+        state.base = dictionaryValue(from: base)
+    }
+    if let scoreValue = projectedState["score"]?.base as? Int {
+        state.score = scoreValue
+    } else if let scoreValue = projectedState["score"]?.base as? Double {
+        state.score = Int(scoreValue)
+    } else if let scoreValue = projectedState["score"]?.base as? NSNumber {
+        state.score = scoreValue.intValue
+    } else if let scoreValue = projectedState["score"]?.base as? String,
+              let parsed = Int(scoreValue) {
+        state.score = parsed
+    } else if projectedState["score"] != nil {
+        // Keep current score when projected value cannot be parsed.
+    }
+}
+
+private func dictionaryValue(from value: AnyCodable) -> [String: AnyCodable] {
+    guard let dictionary = value.base as? [String: Any] else {
+        return [:]
+    }
+    return dictionary.mapValues(AnyCodable.init)
 }
 
 private func resolveReplayRecordPath(from landIDString: String) -> String? {
