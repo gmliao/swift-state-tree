@@ -316,6 +316,22 @@ private struct ProjectedField<T: Decodable>: Decodable {
     let value: T
 }
 
+private func parseScore(from value: AnyCodable?) -> Int? {
+    if let scoreValue = value?.base as? Int {
+        return scoreValue
+    }
+    if let scoreValue = value?.base as? Double {
+        return Int(scoreValue)
+    }
+    if let scoreValue = value?.base as? NSNumber {
+        return scoreValue.intValue
+    }
+    if let scoreValue = value?.base as? String {
+        return Int(scoreValue)
+    }
+    return nil
+}
+
 private func resolveReplayRecordPath(from landIDString: String) -> String? {
     let landID = LandID(landIDString)
     let parts = landID.instanceId.split(separator: ".", maxSplits: 1)
