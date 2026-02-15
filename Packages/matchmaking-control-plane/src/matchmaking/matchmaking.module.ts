@@ -5,6 +5,7 @@ import {
   MatchmakingConfig,
 } from './matchmaking.service';
 import { DefaultMatchStrategy } from './strategies/default.strategy';
+import { MatchmakingTickProcessor } from './matchmaking-tick.processor';
 import { ProvisioningModule } from '../provisioning/provisioning.module';
 import { QueueModule } from '../queue/queue.module';
 import { SecurityModule } from '../security/security.module';
@@ -30,6 +31,7 @@ const matchmakingConfig: MatchmakingConfig = {
       provide: 'MatchStrategyPort',
       useClass: DefaultMatchStrategy,
     },
+    MatchmakingTickProcessor,
   ],
 })
 export class MatchmakingModule {}

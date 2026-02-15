@@ -1,8 +1,14 @@
+import { getQueueToken } from '@nestjs/bullmq';
 import { Test, TestingModule } from '@nestjs/testing';
 import { MatchmakingService } from '../src/matchmaking/matchmaking.service';
 import { InMemoryMatchStorage } from '../src/storage/inmemory-match-storage';
 import { DefaultMatchStrategy } from '../src/matchmaking/strategies/default.strategy';
 import { JwtIssuerService } from '../src/security/jwt-issuer.service';
+
+const mockTickQueue = {
+  add: jest.fn().mockResolvedValue({}),
+  removeRepeatable: jest.fn().mockResolvedValue(undefined),
+};
 
 const mockProvisioning = {
   allocate: jest.fn().mockResolvedValue({
@@ -34,6 +40,7 @@ describe('Assignment Flow', () => {
         { provide: 'MatchStrategyPort', useClass: DefaultMatchStrategy },
         { provide: 'ProvisioningClientPort', useValue: mockProvisioning },
         { provide: 'MatchmakingConfig', useValue: testConfig },
+        { provide: getQueueToken('matchmaking-tick'), useValue: mockTickQueue },
         JwtIssuerService,
       ],
     }).compile();
