@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { WsAdapter } from '@nestjs/platform-ws';
 import * as request from 'supertest';
 import { AppModule } from '../../src/app.module';
 
@@ -33,6 +34,7 @@ describe('Provisioning (Internal Registry) E2E', () => {
       .compile();
 
     app = moduleFixture.createNestApplication();
+    app.useWebSocketAdapter(new WsAdapter(app));
     app.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,
