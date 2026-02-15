@@ -91,6 +91,20 @@
                 <v-icon start>mdi-progress-clock</v-icon>
                 Verifying...
               </v-btn>
+
+              <v-btn
+                class="btn-soft monitor-action-btn mt-2"
+                @click="startReplay"
+                block
+                rounded="xl"
+                size="large"
+                elevation="0"
+                :loading="isStartingReplay"
+                :disabled="!selectedRecord || isVerifying || isConnectingGame"
+              >
+                <v-icon start>mdi-play-network</v-icon>
+                Start Replay Stream
+              </v-btn>
             </div>
           </v-card-text>
         </v-card>
@@ -293,13 +307,19 @@
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 import { LandClient } from "@/utils/LandClient";
+import { useGameClient } from "@/utils/gameClient";
 import StateTreeDiffView from "../components/StateTreeDiffView.vue";
 import "@/styles/ui-tokens.css";
 
 const router = useRouter();
+const { connect: connectGame, isConnecting: isConnectingGame } = useGameClient();
+const adminBaseURL = "http://localhost:8080";
+const adminAPIKey = "hero-defense-admin-key";
+
 const records = ref<string[]>([]);
 const selectedRecord = ref<string | null>(null);
 const isVerifying = ref(false);
+const isStartingReplay = ref(false);
 const monitorClient = ref<LandClient | null>(null);
 const monitorState = ref<any>(null);
 const tickResults = ref<any[]>([]);
@@ -342,7 +362,7 @@ function getRecordDisplay(path: string): RecordDisplay {
     };
   }
 
-  const [, landType, timestamp, suffix] = match;
+  const [, landType, timestamp] = match;
   return {
     title: formatRecordTimestamp(timestamp),
     badge: `(${formatLandType(landType)})`,
@@ -376,14 +396,11 @@ function showTickDetail(tick: any) {
 
 async function loadRecords() {
   try {
-    const response = await fetch(
-      "http://localhost:8080/admin/reevaluation/records",
-      {
-        headers: {
-          "X-API-Key": "hero-defense-admin-key",
-        },
+    const response = await fetch(`${adminBaseURL}/admin/reevaluation/records`, {
+      headers: {
+        "X-API-Key": adminAPIKey,
       },
-    );
+    });
     const data = await response.json();
     records.value = data.data || [];
   } catch (error) {
@@ -404,15 +421,12 @@ async function startVerification() {
   monitorState.value = null;
 
   try {
-    const response = await fetch(
-      "http://localhost:8080/admin/reevaluation/start",
-      {
-        method: "POST",
-        headers: {
-          "X-API-Key": "hero-defense-admin-key",
-        },
+    const response = await fetch(`${adminBaseURL}/admin/reevaluation/start`, {
+      method: "POST",
+      headers: {
+        "X-API-Key": adminAPIKey,
       },
-    );
+    });
     const data = await response.json();
     const monitorLandID = data.data.monitorLandID;
 
@@ -439,6 +453,60 @@ async function startVerification() {
   } catch (error) {
     console.error("Verification failed:", error);
     isVerifying.value = false;
+  }
+}
+
+async function startReplay() {
+  if (!selectedRecord.value || isStartingReplay.value || isConnectingGame.value) {
+    return;
+  }
+
+  isStartingReplay.value = true;
+  try {
+    const replayResponse = await fetch(
+      `${adminBaseURL}/admin/reevaluation/replay/start`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": adminAPIKey,
+        },
+        body: JSON.stringify({
+          landType: "hero-defense",
+          recordFilePath: selectedRecord.value,
+        }),
+      },
+    );
+
+    if (!replayResponse.ok) {
+      throw new Error(`Replay start failed: HTTP ${replayResponse.status}`);
+    }
+
+    const replayPayload = await replayResponse.json();
+    const replayLandID = replayPayload?.data?.replayLandID as string | undefined;
+    const webSocketPath = replayPayload?.data?.webSocketPath as string | undefined;
+    if (!replayLandID || !webSocketPath) {
+      throw new Error("Replay start response missing replayLandID or webSocketPath");
+    }
+
+    const replayWsUrl = `${adminBaseURL.replace(/^http/, "ws")}${webSocketPath}`;
+
+    await connectGame({
+      wsUrl: replayWsUrl,
+      playerName: "replay-viewer",
+      landID: replayLandID,
+    });
+
+    sessionStorage.setItem("wsUrl", replayWsUrl);
+    sessionStorage.setItem("playerName", "replay-viewer");
+    sessionStorage.setItem("roomId", replayLandID);
+    sessionStorage.setItem("replayMode", "1");
+
+    await router.push({ name: "game", query: { mode: "replay" } });
+  } catch (error) {
+    console.error("Start replay failed:", error);
+  } finally {
+    isStartingReplay.value = false;
   }
 }
 

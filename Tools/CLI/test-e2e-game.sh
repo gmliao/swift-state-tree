@@ -78,6 +78,13 @@ run_encoding_tests() {
             --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
             --state-update-encoding ${state_update_encoding}
     fi
+
+    # Server-side replay stream should pass in all transport encodings.
+    print_step "Running ${SERVER_NAME} server replay stream E2E ($encoding)..."
+    HERO_DEFENSE_ADMIN_KEY=${HERO_DEFENSE_ADMIN_KEY:-hero-defense-admin-key} npx tsx src/reevaluation-replay-e2e-game.ts \
+        --ws-url ws://localhost:${SERVER_PORT}/game/hero-defense \
+        --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
+        --state-update-encoding ${state_update_encoding}
     
     local test_result=$?
     cd "$project_root"

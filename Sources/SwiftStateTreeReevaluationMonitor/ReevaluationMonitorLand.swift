@@ -35,11 +35,7 @@ public enum ReevaluationMonitor {
 
                     // Consume results and emit events
                     let newResults = service.consumeResults()
-                    if !newResults.isEmpty {
-                        print("DEBUG: [ReevaluationMonitor] Consuming \(newResults.count) results")
-                    }
                     for result in newResults {
-                        print("DEBUG: [ReevaluationMonitor] Emitting TickSummaryEvent for tick \(result.tickId), match: \(result.isMatch)")
                         let event = TickSummaryEvent(
                             tickId: result.tickId,
                             isMatch: result.isMatch,
@@ -47,6 +43,18 @@ public enum ReevaluationMonitor {
                             actualHash: result.stateHash
                         )
                         ctx.emitEvent(event, to: .all)
+
+                        if let actualState = result.actualState {
+                            let processedEvent = TickProcessedEvent(
+                                tickId: result.tickId,
+                                expectedState: actualState,
+                                actualState: actualState,
+                                isMatch: result.isMatch,
+                                expectedHash: result.recordedHash ?? "?",
+                                actualHash: result.stateHash
+                            )
+                            ctx.emitEvent(processedEvent, to: .all)
+                        }
                     }
                 }
             }

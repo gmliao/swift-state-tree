@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch } from "vue";
-import { useRouter } from "vue-router";
+import { useRouter, useRoute } from "vue-router";
 import Phaser from "phaser";
 import { GameScene } from "../scenes/GameScene";
 import { useGameClient } from "../utils/gameClient";
 
 const router = useRouter();
+const route = useRoute();
 const gameRef = ref<HTMLDivElement | null>(null);
 const phaserGame = ref<Phaser.Game | null>(null);
 const { isConnected, isJoined, disconnect, tree } = useGameClient();
+const isReplayMode = ref(false);
 
 // Game state for UI
 const currentResources = ref(0);
@@ -77,6 +79,9 @@ watch(
 );
 
 onMounted(async () => {
+  isReplayMode.value =
+    route.query.mode === "replay" || sessionStorage.getItem("replayMode") === "1";
+
   // Check if already connected and joined
   if (!isJoined.value) {
     // If not connected, redirect to connect page
@@ -115,6 +120,7 @@ onMounted(async () => {
     // Pass tree to scene (tree.currentPlayerID is automatically available)
     const scene = phaserGame.value.scene.getScene("GameScene") as GameScene;
     if (scene && tree.value) {
+      scene.setReplayMode(isReplayMode.value);
       scene.setStateTree(tree.value);
     }
   }
@@ -139,6 +145,7 @@ async function handleDisconnectUI() {
   sessionStorage.removeItem("wsUrl");
   sessionStorage.removeItem("playerName");
   sessionStorage.removeItem("roomId");
+  sessionStorage.removeItem("replayMode");
 
   // Navigate back to connect page
   router.push({ name: "connect" });
@@ -158,6 +165,7 @@ async function handleDisconnect() {
   sessionStorage.removeItem("wsUrl");
   sessionStorage.removeItem("playerName");
   sessionStorage.removeItem("roomId");
+  sessionStorage.removeItem("replayMode");
 
   // Navigate back to connect page
   router.push({ name: "connect" });
@@ -168,6 +176,7 @@ async function handleLeave() {
 }
 
 async function handleUpgradeWeapon() {
+  if (isReplayMode.value) return;
   if (tree.value) {
     try {
       await tree.value.events.upgradeWeapon({});
@@ -179,6 +188,7 @@ async function handleUpgradeWeapon() {
 }
 
 async function handleUpgradeTurret() {
+  if (isReplayMode.value) return;
   if (tree.value && phaserGame.value) {
     const scene = phaserGame.value.scene.getScene("GameScene") as GameScene;
     if (!scene) return;
@@ -217,6 +227,7 @@ async function handleUpgradeTurret() {
 }
 
 function toggleTurretPlacement() {
+  if (isReplayMode.value) return;
   if (phaserGame.value) {
     const scene = phaserGame.value.scene.getScene("GameScene") as GameScene;
     if (scene) {
@@ -246,6 +257,15 @@ function toggleTurretPlacement() {
           <span class="text-caption font-weight-bold text-uppercase tracking-wide"
             >{{ isConnected ? "Connected" : "Offline" }}</span
           >
+          <v-chip
+            v-if="isReplayMode"
+            size="x-small"
+            color="secondary"
+            variant="flat"
+            class="ml-1"
+          >
+            Replay
+          </v-chip>
         </div>
         <v-btn
           class="hud-leave-btn"
@@ -261,7 +281,7 @@ function toggleTurretPlacement() {
       </div>
 
       <!-- Game controls overlay - Compact Skill Bar -->
-      <div class="overlay-bottom">
+      <div v-if="!isReplayMode" class="overlay-bottom">
         <div class="controls-panel glass-card elevation-0">
           <div class="skill-bar">
             <!-- Resource Display -->
@@ -335,7 +355,7 @@ function toggleTurretPlacement() {
       </div>
 
       <!-- Controls hint -->
-      <div class="overlay-hint">
+      <div v-if="!isReplayMode" class="overlay-hint">
         <div class="hint-text glass-card hud-hint">
           <span class="text-caption font-weight-bold text-primary mr-2"
             >Controls</span
