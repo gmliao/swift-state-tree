@@ -10,9 +10,14 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
     private let lock = NSLock()
 
     private let factory: any ReevaluationTargetFactory
+    private let projectorResolver: ReevaluationReplayProjectorResolver
 
-    public init(factory: any ReevaluationTargetFactory) {
+    public init(
+        factory: any ReevaluationTargetFactory,
+        projectorResolver: @escaping ReevaluationReplayProjectorResolver = ReevaluationReplayProjectorRegistry.defaultResolver
+    ) {
         self.factory = factory
+        self.projectorResolver = projectorResolver
     }
 
     public func getStatus() -> ReevaluationStatus {
@@ -56,7 +61,7 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
     public func startVerification(landType: String, recordFilePath: String) {
         lock.lock()
         verificationTask?.cancel()
-        replayProjector = Self.makeReplayProjector(for: landType)
+        replayProjector = projectorResolver(landType)
         lock.unlock()
 
         resetStatus(recordFilePath: recordFilePath)
@@ -81,10 +86,17 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
                     guard let activeRunner = self.getRunnerInstance() else { break }
 
                     if let result = try await activeRunner.step() {
-                        self.processResult(result)
+                        let shouldContinue = self.processResult(result)
+                        if !shouldContinue {
+                            break
+                        }
                     } else {
                         // Finished
-                        self.updateStatus { s in s.phase = .completed }
+                        self.updateStatus { s in
+                            if s.phase != .failed {
+                                s.phase = .completed
+                            }
+                        }
                         break
                     }
 
@@ -93,6 +105,9 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
                     // try? await Task.sleep(nanoseconds: 1_000_000)
                 }
             } catch {
+                if error is CancellationError {
+                    return
+                }
                 self.updateStatus { s in
                     s.phase = .failed
                     s.errorMessage = error.localizedDescription
@@ -125,7 +140,8 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
         return _status.phase == .paused
     }
 
-    private func processResult(_ result: ReevaluationStepResult) {
+    @discardableResult
+    private func processResult(_ result: ReevaluationStepResult) -> Bool {
         lock.lock()
         defer { lock.unlock() }
 
@@ -144,7 +160,7 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
             } catch {
                 _status.phase = .failed
                 _status.errorMessage = error.localizedDescription
-                return
+                return false
             }
         }
 
@@ -160,15 +176,7 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
         }
 
         resultsQueue.append(queuedResult)
-    }
-
-    private static func makeReplayProjector(for landType: String) -> (any ReevaluationReplayProjecting)? {
-        switch landType {
-        case "hero-defense":
-            return HeroDefenseReplayProjector()
-        default:
-            return nil
-        }
+        return true
     }
 
     public func pause() {
