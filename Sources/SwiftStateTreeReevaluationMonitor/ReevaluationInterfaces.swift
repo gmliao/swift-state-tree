@@ -20,6 +20,8 @@ public protocol ReevaluationReplayProjecting: Sendable {
     func project(_ result: ReevaluationStepResult) throws -> ProjectedReplayFrame
 }
 
+public typealias ReevaluationReplayProjectorResolver = @Sendable (String) -> (any ReevaluationReplayProjecting)?
+
 public struct ReevaluationStepResult: Sendable {
     public let tickId: Int64
     public let stateHash: String

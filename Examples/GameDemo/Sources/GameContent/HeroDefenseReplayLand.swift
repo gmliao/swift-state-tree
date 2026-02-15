@@ -128,30 +128,11 @@ private func applyProjectedState(
     _ projectedState: [String: AnyCodable],
     to state: inout HeroDefenseReplayState
 ) {
-    if let players = projectedState["players"] {
-        state.players = dictionaryValue(from: players)
-    }
-    if let monsters = projectedState["monsters"] {
-        state.monsters = dictionaryValue(from: monsters)
-    }
-    if let turrets = projectedState["turrets"] {
-        state.turrets = dictionaryValue(from: turrets)
-    }
-    if let base = projectedState["base"] {
-        state.base = dictionaryValue(from: base)
-    }
-    if let scoreValue = projectedState["score"]?.base as? Int {
-        state.score = scoreValue
-    } else if let scoreValue = projectedState["score"]?.base as? Double {
-        state.score = Int(scoreValue)
-    } else if let scoreValue = projectedState["score"]?.base as? NSNumber {
-        state.score = scoreValue.intValue
-    } else if let scoreValue = projectedState["score"]?.base as? String,
-              let parsed = Int(scoreValue) {
-        state.score = parsed
-    } else if projectedState["score"] != nil {
-        // Keep current score when projected value cannot be parsed.
-    }
+    state.players = projectedState["players"].map(dictionaryValue) ?? [:]
+    state.monsters = projectedState["monsters"].map(dictionaryValue) ?? [:]
+    state.turrets = projectedState["turrets"].map(dictionaryValue) ?? [:]
+    state.base = projectedState["base"].map(dictionaryValue) ?? [:]
+    state.score = parseScore(from: projectedState["score"]) ?? 0
 }
 
 private func dictionaryValue(from value: AnyCodable) -> [String: AnyCodable] {
@@ -159,6 +140,22 @@ private func dictionaryValue(from value: AnyCodable) -> [String: AnyCodable] {
         return [:]
     }
     return dictionary.mapValues(AnyCodable.init)
+}
+
+private func parseScore(from value: AnyCodable?) -> Int? {
+    if let scoreValue = value?.base as? Int {
+        return scoreValue
+    }
+    if let scoreValue = value?.base as? Double {
+        return Int(scoreValue)
+    }
+    if let scoreValue = value?.base as? NSNumber {
+        return scoreValue.intValue
+    }
+    if let scoreValue = value?.base as? String {
+        return Int(scoreValue)
+    }
+    return nil
 }
 
 private func resolveReplayRecordPath(from landIDString: String) -> String? {
