@@ -15,6 +15,7 @@ import { EffectManager } from "../managers/EffectManager";
 
 export class GameScene extends Phaser.Scene {
   private tree: HeroDefenseStateTree | null = null;
+  private replayMode = false;
   private cameraManager!: CameraManager;
   private moveInput!: MoveToInputHandler;
   private placeTurretInput!: PlaceTurretInputHandler;
@@ -58,6 +59,10 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  setReplayMode(enabled: boolean) {
+    this.replayMode = enabled;
+  }
+
 
   create() {
     // Initialize camera manager
@@ -83,6 +88,9 @@ export class GameScene extends Phaser.Scene {
     this.moveInput = new MoveToInputHandler(this).init(
       (screenX, screenY) => this.cameraManager.screenToWorld(screenX, screenY),
       async (target) => {
+        if (this.replayMode) {
+          return;
+        }
         if (this.tree && !this.placeTurretInput.isInPlacementMode()) {
           const position = new Position2({ x: target.x, y: target.y }, false);
           await this.tree.events.moveTo({ target: position });
@@ -97,6 +105,9 @@ export class GameScene extends Phaser.Scene {
     this.placeTurretInput = new PlaceTurretInputHandler(this).init(
       (screenX, screenY) => this.cameraManager.screenToWorld(screenX, screenY),
       async (target) => {
+        if (this.replayMode) {
+          return;
+        }
         if (this.tree) {
           const position = new Position2({ x: target.x, y: target.y }, false);
           await this.tree.events.placeTurret({ position: position });

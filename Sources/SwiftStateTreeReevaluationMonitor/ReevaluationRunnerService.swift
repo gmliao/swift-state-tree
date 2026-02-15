@@ -28,6 +28,15 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
         return results
     }
 
+    public func consumeNextResult() -> ReevaluationStepResult? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !resultsQueue.isEmpty else {
+            return nil
+        }
+        return resultsQueue.removeFirst()
+    }
+
     private func updateStatus(_ block: (inout ReevaluationStatus) -> Void) {
         lock.lock()
         defer { lock.unlock() }

@@ -52,7 +52,8 @@ public struct NIOAdminRoutes: Sendable {
             "/admin/lands/:landID/reevaluation-record",
             "/admin/stats",
             "/admin/reevaluation/records",
-            "/admin/reevaluation/start"
+            "/admin/reevaluation/start",
+            "/admin/reevaluation/replay/start"
         ]
         
         for path in optionsPaths {
@@ -260,9 +261,109 @@ public struct NIOAdminRoutes: Sendable {
             ])
             return try NIOHTTPResponse.json(response).withCORS()
         }
+
+        // POST /admin/reevaluation/replay/start - Start server-side replay stream session
+        await router.post("/admin/reevaluation/replay/start") { [self, nioEnvConfig] request in
+            guard adminAuth.hasRequiredRole(from: request, requiredRole: .admin) else {
+                return try unauthorizedResponse()
+            }
+
+            guard let body = request.body,
+                  let payload = try? JSONDecoder().decode(StartReevaluationReplayRequest.self, from: body)
+            else {
+                let response = AdminAPIAnyResponse.error(
+                    code: .invalidRequest,
+                    message: "Invalid JSON body. Expect { landType, recordFilePath }."
+                )
+                return try NIOHTTPResponse.json(response, status: .badRequest).withCORS()
+            }
+
+            let replayLandType = "\(payload.landType)-replay"
+            guard await landRealm.isRegistered(landType: replayLandType) else {
+                let response = AdminAPIAnyResponse.error(
+                    code: .invalidRequest,
+                    message: "Replay land type is not registered",
+                    details: [
+                        "landType": AnyCodable(payload.landType),
+                        "replayLandType": AnyCodable(replayLandType),
+                    ]
+                )
+                return try NIOHTTPResponse.json(response, status: .badRequest).withCORS()
+            }
+
+            guard let resolvedRecordPath = resolveReevaluationRecordPath(
+                rawPath: payload.recordFilePath,
+                recordsDir: nioEnvConfig.reevaluationRecordsDir
+            ) else {
+                let response = AdminAPIAnyResponse.error(
+                    code: .invalidRequest,
+                    message: "Path must be within reevaluation records directory"
+                )
+                return try NIOHTTPResponse.json(response, status: .badRequest).withCORS()
+            }
+
+            guard FileManager.default.fileExists(atPath: resolvedRecordPath.path) else {
+                let response = AdminAPIAnyResponse.error(
+                    code: .notFound,
+                    message: "Record file not found"
+                )
+                return try NIOHTTPResponse.json(response, status: .notFound).withCORS()
+            }
+
+            let pathToken = encodeBase64URL(resolvedRecordPath.path)
+            let landID = LandID(landType: replayLandType, instanceId: "\(UUID().uuidString.lowercased()).\(pathToken)")
+            let webSocketPath = "/game/\(replayLandType)"
+
+            let response = AdminAPIAnyResponse.success([
+                "replayLandID": AnyCodable(landID.stringValue),
+                "webSocketPath": AnyCodable(webSocketPath),
+                "landType": AnyCodable(payload.landType),
+                "recordFilePath": AnyCodable(resolvedRecordPath.path),
+            ])
+            return try NIOHTTPResponse.json(response).withCORS()
+        }
         
         logger.info("Registered admin routes", metadata: [
             "paths": .string(optionsPaths.joined(separator: ", "))
         ])
     }
+}
+
+private struct StartReevaluationReplayRequest: Decodable {
+    let landType: String
+    let recordFilePath: String
+}
+
+private func resolveReevaluationRecordPath(rawPath: String, recordsDir: String) -> URL? {
+    let currentDirURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+    let recordsDirURL = URL(fileURLWithPath: recordsDir, relativeTo: currentDirURL).standardizedFileURL
+
+    let candidateURL: URL
+    if rawPath.hasPrefix("/") {
+        candidateURL = URL(fileURLWithPath: rawPath).standardizedFileURL
+    } else {
+        candidateURL = URL(fileURLWithPath: rawPath, relativeTo: recordsDirURL).standardizedFileURL
+    }
+
+    if isWithinDirectory(candidateURL, directoryURL: recordsDirURL) {
+        return candidateURL
+    }
+    return nil
+}
+
+private func encodeBase64URL(_ raw: String) -> String {
+    Data(raw.utf8)
+        .base64EncodedString()
+        .replacingOccurrences(of: "+", with: "-")
+        .replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: "=", with: "")
+}
+
+private func isWithinDirectory(_ fileURL: URL, directoryURL: URL) -> Bool {
+    if fileURL.path == directoryURL.path {
+        return true
+    }
+
+    let directoryPath = directoryURL.path.hasSuffix("/") ? directoryURL.path : "\(directoryURL.path)/"
+    return fileURL.path.hasPrefix(directoryPath)
 }

@@ -5,12 +5,20 @@ public struct ReevaluationStepResult: Sendable {
     public let stateHash: String
     public let recordedHash: String?
     public let isMatch: Bool
+    public let actualState: AnyCodable?
 
-    public init(tickId: Int64, stateHash: String, recordedHash: String?, isMatch: Bool) {
+    public init(
+        tickId: Int64,
+        stateHash: String,
+        recordedHash: String?,
+        isMatch: Bool,
+        actualState: AnyCodable? = nil
+    ) {
         self.tickId = tickId
         self.stateHash = stateHash
         self.recordedHash = recordedHash
         self.isMatch = isMatch
+        self.actualState = actualState
     }
 }
 
