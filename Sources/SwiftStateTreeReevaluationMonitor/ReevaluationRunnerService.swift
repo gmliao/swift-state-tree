@@ -3,6 +3,7 @@ import SwiftStateTree
 
 public final class ReevaluationRunnerService: @unchecked Sendable {
     private var runner: (any ReevaluationRunnerProtocol)?
+    private var replayProjector: (any ReevaluationReplayProjecting)?
     private var verificationTask: Task<Void, Never>?
     private var _status: ReevaluationStatus = .init()
     private var resultsQueue: [ReevaluationStepResult] = []
@@ -55,6 +56,7 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
     public func startVerification(landType: String, recordFilePath: String) {
         lock.lock()
         verificationTask?.cancel()
+        replayProjector = Self.makeReplayProjector(for: landType)
         lock.unlock()
 
         resetStatus(recordFilePath: recordFilePath)
@@ -127,18 +129,46 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        _status.currentTick = result.tickId
-        _status.currentActualHash = result.stateHash
-        _status.currentExpectedHash = result.recordedHash ?? "?"
-        _status.currentIsMatch = result.isMatch
+        var queuedResult = result
+        if let replayProjector {
+            do {
+                let projectedFrame = try replayProjector.project(result)
+                queuedResult = ReevaluationStepResult(
+                    tickId: result.tickId,
+                    stateHash: result.stateHash,
+                    recordedHash: result.recordedHash,
+                    isMatch: result.isMatch,
+                    actualState: result.actualState,
+                    projectedFrame: projectedFrame
+                )
+            } catch {
+                _status.phase = .failed
+                _status.errorMessage = error.localizedDescription
+                return
+            }
+        }
 
-        if result.isMatch {
+        _status.currentTick = queuedResult.tickId
+        _status.currentActualHash = queuedResult.stateHash
+        _status.currentExpectedHash = queuedResult.recordedHash ?? "?"
+        _status.currentIsMatch = queuedResult.isMatch
+
+        if queuedResult.isMatch {
             _status.correctTicks += 1
         } else {
             _status.mismatchedTicks += 1
         }
 
-        resultsQueue.append(result)
+        resultsQueue.append(queuedResult)
+    }
+
+    private static func makeReplayProjector(for landType: String) -> (any ReevaluationReplayProjecting)? {
+        switch landType {
+        case "hero-defense":
+            return HeroDefenseReplayProjector()
+        default:
+            return nil
+        }
     }
 
     public func pause() {
