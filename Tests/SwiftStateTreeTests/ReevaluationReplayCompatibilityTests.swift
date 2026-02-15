@@ -102,6 +102,66 @@ struct ReevaluationReplayCompatibilityTests {
         #expect(service.getStatus().phase == .failed)
     }
 
+    @Test("Monitor land keeps terminal failed status when projector fails")
+    func monitorLandFailureStatusIsTerminalContract() async throws {
+        let results = [
+            ReevaluationStepResult(
+                tickId: 1,
+                stateHash: "hash-1",
+                recordedHash: "hash-1",
+                isMatch: true,
+                actualState: AnyCodable("{}")
+            ),
+        ]
+        let runner = ScriptedRunner(results: results)
+        let factory = ScriptedFactory(runner: runner)
+        let service = ReevaluationRunnerService(
+            factory: factory,
+            projectorResolver: { _ in FailingProjector() }
+        )
+
+        var services = LandServices()
+        services.register(service, as: ReevaluationRunnerService.self)
+
+        let keeper = LandKeeper<ReevaluationMonitorState>(
+            definition: ReevaluationMonitor.makeLand(),
+            initialState: ReevaluationMonitorState(),
+            services: services,
+            autoStartLoops: false
+        )
+
+        let playerID = PlayerID("monitor-player")
+        let clientID = ClientID("monitor-client")
+        let sessionID = SessionID("monitor-session")
+        try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+
+        let startAction = StartVerificationAction(
+            landType: "hero-defense",
+            recordFilePath: "/tmp/replay-monitor-contract.json"
+        )
+        let startEnvelope = ActionEnvelope(
+            typeIdentifier: String(describing: StartVerificationAction.self),
+            payload: AnyCodable(startAction)
+        )
+        _ = try await keeper.handleActionEnvelope(
+            startEnvelope,
+            playerID: playerID,
+            clientID: clientID,
+            sessionID: sessionID
+        )
+
+        let failedState = try await waitForTerminalMonitorState(of: keeper)
+        #expect(monitorStateStatus(from: failedState) == ReevaluationStatus.Phase.failed.rawValue)
+        #expect(!(monitorStateErrorMessage(from: failedState) ?? "").isEmpty)
+
+        await keeper.stepTickOnce()
+        await keeper.stepTickOnce()
+        let finalState = await keeper.currentState()
+        #expect(monitorStateStatus(from: finalState) == ReevaluationStatus.Phase.failed.rawValue)
+        #expect(!(monitorStateErrorMessage(from: finalState) ?? "").isEmpty)
+        #expect(await runner.getStepCalls() == 1)
+    }
+
     @Test("Replay start rejects schema mismatch")
     func schemaMismatchGuardContract() async throws {
         let definition = makeReevaluationEngineTestDefinition()
@@ -329,6 +389,42 @@ private func waitForTerminalStatus(
         }
         try await Task.sleep(nanoseconds: 10_000_000)
     }
+}
+
+private func waitForTerminalMonitorState(
+    of keeper: LandKeeper<ReevaluationMonitorState>,
+    timeoutNanoseconds: UInt64 = 2_000_000_000
+) async throws -> ReevaluationMonitorState {
+    let start = DispatchTime.now().uptimeNanoseconds
+
+    while true {
+        await keeper.stepTickOnce()
+        let state = await keeper.currentState()
+        let status = monitorStateStatus(from: state) ?? ""
+        if status == ReevaluationStatus.Phase.completed.rawValue || status == ReevaluationStatus.Phase.failed.rawValue {
+            return state
+        }
+
+        let elapsed = DispatchTime.now().uptimeNanoseconds - start
+        if elapsed > timeoutNanoseconds {
+            Issue.record("Timed out waiting for monitor terminal status, status=\(status)")
+            return state
+        }
+
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+}
+
+private func monitorStateStatus(from state: ReevaluationMonitorState) -> String? {
+    monitorStateSnapshotValue(from: state, key: "status")?.stringValue
+}
+
+private func monitorStateErrorMessage(from state: ReevaluationMonitorState) -> String? {
+    monitorStateSnapshotValue(from: state, key: "errorMessage")?.stringValue
+}
+
+private func monitorStateSnapshotValue(from state: ReevaluationMonitorState, key: String) -> SnapshotValue? {
+    (try? state.broadcastSnapshot(dirtyFields: nil))?.values[key]
 }
 
 private let stableFixtureDate = Date(timeIntervalSince1970: 1_700_000_000)
