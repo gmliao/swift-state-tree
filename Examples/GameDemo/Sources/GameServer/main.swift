@@ -63,7 +63,12 @@ struct GameServer {
 
         // Extract pathHashes from schema for compression
         let landDef = HeroDefense.makeLand()
-        let schema = SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(landDef)])
+        var schemaLandDefinitions: [AnyLandDefinition] = [AnyLandDefinition(landDef)]
+        if enableReevaluation {
+            schemaLandDefinitions.append(AnyLandDefinition(ReevaluationMonitor.makeLand()))
+            schemaLandDefinitions.append(AnyLandDefinition(HeroDefenseReplay.makeLand()))
+        }
+        let schema = SchemaGenCLI.generateSchema(landDefinitions: schemaLandDefinitions)
         let pathHashes = schema.lands["hero-defense"]?.pathHashes
 
         if let pathHashes = pathHashes {
@@ -93,12 +98,12 @@ struct GameServer {
             adminAPIKey: "hero-defense-admin-key"
         ))
 
-        let nioServerConfig = NIOLandServerConfiguration(
+        let baseServerConfig = NIOLandServerConfiguration(
             logger: logger,
             allowAutoCreateOnJoin: true,
             transportEncoding: transportEncoding,
             enableLiveStateHashRecording: enableReevaluation,
-            pathHashes: pathHashes,
+            pathHashes: nil,
             eventHashes: nil,
             clientEventHashes: nil,
             servicesFactory: { _, _ in
@@ -119,13 +124,16 @@ struct GameServer {
             }
         )
 
+        var heroDefenseServerConfig = baseServerConfig
+        heroDefenseServerConfig.pathHashes = pathHashes
+
         // Register Hero Defense game
         try await nioHost.register(
             landType: "hero-defense",
             land: HeroDefense.makeLand(),
             initialState: HeroDefenseState(),
             webSocketPath: "/game/hero-defense",
-            configuration: nioServerConfig
+            configuration: heroDefenseServerConfig
         )
 
         if enableReevaluation {
@@ -135,7 +143,16 @@ struct GameServer {
                 land: ReevaluationMonitor.makeLand(),
                 initialState: ReevaluationMonitorState(),
                 webSocketPath: "/reevaluation-monitor",
-                configuration: nioServerConfig
+                configuration: baseServerConfig
+            )
+
+            // Register Hero Defense replay stream land
+            try await nioHost.register(
+                landType: "hero-defense-replay",
+                land: HeroDefenseReplay.makeLand(),
+                initialState: HeroDefenseReplayState(),
+                webSocketPath: "/game/hero-defense-replay",
+                configuration: baseServerConfig
             )
         }
 

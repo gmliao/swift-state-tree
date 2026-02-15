@@ -19,6 +19,7 @@
     "test:e2e:cookie": "tsx src/cli.ts script -u ws://localhost:8080/game/cookie -l cookie -s scenarios/cookie/",
     "test:e2e:game": "tsx src/cli.ts script -u ws://localhost:8080/game/hero-defense -l hero-defense -s scenarios/game/",
     "test:e2e:game:reevaluation": "tsx src/reevaluation-e2e-game.ts --ws-url ws://localhost:8080/game/hero-defense --admin-url http://localhost:8080 --state-update-encoding messagepack",
+    "test:e2e:game:replay": "tsx src/reevaluation-replay-e2e-game.ts --ws-url ws://localhost:8080/game/hero-defense --admin-url http://localhost:8080 --state-update-encoding messagepack",
     "test:e2e:reevaluation": "tsx src/reevaluation-e2e.ts --ws-url ws://localhost:8080/game/counter --admin-url http://localhost:8080 --land-type counter",
     "test:e2e:game:ci": "./test-e2e-game.sh",
     "test:e2e:all": "npm run test:e2e:jsonObject && npm run test:e2e:opcodeJsonArray && npm run test:e2e:messagepack",

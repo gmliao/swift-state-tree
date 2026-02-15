@@ -102,3 +102,14 @@ npm run build
 
 - **方向鍵** 或 **WASD**：移動角色
 - **空格鍵**：發送 PlayAction（增加分數）
+
+## Server Replay 驗證
+
+Server-side replay stream 的主要驗證在 CLI 端完成，WebClient 目前維持最小變更（不在前端重建 replay frame）。
+
+```bash
+# 在 repo root
+./Tools/CLI/test-e2e-game.sh
+```
+
+此腳本會在 `json`、`jsonOpcode`、`messagepack` 三種 encoding 下執行 Hero Defense E2E，且每種 encoding 都包含 replay stream 驗證。

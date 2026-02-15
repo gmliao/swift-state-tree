@@ -123,8 +123,12 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         // Calculate hash
         let snapshot = try syncEngine.snapshot(from: state, mode: .all)
         let stateHash: String
-        if let data = try? snapshotEncoder.encode(snapshot) {
-            stateHash = DeterministicHash.toHex64(DeterministicHash.fnv1a64(data))
+        var actualStatePayload: AnyCodable?
+        if let snapshotData = try? snapshotEncoder.encode(snapshot) {
+            stateHash = DeterministicHash.toHex64(DeterministicHash.fnv1a64(snapshotData))
+            if let jsonText = String(data: snapshotData, encoding: .utf8) {
+                actualStatePayload = AnyCodable(jsonText)
+            }
         } else {
             stateHash = "error"
         }
@@ -139,7 +143,8 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             tickId: tickId,
             stateHash: stateHash,
             recordedHash: recordedHash,
-            isMatch: isMatch
+            isMatch: isMatch,
+            actualState: actualStatePayload
         )
     }
 
