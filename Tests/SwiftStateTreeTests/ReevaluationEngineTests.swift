@@ -29,9 +29,8 @@ struct ReevaluationAddEvent: ClientEventPayload {
     let amount: Int
 }
 
-@Test("ReevaluationEngine.run matches recorded state hashes")
-func testReevaluationEngineRunMatchesRecordedHashes() async throws {
-    let definition = Land("reeval-engine-test", using: ReevaluationEngineTestState.self) {
+func makeReevaluationEngineTestDefinition() -> LandDefinition<ReevaluationEngineTestState> {
+    Land("reeval-engine-test", using: ReevaluationEngineTestState.self) {
         ClientEvents {
             Register(ReevaluationAddEvent.self)
         }
@@ -53,11 +52,16 @@ func testReevaluationEngineRunMatchesRecordedHashes() async throws {
             }
         }
     }
+}
+
+@Test("ReevaluationEngine.run matches recorded state hashes")
+func testReevaluationEngineRunMatchesRecordedHashes() async throws {
+    let definition = makeReevaluationEngineTestDefinition()
 
     let landID = "reeval-engine-test:local"
     let expectedSeed = DeterministicSeed.fromLandID(landID)
     let recordingFile = FileManager.default.temporaryDirectory
-        .appendingPathComponent("reevaluation-engine-\(UUID().uuidString).json")
+        .appendingPathComponent("reevaluation-engine-\(landID.replacingOccurrences(of: ":", with: "-")).json")
 
     defer {
         try? FileManager.default.removeItem(at: recordingFile)
@@ -70,23 +74,26 @@ func testReevaluationEngineRunMatchesRecordedHashes() async throws {
         autoStartLoops: false
     )
 
-    if let recorder = await keeper.getReevaluationRecorder() {
-        let meta = ReevaluationRecordMetadata(
-            landID: landID,
-            landType: "reeval-engine-test",
-            createdAt: Date(),
-            metadata: [:],
-            landDefinitionID: definition.id,
-            initialStateHash: nil,
-            landConfig: ["autoStartLoops": AnyCodable(false)],
-            rngSeed: expectedSeed,
-            ruleVariantId: nil,
-            ruleParams: nil,
-            version: "1.0",
-            extensions: nil
-        )
-        await recorder.setMetadata(meta)
+    guard let recorder = await keeper.getReevaluationRecorder() else {
+        Issue.record("ReevaluationRecorder not available")
+        return
     }
+
+    let meta = ReevaluationRecordMetadata(
+        landID: landID,
+        landType: "reeval-engine-test",
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+        metadata: [:],
+        landDefinitionID: definition.id,
+        initialStateHash: nil,
+        landConfig: ["autoStartLoops": AnyCodable(false)],
+        rngSeed: expectedSeed,
+        ruleVariantId: nil,
+        ruleParams: nil,
+        version: "1.0",
+        extensions: nil
+    )
+    await recorder.setMetadata(meta)
 
     let playerID = PlayerID("alice")
     let clientID = ClientID("c1")
@@ -125,9 +132,8 @@ func testReevaluationEngineRunMatchesRecordedHashes() async throws {
     )
     await keeper.stepTickOnce()
 
-    guard let recorder = await keeper.getReevaluationRecorder() else {
-        Issue.record("ReevaluationRecorder not available")
-        return
+    if FileManager.default.fileExists(atPath: recordingFile.path) {
+        try FileManager.default.removeItem(at: recordingFile)
     }
     try await recorder.save(to: recordingFile.path)
 
