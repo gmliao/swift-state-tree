@@ -5,6 +5,8 @@ import {
   OnModuleInit,
   OnModuleDestroy,
 } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { AssignmentResult } from '../contracts/assignment.dto';
 import { EnqueueRequest, StatusResponse } from '../contracts/matchmaking.dto';
 import { ProvisioningClientPort } from '../provisioning/provisioning-client.port';
@@ -31,7 +33,7 @@ const DEFAULT_CONFIG: MatchmakingConfig = {
  */
 @Injectable()
 export class MatchmakingService implements OnModuleInit, OnModuleDestroy {
-  private tickInterval: ReturnType<typeof setInterval> | null = null;
+  private repeatOpts: { every: number } | null = null;
 
   constructor(
     @Inject('MatchStoragePort') private readonly storage: MatchStoragePort,
@@ -40,22 +42,20 @@ export class MatchmakingService implements OnModuleInit, OnModuleDestroy {
     private readonly provisioning: ProvisioningClientPort,
     private readonly jwtIssuer: JwtIssuerService,
     @Inject('MatchmakingConfig') private readonly config: MatchmakingConfig,
+    @InjectQueue('matchmaking-tick') private readonly tickQueue: Queue,
   ) {}
 
-  /** Starts the periodic matchmaking tick. */
-  onModuleInit() {
-    this.tickInterval = setInterval(() => {
-      this.runMatchmakingTick().catch((err) => {
-        console.error('[Matchmaking] tick error:', err);
-      });
-    }, this.config.intervalMs);
+  /** Starts the periodic matchmaking tick via BullMQ repeatable job. */
+  async onModuleInit() {
+    this.repeatOpts = { every: this.config.intervalMs };
+    await this.tickQueue.add('tick', {}, { repeat: this.repeatOpts });
   }
 
-  /** Cleans up the tick interval on shutdown. */
-  onModuleDestroy() {
-    if (this.tickInterval) {
-      clearInterval(this.tickInterval);
-      this.tickInterval = null;
+  /** Cleans up the repeatable job on shutdown. */
+  async onModuleDestroy() {
+    if (this.repeatOpts) {
+      await this.tickQueue.removeRepeatable('tick', this.repeatOpts);
+      this.repeatOpts = null;
     }
   }
 
