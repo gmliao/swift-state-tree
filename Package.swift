@@ -56,6 +56,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.77.0"),
+        .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.21.0"),
     ],
     targets: [
         // 🔹 Core Library: Pure Swift game logic, no network dependency
@@ -139,6 +140,7 @@ let package = Package(
             dependencies: [
                 "SwiftStateTreeNIO",
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "AsyncHTTPClient", package: "async-http-client"),
             ],
             path: "Sources/SwiftStateTreeNIOProvisioning"
         ),
