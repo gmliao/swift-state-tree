@@ -1,0 +1,12 @@
+{
+  "maxDuration": 30000,
+  "steps": [
+    {"type": "log", "message": "Direct mode regression: no assignment token, auto-create"},
+    {"type": "wait", "wait": 500},
+    {"type": "assert", "assert": {"path": "score", "equals": 0, "message": "Initial score 0"}},
+    {"type": "action", "action": "Play", "payload": {}},
+    {"type": "wait", "wait": 500},
+    {"type": "assert", "assert": {"path": "score", "equals": 1, "message": "Score 1 after Play"}},
+    {"type": "log", "message": "Direct mode regression: PASS"}
+  ]
+}

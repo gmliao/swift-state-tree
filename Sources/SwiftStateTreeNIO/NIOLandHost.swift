@@ -9,6 +9,41 @@ import NIOPosix
 import SwiftStateTree
 import SwiftStateTreeTransport
 
+// MARK: - Host Middleware (defined here for compilation order)
+
+/// Immutable context passed to middlewares.
+public struct HostContext: Sendable {
+    public let host: String
+    public let port: UInt16
+    public let logger: Logger
+    public init(host: String, port: UInt16, logger: Logger) {
+        self.host = host
+        self.port = port
+        self.logger = logger
+    }
+}
+
+/// Middleware that runs at host lifecycle events.
+public protocol HostMiddleware: Sendable {
+    func onStart(context: HostContext) async throws -> Task<Void, Never>?
+    func onShutdown(context: HostContext) async throws
+}
+
+/// Builder for collecting host middlewares. Use when configuring NIOLandHost.
+public struct HostMiddlewareBuilder: Sendable {
+    private var items: [any HostMiddleware] = []
+
+    public init() {}
+
+    public mutating func add(_ middleware: any HostMiddleware) {
+        items.append(middleware)
+    }
+
+    public func build() -> [any HostMiddleware] {
+        items
+    }
+}
+
 // MARK: - Configuration
 
 /// Configuration for NIOLandHost.
@@ -25,6 +60,8 @@ public struct NIOLandHostConfiguration: Sendable {
     public var schemaProvider: (@Sendable () -> Data?)?
     /// Admin API key for admin routes (nil = admin routes disabled).
     public var adminAPIKey: String?
+    /// Lifecycle middlewares (run at start/shutdown). Order: start runs in order; shutdown runs in reverse.
+    public var middlewares: [any HostMiddleware]
 
     public init(
         host: String = "localhost",
@@ -32,7 +69,8 @@ public struct NIOLandHostConfiguration: Sendable {
         logger: Logger = Logger(label: "com.swiftstatetree.nio.landhost"),
         eventLoopThreads: Int = System.coreCount,
         schemaProvider: (@Sendable () -> Data?)? = nil,
-        adminAPIKey: String? = nil
+        adminAPIKey: String? = nil,
+        middlewares: [any HostMiddleware] = []
     ) {
         self.host = host
         self.port = port
@@ -40,6 +78,7 @@ public struct NIOLandHostConfiguration: Sendable {
         self.eventLoopThreads = eventLoopThreads
         self.schemaProvider = schemaProvider
         self.adminAPIKey = adminAPIKey
+        self.middlewares = middlewares
     }
 }
 
@@ -146,6 +185,9 @@ public actor NIOLandHost {
     
     /// Registered land encodings for logging.
     private var registeredLandEncodings: [String: TransportEncodingConfig] = [:]
+
+    /// Background tasks from middlewares (cancelled on shutdown).
+    private var middlewareTasks: [Task<Void, Never>] = []
 
     /// Creates a new NIOLandHost.
     public init(configuration: NIOLandHostConfiguration = .init()) {
@@ -257,6 +299,18 @@ public actor NIOLandHost {
         // Register admin routes if configured
         await registerAdminRoutes()
 
+        // Run middleware onStart pipeline
+        let context = HostContext(
+            host: configuration.host,
+            port: configuration.port,
+            logger: configuration.logger
+        )
+        for middleware in configuration.middlewares {
+            if let task = try await middleware.onStart(context: context) {
+                middlewareTasks.append(task)
+            }
+        }
+
         // Create path matcher, transport resolver, and optional JWT auth resolver
         // Supports both exact paths (/game/hero-defense) and path-with-instanceId (/game/hero-defense/room-abc)
         // for K8s path-based routing: Ingress can route /game/{landType}/{instanceId} to specific pods
@@ -352,6 +406,22 @@ public actor NIOLandHost {
 
     /// Shuts down the server.
     public func shutdown() async throws {
+        // Cancel middleware background tasks
+        for task in middlewareTasks {
+            task.cancel()
+        }
+        middlewareTasks = []
+
+        // Run middleware onShutdown pipeline (reverse order)
+        let context = HostContext(
+            host: configuration.host,
+            port: configuration.port,
+            logger: configuration.logger
+        )
+        for middleware in configuration.middlewares.reversed() {
+            try await middleware.onShutdown(context: context)
+        }
+
         // Shutdown realm (all land servers)
         try await realm.shutdown()
         

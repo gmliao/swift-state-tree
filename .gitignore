@@ -94,6 +94,9 @@ iOSInjectionProject/
 .cursorrules
 *.internal.*
 internal/
+# CLI internal scripts (matchmaking E2E, encoding tests) - keep in repo
+!Tools/CLI/scripts/internal/
+!Tools/CLI/scripts/internal/*
 
 .clang_module_cache
 .home
@@ -163,3 +166,6 @@ Examples/GameDemo/ws-loadtest/monitoring/*.json
 
 # Reevaluation records: keep existing committed files as examples; ignore new local runs
 Examples/GameDemo/reevaluation-records/*.json
+
+# Generated nginx config for matchmaking E2E
+docs/deploy/nginx-matchmaking-e2e.generated.conf
