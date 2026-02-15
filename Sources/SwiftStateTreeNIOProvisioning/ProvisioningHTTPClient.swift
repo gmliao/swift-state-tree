@@ -43,7 +43,7 @@ enum ProvisioningHTTPClient: Sendable {
         request.method = HTTPMethod(rawValue: methodTrimmed)
         if let body {
             request.headers.add(name: "Content-Type", value: "application/json")
-            request.body = .bytes(ByteBuffer(data: body))
+            request.body = .bytes(ByteBuffer(bytes: body))
         }
         for (key, value) in headers {
             request.headers.add(name: key, value: value)
