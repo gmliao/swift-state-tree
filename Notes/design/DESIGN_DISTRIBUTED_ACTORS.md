@@ -1,6 +1,8 @@
 # Distributed Actor 擴展性設計
 
-> 本文檔說明 SwiftStateTree 為未來 distributed actor 支援所做的設計考量與擴展性準備。
+> **已放棄**：本專案已不再規劃使用 Swift distributed actor。本文檔僅供歷史參考。
+>
+> 原說明 SwiftStateTree 為未來 distributed actor 支援所做的設計考量與擴展性準備。
 
 ## 設計目標
 

@@ -81,9 +81,6 @@ struct LandRouterTests {
             transport: transport
         )
 
-        // Setup LandManagerRegistry
-        _ = SingleLandManagerRegistry(landManager: landManager)
-
         // Setup Router
         let router = LandRouter<RouterTestState>(
             landManager: landManager,
@@ -458,7 +455,6 @@ struct LandRouterTests {
             initialStateFactory: { landID in registry.initialStateFactory(landID.landType, landID) },
             transport: transport
         )
-        _ = SingleLandManagerRegistry(landManager: landManager)
         
         // Router configured with messagepack encoding
         let router = LandRouter<RouterTestState>(
@@ -523,7 +519,6 @@ struct LandRouterTests {
             initialStateFactory: { landID in registry.initialStateFactory(landID.landType, landID) },
             transport: transport
         )
-        _ = SingleLandManagerRegistry(landManager: landManager)
         
         // Router configured with messagepack encoding
         let router = LandRouter<RouterTestState>(
@@ -586,7 +581,6 @@ struct LandRouterTests {
             initialStateFactory: { landID in registry.initialStateFactory(landID.landType, landID) },
             transport: transport
         )
-        _ = SingleLandManagerRegistry(landManager: landManager)
         
         // Router configured with JSON encoding
         let router = LandRouter<RouterTestState>(
@@ -645,7 +639,6 @@ struct LandRouterTests {
             initialStateFactory: { landID in registry.initialStateFactory(landID.landType, landID) },
             transport: transport
         )
-        _ = SingleLandManagerRegistry(landManager: landManager)
         
         // Router configured with opcode JSON array encoding
         let router = LandRouter<RouterTestState>(
@@ -715,7 +708,6 @@ struct LandRouterTests {
             initialStateFactory: { landID in registry.initialStateFactory(landID.landType, landID) },
             transport: transport
         )
-        _ = SingleLandManagerRegistry(landManager: landManager)
         
         let router = LandRouter<RouterTestState>(
             landManager: landManager,
@@ -780,7 +772,6 @@ struct LandRouterTests {
             initialStateFactory: { landID in registry.initialStateFactory(landID.landType, landID) },
             transport: transport
         )
-        _ = SingleLandManagerRegistry(landManager: landManager)
         
         let router = LandRouter<RouterTestState>(
             landManager: landManager,
@@ -862,7 +853,6 @@ struct LandRouterTests {
             initialStateFactory: { landID in registry.initialStateFactory(landID.landType, landID) },
             transport: transport
         )
-        _ = SingleLandManagerRegistry(landManager: landManager)
         
         // Router with messagepack but allowAutoCreateOnJoin = false
         let router = LandRouter<RouterTestState>(
