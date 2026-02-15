@@ -23,7 +23,7 @@ echo ""
 echo "Calling control plane enqueue..."
 ENQUEUE_RESPONSE=$(curl -s -X POST "$CONTROL_PLANE_URL/v1/matchmaking/enqueue" \
     -H "Content-Type: application/json" \
-    -d '{"groupId":"mvp-test-1","queueKey":"standard:asia","members":["p1"],"groupSize":1}')
+    -d '{"groupId":"mvp-test-1","queueKey":"hero-defense:asia","members":["p1"],"groupSize":1}')
 
 TMP=$(mktemp)
 trap "rm -f $TMP" EXIT

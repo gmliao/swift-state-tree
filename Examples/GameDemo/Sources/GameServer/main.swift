@@ -93,9 +93,10 @@ struct GameServer {
             let connectHost = getEnvStringOptional(key: ProvisioningEnvKeys.connectHost)
             let connectPort = getEnvStringOptional(key: ProvisioningEnvKeys.connectPort).flatMap { Int($0) }
             let connectScheme = getEnvStringOptional(key: ProvisioningEnvKeys.connectScheme)
+            let serverId = getEnvStringOptional(key: ProvisioningEnvKeys.serverId) ?? "game-\(String(UUID().uuidString.prefix(8)))"
             middlewareBuilder.add(NIOLandHostConfiguration.provisioningMiddleware(
                 baseUrl: provBaseUrl,
-                serverId: "game-1",
+                serverId: serverId,
                 landType: "hero-defense",
                 heartbeatIntervalSeconds: 30,
                 connectHost: connectHost,

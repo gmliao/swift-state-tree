@@ -62,7 +62,7 @@ describe('Provisioning (Internal Registry) E2E', () => {
       .post('/v1/matchmaking/enqueue')
       .send({
         groupId: 'solo-p1',
-        queueKey: 'standard:asia',
+        queueKey: 'hero-defense:asia',
         members: ['p1'],
         groupSize: 1,
       })
@@ -103,7 +103,7 @@ describe('Provisioning (Internal Registry) E2E', () => {
       .post('/v1/matchmaking/enqueue')
       .send({
         groupId: 'solo-p2',
-        queueKey: 'standard:asia',
+        queueKey: 'hero-defense:asia',
         members: ['p2'],
         groupSize: 1,
       })
@@ -136,7 +136,7 @@ describe('Provisioning (Internal Registry) E2E', () => {
       .post('/v1/matchmaking/enqueue')
       .send({
         groupId: 'solo-lb',
-        queueKey: 'standard:asia',
+        queueKey: 'hero-defense:asia',
         members: ['p1'],
         groupSize: 1,
       })
@@ -179,7 +179,7 @@ describe('Provisioning (Internal Registry) E2E', () => {
       .post('/v1/matchmaking/enqueue')
       .send({
         groupId: 'solo-p3',
-        queueKey: 'standard:asia',
+        queueKey: 'hero-defense:asia',
         members: ['p3'],
         groupSize: 1,
       })
