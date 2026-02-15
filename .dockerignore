@@ -29,3 +29,10 @@ node_modules/
 # Generated files
 **/dist/
 **/generated/
+
+# Test/benchmark results and artifacts
+**/results/
+**/deep-research/
+
+# Tools (CLI, loadtest scripts - not needed for server build)
+Tools/

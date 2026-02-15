@@ -1,0 +1,19 @@
+# Build Image
+# Used for compiling Swift applications. Contains full Swift toolchain.
+# Use in CI pipelines or as base for multi-stage builds.
+#
+# Example:
+#   docker build -f docker/Dockerfile.build -t swift-state-tree:build .
+#   docker run --rm -v $(pwd):/workspace swift-state-tree:build swift build -c release -C Examples/Demo
+
+FROM swift:6.2
+
+# Install minimal build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+# Verify Swift installation
+RUN swift --version
