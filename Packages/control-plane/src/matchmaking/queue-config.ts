@@ -28,13 +28,22 @@ export function parseGroupSizeFromQueueKey(queueKey: string): number {
   return 1;
 }
 
+/** Optional overrides when building QueueConfig. */
+export interface QueueConfigOverrides {
+  minWaitMs?: number;
+  relaxAfterMs?: number;
+}
+
 /** Build QueueConfig for a queueKey. */
-export function getQueueConfig(queueKey: string): QueueConfig {
+export function getQueueConfig(
+  queueKey: string,
+  overrides?: QueueConfigOverrides,
+): QueueConfig {
   const size = parseGroupSizeFromQueueKey(queueKey);
   return {
     minGroupSize: size,
     maxGroupSize: size,
-    minWaitMs: DEFAULT_MIN_WAIT_MS,
-    relaxAfterMs: DEFAULT_RELAX_AFTER_MS,
+    minWaitMs: overrides?.minWaitMs ?? DEFAULT_MIN_WAIT_MS,
+    relaxAfterMs: overrides?.relaxAfterMs ?? DEFAULT_RELAX_AFTER_MS,
   };
 }
