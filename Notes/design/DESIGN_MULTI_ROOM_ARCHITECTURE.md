@@ -3,10 +3,10 @@
 > 本文檔說明 SwiftStateTree 的多房間架構設計、房間管理、配對服務，以及相關的命名與職責分界。
 >
 > **狀態說明**：
-> - ✅ 多房間架構：已部分實作，`LandManager`、`LandRouter`、`LandContainer` 已實作
+> - ✅ 多房間架構：已實作，`LandManager`、`LandRouter`、`LandContainer` 已實作
 > - ✅ `AppContainer`（未來 `LandServer`）：已支援單房間和多房間兩種模式
-> - 📅 配對服務：規劃中，`MatchmakingService` 已實作但功能仍在擴展
-> - 📅 配對大廳：規劃中，`LobbyContainer` 已實作但功能仍在擴展
+> - ✅ 配對服務：由 NestJS control plane 處理（`Packages/matchmaking-control-plane`）
+> - 📦 配對大廳：Swift 端 `LobbyContainer`、`MatchmakingService` 已歸檔至 `Archive/`
 >
 > 相關文檔：
 > - [DESIGN_APP_CONTAINER_HOSTING.md](./DESIGN_APP_CONTAINER_HOSTING.md) - AppContainer 與 Hosting 設計

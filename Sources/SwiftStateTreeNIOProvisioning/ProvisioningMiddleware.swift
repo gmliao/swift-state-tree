@@ -50,10 +50,11 @@ private struct ProvisioningEmptyResult: Codable, Sendable {}
 
 /// Middleware that registers the host with matchmaking control plane.
 /// Runs heartbeat in background; deregisters on shutdown.
+/// Supports multiple land types: one heartbeat task registers all land types with the control plane.
 public struct ProvisioningMiddleware: HostMiddleware, Sendable {
     private let baseUrl: String
     private let serverId: String
-    private let landType: String
+    private let landTypes: [String]
     private let heartbeatIntervalSeconds: Int
     private let connectHost: String?
     private let connectPort: Int?
@@ -62,7 +63,7 @@ public struct ProvisioningMiddleware: HostMiddleware, Sendable {
     public init(
         baseUrl: String,
         serverId: String,
-        landType: String,
+        landTypes: [String],
         heartbeatIntervalSeconds: Int = 30,
         connectHost: String? = nil,
         connectPort: Int? = nil,
@@ -70,7 +71,7 @@ public struct ProvisioningMiddleware: HostMiddleware, Sendable {
     ) {
         self.baseUrl = baseUrl.hasSuffix("/") ? String(baseUrl.dropLast()) : baseUrl
         self.serverId = serverId
-        self.landType = landType
+        self.landTypes = landTypes
         self.heartbeatIntervalSeconds = heartbeatIntervalSeconds
         self.connectHost = connectHost
         self.connectPort = connectPort
@@ -80,7 +81,7 @@ public struct ProvisioningMiddleware: HostMiddleware, Sendable {
     public func onStart(context: HostContext) async throws -> Task<Void, Never>? {
         let baseUrl = self.baseUrl
         let serverId = self.serverId
-        let landType = self.landType
+        let landTypes = self.landTypes
         let intervalSeconds = self.heartbeatIntervalSeconds
         let connectHost = self.connectHost
         let connectPort = self.connectPort
@@ -91,7 +92,9 @@ public struct ProvisioningMiddleware: HostMiddleware, Sendable {
 
         let task = Task {
             while !Task.isCancelled {
-                await performRegister(baseUrl: baseUrl, serverId: serverId, host: host, port: port, landType: landType, connectHost: connectHost, connectPort: connectPort, connectScheme: connectScheme, logger: logger)
+                for landType in landTypes {
+                    await performRegister(baseUrl: baseUrl, serverId: serverId, host: host, port: port, landType: landType, connectHost: connectHost, connectPort: connectPort, connectScheme: connectScheme, logger: logger)
+                }
                 try? await safeTaskSleep(for: .seconds(Int64(intervalSeconds)))
             }
         }
@@ -101,7 +104,7 @@ public struct ProvisioningMiddleware: HostMiddleware, Sendable {
             metadata: [
                 "baseUrl": .string(baseUrl),
                 "serverId": .string(serverId),
-                "landType": .string(landType),
+                "landTypes": .string(landTypes.joined(separator: ", ")),
             ]
         )
         return task
@@ -156,10 +159,33 @@ public struct ProvisioningMiddleware: HostMiddleware, Sendable {
 
 extension NIOLandHostConfiguration {
     /// Creates a provisioning middleware for matchmaking control plane.
+    /// Registers all given land types with one heartbeat task.
     /// - Parameters:
+    ///   - landTypes: Land types to register (e.g. `["hero-defense", "cardgame"]`).
     ///   - connectHost: Client-facing host for connectUrl (e.g. K8s Ingress, nginx LB). When nil, uses bound host.
     ///   - connectPort: Client-facing port. When nil, uses bound port.
     ///   - connectScheme: "ws" or "wss". When nil, defaults to "wss" for port 443, else "ws".
+    public static func provisioningMiddleware(
+        baseUrl: String,
+        serverId: String,
+        landTypes: [String],
+        heartbeatIntervalSeconds: Int = 30,
+        connectHost: String? = nil,
+        connectPort: Int? = nil,
+        connectScheme: String? = nil
+    ) -> any HostMiddleware {
+        ProvisioningMiddleware(
+            baseUrl: baseUrl,
+            serverId: serverId,
+            landTypes: landTypes,
+            heartbeatIntervalSeconds: heartbeatIntervalSeconds,
+            connectHost: connectHost,
+            connectPort: connectPort,
+            connectScheme: connectScheme
+        )
+    }
+
+    /// Convenience: single land type.
     public static func provisioningMiddleware(
         baseUrl: String,
         serverId: String,
@@ -169,10 +195,10 @@ extension NIOLandHostConfiguration {
         connectPort: Int? = nil,
         connectScheme: String? = nil
     ) -> any HostMiddleware {
-        ProvisioningMiddleware(
+        provisioningMiddleware(
             baseUrl: baseUrl,
             serverId: serverId,
-            landType: landType,
+            landTypes: [landType],
             heartbeatIntervalSeconds: heartbeatIntervalSeconds,
             connectHost: connectHost,
             connectPort: connectPort,
