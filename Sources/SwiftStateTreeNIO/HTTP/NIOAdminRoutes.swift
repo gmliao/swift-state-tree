@@ -366,7 +366,7 @@ public struct NIOAdminRoutes: Sendable {
                 try validateReplayCompatibility(
                     metadata: metadata,
                     expectedLandType: payload.landType,
-                    expectedLandDefinitionID: payload.expectedLandDefinitionID ?? payload.landType,
+                    expectedLandDefinitionID: payload.expectedLandDefinitionID,
                     expectedRecordVersion: payload.expectedRecordVersion
                 )
             } catch let compatibilityError as ReplayStartCompatibilityError {
@@ -416,18 +416,18 @@ private struct StartReevaluationReplayRequest: Decodable {
 private func validateReplayCompatibility(
     metadata: ReevaluationRecordMetadata,
     expectedLandType: String,
-    expectedLandDefinitionID: String,
+    expectedLandDefinitionID: String?,
     expectedRecordVersion: String?
 ) throws {
     if metadata.landType != expectedLandType {
         throw ReplayStartCompatibilityError.landTypeMismatch(expected: expectedLandType, actual: metadata.landType)
     }
 
-    if let recordedLandDefinitionID = metadata.landDefinitionID,
-       recordedLandDefinitionID != expectedLandDefinitionID {
+    if let expectedLandDefinitionID,
+       metadata.landDefinitionID != expectedLandDefinitionID {
         throw ReplayStartCompatibilityError.schemaMismatch(
             expectedLandDefinitionID: expectedLandDefinitionID,
-            recordedLandDefinitionID: recordedLandDefinitionID
+            recordedLandDefinitionID: metadata.landDefinitionID
         )
     }
 

@@ -234,11 +234,10 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             )
         }
 
-        if let recordedLandDefinitionID = metadata.landDefinitionID,
-           recordedLandDefinitionID != expectedLandDefinitionID {
+        if metadata.landDefinitionID != expectedLandDefinitionID {
             throw ReevaluationReplayCompatibilityError.schemaMismatch(
                 expectedLandDefinitionID: expectedLandDefinitionID,
-                recordedLandDefinitionID: recordedLandDefinitionID
+                recordedLandDefinitionID: metadata.landDefinitionID
             )
         }
 
