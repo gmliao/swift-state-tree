@@ -19,7 +19,7 @@ SwiftStateTree 採用模組化設計，各模組職責明確：
 | **SwiftStateTreeDeterministicMath** | 確定性數學運算 | 固定點運算、碰撞檢測、向量運算，用於伺服器權威遊戲 |
 | **SwiftStateTreeBenchmarks** | 基準測試 | 效能測試執行檔 |
 
-配對由 NestJS control plane（`Packages/matchmaking-control-plane`）處理。詳見 [Matchmaking 雙平面架構](matchmaking-two-plane.zh-TW.md)。
+配對由 NestJS control plane（`Packages/control-plane`）處理。詳見 [Matchmaking 雙平面架構](matchmaking-two-plane.zh-TW.md)。
 
 ### 模組依賴關係
 

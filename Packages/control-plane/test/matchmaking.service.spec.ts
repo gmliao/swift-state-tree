@@ -1,18 +1,30 @@
 import { getQueueToken } from '@nestjs/bullmq';
 import { Test, TestingModule } from '@nestjs/testing';
-import { MatchmakingService } from '../src/matchmaking/matchmaking.service';
-import { RealtimeGateway } from '../src/realtime/realtime.gateway';
-import { InMemoryMatchQueue } from '../src/storage/inmemory-match-queue';
-import { FillGroupStrategy } from '../src/matchmaking/strategies/fill-group.strategy';
-import { JwtIssuerService } from '../src/security/jwt-issuer.service';
+import { MatchmakingService } from '../src/modules/matchmaking/matchmaking.service';
+import { MATCH_ASSIGNED_CHANNEL } from '../src/infra/channels/match-assigned-channel.interface';
+import { NODE_INBOX_CHANNEL } from '../src/infra/channels/node-inbox-channel.interface';
+import { CLUSTER_DIRECTORY } from '../src/infra/cluster-directory/cluster-directory.interface';
+import { InMemoryMatchQueue } from '../src/modules/matchmaking/storage/inmemory-match-queue';
+import { FillGroupStrategy } from '../src/modules/matchmaking/strategies/fill-group.strategy';
+import { JwtIssuerService } from '../src/infra/security/jwt-issuer.service';
 
-const mockTickQueue = {
+const mockEnqueueTicketQueue = {
   add: jest.fn().mockResolvedValue({}),
-  removeRepeatable: jest.fn().mockResolvedValue(undefined),
 };
 
-const mockRealtimeGateway = {
-  pushMatchAssigned: jest.fn(),
+const mockMatchAssignedChannel = {
+  publish: jest.fn().mockResolvedValue(undefined),
+  subscribe: jest.fn(),
+};
+const mockNodeInboxChannel = {
+  publish: jest.fn().mockResolvedValue(undefined),
+  subscribe: jest.fn(),
+};
+const mockClusterDirectory = {
+  registerSession: jest.fn().mockResolvedValue(undefined),
+  refreshLease: jest.fn().mockResolvedValue(undefined),
+  getNodeId: jest.fn().mockResolvedValue(null),
+  unregisterSession: jest.fn().mockResolvedValue(undefined),
 };
 
 const mockProvisioning = {
@@ -26,7 +38,7 @@ const mockProvisioning = {
   }),
 };
 
-const testConfig = { intervalMs: 100, minWaitMs: 0 };
+const testConfig = { minWaitMs: 0 };
 
 describe('MatchmakingService', () => {
   let service: MatchmakingService;
@@ -57,12 +69,14 @@ describe('MatchmakingService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         MatchmakingService,
-        { provide: 'MatchQueuePort', useClass: InMemoryMatchQueue },
-        { provide: 'MatchStrategyPort', useClass: FillGroupStrategy },
+        { provide: 'MatchQueue', useClass: InMemoryMatchQueue },
+        { provide: 'MatchStrategy', useClass: FillGroupStrategy },
         { provide: 'ProvisioningClientPort', useValue: mockProvisioning },
         { provide: 'MatchmakingConfig', useValue: testConfig },
-        { provide: getQueueToken('matchmaking-tick'), useValue: mockTickQueue },
-        { provide: RealtimeGateway, useValue: mockRealtimeGateway },
+        { provide: getQueueToken('enqueueTicket'), useValue: mockEnqueueTicketQueue },
+        { provide: MATCH_ASSIGNED_CHANNEL, useValue: mockMatchAssignedChannel },
+        { provide: NODE_INBOX_CHANNEL, useValue: mockNodeInboxChannel },
+        { provide: CLUSTER_DIRECTORY, useValue: mockClusterDirectory },
         JwtIssuerService,
       ],
     }).compile();
@@ -124,19 +138,20 @@ describe('MatchmakingService', () => {
 
   it('cancels queued ticket', async () => {
     const neverMatchStrategy = {
-      findMatchableTickets: jest.fn().mockReturnValue([]),
       findMatchableGroups: jest.fn().mockReturnValue([]),
     };
     const queue = new InMemoryMatchQueue();
     const module = await Test.createTestingModule({
       providers: [
         MatchmakingService,
-        { provide: 'MatchQueuePort', useValue: queue },
-        { provide: 'MatchStrategyPort', useValue: neverMatchStrategy },
+        { provide: 'MatchQueue', useValue: queue },
+        { provide: 'MatchStrategy', useValue: neverMatchStrategy },
         { provide: 'ProvisioningClientPort', useValue: mockProvisioning },
         { provide: 'MatchmakingConfig', useValue: testConfig },
-        { provide: getQueueToken('matchmaking-tick'), useValue: mockTickQueue },
-        { provide: RealtimeGateway, useValue: mockRealtimeGateway },
+        { provide: getQueueToken('enqueueTicket'), useValue: mockEnqueueTicketQueue },
+        { provide: MATCH_ASSIGNED_CHANNEL, useValue: mockMatchAssignedChannel },
+        { provide: NODE_INBOX_CHANNEL, useValue: mockNodeInboxChannel },
+        { provide: CLUSTER_DIRECTORY, useValue: mockClusterDirectory },
         JwtIssuerService,
       ],
     }).compile();
@@ -154,5 +169,67 @@ describe('MatchmakingService', () => {
     expect(status.ticketId).toBe(enqueueResult.ticketId);
     expect(status.status).toBe('assigned');
     expect(status.assignment).toBeDefined();
+  });
+
+  /** Tests for match.assigned delivery via node inbox (USE_NODE_INBOX_FOR_MATCH_ASSIGNED). */
+  describe('match.assigned delivery via node inbox', () => {
+    const originalUseNodeInbox = process.env.USE_NODE_INBOX_FOR_MATCH_ASSIGNED;
+
+    afterEach(() => {
+      process.env.USE_NODE_INBOX_FOR_MATCH_ASSIGNED = originalUseNodeInbox;
+    });
+
+    it('publishes to node inbox when USE_NODE_INBOX_FOR_MATCH_ASSIGNED=true and getNodeId returns nodeId', async () => {
+      process.env.USE_NODE_INBOX_FOR_MATCH_ASSIGNED = 'true';
+      mockClusterDirectory.getNodeId.mockResolvedValue('node-api-1');
+
+      await service.enqueue(base);
+      await service.runMatchmakingTick();
+
+      expect(mockNodeInboxChannel.publish).toHaveBeenCalledWith(
+        'node-api-1',
+        expect.objectContaining({
+          ticketId: expect.any(String),
+          envelope: expect.objectContaining({
+            type: 'match.assigned',
+            v: 1,
+            data: expect.objectContaining({
+              ticketId: expect.any(String),
+              assignment: expect.any(Object),
+            }),
+          }),
+        }),
+      );
+      expect(mockMatchAssignedChannel.publish).not.toHaveBeenCalled();
+    });
+
+    it('falls back to broadcast when USE_NODE_INBOX_FOR_MATCH_ASSIGNED=true but getNodeId returns null', async () => {
+      process.env.USE_NODE_INBOX_FOR_MATCH_ASSIGNED = 'true';
+      mockClusterDirectory.getNodeId.mockResolvedValue(null);
+
+      await service.enqueue(base);
+      await service.runMatchmakingTick();
+
+      expect(mockMatchAssignedChannel.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ticketId: expect.any(String),
+          envelope: expect.objectContaining({
+            type: 'match.assigned',
+            v: 1,
+          }),
+        }),
+      );
+      expect(mockNodeInboxChannel.publish).not.toHaveBeenCalled();
+    });
+
+    it('publishes to broadcast when USE_NODE_INBOX_FOR_MATCH_ASSIGNED is not true', async () => {
+      process.env.USE_NODE_INBOX_FOR_MATCH_ASSIGNED = 'false';
+
+      await service.enqueue(base);
+      await service.runMatchmakingTick();
+
+      expect(mockMatchAssignedChannel.publish).toHaveBeenCalled();
+      expect(mockNodeInboxChannel.publish).not.toHaveBeenCalled();
+    });
   });
 });

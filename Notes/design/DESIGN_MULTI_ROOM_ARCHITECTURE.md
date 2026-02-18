@@ -5,7 +5,7 @@
 > **狀態說明**：
 > - ✅ 多房間架構：已實作，`LandManager`、`LandRouter`、`LandContainer` 已實作
 > - ✅ `AppContainer`（未來 `LandServer`）：已支援單房間和多房間兩種模式
-> - ✅ 配對服務：由 NestJS control plane 處理（`Packages/matchmaking-control-plane`）
+> - ✅ 配對服務：由 NestJS control plane 處理（`Packages/control-plane`）
 > - 📦 配對大廳：Swift 端 `LobbyContainer`、`MatchmakingService` 已歸檔至 `Archive/`
 >
 > 相關文檔：

@@ -11,7 +11,7 @@ Scripts for running the full matchmaking stack locally. Provisioning is built in
 
 - Node.js 18+
 - Swift 6+
-- Control plane built: `cd Packages/matchmaking-control-plane && npm run build`
+- Control plane built: `cd Packages/control-plane && npm run build`
 
 ## Usage
 

@@ -6,7 +6,7 @@
 
 配對採用 **雙平面架構**（Control Plane + Runtime Plane）：
 
-- **Control Plane**：NestJS（`Packages/matchmaking-control-plane`）
+- **Control Plane**：NestJS（`Packages/control-plane`）
   - 玩家 enqueue / poll
   - 分配 connectUrl（GameServer WebSocket URL）
   - Provisioning API：GameServer 啟動時註冊

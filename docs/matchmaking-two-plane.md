@@ -33,8 +33,15 @@ flowchart TB
         M[MatchmakingService]
         P[Provisioning Registry]
         J[JWT Issuer]
+        R[RealtimeGateway]
         M --> P
         M --> J
+        M --> R
+    end
+
+    subgraph CP_Storage["Control Plane Storage"]
+        Redis[(Redis)]
+        M -.->|"BullMQ"| Redis
     end
 
     subgraph RP["Runtime Plane (Swift)"]
@@ -45,19 +52,23 @@ flowchart TB
 
     C -->|"All client traffic"| LB
     LB -->|"/match/* → CP"| CP
+    LB -->|"/match/realtime WS"| R
     LB -->|"/game/* → RP"| RP
     G -->|"POST register (heartbeat)"| CP
+    C -.->|"WS realtime push"| R
 ```
 
-**Without LB:** Client talks directly to Control Plane (REST) and GameServer (WebSocket) on their respective ports.
+**Without LB:** Client talks directly to Control Plane (REST + WebSocket `/realtime`) and GameServer (WebSocket) on their respective ports.
 
 **With LB:** Client uses a **single entry point**. All traffic goes through the LB; the LB routes by path prefix.
+
+**Phase 1 additions:** Redis (BullMQ queue and persistence), RealtimeGateway (WebSocket realtime `match.assigned` push).
 
 ---
 
 ## Control Plane
 
-**Location:** `Packages/matchmaking-control-plane`
+**Location:** `Packages/control-plane`
 
 ### Responsibilities
 
@@ -204,6 +215,7 @@ When using a load balancer (nginx, K8s Ingress), **clients must not bypass the L
 | Path prefix | Backend | Purpose |
 |-------------|---------|---------|
 | `/match` | Control Plane | Matchmaking REST API (enqueue, status, cancel), health, JWKS |
+| `/match/realtime` | Control Plane | WebSocket for real-time match.assigned push (Phase 1) |
 | `/game` | Runtime Plane | Game WebSocket (e.g. `/game/hero-defense`) |
 | `/admin` | Runtime Plane | Admin routes (optional, API key protected) |
 
@@ -211,10 +223,24 @@ When using a load balancer (nginx, K8s Ingress), **clients must not bypass the L
 
 - Matchmaking: `https://game.example.com/match/v1/matchmaking/enqueue`
 - Status poll: `https://game.example.com/match/v1/matchmaking/status/:ticketId`
+- Realtime (WebSocket): `wss://game.example.com/match/realtime?ticketId=:ticketId`
 - JWKS: `https://game.example.com/match/.well-known/jwks.json`
 - Game WebSocket: `wss://game.example.com/game/hero-defense?landId=...&token=...`
 
 The control plane and game server may run on different internal hosts; the LB hides this from the client.
+
+---
+
+## Deployment Phasing: nginx First, K8s Later
+
+**Recommended approach:** Start with nginx (or similar LB) as a fixed routing layer, then migrate to Kubernetes when needed.
+
+| Phase | Setup | Pros |
+|-------|-------|------|
+| **Phase A** | nginx as single entry, upstream to Control Plane + GameServer | Simple config, fast iteration, easy to debug |
+| **Phase B** | Migrate to K8s | Replace nginx upstream with K8s Service; same routing logic applies |
+
+Migration path: nginx config → K8s Ingress (e.g. nginx-ingress controller). The path-based routing (`/match/*`, `/game/*`) stays the same; only the upstream resolution changes.
 
 ---
 
@@ -242,7 +268,7 @@ connectUrl to client: wss://game.example.com/game/hero-defense?landId=...
 
 | Component | Package / Path |
 |-----------|----------------|
-| Control Plane | `Packages/matchmaking-control-plane` |
+| Control Plane | `Packages/control-plane` |
 | Provisioning Middleware | `Sources/SwiftStateTreeNIOProvisioning` |
 | GameServer | `Examples/GameDemo/Sources/GameServer` |
 | NIO Host | `Sources/SwiftStateTreeNIO` |

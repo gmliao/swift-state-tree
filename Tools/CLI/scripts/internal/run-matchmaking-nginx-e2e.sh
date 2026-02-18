@@ -23,10 +23,10 @@ export PROVISIONING_BASE_URL="${PROVISIONING_BASE_URL:-http://127.0.0.1:$CONTROL
 CP_PID=""
 GAME_PID=""
 
-# Ensure matchmaking-control-plane is built
-if [ ! -f "$PROJECT_ROOT/Packages/matchmaking-control-plane/dist/src/main.js" ]; then
-    echo "Building matchmaking-control-plane..."
-    (cd "$PROJECT_ROOT/Packages/matchmaking-control-plane" && npm run build)
+# Ensure control-plane is built
+if [ ! -f "$PROJECT_ROOT/Packages/control-plane/dist/src/main.js" ]; then
+    echo "Building control-plane..."
+    (cd "$PROJECT_ROOT/Packages/control-plane" && npm run build)
 fi
 
 GAME_BIN="$PROJECT_ROOT/Examples/GameDemo/.build/debug/GameServer"
@@ -82,7 +82,7 @@ trap cleanup EXIT INT TERM
 
 # 1. Start control plane
 echo "Starting control plane..."
-(cd "$PROJECT_ROOT/Packages/matchmaking-control-plane" && PORT=$CONTROL_PLANE_PORT node dist/src/main.js) &
+(cd "$PROJECT_ROOT/Packages/control-plane" && PORT=$CONTROL_PLANE_PORT node dist/src/main.js) &
 CP_PID=$!
 npx wait-on "http-get://127.0.0.1:$CONTROL_PLANE_PORT/health" -t 15000 || exit 1
 sleep 2

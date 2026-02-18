@@ -33,8 +33,15 @@ flowchart TB
         M[MatchmakingService]
         P[Provisioning Registry]
         J[JWT Issuer]
+        R[RealtimeGateway]
         M --> P
         M --> J
+        M --> R
+    end
+
+    subgraph CP_Storage["Control Plane 儲存"]
+        Redis[(Redis)]
+        M -.->|"BullMQ"| Redis
     end
 
     subgraph RP["Runtime Plane (Swift)"]
@@ -45,19 +52,23 @@ flowchart TB
 
     C -->|"所有客戶端流量"| LB
     LB -->|"/match/* → CP"| CP
+    LB -->|"/match/realtime WS"| R
     LB -->|"/game/* → RP"| RP
     G -->|"POST register (heartbeat)"| CP
+    C -.->|"WS 即時推送"| R
 ```
 
-**無 LB 時：** 客戶端直接連線 Control Plane（REST）與 GameServer（WebSocket）的各自 port。
+**無 LB 時：** 客戶端直接連線 Control Plane（REST + WebSocket `/realtime`）與 GameServer（WebSocket）的各自 port。
 
 **有 LB 時：** 客戶端使用**單一入口**。所有流量經由 LB；LB 依路徑前綴轉發。
+
+**Phase 1 新增：** Redis（BullMQ 佇列與持久化）、RealtimeGateway（WebSocket 即時 `match.assigned` 推送）。
 
 ---
 
 ## Control Plane
 
-**位置：** `Packages/matchmaking-control-plane`
+**位置：** `Packages/control-plane`
 
 ### 職責
 
@@ -204,6 +215,7 @@ sequenceDiagram
 | 路徑前綴 | 後端 | 用途 |
 |----------|------|------|
 | `/match` | Control Plane | 配對 REST API（enqueue、status、cancel）、health、JWKS |
+| `/match/realtime` | Control Plane | WebSocket 即時 match.assigned 推送（Phase 1） |
 | `/game` | Runtime Plane | 遊戲 WebSocket（如 `/game/hero-defense`） |
 | `/admin` | Runtime Plane | Admin 路由（可選，API key 保護） |
 
@@ -211,10 +223,24 @@ sequenceDiagram
 
 - 配對：`https://game.example.com/match/v1/matchmaking/enqueue`
 - 輪詢狀態：`https://game.example.com/match/v1/matchmaking/status/:ticketId`
+- 即時推送（WebSocket）：`wss://game.example.com/match/realtime?ticketId=:ticketId`
 - JWKS：`https://game.example.com/match/.well-known/jwks.json`
 - 遊戲 WebSocket：`wss://game.example.com/game/hero-defense?landId=...&token=...`
 
 Control Plane 與 GameServer 可運行於不同內部 host；LB 對客戶端隱藏此拓樸。
+
+---
+
+## 部署階段：先 nginx，再 K8s
+
+**建議做法：** 先用 nginx（或類似 LB）做固定路由，之後再視需求遷移至 Kubernetes。
+
+| 階段 | 設定 | 優點 |
+|------|------|------|
+| **Phase A** | nginx 單一入口，upstream 指向 Control Plane + GameServer | 設定簡單、迭代快、除錯容易 |
+| **Phase B** | 遷移至 K8s | 將 nginx upstream 改為 K8s Service；路由邏輯不變 |
+
+遷移路徑：nginx config → K8s Ingress（如 nginx-ingress controller）。路徑路由（`/match/*`、`/game/*`）維持不變，僅 upstream 解析方式改變。
 
 ---
 
@@ -242,7 +268,7 @@ Runtime 綁定：        0.0.0.0:8080
 
 | 組件 | Package / 路徑 |
 |------|----------------|
-| Control Plane | `Packages/matchmaking-control-plane` |
+| Control Plane | `Packages/control-plane` |
 | Provisioning Middleware | `Sources/SwiftStateTreeNIOProvisioning` |
 | GameServer | `Examples/GameDemo/Sources/GameServer` |
 | NIO Host | `Sources/SwiftStateTreeNIO` |

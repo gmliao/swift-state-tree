@@ -19,7 +19,7 @@ for name in control-plane stub gameserver; do
 done
 
 # Fallback: kill by process name
-pkill -f "matchmaking-control-plane" 2>/dev/null || true
+pkill -f "Packages/control-plane" 2>/dev/null || true
 pkill -f "GameServer" 2>/dev/null || true
 
 echo "Matchmaking stack stopped."

@@ -14,7 +14,7 @@ The Matchmaking Control Plane MVP provides queue management, assignment lifecycl
 ### 1. Start Control Plane
 
 ```bash
-cd Packages/matchmaking-control-plane
+cd Packages/control-plane
 npm install
 npm run start:dev
 ```
@@ -54,7 +54,7 @@ curl http://localhost:3000/.well-known/jwks.json
 ## Test Suite
 
 ```bash
-cd Packages/matchmaking-control-plane
+cd Packages/control-plane
 npm test                    # Unit tests
 npm run test:e2e            # E2E tests (uses internal provisioning registry)
 ```

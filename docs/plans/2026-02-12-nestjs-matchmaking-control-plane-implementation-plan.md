@@ -59,7 +59,7 @@ Complete Tasks 0-8 first, without modifying `Examples/GameDemo` runtime behavior
 
 Run:
 
-- `cd Packages/matchmaking-control-plane && npm test`
+- `cd Packages/control-plane && npm test`
 
 Expected:
 
@@ -67,7 +67,7 @@ Expected:
 
 Run:
 
-- `cd Packages/matchmaking-control-plane && npm run test:e2e -- --runInBand`
+- `cd Packages/control-plane && npm run test:e2e -- --runInBand`
 
 Expected:
 
@@ -103,7 +103,7 @@ Expected:
 - Create: `Packages/MatchmakingSwiftProvisioningStub/Sources/MatchmakingSwiftProvisioningStub/StubServer.swift`
 - Create: `Packages/MatchmakingSwiftProvisioningStub/Sources/MatchmakingSwiftProvisioningStub/Models.swift`
 - Create: `Packages/MatchmakingSwiftProvisioningStub/Sources/MatchmakingSwiftProvisioningStub/main.swift`
-- Create: `Packages/matchmaking-control-plane/test/e2e.provisioning-stub.spec.ts`
+- Create: `Packages/control-plane/test/e2e.provisioning-stub.spec.ts`
 
 **Step 1: Write the failing E2E test for assignment with Swift stub**
 
@@ -126,7 +126,7 @@ it("assigns a connectUrl from Swift provisioning stub", async () => {
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd Packages/matchmaking-control-plane && npm test -- e2e.provisioning-stub.spec.ts`
+Run: `cd Packages/control-plane && npm test -- e2e.provisioning-stub.spec.ts`
 
 Expected: FAIL (Swift provisioning stub does not exist yet).
 
@@ -149,14 +149,14 @@ Return deterministic payload:
 
 **Step 4: Re-run test to verify it passes**
 
-Run: `cd Packages/matchmaking-control-plane && npm test -- e2e.provisioning-stub.spec.ts`
+Run: `cd Packages/control-plane && npm test -- e2e.provisioning-stub.spec.ts`
 
 Expected: PASS.
 
 **Step 5: Commit**
 
 ```bash
-git add Packages/MatchmakingSwiftProvisioningStub Packages/matchmaking-control-plane/test/e2e.provisioning-stub.spec.ts
+git add Packages/MatchmakingSwiftProvisioningStub Packages/control-plane/test/e2e.provisioning-stub.spec.ts
 git commit -m "test(matchmaking): add Swift provisioning stub for end-to-end assignment proof"
 ```
 
@@ -164,12 +164,12 @@ git commit -m "test(matchmaking): add Swift provisioning stub for end-to-end ass
 
 **Files:**
 
-- Create: `Packages/matchmaking-control-plane/package.json`
-- Create: `Packages/matchmaking-control-plane/tsconfig.json`
-- Create: `Packages/matchmaking-control-plane/nest-cli.json`
-- Create: `Packages/matchmaking-control-plane/src/main.ts`
-- Create: `Packages/matchmaking-control-plane/src/app.module.ts`
-- Create: `Packages/matchmaking-control-plane/test/app.e2e-spec.ts`
+- Create: `Packages/control-plane/package.json`
+- Create: `Packages/control-plane/tsconfig.json`
+- Create: `Packages/control-plane/nest-cli.json`
+- Create: `Packages/control-plane/src/main.ts`
+- Create: `Packages/control-plane/src/app.module.ts`
+- Create: `Packages/control-plane/test/app.e2e-spec.ts`
 
 **Step 1: Write the failing e2e smoke test**
 
@@ -184,7 +184,7 @@ it("/health (GET) should return ok", async () => {
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd Packages/matchmaking-control-plane && npm test -- --runInBand`
+Run: `cd Packages/control-plane && npm test -- --runInBand`
 
 Expected: FAIL (service not bootstrapped).
 
@@ -194,14 +194,14 @@ Add Nest bootstrap and one health route returning `{ ok: true }`.
 
 **Step 4: Run test to verify it passes**
 
-Run: `cd Packages/matchmaking-control-plane && npm test -- --runInBand`
+Run: `cd Packages/control-plane && npm test -- --runInBand`
 
 Expected: PASS.
 
 **Step 5: Commit**
 
 ```bash
-git add Packages/matchmaking-control-plane
+git add Packages/control-plane
 git commit -m "feat(matchmaking): bootstrap NestJS control plane service"
 ```
 
@@ -209,10 +209,10 @@ git commit -m "feat(matchmaking): bootstrap NestJS control plane service"
 
 **Files:**
 
-- Create: `Packages/matchmaking-control-plane/src/contracts/matchmaking.dto.ts`
-- Create: `Packages/matchmaking-control-plane/src/contracts/assignment.dto.ts`
-- Create: `Packages/matchmaking-control-plane/src/contracts/error-codes.ts`
-- Create: `Packages/matchmaking-control-plane/test/contracts.validation.spec.ts`
+- Create: `Packages/control-plane/src/contracts/matchmaking.dto.ts`
+- Create: `Packages/control-plane/src/contracts/assignment.dto.ts`
+- Create: `Packages/control-plane/src/contracts/error-codes.ts`
+- Create: `Packages/control-plane/test/contracts.validation.spec.ts`
 
 **Step 1: Write failing validation tests**
 
@@ -228,7 +228,7 @@ it("rejects enqueue request without queueKey", async () => {
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd Packages/matchmaking-control-plane && npm test -- contracts.validation.spec.ts`
+Run: `cd Packages/control-plane && npm test -- contracts.validation.spec.ts`
 
 Expected: FAIL.
 
@@ -238,14 +238,14 @@ Define `EnqueueRequest`, `CancelRequest`, `StatusResponse`, `AssignmentResult` w
 
 **Step 4: Run test to verify it passes**
 
-Run: `cd Packages/matchmaking-control-plane && npm test -- contracts.validation.spec.ts`
+Run: `cd Packages/control-plane && npm test -- contracts.validation.spec.ts`
 
 Expected: PASS.
 
 **Step 5: Commit**
 
 ```bash
-git add Packages/matchmaking-control-plane/src/contracts Packages/matchmaking-control-plane/test/contracts.validation.spec.ts
+git add Packages/control-plane/src/contracts Packages/control-plane/test/contracts.validation.spec.ts
 git commit -m "feat(matchmaking): add API contracts and request validation"
 ```
 
@@ -253,9 +253,9 @@ git commit -m "feat(matchmaking): add API contracts and request validation"
 
 **Files:**
 
-- Create: `Packages/matchmaking-control-plane/src/storage/match-storage.port.ts`
-- Create: `Packages/matchmaking-control-plane/src/storage/inmemory-match-storage.ts`
-- Create: `Packages/matchmaking-control-plane/test/inmemory-storage.spec.ts`
+- Create: `Packages/control-plane/src/storage/match-storage.port.ts`
+- Create: `Packages/control-plane/src/storage/inmemory-match-storage.ts`
+- Create: `Packages/control-plane/test/inmemory-storage.spec.ts`
 
 **Step 1: Write failing storage behavior tests**
 
@@ -269,7 +269,7 @@ it("deduplicates active group ticket by groupId", async () => {
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd Packages/matchmaking-control-plane && npm test -- inmemory-storage.spec.ts`
+Run: `cd Packages/control-plane && npm test -- inmemory-storage.spec.ts`
 
 Expected: FAIL.
 
@@ -279,14 +279,14 @@ Support enqueue/cancel/status/assignment persistence in memory maps.
 
 **Step 4: Run test to verify it passes**
 
-Run: `cd Packages/matchmaking-control-plane && npm test -- inmemory-storage.spec.ts`
+Run: `cd Packages/control-plane && npm test -- inmemory-storage.spec.ts`
 
 Expected: PASS.
 
 **Step 5: Commit**
 
 ```bash
-git add Packages/matchmaking-control-plane/src/storage Packages/matchmaking-control-plane/test/inmemory-storage.spec.ts
+git add Packages/control-plane/src/storage Packages/control-plane/test/inmemory-storage.spec.ts
 git commit -m "feat(matchmaking): add in-memory storage adapter with dedupe"
 ```
 
@@ -294,10 +294,10 @@ git commit -m "feat(matchmaking): add in-memory storage adapter with dedupe"
 
 **Files:**
 
-- Create: `Packages/matchmaking-control-plane/src/matchmaking/matchmaking.service.ts`
-- Create: `Packages/matchmaking-control-plane/src/matchmaking/match-strategy.port.ts`
-- Create: `Packages/matchmaking-control-plane/src/matchmaking/strategies/default.strategy.ts`
-- Create: `Packages/matchmaking-control-plane/test/matchmaking.service.spec.ts`
+- Create: `Packages/control-plane/src/matchmaking/matchmaking.service.ts`
+- Create: `Packages/control-plane/src/matchmaking/match-strategy.port.ts`
+- Create: `Packages/control-plane/src/matchmaking/strategies/default.strategy.ts`
+- Create: `Packages/control-plane/test/matchmaking.service.spec.ts`
 
 **Step 1: Write failing service tests**
 
@@ -312,7 +312,7 @@ it("supports solo and party by same MatchGroup model", async () => {
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd Packages/matchmaking-control-plane && npm test -- matchmaking.service.spec.ts`
+Run: `cd Packages/control-plane && npm test -- matchmaking.service.spec.ts`
 
 Expected: FAIL.
 
@@ -322,14 +322,14 @@ Add strategy selection by `queueKey` and keep default strategy deterministic.
 
 **Step 4: Run test to verify it passes**
 
-Run: `cd Packages/matchmaking-control-plane && npm test -- matchmaking.service.spec.ts`
+Run: `cd Packages/control-plane && npm test -- matchmaking.service.spec.ts`
 
 Expected: PASS.
 
 **Step 5: Commit**
 
 ```bash
-git add Packages/matchmaking-control-plane/src/matchmaking Packages/matchmaking-control-plane/test/matchmaking.service.spec.ts
+git add Packages/control-plane/src/matchmaking Packages/control-plane/test/matchmaking.service.spec.ts
 git commit -m "feat(matchmaking): add core service and pluggable strategy interface"
 ```
 
@@ -337,10 +337,10 @@ git commit -m "feat(matchmaking): add core service and pluggable strategy interf
 
 **Files:**
 
-- Create: `Packages/matchmaking-control-plane/src/provisioning/provisioning-client.port.ts`
-- Create: `Packages/matchmaking-control-plane/src/provisioning/http-provisioning.client.ts`
-- Modify: `Packages/matchmaking-control-plane/src/matchmaking/matchmaking.service.ts`
-- Create: `Packages/matchmaking-control-plane/test/assignment-flow.spec.ts`
+- Create: `Packages/control-plane/src/provisioning/provisioning-client.port.ts`
+- Create: `Packages/control-plane/src/provisioning/http-provisioning.client.ts`
+- Modify: `Packages/control-plane/src/matchmaking/matchmaking.service.ts`
+- Create: `Packages/control-plane/test/assignment-flow.spec.ts`
 
 **Step 1: Write failing assignment flow test**
 
@@ -354,7 +354,7 @@ it("creates assignment and returns connect info from provisioning client", async
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd Packages/matchmaking-control-plane && npm test -- assignment-flow.spec.ts`
+Run: `cd Packages/control-plane && npm test -- assignment-flow.spec.ts`
 
 Expected: FAIL.
 
@@ -364,14 +364,14 @@ Call provisioning client synchronously when match is ready.
 
 **Step 4: Run test to verify it passes**
 
-Run: `cd Packages/matchmaking-control-plane && npm test -- assignment-flow.spec.ts`
+Run: `cd Packages/control-plane && npm test -- assignment-flow.spec.ts`
 
 Expected: PASS.
 
 **Step 5: Commit**
 
 ```bash
-git add Packages/matchmaking-control-plane/src/provisioning Packages/matchmaking-control-plane/src/matchmaking/matchmaking.service.ts Packages/matchmaking-control-plane/test/assignment-flow.spec.ts
+git add Packages/control-plane/src/provisioning Packages/control-plane/src/matchmaking/matchmaking.service.ts Packages/control-plane/test/assignment-flow.spec.ts
 git commit -m "feat(matchmaking): integrate provisioning client for assignment"
 ```
 
@@ -379,10 +379,10 @@ git commit -m "feat(matchmaking): integrate provisioning client for assignment"
 
 **Files:**
 
-- Create: `Packages/matchmaking-control-plane/src/security/jwt-issuer.service.ts`
-- Create: `Packages/matchmaking-control-plane/src/security/jwks.controller.ts`
-- Create: `Packages/matchmaking-control-plane/src/security/security.module.ts`
-- Create: `Packages/matchmaking-control-plane/test/security.jwt-jwks.spec.ts`
+- Create: `Packages/control-plane/src/security/jwt-issuer.service.ts`
+- Create: `Packages/control-plane/src/security/jwks.controller.ts`
+- Create: `Packages/control-plane/src/security/security.module.ts`
+- Create: `Packages/control-plane/test/security.jwt-jwks.spec.ts`
 
 **Step 1: Write failing JWT/JWKS tests**
 
@@ -395,7 +395,7 @@ it("issues RS256 token with assignment claims", async () => {
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd Packages/matchmaking-control-plane && npm test -- security.jwt-jwks.spec.ts`
+Run: `cd Packages/control-plane && npm test -- security.jwt-jwks.spec.ts`
 
 Expected: FAIL.
 
@@ -405,14 +405,14 @@ Expose `GET /.well-known/jwks.json` and add required claims (`assignmentId`, `pl
 
 **Step 4: Run test to verify it passes**
 
-Run: `cd Packages/matchmaking-control-plane && npm test -- security.jwt-jwks.spec.ts`
+Run: `cd Packages/control-plane && npm test -- security.jwt-jwks.spec.ts`
 
 Expected: PASS.
 
 **Step 5: Commit**
 
 ```bash
-git add Packages/matchmaking-control-plane/src/security Packages/matchmaking-control-plane/test/security.jwt-jwks.spec.ts
+git add Packages/control-plane/src/security Packages/control-plane/test/security.jwt-jwks.spec.ts
 git commit -m "feat(matchmaking): add JWT issuer and JWKS endpoint"
 ```
 
@@ -420,10 +420,10 @@ git commit -m "feat(matchmaking): add JWT issuer and JWKS endpoint"
 
 **Files:**
 
-- Create: `Packages/matchmaking-control-plane/src/matchmaking/matchmaking.controller.ts`
-- Modify: `Packages/matchmaking-control-plane/src/matchmaking/matchmaking.service.ts`
-- Modify: `Packages/matchmaking-control-plane/src/app.module.ts`
-- Create: `Packages/matchmaking-control-plane/test/matchmaking.controller.e2e-spec.ts`
+- Create: `Packages/control-plane/src/matchmaking/matchmaking.controller.ts`
+- Modify: `Packages/control-plane/src/matchmaking/matchmaking.service.ts`
+- Modify: `Packages/control-plane/src/app.module.ts`
+- Create: `Packages/control-plane/test/matchmaking.controller.e2e-spec.ts`
 
 **Step 1: Write failing endpoint tests**
 
@@ -435,7 +435,7 @@ Add tests for:
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd Packages/matchmaking-control-plane && npm test -- matchmaking.controller.e2e-spec.ts`
+Run: `cd Packages/control-plane && npm test -- matchmaking.controller.e2e-spec.ts`
 
 Expected: FAIL.
 
@@ -445,14 +445,14 @@ Wire endpoints to service methods and return stable response schema.
 
 **Step 4: Run test to verify it passes**
 
-Run: `cd Packages/matchmaking-control-plane && npm test -- matchmaking.controller.e2e-spec.ts`
+Run: `cd Packages/control-plane && npm test -- matchmaking.controller.e2e-spec.ts`
 
 Expected: PASS.
 
 **Step 5: Commit**
 
 ```bash
-git add Packages/matchmaking-control-plane/src/matchmaking Packages/matchmaking-control-plane/test/matchmaking.controller.e2e-spec.ts Packages/matchmaking-control-plane/src/app.module.ts
+git add Packages/control-plane/src/matchmaking Packages/control-plane/test/matchmaking.controller.e2e-spec.ts Packages/control-plane/src/app.module.ts
 git commit -m "feat(matchmaking): add gateway-facing matchmaking endpoints"
 ```
 
@@ -460,7 +460,7 @@ git commit -m "feat(matchmaking): add gateway-facing matchmaking endpoints"
 
 **Files:**
 
-- Create: `Packages/matchmaking-control-plane/README.md`
+- Create: `Packages/control-plane/README.md`
 - Modify: `docs/plans/2026-02-12-matchmaking-control-plane-design.md`
 - Create: `docs/operations/matchmaking-control-plane-mvp.md`
 
@@ -470,7 +470,7 @@ Document exact commands and expected outputs for local run.
 
 **Step 2: Run full test suite**
 
-Run: `cd Packages/matchmaking-control-plane && npm test`
+Run: `cd Packages/control-plane && npm test`
 
 Expected: PASS.
 
@@ -481,7 +481,7 @@ Document: InMemory only, restart drops queue, no automatic reassignment.
 **Step 4: Commit**
 
 ```bash
-git add Packages/matchmaking-control-plane/README.md docs/plans/2026-02-12-matchmaking-control-plane-design.md docs/operations/matchmaking-control-plane-mvp.md
+git add Packages/control-plane/README.md docs/plans/2026-02-12-matchmaking-control-plane-design.md docs/operations/matchmaking-control-plane-mvp.md
 git commit -m "docs(matchmaking): add MVP runbook and operational constraints"
 ```
 
@@ -542,8 +542,8 @@ git commit -m "feat(game-demo): add phase-1 matchmaking integration and CLI scen
 
 **Files:**
 
-- Create: `Packages/matchmaking-control-plane/src/contracts/provisioning.contract.ts`
-- Create: `Packages/matchmaking-control-plane/test/provisioning.contract.spec.ts`
+- Create: `Packages/control-plane/src/contracts/provisioning.contract.ts`
+- Create: `Packages/control-plane/test/provisioning.contract.spec.ts`
 - Modify: `Packages/MatchmakingSwiftProvisioningStub/Sources/MatchmakingSwiftProvisioningStub/Models.swift`
 - Create: `Packages/MatchmakingSwiftProvisioningStub/Tests/MatchmakingSwiftProvisioningStubTests/ProvisioningContractTests.swift`
 - Create: `docs/contracts/provisioning-api.md`
@@ -557,7 +557,7 @@ Add tests that assert required fields and field semantics for both sides:
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cd Packages/matchmaking-control-plane && npm test -- provisioning.contract.spec.ts`
+Run: `cd Packages/control-plane && npm test -- provisioning.contract.spec.ts`
 
 Run: `swift test --package-path Packages/MatchmakingSwiftProvisioningStub`
 
@@ -569,7 +569,7 @@ Define canonical contract in TypeScript and mirror exact field names/types in Sw
 
 **Step 4: Re-run tests to verify they pass**
 
-Run: `cd Packages/matchmaking-control-plane && npm test -- provisioning.contract.spec.ts`
+Run: `cd Packages/control-plane && npm test -- provisioning.contract.spec.ts`
 
 Run: `swift test --package-path Packages/MatchmakingSwiftProvisioningStub`
 
@@ -578,7 +578,7 @@ Expected: PASS.
 **Step 5: Commit**
 
 ```bash
-git add Packages/matchmaking-control-plane/src/contracts/provisioning.contract.ts Packages/matchmaking-control-plane/test/provisioning.contract.spec.ts Packages/MatchmakingSwiftProvisioningStub/Sources/MatchmakingSwiftProvisioningStub/Models.swift Packages/MatchmakingSwiftProvisioningStub/Tests/MatchmakingSwiftProvisioningStubTests/ProvisioningContractTests.swift docs/contracts/provisioning-api.md
+git add Packages/control-plane/src/contracts/provisioning.contract.ts Packages/control-plane/test/provisioning.contract.spec.ts Packages/MatchmakingSwiftProvisioningStub/Sources/MatchmakingSwiftProvisioningStub/Models.swift Packages/MatchmakingSwiftProvisioningStub/Tests/MatchmakingSwiftProvisioningStubTests/ProvisioningContractTests.swift docs/contracts/provisioning-api.md
 git commit -m "chore(matchmaking): freeze provisioning API contract for NestJS and Swift stub"
 ```
 
