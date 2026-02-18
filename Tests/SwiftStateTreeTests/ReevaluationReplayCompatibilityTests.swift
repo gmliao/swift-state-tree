@@ -199,6 +199,114 @@ struct ReevaluationReplayCompatibilityTests {
             )
         }
     }
+
+    @Test("Replay runner rejects missing schema in strict mode deterministically")
+    func missingSchemaMismatchGuardContract() async throws {
+        let definition = makeReevaluationEngineTestDefinition()
+        let recordingFile = try await createRecordingFile(
+            definition: definition,
+            landID: "reeval-schema-missing-contract:local",
+            metadataLandDefinitionID: nil,
+            actions: [5]
+        )
+
+        defer {
+            try? FileManager.default.removeItem(at: recordingFile)
+        }
+
+        do {
+            _ = try await ConcreteReevaluationRunner(
+                definition: definition,
+                initialState: ReevaluationEngineTestState(),
+                recordFilePath: recordingFile.path
+            )
+            Issue.record("Expected schema mismatch error for missing record schema, but replay run succeeded")
+        } catch {
+            #expect(
+                hasSchemaMismatchErrorSignature(error),
+                "Missing record schema should fail with deterministic schema mismatch signature"
+            )
+            guard case let .schemaMismatch(expected, recorded)? = (error as? ReevaluationReplayCompatibilityError) else {
+                Issue.record("Expected ReevaluationReplayCompatibilityError.schemaMismatch")
+                return
+            }
+            #expect(expected == definition.id)
+            #expect(recorded == nil)
+        }
+    }
+
+    @Test("Replay runner rejects land type mismatch deterministically")
+    func landTypeMismatchGuardContract() async throws {
+        let definition = makeReevaluationEngineTestDefinition()
+        let recordingFile = try await createRecordingFile(
+            definition: definition,
+            landID: "reeval-landtype-contract:local",
+            metadataLandType: "other-land-type",
+            metadataLandDefinitionID: definition.id,
+            actions: [1]
+        )
+
+        defer {
+            try? FileManager.default.removeItem(at: recordingFile)
+        }
+
+        do {
+            _ = try await ConcreteReevaluationRunner(
+                definition: definition,
+                initialState: ReevaluationEngineTestState(),
+                recordFilePath: recordingFile.path
+            )
+            Issue.record("Expected landType mismatch error, but replay run succeeded")
+        } catch {
+            #expect(
+                hasLandTypeMismatchErrorSignature(error),
+                "Land type mismatch should fail with deterministic error signature (domain/code)"
+            )
+            guard case let .landTypeMismatch(expected, actual)? = (error as? ReevaluationReplayCompatibilityError) else {
+                Issue.record("Expected ReevaluationReplayCompatibilityError.landTypeMismatch")
+                return
+            }
+            #expect(expected == definition.id)
+            #expect(actual == "other-land-type")
+        }
+    }
+
+    @Test("Replay runner rejects record version mismatch deterministically")
+    func recordVersionMismatchGuardContract() async throws {
+        let definition = makeReevaluationEngineTestDefinition()
+        let recordingFile = try await createRecordingFile(
+            definition: definition,
+            landID: "reeval-version-contract:local",
+            metadataLandDefinitionID: definition.id,
+            metadataVersion: "1.0",
+            actions: [1]
+        )
+
+        defer {
+            try? FileManager.default.removeItem(at: recordingFile)
+        }
+
+        do {
+            _ = try await ConcreteReevaluationRunner(
+                definition: definition,
+                initialState: ReevaluationEngineTestState(),
+                recordFilePath: recordingFile.path,
+                requiredRecordVersion: "2.0"
+            )
+            Issue.record("Expected record version mismatch error, but replay run succeeded")
+        } catch {
+            #expect(
+                hasRecordVersionMismatchErrorSignature(error),
+                "Record version mismatch should fail with deterministic error signature (domain/code)"
+            )
+            guard case let .recordVersionMismatch(expected, recorded)? = (error as? ReevaluationReplayCompatibilityError) else {
+                Issue.record("Expected ReevaluationReplayCompatibilityError.recordVersionMismatch")
+                return
+            }
+            #expect(expected == "2.0")
+            #expect(recorded == "1.0")
+        }
+    }
 }
 
 private enum ReevaluationReplayCompatibilityTestError: Error {
@@ -218,7 +326,56 @@ private func hasSchemaMismatchErrorSignature(_ error: Error) -> Bool {
         return false
     }
 
+    let nsError = compatibilityError as NSError
+    let hasExpectedNSErrorSignature =
+        nsError.domain == ReevaluationReplayCompatibilityError.errorDomain &&
+        nsError.code == 2002
+
+    guard hasExpectedNSErrorSignature else {
+        return false
+    }
+
     if case .schemaMismatch = compatibilityError {
+        return true
+    }
+    return false
+}
+
+private func hasLandTypeMismatchErrorSignature(_ error: Error) -> Bool {
+    guard let compatibilityError = error as? ReevaluationReplayCompatibilityError else {
+        return false
+    }
+
+    let nsError = compatibilityError as NSError
+    let hasExpectedNSErrorSignature =
+        nsError.domain == ReevaluationReplayCompatibilityError.errorDomain &&
+        nsError.code == 2001
+
+    guard hasExpectedNSErrorSignature else {
+        return false
+    }
+
+    if case .landTypeMismatch = compatibilityError {
+        return true
+    }
+    return false
+}
+
+private func hasRecordVersionMismatchErrorSignature(_ error: Error) -> Bool {
+    guard let compatibilityError = error as? ReevaluationReplayCompatibilityError else {
+        return false
+    }
+
+    let nsError = compatibilityError as NSError
+    let hasExpectedNSErrorSignature =
+        nsError.domain == ReevaluationReplayCompatibilityError.errorDomain &&
+        nsError.code == 2003
+
+    guard hasExpectedNSErrorSignature else {
+        return false
+    }
+
+    if case .recordVersionMismatch = compatibilityError {
         return true
     }
     return false
@@ -239,7 +396,9 @@ private func hasSchemaMismatchContext(
 private func createRecordingFile(
     definition: LandDefinition<ReevaluationEngineTestState>,
     landID: String,
-    metadataLandDefinitionID: String,
+    metadataLandType: String? = nil,
+    metadataLandDefinitionID: String?,
+    metadataVersion: String = "1.0",
     actions: [Int]
 ) async throws -> URL {
     let expectedSeed = DeterministicSeed.fromLandID(landID)
@@ -262,7 +421,7 @@ private func createRecordingFile(
 
     let metadata = ReevaluationRecordMetadata(
         landID: landID,
-        landType: definition.id,
+        landType: metadataLandType ?? definition.id,
         createdAt: stableFixtureDate,
         metadata: [:],
         landDefinitionID: metadataLandDefinitionID,
@@ -271,7 +430,7 @@ private func createRecordingFile(
         rngSeed: expectedSeed,
         ruleVariantId: nil,
         ruleParams: nil,
-        version: "1.0",
+        version: metadataVersion,
         extensions: nil
     )
     await recorder.setMetadata(metadata)
