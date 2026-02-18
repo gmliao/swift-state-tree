@@ -282,5 +282,6 @@ jobs:
     - name: Run Matchmaking E2E (control plane + GameServer, no nginx)
       env:
         REDIS_HOST: redis  # Service hostname when job runs in container
+        MATCHMAKING_MIN_WAIT_MS: "0"  # Allow immediate match in CI (no periodic tick)
       run: |
         bash Tools/CLI/scripts/internal/run-matchmaking-full-with-test.sh
