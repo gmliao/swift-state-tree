@@ -14,9 +14,6 @@ public struct HeroDefenseReplayState: StateNodeProtocol {
     var totalTicks: Int = 0
 
     @Sync(.broadcast)
-    var currentStateJSON: String = ""
-
-    @Sync(.broadcast)
     var players: [String: AnyCodable] = [:]
 
     @Sync(.broadcast)
@@ -96,11 +93,6 @@ public enum HeroDefenseReplay {
 
                         if let projectedFrame = result.projectedFrame {
                             applyProjectedState(projectedFrame.stateObject, to: &state)
-                        }
-
-                        if state.currentStateJSON.isEmpty,
-                           let jsonText = result.actualState?.base as? String {
-                            state.currentStateJSON = jsonText
                         }
 
                         let event = HeroDefenseReplayTickEvent(

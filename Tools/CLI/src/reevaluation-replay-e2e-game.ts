@@ -9,6 +9,10 @@ import { downloadReevaluationRecord } from "./admin";
 
 type Args = Record<string, string | boolean>;
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 function parseArgs(argv: string[]): Args {
   const out: Args = {};
   for (let i = 0; i < argv.length; i++) {
@@ -171,7 +175,10 @@ async function main() {
   const start = Date.now();
   let completed = false;
   let failedMessage: string | null = null;
-  let hasStatePayload = false;
+  let hasLiveCompatibleState = false;
+  let hasNonDefaultLiveEvidence = false;
+  let maxObservedScore = 0;
+  let legacyReplayFieldSeen = false;
   const observedTicks = new Set<number>();
 
   while (Date.now() - start < timeoutMs) {
@@ -183,8 +190,37 @@ async function main() {
       observedTicks.add(tick);
     }
 
-    if (typeof state?.currentStateJSON === "string" && state.currentStateJSON.length > 2) {
-      hasStatePayload = true;
+    if (isPlainObject(state) && Object.prototype.hasOwnProperty.call(state, "currentStateJSON")) {
+      legacyReplayFieldSeen = true;
+    }
+
+    const hasLiveShape =
+      isPlainObject(state) &&
+      typeof state.score === "number" &&
+      isPlainObject(state.players) &&
+      isPlainObject(state.monsters) &&
+      isPlainObject(state.turrets) &&
+      isPlainObject(state.base);
+
+    if (hasLiveShape && typeof tick === "number" && tick >= 1) {
+      hasLiveCompatibleState = true;
+
+      const players = state.players as Record<string, unknown>;
+      const monsters = state.monsters as Record<string, unknown>;
+      const turrets = state.turrets as Record<string, unknown>;
+      const base = state.base as Record<string, unknown>;
+      const score = state.score as number;
+      maxObservedScore = Math.max(maxObservedScore, score);
+
+      if (
+        score !== 0 ||
+        Object.keys(players).length > 0 ||
+        Object.keys(monsters).length > 0 ||
+        Object.keys(turrets).length > 0 ||
+        Object.keys(base).length > 0
+      ) {
+        hasNonDefaultLiveEvidence = true;
+      }
     }
 
     if (status === "completed") {
@@ -211,8 +247,17 @@ async function main() {
   if (observedTicks.size < 3) {
     throw new Error(`Expected at least 3 replay ticks, got ${observedTicks.size}`);
   }
-  if (!hasStatePayload) {
-    throw new Error("Expected replay state payload updates, got none");
+  if (!hasLiveCompatibleState) {
+    throw new Error("Expected replay live-compatible state fields, got none");
+  }
+  if (!hasNonDefaultLiveEvidence) {
+    throw new Error("Expected replay live-compatible state evidence, got only default values");
+  }
+  if (maxObservedScore < 1) {
+    throw new Error(`Expected replay score progression, maxObservedScore=${maxObservedScore}`);
+  }
+  if (legacyReplayFieldSeen) {
+    throw new Error("Expected no legacy replay field currentStateJSON in replay state");
   }
 
   console.log(chalk.green(`✅ Replay stream completed; observedTicks=${observedTicks.size}`));

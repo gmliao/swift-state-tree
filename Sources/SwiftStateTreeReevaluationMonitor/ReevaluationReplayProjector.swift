@@ -43,9 +43,16 @@ public struct HeroDefenseReplayProjector: ReevaluationReplayProjecting {
             return [:]
         }
 
+        let stateRoot: [String: Any]
+        if let values = jsonObject["values"] as? [String: Any] {
+            stateRoot = values
+        } else {
+            stateRoot = jsonObject
+        }
+
         var projected: [String: AnyCodable] = [:]
-        for key in Self.allowedStateKeys where jsonObject[key] != nil {
-            projected[key] = AnyCodable(jsonObject[key])
+        for key in Self.allowedStateKeys where stateRoot[key] != nil {
+            projected[key] = AnyCodable(stateRoot[key])
         }
         return projected
     }

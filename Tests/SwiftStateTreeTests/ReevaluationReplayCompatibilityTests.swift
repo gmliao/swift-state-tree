@@ -8,11 +8,13 @@ struct ReevaluationReplayCompatibilityTests {
     @Test("Replay projection emits Hero Defense-compatible state fields")
     func replayProjectionStateShapeParityContract() throws {
         let snapshotObject: [String: Any] = [
-            "players": ["p1": ["x": 10, "y": 20]],
-            "monsters": ["1": ["position": ["x": 10, "y": 20]]],
-            "turrets": ["1": ["position": ["x": 5, "y": 6]]],
-            "base": ["hp": 100],
-            "score": 123,
+            "values": [
+                "players": ["p1": ["x": 10, "y": 20]],
+                "monsters": ["1": ["position": ["x": 10, "y": 20]]],
+                "turrets": ["1": ["position": ["x": 5, "y": 6]]],
+                "base": ["hp": 100],
+                "score": 123,
+            ],
             "currentStateJSON": "legacy-replay-only",
         ]
         let snapshotJSONString = try encodeJSONObjectToString(snapshotObject)
@@ -28,6 +30,37 @@ struct ReevaluationReplayCompatibilityTests {
         let projected = try projector.project(stepResult)
 
         #expect(projected.tickID == 5)
+        #expect(projected.stateObject["players"] != nil)
+        #expect(projected.stateObject["monsters"] != nil)
+        #expect(projected.stateObject["turrets"] != nil)
+        #expect(projected.stateObject["base"] != nil)
+        #expect(projected.stateObject["score"] != nil)
+        #expect(projected.stateObject["currentStateJSON"] == nil)
+    }
+
+    @Test("Replay projection supports legacy top-level snapshot shape")
+    func replayProjectionLegacyTopLevelShapeContract() throws {
+        let snapshotObject: [String: Any] = [
+            "players": ["p1": ["x": 10, "y": 20]],
+            "monsters": ["1": ["position": ["x": 10, "y": 20]]],
+            "turrets": ["1": ["position": ["x": 5, "y": 6]]],
+            "base": ["health": 100, "maxHealth": 100],
+            "score": 7,
+            "currentStateJSON": "legacy-replay-only",
+        ]
+        let snapshotJSONString = try encodeJSONObjectToString(snapshotObject)
+        let stepResult = ReevaluationStepResult(
+            tickId: 9,
+            stateHash: "hash-9",
+            recordedHash: "hash-9",
+            isMatch: true,
+            actualState: AnyCodable(snapshotJSONString)
+        )
+
+        let projector = HeroDefenseReplayProjector()
+        let projected = try projector.project(stepResult)
+
+        #expect(projected.tickID == 9)
         #expect(projected.stateObject["players"] != nil)
         #expect(projected.stateObject["monsters"] != nil)
         #expect(projected.stateObject["turrets"] != nil)
