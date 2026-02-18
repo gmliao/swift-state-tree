@@ -1,5 +1,14 @@
 # Deploy & Load Balancing
 
+## Deployment Phasing: nginx First, K8s Later
+
+**Recommended approach:** Start with nginx (or similar LB) as a fixed routing layer. Migrate to Kubernetes when scaling or orchestration needs arise.
+
+- **Phase A (nginx):** Single entry LB, upstream to Control Plane + GameServer. Simple config, fast iteration.
+- **Phase B (K8s):** Replace nginx upstream with K8s Service; same path-based routing applies. See [matchmaking-two-plane](../matchmaking-two-plane.md#deployment-phasing-nginx-first-k8s-later).
+
+---
+
 ## Path-Based Routing for K8s / Ingress
 
 SwiftStateTree supports WebSocket paths with instanceId for load balancing:

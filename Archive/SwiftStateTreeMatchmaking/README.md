@@ -4,13 +4,13 @@ This directory contains the former **SwiftStateTreeMatchmaking** in-process matc
 
 ## Why Matchmaking Was Archived
 
-- **Architecture change:** Matchmaking is now handled by the external **NestJS Matchmaking Control Plane** (`Packages/matchmaking-control-plane`). Game servers register via `SwiftStateTreeNIOProvisioning` and clients get assignments (connectUrl, matchToken) from the control plane REST API.
+- **Architecture change:** Matchmaking is now handled by the external **NestJS Matchmaking Control Plane** (`Packages/control-plane`). Game servers register via `SwiftStateTreeNIOProvisioning` and clients get assignments (connectUrl, matchToken) from the control plane REST API.
 - **No active consumers:** `GameServer` and `DemoServer` use the NestJS control plane. The only previous consumer was `Archive/SwiftStateTreeHummingbird`, which is also archived.
 - **Simpler stack:** Removing in-process matchmaking reduces maintenance and clarifies that matchmaking is an external service concern.
 
 ## Current Matchmaking Architecture
 
-- **Control plane:** NestJS (`Packages/matchmaking-control-plane`) – enqueue, poll status, assignment with JWT
+- **Control plane:** NestJS (`Packages/control-plane`) – enqueue, poll status, assignment with JWT
 - **Provisioning:** Game servers register via `POST /v1/provisioning/servers/register` (ProvisioningMiddleware)
 - **Client flow:** Enqueue → poll status → get connectUrl (via nginx LB when configured) → connect with token
 

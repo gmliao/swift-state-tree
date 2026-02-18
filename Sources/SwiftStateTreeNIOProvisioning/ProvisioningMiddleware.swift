@@ -7,7 +7,7 @@ import Foundation
 import Logging
 import SwiftStateTreeNIO
 
-// MARK: - DTO (aligned with matchmaking-control-plane contract)
+// MARK: - DTO (aligned with control-plane contract)
 
 /// Request payload for POST /v1/provisioning/servers/register.
 private struct ServerRegisterRequest: Codable, Sendable {

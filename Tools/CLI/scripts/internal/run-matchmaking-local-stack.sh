@@ -24,14 +24,14 @@ echo "GameServer:    $GAME_PORT"
 echo ""
 
 # Ensure control plane is built
-if [ ! -f "$PROJECT_ROOT/Packages/matchmaking-control-plane/dist/src/main.js" ]; then
-    echo "Building matchmaking-control-plane..."
-    (cd "$PROJECT_ROOT/Packages/matchmaking-control-plane" && npm run build)
+if [ ! -f "$PROJECT_ROOT/Packages/control-plane/dist/src/main.js" ]; then
+    echo "Building control-plane..."
+    (cd "$PROJECT_ROOT/Packages/control-plane" && npm run build)
 fi
 
 # 1. Start control plane first (so GameServer can register)
 echo "Starting control plane on port $CONTROL_PLANE_PORT..."
-cd "$PROJECT_ROOT/Packages/matchmaking-control-plane"
+cd "$PROJECT_ROOT/Packages/control-plane"
 PORT=$CONTROL_PLANE_PORT node dist/src/main.js >> "$TMP_DIR/control-plane.log" 2>&1 &
 control_plane_pid=$!
 echo $control_plane_pid > "$TMP_DIR/control-plane.pid"

@@ -251,7 +251,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ~/.npm
-        key: ${{ runner.os }}-node-${{ hashFiles('sdk/ts/package-lock.json', 'Packages/matchmaking-control-plane/package-lock.json') }}
+        key: ${{ runner.os }}-node-${{ hashFiles('sdk/ts/package-lock.json', 'Packages/control-plane/package-lock.json') }}
         restore-keys: |
           ${{ runner.os }}-node-
 
@@ -266,7 +266,7 @@ jobs:
       run: npm ci
 
     - name: Build matchmaking control plane
-      working-directory: Packages/matchmaking-control-plane
+      working-directory: Packages/control-plane
       run: |
         npm ci
         npm run build

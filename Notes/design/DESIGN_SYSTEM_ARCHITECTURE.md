@@ -287,7 +287,7 @@ SwiftStateTreeNIOProvisioning
     └── 提供: 向 NestJS matchmaking control plane 註冊
 ```
 
-**配對**：由 NestJS control plane（`Packages/matchmaking-control-plane`）處理，非 Swift 模組。詳見 `docs/matchmaking-two-plane.md`。
+**配對**：由 NestJS control plane（`Packages/control-plane`）處理，非 Swift 模組。詳見 `docs/matchmaking-two-plane.md`。
 
 **已歸檔**：SwiftStateTreeMatchmaking、SwiftStateTreeHummingbird 已移至 `Archive/`，僅供參考。
 
@@ -340,7 +340,7 @@ try await container.run()
 
 ### 配對服務
 
-**現況**：Matchmaking 已由 NestJS control plane（`Packages/matchmaking-control-plane`）處理。GameServer 透過 ProvisioningMiddleware 向 control plane 註冊，客戶端透過 control plane API 取得可連線的 server 列表。詳見 `docs/matchmaking-two-plane.md`。
+**現況**：Matchmaking 已由 NestJS control plane（`Packages/control-plane`）處理。GameServer 透過 ProvisioningMiddleware 向 control plane 註冊，客戶端透過 control plane API 取得可連線的 server 列表。詳見 `docs/matchmaking-two-plane.md`。
 
 **已歸檔**：Swift 端 MatchmakingService、LobbyContainer 已移至 `Archive/SwiftStateTreeMatchmaking/`，僅供參考。
 

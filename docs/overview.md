@@ -19,7 +19,7 @@ SwiftStateTree adopts a modular design with clear responsibilities for each modu
 | **SwiftStateTreeDeterministicMath** | Deterministic math | Fixed-point arithmetic, collision detection, vector operations for server-authoritative games |
 | **SwiftStateTreeBenchmarks** | Benchmarks | Performance test executable |
 
-Matchmaking is handled by the NestJS control plane (`Packages/matchmaking-control-plane`). See [Matchmaking Two-Plane Architecture](matchmaking-two-plane.md).
+Matchmaking is handled by the NestJS control plane (`Packages/control-plane`). See [Matchmaking Two-Plane Architecture](matchmaking-two-plane.md).
 
 ### Module Dependencies
 

@@ -61,7 +61,7 @@
 - `Sources/SwiftStateTreeBenchmarks`: benchmark executable.
 - `Examples/Demo`: demo project with unified `DemoServer` (NIO) and web client.
 - `Archive/SwiftStateTreeHummingbird`: archived Hummingbird integration (reference only; see Archive README).
-- `Archive/SwiftStateTreeMatchmaking`: archived in-process matchmaking/lobby (reference only). Matchmaking is now handled by NestJS control plane (`Packages/matchmaking-control-plane`).
+- `Archive/SwiftStateTreeMatchmaking`: archived in-process matchmaking/lobby (reference only). Matchmaking is now handled by NestJS control plane (`Packages/control-plane`).
 - `Tests/SwiftStateTreeTests`: unit tests for the library.
 
 ## Build, Test, and Development Commands
@@ -113,7 +113,7 @@ if let provBaseUrl = getEnvStringOptional(key: ProvisioningEnvKeys.baseUrl) {
 
 ## Coding Style & Naming Conventions
 - Swift 6, macOS 13+; follow Swift API Design Guidelines and prefer `Sendable` on public types.
-- **DTOs for API payloads**: Define `Codable` structs for HTTP request/response bodies instead of using `[String: Any]`. Align field names with the API contract (e.g. matchmaking-control-plane DTOs).
+- **DTOs for API payloads**: Define `Codable` structs for HTTP request/response bodies instead of using `[String: Any]`. Align field names with the API contract (e.g. control-plane DTOs).
 - Indent with 4 spaces; keep line length reasonable (~120 chars).
 - Types: `UpperCamelCase`; methods/variables: `lowerCamelCase`; enums use verb-like cases for commands (`.join`, `.attack`).
 - Place new game logic in `Sources/SwiftStateTree`; keep demo-only code inside `Examples/Demo`.
