@@ -17,7 +17,6 @@ npm install
 npm run build
 ```
 
-<<<<<<< HEAD
 ## Directory Index
 
 ### `scenarios/` (E2E Test Cases organized by Land)

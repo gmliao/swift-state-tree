@@ -5,6 +5,8 @@
 
 import Foundation
 import Logging
+import NIOCore
+import NIOPosix
 import Testing
 import SwiftStateTree
 import SwiftStateTreeTransport
@@ -202,4 +204,81 @@ struct NIOLandHostTests {
 
         await host.registerAdminRoutes()
     }
+
+    @Test("NIOLandHost cancels middleware tasks when server.start() throws")
+    func testMiddlewareCancellationOnStartupFailure() async throws {
+        let port: UInt16 = 39399
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+
+        // Bind to port first so host will fail with address-in-use
+        let bootstrap = ServerBootstrap(group: group)
+            .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .childChannelInitializer { channel in
+                channel.eventLoop.makeSucceededFuture(())
+            }
+        let channel = try await bootstrap.bind(host: "127.0.0.1", port: Int(port)).get()
+
+        let tracker = CancellationTracker()
+        let middleware = TrackingMiddleware(tracker: tracker)
+        let config = NIOLandHostConfiguration(
+            host: "127.0.0.1",
+            port: port,
+            logger: Logger(label: "test"),
+            middlewares: [middleware]
+        )
+        let host = NIOLandHost(configuration: config)
+        try await host.register(
+            landType: "game1",
+            land: TestGame1.makeLand(),
+            initialState: TestState1(),
+            webSocketPath: "/game/game1",
+            configuration: NIOLandServerConfiguration(
+                logger: Logger(label: "test"),
+                allowAutoCreateOnJoin: false,
+                transportEncoding: .json
+            )
+        )
+
+        do {
+            try await host.run()
+            #expect(Bool(false), "Expected run() to throw")
+        } catch {
+            // Expected: port already in use
+        }
+
+        try await channel.close()
+        try await group.shutdownGracefully()
+
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let cancelled = await tracker.cancelled
+        #expect(cancelled, "Middleware task should be cancelled when startup fails")
+    }
+}
+
+// MARK: - Test Middleware for Cancellation
+
+private actor CancellationTracker: Sendable {
+    var cancelled = false
+    func markCancelled() {
+        cancelled = true
+    }
+}
+
+private final class TrackingMiddleware: HostMiddleware, @unchecked Sendable {
+    let tracker: CancellationTracker
+    init(tracker: CancellationTracker) {
+        self.tracker = tracker
+    }
+
+    func onStart(context: HostContext) async throws -> Task<Void, Never>? {
+        let t = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            await tracker.markCancelled()
+        }
+        return t
+    }
+
+    func onShutdown(context: HostContext) async throws {}
 }
