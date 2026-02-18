@@ -68,7 +68,6 @@ export class ServerRegistryService {
       const filtered = entries.filter((e) => e.serverId !== serverId);
       if (filtered.length !== entries.length) {
         this.serversByLandType.set(landType, filtered);
-        return;
       }
     }
   }

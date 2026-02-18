@@ -386,7 +386,19 @@ public actor NIOLandHost {
         )
         self.server = server
 
-        try await server.start()
+        do {
+            try await server.start()
+        } catch {
+            // Cancel middleware tasks when startup fails (e.g. port conflict).
+            // Otherwise provisioning heartbeats keep running and register a server that never came up.
+            let tasks = middlewareTasks
+            middlewareTasks = []
+            for task in tasks {
+                task.cancel()
+                _ = await task.value
+            }
+            throw error
+        }
 
         // Log startup info
         let endpointInfo = pathToLandType.map { path, landType in
