@@ -230,6 +230,37 @@ struct ReevaluationReplayCompatibilityTests {
         #expect(payload?["count"] as? Int == 3)
     }
 
+    @Test("Replay projection supports legacy top-level snapshot shape")
+    func replayProjectionLegacyTopLevelShapeContract() throws {
+        let snapshotObject: [String: Any] = [
+            "players": ["p1": ["x": 10, "y": 20]],
+            "monsters": ["1": ["position": ["x": 10, "y": 20]]],
+            "turrets": ["1": ["position": ["x": 5, "y": 6]]],
+            "base": ["health": 100, "maxHealth": 100],
+            "score": 7,
+            "currentStateJSON": "legacy-replay-only",
+        ]
+        let snapshotJSONString = try encodeJSONObjectToString(snapshotObject)
+        let stepResult = ReevaluationStepResult(
+            tickId: 9,
+            stateHash: "hash-9",
+            recordedHash: "hash-9",
+            isMatch: true,
+            actualState: AnyCodable(snapshotJSONString)
+        )
+
+        let projector = HeroDefenseReplayProjector()
+        let projected = try projector.project(stepResult)
+
+        #expect(projected.tickID == 9)
+        #expect(projected.stateObject["players"] != nil)
+        #expect(projected.stateObject["monsters"] != nil)
+        #expect(projected.stateObject["turrets"] != nil)
+        #expect(projected.stateObject["base"] != nil)
+        #expect(projected.stateObject["score"] != nil)
+        #expect(projected.stateObject["currentStateJSON"] == nil)
+    }
+
     @Test("Replay runner pipeline preserves tick ordering through service queue")
     func replayRunnerPipelineOrderingContract() async throws {
         let orderedTickIDs: [Int64] = [1, 2, 3, 4]
