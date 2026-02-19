@@ -46,12 +46,6 @@ async function handleConnect() {
       landID: roomId.value.trim() || undefined,
     });
 
-    // Store connection info in sessionStorage for reference
-    sessionStorage.setItem("wsUrl", wsUrl.value.trim());
-    sessionStorage.setItem("playerName", playerName.value.trim());
-    sessionStorage.setItem("roomId", roomId.value.trim());
-    sessionStorage.removeItem("replayMode");
-
     // Navigate to game view only after successful connection
     await router.push({ name: "game" });
   } catch (err) {

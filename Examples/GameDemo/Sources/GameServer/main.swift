@@ -145,6 +145,10 @@ struct GameServer {
                     )
                     let reevaluationService = ReevaluationRunnerService(factory: reevaluationFactory)
                     services.register(reevaluationService, as: ReevaluationRunnerService.self)
+                    services.register(
+                        ReevaluationReplayPolicyService(eventPolicy: .projectedWithFallback),
+                        as: ReevaluationReplayPolicyService.self
+                    )
                 }
 
                 return services
