@@ -101,17 +101,6 @@ let projectedReplayAllowedEventTypes: Set<String> = [
     "TurretFire",
 ]
 
-func resolveReplayEventPolicy(from services: LandServices) -> ReevaluationReplayEventPolicy {
-    services.get(ReevaluationReplayPolicyService.self)?.eventPolicy ?? .projectedOnly
-}
-
-func shouldEmitFallbackShootingEvents(
-    projectedEventCount _: Int,
-    eventPolicy _: ReevaluationReplayEventPolicy
-) -> Bool {
-    false
-}
-
 func buildProjectedServerEvents(
     _ projectedEvents: [AnyCodable],
     allowedEventTypes: Set<String>
