@@ -194,6 +194,42 @@ struct ReevaluationReplayCompatibilityTests {
         #expect(payload?["turretID"] as? Int == 2)
     }
 
+    @Test("Replay projection keeps arbitrary emitted server event envelopes")
+    func replayProjectionPassesThroughArbitraryServerEventEnvelopeContract() throws {
+        let snapshotJSONString = try encodeJSONObjectToString(["score": 1])
+        let customPayload: [String: Any] = [
+            "label": "fx",
+            "count": 3,
+        ]
+        let emittedEvent = ReevaluationRecordedServerEvent(
+            kind: "serverEvent",
+            sequence: 3,
+            tickId: 10,
+            typeIdentifier: "CustomFx",
+            payload: AnyCodable(customPayload),
+            target: ReevaluationEventTargetRecord(kind: "all", ids: [])
+        )
+        let stepResult = ReevaluationStepResult(
+            tickId: 10,
+            stateHash: "hash-10",
+            recordedHash: "hash-10",
+            isMatch: true,
+            actualState: AnyCodable(snapshotJSONString),
+            emittedServerEvents: [emittedEvent]
+        )
+
+        let projector = HeroDefenseReplayProjector()
+        let projected = try projector.project(stepResult)
+
+        #expect(projected.serverEvents.count == 1)
+        let eventObject = projected.serverEvents.first?.base as? [String: Any]
+        #expect(eventObject?["typeIdentifier"] as? String == "CustomFx")
+        let payloadWrapped = eventObject?["payload"] as? AnyCodable
+        let payload = payloadWrapped?.base as? [String: Any]
+        #expect(payload?["label"] as? String == "fx")
+        #expect(payload?["count"] as? Int == 3)
+    }
+
     @Test("Replay runner pipeline preserves tick ordering through service queue")
     func replayRunnerPipelineOrderingContract() async throws {
         let orderedTickIDs: [Int64] = [1, 2, 3, 4]
