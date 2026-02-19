@@ -13,6 +13,25 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function hasNumericPositionXY(value: unknown): boolean {
+  if (!isPlainObject(value)) return false;
+  const position = value.position;
+  if (!isPlainObject(position)) return false;
+  if (typeof position.x === "number" && typeof position.y === "number") {
+    return true;
+  }
+
+  if (isPlainObject(position.v)) {
+    return typeof position.v.x === "number" && typeof position.v.y === "number";
+  }
+
+  return false;
+}
+
+function hasBaseWrapperArtifact(value: unknown): boolean {
+  return isPlainObject(value) && Object.prototype.hasOwnProperty.call(value, "base");
+}
+
 function parseArgs(argv: string[]): Args {
   const out: Args = {};
   for (let i = 0; i < argv.length; i++) {
@@ -103,6 +122,8 @@ async function main() {
   const adminUrl = (args["admin-url"] as string) ?? "http://localhost:8080";
   const stateUpdateEncoding = (args["state-update-encoding"] as string) ?? "messagepack";
   const timeoutMs = Number(args["timeout-ms"] ?? 30000);
+  const replayIdleMsValue = Number(args["replay-idle-ms"] ?? 1500);
+  const replayIdleMs = Number.isFinite(replayIdleMsValue) && replayIdleMsValue > 0 ? replayIdleMsValue : 1500;
 
   const apiKey = (process.env.HERO_DEFENSE_ADMIN_KEY || process.env.ADMIN_API_KEY || "hero-defense-admin-key").trim();
 
@@ -114,6 +135,8 @@ async function main() {
   console.log(chalk.blue(`🛠️  Admin: ${adminUrl}`));
 
   console.log(chalk.blue("🎮 Running Hero Defense scenario to produce reevaluation record..."));
+  const replayProofScenarioPath = "scenarios/game/test-replay-near-base-shoot.json";
+
   execFileSync(
     "npx",
     [
@@ -125,7 +148,7 @@ async function main() {
       "-l",
       gameLandID,
       "-s",
-      "scenarios/game/test-demo-game.json",
+      replayProofScenarioPath,
       "--state-update-encoding",
       stateUpdateEncoding,
     ],
@@ -137,6 +160,14 @@ async function main() {
     apiKey,
     landID: gameLandID,
   });
+
+  const expectedReplayTickIDs: number[] = Array.isArray(record?.tickFrames)
+    ? record.tickFrames
+        .map((frame: any) => frame?.tickId)
+        .filter((tickId: unknown): tickId is number => typeof tickId === "number" && Number.isInteger(tickId))
+    : [];
+  const expectedReplayTickCount = expectedReplayTickIDs.length;
+  const expectedReplayMaxTick = expectedReplayTickIDs.length > 0 ? Math.max(...expectedReplayTickIDs) : null;
 
   const projectRoot = resolve(process.cwd(), "..", "..");
   const recordsDir = join(projectRoot, "Examples", "GameDemo", "reevaluation-records");
@@ -175,11 +206,40 @@ async function main() {
   const start = Date.now();
   let completed = false;
   let failedMessage: string | null = null;
+  let lastReplayTickAt = 0;
   let hasLiveCompatibleState = false;
   let hasNonDefaultLiveEvidence = false;
-  let maxObservedScore = 0;
   let legacyReplayFieldSeen = false;
+  let replayWrapperArtifact: string | null = null;
+  const nonEmptyEntityKinds = new Set<"players" | "monsters" | "turrets">();
+  let sawMonsterRemoval = false;
+  let previousMonsterIDs = new Set<string>();
+  const liveNestedFieldKinds = new Set<"players" | "monsters" | "turrets">();
   const observedTicks = new Set<number>();
+  const mismatchedReplayTicks: number[] = [];
+  let replayPlayerShootEvents = 0;
+  let replayTurretFireEvents = 0;
+  const unsubscribeReplayTick = view.onServerEvent("HeroDefenseReplayTick", (payload: unknown) => {
+    if (!isPlainObject(payload)) {
+      return;
+    }
+
+    const tickId = payload.tickId;
+    if (typeof tickId === "number" && Number.isFinite(tickId)) {
+      observedTicks.add(tickId);
+      lastReplayTickAt = Date.now();
+
+      if (payload.isMatch === false) {
+        mismatchedReplayTicks.push(tickId);
+      }
+    }
+  });
+  const unsubscribeReplayPlayerShoot = view.onServerEvent("PlayerShoot", () => {
+    replayPlayerShootEvents += 1;
+  });
+  const unsubscribeReplayTurretFire = view.onServerEvent("TurretFire", () => {
+    replayTurretFireEvents += 1;
+  });
 
   while (Date.now() - start < timeoutMs) {
     const state = view.getState() as any;
@@ -202,7 +262,7 @@ async function main() {
       isPlainObject(state.turrets) &&
       isPlainObject(state.base);
 
-    if (hasLiveShape && typeof tick === "number" && tick >= 1) {
+    if (hasLiveShape) {
       hasLiveCompatibleState = true;
 
       const players = state.players as Record<string, unknown>;
@@ -210,7 +270,46 @@ async function main() {
       const turrets = state.turrets as Record<string, unknown>;
       const base = state.base as Record<string, unknown>;
       const score = state.score as number;
-      maxObservedScore = Math.max(maxObservedScore, score);
+      const currentMonsterIDs = new Set(Object.keys(monsters));
+
+      if (previousMonsterIDs.size > 0) {
+        for (const monsterID of previousMonsterIDs) {
+          if (!currentMonsterIDs.has(monsterID)) {
+            sawMonsterRemoval = true;
+            break;
+          }
+        }
+      }
+      previousMonsterIDs = currentMonsterIDs;
+
+      if (hasBaseWrapperArtifact(base)) {
+        replayWrapperArtifact = "base.base";
+      }
+
+      const entityGroups: Array<["players" | "monsters" | "turrets", Record<string, unknown>]> = [
+        ["players", players],
+        ["monsters", monsters],
+        ["turrets", turrets],
+      ];
+
+      for (const [kind, entities] of entityGroups) {
+        const entries = Object.entries(entities);
+        if (entries.length > 0) {
+          nonEmptyEntityKinds.add(kind);
+        }
+
+        for (const [entityId, entityValue] of entries) {
+          if (!isPlainObject(entityValue)) continue;
+
+          if (Object.prototype.hasOwnProperty.call(entityValue, "base")) {
+            replayWrapperArtifact = `${kind}.${entityId}.base`;
+          }
+
+          if (hasNumericPositionXY(entityValue)) {
+            liveNestedFieldKinds.add(kind);
+          }
+        }
+      }
 
       if (
         score !== 0 ||
@@ -233,9 +332,22 @@ async function main() {
       break;
     }
 
+    if (
+      typeof status !== "string" &&
+      lastReplayTickAt > 0 &&
+      Date.now() - lastReplayTickAt >= replayIdleMs &&
+      (expectedReplayMaxTick === null || observedTicks.has(expectedReplayMaxTick))
+    ) {
+      completed = true;
+      break;
+    }
+
     await new Promise((resolveTimer) => setTimeout(resolveTimer, 100));
   }
 
+  unsubscribeReplayTick();
+  unsubscribeReplayPlayerShoot();
+  unsubscribeReplayTurretFire();
   await runtime.disconnect();
 
   if (failedMessage) {
@@ -247,20 +359,58 @@ async function main() {
   if (observedTicks.size < 3) {
     throw new Error(`Expected at least 3 replay ticks, got ${observedTicks.size}`);
   }
+  if (mismatchedReplayTicks.length > 0) {
+    throw new Error(`Expected all replay ticks to match hash, mismatches at ticks: ${mismatchedReplayTicks.join(",")}`);
+  }
+  if (expectedReplayTickCount > 0) {
+    const observedCoverage = observedTicks.size / expectedReplayTickCount;
+    const minimumCoverage = 0.8;
+    if (observedCoverage < minimumCoverage) {
+      const missingTicks = expectedReplayTickIDs.filter((tickId) => !observedTicks.has(tickId));
+      throw new Error(
+        `Expected replay tick coverage >= ${minimumCoverage}, got ${(observedCoverage * 100).toFixed(1)}% (${observedTicks.size}/${expectedReplayTickCount}); missing sample: ${missingTicks.slice(0, 10).join(",")}`,
+      );
+    }
+  }
+  if (expectedReplayMaxTick !== null && !observedTicks.has(expectedReplayMaxTick)) {
+    throw new Error(
+      `Expected to observe final replay tick ${expectedReplayMaxTick}, observed ${observedTicks.size} ticks`,
+    );
+  }
   if (!hasLiveCompatibleState) {
     throw new Error("Expected replay live-compatible state fields, got none");
   }
   if (!hasNonDefaultLiveEvidence) {
     throw new Error("Expected replay live-compatible state evidence, got only default values");
   }
-  if (maxObservedScore < 1) {
-    throw new Error(`Expected replay score progression, maxObservedScore=${maxObservedScore}`);
-  }
   if (legacyReplayFieldSeen) {
     throw new Error("Expected no legacy replay field currentStateJSON in replay state");
   }
+  if (replayWrapperArtifact) {
+    throw new Error(`Expected no replay wrapper artifact, found ${replayWrapperArtifact}`);
+  }
+  if (nonEmptyEntityKinds.size === 0) {
+    throw new Error("Expected at least one non-empty players/monsters/turrets sample during replay");
+  }
+  if (replayPlayerShootEvents + replayTurretFireEvents < 1) {
+    throw new Error(
+      `Expected replay shooting events, got PlayerShoot=${replayPlayerShootEvents}, TurretFire=${replayTurretFireEvents}`,
+    );
+  }
+  if (!sawMonsterRemoval) {
+    throw new Error("Expected at least one monster removal during replay, but none observed");
+  }
+  for (const kind of nonEmptyEntityKinds) {
+    if (!liveNestedFieldKinds.has(kind)) {
+      throw new Error(`Expected live nested position fields in ${kind} sample`);
+    }
+  }
 
-  console.log(chalk.green(`✅ Replay stream completed; observedTicks=${observedTicks.size}`));
+  console.log(
+    chalk.green(
+      `✅ Replay stream completed; observedTicks=${observedTicks.size}, PlayerShoot=${replayPlayerShootEvents}, TurretFire=${replayTurretFireEvents}`,
+    ),
+  );
 }
 
 main().catch((error: unknown) => {

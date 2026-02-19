@@ -177,7 +177,7 @@ struct GameServer {
             try await nioHost.register(
                 landType: "hero-defense-replay",
                 land: HeroDefenseReplay.makeLand(),
-                initialState: HeroDefenseReplayState(),
+                initialState: HeroDefenseState(),
                 webSocketPath: "/game/hero-defense-replay",
                 configuration: baseServerConfig
             )

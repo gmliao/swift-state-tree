@@ -28,6 +28,7 @@ public struct ReevaluationStepResult: Sendable {
     public let recordedHash: String?
     public let isMatch: Bool
     public let actualState: AnyCodable?
+    public let emittedServerEvents: [ReevaluationRecordedServerEvent]
     public let projectedFrame: ProjectedReplayFrame?
 
     public init(
@@ -36,6 +37,7 @@ public struct ReevaluationStepResult: Sendable {
         recordedHash: String?,
         isMatch: Bool,
         actualState: AnyCodable? = nil,
+        emittedServerEvents: [ReevaluationRecordedServerEvent] = [],
         projectedFrame: ProjectedReplayFrame? = nil
     ) {
         self.tickId = tickId
@@ -43,6 +45,7 @@ public struct ReevaluationStepResult: Sendable {
         self.recordedHash = recordedHash
         self.isMatch = isMatch
         self.actualState = actualState
+        self.emittedServerEvents = emittedServerEvents
         self.projectedFrame = projectedFrame
     }
 }

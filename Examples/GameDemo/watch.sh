@@ -45,6 +45,13 @@ fi
 
 export TRANSPORT_ENCODING
 
+# Enable reevaluation by default in watch mode for replay/verification workflows.
+if [[ -z "${ENABLE_REEVALUATION:-}" ]]; then
+  ENABLE_REEVALUATION="true"
+fi
+
+export ENABLE_REEVALUATION
+
 # Display startup info with box
 echo "╔════════════════════════════════════════════════════════════╗"
 echo "║              GameDemo Server - Watch Mode                  ║"
@@ -54,6 +61,7 @@ echo "║    • $(pwd)/Sources"
 echo "║    • $PROJECT_ROOT/Sources"
 echo "╠════════════════════════════════════════════════════════════╣"
 echo "║  Encoding: $TRANSPORT_ENCODING"
+echo "║  Reevaluation: $ENABLE_REEVALUATION"
 echo "╚════════════════════════════════════════════════════════════╝"
 echo ""
 

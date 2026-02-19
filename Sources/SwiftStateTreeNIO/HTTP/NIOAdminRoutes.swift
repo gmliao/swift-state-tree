@@ -444,16 +444,24 @@ private func resolveReevaluationRecordPath(rawPath: String, recordsDir: String) 
     let currentDirURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
     let recordsDirURL = URL(fileURLWithPath: recordsDir, relativeTo: currentDirURL).standardizedFileURL
 
-    let candidateURL: URL
     if rawPath.hasPrefix("/") {
-        candidateURL = URL(fileURLWithPath: rawPath).standardizedFileURL
-    } else {
-        candidateURL = URL(fileURLWithPath: rawPath, relativeTo: recordsDirURL).standardizedFileURL
+        let absoluteCandidateURL = URL(fileURLWithPath: rawPath).standardizedFileURL
+        if isWithinDirectory(absoluteCandidateURL, directoryURL: recordsDirURL) {
+            return absoluteCandidateURL
+        }
+        return nil
     }
 
-    if isWithinDirectory(candidateURL, directoryURL: recordsDirURL) {
-        return candidateURL
+    let relativeToCurrentDirURL = URL(fileURLWithPath: rawPath, relativeTo: currentDirURL).standardizedFileURL
+    if isWithinDirectory(relativeToCurrentDirURL, directoryURL: recordsDirURL) {
+        return relativeToCurrentDirURL
     }
+
+    let relativeToRecordsDirURL = URL(fileURLWithPath: rawPath, relativeTo: recordsDirURL).standardizedFileURL
+    if isWithinDirectory(relativeToRecordsDirURL, directoryURL: recordsDirURL) {
+        return relativeToRecordsDirURL
+    }
+
     return nil
 }
 
