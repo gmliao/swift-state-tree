@@ -134,6 +134,7 @@ let package = Package(
             dependencies: [
                 "SwiftStateTree",
                 "SwiftStateTreeTransport",
+                "SwiftStateTreeReevaluationMonitor",
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
@@ -184,6 +185,7 @@ let package = Package(
                 "SwiftStateTreeNIO",
                 "SwiftStateTreeTransport",
                 "SwiftStateTree",
+                "SwiftStateTreeReevaluationMonitor",
             ],
             path: "Tests/SwiftStateTreeNIOTests"
         ),
