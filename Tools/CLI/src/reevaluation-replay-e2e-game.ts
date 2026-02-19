@@ -6,6 +6,7 @@ import { StateTreeRuntime } from "@swiftstatetree/sdk/core";
 import { ChalkLogger } from "./logger";
 import { fetchSchema } from "./schema";
 import { downloadReevaluationRecord } from "./admin";
+import { parseReplayE2EConfig } from "./reevaluation-replay-config";
 
 type Args = Record<string, string | boolean>;
 
@@ -121,9 +122,7 @@ async function main() {
   const wsUrl = (args["ws-url"] as string) ?? "ws://localhost:8080/game/hero-defense";
   const adminUrl = (args["admin-url"] as string) ?? "http://localhost:8080";
   const stateUpdateEncoding = (args["state-update-encoding"] as string) ?? "messagepack";
-  const timeoutMs = Number(args["timeout-ms"] ?? 30000);
-  const replayIdleMsValue = Number(args["replay-idle-ms"] ?? 1500);
-  const replayIdleMs = Number.isFinite(replayIdleMsValue) && replayIdleMsValue > 0 ? replayIdleMsValue : 1500;
+  const { timeoutMs, replayIdleMs } = parseReplayE2EConfig(args);
 
   const apiKey = (process.env.HERO_DEFENSE_ADMIN_KEY || process.env.ADMIN_API_KEY || "hero-defense-admin-key").trim();
 

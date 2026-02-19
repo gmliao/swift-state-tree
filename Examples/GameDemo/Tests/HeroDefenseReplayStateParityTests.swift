@@ -130,45 +130,6 @@ struct HeroDefenseReplayStateParityTests {
         #expect(state.score == 99)
     }
 
-    @Test("fallback shooting events prefer turret fire when turret exists")
-    func fallbackShootingEventsPreferTurretFireWhenTurretExists() {
-        let playerID = PlayerID("p1")
-
-        var previousMonsters: [Int: MonsterState] = [:]
-        var previousMonster = MonsterState()
-        previousMonster.id = 10
-        previousMonster.health = 10
-        previousMonster.position = Position2(x: 70.0, y: 36.0)
-        previousMonsters[10] = previousMonster
-
-        var currentState = HeroDefenseState()
-        var currentMonster = previousMonster
-        currentMonster.health = 8
-        currentState.monsters[10] = currentMonster
-
-        var player = PlayerState()
-        player.position = Position2(x: 64.0, y: 36.0)
-        currentState.players[playerID] = player
-
-        var turret = TurretState()
-        turret.id = 2
-        turret.position = Position2(x: 68.0, y: 36.0)
-        turret.ownerID = playerID
-        currentState.turrets[2] = turret
-
-        let events = buildFallbackShootingEvents(
-            previousMonsters: previousMonsters,
-            previousPlayers: [playerID: player],
-            previousTurrets: currentState.turrets,
-            currentState: currentState
-        )
-
-        #expect(events.contains(where: { event in
-            if case .turretFire = event { return true }
-            return false
-        }))
-    }
-
     @Test("projected replay events are forwarded as type-erased server events")
     func projectedReplayEventsAreForwardedAsTypeErasedServerEvents() {
         let projectedEvents: [AnyCodable] = [
@@ -225,19 +186,90 @@ struct HeroDefenseReplayStateParityTests {
         )
 
         #expect(forwarded.count == 1)
-        #expect(forwarded[0].type == "PlayerShoot")
+        #expect(forwarded.first?.type == "PlayerShoot")
     }
 
-    @Test("replay event policy defaults to projectedOnly when service is absent")
-    func replayEventPolicyDefaultsToProjectedOnlyWhenServiceAbsent() {
-        let services = LandServices()
-        let policy = resolveReplayEventPolicy(from: services)
-        #expect(policy == .projectedOnly)
-        #expect(shouldEmitFallbackShootingEvents(projectedEventCount: 0, eventPolicy: policy) == false)
+    @Test("projected replay events accept projector envelopes with AnyCodable payload values")
+    func projectedReplayEventsAcceptAnyCodablePayloadValues() {
+        let payload = AnyCodable([
+            "playerID": ["rawValue": "p1"],
+            "from": ["v": ["x": 1000, "y": 2000]],
+            "to": ["v": ["x": 3000, "y": 4000]],
+        ])
+        let projectedEvents: [AnyCodable] = [
+            AnyCodable([
+                "typeIdentifier": "PlayerShoot",
+                "payload": payload,
+            ]),
+        ]
+
+        let forwarded = buildProjectedServerEvents(
+            projectedEvents,
+            allowedEventTypes: ["PlayerShoot", "TurretFire"]
+        )
+
+        #expect(forwarded.count == 1)
+        #expect(forwarded.first?.type == "PlayerShoot")
     }
 
-    @Test("replay event policy supports projectedWithFallback compatibility mode")
-    func replayEventPolicySupportsProjectedWithFallbackCompatibilityMode() {
+    @Test("projected replay events accept projector envelopes stored as [String: AnyCodable]")
+    func projectedReplayEventsAcceptStringAnyCodableEnvelope() {
+        let payload = AnyCodable([
+            "playerID": ["rawValue": "p1"],
+            "from": ["v": ["x": 1000, "y": 2000]],
+            "to": ["v": ["x": 3000, "y": 4000]],
+        ])
+        let envelope: [String: AnyCodable] = [
+            "typeIdentifier": AnyCodable("PlayerShoot"),
+            "payload": payload,
+        ]
+        let projectedEvents: [AnyCodable] = [AnyCodable(envelope)]
+
+        let forwarded = buildProjectedServerEvents(
+            projectedEvents,
+            allowedEventTypes: ["PlayerShoot", "TurretFire"]
+        )
+
+        #expect(forwarded.count == 1)
+        #expect(forwarded.first?.type == "PlayerShoot")
+    }
+
+    @Test("projector output can be forwarded into replay server events")
+    func projectorOutputCanBeForwardedIntoReplayServerEvents() throws {
+        let emittedEvent = ReevaluationRecordedServerEvent(
+            kind: "serverEvent",
+            sequence: 1,
+            tickId: 7,
+            typeIdentifier: "PlayerShoot",
+            payload: AnyCodable([
+                "playerID": ["rawValue": "p1"],
+                "from": ["v": ["x": 1000, "y": 2000]],
+                "to": ["v": ["x": 3000, "y": 4000]],
+            ]),
+            target: ReevaluationEventTargetRecord(kind: "all", ids: [])
+        )
+        let stepResult = ReevaluationStepResult(
+            tickId: 7,
+            stateHash: "hash-7",
+            recordedHash: "hash-7",
+            isMatch: true,
+            actualState: AnyCodable("{}"),
+            emittedServerEvents: [emittedEvent]
+        )
+
+        let projector = HeroDefenseReplayProjector()
+        let projected = try projector.project(stepResult)
+        let forwarded = buildProjectedServerEvents(
+            projected.serverEvents,
+            allowedEventTypes: ["PlayerShoot", "TurretFire"]
+        )
+
+        #expect(forwarded.count == 1)
+        #expect(forwarded.first?.type == "PlayerShoot")
+    }
+
+    @Test("HeroDefense replay stays strict projected-only even if compatibility mode is configured")
+    func heroDefenseReplayStaysStrictProjectedOnlyEvenWithCompatibilityMode() {
         var services = LandServices()
         services.register(
             ReevaluationReplayPolicyService(eventPolicy: .projectedWithFallback),
@@ -246,7 +278,7 @@ struct HeroDefenseReplayStateParityTests {
 
         let policy = resolveReplayEventPolicy(from: services)
         #expect(policy == .projectedWithFallback)
-        #expect(shouldEmitFallbackShootingEvents(projectedEventCount: 0, eventPolicy: policy))
+        #expect(shouldEmitFallbackShootingEvents(projectedEventCount: 0, eventPolicy: policy) == false)
         #expect(shouldEmitFallbackShootingEvents(projectedEventCount: 1, eventPolicy: policy) == false)
     }
 }
