@@ -1,2 +1,3 @@
-// Re-export the generated composable for convenience
-export { useHeroDefense as useGameClient } from '../generated/hero-defense/useHeroDefense'
+// Re-export the generated session composable for convenience.
+// This provides live/replay mode switching with one shared API.
+export { useHeroDefenseSession as useGameClient } from '../generated/hero-defense/useHeroDefenseSession'

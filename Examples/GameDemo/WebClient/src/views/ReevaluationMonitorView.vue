@@ -332,7 +332,7 @@ import StateTreeDiffView from "../components/StateTreeDiffView.vue";
 import "@/styles/ui-tokens.css";
 
 const router = useRouter();
-const { connect: connectGame, isConnecting: isConnectingGame } = useGameClient();
+const { connectReplay: connectGameReplay, isConnecting: isConnectingGame } = useGameClient();
 const adminBaseURL = "http://localhost:8080";
 const adminAPIKey = "hero-defense-admin-key";
 
@@ -533,18 +533,13 @@ async function startReplay() {
 
     const replayWsUrl = `${adminBaseURL.replace(/^http/, "ws")}${webSocketPath}`;
 
-    await connectGame({
+    await connectGameReplay({
       wsUrl: replayWsUrl,
       playerName: "replay-viewer",
       landID: replayLandID,
     });
 
-    sessionStorage.setItem("wsUrl", replayWsUrl);
-    sessionStorage.setItem("playerName", "replay-viewer");
-    sessionStorage.setItem("roomId", replayLandID);
-    sessionStorage.setItem("replayMode", "1");
-
-    await router.push({ name: "game", query: { mode: "replay" } });
+    await router.push({ name: "game" });
   } catch (error) {
     console.error("Start replay failed:", error);
     const rawMessage = error instanceof Error ? error.message : "Unknown replay error";
