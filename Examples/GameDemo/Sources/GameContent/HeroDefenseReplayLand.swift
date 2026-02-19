@@ -52,10 +52,6 @@ public enum HeroDefenseReplay {
 
                     if let result = service.consumeNextResult() {
                         if let projectedFrame = result.projectedFrame {
-                            let replayEventPolicy = resolveReplayEventPolicy(from: ctx.services)
-                            let previousMonsters = state.monsters
-                            let previousPlayers = state.players
-                            let previousTurrets = state.turrets
                             applyProjectedState(projectedFrame.stateObject, to: &state)
                             _ = emitProjectedServerEvents(projectedFrame.serverEvents, ctx: ctx)
                         }
@@ -395,6 +391,52 @@ func buildFallbackShootingEvents(
 private struct ProjectedServerEventEnvelope: Decodable {
     let typeIdentifier: String
     let payload: AnyCodable
+}
+
+private func decodeProjectedServerEventEnvelope(_ rawEvent: AnyCodable) -> ProjectedServerEventEnvelope? {
+    if let object = rawEvent.base as? [String: Any] {
+        let typeIdentifier: String?
+        if let rawType = object["typeIdentifier"] as? String {
+            typeIdentifier = rawType
+        } else if let wrappedType = object["typeIdentifier"] as? AnyCodable {
+            typeIdentifier = wrappedType.base as? String
+        } else {
+            typeIdentifier = nil
+        }
+        guard let typeIdentifier else {
+            return nil
+        }
+        guard let rawPayload = object["payload"] else {
+            return nil
+        }
+
+        let payload: AnyCodable
+        if let wrappedPayload = rawPayload as? AnyCodable {
+            payload = wrappedPayload
+        } else {
+            payload = AnyCodable(rawPayload)
+        }
+
+        return ProjectedServerEventEnvelope(
+            typeIdentifier: typeIdentifier,
+            payload: payload
+        )
+    }
+
+    guard let wrappedObject = rawEvent.base as? [String: AnyCodable] else {
+        return nil
+    }
+    guard let typeIdentifier = wrappedObject["typeIdentifier"]?.base as? String else {
+        return nil
+    }
+    guard let payload = wrappedObject["payload"] else {
+        return nil
+    }
+
+    return ProjectedServerEventEnvelope(
+        typeIdentifier: typeIdentifier,
+        payload: payload
+    )
 }
 
 func applyProjectedState(
