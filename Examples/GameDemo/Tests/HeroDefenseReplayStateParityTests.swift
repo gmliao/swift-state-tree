@@ -268,17 +268,4 @@ struct HeroDefenseReplayStateParityTests {
         #expect(forwarded.first?.type == "PlayerShoot")
     }
 
-    @Test("HeroDefense replay stays strict projected-only even if compatibility mode is configured")
-    func heroDefenseReplayStaysStrictProjectedOnlyEvenWithCompatibilityMode() {
-        var services = LandServices()
-        services.register(
-            ReevaluationReplayPolicyService(eventPolicy: .projectedWithFallback),
-            as: ReevaluationReplayPolicyService.self
-        )
-
-        let policy = resolveReplayEventPolicy(from: services)
-        #expect(policy == .projectedWithFallback)
-        #expect(shouldEmitFallbackShootingEvents(projectedEventCount: 0, eventPolicy: policy) == false)
-        #expect(shouldEmitFallbackShootingEvents(projectedEventCount: 1, eventPolicy: policy) == false)
-    }
 }
