@@ -16,6 +16,7 @@ public protocol ReevaluationSource: Sendable {
     /// Get lifecycle events for a specific tick.
     func getLifecycleEvents(for tickId: Int64) async throws -> [ReevaluationRecordedLifecycleEvent]
 
+
     /// Get the recorded per-tick state hash for a specific tick (live ground truth).
     func getStateHash(for tickId: Int64) async throws -> String?
     

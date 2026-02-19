@@ -58,10 +58,29 @@ public enum ReevaluationReplayCompatibilityError: Error, Sendable, CustomNSError
 }
 
 public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationRunnerProtocol {
+    private actor CapturingSink: ReevaluationSink {
+        private var eventsByTick: [Int64: [ReevaluationRecordedServerEvent]] = [:]
+
+        func onEmittedServerEvents(tickId: Int64, events: [ReevaluationRecordedServerEvent]) async {
+            guard !events.isEmpty else {
+                return
+            }
+            var current = eventsByTick[tickId] ?? []
+            current.append(contentsOf: events)
+            eventsByTick[tickId] = current
+        }
+
+        func takeEmittedEvents(for tickId: Int64) -> [ReevaluationRecordedServerEvent] {
+            defer { eventsByTick[tickId] = nil }
+            return eventsByTick[tickId] ?? []
+        }
+    }
+
     private let keeper: LandKeeper<State>
     private let source: JSONReevaluationSource
     private let syncEngine = SyncEngine()
     private let snapshotEncoder: JSONEncoder
+    private let capturingSink = CapturingSink()
 
     public let maxTickId: Int64
     private var currentTickId: Int64 = -1
@@ -104,7 +123,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             initialState: initialState,
             mode: .reevaluation,
             reevaluationSource: source,
-            reevaluationSink: nil, // We don't need sink for now, or capturing sink?
+            reevaluationSink: capturingSink,
             services: resolvedServices,
             autoStartLoops: false,
             logger: logger
@@ -150,7 +169,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             initialState: initialState,
             mode: .reevaluation,
             reevaluationSource: source,
-            reevaluationSink: nil,
+            reevaluationSink: capturingSink,
             services: resolvedServices,
             autoStartLoops: false,
             logger: logger
@@ -207,13 +226,15 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
 
         // Determine match
         let isMatch = (recordedHash == nil) || (recordedHash == stateHash)
+        let emittedServerEvents = await capturingSink.takeEmittedEvents(for: tickId)
 
         return ReevaluationStepResult(
             tickId: tickId,
             stateHash: stateHash,
             recordedHash: recordedHash,
             isMatch: isMatch,
-            actualState: actualStatePayload
+            actualState: actualStatePayload,
+            emittedServerEvents: emittedServerEvents
         )
     }
 

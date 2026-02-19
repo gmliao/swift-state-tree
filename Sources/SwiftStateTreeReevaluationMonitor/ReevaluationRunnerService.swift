@@ -155,6 +155,7 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
                     recordedHash: result.recordedHash,
                     isMatch: result.isMatch,
                     actualState: result.actualState,
+                    emittedServerEvents: result.emittedServerEvents,
                     projectedFrame: projectedFrame
                 )
             } catch {
