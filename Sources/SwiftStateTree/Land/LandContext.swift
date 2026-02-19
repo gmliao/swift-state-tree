@@ -224,6 +224,14 @@ public struct LandContext: Sendable {
         emitEventHandler(anyEvent, target)
     }
 
+    /// Emit a pre-built type-erased server event deterministically.
+    ///
+    /// This is useful for replay pipelines that already carry `{typeIdentifier, payload}`
+    /// envelopes and need to forward events without concrete payload decoding branches.
+    public func emitAnyServerEvent(_ event: AnyServerEvent, to target: EventTarget) {
+        emitEventHandler(event, target)
+    }
+
     /// Request an immediate sync at the end of the current tick (deterministic).
     public func requestSyncNow() {
         requestSyncNowHandler()
