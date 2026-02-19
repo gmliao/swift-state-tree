@@ -1,16 +1,15 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from "vue";
-import { useRouter, useRoute } from "vue-router";
+import { computed, ref, onMounted, onUnmounted, watch } from "vue";
+import { useRouter } from "vue-router";
 import Phaser from "phaser";
 import { GameScene } from "../scenes/GameScene";
 import { useGameClient } from "../utils/gameClient";
 
 const router = useRouter();
-const route = useRoute();
 const gameRef = ref<HTMLDivElement | null>(null);
 const phaserGame = ref<Phaser.Game | null>(null);
-const { isConnected, isJoined, disconnect, tree } = useGameClient();
-const isReplayMode = ref(false);
+const { isConnected, isJoined, disconnect, tree, mode } = useGameClient();
+const isReplayMode = computed(() => mode.value === "replay");
 
 // Game state for UI
 const currentResources = ref(0);
@@ -79,9 +78,6 @@ watch(
 );
 
 onMounted(async () => {
-  isReplayMode.value =
-    route.query.mode === "replay" || sessionStorage.getItem("replayMode") === "1";
-
   // Check if already connected and joined
   if (!isJoined.value) {
     // If not connected, redirect to connect page
@@ -141,12 +137,6 @@ async function handleDisconnectUI() {
     phaserGame.value = null;
   }
 
-  // Clear session storage
-  sessionStorage.removeItem("wsUrl");
-  sessionStorage.removeItem("playerName");
-  sessionStorage.removeItem("roomId");
-  sessionStorage.removeItem("replayMode");
-
   // Navigate back to connect page
   router.push({ name: "connect" });
 }
@@ -160,12 +150,6 @@ async function handleDisconnect() {
 
   // Disconnect from server
   await disconnect();
-
-  // Clear session storage
-  sessionStorage.removeItem("wsUrl");
-  sessionStorage.removeItem("playerName");
-  sessionStorage.removeItem("roomId");
-  sessionStorage.removeItem("replayMode");
 
   // Navigate back to connect page
   router.push({ name: "connect" });
