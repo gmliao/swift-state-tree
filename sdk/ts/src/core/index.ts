@@ -1,5 +1,6 @@
 export * from './deterministic-math'
 export * from './runtime'
+export * from './session'
 export { StateTreeView, type ViewOptions } from './view'
 export { createWebSocket, registerWebSocketFactory, type WebSocketConnection, type WebSocketFactory, WebSocketReadyState } from './websocket'
 export { BrowserWebSocket } from './websocket-browser'

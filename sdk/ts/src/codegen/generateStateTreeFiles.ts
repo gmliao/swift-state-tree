@@ -83,6 +83,21 @@ async function generateForLand(
       schema
     )
     await writeFileRecursive(join(landDir, `${composableName}.ts`), composableSource)
+
+    const replayLandID = findReplayCompanionLandID(schema, landID)
+    if (replayLandID) {
+      const sessionComposableName = `use${classBaseName}Session`
+      const replayClassBaseName = toPascalCase(replayLandID)
+      const sessionComposableSource = generateVueSessionComposable(
+        sessionComposableName,
+        composableName,
+        classBaseName,
+        replayLandID,
+        `use${replayClassBaseName}`,
+        replayClassBaseName
+      )
+      await writeFileRecursive(join(landDir, `${sessionComposableName}.ts`), sessionComposableSource)
+    }
   }
 
   // Generate test helpers (always generate basic mocks, optionally generate framework-specific helpers)
@@ -100,6 +115,14 @@ async function generateForLand(
   if (testHelpersSource) {
     await writeFileRecursive(join(landDir, 'testHelpers.ts'), testHelpersSource)
   }
+}
+
+function findReplayCompanionLandID(schema: ProtocolSchema, landID: string): string | null {
+  const replayLandID = `${landID}-replay`
+  if (schema.lands[replayLandID]) {
+    return replayLandID
+  }
+  return null
 }
 
 function collectActionBindings(schema: ProtocolSchema, landDef: LandDefinition): ActionBinding[] {
@@ -936,6 +959,159 @@ function generateVueComposable(
   // Also expose tree for advanced usage
   lines.push('    // Advanced: access to underlying tree instance')
   lines.push(`    tree: computed(() => tree.value) as ComputedRef<${className} | null>`)
+  lines.push('  }')
+  lines.push('}')
+  lines.push('')
+
+  return lines.join('\n')
+}
+
+function generateVueSessionComposable(
+  sessionComposableName: string,
+  liveComposableName: string,
+  liveClassBaseName: string,
+  replayLandID: string,
+  replayComposableName: string,
+  replayClassBaseName: string
+): string {
+  const lines: string[] = []
+  lines.push(generateHeader())
+
+  lines.push("import { ref, computed } from 'vue'")
+  lines.push("import type { Ref, ComputedRef } from 'vue'")
+  lines.push("import type { SessionMode } from '@swiftstatetree/sdk/core'")
+  lines.push(`import { ${liveComposableName} } from './${liveComposableName}.js'`)
+  lines.push(`import type { ${liveClassBaseName}ComposableReturn } from './${liveComposableName}.js'`)
+  lines.push(`import { ${replayComposableName} } from '../${replayLandID}/${replayComposableName}.js'`)
+  lines.push(`import type { ${replayClassBaseName}ComposableReturn } from '../${replayLandID}/${replayComposableName}.js'`)
+  lines.push('')
+
+  lines.push(`type LiveConnectOptions = Parameters<${liveClassBaseName}ComposableReturn['connect']>[0]`)
+  lines.push(`type ReplayConnectOptions = Parameters<${replayClassBaseName}ComposableReturn['connect']>[0]`)
+  lines.push('')
+
+  lines.push(`const liveClient = ${liveComposableName}()`)
+  lines.push(`const replayClient = ${replayComposableName}()`)
+  lines.push("const mode = ref<SessionMode>('live')")
+  lines.push('const isSwitching = ref(false)')
+  lines.push('const sessionError = ref<string | null>(null)')
+  lines.push('const liveConnectOptions = ref<LiveConnectOptions | null>(null)')
+  lines.push('const replayConnectOptions = ref<ReplayConnectOptions | null>(null)')
+  lines.push('const activeClient = computed(() => (mode.value === \'live\' ? liveClient : replayClient))')
+  lines.push('')
+  lines.push('const isConnecting = computed(() => isSwitching.value || activeClient.value.isConnecting.value)')
+  lines.push('const isConnected = computed(() => activeClient.value.isConnected.value)')
+  lines.push('const isJoined = computed(() => activeClient.value.isJoined.value)')
+  lines.push('const lastError = computed(() => sessionError.value ?? activeClient.value.lastError.value)')
+  lines.push('const tree = computed(() => activeClient.value.tree.value as any)')
+  lines.push('const state = computed(() => activeClient.value.state.value as any)')
+  lines.push('const currentPlayerID = computed(() => activeClient.value.currentPlayerID.value)')
+  lines.push('')
+
+  lines.push('export interface SessionComposableReturn {')
+  lines.push('  mode: Ref<SessionMode>')
+  lines.push('  isConnecting: Ref<boolean>')
+  lines.push('  isConnected: Ref<boolean>')
+  lines.push('  isJoined: Ref<boolean>')
+  lines.push('  lastError: Ref<string | null>')
+  lines.push('  state: ComputedRef<any>')
+  lines.push('  currentPlayerID: ComputedRef<string | null>')
+  lines.push('  tree: ComputedRef<any>')
+  lines.push('  connect: (options: LiveConnectOptions) => Promise<void>')
+  lines.push('  connectLive: (options: LiveConnectOptions) => Promise<void>')
+  lines.push('  connectReplay: (options: ReplayConnectOptions) => Promise<void>')
+  lines.push('  switchToReplay: (options?: ReplayConnectOptions) => Promise<void>')
+  lines.push('  switchToLive: (options?: LiveConnectOptions) => Promise<void>')
+  lines.push('  disconnect: () => Promise<void>')
+  lines.push('  live: Readonly<any>')
+  lines.push('  replay: Readonly<any>')
+  lines.push('}')
+  lines.push('')
+
+  lines.push('function asErrorMessage(error: unknown): string {')
+  lines.push('  return error instanceof Error ? error.message : String(error)')
+  lines.push('}')
+  lines.push('')
+
+  lines.push(`export function ${sessionComposableName}(): SessionComposableReturn {`)
+  lines.push('  async function connectLive(options: LiveConnectOptions): Promise<void> {')
+  lines.push('    isSwitching.value = true')
+  lines.push('    sessionError.value = null')
+  lines.push('    liveConnectOptions.value = options')
+  lines.push('    try {')
+  lines.push('      await replayClient.disconnect()')
+  lines.push('      await liveClient.connect(options)')
+  lines.push("      mode.value = 'live'")
+  lines.push('    } catch (error) {')
+  lines.push('      sessionError.value = asErrorMessage(error)')
+  lines.push('      throw error')
+  lines.push('    } finally {')
+  lines.push('      isSwitching.value = false')
+  lines.push('    }')
+  lines.push('  }')
+  lines.push('')
+
+  lines.push('  async function connectReplay(options: ReplayConnectOptions): Promise<void> {')
+  lines.push('    isSwitching.value = true')
+  lines.push('    sessionError.value = null')
+  lines.push('    replayConnectOptions.value = options')
+  lines.push('    try {')
+  lines.push('      await liveClient.disconnect()')
+  lines.push('      await replayClient.connect(options)')
+  lines.push("      mode.value = 'replay'")
+  lines.push('    } catch (error) {')
+  lines.push('      sessionError.value = asErrorMessage(error)')
+  lines.push('      throw error')
+  lines.push('    } finally {')
+  lines.push('      isSwitching.value = false')
+  lines.push('    }')
+  lines.push('  }')
+  lines.push('')
+
+  lines.push('  async function switchToReplay(options?: ReplayConnectOptions): Promise<void> {')
+  lines.push('    const target = options ?? replayConnectOptions.value')
+  lines.push('    if (!target) {')
+  lines.push("      throw new Error('Replay connect options missing. Provide options or call connectReplay() first.')")
+  lines.push('    }')
+  lines.push('    await connectReplay(target)')
+  lines.push('  }')
+  lines.push('')
+
+  lines.push('  async function switchToLive(options?: LiveConnectOptions): Promise<void> {')
+  lines.push('    const target = options ?? liveConnectOptions.value')
+  lines.push('    if (!target) {')
+  lines.push("      throw new Error('Live connect options missing. Provide options or call connectLive() first.')")
+  lines.push('    }')
+  lines.push('    await connectLive(target)')
+  lines.push('  }')
+  lines.push('')
+
+  lines.push('  async function disconnect(): Promise<void> {')
+  lines.push('    await liveClient.disconnect()')
+  lines.push('    await replayClient.disconnect()')
+    lines.push("    mode.value = 'live'")
+  lines.push('    isSwitching.value = false')
+  lines.push('    sessionError.value = null')
+  lines.push('  }')
+  lines.push('')
+
+  lines.push('  return {')
+  lines.push('    mode,')
+  lines.push('    isConnecting,')
+  lines.push('    isConnected,')
+  lines.push('    isJoined,')
+  lines.push('    lastError,')
+  lines.push('    state,')
+  lines.push('    currentPlayerID,')
+  lines.push('    tree,')
+  lines.push('    connect: connectLive,')
+  lines.push('    connectLive,')
+  lines.push('    connectReplay,')
+  lines.push('    switchToReplay,')
+  lines.push('    switchToLive,')
+  lines.push('    disconnect,')
+  lines.push('    live: liveClient,')
+  lines.push('    replay: replayClient')
   lines.push('  }')
   lines.push('}')
   lines.push('')
