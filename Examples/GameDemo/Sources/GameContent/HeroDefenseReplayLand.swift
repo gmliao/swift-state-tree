@@ -52,12 +52,16 @@ public enum HeroDefenseReplay {
 
                     if let result = service.consumeNextResult() {
                         if let projectedFrame = result.projectedFrame {
+                            let replayEventPolicy = resolveReplayEventPolicy(from: ctx.services)
                             let previousMonsters = state.monsters
                             let previousPlayers = state.players
                             let previousTurrets = state.turrets
                             applyProjectedState(projectedFrame.stateObject, to: &state)
                             let emittedProjectedEvents = emitProjectedServerEvents(projectedFrame.serverEvents, ctx: ctx)
-                            if emittedProjectedEvents == 0 {
+                            if shouldEmitFallbackShootingEvents(
+                                projectedEventCount: emittedProjectedEvents,
+                                eventPolicy: replayEventPolicy
+                            ) {
                                 emitFallbackShootingEvents(
                                     previousMonsters: previousMonsters,
                                     previousPlayers: previousPlayers,
@@ -90,31 +94,59 @@ public enum HeroDefenseReplay {
 
 @discardableResult
 private func emitProjectedServerEvents(_ projectedEvents: [AnyCodable], ctx: LandContext) -> Int {
-    var emittedCount = 0
-    for rawEvent in projectedEvents {
-        guard let eventObject = rawEvent.base as? [String: Any]
-        else {
-            continue
-        }
-        let payload = eventObject["payload"].map(unwrapAnyCodableValue)
-
-        guard let payload else {
-            continue
-        }
-
-        if let event = decodeProjectedField(PlayerShootEvent.self, from: payload) {
-            ctx.emitEvent(event, to: .all)
-            emittedCount += 1
-            continue
-        }
-
-        if let event = decodeProjectedField(TurretFireEvent.self, from: payload) {
-            ctx.emitEvent(event, to: .all)
-            emittedCount += 1
-        }
+    let forwardedEvents = buildProjectedServerEvents(
+        projectedEvents,
+        allowedEventTypes: projectedReplayAllowedEventTypes
+    )
+    let droppedCount = projectedEvents.count - forwardedEvents.count
+    if droppedCount > 0 {
+        ctx.logger.warning("Ignored unsupported replay projected events", metadata: [
+            "dropped": .string("\(droppedCount)"),
+        ])
     }
 
-    return emittedCount
+    for event in forwardedEvents {
+        ctx.emitAnyServerEvent(event, to: .all)
+    }
+
+    return forwardedEvents.count
+}
+
+let projectedReplayAllowedEventTypes: Set<String> = [
+    "PlayerShoot",
+    "TurretFire",
+]
+
+func resolveReplayEventPolicy(from services: LandServices) -> ReevaluationReplayEventPolicy {
+    services.get(ReevaluationReplayPolicyService.self)?.eventPolicy ?? .projectedOnly
+}
+
+func shouldEmitFallbackShootingEvents(
+    projectedEventCount: Int,
+    eventPolicy: ReevaluationReplayEventPolicy
+) -> Bool {
+    projectedEventCount == 0 && eventPolicy == .projectedWithFallback
+}
+
+func buildProjectedServerEvents(
+    _ projectedEvents: [AnyCodable],
+    allowedEventTypes: Set<String>
+) -> [AnyServerEvent] {
+    projectedEvents.compactMap { rawEvent in
+        let envelope = decodeProjectedField(ProjectedServerEventEnvelope.self, from: rawEvent.base)
+        guard let envelope else {
+            return nil
+        }
+
+        guard allowedEventTypes.contains(envelope.typeIdentifier) else {
+            return nil
+        }
+
+        return AnyServerEvent(
+            type: envelope.typeIdentifier,
+            payload: envelope.payload
+        )
+    }
 }
 
 private func emitFallbackShootingEvents(
@@ -219,22 +251,9 @@ func buildFallbackShootingEvents(
     return events
 }
 
-private func unwrapAnyCodableValue(_ value: Any) -> Any {
-    if let anyCodable = value as? AnyCodable {
-        return unwrapAnyCodableValue(anyCodable.base)
-    }
-
-    if let object = value as? [String: Any] {
-        return object.reduce(into: [String: Any]()) { result, entry in
-            result[entry.key] = unwrapAnyCodableValue(entry.value)
-        }
-    }
-
-    if let array = value as? [Any] {
-        return array.map(unwrapAnyCodableValue)
-    }
-
-    return value
+private struct ProjectedServerEventEnvelope: Decodable {
+    let typeIdentifier: String
+    let payload: AnyCodable
 }
 
 func applyProjectedState(

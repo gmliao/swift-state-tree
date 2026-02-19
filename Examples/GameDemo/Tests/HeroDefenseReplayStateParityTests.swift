@@ -1,6 +1,7 @@
 import Testing
 import SwiftStateTree
 import SwiftStateTreeDeterministicMath
+import SwiftStateTreeReevaluationMonitor
 @testable import GameContent
 
 @Suite("HeroDefenseReplayStateParityTests")
@@ -166,5 +167,86 @@ struct HeroDefenseReplayStateParityTests {
             if case .turretFire = event { return true }
             return false
         }))
+    }
+
+    @Test("projected replay events are forwarded as type-erased server events")
+    func projectedReplayEventsAreForwardedAsTypeErasedServerEvents() {
+        let projectedEvents: [AnyCodable] = [
+            AnyCodable([
+                "typeIdentifier": "PlayerShoot",
+                "payload": [
+                    "playerID": ["rawValue": "p1"],
+                    "from": ["v": ["x": 1000, "y": 2000]],
+                    "to": ["v": ["x": 3000, "y": 4000]],
+                ],
+            ]),
+            AnyCodable([
+                "typeIdentifier": "TurretFire",
+                "payload": [
+                    "turretID": 2,
+                    "from": ["v": ["x": 5000, "y": 6000]],
+                    "to": ["v": ["x": 7000, "y": 8000]],
+                ],
+            ]),
+        ]
+
+        let forwarded = buildProjectedServerEvents(
+            projectedEvents,
+            allowedEventTypes: ["PlayerShoot", "TurretFire"]
+        )
+
+        #expect(forwarded.count == 2)
+        #expect(forwarded[0].type == "PlayerShoot")
+        #expect(forwarded[1].type == "TurretFire")
+    }
+
+    @Test("projected replay events ignore unknown event types safely")
+    func projectedReplayEventsIgnoreUnknownEventTypesSafely() {
+        let projectedEvents: [AnyCodable] = [
+            AnyCodable([
+                "typeIdentifier": "UnknownEffect",
+                "payload": [
+                    "value": 1,
+                ],
+            ]),
+            AnyCodable([
+                "typeIdentifier": "PlayerShoot",
+                "payload": [
+                    "playerID": ["rawValue": "p1"],
+                    "from": ["v": ["x": 1000, "y": 2000]],
+                    "to": ["v": ["x": 3000, "y": 4000]],
+                ],
+            ]),
+        ]
+
+        let forwarded = buildProjectedServerEvents(
+            projectedEvents,
+            allowedEventTypes: ["PlayerShoot", "TurretFire"]
+        )
+
+        #expect(forwarded.count == 1)
+        #expect(forwarded[0].type == "PlayerShoot")
+    }
+
+    @Test("replay event policy defaults to projectedOnly when service is absent")
+    func replayEventPolicyDefaultsToProjectedOnlyWhenServiceAbsent() {
+        let services = LandServices()
+        let policy = resolveReplayEventPolicy(from: services)
+        #expect(policy == .projectedOnly)
+        #expect(shouldEmitFallbackShootingEvents(projectedEventCount: 0, eventPolicy: policy) == false)
+    }
+
+    @Test("replay event policy supports projectedWithFallback compatibility mode")
+    func replayEventPolicySupportsProjectedWithFallbackCompatibilityMode() {
+        var services = LandServices()
+        services.register(
+            ReevaluationReplayPolicyService(eventPolicy: .projectedWithFallback),
+            as: ReevaluationReplayPolicyService.self
+        )
+
+        let policy = resolveReplayEventPolicy(from: services)
+        #expect(policy == .projectedWithFallback)
+        #expect(shouldEmitFallbackShootingEvents(projectedEventCount: 0, eventPolicy: policy))
+        #expect(shouldEmitFallbackShootingEvents(projectedEventCount: 1, eventPolicy: policy) == false)
     }
 }
