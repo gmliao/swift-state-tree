@@ -52,24 +52,8 @@ public enum HeroDefenseReplay {
 
                     if let result = service.consumeNextResult() {
                         if let projectedFrame = result.projectedFrame {
-                            let replayEventPolicy = resolveReplayEventPolicy(from: ctx.services)
-                            let previousMonsters = state.monsters
-                            let previousPlayers = state.players
-                            let previousTurrets = state.turrets
                             applyProjectedState(projectedFrame.stateObject, to: &state)
-                            let emittedProjectedEvents = emitProjectedServerEvents(projectedFrame.serverEvents, ctx: ctx)
-                            if shouldEmitFallbackShootingEvents(
-                                projectedEventCount: emittedProjectedEvents,
-                                eventPolicy: replayEventPolicy
-                            ) {
-                                emitFallbackShootingEvents(
-                                    previousMonsters: previousMonsters,
-                                    previousPlayers: previousPlayers,
-                                    previousTurrets: previousTurrets,
-                                    currentState: state,
-                                    ctx: ctx
-                                )
-                            }
+                            _ = emitProjectedServerEvents(projectedFrame.serverEvents, ctx: ctx)
                         }
 
                         let event = HeroDefenseReplayTickEvent(
@@ -122,10 +106,10 @@ func resolveReplayEventPolicy(from services: LandServices) -> ReevaluationReplay
 }
 
 func shouldEmitFallbackShootingEvents(
-    projectedEventCount: Int,
-    eventPolicy: ReevaluationReplayEventPolicy
+    projectedEventCount _: Int,
+    eventPolicy _: ReevaluationReplayEventPolicy
 ) -> Bool {
-    projectedEventCount == 0 && eventPolicy == .projectedWithFallback
+    false
 }
 
 func buildProjectedServerEvents(
@@ -133,7 +117,7 @@ func buildProjectedServerEvents(
     allowedEventTypes: Set<String>
 ) -> [AnyServerEvent] {
     projectedEvents.compactMap { rawEvent in
-        let envelope = decodeProjectedField(ProjectedServerEventEnvelope.self, from: rawEvent.base)
+        let envelope = decodeProjectedServerEventEnvelope(rawEvent)
         guard let envelope else {
             return nil
         }
@@ -149,111 +133,55 @@ func buildProjectedServerEvents(
     }
 }
 
-private func emitFallbackShootingEvents(
-    previousMonsters: [Int: MonsterState],
-    previousPlayers: [PlayerID: PlayerState],
-    previousTurrets: [Int: TurretState],
-    currentState: HeroDefenseState,
-    ctx: LandContext
-) {
-    let fallbackEvents = buildFallbackShootingEvents(
-        previousMonsters: previousMonsters,
-        previousPlayers: previousPlayers,
-        previousTurrets: previousTurrets,
-        currentState: currentState
-    )
-
-    for event in fallbackEvents {
-        switch event {
-        case .turretFire(let turretFire):
-            ctx.emitEvent(turretFire, to: .all)
-
-        case .playerShoot(let playerShoot):
-            ctx.emitEvent(playerShoot, to: .all)
-        }
-    }
-}
-
-enum FallbackReplayEvent {
-    case playerShoot(PlayerShootEvent)
-    case turretFire(TurretFireEvent)
-}
-
-func buildFallbackShootingEvents(
-    previousMonsters: [Int: MonsterState],
-    previousPlayers: [PlayerID: PlayerState],
-    previousTurrets: [Int: TurretState],
-    currentState: HeroDefenseState
-) -> [FallbackReplayEvent] {
-    guard !previousMonsters.isEmpty else {
-        return []
-    }
-
-    let sortedTurrets: [(Int, TurretState)] = {
-        if !currentState.turrets.isEmpty {
-            return currentState.turrets.sorted { $0.key < $1.key }
-        }
-        return previousTurrets.sorted { $0.key < $1.key }
-    }()
-
-    let sortedPlayers: [(PlayerID, PlayerState)] = {
-        if !currentState.players.isEmpty {
-            return currentState.players.sorted { $0.key.rawValue < $1.key.rawValue }
-        }
-        return previousPlayers.sorted { $0.key.rawValue < $1.key.rawValue }
-    }()
-
-    var events: [FallbackReplayEvent] = []
-
-    for (monsterID, previousMonster) in previousMonsters.sorted(by: { $0.key < $1.key }) {
-        let currentMonster = currentState.monsters[monsterID]
-        let didTakeDamage: Bool
-        let targetPosition: Position2
-
-        if let currentMonster {
-            didTakeDamage = currentMonster.health < previousMonster.health
-            targetPosition = currentMonster.position
-        } else {
-            didTakeDamage = previousMonster.health > 0
-            targetPosition = previousMonster.position
-        }
-
-        guard didTakeDamage else {
-            continue
-        }
-
-        if let (turretID, turretState) = sortedTurrets.first {
-            events.append(
-                .turretFire(
-                    TurretFireEvent(
-                        turretID: turretID,
-                        from: turretState.position,
-                        to: targetPosition
-                    )
-                )
-            )
-            continue
-        }
-
-        if let (playerID, playerState) = sortedPlayers.first {
-            events.append(
-                .playerShoot(
-                    PlayerShootEvent(
-                        playerID: playerID,
-                        from: playerState.position,
-                        to: targetPosition
-                    )
-                )
-            )
-        }
-    }
-
-    return events
-}
-
-private struct ProjectedServerEventEnvelope: Decodable {
+private struct ProjectedServerEventEnvelope {
     let typeIdentifier: String
     let payload: AnyCodable
+}
+
+private func decodeProjectedServerEventEnvelope(_ rawEvent: AnyCodable) -> ProjectedServerEventEnvelope? {
+    if let object = rawEvent.base as? [String: Any] {
+        let typeIdentifier: String?
+        if let rawType = object["typeIdentifier"] as? String {
+            typeIdentifier = rawType
+        } else if let wrappedType = object["typeIdentifier"] as? AnyCodable {
+            typeIdentifier = wrappedType.base as? String
+        } else {
+            typeIdentifier = nil
+        }
+        guard let typeIdentifier else {
+            return nil
+        }
+        guard let rawPayload = object["payload"] else {
+            return nil
+        }
+
+        let payload: AnyCodable
+        if let wrappedPayload = rawPayload as? AnyCodable {
+            payload = wrappedPayload
+        } else {
+            payload = AnyCodable(rawPayload)
+        }
+
+        return ProjectedServerEventEnvelope(
+            typeIdentifier: typeIdentifier,
+            payload: payload
+        )
+    }
+
+    guard let wrappedObject = rawEvent.base as? [String: AnyCodable] else {
+        return nil
+    }
+    guard let typeIdentifier = wrappedObject["typeIdentifier"]?.base as? String else {
+        return nil
+    }
+    guard let payload = wrappedObject["payload"] else {
+        return nil
+    }
+
+    return ProjectedServerEventEnvelope(
+        typeIdentifier: typeIdentifier,
+        payload: payload
+    )
 }
 
 func applyProjectedState(
