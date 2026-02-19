@@ -3,11 +3,12 @@
 
 export const SCHEMA_VERSION = "0.1.0" as const
 
-export const LAND_IDS = ["hero-defense","reevaluation-monitor"] as const
+export const LAND_IDS = ["hero-defense","hero-defense-replay","reevaluation-monitor"] as const
 export type LandID = (typeof LAND_IDS)[number]
 
 export const ACTION_IDS = {
   "hero-defense": ["Play"] as const,
+  "hero-defense-replay": [] as const,
   "reevaluation-monitor": ["PauseVerification","ResumeVerification","StartVerification"] as const,
 } as const
 export type AnyActionID = (typeof ACTION_IDS)[LandID][number]
@@ -15,6 +16,7 @@ export type ActionIDFor<L extends LandID> = (typeof ACTION_IDS)[L][number]
 
 export const CLIENT_EVENT_IDS = {
   "hero-defense": ["MoveTo","PlaceTurret","Shoot","UpdateRotation","UpgradeTurret","UpgradeWeapon"] as const,
+  "hero-defense-replay": [] as const,
   "reevaluation-monitor": [] as const,
 } as const
 export type AnyClientEventID = (typeof CLIENT_EVENT_IDS)[LandID][number]
@@ -22,6 +24,7 @@ export type ClientEventIDFor<L extends LandID> = (typeof CLIENT_EVENT_IDS)[L][nu
 
 export const SERVER_EVENT_IDS = {
   "hero-defense": ["PlayerShoot","TurretFire"] as const,
+  "hero-defense-replay": ["HeroDefenseReplayTick","PlayerShoot","TurretFire"] as const,
   "reevaluation-monitor": ["TickProcessed","TickSummary","VerificationComplete","VerificationFailed","VerificationProgress"] as const,
 } as const
 export type AnyServerEventID = (typeof SERVER_EVENT_IDS)[LandID][number]
@@ -114,6 +117,32 @@ export const SCHEMA = {
         "sync": {
           "policy": "broadcast"
         }
+      }
+    },
+    "HeroDefenseReplayTickEvent": {
+      "properties": {
+        "actualHash": {
+          "type": "string"
+        },
+        "expectedHash": {
+          "type": "string"
+        },
+        "isMatch": {
+          "type": "boolean"
+        },
+        "tickId": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "actualHash",
+        "expectedHash",
+        "isMatch",
+        "tickId"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
       }
     },
     "HeroDefenseState": {
@@ -975,6 +1004,92 @@ export const SCHEMA = {
         }
       }
     },
+    "hero-defense-replay": {
+      "actions": {},
+      "clientEventHashes": {},
+      "clientEvents": {},
+      "eventHashes": {
+        "HeroDefenseReplayTick": 1,
+        "PlayerShoot": 2,
+        "TurretFire": 3
+      },
+      "events": {
+        "HeroDefenseReplayTick": {
+          "$ref": "#/defs/HeroDefenseReplayTickEvent"
+        },
+        "PlayerShoot": {
+          "$ref": "#/defs/PlayerShootEvent"
+        },
+        "TurretFire": {
+          "$ref": "#/defs/TurretFireEvent"
+        }
+      },
+      "pathHashes": {
+        "base": 807936995,
+        "base.health": 1365490441,
+        "base.maxHealth": 3137759299,
+        "base.position": 2112168348,
+        "base.position.v": 511537460,
+        "base.position.v.x": 6003942,
+        "base.position.v.y": 6004565,
+        "base.radius": 39377611,
+        "monsters": 2325809399,
+        "monsters.*": 2014447693,
+        "monsters.*.health": 2567172315,
+        "monsters.*.id": 3525717083,
+        "monsters.*.maxHealth": 1961956327,
+        "monsters.*.pathProgress": 1050430934,
+        "monsters.*.position": 234890857,
+        "monsters.*.position.v": 1706940344,
+        "monsters.*.position.v.x": 447229454,
+        "monsters.*.position.v.y": 447229369,
+        "monsters.*.reward": 1727768670,
+        "monsters.*.rotation": 640249701,
+        "monsters.*.rotation.degrees": 686397836,
+        "monsters.*.spawnPosition": 593435959,
+        "monsters.*.spawnPosition.v": 2976252221,
+        "monsters.*.spawnPosition.v.x": 4294445264,
+        "monsters.*.spawnPosition.v.y": 4294445983,
+        "nextMonsterID": 2296036123,
+        "nextTurretID": 3519257415,
+        "players": 2159421276,
+        "players.*": 3150840898,
+        "players.*.health": 2520354134,
+        "players.*.lastFireTick": 1845451955,
+        "players.*.maxHealth": 2680789487,
+        "players.*.position": 3358665268,
+        "players.*.position.v": 27416202,
+        "players.*.position.v.x": 2079215419,
+        "players.*.position.v.y": 2079214216,
+        "players.*.resources": 4001719203,
+        "players.*.rotation": 1559156681,
+        "players.*.rotation.degrees": 2702880893,
+        "players.*.targetPosition": 4235045094,
+        "players.*.weaponLevel": 643476926,
+        "score": 653805326,
+        "turrets": 1182484103,
+        "turrets.*": 2097601767,
+        "turrets.*.id": 1296230337,
+        "turrets.*.lastFireTick": 2308492880,
+        "turrets.*.level": 793855569,
+        "turrets.*.ownerID": 3684525184,
+        "turrets.*.position": 549984129,
+        "turrets.*.position.v": 1584456286,
+        "turrets.*.position.v.x": 2678658541,
+        "turrets.*.position.v.y": 2678658718,
+        "turrets.*.rotation": 2029854966,
+        "turrets.*.rotation.degrees": 957401409
+      },
+      "stateType": "HeroDefenseState",
+      "sync": {
+        "diff": {
+          "$ref": "#/defs/StateDiff"
+        },
+        "snapshot": {
+          "$ref": "#/defs/HeroDefenseState"
+        }
+      }
+    },
     "reevaluation-monitor": {
       "actions": {
         "PauseVerification": {
@@ -1038,7 +1153,7 @@ export const SCHEMA = {
       }
     }
   },
-  "schemaHash": "16147559c22b2551",
+  "schemaHash": "1a63f638e034df51",
   "version": "0.1.0"
 } as const
 

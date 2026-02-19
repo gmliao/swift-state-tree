@@ -65,6 +65,16 @@
             <v-divider color="rgba(0,0,0,0.05)"></v-divider>
 
             <div class="pa-4 flex-shrink-0">
+              <v-alert
+                v-if="recordLoadErrorMessage"
+                type="warning"
+                variant="tonal"
+                density="comfortable"
+                class="mb-3 text-body-2"
+              >
+                {{ recordLoadErrorMessage }}
+              </v-alert>
+
               <v-btn
                 v-if="!isVerifying"
                 class="btn-apple monitor-action-btn"
@@ -105,6 +115,16 @@
                 <v-icon start>mdi-play-network</v-icon>
                 Start Replay Stream
               </v-btn>
+
+              <v-alert
+                v-if="replayErrorMessage"
+                type="error"
+                variant="tonal"
+                density="comfortable"
+                class="mt-3 text-body-2"
+              >
+                {{ replayErrorMessage }}
+              </v-alert>
             </div>
           </v-card-text>
         </v-card>
@@ -320,6 +340,8 @@ const records = ref<string[]>([]);
 const selectedRecord = ref<string | null>(null);
 const isVerifying = ref(false);
 const isStartingReplay = ref(false);
+const recordLoadErrorMessage = ref<string | null>(null);
+const replayErrorMessage = ref<string | null>(null);
 const monitorClient = ref<LandClient | null>(null);
 const monitorState = ref<any>(null);
 const tickResults = ref<any[]>([]);
@@ -384,6 +406,7 @@ function formatRecordTimestamp(timestamp: string) {
 
 function selectRecord(record: string) {
   selectedRecord.value = record;
+  replayErrorMessage.value = null;
 }
 
 function goBack() {
@@ -396,15 +419,28 @@ function showTickDetail(tick: any) {
 
 async function loadRecords() {
   try {
+    recordLoadErrorMessage.value = null;
     const response = await fetch(`${adminBaseURL}/admin/reevaluation/records`, {
       headers: {
         "X-API-Key": adminAPIKey,
       },
     });
+
+    if (!response.ok) {
+      throw new Error(`Load records failed: HTTP ${response.status}`);
+    }
+
     const data = await response.json();
     records.value = data.data || [];
+
+    if (records.value.length === 0) {
+      recordLoadErrorMessage.value =
+        "No records available yet. Run a game with ENABLE_REEVALUATION=true to generate replay records.";
+    }
   } catch (error) {
     console.error("Failed to load records:", error);
+    const message = error instanceof Error ? error.message : "Unknown error";
+    recordLoadErrorMessage.value = `Failed to load records: ${message}`;
   }
 }
 
@@ -461,6 +497,7 @@ async function startReplay() {
     return;
   }
 
+  replayErrorMessage.value = null;
   isStartingReplay.value = true;
   try {
     const replayResponse = await fetch(
@@ -479,7 +516,12 @@ async function startReplay() {
     );
 
     if (!replayResponse.ok) {
-      throw new Error(`Replay start failed: HTTP ${replayResponse.status}`);
+      const errorPayload = await replayResponse.json().catch(() => null);
+      const serverMessage =
+        (errorPayload?.error?.message as string | undefined) ||
+        (errorPayload?.message as string | undefined);
+      const fallback = `Replay start failed: HTTP ${replayResponse.status}`;
+      throw new Error(serverMessage || fallback);
     }
 
     const replayPayload = await replayResponse.json();
@@ -505,6 +547,19 @@ async function startReplay() {
     await router.push({ name: "game", query: { mode: "replay" } });
   } catch (error) {
     console.error("Start replay failed:", error);
+    const rawMessage = error instanceof Error ? error.message : "Unknown replay error";
+    if (rawMessage.includes("Replay land type is not registered")) {
+      replayErrorMessage.value =
+        "Replay is not enabled on server. Start GameServer with ENABLE_REEVALUATION=true, then try again.";
+    } else if (rawMessage.includes("Path must be within reevaluation records directory")) {
+      replayErrorMessage.value =
+        "Selected record path is invalid. Please refresh records and select a valid record again.";
+    } else if (rawMessage.includes("Record file not found")) {
+      replayErrorMessage.value =
+        "Record file no longer exists. Please refresh records and choose another record.";
+    } else {
+      replayErrorMessage.value = rawMessage;
+    }
   } finally {
     isStartingReplay.value = false;
   }

@@ -12,6 +12,7 @@ struct SchemaGen {
         let landDefinitions = [
             AnyLandDefinition(HeroDefense.makeLand()),
             AnyLandDefinition(ReevaluationMonitor.makeLand()),
+            AnyLandDefinition(HeroDefenseReplay.makeLand()),
         ]
 
         // Generate schema from command line arguments

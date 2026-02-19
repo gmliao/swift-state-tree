@@ -113,3 +113,5 @@ Server-side replay stream 的主要驗證在 CLI 端完成，WebClient 目前維
 ```
 
 此腳本會在 `json`、`jsonOpcode`、`messagepack` 三種 encoding 下執行 Hero Defense E2E，且每種 encoding 都包含 replay stream 驗證。
+
+Replay stream 已對齊 live-compatible state 形狀（`players`、`monsters`、`turrets`、`base`、`score`），不再依賴 legacy `currentStateJSON` 欄位。

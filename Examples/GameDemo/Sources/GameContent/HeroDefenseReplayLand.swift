@@ -1,38 +1,7 @@
 import Foundation
 import SwiftStateTree
+import SwiftStateTreeDeterministicMath
 import SwiftStateTreeReevaluationMonitor
-
-@StateNodeBuilder
-public struct HeroDefenseReplayState: StateNodeProtocol {
-    @Sync(.broadcast)
-    var status: String = "idle"
-
-    @Sync(.broadcast)
-    var currentTickId: Int64 = 0
-
-    @Sync(.broadcast)
-    var totalTicks: Int = 0
-
-    @Sync(.broadcast)
-    var players: [String: AnyCodable] = [:]
-
-    @Sync(.broadcast)
-    var monsters: [String: AnyCodable] = [:]
-
-    @Sync(.broadcast)
-    var turrets: [String: AnyCodable] = [:]
-
-    @Sync(.broadcast)
-    var base: [String: AnyCodable] = [:]
-
-    @Sync(.broadcast)
-    var score: Int = 0
-
-    @Sync(.broadcast)
-    var errorMessage: String = ""
-
-    public init() {}
-}
 
 @Payload
 public struct HeroDefenseReplayTickEvent: ServerEventPayload {
@@ -50,22 +19,20 @@ public struct HeroDefenseReplayTickEvent: ServerEventPayload {
 }
 
 public enum HeroDefenseReplay {
-    public static func makeLand() -> LandDefinition<HeroDefenseReplayState> {
-        Land("hero-defense-replay", using: HeroDefenseReplayState.self) {
+    public static func makeLand() -> LandDefinition<HeroDefenseState> {
+        Land("hero-defense-replay", using: HeroDefenseState.self) {
             AccessControl {
                 AllowPublic(true)
                 MaxPlayers(64)
             }
 
             Lifetime {
-                Tick(every: .milliseconds(50)) { (state: inout HeroDefenseReplayState, ctx: LandContext) in
+                Tick(every: .milliseconds(50)) { (state: inout HeroDefenseState, ctx: LandContext) in
                     guard let service = ctx.services.get(ReevaluationRunnerService.self) else {
                         return
                     }
 
                     let status = service.getStatus()
-                    state.totalTicks = Int(status.totalTicks)
-                    state.errorMessage = status.errorMessage
 
                     if status.phase == .idle {
                         guard let recordFilePath = resolveReplayRecordPath(from: ctx.landID) else {
@@ -84,15 +51,21 @@ public enum HeroDefenseReplay {
                     }
 
                     if let result = service.consumeNextResult() {
-                        if status.phase == .failed {
-                            state.status = ReevaluationStatus.Phase.failed.rawValue
-                        } else {
-                            state.status = ReevaluationStatus.Phase.verifying.rawValue
-                        }
-                        state.currentTickId = result.tickId
-
                         if let projectedFrame = result.projectedFrame {
+                            let previousMonsters = state.monsters
+                            let previousPlayers = state.players
+                            let previousTurrets = state.turrets
                             applyProjectedState(projectedFrame.stateObject, to: &state)
+                            let emittedProjectedEvents = emitProjectedServerEvents(projectedFrame.serverEvents, ctx: ctx)
+                            if emittedProjectedEvents == 0 {
+                                emitFallbackShootingEvents(
+                                    previousMonsters: previousMonsters,
+                                    previousPlayers: previousPlayers,
+                                    previousTurrets: previousTurrets,
+                                    currentState: state,
+                                    ctx: ctx
+                                )
+                            }
                         }
 
                         let event = HeroDefenseReplayTickEvent(
@@ -102,52 +75,309 @@ public enum HeroDefenseReplay {
                             actualHash: result.stateHash
                         )
                         ctx.emitEvent(event, to: .all)
-                    } else {
-                        state.status = status.phase.rawValue
-                        state.currentTickId = status.currentTick
                     }
                 }
             }
 
             ServerEvents {
                 Register(HeroDefenseReplayTickEvent.self)
+                Register(PlayerShootEvent.self)
+                Register(TurretFireEvent.self)
             }
         }
     }
 }
 
-private func applyProjectedState(
-    _ projectedState: [String: AnyCodable],
-    to state: inout HeroDefenseReplayState
+@discardableResult
+private func emitProjectedServerEvents(_ projectedEvents: [AnyCodable], ctx: LandContext) -> Int {
+    var emittedCount = 0
+    for rawEvent in projectedEvents {
+        guard let eventObject = rawEvent.base as? [String: Any]
+        else {
+            continue
+        }
+        let payload = eventObject["payload"].map(unwrapAnyCodableValue)
+
+        guard let payload else {
+            continue
+        }
+
+        if let event = decodeProjectedField(PlayerShootEvent.self, from: payload) {
+            ctx.emitEvent(event, to: .all)
+            emittedCount += 1
+            continue
+        }
+
+        if let event = decodeProjectedField(TurretFireEvent.self, from: payload) {
+            ctx.emitEvent(event, to: .all)
+            emittedCount += 1
+        }
+    }
+
+    return emittedCount
+}
+
+private func emitFallbackShootingEvents(
+    previousMonsters: [Int: MonsterState],
+    previousPlayers: [PlayerID: PlayerState],
+    previousTurrets: [Int: TurretState],
+    currentState: HeroDefenseState,
+    ctx: LandContext
 ) {
-    state.players = projectedState["players"].map(dictionaryValue) ?? [:]
-    state.monsters = projectedState["monsters"].map(dictionaryValue) ?? [:]
-    state.turrets = projectedState["turrets"].map(dictionaryValue) ?? [:]
-    state.base = projectedState["base"].map(dictionaryValue) ?? [:]
-    state.score = parseScore(from: projectedState["score"]) ?? 0
+    let fallbackEvents = buildFallbackShootingEvents(
+        previousMonsters: previousMonsters,
+        previousPlayers: previousPlayers,
+        previousTurrets: previousTurrets,
+        currentState: currentState
+    )
+
+    for event in fallbackEvents {
+        switch event {
+        case .turretFire(let turretFire):
+            ctx.emitEvent(turretFire, to: .all)
+
+        case .playerShoot(let playerShoot):
+            ctx.emitEvent(playerShoot, to: .all)
+        }
+    }
 }
 
-private func dictionaryValue(from value: AnyCodable) -> [String: AnyCodable] {
-    guard let dictionary = value.base as? [String: Any] else {
-        return [:]
-    }
-    return dictionary.mapValues(AnyCodable.init)
+enum FallbackReplayEvent {
+    case playerShoot(PlayerShootEvent)
+    case turretFire(TurretFireEvent)
 }
 
-private func parseScore(from value: AnyCodable?) -> Int? {
-    if let scoreValue = value?.base as? Int {
-        return scoreValue
+func buildFallbackShootingEvents(
+    previousMonsters: [Int: MonsterState],
+    previousPlayers: [PlayerID: PlayerState],
+    previousTurrets: [Int: TurretState],
+    currentState: HeroDefenseState
+) -> [FallbackReplayEvent] {
+    guard !previousMonsters.isEmpty else {
+        return []
     }
-    if let scoreValue = value?.base as? Double {
-        return Int(scoreValue)
+
+    let sortedTurrets: [(Int, TurretState)] = {
+        if !currentState.turrets.isEmpty {
+            return currentState.turrets.sorted { $0.key < $1.key }
+        }
+        return previousTurrets.sorted { $0.key < $1.key }
+    }()
+
+    let sortedPlayers: [(PlayerID, PlayerState)] = {
+        if !currentState.players.isEmpty {
+            return currentState.players.sorted { $0.key.rawValue < $1.key.rawValue }
+        }
+        return previousPlayers.sorted { $0.key.rawValue < $1.key.rawValue }
+    }()
+
+    var events: [FallbackReplayEvent] = []
+
+    for (monsterID, previousMonster) in previousMonsters.sorted(by: { $0.key < $1.key }) {
+        let currentMonster = currentState.monsters[monsterID]
+        let didTakeDamage: Bool
+        let targetPosition: Position2
+
+        if let currentMonster {
+            didTakeDamage = currentMonster.health < previousMonster.health
+            targetPosition = currentMonster.position
+        } else {
+            didTakeDamage = previousMonster.health > 0
+            targetPosition = previousMonster.position
+        }
+
+        guard didTakeDamage else {
+            continue
+        }
+
+        if let (turretID, turretState) = sortedTurrets.first {
+            events.append(
+                .turretFire(
+                    TurretFireEvent(
+                        turretID: turretID,
+                        from: turretState.position,
+                        to: targetPosition
+                    )
+                )
+            )
+            continue
+        }
+
+        if let (playerID, playerState) = sortedPlayers.first {
+            events.append(
+                .playerShoot(
+                    PlayerShootEvent(
+                        playerID: playerID,
+                        from: playerState.position,
+                        to: targetPosition
+                    )
+                )
+            )
+        }
     }
-    if let scoreValue = value?.base as? NSNumber {
-        return scoreValue.intValue
+
+    return events
+}
+
+private func unwrapAnyCodableValue(_ value: Any) -> Any {
+    if let anyCodable = value as? AnyCodable {
+        return unwrapAnyCodableValue(anyCodable.base)
     }
-    if let scoreValue = value?.base as? String {
-        return Int(scoreValue)
+
+    if let object = value as? [String: Any] {
+        return object.reduce(into: [String: Any]()) { result, entry in
+            result[entry.key] = unwrapAnyCodableValue(entry.value)
+        }
     }
-    return nil
+
+    if let array = value as? [Any] {
+        return array.map(unwrapAnyCodableValue)
+    }
+
+    return value
+}
+
+func applyProjectedState(
+    _ projectedState: [String: AnyCodable],
+    to state: inout HeroDefenseState
+) {
+    let baseline = HeroDefenseState()
+    state.players = baseline.players
+    state.monsters = baseline.monsters
+    state.turrets = baseline.turrets
+    state.base = baseline.base
+    state.score = baseline.score
+
+    if let playersObject = projectedState["players"]?.base as? [String: Any] {
+        state.players = playersObject.reduce(into: [PlayerID: PlayerState]()) { result, entry in
+            guard let playerObject = entry.value as? [String: Any] else {
+                return
+            }
+
+            var player = PlayerState()
+            if let position = decodeProjectedField(Position2.self, from: playerObject["position"]) {
+                player.position = position
+            }
+            if let rotation = decodeProjectedField(Angle.self, from: playerObject["rotation"]) {
+                player.rotation = rotation
+            }
+            if let targetPosition = decodeProjectedField(Position2.self, from: playerObject["targetPosition"]) {
+                player.targetPosition = targetPosition
+            }
+            if let health = playerObject["health"] as? Int {
+                player.health = health
+            }
+            if let maxHealth = playerObject["maxHealth"] as? Int {
+                player.maxHealth = maxHealth
+            }
+            if let weaponLevel = playerObject["weaponLevel"] as? Int {
+                player.weaponLevel = weaponLevel
+            }
+            if let resources = playerObject["resources"] as? Int {
+                player.resources = resources
+            }
+
+            result[PlayerID(entry.key)] = player
+        }
+    }
+
+    if let monstersObject = projectedState["monsters"]?.base as? [String: Any] {
+        state.monsters = monstersObject.reduce(into: [Int: MonsterState]()) { result, entry in
+            guard let id = Int(entry.key) else { return }
+            guard let monsterObject = entry.value as? [String: Any] else {
+                return
+            }
+
+            var monster = MonsterState()
+            if let valueID = monsterObject["id"] as? Int {
+                monster.id = valueID
+            }
+            if let position = decodeProjectedField(Position2.self, from: monsterObject["position"]) {
+                monster.position = position
+            }
+            if let rotation = decodeProjectedField(Angle.self, from: monsterObject["rotation"]) {
+                monster.rotation = rotation
+            }
+            if let health = monsterObject["health"] as? Int {
+                monster.health = health
+            }
+            if let maxHealth = monsterObject["maxHealth"] as? Int {
+                monster.maxHealth = maxHealth
+            }
+
+            result[id] = monster
+        }
+    }
+
+    if let turretsObject = projectedState["turrets"]?.base as? [String: Any] {
+        state.turrets = turretsObject.reduce(into: [Int: TurretState]()) { result, entry in
+            guard let id = Int(entry.key) else { return }
+            guard let turretObject = entry.value as? [String: Any] else {
+                return
+            }
+
+            var turret = TurretState()
+            if let valueID = turretObject["id"] as? Int {
+                turret.id = valueID
+            }
+            if let position = decodeProjectedField(Position2.self, from: turretObject["position"]) {
+                turret.position = position
+            }
+            if let rotation = decodeProjectedField(Angle.self, from: turretObject["rotation"]) {
+                turret.rotation = rotation
+            }
+            if let level = turretObject["level"] as? Int {
+                turret.level = level
+            }
+            if let ownerID = turretObject["ownerID"] as? String {
+                turret.ownerID = PlayerID(ownerID)
+            } else {
+                turret.ownerID = nil
+            }
+
+            result[id] = turret
+        }
+    }
+
+    if let baseObject = projectedState["base"]?.base as? [String: Any] {
+        var base = BaseState()
+        if let position = decodeProjectedField(Position2.self, from: baseObject["position"]) {
+            base.position = position
+        }
+        if let radius = decodeProjectedField(Float.self, from: baseObject["radius"]) {
+            base.radius = radius
+        }
+        if let health = baseObject["health"] as? Int {
+            base.health = health
+        }
+        if let maxHealth = baseObject["maxHealth"] as? Int {
+            base.maxHealth = maxHealth
+        }
+        state.base = base
+    }
+
+    if let score = projectedState["score"]?.base as? Int {
+        state.score = score
+    }
+}
+
+private func decodeProjectedField<T: Decodable>(_ type: T.Type, from rawValue: Any?) -> T? {
+    guard let rawValue else {
+        return nil
+    }
+
+    let boxedValue: [String: Any] = ["value": rawValue]
+    guard JSONSerialization.isValidJSONObject(boxedValue),
+          let data = try? JSONSerialization.data(withJSONObject: boxedValue),
+          let decoded = try? JSONDecoder().decode(ProjectedField<T>.self, from: data)
+    else {
+        return nil
+    }
+    return decoded.value
+}
+
+private struct ProjectedField<T: Decodable>: Decodable {
+    let value: T
 }
 
 private func resolveReplayRecordPath(from landIDString: String) -> String? {

@@ -61,12 +61,16 @@ export class GameScene extends Phaser.Scene {
 
   setReplayMode(enabled: boolean) {
     this.replayMode = enabled;
+    if (this.cameraManager) {
+      this.cameraManager.setReplayMode(enabled);
+    }
   }
 
 
   create() {
     // Initialize camera manager
     this.cameraManager = new CameraManager(this);
+    this.cameraManager.setReplayMode(this.replayMode);
 
     // Create white background covering a large area
     const backgroundSize = 1000;
@@ -89,6 +93,8 @@ export class GameScene extends Phaser.Scene {
       (screenX, screenY) => this.cameraManager.screenToWorld(screenX, screenY),
       async (target) => {
         if (this.replayMode) {
+          this.cameraManager.stopFollow();
+          this.cameraManager.centerOn(target.x, target.y);
           return;
         }
         if (this.tree && !this.placeTurretInput.isInPlacementMode()) {
@@ -137,14 +143,12 @@ export class GameScene extends Phaser.Scene {
       this.effectManager.subscribeToTree(this.tree);
       // Set camera manager dependencies
       this.cameraManager.setDependencies(this.tree, this.playerManager);
+      this.cameraManager.setupFollow();
     }
 
     // Update from state if available
     if (this.tree) {
       this.updateFromState();
-      if (this.tree.currentPlayerID && this.playerManager.getCurrentPlayer()) {
-        this.cameraManager.setupFollow();
-      }
     }
   }
 

@@ -7,6 +7,43 @@ import Testing
 
 @Suite("NIO Admin Replay Start Route Tests")
 struct NIOAdminRoutesReplayStartTests {
+    @Test("Replay start accepts recordFilePath returned by records list endpoint")
+    func replayStartAcceptsListedRelativePath() async throws {
+        let router = try await makeRouter()
+        let recordFileURL = try writeRecordFile(
+            landType: "hero-defense",
+            landDefinitionID: "hero-defense",
+            version: "2.0"
+        )
+        defer { try? FileManager.default.removeItem(at: recordFileURL) }
+
+        let listResponse = try await sendRecordsListRequest(on: router)
+        #expect(listResponse.status == .ok)
+
+        let listDecoded = try decodeAdminResponse(from: listResponse)
+        #expect(listDecoded.success)
+        #expect(listDecoded.error == nil)
+
+        let listedPath = (listDecoded.data?.base as? [String])?
+            .first(where: { $0.hasSuffix(recordFileURL.lastPathComponent) })
+        guard let listedPath else {
+            Issue.record("Expected records list to contain newly created file path")
+            return
+        }
+
+        let requestBody = try JSONSerialization.data(withJSONObject: [
+            "landType": "hero-defense",
+            "recordFilePath": listedPath,
+        ])
+
+        let response = try await sendReplayStartRequest(body: requestBody, on: router)
+        #expect(response.status == .ok)
+
+        let decoded = try decodeAdminResponse(from: response)
+        #expect(decoded.success)
+        #expect(decoded.error == nil)
+    }
+
     @Test("Replay start keeps backward compatibility when expectedLandDefinitionID is omitted")
     func replayStartAllowsOmittedExpectedLandDefinitionID() async throws {
         let router = try await makeRouter()
@@ -133,6 +170,23 @@ struct NIOAdminRoutesReplayStartTests {
         #expect(detailString(decoded.error?.details, key: "expectedLandType") == "hero-defense")
         #expect(detailString(decoded.error?.details, key: "recordedLandType") == "counter")
     }
+}
+
+private func sendRecordsListRequest(on router: NIOHTTPRouter) async throws -> NIOHTTPResponse {
+    var headers = HTTPHeaders()
+    headers.add(name: "X-API-Key", value: "test-admin-key")
+
+    let request = NIOHTTPRequest(
+        method: .GET,
+        uri: "/admin/reevaluation/records",
+        headers: headers,
+        body: nil
+    )
+
+    guard let response = try await router.handle(request) else {
+        throw CocoaError(.fileReadUnknown)
+    }
+    return response
 }
 
 private func makeRouter() async throws -> NIOHTTPRouter {

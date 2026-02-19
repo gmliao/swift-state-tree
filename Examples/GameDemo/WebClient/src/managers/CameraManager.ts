@@ -11,6 +11,7 @@ export class CameraManager {
   private readonly gameCamera: GameCamera
   private tree: HeroDefenseStateTree | null = null
   private playerManager: PlayerManager | null = null
+  private replayMode = false
 
   constructor(scene: Phaser.Scene) {
     this.gameCamera = new GameCamera(scene).init()
@@ -24,12 +25,23 @@ export class CameraManager {
     this.playerManager = playerManager
   }
 
+  setReplayMode(enabled: boolean): void {
+    this.replayMode = enabled
+  }
+
   /**
    * Setup camera to follow current player
    * Tries to follow player sprite if available, otherwise centers on initial position
    */
   setupFollow(): void {
-    if (!this.tree || !this.tree.currentPlayerID) return
+    if (!this.tree) return
+
+    if (this.replayMode) {
+      this.centerOnBase()
+      return
+    }
+
+    if (!this.tree.currentPlayerID) return
     
     // Try to use player sprite if available
     if (this.playerManager) {
@@ -56,6 +68,14 @@ export class CameraManager {
     this.gameCamera.startFollow(target)
   }
 
+  stopFollow(): void {
+    this.gameCamera.stopFollow()
+  }
+
+  centerOn(x: number, y: number): void {
+    this.gameCamera.centerOn(x, y)
+  }
+
   /**
    * Convert screen coordinates to world coordinates
    */
@@ -68,5 +88,15 @@ export class CameraManager {
    */
   getCamera(): GameCamera {
     return this.gameCamera
+  }
+
+  private centerOnBase(): void {
+    if (!this.tree) return
+
+    const state = this.tree.state as HeroDefenseState
+    const basePosition = state.base?.position?.v
+    if (basePosition) {
+      this.gameCamera.centerOn(basePosition.x, basePosition.y)
+    }
   }
 }

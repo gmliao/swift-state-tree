@@ -1,0 +1,194 @@
+{
+  "maxDuration": 120000,
+  "steps": [
+    {
+      "type": "log",
+      "message": "Replay proof scenario: stay near base and force shooting opportunities"
+    },
+    {
+      "type": "wait",
+      "wait": 1000
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "score",
+        "equals": 0,
+        "message": "Initial score should be 0"
+      }
+    },
+    {
+      "type": "event",
+      "event": "MoveTo",
+      "payload": {
+        "target": {
+          "__type": "Position2",
+          "value": {
+            "x": 64000,
+            "y": 36000
+          }
+        }
+      }
+    },
+    {
+      "type": "wait",
+      "wait": 300
+    },
+    {
+      "type": "log",
+      "message": "Keep player near base while monsters approach"
+    },
+    {
+      "type": "event",
+      "event": "MoveTo",
+      "payload": {
+        "target": {
+          "__type": "Position2",
+          "value": {
+            "x": 62000,
+            "y": 34000
+          }
+        }
+      }
+    },
+    {
+      "type": "wait",
+      "wait": 400
+    },
+    {
+      "type": "event",
+      "event": "MoveTo",
+      "payload": {
+        "target": {
+          "__type": "Position2",
+          "value": {
+            "x": 66000,
+            "y": 38000
+          }
+        }
+      }
+    },
+    {
+      "type": "wait",
+      "wait": 400
+    },
+    {
+      "type": "event",
+      "event": "MoveTo",
+      "payload": {
+        "target": {
+          "__type": "Position2",
+          "value": {
+            "x": 64000,
+            "y": 36000
+          }
+        }
+      }
+    },
+    {
+      "type": "wait",
+      "wait": 500
+    },
+    {
+      "type": "log",
+      "message": "Manual Shoot events while waiting for monsters to enter range"
+    },
+    {
+      "type": "event",
+      "event": "Shoot",
+      "payload": {}
+    },
+    {
+      "type": "wait",
+      "wait": 800
+    },
+    {
+      "type": "event",
+      "event": "Shoot",
+      "payload": {}
+    },
+    {
+      "type": "wait",
+      "wait": 800
+    },
+    {
+      "type": "event",
+      "event": "Shoot",
+      "payload": {}
+    },
+    {
+      "type": "wait",
+      "wait": 800
+    },
+    {
+      "type": "event",
+      "event": "Shoot",
+      "payload": {}
+    },
+    {
+      "type": "wait",
+      "wait": 800
+    },
+    {
+      "type": "event",
+      "event": "Shoot",
+      "payload": {}
+    },
+    {
+      "type": "wait",
+      "wait": 800
+    },
+    {
+      "type": "event",
+      "event": "Shoot",
+      "payload": {}
+    },
+    {
+      "type": "wait",
+      "wait": 800
+    },
+    {
+      "type": "event",
+      "event": "Shoot",
+      "payload": {}
+    },
+    {
+      "type": "wait",
+      "wait": 800
+    },
+    {
+      "type": "event",
+      "event": "Shoot",
+      "payload": {}
+    },
+    {
+      "type": "wait",
+      "wait": 800
+    },
+    {
+      "type": "event",
+      "event": "Shoot",
+      "payload": {}
+    },
+    {
+      "type": "wait",
+      "wait": 800
+    },
+    {
+      "type": "event",
+      "event": "Shoot",
+      "payload": {}
+    },
+    {
+      "type": "wait",
+      "wait": 800
+    },
+    {
+      "type": "state"
+    },
+    {
+      "type": "log",
+      "message": "Replay proof scenario completed"
+    }
+  ]
+}
