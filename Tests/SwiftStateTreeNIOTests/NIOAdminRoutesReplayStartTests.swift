@@ -250,6 +250,23 @@ private func sendRecordsListRequest(on router: NIOHTTPRouter) async throws -> NI
     return response
 }
 
+private func sendRecordsListRequest(on router: NIOHTTPRouter) async throws -> NIOHTTPResponse {
+    var headers = HTTPHeaders()
+    headers.add(name: "X-API-Key", value: "test-admin-key")
+
+    let request = NIOHTTPRequest(
+        method: .GET,
+        uri: "/admin/reevaluation/records",
+        headers: headers,
+        body: nil
+    )
+
+    guard let response = try await router.handle(request) else {
+        throw CocoaError(.fileReadUnknown)
+    }
+    return response
+}
+
 private func makeRouter() async throws -> NIOHTTPRouter {
     let landRealm = LandRealm()
     try await landRealm.register(landType: "hero-defense-replay", server: MockReplayLandServer())

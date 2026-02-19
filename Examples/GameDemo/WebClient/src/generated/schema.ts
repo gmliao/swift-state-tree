@@ -119,6 +119,32 @@ export const SCHEMA = {
         }
       }
     },
+    "HeroDefenseReplayTickEvent": {
+      "properties": {
+        "actualHash": {
+          "type": "string"
+        },
+        "expectedHash": {
+          "type": "string"
+        },
+        "isMatch": {
+          "type": "boolean"
+        },
+        "tickId": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "actualHash",
+        "expectedHash",
+        "isMatch",
+        "tickId"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
     "HeroDefenseState": {
       "properties": {
         "base": {

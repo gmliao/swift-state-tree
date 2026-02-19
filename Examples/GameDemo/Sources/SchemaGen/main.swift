@@ -13,6 +13,7 @@ struct SchemaGen {
         let landDefinitions = [
             AnyLandDefinition(HeroDefense.makeLand()),
             AnyLandDefinition(ReevaluationMonitor.makeLand()),
+            AnyLandDefinition(HeroDefenseReplay.makeLand()),
         ]
 
         do {
