@@ -230,14 +230,27 @@ struct ReevaluationReplayCompatibilityTests {
         #expect(payload?["count"] as? Int == 3)
     }
 
-    @Test("Replay projection supports legacy top-level snapshot shape")
-    func replayProjectionLegacyTopLevelShapeContract() throws {
+    @Test("Replay projection filters wrapped artifacts per-entity and keeps valid values fields")
+    func replayProjectionLegacyWrappedShapeContract() throws {
         let snapshotObject: [String: Any] = [
-            "players": ["p1": ["x": 10, "y": 20]],
-            "monsters": ["1": ["position": ["x": 10, "y": 20]]],
-            "turrets": ["1": ["position": ["x": 5, "y": 6]]],
-            "base": ["health": 100, "maxHealth": 100],
-            "score": 7,
+            "values": [
+                "players": [
+                    "p1": [
+                        "base": [
+                            "position": ["x": 10, "y": 20],
+                            "health": 99,
+                        ],
+                    ],
+                    "p2": [
+                        "position": ["x": 30, "y": 40],
+                        "health": 80,
+                    ],
+                ],
+                "monsters": ["1": ["position": ["x": 10, "y": 20]]],
+                "turrets": ["1": ["position": ["x": 5, "y": 6]]],
+                "base": ["base": ["health": 100, "maxHealth": 100]],
+                "score": 7,
+            ],
             "currentStateJSON": "legacy-replay-only",
         ]
         let snapshotJSONString = try encodeJSONObjectToString(snapshotObject)
@@ -256,9 +269,91 @@ struct ReevaluationReplayCompatibilityTests {
         #expect(projected.stateObject["players"] != nil)
         #expect(projected.stateObject["monsters"] != nil)
         #expect(projected.stateObject["turrets"] != nil)
-        #expect(projected.stateObject["base"] != nil)
-        #expect(projected.stateObject["score"] != nil)
+        #expect(projected.stateObject["base"] == nil)
+        #expect(projected.stateObject["score"]?.base as? Int == 7)
         #expect(projected.stateObject["currentStateJSON"] == nil)
+
+        let projectedPlayers = projected.stateObject["players"]?.base as? [String: Any]
+        #expect(projectedPlayers?["p1"] == nil)
+        #expect((projectedPlayers?["p2"] as? [String: Any])?["position"] as? [String: Any] != nil)
+
+        let projectedMonsters = projected.stateObject["monsters"]?.base as? [String: Any]
+        let projectedTurrets = projected.stateObject["turrets"]?.base as? [String: Any]
+        #expect((projectedMonsters?["1"] as? [String: Any])?["position"] as? [String: Any] != nil)
+        #expect((projectedTurrets?["1"] as? [String: Any])?["position"] as? [String: Any] != nil)
+    }
+
+    @Test("Replay projection keeps emitted server events for visual effects")
+    func replayProjectionIncludesEmittedServerEventsContract() throws {
+        let snapshotJSONString = try encodeJSONObjectToString(["score": 1])
+        let playerShootPayload: [String: Any] = [
+            "from": ["v": ["x": 1000, "y": 2000]],
+            "to": ["v": ["x": 3000, "y": 4000]],
+            "playerID": ["rawValue": "p1"],
+        ]
+        let emittedEvent = ReevaluationRecordedServerEvent(
+            kind: "serverEvent",
+            sequence: 1,
+            tickId: 7,
+            typeIdentifier: "PlayerShoot",
+            payload: AnyCodable(playerShootPayload),
+            target: ReevaluationEventTargetRecord(kind: "all", ids: [])
+        )
+        let stepResult = ReevaluationStepResult(
+            tickId: 7,
+            stateHash: "hash-7",
+            recordedHash: "hash-7",
+            isMatch: true,
+            actualState: AnyCodable(snapshotJSONString),
+            emittedServerEvents: [emittedEvent]
+        )
+
+        let projector = HeroDefenseReplayProjector()
+        let projected = try projector.project(stepResult)
+
+        #expect(projected.serverEvents.count == 1)
+        let eventObject = projected.serverEvents.first?.base as? [String: Any]
+        #expect(eventObject?["typeIdentifier"] as? String == "PlayerShoot")
+        let payloadWrapped = eventObject?["payload"] as? AnyCodable
+        let payload = payloadWrapped?.base as? [String: Any]
+        let from = payload?["from"] as? [String: Any]
+        #expect(from != nil)
+    }
+
+    @Test("Replay projection keeps emitted TurretFire events for turret effects")
+    func replayProjectionIncludesTurretFireEventsContract() throws {
+        let snapshotJSONString = try encodeJSONObjectToString(["score": 1])
+        let turretFirePayload: [String: Any] = [
+            "turretID": 2,
+            "from": ["v": ["x": 1000, "y": 2000]],
+            "to": ["v": ["x": 3000, "y": 4000]],
+        ]
+        let emittedEvent = ReevaluationRecordedServerEvent(
+            kind: "serverEvent",
+            sequence: 2,
+            tickId: 8,
+            typeIdentifier: "TurretFire",
+            payload: AnyCodable(turretFirePayload),
+            target: ReevaluationEventTargetRecord(kind: "all", ids: [])
+        )
+        let stepResult = ReevaluationStepResult(
+            tickId: 8,
+            stateHash: "hash-8",
+            recordedHash: "hash-8",
+            isMatch: true,
+            actualState: AnyCodable(snapshotJSONString),
+            emittedServerEvents: [emittedEvent]
+        )
+
+        let projector = HeroDefenseReplayProjector()
+        let projected = try projector.project(stepResult)
+
+        #expect(projected.serverEvents.count == 1)
+        let eventObject = projected.serverEvents.first?.base as? [String: Any]
+        #expect(eventObject?["typeIdentifier"] as? String == "TurretFire")
+        let payloadWrapped = eventObject?["payload"] as? AnyCodable
+        let payload = payloadWrapped?.base as? [String: Any]
+        #expect(payload?["turretID"] as? Int == 2)
     }
 
     @Test("Replay runner pipeline preserves tick ordering through service queue")
