@@ -6,7 +6,6 @@ import { GameScene } from "../scenes/GameScene";
 import { useGameClient } from "../utils/gameClient";
 
 const router = useRouter();
-const route = useRoute();
 const gameRef = ref<HTMLDivElement | null>(null);
 const phaserGame = ref<Phaser.Game | null>(null);
 const { isConnected, isJoined, disconnect, tree, mode } = useGameClient();
@@ -79,9 +78,6 @@ watch(
 );
 
 onMounted(async () => {
-  isReplayMode.value =
-    route.query.mode === "replay" || sessionStorage.getItem("replayMode") === "1";
-
   // Check if already connected and joined
   if (!isJoined.value) {
     // If not connected, redirect to connect page
