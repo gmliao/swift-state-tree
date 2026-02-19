@@ -6,7 +6,7 @@
 
 **Architecture:** Add a dedicated read-only replay WebSocket endpoint and land type for Hero Defense replay sessions. Replay data loading, stepping, and tick progression happen on the server via reevaluation record source + runner service, while clients subscribe like normal live game views. Admin APIs create replay sessions and return land IDs so clients only switch endpoint/land ID, not replay reconstruction logic.
 
-**Tech Stack:** Swift 6, SwiftStateTree/SwiftStateTreeNIO/SwiftStateTreeReevaluationMonitor, TypeScript CLI E2E, Playwright smoke tests.
+**Tech Stack:** Swift 6, SwiftStateTree/SwiftStateTreeNIO/SwiftStateTreeReevaluationMonitor, TypeScript CLI E2E.
 
 ### Task 1: Define replay session contract (server API + service interface)
 
@@ -225,3 +225,5 @@ git commit -m "test: add replay stream verification coverage"
 - Keep replay endpoint read-only: gameplay actions must be rejected explicitly.
 - Keep deterministic verification server-side: compare per-tick hashes and expose status for diagnostics.
 - Preserve compatibility with existing live endpoint and clients.
+- Legacy replay-only state field `currentStateJSON` is removed in compatible mode (no fallback path).
+- Replay consumers must use live-compatible fields (`players`, `monsters`, `turrets`, `base`, `score`) only.
