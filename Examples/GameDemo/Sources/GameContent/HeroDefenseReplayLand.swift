@@ -52,6 +52,7 @@ public enum HeroDefenseReplay {
 
                     if let result = service.consumeNextResult() {
                         if let projectedFrame = result.projectedFrame {
+                            let replayEventPolicy = resolveReplayEventPolicy(from: ctx.services)
                             let previousMonsters = state.monsters
                             let previousPlayers = state.players
                             let previousTurrets = state.turrets
@@ -391,22 +392,9 @@ func buildFallbackShootingEvents(
     return events
 }
 
-private func unwrapAnyCodableValue(_ value: Any) -> Any {
-    if let anyCodable = value as? AnyCodable {
-        return unwrapAnyCodableValue(anyCodable.base)
-    }
-
-    if let object = value as? [String: Any] {
-        return object.reduce(into: [String: Any]()) { result, entry in
-            result[entry.key] = unwrapAnyCodableValue(entry.value)
-        }
-    }
-
-    if let array = value as? [Any] {
-        return array.map(unwrapAnyCodableValue)
-    }
-
-    return value
+private struct ProjectedServerEventEnvelope: Decodable {
+    let typeIdentifier: String
+    let payload: AnyCodable
 }
 
 func applyProjectedState(
