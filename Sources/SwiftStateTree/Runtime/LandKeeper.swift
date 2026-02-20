@@ -34,6 +34,14 @@ public enum LandMode: Sendable {
     case reevaluation
 }
 
+/// Output mode for reevaluation mode: when to forward emitted events.
+public enum ReevaluationOutputMode: Sendable {
+    /// Only forward to reevaluation sink (default, backward compatible).
+    case sinkOnly
+    /// Forward to both transport and sink (for same-land replay streaming).
+    case transportAndSink
+}
+
 public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Unified pending item for actions and client events
     public enum PendingItem: Sendable {
@@ -183,6 +191,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private let logger: Logger
     private let autoStartLoops: Bool
     private let enableLiveStateHashRecording: Bool
+    private let reevaluationOutputMode: ReevaluationOutputMode
 
     private var pendingItems: [PendingItem] = []
     private var mode: LandMode
@@ -306,6 +315,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 await transport?.sendEventToTransport(item.event, to: item.target)
             }
         case .reevaluation:
+            if reevaluationOutputMode == .transportAndSink {
+                for item in toFlush {
+                    await transport?.sendEventToTransport(item.event, to: item.target)
+                }
+            }
             if let sink = reevaluationSink, !toFlush.isEmpty {
                 let records = toFlush.map { item in
                     ReevaluationRecordedServerEvent(
@@ -359,6 +373,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///   - initialState: The initial state of the Land.
     ///   - mode: The execution mode (live or re-evaluation). Defaults to .live.
     ///   - reevaluationSource: Optional re-evaluation source. Required when mode is .reevaluation.
+    ///   - reevaluationSink: Optional sink for emitted events. Used when mode is .reevaluation.
+    ///   - reevaluationOutputMode: When mode is .reevaluation, controls whether emitted events go to sink only (.sinkOnly) or both transport and sink (.transportAndSink). Defaults to .sinkOnly.
     ///   - transport: Optional transport interface for sending events and syncing state.
     ///                If not provided, operations will be no-ops (useful for testing).
     ///   - logger: Optional logger instance. If not provided, a default logger will be created.
@@ -368,6 +384,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         mode: LandMode = .live,
         reevaluationSource: (any ReevaluationSource)? = nil,
         reevaluationSink: (any ReevaluationSink)? = nil,
+        reevaluationOutputMode: ReevaluationOutputMode = .sinkOnly,
         services: LandServices = LandServices(),
         enableLiveStateHashRecording: Bool = false,
         autoStartLoops: Bool = true,
@@ -378,6 +395,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         state = initialState
         self.mode = mode
         self.reevaluationSink = reevaluationSink
+        self.reevaluationOutputMode = reevaluationOutputMode
 
         // Ensure DeterministicRngService is always registered for deterministic behavior
         // If not provided, create one based on definition.id (will be updated with actualLandID later)
