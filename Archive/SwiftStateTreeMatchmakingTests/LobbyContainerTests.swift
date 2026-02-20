@@ -320,7 +320,7 @@ func testLobbyContainerJoinRoom() async throws {
     
     // Create a room first
     let gameLandID = LandID("battle-royale-123")
-    _ = await landManager.getOrCreateLand(
+    _ = try await landManager.getOrCreateLand(
         landID: gameLandID,
         definition: gameLandDefinition,
         initialState: initialState,
@@ -493,13 +493,13 @@ func testLobbyContainerUpdateRoomList() async throws {
     // Create some rooms
     let room1ID = LandID("battle-royale-1")
     let room2ID = LandID("battle-royale-2")
-    _ = await landManager.getOrCreateLand(
+    _ = try await landManager.getOrCreateLand(
         landID: room1ID,
         definition: gameLandDefinition,
         initialState: initialState,
         metadata: [:]
     )
-    _ = await landManager.getOrCreateLand(
+    _ = try await landManager.getOrCreateLand(
         landID: room2ID,
         definition: gameLandDefinition,
         initialState: initialState,

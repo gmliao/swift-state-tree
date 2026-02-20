@@ -2,6 +2,12 @@ import Foundation
 import SwiftStateTree
 import Logging
 
+/// Resolved keeper mode for a land instance.
+public enum LandKeeperModeConfig: Sendable {
+    case live
+    case reevaluation(recordFilePath: String)
+}
+
 /// Manager for multiple game lands.
 ///
 /// Handles land lifecycle, routing, and provides access to individual lands.
@@ -89,7 +95,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private let pathHashes: [String: UInt32]?
     private let eventHashes: [String: Int]?
     private let clientEventHashes: [String: Int]?
-    
+    private let keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)?
+
     /// Track creation time for each land
     private var landCreatedAt: [LandID: Date] = [:]
     private var landMetadata: [LandID: [String: String]] = [:]
@@ -118,6 +125,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         pathHashes: [String: UInt32]? = nil,
         eventHashes: [String: Int]? = nil,
         clientEventHashes: [String: Int]? = nil,
+        keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)? = nil,
         logger: Logger? = nil
     ) {
         self.landFactory = landFactory
@@ -130,6 +138,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         self.pathHashes = pathHashes
         self.eventHashes = eventHashes
         self.clientEventHashes = clientEventHashes
+        self.keeperModeResolver = keeperModeResolver
         self.logger = logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.runtime",
             scope: "LandManager"
@@ -155,12 +164,13 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     ///   - definition: The Land definition to use if creating a new land.
     ///   - initialState: The initial state for the land if creating a new one.
     /// - Returns: The LandContainer for the land (internal implementation detail, users should use LandManager methods instead).
+    /// - Throws: When keeperModeResolver returns .reevaluation but the record file cannot be loaded.
     public func getOrCreateLand(
         landID: LandID,
         definition: LandDefinition<State>,
         initialState: State,
         metadata: [String: String]
-    ) async -> LandContainer<State> {
+    ) async throws -> LandContainer<State> {
         // Check if land already exists
         if let existing = lands[landID] {
             // Land exists, return it (monitoring task will auto-remove when destroyed)
@@ -175,13 +185,32 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
 
         let transport = self.sharedTransport ?? WebSocketTransport(logger: logger)
 
-        let keeper = LandKeeper<State>(
-            definition: landDefinition,
-            initialState: initial,
-            services: metadataServices,
-            enableLiveStateHashRecording: enableLiveStateHashRecording,
-            logger: logger
-        )
+        let keeper: LandKeeper<State>
+        if let config = keeperModeResolver?(landID, metadata),
+           case let .reevaluation(recordFilePath) = config
+        {
+            let source = try JSONReevaluationSource(filePath: recordFilePath)
+            keeper = LandKeeper<State>(
+                definition: landDefinition,
+                initialState: initial,
+                mode: .reevaluation,
+                reevaluationSource: source,
+                reevaluationSink: nil,
+                reevaluationOutputMode: .transportAndSink,
+                services: metadataServices,
+                autoStartLoops: true,
+                transport: nil,
+                logger: logger
+            )
+        } else {
+            keeper = LandKeeper<State>(
+                definition: landDefinition,
+                initialState: initial,
+                services: metadataServices,
+                enableLiveStateHashRecording: enableLiveStateHashRecording,
+                logger: logger
+            )
+        }
         
         // Set the actual land instance ID before recording metadata
         // This ensures the RNG seed is updated to use the actual landID (not just definition.id)

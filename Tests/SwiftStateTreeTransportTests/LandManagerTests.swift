@@ -47,8 +47,8 @@ func testLandManagerCreateAndRetrieve() async throws {
     let definition2 = landFactory(landID2)
     let initialState2 = initialStateFactory(landID2)
 
-    let container1 = await manager.getOrCreateLand(landID: landID1, definition: definition1, initialState: initialState1, metadata: [:])
-    let container2 = await manager.getOrCreateLand(landID: landID2, definition: definition2, initialState: initialState2, metadata: [:])
+    let container1 = try await manager.getOrCreateLand(landID: landID1, definition: definition1, initialState: initialState1, metadata: [:])
+    let container2 = try await manager.getOrCreateLand(landID: landID2, definition: definition2, initialState: initialState2, metadata: [:])
     let retrieved1 = await manager.getLand(landID: landID1)
     let retrieved2 = await manager.getLand(landID: landID2)
     let nonExistent = await manager.getLand(landID: LandID("non-existent"))
@@ -92,9 +92,9 @@ func testLandManagerListLands() async throws {
     let def3 = landFactory(landID3)
     let init3 = initialStateFactory(landID3)
 
-    _ = await manager.getOrCreateLand(landID: landID1, definition: def1, initialState: init1, metadata: [:])
-    _ = await manager.getOrCreateLand(landID: landID2, definition: def2, initialState: init2, metadata: [:])
-    _ = await manager.getOrCreateLand(landID: landID3, definition: def3, initialState: init3, metadata: [:])
+    _ = try await manager.getOrCreateLand(landID: landID1, definition: def1, initialState: init1, metadata: [:])
+    _ = try await manager.getOrCreateLand(landID: landID2, definition: def2, initialState: init2, metadata: [:])
+    _ = try await manager.getOrCreateLand(landID: landID3, definition: def3, initialState: init3, metadata: [:])
 
     let allLands = await manager.listLands()
 
@@ -132,8 +132,8 @@ func testLandManagerRemoveLand() async throws {
     let def2 = landFactory(landID2)
     let init2 = initialStateFactory(landID2)
 
-    _ = await manager.getOrCreateLand(landID: landID1, definition: def1, initialState: init1, metadata: [:])
-    _ = await manager.getOrCreateLand(landID: landID2, definition: def2, initialState: init2, metadata: [:])
+    _ = try await manager.getOrCreateLand(landID: landID1, definition: def1, initialState: init1, metadata: [:])
+    _ = try await manager.getOrCreateLand(landID: landID2, definition: def2, initialState: init2, metadata: [:])
 
     // Act
     await manager.removeLand(landID: landID1)
@@ -169,7 +169,7 @@ func testLandManagerGetStats() async throws {
     let landID = LandID("land-1")
     let definition = landFactory(landID)
     let initialState = initialStateFactory(landID)
-    _ = await manager.getOrCreateLand(landID: landID, definition: definition, initialState: initialState, metadata: [:])
+    _ = try await manager.getOrCreateLand(landID: landID, definition: definition, initialState: initialState, metadata: [:])
 
     // Act
     let stats = await manager.getLandStats(landID: landID)
@@ -205,8 +205,8 @@ func testLandManagerGetOrCreateReturnsSameContainer() async throws {
     // Act
     let definition = landFactory(landID)
     let initialState = initialStateFactory(landID)
-    let container1 = await manager.getOrCreateLand(landID: landID, definition: definition, initialState: initialState, metadata: [:])
-    let container2 = await manager.getOrCreateLand(landID: landID, definition: definition, initialState: initialState, metadata: [:])
+    let container1 = try await manager.getOrCreateLand(landID: landID, definition: definition, initialState: initialState, metadata: [:])
+    let container2 = try await manager.getOrCreateLand(landID: landID, definition: definition, initialState: initialState, metadata: [:])
 
     // Assert - Should return the same container (same landID)
     #expect(container1.landID == container2.landID)
@@ -274,7 +274,7 @@ func testLandManagerAutoRemovesDestroyedLand() async throws {
     // Act - Create land and join player
     let definition = landFactory(landID)
     let initialState = initialStateFactory(landID)
-    let container = await manager.getOrCreateLand(landID: landID, definition: definition, initialState: initialState, metadata: [:])
+    let container = try await manager.getOrCreateLand(landID: landID, definition: definition, initialState: initialState, metadata: [:])
 
     // Verify land exists
     let landBeforeDestroy = await manager.getLand(landID: landID)
@@ -345,7 +345,7 @@ func testLandManagerRecreatesDestroyedLandWithFreshState() async throws {
     // Act - Create land and join player
     let definition = landFactory(landID)
     let initialState = initialStateFactory(landID)
-    let container1 = await manager.getOrCreateLand(landID: landID, definition: definition, initialState: initialState, metadata: [:])
+    let container1 = try await manager.getOrCreateLand(landID: landID, definition: definition, initialState: initialState, metadata: [:])
 
     // Join player and modify state using action
     _ = try await container1.keeper.join(playerID: playerID1, clientID: clientID1, sessionID: sessionID1)
@@ -385,7 +385,7 @@ func testLandManagerRecreatesDestroyedLandWithFreshState() async throws {
 
     // Recreate land with same landID
     let newInitialState = initialStateFactory(landID)
-    let container2 = await manager.getOrCreateLand(landID: landID, definition: definition, initialState: newInitialState, metadata: [:])
+    let container2 = try await manager.getOrCreateLand(landID: landID, definition: definition, initialState: newInitialState, metadata: [:])
 
     // Assert - New land should have fresh initial state (count = 0), not old state (count = 7)
     let stateAfterRecreate = await container2.keeper.currentState()

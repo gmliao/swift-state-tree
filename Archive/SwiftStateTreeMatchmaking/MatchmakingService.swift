@@ -143,7 +143,7 @@ public actor MatchmakingService<State: StateNodeProtocol, Registry: LandManagerR
             )
             let initialState = landTypeRegistry.initialStateFactory(landType, newLandID)
             
-            _ = await registry.createLand(
+            _ = try await registry.createLand(
                 landID: newLandID,
                 definition: definition,
                 initialState: initialState,

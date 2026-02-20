@@ -299,7 +299,7 @@ func testMatchmakingServiceStrategyFullThenNext() async throws {
     let landID1 = LandID("land-1")
     let def1 = landFactory(landID1)
     let init1 = initialStateFactory(landID1)
-    _ = await manager.getOrCreateLand(landID: landID1, definition: def1, initialState: init1, metadata: [:])
+    _ = try await manager.getOrCreateLand(landID: landID1, definition: def1, initialState: init1, metadata: [:])
     
     // Simulate adding players to the land (we can't actually join, but we can check stats)
     // For this test, we'll just verify the strategy logic works
