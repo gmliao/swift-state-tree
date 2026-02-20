@@ -10,10 +10,13 @@ public struct SchemaGenCLI {
     /// - Parameters:
     ///   - landDefinitions: Array of LandDefinitions to generate schema for
     ///   - version: Schema version string (default: "0.1.0")
+    ///   - replayLandTypes: Optional set of land type IDs that get a `{id}-replay` alias
+    ///     when reevaluation is enabled (convention-based, no need to pass alias per land)
     /// - Returns: Aggregated ProtocolSchema containing all lands and definitions
     public static func generateSchema(
         landDefinitions: [AnyLandDefinition],
-        version: String = "0.1.0"
+        version: String = "0.1.0",
+        replayLandTypes: Set<String>? = nil
     ) -> ProtocolSchema {
         guard !landDefinitions.isEmpty else {
             return ProtocolSchema(version: version, lands: [:], defs: [:])
@@ -25,7 +28,7 @@ public struct SchemaGenCLI {
         
         for anyDef in landDefinitions {
             let schema = anyDef.extractSchema()
-            
+
             // Merge definitions (avoid duplicates)
             // If key already exists, keep the first one (they should be identical)
             for (key, value) in schema.defs {
@@ -33,13 +36,27 @@ public struct SchemaGenCLI {
                     allDefinitions[key] = value
                 }
             }
-            
+
             // Merge lands
             for (key, value) in schema.lands {
                 allLands[key] = value
             }
+
+            // Add alias land (same schema as base) when alias is specified
+            if let alias = anyDef.alias, let baseLand = schema.lands[anyDef.id] {
+                allLands[alias] = baseLand
+            }
         }
-        
+
+        // Convention-based: add {landType}-replay alias for lands that support replay
+        if let replayTypes = replayLandTypes {
+            for landType in replayTypes {
+                if let baseLand = allLands[landType] {
+                    allLands["\(landType)-replay"] = baseLand
+                }
+            }
+        }
+
         // Compute and include schemaHash for version verification
         return ProtocolSchema(
             version: version,
@@ -54,11 +71,13 @@ public struct SchemaGenCLI {
     ///   - landDefinitions: Array of LandDefinitions to generate schema for
     ///   - version: Schema version string (default: "0.1.0")
     ///   - outputPath: Optional file path to write schema to. If nil, writes to stdout
+    ///   - replayLandTypes: Optional set of land type IDs that get a `{id}-replay` alias
     /// - Throws: Encoding errors if JSON encoding fails
     public static func generate(
         landDefinitions: [AnyLandDefinition],
         version: String = "0.1.0",
-        outputPath: String? = nil
+        outputPath: String? = nil,
+        replayLandTypes: Set<String>? = nil
     ) throws {
         guard !landDefinitions.isEmpty else {
             print("⚠️  Warning: No LandDefinitions provided")
@@ -66,7 +85,7 @@ public struct SchemaGenCLI {
         }
         
         // Use the shared aggregation logic
-        let finalSchema = generateSchema(landDefinitions: landDefinitions, version: version)
+        let finalSchema = generateSchema(landDefinitions: landDefinitions, version: version, replayLandTypes: replayLandTypes)
         
         // Encode to JSON
         let encoder = JSONEncoder()

@@ -34,6 +34,25 @@ function generateHeader(): string {
   ].join('\n')
 }
 
+const REPLAY_SUFFIX = '-replay'
+
+/**
+ * Check if a land is an alias of a base land (same schema, replay path).
+ * Alias lands reuse the base land's generated code to avoid duplication.
+ */
+function getAliasBaseLandID(schema: ProtocolSchema, landID: string): string | null {
+  if (!landID.endsWith(REPLAY_SUFFIX)) return null
+  const baseLandID = landID.slice(0, -REPLAY_SUFFIX.length)
+  const baseDef = schema.lands[baseLandID]
+  const aliasDef = schema.lands[landID]
+  if (!baseDef || !aliasDef) return null
+  if (baseDef.stateType !== aliasDef.stateType) return null
+  if (JSON.stringify(baseDef.actions ?? {}) !== JSON.stringify(aliasDef.actions ?? {})) return null
+  if (JSON.stringify(baseDef.events ?? {}) !== JSON.stringify(aliasDef.events ?? {})) return null
+  if (JSON.stringify(baseDef.clientEvents ?? {}) !== JSON.stringify(aliasDef.clientEvents ?? {})) return null
+  return baseLandID
+}
+
 export async function generateStateTreeFiles(
   schema: ProtocolSchema,
   outputDir: string,
@@ -41,7 +60,8 @@ export async function generateStateTreeFiles(
   testFramework?: TestFramework
 ): Promise<void> {
   for (const [landID, landDef] of Object.entries(schema.lands)) {
-    await generateForLand(schema, landID, landDef, outputDir, framework, testFramework)
+    const baseLandID = getAliasBaseLandID(schema, landID)
+    await generateForLand(schema, landID, landDef, outputDir, framework, testFramework, baseLandID)
   }
 }
 
@@ -51,11 +71,18 @@ async function generateForLand(
   landDef: LandDefinition,
   outputDir: string,
   framework?: Framework,
-  testFramework?: TestFramework
+  testFramework?: TestFramework,
+  aliasBaseLandID?: string | null
 ): Promise<void> {
   const landDir = join(outputDir, landID)
   const classBaseName = toPascalCase(landID)
   const className = `${classBaseName}StateTree`
+  const isAlias = aliasBaseLandID != null
+
+  if (isAlias) {
+    await generateAliasLandFiles(schema, landID, landDef, aliasBaseLandID, outputDir, framework)
+    return
+  }
 
   const actions = collectActionBindings(schema, landDef)
   const clientEvents = collectEventBindings(landDef.clientEvents)
@@ -115,6 +142,174 @@ async function generateForLand(
   if (testHelpersSource) {
     await writeFileRecursive(join(landDir, 'testHelpers.ts'), testHelpersSource)
   }
+}
+
+async function generateAliasLandFiles(
+  schema: ProtocolSchema,
+  landID: string,
+  landDef: LandDefinition,
+  baseLandID: string,
+  outputDir: string,
+  framework?: Framework
+): Promise<void> {
+  const landDir = join(outputDir, landID)
+  const baseClassBaseName = toPascalCase(baseLandID)
+  const baseClassName = `${baseClassBaseName}StateTree`
+  const aliasClassBaseName = toPascalCase(landID)
+
+  const bindingsSource = generateAliasBindingsTs(landID, baseLandID)
+  await writeFileRecursive(join(landDir, 'bindings.ts'), bindingsSource)
+
+  if (framework === 'vue') {
+    const composableName = `use${aliasClassBaseName}`
+    const composableSource = generateVueAliasComposable(
+      landID,
+      baseLandID,
+      baseClassName,
+      composableName,
+      landDef.stateType
+    )
+    await writeFileRecursive(join(landDir, `${composableName}.ts`), composableSource)
+  }
+}
+
+function generateAliasBindingsTs(landID: string, baseLandID: string): string {
+  const lines: string[] = []
+  lines.push(generateHeader())
+  lines.push(`export const LAND_TYPE = ${JSON.stringify(landID)} as const`)
+  lines.push('')
+  lines.push('export type { LandState, ActionPayloads, ActionResponses, ActionName, ClientEventPayloads, ClientEventName, ServerEventPayloads, ServerEventName, Actions, ClientEvents, ServerEventSubscriptions, Unsubscribe, EventHandler, EventSubscription }')
+  lines.push(`  from '../${baseLandID}/bindings.js'`)
+  lines.push('')
+  return lines.join('\n')
+}
+
+function generateVueAliasComposable(
+  landID: string,
+  baseLandID: string,
+  baseClassName: string,
+  composableName: string,
+  stateType: string
+): string {
+  const aliasClassBaseName = toPascalCase(landID)
+  const lines: string[] = []
+  lines.push(generateHeader())
+  lines.push("import { ref, reactive, computed } from 'vue'")
+  lines.push("import type { Ref, ComputedRef } from 'vue'")
+  lines.push("import { StateTreeRuntime } from '@swiftstatetree/sdk/core'")
+  lines.push(`import { ${baseClassName} } from '../${baseLandID}/index.js'`)
+  lines.push(`import { LAND_TYPE } from './bindings.js'`)
+  lines.push(`import type { ${stateType} } from '../defs.js'`)
+  lines.push('')
+  lines.push('interface ConnectOptions {')
+  lines.push('  wsUrl: string')
+  lines.push('  playerName?: string')
+  lines.push('  playerID?: string')
+  lines.push('  deviceID?: string')
+  lines.push('  landID?: string')
+  lines.push('  metadata?: Record<string, any>')
+  lines.push('}')
+  lines.push('')
+  lines.push(`const runtime = ref<StateTreeRuntime | null>(null)`)
+  lines.push(`const tree = ref<${baseClassName} | null>(null)`)
+  lines.push(`const state = ref<${stateType} | null>(null) as Ref<${stateType} | null>`)
+  lines.push('const currentPlayerID = ref<string | null>(null)')
+  lines.push('const isConnecting = ref(false)')
+  lines.push('const isConnected = ref(false)')
+  lines.push('const isJoined = ref(false)')
+  lines.push('const lastError = ref<string | null>(null)')
+  lines.push('')
+  const returnTypeName = `${aliasClassBaseName}ComposableReturn`
+  lines.push(`export interface ${returnTypeName} {`)
+  lines.push(`  state: Ref<${stateType} | null>`)
+  lines.push('  currentPlayerID: Ref<string | null>')
+  lines.push('  isConnecting: Ref<boolean>')
+  lines.push('  isConnected: Ref<boolean>')
+  lines.push('  isJoined: Ref<boolean>')
+  lines.push('  lastError: Ref<string | null>')
+  lines.push('  connect: (opts: ConnectOptions) => Promise<void>')
+  lines.push('  disconnect: () => Promise<void>')
+  lines.push(`  tree: ComputedRef<${baseClassName} | null>`)
+  lines.push('}')
+  lines.push('')
+  lines.push(`export function ${composableName}(): ${returnTypeName} {`)
+  lines.push('  async function connect(opts: ConnectOptions): Promise<void> {')
+  lines.push('    if (isConnecting.value || isConnected.value) return')
+  lines.push('    isConnecting.value = true')
+  lines.push('    lastError.value = null')
+  lines.push('    try {')
+  lines.push('      const r = new StateTreeRuntime()')
+  lines.push('      await r.connect(opts.wsUrl)')
+  lines.push('      runtime.value = r')
+  lines.push('      isConnected.value = true')
+  lines.push('      const metadata: Record<string, any> = opts.metadata ?? {}')
+  lines.push("      if (opts.playerName && opts.playerName.trim().length > 0) {")
+  lines.push("        metadata.username = opts.playerName.trim()")
+  lines.push('      }')
+  lines.push('      let landID: string | undefined = opts.landID')
+  lines.push("      if (landID && !landID.includes(':')) {")
+  lines.push('        landID = `${LAND_TYPE}:${landID}`')
+  lines.push('      }')
+  lines.push(`      const t = new ${baseClassName}(r, {`)
+  lines.push('        landID: landID,')
+  lines.push('        playerID: opts.playerID,')
+  lines.push('        deviceID: opts.deviceID,')
+  lines.push('        metadata,')
+  lines.push('        logger: {')
+  lines.push('          debug: () => {},')
+  lines.push('          info: (msg) => console.log(`[StateTree]`, msg),')
+  lines.push('          warn: (msg) => console.warn(`[StateTree]`, msg),')
+  lines.push('          error: (msg) => console.error(`[StateTree]`, msg)')
+  lines.push('        }')
+  lines.push('      })')
+  lines.push('      tree.value = t')
+  lines.push('      const joinResult = await t.join()')
+  lines.push('      if (!joinResult.success) {')
+  lines.push('        throw new Error(joinResult.reason ?? \'Join failed\')')
+  lines.push('      }')
+  lines.push('      currentPlayerID.value = joinResult.playerID ?? null')
+  lines.push(`      const reactiveState = reactive(t.state as any) as ${stateType}`)
+  lines.push('      state.value = reactiveState')
+  lines.push('      Object.defineProperty(t, \'state\', {')
+  lines.push('        get: () => reactiveState,')
+  lines.push('        enumerable: true,')
+  lines.push('        configurable: true')
+  lines.push('      })')
+  lines.push('      r.onDisconnect(() => {')
+  lines.push('        if (isConnected.value || isJoined.value) {')
+  lines.push("          isConnected.value = false")
+  lines.push('          disconnect()')
+  lines.push('        }')
+  lines.push('      })')
+  lines.push('      isJoined.value = true')
+  lines.push('    } catch (error) {')
+  lines.push('      const message = (error as Error).message ?? String(error)')
+  lines.push('      lastError.value = message')
+  lines.push('      await disconnect()')
+  lines.push('    } finally {')
+  lines.push('      isConnecting.value = false')
+  lines.push('    }')
+  lines.push('  }')
+  lines.push('  async function disconnect(): Promise<void> {')
+  lines.push('    if (tree.value) tree.value.destroy()')
+  lines.push('    if (runtime.value && \'disconnect\' in runtime.value && typeof runtime.value.disconnect === \'function\') {')
+  lines.push('      runtime.value.disconnect()')
+  lines.push('    }')
+  lines.push('    runtime.value = null')
+  lines.push('    tree.value = null')
+  lines.push('    state.value = null')
+  lines.push('    currentPlayerID.value = null')
+  lines.push('    isConnected.value = false')
+  lines.push('    isJoined.value = false')
+  lines.push('  }')
+  lines.push('  return {')
+  lines.push('    state, currentPlayerID, isConnecting, isConnected, isJoined, lastError,')
+  lines.push('    connect, disconnect,')
+  lines.push(`    tree: computed(() => tree.value) as ComputedRef<${baseClassName} | null>`)
+  lines.push('  }')
+  lines.push('}')
+  lines.push('')
+  return lines.join('\n')
 }
 
 function findReplayCompanionLandID(schema: ProtocolSchema, landID: string): string | null {

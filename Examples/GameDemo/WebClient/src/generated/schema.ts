@@ -8,7 +8,7 @@ export type LandID = (typeof LAND_IDS)[number]
 
 export const ACTION_IDS = {
   "hero-defense": ["Play"] as const,
-  "hero-defense-replay": [] as const,
+  "hero-defense-replay": ["Play"] as const,
   "reevaluation-monitor": ["PauseVerification","ResumeVerification","StartVerification"] as const,
 } as const
 export type AnyActionID = (typeof ACTION_IDS)[LandID][number]
@@ -16,7 +16,7 @@ export type ActionIDFor<L extends LandID> = (typeof ACTION_IDS)[L][number]
 
 export const CLIENT_EVENT_IDS = {
   "hero-defense": ["MoveTo","PlaceTurret","Shoot","UpdateRotation","UpgradeTurret","UpgradeWeapon"] as const,
-  "hero-defense-replay": [] as const,
+  "hero-defense-replay": ["MoveTo","PlaceTurret","Shoot","UpdateRotation","UpgradeTurret","UpgradeWeapon"] as const,
   "reevaluation-monitor": [] as const,
 } as const
 export type AnyClientEventID = (typeof CLIENT_EVENT_IDS)[LandID][number]
@@ -24,7 +24,7 @@ export type ClientEventIDFor<L extends LandID> = (typeof CLIENT_EVENT_IDS)[L][nu
 
 export const SERVER_EVENT_IDS = {
   "hero-defense": ["PlayerShoot","TurretFire"] as const,
-  "hero-defense-replay": ["HeroDefenseReplayTick","PlayerShoot","TurretFire"] as const,
+  "hero-defense-replay": ["PlayerShoot","TurretFire"] as const,
   "reevaluation-monitor": ["TickProcessed","TickSummary","VerificationComplete","VerificationFailed","VerificationProgress"] as const,
 } as const
 export type AnyServerEventID = (typeof SERVER_EVENT_IDS)[LandID][number]
@@ -117,32 +117,6 @@ export const SCHEMA = {
         "sync": {
           "policy": "broadcast"
         }
-      }
-    },
-    "HeroDefenseReplayTickEvent": {
-      "properties": {
-        "actualHash": {
-          "type": "string"
-        },
-        "expectedHash": {
-          "type": "string"
-        },
-        "isMatch": {
-          "type": "boolean"
-        },
-        "tickId": {
-          "type": "integer"
-        }
-      },
-      "required": [
-        "actualHash",
-        "expectedHash",
-        "isMatch",
-        "tickId"
-      ],
-      "type": "object",
-      "x-stateTree": {
-        "nodeKind": "leaf"
       }
     },
     "HeroDefenseState": {
@@ -1005,18 +979,44 @@ export const SCHEMA = {
       }
     },
     "hero-defense-replay": {
-      "actions": {},
-      "clientEventHashes": {},
-      "clientEvents": {},
+      "actions": {
+        "Play": {
+          "$ref": "#/defs/PlayAction"
+        }
+      },
+      "clientEventHashes": {
+        "MoveTo": 1,
+        "PlaceTurret": 2,
+        "Shoot": 3,
+        "UpdateRotation": 4,
+        "UpgradeTurret": 5,
+        "UpgradeWeapon": 6
+      },
+      "clientEvents": {
+        "MoveTo": {
+          "$ref": "#/defs/MoveToEvent"
+        },
+        "PlaceTurret": {
+          "$ref": "#/defs/PlaceTurretEvent"
+        },
+        "Shoot": {
+          "$ref": "#/defs/ShootEvent"
+        },
+        "UpdateRotation": {
+          "$ref": "#/defs/UpdateRotationEvent"
+        },
+        "UpgradeTurret": {
+          "$ref": "#/defs/UpgradeTurretEvent"
+        },
+        "UpgradeWeapon": {
+          "$ref": "#/defs/UpgradeWeaponEvent"
+        }
+      },
       "eventHashes": {
-        "HeroDefenseReplayTick": 1,
-        "PlayerShoot": 2,
-        "TurretFire": 3
+        "PlayerShoot": 1,
+        "TurretFire": 2
       },
       "events": {
-        "HeroDefenseReplayTick": {
-          "$ref": "#/defs/HeroDefenseReplayTickEvent"
-        },
         "PlayerShoot": {
           "$ref": "#/defs/PlayerShootEvent"
         },
@@ -1153,7 +1153,7 @@ export const SCHEMA = {
       }
     }
   },
-  "schemaHash": "1a63f638e034df51",
+  "schemaHash": "4875865f9c1987c3",
   "version": "0.1.0"
 } as const
 

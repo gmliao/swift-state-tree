@@ -1,5 +1,6 @@
 import SwiftStateTree
 import SwiftStateTreeReevaluationMonitor
+import SwiftStateTreeTransport
 
 public struct ReevaluationFeatureConfiguration: Sendable {
     public var enabled: Bool
@@ -32,6 +33,74 @@ public struct ReevaluationFeatureConfiguration: Sendable {
 }
 
 public extension NIOLandHost {
+    /// Registers a land with reevaluation using the same live land definition for replay.
+    /// Replay path uses the same `LandDefinition`; keeper mode is resolved at runtime via instanceId decode.
+    ///
+    /// - Parameters:
+    ///   - landType: Base land type (e.g. "hero-defense"); replay will be "\(landType)\(replayLandSuffix)".
+    ///   - liveLand: The land definition used for both live and replay.
+    ///   - liveInitialState: Initial state for live sessions.
+    ///   - liveWebSocketPath: WebSocket path for live connections.
+    ///   - configuration: Server configuration.
+    ///   - reevaluation: Reevaluation feature configuration.
+    func registerWithReevaluationSameLand<State: StateNodeProtocol>(
+        landType: String,
+        liveLand: LandDefinition<State>,
+        liveInitialState: @autoclosure @escaping @Sendable () -> State,
+        liveWebSocketPath: String,
+        configuration: NIOLandServerConfiguration,
+        reevaluation: ReevaluationFeatureConfiguration
+    ) async throws {
+        let effectiveConfiguration: NIOLandServerConfiguration
+        if reevaluation.enabled {
+            effectiveConfiguration = configuration.injectingReevaluationServices(
+                runnerServiceFactory: reevaluation.runnerServiceFactory,
+                replayEventPolicy: reevaluation.replayEventPolicy
+            )
+        } else {
+            effectiveConfiguration = configuration
+        }
+
+        try await register(
+            landType: landType,
+            land: liveLand,
+            initialState: liveInitialState(),
+            webSocketPath: liveWebSocketPath,
+            configuration: effectiveConfiguration
+        )
+
+        guard reevaluation.enabled else {
+            return
+        }
+
+        let replayLandType = "\(landType)\(reevaluation.replayLandSuffix)"
+        let replayWebSocketPath = reevaluation.replayWebSocketPathResolver(replayLandType)
+        let recordsDir = NIOEnvConfig.fromEnvironment().reevaluationRecordsDir
+
+        let replayConfig = effectiveConfiguration.injectingReevaluationKeeperModeResolver(
+            replayLandType: replayLandType,
+            recordsDir: recordsDir
+        )
+
+        try await register(
+            landType: replayLandType,
+            land: liveLand,
+            initialState: liveInitialState(),
+            webSocketPath: replayWebSocketPath,
+            configuration: replayConfig
+        )
+
+        if await realm.isRegistered(landType: reevaluation.monitorLandType) == false {
+            try await register(
+                landType: reevaluation.monitorLandType,
+                land: ReevaluationMonitor.makeLand(),
+                initialState: ReevaluationMonitorState(),
+                webSocketPath: reevaluation.monitorWebSocketPath,
+                configuration: effectiveConfiguration
+            )
+        }
+    }
+
     func registerWithReevaluation<LiveState: StateNodeProtocol, ReplayState: StateNodeProtocol>(
         landType: String,
         liveLand: LandDefinition<LiveState>,
@@ -106,6 +175,25 @@ private extension NIOLandServerConfiguration {
                 )
             }
             return services
+        }
+        return updated
+    }
+
+    func injectingReevaluationKeeperModeResolver(
+        replayLandType: String,
+        recordsDir: String
+    ) -> NIOLandServerConfiguration {
+        var updated = self
+        let captureReplayLandType = replayLandType
+        let captureRecordsDir = recordsDir
+        updated.keeperModeResolver = { landID, _ in
+            guard landID.landType == captureReplayLandType else { return nil }
+            guard let descriptor = ReevaluationReplaySessionDescriptor.decode(
+                instanceId: landID.instanceId,
+                landType: captureReplayLandType,
+                recordsDir: captureRecordsDir
+            ) else { return nil }
+            return .reevaluation(recordFilePath: descriptor.recordFilePath)
         }
         return updated
     }

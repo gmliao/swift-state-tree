@@ -4,7 +4,7 @@
 import { ref, reactive, computed } from 'vue'
 import type { Ref, ComputedRef } from 'vue'
 import { StateTreeRuntime } from '@swiftstatetree/sdk/core'
-import { HeroDefenseReplayStateTree } from './index.js'
+import { HeroDefenseStateTree } from '../hero-defense/index.js'
 import { LAND_TYPE } from './bindings.js'
 import type { HeroDefenseState } from '../defs.js'
 
@@ -13,16 +13,14 @@ interface ConnectOptions {
   playerName?: string
   playerID?: string
   deviceID?: string
-  landID?: string  // Optional: specify room ID (format: "landType:instanceId" or just "instanceId")
+  landID?: string
   metadata?: Record<string, any>
 }
 
 const runtime = ref<StateTreeRuntime | null>(null)
-const tree = ref<HeroDefenseReplayStateTree | null>(null)
-
+const tree = ref<HeroDefenseStateTree | null>(null)
 const state = ref<HeroDefenseState | null>(null) as Ref<HeroDefenseState | null>
 const currentPlayerID = ref<string | null>(null)
-
 const isConnecting = ref(false)
 const isConnected = ref(false)
 const isJoined = ref(false)
@@ -37,36 +35,28 @@ export interface HeroDefenseReplayComposableReturn {
   lastError: Ref<string | null>
   connect: (opts: ConnectOptions) => Promise<void>
   disconnect: () => Promise<void>
-  tree: ComputedRef<HeroDefenseReplayStateTree | null>
+  tree: ComputedRef<HeroDefenseStateTree | null>
 }
 
 export function useHeroDefenseReplay(): HeroDefenseReplayComposableReturn {
-
   async function connect(opts: ConnectOptions): Promise<void> {
     if (isConnecting.value || isConnected.value) return
-
     isConnecting.value = true
     lastError.value = null
-
     try {
       const r = new StateTreeRuntime()
       await r.connect(opts.wsUrl)
       runtime.value = r
       isConnected.value = true
-
       const metadata: Record<string, any> = opts.metadata ?? {}
       if (opts.playerName && opts.playerName.trim().length > 0) {
         metadata.username = opts.playerName.trim()
       }
-
-      // Build landID: if provided, use as-is; if it's just instanceId (no colon), prepend landType
       let landID: string | undefined = opts.landID
       if (landID && !landID.includes(':')) {
-        // If only instanceId provided (e.g., "room-123"), prepend landType
         landID = `${LAND_TYPE}:${landID}`
       }
-
-      const t = new HeroDefenseReplayStateTree(r, {
+      const t = new HeroDefenseStateTree(r, {
         landID: landID,
         playerID: opts.playerID,
         deviceID: opts.deviceID,
@@ -79,56 +69,35 @@ export function useHeroDefenseReplay(): HeroDefenseReplayComposableReturn {
         }
       })
       tree.value = t
-
       const joinResult = await t.join()
       if (!joinResult.success) {
         throw new Error(joinResult.reason ?? 'Join failed')
       }
-
       currentPlayerID.value = joinResult.playerID ?? null
-      
-      // Make t.state reactive so Vue can track changes directly
-      // This allows direct access like state.players[playerID].cookies in templates
-      // Note: SDK automatically converts DeterministicMath types (IVec2, Position2, etc.)
-      // from fixed-point integers to class instances, but TypeScript may not infer this correctly
-      // after reactive() wrapping, so we use type assertion
       const reactiveState = reactive(t.state as any) as HeroDefenseState
       state.value = reactiveState
-      
-      // Override t.state to point to reactiveState so syncInto updates it directly
-      // This way syncInto will update the reactive object and Vue tracks it automatically
       Object.defineProperty(t, 'state', {
         get: () => reactiveState,
         enumerable: true,
         configurable: true
       })
-      
-      // Set up disconnect callback for automatic cleanup
       r.onDisconnect(() => {
         if (isConnected.value || isJoined.value) {
-          console.warn('⚠️ WebSocket disconnected, cleaning up...')
-          // Update state immediately so watchers can react
           isConnected.value = false
-          // disconnect() will set isJoined.value = false, triggering watchers
           disconnect()
         }
       })
-      
       isJoined.value = true
     } catch (error) {
       const message = (error as Error).message ?? String(error)
       lastError.value = message
-      console.error('Connect/join failed:', error)
       await disconnect()
     } finally {
       isConnecting.value = false
     }
   }
-
   async function disconnect(): Promise<void> {
-    if (tree.value) {
-      tree.value.destroy()
-    }
+    if (tree.value) tree.value.destroy()
     if (runtime.value && 'disconnect' in runtime.value && typeof runtime.value.disconnect === 'function') {
       runtime.value.disconnect()
     }
@@ -139,17 +108,9 @@ export function useHeroDefenseReplay(): HeroDefenseReplayComposableReturn {
     isConnected.value = false
     isJoined.value = false
   }
-
   return {
-    state,
-    currentPlayerID,
-    isConnecting,
-    isConnected,
-    isJoined,
-    lastError,
-    connect,
-    disconnect,
-    // Advanced: access to underlying tree instance
-    tree: computed(() => tree.value) as ComputedRef<HeroDefenseReplayStateTree | null>
+    state, currentPlayerID, isConnecting, isConnected, isJoined, lastError,
+    connect, disconnect,
+    tree: computed(() => tree.value) as ComputedRef<HeroDefenseStateTree | null>
   }
 }

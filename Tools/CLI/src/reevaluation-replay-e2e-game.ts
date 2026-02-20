@@ -160,13 +160,7 @@ async function main() {
     landID: gameLandID,
   });
 
-  const expectedReplayTickIDs: number[] = Array.isArray(record?.tickFrames)
-    ? record.tickFrames
-        .map((frame: any) => frame?.tickId)
-        .filter((tickId: unknown): tickId is number => typeof tickId === "number" && Number.isInteger(tickId))
-    : [];
-  const expectedReplayTickCount = expectedReplayTickIDs.length;
-  const expectedReplayMaxTick = expectedReplayTickIDs.length > 0 ? Math.max(...expectedReplayTickIDs) : null;
+  // Same-land replay: no HeroDefenseReplayTickEvent; completion based on state + shooting events + idle timeout
 
   const projectRoot = resolve(process.cwd(), "..", "..");
   const recordsDir = join(projectRoot, "Examples", "GameDemo", "reevaluation-records");
@@ -205,7 +199,7 @@ async function main() {
   const start = Date.now();
   let completed = false;
   let failedMessage: string | null = null;
-  let lastReplayTickAt = 0;
+  let lastActivityAt = 0;
   let hasLiveCompatibleState = false;
   let hasNonDefaultLiveEvidence = false;
   let legacyReplayFieldSeen = false;
@@ -214,40 +208,19 @@ async function main() {
   let sawMonsterRemoval = false;
   let previousMonsterIDs = new Set<string>();
   const liveNestedFieldKinds = new Set<"players" | "monsters" | "turrets">();
-  const observedTicks = new Set<number>();
-  const mismatchedReplayTicks: number[] = [];
   let replayPlayerShootEvents = 0;
   let replayTurretFireEvents = 0;
-  const unsubscribeReplayTick = view.onServerEvent("HeroDefenseReplayTick", (payload: unknown) => {
-    if (!isPlainObject(payload)) {
-      return;
-    }
-
-    const tickId = payload.tickId;
-    if (typeof tickId === "number" && Number.isFinite(tickId)) {
-      observedTicks.add(tickId);
-      lastReplayTickAt = Date.now();
-
-      if (payload.isMatch === false) {
-        mismatchedReplayTicks.push(tickId);
-      }
-    }
-  });
   const unsubscribeReplayPlayerShoot = view.onServerEvent("PlayerShoot", () => {
     replayPlayerShootEvents += 1;
+    lastActivityAt = Date.now();
   });
   const unsubscribeReplayTurretFire = view.onServerEvent("TurretFire", () => {
     replayTurretFireEvents += 1;
+    lastActivityAt = Date.now();
   });
 
   while (Date.now() - start < timeoutMs) {
     const state = view.getState() as any;
-    const status = state?.status;
-    const tick = state?.currentTickId;
-
-    if (typeof tick === "number" && tick >= 0) {
-      observedTicks.add(tick);
-    }
 
     if (isPlainObject(state) && Object.prototype.hasOwnProperty.call(state, "currentStateJSON")) {
       legacyReplayFieldSeen = true;
@@ -318,24 +291,17 @@ async function main() {
         Object.keys(base).length > 0
       ) {
         hasNonDefaultLiveEvidence = true;
+        lastActivityAt = Date.now();
       }
     }
 
-    if (status === "completed") {
-      completed = true;
-      break;
-    }
-
-    if (status === "failed") {
-      failedMessage = state?.errorMessage ?? "unknown error";
-      break;
-    }
-
     if (
-      typeof status !== "string" &&
-      lastReplayTickAt > 0 &&
-      Date.now() - lastReplayTickAt >= replayIdleMs &&
-      (expectedReplayMaxTick === null || observedTicks.has(expectedReplayMaxTick))
+      hasLiveCompatibleState &&
+      hasNonDefaultLiveEvidence &&
+      replayPlayerShootEvents + replayTurretFireEvents >= 1 &&
+      sawMonsterRemoval &&
+      lastActivityAt > 0 &&
+      Date.now() - lastActivityAt >= replayIdleMs
     ) {
       completed = true;
       break;
@@ -344,37 +310,12 @@ async function main() {
     await new Promise((resolveTimer) => setTimeout(resolveTimer, 100));
   }
 
-  unsubscribeReplayTick();
   unsubscribeReplayPlayerShoot();
   unsubscribeReplayTurretFire();
   await runtime.disconnect();
 
-  if (failedMessage) {
-    throw new Error(`Replay stream reported failure: ${failedMessage}`);
-  }
   if (!completed) {
     throw new Error(`Timed out waiting for replay completion (${timeoutMs}ms)`);
-  }
-  if (observedTicks.size < 3) {
-    throw new Error(`Expected at least 3 replay ticks, got ${observedTicks.size}`);
-  }
-  if (mismatchedReplayTicks.length > 0) {
-    throw new Error(`Expected all replay ticks to match hash, mismatches at ticks: ${mismatchedReplayTicks.join(",")}`);
-  }
-  if (expectedReplayTickCount > 0) {
-    const observedCoverage = observedTicks.size / expectedReplayTickCount;
-    const minimumCoverage = 0.8;
-    if (observedCoverage < minimumCoverage) {
-      const missingTicks = expectedReplayTickIDs.filter((tickId) => !observedTicks.has(tickId));
-      throw new Error(
-        `Expected replay tick coverage >= ${minimumCoverage}, got ${(observedCoverage * 100).toFixed(1)}% (${observedTicks.size}/${expectedReplayTickCount}); missing sample: ${missingTicks.slice(0, 10).join(",")}`,
-      );
-    }
-  }
-  if (expectedReplayMaxTick !== null && !observedTicks.has(expectedReplayMaxTick)) {
-    throw new Error(
-      `Expected to observe final replay tick ${expectedReplayMaxTick}, observed ${observedTicks.size} ticks`,
-    );
   }
   if (!hasLiveCompatibleState) {
     throw new Error("Expected replay live-compatible state fields, got none");
@@ -407,7 +348,7 @@ async function main() {
 
   console.log(
     chalk.green(
-      `✅ Replay stream completed; observedTicks=${observedTicks.size}, PlayerShoot=${replayPlayerShootEvents}, TurretFire=${replayTurretFireEvents}`,
+      `✅ Replay stream completed; PlayerShoot=${replayPlayerShootEvents}, TurretFire=${replayTurretFireEvents}`,
     ),
   );
 }
