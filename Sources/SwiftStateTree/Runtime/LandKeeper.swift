@@ -688,6 +688,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         reevaluationRecorder
     }
 
+    /// Get the current LandMode (for testing/debugging).
+    public func getMode() -> LandMode {
+        mode
+    }
+
     deinit {
         tickTask?.cancel()
         syncTask?.cancel()

@@ -273,7 +273,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             switch transportMsg.kind {
             case .join:
                 if case .join(let payload) = transportMsg.payload {
-                    await handleJoinRequest(
+                    try await handleJoinRequest(
                         requestID: payload.requestID,
                         landType: payload.landType,
                         landInstanceId: payload.landInstanceId,
@@ -315,7 +315,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         requestedPlayerID: String?,
         deviceID: String?,
         metadata: [String: AnyCodable]?
-    ) async {
+    ) async throws {
         // Validate session is connected
         guard let clientID = sessionToClient[sessionID] else {
             logger.warning("Join request from unknown session: \(sessionID.rawValue)")
@@ -356,7 +356,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 let definition = landTypeRegistry.getLandDefinition(landType: landType, landID: landID)
                 let initialState = landTypeRegistry.initialStateFactory(landType, landID)
                 
-                container = await landManager.getOrCreateLand(
+                container = try await landManager.getOrCreateLand(
                     landID: landID,
                     definition: definition,
                     initialState: initialState,
@@ -402,7 +402,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             let definition = landTypeRegistry.getLandDefinition(landType: landType, landID: landID)
             let initialState = landTypeRegistry.initialStateFactory(landType, landID)
             
-            container = await landManager.getOrCreateLand(
+            container = try await landManager.getOrCreateLand(
                 landID: landID,
                 definition: definition,
                 initialState: initialState,

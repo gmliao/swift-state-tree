@@ -92,7 +92,7 @@ public struct LobbyContainer<State: StateNodeProtocol, Registry: LandManagerRegi
         let initialState = landTypeRegistry.initialStateFactory(landType, landID)
         
         // Create the land
-        _ = await landManagerRegistry.createLand(
+        _ = try await landManagerRegistry.createLand(
             landID: landID,
             definition: definition,
             initialState: initialState,

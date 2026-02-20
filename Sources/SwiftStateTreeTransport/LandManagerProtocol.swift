@@ -18,12 +18,13 @@ public protocol LandManagerProtocol: Actor {
     ///   - definition: The Land definition to use if creating a new land.
     ///   - initialState: The initial state for the land if creating a new one.
     /// - Returns: The LandContainer for the land (internal implementation detail).
+    /// - Throws: When reevaluation record file cannot be loaded (if resolver returns reevaluation mode).
     func getOrCreateLand(
         landID: LandID,
         definition: LandDefinition<State>,
         initialState: State,
         metadata: [String: String]
-    ) async -> LandContainer<State>
+    ) async throws -> LandContainer<State>
     
     /// Get an existing land by ID.
     ///
