@@ -91,7 +91,6 @@ export function useHeroDefenseReplay(): HeroDefenseReplayComposableReturn {
     } catch (error) {
       const message = (error as Error).message ?? String(error)
       lastError.value = message
-      console.error('Connect/join failed:', error)
       await disconnect()
       throw error
     } finally {
