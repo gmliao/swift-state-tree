@@ -78,6 +78,37 @@ struct ReevaluationFeatureRegistrationTests {
         #expect(await realm.isRegistered(landType: "reevaluation-monitor"))
     }
 
+    @Test("replay landType can be registered without dedicated replay gameplay land (same-land mode)")
+    func replayRegisteredWithoutDedicatedReplayLand() async throws {
+        let host = NIOLandHost(configuration: NIOLandHostConfiguration(
+            host: "localhost",
+            port: 8080,
+            adminAPIKey: "test-admin-key"
+        ))
+
+        let feature = ReevaluationFeatureConfiguration(
+            enabled: true,
+            replayEventPolicy: .projectedOnly,
+            runnerServiceFactory: {
+                ReevaluationRunnerService(factory: MockReevaluationTargetFactory())
+            }
+        )
+
+        try await host.registerWithReevaluationSameLand(
+            landType: "feature-live",
+            liveLand: FeatureLiveLand.makeLand(),
+            liveInitialState: FeatureLiveState(),
+            liveWebSocketPath: "/game/feature-live",
+            configuration: NIOLandServerConfiguration(transportEncoding: .json),
+            reevaluation: feature
+        )
+
+        let realm = await host.realm
+        #expect(await realm.isRegistered(landType: "feature-live"))
+        #expect(await realm.isRegistered(landType: "feature-live-replay"))
+        #expect(await realm.isRegistered(landType: "reevaluation-monitor"))
+    }
+
     @Test("registerWithReevaluation registers only live land when disabled")
     func registerWithReevaluationDisabled() async throws {
         let host = NIOLandHost(configuration: NIOLandHostConfiguration(

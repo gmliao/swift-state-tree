@@ -83,32 +83,6 @@
         }
       }
     },
-    "HeroDefenseReplayTickEvent" : {
-      "properties" : {
-        "actualHash" : {
-          "type" : "string"
-        },
-        "expectedHash" : {
-          "type" : "string"
-        },
-        "isMatch" : {
-          "type" : "boolean"
-        },
-        "tickId" : {
-          "type" : "integer"
-        }
-      },
-      "required" : [
-        "actualHash",
-        "expectedHash",
-        "isMatch",
-        "tickId"
-      ],
-      "type" : "object",
-      "x-stateTree" : {
-        "nodeKind" : "leaf"
-      }
-    },
     "HeroDefenseState" : {
       "properties" : {
         "base" : {
@@ -1008,23 +982,43 @@
     },
     "hero-defense-replay" : {
       "actions" : {
-
+        "Play" : {
+          "$ref" : "#\/defs\/PlayAction"
+        }
       },
       "clientEventHashes" : {
-
+        "MoveTo" : 1,
+        "PlaceTurret" : 2,
+        "Shoot" : 3,
+        "UpdateRotation" : 4,
+        "UpgradeTurret" : 5,
+        "UpgradeWeapon" : 6
       },
       "clientEvents" : {
-
+        "MoveTo" : {
+          "$ref" : "#\/defs\/MoveToEvent"
+        },
+        "PlaceTurret" : {
+          "$ref" : "#\/defs\/PlaceTurretEvent"
+        },
+        "Shoot" : {
+          "$ref" : "#\/defs\/ShootEvent"
+        },
+        "UpdateRotation" : {
+          "$ref" : "#\/defs\/UpdateRotationEvent"
+        },
+        "UpgradeTurret" : {
+          "$ref" : "#\/defs\/UpgradeTurretEvent"
+        },
+        "UpgradeWeapon" : {
+          "$ref" : "#\/defs\/UpgradeWeaponEvent"
+        }
       },
       "eventHashes" : {
-        "HeroDefenseReplayTick" : 1,
-        "PlayerShoot" : 2,
-        "TurretFire" : 3
+        "PlayerShoot" : 1,
+        "TurretFire" : 2
       },
       "events" : {
-        "HeroDefenseReplayTick" : {
-          "$ref" : "#\/defs\/HeroDefenseReplayTickEvent"
-        },
         "PlayerShoot" : {
           "$ref" : "#\/defs\/PlayerShootEvent"
         },
@@ -1165,6 +1159,6 @@
       }
     }
   },
-  "schemaHash" : "1a63f638e034df51",
+  "schemaHash" : "4875865f9c1987c3",
   "version" : "0.1.0"
 }

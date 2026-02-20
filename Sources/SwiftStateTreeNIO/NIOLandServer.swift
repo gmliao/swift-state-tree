@@ -51,6 +51,7 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
             pathHashes: configuration.pathHashes,
             eventHashes: configuration.eventHashes,
             clientEventHashes: configuration.clientEventHashes,
+            keeperModeResolver: configuration.keeperModeResolver,
             logger: configuration.logger
         )
         

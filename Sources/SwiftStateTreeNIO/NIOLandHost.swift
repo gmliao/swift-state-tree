@@ -120,6 +120,10 @@ public struct NIOLandServerConfiguration: Sendable {
     /// Record live per-tick state hashes into the re-evaluation record (ground truth).
     public var enableLiveStateHashRecording: Bool
 
+    /// Resolver for dynamic keeper mode (live vs reevaluation) per land instance.
+    /// When non-nil and returns `.reevaluation(recordFilePath)`, LandManager creates a reevaluation LandKeeper.
+    public var keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)?
+
     public init(
         logger: Logger? = nil,
         jwtConfig: JWTConfiguration? = nil,
@@ -134,7 +138,8 @@ public struct NIOLandServerConfiguration: Sendable {
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
         servicesFactory: @Sendable @escaping (LandID, [String: String]) -> LandServices = { _, _ in
             LandServices()
-        }
+        },
+        keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)? = nil
     ) {
         self.logger = logger
         self.jwtConfig = jwtConfig
@@ -148,6 +153,7 @@ public struct NIOLandServerConfiguration: Sendable {
         self.eventHashes = eventHashes
         self.clientEventHashes = clientEventHashes
         self.servicesFactory = servicesFactory
+        self.keeperModeResolver = keeperModeResolver
     }
 }
 
