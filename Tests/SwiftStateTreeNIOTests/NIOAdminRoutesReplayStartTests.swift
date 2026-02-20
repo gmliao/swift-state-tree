@@ -3,6 +3,7 @@ import NIOHTTP1
 import Testing
 @testable import SwiftStateTree
 @testable import SwiftStateTreeNIO
+@testable import SwiftStateTreeReevaluationMonitor
 @testable import SwiftStateTreeTransport
 
 @Suite("NIO Admin Replay Start Route Tests")
@@ -170,6 +171,66 @@ struct NIOAdminRoutesReplayStartTests {
         #expect(detailString(decoded.error?.details, key: "expectedLandType") == "hero-defense")
         #expect(detailString(decoded.error?.details, key: "recordedLandType") == "counter")
     }
+
+    @Test("Replay start response includes enough metadata to build ReevaluationReplaySessionDescriptor")
+    func replayStartResponseIncludesDescriptorMetadata() async throws {
+        let router = try await makeRouter()
+        let recordFileURL = try writeRecordFile(
+            landType: "hero-defense",
+            landDefinitionID: "hero-defense",
+            version: "2.0"
+        )
+        defer { try? FileManager.default.removeItem(at: recordFileURL) }
+
+        let requestBody = try JSONSerialization.data(withJSONObject: [
+            "landType": "hero-defense",
+            "recordFilePath": recordFileURL.path,
+        ])
+
+        let response = try await sendReplayStartRequest(body: requestBody, on: router)
+        #expect(response.status == .ok)
+
+        let decoded = try decodeAdminResponse(from: response)
+        #expect(decoded.success)
+        guard let data = decoded.data?.base as? [String: Any] else {
+            Issue.record("Expected success data as dictionary")
+            return
+        }
+
+        let descriptor = ReevaluationReplaySessionDescriptor.encode(from: data)
+        #expect(descriptor != nil)
+        #expect(descriptor?.recordFilePath == recordFileURL.path)
+        #expect(descriptor?.landType == "hero-defense")
+        #expect(descriptor?.webSocketPath == "/game/hero-defense-replay")
+    }
+
+    @Test("ReevaluationReplaySessionDescriptor decode rejects path traversal in token")
+    func descriptorDecodeRejectsPathTraversal() async throws {
+        let recordsDir = "\(FileManager.default.currentDirectoryPath)/reevaluation-records"
+        let traversalToken = encodeBase64URLForTest("/../etc/passwd")
+        let instanceId = "\(UUID().uuidString.lowercased()).\(traversalToken)"
+
+        let result = ReevaluationReplaySessionDescriptor.decode(
+            instanceId: instanceId,
+            landType: "hero-defense-replay",
+            recordsDir: recordsDir
+        )
+        #expect(result == nil)
+    }
+
+    @Test("ReevaluationReplaySessionDescriptor decode rejects invalid payload")
+    func descriptorDecodeRejectsInvalidPayload() async throws {
+        let recordsDir = "\(FileManager.default.currentDirectoryPath)/reevaluation-records"
+        let invalidToken = "not-valid-base64!!!"
+        let instanceId = "\(UUID().uuidString.lowercased()).\(invalidToken)"
+
+        let result = ReevaluationReplaySessionDescriptor.decode(
+            instanceId: instanceId,
+            landType: "hero-defense-replay",
+            recordsDir: recordsDir
+        )
+        #expect(result == nil)
+    }
 }
 
 private func sendRecordsListRequest(on router: NIOHTTPRouter) async throws -> NIOHTTPResponse {
@@ -231,6 +292,14 @@ private func detailString(_ details: [String: AnyCodable]?, key: String) -> Stri
 
 private func hasDetailKey(_ details: [String: AnyCodable]?, key: String) -> Bool {
     details?[key] != nil
+}
+
+private func encodeBase64URLForTest(_ raw: String) -> String {
+    Data(raw.utf8)
+        .base64EncodedString()
+        .replacingOccurrences(of: "+", with: "-")
+        .replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: "=", with: "")
 }
 
 private struct ReplayRecordFile: Codable {
