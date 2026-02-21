@@ -15,8 +15,7 @@ export class RedisClusterDirectoryService implements ClusterDirectory, OnModuleD
 
   private ensureClient(): Redis {
     if (!this.client) {
-      const { host, port } = getRedisConfig();
-      this.client = new Redis({ host, port });
+      this.client = new Redis(getRedisConfig());
     }
     return this.client;
   }

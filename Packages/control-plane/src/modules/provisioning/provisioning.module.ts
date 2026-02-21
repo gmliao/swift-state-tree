@@ -17,6 +17,6 @@ import { ServerRegistryService } from './server-registry.service';
       useExisting: InMemoryProvisioningClient,
     },
   ],
-  exports: ['ProvisioningClientPort'],
+  exports: ['ProvisioningClientPort', ServerRegistryService],
 })
 export class ProvisioningModule {}

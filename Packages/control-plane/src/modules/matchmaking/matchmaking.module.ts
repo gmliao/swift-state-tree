@@ -57,6 +57,6 @@ function buildProviders(): Provider[] {
   imports: [BullMQModule, ChannelsModule, ClusterDirectoryModule, SecurityModule, ProvisioningModule],
   controllers: isApiEnabled(getMatchmakingRole()) ? [MatchmakingController] : [],
   providers: buildProviders(),
-  exports: [MatchmakingService],
+  exports: [MatchmakingService, 'MatchmakingStore'],
 })
 export class MatchmakingModule {}

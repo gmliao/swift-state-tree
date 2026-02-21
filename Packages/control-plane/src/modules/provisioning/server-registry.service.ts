@@ -72,6 +72,21 @@ export class ServerRegistryService {
     }
   }
 
+  /**
+   * List all registered servers for admin dashboard.
+   * Each entry includes isStale (true if lastSeenAt exceeds TTL).
+   */
+  listAllServers(): (ServerEntry & { isStale: boolean })[] {
+    const cutoff = Date.now() - SERVER_TTL_MS;
+    const result: (ServerEntry & { isStale: boolean })[] = [];
+    for (const entries of this.serversByLandType.values()) {
+      for (const e of entries) {
+        result.push({ ...e, isStale: e.lastSeenAt.getTime() < cutoff });
+      }
+    }
+    return result;
+  }
+
   pickServer(landType: string, ttlMs = SERVER_TTL_MS): ServerEntry | null {
     const entries = this.serversByLandType.get(landType);
     if (!entries || entries.length === 0) return null;

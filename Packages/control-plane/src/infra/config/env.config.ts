@@ -9,6 +9,8 @@ import { randomUUID } from 'crypto';
 export interface RedisConfig {
   host: string;
   port: number;
+  /** Redis database number (0-15). Use different DB for e2e tests to isolate from dev. */
+  db?: number;
 }
 
 /** Matchmaking role for horizontal scaling. */
@@ -19,6 +21,7 @@ export const EnvKeys = {
   PORT: 'PORT',
   REDIS_HOST: 'REDIS_HOST',
   REDIS_PORT: 'REDIS_PORT',
+  REDIS_DB: 'REDIS_DB',
   NODE_ID: 'NODE_ID',
   MATCHMAKING_ROLE: 'MATCHMAKING_ROLE',
   MATCHMAKING_MIN_WAIT_MS: 'MATCHMAKING_MIN_WAIT_MS',
@@ -62,7 +65,12 @@ export function getRedisPort(): number {
 
 /** Redis connection config. */
 export function getRedisConfig(): RedisConfig {
-  return { host: getRedisHost(), port: getRedisPort() };
+  const config: RedisConfig = { host: getRedisHost(), port: getRedisPort() };
+  const db = getEnvInt(EnvKeys.REDIS_DB, 0);
+  if (db >= 0 && db <= 15) {
+    config.db = db;
+  }
+  return config;
 }
 
 /** NestJS injection token for this node's unique ID. */

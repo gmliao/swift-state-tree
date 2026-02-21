@@ -112,7 +112,7 @@ describe('Realtime WebSocket (e2e)', () => {
     ws.close();
   });
 
-  // Requires Redis (BullMQ). With InMemory channel override, match.assigned delivery is synchronous (no race).
+  // Requires Redis (BullMQ) for full flow. With InMemory channel override, match.assigned delivery is synchronous (no race).
   it.skip('enqueue via WebSocket then receives match.assigned (single client)', async () => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/realtime`);
 

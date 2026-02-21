@@ -253,6 +253,54 @@ struct NIOLandHostTests {
         let cancelled = await tracker.cancelled
         #expect(cancelled, "Middleware task should be cancelled when startup fails")
     }
+
+    @Test("NIOLandHost calls middleware onShutdown when server.start() throws")
+    func testMiddlewareOnShutdownOnStartupFailure() async throws {
+        let port: UInt16 = 39400
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+
+        let bootstrap = ServerBootstrap(group: group)
+            .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .childChannelInitializer { channel in
+                channel.eventLoop.makeSucceededFuture(())
+            }
+        let channel = try await bootstrap.bind(host: "127.0.0.1", port: Int(port)).get()
+
+        let onShutdownTracker = OnShutdownTracker()
+        let middleware = OnShutdownTrackingMiddleware(tracker: onShutdownTracker)
+        let config = NIOLandHostConfiguration(
+            host: "127.0.0.1",
+            port: port,
+            logger: Logger(label: "test"),
+            middlewares: [middleware]
+        )
+        let host = NIOLandHost(configuration: config)
+        try await host.register(
+            landType: "game1",
+            land: TestGame1.makeLand(),
+            initialState: TestState1(),
+            webSocketPath: "/game/game1",
+            configuration: NIOLandServerConfiguration(
+                logger: Logger(label: "test"),
+                allowAutoCreateOnJoin: false,
+                transportEncoding: .json
+            )
+        )
+
+        do {
+            try await host.run()
+            #expect(Bool(false), "Expected run() to throw")
+        } catch {
+            // Expected: port already in use
+        }
+
+        try await channel.close()
+        try await group.shutdownGracefully()
+
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let onShutdownCalled = await onShutdownTracker.wasCalled
+        #expect(onShutdownCalled, "Middleware onShutdown should be called when startup fails")
+    }
 }
 
 // MARK: - Test Middleware for Cancellation
@@ -281,4 +329,28 @@ private final class TrackingMiddleware: HostMiddleware, @unchecked Sendable {
     }
 
     func onShutdown(context: HostContext) async throws {}
+}
+
+// MARK: - Test Middleware for OnShutdown Verification
+
+private actor OnShutdownTracker: Sendable {
+    var wasCalled = false
+    func markCalled() {
+        wasCalled = true
+    }
+}
+
+private final class OnShutdownTrackingMiddleware: HostMiddleware, @unchecked Sendable {
+    let tracker: OnShutdownTracker
+    init(tracker: OnShutdownTracker) {
+        self.tracker = tracker
+    }
+
+    func onStart(context: HostContext) async throws -> Task<Void, Never>? {
+        nil
+    }
+
+    func onShutdown(context: HostContext) async throws {
+        await tracker.markCalled()
+    }
 }

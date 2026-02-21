@@ -28,4 +28,7 @@ export interface MatchmakingStore {
 
   /** Remove queued ticket (on cancel or assign). */
   removeQueuedTicket(ticketId: string): Promise<void>;
+
+  /** List all queued tickets (for admin dashboard). */
+  listAllQueuedTickets(): Promise<QueuedTicket[]>;
 }
