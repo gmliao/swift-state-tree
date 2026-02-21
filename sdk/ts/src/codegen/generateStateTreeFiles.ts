@@ -80,7 +80,7 @@ async function generateForLand(
   const isAlias = aliasBaseLandID != null
 
   if (isAlias) {
-    await generateAliasLandFiles(schema, landID, landDef, aliasBaseLandID, outputDir, framework)
+    await generateAliasLandFiles(schema, landID, landDef, aliasBaseLandID, outputDir, framework, testFramework)
     return
   }
 
@@ -150,15 +150,20 @@ async function generateAliasLandFiles(
   landDef: LandDefinition,
   baseLandID: string,
   outputDir: string,
-  framework?: Framework
+  framework?: Framework,
+  testFramework?: TestFramework
 ): Promise<void> {
   const landDir = join(outputDir, landID)
   const baseClassBaseName = toPascalCase(baseLandID)
   const baseClassName = `${baseClassBaseName}StateTree`
   const aliasClassBaseName = toPascalCase(landID)
+  const aliasClassName = `${aliasClassBaseName}StateTree`
 
   const bindingsSource = generateAliasBindingsTs(landID, baseLandID)
   await writeFileRecursive(join(landDir, 'bindings.ts'), bindingsSource)
+
+  const indexSource = generateAliasIndexTs(landID, baseLandID, baseClassName, aliasClassName)
+  await writeFileRecursive(join(landDir, 'index.ts'), indexSource)
 
   if (framework === 'vue') {
     const composableName = `use${aliasClassBaseName}`
@@ -171,6 +176,11 @@ async function generateAliasLandFiles(
     )
     await writeFileRecursive(join(landDir, `${composableName}.ts`), composableSource)
   }
+
+  const testHelpersSource = generateAliasTestHelpers(baseLandID, baseClassBaseName, aliasClassBaseName, testFramework)
+  if (testHelpersSource) {
+    await writeFileRecursive(join(landDir, 'testHelpers.ts'), testHelpersSource)
+  }
 }
 
 function generateAliasBindingsTs(landID: string, baseLandID: string): string {
@@ -180,6 +190,44 @@ function generateAliasBindingsTs(landID: string, baseLandID: string): string {
   lines.push('')
   lines.push('export type { LandState, ActionPayloads, ActionResponses, ActionName, ClientEventPayloads, ClientEventName, ServerEventPayloads, ServerEventName, Actions, ClientEvents, ServerEventSubscriptions, Unsubscribe, EventHandler, EventSubscription }')
   lines.push(`  from '../${baseLandID}/bindings.js'`)
+  lines.push('')
+  return lines.join('\n')
+}
+
+function generateAliasIndexTs(
+  landID: string,
+  baseLandID: string,
+  baseClassName: string,
+  aliasClassName: string
+): string {
+  const lines: string[] = []
+  lines.push(generateHeader())
+  lines.push("import type { StateTreeRuntime } from '@swiftstatetree/sdk/core'")
+  lines.push(`import { LAND_TYPE } from './bindings.js'`)
+  lines.push(`import { ${baseClassName}, type StateTreeOptions } from '../${baseLandID}/index.js'`)
+  lines.push('')
+  lines.push(`export type { StateTreeOptions } from '../${baseLandID}/index.js'`)
+  lines.push('')
+  lines.push(`export class ${aliasClassName} extends ${baseClassName} {`)
+  lines.push('  override readonly landType = LAND_TYPE')
+  lines.push('')
+  lines.push('  constructor(runtime: StateTreeRuntime, options?: StateTreeOptions) {')
+  lines.push('    super(runtime, { ...options, landID: options?.landID ?? LAND_TYPE })')
+  lines.push('  }')
+  lines.push('}')
+  lines.push('')
+  return lines.join('\n')
+}
+
+function generateAliasTestHelpers(
+  baseLandID: string,
+  baseClassBaseName: string,
+  aliasClassBaseName: string,
+  _testFramework?: TestFramework
+): string {
+  const lines: string[] = []
+  lines.push(generateHeader())
+  lines.push(`export { createMockState, createMock${baseClassBaseName} as createMock${aliasClassBaseName} } from '../${baseLandID}/testHelpers.js'`)
   lines.push('')
   return lines.join('\n')
 }

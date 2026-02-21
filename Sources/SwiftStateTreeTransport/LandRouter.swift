@@ -273,15 +273,31 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             switch transportMsg.kind {
             case .join:
                 if case .join(let payload) = transportMsg.payload {
-                    try await handleJoinRequest(
-                        requestID: payload.requestID,
-                        landType: payload.landType,
-                        landInstanceId: payload.landInstanceId,
-                        sessionID: sessionID,
-                        requestedPlayerID: payload.playerID,
-                        deviceID: payload.deviceID,
-                        metadata: payload.metadata
-                    )
+                    do {
+                        try await handleJoinRequest(
+                            requestID: payload.requestID,
+                            landType: payload.landType,
+                            landInstanceId: payload.landInstanceId,
+                            sessionID: sessionID,
+                            requestedPlayerID: payload.playerID,
+                            deviceID: payload.deviceID,
+                            metadata: payload.metadata
+                        )
+                    } catch {
+                        // Join-domain errors (room creation, replay load, etc.) - not decode failures
+                        sessionToBoundLandID.removeValue(forKey: sessionID)
+                        let errorCode: ErrorCode = .joinRoomNotFound
+                        await sendJoinError(
+                            requestID: payload.requestID,
+                            sessionID: sessionID,
+                            code: errorCode,
+                            message: "\(error)"
+                        )
+                        logger.error("Join failed (land creation or replay load)", metadata: [
+                            "sessionID": .string(sessionID.rawValue),
+                            "error": .string("\(error)")
+                        ])
+                    }
                 }
                 
             default:

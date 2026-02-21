@@ -6,6 +6,15 @@ import type { CookieGameState } from '../defs.js'
 import type { BuyUpgradeAction, BuyUpgradeResponse, ClickCookieEvent } from '../defs.js'
 import { vi } from 'vitest'
 
+interface ConnectOptions {
+  wsUrl: string
+  playerName?: string
+  playerID?: string
+  deviceID?: string
+  landID?: string
+  metadata?: Record<string, any>
+}
+
 /**
  * Creates a mock state for testing.
  * Automatically generates default values based on the state type structure.
@@ -32,6 +41,15 @@ export function createMockCookie(initialState?: CookieGameState) {
   const isJoined = ref(true)
   const lastError = ref<string | null>(null)
 
+  const connect = vi.fn(async (_opts: ConnectOptions): Promise<void> => {
+    // Mock implementation - customize as needed
+    isConnecting.value = true
+    lastError.value = null
+    isConnected.value = true
+    isJoined.value = true
+    isConnecting.value = false
+  })
+
   const clickCookie = vi.fn(async (_payload: ClickCookieEvent) => {
     // Mock implementation - customize as needed
   })
@@ -57,7 +75,7 @@ export function createMockCookie(initialState?: CookieGameState) {
     clickCookie,
     buyUpgrade,
     disconnect,
-    connect: vi.fn(),
+    connect,
     tree: computed(() => null)
   }
 }

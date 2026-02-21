@@ -6,6 +6,8 @@ import Logging
 public enum LandKeeperModeConfig: Sendable {
     case live
     case reevaluation(recordFilePath: String)
+    /// Reject replay join (e.g. invalid instanceId). LandManager will throw when resolving.
+    case invalidReplaySession(message: String)
 }
 
 /// Manager for multiple game lands.
@@ -186,22 +188,33 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         let transport = self.sharedTransport ?? WebSocketTransport(logger: logger)
 
         let keeper: LandKeeper<State>
-        if let config = keeperModeResolver?(landID, metadata),
-           case let .reevaluation(recordFilePath) = config
-        {
-            let source = try JSONReevaluationSource(filePath: recordFilePath)
-            keeper = LandKeeper<State>(
-                definition: landDefinition,
-                initialState: initial,
-                mode: .reevaluation,
-                reevaluationSource: source,
-                reevaluationSink: nil,
-                reevaluationOutputMode: .transportAndSink,
-                services: metadataServices,
-                autoStartLoops: true,
-                transport: nil,
-                logger: logger
-            )
+        if let config = keeperModeResolver?(landID, metadata) {
+            if case let .invalidReplaySession(message) = config {
+                throw ReevaluationReplayError.invalidSessionDescriptor(message)
+            }
+            if case let .reevaluation(recordFilePath) = config {
+                let source = try JSONReevaluationSource(filePath: recordFilePath)
+                keeper = LandKeeper<State>(
+                    definition: landDefinition,
+                    initialState: initial,
+                    mode: .reevaluation,
+                    reevaluationSource: source,
+                    reevaluationSink: nil,
+                    reevaluationOutputMode: .transportAndSink,
+                    services: metadataServices,
+                    autoStartLoops: true,
+                    transport: nil,
+                    logger: logger
+                )
+            } else {
+                keeper = LandKeeper<State>(
+                    definition: landDefinition,
+                    initialState: initial,
+                    services: metadataServices,
+                    enableLiveStateHashRecording: enableLiveStateHashRecording,
+                    logger: logger
+                )
+            }
         } else {
             keeper = LandKeeper<State>(
                 definition: landDefinition,

@@ -6,6 +6,15 @@ import type { DeterministicMathDemoState } from '../defs.js'
 import { Acceleration2, IVec2, Position2, Velocity2 } from '@swiftstatetree/sdk/core'
 import { vi } from 'vitest'
 
+interface ConnectOptions {
+  wsUrl: string
+  playerName?: string
+  playerID?: string
+  deviceID?: string
+  landID?: string
+  metadata?: Record<string, any>
+}
+
 /**
  * Creates a mock state for testing.
  * Automatically generates default values based on the state type structure.
@@ -32,6 +41,15 @@ export function createMockDeterministicMathDemo(initialState?: DeterministicMath
   const isJoined = ref(true)
   const lastError = ref<string | null>(null)
 
+  const connect = vi.fn(async (_opts: ConnectOptions): Promise<void> => {
+    // Mock implementation - customize as needed
+    isConnecting.value = true
+    lastError.value = null
+    isConnected.value = true
+    isJoined.value = true
+    isConnecting.value = false
+  })
+
   const disconnect = vi.fn(async () => {
     isConnected.value = false
     isJoined.value = false
@@ -46,7 +64,7 @@ export function createMockDeterministicMathDemo(initialState?: DeterministicMath
     isJoined,
     lastError,
     disconnect,
-    connect: vi.fn(),
+    connect,
     tree: computed(() => null)
   }
 }

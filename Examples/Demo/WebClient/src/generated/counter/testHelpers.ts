@@ -6,6 +6,15 @@ import type { CounterState } from '../defs.js'
 import type { IncrementAction, IncrementResponse } from '../defs.js'
 import { vi } from 'vitest'
 
+interface ConnectOptions {
+  wsUrl: string
+  playerName?: string
+  playerID?: string
+  deviceID?: string
+  landID?: string
+  metadata?: Record<string, any>
+}
+
 /**
  * Creates a mock state for testing.
  * Automatically generates default values based on the state type structure.
@@ -29,6 +38,15 @@ export function createMockCounter(initialState?: CounterState) {
   const isJoined = ref(true)
   const lastError = ref<string | null>(null)
 
+  const connect = vi.fn(async (_opts: ConnectOptions): Promise<void> => {
+    // Mock implementation - customize as needed
+    isConnecting.value = true
+    lastError.value = null
+    isConnected.value = true
+    isJoined.value = true
+    isConnecting.value = false
+  })
+
   const increment = vi.fn(async (_payload: IncrementAction): Promise<IncrementResponse> => {
     // Mock implementation - customize as needed
     return {} as IncrementResponse
@@ -49,7 +67,7 @@ export function createMockCounter(initialState?: CounterState) {
     lastError,
     increment,
     disconnect,
-    connect: vi.fn(),
+    connect,
     tree: computed(() => null)
   }
 }

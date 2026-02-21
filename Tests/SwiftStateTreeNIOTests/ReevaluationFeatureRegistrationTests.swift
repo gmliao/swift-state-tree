@@ -140,6 +140,55 @@ struct ReevaluationFeatureRegistrationTests {
         #expect(await realm.isRegistered(landType: "feature-live-replay") == false)
         #expect(await realm.isRegistered(landType: "reevaluation-monitor") == false)
     }
+
+    @Test("Replay resolver returns invalidReplaySession when ReevaluationReplaySessionDescriptor.decode fails")
+    func replayResolverFailsClosedForInvalidInstanceId() async throws {
+        let recordsDir = FileManager.default.temporaryDirectory.path
+        let replayLandType = "feature-live-replay"
+
+        let landFactory: @Sendable (LandID) -> LandDefinition<FeatureReplayState> = { landID in
+            Land(landID.stringValue, using: FeatureReplayState.self) { Rules {} }
+        }
+        let initialStateFactory: @Sendable (LandID) -> FeatureReplayState = { _ in FeatureReplayState() }
+
+        let manager = LandManager<FeatureReplayState>(
+            landFactory: landFactory,
+            initialStateFactory: initialStateFactory,
+            keeperModeResolver: { landID, _ in
+                guard landID.landType == replayLandType else { return nil }
+                guard let descriptor = ReevaluationReplaySessionDescriptor.decode(
+                    instanceId: landID.instanceId,
+                    landType: replayLandType,
+                    recordsDir: recordsDir
+                ) else {
+                    return .invalidReplaySession(message: "Invalid replay session descriptor for instanceId")
+                }
+                return .reevaluation(recordFilePath: descriptor.recordFilePath)
+            }
+        )
+
+        let landID = LandID(landType: replayLandType, instanceId: "invalid-no-dot-format")
+        let definition = landFactory(landID)
+        let initialState = initialStateFactory(landID)
+
+        do {
+            _ = try await manager.getOrCreateLand(
+                landID: landID,
+                definition: definition,
+                initialState: initialState,
+                metadata: [:]
+            )
+            Issue.record("Expected ReevaluationReplayError to be thrown for invalid instanceId")
+        } catch let error as ReevaluationReplayError {
+            if case .invalidSessionDescriptor = error {
+                // Expected: fail-closed when decode returns nil
+            } else {
+                Issue.record("Expected invalidSessionDescriptor case")
+            }
+        } catch {
+            Issue.record("Expected ReevaluationReplayError, got \(type(of: error)): \(error)")
+        }
+    }
 }
 
 private struct MockReevaluationTargetFactory: ReevaluationTargetFactory {
