@@ -21,7 +21,7 @@ export interface StateTreeOptions {
 }
 
 export class CookieStateTree {
-  readonly landType = LAND_TYPE
+  readonly landType: string = LAND_TYPE
   readonly state: LandState
   readonly actions: Actions
   readonly events: ClientEvents

@@ -177,7 +177,13 @@ async function generateAliasLandFiles(
     await writeFileRecursive(join(landDir, `${composableName}.ts`), composableSource)
   }
 
-  const testHelpersSource = generateAliasTestHelpers(baseLandID, baseClassBaseName, aliasClassBaseName, testFramework)
+  const testHelpersSource = generateAliasTestHelpers(
+    baseLandID,
+    baseClassBaseName,
+    aliasClassBaseName,
+    framework,
+    testFramework
+  )
   if (testHelpersSource) {
     await writeFileRecursive(join(landDir, 'testHelpers.ts'), testHelpersSource)
   }
@@ -223,11 +229,20 @@ function generateAliasTestHelpers(
   baseLandID: string,
   baseClassBaseName: string,
   aliasClassBaseName: string,
+  framework?: Framework,
   _testFramework?: TestFramework
 ): string {
   const lines: string[] = []
   lines.push(generateHeader())
-  lines.push(`export { createMockState, createMock${baseClassBaseName} as createMock${aliasClassBaseName} } from '../${baseLandID}/testHelpers.js'`)
+  // createMock{BaseName} only exists when base land has a Vue composable (framework === 'vue')
+  const hasComposableMock = framework === 'vue'
+  if (hasComposableMock) {
+    lines.push(
+      `export { createMockState, createMock${baseClassBaseName} as createMock${aliasClassBaseName} } from '../${baseLandID}/testHelpers.js'`
+    )
+  } else {
+    lines.push(`export { createMockState } from '../${baseLandID}/testHelpers.js'`)
+  }
   lines.push('')
   return lines.join('\n')
 }
@@ -615,7 +630,7 @@ function generateIndexTs(
   lines.push('')
 
   lines.push(`export class ${className} {`)
-  lines.push('  readonly landType = LAND_TYPE')
+  lines.push('  readonly landType: string = LAND_TYPE')
   lines.push('  readonly state: LandState')
   lines.push('  readonly actions: Actions')
   lines.push('  readonly events: ClientEvents')
