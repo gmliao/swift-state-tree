@@ -37,12 +37,14 @@ public struct LandTypeRegistry<State: StateNodeProtocol>: Sendable {
     ///   - landType: The land type identifier (should match LandDefinition.id).
     ///   - landID: The unique identifier for the specific land instance.
     /// - Returns: The LandDefinition for this land type.
-    /// - Precondition: The returned LandDefinition.id must match the landType parameter.
+    /// - Precondition: The returned LandDefinition.id must match landType, or landType must be
+    ///   "{definition.id}-replay" (same-land replay convention).
     public func getLandDefinition(landType: String, landID: LandID) -> LandDefinition<State> {
         let definition = landFactory(landType, landID)
-        // Ensure consistency: definition.id should match landType
+        // Ensure consistency: definition.id should match landType, or landType is replay alias
+        let isReplayAlias = landType == "\(definition.id)-replay"
         assert(
-            definition.id == landType,
+            definition.id == landType || isReplayAlias,
             "LandDefinition.id (\(definition.id)) must match landType (\(landType))"
         )
         return definition

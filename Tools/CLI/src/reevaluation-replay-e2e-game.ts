@@ -160,6 +160,21 @@ async function main() {
     landID: gameLandID,
   });
 
+  // Expected player count from record (replay viewer must NOT be added as extra player)
+  const expectedPlayerIDs = new Set<string>();
+  const tickFrames = (record as { tickFrames?: Array<{ lifecycleEvents?: Array<{ kind?: string; playerID?: string }> }> })
+    .tickFrames;
+  if (Array.isArray(tickFrames)) {
+    for (const frame of tickFrames) {
+      for (const ev of frame.lifecycleEvents ?? []) {
+        if (ev.kind === "join" && ev.playerID) {
+          expectedPlayerIDs.add(ev.playerID);
+        }
+      }
+    }
+  }
+  const expectedPlayerCount = expectedPlayerIDs.size;
+
   // Same-land replay: no HeroDefenseReplayTickEvent; completion based on state + shooting events + idle timeout
 
   const projectRoot = resolve(process.cwd(), "..", "..");
@@ -291,7 +306,8 @@ async function main() {
         Object.keys(base).length > 0
       ) {
         hasNonDefaultLiveEvidence = true;
-        lastActivityAt = Date.now();
+        // Do NOT update lastActivityAt here: state updates arrive every tick, so we would never
+        // reach replayIdleMs. lastActivityAt is only updated by PlayerShoot/TurretFire events.
       }
     }
 
@@ -312,7 +328,6 @@ async function main() {
 
   unsubscribeReplayPlayerShoot();
   unsubscribeReplayTurretFire();
-  await runtime.disconnect();
 
   if (!completed) {
     throw new Error(`Timed out waiting for replay completion (${timeoutMs}ms)`);
@@ -346,11 +361,22 @@ async function main() {
     }
   }
 
+  // Replay viewer must NOT be added as extra player (same count as recorded)
+  const finalState = view.getState() as { players?: Record<string, unknown> };
+  const actualPlayerCount = isPlainObject(finalState?.players) ? Object.keys(finalState.players).length : 0;
+  if (actualPlayerCount !== expectedPlayerCount) {
+    throw new Error(
+      `Replay viewer was incorrectly added as player: expected ${expectedPlayerCount} player(s) from record, got ${actualPlayerCount} (replay viewer must be observer-only)`,
+    );
+  }
+
   console.log(
     chalk.green(
       `✅ Replay stream completed; PlayerShoot=${replayPlayerShootEvents}, TurretFire=${replayTurretFireEvents}`,
     ),
   );
+
+  await runtime.disconnect();
 }
 
 main().catch((error: unknown) => {
