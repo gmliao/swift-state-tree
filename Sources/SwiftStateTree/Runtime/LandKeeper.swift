@@ -1787,6 +1787,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let tickId = nextTickId
         nextTickId += 1
 
+        // In re-evaluation mode, stop when we exceed the recorded tick range (prevent simulation beyond record)
+        if mode == .reevaluation, let source = reevaluationSource {
+            let maxTickId = (try? await source.getMaxTickId()) ?? -1
+            if tickId > maxTickId {
+                tickTask?.cancel()
+                tickTask = nil
+                return
+            }
+        }
+
         // In re-evaluation mode, load actions, client events, and lifecycle events from ReevaluationSource.
         if mode == .reevaluation, let source = reevaluationSource {
             do {
