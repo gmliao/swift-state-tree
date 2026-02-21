@@ -66,7 +66,7 @@ describe('generateStateTreeFiles replay session composable', () => {
     await expect(access(sessionFile)).rejects.toThrow()
   })
 
-  it('generates index.ts and testHelpers.ts for alias lands', async () => {
+  it('generates index.ts and testHelpers.ts for alias lands (vue: includes createMock composable)', async () => {
     const outputDir = await mkdtemp(join(tmpdir(), 'sst-codegen-alias-files-'))
     await generateStateTreeFiles(makeSchema(true), outputDir, 'vue', 'vitest')
 
@@ -82,5 +82,15 @@ describe('generateStateTreeFiles replay session composable', () => {
     expect(aliasTestHelpersSource).toContain(
       "export { createMockState, createMockHeroDefense as createMockHeroDefenseReplay } from '../hero-defense/testHelpers.js'"
     )
+  })
+
+  it('generates alias testHelpers with only createMockState when no framework', async () => {
+    const outputDir = await mkdtemp(join(tmpdir(), 'sst-codegen-alias-no-framework-'))
+    await generateStateTreeFiles(makeSchema(true), outputDir)
+
+    const aliasTestHelpersFile = join(outputDir, 'hero-defense-replay', 'testHelpers.ts')
+    const aliasTestHelpersSource = await readFile(aliasTestHelpersFile, 'utf8')
+    expect(aliasTestHelpersSource).toContain("export { createMockState } from '../hero-defense/testHelpers.js'")
+    expect(aliasTestHelpersSource).not.toContain('createMockHeroDefense')
   })
 })
