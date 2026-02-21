@@ -166,6 +166,7 @@ Examples/GameDemo/ws-loadtest/monitoring/*.json
 
 # Reevaluation records: keep existing committed files as examples; ignore new local runs
 Examples/GameDemo/reevaluation-records/*.json
+Examples/GameDemo/WebClient/.playwright-cli/
 
 # Generated nginx config for matchmaking E2E
 docs/deploy/nginx-matchmaking-e2e.generated.conf
