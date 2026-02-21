@@ -160,20 +160,26 @@ async function main() {
     landID: gameLandID,
   });
 
-  // Expected player count from record (replay viewer must NOT be added as extra player)
-  const expectedPlayerIDs = new Set<string>();
+  // Max concurrent player count from record (replay viewer must NOT be added as extra player).
+  // We use max (not final) because we may check state before replay fully finishes.
+  // Assertion: actualPlayerCount <= maxRecordedPlayers (viewer must not appear as extra).
+  let maxRecordedPlayers = 0;
+  const playersPresent = new Set<string>();
   const tickFrames = (record as { tickFrames?: Array<{ lifecycleEvents?: Array<{ kind?: string; playerID?: string }> }> })
     .tickFrames;
   if (Array.isArray(tickFrames)) {
     for (const frame of tickFrames) {
       for (const ev of frame.lifecycleEvents ?? []) {
-        if (ev.kind === "join" && ev.playerID) {
-          expectedPlayerIDs.add(ev.playerID);
+        if (!ev.playerID) continue;
+        if (ev.kind === "join") {
+          playersPresent.add(ev.playerID);
+          maxRecordedPlayers = Math.max(maxRecordedPlayers, playersPresent.size);
+        } else if (ev.kind === "leave") {
+          playersPresent.delete(ev.playerID);
         }
       }
     }
   }
-  const expectedPlayerCount = expectedPlayerIDs.size;
 
   // Same-land replay: no HeroDefenseReplayTickEvent; completion based on state + shooting events + idle timeout
 
@@ -361,12 +367,12 @@ async function main() {
     }
   }
 
-  // Replay viewer must NOT be added as extra player (same count as recorded)
+  // Replay viewer must NOT be added as extra player (actual must not exceed max from record)
   const finalState = view.getState() as { players?: Record<string, unknown> };
   const actualPlayerCount = isPlainObject(finalState?.players) ? Object.keys(finalState.players).length : 0;
-  if (actualPlayerCount !== expectedPlayerCount) {
+  if (actualPlayerCount > maxRecordedPlayers) {
     throw new Error(
-      `Replay viewer was incorrectly added as player: expected ${expectedPlayerCount} player(s) from record, got ${actualPlayerCount} (replay viewer must be observer-only)`,
+      `Replay viewer was incorrectly added as player: max ${maxRecordedPlayers} player(s) from record, got ${actualPlayerCount} (replay viewer must be observer-only)`,
     );
   }
 

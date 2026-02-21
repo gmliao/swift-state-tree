@@ -65,4 +65,22 @@ describe('generateStateTreeFiles replay session composable', () => {
     const sessionFile = join(outputDir, 'hero-defense', 'useHeroDefenseSession.ts')
     await expect(access(sessionFile)).rejects.toThrow()
   })
+
+  it('generates index.ts and testHelpers.ts for alias lands', async () => {
+    const outputDir = await mkdtemp(join(tmpdir(), 'sst-codegen-alias-files-'))
+    await generateStateTreeFiles(makeSchema(true), outputDir, 'vue', 'vitest')
+
+    const aliasIndexFile = join(outputDir, 'hero-defense-replay', 'index.ts')
+    const aliasIndexSource = await readFile(aliasIndexFile, 'utf8')
+    expect(aliasIndexSource).toContain('export class HeroDefenseReplayStateTree extends HeroDefenseStateTree')
+    expect(aliasIndexSource).toContain('override readonly landType = LAND_TYPE')
+    expect(aliasIndexSource).toContain("import { LAND_TYPE } from './bindings.js'")
+    expect(aliasIndexSource).toContain("import { HeroDefenseStateTree, type StateTreeOptions } from '../hero-defense/index.js'")
+
+    const aliasTestHelpersFile = join(outputDir, 'hero-defense-replay', 'testHelpers.ts')
+    const aliasTestHelpersSource = await readFile(aliasTestHelpersFile, 'utf8')
+    expect(aliasTestHelpersSource).toContain(
+      "export { createMockState, createMockHeroDefense as createMockHeroDefenseReplay } from '../hero-defense/testHelpers.js'"
+    )
+  })
 })

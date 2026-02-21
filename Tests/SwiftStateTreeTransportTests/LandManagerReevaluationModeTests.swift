@@ -116,6 +116,51 @@ struct LandManagerReevaluationModeTests {
         let mode = await container.keeper.getMode()
         #expect(mode == .reevaluation)
     }
+
+    @Test("Invalid replay session descriptor throws ReevaluationReplayError")
+    func invalidReplaySessionThrowsReevaluationReplayError() async throws {
+        let landFactory: @Sendable (LandID) -> LandDefinition<ReevaluationModeTestState> = { landID in
+            Land(landID.stringValue, using: ReevaluationModeTestState.self) {
+                Rules {}
+            }
+        }
+        let initialStateFactory: @Sendable (LandID) -> ReevaluationModeTestState = { _ in
+            ReevaluationModeTestState()
+        }
+
+        let manager = LandManager<ReevaluationModeTestState>(
+            landFactory: landFactory,
+            initialStateFactory: initialStateFactory,
+            keeperModeResolver: { landID, _ in
+                if landID.landType == "test-replay" {
+                    return .invalidReplaySession(message: "Invalid replay session descriptor for instanceId")
+                }
+                return nil
+            }
+        )
+
+        let landID = LandID(landType: "test-replay", instanceId: "invalid-instance-id")
+        let definition = landFactory(landID)
+        let initialState = initialStateFactory(landID)
+
+        do {
+            _ = try await manager.getOrCreateLand(
+                landID: landID,
+                definition: definition,
+                initialState: initialState,
+                metadata: [:]
+            )
+            Issue.record("Expected ReevaluationReplayError to be thrown")
+        } catch let error as ReevaluationReplayError {
+            if case let .invalidSessionDescriptor(message) = error {
+                #expect(message == "Invalid replay session descriptor for instanceId")
+            } else {
+                Issue.record("Expected invalidSessionDescriptor case, got \(error)")
+            }
+        } catch {
+            Issue.record("Expected ReevaluationReplayError, got \(type(of: error)): \(error)")
+        }
+    }
 }
 
 private struct ReevaluationRecordFile: Codable {
