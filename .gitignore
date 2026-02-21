@@ -136,6 +136,9 @@ coverage/
 **/__pycache__/
 *.pyc
 
+# TypeScript incremental build cache
+*.tsbuildinfo
+
 # Env files
 .env
 .env.*.local
