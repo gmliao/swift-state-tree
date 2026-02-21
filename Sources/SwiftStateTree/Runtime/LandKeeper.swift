@@ -737,7 +737,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         destroyTask?.cancel()
         destroyTask = nil
 
-        guard isFirst, definition.lifetimeHandlers.onJoin != nil else { return }
+        // In reevaluation mode, replay viewers are observers: add to players for sync but skip OnJoin
+        // so they are not added to game state (which would create an extra player in the replay).
+        guard isFirst, definition.lifetimeHandlers.onJoin != nil, mode != .reevaluation else { return }
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
         let sequence = outputCollector.takeNextSequence()
@@ -894,7 +896,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         destroyTask?.cancel()
         destroyTask = nil
 
-        guard isFirst, definition.lifetimeHandlers.onJoin != nil else { return decision }
+        // In reevaluation mode, replay viewers are observers: add to players for sync but skip OnJoin
+        // so they are not added to game state (which would create an extra player in the replay).
+        guard isFirst, definition.lifetimeHandlers.onJoin != nil, mode != .reevaluation else {
+            return decision
+        }
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
         let sequence = outputCollector.takeNextSequence()
@@ -988,12 +994,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let metadata = session.metadata
         players.removeValue(forKey: playerID)
 
-        logger.info("Player \(playerID.rawValue) leaving, enqueuing OnLeave lifecycle item")
-
-        guard definition.lifetimeHandlers.onLeave != nil else {
+        // In reevaluation mode, replay viewers never ran OnJoin so skip OnLeave (no game state to clean).
+        guard definition.lifetimeHandlers.onLeave != nil, mode != .reevaluation else {
             scheduleDestroyIfNeeded()
             return
         }
+
+        logger.info("Player \(playerID.rawValue) leaving, enqueuing OnLeave lifecycle item")
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
         let sequence = outputCollector.takeNextSequence()
