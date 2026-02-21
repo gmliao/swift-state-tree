@@ -60,6 +60,9 @@ public struct NIOLandHostConfiguration: Sendable {
     public var schemaProvider: (@Sendable () -> Data?)?
     /// Admin API key for admin routes (nil = admin routes disabled).
     public var adminAPIKey: String?
+    /// Resolver for replay land WebSocket path in replay-start response. When nil, uses default "/game/{replayLandType}".
+    /// Set this to match ReevaluationFeatureConfiguration.replayWebSocketPathResolver when using a custom path.
+    public var replayWebSocketPathResolver: (@Sendable (String) -> String)?
     /// Lifecycle middlewares (run at start/shutdown). Order: start runs in order; shutdown runs in reverse.
     public var middlewares: [any HostMiddleware]
 
@@ -70,6 +73,7 @@ public struct NIOLandHostConfiguration: Sendable {
         eventLoopThreads: Int = System.coreCount,
         schemaProvider: (@Sendable () -> Data?)? = nil,
         adminAPIKey: String? = nil,
+        replayWebSocketPathResolver: (@Sendable (String) -> String)? = nil,
         middlewares: [any HostMiddleware] = []
     ) {
         self.host = host
@@ -78,6 +82,7 @@ public struct NIOLandHostConfiguration: Sendable {
         self.eventLoopThreads = eventLoopThreads
         self.schemaProvider = schemaProvider
         self.adminAPIKey = adminAPIKey
+        self.replayWebSocketPathResolver = replayWebSocketPathResolver
         self.middlewares = middlewares
     }
 }
@@ -264,7 +269,8 @@ public actor NIOLandHost {
         let adminRoutes = NIOAdminRoutes(
             landRealm: realm,
             adminAuth: adminAuth,
-            logger: configuration.logger
+            logger: configuration.logger,
+            replayWebSocketPathResolver: configuration.replayWebSocketPathResolver
         )
         
         await adminRoutes.registerRoutes(on: httpRouter)

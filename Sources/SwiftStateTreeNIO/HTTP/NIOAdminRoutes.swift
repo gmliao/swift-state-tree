@@ -66,15 +66,19 @@ public struct NIOAdminRoutes: Sendable {
     public let landRealm: LandRealm
     public let adminAuth: NIOAdminAuth
     public let logger: Logger
-    
+    /// Resolver for replay land WebSocket path. When nil, uses default "/game/{replayLandType}".
+    public let replayWebSocketPathResolver: (@Sendable (String) -> String)?
+
     public init(
         landRealm: LandRealm,
         adminAuth: NIOAdminAuth,
-        logger: Logger? = nil
+        logger: Logger? = nil,
+        replayWebSocketPathResolver: (@Sendable (String) -> String)? = nil
     ) {
         self.landRealm = landRealm
         self.adminAuth = adminAuth
         self.logger = logger ?? Logger(label: "com.swiftstatetree.nio.admin.routes")
+        self.replayWebSocketPathResolver = replayWebSocketPathResolver
     }
     
     /// Register admin routes to the router.
@@ -389,7 +393,7 @@ public struct NIOAdminRoutes: Sendable {
 
             let pathToken = encodeBase64URL(resolvedRecordPath.path)
             let landID = LandID(landType: replayLandType, instanceId: "\(UUID().uuidString.lowercased()).\(pathToken)")
-            let webSocketPath = "/game/\(replayLandType)"
+            let webSocketPath = replayWebSocketPathResolver?(replayLandType) ?? "/game/\(replayLandType)"
 
             let response = AdminAPIAnyResponse.success([
                 "replayLandID": AnyCodable(landID.stringValue),

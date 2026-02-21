@@ -121,6 +121,7 @@ export function useReevaluationMonitor(): ReevaluationMonitorComposableReturn {
       lastError.value = message
       console.error('Connect/join failed:', error)
       await disconnect()
+      throw error
     } finally {
       isConnecting.value = false
     }
