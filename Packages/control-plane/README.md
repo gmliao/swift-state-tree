@@ -129,6 +129,8 @@ MATCHMAKING_ROLE=queue-worker PROVISIONING_BASE_URL=http://127.0.0.1:9101 npm ru
 | GET | /v1/matchmaking/status/:ticketId | Get ticket status |
 | GET | /.well-known/jwks.json | JWKS for token validation |
 | GET | /api | **Swagger UI** (OpenAPI documentation) |
+| GET | /v1/admin/servers | List registered servers (read-only) |
+| GET | /v1/admin/queue/summary | Queue summary by queueKey (read-only) |
 
 ## Environment Variables
 

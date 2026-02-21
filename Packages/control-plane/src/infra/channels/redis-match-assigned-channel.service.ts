@@ -1,4 +1,4 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import Redis from 'ioredis';
 import { getRedisConfig } from '../config/env.config';
 import { getMatchmakingRole, isApiEnabled } from '../../modules/matchmaking/matchmaking-role';
@@ -11,13 +11,13 @@ import type { MatchAssignedChannel, MatchAssignedPayload } from './match-assigne
  */
 @Injectable()
 export class RedisMatchAssignedChannelService implements MatchAssignedChannel, OnModuleDestroy {
+  private readonly logger = new Logger(RedisMatchAssignedChannelService.name);
   private pubClient: Redis | null = null;
   private subClient: Redis | null = null;
 
   private ensurePubClient(): Redis {
     if (!this.pubClient) {
-      const { host, port } = getRedisConfig();
-      this.pubClient = new Redis({ host, port });
+      this.pubClient = new Redis(getRedisConfig());
     }
     return this.pubClient;
   }
@@ -29,14 +29,13 @@ export class RedisMatchAssignedChannelService implements MatchAssignedChannel, O
 
   subscribe(handler: (payload: MatchAssignedPayload) => void): void {
     if (!isApiEnabled(getMatchmakingRole())) return;
-    const { host, port } = getRedisConfig();
-    this.subClient = new Redis({ host, port });
+    this.subClient = new Redis(getRedisConfig());
     this.subClient.subscribe(CHANNEL_NAMES.matchAssigned);
     this.subClient.on('message', (_ch, msg) => {
       try {
         handler(JSON.parse(msg) as MatchAssignedPayload);
       } catch (e) {
-        console.error('[MatchAssignedChannel] parse error:', e);
+        this.logger.error('Parse error', e);
       }
     });
   }

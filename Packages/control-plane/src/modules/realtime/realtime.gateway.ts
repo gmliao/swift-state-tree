@@ -19,9 +19,6 @@ import type { WsEnqueueMessage } from './ws-envelope.dto';
 import { Server, WebSocket as WsWebSocket } from 'ws';
 import { IncomingMessage } from 'http';
 
-/** Maps ticketId -> Set of WebSocket clients subscribed to that ticket. */
-const ticketSubscriptions = new Map<string, Set<WsWebSocket>>();
-
 /** Client metadata attached to WebSocket. */
 interface ClientMeta {
   _ticketId?: string;
@@ -47,6 +44,9 @@ function getMeta(client: WsWebSocket): ClientMeta {
 export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect, OnModuleInit {
   @WebSocketServer()
   server!: Server;
+
+  /** Maps ticketId -> Set of WebSocket clients subscribed to that ticket. */
+  private readonly ticketSubscriptions = new Map<string, Set<WsWebSocket>>();
 
   constructor(
     @Inject(forwardRef(() => MatchmakingService))
@@ -100,12 +100,12 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   private subscribeClient(client: WsWebSocket, ticketId: string): void {
     const prev = getMeta(client)._ticketId;
     if (prev) {
-      ticketSubscriptions.get(prev)?.delete(client);
+      this.ticketSubscriptions.get(prev)?.delete(client);
     }
-    let set = ticketSubscriptions.get(ticketId);
+    let set = this.ticketSubscriptions.get(ticketId);
     if (!set) {
       set = new Set();
-      ticketSubscriptions.set(ticketId, set);
+      this.ticketSubscriptions.set(ticketId, set);
     }
     set.add(client);
     getMeta(client)._ticketId = ticketId;
@@ -172,10 +172,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   handleDisconnect(client: WsWebSocket) {
     const ticketId = getMeta(client)._ticketId;
     if (ticketId) {
-      const set = ticketSubscriptions.get(ticketId);
+      const set = this.ticketSubscriptions.get(ticketId);
       if (set) {
         set.delete(client);
-        if (set.size === 0) ticketSubscriptions.delete(ticketId);
+        if (set.size === 0) this.ticketSubscriptions.delete(ticketId);
       }
     }
     this.userSessionRegistry.unbind(client);
@@ -187,7 +187,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
    * @param envelope - WebSocket envelope (type, v, data)
    */
   pushMatchAssigned(ticketId: string, envelope: object): void {
-    const set = ticketSubscriptions.get(ticketId);
+    const set = this.ticketSubscriptions.get(ticketId);
     if (!set) return;
     const msg = JSON.stringify(envelope);
     for (const ws of set) {

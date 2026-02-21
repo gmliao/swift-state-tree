@@ -74,4 +74,15 @@ export class RedisMatchmakingStore implements MatchmakingStore {
     const redis = await this.getRedis();
     await redis.hdel(QUEUED_KEY, ticketId);
   }
+
+  async listAllQueuedTickets(): Promise<QueuedTicket[]> {
+    const redis = await this.getRedis();
+    const raw = await redis.hgetall(QUEUED_KEY);
+    if (!raw || Object.keys(raw).length === 0) return [];
+    return Object.values(raw).map((v) => {
+      const t = JSON.parse(v as string) as QueuedTicket;
+      t.createdAt = new Date(t.createdAt as unknown as string);
+      return t;
+    });
+  }
 }

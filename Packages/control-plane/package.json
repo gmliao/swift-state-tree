@@ -17,7 +17,7 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json --runInBand --forceExit",
+    "test:e2e": "REDIS_DB=1 jest --config ./test/jest-e2e.json --runInBand --forceExit",
     "test:e2e:split": "jest --config ./test/jest-e2e.json --runInBand --forceExit --testPathPattern=matchmaking-split-roles\\.e2e-spec",
     "test:e2e:split:sh": "./test/scripts/e2e-split.sh"
   },
@@ -85,8 +85,7 @@
       "<rootDir>/test"
     ],
     "testPathIgnorePatterns": [
-      ".e2e-spec.ts$",
-      "contracts.validation.spec.ts"
+      ".e2e-spec.ts$"
     ]
   }
 }

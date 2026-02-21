@@ -79,6 +79,9 @@ export class ApiMatchQueue implements MatchQueue {
   async cancel(ticketId: string): Promise<boolean> {
     const existing = await this.getStatus(ticketId);
     if (!existing || existing.status !== 'queued') return false;
+    // Update store immediately so getStatus returns null before worker processes cancel job.
+    await this.store.removeQueuedTicket(ticketId);
+    await this.store.removeGroupTicket(existing.groupId);
     await this.queue.add(CANCEL_JOB, { ticketId } as CancelJobPayload);
     return true;
   }

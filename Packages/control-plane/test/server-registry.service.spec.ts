@@ -62,6 +62,30 @@ describe('ServerRegistryService', () => {
     });
   });
 
+  describe('listAllServers', () => {
+    it('returns all entries with isStale', () => {
+      registry.register('s1', '127.0.0.1', 8080, 'hero-defense');
+      registry.register('s2', '127.0.0.1', 8081, 'hero-defense');
+      const list = registry.listAllServers();
+      expect(list).toHaveLength(2);
+      expect(list[0]).toMatchObject({ serverId: 's1', landType: 'hero-defense', isStale: false });
+      expect(list[1]).toMatchObject({ serverId: 's2', landType: 'hero-defense', isStale: false });
+    });
+
+    it('marks stale servers when lastSeenAt exceeds TTL', () => {
+      registry.register('s1', '127.0.0.1', 8080, 'hero-defense');
+      const cutoff = Date.now() - SERVER_TTL_MS - 1000;
+      (registry as any).serversByLandType.get('hero-defense')![0].lastSeenAt = new Date(cutoff);
+      const list = registry.listAllServers();
+      expect(list).toHaveLength(1);
+      expect(list[0].isStale).toBe(true);
+    });
+
+    it('returns empty array when no servers registered', () => {
+      expect(registry.listAllServers()).toEqual([]);
+    });
+  });
+
   describe('pickServer', () => {
     it('returns null when no servers registered', () => {
       expect(registry.pickServer('hero-defense')).toBeNull();

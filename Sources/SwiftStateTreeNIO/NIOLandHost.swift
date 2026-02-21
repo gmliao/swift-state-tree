@@ -389,13 +389,22 @@ public actor NIOLandHost {
         do {
             try await server.start()
         } catch {
-            // Cancel middleware tasks when startup fails (e.g. port conflict).
+            // Cancel middleware tasks and run onShutdown when startup fails (e.g. port conflict).
             // Otherwise provisioning heartbeats keep running and register a server that never came up.
+            // If first heartbeat already ran, we must deregister via onShutdown.
             let tasks = middlewareTasks
             middlewareTasks = []
             for task in tasks {
                 task.cancel()
                 _ = await task.value
+            }
+            let context = HostContext(
+                host: configuration.host,
+                port: configuration.port,
+                logger: configuration.logger
+            )
+            for middleware in configuration.middlewares.reversed() {
+                try? await middleware.onShutdown(context: context)
             }
             throw error
         }
