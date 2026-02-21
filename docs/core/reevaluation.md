@@ -123,6 +123,16 @@ await client.sendAction("pauseVerification", {});
 await client.sendAction("resumeVerification", {});
 ```
 
+## Verification
+
+### State Hash Proves Reevaluation
+
+The per-tick `stateHash` is a deterministic FNV-1a64 hash of the full state snapshot. When live and replay produce the same hash for every tick, the state transition logic is deterministic. Server events are derived from the same handlers and inputs; recording them allows an additional consistency check.
+
+### Server Event Verification
+
+When `enableLiveStateHashRecording: true`, the server also records server events (`ctx.emitEvent()`) per tick. During reevaluation with `--verify`, the runner compares recorded vs emitted server events. A mismatch indicates non-determinism in event emission (e.g., ordering or payload differences).
+
 ## Best Practices
 
 1. **Keep handlers deterministic** - Avoid using `Date()`, `random()`, external API calls directly in handlers

@@ -27,6 +27,8 @@ public enum ReevaluationEngine {
         public let maxTickId: Int64
         public let tickHashes: [Int64: String]
         public let recordedStateHashes: [Int64: String]
+        /// Mismatches between recorded and emitted server events (for verification).
+        public let serverEventMismatches: [(tickId: Int64, expected: [ReevaluationRecordedServerEvent], actual: [ReevaluationRecordedServerEvent])]
     }
     
     /// Run a deterministic re-evaluation from a JSON record file.
@@ -85,6 +87,7 @@ public enum ReevaluationEngine {
         
         var hashes: [Int64: String] = [:]
         var recordedHashes: [Int64: String] = [:]
+        var serverEventMismatches: [(tickId: Int64, expected: [ReevaluationRecordedServerEvent], actual: [ReevaluationRecordedServerEvent])] = []
         if maxTickId >= 0 {
             for tickId in 0...maxTickId {
                 await keeper.stepTickOnce()
@@ -102,14 +105,19 @@ public enum ReevaluationEngine {
                 if let recorded = try await source.getStateHash(for: tickId) {
                     recordedHashes[tickId] = recorded
                 }
+
+                let emittedEvents = await capturingSink.takeEmittedEvents(for: tickId)
+                let recordedEvents = try await source.getServerEvents(for: tickId)
+                if !recordedEvents.isEmpty, !serverEventsMatch(recorded: recordedEvents, emitted: emittedEvents) {
+                    serverEventMismatches.append((tickId: tickId, expected: recordedEvents, actual: emittedEvents))
+                }
                 
                 if let exporter {
-                    let sortedEvents = await capturingSink.takeEmittedEvents(for: tickId)
                     try await exporter.writeTick(
                         tickId: tickId,
                         stateSnapshot: snapshot,
                         stateHash: includeStateHashInExport ? stateHash : nil,
-                        serverEvents: sortedEvents
+                        serverEvents: emittedEvents
                     )
                 }
             }
@@ -119,9 +127,34 @@ public enum ReevaluationEngine {
             try await exporter.close()
         }
         
-        return RunResult(maxTickId: maxTickId, tickHashes: hashes, recordedStateHashes: recordedHashes)
+        return RunResult(
+            maxTickId: maxTickId,
+            tickHashes: hashes,
+            recordedStateHashes: recordedHashes,
+            serverEventMismatches: serverEventMismatches
+        )
     }
     
+    /// Compare recorded vs emitted server events (by JSON encoding for AnyCodable payload equality).
+    private static func serverEventsMatch(recorded: [ReevaluationRecordedServerEvent], emitted: [ReevaluationRecordedServerEvent]) -> Bool {
+        guard recorded.count == emitted.count else { return false }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        for (r, e) in zip(recorded, emitted) {
+            guard r.sequence == e.sequence,
+                  r.tickId == e.tickId,
+                  r.typeIdentifier == e.typeIdentifier
+            else { return false }
+            let rData = (try? encoder.encode(r.payload)) ?? Data()
+            let eData = (try? encoder.encode(e.payload)) ?? Data()
+            if rData != eData { return false }
+            let rTarget = (try? encoder.encode(r.target)) ?? Data()
+            let eTarget = (try? encoder.encode(e.target)) ?? Data()
+            if rTarget != eTarget { return false }
+        }
+        return true
+    }
+
     /// Calculate a deterministic hash of the full state snapshot.
     public static func calculateStateHash<State: StateNodeProtocol>(_ state: State) -> String {
         let syncEngine = SyncEngine()

@@ -153,3 +153,89 @@ func testReevaluationEngineRunMatchesRecordedHashes() async throws {
         )
     }
 }
+
+// MARK: - Server Event Recording Test
+
+@Payload
+struct ServerEventRecordingTestEvent: ServerEventPayload {
+    let value: Int
+}
+
+@StateNodeBuilder
+struct ServerEventRecordingTestState: StateNodeProtocol {
+    @Sync(.broadcast)
+    var ticks: Int = 0
+}
+
+func makeServerEventRecordingTestDefinition() -> LandDefinition<ServerEventRecordingTestState> {
+    Land("server-event-recording-test", using: ServerEventRecordingTestState.self) {
+        ServerEvents {
+            Register(ServerEventRecordingTestEvent.self)
+        }
+        Rules {}
+        Lifetime {
+            Tick(every: .seconds(3600)) { (state: inout ServerEventRecordingTestState, ctx: LandContext) in
+                state.ticks += 1
+                ctx.emitEvent(ServerEventRecordingTestEvent(value: state.ticks), to: .all)
+            }
+        }
+    }
+}
+
+@Test("Live recording captures server events; reevaluation produces identical events")
+func testServerEventRecordingAndVerification() async throws {
+    let definition = makeServerEventRecordingTestDefinition()
+    let landID = "server-event-recording-test:local"
+    let expectedSeed = DeterministicSeed.fromLandID(landID)
+    let recordingFile = FileManager.default.temporaryDirectory
+        .appendingPathComponent("server-event-recording-\(UUID().uuidString).json")
+
+    defer {
+        try? FileManager.default.removeItem(at: recordingFile)
+    }
+
+    let keeper = LandKeeper<ServerEventRecordingTestState>(
+        definition: definition,
+        initialState: ServerEventRecordingTestState(),
+        enableLiveStateHashRecording: true,
+        autoStartLoops: false
+    )
+
+    guard let recorder = await keeper.getReevaluationRecorder() else {
+        Issue.record("ReevaluationRecorder not available")
+        return
+    }
+
+    let meta = ReevaluationRecordMetadata(
+        landID: landID,
+        landType: "server-event-recording-test",
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+        metadata: [:],
+        landDefinitionID: definition.id,
+        rngSeed: expectedSeed,
+        version: "1.0"
+    )
+    await recorder.setMetadata(meta)
+
+    let playerID = PlayerID("p1")
+    let clientID = ClientID("c1")
+    let sessionID = SessionID("s1")
+    try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
+
+    await keeper.stepTickOnce()
+    await keeper.stepTickOnce()
+
+    try await recorder.save(to: recordingFile.path)
+
+    let frames = await recorder.getAllFrames()
+    let framesWithEvents = frames.filter { !$0.serverEvents.isEmpty }
+    #expect(!framesWithEvents.isEmpty, "Record should contain server events")
+
+    let result = try await ReevaluationEngine.run(
+        definition: definition,
+        initialState: ServerEventRecordingTestState(),
+        recordFilePath: recordingFile.path
+    )
+
+    #expect(result.serverEventMismatches.isEmpty, "Reevaluation should produce identical server events")
+}

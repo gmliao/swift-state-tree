@@ -133,19 +133,37 @@ public struct ReevaluationTickFrame: Codable, Sendable {
     public let actions: [ReevaluationRecordedAction]
     public let clientEvents: [ReevaluationRecordedClientEvent]
     public let lifecycleEvents: [ReevaluationRecordedLifecycleEvent]
-    
+    /// Server events emitted during this tick (for verification).
+    public let serverEvents: [ReevaluationRecordedServerEvent]
+
     public init(
         tickId: Int64,
         stateHash: String? = nil,
         actions: [ReevaluationRecordedAction],
         clientEvents: [ReevaluationRecordedClientEvent],
-        lifecycleEvents: [ReevaluationRecordedLifecycleEvent]
+        lifecycleEvents: [ReevaluationRecordedLifecycleEvent],
+        serverEvents: [ReevaluationRecordedServerEvent] = []
     ) {
         self.tickId = tickId
         self.stateHash = stateHash
         self.actions = actions
         self.clientEvents = clientEvents
         self.lifecycleEvents = lifecycleEvents
+        self.serverEvents = serverEvents
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        tickId = try container.decode(Int64.self, forKey: .tickId)
+        stateHash = try container.decodeIfPresent(String.self, forKey: .stateHash)
+        actions = try container.decode([ReevaluationRecordedAction].self, forKey: .actions)
+        clientEvents = try container.decode([ReevaluationRecordedClientEvent].self, forKey: .clientEvents)
+        lifecycleEvents = try container.decode([ReevaluationRecordedLifecycleEvent].self, forKey: .lifecycleEvents)
+        serverEvents = try container.decodeIfPresent([ReevaluationRecordedServerEvent].self, forKey: .serverEvents) ?? []
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case tickId, stateHash, actions, clientEvents, lifecycleEvents, serverEvents
     }
 }
 
@@ -311,7 +329,8 @@ public actor ReevaluationRecorder {
                 stateHash: nil,
                 actions: [],
                 clientEvents: [],
-                lifecycleEvents: []
+                lifecycleEvents: [],
+                serverEvents: []
             )
         }
         
@@ -323,7 +342,8 @@ public actor ReevaluationRecorder {
                 stateHash: nil,
                 actions: actions,
                 clientEvents: clientEvents,
-                lifecycleEvents: lifecycleEvents
+                lifecycleEvents: lifecycleEvents,
+                serverEvents: []
             )
             return
         }
@@ -333,7 +353,8 @@ public actor ReevaluationRecorder {
             stateHash: frame.stateHash,
             actions: frame.actions + actions,
             clientEvents: frame.clientEvents + clientEvents,
-            lifecycleEvents: frame.lifecycleEvents + lifecycleEvents
+            lifecycleEvents: frame.lifecycleEvents + lifecycleEvents,
+            serverEvents: frame.serverEvents
         )
         currentFrame = frame
     }
@@ -350,7 +371,8 @@ public actor ReevaluationRecorder {
                 stateHash: nil,
                 actions: [],
                 clientEvents: [],
-                lifecycleEvents: []
+                lifecycleEvents: [],
+                serverEvents: []
             )
         }
 
@@ -360,7 +382,8 @@ public actor ReevaluationRecorder {
                 stateHash: nil,
                 actions: [],
                 clientEvents: [],
-                lifecycleEvents: [event]
+                lifecycleEvents: [event],
+                serverEvents: []
             )
             return
         }
@@ -370,7 +393,8 @@ public actor ReevaluationRecorder {
             stateHash: frame.stateHash,
             actions: frame.actions,
             clientEvents: frame.clientEvents,
-            lifecycleEvents: frame.lifecycleEvents + [event]
+            lifecycleEvents: frame.lifecycleEvents + [event],
+            serverEvents: frame.serverEvents
         )
         currentFrame = frame
     }
@@ -387,7 +411,8 @@ public actor ReevaluationRecorder {
                 stateHash: stateHash,
                 actions: [],
                 clientEvents: [],
-                lifecycleEvents: []
+                lifecycleEvents: [],
+                serverEvents: []
             )
             return
         }
@@ -398,7 +423,8 @@ public actor ReevaluationRecorder {
                 stateHash: stateHash,
                 actions: [],
                 clientEvents: [],
-                lifecycleEvents: []
+                lifecycleEvents: [],
+                serverEvents: []
             )
             return
         }
@@ -408,10 +434,49 @@ public actor ReevaluationRecorder {
             stateHash: stateHash,
             actions: frame.actions,
             clientEvents: frame.clientEvents,
-            lifecycleEvents: frame.lifecycleEvents
+            lifecycleEvents: frame.lifecycleEvents,
+            serverEvents: frame.serverEvents
         )
     }
-    
+
+    /// Record server events emitted for a specific tick.
+    public func recordServerEvents(tickId: Int64, events: [ReevaluationRecordedServerEvent]) {
+        if tickId != currentTickId {
+            if let frame = currentFrame {
+                frames.append(frame)
+            }
+            currentTickId = tickId
+            currentFrame = ReevaluationTickFrame(
+                tickId: tickId,
+                stateHash: nil,
+                actions: [],
+                clientEvents: [],
+                lifecycleEvents: [],
+                serverEvents: events
+            )
+            return
+        }
+        guard let frame = currentFrame else {
+            currentFrame = ReevaluationTickFrame(
+                tickId: tickId,
+                stateHash: nil,
+                actions: [],
+                clientEvents: [],
+                lifecycleEvents: [],
+                serverEvents: events
+            )
+            return
+        }
+        currentFrame = ReevaluationTickFrame(
+            tickId: frame.tickId,
+            stateHash: frame.stateHash,
+            actions: frame.actions,
+            clientEvents: frame.clientEvents,
+            lifecycleEvents: frame.lifecycleEvents,
+            serverEvents: events
+        )
+    }
+
     /// Flush frames to disk if needed (based on flushInterval)
     public func flushIfNeeded(currentTick: Int64) async throws {
         guard currentTick - lastFlushTick >= flushInterval else {
