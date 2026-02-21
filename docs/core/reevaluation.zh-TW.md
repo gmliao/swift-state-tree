@@ -123,6 +123,16 @@ await client.sendAction("pauseVerification", {});
 await client.sendAction("resumeVerification", {});
 ```
 
+## 驗證
+
+### State Hash 證明 Reevaluation
+
+每 tick 的 `stateHash` 是完整 state snapshot 的決定性 FNV-1a64 hash。當 live 與 replay 對每個 tick 產生相同 hash 時，表示狀態轉換邏輯具決定性。Server events 來自相同的 handlers 與輸入；錄製它們可進行額外的一致性檢查。
+
+### Server Event 驗證
+
+當 `enableLiveStateHashRecording: true` 時，伺服器也會記錄每 tick 的 server events（`ctx.emitEvent()`）。在帶 `--verify` 的 reevaluation 中，runner 會比對錄製與發送的 server events。若 mismatch 表示 event 發送有非決定性（例如順序或 payload 差異）。
+
 ## 最佳實踐
 
 1. **保持 handlers 決定性** - 避免在 handlers 中直接使用 `Date()`、`random()`、外部 API 呼叫

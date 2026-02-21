@@ -172,6 +172,14 @@ struct ReevaluationRunnerMain {
             }
             exit(5)
         }
+
+        if !first.serverEventMismatches.isEmpty {
+            print("❌ Verification failed: server event mismatches=\(first.serverEventMismatches.count)")
+            for (tickId, expected, actual) in first.serverEventMismatches.prefix(5) {
+                print("  tick \(tickId): expected \(expected.count) events, got \(actual.count)")
+            }
+            exit(6)
+        }
         
         let second = try await ReevaluationEngine.run(
             definition: definition,

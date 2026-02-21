@@ -19,7 +19,10 @@ public protocol ReevaluationSource: Sendable {
 
     /// Get the recorded per-tick state hash for a specific tick (live ground truth).
     func getStateHash(for tickId: Int64) async throws -> String?
-    
+
+    /// Get recorded server events for a specific tick (for verification).
+    func getServerEvents(for tickId: Int64) async throws -> [ReevaluationRecordedServerEvent]
+
     /// Get the maximum tick ID available in the record.
     func getMaxTickId() async throws -> Int64
 }
@@ -82,7 +85,11 @@ public actor JSONReevaluationSource: ReevaluationSource {
     public func getStateHash(for tickId: Int64) async throws -> String? {
         framesByTickId[tickId]?.stateHash
     }
-    
+
+    public func getServerEvents(for tickId: Int64) async throws -> [ReevaluationRecordedServerEvent] {
+        framesByTickId[tickId]?.serverEvents ?? []
+    }
+
     public func getMaxTickId() async throws -> Int64 {
         maxTickId
     }

@@ -314,6 +314,20 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             for item in toFlush {
                 await transport?.sendEventToTransport(item.event, to: item.target)
             }
+            // Record server events for verification when reevaluation recording is enabled
+            if let recorder = reevaluationRecorder, !toFlush.isEmpty {
+                let records = toFlush.map { item in
+                    ReevaluationRecordedServerEvent(
+                        kind: "serverEvent",
+                        sequence: item.sequence,
+                        tickId: item.tickId,
+                        typeIdentifier: item.event.type,
+                        payload: item.event.payload,
+                        target: ReevaluationEventTargetRecord.from(item.target)
+                    )
+                }
+                await recorder.recordServerEvents(tickId: tickId, events: records)
+            }
         case .reevaluation:
             if reevaluationOutputMode == .transportAndSink {
                 for item in toFlush {
