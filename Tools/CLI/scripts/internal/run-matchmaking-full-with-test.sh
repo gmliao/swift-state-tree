@@ -65,17 +65,26 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# Free ports before starting (avoid stale processes from previous runs)
+kill_port $CONTROL_PLANE_PORT
+kill_port $GAME_PORT
+sleep 1
+
 # Start control plane first, wait for health, then start game (so it can register)
 (cd "$PROJECT_ROOT/Packages/control-plane" && PORT=$CONTROL_PLANE_PORT node dist/src/main.js) &
 CP_PID=$!
 npx wait-on "http-get://127.0.0.1:$CONTROL_PLANE_PORT/health" -t 15000 || exit 1
 sleep 2
 
-# Start game
-HOST=127.0.0.1 PORT=$GAME_PORT PROVISIONING_BASE_URL=$MATCHMAKING_CONTROL_PLANE_URL $GAME_BIN &
+# Start game (TRANSPORT_ENCODING=jsonOpcode to match CLI --state-update-encoding opcodeJsonArray)
+HOST=127.0.0.1 PORT=$GAME_PORT TRANSPORT_ENCODING=jsonOpcode PROVISIONING_BASE_URL=$MATCHMAKING_CONTROL_PLANE_URL $GAME_BIN &
 GAME_PID=$!
 npx wait-on "http-get://127.0.0.1:$GAME_PORT/schema" -t 15000 || exit 1
 sleep 3
 
 # Run MVP test
 MATCHMAKING_CONTROL_PLANE_URL=$MATCHMAKING_CONTROL_PLANE_URL npm run test:e2e:game:matchmaking:mvp
+
+# Run two-player test (both connect to same game)
+echo ""
+MATCHMAKING_CONTROL_PLANE_URL=$MATCHMAKING_CONTROL_PLANE_URL bash "$SCRIPT_DIR/run-matchmaking-two-players.sh"
