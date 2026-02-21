@@ -169,6 +169,7 @@ Examples/GameDemo/ws-loadtest/monitoring/*.json
 
 # Reevaluation records: keep existing committed files as examples; ignore new local runs
 Examples/GameDemo/reevaluation-records/*.json
+Examples/GameDemo/WebClient/.playwright-cli/
 
 # Playwright: reports, traces, test results, CLI session data
 **/playwright-report/
