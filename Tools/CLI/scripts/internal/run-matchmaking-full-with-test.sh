@@ -71,7 +71,7 @@ kill_port $GAME_PORT
 sleep 1
 
 # Start control plane first, wait for health, then start game (so it can register)
-(cd "$PROJECT_ROOT/Packages/control-plane" && PORT=$CONTROL_PLANE_PORT node dist/src/main.js) &
+(cd "$PROJECT_ROOT/Packages/control-plane" && PORT=$CONTROL_PLANE_PORT REDIS_DB=2 node dist/src/main.js) &
 CP_PID=$!
 npx wait-on "http-get://127.0.0.1:$CONTROL_PLANE_PORT/health" -t 15000 || exit 1
 sleep 2

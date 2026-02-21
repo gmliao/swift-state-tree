@@ -26,6 +26,7 @@
     "test:e2e:game:matchmaking:full": "bash scripts/internal/run-matchmaking-full-with-test.sh",
     "test:e2e:game:matchmaking:nginx": "bash scripts/internal/run-matchmaking-nginx-e2e.sh",
     "test:e2e:game:matchmaking:two-players": "bash scripts/internal/run-matchmaking-two-players.sh",
+    "test:e2e:game:matchmaking:multi-server": "bash scripts/internal/run-matchmaking-multi-server-e2e.sh",
     "test:matchmaking:stack:smoke": "bash scripts/internal/run-matchmaking-local-stack.sh",
     "test:e2e:game:direct": "MATCHMAKING_MODE=direct ./test-e2e-game.sh",
     "test:e2e:game:direct:regression": "MATCHMAKING_MODE=direct E2E_SCENARIO=scenarios/game/test-direct-mode-regression.json ./test-e2e-game.sh",
