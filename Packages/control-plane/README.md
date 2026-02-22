@@ -146,7 +146,7 @@ Config is centralized in `infra/config/`. Copy `.env.example` to `.env` for loca
 | `MATCHMAKING_MIN_WAIT_MS` | Minimum wait before a ticket can be matched | 3000 |
 | `NODE_ID` | Unique ID for this API instance (Phase 2 multi-node) | Auto-generated UUID |
 | `USE_NODE_INBOX_FOR_MATCH_ASSIGNED` | Use node inbox routing for match.assigned | true |
-| `CLUSTER_DIRECTORY_TTL_SECONDS` | Session lease TTL for userId→nodeId | 8 |
+| `CLUSTER_DIRECTORY_TTL_SECONDS` | UserIdDirectory session lease TTL (userId→nodeId) | 8 |
 | `MATCHMAKING_RELAX_AFTER_MS` | Relax group size after this wait (ms) | 30000 |
 
 ## Matchmaking Flow
