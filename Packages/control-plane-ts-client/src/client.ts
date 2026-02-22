@@ -2,6 +2,8 @@ import type {
   CancelResponse,
   EnqueueRequest,
   EnqueueResponse,
+  QueueSummaryResponse,
+  ServerListResponse,
   StatusResponse,
 } from './types.js';
 
@@ -13,6 +15,7 @@ export interface ControlPlaneClientOptions {
 export class ControlPlaneClient {
   private readonly baseUrl: string;
   private readonly fetch: typeof globalThis.fetch;
+  private readonly adminApiKey?: string;
 
   constructor(
     baseUrl: string,
@@ -20,11 +23,16 @@ export class ControlPlaneClient {
   ) {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.fetch = options?.fetch ?? globalThis.fetch;
+    this.adminApiKey = options?.adminApiKey;
   }
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
     const url = this.baseUrl + path;
-    const response = await this.fetch(url, init);
+    const headers = new Headers(init?.headers);
+    if (this.adminApiKey != null && path.startsWith('/v1/admin/')) {
+      headers.set('Authorization', `Bearer ${this.adminApiKey}`);
+    }
+    const response = await this.fetch(url, { ...init, headers });
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`Control plane request failed: ${response.status} ${text}`);
@@ -53,5 +61,17 @@ export class ControlPlaneClient {
       '/v1/matchmaking/status/' + encodeURIComponent(ticketId),
       { method: 'GET' },
     );
+  }
+
+  getServers(): Promise<ServerListResponse> {
+    return this.request<ServerListResponse>('/v1/admin/servers', {
+      method: 'GET',
+    });
+  }
+
+  getQueueSummary(): Promise<QueueSummaryResponse> {
+    return this.request<QueueSummaryResponse>('/v1/admin/queue/summary', {
+      method: 'GET',
+    });
   }
 }

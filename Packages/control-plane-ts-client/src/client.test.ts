@@ -36,7 +36,8 @@ describe('ControlPlaneClient', () => {
       const [url, init] = mockFetch.mock.calls[0];
       expect(String(url)).toContain('/v1/matchmaking/enqueue');
       expect(init?.method).toBe('POST');
-      expect(init?.headers).toMatchObject({ 'Content-Type': 'application/json' });
+      const headers = init?.headers as Headers;
+      expect(headers.get('Content-Type')).toBe('application/json');
       const body = JSON.parse(init?.body as string);
       expect(body).toMatchObject({
         queueKey: request.queueKey,
@@ -62,7 +63,8 @@ describe('ControlPlaneClient', () => {
       const [url, init] = mockFetch.mock.calls[0];
       expect(String(url)).toContain('/v1/matchmaking/cancel');
       expect(init?.method).toBe('POST');
-      expect(init?.headers).toMatchObject({ 'Content-Type': 'application/json' });
+      const headers = init?.headers as Headers;
+      expect(headers.get('Content-Type')).toBe('application/json');
       const body = JSON.parse(init?.body as string);
       expect(body).toEqual({ ticketId: 't1' });
     });
@@ -84,6 +86,77 @@ describe('ControlPlaneClient', () => {
       const [url, init] = mockFetch.mock.calls[0];
       expect(String(url)).toContain('/v1/matchmaking/status/t1');
       expect(init?.method).toBe('GET');
+    });
+  });
+
+  describe('getServers', () => {
+    it('GETs /v1/admin/servers and returns ServerListResponse', async () => {
+      const response = {
+        servers: [
+          {
+            serverId: 's1',
+            host: 'h',
+            port: 8080,
+            landType: 'hero-defense',
+            registeredAt: '2026-01-01T00:00:00.000Z',
+            lastSeenAt: '2026-01-01T00:01:00.000Z',
+            isStale: false,
+          },
+        ],
+      };
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => response,
+      });
+
+      const client = new ControlPlaneClient(BASE_URL);
+      const result = await client.getServers();
+
+      expect(result).toEqual(response);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(String(url)).toContain('/v1/admin/servers');
+      expect(init?.method).toBe('GET');
+    });
+  });
+
+  describe('getQueueSummary', () => {
+    it('GETs /v1/admin/queue/summary and returns QueueSummaryResponse', async () => {
+      const response = {
+        queueKeys: ['q1'],
+        byQueueKey: { q1: { queuedCount: 2 } },
+      };
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => response,
+      });
+
+      const client = new ControlPlaneClient(BASE_URL);
+      const result = await client.getQueueSummary();
+
+      expect(result).toEqual(response);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(String(url)).toContain('/v1/admin/queue/summary');
+      expect(init?.method).toBe('GET');
+    });
+  });
+
+  describe('admin API auth', () => {
+    it('sends Authorization: Bearer when adminApiKey is set and path is /v1/admin/*', async () => {
+      const response = { servers: [] };
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => response,
+      });
+
+      const client = new ControlPlaneClient(BASE_URL, { adminApiKey: 'my-admin-key' });
+      await client.getServers();
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const [, init] = mockFetch.mock.calls[0];
+      const headers = init?.headers as Headers;
+      expect(headers.get('Authorization')).toBe('Bearer my-admin-key');
     });
   });
 });
