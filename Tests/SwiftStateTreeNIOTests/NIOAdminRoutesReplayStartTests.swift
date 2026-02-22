@@ -244,24 +244,8 @@ private func sendRecordsListRequest(on router: NIOHTTPRouter) async throws -> NI
         body: nil
     )
 
-    guard let response = try await router.handle(request) else {
-        throw CocoaError(.fileReadUnknown)
-    }
-    return response
-}
-
-private func sendRecordsListRequest(on router: NIOHTTPRouter) async throws -> NIOHTTPResponse {
-    var headers = HTTPHeaders()
-    headers.add(name: "X-API-Key", value: "test-admin-key")
-
-    let request = NIOHTTPRequest(
-        method: .GET,
-        uri: "/admin/reevaluation/records",
-        headers: headers,
-        body: nil
-    )
-
-    guard let response = try await router.handle(request) else {
+    let optionalResponse = try await router.handle(request)
+    guard let response = optionalResponse else {
         throw CocoaError(.fileReadUnknown)
     }
     return response
@@ -290,7 +274,8 @@ private func sendReplayStartRequest(body: Data, on router: NIOHTTPRouter) async 
         body: body
     )
 
-    guard let response = try await router.handle(request) else {
+    let optionalResponse = try await router.handle(request)
+    guard let response = optionalResponse else {
         throw CocoaError(.fileReadUnknown)
     }
     return response
