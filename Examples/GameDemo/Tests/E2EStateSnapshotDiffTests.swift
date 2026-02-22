@@ -1,39 +1,58 @@
 // Examples/GameDemo/Tests/E2EStateSnapshotDiffTests.swift
 //
-// E2E test: verifies that live-recorded state snapshots match reevaluation output,
-// with particular focus on initial player position (set via ctx.random in OnJoin).
+// E2E test: records live HeroDefense state snapshots to reevaluation-records/,
+// then reruns as reevaluation with --diff-with to verify every per-tick state matches.
+// Focus: initial player position (set via ctx.random in OnJoin) and monster spawning.
 
 import Testing
 import Foundation
 import Logging
 @testable import GameContent
 @testable import SwiftStateTree
+import SwiftStateTreeReevaluationMonitor
+
+// MARK: - Helpers
+
+private func recordsDir() -> URL {
+    // Resolve from test file location: Tests/ → GameDemo/ → reevaluation-records/
+    let thisFile = URL(fileURLWithPath: #filePath)
+    let gameDemoRoot = thisFile
+        .deletingLastPathComponent() // Tests/
+        .deletingLastPathComponent() // GameDemo/
+    let dir = gameDemoRoot.appendingPathComponent("reevaluation-records")
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    return dir
+}
+
+private func makeServices() -> LandServices {
+    var services = LandServices()
+    services.register(
+        GameConfigProviderService(provider: DefaultGameConfigProvider()),
+        as: GameConfigProviderService.self
+    )
+    return services
+}
+
+// MARK: - Suite
 
 @Suite("E2E State Snapshot Diff")
 struct E2EStateSnapshotDiffTests {
 
-    func makeServices() -> LandServices {
-        var services = LandServices()
-        services.register(
-            GameConfigProviderService(provider: DefaultGameConfigProvider()),
-            as: GameConfigProviderService.self
-        )
-        return services
-    }
+    // MARK: - Full e2e: live == reevaluation
 
-    // MARK: - Happy path: live == reevaluation
-
-    @Test("Live state snapshot matches reevaluation output (initial position check)")
+    @Test("Live state snapshot matches reevaluation — writes to reevaluation-records/")
     func testLiveSnapshotMatchesReevaluation() async throws {
         let landID = "hero-defense:e2e-snapshot-diff"
-        let tmpDir = FileManager.default.temporaryDirectory
-        let recordingFile = tmpDir.appendingPathComponent("e2e-state-\(UUID().uuidString).json")
+
+        // Write to persistent reevaluation-records/ for post-test inspection
+        let dir = recordsDir()
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+            .replacingOccurrences(of: ":", with: "-")
+        let recordingFile = dir.appendingPathComponent("e2e-state-\(timestamp).json")
         let stateJsonlPath = recordingFile.path.replacingOccurrences(of: ".json", with: "-state.jsonl")
 
-        defer {
-            try? FileManager.default.removeItem(at: recordingFile)
-            try? FileManager.default.removeItem(atPath: stateJsonlPath)
-        }
+        print("\n📁 Recording to: \(recordingFile.path)")
+        print("📁 State JSONL:  \(stateJsonlPath)\n")
 
         // ── Live phase ─────────────────────────────────────────────────────────
         let definition = HeroDefense.makeLand()
@@ -60,31 +79,45 @@ struct E2EStateSnapshotDiffTests {
             version: "1.0"
         ))
 
-        // Player joins — OnJoin sets initial position via ctx.random (the suspected diff point)
+        // Player joins — initial position set via ctx.random (key suspect for divergence)
         try await keeper.join(
             playerID: PlayerID("alice"),
             clientID: ClientID("c1"),
             sessionID: SessionID("s1")
         )
 
-        // Run 3 ticks; capture snapshot after each tick (simulating ENABLE_STATE_SNAPSHOT_RECORDING)
-        // LandKeeper already calls setStateHash inside runTick automatically.
-        for tickId in Int64(0)..<3 {
+        // Run 35 ticks: covers monster spawning (MONSTER_SPAWN_INTERVAL_TICKS = 30)
+        // and player position being recorded at tick 0
+        let tickCount: Int64 = 35
+        for tickId in Int64(0)..<tickCount {
             await keeper.stepTickOnce()
             let state = await keeper.currentState()
             let (_, snapshot) = ReevaluationEngine.calculateStateHashAndSnapshot(state)
+            // Supplement the hash (already set by LandKeeper) with the full snapshot
             await recorder.recordStateSnapshot(tickId: tickId, stateSnapshot: snapshot)
         }
 
         try await recorder.save(to: recordingFile.path)
 
         #expect(
+            FileManager.default.fileExists(atPath: recordingFile.path),
+            "Main record JSON should exist"
+        )
+        #expect(
             FileManager.default.fileExists(atPath: stateJsonlPath),
             "State JSONL should be written alongside main record"
         )
 
+        let lineCount = (try String(contentsOfFile: stateJsonlPath, encoding: .utf8))
+            .components(separatedBy: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            .count
+        #expect(lineCount == Int(tickCount), "State JSONL should have one line per tick (got \(lineCount), expected \(tickCount))")
+
+        print("✅ Recorded \(tickCount) ticks. State JSONL: \(lineCount) lines.")
+
         // ── Reevaluation phase ─────────────────────────────────────────────────
-        var logger = Logger(label: "e2e-test")
+        var logger = Logger(label: "e2e-reeval")
         logger.logLevel = .error
 
         let result = try await ReevaluationEngine.run(
@@ -97,30 +130,126 @@ struct E2EStateSnapshotDiffTests {
         )
 
         // ── Assertions ─────────────────────────────────────────────────────────
-        #expect(!result.recordedStateHashes.isEmpty, "Recorded hashes must be present")
+        #expect(
+            !result.recordedStateHashes.isEmpty,
+            "Recorded hashes should be present in the record file"
+        )
 
+        var mismatchCount = 0
         for (tickId, recordedHash) in result.recordedStateHashes.sorted(by: { $0.key < $1.key }) {
             let computedHash = result.tickHashes[tickId] ?? "missing"
-            #expect(
-                computedHash == recordedHash,
-                """
-                Hash mismatch at tick \(tickId):
-                  live     = \(recordedHash)
-                  reeval   = \(computedHash)
-                Likely cause: initial player position differs (OnJoin uses ctx.random — check RNG seed alignment)
-                """
-            )
+            if computedHash != recordedHash {
+                mismatchCount += 1
+                print("❌ tick \(tickId): live=\(recordedHash) reeval=\(computedHash)")
+            }
         }
+
+        print(mismatchCount == 0
+            ? "✅ All \(result.recordedStateHashes.count) ticks match."
+            : "❌ \(mismatchCount) tick(s) with hash mismatch — check stderr for field-level diff."
+        )
+
+        #expect(
+            mismatchCount == 0,
+            "\(mismatchCount) tick(s) diverged between live and reevaluation. Run with --diff-with to inspect field-level diffs:\n  swift run ReevaluationRunner --input \(recordingFile.path) --verify --diff-with \(stateJsonlPath)"
+        )
     }
 
-    // MARK: - Mismatch detection
+    // MARK: - ConcreteReevaluationRunner (webclient path)
+
+    @Test("ConcreteReevaluationRunner produces matching hashes — verifies RNG seed uses recorded landID not replay landID")
+    func testConcreteReevaluationRunnerMatchesLive() async throws {
+        let landID = "hero-defense:e2e-concrete-runner"
+        let tmpDir = FileManager.default.temporaryDirectory
+        let recordingFile = tmpDir.appendingPathComponent("e2e-concrete-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: recordingFile) }
+
+        // ── Live phase ──────────────────────────────────────────────────────────
+        let definition = HeroDefense.makeLand()
+        let keeper = LandKeeper<HeroDefenseState>(
+            definition: definition,
+            initialState: HeroDefenseState(),
+            services: makeServices(),
+            enableLiveStateHashRecording: true,
+            autoStartLoops: false
+        )
+        await keeper.setLandID(landID)
+
+        guard let recorder = await keeper.getReevaluationRecorder() else {
+            Issue.record("ReevaluationRecorder not available"); return
+        }
+
+        await recorder.setMetadata(ReevaluationRecordMetadata(
+            landID: landID,
+            landType: "hero-defense",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            metadata: [:],
+            landDefinitionID: definition.id,
+            rngSeed: DeterministicSeed.fromLandID(landID),
+            version: "2.0"
+        ))
+
+        try await keeper.join(
+            playerID: PlayerID("charlie"),
+            clientID: ClientID("c1"),
+            sessionID: SessionID("s1")
+        )
+
+        let tickCount: Int64 = 5
+        for _ in Int64(0)..<tickCount {
+            await keeper.stepTickOnce()
+        }
+        try await recorder.save(to: recordingFile.path)
+
+        // ── Reevaluation via ConcreteReevaluationRunner (webclient path) ────────
+        // Use a fake "replay" landID to simulate what happens when LandManager sets
+        // the landID to the replay land's ID (e.g. "hero-defense-replay:xyz").
+        // The runner must still derive the RNG seed from metadata.landID, not the
+        // replay landID, or the initial player position will diverge.
+        var services = makeServices()
+        services.register(
+            DeterministicRngService(seed: DeterministicSeed.fromLandID(landID)),
+            as: DeterministicRngService.self
+        )
+        let runner = try await ConcreteReevaluationRunner(
+            definition: HeroDefense.makeLand(),
+            initialState: HeroDefenseState(),
+            recordFilePath: recordingFile.path,
+            services: services
+        )
+
+        var revalHashes: [Int64: String] = [:]
+        while let result = try await runner.step() {
+            revalHashes[result.tickId] = result.stateHash
+        }
+
+        // ── Compare hashes ──────────────────────────────────────────────────────
+        let source = try JSONReevaluationSource(filePath: recordingFile.path)
+        var mismatchCount = 0
+        for tickId in 0..<tickCount {
+            let recorded = try await source.getStateHash(for: tickId) ?? "missing"
+            let computed = revalHashes[tickId] ?? "missing"
+            if recorded != computed {
+                mismatchCount += 1
+                print("❌ tick \(tickId): live=\(recorded) reeval=\(computed)")
+            }
+        }
+        print(mismatchCount == 0
+            ? "✅ ConcreteReevaluationRunner: all \(tickCount) ticks match."
+            : "❌ ConcreteReevaluationRunner: \(mismatchCount) tick(s) diverged."
+        )
+        #expect(mismatchCount == 0,
+            "ConcreteReevaluationRunner produced \(mismatchCount) hash mismatch(es) — RNG seed bug in webclient path"
+        )
+    }
+
+    // MARK: - Mismatch detection sanity check
 
     @Test("diffWithPath detects deliberately corrupted state")
     func testDiffDetectsMismatch() async throws {
         let landID = "hero-defense:e2e-mismatch"
         let tmpDir = FileManager.default.temporaryDirectory
         let recordingFile = tmpDir.appendingPathComponent("e2e-mismatch-\(UUID().uuidString).json")
-        // Write a hand-crafted JSONL with a wrong position at tick 0
         let fakeJsonlFile = tmpDir.appendingPathComponent("fake-state-\(UUID().uuidString).jsonl")
 
         defer {
@@ -128,7 +257,6 @@ struct E2EStateSnapshotDiffTests {
             try? FileManager.default.removeItem(at: fakeJsonlFile)
         }
 
-        // ── Produce a valid recording (needed for ReevaluationEngine.run) ──────
         let definition = HeroDefense.makeLand()
         let keeper = LandKeeper<HeroDefenseState>(
             definition: definition,
@@ -161,18 +289,16 @@ struct E2EStateSnapshotDiffTests {
         await keeper.stepTickOnce()
         try await recorder.save(to: recordingFile.path)
 
-        // ── Write a fake state JSONL with wrong player position at tick 0 ──────
+        // Hand-crafted JSONL with deliberately wrong player position
         let fakeJsonl = """
         {"tickId":0,"stateSnapshot":{"players":{"bob":{"position":{"v":{"x":999999,"y":999999}}}}}}
         """
         try fakeJsonl.write(to: fakeJsonlFile, atomically: true, encoding: .utf8)
 
-        // ── Run reevaluation — diffs go to stderr, but hash comparison exposes mismatch ─
         var logger = Logger(label: "e2e-mismatch-test")
         logger.logLevel = .error
 
-        // The important thing: ReevaluationEngine.run should not throw;
-        // the diff output is printed to stderr. We verify by checking hash mismatch.
+        // Should complete without throwing; diff output goes to stderr
         let result = try await ReevaluationEngine.run(
             definition: HeroDefense.makeLand(),
             initialState: HeroDefenseState(),
@@ -182,12 +308,6 @@ struct E2EStateSnapshotDiffTests {
             logger: logger
         )
 
-        // With the fake JSONL, we expect the player position in "recorded" differs from
-        // computed. The diff path in ReevaluationEngine compares against it and prints to stderr.
-        // We can also verify the overall run completed and produced hashes.
         #expect(result.maxTickId >= 0, "Reevaluation should complete even with diffWithPath mismatch")
-
-        // Fake JSONL has no stateHash field, so recordedStateHashes stays from the main JSON.
-        // The actual diff output goes to stderr — confirmed by the fakeJsonl containing wrong coords.
     }
 }

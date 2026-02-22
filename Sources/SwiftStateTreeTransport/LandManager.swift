@@ -194,6 +194,22 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             }
             if case let .reevaluation(recordFilePath) = config {
                 let source = try JSONReevaluationSource(filePath: recordFilePath)
+
+                // Pre-register the RNG seed from the *recorded* game's landID.
+                // This is critical for determinism: reevaluation must use the same RNG seed
+                // as the original live game. Without this, setLandID() would derive the seed
+                // from the replay landID (e.g. "hero-defense-replay:xyz") instead of the
+                // original game's landID (e.g. "hero-defense:abc123"), causing divergence
+                // in any RNG-based logic (e.g. initial player position in OnJoin).
+                var reevalServices = metadataServices
+                let recordedMetadata = try await source.getMetadata()
+                let rngSeed = recordedMetadata.rngSeed
+                    ?? DeterministicSeed.fromLandID(recordedMetadata.landID)
+                reevalServices.register(
+                    DeterministicRngService(seed: rngSeed),
+                    as: DeterministicRngService.self
+                )
+
                 keeper = LandKeeper<State>(
                     definition: landDefinition,
                     initialState: initial,
@@ -201,7 +217,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                     reevaluationSource: source,
                     reevaluationSink: nil,
                     reevaluationOutputMode: .transportAndSink,
-                    services: metadataServices,
+                    services: reevalServices,
                     autoStartLoops: true,
                     transport: nil,
                     logger: logger
