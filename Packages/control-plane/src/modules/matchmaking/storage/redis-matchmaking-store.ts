@@ -6,8 +6,11 @@ import { QueuedTicket } from '../match-queue';
 import { MatchmakingStore } from '../matchmaking-store';
 
 const GROUP_TO_TICKET_KEY = 'matchmaking:groupToTicket';
-const ASSIGNED_KEY = 'matchmaking:assigned';
+const ASSIGNED_KEY_PREFIX = 'matchmaking:assigned:';
 const QUEUED_KEY = 'matchmaking:queued';
+
+/** TTL in seconds for assignment keys. Prevents stale data after restart. */
+const ASSIGNMENT_TTL_SECONDS = 300;
 
 /**
  * Redis-backed implementation of MatchmakingStore.
@@ -41,7 +44,8 @@ export class RedisMatchmakingStore implements MatchmakingStore {
 
   async getAssignedTicket(ticketId: string): Promise<QueuedTicket | null> {
     const redis = await this.getRedis();
-    const raw = await redis.hget(ASSIGNED_KEY, ticketId);
+    const key = `${ASSIGNED_KEY_PREFIX}${ticketId}`;
+    const raw = await redis.get(key);
     if (!raw) return null;
     const ticket = JSON.parse(raw) as QueuedTicket;
     ticket.createdAt = new Date(ticket.createdAt as unknown as string);
@@ -53,7 +57,8 @@ export class RedisMatchmakingStore implements MatchmakingStore {
 
   async setAssignedTicket(ticketId: string, ticket: QueuedTicket): Promise<void> {
     const redis = await this.getRedis();
-    await redis.hset(ASSIGNED_KEY, ticketId, JSON.stringify(ticket));
+    const key = `${ASSIGNED_KEY_PREFIX}${ticketId}`;
+    await redis.set(key, JSON.stringify(ticket), 'EX', ASSIGNMENT_TTL_SECONDS);
   }
 
   async getQueuedTicket(ticketId: string): Promise<QueuedTicket | null> {

@@ -22,14 +22,13 @@ import { RedisMatchmakingStore } from './storage/redis-matchmaking-store';
 
 import { getMatchmakingMinWaitMs } from '../../infra/config/env.config';
 
-const matchmakingConfig: MatchmakingConfig = {
-  minWaitMs: getMatchmakingMinWaitMs(),
-};
-
 function buildProviders(): Provider[] {
   const role = getMatchmakingRole();
   const providers: Provider[] = [
-    { provide: 'MatchmakingConfig', useValue: matchmakingConfig },
+    {
+      provide: 'MatchmakingConfig',
+      useFactory: () => ({ minWaitMs: getMatchmakingMinWaitMs() }),
+    },
     MatchmakingService,
     {
       provide: 'MatchmakingStore',
