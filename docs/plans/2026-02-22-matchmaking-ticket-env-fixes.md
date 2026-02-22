@@ -84,9 +84,10 @@
 ## Task 5: Split-role e2e – Role isolation
 
 **Files:**
-- Modify: `Packages/control-plane/test/matchmaking-split-roles.e2e-spec.ts`
+- Delete: `Packages/control-plane/test/matchmaking-split-roles.e2e-spec.ts`
+- Modify: `Packages/control-plane/package.json` – `test:e2e:split` now runs external spec
 
-**Outcome:** `jest.resetModules()` + dynamic import breaks NestJS BullMQ (ModuleRef resolution). In-process test cannot achieve true role isolation. Skipped the in-process test; `matchmaking-split-roles-external.e2e-spec.ts` (child processes) provides definitive verification and passes.
+**Outcome:** In-process test removed (cannot achieve role isolation; `jest.resetModules` breaks BullMQ). Use `matchmaking-split-roles-external.e2e-spec.ts` or `npm run test:e2e:split` / `npm run test:e2e:split:sh`.
 
 ---
 
