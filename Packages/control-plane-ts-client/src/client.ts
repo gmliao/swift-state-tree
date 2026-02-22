@@ -1,3 +1,4 @@
+import { RealtimeSocket } from './realtime.js';
 import type {
   CancelResponse,
   EnqueueRequest,
@@ -72,6 +73,23 @@ export class ControlPlaneClient {
   getQueueSummary(): Promise<QueueSummaryResponse> {
     return this.request<QueueSummaryResponse>('/v1/admin/queue/summary', {
       method: 'GET',
+    });
+  }
+
+  /**
+   * Opens a WebSocket to the control-plane realtime channel.
+   * Resolves when the socket is open; rejects on connection error.
+   * @param ticketId - Optional ticket ID to subscribe to (appended as query param).
+   */
+  openRealtimeSocket(ticketId?: string): Promise<RealtimeSocket> {
+    const base = this.baseUrl.replace(/^http:\/\//i, 'ws://').replace(/^https:\/\//i, 'wss://');
+    const path = '/realtime' + (ticketId != null && ticketId !== '' ? `?ticketId=${encodeURIComponent(ticketId)}` : '');
+    const wsUrl = base + path;
+    const ws = new WebSocket(wsUrl);
+    const socket = new RealtimeSocket(ws);
+    return new Promise((resolve, reject) => {
+      ws.onopen = () => resolve(socket);
+      ws.onerror = () => reject(new Error('WebSocket connection failed'));
     });
   }
 }
