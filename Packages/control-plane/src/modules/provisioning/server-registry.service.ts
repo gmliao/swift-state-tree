@@ -1,19 +1,6 @@
 import { Injectable } from '@nestjs/common';
-
-/** Default TTL: server is considered stale if no heartbeat for 90 seconds. */
-export const SERVER_TTL_MS = 90_000;
-
-export interface ServerEntry {
-  serverId: string;
-  host: string;
-  port: number;
-  landType: string;
-  connectHost?: string;
-  connectPort?: number;
-  connectScheme?: 'ws' | 'wss';
-  registeredAt: Date;
-  lastSeenAt: Date;
-}
+import { ServerEntry, SERVER_TTL_MS } from '../../infra/contracts/server-entry.dto';
+export { ServerEntry, SERVER_TTL_MS };
 
 /**
  * In-memory registry of game servers.
