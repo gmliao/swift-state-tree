@@ -68,7 +68,7 @@ export class RedisServerIdDirectoryService implements ServerIdDirectory, OnModul
     const client = this.ensureClient();
     const json = await client.get(KEY_BYID + serverId);
     if (!json) return;
-    const entry = JSON.parse(json) as { landType: string };
+    const entry = JSON.parse(json) as ServerEntry;
     await client.del(KEY_BYID + serverId);
     await client.hdel(KEY_LAND + entry.landType, serverId);
     await client.srem(KEY_IDS, serverId);

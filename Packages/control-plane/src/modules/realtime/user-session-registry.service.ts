@@ -24,7 +24,7 @@ export class UserSessionRegistryService implements UserSessionRegistry {
 
   constructor(
     @Inject(USER_ID_DIRECTORY)
-    private readonly clusterDirectory: UserIdDirectory,
+    private readonly userIdDirectory: UserIdDirectory,
     @Inject(NODE_INBOX_CHANNEL)
     private readonly nodeInboxChannel: NodeInboxChannel,
     @Inject(NODE_ID)
@@ -45,7 +45,7 @@ export class UserSessionRegistryService implements UserSessionRegistry {
     if (existing && existing !== client) {
       existing.close(KICK_CLOSE_CODE, KICK_REASON_SAME_NODE);
     }
-    const oldNodeId = await this.clusterDirectory.getNodeId(userId);
+    const oldNodeId = await this.userIdDirectory.getNodeId(userId);
     if (oldNodeId && oldNodeId !== this.nodeId) {
       await this.nodeInboxChannel.publish(oldNodeId, {
         type: 'kick',
@@ -55,7 +55,7 @@ export class UserSessionRegistryService implements UserSessionRegistry {
     this.userToSocket.set(userId, client);
     (client as unknown as { _userId: string })[META_KEY] = userId;
     if (!existing) {
-      this.clusterDirectory.registerSession(userId, this.nodeId).catch((e) => {
+      this.userIdDirectory.registerSession(userId, this.nodeId).catch((e) => {
         console.error('[UserSessionRegistry] registerSession failed:', e);
       });
     }
@@ -81,7 +81,7 @@ export class UserSessionRegistryService implements UserSessionRegistry {
     if (!userId) return;
     if (this.userToSocket.get(userId) === client) {
       this.userToSocket.delete(userId);
-      this.clusterDirectory.unregisterSession(userId, this.nodeId).catch((e) => {
+      this.userIdDirectory.unregisterSession(userId, this.nodeId).catch((e) => {
         console.error('[UserSessionRegistry] unregisterSession failed:', e);
       });
     }
@@ -91,7 +91,7 @@ export class UserSessionRegistryService implements UserSessionRegistry {
   private unbindClient(client: WebSocket, prevUserId: string): void {
     if (this.userToSocket.get(prevUserId) === client) {
       this.userToSocket.delete(prevUserId);
-      this.clusterDirectory.unregisterSession(prevUserId, this.nodeId).catch((e) => {
+      this.userIdDirectory.unregisterSession(prevUserId, this.nodeId).catch((e) => {
         console.error('[UserSessionRegistry] unregisterSession failed:', e);
       });
     }
@@ -114,7 +114,7 @@ export class UserSessionRegistryService implements UserSessionRegistry {
   refreshLease(client: WebSocket): void {
     const userId = (client as unknown as { _userId?: string })[META_KEY];
     if (userId && this.userToSocket.get(userId) === client) {
-      this.clusterDirectory.refreshLease(userId, this.nodeId).catch((e) => {
+      this.userIdDirectory.refreshLease(userId, this.nodeId).catch((e) => {
         console.error('[UserSessionRegistry] refreshLease failed:', e);
       });
     }

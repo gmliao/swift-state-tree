@@ -5,7 +5,7 @@
  */
 export { ProvisioningController } from './provisioning.controller';
 export { ProvisioningModule } from './provisioning.module';
-export { ServerRegistryService, SERVER_TTL_MS } from './server-registry.service';
+export { ServerEntry, SERVER_TTL_MS } from '../../infra/contracts/server-entry.dto';
 export { InMemoryProvisioningClient } from './inmemory-provisioning.client';
 export { ProvisioningClientPort } from './provisioning-client.port';
 export { ServerRegisterDto } from './dto/server-register.dto';

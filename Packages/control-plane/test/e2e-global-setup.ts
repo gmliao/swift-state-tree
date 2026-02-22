@@ -1,6 +1,6 @@
 /**
  * Runs once before all e2e tests.
- * Flushes Redis matchmaking/BullMQ keys to avoid "No server available" from stale jobs.
+ * Flushes Redis matchmaking/BullMQ keys and ServerIdDirectory keys to avoid cross-test pollution.
  */
 import Redis from 'ioredis';
 
@@ -18,6 +18,10 @@ export default async function globalSetup(): Promise<void> {
     const matchKeys = await redis.keys('matchmaking:*');
     if (matchKeys.length > 0) {
       await redis.del(...matchKeys);
+    }
+    const serverKeys = await redis.keys('cd:server:*');
+    if (serverKeys.length > 0) {
+      await redis.del(...serverKeys);
     }
   } finally {
     await redis.quit();
