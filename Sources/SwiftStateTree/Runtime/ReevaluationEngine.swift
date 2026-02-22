@@ -155,6 +155,23 @@ public enum ReevaluationEngine {
         return true
     }
 
+    /// Calculate a deterministic hash and capture the full state snapshot (for debug recording).
+    public static func calculateStateHashAndSnapshot<State: StateNodeProtocol>(_ state: State) -> (hash: String, snapshot: StateSnapshot) {
+        let syncEngine = SyncEngine()
+        let snapshot: StateSnapshot
+        do {
+            snapshot = try syncEngine.snapshot(from: state, mode: .all)
+        } catch {
+            return ("error", StateSnapshot())
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(snapshot) else {
+            return ("error", snapshot)
+        }
+        return (DeterministicHash.toHex64(DeterministicHash.fnv1a64(data)), snapshot)
+    }
+
     /// Calculate a deterministic hash of the full state snapshot.
     public static func calculateStateHash<State: StateNodeProtocol>(_ state: State) -> String {
         let syncEngine = SyncEngine()

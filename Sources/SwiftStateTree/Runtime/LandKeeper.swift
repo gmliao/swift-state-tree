@@ -1960,8 +1960,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Optionally record live per-tick state hash as ground truth for deterministic re-evaluation.
         if enableLiveStateHashRecording, let recorder = reevaluationRecorder {
-            let hash = ReevaluationEngine.calculateStateHash(state)
-            await recorder.setStateHash(tickId: tickId, stateHash: hash)
+            let enableStateSnapshotRecording = EnvHelpers.getEnvBool(
+                key: "ENABLE_STATE_SNAPSHOT_RECORDING",
+                defaultValue: false
+            )
+            if enableStateSnapshotRecording {
+                let (hash, snapshot) = ReevaluationEngine.calculateStateHashAndSnapshot(state)
+                await recorder.setStateHash(tickId: tickId, stateHash: hash)
+                await recorder.recordStateSnapshot(tickId: tickId, stateSnapshot: snapshot)
+            } else {
+                let hash = ReevaluationEngine.calculateStateHash(state)
+                await recorder.setStateHash(tickId: tickId, stateHash: hash)
+            }
         }
 
         // Flush deterministic outputs (emitted events + sync requests) for this tick.
