@@ -1,14 +1,14 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { InMemoryClusterDirectoryService } from '../src/infra/cluster-directory/inmemory-cluster-directory.service';
+import { InMemoryUserIdDirectoryService } from '../src/infra/cluster-directory/inmemory-user-id-directory.service';
 
-describe('InMemoryClusterDirectoryService', () => {
-  let service: InMemoryClusterDirectoryService;
+describe('InMemoryUserIdDirectoryService', () => {
+  let service: InMemoryUserIdDirectoryService;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [InMemoryClusterDirectoryService],
+      providers: [InMemoryUserIdDirectoryService],
     }).compile();
-    service = module.get(InMemoryClusterDirectoryService);
+    service = module.get(InMemoryUserIdDirectoryService);
     service.setTtlMs(5000);
   });
 

@@ -3,7 +3,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { MatchmakingService } from '../src/modules/matchmaking/matchmaking.service';
 import { MATCH_ASSIGNED_CHANNEL } from '../src/infra/channels/match-assigned-channel.interface';
 import { NODE_INBOX_CHANNEL } from '../src/infra/channels/node-inbox-channel.interface';
-import { CLUSTER_DIRECTORY } from '../src/infra/cluster-directory/cluster-directory.interface';
+import { USER_ID_DIRECTORY } from '../src/infra/cluster-directory/user-id-directory.interface';
 import { InMemoryMatchQueue } from '../src/modules/matchmaking/storage/inmemory-match-queue';
 import { FillGroupStrategy } from '../src/modules/matchmaking/strategies/fill-group.strategy';
 import { JwtIssuerService } from '../src/infra/security/jwt-issuer.service';
@@ -76,7 +76,7 @@ describe('MatchmakingService', () => {
         { provide: getQueueToken('enqueueTicket'), useValue: mockEnqueueTicketQueue },
         { provide: MATCH_ASSIGNED_CHANNEL, useValue: mockMatchAssignedChannel },
         { provide: NODE_INBOX_CHANNEL, useValue: mockNodeInboxChannel },
-        { provide: CLUSTER_DIRECTORY, useValue: mockClusterDirectory },
+        { provide: USER_ID_DIRECTORY, useValue: mockClusterDirectory },
         JwtIssuerService,
       ],
     }).compile();
@@ -175,7 +175,7 @@ describe('MatchmakingService', () => {
         { provide: getQueueToken('enqueueTicket'), useValue: mockEnqueueTicketQueue },
         { provide: MATCH_ASSIGNED_CHANNEL, useValue: mockMatchAssignedChannel },
         { provide: NODE_INBOX_CHANNEL, useValue: mockNodeInboxChannel },
-        { provide: CLUSTER_DIRECTORY, useValue: mockClusterDirectory },
+        { provide: USER_ID_DIRECTORY, useValue: mockClusterDirectory },
         JwtIssuerService,
       ],
     }).compile();

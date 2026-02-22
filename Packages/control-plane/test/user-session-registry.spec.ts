@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { WebSocket } from 'ws';
 import { UserSessionRegistryService } from '../src/modules/realtime/user-session-registry.service';
 import { USER_SESSION_REGISTRY } from '../src/modules/realtime/user-session-registry.interface';
-import { CLUSTER_DIRECTORY } from '../src/infra/cluster-directory/cluster-directory.interface';
+import { USER_ID_DIRECTORY } from '../src/infra/cluster-directory/user-id-directory.interface';
 import { NODE_INBOX_CHANNEL } from '../src/infra/channels/node-inbox-channel.interface';
 import { NODE_ID } from '../src/infra/config/env.config';
 
@@ -28,7 +28,7 @@ describe('UserSessionRegistryService', () => {
           provide: USER_SESSION_REGISTRY,
           useClass: UserSessionRegistryService,
         },
-        { provide: CLUSTER_DIRECTORY, useValue: mockClusterDirectory },
+        { provide: USER_ID_DIRECTORY, useValue: mockClusterDirectory },
         { provide: NODE_INBOX_CHANNEL, useValue: mockNodeInboxChannel },
         { provide: NODE_ID, useValue: 'node-1' },
       ],

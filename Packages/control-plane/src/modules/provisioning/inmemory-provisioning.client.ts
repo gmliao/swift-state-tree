@@ -1,19 +1,24 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Inject } from '@nestjs/common';
 import { AssignmentResult } from '../../infra/contracts/assignment.dto';
+import { SERVER_ID_DIRECTORY } from '../../infra/cluster-directory/server-id-directory.interface';
+import type { ServerIdDirectory } from '../../infra/cluster-directory/server-id-directory.interface';
 import {
   ProvisioningAllocateRequest,
   ProvisioningClientPort,
 } from './provisioning-client.port';
-import { ServerRegistryService } from './server-registry.service';
+import { NoServerAvailableError } from './provisioning-errors';
 
 /**
  * In-memory provisioning client.
- * Uses ServerRegistryService to pick a server and generate connectUrl.
+ * Uses ServerIdDirectory to pick a server and generate connectUrl.
  * No external HTTP call.
  */
 @Injectable()
 export class InMemoryProvisioningClient implements ProvisioningClientPort {
-  constructor(private readonly registry: ServerRegistryService) {}
+  constructor(
+    @Inject(SERVER_ID_DIRECTORY)
+    private readonly serverIdDirectory: ServerIdDirectory,
+  ) {}
 
   async allocate(request: ProvisioningAllocateRequest): Promise<AssignmentResult> {
     // Derive landType from queueKey (e.g. "hero-defense:asia" -> "hero-defense").
@@ -22,9 +27,9 @@ export class InMemoryProvisioningClient implements ProvisioningClientPort {
       request.queueKey.includes(':')
         ? request.queueKey.split(':')[0]
         : request.queueKey || 'hero-defense';
-    const server = this.registry.pickServer(landType);
+    const server = await this.serverIdDirectory.pickServer(landType);
     if (!server) {
-      throw new Error(`No server available for landType: ${landType}`);
+      throw new NoServerAvailableError(landType);
     }
     const instanceId = crypto.randomUUID();
     const landId = `${server.landType}:${instanceId}`;

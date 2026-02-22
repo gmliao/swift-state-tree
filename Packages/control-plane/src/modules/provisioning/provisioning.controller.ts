@@ -4,16 +4,18 @@ import {
   Delete,
   HttpCode,
   HttpStatus,
+  Inject,
   Param,
   Post,
 } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { SERVER_ID_DIRECTORY } from '../../infra/cluster-directory/server-id-directory.interface';
+import type { ServerIdDirectory } from '../../infra/cluster-directory/server-id-directory.interface';
 import {
   ProvisioningResponseDto,
   provisioningSuccess,
 } from './dto/provisioning-response.dto';
 import { ServerRegisterDto } from './dto/server-register.dto';
-import { ServerRegistryService } from './server-registry.service';
 
 /**
  * Provisioning API.
@@ -24,14 +26,17 @@ import { ServerRegistryService } from './server-registry.service';
 @ApiTags('provisioning')
 @Controller('v1/provisioning')
 export class ProvisioningController {
-  constructor(private readonly registry: ServerRegistryService) {}
+  constructor(
+    @Inject(SERVER_ID_DIRECTORY)
+    private readonly serverIdDirectory: ServerIdDirectory,
+  ) {}
 
   @Post('servers/register')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Register or heartbeat a game server' })
   @ApiResponse({ status: 200, description: 'Success', type: ProvisioningResponseDto })
   async register(@Body() dto: ServerRegisterDto) {
-    this.registry.register(dto.serverId, dto.host, dto.port, dto.landType, {
+    await this.serverIdDirectory.register(dto.serverId, dto.host, dto.port, dto.landType, {
       connectHost: dto.connectHost,
       connectPort: dto.connectPort,
       connectScheme: dto.connectScheme,
@@ -44,7 +49,7 @@ export class ProvisioningController {
   @ApiOperation({ summary: 'Deregister a game server on shutdown' })
   @ApiResponse({ status: 200, description: 'Success', type: ProvisioningResponseDto })
   async deregister(@Param('serverId') serverId: string) {
-    this.registry.deregister(serverId);
+    await this.serverIdDirectory.deregister(serverId);
     return provisioningSuccess();
   }
 }

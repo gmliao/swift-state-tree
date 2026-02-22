@@ -9,8 +9,8 @@ import { MATCH_ASSIGNED_CHANNEL } from '../src/infra/channels/match-assigned-cha
 import { InMemoryMatchAssignedChannelService } from '../src/infra/channels/inmemory-match-assigned-channel.service';
 import { NODE_INBOX_CHANNEL } from '../src/infra/channels/node-inbox-channel.interface';
 import { InMemoryNodeInboxChannelService } from '../src/infra/channels/inmemory-node-inbox-channel.service';
-import { CLUSTER_DIRECTORY } from '../src/infra/cluster-directory/cluster-directory.interface';
-import { InMemoryClusterDirectoryService } from '../src/infra/cluster-directory/inmemory-cluster-directory.service';
+import { USER_ID_DIRECTORY } from '../src/infra/cluster-directory/user-id-directory.interface';
+import { InMemoryUserIdDirectoryService } from '../src/infra/cluster-directory/inmemory-user-id-directory.service';
 import { MatchmakingService } from '../src/modules/matchmaking/matchmaking.service';
 import { InMemoryMatchQueue } from '../src/modules/matchmaking/storage/inmemory-match-queue';
 
@@ -49,8 +49,8 @@ describe('Realtime WebSocket (e2e)', () => {
       .useClass(InMemoryMatchAssignedChannelService)
       .overrideProvider(NODE_INBOX_CHANNEL)
       .useClass(InMemoryNodeInboxChannelService)
-      .overrideProvider(CLUSTER_DIRECTORY)
-      .useClass(InMemoryClusterDirectoryService)
+      .overrideProvider(USER_ID_DIRECTORY)
+      .useClass(InMemoryUserIdDirectoryService)
       .compile();
 
     app = moduleFixture.createNestApplication();
@@ -188,8 +188,8 @@ describe('Realtime WebSocket (e2e)', () => {
       .useClass(InMemoryMatchAssignedChannelService)
       .overrideProvider(NODE_INBOX_CHANNEL)
       .useClass(InMemoryNodeInboxChannelService)
-      .overrideProvider(CLUSTER_DIRECTORY)
-      .useClass(InMemoryClusterDirectoryService)
+      .overrideProvider(USER_ID_DIRECTORY)
+      .useClass(InMemoryUserIdDirectoryService)
       .compile();
 
     const testApp = moduleFixture.createNestApplication();

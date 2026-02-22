@@ -1,6 +1,7 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Inject } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
-import { ServerRegistryService } from '../provisioning/server-registry.service';
+import { SERVER_ID_DIRECTORY } from '../../infra/cluster-directory/server-id-directory.interface';
+import type { ServerIdDirectory } from '../../infra/cluster-directory/server-id-directory.interface';
 import { AdminQueueService } from './admin-queue.service';
 import {
   QueueSummaryResponseDto,
@@ -14,13 +15,14 @@ import {
 @ApiTags('admin')
 export class AdminController {
   constructor(
-    private readonly registry: ServerRegistryService,
+    @Inject(SERVER_ID_DIRECTORY)
+    private readonly serverIdDirectory: ServerIdDirectory,
     private readonly queueSummary: AdminQueueService,
   ) {}
 
   @Get('servers')
-  getServers(): ServerListResponseDto {
-    const list = this.registry.listAllServers();
+  async getServers(): Promise<ServerListResponseDto> {
+    const list = await this.serverIdDirectory.listAllServers();
     return {
       servers: list.map((e) => ({
         serverId: e.serverId,

@@ -3,6 +3,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { AssignmentResult } from '../../infra/contracts/assignment.dto';
 import { EnqueueRequest, StatusResponse } from '../../infra/contracts/matchmaking.dto';
+import { NoServerAvailableError } from '../provisioning/provisioning-errors';
 import { ProvisioningClientPort } from '../provisioning/provisioning-client.port';
 import { buildMatchAssignedEnvelope } from '../realtime/ws-envelope.dto';
 import {
@@ -14,9 +15,9 @@ import {
   type NodeInboxChannel,
 } from '../../infra/channels/node-inbox-channel.interface';
 import {
-  CLUSTER_DIRECTORY,
-  type ClusterDirectory,
-} from '../../infra/cluster-directory/cluster-directory.interface';
+  USER_ID_DIRECTORY,
+  type UserIdDirectory,
+} from '../../infra/cluster-directory/user-id-directory.interface';
 import { JwtIssuerService } from '../../infra/security/jwt-issuer.service';
 import { getUseNodeInboxForMatchAssigned } from '../../infra/config/env.config';
 import {
@@ -54,8 +55,8 @@ export class MatchmakingService {
     private readonly matchAssignedChannel: MatchAssignedChannel,
     @Inject(NODE_INBOX_CHANNEL)
     private readonly nodeInboxChannel: NodeInboxChannel,
-    @Inject(CLUSTER_DIRECTORY)
-    private readonly clusterDirectory: ClusterDirectory,
+    @Inject(USER_ID_DIRECTORY)
+    private readonly clusterDirectory: UserIdDirectory,
   ) {}
 
   /**
@@ -173,7 +174,15 @@ export class MatchmakingService {
           }
         }
       } catch (err) {
-        console.error(`[Matchmaking] failed to assign group:`, err);
+        if (err instanceof NoServerAvailableError) {
+          // Expected: no server registered yet; ticket stays queued, retry later.
+          // Log at debug level to avoid polluting console in tests.
+          if (process.env.NODE_ENV !== 'test') {
+            console.warn(`[Matchmaking] ${err.message}`);
+          }
+        } else {
+          throw err;
+        }
       }
     }
   }

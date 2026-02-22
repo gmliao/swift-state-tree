@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type { ClusterDirectory } from '../../infra/cluster-directory/cluster-directory.interface';
-import { CLUSTER_DIRECTORY } from '../../infra/cluster-directory/cluster-directory.interface';
+import { USER_ID_DIRECTORY } from '../../infra/cluster-directory/user-id-directory.interface';
+import type { UserIdDirectory } from '../../infra/cluster-directory/user-id-directory.interface';
 import { NODE_ID } from '../../infra/config/env.config';
 import type { NodeInboxChannel } from '../../infra/channels/node-inbox-channel.interface';
 import { NODE_INBOX_CHANNEL } from '../../infra/channels/node-inbox-channel.interface';
@@ -23,8 +23,8 @@ export class UserSessionRegistryService implements UserSessionRegistry {
   private readonly userToSocket = new Map<string, WebSocket>();
 
   constructor(
-    @Inject(CLUSTER_DIRECTORY)
-    private readonly clusterDirectory: ClusterDirectory,
+    @Inject(USER_ID_DIRECTORY)
+    private readonly clusterDirectory: UserIdDirectory,
     @Inject(NODE_INBOX_CHANNEL)
     private readonly nodeInboxChannel: NodeInboxChannel,
     @Inject(NODE_ID)
