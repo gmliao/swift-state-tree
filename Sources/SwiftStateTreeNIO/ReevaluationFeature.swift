@@ -181,29 +181,4 @@ private extension NIOLandServerConfiguration {
         }
         return updated
     }
-
-    func injectingReevaluationKeeperModeResolver(
-        replayLandType: String,
-        recordsDir: String
-    ) -> NIOLandServerConfiguration {
-        var updated = self
-        let previousResolver = self.keeperModeResolver
-        let captureReplayLandType = replayLandType
-        let captureRecordsDir = recordsDir
-        updated.keeperModeResolver = { landID, metadata in
-            if let previous = previousResolver, let result = previous(landID, metadata) {
-                return result
-            }
-            guard landID.landType == captureReplayLandType else { return nil }
-            guard let descriptor = ReevaluationReplaySessionDescriptor.decode(
-                instanceId: landID.instanceId,
-                landType: captureReplayLandType,
-                recordsDir: captureRecordsDir
-            ) else {
-                return .invalidReplaySession(message: "Invalid replay session descriptor for instanceId")
-            }
-            return .reevaluation(recordFilePath: descriptor.recordFilePath)
-        }
-        return updated
-    }
 }
