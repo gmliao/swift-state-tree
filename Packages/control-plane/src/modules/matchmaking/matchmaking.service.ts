@@ -76,6 +76,10 @@ export class MatchmakingService {
     };
     const ticket = await this.queue.enqueue(group);
     onBeforeJob?.(ticket.ticketId);
+    // Synchronous tryMatch: process immediately in same process. Workaround for BullMQ
+    // sequential-enqueue bug where second job may not be processed (or processed before
+    // ticket is in queue). BullMQ job still runs but will typically find nothing to match.
+    await this.tryMatch(dto.queueKey);
     if (isWorkerEnabled(getMatchmakingRole())) {
       await this.enqueueTicketQueue.add(
         'enqueue',
