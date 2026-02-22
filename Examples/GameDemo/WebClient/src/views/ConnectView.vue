@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { useRouter } from "vue-router";
+import { ControlPlaneClient, findMatch } from "@swiftstatetree/control-plane-client";
 import { useGameClient } from "../utils/gameClient";
 import "@/styles/ui-tokens.css";
 
@@ -18,6 +19,11 @@ function generateRandomUserName(): string {
 const wsUrl = ref("ws://localhost:8080/game/hero-defense");
 const playerName = ref("");
 const roomId = ref("default");
+
+// Matchmaking (Control Plane)
+const controlPlaneUrl = ref("http://localhost:3000");
+const isFindingMatch = ref(false);
+const findMatchError = ref("");
 
 // Auto-generate player name on mount
 onMounted(() => {
@@ -50,6 +56,42 @@ async function handleConnect() {
     await router.push({ name: "game" });
   } catch (err) {
     // Error is already stored in lastError by useGameClient
+  }
+}
+
+async function handleFindMatch() {
+  if (isFindingMatch.value) return;
+  if (!playerName.value.trim()) {
+    findMatchError.value = "Please enter a pilot name.";
+    return;
+  }
+
+  isFindingMatch.value = true;
+  findMatchError.value = "";
+
+  try {
+    const client = new ControlPlaneClient(controlPlaneUrl.value);
+    const assignment = await findMatch(client, {
+      queueKey: "hero-defense",
+      members: [playerName.value.trim()],
+      groupSize: 1,
+    });
+
+    const sep = assignment.connectUrl.includes("?") ? "&" : "?";
+    const finalWsUrl =
+      assignment.connectUrl + sep + "token=" + encodeURIComponent(assignment.matchToken);
+
+    await connect({
+      wsUrl: finalWsUrl,
+      playerName: playerName.value.trim(),
+      landID: assignment.landId,
+    });
+    await router.push({ name: "game" });
+  } catch (err) {
+    findMatchError.value =
+      err instanceof Error ? err.message : String(err);
+  } finally {
+    isFindingMatch.value = false;
   }
 }
 
@@ -109,6 +151,49 @@ function goToReevaluationMonitor() {
             bg-color="rgba(0,0,0,0.03)"
           ></v-text-field>
         </div>
+
+        <div class="input-section mb-8">
+          <label
+            class="text-caption font-weight-semibold text-secondary mb-2 d-block ml-1"
+            >Matchmaking (Control Plane)</label
+          >
+          <v-text-field
+            v-model="controlPlaneUrl"
+            placeholder="http://localhost:3000"
+            variant="solo"
+            flat
+            density="comfortable"
+            class="apple-input mb-3"
+            prepend-inner-icon="mdi-cloud-outline"
+            rounded="lg"
+            bg-color="rgba(0,0,0,0.03)"
+          ></v-text-field>
+          <v-btn
+            type="button"
+            class="btn-apple mb-0"
+            block
+            size="large"
+            elevation="0"
+            :loading="isFindingMatch"
+            rounded="lg"
+            height="48"
+            @click="handleFindMatch"
+          >
+            <v-icon start class="mr-2">mdi-magnify</v-icon>
+            Find Match
+          </v-btn>
+        </div>
+
+        <v-alert
+          v-if="findMatchError"
+          type="error"
+          variant="tonal"
+          class="mb-6 rounded-lg border-error"
+          density="compact"
+          icon="mdi-alert-circle-outline"
+        >
+          {{ findMatchError }}
+        </v-alert>
 
         <v-alert
           v-if="lastError"
