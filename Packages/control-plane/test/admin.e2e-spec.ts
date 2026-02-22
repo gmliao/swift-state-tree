@@ -3,7 +3,7 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { WsAdapter } from '@nestjs/platform-ws';
 import * as request from 'supertest';
 import { AppModule } from '../src/app.module';
-import { closeApp } from './e2e-helpers';
+import { closeApp, flushServerKeys } from './e2e-helpers';
 
 const testConfig = { intervalMs: 100, minWaitMs: 0 };
 
@@ -16,6 +16,7 @@ describe('AdminController (e2e)', () => {
   let app: INestApplication;
 
   beforeAll(async () => {
+    await flushServerKeys();
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     })
@@ -38,6 +39,7 @@ describe('AdminController (e2e)', () => {
 
   afterAll(async () => {
     await closeApp(app);
+    await flushServerKeys();
   });
 
   it('GET /v1/admin/servers returns empty list when no servers', async () => {

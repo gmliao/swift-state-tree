@@ -3,7 +3,7 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { WsAdapter } from '@nestjs/platform-ws';
 import * as request from 'supertest';
 import { AppModule } from '../../src/app.module';
-import { closeApp } from '../e2e-helpers';
+import { closeApp, flushServerKeys } from '../e2e-helpers';
 
 const testConfig = { intervalMs: 100, minWaitMs: 0 };
 
@@ -49,6 +49,7 @@ describe('Provisioning (Internal Registry) E2E', () => {
 
   afterEach(async () => {
     await closeApp(app);
+    await flushServerKeys();
   });
 
   it('registers a server and assigns connectUrl from internal registry', async () => {
