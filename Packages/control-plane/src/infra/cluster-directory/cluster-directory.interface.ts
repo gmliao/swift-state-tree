@@ -1,3 +1,6 @@
+export type { UserIdDirectory } from './user-id-directory.interface';
+export { USER_ID_DIRECTORY } from './user-id-directory.interface';
+
 /**
  * ClusterDirectory: userId → nodeId mapping with TTL lease.
  * Gateway registers on connect; heartbeat refreshes lease.
