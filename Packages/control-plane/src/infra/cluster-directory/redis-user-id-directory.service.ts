@@ -1,16 +1,16 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import Redis from 'ioredis';
 import { getClusterDirectoryTtlSeconds, getRedisConfig } from '../config/env.config';
-import type { ClusterDirectory } from './cluster-directory.interface';
+import type { UserIdDirectory } from './user-id-directory.interface';
 
 const KEY_PREFIX = 'cd:user:';
 
 /**
- * Redis-backed ClusterDirectory implementation.
+ * Redis-backed UserIdDirectory implementation.
  * Stores userId -> nodeId with TTL. Key: cd:user:{userId}.
  */
 @Injectable()
-export class RedisClusterDirectoryService implements ClusterDirectory, OnModuleDestroy {
+export class RedisUserIdDirectoryService implements UserIdDirectory, OnModuleDestroy {
   private client: Redis | null = null;
 
   private ensureClient(): Redis {

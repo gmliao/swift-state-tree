@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { ClusterDirectory } from './cluster-directory.interface';
+import type { UserIdDirectory } from './user-id-directory.interface';
 
 /** Lease entry with expiry. */
 interface Lease {
@@ -10,11 +10,11 @@ interface Lease {
 const DEFAULT_TTL_MS = 8000;
 
 /**
- * In-memory ClusterDirectory implementation for tests.
+ * In-memory UserIdDirectory implementation for tests.
  * Single-process; no Redis required.
  */
 @Injectable()
-export class InMemoryClusterDirectoryService implements ClusterDirectory {
+export class InMemoryUserIdDirectoryService implements UserIdDirectory {
   private readonly sessions = new Map<string, Lease>();
   private ttlMs = DEFAULT_TTL_MS;
 
