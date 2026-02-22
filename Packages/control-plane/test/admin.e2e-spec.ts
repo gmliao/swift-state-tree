@@ -9,11 +9,12 @@ const testConfig = { intervalMs: 100, minWaitMs: 0 };
 
 /**
  * E2E tests for admin API (read-only dashboard endpoints).
+ * Uses beforeAll/afterAll to avoid BullMQ "Connection is closed" during rapid app lifecycle.
  */
 describe('AdminController (e2e)', () => {
   let app: INestApplication;
 
-  beforeEach(async () => {
+  beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     })
@@ -34,7 +35,7 @@ describe('AdminController (e2e)', () => {
     await app.init();
   });
 
-  afterEach(async () => {
+  afterAll(async () => {
     await closeApp(app);
   });
 

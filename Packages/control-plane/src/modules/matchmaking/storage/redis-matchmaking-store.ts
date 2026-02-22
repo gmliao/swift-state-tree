@@ -9,8 +9,8 @@ const GROUP_TO_TICKET_KEY = 'matchmaking:groupToTicket';
 const ASSIGNED_KEY_PREFIX = 'matchmaking:assigned:';
 const QUEUED_KEY = 'matchmaking:queued';
 
-/** TTL in seconds for assignment keys. Prevents stale data after restart. */
-const ASSIGNMENT_TTL_SECONDS = 300;
+/** TTL in seconds for assignment keys. Align with JWT exp (1h) to avoid "token valid but status not found". */
+const ASSIGNMENT_TTL_SECONDS = 3600;
 
 /**
  * Redis-backed implementation of MatchmakingStore.
