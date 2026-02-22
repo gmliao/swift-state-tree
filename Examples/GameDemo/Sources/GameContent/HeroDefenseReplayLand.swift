@@ -54,6 +54,9 @@ public enum HeroDefenseReplay {
                         if let projectedFrame = result.projectedFrame {
                             applyProjectedState(projectedFrame.stateObject, to: &state)
                             _ = emitProjectedServerEvents(projectedFrame.serverEvents, ctx: ctx)
+                            // Trigger immediate sync so client receives updated state (avoids showing
+                            // baseline position 0,0 before first projected frame is applied)
+                            ctx.requestSyncBroadcastOnly()
                         }
 
                         let event = HeroDefenseReplayTickEvent(

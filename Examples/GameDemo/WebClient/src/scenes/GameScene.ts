@@ -165,6 +165,18 @@ export class GameScene extends Phaser.Scene {
     // Update all players (handles creation, updates, and removal)
     this.playerManager.update(state.players || {});
 
+    // In replay mode, viewer has no player state; show first player's position in HUD
+    if (this.replayMode && state.players && Object.keys(state.players).length > 0) {
+      const firstPlayerID = Object.keys(state.players)[0];
+      const firstPlayer = state.players[firstPlayerID];
+      if (firstPlayer?.position?.v) {
+        this.hudManager.updatePosition(
+          firstPlayer.position.v.x,
+          firstPlayer.position.v.y,
+        );
+      }
+    }
+
     // Update monsters
     this.monsterManager.update(state.monsters);
 
