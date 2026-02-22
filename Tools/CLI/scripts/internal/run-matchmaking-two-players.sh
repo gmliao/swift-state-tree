@@ -26,7 +26,7 @@ echo ""
 echo "Enqueueing group [p1, p2]..."
 ENQUEUE_RESPONSE=$(curl -s -X POST "$CONTROL_PLANE_URL/v1/matchmaking/enqueue" \
     -H "Content-Type: application/json" \
-    -d '{"groupId":"two-player-1","queueKey":"hero-defense:asia","members":["p1","p2"],"groupSize":2}')
+    -d '{"groupId":"two-player-1","queueKey":"hero-defense:2","members":["p1","p2"],"groupSize":2}')
 
 TMP=$(mktemp)
 trap "rm -f $TMP" EXIT

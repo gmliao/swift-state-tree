@@ -9,6 +9,9 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/cli.ts",
+    "dev:matchmaking": "bash scripts/dev-matchmaking-stack.sh",
+    "dev:matchmaking:nginx": "bash scripts/dev-matchmaking-nginx-stack.sh",
+    "dev:demo": "bash scripts/dev-demo-stack.sh",
     "start": "node dist/cli.js",
     "measure": "tsx benchmarks/measure-state-updates.ts",
     "measure:full": "bash benchmarks/run-protocol-measurement.sh",
@@ -27,6 +30,8 @@
     "test:e2e:game:matchmaking:nginx": "bash scripts/internal/run-matchmaking-nginx-e2e.sh",
     "test:e2e:game:matchmaking:two-players": "bash scripts/internal/run-matchmaking-two-players.sh",
     "test:e2e:game:matchmaking:multi-server": "bash scripts/internal/run-matchmaking-multi-server-e2e.sh",
+    "test:e2e:game:matchmaking:three-players": "bash scripts/internal/run-matchmaking-three-players.sh",
+    "test:e2e:game:matchmaking:all-encodings": "bash scripts/internal/run-matchmaking-full-encodings.sh",
     "test:matchmaking:stack:smoke": "bash scripts/internal/run-matchmaking-local-stack.sh",
     "test:e2e:game:direct": "MATCHMAKING_MODE=direct ./test-e2e-game.sh",
     "test:e2e:game:direct:regression": "MATCHMAKING_MODE=direct E2E_SCENARIO=scenarios/game/test-direct-mode-regression.json ./test-e2e-game.sh",
