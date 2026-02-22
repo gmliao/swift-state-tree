@@ -220,3 +220,14 @@ private actor MockReevaluationRunner: ReevaluationRunnerProtocol {
         nil
     }
 }
+
+extension ReevaluationFeatureRegistrationTests {
+    @Test("GenericReplayLand.makeLand produces a LandDefinition with the correct land ID")
+    func genericReplayLandMakeLandProducesValidDefinition() {
+        let definition = GenericReplayLand.makeLand(
+            landType: "hero-defense",
+            stateType: FeatureLiveState.self
+        )
+        #expect(definition.id == "hero-defense-replay")
+    }
+}

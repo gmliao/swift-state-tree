@@ -46,3 +46,49 @@ func decodeReplayState<State: Decodable>(_ type: State.Type, from actualState: A
 
     return decoded
 }
+
+// MARK: - Placeholder (replaced in Task 3)
+
+internal func StandardReplayLifetime<State: StateNodeProtocol>(
+    landType _: String
+) -> LifetimeNode<State> {
+    Lifetime { _ in }
+}
+
+// MARK: - GenericReplayLand
+
+/// Zero-config generic replay land for any State conforming to StateNodeProtocol & Decodable.
+///
+/// Replaces hand-written game-specific replay lands (e.g. HeroDefenseReplayLand).
+/// - Starts reevaluation verification automatically on first tick.
+/// - Decodes projected state from `result.actualState` using JSONDecoder.
+/// - Forwards ALL recorded server events without filtering.
+/// - Emits ReplayTickEvent after each result.
+///
+/// For custom actions (fast-forward, reset, etc.), use
+/// `StandardReplayLifetime` and `StandardReplayServerEvents` instead.
+public enum GenericReplayLand {
+    /// Creates a generic replay LandDefinition.
+    ///
+    /// - Parameters:
+    ///   - landType: The BASE land type (e.g. "hero-defense"), NOT the replay land type.
+    ///     The returned definition's ID will be "\(landType)-replay".
+    ///   - stateType: The State type. Must conform to StateNodeProtocol & Decodable.
+    public static func makeLand<State: StateNodeProtocol>(
+        landType: String,
+        stateType: State.Type
+    ) -> LandDefinition<State> {
+        Land("\(landType)-replay", using: stateType) {
+            AccessControl {
+                AllowPublic(true)
+                MaxPlayers(64)
+            }
+
+            StandardReplayLifetime(landType: landType) as LifetimeNode<State>
+
+            ServerEvents {
+                Register(ReplayTickEvent.self)
+            }
+        }
+    }
+}
