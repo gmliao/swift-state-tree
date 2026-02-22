@@ -2,7 +2,7 @@ import { INestApplication } from '@nestjs/common';
 
 const CLOSE_TIMEOUT_MS = 5000;
 /** Drain delay after close to reduce BullMQ "Connection is closed" during teardown. */
-const DRAIN_DELAY_MS = 400;
+const DRAIN_DELAY_MS = 800;
 
 /**
  * Closes the NestJS app and waits for BullMQ Worker/Redis connections to shut down.
