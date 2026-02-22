@@ -8,7 +8,7 @@
 
 import readline from 'readline'
 import chalk from 'chalk'
-import { StateTreeRuntime } from '@swiftstatetree/sdk/core'
+import { StateTreeRuntime, Position2 } from '@swiftstatetree/sdk/core'
 import { HeroDefenseStateTree } from './generated/hero-defense/index.js'
 import { LAND_TYPE } from './generated/hero-defense/bindings.js'
 import type { HeroDefenseState, PlayerState, MonsterState, TurretState } from './generated/defs.js'
@@ -51,7 +51,7 @@ function printHelp() {
   console.log('  shoot <x> <y>     - 向指定位置射擊')
   console.log('  place <x> <y>     - 在指定位置放置炮塔')
   console.log('  upgrade-weapon    - 升級武器 (消耗 5 資源)')
-  console.log('  upgrade-turret     - 升級炮塔 (消耗 10 資源)')
+  console.log('  upgrade-turret <id> - 升級指定炮塔 (消耗 10 資源)')
   console.log('  status            - 顯示遊戲狀態')
   console.log('  players           - 顯示所有玩家')
   console.log('  monsters          - 顯示所有怪物')
@@ -73,17 +73,17 @@ function printStatus() {
   const player = gameState.playerID ? state.players[gameState.playerID] : null
 
   console.log(chalk.cyan('\n=== 遊戲狀態 ==='))
-  console.log(`基地生命值: ${chalk.red(state.base.hp)}/${chalk.green(state.base.maxHp)}`)
-  console.log(`波次: ${chalk.yellow(state.wave)}`)
+  console.log(`基地生命值: ${chalk.red(state.base.health)}/${chalk.green(state.base.maxHealth)}`)
+  console.log(`分數: ${chalk.yellow(state.score)}`)
   console.log(`怪物數量: ${chalk.red(Object.keys(state.monsters).length)}`)
   console.log(`炮塔數量: ${chalk.blue(Object.keys(state.turrets).length)}`)
   
   if (player) {
     console.log(chalk.green(`\n=== 玩家狀態 (${playerName}) ===`))
-    console.log(`位置: ${formatPosition(player.position.x, player.position.y)}`)
-    console.log(`生命值: ${player.hp}/${player.maxHp}`)
+    console.log(`位置: ${formatPosition(player.position.v.x, player.position.v.y)}`)
+    console.log(`生命值: ${player.health}/${player.maxHealth}`)
     console.log(`資源: ${chalk.yellow(player.resources)}`)
-    console.log(`武器等級: ${player.weaponLevel} (傷害: ${player.weaponDamage}, 射程: ${player.weaponRange})`)
+    console.log(`武器等級: ${player.weaponLevel}`)
   }
   
   console.log('')
@@ -100,7 +100,7 @@ function printPlayers() {
   for (const [id, player] of Object.entries(players)) {
     const isMe = id === gameState.playerID
     const prefix = isMe ? chalk.green('* ') : '  '
-    console.log(`${prefix}${chalk.yellow(id)}: 位置=${formatPosition(player.position.x, player.position.y)}, 生命值=${player.hp}/${player.maxHp}, 資源=${player.resources}`)
+    console.log(`${prefix}${chalk.yellow(id)}: 位置=${formatPosition(player.position.v.x, player.position.v.y)}, 生命值=${player.health}/${player.maxHealth}, 資源=${player.resources}`)
   }
   console.log('')
 }
@@ -117,7 +117,7 @@ function printMonsters() {
     console.log('  沒有怪物')
   } else {
     for (const [id, monster] of Object.entries(monsters)) {
-      console.log(`  ${chalk.red(id)}: 位置=${formatPosition(monster.position.x, monster.position.y)}, 生命值=${monster.hp}/${monster.maxHp}`)
+      console.log(`  ${chalk.red(id)}: 位置=${formatPosition(monster.position.v.x, monster.position.v.y)}, 生命值=${monster.health}/${monster.maxHealth}`)
     }
   }
   console.log('')
@@ -136,7 +136,7 @@ function printTurrets() {
   } else {
     for (const [id, turret] of Object.entries(turrets)) {
       const owner = turret.ownerID === gameState.playerID ? chalk.green('(我的)') : ''
-      console.log(`  ${chalk.blue(id)}: 位置=${formatPosition(turret.position.x, turret.position.y)}, 等級=${turret.level}, 傷害=${turret.damage}, 射程=${turret.range} ${owner}`)
+      console.log(`  ${chalk.blue(id)}: 位置=${formatPosition(turret.position.v.x, turret.position.v.y)}, 等級=${turret.level} ${owner}`)
     }
   }
   console.log('')
@@ -197,7 +197,7 @@ async function connect() {
     
     // Set up state update listener for auto-refresh
     let statusUpdateTimer: NodeJS.Timeout | null = null
-    tree.on.stateUpdate((patches) => {
+    tree.onPatch(() => {
       // Debounce status updates to avoid spam
       if (statusUpdateTimer) {
         clearTimeout(statusUpdateTimer)
@@ -306,7 +306,7 @@ async function handleCommand(line: string) {
         try {
           const x = parseFloat(args[0])
           const y = parseFloat(args[1])
-          gameState.tree.events.moveTo({ x, y })
+          gameState.tree.events.moveTo({ target: new Position2({ x, y }, false) })
           console.log(chalk.green(`✅ 移動到 ${formatPosition(x, y)}`))
         } catch (error) {
           console.error(chalk.red(`移動失敗: ${error}`))
@@ -346,7 +346,7 @@ async function handleCommand(line: string) {
         try {
           const x = parseFloat(args[0])
           const y = parseFloat(args[1])
-          gameState.tree.events.placeTurret({ x, y })
+          gameState.tree.events.placeTurret({ position: new Position2({ x, y }, false) })
           console.log(chalk.green(`✅ 在 ${formatPosition(x, y)} 放置炮塔`))
         } catch (error) {
           console.error(chalk.red(`放置炮塔失敗: ${error}`))
@@ -373,9 +373,18 @@ async function handleCommand(line: string) {
           console.log(chalk.red('請先連接並加入遊戲'))
           break
         }
+        if (args.length < 1) {
+          console.log(chalk.red('用法: upgrade-turret <炮塔ID>'))
+          break
+        }
         try {
-          gameState.tree.events.upgradeTurret({})
-          console.log(chalk.green(`✅ 升級炮塔 (消耗 10 資源)`))
+          const turretID = parseInt(args[0], 10)
+          if (isNaN(turretID)) {
+            console.log(chalk.red('炮塔 ID 必須為數字'))
+            break
+          }
+          gameState.tree.events.upgradeTurret({ turretID })
+          console.log(chalk.green(`✅ 升級炮塔 ${turretID} (消耗 10 資源)`))
         } catch (error) {
           console.error(chalk.red(`升級炮塔失敗: ${error}`))
         }
