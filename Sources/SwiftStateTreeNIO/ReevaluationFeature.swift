@@ -75,19 +75,15 @@ public extension NIOLandHost {
 
         let replayLandType = "\(landType)\(reevaluation.replayLandSuffix)"
         let replayWebSocketPath = reevaluation.replayWebSocketPathResolver(replayLandType)
-        let recordsDir = NIOEnvConfig.fromEnvironment().reevaluationRecordsDir
 
-        var replayConfig = effectiveConfiguration.injectingReevaluationKeeperModeResolver(
-            replayLandType: replayLandType,
-            recordsDir: recordsDir
-        )
+        var replayConfig = effectiveConfiguration
         replayConfig.replayLandSuffix = reevaluation.replayLandSuffix
 
         replayLandSuffix = reevaluation.replayLandSuffix
 
         try await register(
             landType: replayLandType,
-            land: liveLand,
+            land: GenericReplayLand.makeLand(landType: landType, stateType: State.self),
             initialState: liveInitialState(),
             webSocketPath: replayWebSocketPath,
             configuration: replayConfig

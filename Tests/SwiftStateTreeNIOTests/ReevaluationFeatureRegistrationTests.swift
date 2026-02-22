@@ -222,6 +222,36 @@ private actor MockReevaluationRunner: ReevaluationRunnerProtocol {
 }
 
 extension ReevaluationFeatureRegistrationTests {
+    @Test("registerWithReevaluationSameLand registers GenericReplayLand for replay (not liveLand)")
+    func registerWithReevaluationSameLandUsesGenericReplayLand() async throws {
+        let host = NIOLandHost(configuration: NIOLandHostConfiguration(
+            host: "localhost",
+            port: 8080,
+            adminAPIKey: "test-admin-key"
+        ))
+
+        let feature = ReevaluationFeatureConfiguration(
+            enabled: true,
+            runnerServiceFactory: {
+                ReevaluationRunnerService(factory: MockReevaluationTargetFactory())
+            }
+        )
+
+        try await host.registerWithReevaluationSameLand(
+            landType: "feature-live",
+            liveLand: FeatureLiveLand.makeLand(),
+            liveInitialState: FeatureLiveState(),
+            liveWebSocketPath: "/game/feature-live",
+            configuration: NIOLandServerConfiguration(transportEncoding: .json),
+            reevaluation: feature
+        )
+
+        let realm = await host.realm
+        #expect(await realm.isRegistered(landType: "feature-live"))
+        #expect(await realm.isRegistered(landType: "feature-live-replay"))
+        #expect(await realm.isRegistered(landType: "reevaluation-monitor"))
+    }
+
     @Test("GenericReplayLand.makeLand produces a LandDefinition with the correct land ID")
     func genericReplayLandMakeLandProducesValidDefinition() {
         let definition = GenericReplayLand.makeLand(
