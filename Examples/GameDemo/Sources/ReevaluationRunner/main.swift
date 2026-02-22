@@ -19,7 +19,8 @@ struct ReevaluationRunnerMain {
         var inputFile: String?
         var verify = false
         var exportJsonlPath: String?
-        
+        var diffWithPath: String?
+
         var i = 1
         while i < args.count {
             switch args[i] {
@@ -32,6 +33,9 @@ struct ReevaluationRunnerMain {
             case "--export-jsonl":
                 exportJsonlPath = (i + 1 < args.count) ? args[i + 1] : nil
                 i += 2
+            case "--diff-with":
+                diffWithPath = (i + 1 < args.count) ? args[i + 1] : nil
+                i += 2
             case "--help", "-h":
                 printHelpAndExit()
             default:
@@ -43,6 +47,11 @@ struct ReevaluationRunnerMain {
         guard let inputFile else {
             print("Error: --input is required")
             printHelpAndExit(exitCode: 1)
+        }
+
+        if let path = diffWithPath, !FileManager.default.fileExists(atPath: path) {
+            print("Error: --diff-with file not found: \(path)")
+            exit(1)
         }
         
         let source = try JSONReevaluationSource(filePath: inputFile)
@@ -153,6 +162,7 @@ struct ReevaluationRunnerMain {
             services: services,
             sink: sink,
             exportJsonlPath: exportJsonlPath,
+            diffWithPath: diffWithPath,
             logger: logger
         )
         
@@ -258,15 +268,16 @@ struct ReevaluationRunnerMain {
     private static func printHelpAndExit(exitCode: Int32 = 0) -> Never {
         print("""
         ReevaluationRunner (GameDemo)
-        
+
         Usage:
-          swift run ReevaluationRunner --input <path> [--verify] [--export-jsonl <path>]
-        
+          swift run ReevaluationRunner --input <path> [--verify] [--export-jsonl <path>] [--diff-with <path>]
+
         Options:
-          --input, -i <path>   Path to re-evaluation record JSON file (required)
-          --verify, -v         Run twice and compare per-tick hashes
+          --input, -i <path>     Path to re-evaluation record JSON file (required)
+          --verify, -v           Run twice and compare per-tick hashes
           --export-jsonl <path>  Export JSONL stream (snapshot + events per tick)
-          --help, -h           Show this help message
+          --diff-with <path>     Compare with recorded state JSONL (output field-level diffs)
+          --help, -h             Show this help message
         """)
         exit(exitCode)
     }
