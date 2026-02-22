@@ -13,16 +13,24 @@ const stubAssignment: Assignment = {
   expiresAt: '2025-12-31T00:00:00Z',
 };
 
-function createMockSocket(): RealtimeSocket & { emitMatchAssigned: (a: Assignment) => void } {
+function createMockSocket(): RealtimeSocket & {
+  emitMatchAssigned: (a: Assignment) => void;
+  emitError: (err: Error | string) => void;
+} {
   const assignedCbs: ((a: Assignment) => void)[] = [];
+  const errorCbs: ((err: Error | string) => void)[] = [];
   return {
-    on(event: string, cb: (a: Assignment) => void) {
-      if (event === 'match.assigned') assignedCbs.push(cb);
+    on(event: string, cb: (a: Assignment) => void | ((err: Error | string) => void)) {
+      if (event === 'match.assigned') assignedCbs.push(cb as (a: Assignment) => void);
+      if (event === 'error') errorCbs.push(cb as (err: Error | string) => void);
     },
     close: vi.fn(),
     sendEnqueue: vi.fn(),
     emitMatchAssigned(assignment: Assignment) {
       for (const cb of assignedCbs) cb(assignment);
+    },
+    emitError(err: Error | string) {
+      for (const cb of errorCbs) cb(err);
     },
   };
 }
@@ -95,6 +103,25 @@ describe('findMatch', () => {
       name: 'AbortError',
       message: expect.stringMatching(/abort/i),
     });
+    expect(mockSocket.close).toHaveBeenCalled();
+  });
+
+  it('rejects when socket emits error', async () => {
+    const mockSocket = createMockSocket();
+    const client = createMockClient(mockSocket);
+
+    const resultP = findMatch(client, {
+      queueKey: 'q',
+      members: ['p1'],
+      groupSize: 1,
+      timeoutMs: 60_000,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    const err = new Error('Server rejected ticket');
+    mockSocket.emitError(err);
+
+    await expect(resultP).rejects.toThrow('Server rejected ticket');
     expect(mockSocket.close).toHaveBeenCalled();
   });
 });

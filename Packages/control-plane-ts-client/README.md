@@ -26,7 +26,7 @@ const client = new ControlPlaneClient('https://your-control-plane.example.com');
 // Enqueue and get ticket
 const { ticketId } = await client.enqueue({
   queueKey: 'hero-defense',
-  members: [{ id: 'player-1', role: 'player' }],
+  members: ['player-1'],
   groupSize: 2,
 });
 
@@ -37,7 +37,7 @@ const { ticketId } = await client.enqueue({
 // Wait for a match (enqueue + realtime in one)
 const assignment = await findMatch(client, {
   queueKey: 'hero-defense',
-  members: [{ id: 'player-1', role: 'player' }],
+  members: ['player-1'],
   groupSize: 2,
   timeoutMs: 30_000,
 });

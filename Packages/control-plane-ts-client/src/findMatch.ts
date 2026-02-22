@@ -76,6 +76,10 @@ export async function findMatch(
     }
 
     socket.on('match.assigned', onAssigned);
+    socket.on('error', (err) => {
+      finish();
+      reject(err instanceof Error ? err : new Error(String(err)));
+    });
 
     if (signal?.aborted) {
       onAbort();
