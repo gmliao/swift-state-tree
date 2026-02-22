@@ -18,7 +18,7 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "REDIS_DB=1 jest --config ./test/jest-e2e.json --runInBand --forceExit",
-    "test:e2e:split": "jest --config ./test/jest-e2e.json --runInBand --forceExit --testPathPattern=matchmaking-split-roles-external",
+    "test:e2e:split": "REDIS_DB=1 jest --config ./test/jest-e2e.json --runInBand --forceExit --testPathPattern=matchmaking-split-roles-external",
     "test:e2e:split:sh": "./test/scripts/e2e-split.sh"
   },
   "dependencies": {

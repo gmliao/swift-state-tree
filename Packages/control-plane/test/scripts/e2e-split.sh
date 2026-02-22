@@ -31,13 +31,13 @@ npm run build --silent
 
 # Start queue-worker first (must be ready to consume before API adds jobs)
 echo "[e2e-split] Starting queue-worker on port $WORKER_PORT..."
-REDIS_HOST=127.0.0.1 REDIS_PORT=6379 MATCHMAKING_ROLE=queue-worker MATCHMAKING_MIN_WAIT_MS=0 PORT="$WORKER_PORT" node dist/src/main.js &
+REDIS_HOST=127.0.0.1 REDIS_PORT=6379 REDIS_DB=1 MATCHMAKING_ROLE=queue-worker MATCHMAKING_MIN_WAIT_MS=0 PORT="$WORKER_PORT" node dist/src/main.js &
 WORKER_PID=$!
 sleep 2
 
 # Start API (background)
 echo "[e2e-split] Starting API on port $API_PORT..."
-REDIS_HOST=127.0.0.1 REDIS_PORT=6379 MATCHMAKING_ROLE=api MATCHMAKING_MIN_WAIT_MS=0 PORT="$API_PORT" node dist/src/main.js &
+REDIS_HOST=127.0.0.1 REDIS_PORT=6379 REDIS_DB=1 MATCHMAKING_ROLE=api MATCHMAKING_MIN_WAIT_MS=0 PORT="$API_PORT" node dist/src/main.js &
 API_PID=$!
 
 cleanup() {
