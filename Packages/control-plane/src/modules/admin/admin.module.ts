@@ -3,9 +3,10 @@ import { AdminController } from './admin.controller';
 import { AdminQueueService } from './admin-queue.service';
 import { MatchmakingModule } from '../matchmaking/matchmaking.module';
 import { ProvisioningModule } from '../provisioning/provisioning.module';
+import { ClusterDirectoryModule } from '../../infra/cluster-directory/cluster-directory.module';
 
 @Module({
-  imports: [ProvisioningModule, MatchmakingModule],
+  imports: [ClusterDirectoryModule, ProvisioningModule, MatchmakingModule],
   controllers: [AdminController],
   providers: [AdminQueueService],
 })
