@@ -6,6 +6,8 @@ import Logging
 /// This is intentionally generic and is meant to be used by demo-specific runners
 /// (e.g., `Examples/Demo` and `Examples/GameDemo`) that can import their own land definitions.
 public enum ReevaluationEngine {
+    private static let diffLogger = Logger(label: "com.swiftstatetree.reevaluation.diff")
+
     private actor CapturingSink: ReevaluationSink {
         private var eventsByTick: [Int64: [ReevaluationRecordedServerEvent]] = [:]
         private let downstream: (any ReevaluationSink)?
@@ -136,7 +138,7 @@ public enum ReevaluationEngine {
                 {
                     let diffs = StateSnapshotDiff.compare(recorded: recordedState, computed: computedState)
                     for d in diffs {
-                        fputs("[tick \(tickId)] DIFF at \(d.path): recorded=\(d.recorded) computed=\(d.computed)\n", stderr)
+                        diffLogger.warning("[tick \(tickId)] DIFF at \(d.path): recorded=\(d.recorded) computed=\(d.computed)")
                     }
                 }
 
