@@ -68,15 +68,17 @@ struct GameServer {
         ])
 
         // Extract pathHashes from schema for compression
-        // Same-land replay: hero-defense-replay is convention-based alias (replayLandTypes)
         let landDef = HeroDefense.makeLand()
         var schemaLandDefinitions: [AnyLandDefinition] = [AnyLandDefinition(landDef)]
         if enableReevaluation {
             schemaLandDefinitions.append(AnyLandDefinition(ReevaluationMonitor.makeLand()))
+            schemaLandDefinitions.append(
+                AnyLandDefinition(GenericReplayLand.makeLand(landType: "hero-defense", stateType: HeroDefenseState.self))
+            )
         }
         let schema = SchemaGenCLI.generateSchema(
             landDefinitions: schemaLandDefinitions,
-            replayLandTypes: enableReevaluation ? ["hero-defense"] : nil
+            replayLandTypes: nil
         )
         let pathHashes = schema.lands["hero-defense"]?.pathHashes
 
