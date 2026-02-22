@@ -20,7 +20,32 @@ public struct ReplayTickEvent: ServerEventPayload {
     }
 }
 
-// MARK: - Internal state decode helper
+// MARK: - Internal state decode helpers
+
+/// Type-erased protocol allowing `StandardReplayLifetime` to call `decodeReplayState`
+/// on State types that also conform to `Decodable`, without constraining the generic
+/// parameter of `StandardReplayLifetime` itself.
+private protocol _DecodableStateDecoder {
+    static func _decodeFromActualState(_ actualState: AnyCodable?) -> Self?
+}
+
+extension _DecodableStateDecoder where Self: Decodable {
+    static func _decodeFromActualState(_ actualState: AnyCodable?) -> Self? {
+        decodeReplayState(Self.self, from: actualState)
+    }
+}
+
+/// Attempts to decode a `State` from `result.actualState` when `State` is `Decodable`.
+///
+/// Returns `nil` when `State` does not conform to `Decodable` or when decoding fails.
+/// Used by `StandardReplayLifetime` which cannot constrain `State: Decodable`.
+private func decodeReplayStateIfDecodable<State: StateNodeProtocol>(
+    _ type: State.Type,
+    from actualState: AnyCodable?
+) -> State? {
+    guard let decoderType = State.self as? any _DecodableStateDecoder.Type else { return nil }
+    return decoderType._decodeFromActualState(actualState) as? State
+}
 
 /// Decodes a State from `result.actualState`.
 ///
@@ -47,12 +72,92 @@ func decodeReplayState<State: Decodable>(_ type: State.Type, from actualState: A
     return decoded
 }
 
-// MARK: - Placeholder: returns empty Lifetime tick; replaced with real reevaluation logic in Task 3
+// MARK: - StandardReplayLifetime
 
-internal func StandardReplayLifetime<State: StateNodeProtocol>(
-    landType _: String
+/// Generic replay tick loop for any State conforming to StateNodeProtocol.
+///
+/// On each 50 ms tick:
+/// 1. Reads `ReevaluationRunnerService` from `ctx.services`.
+/// 2. When the service phase is `.idle`, decodes the record path from `ctx.landID` via
+///    `ReevaluationReplaySessionDescriptor.decode` and calls `service.startVerification`.
+/// 3. When a result is available via `service.consumeNextResult()`:
+///    - Decodes the actual state (only when `State: Decodable`; otherwise logs a warning).
+///    - Forwards all recorded server events via `ctx.emitAnyServerEvent`.
+///    - Emits a `ReplayTickEvent` with hash comparison metadata.
+///
+/// For use with concrete State types that are also `Decodable`, state decode is
+/// attempted automatically. When `State` does not conform to `Decodable` the tick
+/// loop still runs but the projected state is not applied.
+public func StandardReplayLifetime<State: StateNodeProtocol>(
+    landType: String
 ) -> LifetimeNode<State> {
-    Lifetime { _ in }
+    let captureLandType = landType
+    return Lifetime {
+        Tick(every: .milliseconds(50)) { (state: inout State, ctx: LandContext) in
+            guard let service = ctx.services.get(ReevaluationRunnerService.self) else {
+                return
+            }
+
+            let status = service.getStatus()
+
+            if status.phase == .idle {
+                let instanceId = LandID(ctx.landID).instanceId
+                let recordsDir = ReevaluationEnvConfig.fromEnvironment().recordsDir
+                guard let descriptor = ReevaluationReplaySessionDescriptor.decode(
+                    instanceId: instanceId,
+                    landType: captureLandType,
+                    recordsDir: recordsDir
+                ) else {
+                    service.startVerification(
+                        landType: captureLandType,
+                        recordFilePath: "__invalid_replay_record_path__"
+                    )
+                    return
+                }
+                service.startVerification(
+                    landType: captureLandType,
+                    recordFilePath: descriptor.recordFilePath
+                )
+                return
+            }
+
+            guard let result = service.consumeNextResult() else { return }
+
+            if let decoded = decodeReplayStateIfDecodable(State.self, from: result.actualState) {
+                state = decoded
+                ctx.requestSyncBroadcastOnly()
+            }
+
+            for event in result.emittedServerEvents {
+                ctx.emitAnyServerEvent(
+                    AnyServerEvent(type: event.typeIdentifier, payload: event.payload),
+                    to: .all
+                )
+            }
+
+            ctx.emitEvent(
+                ReplayTickEvent(
+                    tickId: result.tickId,
+                    isMatch: result.isMatch,
+                    expectedHash: result.recordedHash ?? "?",
+                    actualHash: result.stateHash
+                ),
+                to: .all
+            )
+        }
+    }
+}
+
+// MARK: - StandardReplayServerEvents
+
+/// Returns a `ServerEventsNode` that registers `ReplayTickEvent`.
+///
+/// Use this alongside `StandardReplayLifetime` when composing a custom replay land
+/// that needs to emit `ReplayTickEvent` to connected clients.
+public func StandardReplayServerEvents() -> ServerEventsNode {
+    ServerEvents {
+        Register(ReplayTickEvent.self)
+    }
 }
 
 // MARK: - GenericReplayLand

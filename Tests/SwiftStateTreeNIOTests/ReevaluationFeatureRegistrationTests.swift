@@ -230,4 +230,16 @@ extension ReevaluationFeatureRegistrationTests {
         )
         #expect(definition.id == "hero-defense-replay")
     }
+
+    @Test("StandardReplayLifetime is a LandNode")
+    func standardReplayLifetimeIsLandNode() {
+        let node: LifetimeNode<FeatureLiveState> = StandardReplayLifetime(landType: "test")
+        #expect(node is LifetimeNode<FeatureLiveState>)
+    }
+
+    @Test("StandardReplayServerEvents is a LandNode")
+    func standardReplayServerEventsIsLandNode() {
+        let node: any LandNode = StandardReplayServerEvents()
+        #expect(node is ServerEventsNode)
+    }
 }
