@@ -104,6 +104,30 @@ describe('MatchmakingService', () => {
     expect(status.assignment!.landId).toBe('standard:stub-room-1');
   });
 
+  it('assigns both tickets immediately when enqueued sequentially (sync tryMatch in enqueue)', async () => {
+    // Regression: BullMQ sequential-enqueue bug caused second ticket to stay queued.
+    // Fix: tryMatch is called synchronously in enqueue(), so both get assigned without runMatchmakingTick.
+    const r1 = await service.enqueue({
+      groupId: 'seq-p1',
+      queueKey: 'hero-defense:1',
+      members: ['p1'],
+      groupSize: 1,
+    });
+    const r2 = await service.enqueue({
+      groupId: 'seq-p2',
+      queueKey: 'hero-defense:1',
+      members: ['p2'],
+      groupSize: 1,
+    });
+    const s1 = await service.getStatus(r1.ticketId);
+    const s2 = await service.getStatus(r2.ticketId);
+    expect(s1.status).toBe('assigned');
+    expect(s2.status).toBe('assigned');
+    expect(s1.assignment).toBeDefined();
+    expect(s2.assignment).toBeDefined();
+    expect(mockProvisioning.allocate).toHaveBeenCalledTimes(2);
+  });
+
   it('forms one group from 3 solo tickets in hero-defense:3v3', async () => {
     const queueKey = 'hero-defense:3v3';
     const r1 = await service.enqueue({
