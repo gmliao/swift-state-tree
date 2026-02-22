@@ -297,6 +297,13 @@ public actor ReevaluationRecorder {
     private var currentTickId: Int64 = -1
     private let flushInterval: Int64
     private var lastFlushTick: Int64 = -1
+    private var stateSnapshotsByTick: [Int64: StateSnapshot] = [:]
+
+    /// Line format for state JSONL file.
+    private struct RecordedStateLine: Codable {
+        let tickId: Int64
+        let stateSnapshot: StateSnapshot
+    }
     
     public init(flushInterval: Int64 = 60) {
         self.flushInterval = flushInterval
@@ -439,6 +446,11 @@ public actor ReevaluationRecorder {
         )
     }
 
+    /// Record a full state snapshot for a specific tick (debug-only, enabled via ENABLE_STATE_SNAPSHOT_RECORDING).
+    public func recordStateSnapshot(tickId: Int64, stateSnapshot: StateSnapshot) {
+        stateSnapshotsByTick[tickId] = stateSnapshot
+    }
+
     /// Record server events emitted for a specific tick.
     public func recordServerEvents(tickId: Int64, events: [ReevaluationRecordedServerEvent]) {
         if tickId != currentTickId {
@@ -523,6 +535,30 @@ public actor ReevaluationRecorder {
         // Write to file
         let url = URL(fileURLWithPath: filePath)
         try data.write(to: url)
+
+        // Write state JSONL file when buffer is non-empty
+        if !stateSnapshotsByTick.isEmpty {
+            let statePath: String
+            if filePath.hasSuffix(".json") {
+                statePath = String(filePath.dropLast(5)) + "-state.jsonl"
+            } else {
+                statePath = filePath + "-state.jsonl"
+            }
+            let stateURL = URL(fileURLWithPath: statePath)
+            FileManager.default.createFile(atPath: statePath, contents: nil)
+            let handle = try FileHandle(forWritingTo: stateURL)
+            let lineEncoder = JSONEncoder()
+            lineEncoder.outputFormatting = [.sortedKeys]
+            for tickId in stateSnapshotsByTick.keys.sorted() {
+                let snapshot = stateSnapshotsByTick[tickId]!
+                let line = RecordedStateLine(tickId: tickId, stateSnapshot: snapshot)
+                var lineData = try lineEncoder.encode(line)
+                lineData.append(UInt8(ascii: "\n"))
+                handle.write(lineData)
+            }
+            handle.closeFile()
+            stateSnapshotsByTick = [:]
+        }
     }
 
     /// Encode the current record into JSON data without mutating recorder state.
