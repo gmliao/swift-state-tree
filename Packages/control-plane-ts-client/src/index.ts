@@ -1,3 +1,4 @@
+export { ControlPlaneClient } from './client.js';
 export type {
   TicketStatus,
   EnqueueRequest,
