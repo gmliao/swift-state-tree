@@ -77,10 +77,13 @@ public extension NIOLandHost {
         let replayWebSocketPath = reevaluation.replayWebSocketPathResolver(replayLandType)
         let recordsDir = NIOEnvConfig.fromEnvironment().reevaluationRecordsDir
 
-        let replayConfig = effectiveConfiguration.injectingReevaluationKeeperModeResolver(
+        var replayConfig = effectiveConfiguration.injectingReevaluationKeeperModeResolver(
             replayLandType: replayLandType,
             recordsDir: recordsDir
         )
+        replayConfig.replayLandSuffix = reevaluation.replayLandSuffix
+
+        replayLandSuffix = reevaluation.replayLandSuffix
 
         try await register(
             landType: replayLandType,
@@ -136,12 +139,16 @@ public extension NIOLandHost {
         let replayLandType = "\(landType)\(reevaluation.replayLandSuffix)"
         let replayWebSocketPath = reevaluation.replayWebSocketPathResolver(replayLandType)
 
+        var replayConfigForDifferentState = effectiveConfiguration
+        replayConfigForDifferentState.replayLandSuffix = reevaluation.replayLandSuffix
+        replayLandSuffix = reevaluation.replayLandSuffix
+
         try await register(
             landType: replayLandType,
             land: replayLand,
             initialState: replayInitialState(),
             webSocketPath: replayWebSocketPath,
-            configuration: effectiveConfiguration
+            configuration: replayConfigForDifferentState
         )
 
         if await realm.isRegistered(landType: reevaluation.monitorLandType) == false {

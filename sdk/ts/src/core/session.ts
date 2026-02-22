@@ -80,6 +80,10 @@ export class StateTreeSession {
       await targetSpec.onAfterConnect?.(this.runtimeImpl)
       this.mode = targetMode
     } catch (cause) {
+      // connect() succeeded but onAfterConnect threw — clean up the dangling connection
+      if (this.runtimeImpl.connected) {
+        this.runtimeImpl.disconnect()
+      }
       this.onError?.({
         operation,
         targetMode,
