@@ -19,7 +19,6 @@ export class LocalMatchQueue implements MatchQueue {
   private readonly queuesByKey = new Map<string, Denque<QueuedTicket>>();
   /** Map<ticketId, queueKey> - for cancel and getStatus lookup. */
   private readonly ticketToQueueKey = new Map<string, string>();
-  private ticketCounter = 0;
 
   constructor(
     @Inject('MatchmakingStore') private readonly store: MatchmakingStore,
@@ -32,8 +31,7 @@ export class LocalMatchQueue implements MatchQueue {
       if (existing && existing.status === 'queued') return existing;
     }
 
-    this.ticketCounter += 1;
-    const ticketId = `ticket-${this.ticketCounter}`;
+    const ticketId = `ticket-${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
     const ticket: QueuedTicket = {
       ticketId,
       groupId: group.groupId,

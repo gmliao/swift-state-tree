@@ -1,7 +1,10 @@
 /**
- * E2E test for api + queue-worker split deployment.
+ * E2E test for api + queue-worker split deployment (in-process).
  * Uses two NestJS app instances in the same process: API (role=api) and queue-worker (role=queue-worker).
- * Verifies enqueue via API, processing by queue-worker, status via API.
+ *
+ * SKIPPED: In-process tests cannot achieve true role isolation because AppModule is cached at import
+ * time; MATCHMAKING_ROLE is read in decorators before env can be set. Use
+ * matchmaking-split-roles-external.e2e-spec.ts for definitive verification (spawns separate processes).
  *
  * Requires: Redis running (docker compose up -d).
  * Run: npm run test:e2e -- --testPathPattern=matchmaking-split-roles
@@ -56,7 +59,7 @@ async function waitForAssignment(
   throw new Error('Timed out waiting for assignment');
 }
 
-describe('Matchmaking split roles (api + queue-worker) E2E', () => {
+describe.skip('Matchmaking split roles (api + queue-worker) E2E', () => {
   let apiApp: INestApplication;
   let queueWorkerApp: INestApplication;
 

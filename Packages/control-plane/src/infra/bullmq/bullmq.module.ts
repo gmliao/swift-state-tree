@@ -5,8 +5,9 @@ import { getRedisConfig } from '../config/env.config';
 /** BullMQ infrastructure: Redis connection and job queues. */
 @Module({
   imports: [
-    BullModule.forRoot({
-      connection: getRedisConfig(),
+    BullModule.forRootAsync({
+      useFactory: () => ({ connection: getRedisConfig() }),
+      // Factory runs at module init, after ConfigModule has loaded .env
     }),
     BullModule.registerQueue({ name: 'enqueueTicket' }),
   ],
