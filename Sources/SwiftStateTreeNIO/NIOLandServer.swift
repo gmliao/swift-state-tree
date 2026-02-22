@@ -58,7 +58,8 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
         // Create LandTypeRegistry
         let registry = LandTypeRegistry<State>(
             landFactory: { (_: String, landID: LandID) in landFactory(landID) },
-            initialStateFactory: { (_: String, landID: LandID) in initialStateFactory(landID) }
+            initialStateFactory: { (_: String, landID: LandID) in initialStateFactory(landID) },
+            replayLandSuffix: configuration.replayLandSuffix
         )
         
         // Create LandRouter

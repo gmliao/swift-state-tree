@@ -125,6 +125,9 @@ public struct NIOLandServerConfiguration: Sendable {
     /// Record live per-tick state hashes into the re-evaluation record (ground truth).
     public var enableLiveStateHashRecording: Bool
 
+    /// Suffix appended to base land type to form the replay land type (e.g. "-replay").
+    public var replayLandSuffix: String
+
     /// Resolver for dynamic keeper mode (live vs reevaluation) per land instance.
     /// When non-nil and returns `.reevaluation(recordFilePath)`, LandManager creates a reevaluation LandKeeper.
     public var keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)?
@@ -137,6 +140,7 @@ public struct NIOLandServerConfiguration: Sendable {
         allowAutoCreateOnJoin: Bool = false,
         transportEncoding: TransportEncodingConfig = .json,
         enableLiveStateHashRecording: Bool = false,
+        replayLandSuffix: String = "-replay",
         pathHashes: [String: UInt32]? = nil,
         eventHashes: [String: Int]? = nil,
         clientEventHashes: [String: Int]? = nil,
@@ -154,6 +158,7 @@ public struct NIOLandServerConfiguration: Sendable {
         self.allowAutoCreateOnJoin = allowAutoCreateOnJoin
         self.transportEncoding = transportEncoding
         self.enableLiveStateHashRecording = enableLiveStateHashRecording
+        self.replayLandSuffix = replayLandSuffix
         self.pathHashes = pathHashes
         self.eventHashes = eventHashes
         self.clientEventHashes = clientEventHashes
@@ -193,9 +198,12 @@ public actor NIOLandHost {
     
     /// Path to server configuration (for JWT auth resolution per path).
     private var pathToServerConfig: [String: NIOLandServerConfiguration] = [:]
-    
+
     /// Registered land encodings for logging.
     private var registeredLandEncodings: [String: TransportEncodingConfig] = [:]
+
+    /// Suffix used for replay land types. Updated by registerWithReevaluationSameLand.
+    var replayLandSuffix: String = "-replay"
 
     /// Background tasks from middlewares (cancelled on shutdown).
     private var middlewareTasks: [Task<Void, Never>] = []
@@ -270,7 +278,8 @@ public actor NIOLandHost {
             landRealm: realm,
             adminAuth: adminAuth,
             logger: configuration.logger,
-            replayWebSocketPathResolver: configuration.replayWebSocketPathResolver
+            replayWebSocketPathResolver: configuration.replayWebSocketPathResolver,
+            replayLandSuffix: replayLandSuffix
         )
         
         await adminRoutes.registerRoutes(on: httpRouter)

@@ -68,17 +68,21 @@ public struct NIOAdminRoutes: Sendable {
     public let logger: Logger
     /// Resolver for replay land WebSocket path. When nil, uses default "/game/{replayLandType}".
     public let replayWebSocketPathResolver: (@Sendable (String) -> String)?
+    /// Suffix appended to base land type to form the replay land type (e.g. "-replay").
+    public let replayLandSuffix: String
 
     public init(
         landRealm: LandRealm,
         adminAuth: NIOAdminAuth,
         logger: Logger? = nil,
-        replayWebSocketPathResolver: (@Sendable (String) -> String)? = nil
+        replayWebSocketPathResolver: (@Sendable (String) -> String)? = nil,
+        replayLandSuffix: String = "-replay"
     ) {
         self.landRealm = landRealm
         self.adminAuth = adminAuth
         self.logger = logger ?? Logger(label: "com.swiftstatetree.nio.admin.routes")
         self.replayWebSocketPathResolver = replayWebSocketPathResolver
+        self.replayLandSuffix = replayLandSuffix
     }
     
     /// Register admin routes to the router.
@@ -332,7 +336,7 @@ public struct NIOAdminRoutes: Sendable {
                 return try NIOHTTPResponse.json(response, status: .badRequest).withCORS()
             }
 
-            let replayLandType = "\(payload.landType)-replay"
+            let replayLandType = "\(payload.landType)\(replayLandSuffix)"
             guard await landRealm.isRegistered(landType: replayLandType) else {
                 let response = AdminAPIAnyResponse.error(
                     code: .invalidRequest,

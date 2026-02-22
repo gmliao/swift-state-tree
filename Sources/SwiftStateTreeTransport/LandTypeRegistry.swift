@@ -13,22 +13,28 @@ public struct LandTypeRegistry<State: StateNodeProtocol>: Sendable {
     /// Factory: (landType, landID) -> LandDefinition
     /// The LandDefinition.id must match the landType.
     public let landFactory: @Sendable (String, LandID) -> LandDefinition<State>
-    
+
     /// Factory: (landType, landID) -> State
     public let initialStateFactory: @Sendable (String, LandID) -> State
-    
+
+    /// Suffix appended to base land type to form the replay land type (e.g. "-replay").
+    public let replayLandSuffix: String
+
     /// Initialize a LandTypeRegistry.
     ///
     /// - Parameters:
     ///   - landFactory: Factory function that creates a LandDefinition for a given landType and landID.
     ///     The returned LandDefinition.id must match the landType parameter.
     ///   - initialStateFactory: Factory function that creates initial state for a given landType and landID.
+    ///   - replayLandSuffix: Suffix used to identify replay land types (default: "-replay").
     public init(
         landFactory: @escaping @Sendable (String, LandID) -> LandDefinition<State>,
-        initialStateFactory: @escaping @Sendable (String, LandID) -> State
+        initialStateFactory: @escaping @Sendable (String, LandID) -> State,
+        replayLandSuffix: String = "-replay"
     ) {
         self.landFactory = landFactory
         self.initialStateFactory = initialStateFactory
+        self.replayLandSuffix = replayLandSuffix
     }
     
     /// Get LandDefinition for a land type.
@@ -42,7 +48,7 @@ public struct LandTypeRegistry<State: StateNodeProtocol>: Sendable {
     public func getLandDefinition(landType: String, landID: LandID) -> LandDefinition<State> {
         let definition = landFactory(landType, landID)
         // Ensure consistency: definition.id should match landType, or landType is replay alias
-        let isReplayAlias = landType == "\(definition.id)-replay"
+        let isReplayAlias = landType == "\(definition.id)\(replayLandSuffix)"
         assert(
             definition.id == landType || isReplayAlias,
             "LandDefinition.id (\(definition.id)) must match landType (\(landType))"
