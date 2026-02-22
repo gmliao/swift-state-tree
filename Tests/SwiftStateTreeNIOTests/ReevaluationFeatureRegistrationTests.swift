@@ -189,6 +189,20 @@ struct ReevaluationFeatureRegistrationTests {
             Issue.record("Expected ReevaluationReplayError, got \(type(of: error)): \(error)")
         }
     }
+
+    @Test("ReplayTickEvent has correct fields")
+    func replayTickEventHasCorrectFields() {
+        let event = ReplayTickEvent(
+            tickId: 42,
+            isMatch: true,
+            expectedHash: "abc",
+            actualHash: "abc"
+        )
+        #expect(event.tickId == 42)
+        #expect(event.isMatch == true)
+        #expect(event.expectedHash == "abc")
+        #expect(event.actualHash == "abc")
+    }
 }
 
 private struct MockReevaluationTargetFactory: ReevaluationTargetFactory {
