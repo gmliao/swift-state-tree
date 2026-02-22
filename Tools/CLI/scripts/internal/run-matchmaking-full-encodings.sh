@@ -1,9 +1,9 @@
 #!/bin/bash
-# Start matchmaking control plane + GameServer, run E2E test.
-# Provisioning is built into control plane (NestJS). GameServer registers via REST.
-# Run from project root or Tools/CLI.
+# Matchmaking MVP E2E across all encodings: jsonObject, opcodeJsonArray, messagepack.
+# Starts CP once, then for each encoding: start GameServer with TRANSPORT_ENCODING,
+# run MVP with matching --state-update-encoding, stop GameServer.
 #
-# If ports in use: set MATCHMAKING_CONTROL_PLANE_PORT, SERVER_PORT.
+# Run from project root or Tools/CLI. Requires Redis.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,7 +20,7 @@ if [ ! -f "$PROJECT_ROOT/Packages/control-plane/dist/src/main.js" ]; then
     (cd "$PROJECT_ROOT/Packages/control-plane" && npm run build)
 fi
 
-# Pre-build GameServer (with PROVISIONING_BASE_URL it registers to control plane)
+# Pre-build GameServer
 GAME_BIN="$PROJECT_ROOT/Examples/GameDemo/.build/debug/GameServer"
 if [ ! -x "$GAME_BIN" ]; then
     echo "Building GameServer..."
@@ -33,10 +33,10 @@ if [ ! -d "node_modules" ]; then
 fi
 
 echo "=========================================="
-echo "  Matchmaking Full Stack + E2E Test"
+echo "  Matchmaking MVP All Encodings E2E"
 echo "=========================================="
+echo "Control plane: $CONTROL_PLANE_PORT"
 echo "GameServer:    $GAME_PORT"
-echo "Control plane: $CONTROL_PLANE_PORT (includes provisioning)"
 echo ""
 
 CP_PID=""
@@ -53,9 +53,9 @@ kill_port() {
 }
 
 cleanup() {
-    echo "Cleaning up (stopping servers)..."
-    [ -n "$CP_PID" ] && kill -9 $CP_PID 2>/dev/null || true
+    echo "Cleaning up..."
     [ -n "$GAME_PID" ] && kill -9 $GAME_PID 2>/dev/null || true
+    [ -n "$CP_PID" ] && kill -9 $CP_PID 2>/dev/null || true
     sleep 2
     if command -v lsof &>/dev/null; then
         kill_port $CONTROL_PLANE_PORT
@@ -65,30 +65,45 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# Free ports before starting (avoid stale processes from previous runs)
 kill_port $CONTROL_PLANE_PORT
 kill_port $GAME_PORT
 sleep 1
 
-# Start control plane first, wait for health, then start game (so it can register)
+# Start control plane once
 (cd "$PROJECT_ROOT/Packages/control-plane" && PORT=$CONTROL_PLANE_PORT REDIS_DB=2 MATCHMAKING_MIN_WAIT_MS=0 node dist/src/main.js) &
 CP_PID=$!
 npx wait-on "http-get://127.0.0.1:$CONTROL_PLANE_PORT/health" -t 15000 || exit 1
 sleep 2
 
-# Start game (TRANSPORT_ENCODING=jsonOpcode to match CLI --state-update-encoding opcodeJsonArray)
-HOST=127.0.0.1 PORT=$GAME_PORT TRANSPORT_ENCODING=jsonOpcode PROVISIONING_BASE_URL=$MATCHMAKING_CONTROL_PLANE_URL $GAME_BIN &
-GAME_PID=$!
-npx wait-on "http-get://127.0.0.1:$GAME_PORT/schema" -t 15000 || exit 1
-sleep 3
+# Encoding mapping: TRANSPORT_ENCODING -> CLI --state-update-encoding
+run_mvp_for_encoding() {
+    local transport_encoding=$1
+    local state_update_encoding=$2
+    echo ""
+    echo "=========================================="
+    echo "  Encoding: $state_update_encoding"
+    echo "=========================================="
 
-# Run MVP test
-MATCHMAKING_CONTROL_PLANE_URL=$MATCHMAKING_CONTROL_PLANE_URL npm run test:e2e:game:matchmaking:mvp
+    kill_port $GAME_PORT
+    sleep 1
 
-# Run two-player test (both connect to same game)
+    HOST=127.0.0.1 PORT=$GAME_PORT TRANSPORT_ENCODING=$transport_encoding PROVISIONING_BASE_URL=$MATCHMAKING_CONTROL_PLANE_URL $GAME_BIN &
+    GAME_PID=$!
+    npx wait-on "http-get://127.0.0.1:$GAME_PORT/schema" -t 15000 || exit 1
+    sleep 2
+
+    MATCHMAKING_CONTROL_PLANE_URL=$MATCHMAKING_CONTROL_PLANE_URL MATCHMAKING_STATE_UPDATE_ENCODING=$state_update_encoding bash "$SCRIPT_DIR/run-matchmaking-mvp.sh"
+
+    kill -9 $GAME_PID 2>/dev/null || true
+    GAME_PID=""
+    sleep 2
+}
+
+run_mvp_for_encoding "json" "jsonObject"
+run_mvp_for_encoding "jsonOpcode" "opcodeJsonArray"
+run_mvp_for_encoding "messagepack" "messagepack"
+
 echo ""
-MATCHMAKING_CONTROL_PLANE_URL=$MATCHMAKING_CONTROL_PLANE_URL bash "$SCRIPT_DIR/run-matchmaking-two-players.sh"
-
-# Run three-player test (group of 3, all connect to same game)
-echo ""
-MATCHMAKING_CONTROL_PLANE_URL=$MATCHMAKING_CONTROL_PLANE_URL bash "$SCRIPT_DIR/run-matchmaking-three-players.sh"
+echo "=========================================="
+echo "  Matchmaking All Encodings E2E: PASS"
+echo "=========================================="

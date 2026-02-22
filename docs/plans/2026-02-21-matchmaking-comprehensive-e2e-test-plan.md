@@ -17,7 +17,11 @@
 | `test:e2e:game:matchmaking:mvp` | CP + 1 GameServer | Single player: enqueue → poll → connect with token → run scenario |
 | `test:e2e:game:matchmaking:full` | CP + 1 GameServer | Same as MVP, auto-starts stack |
 | `test:e2e:game:matchmaking:two-players` | CP + GameServer (pre-started) | Group of 2: enqueue → both connect to same landId |
+| `test:e2e:game:matchmaking:three-players` | CP + GameServer (pre-started) | Group of 3: enqueue → all connect to same landId |
+| `test:e2e:game:matchmaking:multi-server` | CP + 2 GameServers | Single player: verify connectUrl port assignment |
 | `test:e2e:game:matchmaking:nginx` | CP + GameServer + nginx | connectUrl goes through nginx (LB) |
+
+**Fixed (Control Plane):** Sequential enqueue bug was addressed by calling `tryMatch(queueKey)` synchronously in `enqueue()` before adding the BullMQ job. This ensures immediate processing; the BullMQ job still runs but typically finds nothing to match.
 
 **Gaps:**
 - No test with **multiple GameServers** (round-robin allocation)
@@ -76,18 +80,18 @@
 
 ---
 
-### Scenario 4: Matchmaking Full Suite (All Encodings)
+### Scenario 4: Matchmaking Full Suite (All Encodings) ✅
 
 **Goal:** Run matchmaking MVP across jsonObject, opcodeJsonArray, messagepack.
 
-**Approach:** New script `run-matchmaking-full-encodings.sh` that:
-1. Starts CP + GameServer
-2. For each encoding: run MVP test with `--state-update-encoding <mode>`
+**Approach:** Script `run-matchmaking-full-encodings.sh`:
+1. Starts CP once
+2. For each encoding: start GameServer with TRANSPORT_ENCODING, run MVP with MATCHMAKING_STATE_UPDATE_ENCODING, stop GameServer
 3. Cleanup
 
 **Files:**
-- Create: `Tools/CLI/scripts/internal/run-matchmaking-full-encodings.sh`
-- Modify: `Tools/CLI/package.json` — add `test:e2e:game:matchmaking:all-encodings`
+- `Tools/CLI/scripts/internal/run-matchmaking-full-encodings.sh`
+- `Tools/CLI/package.json` — `test:e2e:game:matchmaking:all-encodings`
 
 ---
 

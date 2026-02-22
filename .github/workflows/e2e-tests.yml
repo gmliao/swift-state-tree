@@ -285,3 +285,10 @@ jobs:
         MATCHMAKING_MIN_WAIT_MS: "0"  # Allow immediate match in CI (no periodic tick)
       run: |
         bash Tools/CLI/scripts/internal/run-matchmaking-full-with-test.sh
+
+    - name: Run Matchmaking MVP All Encodings (jsonObject, opcodeJsonArray, messagepack)
+      env:
+        REDIS_HOST: redis
+        MATCHMAKING_MIN_WAIT_MS: "0"
+      run: |
+        bash Tools/CLI/scripts/internal/run-matchmaking-full-encodings.sh
