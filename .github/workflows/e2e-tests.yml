@@ -276,6 +276,13 @@ jobs:
         npm ci
         npm run build
 
+    - name: Run control-plane Jest E2E
+      working-directory: Packages/control-plane
+      env:
+        REDIS_HOST: redis
+        REDIS_DB: "1"
+      run: npm run test:e2e
+
     - name: Build GameServer
       run: swift build --package-path Examples/GameDemo
 
