@@ -47,7 +47,7 @@ func decodeReplayState<State: Decodable>(_ type: State.Type, from actualState: A
     return decoded
 }
 
-// MARK: - Placeholder (replaced in Task 3)
+// MARK: - Placeholder: returns empty Lifetime tick; replaced with real reevaluation logic in Task 3
 
 internal func StandardReplayLifetime<State: StateNodeProtocol>(
     landType _: String
@@ -73,7 +73,8 @@ public enum GenericReplayLand {
     /// - Parameters:
     ///   - landType: The BASE land type (e.g. "hero-defense"), NOT the replay land type.
     ///     The returned definition's ID will be "\(landType)-replay".
-    ///   - stateType: The State type. Must conform to StateNodeProtocol & Decodable.
+    ///   - stateType: The State type. Must conform to `StateNodeProtocol`. For actual state
+    ///     decoding in Task 3, the state must also be `Decodable`.
     public static func makeLand<State: StateNodeProtocol>(
         landType: String,
         stateType: State.Type
