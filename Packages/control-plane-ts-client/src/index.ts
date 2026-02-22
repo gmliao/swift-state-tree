@@ -1,2 +1,11 @@
-// Placeholder; will re-export client and types in later tasks.
-export {};
+export type {
+  TicketStatus,
+  EnqueueRequest,
+  EnqueueResponse,
+  CancelResponse,
+  Assignment,
+  StatusResponse,
+  ServerEntry,
+  ServerListResponse,
+  QueueSummaryResponse,
+} from './types.js';
