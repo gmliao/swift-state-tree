@@ -1,5 +1,7 @@
 import { Inject, forwardRef } from '@nestjs/common';
 import type { OnModuleInit } from '@nestjs/common';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -12,10 +14,10 @@ import type { MatchAssignedChannel } from '../../infra/channels/match-assigned-c
 import { isKickPayload, NODE_INBOX_CHANNEL } from '../../infra/channels/node-inbox-channel.interface';
 import type { NodeInboxChannel } from '../../infra/channels/node-inbox-channel.interface';
 import { NODE_ID } from '../../infra/config/env.config';
+import { getMatchmakingRole, isApiEnabled } from '../matchmaking/matchmaking-role';
 import { USER_SESSION_REGISTRY } from './user-session-registry.interface';
 import type { UserSessionRegistry } from './user-session-registry.interface';
-import { buildEnqueuedEnvelope, type WsErrorResponse } from './ws-envelope.dto';
-import type { WsEnqueueMessage } from './ws-envelope.dto';
+import { buildEnqueuedEnvelope, WsEnqueueMessageDto, type WsErrorResponse } from './ws-envelope.dto';
 import { Server, WebSocket as WsWebSocket } from 'ws';
 import { IncomingMessage } from 'http';
 
@@ -79,6 +81,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   }
 
   handleConnection(client: WsWebSocket, request: IncomingMessage) {
+    if (!isApiEnabled(getMatchmakingRole())) {
+      client.close(4403, 'This node does not serve WebSocket connections (queue-worker role)');
+      return;
+    }
     const url = new URL(request.url ?? '', `http://${request.headers.host}`);
     const ticketId = url.searchParams.get('ticketId');
     const userId = url.searchParams.get('userId');
@@ -113,27 +119,38 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
 
   private setupMessageHandler(client: WsWebSocket): void {
     client.on('message', (data: Buffer | string) => {
-      let msg: unknown;
-      try {
-        msg = JSON.parse(data.toString());
-      } catch {
-        this.sendError(client, 'Invalid JSON');
-        return;
-      }
-      const m = msg as { action?: string };
-      if (m?.action === 'enqueue') {
-        this.handleEnqueue(client, m as WsEnqueueMessage);
-        return;
-      }
-      if (m?.action === 'heartbeat') {
-        this.handleHeartbeat(client);
-        return;
-      }
-      this.sendError(client, 'Expected action: enqueue or heartbeat');
+      void (async () => {
+        let msg: unknown;
+        try {
+          msg = JSON.parse(data.toString());
+        } catch {
+          this.sendError(client, 'Invalid JSON');
+          return;
+        }
+        const m = msg as { action?: string };
+        if (m?.action === 'enqueue') {
+          const dto = plainToInstance(WsEnqueueMessageDto, m);
+          const errors = await validate(dto);
+          if (errors.length > 0) {
+            const detail = errors
+              .flatMap((e) => Object.values(e.constraints ?? {}))
+              .join(', ');
+            this.sendError(client, `Invalid enqueue payload: ${detail}`);
+            return;
+          }
+          await this.handleEnqueue(client, dto);
+          return;
+        }
+        if (m?.action === 'heartbeat') {
+          this.handleHeartbeat(client);
+          return;
+        }
+        this.sendError(client, 'Expected action: enqueue or heartbeat');
+      })();
     });
   }
 
-  private async handleEnqueue(client: WsWebSocket, m: WsEnqueueMessage): Promise<void> {
+  private async handleEnqueue(client: WsWebSocket, m: WsEnqueueMessageDto): Promise<void> {
     try {
       const result = await this.matchmakingService.enqueue(
         {
