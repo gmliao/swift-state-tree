@@ -1,3 +1,4 @@
+import { IsArray, IsInt, IsNotEmpty, IsOptional, IsString, Min } from 'class-validator';
 import { AssignmentResult } from '../../infra/contracts/assignment.dto';
 
 /** Server-to-client WebSocket event types. */
@@ -60,6 +61,35 @@ export interface WsEnqueueMessage {
   members: string[];
   groupSize: number;
   region?: string;
+  constraints?: Record<string, unknown>;
+}
+
+/** Validated DTO for WsEnqueueMessage. Use plainToInstance + validate before calling handleEnqueue. */
+export class WsEnqueueMessageDto implements WsEnqueueMessage {
+  action!: 'enqueue';
+
+  @IsOptional()
+  @IsString()
+  groupId?: string;
+
+  @IsNotEmpty({ message: 'queueKey is required' })
+  @IsString()
+  queueKey!: string;
+
+  @IsNotEmpty({ message: 'members is required' })
+  @IsArray()
+  @IsString({ each: true })
+  members!: string[];
+
+  @IsInt()
+  @Min(1)
+  groupSize!: number;
+
+  @IsOptional()
+  @IsString()
+  region?: string;
+
+  @IsOptional()
   constraints?: Record<string, unknown>;
 }
 
