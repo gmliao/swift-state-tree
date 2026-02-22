@@ -133,6 +133,39 @@ The per-tick `stateHash` is a deterministic FNV-1a64 hash of the full state snap
 
 When `enableLiveStateHashRecording: true`, the server also records server events (`ctx.emitEvent()`) per tick. During reevaluation with `--verify`, the runner compares recorded vs emitted server events. A mismatch indicates non-determinism in event emission (e.g., ordering or payload differences).
 
+### Field-Level State Diff (Debug)
+
+For deep debugging of hash mismatches, you can record the full per-tick state snapshot alongside the main record and then use `--diff-with` to produce field-level diffs during reevaluation.
+
+**Step 1 – Enable state snapshot recording on the server:**
+
+```bash
+ENABLE_STATE_SNAPSHOT_RECORDING=true ./YourServer
+```
+
+When this env var is set, the recorder writes a `*-state.jsonl` file alongside the main `.json` record. Each line is:
+
+```json
+{"tickId": 42, "stateSnapshot": { ... }}
+```
+
+**Step 2 – Run reevaluation with `--diff-with`:**
+
+```bash
+swift run ReevaluationRunner \
+  --input path/to/recording.json \
+  --diff-with path/to/recording-state.jsonl
+```
+
+Any field-level differences between recorded and computed state are printed to stderr:
+
+```
+[tick 42] DIFF at players.p1.position.v.x: recorded=98100 computed=0
+[tick 42] DIFF at players.p1.position.v.y: recorded=35689 computed=0
+```
+
+> **Note:** `ENABLE_STATE_SNAPSHOT_RECORDING` is intended for debug sessions only. It increases memory usage and I/O per tick.
+
 ## Best Practices
 
 1. **Keep handlers deterministic** - Avoid using `Date()`, `random()`, external API calls directly in handlers

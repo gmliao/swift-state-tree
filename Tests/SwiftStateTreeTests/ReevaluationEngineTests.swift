@@ -154,6 +154,75 @@ func testReevaluationEngineRunMatchesRecordedHashes() async throws {
     }
 }
 
+// MARK: - State Snapshot JSONL Recording Test
+
+@Test("State snapshot recording writes JSONL alongside main record when snapshots are recorded")
+func testStateSnapshotRecordingWritesJsonl() async throws {
+    let definition = makeReevaluationEngineTestDefinition()
+    let landID = "state-snapshot-test:local"
+    let expectedSeed = DeterministicSeed.fromLandID(landID)
+    let tmpDir = FileManager.default.temporaryDirectory
+    let recordingFile = tmpDir.appendingPathComponent("state-snapshot-\(UUID().uuidString).json")
+    let stateJsonlFile = tmpDir.appendingPathComponent(recordingFile.deletingPathExtension().lastPathComponent + "-state.jsonl")
+
+    defer {
+        try? FileManager.default.removeItem(at: recordingFile)
+        try? FileManager.default.removeItem(at: stateJsonlFile)
+    }
+
+    let recorder = ReevaluationRecorder()
+    let meta = ReevaluationRecordMetadata(
+        landID: landID,
+        landType: "reeval-engine-test",
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+        metadata: [:],
+        landDefinitionID: definition.id,
+        rngSeed: expectedSeed,
+        version: "1.0"
+    )
+    await recorder.setMetadata(meta)
+
+    // Simulate a few ticks with state snapshots recorded directly
+    let keeper = LandKeeper<ReevaluationEngineTestState>(
+        definition: definition,
+        initialState: ReevaluationEngineTestState(),
+        enableLiveStateHashRecording: true,
+        autoStartLoops: false
+    )
+
+    await keeper.stepTickOnce()
+    let state0 = await keeper.currentState()
+    let (hash0, snapshot0) = ReevaluationEngine.calculateStateHashAndSnapshot(state0)
+    await recorder.recordStateSnapshot(tickId: 0, stateSnapshot: snapshot0)
+    await recorder.setStateHash(tickId: 0, stateHash: hash0)
+
+    await keeper.stepTickOnce()
+    let state1 = await keeper.currentState()
+    let (hash1, snapshot1) = ReevaluationEngine.calculateStateHashAndSnapshot(state1)
+    await recorder.recordStateSnapshot(tickId: 1, stateSnapshot: snapshot1)
+    await recorder.setStateHash(tickId: 1, stateHash: hash1)
+
+    try await recorder.save(to: recordingFile.path)
+
+    // Verify main JSON was written
+    #expect(FileManager.default.fileExists(atPath: recordingFile.path), "Main record JSON should exist")
+
+    // Verify state JSONL was written alongside main record
+    #expect(FileManager.default.fileExists(atPath: stateJsonlFile.path), "State JSONL file should be written when snapshots are recorded")
+
+    let content = try String(contentsOf: stateJsonlFile, encoding: .utf8)
+    let lines = content.components(separatedBy: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+    #expect(lines.count == 2, "State JSONL should contain one line per recorded tick")
+
+    // Verify each line parses as JSON with tickId and stateSnapshot
+    for line in lines {
+        let data = try #require(line.data(using: .utf8))
+        let json = try #require(try? JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(json["tickId"] != nil, "Each JSONL line should have tickId")
+        #expect(json["stateSnapshot"] != nil, "Each JSONL line should have stateSnapshot")
+    }
+}
+
 // MARK: - Server Event Recording Test
 
 @Payload

@@ -133,6 +133,39 @@ await client.sendAction("resumeVerification", {});
 
 當 `enableLiveStateHashRecording: true` 時，伺服器也會記錄每 tick 的 server events（`ctx.emitEvent()`）。在帶 `--verify` 的 reevaluation 中，runner 會比對錄製與發送的 server events。若 mismatch 表示 event 發送有非決定性（例如順序或 payload 差異）。
 
+### 欄位級 State Diff（Debug 用）
+
+當 hash mismatch 需要深入除錯時，可錄製完整的逐 tick state snapshot，並在 reevaluation 時用 `--diff-with` 產生欄位級 diff。
+
+**步驟 1 – 在伺服器端啟用 state snapshot 錄製：**
+
+```bash
+ENABLE_STATE_SNAPSHOT_RECORDING=true ./YourServer
+```
+
+設定此 env var 後，recorder 會在主 `.json` 錄製檔旁寫出 `*-state.jsonl`，每行格式為：
+
+```json
+{"tickId": 42, "stateSnapshot": { ... }}
+```
+
+**步驟 2 – 以 `--diff-with` 執行 reevaluation：**
+
+```bash
+swift run ReevaluationRunner \
+  --input path/to/recording.json \
+  --diff-with path/to/recording-state.jsonl
+```
+
+錄製與計算 state 的欄位差異會輸出至 stderr：
+
+```
+[tick 42] DIFF at players.p1.position.v.x: recorded=98100 computed=0
+[tick 42] DIFF at players.p1.position.v.y: recorded=35689 computed=0
+```
+
+> **注意：** `ENABLE_STATE_SNAPSHOT_RECORDING` 僅供 debug 使用，會增加每 tick 的記憶體與 I/O 用量。
+
 ## 最佳實踐
 
 1. **保持 handlers 決定性** - 避免在 handlers 中直接使用 `Date()`、`random()`、外部 API 呼叫
