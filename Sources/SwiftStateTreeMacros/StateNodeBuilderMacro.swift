@@ -13,7 +13,8 @@ import SwiftSyntaxMacros
 /// 1. Validates that all stored properties have @Sync or @Internal markers
 /// 2. Generates `getSyncFields()` method implementation
 /// 3. Generates `validateSyncFields()` method implementation
-public struct StateNodeBuilderMacro: MemberMacro {
+/// 4. Generates `init(fromBroadcastSnapshot:)` (via extension) satisfying `StateFromSnapshotDecodable`
+public struct StateNodeBuilderMacro: MemberMacro, ExtensionMacro {
     public static func expansion(
         of node: AttributeSyntax,
         providingMembersOf declaration: some DeclGroupSyntax,
@@ -724,6 +725,103 @@ public struct StateNodeBuilderMacro: MemberMacro {
             }
             """
         )
+    }
+
+    /// Generate init(fromBroadcastSnapshot:) method as DeclSyntax.
+    ///
+    /// Only generates `_snapshotDecode` calls for broadcast properties whose types are
+    /// statically known to conform to `SnapshotValueDecodable`. Properties with complex or
+    /// unknown types are skipped (they keep their default values).
+    private static func generateFromBroadcastSnapshotInit(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> DeclSyntax {
+        let broadcastProperties = propertiesWithNodes.filter { $0.0.hasSync && $0.0.policyType == .broadcast }
+
+        var codeLines: [String] = []
+        codeLines.append("self.init()")
+
+        for (property, _) in broadcastProperties {
+            let name = property.name
+            // Only emit _snapshotDecode for types known to conform to SnapshotValueDecodable.
+            // Unknown/complex types keep their defaults from self.init().
+            guard isKnownSnapshotValueDecodable(property.typeName) else {
+                continue
+            }
+            codeLines.append("if let _v = snapshot.values[\"\(name)\"] { self.\(name) = try _snapshotDecode(_v) }")
+        }
+
+        let body = codeLines.joined(separator: "\n")
+
+        return DeclSyntax(
+            """
+            public init(fromBroadcastSnapshot snapshot: StateSnapshot) throws {
+                \(raw: body)
+            }
+            """
+        )
+    }
+
+    /// Returns true if the type is statically known to conform to SnapshotValueDecodable.
+    /// Used by generateFromBroadcastSnapshotInit to avoid generating invalid decode calls.
+    private static func isKnownSnapshotValueDecodable(_ typeName: String?) -> Bool {
+        guard let typeName = typeName else { return false }
+        let normalized = typeName.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Check for Optional<T> wrapping a known type
+        if normalized.hasSuffix("?") {
+            let inner = String(normalized.dropLast()).trimmingCharacters(in: .whitespaces)
+            return isKnownSnapshotValueDecodable(inner)
+        }
+        if normalized.hasPrefix("Optional<") && normalized.hasSuffix(">") {
+            let inner = String(normalized.dropFirst("Optional<".count).dropLast())
+                .trimmingCharacters(in: .whitespaces)
+            return isKnownSnapshotValueDecodable(inner)
+        }
+
+        // Check for Array<T> or [T]
+        if normalized.hasPrefix("Array<") && normalized.hasSuffix(">") {
+            let inner = String(normalized.dropFirst("Array<".count).dropLast())
+                .trimmingCharacters(in: .whitespaces)
+            return isKnownSnapshotValueDecodable(inner)
+        }
+        if normalized.hasPrefix("[") && normalized.hasSuffix("]") && !normalized.contains(":") {
+            let inner = String(normalized.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces)
+            return isKnownSnapshotValueDecodable(inner)
+        }
+
+        // Check for Dictionary<K, V> or [K: V] — requires key to be SnapshotKeyDecodable
+        // and value to be SnapshotValueDecodable.
+        if normalized.hasPrefix("Dictionary<") && normalized.hasSuffix(">") {
+            let content = String(normalized.dropFirst("Dictionary<".count).dropLast())
+            let parts = content.split(separator: ",", maxSplits: 1)
+            if parts.count == 2 {
+                let keyType = String(parts[0]).trimmingCharacters(in: .whitespaces)
+                let valueType = String(parts[1]).trimmingCharacters(in: .whitespaces)
+                return isKnownSnapshotKeyDecodable(keyType) && isKnownSnapshotValueDecodable(valueType)
+            }
+        }
+        if normalized.hasPrefix("[") && normalized.hasSuffix("]") && normalized.contains(":") {
+            let content = String(normalized.dropFirst().dropLast())
+            let parts = content.split(separator: ":", maxSplits: 1)
+            if parts.count == 2 {
+                let keyType = String(parts[0]).trimmingCharacters(in: .whitespaces)
+                let valueType = String(parts[1]).trimmingCharacters(in: .whitespaces)
+                return isKnownSnapshotKeyDecodable(keyType) && isKnownSnapshotValueDecodable(valueType)
+            }
+        }
+
+        // Primitive types with known SnapshotValueDecodable conformance
+        let knownTypes: Set<String> = [
+            "Int", "Int8", "Int16", "Int32", "Int64",
+            "UInt", "UInt8", "UInt16", "UInt32", "UInt64",
+            "Float", "Double", "Bool", "String",
+            "PlayerID"
+        ]
+        return knownTypes.contains(normalized)
+    }
+
+    /// Returns true if the type is statically known to conform to SnapshotKeyDecodable.
+    private static func isKnownSnapshotKeyDecodable(_ typeName: String) -> Bool {
+        let knownKeyTypes: Set<String> = ["String", "Int", "PlayerID"]
+        return knownKeyTypes.contains(typeName.trimmingCharacters(in: .whitespaces))
     }
 
     /// Generate helper methods for container types (Dictionary, Array, Set)
