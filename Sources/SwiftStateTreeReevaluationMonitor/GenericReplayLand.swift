@@ -102,6 +102,21 @@ public enum GenericReplayLand<State: StateFromSnapshotDecodable> {
 
                     state = decoded
                     ctx.requestSyncBroadcastOnly()
+
+                    // Emit server events for this tick (projectedOnly vs projectedWithFallback).
+                    let policy = ctx.services.get(ReevaluationReplayPolicyService.self)?.eventPolicy ?? .projectedOnly
+                    let eventsToSend: [ReevaluationRecordedServerEvent]
+                    switch policy {
+                    case .projectedOnly:
+                        eventsToSend = result.emittedServerEvents
+                    case .projectedWithFallback:
+                        eventsToSend = result.emittedServerEvents.isEmpty ? result.recordedServerEvents : result.emittedServerEvents
+                    }
+                    for recorded in eventsToSend {
+                        let anyEvent = AnyServerEvent(type: recorded.typeIdentifier, payload: recorded.payload)
+                        let target = recorded.target.toEventTarget()
+                        ctx.emitAnyServerEvent(anyEvent, to: target)
+                    }
                 }
             }
         }

@@ -29,6 +29,8 @@ public struct ReevaluationStepResult: Sendable {
     public let isMatch: Bool
     public let actualState: AnyCodable?
     public let emittedServerEvents: [ReevaluationRecordedServerEvent]
+    /// Recorded server events from the record file for this tick (used when replayEventPolicy is projectedWithFallback).
+    public let recordedServerEvents: [ReevaluationRecordedServerEvent]
     public let projectedFrame: ProjectedReplayFrame?
 
     public init(
@@ -38,6 +40,7 @@ public struct ReevaluationStepResult: Sendable {
         isMatch: Bool,
         actualState: AnyCodable? = nil,
         emittedServerEvents: [ReevaluationRecordedServerEvent] = [],
+        recordedServerEvents: [ReevaluationRecordedServerEvent] = [],
         projectedFrame: ProjectedReplayFrame? = nil
     ) {
         self.tickId = tickId
@@ -46,6 +49,7 @@ public struct ReevaluationStepResult: Sendable {
         self.isMatch = isMatch
         self.actualState = actualState
         self.emittedServerEvents = emittedServerEvents
+        self.recordedServerEvents = recordedServerEvents
         self.projectedFrame = projectedFrame
     }
 }

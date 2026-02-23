@@ -227,6 +227,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         // Determine match
         let isMatch = (recordedHash == nil) || (recordedHash == stateHash)
         let emittedServerEvents = await capturingSink.takeEmittedEvents(for: tickId)
+        let recordedServerEvents = (try? await source.getServerEvents(for: tickId)) ?? []
 
         return ReevaluationStepResult(
             tickId: tickId,
@@ -234,7 +235,8 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             recordedHash: recordedHash,
             isMatch: isMatch,
             actualState: actualStatePayload,
-            emittedServerEvents: emittedServerEvents
+            emittedServerEvents: emittedServerEvents,
+            recordedServerEvents: recordedServerEvents
         )
     }
 
