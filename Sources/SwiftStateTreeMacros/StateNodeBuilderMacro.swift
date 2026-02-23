@@ -73,6 +73,7 @@ public struct StateNodeBuilderMacro: MemberMacro, ExtensionMacro {
     // MARK: - ExtensionMacro
 
     /// Generates `extension TypeName: StateFromSnapshotDecodable { init(fromBroadcastSnapshot:) }`
+    /// Only invoked when the type explicitly declares StateFromSnapshotDecodable conformance.
     public static func expansion(
         of node: AttributeSyntax,
         attachedTo declaration: some DeclGroupSyntax,
