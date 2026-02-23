@@ -54,7 +54,7 @@ public macro StateNodeBuilder() = #externalMacro(
 ///     }
 /// }
 /// ```
-@attached(extension, conformances: SnapshotValueConvertible, names: named(toSnapshotValue))
+@attached(extension, conformances: SnapshotValueConvertible, SnapshotValueDecodable, names: named(toSnapshotValue), named(init(fromSnapshotValue:)))
 public macro SnapshotConvertible() = #externalMacro(
     module: "SwiftStateTreeMacros",
     type: "SnapshotConvertibleMacro"

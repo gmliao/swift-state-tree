@@ -121,11 +121,12 @@ struct DeterministicMathSnapshotDecodableTests {
         }
     }
 
-    @Test("Angle throws on missing degrees key")
-    func angleThrowsOnMissingDegrees() {
-        #expect(throws: (any Error).self) {
-            _ = try Angle(fromSnapshotValue: .object(["radians": .int(1000)]))
-        }
+    @Test("Angle uses default zero when degrees key is missing")
+    func angleUsesDefaultWhenDegreesMissing() throws {
+        // The macro-generated init(fromSnapshotValue:) is lenient: missing keys keep
+        // the default value from self.init() (zero angle) rather than throwing.
+        let angle = try Angle(fromSnapshotValue: .object(["radians": .int(1000)]))
+        #expect(angle == Angle.zero)
     }
 
     @Test("Angle round-trip through SnapshotValue")
@@ -158,5 +159,39 @@ struct DeterministicMathSnapshotDecodableTests {
         let snapshotValue = try original.toSnapshotValue()
         let decoded = try Angle(fromSnapshotValue: snapshotValue)
         #expect(decoded == original)
+    }
+
+    // MARK: - Position2
+
+    @Test("Position2 round-trip through SnapshotValue (via @SnapshotConvertible)")
+    func position2RoundTrip() throws {
+        let pos = Position2(x: 10.0, y: 20.0)
+        let snapshotValue = try pos.toSnapshotValue()
+        let decoded = try Position2(fromSnapshotValue: snapshotValue)
+        #expect(decoded == pos)
+    }
+
+    @Test("Position2 round-trip zero position")
+    func position2RoundTripZero() throws {
+        let pos = Position2()
+        let snapshotValue = try pos.toSnapshotValue()
+        let decoded = try Position2(fromSnapshotValue: snapshotValue)
+        #expect(decoded == pos)
+        #expect(decoded.v == IVec2.zero)
+    }
+
+    @Test("Position2 round-trip negative coordinates")
+    func position2RoundTripNegative() throws {
+        let pos = Position2(x: -5.0, y: -3.5)
+        let snapshotValue = try pos.toSnapshotValue()
+        let decoded = try Position2(fromSnapshotValue: snapshotValue)
+        #expect(decoded == pos)
+    }
+
+    @Test("Position2 throws on wrong snapshot type")
+    func position2ThrowsOnWrongType() {
+        #expect(throws: (any Error).self) {
+            _ = try Position2(fromSnapshotValue: .string("bad"))
+        }
     }
 }

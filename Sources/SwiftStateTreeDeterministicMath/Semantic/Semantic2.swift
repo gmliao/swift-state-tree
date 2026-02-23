@@ -21,14 +21,21 @@ import SwiftStateTree
 public struct Position2: Codable, Equatable, Sendable {
     /// The underlying vector.
     public var v: IVec2
-    
+
+    /// Creates a zero Position2.
+    ///
+    /// Required for `@SnapshotConvertible`-generated `init(fromSnapshotValue:)`.
+    public init() {
+        self.v = .zero
+    }
+
     /// Creates a new Position2 with the given vector.
     ///
     /// - Parameter v: The position vector.
     public init(v: IVec2) {
         self.v = v
     }
-    
+
     /// Creates a new Position2 with the given coordinates.
     ///
     /// - Parameters:
@@ -37,7 +44,7 @@ public struct Position2: Codable, Equatable, Sendable {
     public init(x: Float, y: Float) {
         self.v = IVec2(x: x, y: y)
     }
-    
+
 }
 
 /// A 2D velocity using integer coordinates.
@@ -48,14 +55,21 @@ public struct Position2: Codable, Equatable, Sendable {
 public struct Velocity2: Codable, Equatable, Sendable {
     /// The underlying vector.
     public var v: IVec2
-    
+
+    /// Creates a zero Velocity2.
+    ///
+    /// Required for `@SnapshotConvertible`-generated `init(fromSnapshotValue:)`.
+    public init() {
+        self.v = .zero
+    }
+
     /// Creates a new Velocity2 with the given vector.
     ///
     /// - Parameter v: The velocity vector.
     public init(v: IVec2) {
         self.v = v
     }
-    
+
     /// Creates a new Velocity2 with the given coordinates.
     ///
     /// - Parameters:
@@ -79,14 +93,21 @@ public struct Velocity2: Codable, Equatable, Sendable {
 public struct Acceleration2: Codable, Equatable, Sendable {
     /// The underlying vector.
     public var v: IVec2
-    
+
+    /// Creates a zero Acceleration2.
+    ///
+    /// Required for `@SnapshotConvertible`-generated `init(fromSnapshotValue:)`.
+    public init() {
+        self.v = .zero
+    }
+
     /// Creates a new Acceleration2 with the given vector.
     ///
     /// - Parameter v: The acceleration vector.
     public init(v: IVec2) {
         self.v = v
     }
-    
+
     /// Creates a new Acceleration2 with the given coordinates.
     ///
     /// - Parameters:
@@ -304,7 +325,14 @@ public struct Angle: Codable, Equatable, Sendable, Hashable {
     /// Using a single Int32 value for efficient operations.
     @usableFromInline
     internal var degrees: Int32
-    
+
+    /// Creates a zero Angle (0 degrees).
+    ///
+    /// Required for `@SnapshotConvertible`-generated `init(fromSnapshotValue:)`.
+    public init() {
+        self.degrees = 0
+    }
+
     /// Internal initializer for fixed-point degrees.
     ///
     /// This is used internally for operations that already produce quantized values.

@@ -8,16 +8,16 @@ import SwiftStateTree
 /// Test nested structure: Player state with multiple fields
 @SnapshotConvertible
 struct BenchmarkPlayerState: StateProtocol {
-    var name: String
-    var hpCurrent: Int
-    var hpMax: Int
+    var name: String = ""
+    var hpCurrent: Int = 0
+    var hpMax: Int = 0
 }
 
 /// Test nested structure: Hand state containing cards
 @SnapshotConvertible
 struct BenchmarkHandState: StateProtocol {
-    var ownerID: PlayerID
-    var cards: [BenchmarkCard]
+    var ownerID: PlayerID = PlayerID("")
+    var cards: [BenchmarkCard] = []
 }
 
 /// Test nested structure: Card with multiple properties
@@ -26,6 +26,18 @@ struct BenchmarkCard: StateProtocol {
     let id: Int
     let suit: Int
     let rank: Int
+}
+
+extension BenchmarkCard: SnapshotValueDecodable {
+    init(fromSnapshotValue value: SnapshotValue) throws {
+        guard case .object(let dict) = value else {
+            throw SnapshotDecodeError.typeMismatch(expected: "object", got: value)
+        }
+        let id: Int = try dict["id"].map { try _snapshotDecode($0) } ?? 0
+        let suit: Int = try dict["suit"].map { try _snapshotDecode($0) } ?? 0
+        let rank: Int = try dict["rank"].map { try _snapshotDecode($0) } ?? 0
+        self = BenchmarkCard(id: id, suit: suit, rank: rank)
+    }
 }
 
 /// Player-specific StateNode with multiple fields for testing dirty tracking
