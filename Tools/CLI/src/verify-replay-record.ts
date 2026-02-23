@@ -11,7 +11,7 @@
  * Requires: GameServer running (e.g. from Examples/GameDemo with REEVALUATION_RECORDS_DIR).
  */
 
-import { resolve } from "path";
+import { isAbsolute, resolve } from "path";
 import chalk from "chalk";
 import { StateTreeRuntime } from "@swiftstatetree/sdk/core";
 import { ChalkLogger } from "./logger";
@@ -83,7 +83,7 @@ async function main() {
     args["record-path"] ??
     resolve(process.cwd(), "..", "..", "Examples", "GameDemo", "reevaluation-records", "3-hero-defense.json");
 
-  const recordFilePath = recordPathArg.startsWith("/") ? recordPathArg : resolve(process.cwd(), recordPathArg);
+  const recordFilePath = isAbsolute(recordPathArg) ? recordPathArg : resolve(process.cwd(), recordPathArg);
   console.log(chalk.blue(`Record file: ${recordFilePath}`));
   console.log(chalk.blue(`Admin: ${adminUrl}`));
 
