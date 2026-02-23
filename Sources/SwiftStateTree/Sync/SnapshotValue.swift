@@ -367,3 +367,35 @@ public extension SnapshotValue {
         throw SyncError.unsupportedKey("Unsupported dictionary key type: \(type(of: value))")
     }
 }
+
+// MARK: - Strict Extraction Helpers (for SnapshotValueDecodable implementations)
+
+public extension SnapshotValue {
+    func requireInt() throws -> Int {
+        guard case .int(let v) = self else {
+            throw SnapshotDecodeError.typeMismatch(expected: "Int (.int)", got: self)
+        }
+        return v
+    }
+
+    func requireBool() throws -> Bool {
+        guard case .bool(let v) = self else {
+            throw SnapshotDecodeError.typeMismatch(expected: "Bool (.bool)", got: self)
+        }
+        return v
+    }
+
+    func requireString() throws -> String {
+        guard case .string(let v) = self else {
+            throw SnapshotDecodeError.typeMismatch(expected: "String (.string)", got: self)
+        }
+        return v
+    }
+
+    func requireDouble() throws -> Double {
+        guard case .double(let v) = self else {
+            throw SnapshotDecodeError.typeMismatch(expected: "Double (.double)", got: self)
+        }
+        return v
+    }
+}
