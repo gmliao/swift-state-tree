@@ -33,6 +33,15 @@ extension PlayerID: SnapshotKeyDecodable {
     public init?(snapshotKey: String) { self.init(snapshotKey) }
 }
 
+extension PlayerID: SnapshotValueDecodable {
+    public init(fromSnapshotValue value: SnapshotValue) throws {
+        guard case .string(let v) = value else {
+            throw SnapshotDecodeError.typeMismatch(expected: "PlayerID (.string)", got: value)
+        }
+        self.init(v)
+    }
+}
+
 // MARK: - SnapshotValueDecodable
 
 public protocol SnapshotValueDecodable {
@@ -74,6 +83,96 @@ extension Double: SnapshotValueDecodable {
             throw SnapshotDecodeError.typeMismatch(expected: "Double (.double)", got: value)
         }
         self = v
+    }
+}
+
+extension Float: SnapshotValueDecodable {
+    public init(fromSnapshotValue value: SnapshotValue) throws {
+        guard case .double(let v) = value else {
+            throw SnapshotDecodeError.typeMismatch(expected: "Float (.double)", got: value)
+        }
+        self = Float(v)
+    }
+}
+
+extension Int8: SnapshotValueDecodable {
+    public init(fromSnapshotValue value: SnapshotValue) throws {
+        guard case .int(let v) = value else {
+            throw SnapshotDecodeError.typeMismatch(expected: "Int8 (.int)", got: value)
+        }
+        self = Int8(v)
+    }
+}
+
+extension Int16: SnapshotValueDecodable {
+    public init(fromSnapshotValue value: SnapshotValue) throws {
+        guard case .int(let v) = value else {
+            throw SnapshotDecodeError.typeMismatch(expected: "Int16 (.int)", got: value)
+        }
+        self = Int16(v)
+    }
+}
+
+extension Int32: SnapshotValueDecodable {
+    public init(fromSnapshotValue value: SnapshotValue) throws {
+        guard case .int(let v) = value else {
+            throw SnapshotDecodeError.typeMismatch(expected: "Int32 (.int)", got: value)
+        }
+        self = Int32(v)
+    }
+}
+
+extension Int64: SnapshotValueDecodable {
+    public init(fromSnapshotValue value: SnapshotValue) throws {
+        guard case .int(let v) = value else {
+            throw SnapshotDecodeError.typeMismatch(expected: "Int64 (.int)", got: value)
+        }
+        self = Int64(v)
+    }
+}
+
+extension UInt: SnapshotValueDecodable {
+    public init(fromSnapshotValue value: SnapshotValue) throws {
+        guard case .int(let v) = value else {
+            throw SnapshotDecodeError.typeMismatch(expected: "UInt (.int)", got: value)
+        }
+        self = UInt(v)
+    }
+}
+
+extension UInt8: SnapshotValueDecodable {
+    public init(fromSnapshotValue value: SnapshotValue) throws {
+        guard case .int(let v) = value else {
+            throw SnapshotDecodeError.typeMismatch(expected: "UInt8 (.int)", got: value)
+        }
+        self = UInt8(v)
+    }
+}
+
+extension UInt16: SnapshotValueDecodable {
+    public init(fromSnapshotValue value: SnapshotValue) throws {
+        guard case .int(let v) = value else {
+            throw SnapshotDecodeError.typeMismatch(expected: "UInt16 (.int)", got: value)
+        }
+        self = UInt16(v)
+    }
+}
+
+extension UInt32: SnapshotValueDecodable {
+    public init(fromSnapshotValue value: SnapshotValue) throws {
+        guard case .int(let v) = value else {
+            throw SnapshotDecodeError.typeMismatch(expected: "UInt32 (.int)", got: value)
+        }
+        self = UInt32(v)
+    }
+}
+
+extension UInt64: SnapshotValueDecodable {
+    public init(fromSnapshotValue value: SnapshotValue) throws {
+        guard case .int(let v) = value else {
+            throw SnapshotDecodeError.typeMismatch(expected: "UInt64 (.int)", got: value)
+        }
+        self = UInt64(v)
     }
 }
 
