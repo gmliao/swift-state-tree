@@ -69,4 +69,31 @@ struct SnapshotValueDecodableTests {
         let v = try [Int: Int](fromSnapshotValue: .object(["1": .int(10), "bad": .int(99)]))
         #expect(v == [1: 10])
     }
+
+    @Test("SnapshotValue.requireInt extracts int")
+    func requireInt() throws {
+        #expect(try SnapshotValue.int(5).requireInt() == 5)
+    }
+
+    @Test("SnapshotValue.requireInt throws on mismatch")
+    func requireIntThrows() {
+        #expect(throws: (any Error).self) {
+            _ = try SnapshotValue.string("x").requireInt()
+        }
+    }
+
+    @Test("SnapshotValue.requireBool extracts bool")
+    func requireBool() throws {
+        #expect(try SnapshotValue.bool(true).requireBool() == true)
+    }
+
+    @Test("SnapshotValue.requireString extracts string")
+    func requireString() throws {
+        #expect(try SnapshotValue.string("hi").requireString() == "hi")
+    }
+
+    @Test("SnapshotValue.requireDouble extracts double")
+    func requireDouble() throws {
+        #expect(try SnapshotValue.double(1.5).requireDouble() == 1.5)
+    }
 }
