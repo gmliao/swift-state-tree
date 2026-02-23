@@ -90,8 +90,16 @@ public struct StateNodeBuilderMacro: MemberMacro, ExtensionMacro {
 
         var assignmentLines: [String] = []
         for prop in broadcastProperties {
+            // Only emit _snapshotDecode for types statically known to conform to SnapshotValueDecodable.
+            // Properties with complex or unknown types keep their default values from self.init().
+            guard isKnownSnapshotValueDecodable(prop.typeName) else {
+                continue
+            }
+            // Use _propName.wrappedValue assignment so the @Sync dirty flag is set correctly.
+            // In init bodies, `self.propName = value` bypasses the property wrapper setter and
+            // does NOT mark the field dirty. Assigning to `.wrappedValue` calls the setter directly.
             assignmentLines.append(
-                "        if let _v = snapshot.values[\"\(prop.name)\"] { self.\(prop.name) = try _snapshotDecode(_v) }"
+                "        if let _v = snapshot.values[\"\(prop.name)\"] { self._\(prop.name).wrappedValue = try _snapshotDecode(_v) }"
             )
         }
         let body = assignmentLines.joined(separator: "\n")
@@ -785,7 +793,9 @@ public struct StateNodeBuilderMacro: MemberMacro, ExtensionMacro {
             guard isKnownSnapshotValueDecodable(property.typeName) else {
                 continue
             }
-            codeLines.append("if let _v = snapshot.values[\"\(name)\"] { self.\(name) = try _snapshotDecode(_v) }")
+            // Use _propName.wrappedValue to trigger the @Sync setter and mark the field dirty.
+            // In init bodies, `self.propName = value` bypasses the property wrapper setter.
+            codeLines.append("if let _v = snapshot.values[\"\(name)\"] { self._\(name).wrappedValue = try _snapshotDecode(_v) }")
         }
 
         let body = codeLines.joined(separator: "\n")

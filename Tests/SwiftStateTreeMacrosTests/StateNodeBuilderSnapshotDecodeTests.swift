@@ -38,8 +38,8 @@ final class StateNodeBuilderSnapshotDecodeTests {
             extension SimpleState: StateFromSnapshotDecodable {
                 public init(fromBroadcastSnapshot snapshot: StateSnapshot) throws {
                     self.init()
-                    if let _v = snapshot.values["score"] { self.score = try _snapshotDecode(_v) }
-                    if let _v = snapshot.values["name"] { self.name = try _snapshotDecode(_v) }
+                    if let _v = snapshot.values["score"] { self._score.wrappedValue = try _snapshotDecode(_v) }
+                    if let _v = snapshot.values["name"] { self._name.wrappedValue = try _snapshotDecode(_v) }
                 }
             }
             """,
