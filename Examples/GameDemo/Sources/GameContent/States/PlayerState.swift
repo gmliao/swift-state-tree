@@ -6,6 +6,7 @@ import SwiftStateTreeDeterministicMath
 
 /// Player state with position, rotation, movement, weapon, and resources.
 @StateNodeBuilder
+@SnapshotConvertible
 public struct PlayerState: StateNodeProtocol {
     /// Player position in 2D world (fixed-point: 1000 = 1.0)
     @Sync(.broadcast)

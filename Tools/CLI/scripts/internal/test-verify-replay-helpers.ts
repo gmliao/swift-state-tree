@@ -13,6 +13,9 @@ import {
   isBasePositionOk,
   isNearBase,
   analyzeReplayState,
+  getEntityCounts,
+  updateMaxEntityCounts,
+  evaluateEntityThresholds,
 } from "../../src/verify-replay-helpers";
 
 // parseArgs
@@ -116,6 +119,54 @@ const stateWithPlayerFar = {
 const a3 = analyzeReplayState(stateWithPlayerFar as any);
 assert.strictEqual(a3.nearBaseCount, 0, "analyzeReplayState player far from base");
 assert.strictEqual(a3.playersWithPosition, 1, "analyzeReplayState playersWithPosition still 1");
+
+// getEntityCounts
+assert.deepStrictEqual(
+  getEntityCounts({
+    players: { p1: {} },
+    monsters: { 1: {}, 2: {} },
+    turrets: {},
+  } as any),
+  { players: 1, monsters: 2, turrets: 0 },
+  "getEntityCounts counts entity collections"
+);
+assert.deepStrictEqual(
+  getEntityCounts(undefined),
+  { players: 0, monsters: 0, turrets: 0 },
+  "getEntityCounts handles undefined"
+);
+
+// updateMaxEntityCounts
+assert.deepStrictEqual(
+  updateMaxEntityCounts(
+    { players: 1, monsters: 0, turrets: 2 },
+    { players: 2, monsters: 1, turrets: 1 }
+  ),
+  { players: 2, monsters: 1, turrets: 2 },
+  "updateMaxEntityCounts tracks max seen values"
+);
+
+// evaluateEntityThresholds
+const thresholdPass = evaluateEntityThresholds(
+  { players: 1, monsters: 3, turrets: 0 },
+  { minPlayers: 1, minMonsters: 1, minTurrets: 0 }
+);
+assert.strictEqual(thresholdPass.ok, true, "evaluateEntityThresholds pass");
+assert.deepStrictEqual(thresholdPass.failures, [], "evaluateEntityThresholds no failures when pass");
+
+const thresholdFail = evaluateEntityThresholds(
+  { players: 0, monsters: 0, turrets: 0 },
+  { minPlayers: 1, minMonsters: 1, minTurrets: 0 }
+);
+assert.strictEqual(thresholdFail.ok, false, "evaluateEntityThresholds fail");
+assert.ok(
+  thresholdFail.failures.some((f) => f.includes("players")),
+  "evaluateEntityThresholds reports players failure"
+);
+assert.ok(
+  thresholdFail.failures.some((f) => f.includes("monsters")),
+  "evaluateEntityThresholds reports monsters failure"
+);
 
 console.log("All verify-replay-helpers tests passed.");
 process.exit(0);

@@ -11,36 +11,38 @@ final class StateNodeBuilderSnapshotDecodeTests {
         "StateNodeBuilder": StateNodeBuilderMacro.self
     ]
 
-    @Test("StateNodeBuilder generates StateFromSnapshotDecodable extension")
+    @Test("StateNodeBuilder generates fromBroadcastSnapshot initializer when conformance is declared")
     func generatesFromBroadcastSnapshotInit() throws {
         assertMacroExpansion(
             """
             @StateNodeBuilder
-            struct SimpleState: StateNodeProtocol {
+            struct SimpleState: StateNodeProtocol, StateFromSnapshotDecodable {
                 @Sync(.broadcast)
                 var score: Int = 0
                 @Sync(.broadcast)
                 var name: String = ""
                 @Sync(.serverOnly)
                 var internal_counter: Int = 0
+
+                init() {}
             }
             """,
             expandedSource: """
-            struct SimpleState: StateNodeProtocol {
+            struct SimpleState: StateNodeProtocol, StateFromSnapshotDecodable {
                 @Sync(.broadcast)
                 var score: Int = 0
                 @Sync(.broadcast)
                 var name: String = ""
                 @Sync(.serverOnly)
                 var internal_counter: Int = 0
-            }
 
-            extension SimpleState: StateFromSnapshotDecodable {
                 public init(fromBroadcastSnapshot snapshot: StateSnapshot) throws {
                     self.init()
                     if let _v = snapshot.values["score"] { self._score.wrappedValue = try _snapshotDecode(_v) }
                     if let _v = snapshot.values["name"] { self._name.wrappedValue = try _snapshotDecode(_v) }
                 }
+
+                init() {}
             }
             """,
             macros: testMacros

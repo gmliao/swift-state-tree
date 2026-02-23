@@ -2,36 +2,15 @@ import Testing
 @testable import SwiftStateTree
 
 // Minimal test state — only Int, String, Bool, and [String: Int] (Phase 1 types)
-// Uses @StateNodeBuilder which generates broadcastSnapshot, isDirty, getDirtyFields, etc.
-// The init(fromBroadcastSnapshot:) is manually provided here as an extension (same pattern
-// as the @StateNodeBuilder macro-generated init) to verify dirty-flag semantics at runtime.
+// Uses @StateNodeBuilder which should auto-generate StateFromSnapshotDecodable conformance
+// including init(fromBroadcastSnapshot:).
 @StateNodeBuilder
-struct MockReplayState: StateNodeProtocol {
+struct MockReplayState: StateNodeProtocol, StateFromSnapshotDecodable {
     @Sync(.broadcast) var score: Int = 0
     @Sync(.broadcast) var name: String = ""
     @Sync(.broadcast) var active: Bool = false
     @Sync(.broadcast) var tags: [String: Int] = [:]
     @Sync(.serverOnly) var internalCounter: Int = 0  // NOT in broadcast snapshot
-}
-
-// Manual extension providing StateFromSnapshotDecodable conformance.
-// This mirrors EXACTLY what the @StateNodeBuilder ExtensionMacro generates.
-//
-// Key pattern: `self._fieldName.wrappedValue = try _snapshotDecode(_v)`
-// This calls the @Sync property wrapper setter, which sets _isDirty = true.
-// Using `self.fieldName = value` in an init body BYPASSES the property wrapper
-// setter (Swift treats it as backing-store initialization), so dirty is NOT marked.
-//
-// @Sync(.serverOnly) properties are NOT included (not in the broadcast snapshot).
-extension MockReplayState: StateFromSnapshotDecodable {
-    public init(fromBroadcastSnapshot snapshot: StateSnapshot) throws {
-        self.init()
-        if let _v = snapshot.values["score"] { self._score.wrappedValue = try _snapshotDecode(_v) }
-        if let _v = snapshot.values["name"] { self._name.wrappedValue = try _snapshotDecode(_v) }
-        if let _v = snapshot.values["active"] { self._active.wrappedValue = try _snapshotDecode(_v) }
-        if let _v = snapshot.values["tags"] { self._tags.wrappedValue = try _snapshotDecode(_v) }
-        // internalCounter is @Sync(.serverOnly) — excluded from broadcast snapshot
-    }
 }
 
 @Suite("StateNode fromBroadcastSnapshot runtime")

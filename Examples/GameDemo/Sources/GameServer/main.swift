@@ -67,56 +67,23 @@ struct GameServer {
             "stateUpdate": .string(transportEncoding.stateUpdate.rawValue),
         ])
 
-        // Extract pathHashes from schema for compression
-        // Same-land replay: hero-defense-replay is convention-based alias (replayLandTypes)
-        let landDef = HeroDefense.makeLand()
-        var schemaLandDefinitions: [AnyLandDefinition] = [AnyLandDefinition(landDef)]
-        if enableReevaluation {
-            schemaLandDefinitions.append(AnyLandDefinition(ReevaluationMonitor.makeLand()))
-        }
+        // Schema and path hashes (replay land types only when reevaluation enabled)
+        let liveLand = HeroDefense.makeLand()
+        let schemaLands: [AnyLandDefinition] = enableReevaluation
+            ? [AnyLandDefinition(liveLand), AnyLandDefinition(ReevaluationMonitor.makeLand())]
+            : [AnyLandDefinition(liveLand)]
         let schema = SchemaGenCLI.generateSchema(
-            landDefinitions: schemaLandDefinitions,
+            landDefinitions: schemaLands,
             replayLandTypes: enableReevaluation ? ["hero-defense"] : nil
         )
         let pathHashes = schema.lands["hero-defense"]?.pathHashes
+        logPathHashes(pathHashes, logger: logger)
+        logger.info(enableReevaluation ? "✅ Reevaluation enabled (recording for replay/verification)" : "Reevaluation disabled (set ENABLE_REEVALUATION=true to enable)")
 
-        if let pathHashes = pathHashes {
-            logger.info("✅ PathHashes extracted", metadata: [
-                "count": .string("\(pathHashes.count)"),
-                "sample": .string(Array(pathHashes.keys.prefix(3)).joined(separator: ", ")),
-            ])
-        } else {
-            logger.warning("⚠️ PathHashes is nil - compression will fall back to Legacy format")
-        }
-
-        if enableReevaluation {
-            logger.info("✅ Reevaluation enabled (recording for replay/verification)")
-        } else {
-            logger.info("Reevaluation disabled (set ENABLE_REEVALUATION=true to enable)")
-        }
-
-        // Generate schema for /schema endpoint
         let schemaData: Data? = try? JSONEncoder().encode(schema)
         let schemaProvider: @Sendable () -> Data? = { schemaData }
 
-        var middlewareBuilder = HostMiddlewareBuilder()
-        if let provBaseUrl = getEnvStringOptional(key: ProvisioningEnvKeys.baseUrl) {
-            let connectHost = getEnvStringOptional(key: ProvisioningEnvKeys.connectHost)
-            let connectPort = getEnvStringOptional(key: ProvisioningEnvKeys.connectPort).flatMap { Int($0) }
-            let connectScheme = getEnvStringOptional(key: ProvisioningEnvKeys.connectScheme)
-            let serverId = getEnvStringOptional(key: ProvisioningEnvKeys.serverId) ?? "game-\(String(UUID().uuidString.prefix(8)))"
-            middlewareBuilder.add(NIOLandHostConfiguration.provisioningMiddleware(
-                baseUrl: provBaseUrl,
-                serverId: serverId,
-                landType: "hero-defense",
-                heartbeatIntervalSeconds: 30,
-                connectHost: connectHost,
-                connectPort: connectPort,
-                connectScheme: (connectScheme == "ws" || connectScheme == "wss") ? connectScheme : nil
-            ))
-        }
-        let middlewares = middlewareBuilder.build()
-
+        let middlewares = buildProvisioningMiddlewares()
         let nioHost = NIOLandHost(configuration: NIOLandHostConfiguration(
             host: host,
             port: port,
@@ -126,69 +93,29 @@ struct GameServer {
             middlewares: middlewares
         ))
 
-        let baseServerConfig = NIOLandServerConfiguration(
+        let serverConfig = NIOLandServerConfiguration(
             logger: logger,
             allowAutoCreateOnJoin: true,
             transportEncoding: transportEncoding,
             enableLiveStateHashRecording: enableReevaluation,
-            pathHashes: nil,
+            pathHashes: pathHashes,
             eventHashes: nil,
             clientEventHashes: nil,
-            servicesFactory: { _, _ in
-                var services = LandServices()
-
-                // Inject GameConfig provider
-                let configProvider = DefaultGameConfigProvider()
-                let configService = GameConfigProviderService(provider: configProvider)
-                services.register(configService, as: GameConfigProviderService.self)
-
-                if enableReevaluation {
-                    let reevaluationFactory = GameServerReevaluationFactory(
-                        requiredRecordVersion: requiredReplayRecordVersion
-                    )
-                    let reevaluationService = ReevaluationRunnerService(factory: reevaluationFactory)
-                    services.register(reevaluationService, as: ReevaluationRunnerService.self)
-                    services.register(
-                        ReevaluationReplayPolicyService(eventPolicy: .projectedOnly),
-                        as: ReevaluationReplayPolicyService.self
-                    )
-                }
-
-                return services
-            }
+            servicesFactory: { _, _ in makeGameServices(enableReevaluation: enableReevaluation, requiredRecordVersion: requiredReplayRecordVersion) }
         )
 
-        var heroDefenseServerConfig = baseServerConfig
-        heroDefenseServerConfig.pathHashes = pathHashes
-
-        if enableReevaluation {
-            let reevaluationFeature = ReevaluationFeatureConfiguration(
-                enabled: true,
+        try await nioHost.registerWithGenericReplay(
+            landType: "hero-defense",
+            liveLand: liveLand,
+            liveInitialState: HeroDefenseState(),
+            liveWebSocketPath: "/game/hero-defense",
+            configuration: serverConfig,
+            reevaluation: ReevaluationFeatureConfiguration(
+                enabled: enableReevaluation,
                 replayEventPolicy: .projectedOnly,
-                runnerServiceFactory: {
-                    ReevaluationRunnerService(factory: GameServerReevaluationFactory(
-                        requiredRecordVersion: requiredReplayRecordVersion
-                    ))
-                }
+                runnerServiceFactory: { ReevaluationRunnerService(factory: GameServerReevaluationFactory(requiredRecordVersion: requiredReplayRecordVersion)) }
             )
-            try await nioHost.registerWithReevaluationSameLand(
-                landType: "hero-defense",
-                liveLand: HeroDefense.makeLand(),
-                liveInitialState: HeroDefenseState(),
-                liveWebSocketPath: "/game/hero-defense",
-                configuration: heroDefenseServerConfig,
-                reevaluation: reevaluationFeature
-            )
-        } else {
-            // Register Hero Defense game (no reevaluation)
-            try await nioHost.register(
-                landType: "hero-defense",
-                land: HeroDefense.makeLand(),
-                initialState: HeroDefenseState(),
-                webSocketPath: "/game/hero-defense",
-                configuration: heroDefenseServerConfig
-            )
-        }
+        )
 
         await nioHost.registerAdminRoutes()
         logger.info("✅ HTTP endpoints available: /health, /schema, /admin/*")
@@ -202,6 +129,49 @@ struct GameServer {
             exit(1)
         }
     }
+}
+
+// MARK: - Helpers
+
+private func logPathHashes(_ pathHashes: [String: UInt32]?, logger: Logger) {
+    if let pathHashes = pathHashes {
+        logger.info("✅ PathHashes extracted", metadata: [
+            "count": .string("\(pathHashes.count)"),
+            "sample": .string(Array(pathHashes.keys.prefix(3)).joined(separator: ", ")),
+        ])
+    } else {
+        logger.warning("⚠️ PathHashes is nil - compression will fall back to Legacy format")
+    }
+}
+
+private func buildProvisioningMiddlewares() -> [any HostMiddleware] {
+    var builder = HostMiddlewareBuilder()
+    if let provBaseUrl = getEnvStringOptional(key: ProvisioningEnvKeys.baseUrl) {
+        let connectHost = getEnvStringOptional(key: ProvisioningEnvKeys.connectHost)
+        let connectPort = getEnvStringOptional(key: ProvisioningEnvKeys.connectPort).flatMap { Int($0) }
+        let connectScheme = getEnvStringOptional(key: ProvisioningEnvKeys.connectScheme)
+        let serverId = getEnvStringOptional(key: ProvisioningEnvKeys.serverId) ?? "game-\(String(UUID().uuidString.prefix(8)))"
+        builder.add(NIOLandHostConfiguration.provisioningMiddleware(
+            baseUrl: provBaseUrl,
+            serverId: serverId,
+            landType: "hero-defense",
+            heartbeatIntervalSeconds: 30,
+            connectHost: connectHost,
+            connectPort: connectPort,
+            connectScheme: (connectScheme == "ws" || connectScheme == "wss") ? connectScheme : nil
+        ))
+    }
+    return builder.build()
+}
+
+private func makeGameServices(enableReevaluation: Bool, requiredRecordVersion: String) -> LandServices {
+    var services = LandServices()
+    services.register(GameConfigProviderService(provider: DefaultGameConfigProvider()), as: GameConfigProviderService.self)
+    if enableReevaluation {
+        services.register(ReevaluationRunnerService(factory: GameServerReevaluationFactory(requiredRecordVersion: requiredRecordVersion)), as: ReevaluationRunnerService.self)
+        services.register(ReevaluationReplayPolicyService(eventPolicy: .projectedOnly), as: ReevaluationReplayPolicyService.self)
+    }
+    return services
 }
 
 private struct GameServerReevaluationFactory: ReevaluationTargetFactory {

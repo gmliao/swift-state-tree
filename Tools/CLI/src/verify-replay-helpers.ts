@@ -7,6 +7,18 @@ export const BASE_X = 64;
 export const BASE_Y = 36;
 export const NEAR_BASE_RADIUS = 25;
 
+export type EntityCounts = {
+  players: number;
+  monsters: number;
+  turrets: number;
+};
+
+export type EntityThresholds = {
+  minPlayers: number;
+  minMonsters: number;
+  minTurrets: number;
+};
+
 export function parseArgs(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
   for (const arg of argv) {
@@ -93,4 +105,56 @@ export function analyzeReplayState(state: Record<string, unknown> | undefined): 
     nearBaseCount,
     playersWithPosition,
   };
+}
+
+export function getEntityCounts(state: Record<string, unknown> | undefined): EntityCounts {
+  if (!state || typeof state !== "object") {
+    return { players: 0, monsters: 0, turrets: 0 };
+  }
+
+  const players = state.players as Record<string, unknown> | undefined;
+  const monsters = state.monsters as Record<string, unknown> | undefined;
+  const turrets = state.turrets as Record<string, unknown> | undefined;
+
+  return {
+    players: Object.keys(players ?? {}).length,
+    monsters: Object.keys(monsters ?? {}).length,
+    turrets: Object.keys(turrets ?? {}).length,
+  };
+}
+
+export function updateMaxEntityCounts(
+  currentMax: EntityCounts,
+  current: EntityCounts
+): EntityCounts {
+  return {
+    players: Math.max(currentMax.players, current.players),
+    monsters: Math.max(currentMax.monsters, current.monsters),
+    turrets: Math.max(currentMax.turrets, current.turrets),
+  };
+}
+
+export function evaluateEntityThresholds(
+  maxCounts: EntityCounts,
+  thresholds: EntityThresholds
+): { ok: boolean; failures: string[] } {
+  const failures: string[] = [];
+
+  if (maxCounts.players < thresholds.minPlayers) {
+    failures.push(
+      `players max=${maxCounts.players} < minPlayers=${thresholds.minPlayers}`
+    );
+  }
+  if (maxCounts.monsters < thresholds.minMonsters) {
+    failures.push(
+      `monsters max=${maxCounts.monsters} < minMonsters=${thresholds.minMonsters}`
+    );
+  }
+  if (maxCounts.turrets < thresholds.minTurrets) {
+    failures.push(
+      `turrets max=${maxCounts.turrets} < minTurrets=${thresholds.minTurrets}`
+    );
+  }
+
+  return { ok: failures.length === 0, failures };
 }

@@ -40,7 +40,7 @@
     "test:e2e:opcodeJsonArray": "TRANSPORT_ENCODING=jsonOpcode npm run test:e2e:counter -- --state-update-encoding opcodeJsonArray && TRANSPORT_ENCODING=jsonOpcode npm run test:e2e:cookie -- --state-update-encoding opcodeJsonArray && TRANSPORT_ENCODING=jsonOpcode npm run test:e2e:reevaluation -- --state-update-encoding opcodeJsonArray",
     "test:e2e:messagepack": "TRANSPORT_ENCODING=messagepack npm run test:e2e:counter -- --state-update-encoding messagepack && TRANSPORT_ENCODING=messagepack npm run test:e2e:cookie -- --state-update-encoding messagepack && TRANSPORT_ENCODING=messagepack npm run test:e2e:reevaluation -- --state-update-encoding messagepack",
     "test": "npm run test:protocol && npm run test:e2e:all",
-    "test:cli:unit": "tsx scripts/internal/test-cli-assertions.ts && tsx scripts/internal/test-reevaluation-replay-config.ts",
+    "test:cli:unit": "tsx scripts/internal/test-cli-assertions.ts && tsx scripts/internal/test-reevaluation-replay-config.ts && tsx scripts/internal/test-verify-replay-helpers.ts",
     "test-mixed-encoding": "tsx scripts/internal/test-mixed-encoding.ts --url ws://localhost:8080/game/counter",
     "test-packet-encoding": "tsx scripts/internal/test-packet-encoding.ts --url ws://localhost:8080/game/counter",
     "test-encoding-integration": "tsx scripts/internal/test-encoding-integration.ts",

@@ -6,6 +6,7 @@ import SwiftStateTreeDeterministicMath
 
 /// Monster state with position, path progress, and health.
 @StateNodeBuilder
+@SnapshotConvertible
 public struct MonsterState: StateNodeProtocol {
     /// Unique monster ID
     @Sync(.broadcast)
