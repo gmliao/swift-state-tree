@@ -163,6 +163,93 @@ public extension NIOLandHost {
     }
 }
 
+// MARK: - Generic Replay Registration (additive — does not modify existing functions)
+
+public extension NIOLandHost {
+    /// Registers a live land and a corresponding generic replay land.
+    ///
+    /// Unlike `registerWithReevaluationSameLand`, this variant uses
+    /// `GenericReplayLand<State>.makeLand(basedOn:)` to construct the replay land.
+    /// The replay land decodes each tick's state from the `ReevaluationRunnerService`
+    /// result queue via `State.init(fromBroadcastSnapshot:)` — no manual `Decodable`
+    /// conformance is required for game state types.
+    ///
+    /// The replay land type is `"\(landType)\(reevaluation.replayLandSuffix)"`
+    /// (default: `"\(landType)-replay"`).
+    ///
+    /// - Parameters:
+    ///   - landType: Base land type (e.g. "hero-defense"); replay will be
+    ///     `"\(landType)\(reevaluation.replayLandSuffix)"`.
+    ///   - liveLand: The live land definition.  The same definition is passed to
+    ///     `GenericReplayLand.makeLand(basedOn:)` to build the replay land.
+    ///   - liveInitialState: Initial state for live sessions.
+    ///   - liveWebSocketPath: WebSocket path for live connections.
+    ///   - configuration: Server configuration shared by live and replay lands.
+    ///   - reevaluation: Reevaluation feature configuration (runner factory, suffix, …).
+    func registerWithGenericReplay<State: StateFromSnapshotDecodable>(
+        landType: String,
+        liveLand: LandDefinition<State>,
+        liveInitialState: @autoclosure @escaping @Sendable () -> State,
+        liveWebSocketPath: String,
+        configuration: NIOLandServerConfiguration,
+        reevaluation: ReevaluationFeatureConfiguration
+    ) async throws {
+        let effectiveConfiguration: NIOLandServerConfiguration
+        if reevaluation.enabled {
+            effectiveConfiguration = configuration.injectingReevaluationServices(
+                runnerServiceFactory: reevaluation.runnerServiceFactory,
+                replayEventPolicy: reevaluation.replayEventPolicy
+            )
+        } else {
+            effectiveConfiguration = configuration
+        }
+
+        try await register(
+            landType: landType,
+            land: liveLand,
+            initialState: liveInitialState(),
+            webSocketPath: liveWebSocketPath,
+            configuration: effectiveConfiguration
+        )
+
+        guard reevaluation.enabled else {
+            return
+        }
+
+        let replayLandType = "\(landType)\(reevaluation.replayLandSuffix)"
+        let replayWebSocketPath = reevaluation.replayWebSocketPathResolver(replayLandType)
+        let recordsDir = NIOEnvConfig.fromEnvironment().reevaluationRecordsDir
+
+        var replayConfig = effectiveConfiguration.injectingReevaluationKeeperModeResolver(
+            replayLandType: replayLandType,
+            recordsDir: recordsDir
+        )
+        replayConfig.replayLandSuffix = reevaluation.replayLandSuffix
+
+        replayLandSuffix = reevaluation.replayLandSuffix
+
+        let replayLand = GenericReplayLand<State>.makeLand(basedOn: liveLand)
+
+        try await register(
+            landType: replayLandType,
+            land: replayLand,
+            initialState: liveInitialState(),
+            webSocketPath: replayWebSocketPath,
+            configuration: replayConfig
+        )
+
+        if await realm.isRegistered(landType: reevaluation.monitorLandType) == false {
+            try await register(
+                landType: reevaluation.monitorLandType,
+                land: ReevaluationMonitor.makeLand(),
+                initialState: ReevaluationMonitorState(),
+                webSocketPath: reevaluation.monitorWebSocketPath,
+                configuration: effectiveConfiguration
+            )
+        }
+    }
+}
+
 private extension NIOLandServerConfiguration {
     func injectingReevaluationServices(
         runnerServiceFactory: @escaping @Sendable () -> ReevaluationRunnerService,
