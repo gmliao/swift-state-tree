@@ -108,13 +108,57 @@ final class SnapshotConvertibleMacroTests {
                 var name: String?
                 var score: Int
             }
-            
+
             extension OptionalState: SnapshotValueConvertible {
                 func toSnapshotValue() throws -> SnapshotValue {
                     return .object([
                         "name": try SnapshotValue.make(from: name),
                         "score": .int(score)
                     ])
+                }
+            }
+            """,
+            macros: testMacros
+        )
+    }
+
+    @Test("SnapshotConvertible macro generates init(fromSnapshotValue:) for basic types")
+    func generatesFromSnapshotValueInit() throws {
+        assertMacroExpansion(
+            """
+            @SnapshotConvertible
+            struct PlayerState: Codable {
+                var name: String
+                var hpCurrent: Int
+                var hpMax: Int
+            }
+            """,
+            expandedSource: """
+            struct PlayerState: Codable {
+                var name: String
+                var hpCurrent: Int
+                var hpMax: Int
+            }
+
+            extension PlayerState: SnapshotValueConvertible {
+                public func toSnapshotValue() throws -> SnapshotValue {
+                    return .object([
+                        "name": .string(name),
+                        "hpCurrent": .int(hpCurrent),
+                        "hpMax": .int(hpMax)
+                    ])
+                }
+            }
+
+            extension PlayerState: SnapshotValueDecodable {
+                public init(fromSnapshotValue value: SnapshotValue) throws {
+                    guard case .object(let _dict) = value else {
+                        throw SnapshotDecodeError.typeMismatch(expected: "object", got: value)
+                    }
+                    self.init()
+                    if let _v = _dict["name"] { self.name = try _snapshotDecode(_v) }
+                    if let _v = _dict["hpCurrent"] { self.hpCurrent = try _snapshotDecode(_v) }
+                    if let _v = _dict["hpMax"] { self.hpMax = try _snapshotDecode(_v) }
                 }
             }
             """,
