@@ -13,8 +13,9 @@ import SwiftSyntaxMacros
 /// 1. Validates that all stored properties have @Sync or @Internal markers
 /// 2. Generates `getSyncFields()` method implementation
 /// 3. Generates `validateSyncFields()` method implementation
-/// 4. Generates `init(fromBroadcastSnapshot:)` (via extension) satisfying `StateFromSnapshotDecodable`
-public struct StateNodeBuilderMacro: MemberMacro, ExtensionMacro {
+/// 4. Generates `init(fromBroadcastSnapshot:)` as a member when the type explicitly
+///    declares `StateFromSnapshotDecodable` conformance.
+public struct StateNodeBuilderMacro: MemberMacro {
     public static func expansion(
         of node: AttributeSyntax,
         providingMembersOf declaration: some DeclGroupSyntax,
@@ -57,7 +58,7 @@ public struct StateNodeBuilderMacro: MemberMacro, ExtensionMacro {
         // Generate helper methods for container types (Dictionary, Array, Set)
         let containerHelperMethods = try generateContainerHelperMethods(propertiesWithNodes: propertiesWithNodes)
 
-        return [
+        var members: [DeclSyntax] = [
             DeclSyntax(getSyncFieldsMethod),
             DeclSyntax(validateSyncFieldsMethod),
             DeclSyntax(snapshotMethod),
@@ -68,55 +69,21 @@ public struct StateNodeBuilderMacro: MemberMacro, ExtensionMacro {
             DeclSyntax(clearDirtyMethod),
             DeclSyntax(try generateGetFieldMetadata(properties: properties))
         ] + containerHelperMethods
-    }
 
-    // MARK: - ExtensionMacro
-
-    /// Generates `extension TypeName: StateFromSnapshotDecodable { init(fromBroadcastSnapshot:) }`
-    /// Only invoked when the type explicitly declares StateFromSnapshotDecodable conformance.
-    public static func expansion(
-        of node: AttributeSyntax,
-        attachedTo declaration: some DeclGroupSyntax,
-        providingExtensionsOf type: some TypeSyntaxProtocol,
-        conformingTo protocols: [TypeSyntax],
-        in context: some MacroExpansionContext
-    ) throws -> [ExtensionDeclSyntax] {
-        guard let structDecl = declaration.as(StructDeclSyntax.self) else {
-            return []
+        if declaresStateFromSnapshotDecodable(structDecl) {
+            if hasNoArgumentInitializer(structDecl) == false {
+                members.append(
+                    DeclSyntax(
+                        """
+                        init() {}
+                        """
+                    )
+                )
+            }
+            members.append(try generateFromBroadcastSnapshotInit(propertiesWithNodes: propertiesWithNodes))
         }
 
-        let propertiesWithNodes = collectStoredProperties(from: structDecl)
-        let properties = propertiesWithNodes.map { $0.0 }
-        let broadcastProperties = properties.filter { $0.policyType == .broadcast }
-
-        var assignmentLines: [String] = []
-        for prop in broadcastProperties {
-            // Only emit _snapshotDecode for types statically known to conform to SnapshotValueDecodable.
-            // Properties with complex or unknown types keep their default values from self.init().
-            guard isKnownSnapshotValueDecodable(prop.typeName) else {
-                continue
-            }
-            // Use _propName.wrappedValue assignment so the @Sync dirty flag is set correctly.
-            // In init bodies, `self.propName = value` bypasses the property wrapper setter and
-            // does NOT mark the field dirty. Assigning to `.wrappedValue` calls the setter directly.
-            assignmentLines.append(
-                "        if let _v = snapshot.values[\"\(prop.name)\"] { self._\(prop.name).wrappedValue = try _snapshotDecode(_v) }"
-            )
-        }
-        let body = assignmentLines.joined(separator: "\n")
-
-        let typeName = structDecl.name.text
-        let extensionDecl = try ExtensionDeclSyntax(
-            """
-            extension \(raw: typeName): StateFromSnapshotDecodable {
-                public init(fromBroadcastSnapshot snapshot: StateSnapshot) throws {
-                    self.init()
-            \(raw: body)
-                }
-            }
-            """
-        )
-        return [extensionDecl]
+        return members
     }
 
     /// Collect all stored properties from a struct declaration
@@ -778,9 +745,8 @@ public struct StateNodeBuilderMacro: MemberMacro, ExtensionMacro {
 
     /// Generate init(fromBroadcastSnapshot:) method as DeclSyntax.
     ///
-    /// Only generates `_snapshotDecode` calls for broadcast properties whose types are
-    /// statically known to conform to `SnapshotValueDecodable`. Properties with complex or
-    /// unknown types are skipped (they keep their default values).
+    /// Emits _snapshotDecode for every broadcast property; the compiler will error if a
+    /// property type does not conform to SnapshotValueDecodable.
     private static func generateFromBroadcastSnapshotInit(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> DeclSyntax {
         let broadcastProperties = propertiesWithNodes.filter { $0.0.hasSync && $0.0.policyType == .broadcast }
 
@@ -789,13 +755,7 @@ public struct StateNodeBuilderMacro: MemberMacro, ExtensionMacro {
 
         for (property, _) in broadcastProperties {
             let name = property.name
-            // Only emit _snapshotDecode for types known to conform to SnapshotValueDecodable.
-            // Unknown/complex types keep their defaults from self.init().
-            guard isKnownSnapshotValueDecodable(property.typeName) else {
-                continue
-            }
             // Use _propName.wrappedValue to trigger the @Sync setter and mark the field dirty.
-            // In init bodies, `self.propName = value` bypasses the property wrapper setter.
             codeLines.append("if let _v = snapshot.values[\"\(name)\"] { self._\(name).wrappedValue = try _snapshotDecode(_v) }")
         }
 
@@ -808,6 +768,35 @@ public struct StateNodeBuilderMacro: MemberMacro, ExtensionMacro {
             }
             """
         )
+    }
+
+    /// Returns true when the struct explicitly declares `StateFromSnapshotDecodable`.
+    /// We only generate `init(fromBroadcastSnapshot:)` in this case to avoid imposing
+    /// SnapshotValueDecodable requirements on all @StateNodeBuilder users.
+    private static func declaresStateFromSnapshotDecodable(_ structDecl: StructDeclSyntax) -> Bool {
+        guard let inheritedTypes = structDecl.inheritanceClause?.inheritedTypes else {
+            return false
+        }
+
+        return inheritedTypes.contains { inheritedType in
+            let text = inheritedType.type.trimmedDescription.replacingOccurrences(of: " ", with: "")
+            return text == "StateFromSnapshotDecodable" || text.hasSuffix(".StateFromSnapshotDecodable")
+        }
+    }
+
+    /// Returns true if the struct explicitly defines `init()` with no parameters.
+    private static func hasNoArgumentInitializer(_ structDecl: StructDeclSyntax) -> Bool {
+        for member in structDecl.memberBlock.members {
+            guard let initializer = member.decl.as(InitializerDeclSyntax.self) else {
+                continue
+            }
+
+            let parameters = initializer.signature.parameterClause.parameters
+            if parameters.isEmpty {
+                return true
+            }
+        }
+        return false
     }
 
     /// Returns true if the type is statically known to conform to SnapshotValueDecodable.

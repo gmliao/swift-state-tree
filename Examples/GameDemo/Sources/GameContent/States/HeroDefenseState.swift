@@ -6,7 +6,7 @@ import SwiftStateTree
 /// Hero Defense game state definition.
 /// Players can move freely, shoot monsters, and upgrade with resources.
 @StateNodeBuilder
-public struct HeroDefenseState: StateNodeProtocol {
+public struct HeroDefenseState: StateNodeProtocol, StateFromSnapshotDecodable {
     /// Online players and their states
     @Sync(.broadcast)
     var players: [PlayerID: PlayerState] = [:]

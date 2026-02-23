@@ -6,6 +6,7 @@ import SwiftStateTreeDeterministicMath
 
 /// Turret state with position, level, and targeting.
 @StateNodeBuilder
+@SnapshotConvertible
 public struct TurretState: StateNodeProtocol {
     /// Unique turret ID
     @Sync(.broadcast)

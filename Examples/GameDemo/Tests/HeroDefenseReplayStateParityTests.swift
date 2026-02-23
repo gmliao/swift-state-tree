@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 import SwiftStateTree
 import SwiftStateTreeDeterministicMath
 import SwiftStateTreeReevaluationMonitor
@@ -6,266 +7,136 @@ import SwiftStateTreeReevaluationMonitor
 
 @Suite("HeroDefenseReplayStateParityTests")
 struct HeroDefenseReplayStateParityTests {
-    @Test("Replay land uses HeroDefenseState as the state definition")
-    func replayLandUsesLiveStateDefinition() {
-        let replayLand = HeroDefenseReplay.makeLand()
-
-        #expect(replayLand.stateType == HeroDefenseState.self)
+    @Test("HeroDefenseState satisfies StateFromSnapshotDecodable for GenericReplayLand")
+    func heroDefenseStateConformsToStateFromSnapshotDecodable() {
+        requireReplayDecodable(HeroDefenseState.self)
     }
 
-    @Test("Replay land registers shooting server events for schema/codegen")
-    func replayLandRegistersShootingServerEvents() {
-        let replayLand = HeroDefenseReplay.makeLand()
-        let eventNames = Set(replayLand.serverEventRegistry.registered.map { $0.eventName })
+    @Test("HeroDefenseState decodes broadcast snapshot with entities")
+    func heroDefenseStateDecodesBroadcastSnapshotWithEntities() throws {
+        var original = HeroDefenseState()
 
-        #expect(eventNames.contains("HeroDefenseReplayTick"))
-        #expect(eventNames.contains("PlayerShoot"))
-        #expect(eventNames.contains("TurretFire"))
-    }
-
-    @Test("Live HeroDefense snapshot shape has no replay wrapper artifacts")
-    func liveSnapshotShapeHasNoReplayWrapperArtifacts() throws {
-        var replay = HeroDefenseState()
         var player = PlayerState()
-        player.position = Position2(x: 10.0, y: 20.0)
-        replay.players[PlayerID("p1")] = player
+        player.position = Position2(x: 64, y: 36)
+        player.health = 111
+        original.players[PlayerID("p1")] = player
 
         var monster = MonsterState()
-        monster.id = 1
-        monster.position = Position2(x: 11.0, y: 22.0)
-        replay.monsters[1] = monster
+        monster.id = 7
+        monster.position = Position2(x: 80, y: 40)
+        original.monsters[7] = monster
 
         var turret = TurretState()
-        turret.id = 2
-        turret.position = Position2(x: 30.0, y: 40.0)
+        turret.id = 3
+        turret.position = Position2(x: 66, y: 37)
         turret.ownerID = PlayerID("p1")
-        replay.turrets[2] = turret
+        original.turrets[3] = turret
 
-        replay.base.health = 88
-        replay.base.maxHealth = 100
-        replay.score = 123
+        original.score = 55
 
-        let snapshot = try replay.broadcastSnapshot(dirtyFields: nil)
-        let playersValue = snapshot.values["players"]?.objectValue
-        let playerP1 = playersValue?["p1"]?.objectValue
-        let monstersValue = snapshot.values["monsters"]?.objectValue
-        let monster1 = monstersValue?["1"]?.objectValue
-        let turretsValue = snapshot.values["turrets"]?.objectValue
-        let turret2 = turretsValue?["2"]?.objectValue
-        let baseValue = snapshot.values["base"]?.objectValue
-        let scoreValue = snapshot.values["score"]
+        let snapshot = try original.broadcastSnapshot(dirtyFields: nil)
+        let decoded = try HeroDefenseState(fromBroadcastSnapshot: snapshot)
 
-        #expect(playersValue != nil)
-        #expect(playerP1?["base"] == nil)
-        #expect(playerP1?["position"] != nil)
-        #expect(monstersValue != nil)
-        #expect(monster1?["position"] != nil)
-        #expect(turretsValue != nil)
-        #expect(turret2?["position"] != nil)
-        #expect(baseValue?["base"] == nil)
-        #expect(baseValue?["health"]?.intValue == 88)
-        #expect(scoreValue?.intValue == 123)
+        #expect(decoded.players.count == 1)
+        #expect(decoded.monsters.count == 1)
+        #expect(decoded.turrets.count == 1)
+        #expect(decoded.score == 55)
+        #expect(decoded.players[PlayerID("p1")]?.health == 111)
+        #expect(decoded.monsters[7]?.id == 7)
+        #expect(decoded.turrets[3]?.ownerID == PlayerID("p1"))
     }
 
-    @Test("applyProjectedState clears replay-applied fields when projected keys are missing")
-    func applyProjectedStateClearsReplayAppliedFieldsWhenKeysMissing() {
-        var state = HeroDefenseState()
+    @Test("GenericReplayLand built from HeroDefense preserves identity and access-control")
+    func genericReplayLandBuiltFromHeroDefensePreservesIdentityAndAccessControl() {
+        let liveLand = HeroDefense.makeLand()
+        let replayLand = GenericReplayLand<HeroDefenseState>.makeLand(basedOn: liveLand)
 
-        var player = PlayerState()
-        player.position = Position2(x: 10.0, y: 20.0)
-        state.players[PlayerID("p1")] = player
-
-        var monster = MonsterState()
-        monster.id = 1
-        monster.health = 77
-        state.monsters[1] = monster
-
-        var turret = TurretState()
-        turret.id = 2
-        turret.ownerID = PlayerID("p1")
-        state.turrets[2] = turret
-
-        state.base.health = 42
-        state.score = 3
-
-        applyProjectedState([
-            "score": AnyCodable(9)
-        ], to: &state)
-
-        let defaultBase = BaseState()
-
-        #expect(state.players.isEmpty)
-        #expect(state.monsters.isEmpty)
-        #expect(state.turrets.isEmpty)
-        #expect(state.base.position == defaultBase.position)
-        #expect(state.base.radius == defaultBase.radius)
-        #expect(state.base.health == defaultBase.health)
-        #expect(state.base.maxHealth == defaultBase.maxHealth)
-        #expect(state.score == 9)
+        #expect(replayLand.id == liveLand.id)
+        #expect(replayLand.config.allowPublic == liveLand.config.allowPublic)
+        #expect(replayLand.config.maxPlayers == liveLand.config.maxPlayers)
+        #expect(replayLand.lifetimeHandlers.tickInterval == liveLand.lifetimeHandlers.tickInterval)
     }
 
-    @Test("applyProjectedState does not mix old frame data when projected payload is invalid")
-    func applyProjectedStateInvalidPayloadDoesNotLeakPreviousFrameData() {
-        var state = HeroDefenseState()
+    @Test("HeroDefenseReplayProjector emits state object with non-empty entity collections")
+    func heroDefenseReplayProjectorEmitsStateObjectWithEntityCollections() throws {
+        let json = #"{"values":{"players":{"p1":{"health":100,"maxHealth":100,"position":{"v":{"x":64000,"y":36000}},"rotation":{"degrees":0},"targetPosition":null,"weaponLevel":0,"resources":0}},"monsters":{"1":{"id":1,"health":10,"maxHealth":10,"position":{"v":{"x":65000,"y":36500}},"rotation":{"degrees":1000}}},"turrets":{"2":{"id":2,"position":{"v":{"x":64500,"y":36200}},"rotation":{"degrees":0},"level":1,"ownerID":"p1"}},"base":{"position":{"v":{"x":64000,"y":36000}},"radius":3,"health":100,"maxHealth":100},"score":9}}"#
 
-        var player = PlayerState()
-        player.health = 11
-        state.players[PlayerID("p1")] = player
-        state.base.health = 55
-        state.score = 1
-
-        applyProjectedState([
-            "players": AnyCodable("not-a-player-map"),
-            "base": AnyCodable("not-a-base-object"),
-            "score": AnyCodable(99)
-        ], to: &state)
-
-        let defaultBase = BaseState()
-
-        #expect(state.players.isEmpty)
-        #expect(state.base.position == defaultBase.position)
-        #expect(state.base.radius == defaultBase.radius)
-        #expect(state.base.health == defaultBase.health)
-        #expect(state.base.maxHealth == defaultBase.maxHealth)
-        #expect(state.score == 99)
-    }
-
-    @Test("projected replay events are forwarded as type-erased server events")
-    func projectedReplayEventsAreForwardedAsTypeErasedServerEvents() {
-        let projectedEvents: [AnyCodable] = [
-            AnyCodable([
-                "typeIdentifier": "PlayerShoot",
-                "payload": [
-                    "playerID": ["rawValue": "p1"],
-                    "from": ["v": ["x": 1000, "y": 2000]],
-                    "to": ["v": ["x": 3000, "y": 4000]],
-                ],
-            ]),
-            AnyCodable([
-                "typeIdentifier": "TurretFire",
-                "payload": [
-                    "turretID": 2,
-                    "from": ["v": ["x": 5000, "y": 6000]],
-                    "to": ["v": ["x": 7000, "y": 8000]],
-                ],
-            ]),
-        ]
-
-        let forwarded = buildProjectedServerEvents(
-            projectedEvents,
-            allowedEventTypes: ["PlayerShoot", "TurretFire"]
-        )
-
-        #expect(forwarded.count == 2)
-        #expect(forwarded[0].type == "PlayerShoot")
-        #expect(forwarded[1].type == "TurretFire")
-    }
-
-    @Test("projected replay events ignore unknown event types safely")
-    func projectedReplayEventsIgnoreUnknownEventTypesSafely() {
-        let projectedEvents: [AnyCodable] = [
-            AnyCodable([
-                "typeIdentifier": "UnknownEffect",
-                "payload": [
-                    "value": 1,
-                ],
-            ]),
-            AnyCodable([
-                "typeIdentifier": "PlayerShoot",
-                "payload": [
-                    "playerID": ["rawValue": "p1"],
-                    "from": ["v": ["x": 1000, "y": 2000]],
-                    "to": ["v": ["x": 3000, "y": 4000]],
-                ],
-            ]),
-        ]
-
-        let forwarded = buildProjectedServerEvents(
-            projectedEvents,
-            allowedEventTypes: ["PlayerShoot", "TurretFire"]
-        )
-
-        #expect(forwarded.count == 1)
-        #expect(forwarded.first?.type == "PlayerShoot")
-    }
-
-    @Test("projected replay events accept projector envelopes with AnyCodable payload values")
-    func projectedReplayEventsAcceptAnyCodablePayloadValues() {
-        let payload = AnyCodable([
-            "playerID": ["rawValue": "p1"],
-            "from": ["v": ["x": 1000, "y": 2000]],
-            "to": ["v": ["x": 3000, "y": 4000]],
-        ])
-        let projectedEvents: [AnyCodable] = [
-            AnyCodable([
-                "typeIdentifier": "PlayerShoot",
-                "payload": payload,
-            ]),
-        ]
-
-        let forwarded = buildProjectedServerEvents(
-            projectedEvents,
-            allowedEventTypes: ["PlayerShoot", "TurretFire"]
-        )
-
-        #expect(forwarded.count == 1)
-        #expect(forwarded.first?.type == "PlayerShoot")
-    }
-
-    @Test("projected replay events accept projector envelopes stored as [String: AnyCodable]")
-    func projectedReplayEventsAcceptStringAnyCodableEnvelope() {
-        let payload = AnyCodable([
-            "playerID": ["rawValue": "p1"],
-            "from": ["v": ["x": 1000, "y": 2000]],
-            "to": ["v": ["x": 3000, "y": 4000]],
-        ])
-        let envelope: [String: AnyCodable] = [
-            "typeIdentifier": AnyCodable("PlayerShoot"),
-            "payload": payload,
-        ]
-        let projectedEvents: [AnyCodable] = [AnyCodable(envelope)]
-
-        let forwarded = buildProjectedServerEvents(
-            projectedEvents,
-            allowedEventTypes: ["PlayerShoot", "TurretFire"]
-        )
-
-        #expect(forwarded.count == 1)
-        #expect(forwarded.first?.type == "PlayerShoot")
-    }
-
-    @Test("projector output can be forwarded into replay server events")
-    func projectorOutputCanBeForwardedIntoReplayServerEvents() throws {
-        let emittedEvent = ReevaluationRecordedServerEvent(
-            kind: "serverEvent",
-            sequence: 1,
-            tickId: 7,
-            typeIdentifier: "PlayerShoot",
-            payload: AnyCodable([
-                "playerID": ["rawValue": "p1"],
-                "from": ["v": ["x": 1000, "y": 2000]],
-                "to": ["v": ["x": 3000, "y": 4000]],
-            ]),
-            target: ReevaluationEventTargetRecord(kind: "all", ids: [])
-        )
-        let stepResult = ReevaluationStepResult(
-            tickId: 7,
-            stateHash: "hash-7",
-            recordedHash: "hash-7",
+        let result = ReevaluationStepResult(
+            tickId: 1,
+            stateHash: "h1",
+            recordedHash: "h1",
             isMatch: true,
-            actualState: AnyCodable("{}"),
-            emittedServerEvents: [emittedEvent]
+            actualState: AnyCodable(json),
+            emittedServerEvents: []
         )
 
-        let projector = HeroDefenseReplayProjector()
-        let projected = try projector.project(stepResult)
-        let forwarded = buildProjectedServerEvents(
-            projected.serverEvents,
-            allowedEventTypes: ["PlayerShoot", "TurretFire"]
-        )
+        let projected = try HeroDefenseReplayProjector().project(result)
 
-        #expect(forwarded.count == 1)
-        #expect(forwarded.first?.type == "PlayerShoot")
+        #expect(projected.tickID == 1)
+        #expect(entityCount(projected.stateObject["players"]) == 1)
+        #expect(entityCount(projected.stateObject["monsters"]) == 1)
+        #expect(entityCount(projected.stateObject["turrets"]) == 1)
     }
 
+    @Test("HeroDefenseState decodes first ConcreteReevaluationRunner snapshot from fixture record")
+    func heroDefenseStateDecodesRunnerSnapshotFixture() async throws {
+        let recordPath = fixtureRecordPath("3-hero-defense.json")
+        #expect(FileManager.default.fileExists(atPath: recordPath))
+
+        var services = LandServices()
+        services.register(
+            GameConfigProviderService(provider: DefaultGameConfigProvider()),
+            as: GameConfigProviderService.self
+        )
+
+        let runner = try await ConcreteReevaluationRunner(
+            definition: HeroDefense.makeLand(),
+            initialState: HeroDefenseState(),
+            recordFilePath: recordPath,
+            services: services
+        )
+
+        guard let first = try await runner.step() else {
+            Issue.record("Expected at least one replay tick in fixture record")
+            return
+        }
+
+        guard let snapshot = decodeReplayState(StateSnapshot.self, from: first.actualState) else {
+            Issue.record("Expected first replay tick to include decodable StateSnapshot")
+            return
+        }
+
+        let decoded = try HeroDefenseState(fromBroadcastSnapshot: snapshot)
+        #expect(!decoded.players.isEmpty)
+        #expect(!decoded.monsters.isEmpty)
+    }
+}
+
+private func requireReplayDecodable<T: StateFromSnapshotDecodable>(_: T.Type) {}
+
+private func entityCount(_ value: AnyCodable?) -> Int {
+    guard let value else {
+        return 0
+    }
+
+    if let dict = value.base as? [String: Any] {
+        return dict.count
+    }
+
+    if let dict = value.base as? [String: AnyCodable] {
+        return dict.count
+    }
+
+    return 0
+}
+
+private func fixtureRecordPath(_ fileName: String) -> String {
+    let thisFile = URL(fileURLWithPath: #filePath)
+    let gameDemoRoot = thisFile
+        .deletingLastPathComponent() // Tests
+        .deletingLastPathComponent() // GameDemo
+    return gameDemoRoot
+        .appendingPathComponent("reevaluation-records")
+        .appendingPathComponent(fileName)
+        .path
 }

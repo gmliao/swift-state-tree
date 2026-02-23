@@ -77,10 +77,16 @@ public extension NIOLandHost {
         let replayWebSocketPath = reevaluation.replayWebSocketPathResolver(replayLandType)
         let recordsDir = NIOEnvConfig.fromEnvironment().reevaluationRecordsDir
 
-        var replayConfig = effectiveConfiguration.injectingReevaluationKeeperModeResolver(
-            replayLandType: replayLandType,
-            recordsDir: recordsDir
-        )
+        var replayConfig = effectiveConfiguration
+            .injectingGenericReplayRunnerBootstrap(
+                replayLandType: replayLandType,
+                liveLandType: landType,
+                recordsDir: recordsDir
+            )
+            .injectingGenericReplayKeeperModeResolver(
+                replayLandType: replayLandType,
+                recordsDir: recordsDir
+            )
         replayConfig.replayLandSuffix = reevaluation.replayLandSuffix
 
         replayLandSuffix = reevaluation.replayLandSuffix
@@ -220,10 +226,16 @@ public extension NIOLandHost {
         let replayWebSocketPath = reevaluation.replayWebSocketPathResolver(replayLandType)
         let recordsDir = NIOEnvConfig.fromEnvironment().reevaluationRecordsDir
 
-        var replayConfig = effectiveConfiguration.injectingReevaluationKeeperModeResolver(
-            replayLandType: replayLandType,
-            recordsDir: recordsDir
-        )
+        var replayConfig = effectiveConfiguration
+            .injectingGenericReplayRunnerBootstrap(
+                replayLandType: replayLandType,
+                liveLandType: landType,
+                recordsDir: recordsDir
+            )
+            .injectingGenericReplayKeeperModeResolver(
+                replayLandType: replayLandType,
+                recordsDir: recordsDir
+            )
         replayConfig.replayLandSuffix = reevaluation.replayLandSuffix
 
         replayLandSuffix = reevaluation.replayLandSuffix
@@ -250,7 +262,23 @@ public extension NIOLandHost {
     }
 }
 
-private extension NIOLandServerConfiguration {
+func resolveGenericReplayKeeperMode(
+    landID: LandID,
+    replayLandType: String,
+    recordsDir: String
+) -> LandKeeperModeConfig? {
+    guard landID.landType == replayLandType else { return nil }
+    guard ReevaluationReplaySessionDescriptor.decode(
+        instanceId: landID.instanceId,
+        landType: replayLandType,
+        recordsDir: recordsDir
+    ) != nil else {
+        return .invalidReplaySession(message: "Invalid replay session descriptor for instanceId")
+    }
+    return .live
+}
+
+extension NIOLandServerConfiguration {
     func injectingReevaluationServices(
         runnerServiceFactory: @escaping @Sendable () -> ReevaluationRunnerService,
         replayEventPolicy: ReevaluationReplayEventPolicy
@@ -268,6 +296,69 @@ private extension NIOLandServerConfiguration {
                     as: ReevaluationReplayPolicyService.self
                 )
             }
+            return services
+        }
+        return updated
+    }
+
+    func injectingGenericReplayKeeperModeResolver(
+        replayLandType: String,
+        recordsDir: String
+    ) -> NIOLandServerConfiguration {
+        var updated = self
+        let previousResolver = self.keeperModeResolver
+        let captureReplayLandType = replayLandType
+        let captureRecordsDir = recordsDir
+        updated.keeperModeResolver = { landID, metadata in
+            if let previous = previousResolver, let result = previous(landID, metadata) {
+                return result
+            }
+            return resolveGenericReplayKeeperMode(
+                landID: landID,
+                replayLandType: captureReplayLandType,
+                recordsDir: captureRecordsDir
+            )
+        }
+        return updated
+    }
+
+    func injectingGenericReplayRunnerBootstrap(
+        replayLandType: String,
+        liveLandType: String,
+        recordsDir: String
+    ) -> NIOLandServerConfiguration {
+        var updated = self
+        let baseFactory = self.servicesFactory
+        let captureReplayLandType = replayLandType
+        let captureLiveLandType = liveLandType
+        let captureRecordsDir = recordsDir
+
+        updated.servicesFactory = { landID, metadata in
+            let services = baseFactory(landID, metadata)
+
+            guard landID.landType == captureReplayLandType else {
+                return services
+            }
+
+            guard let descriptor = ReevaluationReplaySessionDescriptor.decode(
+                instanceId: landID.instanceId,
+                landType: captureReplayLandType,
+                recordsDir: captureRecordsDir
+            ) else {
+                return services
+            }
+
+            guard let runnerService = services.get(ReevaluationRunnerService.self) else {
+                return services
+            }
+
+            if runnerService.getStatus().phase == .idle {
+                runnerService.startVerification(
+                    landType: captureLiveLandType,
+                    recordFilePath: descriptor.recordFilePath
+                )
+            }
+
             return services
         }
         return updated

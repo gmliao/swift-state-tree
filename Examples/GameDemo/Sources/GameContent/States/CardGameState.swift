@@ -13,12 +13,25 @@ public struct Card: StateProtocol {
     public let suit: Int  // 0-3: Spades, Hearts, Diamonds, Clubs
     public let rank: Int  // 0-12: Ace, 2-10, Jack, Queen, King
     public let value: Int  // Game value (1-13)
-    
+
     public init(id: Int, suit: Int, rank: Int, value: Int) {
         self.id = id
         self.suit = suit
         self.rank = rank
         self.value = value
+    }
+}
+
+extension Card: SnapshotValueDecodable {
+    public init(fromSnapshotValue value: SnapshotValue) throws {
+        guard case .object(let dict) = value else {
+            throw SnapshotDecodeError.typeMismatch(expected: "object", got: value)
+        }
+        let idVal: Int = try _snapshotDecode(dict["id"] ?? .null)
+        let suitVal: Int = try _snapshotDecode(dict["suit"] ?? .null)
+        let rankVal: Int = try _snapshotDecode(dict["rank"] ?? .null)
+        let valueVal: Int = try _snapshotDecode(dict["value"] ?? .null)
+        self.init(id: idVal, suit: suitVal, rank: rankVal, value: valueVal)
     }
 }
 
@@ -45,12 +58,17 @@ public struct CardGamePlayerState: StateProtocol {
     public var totalScore: Int
     public var gamesWon: Int
     public var isActive: Bool
-    
+
     public init(name: String, totalScore: Int = 0, gamesWon: Int = 0, isActive: Bool = true) {
         self.name = name
         self.totalScore = totalScore
         self.gamesWon = gamesWon
         self.isActive = isActive
+    }
+
+    /// No-argument init for @SnapshotConvertible-generated decoder.
+    public init() {
+        self.init(name: "", totalScore: 0, gamesWon: 0, isActive: true)
     }
 }
 

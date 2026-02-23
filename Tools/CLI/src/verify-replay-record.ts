@@ -5,6 +5,7 @@
  *
  * Usage:
  *   tsx src/verify-replay-record.ts [--record-path=path] [--admin-url=url]
+ *     [--wait-ms=8000] [--min-players=1] [--min-monsters=1] [--min-turrets=0]
  *
  * Requires: GameServer running (e.g. from Examples/GameDemo with REEVALUATION_RECORDS_DIR).
  */
@@ -22,6 +23,9 @@ import {
   getPositionXY,
   distance,
   analyzeReplayState,
+  getEntityCounts,
+  updateMaxEntityCounts,
+  evaluateEntityThresholds,
 } from "./verify-replay-helpers";
 
 async function startReplaySession(params: {
@@ -64,6 +68,10 @@ async function startReplaySession(params: {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const adminUrl = args["admin-url"] ?? "http://localhost:8080";
+  const waitMs = parseUIntOption(args["wait-ms"], "wait-ms", 8000);
+  const minPlayers = parseUIntOption(args["min-players"], "min-players", 1);
+  const minMonsters = parseUIntOption(args["min-monsters"], "min-monsters", 1);
+  const minTurrets = parseUIntOption(args["min-turrets"], "min-turrets", 0);
   const apiKey = (
     process.env.HERO_DEFENSE_ADMIN_KEY ||
     process.env.ADMIN_API_KEY ||
@@ -105,15 +113,16 @@ async function main() {
     throw new Error(`Join failed: ${joinResult.reason ?? "unknown"}`);
   }
 
-  // Wait until state has at least one player (replay applies join at tick 0, then state updates)
-  const waitForPlayersMs = 8000;
+  // Observe replay state for a fixed window and track max entity counts seen during replay.
   const pollIntervalMs = 200;
   let state = view.getState() as Record<string, unknown> | undefined;
+  let latestAnalyzed = analyzeReplayState(state);
+  let maxEntityCounts = getEntityCounts(state);
   let elapsed = 0;
-  while (elapsed < waitForPlayersMs) {
+  while (elapsed < waitMs) {
     state = view.getState() as Record<string, unknown> | undefined;
-    const players = (state?.players as Record<string, unknown>) ?? {};
-    if (Object.keys(players).length > 0) break;
+    latestAnalyzed = analyzeReplayState(state);
+    maxEntityCounts = updateMaxEntityCounts(maxEntityCounts, getEntityCounts(state));
     await new Promise((r) => setTimeout(r, pollIntervalMs));
     elapsed += pollIntervalMs;
   }
@@ -122,8 +131,7 @@ async function main() {
     await runtime.disconnect();
     throw new Error("No state after join");
   }
-  const analyzed = analyzeReplayState(state as Record<string, unknown>);
-  const { basePos, baseOk, playerEntries, nearBaseCount, playersWithPosition } = analyzed;
+  const { basePos, baseOk, playerEntries, nearBaseCount, playersWithPosition } = latestAnalyzed;
 
   console.log(chalk.cyan("\n=== Replay state (client-received) ==="));
   console.log(`Base position: ${basePos ? `(${basePos.x.toFixed(2)}, ${basePos.y.toFixed(2)})` : "N/A"} (expected ${BASE_X}, ${BASE_Y})`);
@@ -150,9 +158,12 @@ async function main() {
     }
   }
 
-  const monsters = (state as Record<string, unknown>).monsters as Record<string, unknown> | undefined;
-  const turrets = (state as Record<string, unknown>).turrets as Record<string, unknown> | undefined;
-  console.log(`Monsters: ${Object.keys(monsters ?? {}).length}, Turrets: ${Object.keys(turrets ?? {}).length}`);
+  console.log(
+    `Entity max seen within ${waitMs}ms: Players=${maxEntityCounts.players}, Monsters=${maxEntityCounts.monsters}, Turrets=${maxEntityCounts.turrets}`
+  );
+  console.log(
+    `Entity minimum required: Players>=${minPlayers}, Monsters>=${minMonsters}, Turrets>=${minTurrets}`
+  );
 
   await runtime.disconnect();
 
@@ -160,15 +171,22 @@ async function main() {
     console.log(chalk.red("\nFAIL: Base position should be (64, 36) per GameConfig."));
     process.exit(1);
   }
-  if (playerEntries.length === 0) {
-    console.log(
-      chalk.yellow("\nWARN: No players in state after waiting. Replay server may not be pushing state updates (decode of actualState to State can fail if snapshot format does not match). Base position was verified.")
-    );
-  } else if (playersWithPosition > 0 && nearBaseCount < playersWithPosition) {
+  const thresholdResult = evaluateEntityThresholds(
+    maxEntityCounts,
+    { minPlayers, minMonsters, minTurrets }
+  );
+  if (!thresholdResult.ok) {
+    for (const failure of thresholdResult.failures) {
+      console.log(chalk.red(`FAIL: ${failure}`));
+    }
+    process.exit(1);
+  }
+
+  if (playerEntries.length > 0 && playersWithPosition > 0 && nearBaseCount < playersWithPosition) {
     console.log(chalk.red(`\nFAIL: Not all player positions near base (expected spawn 64±5, 36±5). ${nearBaseCount}/${playersWithPosition} near base.`));
     process.exit(1);
   } else {
-    console.log(chalk.green("\nOK: Reevaluation replay verified; base (64,36) and player position(s) near base received correctly."));
+    console.log(chalk.green("\nOK: Reevaluation replay verified; base position and entity thresholds are satisfied."));
   }
   process.exit(0);
 }
@@ -177,3 +195,15 @@ main().catch((err: unknown) => {
   console.error(chalk.red(String(err)));
   process.exit(1);
 });
+
+function parseUIntOption(raw: string | undefined, key: string, defaultValue: number): number {
+  if (raw == null || raw.trim().length === 0) {
+    return defaultValue;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || Number.isNaN(parsed) || parsed < 0) {
+    throw new Error(`Invalid --${key} value: ${raw}`);
+  }
+  return parsed;
+}

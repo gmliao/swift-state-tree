@@ -34,6 +34,16 @@ struct SnapshotValueDecodableTests {
         #expect(try Double(fromSnapshotValue: .double(3.14)) == 3.14)
     }
 
+    @Test("Double decodes from .int case for JSON round-trip compatibility")
+    func doubleFromInt() throws {
+        #expect(try Double(fromSnapshotValue: .int(3)) == 3.0)
+    }
+
+    @Test("Float decodes from .int case for JSON round-trip compatibility")
+    func floatFromInt() throws {
+        #expect(try Float(fromSnapshotValue: .int(3)) == 3.0)
+    }
+
     @Test("Optional decodes .null as nil")
     func optionalNull() throws {
         let v = try Optional<Int>(fromSnapshotValue: .null)

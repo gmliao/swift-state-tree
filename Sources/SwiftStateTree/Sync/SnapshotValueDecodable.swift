@@ -79,19 +79,29 @@ extension String: SnapshotValueDecodable {
 
 extension Double: SnapshotValueDecodable {
     public init(fromSnapshotValue value: SnapshotValue) throws {
-        guard case .double(let v) = value else {
-            throw SnapshotDecodeError.typeMismatch(expected: "Double (.double)", got: value)
+        switch value {
+        case .double(let v):
+            self = v
+        case .int(let v):
+            // JSON round-trips may normalize whole-number doubles to ints.
+            self = Double(v)
+        default:
+            throw SnapshotDecodeError.typeMismatch(expected: "Double (.double|.int)", got: value)
         }
-        self = v
     }
 }
 
 extension Float: SnapshotValueDecodable {
     public init(fromSnapshotValue value: SnapshotValue) throws {
-        guard case .double(let v) = value else {
-            throw SnapshotDecodeError.typeMismatch(expected: "Float (.double)", got: value)
+        switch value {
+        case .double(let v):
+            self = Float(v)
+        case .int(let v):
+            // JSON round-trips may normalize whole-number floats to ints.
+            self = Float(v)
+        default:
+            throw SnapshotDecodeError.typeMismatch(expected: "Float (.double|.int)", got: value)
         }
-        self = Float(v)
     }
 }
 

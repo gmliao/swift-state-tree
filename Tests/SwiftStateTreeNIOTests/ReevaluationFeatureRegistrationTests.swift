@@ -189,6 +189,74 @@ struct ReevaluationFeatureRegistrationTests {
             Issue.record("Expected ReevaluationReplayError, got \(type(of: error)): \(error)")
         }
     }
+
+    @Test("Generic replay resolver returns .live for valid replay descriptor")
+    func genericReplayResolverReturnsLiveForValidDescriptor() {
+        let recordsDir = FileManager.default.temporaryDirectory.path
+        let replayLandType = "feature-live-replay"
+        let recordPath = URL(fileURLWithPath: recordsDir).appendingPathComponent("record.json").path
+        let landID = LandID(
+            landType: replayLandType,
+            instanceId: "\(UUID().uuidString.lowercased()).\(base64URLEncoded(recordPath))"
+        )
+
+        let mode = resolveGenericReplayKeeperMode(
+            landID: landID,
+            replayLandType: replayLandType,
+            recordsDir: recordsDir
+        )
+
+        guard let mode else {
+            Issue.record("Expected generic replay resolver to return .live for valid descriptor")
+            return
+        }
+
+        switch mode {
+        case .live:
+            break
+        default:
+            Issue.record("Expected .live, got \(String(describing: mode))")
+        }
+    }
+
+    @Test("Generic replay configuration bootstraps runner service using record path from replay landID")
+    func genericReplayConfigurationBootstrapsRunnerService() {
+        let replayLandType = "feature-live-replay"
+        let liveLandType = "feature-live"
+        let recordsDir = FileManager.default.temporaryDirectory.path
+        let recordPath = URL(fileURLWithPath: recordsDir).appendingPathComponent("boot.json").path
+        let landID = LandID(
+            landType: replayLandType,
+            instanceId: "\(UUID().uuidString.lowercased()).\(base64URLEncoded(recordPath))"
+        )
+
+        let bootstrapFactory = MockReevaluationTargetFactory()
+        let config = NIOLandServerConfiguration(
+            servicesFactory: { _, _ in
+                var services = LandServices()
+                services.register(
+                    ReevaluationRunnerService(factory: bootstrapFactory),
+                    as: ReevaluationRunnerService.self
+                )
+                return services
+            }
+        )
+            .injectingGenericReplayRunnerBootstrap(
+                replayLandType: replayLandType,
+                liveLandType: liveLandType,
+                recordsDir: recordsDir
+            )
+
+        let services = config.servicesFactory(landID, [:])
+        guard let service = services.get(ReevaluationRunnerService.self) else {
+            Issue.record("Expected ReevaluationRunnerService in services")
+            return
+        }
+
+        let status = service.getStatus()
+        #expect(status.phase == .loading)
+        #expect(status.recordFilePath == recordPath)
+    }
 }
 
 private struct MockReevaluationTargetFactory: ReevaluationTargetFactory {
@@ -205,4 +273,12 @@ private actor MockReevaluationRunner: ReevaluationRunnerProtocol {
     func step() async throws -> ReevaluationStepResult? {
         nil
     }
+}
+
+private func base64URLEncoded(_ value: String) -> String {
+    Data(value.utf8)
+        .base64EncodedString()
+        .replacingOccurrences(of: "+", with: "-")
+        .replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: "=", with: "")
 }

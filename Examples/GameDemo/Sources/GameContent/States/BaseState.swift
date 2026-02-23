@@ -6,6 +6,7 @@ import SwiftStateTreeDeterministicMath
 
 /// Base/fortress state at world center.
 @StateNodeBuilder
+@SnapshotConvertible
 public struct BaseState: StateNodeProtocol {
     /// Base position (center of world)
     @Sync(.broadcast)
