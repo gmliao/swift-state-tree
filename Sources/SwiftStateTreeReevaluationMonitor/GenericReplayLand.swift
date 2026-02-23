@@ -5,6 +5,19 @@
 import Foundation
 import SwiftStateTree
 
+func selectReplayEventsToEmit(
+    policy: ReevaluationReplayEventPolicy,
+    emittedServerEvents: [ReevaluationRecordedServerEvent],
+    recordedServerEvents: [ReevaluationRecordedServerEvent]
+) -> [ReevaluationRecordedServerEvent] {
+    switch policy {
+    case .projectedOnly:
+        emittedServerEvents
+    case .projectedWithFallback:
+        emittedServerEvents.isEmpty ? recordedServerEvents : emittedServerEvents
+    }
+}
+
 /// A factory for creating replay LandDefinitions.
 ///
 /// Each tick, GenericReplayLand:
@@ -105,13 +118,11 @@ public enum GenericReplayLand<State: StateFromSnapshotDecodable> {
 
                     // Emit server events for this tick (projectedOnly vs projectedWithFallback).
                     let policy = ctx.services.get(ReevaluationReplayPolicyService.self)?.eventPolicy ?? .projectedOnly
-                    let eventsToSend: [ReevaluationRecordedServerEvent]
-                    switch policy {
-                    case .projectedOnly:
-                        eventsToSend = result.emittedServerEvents
-                    case .projectedWithFallback:
-                        eventsToSend = result.emittedServerEvents.isEmpty ? result.recordedServerEvents : result.emittedServerEvents
-                    }
+                    let eventsToSend = selectReplayEventsToEmit(
+                        policy: policy,
+                        emittedServerEvents: result.emittedServerEvents,
+                        recordedServerEvents: result.recordedServerEvents
+                    )
                     for recorded in eventsToSend {
                         let anyEvent = AnyServerEvent(type: recorded.typeIdentifier, payload: recorded.payload)
                         let target = recorded.target.toEventTarget()
@@ -141,4 +152,5 @@ public enum GenericReplayLand<State: StateFromSnapshotDecodable> {
         }
         return recordPath
     }
+
 }

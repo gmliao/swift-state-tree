@@ -78,4 +78,51 @@ struct GenericReplayLandDecodeTests {
         #expect(result?.players["p1"]?.x == 1)
         #expect(result?.players["p2"]?.label == "b")
     }
+
+    @Test("projectedWithFallback selects recorded events when emitted events are empty")
+    func projectedWithFallbackSelectsRecordedEventsWhenEmittedEmpty() {
+        let emitted: [ReevaluationRecordedServerEvent] = []
+        let recorded = [
+            makeRecordedEvent(typeIdentifier: "PlayerShoot", sequence: 1, tickId: 7),
+        ]
+
+        let selected = selectReplayEventsToEmit(
+            policy: .projectedWithFallback,
+            emittedServerEvents: emitted,
+            recordedServerEvents: recorded
+        )
+
+        #expect(selected.count == 1)
+        #expect(selected.first?.typeIdentifier == "PlayerShoot")
+    }
+
+    @Test("projectedWithFallback prefers emitted events when available")
+    func projectedWithFallbackPrefersEmittedEvents() {
+        let emitted = [
+            makeRecordedEvent(typeIdentifier: "TurretFire", sequence: 2, tickId: 8),
+        ]
+        let recorded = [
+            makeRecordedEvent(typeIdentifier: "PlayerShoot", sequence: 3, tickId: 8),
+        ]
+
+        let selected = selectReplayEventsToEmit(
+            policy: .projectedWithFallback,
+            emittedServerEvents: emitted,
+            recordedServerEvents: recorded
+        )
+
+        #expect(selected.count == 1)
+        #expect(selected.first?.typeIdentifier == "TurretFire")
+    }
+}
+
+private func makeRecordedEvent(typeIdentifier: String, sequence: Int64, tickId: Int64) -> ReevaluationRecordedServerEvent {
+    ReevaluationRecordedServerEvent(
+        kind: "serverEvent",
+        sequence: sequence,
+        tickId: tickId,
+        typeIdentifier: typeIdentifier,
+        payload: AnyCodable(["ok": true]),
+        target: ReevaluationEventTargetRecord(kind: "all", ids: [])
+    )
 }
