@@ -70,6 +70,46 @@ public struct StateNodeBuilderMacro: MemberMacro, ExtensionMacro {
         ] + containerHelperMethods
     }
 
+    // MARK: - ExtensionMacro
+
+    /// Generates `extension TypeName: StateFromSnapshotDecodable { init(fromBroadcastSnapshot:) }`
+    public static func expansion(
+        of node: AttributeSyntax,
+        attachedTo declaration: some DeclGroupSyntax,
+        providingExtensionsOf type: some TypeSyntaxProtocol,
+        conformingTo protocols: [TypeSyntax],
+        in context: some MacroExpansionContext
+    ) throws -> [ExtensionDeclSyntax] {
+        guard let structDecl = declaration.as(StructDeclSyntax.self) else {
+            return []
+        }
+
+        let propertiesWithNodes = collectStoredProperties(from: structDecl)
+        let properties = propertiesWithNodes.map { $0.0 }
+        let broadcastProperties = properties.filter { $0.policyType == .broadcast }
+
+        var assignmentLines: [String] = []
+        for prop in broadcastProperties {
+            assignmentLines.append(
+                "        if let _v = snapshot.values[\"\(prop.name)\"] { self.\(prop.name) = try _snapshotDecode(_v) }"
+            )
+        }
+        let body = assignmentLines.joined(separator: "\n")
+
+        let typeName = structDecl.name.text
+        let extensionDecl = try ExtensionDeclSyntax(
+            """
+            extension \(raw: typeName): StateFromSnapshotDecodable {
+                public init(fromBroadcastSnapshot snapshot: StateSnapshot) throws {
+                    self.init()
+            \(raw: body)
+                }
+            }
+            """
+        )
+        return [extensionDecl]
+    }
+
     /// Collect all stored properties from a struct declaration
     private static func collectStoredProperties(from structDecl: StructDeclSyntax) -> [(PropertyInfo, Syntax)] {
         var properties: [(PropertyInfo, Syntax)] = []
