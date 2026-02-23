@@ -6,6 +6,7 @@
  * Usage:
  *   tsx src/verify-replay-record.ts [--record-path=path] [--admin-url=url]
  *     [--wait-ms=8000] [--min-players=1] [--min-monsters=1] [--min-turrets=0]
+ *     [--min-events=0]
  *
  * Requires: GameServer running (e.g. from Examples/GameDemo with REEVALUATION_RECORDS_DIR).
  */
@@ -72,6 +73,7 @@ async function main() {
   const minPlayers = parseUIntOption(args["min-players"], "min-players", 1);
   const minMonsters = parseUIntOption(args["min-monsters"], "min-monsters", 1);
   const minTurrets = parseUIntOption(args["min-turrets"], "min-turrets", 0);
+  const minEvents = parseUIntOption(args["min-events"], "min-events", 0);
   const apiKey = (
     process.env.HERO_DEFENSE_ADMIN_KEY ||
     process.env.ADMIN_API_KEY ||
@@ -81,7 +83,7 @@ async function main() {
     args["record-path"] ??
     resolve(process.cwd(), "..", "..", "Examples", "GameDemo", "reevaluation-records", "3-hero-defense.json");
 
-  const recordFilePath = recordPathArg.startsWith("/") ? recordPathArg : resolve(recordPathArg);
+  const recordFilePath = recordPathArg.startsWith("/") ? recordPathArg : resolve(process.cwd(), recordPathArg);
   console.log(chalk.blue(`Record file: ${recordFilePath}`));
   console.log(chalk.blue(`Admin: ${adminUrl}`));
 
@@ -113,6 +115,18 @@ async function main() {
     throw new Error(`Join failed: ${joinResult.reason ?? "unknown"}`);
   }
 
+  // Count server events (e.g. PlayerShoot, TurretFire) during replay
+  let serverEventCount = 0;
+  const eventTypesToCount = ["PlayerShoot", "TurretFire"];
+  const unsubs: (() => void)[] = [];
+  for (const eventType of eventTypesToCount) {
+    unsubs.push(
+      view.onServerEvent(eventType, () => {
+        serverEventCount += 1;
+      })
+    );
+  }
+
   // Observe replay state for a fixed window and track max entity counts seen during replay.
   const pollIntervalMs = 200;
   let state = view.getState() as Record<string, unknown> | undefined;
@@ -126,6 +140,8 @@ async function main() {
     await new Promise((r) => setTimeout(r, pollIntervalMs));
     elapsed += pollIntervalMs;
   }
+
+  for (const unsub of unsubs) unsub();
 
   if (!state || typeof state !== "object") {
     await runtime.disconnect();
@@ -164,6 +180,9 @@ async function main() {
   console.log(
     `Entity minimum required: Players>=${minPlayers}, Monsters>=${minMonsters}, Turrets>=${minTurrets}`
   );
+  console.log(
+    `Server events received (PlayerShoot/TurretFire): ${serverEventCount} (min required: ${minEvents})`
+  );
 
   await runtime.disconnect();
 
@@ -185,9 +204,12 @@ async function main() {
   if (playerEntries.length > 0 && playersWithPosition > 0 && nearBaseCount < playersWithPosition) {
     console.log(chalk.red(`\nFAIL: Not all player positions near base (expected spawn 64±5, 36±5). ${nearBaseCount}/${playersWithPosition} near base.`));
     process.exit(1);
-  } else {
-    console.log(chalk.green("\nOK: Reevaluation replay verified; base position and entity thresholds are satisfied."));
   }
+  if (serverEventCount < minEvents) {
+    console.log(chalk.red(`\nFAIL: Server events received ${serverEventCount} < min-events ${minEvents}.`));
+    process.exit(1);
+  }
+  console.log(chalk.green("\nOK: Reevaluation replay verified; base position, entity thresholds and event count are satisfied."));
   process.exit(0);
 }
 

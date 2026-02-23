@@ -194,6 +194,97 @@ struct ReevaluationReplayCompatibilityTests {
         #expect(payload?["turretID"] as? Int == 2)
     }
 
+    @Test("ReevaluationEventTargetRecord round-trip to EventTarget")
+    func reevaluationEventTargetRecordToEventTargetRoundTrip() {
+        // .all
+        let allRecord = ReevaluationEventTargetRecord(kind: "all", ids: [])
+        if case .all = allRecord.toEventTarget() { } else { Issue.record("Expected .all") }
+
+        // .player
+        let playerRecord = ReevaluationEventTargetRecord(kind: "player", ids: ["player-uuid-1"])
+        if case .player(let pid) = playerRecord.toEventTarget() {
+            #expect(pid.rawValue == "player-uuid-1")
+        } else {
+            Issue.record("Expected .player(PlayerID)")
+        }
+
+        // .players
+        let playersRecord = ReevaluationEventTargetRecord(kind: "players", ids: ["a", "b"])
+        if case .players(let pids) = playersRecord.toEventTarget() {
+            #expect(pids.count == 2)
+            #expect(pids[0].rawValue == "a")
+            #expect(pids[1].rawValue == "b")
+        } else {
+            Issue.record("Expected .players([PlayerID])")
+        }
+
+        // .client
+        let clientRecord = ReevaluationEventTargetRecord(kind: "client", ids: ["client-device-1"])
+        if case .client(let cid) = clientRecord.toEventTarget() {
+            #expect(cid.rawValue == "client-device-1")
+        } else {
+            Issue.record("Expected .client(ClientID)")
+        }
+
+        // .session
+        let sessionRecord = ReevaluationEventTargetRecord(kind: "session", ids: ["session-conn-1"])
+        if case .session(let sid) = sessionRecord.toEventTarget() {
+            #expect(sid.rawValue == "session-conn-1")
+        } else {
+            Issue.record("Expected .session(SessionID)")
+        }
+
+        // Round-trip: EventTarget -> Record -> toEventTarget() (compare by pattern + values)
+        let allBack = ReevaluationEventTargetRecord.from(EventTarget.all).toEventTarget()
+        if case .all = allBack { } else { Issue.record("Round-trip .all failed") }
+
+        let playerBack = ReevaluationEventTargetRecord.from(EventTarget.player(PlayerID("p1"))).toEventTarget()
+        if case .player(let p) = playerBack { #expect(p.rawValue == "p1") } else { Issue.record("Round-trip .player failed") }
+
+        let playersBack = ReevaluationEventTargetRecord.from(EventTarget.players([PlayerID("p1"), PlayerID("p2")])).toEventTarget()
+        if case .players(let ps) = playersBack {
+            #expect(ps.count == 2 && ps[0].rawValue == "p1" && ps[1].rawValue == "p2")
+        } else { Issue.record("Round-trip .players failed") }
+
+        let clientBack = ReevaluationEventTargetRecord.from(EventTarget.client(ClientID("c1"))).toEventTarget()
+        if case .client(let c) = clientBack { #expect(c.rawValue == "c1") } else { Issue.record("Round-trip .client failed") }
+
+        let sessionBack = ReevaluationEventTargetRecord.from(EventTarget.session(SessionID("s1"))).toEventTarget()
+        if case .session(let s) = sessionBack { #expect(s.rawValue == "s1") } else { Issue.record("Round-trip .session failed") }
+
+        // Unknown kind or empty ids fallback to .all
+        let unknownRecord = ReevaluationEventTargetRecord(kind: "unknown", ids: ["x"])
+        if case .all = unknownRecord.toEventTarget() { } else { Issue.record("Unknown kind should fallback to .all") }
+        let playerEmptyIds = ReevaluationEventTargetRecord(kind: "player", ids: [])
+        if case .all = playerEmptyIds.toEventTarget() { } else { Issue.record("Empty player ids should fallback to .all") }
+    }
+
+    @Test("ReevaluationStepResult recordedServerEvents preserved when projector runs")
+    func reevaluationStepResultRecordedServerEventsPreserved() throws {
+        let recordedEvent = ReevaluationRecordedServerEvent(
+            kind: "serverEvent",
+            sequence: 1,
+            tickId: 70,
+            typeIdentifier: "PlayerShoot",
+            payload: AnyCodable(["from": ["v": ["x": 39867, "y": 38980]], "to": ["v": ["x": 20336, "y": 41028]], "playerID": ["rawValue": "EF198066-1074-431F-89D0-EA29F257D50C"]]),
+            target: ReevaluationEventTargetRecord(kind: "all", ids: [])
+        )
+        let result = ReevaluationStepResult(
+            tickId: 70,
+            stateHash: "abc",
+            recordedHash: "abc",
+            isMatch: true,
+            actualState: AnyCodable(try encodeJSONObjectToString(["score": 0])),
+            emittedServerEvents: [],
+            recordedServerEvents: [recordedEvent]
+        )
+        let projector = HeroDefenseReplayProjector()
+        let projected = try projector.project(result)
+        #expect(projected.serverEvents.count == 0)
+        #expect(result.recordedServerEvents.count == 1)
+        #expect(result.recordedServerEvents.first?.typeIdentifier == "PlayerShoot")
+    }
+
     @Test("Replay projection keeps arbitrary emitted server event envelopes")
     func replayProjectionPassesThroughArbitraryServerEventEnvelopeContract() throws {
         let snapshotJSONString = try encodeJSONObjectToString(["score": 1])

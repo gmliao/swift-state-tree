@@ -285,6 +285,33 @@ public struct ReevaluationEventTargetRecord: Codable, Sendable {
             return ReevaluationEventTargetRecord(kind: "players", ids: playerIDs.map { $0.rawValue })
         }
     }
+
+    /// Convert ReevaluationEventTargetRecord back to EventTarget for replay forwarding.
+    public func toEventTarget() -> EventTarget {
+        switch kind {
+        case "all":
+            return .all
+        case "player":
+            if let id = ids.first {
+                return .player(PlayerID(id))
+            }
+            return .all
+        case "client":
+            if let id = ids.first {
+                return .client(ClientID(id))
+            }
+            return .all
+        case "session":
+            if let id = ids.first {
+                return .session(SessionID(id))
+            }
+            return .all
+        case "players":
+            return .players(ids.map { PlayerID($0) })
+        default:
+            return .all
+        }
+    }
 }
 
 // MARK: - ReevaluationRecorder Actor
