@@ -10,6 +10,8 @@ public enum SnapshotDecodeError: Error, Sendable {
     case typeMismatch(expected: String, got: SnapshotValue)
     case missingKey(String)
     case invalidKeyString(String, targetType: String)
+    /// Thrown when an integer value does not fit in the target type (e.g. snapshot .int overflow for Int32).
+    case integerOutOfRange(value: Int, targetType: String)
 }
 
 // MARK: - SnapshotKeyDecodable
@@ -110,7 +112,10 @@ extension Int8: SnapshotValueDecodable {
         guard case .int(let v) = value else {
             throw SnapshotDecodeError.typeMismatch(expected: "Int8 (.int)", got: value)
         }
-        self = Int8(v)
+        guard let r = Int8(exactly: v) else {
+            throw SnapshotDecodeError.integerOutOfRange(value: v, targetType: "Int8")
+        }
+        self = r
     }
 }
 
@@ -119,7 +124,10 @@ extension Int16: SnapshotValueDecodable {
         guard case .int(let v) = value else {
             throw SnapshotDecodeError.typeMismatch(expected: "Int16 (.int)", got: value)
         }
-        self = Int16(v)
+        guard let r = Int16(exactly: v) else {
+            throw SnapshotDecodeError.integerOutOfRange(value: v, targetType: "Int16")
+        }
+        self = r
     }
 }
 
@@ -128,7 +136,10 @@ extension Int32: SnapshotValueDecodable {
         guard case .int(let v) = value else {
             throw SnapshotDecodeError.typeMismatch(expected: "Int32 (.int)", got: value)
         }
-        self = Int32(v)
+        guard let r = Int32(exactly: v) else {
+            throw SnapshotDecodeError.integerOutOfRange(value: v, targetType: "Int32")
+        }
+        self = r
     }
 }
 
@@ -137,7 +148,10 @@ extension Int64: SnapshotValueDecodable {
         guard case .int(let v) = value else {
             throw SnapshotDecodeError.typeMismatch(expected: "Int64 (.int)", got: value)
         }
-        self = Int64(v)
+        guard let r = Int64(exactly: v) else {
+            throw SnapshotDecodeError.integerOutOfRange(value: v, targetType: "Int64")
+        }
+        self = r
     }
 }
 
@@ -146,7 +160,10 @@ extension UInt: SnapshotValueDecodable {
         guard case .int(let v) = value else {
             throw SnapshotDecodeError.typeMismatch(expected: "UInt (.int)", got: value)
         }
-        self = UInt(v)
+        guard let r = UInt(exactly: v) else {
+            throw SnapshotDecodeError.integerOutOfRange(value: v, targetType: "UInt")
+        }
+        self = r
     }
 }
 
@@ -155,7 +172,10 @@ extension UInt8: SnapshotValueDecodable {
         guard case .int(let v) = value else {
             throw SnapshotDecodeError.typeMismatch(expected: "UInt8 (.int)", got: value)
         }
-        self = UInt8(v)
+        guard let r = UInt8(exactly: v) else {
+            throw SnapshotDecodeError.integerOutOfRange(value: v, targetType: "UInt8")
+        }
+        self = r
     }
 }
 
@@ -164,7 +184,10 @@ extension UInt16: SnapshotValueDecodable {
         guard case .int(let v) = value else {
             throw SnapshotDecodeError.typeMismatch(expected: "UInt16 (.int)", got: value)
         }
-        self = UInt16(v)
+        guard let r = UInt16(exactly: v) else {
+            throw SnapshotDecodeError.integerOutOfRange(value: v, targetType: "UInt16")
+        }
+        self = r
     }
 }
 
@@ -173,7 +196,10 @@ extension UInt32: SnapshotValueDecodable {
         guard case .int(let v) = value else {
             throw SnapshotDecodeError.typeMismatch(expected: "UInt32 (.int)", got: value)
         }
-        self = UInt32(v)
+        guard let r = UInt32(exactly: v) else {
+            throw SnapshotDecodeError.integerOutOfRange(value: v, targetType: "UInt32")
+        }
+        self = r
     }
 }
 
@@ -182,7 +208,10 @@ extension UInt64: SnapshotValueDecodable {
         guard case .int(let v) = value else {
             throw SnapshotDecodeError.typeMismatch(expected: "UInt64 (.int)", got: value)
         }
-        self = UInt64(v)
+        guard let r = UInt64(exactly: v) else {
+            throw SnapshotDecodeError.integerOutOfRange(value: v, targetType: "UInt64")
+        }
+        self = r
     }
 }
 

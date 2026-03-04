@@ -32,6 +32,8 @@
  4. Note: Use actual repo name (e.g., `gmliao/swift-state-tree`) instead of `:owner/:repo` placeholder
  5. Example: `gh api --method POST repos/gmliao/swift-state-tree/pulls/24/comments/2700778279/replies -f body="Thanks for the review! ..."`
 
+- **Handle PR review and reply (current branch)**: When user says "處理 PR 留言" or "審查 PR comment 並回覆" — use skill **SwiftStateTree/handle-pr-review-and-reply**: list review comments for the current branch's PR, implement fixes as needed, then reply **under each specified comment** via `gh api .../comments/COMMENT_ID/replies` so the reply appears in that thread.
+
 ### Key Testing Locations
 - **Unit Tests**: `swift test` (Swift Testing framework)
 - **E2E Tests**: `cd Tools/CLI && npm test` (requires DemoServer)

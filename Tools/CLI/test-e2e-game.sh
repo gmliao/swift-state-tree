@@ -79,7 +79,10 @@ run_encoding_tests() {
             --state-update-encoding ${state_update_encoding}
 
         print_step "Running ${SERVER_NAME} replay record verification ($encoding)..."
-        HERO_DEFENSE_ADMIN_KEY=${HERO_DEFENSE_ADMIN_KEY:-hero-defense-admin-key} npm run test:e2e:game:verify-replay
+        HERO_DEFENSE_ADMIN_KEY=${HERO_DEFENSE_ADMIN_KEY:-hero-defense-admin-key} npx tsx src/verify-replay-record.ts \
+            --admin-url="http://${SERVER_HOST}:${SERVER_PORT}" \
+            --wait-ms=12000 \
+            --min-events=1
     fi
 
     # Server-side replay stream should pass in all transport encodings.

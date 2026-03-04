@@ -60,6 +60,7 @@ Located in `SwiftStateTree/` directory - Project-specific workflows and guidelin
 **GitHub Workflow:**
 - **SwiftStateTree/view-pr-comments** - View PR details, comments, and reviews using GitHub CLI
 - **SwiftStateTree/reply-pr-comment** - Reply to specific PR comment threads
+- **SwiftStateTree/handle-pr-review-and-reply** - Review current branch PR comments, implement fixes, and reply under each specified comment thread
 
 **Code Generation:**
 - **SwiftStateTree/generate-schema** - Generate JSON schema from LandDefinitions and TypeScript client SDK
@@ -160,6 +161,8 @@ Skills can be organized in subdirectories for better management:
 │   ├── view-pr-comments/
 │   │   └── SKILL.md
 │   ├── reply-pr-comment/
+│   │   └── SKILL.md
+│   ├── handle-pr-review-and-reply/
 │   │   └── SKILL.md
 │   ├── generate-schema/
 │   │   └── SKILL.md
