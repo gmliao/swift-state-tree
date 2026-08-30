@@ -180,3 +180,7 @@ Examples/GameDemo/WebClient/.playwright-cli/
 
 # Generated nginx config for matchmaking E2E
 docs/deploy/nginx-matchmaking-e2e.generated.conf
+
+# Claude Code local configuration (settings, skill symlinks)
+.claude/
+.workbench

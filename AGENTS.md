@@ -18,21 +18,7 @@
 
 - **Create New Test Scenario**: Add JSON file to `Tools/CLI/scenarios/{land-type}/` directory
 
-- **View PR Comments**: When user says "看 PR comment" or "查看 PR":
- 1. View PR details with comments: `gh pr view --comments` (shows PR info and review comments)
- 2. View PR comments (留言區): `gh api repos/:owner/:repo/pulls/$(gh pr view --json number --jq '.number')/comments --jq '.[] | {id: .id, author: .user.login, body: .body, createdAt: .created_at}'` (shows all comments in the conversation thread)
- 3. View PR reviews (review comments): `gh pr view --json reviews --jq '.reviews[] | select(.state == "COMMENTED") | {body: .body, author: .author.login}'` (shows review comments from reviewers)
- 4. View all comments and reviews together: `gh pr view --json comments,reviews --jq '{comments: .comments, reviews: .reviews}'`
- 5. Open PR in browser: `gh pr view --web`
-
-- **Reply to Specific PR Comment**: When user wants to reply to a specific comment thread:
- 1. Get repo name: `gh repo view --json nameWithOwner --jq '.nameWithOwner'` (e.g., `gmliao/swift-state-tree`)
- 2. Get comment ID from PR comments: `gh pr view PR_NUMBER --json comments,reviews --jq '.reviews[].comments[] | {id: .id, author: .author.login, body: (.body | split("\n")[0:2] | join("\n"))}'` or view line comments: `gh api repos/OWNER/REPO/pulls/PR_NUMBER/comments --jq '.[] | {id: .id, path: .path, line: .line, body: (.body | split("\n")[0:2] | join("\n"))}'`
- 3. Reply to review comment (line comment): `gh api --method POST repos/OWNER/REPO/pulls/PR_NUMBER/comments/COMMENT_ID/replies -f body="Your reply text"`
- 4. Note: Use actual repo name (e.g., `gmliao/swift-state-tree`) instead of `:owner/:repo` placeholder
- 5. Example: `gh api --method POST repos/gmliao/swift-state-tree/pulls/24/comments/2700778279/replies -f body="Thanks for the review! ..."`
-
-- **Handle PR review and reply (current branch)**: When user says "處理 PR 留言" or "審查 PR comment 並回覆" — use skill **SwiftStateTree/handle-pr-review-and-reply**: list review comments for the current branch's PR, implement fixes as needed, then reply **under each specified comment** via `gh api .../comments/COMMENT_ID/replies` so the reply appears in that thread.
+- **PR review and replies**: reviewing pull requests and replying to review threads is handled by the maintainer's local tooling. When replying manually, reply inside the thread: `gh api --method POST repos/OWNER/REPO/pulls/PR/comments/COMMENT_ID/replies -f body="..."`.
 
 ### Key Testing Locations
 - **Unit Tests**: `swift test` (Swift Testing framework)

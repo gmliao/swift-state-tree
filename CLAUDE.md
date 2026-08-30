@@ -95,3 +95,31 @@ The dependency chain flows: `SwiftStateTree` → `SwiftStateTreeTransport` → `
 - `Notes/plans/` — task-specific implementation plans (AI agents should store plans here)
 - `Notes/guides/DEBUGGING_TECHNIQUES.md` — debugging guide for complex issues
 - `Tools/CLI/scenarios/` — E2E test scenario JSON files
+
+## Claude Code Specifics
+
+### Local setup (`.claude/` is gitignored)
+
+`.claude/` is not tracked. The maintainer keeps workflow skills in a private, gitignored workbench directory and points `.claude/skills` at it with a symlink; that workbench links the public knowledge skills back from `.agent/skills/SwiftStateTree/`. On a clone without that workbench, symlink the public skills directly:
+
+```bash
+mkdir -p .claude/skills && cd .claude/skills
+for d in ../../.agent/skills/SwiftStateTree/*/; do ln -sfn "../../.agent/skills/SwiftStateTree/$(basename "$d")" "$(basename "$d")"; done
+```
+
+**Edit knowledge skills under `.agent/skills/SwiftStateTree/`** (shared with Cursor/Codex), never as real files in `.claude/skills/`. Superpowers/SpecKit skills are not symlinked: Claude Code gets them from the global plugin, which is newer than the snapshot in `.agent/skills/Superpowers/`.
+
+### LSP
+
+Enable `swift-lsp` and `typescript-lsp` in your local `.claude/settings.json` (or globally). Prefer the `LSP` tool for symbol navigation and diagnostics in Swift and in the TS packages (`sdk/ts`, `Tools/CLI`, `Examples/*/WebClient`). If LSP does not respond, tell the user instead of silently falling back to grep.
+
+### Troubleshooting
+
+- **E2E fails to start / port 8080 busy** — DemoServer and GameServer both bind 8080. Run `./killport.sh 8080` from the repo root, then re-run `./Tools/CLI/test-e2e-ci.sh` or `./Tools/CLI/test-e2e-game.sh`.
+- **Reevaluation E2E is skipped** — GameServer only mounts reevaluation routes when `ENABLE_REEVALUATION=true`. `test-e2e-game.sh` sets it; set it yourself when starting the server manually.
+- **Benchmark numbers look wrong** — `EncodingBenchmark` and `ServerLoadTest` must run with `swift run -c release`. Debug-build numbers are not comparable and must not be written into docs.
+- **Toolchain drift** — the last full verification on record (2026-02-18: 714 tests, all three encodings E2E, replay 0 mismatch) used Swift 6.2.3. On 2026-08-29 `swift test` passed 790 tests / 46 suites on Swift 6.3.2. `Package.swift` still pins `swift-syntax` at `from: "509.0.0"`; check `deep-research/` notes before bumping macro dependencies.
+
+### Research Notes
+
+Paper-revision working notes live in `deep-research/` (e.g. `related-systems-matrix.md`, `emse-artifacts/`), not in `docs/`. `docs/` is the official bilingual documentation and is bound by the bilingual-sync rule in AGENTS.md. Repository prose (CLAUDE.md, README, code comments, commit messages) is English; Chinese is reserved for design documents and `.zh-TW.md` translations.
