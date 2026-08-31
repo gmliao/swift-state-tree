@@ -23,6 +23,7 @@ struct ReevaluationRunnerMain {
         var seedId = 1
         var recordTicks: Int64 = 1200
         var recordPlayers = 5
+        var recordMoveEvery: Int64 = 20
         var exportJsonlPath: String?
         var diffWithPath: String?
 
@@ -56,6 +57,9 @@ struct ReevaluationRunnerMain {
             case "--players":
                 recordPlayers = (i + 1 < args.count) ? (Int(args[i + 1]) ?? 5) : 5
                 i += 2
+            case "--move-every":
+                recordMoveEvery = (i + 1 < args.count) ? (Int64(args[i + 1]) ?? 20) : 20
+                i += 2
             case "--help", "-h":
                 printHelpAndExit()
             default:
@@ -71,7 +75,8 @@ struct ReevaluationRunnerMain {
             }
             try await runRecord(
                 outputPath: outputPath, seedId: seedId,
-                ticks: recordTicks, players: recordPlayers)
+                ticks: recordTicks, players: recordPlayers,
+                moveEvery: recordMoveEvery)
             return
         }
 
@@ -277,7 +282,7 @@ struct ReevaluationRunnerMain {
     /// Headless batch recording: live keeper + deterministic MoveTo injection, saved as a
     /// re-evaluation record. The RNG seed is derived from the landID, so each seedId yields
     /// a distinct recording.
-    private static func runRecord(outputPath: String, seedId: Int, ticks: Int64, players: Int) async throws {
+    private static func runRecord(outputPath: String, seedId: Int, ticks: Int64, players: Int, moveEvery: Int64) async throws {
         let landID = "hero-defense:batch-\(seedId)"
         var services = LandServices()
         services.register(
@@ -312,7 +317,7 @@ struct ReevaluationRunnerMain {
             )
         }
         for tickId in Int64(0) ..< ticks {
-            if tickId % 20 == 0 {
+            if tickId % moveEvery == 0 {
                 for p in 0 ..< players {
                     // Deterministic far-away targets (integer math only) keep every player moving
                     let tx = Float((p * 37 + Int(tickId) * 13) % 128)
