@@ -1,0 +1,30 @@
+📊 Record Statistics:
+   Total Ticks: 1200
+   Actions: 0
+   Client Events: 300
+   Lifecycle Events: 5
+   Ticks with State Hash: 1200
+
+🖥️  Current Hardware Info:
+   CPU Architecture: arm64
+   OS: macOS 25G83)
+   CPU Model: Apple M2
+   CPU Cores: 8
+   Swift Version: 6.3
+
+🔄 Re-evaluation Results:
+   Processed Ticks: 1200
+   Emitted Server Events: 98
+   Final Tick Hash: b9acb9ae6c2d39a0
+
+❌ Verification failed: mismatched ticks vs recorded=46
+  tick 600: computed=48ff00aa496576ce recorded=8e8d28756ab76e35
+  tick 601: computed=796a9380a31ad289 recorded=08c6530150c4e2e8
+  tick 602: computed=510657a0c4b0684a recorded=cea5111dfbed76be
+  tick 603: computed=9d6fa872b1e54bb2 recorded=902aff9bdc67c3f1
+  tick 604: computed=d69bb2b804f44d9f recorded=bc9c4c5e91628cc9
+  tick 605: computed=9c9754c9c1da05e7 recorded=f81dc4e7c7e6f65d
+  tick 606: computed=62c3a7e10586aabc recorded=0e369dc9bd2e6531
+  tick 607: computed=a4ad73cf0de2219c recorded=cfb839244d6f14fc
+  tick 608: computed=84a91f52995d1314 recorded=1c9ee4e2f35748f9
+  tick 609: computed=03063dedf6ef5faf recorded=0f47bc7be4e74a1f

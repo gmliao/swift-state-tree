@@ -1,0 +1,22 @@
+📊 Record Statistics:
+   Total Ticks: 1200
+   Actions: 0
+   Client Events: 300
+   Lifecycle Events: 5
+   Ticks with State Hash: 1200
+
+🖥️  Current Hardware Info:
+   CPU Architecture: arm64
+   OS: macOS 25G83)
+   CPU Model: Apple M2
+   CPU Cores: 8
+   Swift Version: 6.3
+
+🔄 Re-evaluation Results:
+   Processed Ticks: 1200
+   Emitted Server Events: 95
+   Final Tick Hash: 3f56146e355ee401
+
+✅ Verified: computed hashes match recorded ground truth
+⚠️ Server event sequence numbering differs in replay (known accounting gap); event content matches for all 94 affected ticks
+✅ Verified: hashes are identical across two re-evaluation runs

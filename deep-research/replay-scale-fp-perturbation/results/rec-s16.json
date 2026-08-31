@@ -1,0 +1,25 @@
+{
+  "meta": {
+    "date": "2026-08-31",
+    "git_sha": "d23d66d",
+    "swift_version": "6.3.2",
+    "build_config": "release",
+    "host": "Apple M2, macOS (8 cores, 16 GB), arm64",
+    "command": "ReevaluationRunner --record --output s16.json --seed-id 16 --ticks 1200; ReevaluationRunner --input s16.json --verify",
+    "source_log": "rec-s16.log"
+  },
+  "params": {
+    "seed": 16,
+    "ticks": 1200,
+    "players": 5,
+    "workload": "record-verify"
+  },
+  "metrics": {
+    "total_ticks": 1200,
+    "total_actions": 0,
+    "total_client_events": 300,
+    "mismatch_ticks": 0,
+    "verified_vs_recorded": true,
+    "verified_run1_vs_run2": true
+  }
+}
