@@ -38,7 +38,10 @@ HERO_PERTURB_TICK=600 HERO_PERTURB_MODE=<float|fixed> HERO_PERTURB_EPS=<eps> \
 
 | Part | 軸 | 值 | 固定 |
 |---|---|---|---|
-| A | seed | 1–30 | 1,200 ticks、5 players、MoveTo every 20 ticks |
+| A 核心 | seed | 1–30 | 1,200 ticks、5 players、MoveTo every 20 ticks |
+| A 變體 | players | 2（seeds 101–103）、10（seeds 111–113） | 1,200 ticks、cadence 20 |
+| A 變體 | MoveTo cadence | every 5 ticks（seeds 121–123） | 1,200 ticks、5 players |
+| A 長程 | ticks | 12,000（~10 分鐘；seeds 201–202） | 5 players、cadence 20 |
 | B | 擾動 | float 1e-7 / fixed +1 LSB / fixed +1000 LSB | perturb tick = 600，seeds 1–10 |
 
 ## Results
@@ -47,42 +50,53 @@ HERO_PERTURB_TICK=600 HERO_PERTURB_MODE=<float|fixed> HERO_PERTURB_EPS=<eps> \
 
 | recordings | total ticks | total actions | total client events | hash mismatches | verified vs recorded | run1 == run2 |
 |---:|---:|---:|---:|---:|---:|---:|
-| 30 | 36000 | 0 | 9000 | 0 | 30/30 | 30/30 |
+| 41 | 70800 | 0 | 20760 | 0 | 41/41 | 41/41 |
 
 ### Part A — per recording
 
-| seed | ticks | actions | client events | hash mismatches | verified |
-|---:|---:|---:|---:|---:|---|
-| 1 | 1200 | 0 | 300 | 0 | yes |
-| 2 | 1200 | 0 | 300 | 0 | yes |
-| 3 | 1200 | 0 | 300 | 0 | yes |
-| 4 | 1200 | 0 | 300 | 0 | yes |
-| 5 | 1200 | 0 | 300 | 0 | yes |
-| 6 | 1200 | 0 | 300 | 0 | yes |
-| 7 | 1200 | 0 | 300 | 0 | yes |
-| 8 | 1200 | 0 | 300 | 0 | yes |
-| 9 | 1200 | 0 | 300 | 0 | yes |
-| 10 | 1200 | 0 | 300 | 0 | yes |
-| 11 | 1200 | 0 | 300 | 0 | yes |
-| 12 | 1200 | 0 | 300 | 0 | yes |
-| 13 | 1200 | 0 | 300 | 0 | yes |
-| 14 | 1200 | 0 | 300 | 0 | yes |
-| 15 | 1200 | 0 | 300 | 0 | yes |
-| 16 | 1200 | 0 | 300 | 0 | yes |
-| 17 | 1200 | 0 | 300 | 0 | yes |
-| 18 | 1200 | 0 | 300 | 0 | yes |
-| 19 | 1200 | 0 | 300 | 0 | yes |
-| 20 | 1200 | 0 | 300 | 0 | yes |
-| 21 | 1200 | 0 | 300 | 0 | yes |
-| 22 | 1200 | 0 | 300 | 0 | yes |
-| 23 | 1200 | 0 | 300 | 0 | yes |
-| 24 | 1200 | 0 | 300 | 0 | yes |
-| 25 | 1200 | 0 | 300 | 0 | yes |
-| 26 | 1200 | 0 | 300 | 0 | yes |
-| 27 | 1200 | 0 | 300 | 0 | yes |
-| 28 | 1200 | 0 | 300 | 0 | yes |
-| 29 | 1200 | 0 | 300 | 0 | yes |
-| 30 | 1200 | 0 | 300 | 0 | yes |
+| seed | players | move every | ticks | actions | client events | hash mismatches | verified |
+|---:|---:|---:|---:|---:|---:|---:|---|
+| 101 | 2 | 20 | 1200 | 0 | 120 | 0 | yes |
+| 102 | 2 | 20 | 1200 | 0 | 120 | 0 | yes |
+| 103 | 2 | 20 | 1200 | 0 | 120 | 0 | yes |
+| 121 | 5 | 5 | 1200 | 0 | 1200 | 0 | yes |
+| 122 | 5 | 5 | 1200 | 0 | 1200 | 0 | yes |
+| 123 | 5 | 5 | 1200 | 0 | 1200 | 0 | yes |
+| 1 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 2 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 3 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 4 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 5 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 6 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 7 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 8 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 9 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 10 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 11 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 12 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 13 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 14 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 15 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 16 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 17 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 18 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 19 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 20 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 21 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 22 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 23 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 24 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 25 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 26 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 27 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 28 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 29 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 30 | 5 | 20 | 1200 | 0 | 300 | 0 | yes |
+| 111 | 10 | 20 | 1200 | 0 | 600 | 0 | yes |
+| 112 | 10 | 20 | 1200 | 0 | 600 | 0 | yes |
+| 113 | 10 | 20 | 1200 | 0 | 600 | 0 | yes |
+| 201 | 5 | 20 | 12000 | 0 | 3000 | 0 | yes |
+| 202 | 5 | 20 | 12000 | 0 | 3000 | 0 | yes |
 
 ### Part B — perturbation sensitivity (perturb at tick 600, 10 recordings each)
 
@@ -91,11 +105,11 @@ HERO_PERTURB_TICK=600 HERO_PERTURB_MODE=<float|fixed> HERO_PERTURB_EPS=<eps> \
 | float +1e-7 (sub-LSB, pre-quantization) | 1e-07 | 0/10 | — |
 | fixed +1 LSB (0.001 world units) | 1 | 10/10 | min 0 / max 0 |
 | fixed +1000 LSB (1.0 world unit) | 1000 | 10/10 | min 0 / max 0 |
-
 ## Conclusion
 
-30 段 × 1,200 ticks（36,000 ticks、9,000 個 client events）重播驗證 **0 hash mismatch**，且每段
-run1 與 run2 完全一致；次解析度的浮點擾動（1e-7，量化前）10/10 被定點量化吸收（仍 0 mismatch），
+41 段錄音共 **70,800 ticks**（核心 30×1,200 + 玩家數/注入節奏變體 9 段 + 兩段 12,000-tick 長程）
+重播驗證 **0 hash mismatch**，且每段 run1 與 run2 完全一致——對應 per-tick mismatch 機率的
+95% rule-of-three 上界 ≈ 3/70,800 ≈ 4.2×10⁻⁵；次解析度的浮點擾動（1e-7，量化前）10/10 被定點量化吸收（仍 0 mismatch），
 而 ≥1 LSB 的狀態擾動 10/10 在注入當 tick（延遲 0）被逐 tick hash 比對偵測。亦即：驗證機制對
 「會改變定點狀態的最小擾動」即時敏感，對「低於定點解析度的浮點雜訊」則因量化而免疫。
 
@@ -112,6 +126,8 @@ run1 與 run2 完全一致；次解析度的浮點擾動（1e-7，量化前）10
   `deep-research/emse-artifacts/evidence-2026-02-06-*`。
 - 擾動作用於當 tick 所有移動中的玩家（非單一玩家）；latency 以「首個 mismatch tick − 600」計。
 - 錄音檔（每段 ~1200 ticks）未入 repo：由 `--record --seed-id <N>` 可決定性重建。
-- 未變動軸：ticks/段（1,200）、玩家數（5）、注入節奏（20 ticks）、擾動時點（600）、砲塔（0）。
+- 已變動軸：玩家數（2/5/10）、注入節奏（5/20 ticks）、長度（1,200/12,000 ticks）。未變動軸：
+  擾動時點（600）與擾動僅在核心 30 段的前 10 段上施加、砲塔（0）。
+- 跨架構重驗：`crossarch-verify.sh` 於 x86_64 機器上對同一批 arm64 錄音執行（結果另行補入）。
 
 Raw runner stdout 未入 repo（可由上列指令決定性重生）；`regenerate.py` 的資料來源為 `results/*.json`。

@@ -1,24 +1,24 @@
 {
   "meta": {
     "date": "2026-08-31",
-    "git_sha": "d23d66d",
+    "git_sha": "fcdd41e",
     "swift_version": "6.3.2",
     "build_config": "release",
     "host": "Apple M2, macOS (8 cores, 16 GB), arm64",
-    "command": "ReevaluationRunner --record --output s21.json --seed-id 21 --ticks 1200; ReevaluationRunner --input s21.json --verify",
-    "source_log": "rec-s21.log"
+    "command": "ReevaluationRunner --record --output p2-s103.json --seed-id 103 --ticks 1200 --players 2 --move-every 20; ReevaluationRunner --input p2-s103.json --verify",
+    "source_log": "rec-p2-s103.log"
   },
   "params": {
-    "seed": 21,
+    "seed": 103,
     "ticks": 1200,
-    "players": 5,
-    "workload": "record-verify",
-    "move_every": 20
+    "players": 2,
+    "move_every": 20,
+    "workload": "record-verify"
   },
   "metrics": {
     "total_ticks": 1200,
     "total_actions": 0,
-    "total_client_events": 300,
+    "total_client_events": 120,
     "mismatch_ticks": 0,
     "verified_vs_recorded": true,
     "verified_run1_vs_run2": true

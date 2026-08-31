@@ -12,7 +12,8 @@
     "seed": 24,
     "ticks": 1200,
     "players": 5,
-    "workload": "record-verify"
+    "workload": "record-verify",
+    "move_every": 20
   },
   "metrics": {
     "total_ticks": 1200,

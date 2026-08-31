@@ -15,7 +15,7 @@ def load_runs():
 def tables(runs) -> str:
     out = []
     recs = sorted((r for r in runs if r["params"]["workload"] == "record-verify"),
-                  key=lambda r: r["params"]["seed"])
+                  key=lambda r: (r["params"]["ticks"], r["params"]["players"], r["params"]["move_every"], r["params"]["seed"]))
     perts = [r for r in runs if r["params"]["workload"] == "perturbed-replay"]
 
     out.append("### Part A — replay verification at scale (aggregate)\n")
@@ -32,12 +32,12 @@ def tables(runs) -> str:
     ))
 
     out.append("\n### Part A — per recording\n")
-    out.append("| seed | ticks | actions | client events | hash mismatches | verified |")
-    out.append("|---:|---:|---:|---:|---:|---|")
+    out.append("| seed | players | move every | ticks | actions | client events | hash mismatches | verified |")
+    out.append("|---:|---:|---:|---:|---:|---:|---:|---|")
     for r in recs:
-        m = r["metrics"]
+        m, q = r["metrics"], r["params"]
         ok = "yes" if (m["verified_vs_recorded"] and m["verified_run1_vs_run2"]) else "NO"
-        out.append(f"| {r['params']['seed']} | {m['total_ticks']} | {m['total_actions']} | {m['total_client_events']} | {m['mismatch_ticks']} | {ok} |")
+        out.append(f"| {q['seed']} | {q['players']} | {q['move_every']} | {m['total_ticks']} | {m['total_actions']} | {m['total_client_events']} | {m['mismatch_ticks']} | {ok} |")
 
     out.append("\n### Part B — perturbation sensitivity (perturb at tick 600, 10 recordings each)\n")
     out.append("| mode | eps | detected | detection latency (ticks) |")
