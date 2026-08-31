@@ -12,6 +12,7 @@
     "players": 5,
     "monster_cap": 50,
     "encoding": "messagepack-pathhash",
+    "workload": "idle",
     "rooms": 1,
     "ticks_per_sync": 2,
     "iterations": 200
@@ -19,6 +20,7 @@
   "metrics": {
     "bytes_per_sync": 9112.0,
     "bytes_per_sync_serial": 9112.0,
+    "bytes_per_player_per_sync": 1822.4,
     "final_monster_count": 50,
     "avg_cost_per_sync_ms": 2.4471239550000004
   }

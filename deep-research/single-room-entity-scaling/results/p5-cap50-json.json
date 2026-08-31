@@ -12,6 +12,7 @@
     "players": 5,
     "monster_cap": 50,
     "encoding": "json-object",
+    "workload": "idle",
     "rooms": 1,
     "ticks_per_sync": 2,
     "iterations": 200
@@ -19,6 +20,7 @@
   "metrics": {
     "bytes_per_sync": 32854.0,
     "bytes_per_sync_serial": 32637.0,
+    "bytes_per_player_per_sync": 6570.8,
     "final_monster_count": 50,
     "avg_cost_per_sync_ms": 4.47424854
   }

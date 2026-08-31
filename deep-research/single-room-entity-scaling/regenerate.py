@@ -17,49 +17,59 @@ def load_runs():
     return [json.loads(p.read_text()) for p in sorted((HERE / "results").glob("*.json"))]
 
 
-def fmt_row(r):
-    m = r["metrics"]
-    return (
-        f"| {ENCODING_LABEL[r['params']['encoding']]} "
-        f"| {r['params']['players']} "
-        f"| {r['params']['monster_cap']} "
-        f"| {m['final_monster_count']} "
-        f"| {m['bytes_per_sync']:.0f} "
-        f"| {m['bytes_per_sync_serial']:.0f} |"
-    )
+def pick(runs, **cond):
+    out = [r for r in runs if all(r["params"][k] == v for k, v in cond.items())]
+    return sorted(out, key=lambda r: (r["params"]["encoding"], r["params"]["players"], r["params"]["monster_cap"]))
 
 
-HEADER = (
-    "| Format | players | monster cap | final monsters | bytesPerSync (parallel) | bytesPerSync (serial) |\n"
-    "|---|---:|---:|---:|---:|---:|"
-)
+def row(r, per_player=False):
+    m, p = r["metrics"], r["params"]
+    cells = [
+        ENCODING_LABEL[p["encoding"]],
+        str(p["players"]),
+        str(p["monster_cap"]),
+        str(m["final_monster_count"]),
+        f"{m['bytes_per_sync']:.0f}",
+    ]
+    if per_player:
+        cells.append(f"{m['bytes_per_player_per_sync']:.0f}")
+    return "| " + " | ".join(cells) + " |"
+
+
+HDR = "| Format | players | monster cap | final monsters | bytesPerSync |"
+SEP = "|---|---:|---:|---:|---:|"
+HDR_PP = HDR + " bytes/player |"
+SEP_PP = SEP + "---:|"
 
 
 def tables(runs) -> str:
     out = []
 
-    out.append("### Monster axis (players = 5)\n")
-    out.append(HEADER)
-    rows = [r for r in runs if r["params"]["players"] == 5]
-    rows.sort(key=lambda r: (r["params"]["encoding"], r["params"]["monster_cap"]))
-    out.extend(fmt_row(r) for r in rows)
+    out.append("### Monster axis (idle, players = 5)\n")
+    out.append(HDR); out.append(SEP)
+    out.extend(row(r) for r in pick(runs, workload="idle", players=5))
 
-    out.append("\n### Player axis (monster cap = 4)\n")
-    out.append(HEADER)
-    rows = [r for r in runs if r["params"]["monster_cap"] == 4]
-    rows.sort(key=lambda r: (r["params"]["encoding"], r["params"]["players"]))
-    out.extend(fmt_row(r) for r in rows)
+    out.append("\n### Player axis — idle players (monster cap = 4)\n")
+    out.append(HDR_PP); out.append(SEP_PP)
+    out.extend(row(r, True) for r in pick(runs, workload="idle", monster_cap=4))
 
-    out.append("\n### Marginal payload cost per monster (parallel, relative to cap=4)\n")
-    out.append("| Format | cap range | bytes/monster |")
-    out.append("|---|---|---:|")
-    by = {}
-    for r in runs:
-        if r["params"]["players"] == 5:
-            by[(r["params"]["encoding"], r["params"]["monster_cap"])] = r["metrics"]["bytes_per_sync"]
+    out.append("\n### Player axis — active players (monster cap = 4)\n")
+    out.append(HDR_PP); out.append(SEP_PP)
+    out.extend(row(r, True) for r in pick(runs, workload="active", monster_cap=4))
+
+    out.append("\n### Joint cell — active, players and monsters raised together\n")
+    out.append(HDR_PP); out.append(SEP_PP)
+    joint = pick(runs, workload="active", players=20, monster_cap=4) + \
+            pick(runs, workload="active", players=20, monster_cap=20)
+    out.extend(row(r, True) for r in sorted(joint, key=lambda r: (r["params"]["encoding"], r["params"]["monster_cap"])))
+
+    out.append("\n### Marginal payload cost per monster (idle, players = 5, cap 4 → 100)\n")
+    out.append("| Format | bytes/monster |")
+    out.append("|---|---:|")
+    by = {(r["params"]["encoding"], r["params"]["monster_cap"]): r["metrics"]["bytes_per_sync"]
+          for r in pick(runs, workload="idle", players=5)}
     for enc in ("json-object", "messagepack-pathhash"):
-        lo, hi = by[(enc, 4)], by[(enc, 100)]
-        out.append(f"| {ENCODING_LABEL[enc]} | 4 → 100 | {(hi - lo) / 96.0:.1f} |")
+        out.append(f"| {ENCODING_LABEL[enc]} | {(by[(enc, 100)] - by[(enc, 4)]) / 96.0:.1f} |")
 
     return "\n".join(out) + "\n"
 
