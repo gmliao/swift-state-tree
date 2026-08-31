@@ -55,3 +55,17 @@ Lives entirely under `Examples/GameDemo` → `sst-direct-change`, no core PR.
 - Action injection cost appears in timing metrics; only byte metrics will be cited.
 - If auto-shoot kills monsters faster with more active players near them, the cap refill
   keeps the monster count stable (verified via `finalMonsterCount`).
+
+## Post-run corrections (2026-08-31)
+
+- **D2 was wrong about broadcast counting.** In the measured legacy path
+  (`USE_SNAPSHOT_FOR_SYNC=false`) the adapter sends one merged update per session, so
+  `bytes_per_sync` already sums over recipients; the derived `wire_bytes_per_sync` metric is
+  unnecessary and was dropped. Verified empirically: with a constant changed set (idle,
+  cap 4) bytes scale linearly with player count at ~588 B/player (JSON).
+- **MaxPlayers(10) artifact.** `HeroDefense` hard-coded `MaxPlayers(10)`; joins beyond 10
+  were silently swallowed by the benchmark's `try?`, truncating every earlier run with
+  players > 10. Fixed by `makeLand(maxPlayers:)` (default 10) plus a loud joined-count
+  check in the benchmark. All player-axis cells were rerun after the fix.
+- The injected event type string is `"MoveTo"` (the registry strips the `Event` suffix),
+  not `"MoveToEvent"`.
