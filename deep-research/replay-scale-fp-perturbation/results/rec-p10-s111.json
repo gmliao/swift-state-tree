@@ -1,0 +1,26 @@
+{
+  "meta": {
+    "date": "2026-08-31",
+    "git_sha": "fcdd41e",
+    "swift_version": "6.3.2",
+    "build_config": "release",
+    "host": "Apple M2, macOS (8 cores, 16 GB), arm64",
+    "command": "ReevaluationRunner --record --output p10-s111.json --seed-id 111 --ticks 1200 --players 10 --move-every 20; ReevaluationRunner --input p10-s111.json --verify",
+    "source_log": "rec-p10-s111.log"
+  },
+  "params": {
+    "seed": 111,
+    "ticks": 1200,
+    "players": 10,
+    "move_every": 20,
+    "workload": "record-verify"
+  },
+  "metrics": {
+    "total_ticks": 1200,
+    "total_actions": 0,
+    "total_client_events": 600,
+    "mismatch_ticks": 0,
+    "verified_vs_recorded": true,
+    "verified_run1_vs_run2": true
+  }
+}

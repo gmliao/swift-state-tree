@@ -1,0 +1,24 @@
+{
+  "meta": {
+    "date": "2026-08-31",
+    "git_sha": "d23d66d",
+    "swift_version": "6.3.2",
+    "build_config": "release",
+    "host": "Apple M2, macOS (8 cores, 16 GB), arm64",
+    "command": "HERO_PERTURB_TICK=600 HERO_PERTURB_MODE=float HERO_PERTURB_EPS=1e-07 ReevaluationRunner --input s6.json --verify",
+    "source_log": "perturb-s6-float1e-7.log"
+  },
+  "params": {
+    "seed": 6,
+    "perturb_tick": 600,
+    "mode": "float",
+    "eps": 1e-07,
+    "workload": "perturbed-replay"
+  },
+  "metrics": {
+    "detected": false,
+    "first_mismatch_tick": null,
+    "detection_latency_ticks": null,
+    "mismatch_ticks": 0
+  }
+}
