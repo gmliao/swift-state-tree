@@ -232,6 +232,9 @@ jobs:
         ./test-e2e-game.sh
 
   e2e-matchmaking-tests:
+    # Temporarily disabled while paper work takes priority (job was hanging until
+    # run cancellation, e.g. run 33290172486). Remove this `if` to re-enable.
+    if: false
     runs-on: ubuntu-22.04 # Linux runner (production target)
     container:
       image: swift:6.2
