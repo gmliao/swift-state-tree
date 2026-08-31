@@ -26,6 +26,13 @@ public protocol GameConfigProvider: Sendable {
     var weaponUpgradeCost: Int { get }
     var turretUpgradeCost: Int { get }
     var turretPlacementCost: Int { get }
+    /// Maximum number of live monsters allowed in a room. 0 means unlimited (default behavior).
+    var monsterMaxCount: Int { get }
+}
+
+extension GameConfigProvider {
+    /// Default: no cap, preserving the original spawn behavior.
+    public var monsterMaxCount: Int { 0 }
 }
 
 public struct GameConfigProviderService: Sendable {

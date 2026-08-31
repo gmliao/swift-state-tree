@@ -75,7 +75,11 @@ public enum HeroDefense {
                     let spawnInterval = MonsterSystem.getMonsterSpawnInterval(ctx)
                     if tickId % Int64(spawnInterval) == 0 {
                         // Spawn random number of monsters (1-4) for more intense combat
-                        let spawnCount = ctx.random.nextInt(in: config.monsterSpawnCountMin ... config.monsterSpawnCountMax)
+                        var spawnCount = ctx.random.nextInt(in: config.monsterSpawnCountMin ... config.monsterSpawnCountMax)
+                        // Clamp to the configured monster cap (0 = unlimited)
+                        if config.monsterMaxCount > 0 {
+                            spawnCount = min(spawnCount, max(0, config.monsterMaxCount - state.monsters.count))
+                        }
                         for _ in 0 ..< spawnCount {
                             let monsterID = state.nextMonsterID
                             state.nextMonsterID += 1

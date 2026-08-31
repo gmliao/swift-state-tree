@@ -37,3 +37,8 @@ public struct HeroDefenseState: StateNodeProtocol, StateFromSnapshotDecodable {
 
     public init() {}
 }
+
+extension HeroDefenseState {
+    /// Number of live monsters (read-only accessor for benchmarks and tools).
+    public var liveMonsterCount: Int { monsters.count }
+}

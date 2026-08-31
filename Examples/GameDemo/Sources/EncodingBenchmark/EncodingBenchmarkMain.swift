@@ -196,6 +196,7 @@ func runMultiRoomBenchmark(
     iterations: Int,
     parallel: Bool,
     ticksPerSync: Int = 0,
+    monsterCap: Int = 0,
     progressEvery: Int = 0,
     progressLabel: String? = nil
 ) async -> BenchmarkResult {
@@ -220,7 +221,9 @@ func runMultiRoomBenchmark(
         
         // Create services with GameConfig
         var services = LandServices()
-        let configProvider = DefaultGameConfigProvider()
+        let configProvider: any GameConfigProvider = monsterCap > 0
+            ? CappedMonsterGameConfigProvider(cap: monsterCap)
+            : DefaultGameConfigProvider()
         let configService = GameConfigProviderService(provider: configProvider)
         services.register(configService, as: GameConfigProviderService.self)
         
@@ -357,6 +360,12 @@ func runMultiRoomBenchmark(
     // This represents the average time to sync one room in one iteration
     let avgCostPerSyncMs = roomCount > 0 ? timePerSyncMs / Double(roomCount) : timePerSyncMs
     
+    // Record the final monster count from the first room (all rooms evolve identically)
+    var finalMonsterCount = 0
+    if let firstRoom = rooms.first {
+        finalMonsterCount = await firstRoom.keeper.currentState().liveMonsterCount
+    }
+    
     return BenchmarkResult(
         format: format,
         timeMs: timeMs,
@@ -369,7 +378,8 @@ func runMultiRoomBenchmark(
         playersPerRoom: playersPerRoom,
         timePerRoomMs: timePerRoomMs,
         timePerSyncMs: timePerSyncMs,
-        avgCostPerSyncMs: avgCostPerSyncMs
+        avgCostPerSyncMs: avgCostPerSyncMs,
+        finalMonsterCount: finalMonsterCount
     )
 }
 
@@ -1432,6 +1442,7 @@ struct EncodingBenchmark {
                             iterations: config.iterations,
                             parallel: false,
                             ticksPerSync: config.ticksPerSync,
+                            monsterCap: config.monsterCap,
                             progressEvery: config.progressEvery,
                             progressLabel: "scalability/serial/\(format.rawValue)/rooms\(roomCount)/ppr\(playersPerRoom)"
                         )
@@ -1442,6 +1453,7 @@ struct EncodingBenchmark {
                             iterations: config.iterations,
                             parallel: true,
                             ticksPerSync: config.ticksPerSync,
+                            monsterCap: config.monsterCap,
                             progressEvery: config.progressEvery,
                             progressLabel: "scalability/parallel/\(format.rawValue)/rooms\(roomCount)/ppr\(playersPerRoom)"
                         )
@@ -1471,21 +1483,24 @@ struct EncodingBenchmark {
                             "totalBytes": serialResult.totalBytes,
                             "bytesPerSync": serialResult.bytesPerSync,
                             "throughputSyncsPerSecond": serialResult.throughputSyncsPerSecond,
-                            "avgCostPerSyncMs": serialResult.avgCostPerSyncMs
+                            "avgCostPerSyncMs": serialResult.avgCostPerSyncMs,
+                            "finalMonsterCount": serialResult.finalMonsterCount
                         ],
                         "parallel": [
                             "timeMs": parallelResult.timeMs,
                             "totalBytes": parallelResult.totalBytes,
                             "bytesPerSync": parallelResult.bytesPerSync,
                             "throughputSyncsPerSecond": parallelResult.throughputSyncsPerSecond,
-                            "avgCostPerSyncMs": parallelResult.avgCostPerSyncMs
+                            "avgCostPerSyncMs": parallelResult.avgCostPerSyncMs,
+                            "finalMonsterCount": parallelResult.finalMonsterCount
                         ],
                         "speedup": speedup,
                         "efficiency": efficiency,
                         "config": [
                             "iterations": config.iterations,
                             "ticksPerSync": config.ticksPerSync,
-                            "gameType": config.gameType.rawValue
+                            "gameType": config.gameType.rawValue,
+                            "monsterCap": config.monsterCap
                         ]
                     ])
                 }
@@ -1503,7 +1518,8 @@ struct EncodingBenchmark {
             ? ""
             : "-ppr\(playersPerRoomValues.map(String.init).joined(separator: "+"))"
         let formatsSuffix = config.runAll ? "-all-formats" : "-\(config.format.rawValue)"
-        let filename = "scalability-matrix\(formatsSuffix)\(playersSuffix)-\(config.iterations)iterations\(tickSuffix)-\(timestamp).json"
+        let mcapSuffix = config.monsterCap > 0 ? "-mcap\(config.monsterCap)" : ""
+        let filename = "scalability-matrix\(formatsSuffix)\(playersSuffix)\(mcapSuffix)-\(config.iterations)iterations\(tickSuffix)-\(timestamp).json"
         saveResultsToJSON(allResults, filename: filename, benchmarkConfig: [
             "mode": "scalability-matrix",
             "roomCounts": roomCounts,
@@ -1511,6 +1527,7 @@ struct EncodingBenchmark {
             "iterations": config.iterations,
             "ticksPerSync": config.ticksPerSync,
             "gameType": config.gameType.rawValue,
+            "monsterCap": config.monsterCap,
             "formats": formats.map(\.rawValue)
         ])
     }

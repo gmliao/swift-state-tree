@@ -91,6 +91,9 @@ struct BenchmarkConfig {
     var workerCount: Int? = nil
     var compareWorkerPool: Bool = false
     var gameType: GameType = .heroDefense
+    /// Hero-defense only: when > 0, rooms refill monsters to this count every tick
+    /// (spawn interval forced to 1) so the live monster count stays at ~cap.
+    var monsterCap: Int = 0
 }
 
 // MARK: - Argument Parsing
@@ -178,6 +181,11 @@ enum ArgumentParser {
                 config.gameType = gameType
                 i += 1
             }
+        case "--monster-cap":
+            if i + 1 < args.count, let value = Int(args[i + 1]) {
+                config.monsterCap = max(0, value)
+                i += 1
+            }
         case "--use-worker-pool":
             config.useWorkerPool = true
         case "--workers":
@@ -215,6 +223,7 @@ enum ArgumentParser {
       --output <format>       Output format: table or json (default: table)
       --parallel <bool>       Enable parallel execution across rooms (default: true)
       --game-type <type>      Game type: hero-defense or card-game (default: hero-defense)
+      --monster-cap <int>     Hero-defense: keep live monsters at ~this count (0 = default spawning)
       --all                   Run benchmark for all formats
       --compare-parallel      Compare serial vs parallel execution for each format
       --scalability           Run scalability test (different room counts)

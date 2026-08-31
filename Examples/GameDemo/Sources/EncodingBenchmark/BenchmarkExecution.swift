@@ -10,6 +10,43 @@ import SwiftStateTreeTransport
 
 // MARK: - Types
 
+/// Config provider used when `--monster-cap` is set: forces spawn interval to 1 and
+/// refills monsters up to the cap every tick (the land clamps to `monsterMaxCount`),
+/// so the live monster count stays at ~cap for the whole measurement window.
+struct CappedMonsterGameConfigProvider: GameConfigProvider {
+    let base = DefaultGameConfigProvider()
+    let cap: Int
+
+    var monsterMaxCount: Int { cap }
+    var monsterSpawnIntervalMinTicks: Int { 1 }
+    var monsterSpawnIntervalMaxTicks: Int { 1 }
+    var monsterSpawnCountMin: Int { cap }
+    var monsterSpawnCountMax: Int { cap }
+
+    // Delegate everything else to the default provider
+    var worldWidth: Float { base.worldWidth }
+    var worldHeight: Float { base.worldHeight }
+    var baseCenterX: Float { base.baseCenterX }
+    var baseCenterY: Float { base.baseCenterY }
+    var baseRadius: Float { base.baseRadius }
+    var baseMaxHealth: Int { base.baseMaxHealth }
+    var tickIntervalMs: Int { base.tickIntervalMs }
+    var monsterSpawnAccelerationTicks: Int64 { base.monsterSpawnAccelerationTicks }
+    var monsterMoveSpeed: Float { base.monsterMoveSpeed }
+    var monsterBaseHealth: Int { base.monsterBaseHealth }
+    var monsterBaseReward: Int { base.monsterBaseReward }
+    var weaponBaseDamage: Int { base.weaponBaseDamage }
+    var weaponBaseRange: Float { base.weaponBaseRange }
+    var weaponFireRateTicks: Int { base.weaponFireRateTicks }
+    var turretBaseDamage: Int { base.turretBaseDamage }
+    var turretBaseRange: Float { base.turretBaseRange }
+    var turretFireRateTicks: Int { base.turretFireRateTicks }
+    var turretPlacementDistance: Float { base.turretPlacementDistance }
+    var weaponUpgradeCost: Int { base.weaponUpgradeCost }
+    var turretUpgradeCost: Int { base.turretUpgradeCost }
+    var turretPlacementCost: Int { base.turretPlacementCost }
+}
+
 // Generic room context for HeroDefense
 struct HeroDefenseRoomContext: Sendable {
     let landID: LandID
@@ -72,6 +109,9 @@ struct BenchmarkResult {
     let timePerRoomMs: Double  // Average time per room
     let timePerSyncMs: Double  // Average time per sync
     let avgCostPerSyncMs: Double  // Average cost per sync operation (time per sync / number of rooms)
+    /// Live monster count in the first room at the end of the measurement window
+    /// (all rooms evolve identically; 0 for non-hero-defense benchmarks).
+    var finalMonsterCount: Int = 0
     
     // Additional metrics for comparison
     var throughputSyncsPerSecond: Double {
@@ -646,6 +686,7 @@ enum BenchmarkRunner {
         iterations: Int,
         parallel: Bool,
         ticksPerSync: Int = 0,
+        monsterCap: Int = 0,
         progressEvery: Int = 0,
         progressLabel: String? = nil
     ) async -> BenchmarkResult {
@@ -670,7 +711,9 @@ enum BenchmarkRunner {
         
         // Create services with GameConfig
         var services = LandServices()
-        let configProvider = DefaultGameConfigProvider()
+        let configProvider: any GameConfigProvider = monsterCap > 0
+            ? CappedMonsterGameConfigProvider(cap: monsterCap)
+            : DefaultGameConfigProvider()
         let configService = GameConfigProviderService(provider: configProvider)
         services.register(configService, as: GameConfigProviderService.self)
         
@@ -805,6 +848,12 @@ enum BenchmarkRunner {
     // This represents the average time to sync one room in one iteration
     let avgCostPerSyncMs = roomCount > 0 ? timePerSyncMs / Double(roomCount) : timePerSyncMs
     
+    // Record the final monster count from the first room (all rooms evolve identically)
+    var finalMonsterCount = 0
+    if let firstRoom = rooms.first {
+        finalMonsterCount = await firstRoom.keeper.currentState().liveMonsterCount
+    }
+    
     return BenchmarkResult(
         format: format,
         timeMs: timeMs,
@@ -817,7 +866,8 @@ enum BenchmarkRunner {
         playersPerRoom: playersPerRoom,
         timePerRoomMs: timePerRoomMs,
         timePerSyncMs: timePerSyncMs,
-        avgCostPerSyncMs: avgCostPerSyncMs
+        avgCostPerSyncMs: avgCostPerSyncMs,
+        finalMonsterCount: finalMonsterCount
     )
     }
     
