@@ -202,7 +202,7 @@ func runMultiRoomBenchmark(
     progressLabel: String? = nil
 ) async -> BenchmarkResult {
     // Extract pathHashes from schema
-    let landDef = HeroDefense.makeLand()
+    let landDef = HeroDefense.makeLand(maxPlayers: max(10, playersPerRoom))
     let schema = SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(landDef)])
     let pathHashes = format.usesPathHash ? schema.lands["hero-defense"]?.pathHashes : nil
 
@@ -229,7 +229,7 @@ func runMultiRoomBenchmark(
         services.register(configService, as: GameConfigProviderService.self)
         
         let keeper = LandKeeper<HeroDefenseState>(
-            definition: HeroDefense.makeLand(),
+            definition: HeroDefense.makeLand(maxPlayers: max(10, playersPerRoom)),
             initialState: HeroDefenseState(),
             services: services,
             autoStartLoops: false,
@@ -271,6 +271,12 @@ func runMultiRoomBenchmark(
             ) {
                 await adapter.syncStateForNewPlayer(playerID: result.playerID, sessionID: sessionID)
             }
+        }
+        
+        // Fail loudly if the land's join policy rejected any player
+        let joinedCount = await keeper.playerCount()
+        if joinedCount != playersPerRoom {
+            print("WARNING: room \(roomIndex) joined \(joinedCount)/\(playersPerRoom) players (join policy rejected the rest)")
         }
         
         // Initial sync

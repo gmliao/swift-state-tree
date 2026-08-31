@@ -7,14 +7,15 @@ import SwiftStateTreeReevaluationMonitor
 // MARK: - Land Definition
 
 public enum HeroDefense {
-    public static func makeLand() -> LandDefinition<HeroDefenseState> {
+    /// - Parameter maxPlayers: Maximum players allowed to join (default 10, the production value).
+    public static func makeLand(maxPlayers: Int = 10) -> LandDefinition<HeroDefenseState> {
         Land(
             "hero-defense",
             using: HeroDefenseState.self
         ) {
             AccessControl {
                 AllowPublic(true)
-                MaxPlayers(10)
+                MaxPlayers(maxPlayers)
             }
 
             ClientEvents {
