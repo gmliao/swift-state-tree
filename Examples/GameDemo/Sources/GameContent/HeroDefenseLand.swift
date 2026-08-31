@@ -41,8 +41,10 @@ public enum HeroDefense {
                     }
                     let config = configService.provider
 
-                    // Update all player systems
-                    for (playerID, var player) in state.players {
+                    // Update all player systems (sorted keys: dictionary iteration order is
+                    // not deterministic across runs, and firing order affects combat outcomes)
+                    for playerID in state.players.keys.sorted(by: { $0.rawValue < $1.rawValue }) {
+                        guard var player = state.players[playerID] else { continue }
                         defer { state.players[playerID] = player }
 
                         // Update movement (this also updates rotation towards movement target)
@@ -89,9 +91,10 @@ public enum HeroDefense {
                         }
                     }
 
-                    // Update all monsters
+                    // Update all monsters (sorted keys for deterministic iteration order)
                     var monstersToRemove: [Int] = []
-                    for (monsterID, var monster) in state.monsters {
+                    for monsterID in state.monsters.keys.sorted() {
+                        guard var monster = state.monsters[monsterID] else { continue }
                         // Update movement
                         MovementSystem.updateMonsterMovement(
                             &monster,
@@ -116,7 +119,9 @@ public enum HeroDefense {
                     }
 
                     // Update turrets (auto-target and fire)
-                    for (turretID, var turret) in state.turrets {
+                    // Sorted keys for deterministic iteration order
+                    for turretID in state.turrets.keys.sorted() {
+                        guard var turret = state.turrets[turretID] else { continue }
                         defer { state.turrets[turretID] = turret }
 
                         // Check fire rate
