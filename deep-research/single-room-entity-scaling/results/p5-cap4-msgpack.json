@@ -1,0 +1,25 @@
+{
+  "meta": {
+    "date": "2026-08-31T02:48:46.218Z",
+    "git_sha": "648fce5",
+    "swift_version": "6.3.2",
+    "build_config": "release",
+    "host": "None, Darwin",
+    "command": "USE_SNAPSHOT_FOR_SYNC=false swift run -c release EncodingBenchmark --scalability --format messagepack-pathhash --players-per-room-list 5,10,20,50 --room-counts 1 --monster-cap 4 --iterations 200 --ticks-per-sync 2",
+    "source_file": "scalability-matrix-messagepack-pathhash-ppr5+10+20+50-mcap4-200iterations-tick2-2026-08-31T02-48-46Z.json"
+  },
+  "params": {
+    "players": 5,
+    "monster_cap": 4,
+    "encoding": "messagepack-pathhash",
+    "rooms": 1,
+    "ticks_per_sync": 2,
+    "iterations": 200
+  },
+  "metrics": {
+    "bytes_per_sync": 828.0,
+    "bytes_per_sync_serial": 828.0,
+    "final_monster_count": 4,
+    "avg_cost_per_sync_ms": 0.41699770999999997
+  }
+}
