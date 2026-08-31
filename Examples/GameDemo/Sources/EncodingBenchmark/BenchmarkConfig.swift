@@ -94,6 +94,9 @@ struct BenchmarkConfig {
     /// Hero-defense only: when > 0, rooms refill monsters to this count every tick
     /// (spawn interval forced to 1) so the live monster count stays at ~cap.
     var monsterCap: Int = 0
+    /// Hero-defense only: when true, every player receives a deterministic MoveToEvent
+    /// each iteration so all players produce position changes every tick.
+    var activePlayers: Bool = false
 }
 
 // MARK: - Argument Parsing
@@ -186,6 +189,8 @@ enum ArgumentParser {
                 config.monsterCap = max(0, value)
                 i += 1
             }
+        case "--active-players":
+            config.activePlayers = true
         case "--use-worker-pool":
             config.useWorkerPool = true
         case "--workers":
@@ -224,6 +229,7 @@ enum ArgumentParser {
       --parallel <bool>       Enable parallel execution across rooms (default: true)
       --game-type <type>      Game type: hero-defense or card-game (default: hero-defense)
       --monster-cap <int>     Hero-defense: keep live monsters at ~this count (0 = default spawning)
+      --active-players        Hero-defense: inject a deterministic move target per player per iteration
       --all                   Run benchmark for all formats
       --compare-parallel      Compare serial vs parallel execution for each format
       --scalability           Run scalability test (different room counts)

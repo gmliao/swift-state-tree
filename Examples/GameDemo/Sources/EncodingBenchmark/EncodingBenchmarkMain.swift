@@ -197,6 +197,7 @@ func runMultiRoomBenchmark(
     parallel: Bool,
     ticksPerSync: Int = 0,
     monsterCap: Int = 0,
+    activePlayers: Bool = false,
     progressEvery: Int = 0,
     progressLabel: String? = nil
 ) async -> BenchmarkResult {
@@ -311,8 +312,13 @@ func runMultiRoomBenchmark(
         // Parallel execution using withTaskGroup
         for iterationIndex in 0 ..< iterations {
             await withTaskGroup(of: Void.self) { group in
-                for room in rooms {
+                for (roomIndex, room) in rooms.enumerated() {
                     group.addTask { [room] in
+                        if activePlayers {
+                            await injectActiveMoveTargets(
+                                room: room, roomIndex: roomIndex,
+                                playersPerRoom: playersPerRoom, iteration: iterationIndex)
+                        }
                         if ticksPerSync > 0 {
                             for _ in 0 ..< ticksPerSync {
                                 await room.keeper.stepTickOnce()
@@ -329,7 +335,12 @@ func runMultiRoomBenchmark(
     } else {
         // Serial execution to avoid memory allocation order issues
         for iterationIndex in 0 ..< iterations {
-            for room in rooms {
+            for (roomIndex, room) in rooms.enumerated() {
+                if activePlayers {
+                    await injectActiveMoveTargets(
+                        room: room, roomIndex: roomIndex,
+                        playersPerRoom: playersPerRoom, iteration: iterationIndex)
+                }
                 if ticksPerSync > 0 {
                     for _ in 0 ..< ticksPerSync {
                         await room.keeper.stepTickOnce()
@@ -1443,6 +1454,7 @@ struct EncodingBenchmark {
                             parallel: false,
                             ticksPerSync: config.ticksPerSync,
                             monsterCap: config.monsterCap,
+                            activePlayers: config.activePlayers,
                             progressEvery: config.progressEvery,
                             progressLabel: "scalability/serial/\(format.rawValue)/rooms\(roomCount)/ppr\(playersPerRoom)"
                         )
@@ -1454,6 +1466,7 @@ struct EncodingBenchmark {
                             parallel: true,
                             ticksPerSync: config.ticksPerSync,
                             monsterCap: config.monsterCap,
+                            activePlayers: config.activePlayers,
                             progressEvery: config.progressEvery,
                             progressLabel: "scalability/parallel/\(format.rawValue)/rooms\(roomCount)/ppr\(playersPerRoom)"
                         )
@@ -1500,7 +1513,8 @@ struct EncodingBenchmark {
                             "iterations": config.iterations,
                             "ticksPerSync": config.ticksPerSync,
                             "gameType": config.gameType.rawValue,
-                            "monsterCap": config.monsterCap
+                            "monsterCap": config.monsterCap,
+                            "activePlayers": config.activePlayers
                         ]
                     ])
                 }
@@ -1519,7 +1533,8 @@ struct EncodingBenchmark {
             : "-ppr\(playersPerRoomValues.map(String.init).joined(separator: "+"))"
         let formatsSuffix = config.runAll ? "-all-formats" : "-\(config.format.rawValue)"
         let mcapSuffix = config.monsterCap > 0 ? "-mcap\(config.monsterCap)" : ""
-        let filename = "scalability-matrix\(formatsSuffix)\(playersSuffix)\(mcapSuffix)-\(config.iterations)iterations\(tickSuffix)-\(timestamp).json"
+        let activeSuffix = config.activePlayers ? "-active" : ""
+        let filename = "scalability-matrix\(formatsSuffix)\(playersSuffix)\(mcapSuffix)\(activeSuffix)-\(config.iterations)iterations\(tickSuffix)-\(timestamp).json"
         saveResultsToJSON(allResults, filename: filename, benchmarkConfig: [
             "mode": "scalability-matrix",
             "roomCounts": roomCounts,
@@ -1528,6 +1543,7 @@ struct EncodingBenchmark {
             "ticksPerSync": config.ticksPerSync,
             "gameType": config.gameType.rawValue,
             "monsterCap": config.monsterCap,
+            "activePlayers": config.activePlayers,
             "formats": formats.map(\.rawValue)
         ])
     }

@@ -47,6 +47,31 @@ struct CappedMonsterGameConfigProvider: GameConfigProvider {
     var turretPlacementCost: Int { base.turretPlacementCost }
 }
 
+/// Inject a deterministic MoveToEvent for every player in the room so each player
+/// produces a position change every tick (active-player workload).
+/// Targets are derived from indices with integer math only (deterministic across runs).
+func injectActiveMoveTargets(
+    room: HeroDefenseRoomContext,
+    roomIndex: Int,
+    playersPerRoom: Int,
+    iteration: Int
+) async {
+    for playerIndex in 0 ..< playersPerRoom {
+        let tx = Float((playerIndex * 37 + iteration * 13) % 128)
+        let ty = Float((playerIndex * 53 + iteration * 17) % 72)
+        let event = MoveToEvent(x: tx, y: ty)
+        guard let data = try? JSONEncoder().encode(event),
+          let payload = try? JSONDecoder().decode(AnyCodable.self, from: data)
+    else { continue }
+    try? await room.keeper.handleClientEvent(
+        AnyClientEvent(type: "MoveTo", payload: payload),
+        playerID: PlayerID("room\(roomIndex)-player-\(playerIndex)"),
+        clientID: ClientID("room\(roomIndex)-client-\(playerIndex)"),
+        sessionID: SessionID("room\(roomIndex)-session-\(playerIndex)")
+    )
+    }
+}
+
 // Generic room context for HeroDefense
 struct HeroDefenseRoomContext: Sendable {
     let landID: LandID
@@ -687,6 +712,7 @@ enum BenchmarkRunner {
         parallel: Bool,
         ticksPerSync: Int = 0,
         monsterCap: Int = 0,
+        activePlayers: Bool = false,
         progressEvery: Int = 0,
         progressLabel: String? = nil
     ) async -> BenchmarkResult {
@@ -799,8 +825,13 @@ enum BenchmarkRunner {
         // Parallel execution using withTaskGroup
         for iterationIndex in 0 ..< iterations {
             await withTaskGroup(of: Void.self) { group in
-                for room in rooms {
+                for (roomIndex, room) in rooms.enumerated() {
                     group.addTask { [room] in
+                        if activePlayers {
+                            await injectActiveMoveTargets(
+                                room: room, roomIndex: roomIndex,
+                                playersPerRoom: playersPerRoom, iteration: iterationIndex)
+                        }
                         if ticksPerSync > 0 {
                             for _ in 0 ..< ticksPerSync {
                                 await room.keeper.stepTickOnce()
@@ -817,7 +848,12 @@ enum BenchmarkRunner {
     } else {
         // Serial execution to avoid memory allocation order issues
         for iterationIndex in 0 ..< iterations {
-            for room in rooms {
+            for (roomIndex, room) in rooms.enumerated() {
+                if activePlayers {
+                    await injectActiveMoveTargets(
+                        room: room, roomIndex: roomIndex,
+                        playersPerRoom: playersPerRoom, iteration: iterationIndex)
+                }
                 if ticksPerSync > 0 {
                     for _ in 0 ..< ticksPerSync {
                         await room.keeper.stepTickOnce()
