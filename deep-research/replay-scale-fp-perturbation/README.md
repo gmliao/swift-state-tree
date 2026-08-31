@@ -114,4 +114,4 @@ run1 與 run2 完全一致；次解析度的浮點擾動（1e-7，量化前）10
 - 錄音檔（每段 ~1200 ticks）未入 repo：由 `--record --seed-id <N>` 可決定性重建。
 - 未變動軸：ticks/段（1,200）、玩家數（5）、注入節奏（20 ticks）、擾動時點（600）、砲塔（0）。
 
-Raw runner stdout: `results/*.log`（`regenerate.py` 的資料來源為對應的 `results/*.json`）。
+Raw runner stdout 未入 repo（可由上列指令決定性重生）；`regenerate.py` 的資料來源為 `results/*.json`。
