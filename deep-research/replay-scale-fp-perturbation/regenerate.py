@@ -14,9 +14,11 @@ def load_runs():
 
 def tables(runs) -> str:
     out = []
-    recs = sorted((r for r in runs if r["params"]["workload"] == "record-verify"),
+    recs = sorted((r for r in runs if r["params"].get("workload") == "record-verify"),
                   key=lambda r: (r["params"]["ticks"], r["params"]["players"], r["params"]["move_every"], r["params"]["seed"]))
-    perts = [r for r in runs if r["params"]["workload"] == "perturbed-replay"]
+    perts = [r for r in runs if r["params"].get("workload") == "perturbed-replay"]
+    crossarch = sorted((r for r in runs if r["params"].get("recorded_on")),
+                       key=lambda r: r["meta"]["arch"])
 
     out.append("### Part A — replay verification at scale (aggregate)\n")
     out.append("| recordings | total ticks | total actions | total client events | hash mismatches | verified vs recorded | run1 == run2 |")
@@ -50,6 +52,16 @@ def tables(runs) -> str:
         lat = sorted(r["metrics"]["detection_latency_ticks"] for r in det)
         lat_s = f"min {lat[0]} / max {lat[-1]}" if lat else "—"
         out.append(f"| {label} | {eps:g} | {len(det)}/{len(cell)} | {lat_s} |")
+
+    if crossarch:
+        out.append("\n### Cross-architecture verification — replay the arm64-recorded batch elsewhere\n")
+        out.append("| arch | host | swift | recordings | pass | fail |")
+        out.append("|---|---|---|---:|---:|---:|")
+        for r in crossarch:
+            m = r["meta"]
+            host = ", ".join(p.strip() for p in m["host"].split(",")[:2])
+            swift = m["swift_version"].split()[2] if m["swift_version"].startswith("Swift version") else m["swift_version"]
+            out.append(f"| {m['arch']} | {host} | {swift} | {r['params']['recordings']} | {r['metrics']['pass']} | {r['metrics']['fail']} |")
 
     return "\n".join(out) + "\n"
 

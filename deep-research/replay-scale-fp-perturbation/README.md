@@ -19,7 +19,7 @@
 - date: 2026-08-31
 - git_sha: `d23d66d`（`experiment/replay-scale-fp-perturbation` branch；含 `--record` 模式、擾動 hook、與確定性迭代修正）
 - swift_version: Apple Swift 6.3.2, build_config: release
-- host: Apple M2, macOS（8 cores, 16 GB）, arm64（錄製與重播同架構；跨架構證據見 2026-02 evidence）
+- host: Apple M2, macOS（8 cores, 16 GB）, arm64；跨架構重驗另於 AMD Ryzen 5 7600X / WSL2 Ubuntu / Swift 6.2.3（x86_64）執行，見 Results 末表
 
 ## Command(s)
 
@@ -114,6 +114,12 @@ HERO_PERTURB_TICK=600 HERO_PERTURB_MODE=<float|fixed> HERO_PERTURB_EPS=<eps> \
 | float +1e-7 (sub-LSB, pre-quantization) | 1e-07 | 0/10 | — |
 | fixed +1 LSB (0.001 world units) | 1 | 10/10 | min 0 / max 0 |
 | fixed +1000 LSB (1.0 world unit) | 1000 | 10/10 | min 0 / max 0 |
+
+### Cross-architecture verification — replay the arm64-recorded batch elsewhere
+
+| arch | host | swift | recordings | pass | fail |
+|---|---|---|---:|---:|---:|
+| x86_64 | AMD Ryzen 5 7600X 6-Core Processor, WSL2 (Ubuntu) | 6.2.3 | 41 | 41 | 0 |
 ## Conclusion
 
 41 段錄音共 **70,800 ticks**（核心 30×1,200 + 玩家數/注入節奏變體 9 段 + 兩段 12,000-tick 長程）
@@ -123,6 +129,11 @@ HERO_PERTURB_TICK=600 HERO_PERTURB_MODE=<float|fixed> HERO_PERTURB_EPS=<eps> \
 低於量化步長的浮點雜訊寫不進定點狀態，決定性不依賴偵測來維持；(2) **稽核靈敏度**——一旦狀態
 真的偏移（最小 1 LSB），離線重播驗證的逐 tick hash 比對當拍、無盲區地暴露它。此驗證屬
 audit-time（重播稽核／CI）機制，非 runtime 監測。
+
+跨架構：同一批 arm64 錄音（sha256 對帳後搬運）在 x86_64（AMD Ryzen 5 7600X / WSL2
+Ubuntu / Swift 6.2.3）重播 **41/41 通過、0 mismatch**——錄製端為 arm64 / macOS /
+Swift 6.3.2，故此結果同時跨 CPU 架構、作業系統與 toolchain 版本三軸，
+`E_t` 錄下後 δ 的重評估不依賴錄製平台。
 
 ## Caveats
 
@@ -139,6 +150,9 @@ audit-time（重播稽核／CI）機制，非 runtime 監測。
 - 錄音檔（每段 ~1200 ticks）未入 repo：由 `--record --seed-id <N>` 可決定性重建。
 - 已變動軸：玩家數（2/5/10）、注入節奏（5/20 ticks）、長度（1,200/12,000 ticks）。未變動軸：
   擾動時點（600）與擾動僅在核心 30 段的前 10 段上施加、砲塔（0）。
-- 跨架構重驗：`crossarch-verify.sh` 於 x86_64 機器上對同一批 arm64 錄音執行（結果另行補入）。
+- 跨架構重驗已完成（`results/crossarch-x86_64.json`，2026-09-12）：41 段 arm64 錄音由
+  seed 決定性重建（`--record --seed-id`）、tar 後以 sha256 對帳搬運至 x86_64 機器，
+  `crossarch-verify.sh` 全數通過。重建用 commit `9c48092` 的 runner（非首次錄製的
+  `d23d66d`）；重建檔於 arm64 本機 `--verify` 抽驗通過後才搬運。
 
 Raw runner stdout 未入 repo（可由上列指令決定性重生）；`regenerate.py` 的資料來源為 `results/*.json`。
