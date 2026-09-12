@@ -1,0 +1,26 @@
+{
+  "meta": {
+    "date": "2026-08-31",
+    "git_sha": "fcdd41e",
+    "swift_version": "6.3.2",
+    "build_config": "release",
+    "host": "Apple M2, macOS (8 cores, 16 GB), arm64",
+    "command": "ReevaluationRunner --record --output m5-s122.json --seed-id 122 --ticks 1200 --players 5 --move-every 5; ReevaluationRunner --input m5-s122.json --verify",
+    "source_log": "rec-m5-s122.log"
+  },
+  "params": {
+    "seed": 122,
+    "ticks": 1200,
+    "players": 5,
+    "move_every": 5,
+    "workload": "record-verify"
+  },
+  "metrics": {
+    "total_ticks": 1200,
+    "total_actions": 0,
+    "total_client_events": 1200,
+    "mismatch_ticks": 0,
+    "verified_vs_recorded": true,
+    "verified_run1_vs_run2": true
+  }
+}

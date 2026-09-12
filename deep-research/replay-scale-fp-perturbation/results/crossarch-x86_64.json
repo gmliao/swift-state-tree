@@ -1,0 +1,13 @@
+{
+  "meta": {
+    "date": "2026-09-12T13:19:37Z",
+    "git_sha": "9c48092",
+    "swift_version": "Swift version 6.2.3 (swift-6.2.3-RELEASE)",
+    "host": "AMD Ryzen 5 7600X 6-Core Processor, WSL2 (Ubuntu), Linux Guanming-7600X 6.18.33.1-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Fri Jun  5 01:12:21 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux",
+    "arch": "x86_64",
+    "recordings_sha256": "fe09fb153e274cd950f39bf039045b9056cfd44a664a7a85ef16d3ffab743d03"
+  },
+  "params": { "recordings": 41, "recorded_on": "arm64-macos" },
+  "metrics": { "pass": 41, "fail": 0 },
+  "failures": []
+}

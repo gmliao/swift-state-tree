@@ -1,0 +1,24 @@
+{
+  "meta": {
+    "date": "2026-08-31",
+    "git_sha": "d23d66d",
+    "swift_version": "6.3.2",
+    "build_config": "release",
+    "host": "Apple M2, macOS (8 cores, 16 GB), arm64",
+    "command": "HERO_PERTURB_TICK=600 HERO_PERTURB_MODE=fixed HERO_PERTURB_EPS=1.0 ReevaluationRunner --input s8.json --verify",
+    "source_log": "perturb-s8-fixed1.log"
+  },
+  "params": {
+    "seed": 8,
+    "perturb_tick": 600,
+    "mode": "fixed",
+    "eps": 1.0,
+    "workload": "perturbed-replay"
+  },
+  "metrics": {
+    "detected": true,
+    "first_mismatch_tick": 600,
+    "detection_latency_ticks": 0,
+    "mismatch_ticks": 46
+  }
+}

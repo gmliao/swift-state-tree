@@ -46,7 +46,10 @@ public enum CombatSystem {
         var nearest: (id: Int, monster: MonsterState)? = nil
         var nearestDistance: Float = Float.greatestFiniteMagnitude
         
-        for (id, monster) in monsters {
+        // Sorted iteration keeps target selection deterministic: with the strict `<`
+        // comparison below, equidistant monsters resolve to the lowest id on every run.
+        for id in monsters.keys.sorted() {
+            guard let monster = monsters[id] else { continue }
             let distance = position.v.distance(to: monster.position.v)
             if distance <= range && distance < nearestDistance {
                 nearest = (id, monster)
