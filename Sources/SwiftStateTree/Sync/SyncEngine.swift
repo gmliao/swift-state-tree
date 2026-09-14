@@ -32,6 +32,16 @@ public enum SnapshotMode: Sendable {
 ///
 /// See [DESIGN_RUNTIME.md](../../../DESIGN_RUNTIME.md) for detailed documentation.
 public struct SyncEngine: Sendable {
+    /// What a diff is computed against.
+    ///
+    /// - `cached`: the previous snapshot held in the engine's cache; the cache is updated afterwards.
+    /// - `empty`: an empty snapshot, so every field becomes a `.set` patch (a full view).
+    ///   The cache is neither read nor written. Used by the full-snapshot sync strategy.
+    public enum DiffBaseline: Sendable {
+        case cached
+        case empty
+    }
+
     /// Cache for broadcast snapshot (shared across all players)
     private var lastBroadcastSnapshot: StateSnapshot?
     
@@ -544,12 +554,18 @@ public struct SyncEngine: Sendable {
     ///   - currentBroadcast: Pre-extracted broadcast snapshot.
     ///   - onlyPaths: Optional set of paths to limit diff calculation (JSON Pointer format).
     ///   - mode: Snapshot generation mode. Should match the mode used to extract the snapshot.
+    ///   - baseline: What to compute the diff against. Default is `.cached`.
     /// - Returns: Array of patches representing the changes.
     public mutating func computeBroadcastDiffFromSnapshot(
         currentBroadcast: StateSnapshot,
         onlyPaths: Set<String>? = nil,
-        mode: SnapshotMode = .all
+        mode: SnapshotMode = .all,
+        baseline: DiffBaseline = .cached
     ) -> [StatePatch] {
+        if case .empty = baseline {
+            return compareSnapshots(from: StateSnapshot(values: [:]), to: currentBroadcast, onlyPaths: onlyPaths, dirtyFields: nil)
+        }
+
         // Check if we have cached broadcast snapshot
         guard let lastBroadcast = lastBroadcastSnapshot else {
             // First time: seed cache with the provided snapshot
@@ -587,13 +603,18 @@ public struct SyncEngine: Sendable {
         for playerID: PlayerID,
         currentPerPlayer: StateSnapshot,
         onlyPaths: Set<String>?,
-        mode: SnapshotMode = .all
+        mode: SnapshotMode = .all,
+        baseline: DiffBaseline = .cached
     ) -> [StatePatch] {
+        if case .empty = baseline {
+            return compareSnapshots(from: StateSnapshot(values: [:]), to: currentPerPlayer, onlyPaths: onlyPaths, dirtyFields: nil)
+        }
+
         // If only broadcast fields are dirty, we can skip per-player diff when cache exists
         if case .dirtyTracking(let dirtyFields) = mode, dirtyFields.isEmpty, lastPerPlayerSnapshots[playerID] != nil {
             return []
         }
-        
+
         // Check if we have cached per-player snapshot
         guard let lastPerPlayer = lastPerPlayerSnapshots[playerID] else {
             // First time: seed cache with the provided snapshot
@@ -721,21 +742,24 @@ public struct SyncEngine: Sendable {
     ///   - perPlayerSnapshot: Pre-extracted per-player snapshot for this player.
     ///   - perPlayerMode: Snapshot mode used to extract perPlayerSnapshot (for dirty tracking).
     ///   - onlyPaths: Optional set of paths to limit diff calculation (JSON Pointer format).
+    ///   - baseline: What to compute the diff against. Default is `.cached`.
     /// - Returns: `.firstSync([StatePatch])` on first call, `.diff([StatePatch])` with changes, or `.noChange`.
     package mutating func generateUpdateFromBroadcastDiff(
         for playerID: PlayerID,
         broadcastDiff: [StatePatch],
         perPlayerSnapshot: StateSnapshot,
         perPlayerMode: SnapshotMode = .all,
-        onlyPaths: Set<String>? = nil
+        onlyPaths: Set<String>? = nil,
+        baseline: DiffBaseline = .cached
     ) -> StateUpdate {
         let isFirstSyncForPlayer = !hasReceivedFirstSync.contains(playerID)
-        
+
         let perPlayerDiff = computePerPlayerDiffFromSnapshot(
             for: playerID,
             currentPerPlayer: perPlayerSnapshot,
             onlyPaths: onlyPaths,
-            mode: perPlayerMode
+            mode: perPlayerMode,
+            baseline: baseline
         )
         
         let mergedPatches = mergePatches(broadcastDiff, perPlayerDiff)
@@ -761,18 +785,21 @@ public struct SyncEngine: Sendable {
     ///   - perPlayerSnapshot: Pre-extracted per-player snapshot for this player.
     ///   - perPlayerMode: Snapshot mode used to extract perPlayerSnapshot (for dirty tracking).
     ///   - onlyPaths: Optional set of paths to limit diff calculation (JSON Pointer format).
+    ///   - baseline: What to compute the diff against. Default is `.cached`.
     /// - Returns: `.diff([StatePatch])` with changes, or `.noChange` if none.
     package mutating func generatePerPlayerUpdateFromSnapshot(
         for playerID: PlayerID,
         perPlayerSnapshot: StateSnapshot,
         perPlayerMode: SnapshotMode = .all,
-        onlyPaths: Set<String>? = nil
+        onlyPaths: Set<String>? = nil,
+        baseline: DiffBaseline = .cached
     ) -> StateUpdate {
         let perPlayerDiff = computePerPlayerDiffFromSnapshot(
             for: playerID,
             currentPerPlayer: perPlayerSnapshot,
             onlyPaths: onlyPaths,
-            mode: perPlayerMode
+            mode: perPlayerMode,
+            baseline: baseline
         )
 
         if perPlayerDiff.isEmpty {
