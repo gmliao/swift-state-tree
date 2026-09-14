@@ -1184,11 +1184,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     private func runSyncNowCycle(state: State) async throws {
         let shouldCollectChangeMetrics = enableChangeObjectMetrics || enableAutoDirtyTracking
-        let (broadcastMode, perPlayerMode) = computeSyncModes(for: state)
-        let (broadcastSnapshot, perPlayerByPlayer) = try extractSyncSnapshots(
+        let (requestedBroadcastMode, requestedPerPlayerMode) = computeSyncModes(for: state)
+        // `extractSyncSnapshots` may extract with a different (but equivalent) mode than requested
+        // when `useSnapshotForSync` is enabled: it derives a single combined dirty-field mode from
+        // `state.getDirtyFields()` rather than reusing `requestedBroadcastMode`/`requestedPerPlayerMode`
+        // verbatim. Diffing must use the mode that was actually applied during extraction, or fields
+        // excluded from extraction (because they weren't in that combined dirty set) get misread as
+        // newly-added when compared against the broadcast cache.
+        let (broadcastSnapshot, perPlayerByPlayer, broadcastMode, perPlayerMode) = try extractSyncSnapshots(
             from: state,
-            broadcastMode: broadcastMode,
-            perPlayerMode: perPlayerMode
+            broadcastMode: requestedBroadcastMode,
+            perPlayerMode: requestedPerPlayerMode
         )
 
         let broadcastDiff = syncEngine.computeBroadcastDiffFromSnapshot(
@@ -1260,7 +1266,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         from state: State,
         broadcastMode: SnapshotMode,
         perPlayerMode: SnapshotMode
-    ) throws -> (broadcastSnapshot: StateSnapshot, perPlayerByPlayer: [PlayerID: StateSnapshot]) {
+    ) throws -> (
+        broadcastSnapshot: StateSnapshot,
+        perPlayerByPlayer: [PlayerID: StateSnapshot],
+        broadcastMode: SnapshotMode,
+        perPlayerMode: SnapshotMode
+    ) {
         if useSnapshotForSync {
             let fullMode: SnapshotMode = (enableDirtyTracking && state.isDirty())
                 ? .dirtyTracking(state.getDirtyFields())
@@ -1271,7 +1282,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 playerIDs: Array(playerIDsToSync),
                 mode: fullMode
             )
-            return (broadcastSnapshot: extracted.broadcast, perPlayerByPlayer: extracted.perPlayer)
+            // One-pass extraction filters both broadcast and per-player fields against the same
+            // `fullMode` dirty-field set, so the mode used for later diffing must be `fullMode` too
+            // (not the independently-computed `broadcastMode`/`perPlayerMode`), or fields left out of
+            // this extraction get compared as if they were still fully present in the previous snapshot.
+            return (
+                broadcastSnapshot: extracted.broadcast,
+                perPlayerByPlayer: extracted.perPlayer,
+                broadcastMode: fullMode,
+                perPlayerMode: fullMode
+            )
         }
 
         let broadcastSnapshot = try syncEngine.extractBroadcastSnapshot(from: state, mode: broadcastMode)
@@ -1287,7 +1307,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 mode: perPlayerMode
             )
         }
-        return (broadcastSnapshot: broadcastSnapshot, perPlayerByPlayer: perPlayerByPlayer)
+        return (
+            broadcastSnapshot: broadcastSnapshot,
+            perPlayerByPlayer: perPlayerByPlayer,
+            broadcastMode: broadcastMode,
+            perPlayerMode: perPlayerMode
+        )
     }
 
     private func sendMergedBroadcastUpdateIfNeeded(
