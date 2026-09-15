@@ -17,7 +17,8 @@ for raw in sorted(RAW.glob("*.json")):
     active = "--active-players" in cmd
     cap = int(cmd[cmd.index("--monster-cap") + 1]) if "--monster-cap" in cmd else None
     encoding = cmd[cmd.index("--format") + 1]
-    axis = "rooms" if raw.stem.startswith("rq1-rooms") else "active" if raw.stem.startswith("active") else "monsters"
+    axis = ("rooms" if raw.stem.startswith("rq1-rooms") else "rooms-large" if raw.stem.startswith("rq2-rooms")
+            else "active" if raw.stem.startswith("active") else "monsters")
     for r in d["results"]:
         rooms, players = r["rooms"], r["playersPerRoom"]
         sname = "full" if strategy == "full-snapshot" else "delta"

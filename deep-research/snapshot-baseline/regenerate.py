@@ -64,6 +64,14 @@ def tables(runs):
         d = pick(runs, axis="active", players=p, sync_strategy="delta")
         f = pick(runs, axis="active", players=p, sync_strategy="full-snapshot")
         out.append(pair_row(f"players {p}", d, f))
+    out.append("\n### Table IX replacement (100/300/500 rooms, same commit)\n")
+    out.append("| Format / Strategy | Rooms | Total Players | bytesPerSync |\n|---|---:|---:|---:|")
+    for label, enc, strat in (("JSON Object, delta", "json-object", "delta"),
+                              ("Opcode MsgPack (PathHash), delta", "messagepack-pathhash", "delta"),
+                              ("Opcode MsgPack (PathHash), full-snapshot", "messagepack-pathhash", "full-snapshot")):
+        for rooms in (100, 300, 500):
+            r = pick(runs, axis="rooms-large", rooms=rooms, sync_strategy=strat, encoding=enc)
+            out.append(f"| {label} | {rooms} | {5 * rooms} | {fmt(r['metrics']['bytes_per_sync'])} |")
     # Drift check against the archived single-room-entity-scaling delta cells.
     out.append("\n### Drift check: re-run delta cells vs archived `single-room-entity-scaling`\n")
     out.append("| Cell | archived bytesPerSync | re-run bytesPerSync | drift |\n|---|---:|---:|---:|")
@@ -80,12 +88,14 @@ def tables(runs):
             ab, rb = a["metrics"]["bytes_per_sync"], r["metrics"]["bytes_per_sync"]
             out.append(f"| active players {p} | {fmt(ab)} | {fmt(rb)} | {(rb - ab) / ab * 100:+.1f}% |")
     out.append("\n### Rooms axis vs the paper's archived RQ1 tables (per-room bytesPerSync)\n")
-    out.append("| Format | archived Table VI (2026-01-25, 10 rooms) | archived Table IX (2026-02-06, 100 rooms) | this topic (10 rooms) |\n|---|---:|---:|---:|")
+    out.append("| Format | archived Table VI (2026-01-25, 10 rooms) | archived Table IX (2026-02-06, 100 rooms) | this topic (10 rooms) | this topic (100 rooms) |\n|---|---:|---:|---:|---:|")
     archive_vi = {"json-object": 17627, "messagepack-pathhash": 4572}
     archive_ix = {"json-object": 175471, "messagepack-pathhash": 49851}
     for label, enc in (("JSON Object", "json-object"), ("Opcode MsgPack (PathHash)", "messagepack-pathhash")):
-        r = pick(runs, axis="rooms", rooms=10, sync_strategy="delta", encoding=enc)
-        out.append(f"| {label} | {archive_vi[enc] / 10:,.1f} | {archive_ix[enc] / 100:,.1f} | {r['metrics']['bytes_per_sync'] / 10:,.1f} |")
+        r10 = pick(runs, axis="rooms", rooms=10, sync_strategy="delta", encoding=enc)
+        r100 = pick(runs, axis="rooms-large", rooms=100, sync_strategy="delta", encoding=enc)
+        out.append(f"| {label} | {archive_vi[enc] / 10:,.1f} | {archive_ix[enc] / 100:,.1f} | "
+                   f"{r10['metrics']['bytes_per_sync'] / 10:,.1f} | {r100['metrics']['bytes_per_sync'] / 100:,.1f} |")
     return "\n".join(out) + "\n"
 
 

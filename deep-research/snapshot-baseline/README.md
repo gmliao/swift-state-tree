@@ -30,8 +30,8 @@ below is purely transmitted volume.
 
 ## Command(s)
 
-`run.sh` executes every strategy cell (12 invocations, 22 cells); one extra `--format json-object`
-run of the rooms axis (delta only, 3 cells) provides the JSON rows of the Table VI replacement and moves the raw
+`run.sh` executes every strategy cell (12 invocations, 22 cells); extra runs provide the JSON rows of the
+Table VI replacement and all rows of the Table IX replacement (100/300/500 rooms) and moves the raw
 scalability-matrix JSONs into `raw/`; `collect.py` splits them into one `results/<cell>.json`
 per cell; `regenerate.py` produces the tables below.
 
@@ -57,6 +57,14 @@ done
 # JSON rows for the Table VI replacement (delta only)
 swift run -c release EncodingBenchmark --scalability --format json-object \
   --players-per-room-list 5 --room-counts 10,30,50 --iterations 200 --ticks-per-sync 2
+# Table IX replacement (100/300/500 rooms): JSON delta, MsgPack delta, MsgPack full-snapshot
+swift run -c release EncodingBenchmark --scalability --format json-object \
+  --players-per-room-list 5 --room-counts 100,300,500 --iterations 200 --ticks-per-sync 2
+for S in delta full-snapshot; do
+  swift run -c release EncodingBenchmark --scalability --format messagepack-pathhash \
+    --players-per-room-list 5 --room-counts 100,300,500 --iterations 200 --ticks-per-sync 2 \
+    --sync-strategy $S
+done
 ```
 
 `--sync-strategy full-snapshot` sets `SYNC_STRATEGY` for the benchmark process; every
@@ -69,6 +77,7 @@ every sync, even when nothing changed. Late-join initial sync and encoding are u
 | Axis | Swept | Held fixed | Strategies |
 |---|---|---|---|
 | Rooms | 10, 30, 50 rooms | players 5 per room, natural spawn | delta, full-snapshot (+ JSON-object delta for the Table VI replacement) |
+| Rooms, large (Table IX) | 100, 300, 500 rooms | players 5 per room, natural spawn | delta, full-snapshot, JSON-object delta |
 | Monsters | monster cap 4, 10, 50, 100 | rooms 1, players 5 idle | delta, full-snapshot |
 | Active players | players 5, 10, 20, 50, all moving every tick | rooms 1, monster cap 4 | delta, full-snapshot |
 
@@ -118,6 +127,20 @@ build, single machine, `USE_SNAPSHOT_FOR_SYNC=false`. Metrics: `bytes_per_sync` 
 | players 20 | 30,143 | 68,604 | 2.28× | 56.1% | 3.227 | 2.730 |
 | players 50 | 176,264 | 397,714 | 2.26× | 55.7% | 12.938 | 12.318 |
 
+### Table IX replacement (100/300/500 rooms, same commit)
+
+| Format / Strategy | Rooms | Total Players | bytesPerSync |
+|---|---:|---:|---:|
+| JSON Object, delta | 100 | 500 | 180,196 |
+| JSON Object, delta | 300 | 1500 | 540,170 |
+| JSON Object, delta | 500 | 2500 | 900,564 |
+| Opcode MsgPack (PathHash), delta | 100 | 500 | 50,463 |
+| Opcode MsgPack (PathHash), delta | 300 | 1500 | 151,346 |
+| Opcode MsgPack (PathHash), delta | 500 | 2500 | 252,319 |
+| Opcode MsgPack (PathHash), full-snapshot | 100 | 500 | 486,059 |
+| Opcode MsgPack (PathHash), full-snapshot | 300 | 1500 | 1,463,595 |
+| Opcode MsgPack (PathHash), full-snapshot | 500 | 2500 | 2,441,395 |
+
 ### Drift check: re-run delta cells vs archived `single-room-entity-scaling`
 
 | Cell | archived bytesPerSync | re-run bytesPerSync | drift |
@@ -133,16 +156,16 @@ build, single machine, `USE_SNAPSHOT_FOR_SYNC=false`. Metrics: `bytes_per_sync` 
 
 ### Rooms axis vs the paper's archived RQ1 tables (per-room bytesPerSync)
 
-| Format | archived Table VI (2026-01-25, 10 rooms) | archived Table IX (2026-02-06, 100 rooms) | this topic (10 rooms) |
-|---|---:|---:|---:|
-| JSON Object | 1,762.7 | 1,754.7 | 1,809.0 |
-| Opcode MsgPack (PathHash) | 457.2 | 498.5 | 506.3 |
+| Format | archived Table VI (2026-01-25, 10 rooms) | archived Table IX (2026-02-06, 100 rooms) | this topic (10 rooms) | this topic (100 rooms) |
+|---|---:|---:|---:|---:|
+| JSON Object | 1,762.7 | 1,754.7 | 1,809.0 | 1,802.0 |
+| Opcode MsgPack (PathHash) | 457.2 | 498.5 | 506.3 | 504.6 |
 
 
 ## Conclusion
 
-Under identical encoding, delta synchronization transmits 2.3×–9.6× fewer bytes per sync
-than a per-sync full snapshot across all 11 cell pairs. The saving is largest where most of
+Under identical encoding, delta synchronization transmits 2.3×–9.7× fewer bytes per sync
+than a per-sync full snapshot across all 14 cell pairs (rooms 10–500, monsters, active players). The saving is largest where most of
 the tree is unchanged each tick (rooms axis ≈ 90%, monster cap 4 ≈ 85%) and settles at
 ≈ 56% when nearly every entity changes every tick (monster cap 100, and the whole
 active-player axis): even then delta pays only for the changed *fields* of each entity
@@ -168,8 +191,9 @@ baseline is compared against exactly the data the paper already reports.
   merged into one MessagePack frame, `4423693`), which affects only the MessagePack path —
   consistent with the JSON-object per-room figure being unchanged across all three
   measurements (1,763 / 1,755 / 1,809 B). Table VI and Table IX in the paper were therefore
-  measured under different wire formats; the "Table VI replacement" above re-measures every
-  row at one commit (`d2c647b`) and should replace Table VI wholesale. The PR #47
+  measured under different wire formats; the "Table VI replacement" and "Table IX replacement" above re-measure every
+  row of both tables at one commit (`d2c647b`) and should replace them wholesale; the
+  per-room figures now agree between 10 and 100 rooms within 0.4%. The PR #47
   determinism fix is **not** the cause (5,063 B is already observed at `e119b04`, the commit
   before it).
 - Prior to PR #53 the default extraction path (`USE_SNAPSHOT_FOR_SYNC` unset) could seed the
