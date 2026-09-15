@@ -1,0 +1,29 @@
+{
+  "meta": {
+    "build_config": "release",
+    "command": "USE_SNAPSHOT_FOR_SYNC=false swift run -c release EncodingBenchmark --scalability --format messagepack-pathhash --iterations 200 --ticks-per-sync 2 --players-per-room-list 5,10,20,50 --room-counts 1 --monster-cap 4 --active-players --sync-strategy delta",
+    "date": "2026-09-15T02:49:49.654Z",
+    "git_sha": "d2c647b",
+    "host": "Apple M2, Darwin 25.6.0",
+    "source_file": "active-players-delta.json",
+    "swift_version": "6.3.2"
+  },
+  "metrics": {
+    "avg_cost_per_sync_ms": 1.3933702099999998,
+    "bytes_per_sync": 8349.0,
+    "bytes_per_sync_serial": 8349.0,
+    "final_monster_count": 4
+  },
+  "params": {
+    "axis": "active",
+    "encoding": "messagepack-pathhash",
+    "iterations": 200,
+    "monster_cap": 4,
+    "players": 10,
+    "rooms": 1,
+    "sync_strategy": "delta",
+    "ticks_per_sync": 2,
+    "use_snapshot_for_sync": false,
+    "workload": "active"
+  }
+}

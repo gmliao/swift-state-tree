@@ -1,0 +1,158 @@
+{
+  "metadata" : {
+    "benchmarkConfig" : {
+      "activePlayers" : false,
+      "formats" : [
+        "messagepack-pathhash"
+      ],
+      "gameType" : "hero-defense",
+      "iterations" : 200,
+      "mode" : "scalability-matrix",
+      "monsterCap" : 0,
+      "playersPerRoom" : [
+        5
+      ],
+      "roomCounts" : [
+        10,
+        30,
+        50
+      ],
+      "ticksPerSync" : 2
+    },
+    "build" : {
+      "configuration" : "release",
+      "swiftVersion" : "Apple Swift version 6.3.2 (swiftlang-6.3.2.1.108 clang-2100.1.1.101)"
+    },
+    "commandLine" : [
+      ".build\/release\/EncodingBenchmark",
+      "--scalability",
+      "--format",
+      "messagepack-pathhash",
+      "--iterations",
+      "200",
+      "--ticks-per-sync",
+      "2",
+      "--players-per-room-list",
+      "5",
+      "--room-counts",
+      "10,30,50",
+      "--sync-strategy",
+      "full-snapshot"
+    ],
+    "env" : {
+
+    },
+    "environment" : {
+      "arch" : "arm64",
+      "container" : false,
+      "cpuActiveLogicalCores" : 8,
+      "cpuLogicalCores" : 8,
+      "cpuModel" : null,
+      "cpuPhysicalCores" : null,
+      "kernelVersion" : "25.6.0",
+      "memoryTotalMB" : 16384,
+      "osName" : "Darwin",
+      "wsl" : false
+    },
+    "git" : {
+      "branch" : "main",
+      "commit" : "d2c647b4119e81c843d5c386e4788c24079bad92"
+    },
+    "timestampUTC" : "2026-09-15T02:49:58.853Z"
+  },
+  "results" : [
+    {
+      "config" : {
+        "activePlayers" : false,
+        "gameType" : "hero-defense",
+        "iterations" : 200,
+        "monsterCap" : 0,
+        "ticksPerSync" : 2
+      },
+      "displayName" : "Opcode MsgPack (PathHash)",
+      "efficiency" : 27.36742671544604,
+      "format" : "messagepack-pathhash",
+      "parallel" : {
+        "avgCostPerSyncMs" : 0.15207670849999999,
+        "bytesPerSync" : 48374,
+        "finalMonsterCount" : 3,
+        "throughputSyncsPerSecond" : 6575.6289037515562,
+        "timeMs" : 304.15341699999999,
+        "totalBytes" : 9674835
+      },
+      "playersPerRoom" : 5,
+      "rooms" : 10,
+      "serial" : {
+        "avgCostPerSyncMs" : 0.332955854,
+        "bytesPerSync" : 48374,
+        "finalMonsterCount" : 3,
+        "throughputSyncsPerSecond" : 3003.4011656091802,
+        "timeMs" : 665.91170799999998,
+        "totalBytes" : 9674835
+      },
+      "speedup" : 2.1893941372356833
+    },
+    {
+      "config" : {
+        "activePlayers" : false,
+        "gameType" : "hero-defense",
+        "iterations" : 200,
+        "monsterCap" : 0,
+        "ticksPerSync" : 2
+      },
+      "displayName" : "Opcode MsgPack (PathHash)",
+      "efficiency" : 27.350653529207079,
+      "format" : "messagepack-pathhash",
+      "parallel" : {
+        "avgCostPerSyncMs" : 0.15418879866666665,
+        "bytesPerSync" : 145637,
+        "finalMonsterCount" : 3,
+        "throughputSyncsPerSecond" : 6485.5554271607753,
+        "timeMs" : 925.13279199999999,
+        "totalBytes" : 29127445
+      },
+      "playersPerRoom" : 5,
+      "rooms" : 30,
+      "serial" : {
+        "avgCostPerSyncMs" : 0.3373731528333333,
+        "bytesPerSync" : 145637,
+        "finalMonsterCount" : 3,
+        "throughputSyncsPerSecond" : 2964.076991905793,
+        "timeMs" : 2024.2389169999999,
+        "totalBytes" : 29127445
+      },
+      "speedup" : 2.1880522823365665
+    },
+    {
+      "config" : {
+        "activePlayers" : false,
+        "gameType" : "hero-defense",
+        "iterations" : 200,
+        "monsterCap" : 0,
+        "ticksPerSync" : 2
+      },
+      "displayName" : "Opcode MsgPack (PathHash)",
+      "efficiency" : 30.483241844674204,
+      "format" : "messagepack-pathhash",
+      "parallel" : {
+        "avgCostPerSyncMs" : 0.14267478750000001,
+        "bytesPerSync" : 242885,
+        "finalMonsterCount" : 3,
+        "throughputSyncsPerSecond" : 7008.9468330205154,
+        "timeMs" : 1426.747875,
+        "totalBytes" : 48577020
+      },
+      "playersPerRoom" : 5,
+      "rooms" : 50,
+      "serial" : {
+        "avgCostPerSyncMs" : 0.34793520420000001,
+        "bytesPerSync" : 242885,
+        "finalMonsterCount" : 3,
+        "throughputSyncsPerSecond" : 2874.0983606395298,
+        "timeMs" : 3479.352042,
+        "totalBytes" : 48577020
+      },
+      "speedup" : 2.4386593475739362
+    }
+  ]
+}
