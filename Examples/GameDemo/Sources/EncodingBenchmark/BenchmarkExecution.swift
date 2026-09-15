@@ -137,6 +137,15 @@ struct BenchmarkResult {
     /// Live monster count in the first room at the end of the measurement window
     /// (all rooms evolve identically; 0 for non-hero-defense benchmarks).
     var finalMonsterCount: Int = 0
+    /// Sync strategy every `TransportAdapter` this run constructed actually used.
+    /// `EncodingBenchmark.main()` sets `SYNC_STRATEGY` via `setenv` once, right after
+    /// parsing `--sync-strategy`, before any run* function (and therefore any
+    /// `TransportAdapter`) is created — so reading the env var back here, instead of
+    /// threading `config.syncStrategy` through every run* function signature, always
+    /// matches what those adapters actually used.
+    let syncStrategy: String = SyncStrategy.parse(
+        ProcessInfo.processInfo.environment[SyncStrategy.environmentKey], default: .delta
+    ).rawValue
     
     // Additional metrics for comparison
     var throughputSyncsPerSecond: Double {

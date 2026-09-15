@@ -795,8 +795,8 @@ func saveResultsToJSON(_ results: Any, filename: String, benchmarkConfig: [Strin
 
 func printTableHeader() {
     print("===================== Encoding Benchmark Results =====================")
-    print("Format                      | Time (ms) | Total Bytes | Per Sync | Avg Cost/Sync | vs JSON")
-    print("------------------------------------------------------------------------")
+    print("Format                      | Strategy      | Time (ms) | Total Bytes | Per Sync | Avg Cost/Sync | vs JSON")
+    print("------------------------------------------------------------------------------------------------------")
 }
 
 func printTableRow(_ result: BenchmarkResult, baselineBytes: Int?) {
@@ -809,8 +809,9 @@ func printTableRow(_ result: BenchmarkResult, baselineBytes: Int?) {
 
     // NOTE: Use %@ (Objective-C object) instead of %s. %s expects a C string pointer and can
     // crash in release builds when passed a Swift String.
-    print(String(format: "%-27@ | %9.2f | %11d | %8d | %13.4f | %@",
+    print(String(format: "%-27@ | %-13@ | %9.2f | %11d | %8d | %13.4f | %@",
                  result.format.displayName,
+                 result.syncStrategy,
                  result.timeMs,
                  result.totalBytes,
                  result.bytesPerSync,
@@ -826,6 +827,7 @@ func printJSON(_ result: BenchmarkResult) {
     var json: [String: Any] = [
         "format": result.format.rawValue,
         "displayName": result.format.displayName,
+        "syncStrategy": result.syncStrategy,
         "timeMs": result.timeMs,
         "totalBytes": result.totalBytes,
         "bytesPerSync": result.bytesPerSync,
@@ -856,6 +858,9 @@ func printJSON(_ result: BenchmarkResult) {
 struct EncodingBenchmark {
     static func main() async {
         let config = ArgumentParser.parseArguments()
+
+        // Reaches every TransportAdapter the benchmark constructs; same mechanism a shell user would use.
+        setenv(SyncStrategy.environmentKey, config.syncStrategy.rawValue, 1)
 
         // Determine if multi-room mode
         // If rooms > 1, use multi-room mode

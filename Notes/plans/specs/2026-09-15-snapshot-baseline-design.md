@@ -154,10 +154,9 @@ A second small test checks `SYNC_STRATEGY` parsing: unset → init default,
 
 - `BenchmarkConfig.syncStrategy: SyncStrategy = .delta`; `--sync-strategy
   delta|full-snapshot`; `--help` line.
-- Both the `BenchmarkRunner` method and its duplicated free function in
-  `EncodingBenchmarkMain` construct `TransportAdapter` with `syncStrategy:` —
-  both call sites must be patched (known duplication, see
-  `Notes/plans/2026-08-31-active-players-experiment-design.md`).
+- The benchmark sets `SYNC_STRATEGY` in its own process (`setenv`) once after
+  argument parsing, which reaches every `TransportAdapter` it constructs
+  (eight call sites) exactly as a shell user would.
 - Result JSON gains `"syncStrategy"`; table output gains a column.
 - Run-id convention for the topic: `<cell>-<strategy>.json`, e.g.
   `p5-r10-msgpack-delta.json`, `p5-r10-msgpack-full.json`.

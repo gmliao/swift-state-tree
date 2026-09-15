@@ -67,6 +67,7 @@ enum GameType: String {
 
 struct BenchmarkConfig {
     var format: EncodingFormat = .messagepackPathHash
+    var syncStrategy: SyncStrategy = .delta
     var players: Int = 10
     var rooms: Int = 1
     var playersPerRoom: Int = 10
@@ -119,6 +120,14 @@ enum ArgumentParser {
             if i + 1 < args.count, let format = EncodingFormat(rawValue: args[i + 1]) {
                 config.format = format
                 i += 1
+            }
+        case "--sync-strategy":
+            if i + 1 < args.count, let strategy = SyncStrategy(rawValue: args[i + 1].lowercased()) {
+                config.syncStrategy = strategy
+                i += 1
+            } else {
+                print("Error: --sync-strategy requires delta or full-snapshot")
+                exit(1)
             }
         case "--players":
             if i + 1 < args.count, let count = Int(args[i + 1]) {
@@ -220,6 +229,7 @@ enum ArgumentParser {
       --format <format>       Encoding format (default: messagepack-pathhash)
                               Values: json-object, opcode-json, opcode-json-pathhash,
                                       messagepack, messagepack-pathhash
+      --sync-strategy <s>     Sync strategy: delta (default) or full-snapshot (send full view every sync)
       --players <count>       Number of players (default: 10, single room mode)
       --rooms <count>         Number of rooms (default: 1, single room mode)
       --players-per-room <count>  Number of players per room (default: 10)

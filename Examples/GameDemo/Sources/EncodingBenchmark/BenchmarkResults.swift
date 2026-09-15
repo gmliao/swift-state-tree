@@ -9,8 +9,8 @@ import Foundation
 enum OutputFormatter {
     static func printTableHeader() {
     print("===================== Encoding Benchmark Results =====================")
-    print("Format                      | Time (ms) | Total Bytes | Per Sync | Avg Cost/Sync | vs JSON")
-        print("------------------------------------------------------------------------")
+    print("Format                      | Strategy      | Time (ms) | Total Bytes | Per Sync | Avg Cost/Sync | vs JSON")
+        print("------------------------------------------------------------------------------------------------------")
     }
 
     static func printTableRow(_ result: BenchmarkResult, baselineBytes: Int?) {
@@ -21,8 +21,9 @@ enum OutputFormatter {
         ratio = "  100%"
     }
 
-    print(String(format: "%-27@ | %9.2f | %11d | %8d | %13.4f | %@",
+    print(String(format: "%-27@ | %-13@ | %9.2f | %11d | %8d | %13.4f | %@",
                  result.format.displayName,
+                 result.syncStrategy,
                  result.timeMs,
                  result.totalBytes,
                  result.bytesPerSync,
@@ -38,6 +39,7 @@ enum OutputFormatter {
     var json: [String: Any] = [
         "format": result.format.rawValue,
         "displayName": result.format.displayName,
+        "syncStrategy": result.syncStrategy,
         "timeMs": result.timeMs,
         "totalBytes": result.totalBytes,
         "bytesPerSync": result.bytesPerSync,
