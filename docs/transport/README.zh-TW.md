@@ -83,6 +83,7 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 |------|------|------|------|
 | `ENABLE_DIRTY_TRACKING` | Bool | init 參數 | 啟用 dirty-field 追蹤以產生較小 diff；高更新比例場景可關閉 |
 | `USE_SNAPSHOT_FOR_SYNC` | Bool | true | 使用單次 snapshot 擷取；設為 `false` 使用舊版 broadcast + per-player 路徑 |
+| `SYNC_STRATEGY` | String | `delta` | `delta` 只送變更欄位；`full-snapshot` 每次同步送每個接收者的完整視圖（量測用基線，非正式模式） |
 | `ENABLE_CHANGE_OBJECT_METRICS` | Bool | false | 記錄每次 sync 的 changed vs unchanged 物件比例 |
 | `CHANGE_OBJECT_METRICS_LOG_EVERY` | Int | 10 | 變更物件 metrics 日誌的 sync 週期間隔 |
 | `CHANGE_OBJECT_METRICS_EMA_ALPHA` | Double | 0.2 | 變更率 EMA alpha（0.01–1.0） |

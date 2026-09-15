@@ -91,6 +91,7 @@ Transport-related behavior can be tuned via environment variables. All variables
 |----------|------|---------|-------------|
 | `ENABLE_DIRTY_TRACKING` | Bool | init param | Enable dirty-field tracking for smaller diffs; disable for high-update-ratio scenarios |
 | `USE_SNAPSHOT_FOR_SYNC` | Bool | true | Use one-pass snapshot extraction; set to `false` for legacy separate broadcast + per-player path |
+| `SYNC_STRATEGY` | String | `delta` | `delta` sends changed fields only; `full-snapshot` sends each recipient's complete view every sync (measurement baseline, not a production mode) |
 | `ENABLE_CHANGE_OBJECT_METRICS` | Bool | false | Log changed-vs-unchanged object ratio per sync |
 | `CHANGE_OBJECT_METRICS_LOG_EVERY` | Int | 10 | Sync cycles between change-object metric logs |
 | `CHANGE_OBJECT_METRICS_EMA_ALPHA` | Double | 0.2 | EMA alpha for change rate (0.01–1.0) |
