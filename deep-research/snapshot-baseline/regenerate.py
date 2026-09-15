@@ -41,9 +41,17 @@ def tables(runs):
     out.append("### Rooms axis (RQ1 workload: players 5 per room, natural spawn)\n")
     out.append(HEADER)
     for rooms in (10, 30, 50):
-        d = pick(runs, axis="rooms", rooms=rooms, sync_strategy="delta")
-        f = pick(runs, axis="rooms", rooms=rooms, sync_strategy="full-snapshot")
+        d = pick(runs, axis="rooms", rooms=rooms, sync_strategy="delta", encoding="messagepack-pathhash")
+        f = pick(runs, axis="rooms", rooms=rooms, sync_strategy="full-snapshot", encoding="messagepack-pathhash")
         out.append(pair_row(f"rooms {rooms} (players {5 * rooms})", d, f))
+    out.append("\n### Table VI replacement (all rows measured at the same commit)\n")
+    out.append("| Format / Strategy | Rooms | Total Players | bytesPerSync |\n|---|---:|---:|---:|")
+    for label, enc, strat in (("JSON Object, delta", "json-object", "delta"),
+                              ("Opcode MsgPack (PathHash), delta", "messagepack-pathhash", "delta"),
+                              ("Opcode MsgPack (PathHash), full-snapshot", "messagepack-pathhash", "full-snapshot")):
+        for rooms in (10, 30, 50):
+            r = pick(runs, axis="rooms", rooms=rooms, sync_strategy=strat, encoding=enc)
+            out.append(f"| {label} | {rooms} | {5 * rooms} | {fmt(r['metrics']['bytes_per_sync'])} |")
     out.append("\n### Monster axis (rooms 1, players 5 idle, |ΔSt| ↑)\n")
     out.append(HEADER)
     for cap in (4, 10, 50, 100):
@@ -71,6 +79,13 @@ def tables(runs):
             r = pick(runs, axis="active", players=p, sync_strategy="delta")
             ab, rb = a["metrics"]["bytes_per_sync"], r["metrics"]["bytes_per_sync"]
             out.append(f"| active players {p} | {fmt(ab)} | {fmt(rb)} | {(rb - ab) / ab * 100:+.1f}% |")
+    out.append("\n### Rooms axis vs the paper's archived RQ1 tables (per-room bytesPerSync)\n")
+    out.append("| Format | archived Table VI (2026-01-25, 10 rooms) | archived Table IX (2026-02-06, 100 rooms) | this topic (10 rooms) |\n|---|---:|---:|---:|")
+    archive_vi = {"json-object": 17627, "messagepack-pathhash": 4572}
+    archive_ix = {"json-object": 175471, "messagepack-pathhash": 49851}
+    for label, enc in (("JSON Object", "json-object"), ("Opcode MsgPack (PathHash)", "messagepack-pathhash")):
+        r = pick(runs, axis="rooms", rooms=10, sync_strategy="delta", encoding=enc)
+        out.append(f"| {label} | {archive_vi[enc] / 10:,.1f} | {archive_ix[enc] / 100:,.1f} | {r['metrics']['bytes_per_sync'] / 10:,.1f} |")
     return "\n".join(out) + "\n"
 
 
@@ -78,7 +93,9 @@ def check_invariants(runs):
     for r in runs:
         if r["params"]["sync_strategy"] != "delta":
             continue
-        cond = {k: r["params"][k] for k in ("axis", "players", "rooms", "monster_cap")}
+        if r["params"]["encoding"] != "messagepack-pathhash":
+            continue
+        cond = {k: r["params"][k] for k in ("axis", "players", "rooms", "monster_cap", "encoding")}
         f = pick(runs, sync_strategy="full-snapshot", **cond)
         if f["metrics"]["bytes_per_sync"] < r["metrics"]["bytes_per_sync"]:
             sys.exit(f"invariant violated: full < delta for {cond}")

@@ -3,7 +3,7 @@
     "build_config": "release",
     "command": "USE_SNAPSHOT_FOR_SYNC=false swift run -c release EncodingBenchmark --scalability --format messagepack-pathhash --iterations 200 --ticks-per-sync 2 --players-per-room-list 5 --room-counts 1 --monster-cap 10 --sync-strategy delta",
     "date": "2026-09-15T02:49:38.946Z",
-    "git_sha": "d2c647b",
+    "git_sha": "c0118d6",
     "host": "Apple M2, Darwin 25.6.0",
     "source_file": "monsters-cap10-delta.json",
     "swift_version": "6.3.2"
