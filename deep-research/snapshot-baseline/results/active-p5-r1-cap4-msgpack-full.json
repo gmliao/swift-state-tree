@@ -3,15 +3,15 @@
     "build_config": "release",
     "command": "USE_SNAPSHOT_FOR_SYNC=false swift run -c release EncodingBenchmark --scalability --format messagepack-pathhash --iterations 200 --ticks-per-sync 2 --players-per-room-list 5,10,20,50 --room-counts 1 --monster-cap 4 --active-players --sync-strategy full-snapshot",
     "date": "2026-09-15T02:50:10.352Z",
-    "git_sha": "d2c647b",
+    "git_sha": "b8e798b",
     "host": "Apple M2, Darwin 25.6.0",
     "source_file": "active-players-full-snapshot.json",
     "swift_version": "6.3.2"
   },
   "metrics": {
-    "avg_cost_per_sync_ms": 1.079929585,
-    "bytes_per_sync": 19164.0,
-    "bytes_per_sync_serial": 19164.0,
+    "avg_cost_per_sync_ms": 0.5054758300000001,
+    "bytes_per_sync": 5818.0,
+    "bytes_per_sync_serial": 5818.0,
     "final_monster_count": 4
   },
   "params": {
@@ -19,7 +19,7 @@
     "encoding": "messagepack-pathhash",
     "iterations": 200,
     "monster_cap": 4,
-    "players": 10,
+    "players": 5,
     "rooms": 1,
     "sync_strategy": "full-snapshot",
     "ticks_per_sync": 2,

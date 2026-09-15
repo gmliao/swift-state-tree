@@ -3,15 +3,15 @@
     "build_config": "release",
     "command": "USE_SNAPSHOT_FOR_SYNC=false swift run -c release EncodingBenchmark --scalability --format messagepack-pathhash --iterations 200 --ticks-per-sync 2 --players-per-room-list 5 --room-counts 10,30,50 --sync-strategy delta",
     "date": "2026-09-15T02:49:38.265Z",
-    "git_sha": "d2c647b",
+    "git_sha": "b8e798b",
     "host": "Apple M2, Darwin 25.6.0",
     "source_file": "rq1-rooms-delta.json",
     "swift_version": "6.3.2"
   },
   "metrics": {
-    "avg_cost_per_sync_ms": 0.12347358750000001,
-    "bytes_per_sync": 25203.0,
-    "bytes_per_sync_serial": 25203.0,
+    "avg_cost_per_sync_ms": 0.136174625,
+    "bytes_per_sync": 5063.0,
+    "bytes_per_sync_serial": 5063.0,
     "final_monster_count": 3
   },
   "params": {
@@ -20,7 +20,7 @@
     "iterations": 200,
     "monster_cap": null,
     "players": 5,
-    "rooms": 50,
+    "rooms": 10,
     "sync_strategy": "delta",
     "ticks_per_sync": 2,
     "use_snapshot_for_sync": false,

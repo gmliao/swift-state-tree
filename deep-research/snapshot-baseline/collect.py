@@ -16,12 +16,14 @@ for raw in sorted(RAW.glob("*.json")):
     strategy = cmd[cmd.index("--sync-strategy") + 1] if "--sync-strategy" in cmd else "delta"
     active = "--active-players" in cmd
     cap = int(cmd[cmd.index("--monster-cap") + 1]) if "--monster-cap" in cmd else None
-    axis = raw.stem.rsplit("-", 1)[0] if strategy == "delta" else raw.stem[: -len("-full-snapshot")]
-    axis = {"rq1-rooms": "rooms", "active-players": "active"}.get(axis, "monsters")
+    encoding = cmd[cmd.index("--format") + 1]
+    axis = ("rooms" if raw.stem.startswith("rq1-rooms") else "rooms-large" if raw.stem.startswith("rq2-rooms")
+            else "active" if raw.stem.startswith("active") else "monsters")
     for r in d["results"]:
         rooms, players = r["rooms"], r["playersPerRoom"]
         sname = "full" if strategy == "full-snapshot" else "delta"
-        run_id = f"{axis}-p{players}-r{rooms}" + (f"-cap{cap}" if cap is not None else "") + f"-{sname}"
+        enc = "json" if encoding == "json-object" else "msgpack"
+        run_id = f"{axis}-p{players}-r{rooms}" + (f"-cap{cap}" if cap is not None else "") + f"-{enc}-{sname}"
         env = meta.get("environment", {})
         out = {
             "meta": {
@@ -36,7 +38,7 @@ for raw in sorted(RAW.glob("*.json")):
             "params": {
                 "axis": axis, "sync_strategy": strategy, "players": players, "rooms": rooms,
                 "monster_cap": cap, "workload": "active" if active else "idle",
-                "encoding": "messagepack-pathhash", "ticks_per_sync": 2, "iterations": 200,
+                "encoding": encoding, "ticks_per_sync": 2, "iterations": 200,
                 "use_snapshot_for_sync": False,
             },
             "metrics": {
