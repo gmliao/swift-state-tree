@@ -4,9 +4,14 @@
 // (USE_SNAPSHOT_FOR_SYNC, on by default): when only a per-player field is dirty,
 // `extractSyncSnapshots` extracts broadcast + per-player fields together against a single
 // combined dirty-field mode, excluding untouched broadcast fields from the extracted
-// snapshot. If the diff is then computed with a mismatched "no filtering" mode, the
-// broadcast cache gets seeded with that incomplete snapshot, and the next (truly
-// unchanged) sync reports the previously-excluded broadcast fields as newly added.
+// snapshot. If the diff is then computed with a mismatched "no filtering" mode, the bug
+// had two symptoms:
+// 1. The *first* post-join sync (the one seeding the cache) spuriously emitted a
+//    `.delete` patch for the untouched broadcast field ("tick"), because the diff engine
+//    compared the incomplete extracted snapshot against a cache that still held "tick".
+// 2. The broadcast cache then got seeded with that incomplete snapshot, so the *next*
+//    (truly unchanged) sync reported the previously-excluded broadcast fields as newly
+//    added again.
 //
 // This reproduces with the *default* adapter configuration: USE_SNAPSHOT_FOR_SYNC is
 // unset (defaults to the snapshotForSync path), so no `transportEnvConfig:` override
@@ -71,18 +76,36 @@ func testSnapshotForSyncDoesNotReplayUnchangedBroadcastFieldsAfterPerPlayerOnlyD
     await adapter.onConnect(sessionID: session, clientID: client)
     try await simulateRouterJoin(adapter: adapter, keeper: keeper, sessionID: session, clientID: client, playerID: player)
     try await Task.sleep(for: .milliseconds(100))
+    // Drop the initial join snapshot (which legitimately includes "tick") so the next decode
+    // reflects only what the first *regular* sync below actually sent.
+    await transport.clear()
 
     // First regular sync after join: only "scores" (per-player) is dirty. This is where the
-    // broadcast cache used to get seeded with an incomplete snapshot (missing "tick").
+    // broadcast cache used to get seeded with an incomplete snapshot (missing "tick"), and
+    // where the diff engine used to spuriously emit a `.delete /tick` patch for the
+    // untouched broadcast field. Decode what was actually sent and check neither symptom.
     await adapter.syncNow()
     try await Task.sleep(for: .milliseconds(100))
+
+    let decoder = JSONStateUpdateDecoder()
+    let firstSyncUpdates = (await transport.messages(for: session)).compactMap { try? decoder.decode(data: $0).update }
+    let firstSyncPatches: [StatePatch] = firstSyncUpdates.flatMap { update -> [StatePatch] in
+        switch update {
+        case .noChange: return []
+        case .firstSync(let patches), .diff(let patches): return patches
+        }
+    }
+    #expect(
+        !firstSyncPatches.contains { $0.path == "/tick" },
+        "untouched broadcast field must not be patched on a per-player-only dirty sync; got \(firstSyncPatches)"
+    )
+
     await transport.clear()
 
     // Second sync: nothing changed at all.
     await adapter.syncNow()
     try await Task.sleep(for: .milliseconds(100))
 
-    let decoder = JSONStateUpdateDecoder()
     let updates = (await transport.messages(for: session)).compactMap { try? decoder.decode(data: $0).update }
     #expect(updates.isEmpty, "unchanged sync must not resend previously-excluded broadcast fields; got \(updates)")
 }

@@ -21,3 +21,15 @@ func testTransportEnvConfigSyncStrategyDefault() {
     let defaultConfig = TransportEnvConfig.fromEnvironment()
     #expect(defaultConfig.syncStrategy == .delta)
 }
+
+@Test("SyncStrategy.isRecognised applies the same trim+lowercase normalisation as parse")
+func testSyncStrategyIsRecognised() {
+    #expect(SyncStrategy.isRecognised("delta"))
+    #expect(SyncStrategy.isRecognised(" FULL-SNAPSHOT "))
+    #expect(!SyncStrategy.isRecognised("full_snapshot"))
+    #expect(!SyncStrategy.isRecognised("garbage"))
+    // Empty (after trimming) counts as "not provided", not "unrecognised" — callers
+    // (e.g. TransportAdapter.init) skip warning for empty values on this basis.
+    #expect(!SyncStrategy.isRecognised(""))
+    #expect(!SyncStrategy.isRecognised("   "))
+}

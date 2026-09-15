@@ -268,6 +268,22 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         )
         self.membershipCoordinator = MembershipCoordinator()
 
+        // Warn about a typo'd SYNC_STRATEGY only when the env lookup actually happened
+        // (transportEnvConfig == nil): tests/benchmarks that inject transportEnvConfig
+        // explicitly bypass env parsing entirely, so there is nothing to warn about.
+        if transportEnvConfig == nil,
+           let rawSyncStrategy = ProcessInfo.processInfo.environment[SyncStrategy.environmentKey]
+        {
+            let trimmed = rawSyncStrategy.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if !trimmed.isEmpty, !SyncStrategy.isRecognised(rawSyncStrategy) {
+                self.logger.warning("Unrecognised SYNC_STRATEGY value; using init default", metadata: [
+                    "landID": .string(landID),
+                    "value": .string(rawSyncStrategy),
+                    "default": .string(self.syncStrategy.rawValue)
+                ])
+            }
+        }
+
         self.logger.info("Transport encoding configured", metadata: [
             "landID": .string(landID),
             "messageEncoding": .string(self.messageEncoder.encoding.rawValue),
@@ -1196,7 +1212,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private func runSyncNowCycle(state: State) async throws {
         let shouldCollectChangeMetrics = enableChangeObjectMetrics || enableAutoDirtyTracking
         let (requestedBroadcastMode, requestedPerPlayerMode) = computeSyncModes(for: state)
-        // `extractSyncSnapshots` may extract with a different (but equivalent) mode than requested
+        // `extractSyncSnapshots` may extract with a different mode than requested
         // when `useSnapshotForSync` is enabled: it derives a single combined dirty-field mode from
         // `state.getDirtyFields()` rather than reusing `requestedBroadcastMode`/`requestedPerPlayerMode`
         // verbatim. Diffing must use the mode that was actually applied during extraction, or fields
