@@ -68,7 +68,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// When true, use one-pass extraction (state.snapshotForSync) instead of separate broadcast + per-player extractions.
     /// Default is true; set USE_SNAPSHOT_FOR_SYNC=false to use the legacy path.
     private let useSnapshotForSync: Bool
-    
+
+    /// Sync strategy: `.delta` (dirty-field diffing, default) or `.fullSnapshot` (always send the full view).
+    /// Overridable at runtime via `SYNC_STRATEGY`.
+    private let syncStrategy: SyncStrategy
+
     /// Enable logging of changed-vs-unchanged object ratio per sync.
     /// Disabled by default. Enable with ENABLE_CHANGE_OBJECT_METRICS=true.
     private let enableChangeObjectMetrics: Bool
@@ -141,7 +145,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// **Core**: `keeper`, `transport`, `transportSendQueue`, `landID`
     /// **Join / lifecycle**: `createGuestSession`, `onLandDestroyed`, `enableLegacyJoin`
     /// **Encoding**: Prefer `encodingConfig` (message + state encoding); otherwise use `codec`, `stateUpdateEncoder`, and optional `pathHashes` / `eventHashes` / `clientEventHashes`
-    /// **Tuning**: `enableDirtyTracking`, `expectedSchemaHash`
+    /// **Tuning**: `enableDirtyTracking`, `syncStrategy`, `expectedSchemaHash`; `transportEnvConfig` replaces env lookup entirely (tests/benchmarks)
     /// **Logging**: `logger` (optional). When provided, uses the same logger as the app (e.g. LandManager) for unified logging; when nil, creates a default colored logger. Benchmarks often pass a high log-level logger (e.g. .error) to reduce noise.
     ///
     /// Many options can be overridden at runtime via environment variables (e.g. `ENABLE_DIRTY_TRACKING`, `USE_SNAPSHOT_FOR_SYNC`).
@@ -154,6 +158,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         onLandDestroyed: (@Sendable () async -> Void)? = nil,
         enableLegacyJoin: Bool = false,
         enableDirtyTracking: Bool = true,
+        syncStrategy: SyncStrategy = .delta,
+        transportEnvConfig: TransportEnvConfig? = nil,
         expectedSchemaHash: String? = nil,
         codec: any TransportCodec = JSONTransportCodec(),
         stateUpdateEncoder: any StateUpdateEncoder = JSONStateUpdateEncoder(),
@@ -210,9 +216,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
         self.enableLegacyJoin = enableLegacyJoin
 
-        let envConfig = TransportEnvConfig.fromEnvironment(enableDirtyTrackingDefault: enableDirtyTracking)
+        let envConfig = transportEnvConfig ?? TransportEnvConfig.fromEnvironment(
+            enableDirtyTrackingDefault: enableDirtyTracking,
+            syncStrategyDefault: syncStrategy
+        )
         self.enableDirtyTracking = envConfig.enableDirtyTracking
         self.useSnapshotForSync = envConfig.useSnapshotForSync
+        self.syncStrategy = envConfig.syncStrategy
         self.enableChangeObjectMetrics = envConfig.enableChangeObjectMetrics
         self.changeObjectMetricsLogEvery = envConfig.changeObjectMetricsLogEvery
         self.dirtyTrackingMetrics = DirtyTrackingMetrics(emaAlpha: envConfig.changeObjectMetricsEmaAlpha)
@@ -258,12 +268,29 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         )
         self.membershipCoordinator = MembershipCoordinator()
 
+        // Warn about a typo'd SYNC_STRATEGY only when the env lookup actually happened
+        // (transportEnvConfig == nil): tests/benchmarks that inject transportEnvConfig
+        // explicitly bypass env parsing entirely, so there is nothing to warn about.
+        if transportEnvConfig == nil,
+           let rawSyncStrategy = ProcessInfo.processInfo.environment[SyncStrategy.environmentKey]
+        {
+            let trimmed = rawSyncStrategy.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if !trimmed.isEmpty, !SyncStrategy.isRecognised(rawSyncStrategy) {
+                self.logger.warning("Unrecognised SYNC_STRATEGY value; using init default", metadata: [
+                    "landID": .string(landID),
+                    "value": .string(rawSyncStrategy),
+                    "default": .string(self.syncStrategy.rawValue)
+                ])
+            }
+        }
+
         self.logger.info("Transport encoding configured", metadata: [
             "landID": .string(landID),
             "messageEncoding": .string(self.messageEncoder.encoding.rawValue),
             "stateUpdateEncoding": .string(self.stateUpdateEncoder.encoding.rawValue),
             "dirtyTracking": .string(envConfig.enableDirtyTracking ? "on" : "off"),
             "snapshotForSync": .string(envConfig.useSnapshotForSync ? "on" : "off"),
+            "syncStrategy": .string(envConfig.syncStrategy.rawValue),
             "changeObjectMetrics": .string(envConfig.enableChangeObjectMetrics ? "on" : "off"),
             "autoDirtyTracking": .string(envConfig.enableAutoDirtyTracking ? "on" : "off"),
             "autoDirtyOffThreshold": .string(String(format: "%.3f", envConfig.autoDirtyOffThreshold)),
@@ -1184,17 +1211,24 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     private func runSyncNowCycle(state: State) async throws {
         let shouldCollectChangeMetrics = enableChangeObjectMetrics || enableAutoDirtyTracking
-        let (broadcastMode, perPlayerMode) = computeSyncModes(for: state)
-        let (broadcastSnapshot, perPlayerByPlayer) = try extractSyncSnapshots(
+        let (requestedBroadcastMode, requestedPerPlayerMode) = computeSyncModes(for: state)
+        // `extractSyncSnapshots` may extract with a different mode than requested
+        // when `useSnapshotForSync` is enabled: it derives a single combined dirty-field mode from
+        // `state.getDirtyFields()` rather than reusing `requestedBroadcastMode`/`requestedPerPlayerMode`
+        // verbatim. Diffing must use the mode that was actually applied during extraction, or fields
+        // excluded from extraction (because they weren't in that combined dirty set) get misread as
+        // newly-added when compared against the broadcast cache.
+        let (broadcastSnapshot, perPlayerByPlayer, broadcastMode, perPlayerMode) = try extractSyncSnapshots(
             from: state,
-            broadcastMode: broadcastMode,
-            perPlayerMode: perPlayerMode
+            broadcastMode: requestedBroadcastMode,
+            perPlayerMode: requestedPerPlayerMode
         )
 
         let broadcastDiff = syncEngine.computeBroadcastDiffFromSnapshot(
             currentBroadcast: broadcastSnapshot,
             onlyPaths: nil,
-            mode: broadcastMode
+            mode: broadcastMode,
+            baseline: diffBaseline
         )
 
         var metricUpdates = makeMetricUpdatesBuffer(shouldCollect: shouldCollectChangeMetrics)
@@ -1239,7 +1273,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
+    /// Diff baseline implied by the sync strategy.
+    private var diffBaseline: SyncEngine.DiffBaseline {
+        syncStrategy == .fullSnapshot ? .empty : .cached
+    }
+
     private func computeSyncModes(for state: State) -> (broadcastMode: SnapshotMode, perPlayerMode: SnapshotMode) {
+        if syncStrategy == .fullSnapshot {
+            return (.all, .all)
+        }
+
         if enableDirtyTracking && state.isDirty() {
             let dirtyFields = state.getDirtyFields()
             let syncFields = state.getSyncFields()
@@ -1260,9 +1303,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         from state: State,
         broadcastMode: SnapshotMode,
         perPlayerMode: SnapshotMode
-    ) throws -> (broadcastSnapshot: StateSnapshot, perPlayerByPlayer: [PlayerID: StateSnapshot]) {
+    ) throws -> (
+        broadcastSnapshot: StateSnapshot,
+        perPlayerByPlayer: [PlayerID: StateSnapshot],
+        broadcastMode: SnapshotMode,
+        perPlayerMode: SnapshotMode
+    ) {
         if useSnapshotForSync {
-            let fullMode: SnapshotMode = (enableDirtyTracking && state.isDirty())
+            let fullMode: SnapshotMode = (syncStrategy == .delta && enableDirtyTracking && state.isDirty())
                 ? .dirtyTracking(state.getDirtyFields())
                 : .all
             let playerIDsToSync = membershipCoordinator.joinedPlayerIDs().filter { !initialSyncingPlayers.contains($0) }
@@ -1271,7 +1319,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 playerIDs: Array(playerIDsToSync),
                 mode: fullMode
             )
-            return (broadcastSnapshot: extracted.broadcast, perPlayerByPlayer: extracted.perPlayer)
+            // One-pass extraction filters both broadcast and per-player fields against the same
+            // `fullMode` dirty-field set, so the mode used for later diffing must be `fullMode` too
+            // (not the independently-computed `broadcastMode`/`perPlayerMode`), or fields left out of
+            // this extraction get compared as if they were still fully present in the previous snapshot.
+            return (
+                broadcastSnapshot: extracted.broadcast,
+                perPlayerByPlayer: extracted.perPlayer,
+                broadcastMode: fullMode,
+                perPlayerMode: fullMode
+            )
         }
 
         let broadcastSnapshot = try syncEngine.extractBroadcastSnapshot(from: state, mode: broadcastMode)
@@ -1287,7 +1344,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 mode: perPlayerMode
             )
         }
-        return (broadcastSnapshot: broadcastSnapshot, perPlayerByPlayer: perPlayerByPlayer)
+        return (
+            broadcastSnapshot: broadcastSnapshot,
+            perPlayerByPlayer: perPlayerByPlayer,
+            broadcastMode: broadcastMode,
+            perPlayerMode: perPlayerMode
+        )
     }
 
     private func sendMergedBroadcastUpdateIfNeeded(
@@ -1372,7 +1434,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 for: playerID,
                 perPlayerSnapshot: perPlayerSnapshot,
                 perPlayerMode: perPlayerMode,
-                onlyPaths: nil
+                onlyPaths: nil,
+                baseline: diffBaseline
             )
 
             if case .noChange = update {
@@ -1408,7 +1471,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 broadcastDiff: broadcastDiff,
                 perPlayerSnapshot: perPlayerSnapshot,
                 perPlayerMode: perPlayerMode,
-                onlyPaths: nil
+                onlyPaths: nil,
+                baseline: diffBaseline
             )
 
             if case .noChange = update {
@@ -1564,16 +1628,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private func extractAndComputeBroadcastDiff(state: State) throws -> (diff: [StatePatch], mode: SnapshotMode) {
         // Determine snapshot mode based on dirty tracking
         let broadcastMode: SnapshotMode
-        if enableDirtyTracking && state.isDirty() {
+        if syncStrategy == .delta, enableDirtyTracking && state.isDirty() {
             let dirtyFields = state.getDirtyFields()
             let syncFields = state.getSyncFields()
             let broadcastFieldNames = Set(syncFields.filter { $0.policyType == .broadcast }.map { $0.name })
             let broadcastFields = dirtyFields.intersection(broadcastFieldNames)
-            
+
             // Only extract and compare dirty broadcast fields
             broadcastMode = broadcastFields.isEmpty ? .all : .dirtyTracking(broadcastFields)
         } else {
-            // Dirty tracking disabled or state not dirty: always use .all mode
+            // Full-snapshot strategy, dirty tracking disabled, or state not dirty: always use .all mode
             broadcastMode = .all
         }
         
@@ -1587,9 +1651,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let broadcastDiff = syncEngine.computeBroadcastDiffFromSnapshot(
             currentBroadcast: broadcastSnapshot,
             onlyPaths: nil,
-            mode: broadcastMode
+            mode: broadcastMode,
+            baseline: diffBaseline
         )
-        
+
         return (broadcastDiff, broadcastMode)
     }
     
@@ -2079,7 +2144,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 broadcastDiff: broadcastDiff,
                 perPlayerSnapshot: perPlayerSnapshot,
                 perPlayerMode: perPlayerMode,
-                onlyPaths: nil
+                onlyPaths: nil,
+                baseline: diffBaseline
             )
 
             // Skip only if noChange - firstSync should always be sent (even if patches are empty)

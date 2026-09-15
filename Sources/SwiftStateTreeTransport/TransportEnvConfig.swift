@@ -9,6 +9,7 @@
 // |-----|------|---------|-------|
 // | ENABLE_DIRTY_TRACKING | Bool | init param | truthy: 1/true/yes/y/on; falsy: 0/false/no/n/off; unset uses init default |
 // | USE_SNAPSHOT_FOR_SYNC | Bool | true | disabled when "false"/"0"/"no"/"off"; otherwise enabled |
+// | SYNC_STRATEGY | String | init param | "delta" or "full-snapshot" (case-insensitive); unknown values use init default |
 // | ENABLE_CHANGE_OBJECT_METRICS | Bool | false | enabled only when "true"/"1"/"yes"/"y"/"on" |
 // | CHANGE_OBJECT_METRICS_LOG_EVERY | Int | 10 | min 1 |
 // | CHANGE_OBJECT_METRICS_EMA_ALPHA | Double | 0.2 | clamp 0.01–1.0 |
@@ -31,6 +32,7 @@ import SwiftStateTree
 public struct TransportEnvConfig: Sendable {
     public let enableDirtyTracking: Bool
     public let useSnapshotForSync: Bool
+    public let syncStrategy: SyncStrategy
     public let enableChangeObjectMetrics: Bool
     public let changeObjectMetricsLogEvery: Int
     public let changeObjectMetricsEmaAlpha: Double
@@ -40,10 +42,11 @@ public struct TransportEnvConfig: Sendable {
     public let autoDirtyRequiredConsecutiveSamples: Int
     public let profilingConfig: TransportProfilingConfig?
 
-    /// Create config from environment. Init param `enableDirtyTrackingDefault` is used
-    /// when ENABLE_DIRTY_TRACKING is unset.
+    /// Create config from environment. Init params `enableDirtyTrackingDefault` and
+    /// `syncStrategyDefault` are used when the matching env var is unset.
     public static func fromEnvironment(
-        enableDirtyTrackingDefault: Bool = true
+        enableDirtyTrackingDefault: Bool = true,
+        syncStrategyDefault: SyncStrategy = .delta
     ) -> TransportEnvConfig {
         let env = ProcessInfo.processInfo.environment
 
@@ -54,6 +57,8 @@ public struct TransportEnvConfig: Sendable {
         )
 
         let useSnapshotForSync = !EnvHelpers.isExplicitlyDisabled(key: TransportEnvKeys.useSnapshotForSync, environment: env)
+
+        let syncStrategy = SyncStrategy.parse(env[TransportEnvKeys.syncStrategy], default: syncStrategyDefault)
 
         let enableChangeObjectMetrics = EnvHelpers.getEnvBool(
             key: TransportEnvKeys.enableChangeObjectMetrics,
@@ -101,6 +106,7 @@ public struct TransportEnvConfig: Sendable {
         return TransportEnvConfig(
             enableDirtyTracking: enableDirtyTracking,
             useSnapshotForSync: useSnapshotForSync,
+            syncStrategy: syncStrategy,
             enableChangeObjectMetrics: enableChangeObjectMetrics,
             changeObjectMetricsLogEvery: changeObjectMetricsLogEvery,
             changeObjectMetricsEmaAlpha: changeObjectMetricsAlpha,

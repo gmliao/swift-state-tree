@@ -32,6 +32,18 @@ public enum SnapshotMode: Sendable {
 ///
 /// See [DESIGN_RUNTIME.md](../../../DESIGN_RUNTIME.md) for detailed documentation.
 public struct SyncEngine: Sendable {
+    /// What a diff is computed against.
+    ///
+    /// - `cached`: the previous snapshot held in the engine's cache; the cache is updated afterwards.
+    /// - `empty`: compares against an empty snapshot so every present field becomes a `.set`;
+    ///   the cache is used only to emit `.delete` for top-level fields that disappeared from the
+    ///   view since the previous sync (replacement semantics), and is then replaced by the current
+    ///   snapshot. Used by the full-snapshot sync strategy.
+    public enum DiffBaseline: Sendable {
+        case cached
+        case empty
+    }
+
     /// Cache for broadcast snapshot (shared across all players)
     private var lastBroadcastSnapshot: StateSnapshot?
     
@@ -345,6 +357,34 @@ public struct SyncEngine: Sendable {
         return false
     }
     
+    /// Build `.delete` patches for top-level keys present in `cached` but absent from `current`.
+    ///
+    /// Used by the `.empty` diff baseline (full-snapshot sync strategy) to give the client-view
+    /// equivalence that delta mode gets naturally from comparing against the real previous
+    /// snapshot: a top-level field that disappears from a recipient's view (e.g. a conditional
+    /// per-player field losing its value) must still produce an explicit delete, not silence.
+    /// Keys are sorted for deterministic patch ordering. Respects `onlyPaths` the same way
+    /// `compareSnapshots` does.
+    private func deletePatchesForVanishedTopLevelKeys(
+        cached: StateSnapshot?,
+        current: StateSnapshot,
+        onlyPaths: Set<String>?
+    ) -> [StatePatch] {
+        guard let cached else { return [] }
+        let vanishedKeys = Set(cached.values.keys).subtracting(current.values.keys)
+        guard !vanishedKeys.isEmpty else { return [] }
+
+        var deletes: [StatePatch] = []
+        for key in vanishedKeys.sorted() {
+            let path = "/\(key)"
+            if let onlyPaths = onlyPaths, !onlyPaths.contains(path) && !anyPathMatches(path, in: onlyPaths) {
+                continue
+            }
+            deletes.append(StatePatch(path: path, operation: .delete))
+        }
+        return deletes
+    }
+
     /// Check if an object represents an atomic DeterministicMath type.
     /// Atomic types should be updated as a whole unit, not field-by-field.
     private func isAtomicType(_ oldObj: [String: SnapshotValue], _ newObj: [String: SnapshotValue]) -> Bool {
@@ -544,12 +584,27 @@ public struct SyncEngine: Sendable {
     ///   - currentBroadcast: Pre-extracted broadcast snapshot.
     ///   - onlyPaths: Optional set of paths to limit diff calculation (JSON Pointer format).
     ///   - mode: Snapshot generation mode. Should match the mode used to extract the snapshot.
+    ///   - baseline: What to compute the diff against. Default is `.cached`.
     /// - Returns: Array of patches representing the changes.
     public mutating func computeBroadcastDiffFromSnapshot(
         currentBroadcast: StateSnapshot,
         onlyPaths: Set<String>? = nil,
-        mode: SnapshotMode = .all
+        mode: SnapshotMode = .all,
+        baseline: DiffBaseline = .cached
     ) -> [StatePatch] {
+        if case .empty = baseline {
+            let sets = compareSnapshots(from: StateSnapshot(values: [:]), to: currentBroadcast, onlyPaths: onlyPaths, dirtyFields: nil)
+            let deletes = deletePatchesForVanishedTopLevelKeys(
+                cached: lastBroadcastSnapshot,
+                current: currentBroadcast,
+                onlyPaths: onlyPaths
+            )
+            // Replacement semantics: the cache holds exactly the current view, never merged with
+            // the previous one, so the next `.empty` call detects exactly what vanished this time.
+            lastBroadcastSnapshot = currentBroadcast
+            return sets + deletes
+        }
+
         // Check if we have cached broadcast snapshot
         guard let lastBroadcast = lastBroadcastSnapshot else {
             // First time: seed cache with the provided snapshot
@@ -587,13 +642,27 @@ public struct SyncEngine: Sendable {
         for playerID: PlayerID,
         currentPerPlayer: StateSnapshot,
         onlyPaths: Set<String>?,
-        mode: SnapshotMode = .all
+        mode: SnapshotMode = .all,
+        baseline: DiffBaseline = .cached
     ) -> [StatePatch] {
+        if case .empty = baseline {
+            let sets = compareSnapshots(from: StateSnapshot(values: [:]), to: currentPerPlayer, onlyPaths: onlyPaths, dirtyFields: nil)
+            let deletes = deletePatchesForVanishedTopLevelKeys(
+                cached: lastPerPlayerSnapshots[playerID],
+                current: currentPerPlayer,
+                onlyPaths: onlyPaths
+            )
+            // Replacement semantics: the cache holds exactly the current view, never merged with
+            // the previous one, so the next `.empty` call detects exactly what vanished this time.
+            lastPerPlayerSnapshots[playerID] = currentPerPlayer
+            return sets + deletes
+        }
+
         // If only broadcast fields are dirty, we can skip per-player diff when cache exists
         if case .dirtyTracking(let dirtyFields) = mode, dirtyFields.isEmpty, lastPerPlayerSnapshots[playerID] != nil {
             return []
         }
-        
+
         // Check if we have cached per-player snapshot
         guard let lastPerPlayer = lastPerPlayerSnapshots[playerID] else {
             // First time: seed cache with the provided snapshot
@@ -721,21 +790,24 @@ public struct SyncEngine: Sendable {
     ///   - perPlayerSnapshot: Pre-extracted per-player snapshot for this player.
     ///   - perPlayerMode: Snapshot mode used to extract perPlayerSnapshot (for dirty tracking).
     ///   - onlyPaths: Optional set of paths to limit diff calculation (JSON Pointer format).
+    ///   - baseline: What to compute the diff against. Default is `.cached`.
     /// - Returns: `.firstSync([StatePatch])` on first call, `.diff([StatePatch])` with changes, or `.noChange`.
     package mutating func generateUpdateFromBroadcastDiff(
         for playerID: PlayerID,
         broadcastDiff: [StatePatch],
         perPlayerSnapshot: StateSnapshot,
         perPlayerMode: SnapshotMode = .all,
-        onlyPaths: Set<String>? = nil
+        onlyPaths: Set<String>? = nil,
+        baseline: DiffBaseline = .cached
     ) -> StateUpdate {
         let isFirstSyncForPlayer = !hasReceivedFirstSync.contains(playerID)
-        
+
         let perPlayerDiff = computePerPlayerDiffFromSnapshot(
             for: playerID,
             currentPerPlayer: perPlayerSnapshot,
             onlyPaths: onlyPaths,
-            mode: perPlayerMode
+            mode: perPlayerMode,
+            baseline: baseline
         )
         
         let mergedPatches = mergePatches(broadcastDiff, perPlayerDiff)
@@ -761,18 +833,21 @@ public struct SyncEngine: Sendable {
     ///   - perPlayerSnapshot: Pre-extracted per-player snapshot for this player.
     ///   - perPlayerMode: Snapshot mode used to extract perPlayerSnapshot (for dirty tracking).
     ///   - onlyPaths: Optional set of paths to limit diff calculation (JSON Pointer format).
+    ///   - baseline: What to compute the diff against. Default is `.cached`.
     /// - Returns: `.diff([StatePatch])` with changes, or `.noChange` if none.
     package mutating func generatePerPlayerUpdateFromSnapshot(
         for playerID: PlayerID,
         perPlayerSnapshot: StateSnapshot,
         perPlayerMode: SnapshotMode = .all,
-        onlyPaths: Set<String>? = nil
+        onlyPaths: Set<String>? = nil,
+        baseline: DiffBaseline = .cached
     ) -> StateUpdate {
         let perPlayerDiff = computePerPlayerDiffFromSnapshot(
             for: playerID,
             currentPerPlayer: perPlayerSnapshot,
             onlyPaths: onlyPaths,
-            mode: perPlayerMode
+            mode: perPlayerMode,
+            baseline: baseline
         )
 
         if perPlayerDiff.isEmpty {
