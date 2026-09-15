@@ -35,8 +35,10 @@ public struct SyncEngine: Sendable {
     /// What a diff is computed against.
     ///
     /// - `cached`: the previous snapshot held in the engine's cache; the cache is updated afterwards.
-    /// - `empty`: an empty snapshot, so every field becomes a `.set` patch (a full view).
-    ///   The cache is neither read nor written. Used by the full-snapshot sync strategy.
+    /// - `empty`: compares against an empty snapshot so every present field becomes a `.set`;
+    ///   the cache is used only to emit `.delete` for top-level fields that disappeared from the
+    ///   view since the previous sync (replacement semantics), and is then replaced by the current
+    ///   snapshot. Used by the full-snapshot sync strategy.
     public enum DiffBaseline: Sendable {
         case cached
         case empty
@@ -355,6 +357,34 @@ public struct SyncEngine: Sendable {
         return false
     }
     
+    /// Build `.delete` patches for top-level keys present in `cached` but absent from `current`.
+    ///
+    /// Used by the `.empty` diff baseline (full-snapshot sync strategy) to give the client-view
+    /// equivalence that delta mode gets naturally from comparing against the real previous
+    /// snapshot: a top-level field that disappears from a recipient's view (e.g. a conditional
+    /// per-player field losing its value) must still produce an explicit delete, not silence.
+    /// Keys are sorted for deterministic patch ordering. Respects `onlyPaths` the same way
+    /// `compareSnapshots` does.
+    private func deletePatchesForVanishedTopLevelKeys(
+        cached: StateSnapshot?,
+        current: StateSnapshot,
+        onlyPaths: Set<String>?
+    ) -> [StatePatch] {
+        guard let cached else { return [] }
+        let vanishedKeys = Set(cached.values.keys).subtracting(current.values.keys)
+        guard !vanishedKeys.isEmpty else { return [] }
+
+        var deletes: [StatePatch] = []
+        for key in vanishedKeys.sorted() {
+            let path = "/\(key)"
+            if let onlyPaths = onlyPaths, !onlyPaths.contains(path) && !anyPathMatches(path, in: onlyPaths) {
+                continue
+            }
+            deletes.append(StatePatch(path: path, operation: .delete))
+        }
+        return deletes
+    }
+
     /// Check if an object represents an atomic DeterministicMath type.
     /// Atomic types should be updated as a whole unit, not field-by-field.
     private func isAtomicType(_ oldObj: [String: SnapshotValue], _ newObj: [String: SnapshotValue]) -> Bool {
@@ -563,7 +593,16 @@ public struct SyncEngine: Sendable {
         baseline: DiffBaseline = .cached
     ) -> [StatePatch] {
         if case .empty = baseline {
-            return compareSnapshots(from: StateSnapshot(values: [:]), to: currentBroadcast, onlyPaths: onlyPaths, dirtyFields: nil)
+            let sets = compareSnapshots(from: StateSnapshot(values: [:]), to: currentBroadcast, onlyPaths: onlyPaths, dirtyFields: nil)
+            let deletes = deletePatchesForVanishedTopLevelKeys(
+                cached: lastBroadcastSnapshot,
+                current: currentBroadcast,
+                onlyPaths: onlyPaths
+            )
+            // Replacement semantics: the cache holds exactly the current view, never merged with
+            // the previous one, so the next `.empty` call detects exactly what vanished this time.
+            lastBroadcastSnapshot = currentBroadcast
+            return sets + deletes
         }
 
         // Check if we have cached broadcast snapshot
@@ -607,7 +646,16 @@ public struct SyncEngine: Sendable {
         baseline: DiffBaseline = .cached
     ) -> [StatePatch] {
         if case .empty = baseline {
-            return compareSnapshots(from: StateSnapshot(values: [:]), to: currentPerPlayer, onlyPaths: onlyPaths, dirtyFields: nil)
+            let sets = compareSnapshots(from: StateSnapshot(values: [:]), to: currentPerPlayer, onlyPaths: onlyPaths, dirtyFields: nil)
+            let deletes = deletePatchesForVanishedTopLevelKeys(
+                cached: lastPerPlayerSnapshots[playerID],
+                current: currentPerPlayer,
+                onlyPaths: onlyPaths
+            )
+            // Replacement semantics: the cache holds exactly the current view, never merged with
+            // the previous one, so the next `.empty` call detects exactly what vanished this time.
+            lastPerPlayerSnapshots[playerID] = currentPerPlayer
+            return sets + deletes
         }
 
         // If only broadcast fields are dirty, we can skip per-player diff when cache exists

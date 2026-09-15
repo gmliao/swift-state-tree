@@ -26,6 +26,10 @@ private struct EquivStepEvent: ClientEventPayload {
     let addMonster: Int
     let removeMonster: Int
     let item: String
+    /// Sentinel: when `true`, the handler removes the acting player's per-player-slice entry
+    /// (`state.inventories.removeValue(forKey:)`), simulating a conditional per-player field
+    /// disappearing from a still-connected player's view.
+    let clearInventory: Bool
 }
 
 /// Minimal client model: a JSON-pointer patch applier over a SnapshotValue tree.
@@ -85,6 +89,7 @@ private struct Harness {
                     state.secret += 7
                     if ev.addMonster != 0 { state.monsters[ev.addMonster] = 100 - ev.addMonster }
                     if ev.removeMonster != 0 { state.monsters.removeValue(forKey: ev.removeMonster) }
+                    if ev.clearInventory { state.inventories.removeValue(forKey: ctx.playerID) }
                     if !ev.item.isEmpty { state.inventories[ctx.playerID, default: []].append(ev.item) }
                 }
             }
@@ -124,9 +129,9 @@ private struct Harness {
         await adapter.onDisconnect(sessionID: SessionID("s\(n)"), clientID: ClientID("c\(n)"))
     }
 
-    func step(_ n: Int, add: Int? = nil, remove: Int? = nil, item: String? = nil) async throws {
+    func step(_ n: Int, add: Int? = nil, remove: Int? = nil, item: String? = nil, clearInventory: Bool = false) async throws {
         try await keeper.handleClientEvent(
-            AnyClientEvent(EquivStepEvent(addMonster: add ?? 0, removeMonster: remove ?? 0, item: item ?? "")),
+            AnyClientEvent(EquivStepEvent(addMonster: add ?? 0, removeMonster: remove ?? 0, item: item ?? "", clearInventory: clearInventory)),
             playerID: PlayerID("p\(n)"), clientID: ClientID("c\(n)"), sessionID: SessionID("s\(n)")
         )
         // `LandKeeper.handleClientEvent` on a tickless land (no `Lifetime { Tick(...) }` handler)
@@ -201,6 +206,21 @@ func testStrategiesAreEquivalent(useSnapshotForSync: Bool) async throws {
     try await delta.step(3, remove: 2); try await full.step(3, remove: 2)
     await delta.adapter.syncNow();      await full.adapter.syncNow()
     try await checkpoint("remove", delta: &delta, full: &full)
+
+    // A still-connected player's conditional per-player field disappears from its own view
+    // (e.g. `@Sync(.perPlayerSlice())` losing its entry for that player) and later reappears.
+    // Player 1 stays connected for the whole script, so this exercises the bug this test guards
+    // against without conflating it with the leave/late-join path below: under `.fullSnapshot`,
+    // the diff used to be computed against an empty baseline every sync, so a top-level key that
+    // is simply absent from the new per-player snapshot produced neither `.set` nor `.delete` and
+    // the client kept the stale "inventories" value forever.
+    try await delta.step(1, clearInventory: true); try await full.step(1, clearInventory: true)
+    await delta.adapter.syncNow();                 await full.adapter.syncNow()
+    try await checkpoint("slice-vanished", delta: &delta, full: &full)
+
+    try await delta.step(1, item: "back"); try await full.step(1, item: "back")
+    await delta.adapter.syncNow();         await full.adapter.syncNow()
+    try await checkpoint("slice-restored", delta: &delta, full: &full)
 
     await delta.leave(2); await full.leave(2)
     delta.views[SessionID("s2")] = nil; full.views[SessionID("s2")] = nil

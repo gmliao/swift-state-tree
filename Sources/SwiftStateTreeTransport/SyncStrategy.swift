@@ -9,11 +9,10 @@ import Foundation
 /// - `delta`: only fields that changed since the previous sync (today's behaviour).
 /// - `fullSnapshot`: the recipient's complete visible view every sync, even when
 ///   nothing changed. Exists as a controlled baseline for measuring the delta
-///   strategy; it is not a production mode. Full-snapshot mode expresses the view
-///   as `.set` patches, so a per-player field whose filtered value becomes `nil`
-///   for a still-connected player (e.g. a visibility policy hiding it) produces no
-///   patch at all, whereas delta mode would send an explicit `.delete` for that
-///   field; this asymmetry does not arise in the hero-defense workload.
+///   strategy; it is not a production mode. Full-snapshot mode sends every present
+///   field as a `.set` and a `.delete` for any top-level field that disappeared
+///   from the recipient's view since the previous sync, so the client view is
+///   identical to delta mode.
 ///
 /// Late-join initial sync always sends a full snapshot regardless of this setting.
 public enum SyncStrategy: String, Sendable, CaseIterable {

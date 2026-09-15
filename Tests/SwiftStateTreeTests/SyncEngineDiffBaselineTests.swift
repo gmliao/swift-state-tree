@@ -19,7 +19,7 @@ private func setValues(_ patches: [StatePatch]) -> [String: SnapshotValue] {
     return out
 }
 
-@Test("empty baseline returns a set patch for every broadcast field and never seeds the cache")
+@Test("empty baseline returns a set patch for every broadcast field; cache holds the previous view afterward")
 func testEmptyBaselineBroadcast() throws {
     var engine = SyncEngine()
     var state = BaselineTestState()
@@ -39,12 +39,15 @@ func testEmptyBaselineBroadcast() throws {
     let second = engine.computeBroadcastDiffFromSnapshot(currentBroadcast: snapshot, onlyPaths: nil, mode: .all, baseline: .empty)
     #expect(setValues(second) == firstSets)
 
-    // A subsequent .cached call behaves like a first call (cache still empty): seeds and returns [].
-    let cachedFirst = engine.computeBroadcastDiffFromSnapshot(currentBroadcast: snapshot, onlyPaths: nil, mode: .all, baseline: .cached)
-    #expect(cachedFirst.isEmpty)
+    // The cache now holds the previous full snapshot (replacement semantics), rather than being
+    // empty: a subsequent .cached call diffs against it like the normal delta path would.
+    state.tick = 4
+    let mutatedSnapshot = try engine.extractBroadcastSnapshot(from: state, mode: .all)
+    let cachedDiff = engine.computeBroadcastDiffFromSnapshot(currentBroadcast: mutatedSnapshot, onlyPaths: nil, mode: .all, baseline: .cached)
+    #expect(setValues(cachedDiff) == ["/tick": .int(4)])
 }
 
-@Test("empty baseline on per-player update returns diff with every per-player field, cache untouched")
+@Test("empty baseline on per-player update returns diff with every per-player field; cache holds the previous view afterward")
 func testEmptyBaselinePerPlayer() throws {
     var engine = SyncEngine()
     let alice = PlayerID("alice")
@@ -65,9 +68,58 @@ func testEmptyBaselinePerPlayer() throws {
     let again = engine.generatePerPlayerUpdateFromSnapshot(for: alice, perPlayerSnapshot: perPlayer, perPlayerMode: .all, onlyPaths: nil, baseline: .empty)
     #expect(again == update)
 
-    // A subsequent .cached call behaves like a first call (cache still empty): seeds and returns .noChange.
-    let cachedFirst = engine.generatePerPlayerUpdateFromSnapshot(for: alice, perPlayerSnapshot: perPlayer, perPlayerMode: .all, onlyPaths: nil, baseline: .cached)
-    #expect(cachedFirst == .noChange)
+    // The cache now holds the previous per-player snapshot (replacement semantics), rather than
+    // being empty: a subsequent .cached call diffs against it like the normal delta path would.
+    state.inventories[alice] = ["sword", "shield"]
+    let mutatedPerPlayer = try engine.extractPerPlayerSnapshot(for: alice, from: state, mode: .all)
+    let cachedUpdate = engine.generatePerPlayerUpdateFromSnapshot(for: alice, perPlayerSnapshot: mutatedPerPlayer, perPlayerMode: .all, onlyPaths: nil, baseline: .cached)
+    guard case .diff(let cachedPatches) = cachedUpdate else {
+        Issue.record("expected .diff, got \(cachedUpdate)")
+        return
+    }
+    // Both old and new snapshots have the "inventories" key, so the diff recurses into the
+    // per-player object and reports the change at "/inventories/alice" rather than replacing the
+    // whole top-level key (see the "added" case in `testEmptyBaselineBroadcast`/the vanished-field
+    // test below, where one side lacks the key entirely and the whole value is set/deleted).
+    #expect(cachedPatches.contains { $0.path.hasPrefix("/inventories") })
+}
+
+@Test("empty baseline emits a delete for a per-player field that vanishes from the view")
+func testEmptyBaselineEmitsDeleteForVanishedPerPlayerField() throws {
+    var engine = SyncEngine()
+    let alice = PlayerID("alice")
+    var state = BaselineTestState()
+    state.inventories[alice] = ["sword"]
+
+    // First .empty call: alice's slice is present, so "inventories" is a `.set`.
+    let present = try engine.extractPerPlayerSnapshot(for: alice, from: state, mode: .all)
+    let firstUpdate = engine.generatePerPlayerUpdateFromSnapshot(for: alice, perPlayerSnapshot: present, perPlayerMode: .all, onlyPaths: nil, baseline: .empty)
+    guard case .diff(let firstPatches) = firstUpdate else {
+        Issue.record("expected .diff, got \(firstUpdate)")
+        return
+    }
+    #expect(setValues(firstPatches)["/inventories"] != nil)
+
+    // Alice's entry disappears from the underlying state (e.g. the conditional per-player field
+    // is removed for a still-connected player). The new snapshot has no "inventories" key at all,
+    // so the diff against an empty snapshot alone would produce neither `.set` nor `.delete` — the
+    // fix must emit `.delete` by comparing against the cached previous view instead.
+    state.inventories.removeValue(forKey: alice)
+    let absent = try engine.extractPerPlayerSnapshot(for: alice, from: state, mode: .all)
+    #expect(absent.values["inventories"] == nil)
+
+    let secondUpdate = engine.generatePerPlayerUpdateFromSnapshot(for: alice, perPlayerSnapshot: absent, perPlayerMode: .all, onlyPaths: nil, baseline: .empty)
+    guard case .diff(let secondPatches) = secondUpdate else {
+        Issue.record("expected .diff, got \(secondUpdate)")
+        return
+    }
+    #expect(secondPatches.contains(StatePatch(path: "/inventories", operation: .delete)))
+    #expect(setValues(secondPatches)["/inventories"] == nil)
+
+    // A third .empty call with the same (still absent) state: the cache was already replaced with
+    // the "inventories"-less snapshot, so there is nothing left to report as vanished.
+    let thirdUpdate = engine.generatePerPlayerUpdateFromSnapshot(for: alice, perPlayerSnapshot: absent, perPlayerMode: .all, onlyPaths: nil, baseline: .empty)
+    #expect(thirdUpdate == .noChange)
 }
 
 @Test("cached baseline is unchanged: first call seeds, second call diffs")

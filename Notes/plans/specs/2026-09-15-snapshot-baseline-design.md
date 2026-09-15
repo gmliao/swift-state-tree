@@ -50,10 +50,12 @@ For every `syncNow()`:
 - The update is sent **even when nothing changed** — this is what a naive
   snapshot protocol does and is the point of the baseline.
 - Pending events are attached exactly as in delta mode.
-- The `SyncEngine` caches are neither read nor written; dirty flags are still
-  cleared via `keeper.endSync` so switching strategies at runtime cannot leave
-  stale flags (runtime switching is not a supported feature, only a non-goal
-  that must not corrupt state).
+- The `SyncEngine` caches are never used to suppress unchanged fields; they are
+  read only to emit `.delete` for top-level fields that disappeared from the
+  recipient's view (replacement semantics) and then replaced by the current
+  snapshot. Dirty flags are still cleared via `keeper.endSync` so switching
+  strategies at runtime cannot leave stale flags (runtime switching is not a
+  supported feature, only a non-goal that must not corrupt state).
 - Encoding is unchanged: the same `StateUpdateEncoder` (opcode + MessagePack +
   PathHash + slot compression in the benchmark) encodes the `.set` patches.
 
@@ -99,7 +101,8 @@ public enum DiffBaseline: Sendable {
 `computeBroadcastDiffFromSnapshot`, `computePerPlayerDiffFromSnapshot` and
 `generatePerPlayerUpdateFromSnapshot` gain `baseline: DiffBaseline = .cached`.
 With `.empty` they call the existing `compareSnapshots(from: StateSnapshot(values: [:]), to: current, onlyPaths: nil, dirtyFields: nil)`
-and return; no cache read, no cache write, no first-call "seed and return []".
+plus `.delete` for vanished top-level keys tracked via the cache; the cache is
+replaced, never merged; there is no first-call "seed and return []".
 
 `.cached` is byte-for-byte the existing code path.
 
