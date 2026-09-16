@@ -1,14 +1,22 @@
 cff-version: 1.2.0
 title: SwiftStateTree
 message: "If you use this software, please cite it as below."
-version: baseline-v0.1.1
-date-released: 2026-02-11
+version: v0.2.0
+date-released: 2026-09-16
+doi: 10.5281/zenodo.18610075
 type: software
 authors:
   - family-names: Liao
     given-names: Guan-Ming
 url: https://github.com/gmliao/swift-state-tree
 repository-code: https://github.com/gmliao/swift-state-tree
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.18610075
+    description: Concept DOI (resolves to the latest archived release)
+  - type: doi
+    value: 10.5281/zenodo.22788026
+    description: Version DOI for v0.2.0 (commit 95f9123)
 license: MIT
 keywords:
   - swift
