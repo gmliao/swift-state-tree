@@ -15,6 +15,7 @@ import {
   IVec3,
 } from "@swiftstatetree/sdk/core";
 import { ChalkLogger } from "./logger";
+import { joinWithTimeout } from "./join-timeout";
 import { fetchSchema, printSchema } from "./schema";
 import * as admin from "./admin";
 import { evaluateAssertion } from "./scenarioAssertions.js";
@@ -31,7 +32,7 @@ type ConvergenceContext = {
   landID: string;
   clients: ConvergenceClient[];
   debug?: DebugStateClient;
-  /** Mismatches fail the script (default: report-only until #60). */
+  /** Mismatches fail the script (CLI default: report-only; the E2E scripts turn it on). */
   gating: boolean;
   stats: { checks: number; converged: number; mismatches: number; inconclusive: number };
 };
@@ -118,7 +119,7 @@ program
       });
 
       // Join
-      const joinResult = await view.join();
+      const joinResult = await joinWithTimeout(view, options.land);
       if (!joinResult.success) {
         console.error(
           chalk.red(`Failed to join: ${joinResult.reason || "Unknown reason"}`),
@@ -369,7 +370,7 @@ program
             logger,
           });
 
-          const joinResult = await view.join();
+          const joinResult = await joinWithTimeout(view, landID);
           if (!joinResult.success) {
             throw new Error(
               `Failed to join land ${landID}: ${joinResult.reason || "Unknown reason"}`,
@@ -397,7 +398,7 @@ program
             extraRuntimes.push(extra);
             await extra.connect(wsUrl);
             const extraView = extra.createView(joinedLandID, { schema: schema as any, logger });
-            const extraJoin = await extraView.join();
+            const extraJoin = await joinWithTimeout(extraView, joinedLandID);
             if (!extraJoin.success || !extraJoin.playerID) {
               throw new Error(`client-${i} failed to join ${joinedLandID}: ${extraJoin.reason || "Unknown reason"}`);
             }

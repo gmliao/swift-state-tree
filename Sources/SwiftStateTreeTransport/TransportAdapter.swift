@@ -48,8 +48,49 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     private let keeper: LandKeeper<State>
     let transport: any Transport
-    /// When set, sync uses enqueueBatch (no await) instead of transport.sendBatch.
-    let transportSendQueue: (any TransportSendQueue)?
+    /// Ordered FIFO for every frame this adapter sends (#60). See `OutboundWriter`.
+    let outboundWriter: OutboundWriter
+    /// Frames of the running sync cycle, enqueued as one writer element when it ends.
+    /// `nil` outside a cycle.
+    var cycleFrames: [SessionFrame]?
+    /// Transport connection generation per joined session, stamped on every frame so the
+    /// transport drops frames for an ended connection. Read when the connection was accepted
+    /// (`LandRouter` passes it to `performJoin`), else when the session registers.
+    ///
+    /// Defence in depth: `NIOWebSocketServer` gives every connection a fresh `UUID` SessionID, so
+    /// this matters only for transports or tests that reuse SessionIDs.
+    var connectionGenerations: [SessionID: UInt64] = [:]
+    /// Sessions that ended (disconnected, or disconnected by the server after a writer ceiling
+    /// drop). Frames for them are dropped before the writer, also unstamped ones.
+    var endedSessions = EndedSessionSet()
+    /// Sessions the server disconnected after a writer ceiling drop.
+    var outboundCeilingDisconnects = 0
+    /// The no-op-`closeSession` warning was logged (once per adapter).
+    var warnedNoCloseSession = false
+    /// Sync cycles skipped before `beginSync` (see `SyncSkipCounts`).
+    var syncSkips = SyncSkipCounts()
+    /// Syncs skipped for writer back-pressure on a land without periodic sync, to run once the
+    /// writer drained its sync cycle elements (see `deferSyncForOutboundBacklog`).
+    var backlogDeferredSyncNow = false
+    var backlogDeferredBroadcastOnly = false
+    var backlogRetryScheduled = false
+    /// `landID` for the outbound extension's logs.
+    var landIDForOutbound: String { landID }
+    /// Logger for the outbound extension.
+    var outboundLogger: Logger { logger }
+    /// Diagnostics and tests only: awaited by a sync cycle after its frames were enqueued and
+    /// before its `endSync` hop, while the cycle still owns the keeper's sync flag. Lets a test
+    /// hold a cycle in flight now that the cycle no longer awaits the transport. `nil` (the
+    /// default) costs one load per cycle.
+    var debugCycleHoldBeforeEndSync: (@Sendable () async -> Void)?
+
+    /// Installs `debugCycleHoldBeforeEndSync` (diagnostics and tests only).
+    func setDebugCycleHoldBeforeEndSync(_ hold: (@Sendable () async -> Void)?) {
+        debugCycleHoldBeforeEndSync = hold
+    }
+
+    /// How long teardown waits for queued frames to reach the transport.
+    static var outboundTeardownTimeout: Duration { .seconds(2) }
     private let landID: String
     private let codec: any TransportCodec
     private let messageEncoder: any TransportMessageEncoder
@@ -167,7 +208,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Creates a TransportAdapter that connects a LandKeeper to a Transport.
     ///
-    /// **Core**: `keeper`, `transport`, `transportSendQueue`, `landID`
+    /// **Core**: `keeper`, `transport`, `landID` (`transportSendQueue` is ignored and deprecated:
+    /// every send goes through the adapter's ordered `OutboundWriter`)
     /// **Join / lifecycle**: `createGuestSession`, `onLandDestroyed`, `enableLegacyJoin`
     /// **Encoding**: Prefer `encodingConfig` (message + state encoding); otherwise use `codec`, `stateUpdateEncoder`, and optional `pathHashes` / `eventHashes` / `clientEventHashes`
     /// **Tuning**: `enableDirtyTracking`, `syncStrategy`, `expectedSchemaHash`; `transportEnvConfig` replaces env lookup entirely (tests/benchmarks)
@@ -197,7 +239,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ) {
         self.keeper = keeper
         self.transport = transport
-        self.transportSendQueue = transportSendQueue
+        _ = transportSendQueue
         self.landID = landID
         let adapterScope = "TransportAdapter"
         self.logger = logger.map { $0.withScope(adapterScope) } ?? createColoredLogger(
@@ -271,6 +313,28 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             self.profiler = nil
             self.profilerCounters = nil
         }
+
+        // Send latency is measured by the writer's consumer (dequeue to transport return),
+        // sampled 1 in 100 like before. Not comparable with the pre-writer numbers, which
+        // timed the producer's own send call.
+        let onSent: (@Sendable (Duration, Int) -> Void)?
+        if let profiler = self.profiler {
+            let sampler = OutboundSendSampler(every: 100)
+            onSent = { duration, _ in
+                guard sampler.shouldSample() else { return }
+                let ms = Double(duration.components.seconds) * 1000
+                    + Double(duration.components.attoseconds) / 1e15
+                Task { await profiler.recordSend(durationMs: ms) }
+            }
+        } else {
+            onSent = nil
+        }
+        self.outboundWriter = OutboundWriter(
+            transport: transport,
+            maxBytes: envConfig.outboundWriterMaxBytes,
+            logger: self.logger,
+            onSent: onSent
+        )
 
         self.decodingPipeline = MessageDecodingPipeline(
             codec: self.codec,
@@ -405,6 +469,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     private func handleDisconnectQueued(sessionID: SessionID, clientID: ClientID) async {
         profilerCounters?.incrementDisconnects()
+        // Late frames for this connection (e.g. an action response still in flight) are dropped,
+        // so they cannot reach a later connection that reuses the SessionID.
+        connectionGenerations.removeValue(forKey: sessionID)
+        endedSessions.insert(sessionID)
         let joinedPlayerID = membershipCoordinator.playerID(for: sessionID)
 
         // If player had joined, handle leave
@@ -452,7 +520,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         sessionID: SessionID,
         clientID: ClientID,
         playerID: PlayerID,
-        authInfo: AuthenticatedInfo?
+        authInfo: AuthenticatedInfo?,
+        acceptedConnectionGeneration: UInt64? = nil
     ) async {
         _ = membershipCoordinator.registerPlayer(
             sessionID: sessionID,
@@ -461,12 +530,29 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         )
         membershipCoordinator.registerClient(sessionID: sessionID, clientID: clientID)
 
-        // Register with transport for player-based targeting (if supported)
+        // Record the session's connection generation (see `connectionGenerations`). Group
+        // targets are expanded from this adapter's membership, not from the transport's maps.
+        endedSessions.remove(sessionID)
         if let webSocketTransport = transport as? WebSocketTransport {
-            await webSocketTransport.registerSession(sessionID, for: playerID)
+            let current = await webSocketTransport.registerSession(sessionID, for: playerID)
+            connectionGenerations[sessionID] = acceptedConnectionGeneration ?? current
+        } else if let acceptedConnectionGeneration {
+            connectionGenerations[sessionID] = acceptedConnectionGeneration
         }
 
         logger.info("Session registered via Router: session=\(sessionID.rawValue), player=\(playerID.rawValue)")
+    }
+
+    // MARK: - Outbound target expansion
+
+    /// Joined sessions of this land, for `.broadcast` frames.
+    func joinedSessionIDs() -> [SessionID] {
+        membershipCoordinator.allJoinedEntries().map(\.sessionID)
+    }
+
+    /// This land's sessions of `playerID`, for `.player` frames.
+    func membershipSessionIDs(for playerID: PlayerID) -> [SessionID] {
+        membershipCoordinator.sessionIDs(for: playerID)
     }
 
     // MARK: - Join Helpers (Shared Logic)
@@ -577,18 +663,22 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         public let playerSlot: Int32
     }
 
+    /// - Parameter connectionGeneration: The transport connection generation read when the
+    ///   session's connection was accepted (see `connectionGenerations`); `nil` reads it now.
     public func performJoin(
         playerSession: PlayerSession,
         clientID: ClientID,
         sessionID: SessionID,
-        authInfo: AuthenticatedInfo?
+        authInfo: AuthenticatedInfo?,
+        connectionGeneration: UInt64? = nil
     ) async throws -> JoinResult? {
         try await enqueueMembership {
             try await self.performJoinQueued(
                 playerSession: playerSession,
                 clientID: clientID,
                 sessionID: sessionID,
-                authInfo: authInfo
+                authInfo: authInfo,
+                connectionGeneration: connectionGeneration
             )
         }
     }
@@ -597,7 +687,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         playerSession: PlayerSession,
         clientID: ClientID,
         sessionID: SessionID,
-        authInfo: AuthenticatedInfo?
+        authInfo: AuthenticatedInfo?,
+        connectionGeneration: UInt64?
     ) async throws -> JoinResult? {
         // Attempt to join (updates keeper.players)
         let decision = try await keeper.join(
@@ -624,7 +715,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 sessionID: sessionID,
                 clientID: clientID,
                 playerID: playerID,
-                authInfo: authInfo
+                authInfo: authInfo,
+                connectionGeneration: connectionGeneration
             )
 
             // NOTE: Initial state snapshot is NOT sent here anymore.
@@ -705,8 +797,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 )
                 let errorResponse = TransportMessage.error(errorPayload)
                 let errorData = try messageEncoder.encode(errorResponse)
-                await transport.send(errorData, to: .session(sessionID))
-                await Task.yield()
+                enqueueOutbound(errorData, to: sessionID)
             } catch {
                 logger.error("❌ Failed to send decode error to client", metadata: [
                     "sessionID": .string(sessionID.rawValue),
@@ -896,8 +987,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         )
                         let errorResponse = TransportMessage.error(errorPayload)
                         if let errorData = try? messageEncoder.encode(errorResponse) {
-                            await transport.send(errorData, to: .session(sessionID))
-                            await Task.yield()
+                            enqueueOutbound(errorData, to: sessionID)
                         }
                     }
                 } else if case .fromServer = event {
@@ -980,12 +1070,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                           membershipCoordinator.isPlayerCurrent(playerID, expected: stamp.version) else {
                         continue
                     }
-                    let sessionIDs = membershipCoordinator.sessionIDs(for: playerID)
-                    for sessionID in sessionIDs {
-                        await transport.send(data, to: .session(sessionID))
-                    }
+                    enqueueOutbound(data, toSessions: membershipCoordinator.sessionIDs(for: playerID))
                 }
-                await Task.yield()
                 return
             }
             
@@ -1021,8 +1107,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 }
             }
 
-            await transport.send(data, to: transportTarget)
-            await Task.yield()
+            // Expanded to this land's sessions (#84): the transport is shared by every land
+            // of the type, so its `.broadcast` and player map reach other lands' sessions.
+            enqueueOutbound(data, toSessions: sessionIDs(for: transportTarget))
         } catch {
             logger.error("❌ Failed to send event", metadata: [
                 "eventType": .string(event.type),
@@ -1117,15 +1204,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         )
     }
 
-    private func sendEventBodiesSeparately(_ eventBodies: [MessagePackValue], to sessionID: SessionID) async {
+    private func sendEventBodiesSeparately(_ eventBodies: [MessagePackValue], to sessionID: SessionID) {
         for body in eventBodies {
             guard case .array(let bodyArray) = body else { continue }
             let frame: MessagePackValue = .array([.int(Int64(MessageKindOpcode.event.rawValue))] + bodyArray)
             if let data = try? pack(frame) {
-                await transport.send(data, to: .session(sessionID))
+                enqueueOutbound(data, to: sessionID)
             }
         }
-        await Task.yield()
     }
 
     /// Build batch of (Data, EventTarget) for encoded updates. Includes event bodies first when useStateUpdateWithEvents.
@@ -1156,45 +1242,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         return batch
     }
 
-    /// Send encoded updates in a single transport call. Reduces WebSocketTransport actor contention.
-    /// When transportSendQueue is set, enqueues without await (queue-based path).
+    /// Enqueue encoded updates (with their targeted event frames) on the outbound writer.
     private func sendEncodedUpdatesBatch(
         _ encodedUpdates: [EncodedSyncUpdate],
         mergeEvents: Bool
-    ) async {
+    ) {
         let batch = buildSendBatch(from: encodedUpdates, mergeEvents: mergeEvents)
         guard !batch.isEmpty else { return }
         let stateUpdateCount = encodedUpdates.filter { $0.payload != nil }.count
-        await sendBatchWithProfiling(batch, stateUpdateCount: stateUpdateCount)
-    }
-
-    private func sendEventBody(_ body: MessagePackValue, to target: SwiftStateTree.EventTarget) async {
-        guard case .array(let bodyArray) = body else { return }
-        let frame: MessagePackValue = .array([.int(Int64(MessageKindOpcode.event.rawValue))] + bodyArray)
-        guard let data = try? pack(frame) else { return }
-
-        switch target {
-        case .all:
-            await transport.send(data, to: .broadcast)
-        case .player(let playerID):
-            await transport.send(data, to: .player(playerID))
-        case .client(let clientID):
-            if let sessionID = membershipCoordinator.sessionID(for: clientID) {
-                await transport.send(data, to: .session(sessionID))
-            } else {
-                logger.warning("No session found for client: \(clientID.rawValue)")
-            }
-        case .session(let sessionID):
-            await transport.send(data, to: .session(sessionID))
-        case .players(let playerIDs):
-            for playerID in playerIDs {
-                let sessionIDs = membershipCoordinator.sessionIDs(for: playerID)
-                for sessionID in sessionIDs {
-                    await transport.send(data, to: .session(sessionID))
-                }
-            }
-        }
-        await Task.yield()
+        sendBatchWithProfiling(batch, stateUpdateCount: stateUpdateCount)
     }
 
     /// Trigger immediate state synchronization
@@ -1223,6 +1279,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // here, once: the auto-switch at the end of the cycle may change `enableDirtyTracking`.
         let needsFollowUp = await withSyncState(
             clearDirtyFlags: enableDirtyTracking,
+            broadcastOnly: false,
             skipLogMessage: "⏭️ Sync skipped: another sync operation is in progress",
             errorLogMessage: "❌ Failed to extract broadcast snapshot"
         ) { state in
@@ -1241,6 +1298,52 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         Task { await self.syncNow() }
     }
 
+    /// After a back-pressure skip, or a request rejected because a cycle was in flight: a land
+    /// with periodic sync gets its next periodic cycle, which covers broadcast-only changes too.
+    /// Without periodic sync nothing else would run the skipped cycle, so run it once the
+    /// writer has drained its sync cycle elements (coalesced: one pending retry, a full cycle
+    /// when any skipped request was full).
+    private func deferSyncForOutboundBacklog(broadcastOnly: Bool, afterBusy: Bool = false) {
+        // After teardown nothing is sent any more: do not schedule a retry.
+        guard !keeper.hasPeriodicSync, !outboundWriter.isFinished else { return }
+        if broadcastOnly {
+            backlogDeferredBroadcastOnly = true
+        } else {
+            backlogDeferredSyncNow = true
+        }
+        guard !backlogRetryScheduled else { return }
+        backlogRetryScheduled = true
+        let writer = outboundWriter
+        Task {
+            // After a busy rejection, let the cycle in flight reach `endSync` first.
+            if afterBusy { try? await safeTaskSleep(for: .milliseconds(1)) }
+            await writer.waitForSyncCycleDrain()
+            await self.runBacklogDeferredSync()
+        }
+    }
+
+    /// Number of deferred retries started so far (tests).
+    private(set) var backlogRetryRuns = 0
+
+    private func runBacklogDeferredSync() async {
+        backlogRetryRuns += 1
+        let runSyncNow = backlogDeferredSyncNow
+        let runBroadcastOnly = backlogDeferredBroadcastOnly && !runSyncNow
+        backlogDeferredSyncNow = false
+        backlogDeferredBroadcastOnly = false
+        backlogRetryScheduled = false
+        if runSyncNow {
+            await syncNow()
+        } else if runBroadcastOnly {
+            await syncBroadcastOnly()
+        }
+    }
+
+    /// Sync cycles skipped so far (tests and diagnostics).
+    func syncSkipCounts() -> SyncSkipCounts {
+        syncSkips
+    }
+
     /// Runs `operation` on a state copy taken by `LandKeeper.beginSync(clearDirtyFlags:)`.
     ///
     /// Dirty flags are cleared (when `clearDirtyFlags` is set) in the same keeper turn that takes
@@ -1256,13 +1359,31 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// - `operation` completed: a cycle that throws every time must not retry forever;
     /// - events are queued now (kept by this cycle or queued after its cleanup);
     /// - the land has no periodic sync (`LandKeeper.hasPeriodicSync`) whose next cycle delivers them.
+    ///
+    /// Back-pressure: while the writer still holds a sync cycle element from an earlier cycle,
+    /// the cycle is skipped before `beginSync`, so dirty flags and queued events stay for the
+    /// next cycle, which diffs against the last state sent. Overload then turns into skipped
+    /// cycles instead of a growing writer queue that every later frame waits behind. Event and
+    /// action-response frames are not held back. A joiner's firstSync and the debug settle do
+    /// not run through here.
     private func withSyncState(
         clearDirtyFlags: Bool,
+        broadcastOnly: Bool,
         skipLogMessage: String,
         errorLogMessage: String,
         operation: (State) async throws -> Void
     ) async -> Bool {
+        if hasPendingStateElement {
+            syncSkips.outboundBacklog += 1
+            deferSyncForOutboundBacklog(broadcastOnly: broadcastOnly)
+            return false
+        }
         guard let state = await keeper.beginSync(clearDirtyFlags: clearDirtyFlags) else {
+            syncSkips.busy += 1
+            // On a land without periodic sync this request may be the only one for changes
+            // made after the cycle in flight took its copy (deferred cycles now run in the
+            // background, so requests overlap): run it once more after that cycle.
+            deferSyncForOutboundBacklog(broadcastOnly: broadcastOnly, afterBusy: true)
             if logger.logLevel <= .debug {
                 logger.debug("Sync skipped", metadata: ["message": .string(skipLogMessage)])
             }
@@ -1270,6 +1391,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
 
         var completed = false
+        // The cycle's frames, and any frame issued while it runs, become one writer element,
+        // enqueued as soon as the operation ends (before the `endSync` hop).
+        let openedCycleFrames = beginCycleFrames()
         do {
             try await operation(state)
             completed = true
@@ -1279,7 +1403,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "error": .string("\(error)")
             ])
         }
+        if openedCycleFrames { endCycleFrames() }
 
+        if let hold = debugCycleHoldBeforeEndSync {
+            await hold()
+        }
         await keeper.endSync()
         return completed && pendingEventManager.hasAnyEvents && !keeper.hasPeriodicSync
     }
@@ -1288,14 +1416,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///
     /// Event order guaranteed per frame:
     /// - opcode 107, broadcast events: they ride inside the merged broadcast frame, ahead of that
-    ///   frame's state update. The merged frame is issued before the per-player batch, but each
-    ///   session's copy is sent from an unstructured task, so until #60 its arrival order relative
-    ///   to the batch and the targeted event frames is not guaranteed.
+    ///   frame's state update. The merged frame is issued before the per-player batch; every frame
+    ///   goes through the adapter's `OutboundWriter`, so frames arrive in issue order (#60).
     /// - opcode 107, targeted events queued before the batch is built: sent to their session
     ///   immediately before that session's per-player state frame, once.
-    /// - opcode 107, targeted events queued later in the cycle (e.g. during the batch send): sent
-    ///   once by `flushTargetedEventBodiesIfNeeded`, after that session's per-player frame. A session
-    ///   with no per-player frame this cycle gets all its targeted events from the flush.
+    /// - opcode 107, targeted events not sent with a per-player frame: sent once by
+    ///   `flushTargetedEventBodiesIfNeeded`, after that session's per-player frame. A session with
+    ///   no per-player frame this cycle gets all its targeted events from the flush. The cycle
+    ///   does not suspend between building the batch and the flush (sends are enqueued, #60).
     /// - opcode 107, events queued after the cycle read the queue (broadcast events after the merged
     ///   frame is built, targeted events after the flush starts) are delivered by the next cycle.
     /// - json / opcodeJsonArray: events are not queued; each is sent when emitted, so it precedes
@@ -1510,9 +1638,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 continue
             }
             profilerCounters?.incrementStateUpdates()
-            Task { await transport.send(dataToSend, to: .session(sessionID)) }
+            enqueueOutbound(dataToSend, to: sessionID)
         }
-        await Task.yield()
         return broadcastUpdate
     }
 
@@ -1638,7 +1765,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
         let successfulUpdates = encodedUpdates.filter { $0.payload != nil }
         if !successfulUpdates.isEmpty {
-            await sendEncodedUpdatesBatch(successfulUpdates, mergeEvents: false)
+            sendEncodedUpdatesBatch(successfulUpdates, mergeEvents: false)
         }
 
         for encoded in encodedUpdates where encoded.errorMessage != nil {
@@ -1678,7 +1805,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 endingBefore: end
             )
             if !eventBodies.isEmpty {
-                await sendEventBodiesSeparately(eventBodies, to: sessionID)
+                sendEventBodiesSeparately(eventBodies, to: sessionID)
             }
         }
     }
@@ -1729,6 +1856,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // dictionary keys) accumulate until a syncNow runs with members: memory and work, not correctness.
         let needsFollowUp = await withSyncState(
             clearDirtyFlags: false,
+            broadcastOnly: true,
             skipLogMessage: "⏭️ Broadcast-only sync skipped: another sync operation is in progress",
             errorLogMessage: "❌ Failed to sync broadcast-only"
         ) { state in
@@ -1878,9 +2006,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             if initialSyncingPlayers.contains(playerID) {
                 continue
             }
-            await sendWithProfiling(dataToSend, to: .session(sessionID))
+            sendWithProfiling(dataToSend, to: .session(sessionID))
         }
-        await Task.yield()
         
         return updateSize
     }
@@ -1924,7 +2051,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     ])
                 }
                 
-                await sendWithProfiling(updateData, to: .session(sessionID))
+                sendWithProfiling(updateData, to: .session(sessionID))
             } catch {
                 // Log error but continue sending to other players
                 logger.warning("Failed to send broadcast update to session", metadata: [
@@ -1933,8 +2060,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 ])
             }
         }
-        await Task.yield()
-        
+
         return lastUpdateSize
     }
     
@@ -1956,7 +2082,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
             let eventBodies = pendingTargetedEventBodies(for: sessionID, playerID: playerID, endingBefore: end)
             if !eventBodies.isEmpty {
-                await sendEventBodiesSeparately(eventBodies, to: sessionID)
+                sendEventBodiesSeparately(eventBodies, to: sessionID)
             }
         }
     }
@@ -2204,151 +2330,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         return result
     }
 
-    /// Send encoded update to transport.
-    ///
-    /// - Parameter yieldAfterSend: When true, yields to the executor after sending.
-    ///   Set to false when sending in a batch to reduce context switch overhead (yield every N sends instead).
-    private func sendEncodedUpdate(
-        sessionID: SessionID,
-        playerID: PlayerID,
-        updateType: String,
-        patchCount: Int,
-        updateData: Data,
-        mergeEvents: Bool,
-        yieldAfterSend: Bool = true
-    ) async {
-        let dataToSend: Data
-        if mergeEvents, useStateUpdateWithEvents {
-            let eventBodies = pendingEventManager.pendingBroadcastBodies()
-            if let combined = buildStateUpdateWithEventBodies(
-                stateUpdateData: updateData,
-                eventBodies: eventBodies,
-                allowEmptyEvents: true
-            ) {
-                dataToSend = combined
-            } else {
-                dataToSend = updateData
-            }
-        } else {
-            if useStateUpdateWithEvents {
-                let eventBodies = pendingTargetedEventBodies(for: sessionID, playerID: playerID)
-                if !eventBodies.isEmpty {
-                    await sendEventBodiesSeparately(eventBodies, to: sessionID)
-                }
-            }
-            dataToSend = updateData
-        }
-
-        let updateSize = dataToSend.count
-
-        // Verbose per-player state update logging can be noisy at debug level,
-        // especially when ticks are running frequently. Use trace instead,
-        // and rely on higher‑level logs for normal operation.
-        // Only compute logging metadata if trace logging is enabled
-        if logger.logLevel <= .trace {
-            logger.trace("📤 Sending state update", metadata: [
-                "playerID": .string(playerID.rawValue),
-                "sessionID": .string(sessionID.rawValue),
-                "type": .string(updateType),
-                "patches": .string("\(patchCount)"),
-                "bytes": .string("\(updateSize)")
-            ])
-        }
-
-        // Log update preview (first 500 chars) - only compute if trace logging is enabled
-        if let preview = logger.safePreview(from: dataToSend, maxLength: 500) {
-            logger.trace("📤 Update preview", metadata: [
-                "playerID": .string(playerID.rawValue),
-                "type": .string(updateType),
-                "preview": .string(preview)
-            ])
-        }
-
-        await sendWithProfiling(dataToSend, to: .session(sessionID), yieldAfterSend: yieldAfterSend)
-    }
-
-    /// Sync state for a specific player
-    ///
-    /// This method extracts per-player snapshot and computes diff for a single player.
-    /// It reuses the broadcast snapshot to avoid redundant extraction.
-    ///
-    /// TODO: Optimization opportunities:
-    /// - Batch per-player snapshot extraction for multiple players
-    /// - Cache per-player snapshots if state hasn't changed
-    /// - Consider incremental sync for large state trees
-    ///
-    /// NOTE: Parallel per-player diff computation was tested but did not show performance improvements.
-    /// TaskGroup overhead and actor isolation costs exceeded the benefits, even with 50+ players.
-    private func syncState(
-        for playerID: PlayerID,
-        sessionID: SessionID,
-        state: State,
-        broadcastDiff: [StatePatch],
-        perPlayerMode: SnapshotMode
-    ) async {
-        do {
-            // Extract per-player snapshot (specific to this player)
-            let perPlayerSnapshot = try syncEngine.extractPerPlayerSnapshot(for: playerID, from: state, mode: perPlayerMode)
-
-            // Broadcast diff is precomputed once per sync cycle and reused for all players.
-            let update = syncEngine.generateUpdateFromBroadcastDiff(
-                for: playerID,
-                broadcastDiff: broadcastDiff,
-                perPlayerSnapshot: perPlayerSnapshot,
-                perPlayerMode: perPlayerMode,
-                onlyPaths: nil,
-                baseline: diffBaseline
-            )
-
-            // Skip only if noChange - firstSync should always be sent (even if patches are empty)
-            // firstSync is a notification that sync has started, not just a data update
-            if case .noChange = update {
-                return
-            }
-
-            let playerSlot = getPlayerSlot(for: playerID)
-            let updateData = try stateUpdateEncoder.encode(
-                update: update,
-                landID: landID,
-                playerID: playerID,
-                playerSlot: playerSlot
-            )
-
-            // Verbose per-player state update logging can be noisy at debug level,
-            // especially when ticks are running frequently. Use trace instead,
-            // and rely on higher‑level logs for normal operation.
-            // Only compute logging metadata if trace logging is enabled
-            if logger.logLevel <= .trace {
-                let (updateType, patchCount) = update.typeAndPatchCount()
-                logger.trace("📤 Sending state update", metadata: [
-                    "playerID": .string(playerID.rawValue),
-                    "sessionID": .string(sessionID.rawValue),
-                    "type": .string(updateType),
-                    "patches": .string("\(patchCount)"),
-                    "bytes": .string("\(updateData.count)")
-                ])
-            }
-
-            // Log update preview (first 500 chars) - only compute if trace logging is enabled
-            if let preview = logger.safePreview(from: updateData, maxLength: 500) {
-                let updateType = update.updateType
-                logger.trace("📤 Update preview", metadata: [
-                    "playerID": .string(playerID.rawValue),
-                    "type": .string(updateType),
-                    "preview": .string(preview)
-                ])
-            }
-
-            await sendWithProfiling(updateData, to: .session(sessionID), yieldAfterSend: true)
-        } catch {
-            logger.error("❌ Failed to sync state", metadata: [
-                "playerID": .string(playerID.rawValue),
-                "sessionID": .string(sessionID.rawValue),
-                "error": .string("\(error)")
-            ])
-        }
-    }
-
     /// Internal implementation of syncStateForNewPlayer without initialSyncingPlayers management.
     /// Caller is responsible for managing initialSyncingPlayers.
     private func _syncStateForNewPlayer(playerID: PlayerID, sessionID: SessionID) async {
@@ -2400,7 +2381,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
 
             // Send encoded update (OpArray format)
-            await sendWithProfiling(updateData, to: .session(sessionID), yieldAfterSend: true)
+            sendWithProfiling(updateData, to: .session(sessionID))
 
             // Mark as synced so subsequent updates use diffs
             syncEngine.markFirstSyncReceived(for: playerID)
@@ -2498,8 +2479,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 ])
             }
 
-            await transport.send(responseData, to: .session(sessionID))
-            await Task.yield()
+            enqueueOutbound(responseData, to: sessionID)
         } catch {
             logger.error("❌ Failed to send action response", metadata: [
                 "requestID": .string(requestID),
@@ -2537,8 +2517,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             )
             let errorResponse = TransportMessage.error(errorPayload)
             let errorData = try messageEncoder.encode(errorResponse)
-            await transport.send(errorData, to: .session(sessionID))
-            await Task.yield()
+            enqueueOutbound(errorData, to: sessionID)
         } catch {
             logger.error("❌ Failed to send error response", metadata: [
                 "requestID": .string(requestID),
@@ -2819,8 +2798,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let errorPayload = ErrorPayload(code: code, message: message, details: errorDetails)
             let errorResponse = TransportMessage.error(errorPayload)
             let errorData = try messageEncoder.encode(errorResponse)
-            await transport.send(errorData, to: .session(sessionID))
-            await Task.yield()
+            enqueueOutbound(errorData, to: sessionID)
 
             if logger.logLevel <= .debug {
                 logger.debug("📤 Sent join error", metadata: [
@@ -2859,8 +2837,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 reason: reason
             )
             let responseData = try messageEncoder.encode(response)
-            await transport.send(responseData, to: .session(sessionID))
-            await Task.yield()
+            enqueueOutbound(responseData, to: sessionID)
 
             if logger.logLevel <= .debug {
                 logger.debug("📤 Sent join response", metadata: [
@@ -3053,6 +3030,14 @@ extension TransportAdapter {
         // A sync cycle may still be running (started before the freeze); `beginSync` rejects
         // concurrent cycles, so retry until it accepts.
         while true {
+            // Not skipped for back-pressure: wait until earlier cycles' frames left the writer,
+            // so the settle frames are not queued behind them.
+            if hasPendingStateElement {
+                guard ContinuousClock.now < deadline else { throw DebugFreezeError.settleTimedOut }
+                try await safeTaskSleep(for: .milliseconds(2))
+                guard debugIsCurrent(generation) else { throw DebugFreezeError.released }
+                continue
+            }
             // Read before the copy is taken: a join or leave from here on is not in the copy
             // and must show up as `membershipChanged`.
             let membershipEpoch = membershipCoordinator.membershipEpoch
@@ -3061,11 +3046,16 @@ extension TransportAdapter {
             if let state = await keeper.beginSync(clearDirtyFlags: enableDirtyTracking && hasMembers) {
                 do {
                     if hasMembers {
+                        let openedCycleFrames = beginCycleFrames()
+                        defer { if openedCycleFrames { endCycleFrames() } }
                         try await runSyncNowCycle(state: state)
                     }
                 } catch {
                     await keeper.endSync()
                     throw error
+                }
+                if let hold = debugCycleHoldBeforeEndSync {
+                    await hold()
                 }
                 await keeper.endSync()
                 let tickId = await keeper.debugLastCommittedTickId()

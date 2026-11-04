@@ -178,12 +178,15 @@ func testMessagePackTransportAdapterJoin() async throws {
     )
     let joinData = try encoder.encode(joinMessage)
     await transport.handleIncomingMessage(sessionID: sessionID, data: joinData)
+    #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
-    let messages = await connection.recordedMessages()
-    #expect(messages.count >= 1)
+    // The writer's drain means the frames reached the transport. WebSocketTransport then
+    // hands them to the connection from its own per-session task, so wait for that too.
+    let messages = try await waitForRecordedMessages(connection)
+    let firstMessage = try #require(messages.first, "Expected at least one response message")
 
     // Decode join response (should be MessagePack opcode array format)
-    let unpacked = try unpack(messages[0])
+    let unpacked = try unpack(firstMessage)
     guard case .array(let array) = unpacked, array.count >= 1,
           case .int(let opcode) = array[0],
           opcode == 105 else { // 105 = joinResponse opcode
@@ -208,5 +211,15 @@ func testMessagePackTransportAdapterJoin() async throws {
     #expect(joinResponse.kind == MessageKind.joinResponse)
     if case .joinResponse(let payload) = joinResponse.payload {
         #expect(payload.requestID == "join-1")
+    }
+}
+
+/// Polls the connection until it recorded at least one message (bounded; no fixed sleeps).
+private func waitForRecordedMessages(_ connection: RecordingWebSocketConnection, timeout: Duration = .seconds(3)) async throws -> [Data] {
+    let deadline = ContinuousClock.now + timeout
+    while true {
+        let messages = await connection.recordedMessages()
+        if !messages.isEmpty || ContinuousClock.now >= deadline { return messages }
+        try await Task.sleep(for: .milliseconds(1))
     }
 }

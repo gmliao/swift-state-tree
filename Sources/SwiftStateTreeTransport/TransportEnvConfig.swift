@@ -21,6 +21,7 @@
 // | TRANSPORT_PROFILE_INTERVAL_MS | Int | 1000 | Write interval in ms, min 100 |
 // | TRANSPORT_PROFILE_SAMPLE_RATE | Double | 0.01 | Latency sample rate 0.001–1.0 |
 // | TRANSPORT_PROFILE_MAX_SAMPLES_PER_INTERVAL | Int | 500 | Max latency samples per interval, clamp 10–10000 |
+// | OUTBOUND_WRITER_MAX_BYTES | Int | 67108864 (64 MiB) | Per-land ceiling for frames queued in the outbound writer, min 1024 |
 
 import Foundation
 import SwiftStateTree
@@ -41,6 +42,40 @@ public struct TransportEnvConfig: Sendable {
     public let autoDirtyOnThreshold: Double
     public let autoDirtyRequiredConsecutiveSamples: Int
     public let profilingConfig: TransportProfilingConfig?
+    /// Ceiling for the bytes queued in one adapter's `OutboundWriter`; frames over it are
+    /// dropped and logged.
+    public let outboundWriterMaxBytes: Int
+
+    /// Default for `outboundWriterMaxBytes` (64 MiB).
+    public static let defaultOutboundWriterMaxBytes = 64 * 1024 * 1024
+
+    public init(
+        enableDirtyTracking: Bool,
+        useSnapshotForSync: Bool,
+        syncStrategy: SyncStrategy,
+        enableChangeObjectMetrics: Bool,
+        changeObjectMetricsLogEvery: Int,
+        changeObjectMetricsEmaAlpha: Double,
+        enableAutoDirtyTracking: Bool,
+        autoDirtyOffThreshold: Double,
+        autoDirtyOnThreshold: Double,
+        autoDirtyRequiredConsecutiveSamples: Int,
+        profilingConfig: TransportProfilingConfig?,
+        outboundWriterMaxBytes: Int = TransportEnvConfig.defaultOutboundWriterMaxBytes
+    ) {
+        self.enableDirtyTracking = enableDirtyTracking
+        self.useSnapshotForSync = useSnapshotForSync
+        self.syncStrategy = syncStrategy
+        self.enableChangeObjectMetrics = enableChangeObjectMetrics
+        self.changeObjectMetricsLogEvery = changeObjectMetricsLogEvery
+        self.changeObjectMetricsEmaAlpha = changeObjectMetricsEmaAlpha
+        self.enableAutoDirtyTracking = enableAutoDirtyTracking
+        self.autoDirtyOffThreshold = autoDirtyOffThreshold
+        self.autoDirtyOnThreshold = autoDirtyOnThreshold
+        self.autoDirtyRequiredConsecutiveSamples = autoDirtyRequiredConsecutiveSamples
+        self.profilingConfig = profilingConfig
+        self.outboundWriterMaxBytes = outboundWriterMaxBytes
+    }
 
     /// Create config from environment. Init params `enableDirtyTrackingDefault` and
     /// `syncStrategyDefault` are used when the matching env var is unset.
@@ -103,6 +138,12 @@ public struct TransportEnvConfig: Sendable {
 
         let profilingConfig = TransportProfilingConfig.fromEnvironment()
 
+        let outboundWriterMaxBytes = max(1024, EnvHelpers.getEnvInt(
+            key: TransportEnvKeys.outboundWriterMaxBytes,
+            defaultValue: TransportEnvConfig.defaultOutboundWriterMaxBytes,
+            environment: env
+        ))
+
         return TransportEnvConfig(
             enableDirtyTracking: enableDirtyTracking,
             useSnapshotForSync: useSnapshotForSync,
@@ -114,7 +155,8 @@ public struct TransportEnvConfig: Sendable {
             autoDirtyOffThreshold: resolvedOffThreshold,
             autoDirtyOnThreshold: resolvedOnThreshold,
             autoDirtyRequiredConsecutiveSamples: autoDirtyRequiredSamples,
-            profilingConfig: profilingConfig
+            profilingConfig: profilingConfig,
+            outboundWriterMaxBytes: outboundWriterMaxBytes
         )
     }
 }

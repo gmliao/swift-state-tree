@@ -64,16 +64,12 @@ private func makeDirtyWindowLand() -> LandDefinition<DirtyWindowTestState> {
     }
 }
 
-// MARK: - Transport that can hold a sync cycle in flight
+// MARK: - Recording transport
 
-/// Records every send. When armed with `holdNextBatch()`, the next `sendBatch` records its
-/// frames and then suspends until `release()`, keeping the adapter's sync cycle in flight.
+/// Records every send. Cycles are held in flight with `SyncCycleHold`.
 private actor DirtyWindowTransport: Transport {
     var delegate: TransportDelegate?
     private var sent: [(target: SwiftStateTreeTransport.EventTarget, data: Data)] = []
-    private var shouldHoldNextBatch = false
-    private var heldBatch: CheckedContinuation<Void, Never>?
-    private var holdWaiter: CheckedContinuation<Void, Never>?
 
     func setDelegate(_ delegate: TransportDelegate?) { self.delegate = delegate }
     func start() async throws {}
@@ -87,28 +83,6 @@ private actor DirtyWindowTransport: Transport {
         for (data, target) in updates {
             sent.append((target, data))
         }
-        guard shouldHoldNextBatch else { return }
-        shouldHoldNextBatch = false
-        await withCheckedContinuation { continuation in
-            heldBatch = continuation
-            holdWaiter?.resume()
-            holdWaiter = nil
-        }
-    }
-
-    func holdNextBatch() { shouldHoldNextBatch = true }
-
-    /// Returns once a `sendBatch` call is suspended.
-    func waitUntilHeld() async {
-        if heldBatch != nil { return }
-        await withCheckedContinuation { continuation in
-            holdWaiter = continuation
-        }
-    }
-
-    func release() {
-        heldBatch?.resume()
-        heldBatch = nil
     }
 
     func messages(for sessionID: SessionID) -> [Data] {
@@ -189,6 +163,7 @@ private struct DirtyWindowFixture {
     let keeper: LandKeeper<DirtyWindowTestState>
     let adapter: TransportAdapter<DirtyWindowTestState>
     let transport: DirtyWindowTransport
+    let hold = SyncCycleHold()
     let session = SessionID("dw-session")
     let client = ClientID("dw-client")
     let player = PlayerID("dw-player")
@@ -207,6 +182,7 @@ private struct DirtyWindowFixture {
         )
         await transport.setDelegate(adapter)
         let fixture = DirtyWindowFixture(keeper: keeper, adapter: adapter, transport: transport)
+        await fixture.hold.install(on: adapter)
         await adapter.onConnect(sessionID: fixture.session, clientID: fixture.client)
         try await simulateRouterJoin(
             adapter: adapter,
@@ -248,23 +224,25 @@ private struct DirtyWindowFixture {
         DirtyWindowClientView(server: await keeper.currentState(), player: player)
     }
 
-    /// Runs one `syncNow` cycle and, while it is suspended in `sendBatch`, runs `duringCycle`.
-    /// The cycle must have something to send, or it never reaches `sendBatch`.
+    /// Runs one `syncNow` cycle and, while it is held in flight (frames enqueued, `endSync` not
+    /// yet run, see `SyncCycleHold`), runs `duringCycle`. Before #60 the cycle was held inside
+    /// the transport's `sendBatch`; the cycle no longer awaits the transport.
     func syncNowHoldingSend(duringCycle: () async throws -> Void) async throws {
         let adapter = self.adapter
-        await transport.holdNextBatch()
+        hold.arm()
         let cycle = Task { await adapter.syncNow() }
-        await transport.waitUntilHeld()
         do {
+            try await hold.waitUntilHeld()
             try await duringCycle()
         } catch {
-            // Release the held send so the test fails instead of hanging.
-            await transport.release()
+            // Release the held cycle so the test fails instead of hanging.
+            hold.release()
             await cycle.value
             throw error
         }
-        await transport.release()
+        hold.release()
         await cycle.value
+        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
     }
 }
 
@@ -300,6 +278,7 @@ struct TransportAdapterSyncDirtyWindowTests {
     func mutationInsideKeeperWindowIsSentNextCycle(useSnapshotForSync: Bool) async throws {
         let f = try await DirtyWindowFixture.make(envConfig: makeDirtyWindowEnvConfig(useSnapshotForSync: useSnapshotForSync))
         await f.adapter.syncNow()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         // A sync cycle has taken its copy; the keeper mutates `a` before the cycle ends.
         guard await f.keeper.beginSync(clearDirtyFlags: true) != nil else {
@@ -312,6 +291,7 @@ struct TransportAdapterSyncDirtyWindowTests {
         // Next cycle: `b` (same broadcast category) is dirty too, so no `.all` fallback.
         try await f.set("b", 2)
         await f.adapter.syncNow()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         let client = await f.clientView(from: f.initialView)
         let server = await f.serverView()
@@ -324,13 +304,16 @@ struct TransportAdapterSyncDirtyWindowTests {
         // snapshot extraction on, auto-switch off.
         let f = try await DirtyWindowFixture.make(envConfig: makeDirtyWindowEnvConfig(useSnapshotForSync: true))
         await f.adapter.syncNow()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         try await f.set("score", 5)
         await f.adapter.syncBroadcastOnly()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         // A broadcast field is dirty in the next cycle, so it is not an `.all` cycle.
         try await f.set("a", 1)
         await f.adapter.syncNow()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         let client = await f.clientView(from: f.initialView)
         let server = await f.serverView()
@@ -360,6 +343,7 @@ struct TransportAdapterSyncDirtyWindowTests {
 
         try await f.set("b", 2)
         await f.adapter.syncNow()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         let client = await f.clientView(from: f.initialView)
         let server = await f.serverView()
@@ -371,6 +355,7 @@ struct TransportAdapterSyncDirtyWindowTests {
     func rejectedSyncRequestLosesNoMutation() async throws {
         let f = try await DirtyWindowFixture.make(envConfig: makeDirtyWindowEnvConfig(useSnapshotForSync: true))
         await f.adapter.syncNow()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         try await f.set("a", 1)  // something for the held cycle to send
         try await f.syncNowHoldingSend {
@@ -378,10 +363,12 @@ struct TransportAdapterSyncDirtyWindowTests {
             // Rejected: the held cycle still owns the sync flag.
             #expect(await f.keeper.beginSync(clearDirtyFlags: true) == nil)
             await f.adapter.syncNow()
+            #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
         }
 
         try await f.set("a", 3)
         await f.adapter.syncNow()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         let client = await f.clientView(from: f.initialView)
         let server = await f.serverView()
@@ -393,6 +380,7 @@ struct TransportAdapterSyncDirtyWindowTests {
     func inFlightCycleMutationsReachClient(useSnapshotForSync: Bool) async throws {
         let f = try await DirtyWindowFixture.make(envConfig: makeDirtyWindowEnvConfig(useSnapshotForSync: useSnapshotForSync))
         await f.adapter.syncNow()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         try await f.set("a", 1)  // something for the held cycle to send
         try await f.syncNowHoldingSend {
@@ -405,6 +393,7 @@ struct TransportAdapterSyncDirtyWindowTests {
         try await f.set("a", 2)
         try await f.set("bonus", 1)
         await f.adapter.syncNow()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         let client = await f.clientView(from: f.initialView)
         let server = await f.serverView()

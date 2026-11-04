@@ -46,6 +46,25 @@ public protocol Transport: Actor {
     ///
     /// - Parameter updates: Pairs of (message, target) to send.
     func sendBatch(_ updates: [(Data, EventTarget)]) async
+
+    /// Sends frames that each address one session, in array order. This is the only call a
+    /// `TransportAdapter` makes to send (through its `OutboundWriter`).
+    ///
+    /// A transport that tracks connection generations drops a frame whose
+    /// `connectionGeneration` differs from the session's current connection. The default
+    /// implementation ignores generations and forwards to `sendBatch` with `.session` targets.
+    func sendSessionFrames(_ frames: [SessionFrame]) async
+
+    /// Closes one session's connection from the server side. `TransportAdapter` calls it when it
+    /// had to drop a frame for the session (outbound writer ceiling): the client reconnects and
+    /// rejoins with a fresh firstSync instead of staying on state it can no longer patch.
+    ///
+    /// The default does nothing; the adapter still stops sending to the session.
+    func closeSession(_ sessionID: SessionID) async
+
+    /// Whether `closeSession` actually closes the connection. `false` (the default) means a
+    /// session the adapter ends stays connected but gets no more frames until it reconnects.
+    nonisolated var supportsCloseSession: Bool { get }
 }
 
 extension Transport {
@@ -54,6 +73,17 @@ extension Transport {
         for (data, target) in updates {
             send(data, to: target)
         }
+    }
+
+    /// Default: cannot close sessions.
+    public func closeSession(_ sessionID: SessionID) async {}
+
+    /// Default: `closeSession` is a no-op.
+    public nonisolated var supportsCloseSession: Bool { false }
+
+    /// Default: no generation check; forwards to `sendBatch`.
+    public func sendSessionFrames(_ frames: [SessionFrame]) async {
+        await sendBatch(frames.map { ($0.data, .session($0.sessionID)) })
     }
 }
 
@@ -78,6 +108,9 @@ public protocol TransportDelegate: Sendable {
 // MARK: - Transport Send Queue
 
 /// Thread-safe queue for non-blocking send. When available, producers enqueue without awaiting the transport actor.
+///
+/// No longer used: `TransportAdapter` sends through its own ordered `OutboundWriter` (#60), and
+/// `WebSocketTransport.transportSendQueue` returns `nil`. Kept for source compatibility.
 public protocol TransportSendQueue: Sendable {
     func enqueue(_ message: Data, to target: EventTarget)
     func enqueueBatch(_ updates: [(Data, EventTarget)])

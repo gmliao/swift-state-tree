@@ -171,6 +171,7 @@ private struct Fixture {
             )
         }
         await adapter.syncNow()
+        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
         await transport.clear()
     }
 
@@ -261,6 +262,7 @@ struct TransportAdapterDebugFreezeTests {
         let resume = await f.adapter.debugResume(freezeToken: freeze.freezeToken)
         #expect(resume == DebugResumeResponse(freezeCount: 0, resumed: true))
         await f.adapter.syncNow()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
         await drainSends()
         #expect(patchCount(await f.aliceFrames()) == 0)
     }
@@ -333,7 +335,9 @@ struct TransportAdapterDebugFreezeTests {
         // Bob leaves: OnLeave removes him from a broadcast map and requests a broadcast-only sync.
         await f.adapter.onDisconnect(sessionID: f.bob.session, clientID: f.bob.client)
         await f.adapter.syncNow()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
         await f.adapter.syncBroadcastOnly()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
         await drainSends()
         #expect(patchCount(await f.aliceFrames()) == 0, "a sync ran while frozen")
 

@@ -4,6 +4,10 @@
 
 set -e  # Exit on error
 
+# assertConverged gates by default in this script: a convergence mismatch fails the run.
+# Set E2E_CONVERGENCE_GATING=false for a report-only run.
+export E2E_CONVERGENCE_GATING="${E2E_CONVERGENCE_GATING:-true}"
+
 # Load common functions
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/e2e-test-common.sh"

@@ -10,17 +10,21 @@ extension TransportAdapter {
         await _onDisconnectImpl(sessionID: sessionID, clientID: clientID)
     }
 
+    /// - Parameter connectionGeneration: The transport connection generation read when the
+    ///   session's connection was accepted; `nil` reads the current one.
     public func registerSession(
         sessionID: SessionID,
         clientID: ClientID,
         playerID: PlayerID,
-        authInfo: AuthenticatedInfo?
+        authInfo: AuthenticatedInfo?,
+        connectionGeneration: UInt64? = nil
     ) async {
         await _registerSessionImpl(
             sessionID: sessionID,
             clientID: clientID,
             playerID: playerID,
-            authInfo: authInfo
+            authInfo: authInfo,
+            acceptedConnectionGeneration: connectionGeneration
         )
     }
 

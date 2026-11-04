@@ -299,7 +299,6 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         let transportAdapter = TransportAdapter<State>(
             keeper: keeper,
             transport: transport,
-            transportSendQueue: transport.transportSendQueue,
             landID: landID.stringValue,
             createGuestSession: createGuestSession,
             onLandDestroyed: { [landID] in
