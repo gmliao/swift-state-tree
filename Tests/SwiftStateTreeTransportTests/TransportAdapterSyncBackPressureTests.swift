@@ -217,6 +217,36 @@ struct TransportAdapterSyncBackPressureTests {
         }
     }
 
+    @Test("tickless land: teardown with a state element stuck in the writer ends the deferred retry, and later sync requests return")
+    func teardownWithPendingElementEndsDeferral() async throws {
+        let f = try await BPFixture.make("bp-teardown", encoding: .json)
+        try await f.blockWithCycleInWriter(stamp: 1)  // never released: the transport never returns
+        try await f.set(2)
+        await f.adapter.syncNow()  // skipped: deferred until the writer drains
+        #expect(await f.adapter.syncSkipCounts().outboundBacklog == 1)
+        #expect(await f.adapter.backlogRetryRuns == 0, "the retry waits for the drain")
+
+        // Teardown times out on the stuck transport and gives up on the consumer.
+        await f.adapter.onLandDestroyed()
+        #expect(await f.adapter.hasPendingStateElement == false, "nothing is pending after teardown")
+
+        // The waiting retry runs once and ends; it does not spin.
+        let deadline = ContinuousClock.now + .seconds(2)
+        while await f.adapter.backlogRetryRuns == 0, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await f.adapter.backlogRetryRuns == 1, "one retry after teardown, no loop")
+
+        // Later requests (full and broadcast-only) return and schedule nothing.
+        await f.adapter.syncNow()
+        await f.adapter.syncBroadcastOnly()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(await f.adapter.backlogRetryRuns == 1)
+        #expect(await f.adapter.backlogRetryScheduled == false)
+        f.transport.release()
+    }
+
     @Test("a joiner's firstSync is not skipped while the writer holds a cycle")
     func firstSyncIsNotSkipped() async throws {
         let f = try await BPFixture.make("bp-join", encoding: .json)

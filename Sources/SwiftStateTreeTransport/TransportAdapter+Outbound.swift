@@ -87,8 +87,10 @@ extension TransportAdapter {
     /// handed to the transport. The sync back-pressure rule: a new state cycle waits while this
     /// is true. Event and action-response elements are not counted, so an event-heavy land never
     /// suppresses its own state syncs.
+    /// After teardown (`finish`) it is false: later frames are dropped anyway, and a sync
+    /// request must not be deferred behind elements that will never drain.
     var hasPendingStateElement: Bool {
-        outboundWriter.backlog.syncCycleElements > 0
+        !outboundWriter.isFinished && outboundWriter.backlog.syncCycleElements > 0
     }
 
     /// Queued frames of the outbound writer (tests and diagnostics).

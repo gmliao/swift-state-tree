@@ -437,6 +437,88 @@ struct TransportAdapterOrderedSendTests {
         }
     }
 
+    @Test("mixed paths (json), transport blocked: a queued state frame is not overtaken by a later event or action response")
+    func mixedPathsQueuedBehindBlockedTransportKeepOrder() async throws {
+        let transport = BlockingTransport()
+        let definition = Land("ordered-send-mixed-blocked", using: OrderedSendTestState.self) {
+            ServerEvents { Register(OrderedSendEvent.self) }
+            Rules {
+                OnJoin { (state: inout OrderedSendTestState, ctx: LandContext) in
+                    state.mine[ctx.playerID] = marker("pp", 0)
+                }
+                HandleAction(OrderedSendSetAction.self) { (state: inout OrderedSendTestState, action: OrderedSendSetAction, _: LandContext) in
+                    state.stamp = marker("mk", action.stamp)
+                    return OrderedSendSetResponse(echo: marker("rs", action.echo))
+                }
+            }
+        }
+        let keeper = LandKeeper<OrderedSendTestState>(definition: definition, initialState: OrderedSendTestState())
+        let adapter = TransportAdapter<OrderedSendTestState>(
+            keeper: keeper,
+            transport: transport,
+            landID: "ordered-send-mixed-blocked",
+            encodingConfig: .json,
+            suppressMissingPathHashesWarning: true
+        )
+        await transport.setDelegate(adapter)
+        let members = [OrderedSendMember("mixed-blocked-a"), OrderedSendMember("mixed-blocked-b")]
+        for member in members {
+            await adapter.onConnect(sessionID: member.session, clientID: member.client)
+            try await simulateRouterJoin(
+                adapter: adapter, keeper: keeper,
+                sessionID: member.session, clientID: member.client, playerID: member.player
+            )
+        }
+        await adapter.syncNow()
+        try await waitUntilTransportIdle(transport)
+        var before: [SessionID: Int] = [:]
+        for member in members { before[member.session] = transport.frames(for: member.session).count }
+
+        let sender = members[0]
+        let rounds = 5
+        for i in 1...rounds {
+            transport.block()
+            // Blocker: an event element that the transport holds, so everything after it queues.
+            await adapter.sendEvent(AnyServerEvent(OrderedSendEvent(message: marker("bl", i))), to: .all)
+            try await orderedWaitUntil("blocker \(i) to reach the transport") {
+                members.allSatisfy { m in transport.frames(for: m.session).contains { markers("bl", in: $0).contains(i) } }
+            }
+            // Queued behind it, in issue order: this cycle's state, an immediate event, an action response.
+            let set = ActionEnvelope(
+                typeIdentifier: String(describing: OrderedSendSetAction.self),
+                payload: AnyCodable(OrderedSendSetAction(stamp: 2 * i, mine: -1, echo: 0))
+            )
+            _ = try await keeper.handleActionEnvelope(set, playerID: sender.player, clientID: sender.client, sessionID: sender.session)
+            await adapter.syncNow()
+            #expect(await adapter.hasPendingStateElement, "round \(i): the cycle's element is queued")
+            await adapter.sendEvent(AnyServerEvent(OrderedSendEvent(message: marker("ev", i))), to: .all)
+            let action = ActionEnvelope(
+                typeIdentifier: String(describing: OrderedSendSetAction.self),
+                payload: AnyCodable(OrderedSendSetAction(stamp: 2 * i + 1, mine: -1, echo: i))
+            )
+            let message = TransportMessage.action(requestID: "mixed-blocked-\(i)", action: action)
+            await adapter.onMessage(try JSONEncoder().encode(message), from: sender.session)
+            transport.release()
+            #expect(await adapter.waitForOutboundDrain())
+        }
+
+        for member in members {
+            let frames = Array(transport.frames(for: member.session).dropFirst(before[member.session]!))
+            var received: [String] = []
+            for frame in frames {
+                for prefix in ["bl", "mk", "ev", "rs"] {
+                    received += markers(prefix, in: frame).map { marker(prefix, $0) }
+                }
+            }
+            var expected: [String] = []
+            for i in 1...rounds {
+                expected += [marker("bl", i), marker("mk", 2 * i), marker("ev", i)]
+                if member.session == sender.session { expected.append(marker("rs", i)) }
+            }
+            #expect(received == expected, "\(member.session.rawValue): received \(received)")
+        }
+    }
+
     @Test("the sync cycle does not wait for the transport: syncNow returns and endSync runs while sends are blocked")
     func cycleDoesNotWaitForTheTransport() async throws {
         let transport = BlockingTransport()
