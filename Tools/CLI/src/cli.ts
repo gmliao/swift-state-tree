@@ -264,6 +264,11 @@ program
     "1",
   )
   .option(
+    "--rooms <n>",
+    "Run each scenario in n lands in parallel (each with --clients clients)",
+    "1",
+  )
+  .option(
     "--convergence-gating",
     "Fail the script on a convergence mismatch (or E2E_CONVERGENCE_GATING=true); default report-only",
   )
@@ -274,6 +279,7 @@ program
   .action(async (options) => {
     try {
       const clientCount = Math.max(1, parseInt(options.clients ?? "1", 10) || 1);
+      const rooms = Math.max(1, parseInt(options.rooms ?? "1", 10) || 1);
       const adminKey = options.adminKey ?? process.env.E2E_ADMIN_KEY;
       const debug = adminKey
         ? new DebugStateClient({
@@ -314,7 +320,7 @@ program
 
       console.log(chalk.blue(`📂 Executing ${scripts.length} script(s).`));
 
-      for (const scriptPath of scripts) {
+      const runScenarioInRoom = async (scriptPath: string, room: number) => {
         // Create a new runtime connection for each script to avoid "Already joined a land" error
         const logger = new ChalkLogger();
         const transportEncoding = buildTransportEncoding(
@@ -348,7 +354,11 @@ program
             landID = `${options.land}:${uniqueInstanceId}`;
           }
 
-          console.log(chalk.cyan(`🏠 Using land ID: ${landID}`));
+          // Several rooms of one scenario need distinct instances.
+          if (rooms > 1 && (options.land.includes(":") || script.landID)) {
+            landID = `${landID}-room${room}`;
+          }
+          console.log(chalk.cyan(`🏠 Using land ID: ${landID}${rooms > 1 ? ` (room ${room})` : ""}`));
 
           // Create a new view with unique land ID for each script
           const view = runtime.createView(landID, {
@@ -407,10 +417,19 @@ program
           if (droppedPatch) {
             console.log(chalk.yellow(`⚠️  Fault injection dropped: ${droppedPatch() ?? "<nothing>"}`));
           }
-
-          // Disconnect runtimes after script completes
+        } finally {
+          // Disconnect runtimes after the scenario completes or fails
           extraRuntimes.forEach((extra) => extra.disconnect());
           runtime.disconnect();
+        }
+      };
+
+      for (const scriptPath of scripts) {
+        try {
+          // Rooms run in parallel; each has its own land and clients.
+          await Promise.all(
+            Array.from({ length: rooms }, (_, room) => runScenarioInRoom(scriptPath, room)),
+          );
         } catch (scriptError) {
           console.error(
             chalk.red(
@@ -418,8 +437,6 @@ program
             ),
           );
           printConvergenceSummary(convergenceStats);
-          extraRuntimes.forEach((extra) => extra.disconnect());
-          runtime.disconnect();
           process.exit(1);
         }
       }
@@ -472,6 +489,47 @@ async function runAssertConverged(step: any, convergence: ConvergenceContext | u
   if (convergence.gating) {
     throw new Error(`State did not converge (${label}); see the paths above`);
   }
+}
+
+type BurstStep = { action?: string; event?: string; payload?: any };
+
+/**
+ * Send `steps` back-to-back for `rounds` rounds without waiting between them, from every
+ * client when `allClients` is set (load variant), then wait for all action responses.
+ */
+async function runBurst(
+  config: { rounds?: number; allClients?: boolean; steps?: BurstStep[] },
+  view: StateTreeView,
+  convergence: ConvergenceContext | undefined,
+) {
+  const rounds = Math.max(1, config.rounds ?? 1);
+  const steps = config.steps ?? [];
+  const views =
+    config.allClients && convergence ? convergence.clients.map((client) => client.view) : [view];
+  console.log(
+    chalk.blue(`📤 Burst: ${rounds} round(s) x ${steps.length} step(s) from ${views.length} client(s)...`),
+  );
+  const pending: Promise<unknown>[] = [];
+  for (let round = 0; round < rounds; round += 1) {
+    for (const sender of views) {
+      for (const burstStep of steps) {
+        const payload = hydratePayload(burstStep.payload || {});
+        if (burstStep.action) {
+          pending.push(sender.sendAction(burstStep.action, payload));
+        } else if (burstStep.event) {
+          sender.sendEvent(burstStep.event, payload);
+        }
+      }
+    }
+  }
+  const results = await Promise.allSettled(pending);
+  const failures = results.filter((r) => r.status === "rejected");
+  if (failures.length > 0) {
+    throw new Error(
+      `Burst: ${failures.length}/${results.length} action(s) failed: ${String((failures[0] as PromiseRejectedResult).reason)}`,
+    );
+  }
+  console.log(chalk.green(`✅ Burst sent; ${results.length} action response(s) received`));
 }
 
 async function executeScript(
@@ -578,6 +636,10 @@ async function executeScript(
 
       if (type === "assertConverged") {
         await runAssertConverged(step, convergence);
+      }
+
+      if (type === "burst" && step.burst) {
+        await runBurst(step.burst, view, convergence);
       }
 
       if (type === "waitForEvent" && step.waitForEvent) {

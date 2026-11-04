@@ -81,6 +81,22 @@ run_encoding_tests() {
     local failed_step=""
     run_cli_scenarios "$encoding" || failed_step="CLI scenarios"
 
+    # Optional load variant (#79): E2E_CONVERGENCE_LOAD=true runs the burst scenario with
+    # E2E_LOAD_CLIENTS clients in each of E2E_LOAD_ROOMS parallel rooms. Report-only for
+    # mismatches; route and timeout errors still fail.
+    if [ -z "$failed_step" ] && [ "${E2E_CONVERGENCE_LOAD:-false}" = "true" ]; then
+        print_step "Running ${SERVER_NAME} convergence load variant ($encoding, ${E2E_LOAD_CLIENTS:-4} clients x ${E2E_LOAD_ROOMS:-4} rooms)..."
+        local server_encoding=$(normalize_encoding_for_server "$encoding" "gameserver")
+        TRANSPORT_ENCODING=${server_encoding} npx tsx src/cli.ts script \
+            -u ws://localhost:${SERVER_PORT}/game/hero-defense \
+            -l hero-defense \
+            -s scenarios/load/hero-defense-burst.json \
+            --clients "${E2E_LOAD_CLIENTS:-4}" \
+            --rooms "${E2E_LOAD_ROOMS:-4}" \
+            --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
+            --state-update-encoding ${state_update_encoding} || failed_step="convergence load variant"
+    fi
+
     # Re-evaluation record + offline verify (Hero Defense): only required for messagepack
     if [ -z "$failed_step" ] && [ "$encoding" = "messagepack" ]; then
         print_step "Running ${SERVER_NAME} re-evaluation record+verify ($encoding)..."

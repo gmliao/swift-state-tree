@@ -23,6 +23,7 @@ npm run build
 - `scenarios/counter/`: Tests for the Counter demo (requires DemoServer).
 - `scenarios/cookie/`: Tests for the Cookie Clicker game (requires DemoServer).
 - `scenarios/game/`: Tests for the Hero Defense game (requires GameServer).
+- `scenarios/load/`: Convergence load variant (`burst` steps from every client); run with `--clients` / `--rooms`, not as part of `scenarios/game/`.
 - `scenarios/fault/`: Negative tests run with fault injection (e.g. `--fault-drop-patch`); not run as a directory.
 - `scenarios/internal/`: Internal protocol and compression validation scenarios.
 
@@ -167,6 +168,11 @@ Test scenarios are defined in JSON files within the `scenarios/` directory.
     CLI to get the key from `--admin-key` or `E2E_ADMIN_KEY` (`--admin-url` defaults to the
     WebSocket host). `test-e2e-ci.sh` and `test-e2e-game.sh` set both.
   - `label`: Name printed with the result (optional).
+- **`burst`**: Send `steps` back-to-back for `rounds` rounds without waiting between them,
+  then wait for all action responses (load variant).
+  - `steps`: list of `{ "action": ..., "payload": ... }` or `{ "event": ..., "payload": ... }`.
+  - `rounds`: number of rounds (default 1).
+  - `allClients`: send from every client of the land (default: client 0 only).
 - **`state`**: Print full current state to console.
 - **`log`**: Print a message.
 
@@ -174,6 +180,10 @@ Test scenarios are defined in JSON files within the `scenarios/` directory.
 
 - `--clients <n>`: join `n` clients to each scenario's land. Steps send from client 0;
   `assertConverged` freezes once and checks every client before one resume.
+- `--rooms <n>`: run each scenario in `n` lands in parallel, each with `--clients` clients.
+  Load variant against GameServer: `npm run test:e2e:game:convergence-load`
+  (`E2E_LOAD_CLIENTS` / `E2E_LOAD_ROOMS`, default 4 x 4), or `E2E_CONVERGENCE_LOAD=true
+  ./test-e2e-game.sh` to add it to every encoding pass. Mismatches stay report-only.
 - `--fault-drop-patch <pathPrefix>`: client 0 drops the next diff patch under the prefix
   (negative test for `assertConverged`).
 
