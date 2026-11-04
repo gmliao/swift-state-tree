@@ -76,6 +76,8 @@ The dependency chain flows: `SwiftStateTree` → `SwiftStateTreeTransport` → `
 
 **DTOs over dictionaries:** Use `Codable` structs for HTTP request/response bodies. Avoid `[String: Any]` for API payloads.
 
+**Actor reentrancy (check → await → act):** Every `await` inside an actor lets other calls run, so state checked before it (a lookup, `isEmpty`, `isRunning`, "already joined", "session still connected") may be stale after it. Either make the check and the act one synchronous segment, reserving the slot before the first `await` (a shared in-flight task per key for create/start/destroy-once, or a state enum such as `.starting`/`.draining` set synchronously), or capture an epoch/generation before the `await` and re-check it in the same synchronous segment as the act, compensating if the state moved on. Never remove or overwrite keyed state by key alone from a callback that can outlive its instance; compare identity or generation. Order-sensitive per-session or per-player work goes through one serial queue (the adapter's membership queue), not independent Tasks. Tests for these paths force the interleaving with a hold at the `await` instead of relying on timing. TSan does not catch this class.
+
 **Cross-platform:** Avoid `#if os(macOS)` / `#if os(Linux)` unless unavoidable. Prefer Foundation APIs that work on both platforms.
 
 **EnvConfig pattern:** Use `getEnvString`/`getEnvBool`/`getEnvUInt16` helpers (in `Sources/SwiftStateTree/Support/EnvHelpers.swift`) and named constants from `*EnvKeys` enums instead of `ProcessInfo.processInfo.environment["KEY"]` directly.

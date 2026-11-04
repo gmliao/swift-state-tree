@@ -138,6 +138,14 @@ if let provBaseUrl = getEnvStringOptional(key: ProvisioningEnvKeys.baseUrl) {
 - If a needed helper method doesn't exist, **propose adding it to the DeterministicMath library** rather than implementing workarounds in game logic.
 - This ensures code clarity, maintainability, and consistency across the codebase.
 
+### Actor Reentrancy (check → await → act)
+- Every `await` inside an actor is a point where other calls run and the actor's state can change. A decision based on actor state (a lookup, `isEmpty`, `isRunning`, "already joined", "session still connected") holds only until the next `await`.
+- **Either** make the check and the act one synchronous segment, reserving the slot before the first `await`: a shared in-flight task per key for create, start or destroy once (later callers await it), or a state enum such as `.starting` / `.draining` set synchronously;
+- **or** capture an epoch / generation before the `await` and re-check it in the same synchronous segment as the act, compensating if the state moved on (for example, roll back a join whose session ended).
+- Never remove or overwrite keyed state by key alone from a callback that can outlive its instance; compare identity or generation.
+- Order-sensitive per-session or per-player work goes through one serial queue (the adapter's membership queue), not independent Tasks.
+- Tests for these paths force the interleaving with a hold at the `await`; they don't rely on timing. TSan does not catch this class (it is a logic race, not a data race).
+
 ### Safe Task.sleep Usage (avoid Swift Concurrency runtime bug)
 - **Never use `Task.sleep(for: Duration)` directly in library code** (`Sources/SwiftStateTree`).
   - `Task.sleep(for:)` has a known bug in Swift Concurrency runtime that can cause crashes (`SIGABRT` in `swift_task_dealloc`) on macOS release builds under load.
