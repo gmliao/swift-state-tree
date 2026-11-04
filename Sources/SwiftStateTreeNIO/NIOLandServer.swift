@@ -103,4 +103,19 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
         guard let recorder = await container.keeper.getReevaluationRecorder() else { return nil }
         return try await recorder.encode()
     }
+
+    public func debugFreeze(landID: LandID) async throws -> DebugFreezeResponse? {
+        guard let container = await landManager.getLand(landID: landID) else { return nil }
+        return try await container.transportAdapter.debugFreeze()
+    }
+
+    public func debugProjection(landID: LandID, playerID: PlayerID?) async throws -> DebugProjectionResponse? {
+        guard let container = await landManager.getLand(landID: landID) else { return nil }
+        return try await container.transportAdapter.debugProjection(playerID: playerID)
+    }
+
+    public func debugResume(landID: LandID) async -> DebugResumeResponse? {
+        guard let container = await landManager.getLand(landID: landID) else { return nil }
+        return await container.transportAdapter.debugResume()
+    }
 }

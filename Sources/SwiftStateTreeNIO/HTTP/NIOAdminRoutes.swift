@@ -70,19 +70,27 @@ public struct NIOAdminRoutes: Sendable {
     public let replayWebSocketPathResolver: (@Sendable (String) -> String)?
     /// Suffix appended to base land type to form the replay land type (e.g. "-replay").
     public let replayLandSuffix: String
+    /// Whether `/admin/lands/:landID/debug/*` (freeze, projection, resume) is registered.
+    ///
+    /// These routes expose full land state and let a caller pause a land (a denial-of-service
+    /// lever), so they need both the admin API key and this flag. Never enable in production.
+    public let enableDebugStateRoutes: Bool
 
+    /// - Parameter enableDebugStateRoutes: nil reads `ENABLE_DEBUG_STATE_ROUTES` (default false).
     public init(
         landRealm: LandRealm,
         adminAuth: NIOAdminAuth,
         logger: Logger? = nil,
         replayWebSocketPathResolver: (@Sendable (String) -> String)? = nil,
-        replayLandSuffix: String = "-replay"
+        replayLandSuffix: String = "-replay",
+        enableDebugStateRoutes: Bool? = nil
     ) {
         self.landRealm = landRealm
         self.adminAuth = adminAuth
         self.logger = logger ?? Logger(label: "com.swiftstatetree.nio.admin.routes")
         self.replayWebSocketPathResolver = replayWebSocketPathResolver
         self.replayLandSuffix = replayLandSuffix
+        self.enableDebugStateRoutes = enableDebugStateRoutes ?? NIOEnvConfig.fromEnvironment().enableDebugStateRoutes
     }
     
     /// Register admin routes to the router.
@@ -116,6 +124,10 @@ public struct NIOAdminRoutes: Sendable {
         
         for path in optionsPaths {
             await router.options(path, handler: corsOptionsHandler)
+        }
+
+        if enableDebugStateRoutes {
+            await registerDebugStateRoutes(on: router, corsOptionsHandler: corsOptionsHandler)
         }
         
         // GET /admin/lands - List all lands
@@ -410,6 +422,108 @@ public struct NIOAdminRoutes: Sendable {
         
         logger.info("Registered admin routes", metadata: [
             "paths": .string(optionsPaths.joined(separator: ", "))
+        ])
+    }
+}
+
+// MARK: - Debug state routes
+
+extension NIOAdminRoutes {
+    static let debugStatePaths = [
+        "/admin/lands/:landID/debug/freeze",
+        "/admin/lands/:landID/debug/projection",
+        "/admin/lands/:landID/debug/resume",
+    ]
+
+    /// `POST .../debug/freeze`, `GET .../debug/projection?playerID=...`, `POST .../debug/resume`.
+    /// All require the `.admin` role.
+    fileprivate func registerDebugStateRoutes(
+        on router: NIOHTTPRouter,
+        corsOptionsHandler: @escaping NIOHTTPHandler
+    ) async {
+        for path in Self.debugStatePaths {
+            await router.options(path, handler: corsOptionsHandler)
+        }
+
+        @Sendable func errorResponse(
+            _ code: AdminAPIErrorCode,
+            _ message: String,
+            status: HTTPResponseStatus,
+            landID: String? = nil
+        ) throws -> NIOHTTPResponse {
+            let details = landID.map { ["landID": AnyCodable($0)] }
+            let response = AdminAPIAnyResponse.error(code: code, message: message, details: details)
+            return try NIOHTTPResponse.json(response, status: status).withCORS()
+        }
+
+        @Sendable func debugErrorResponse(_ error: Error, landID: String) throws -> NIOHTTPResponse {
+            switch error as? DebugFreezeError {
+            case .notFrozen:
+                return try errorResponse(.invalidRequest, "Land is not frozen", status: .conflict, landID: landID)
+            case .settleTimedOut:
+                return try errorResponse(.internalError, "Settle sync did not start in time", status: .serviceUnavailable, landID: landID)
+            case nil:
+                return try errorResponse(.internalError, "Debug state operation failed: \(error)", status: .internalServerError, landID: landID)
+            }
+        }
+
+        await router.post("/admin/lands/:landID/debug/freeze") { [self] request in
+            guard adminAuth.hasRequiredRole(from: request, requiredRole: .admin) else {
+                return try errorResponse(.unauthorized, "Invalid API key", status: .unauthorized)
+            }
+            guard let landIDString = request.pathParam("landID") else {
+                return try errorResponse(.invalidRequest, "Missing landID", status: .badRequest)
+            }
+            do {
+                guard let freeze = try await landRealm.debugFreeze(landID: LandID(landIDString)) else {
+                    return try errorResponse(.notFound, "Land not found", status: .notFound, landID: landIDString)
+                }
+                logger.warning("Debug freeze", metadata: [
+                    "landID": .string(landIDString),
+                    "freezeCount": .stringConvertible(freeze.freezeCount),
+                ])
+                return try NIOHTTPResponse.json(AdminAPIResponse.success(freeze)).withCORS()
+            } catch {
+                return try debugErrorResponse(error, landID: landIDString)
+            }
+        }
+
+        await router.get("/admin/lands/:landID/debug/projection") { [self] request in
+            guard adminAuth.hasRequiredRole(from: request, requiredRole: .admin) else {
+                return try errorResponse(.unauthorized, "Invalid API key", status: .unauthorized)
+            }
+            guard let landIDString = request.pathParam("landID") else {
+                return try errorResponse(.invalidRequest, "Missing landID", status: .badRequest)
+            }
+            let playerID = request.queryParam("playerID").flatMap { $0.isEmpty ? nil : PlayerID($0) }
+            do {
+                guard let projection = try await landRealm.debugProjection(
+                    landID: LandID(landIDString),
+                    playerID: playerID
+                ) else {
+                    return try errorResponse(.notFound, "Land not found", status: .notFound, landID: landIDString)
+                }
+                return try NIOHTTPResponse.json(AdminAPIResponse.success(projection)).withCORS()
+            } catch {
+                return try debugErrorResponse(error, landID: landIDString)
+            }
+        }
+
+        await router.post("/admin/lands/:landID/debug/resume") { [self] request in
+            guard adminAuth.hasRequiredRole(from: request, requiredRole: .admin) else {
+                return try errorResponse(.unauthorized, "Invalid API key", status: .unauthorized)
+            }
+            guard let landIDString = request.pathParam("landID") else {
+                return try errorResponse(.invalidRequest, "Missing landID", status: .badRequest)
+            }
+            guard let resume = await landRealm.debugResume(landID: LandID(landIDString)) else {
+                return try errorResponse(.notFound, "Land not found", status: .notFound, landID: landIDString)
+            }
+            return try NIOHTTPResponse.json(AdminAPIResponse.success(resume)).withCORS()
+        }
+
+        logger.warning("Debug state routes registered (exposes full land state; not for production)", metadata: [
+            "paths": .string(Self.debugStatePaths.joined(separator: ", "))
         ])
     }
 }

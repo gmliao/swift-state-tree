@@ -375,6 +375,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// - Metrics: Track sync frequency and performance
     private var isSyncing = false
 
+    // MARK: Debug freeze state (see `debugFreeze()`)
+
+    /// While true, tick and sync bodies do not start and tickless inputs are held.
+    private var debugFrozen = false
+    /// Tickless inputs waiting for `debugResume()`.
+    private var debugHeldInputs: [CheckedContinuation<Void, Never>] = []
+    /// Tick bodies and tickless input processing currently running.
+    private var debugInFlightWork = 0
+    /// `debugFreeze()` callers waiting for `debugInFlightWork` to reach zero.
+    private var debugDrainWaiters: [CheckedContinuation<Void, Never>] = []
+
     // Use public system IDs from LandContext
     private let systemPlayerID = LandContext.systemPlayerID
     private let systemClientID = LandContext.systemClientID
@@ -722,6 +733,66 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         tickTask?.cancel()
         syncTask?.cancel()
         destroyTask?.cancel()
+    }
+
+    // MARK: - Debug Freeze
+
+    /// Pause the land for a debug state check and wait until in-flight work has finished.
+    ///
+    /// While frozen:
+    /// - no tick body and no sync-loop body starts;
+    /// - in tickless lands, `handleActionEnvelope` and `handleClientEvent` wait until
+    ///   `debugResume()` (in tick lands they only queue, and ticks do not run);
+    /// - joins and leaves still run (callers detect them separately).
+    ///
+    /// Returns once tick bodies and tickless input processing that were already running
+    /// (including their resolvers) have finished. Calling it again while frozen only waits for
+    /// the drain. Debug tooling only; the transport layer owns reference counting.
+    public func debugFreeze() async {
+        debugFrozen = true
+        while debugInFlightWork > 0 {
+            await withCheckedContinuation { continuation in
+                debugDrainWaiters.append(continuation)
+            }
+        }
+    }
+
+    /// Release a `debugFreeze()`: held tickless inputs continue and ticks start again.
+    public func debugResume() {
+        debugFrozen = false
+        let held = debugHeldInputs
+        debugHeldInputs.removeAll()
+        held.forEach { $0.resume() }
+    }
+
+    /// Whether `debugFreeze()` is in effect.
+    public func isDebugFrozen() -> Bool {
+        debugFrozen
+    }
+
+    /// The most recent committed tick ID (-1 before the first tick).
+    public func debugLastCommittedTickId() -> Int64 {
+        lastCommittedTickId
+    }
+
+    private func debugWaitWhileFrozen() async {
+        while debugFrozen {
+            await withCheckedContinuation { continuation in
+                debugHeldInputs.append(continuation)
+            }
+        }
+    }
+
+    private func debugBeginWork() {
+        debugInFlightWork += 1
+    }
+
+    private func debugEndWork() {
+        debugInFlightWork -= 1
+        guard debugInFlightWork == 0, !debugDrainWaiters.isEmpty else { return }
+        let waiters = debugDrainWaiters
+        debugDrainWaiters.removeAll()
+        waiters.forEach { $0.resume() }
     }
 
     // MARK: - Player Lifecycle
@@ -1112,6 +1183,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             return AnyCodable(())
         }
 
+        // Tickless lands apply actions immediately: hold them while frozen and count them as
+        // in-flight work (resolvers included) so `debugFreeze()` drains them. Tick lands only
+        // queue the action here; ticks do not run while frozen.
+        let isTickless = definition.lifetimeHandlers.tickHandler == nil
+        if isTickless {
+            await debugWaitWhileFrozen()
+            debugBeginWork()
+        }
+        defer {
+            if isTickless { debugEndWork() }
+        }
+
         let decoder = JSONDecoder()
         let typeIdentifier = envelope.typeIdentifier
 
@@ -1279,6 +1362,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             return
         }
 
+        // Tickless lands apply events right away (in a task below): hold them while frozen.
+        if definition.lifetimeHandlers.tickHandler == nil {
+            await debugWaitWhileFrozen()
+        }
+
         // Check if event is registered in the client event registry
         guard let descriptor = definition.clientEventRegistry.findDescriptor(for: event.type) else {
             logger.error(
@@ -1335,6 +1423,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // IMPORTANT: processPendingActions() will automatically advance tick counter
         // if needed to ensure valid tick IDs for recording
         if definition.lifetimeHandlers.tickHandler == nil {
+            // Counted as in-flight from now until the task finishes, so `debugFreeze()` drains it.
+            debugBeginWork()
             Task { [weak self] in
                 guard let self = self else { return }
                 do {
@@ -1344,6 +1434,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         "error": .string(String(describing: error)),
                     ])
                 }
+                await self.debugEndWork()
             }
         }
 
@@ -1809,6 +1900,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // This prevents ticks from running after shutdown has started
         guard !Task.isCancelled else { return }
 
+        // No tick body starts while frozen; a body already running is drained by `debugFreeze()`.
+        guard !debugFrozen else { return }
+        debugBeginWork()
+        defer { debugEndWork() }
+
         guard let handler = definition.lifetimeHandlers.tickHandler else {
             // Even if there's no tick handler, we still need to process pending actions
             // processPendingActions() will automatically advance tick counter if needed
@@ -2078,6 +2174,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Double-check: if syncTask is nil, we're in shutdown, don't run
         guard syncTask != nil else { return }
+
+        // The only sync while frozen is the settle cycle run by the transport.
+        guard !debugFrozen else { return }
 
         // Execute optional read-only callback if provided
         // This callback is read-only and should NOT modify state

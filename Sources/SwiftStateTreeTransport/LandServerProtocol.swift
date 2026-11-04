@@ -65,4 +65,31 @@ public protocol LandServerProtocol<State> {
     /// - Parameter landID: The unique identifier for the land.
     /// - Returns: JSON data for the record, or nil if land/record not found.
     func getReevaluationRecord(landID: LandID) async throws -> Data?
+
+    /// Freeze a land for a debug state check (see `TransportAdapter.debugFreeze()`).
+    ///
+    /// - Returns: nil if the land does not exist on this server.
+    func debugFreeze(landID: LandID) async throws -> DebugFreezeResponse?
+
+    /// Projection of a frozen land for `playerID`, or broadcast-only when `playerID` is nil.
+    ///
+    /// - Returns: nil if the land does not exist on this server.
+    /// - Throws: `DebugFreezeError.notFrozen` if the land is not frozen.
+    func debugProjection(landID: LandID, playerID: PlayerID?) async throws -> DebugProjectionResponse?
+
+    /// Drop one freeze reference of a land.
+    ///
+    /// - Returns: nil if the land does not exist on this server.
+    func debugResume(landID: LandID) async -> DebugResumeResponse?
+}
+
+extension LandServerProtocol {
+    /// Default: debug freeze is not supported, the land is reported as not found.
+    public func debugFreeze(landID: LandID) async throws -> DebugFreezeResponse? { nil }
+
+    /// Default: debug freeze is not supported, the land is reported as not found.
+    public func debugProjection(landID: LandID, playerID: PlayerID?) async throws -> DebugProjectionResponse? { nil }
+
+    /// Default: debug freeze is not supported, the land is reported as not found.
+    public func debugResume(landID: LandID) async -> DebugResumeResponse? { nil }
 }

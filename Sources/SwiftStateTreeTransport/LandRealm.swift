@@ -28,6 +28,9 @@ public actor LandRealm {
         nonisolated(unsafe) let getLandStatsClosure: (LandID) async -> LandStats?
         nonisolated(unsafe) let getReevaluationRecordClosure: (LandID) async throws -> Data?
         nonisolated(unsafe) let removeLandClosure: (LandID) async -> Void
+        nonisolated(unsafe) let debugFreezeClosure: (LandID) async throws -> DebugFreezeResponse?
+        nonisolated(unsafe) let debugProjectionClosure: (LandID, PlayerID?) async throws -> DebugProjectionResponse?
+        nonisolated(unsafe) let debugResumeClosure: (LandID) async -> DebugResumeResponse?
         
         init<Server: LandServerProtocol>(
             landType: String,
@@ -61,6 +64,18 @@ public actor LandRealm {
             
             self.removeLandClosure = { landID in
                 await server.removeLand(landID: landID)
+            }
+
+            self.debugFreezeClosure = { landID in
+                try await server.debugFreeze(landID: landID)
+            }
+
+            self.debugProjectionClosure = { landID, playerID in
+                try await server.debugProjection(landID: landID, playerID: playerID)
+            }
+
+            self.debugResumeClosure = { landID in
+                await server.debugResume(landID: landID)
             }
         }
     }
@@ -283,6 +298,46 @@ public actor LandRealm {
     ///
     /// - Parameter landID: The unique identifier for the land.
     /// - Returns: JSON data for the record if found, nil otherwise.
+    // MARK: - Debug freeze
+
+    /// Servers to ask for `landID`: its land type's server when known, otherwise all of them.
+    private func debugCandidateServers(for landID: LandID) -> [ServerInfo] {
+        if !landID.landType.isEmpty, let serverInfo = servers[landID.landType] {
+            return [serverInfo]
+        }
+        return Array(servers.values)
+    }
+
+    /// Freeze a land for a debug state check. Returns nil if no server has the land.
+    public func debugFreeze(landID: LandID) async throws -> DebugFreezeResponse? {
+        for serverInfo in debugCandidateServers(for: landID) {
+            if let response = try await serverInfo.debugFreezeClosure(landID) {
+                return response
+            }
+        }
+        return nil
+    }
+
+    /// Projection of a frozen land. Returns nil if no server has the land.
+    public func debugProjection(landID: LandID, playerID: PlayerID?) async throws -> DebugProjectionResponse? {
+        for serverInfo in debugCandidateServers(for: landID) {
+            if let response = try await serverInfo.debugProjectionClosure(landID, playerID) {
+                return response
+            }
+        }
+        return nil
+    }
+
+    /// Drop one freeze reference of a land. Returns nil if no server has the land.
+    public func debugResume(landID: LandID) async -> DebugResumeResponse? {
+        for serverInfo in debugCandidateServers(for: landID) {
+            if let response = await serverInfo.debugResumeClosure(landID) {
+                return response
+            }
+        }
+        return nil
+    }
+
     public func getReevaluationRecord(landID: LandID) async throws -> Data? {
         // Fast path: use landType routing when available
         if !landID.landType.isEmpty, let serverInfo = servers[landID.landType] {

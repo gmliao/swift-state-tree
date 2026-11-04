@@ -24,6 +24,9 @@ public struct NIOEnvConfig: Sendable {
     /// Directory for reevaluation records (admin API).
     public let reevaluationRecordsDir: String
 
+    /// Whether the debug state routes are registered (`ENABLE_DEBUG_STATE_ROUTES`, default false).
+    public let enableDebugStateRoutes: Bool
+
     /// Create config from environment.
     public static func fromEnvironment(
         environment: [String: String] = ProcessInfo.processInfo.environment
@@ -34,9 +37,15 @@ public struct NIOEnvConfig: Sendable {
             defaultValue: "./reevaluation-records",
             environment: environment
         )
+        let enableDebugStateRoutes = EnvHelpers.getEnvBool(
+            key: EnvKeys.Debug.enableDebugStateRoutes,
+            defaultValue: false,
+            environment: environment
+        )
         return NIOEnvConfig(
             jwtConfiguration: jwtConfiguration,
-            reevaluationRecordsDir: reevaluationRecordsDir
+            reevaluationRecordsDir: reevaluationRecordsDir,
+            enableDebugStateRoutes: enableDebugStateRoutes
         )
     }
 }
