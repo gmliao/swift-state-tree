@@ -23,6 +23,7 @@ npm run build
 - `scenarios/counter/`: Tests for the Counter demo (requires DemoServer).
 - `scenarios/cookie/`: Tests for the Cookie Clicker game (requires DemoServer).
 - `scenarios/game/`: Tests for the Hero Defense game (requires GameServer).
+- `scenarios/fault/`: Negative tests run with fault injection (e.g. `--fault-drop-patch`); not run as a directory.
 - `scenarios/internal/`: Internal protocol and compression validation scenarios.
 
 **AI Agents Tip**: When adding tests for a new project or Land, create a corresponding subdirectory under `scenarios/`. You can use your own created scenarios to verify new logic or bug fixes before submitting a PR.
@@ -145,8 +146,36 @@ Test scenarios are defined in JSON files within the `scenarios/` directory.
   - `path`: Dot-notation path to state field (e.g., `players.0.name`).
   - `equals`: Expected value.
   - `exists`: boolean (optional)
+- **`waitForEvent`**: Wait until a server event has arrived (counted from the scenario start).
+  - `event`: Server event type (e.g., `PlayerShoot`).
+  - `minCount`: Number of events to wait for (default: 1).
+  - `timeout`: Maximum wait time in milliseconds (default: 5000ms).
+  - `message`: Error message if the events do not arrive (optional).
+- **`assertConverged`**: Check that every client's state equals the server's state.
+  - Freezes the land through the admin debug routes, waits until no client receives a patch
+    for `quietMs` (default 200, bounded by `settleTimeoutMs`, default 3000), compares each
+    client's state with the server projection for its player, then resumes with the freeze
+    token (also when the check fails).
+  - Comparison: SDK math types compare as raw fixed-point integers (the state-wire shape),
+    `null` and an absent key are equal, key order is ignored, 64-bit integers compare as numbers.
+  - Mismatches print `CONVERGENCE MISMATCH (report-only)` with the first `maxPaths` (default 10)
+    differing paths and do not fail the script, unless `--convergence-gating` (or
+    `E2E_CONVERGENCE_GATING=true`) is set. A join or leave during the freeze prints
+    `CONVERGENCE INCONCLUSIVE (membership changed)`. Route, auth, timeout and projection
+    errors always fail the script. The run ends with a `CONVERGENCE SUMMARY` line.
+  - Requires the server to run with `ENABLE_DEBUG_STATE_ROUTES=true` and an admin key, and the
+    CLI to get the key from `--admin-key` or `E2E_ADMIN_KEY` (`--admin-url` defaults to the
+    WebSocket host). `test-e2e-ci.sh` and `test-e2e-game.sh` set both.
+  - `label`: Name printed with the result (optional).
 - **`state`**: Print full current state to console.
 - **`log`**: Print a message.
+
+### `script` options for convergence checks
+
+- `--clients <n>`: join `n` clients to each scenario's land. Steps send from client 0;
+  `assertConverged` freezes once and checks every client before one resume.
+- `--fault-drop-patch <pathPrefix>`: client 0 drops the next diff patch under the prefix
+  (negative test for `assertConverged`).
 
 ## Benchmarking
 

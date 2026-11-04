@@ -18,6 +18,23 @@ import { ChalkLogger } from "./logger";
 import { fetchSchema, printSchema } from "./schema";
 import * as admin from "./admin";
 import { evaluateAssertion } from "./scenarioAssertions.js";
+import {
+  checkConvergence,
+  ConvergenceClient,
+  DebugStateClient,
+  formatConvergence,
+  injectDropOnePatch,
+} from "./convergence.js";
+
+/** Context for `assertConverged` steps: the land, every client in it, the debug routes. */
+type ConvergenceContext = {
+  landID: string;
+  clients: ConvergenceClient[];
+  debug?: DebugStateClient;
+  /** Mismatches fail the script (default: report-only until #60). */
+  gating: boolean;
+  stats: { checks: number; converged: number; mismatches: number; inconclusive: number };
+};
 
 const program = new Command();
 
@@ -233,8 +250,42 @@ program
     "State update decoding mode (auto|jsonObject|opcodeJsonArray|messagepack)",
     "auto",
   )
+  .option(
+    "--admin-url <url>",
+    "Admin base URL for assertConverged (defaults to the WebSocket host)",
+  )
+  .option(
+    "--admin-key <key>",
+    "Admin API key for assertConverged (or E2E_ADMIN_KEY)",
+  )
+  .option(
+    "--clients <n>",
+    "Clients joining each scenario's land; steps send from client 0, assertConverged checks all",
+    "1",
+  )
+  .option(
+    "--convergence-gating",
+    "Fail the script on a convergence mismatch (or E2E_CONVERGENCE_GATING=true); default report-only",
+  )
+  .option(
+    "--fault-drop-patch <pathPrefix>",
+    "Fault injection: client 0 drops the next patch whose path starts with this prefix",
+  )
   .action(async (options) => {
     try {
+      const clientCount = Math.max(1, parseInt(options.clients ?? "1", 10) || 1);
+      const adminKey = options.adminKey ?? process.env.E2E_ADMIN_KEY;
+      const debug = adminKey
+        ? new DebugStateClient({
+            adminUrl: options.adminUrl ?? deriveSchemaBaseUrl(options.url),
+            apiKey: adminKey,
+          })
+        : undefined;
+      const gating =
+        options.convergenceGating === true ||
+        ["1", "true", "yes", "on"].includes((process.env.E2E_CONVERGENCE_GATING ?? "").toLowerCase());
+      const convergenceStats = { checks: 0, converged: 0, mismatches: 0, inconclusive: 0 };
+
       let metadata: Record<string, any> | undefined;
       if (options.metadata) {
         try {
@@ -270,6 +321,7 @@ program
           options.stateUpdateEncoding,
         );
         const runtime = new StateTreeRuntime({ logger, transportEncoding });
+        const extraRuntimes: StateTreeRuntime[] = [];
 
         try {
           await runtime.connect(wsUrl);
@@ -313,13 +365,51 @@ program
               `Failed to join land ${landID}: ${joinResult.reason || "Unknown reason"}`,
             );
           }
-          console.log(
-            chalk.green(`✅ Joined land: ${joinResult.landID || landID}`),
-          );
+          const joinedLandID = joinResult.landID || landID;
+          console.log(chalk.green(`✅ Joined land: ${joinedLandID}`));
 
-          await executeScript(view, scriptPath, script, joinResult.playerID);
+          let droppedPatch: (() => string | undefined) | undefined;
+          if (options.faultDropPatch) {
+            droppedPatch = injectDropOnePatch(view, options.faultDropPatch);
+            console.log(
+              chalk.yellow(`⚠️  Fault injection: client-0 drops the next patch under ${options.faultDropPatch}`),
+            );
+          }
 
-          // Disconnect runtime after script completes
+          const clients: ConvergenceClient[] = [
+            { name: "client-0", view, playerID: joinResult.playerID ?? options.player ?? "" },
+          ];
+          for (let i = 1; i < clientCount; i += 1) {
+            const extra = new StateTreeRuntime({
+              logger: new ChalkLogger(),
+              transportEncoding: buildTransportEncoding(options.stateUpdateEncoding),
+            });
+            extraRuntimes.push(extra);
+            await extra.connect(wsUrl);
+            const extraView = extra.createView(joinedLandID, { schema: schema as any, logger });
+            const extraJoin = await extraView.join();
+            if (!extraJoin.success || !extraJoin.playerID) {
+              throw new Error(`client-${i} failed to join ${joinedLandID}: ${extraJoin.reason || "Unknown reason"}`);
+            }
+            clients.push({ name: `client-${i}`, view: extraView, playerID: extraJoin.playerID });
+          }
+          if (clientCount > 1) {
+            console.log(chalk.green(`✅ ${clientCount} clients joined ${joinedLandID}`));
+          }
+
+          await executeScript(view, scriptPath, script, joinResult.playerID, {
+            landID: joinedLandID,
+            clients,
+            debug,
+            gating,
+            stats: convergenceStats,
+          });
+          if (droppedPatch) {
+            console.log(chalk.yellow(`⚠️  Fault injection dropped: ${droppedPatch() ?? "<nothing>"}`));
+          }
+
+          // Disconnect runtimes after script completes
+          extraRuntimes.forEach((extra) => extra.disconnect());
           runtime.disconnect();
         } catch (scriptError) {
           console.error(
@@ -327,11 +417,14 @@ program
               `\n❌ Script execution error in ${basename(scriptPath)}: ${scriptError}`,
             ),
           );
+          printConvergenceSummary(convergenceStats);
+          extraRuntimes.forEach((extra) => extra.disconnect());
           runtime.disconnect();
           process.exit(1);
         }
       }
 
+      printConvergenceSummary(convergenceStats);
       console.log(chalk.yellow("\n👋 All scripts completed successfully"));
       process.exit(0);
     } catch (error) {
@@ -340,23 +433,80 @@ program
     }
   });
 
+function printConvergenceSummary(stats: ConvergenceContext["stats"]) {
+  if (stats.checks === 0) return;
+  console.log(
+    `CONVERGENCE SUMMARY checks=${stats.checks} converged=${stats.converged} mismatches=${stats.mismatches} inconclusive=${stats.inconclusive}`,
+  );
+}
+
+async function runAssertConverged(step: any, convergence: ConvergenceContext | undefined) {
+  if (!convergence) {
+    throw new Error("assertConverged needs the `script` command (land and clients unknown here)");
+  }
+  if (!convergence.debug) {
+    throw new Error("assertConverged needs an admin key (--admin-key or E2E_ADMIN_KEY)");
+  }
+  const config = step.assertConverged ?? {};
+  const label = config.label ?? "assertConverged";
+  console.log(chalk.magenta(`🔍 Checking state convergence (${label}, ${convergence.clients.length} client(s))...`));
+  const result = await checkConvergence(convergence.debug, convergence.landID, convergence.clients, {
+    label,
+    quietMs: config.quietMs,
+    settleTimeoutMs: config.settleTimeoutMs,
+  });
+  convergence.stats.checks += 1;
+  const lines = formatConvergence(result, config.maxPaths ?? 10, convergence.gating);
+  if (result.membershipChanged) {
+    convergence.stats.inconclusive += 1;
+    lines.forEach((line) => console.log(chalk.yellow(line)));
+    return;
+  }
+  if (result.converged) {
+    convergence.stats.converged += 1;
+    console.log(chalk.green(`✅ State converged (${label}, tick ${result.tickId})`));
+    return;
+  }
+  convergence.stats.mismatches += 1;
+  lines.forEach((line) => console.log(chalk.red(line)));
+  if (convergence.gating) {
+    throw new Error(`State did not converge (${label}); see the paths above`);
+  }
+}
+
 async function executeScript(
   view: StateTreeView,
   scriptPath: string,
   script?: any,
   playerID?: string,
+  convergence?: ConvergenceContext,
 ) {
   const patchHistory: Array<{ op: string; path: string }> = [];
   let lastPatchCheckIndex = 0;
   const unsubscribePatch = view.onPatch((patch) => {
     patchHistory.push({ op: patch.op, path: patch.path });
   });
+  // Server events counted from the scenario start, for `waitForEvent` steps.
+  const eventCounts = new Map<string, number>();
+  const unsubscribeEvents: Array<() => void> = [];
 
   try {
     // If script is already parsed, use it; otherwise read from file
     if (!script) {
       const scriptContent = readFileSync(scriptPath, "utf-8");
       script = JSON.parse(scriptContent);
+    }
+
+    for (const step of script.steps || []) {
+      const eventName = step.type === "waitForEvent" ? step.waitForEvent?.event : undefined;
+      if (eventName && !eventCounts.has(eventName)) {
+        eventCounts.set(eventName, 0);
+        unsubscribeEvents.push(
+          view.onServerEvent(eventName, () => {
+            eventCounts.set(eventName, (eventCounts.get(eventName) ?? 0) + 1);
+          }),
+        );
+      }
     }
 
     // Replace [PLAYER_ID] placeholder in steps
@@ -424,6 +574,25 @@ async function executeScript(
             `Timeout waiting for state condition: ${waitForState.message || JSON.stringify(waitForState)} (current state: ${JSON.stringify(state)})`,
           );
         }
+      }
+
+      if (type === "assertConverged") {
+        await runAssertConverged(step, convergence);
+      }
+
+      if (type === "waitForEvent" && step.waitForEvent) {
+        const { event: eventName, timeout = 5000, minCount = 1, message } = step.waitForEvent;
+        console.log(chalk.gray(`⏳ Waiting for server event [${eventName}] x${minCount} (timeout: ${timeout}ms)...`));
+        const startWait = Date.now();
+        while ((eventCounts.get(eventName) ?? 0) < minCount) {
+          if (Date.now() - startWait > timeout) {
+            throw new Error(
+              message || `Timeout waiting for server event ${eventName}: got ${eventCounts.get(eventName) ?? 0}, expected >= ${minCount}`,
+            );
+          }
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        console.log(chalk.green(`✅ Server event [${eventName}] received x${eventCounts.get(eventName)}`));
       }
 
       if (type === "action" && action) {
@@ -569,6 +738,7 @@ async function executeScript(
     throw error;
   } finally {
     unsubscribePatch();
+    unsubscribeEvents.forEach((unsubscribe) => unsubscribe());
   }
 }
 
