@@ -376,7 +376,7 @@ struct TransportAdapterSyncDirtyWindowTests {
         try await f.syncNowHoldingSend {
             try await f.set("b", 2)
             // Rejected: the held cycle still owns the sync flag.
-            #expect(await f.keeper.beginSync(clearDirtyFlags: false) == nil)
+            #expect(await f.keeper.beginSync(clearDirtyFlags: true) == nil)
             await f.adapter.syncNow()
         }
 
