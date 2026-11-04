@@ -101,3 +101,15 @@ All findings accepted with the reviewer's severity; no disagreements.
 | N1 | nit | Comparison stated as backstop |
 | N2 | nit | Plain assignment to `nextSequence` |
 | T-a…T-h | tests | Added as tests 1, 4, 5, 7, 8, 9, 10, 11 |
+
+## Amendments during implementation
+
+### A1 (2026-11-04): comparison backstop applies to watermarked frames only
+
+**Gap.** The backstop above ("compare whenever either side is non-empty") assumed every recording stores server events. `ReevaluationTickFrame.init(from:)` decodes a missing `serverEvents` key as `[]`, and seven checked-in recordings predate that field (no frame has the key): `Examples/GameDemo/reevaluation-records/1-hero-defense.json`, `2-hero-defense.json` and the five `hero-defense-2026-01-25T05-*.json` files. Hero-defense emits server events during replay, so with the rule as written every tick where replay emits an event in those files would be reported as a mismatch, and `GameDemo ReevaluationRunner --verify` on them would go from passing to exit 6. No required test or E2E suite uses those files (Swift tests use `3-hero-defense.json`, which has server events; the E2E scripts record fresh).
+
+**Decision.** `ReevaluationEngine` compares when the frame carries sequence watermarks, or when the recorded list is non-empty. Frames without watermarks keep the previous rule (compare only when something was recorded).
+
+**Why.** Watermarked frames always come from recorders that store server events, so an empty recorded list is meaningful there; the stricter check becomes part of the new format's guarantee. Legacy behaviour stays exactly as before, and no extra decode flag is needed.
+
+**Tests.** Tests 7 and 8 use watermarked frames; test 8 adds a legacy (no-watermark) frame showing the old rule still applies.

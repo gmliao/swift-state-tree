@@ -1784,6 +1784,26 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return lastActionResponse
     }
 
+    /// Re-evaluation only: move the shared sequence counter forward to a recorded watermark.
+    ///
+    /// The counter is never moved back. If replay has already taken more numbers than live did,
+    /// the extra server event shows up in the per-tick server-event comparison instead.
+    private func restoreSequenceWatermark(_ watermark: Int64?, tickId: Int64, point: String) {
+        guard mode == .reevaluation, let watermark else { return }
+        if outputCollector.nextSequence <= watermark {
+            outputCollector.nextSequence = watermark
+        } else {
+            // Replay has taken more numbers than live did; later ticks may mismatch because of
+            // this, so log where it started.
+            logger.warning("Re-evaluation sequence counter is past the recorded watermark", metadata: [
+                "tickId": .stringConvertible(tickId),
+                "point": .string(point),
+                "counter": .stringConvertible(outputCollector.nextSequence),
+                "watermark": .stringConvertible(watermark),
+            ])
+        }
+    }
+
     private func runTick(allowWhenNoTickTask: Bool) async {
         // Check if task was cancelled before executing tick
         // This prevents ticks from running after shutdown has started
@@ -1822,9 +1842,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
         }
 
+        // Recorded sequence watermarks for this tick (re-evaluation only; nil for older records).
+        var replayWatermarks: ReevaluationSequenceWatermarks?
+
         // In re-evaluation mode, load actions, client events, and lifecycle events from ReevaluationSource.
         if mode == .reevaluation, let source = reevaluationSource {
             do {
+                replayWatermarks = try await source.getSequenceWatermarks(for: tickId)
                 let recordedActions = try await source.getActions(for: tickId)
                 let recordedClientEvents = try await source.getClientEvents(for: tickId)
                 let recordedLifecycleEvents = try await source.getLifecycleEvents(for: tickId)
@@ -1943,6 +1967,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
         }
 
+        // Sequence watermark W1 (before inputs). Live: captured synchronously, with no await
+        // since `nextTickId += 1`. Re-evaluation: restored after the source-loading awaits.
+        restoreSequenceWatermark(replayWatermarks?.beforeInputs, tickId: tickId, point: "beforeInputs")
+        let sequenceBeforeInputs = outputCollector.nextSequence
+
         // Process pending actions before tick handler
         // Don't flush outputs yet - defer until after tick handler to ensure
         // outputs include state changes from the tick handler
@@ -1960,6 +1989,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             sessionID: systemSessionID,
             tickId: tickId
         )
+
+        // Sequence watermark W2 (before the tick handler). processPendingActions awaits after
+        // its item loop, so inputs arriving then may have taken numbers since W1.
+        restoreSequenceWatermark(replayWatermarks?.beforeTickHandler, tickId: tickId, point: "beforeTickHandler")
+        let sequenceBeforeTickHandler = outputCollector.nextSequence
 
         // Execute handler synchronously - no copying needed
         // withMutableStateSync directly modifies state (actor isolation maintained)
@@ -1988,13 +2022,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Flush deterministic outputs (emitted events + sync requests) for this tick.
         await flushOutputs(forTick: tickId)
 
-        // Ensure we have a frame for every tick in live mode, even if no inputs occurred.
+        // Ensure we have a frame for every tick in live mode, even if no inputs occurred,
+        // and store this tick's sequence watermarks on it.
         if let recorder = reevaluationRecorder {
             await recorder.record(
                 tickId: tickId,
                 actions: [],
                 clientEvents: [],
-                lifecycleEvents: []
+                lifecycleEvents: [],
+                sequenceBeforeInputs: sequenceBeforeInputs,
+                sequenceBeforeTickHandler: sequenceBeforeTickHandler
             )
         }
 
