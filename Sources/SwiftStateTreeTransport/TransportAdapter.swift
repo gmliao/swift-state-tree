@@ -117,6 +117,9 @@ struct SyncPhasePlan {
     var droppedUpdates = 0
     /// The first encode failure's message (for the dropped-updates log).
     var dropReason: String?
+    /// A joiner's firstSync did not encode even empty: nothing is committed for it, so it stays
+    /// unmarked and the next full cycle gives it its whole view (`planFullViewUpdate`).
+    var skippedJoiner = false
     /// Change-object metric input; `nil` when metrics are not collected.
     var metrics: SyncPhaseMetrics?
     var broadcastOnlyLog: SyncPhaseBroadcastLog?
@@ -262,14 +265,22 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// failed plan's encodes allocated without the client learning them are never referenced. The client applies
     /// a firstSync's patches onto its view like a diff, so the update carries a diff.
     ///
-    /// Cleared by the commit of the next plan that covers all fields. A deterministic throw keeps
-    /// the land in recovery with nothing sent, as before plan + commit (nothing was sent then
-    /// either); `syncRecoveryCycles` and a rate-limited error log make it visible.
+    /// Cleared by the commit of the next plan that covers all fields. A deterministic throw is
+    /// bounded: after `syncRecoveryFailureBound` failed recovery plans in a row the recovery is
+    /// abandoned (logged, counted in `syncDroppedUpdates`), so the next plan is a normal
+    /// dirty-only plan as before plan + commit: the fields whose flags the failed cycles cleared
+    /// stay stale until they change, and every other change flows again.
     private var syncRecoveryPending = false
 
     /// Sync cycles that requested `beginSync`, counted in the turn that starts the hop (tests:
     /// once the count is readable, that cycle is suspended in or past its `beginSync` hop).
     private(set) var beginSyncRequests = 0
+
+    /// Failed recovery plans in a row after which the recovery is abandoned.
+    static var syncRecoveryFailureBound: Int { 3 }
+
+    /// Consecutive failed recovery plans (`syncRecoveryFailureBound`).
+    private var failedRecoveryPlans = 0
 
     /// Failed plans in a row after which no delayed follow-up is scheduled any more.
     static var syncFailedPlanFollowUpLimit: Int { 3 }
@@ -1510,15 +1521,37 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             syncRecoveryCycles += 1
             profilerCounters?.incrementSyncRecoveryCycles()
         }
-        try runSyncPhase {
-            try planSyncPhase(
-                state: state,
-                recipients: syncPhaseRecipients(),
-                events: pendingEventManager,
-                fullSnapshot: syncStrategy == .fullSnapshot,
-                recovery: recovery
-            )
+        do {
+            try runSyncPhase {
+                try planSyncPhase(
+                    state: state,
+                    recipients: syncPhaseRecipients(),
+                    events: pendingEventManager,
+                    fullSnapshot: syncStrategy == .fullSnapshot,
+                    recovery: recovery
+                )
+            }
+        } catch {
+            if recovery {
+                noteFailedRecoveryPlan(error)
+            }
+            throw error
         }
+        failedRecoveryPlans = 0
+    }
+
+    /// Counts a failed recovery plan; after `syncRecoveryFailureBound` in a row the recovery is
+    /// abandoned. A deterministic throw (e.g. a field whose snapshot conversion always throws)
+    /// would otherwise fail every `.all` plan and keep the room stuck; before plan + commit the
+    /// failing cycle cleared that field's dirty flag and later cycles went on without it.
+    private func noteFailedRecoveryPlan(_ error: any Error) {
+        failedRecoveryPlans += 1
+        guard failedRecoveryPlans >= Self.syncRecoveryFailureBound else { return }
+        failedRecoveryPlans = 0
+        syncRecoveryPending = false
+        syncDroppedUpdates += 1
+        profilerCounters?.incrementSyncDroppedUpdates(by: 1)
+        logDroppedUpdatesIfDue(1, reason: "recovery abandoned after \(Self.syncRecoveryFailureBound) failed recovery plans: \(error)")
     }
 
     /// Logs dropped updates (data loss), at most every 10 seconds.
@@ -1557,6 +1590,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// that covers all fields ends a recovery.
     private func commitSyncPhase(_ plan: SyncPhasePlan) {
         syncEngine.applyStaged(plan.staged)
+        if plan.skippedJoiner {
+            noteFailedPlanForFollowUp()
+        }
         if plan.droppedUpdates > 0 {
             syncDroppedUpdates += plan.droppedUpdates
             profilerCounters?.incrementSyncDroppedUpdates(by: plan.droppedUpdates)
@@ -2647,8 +2683,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let (data, dropped) = encodeDroppingUnencodablePatches(patches) { kept in
                 try self.encodePerPlayerUpdate(.firstSync(kept), playerID: playerID, playerSlot: playerSlot)
             }
+            guard let data else {
+                // Not even an empty firstSync encodes: skip the joiner without marking it (and
+                // without its staged caches), so the next full cycle's from-empty path retries it.
+                var skipped = SyncPhasePlan()
+                skipped.droppedUpdates = dropped
+                skipped.dropReason = "\(error)"
+                skipped.skippedJoiner = true
+                return skipped
+            }
             plan.droppedUpdates += dropped
-            guard let data else { throw error }
             updateData = data
         }
 
