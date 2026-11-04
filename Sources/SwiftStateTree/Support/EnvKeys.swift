@@ -22,6 +22,13 @@ public enum EnvKeys: Sendable {
         public static let freezeTimeoutSeconds = "DEBUG_FREEZE_TIMEOUT_SECONDS"
     }
 
+    /// Land runtime behavior.
+    public enum Runtime: Sendable {
+        /// `false` turns off the per-land phase offset of the tick and sync loops
+        /// (`LandLoopPhase`). Default: on.
+        public static let landLoopPhaseOffset = "LAND_LOOP_PHASE_OFFSET"
+    }
+
     /// Log output behavior. NO_COLOR: https://no-color.org/
     public enum Logging: Sendable {
         public static let useColors = "LOG_USE_COLORS"

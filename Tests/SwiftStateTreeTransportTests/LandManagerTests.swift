@@ -396,3 +396,46 @@ func testLandManagerRecreatesDestroyedLandWithFreshState() async throws {
     let playerCountAfterRecreate = await container2.keeper.playerCount()
     #expect(playerCountAfterRecreate == 0, "New land should start with no players")
 }
+
+@Test("LandManager starts each land's loops with the instance ID's phase offset, not the type's")
+func testLandManagerLoopPhaseOffsetUsesInstanceID() async throws {
+    let interval = Duration.milliseconds(100)
+    let landFactory: @Sendable (LandID) -> LandDefinition<ManagerTestState> = { _ in
+        Land("phase-type", using: ManagerTestState.self) {
+            Rules {}
+            Lifetime {
+                Tick(every: interval) { (state: inout ManagerTestState, _: LandContext) in
+                    state.ticks += 1
+                }
+                StateSync(every: interval) { (_: ManagerTestState, _: LandContext) in }
+            }
+        }
+    }
+    let manager = LandManager<ManagerTestState>(
+        landFactory: landFactory,
+        initialStateFactory: { _ in ManagerTestState() },
+        enableLoopPhaseOffset: true
+    )
+
+    for index in 0..<20 {
+        let landID = LandID("phase-type:room-\(index)")
+        let container = try await manager.getOrCreateLand(
+            landID: landID,
+            definition: landFactory(landID),
+            initialState: ManagerTestState(),
+            metadata: [:]
+        )
+        let keeper = container.keeper
+        let deadline = ContinuousClock.now + .seconds(3)
+        while ContinuousClock.now < deadline {
+            let tick = await keeper.appliedTickPhaseOffset
+            let sync = await keeper.appliedSyncPhaseOffset
+            if tick != nil, sync != nil { break }
+            try await safeTaskSleep(for: .milliseconds(5))
+        }
+        let expected = LandLoopPhase.offset(landID: landID.stringValue, interval: interval)
+        #expect(await keeper.appliedTickPhaseOffset == expected, "tick offset of \(landID)")
+        #expect(await keeper.appliedSyncPhaseOffset == expected, "sync offset of \(landID)")
+        #expect(await keeper.getRngSeed() == DeterministicSeed.fromLandID(landID.stringValue))
+    }
+}

@@ -3,7 +3,7 @@
   "steps": [
     {
       "type": "log",
-      "message": "Testing Tick handler - ticks should auto-increment every 300ms"
+      "message": "Testing Tick handler - ticks should auto-increment every 300ms (the first tick and sync may start up to one interval late: per-land phase offset)"
     },
     {
       "type": "wait",
@@ -19,7 +19,7 @@
     },
     {
       "type": "wait",
-      "wait": 200
+      "wait": 800
     },
     {
       "type": "assert",
