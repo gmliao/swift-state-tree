@@ -700,6 +700,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         endSync()
     }
 
+    /// Whether this keeper syncs the land periodically on its own: its loops auto-start and either
+    /// the tick loop is configured (`tickInterval` and `tickHandler`) or a sync loop runs (an explicit
+    /// `syncInterval`, or the tick interval as fallback). Mirrors the loop setup in
+    /// `performInitialization`. When `false`, the land syncs only when someone requests it.
+    public nonisolated var hasPeriodicSync: Bool {
+        guard autoStartLoops else { return false }
+        let handlers = definition.lifetimeHandlers
+        let tickLoop = handlers.tickInterval != nil && handlers.tickHandler != nil
+        let syncLoop = handlers.syncInterval != nil || handlers.tickInterval != nil
+        return tickLoop || syncLoop
+    }
+
     /// Returns the current number of players in the land.
     ///
     /// This counts unique players (not connections), as a player can have multiple connections.
