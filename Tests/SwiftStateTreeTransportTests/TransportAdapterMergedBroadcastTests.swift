@@ -105,21 +105,40 @@ private let metricsOnCases = encodings.flatMap { name, encoding in
 
 // MARK: - Helpers
 
-/// Frames sent to each session, whatever their encoding.
+/// Frames sent to each session, whatever their encoding. Waiters are resumed on each `send`,
+/// so tests wait for a condition instead of polling with sleeps.
 private actor MergedBroadcastRecordingTransport: Transport {
+    private struct Waiter {
+        let id: UUID
+        let isSatisfied: @Sendable ([(target: SwiftStateTreeTransport.EventTarget, data: Data)]) -> Bool
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+
     var delegate: TransportDelegate?
     private var sent: [(target: SwiftStateTreeTransport.EventTarget, data: Data)] = []
+    private var waiters: [Waiter] = []
 
     func setDelegate(_ delegate: TransportDelegate?) { self.delegate = delegate }
     func start() async throws {}
     func stop() async throws {}
     func send(_ message: Data, to target: SwiftStateTreeTransport.EventTarget) {
         sent.append((target, message))
+        let ready = waiters.filter { $0.isSatisfied(sent) }
+        waiters.removeAll { waiter in ready.contains { $0.id == waiter.id } }
+        ready.forEach { $0.continuation.resume(returning: true) }
     }
 
     /// Frames that reach `sessionID`: addressed to it, to its player, or broadcast to everyone.
     /// (Server events go out as `.broadcast` on the json / opcodeJsonArray paths.)
     func frames(for sessionID: SessionID, playerID: PlayerID) -> [Data] {
+        Self.frames(in: sent, for: sessionID, playerID: playerID)
+    }
+
+    static func frames(
+        in sent: [(target: SwiftStateTreeTransport.EventTarget, data: Data)],
+        for sessionID: SessionID,
+        playerID: PlayerID
+    ) -> [Data] {
         sent.compactMap { entry in
             switch entry.target {
             case .session(let id) where id == sessionID: return entry.data
@@ -131,36 +150,54 @@ private actor MergedBroadcastRecordingTransport: Transport {
         }
     }
 
+    /// Resume when the frames reaching the session satisfy `condition`, or return false after
+    /// `timeout` (a safety net so a missing send fails instead of hanging).
+    func waitUntil(
+        session: SessionID,
+        player: PlayerID,
+        timeout: Duration = .seconds(10),
+        _ condition: @escaping @Sendable ([Data]) -> Bool
+    ) async -> Bool {
+        let isSatisfied: @Sendable ([(target: SwiftStateTreeTransport.EventTarget, data: Data)]) -> Bool = { sent in
+            condition(Self.frames(in: sent, for: session, playerID: player))
+        }
+        if isSatisfied(sent) { return true }
+        let id = UUID()
+        return await withCheckedContinuation { continuation in
+            waiters.append(Waiter(id: id, isSatisfied: isSatisfied, continuation: continuation))
+            Task {
+                try? await Task.sleep(for: timeout)
+                await self.expire(id)
+            }
+        }
+    }
+
+    private func expire(_ id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        waiters.remove(at: index).continuation.resume(returning: false)
+    }
+
     func clear() { sent.removeAll() }
 }
 
 /// String values appear as raw UTF-8 bytes in JSON text and in MessagePack `str` payloads,
 /// so a unique marker can be found in any encoding without decoding the frame.
-private func frames(_ frames: [Data], contain marker: String) -> Bool {
+private func frameCount(_ frames: [Data], containing marker: String) -> Int {
     let needle = Data(marker.utf8)
-    return frames.contains { $0.range(of: needle) != nil }
+    return frames.filter { $0.range(of: needle) != nil }.count
 }
 
-/// Adapter sends are dispatched in unstructured tasks; wait (bounded) until both markers arrive.
-private func waitForMarkers(
-    _ markers: [String],
-    session: SessionID,
-    player: PlayerID,
-    transport: MergedBroadcastRecordingTransport
-) async -> [String: Bool] {
-    var found: [String: Bool] = [:]
-    for _ in 0..<100 {
-        let sent = await transport.frames(for: session, playerID: player)
-        found = Dictionary(uniqueKeysWithValues: markers.map { ($0, frames(sent, contain: $0)) })
-        if found.values.allSatisfy({ $0 }) { break }
-        try? await Task.sleep(for: .milliseconds(10))
-    }
-    return found
+/// Result of one broadcast cycle as seen by the session.
+private struct BroadcastDelivery {
+    let stateChangeDelivered: Bool
+    let eventDelivered: Bool
+    /// Frames containing the event after a later idle sync (1 when there is no duplicate send).
+    let eventFrameCount: Int
 }
 
-/// Join one session, change the broadcast field and emit a broadcast event, then run one sync.
-/// Returns which markers reached the session.
-private func runBroadcastCycle(_ testCase: MergedBroadcastCase) async throws -> [String: Bool] {
+/// Join one session, change the broadcast field and emit a broadcast event, then run one sync,
+/// followed by an idle sync so a duplicate event send would show up.
+private func runBroadcastCycle(_ testCase: MergedBroadcastCase) async throws -> BroadcastDelivery {
     let transport = MergedBroadcastRecordingTransport()
     let keeper = LandKeeper<MergedBroadcastTestState>(
         definition: makeMergedBroadcastDefinition(),
@@ -197,8 +234,24 @@ private func runBroadcastCycle(_ testCase: MergedBroadcastCase) async throws -> 
     )
     await adapter.syncNow()
 
-    let found = await waitForMarkers([headline, announcement], session: session, player: player, transport: transport)
-    return ["stateChange": found[headline] ?? false, "event": found[announcement] ?? false]
+    let stateChangeDelivered = await transport.waitUntil(session: session, player: player) {
+        frameCount($0, containing: headline) > 0
+    }
+    let eventDelivered = await transport.waitUntil(session: session, player: player) {
+        frameCount($0, containing: announcement) > 0
+    }
+
+    // Nothing is dirty and no event is pending now; this sync must not resend the event.
+    // Its sends (if any) are dispatched in tasks, so give them a few turns to land.
+    await adapter.syncNow()
+    for _ in 0..<20 { await Task.yield() }
+    let eventFrameCount = frameCount(await transport.frames(for: session, playerID: player), containing: announcement)
+
+    return BroadcastDelivery(
+        stateChangeDelivered: stateChangeDelivered,
+        eventDelivered: eventDelivered,
+        eventFrameCount: eventFrameCount
+    )
 }
 
 // MARK: - Tests
@@ -211,15 +264,17 @@ struct TransportAdapterMergedBroadcastTests {
     @Test("Metrics off: broadcast change and broadcast event reach the session", arguments: metricsOffCases)
     func metricsOffDeliversBroadcast(_ testCase: MergedBroadcastCase) async throws {
         let delivered = try await runBroadcastCycle(testCase)
-        #expect(delivered["stateChange"] == true, "broadcast field change not sent")
-        #expect(delivered["event"] == true, "broadcast event not sent")
+        #expect(delivered.stateChangeDelivered, "broadcast field change not sent")
+        #expect(delivered.eventDelivered, "broadcast event not sent")
+        #expect(delivered.eventFrameCount == 1, "broadcast event sent \(delivered.eventFrameCount) times")
     }
 
     // Test 3: default configuration and metrics-on configurations keep delivering (regression guard).
     @Test("Metrics on: broadcast change and broadcast event reach the session", arguments: metricsOnCases)
     func metricsOnDeliversBroadcast(_ testCase: MergedBroadcastCase) async throws {
         let delivered = try await runBroadcastCycle(testCase)
-        #expect(delivered["stateChange"] == true, "broadcast field change not sent")
-        #expect(delivered["event"] == true, "broadcast event not sent")
+        #expect(delivered.stateChangeDelivered, "broadcast field change not sent")
+        #expect(delivered.eventDelivered, "broadcast event not sent")
+        #expect(delivered.eventFrameCount == 1, "broadcast event sent \(delivered.eventFrameCount) times")
     }
 }
