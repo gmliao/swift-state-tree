@@ -881,3 +881,84 @@ struct LandKeeperHasPeriodicSyncTests {
         #expect(keeper(synced, autoStartLoops: false).hasPeriodicSync == false)
     }
 }
+
+// MARK: - Debug freeze (#79)
+
+@Suite("Kept events and follow-up cycles under a debug freeze (#79)", .timeLimit(.minutes(1)))
+struct TransportAdapterKeptEventsDebugFreezeTests {
+    @Test("A follow-up requested while frozen is deferred, then runs on resume")
+    func followUpDeferredWhileFrozen() async throws {
+        let f = try await KeptEventsFixture.make(.tickless)
+        #expect(f.keeper.hasPeriodicSync == false)
+
+        try await f.set("score", 1)
+        var freeze: Task<DebugFreezeResponse, Error>?
+        try await f.syncNowHoldingBatch {
+            // Kept by this cycle, so its end requests a follow-up; the freeze is already in effect.
+            await f.broadcastEvent("bc-frozen-follow-up")
+            let adapter = f.adapter
+            freeze = Task { try await adapter.debugFreeze() }
+            for _ in 0..<5000 where await adapter.isDebugFrozen() == false {
+                try await Task.sleep(for: .milliseconds(1))
+            }
+            #expect(await adapter.isDebugFrozen(), "freeze did not take effect")
+        }
+        let token = try #require(try await freeze?.value).freezeToken
+
+        // The settle cycle delivered the kept event; the follow-up hit the freeze gate instead
+        // of running.
+        try await f.waitForCount("bc-frozen-follow-up", f.a)
+        #expect(await f.adapter.debugFreezeState.deferredSyncNow, "follow-up was not deferred by the freeze")
+        #expect(count("bc-frozen-follow-up", in: f.frames(f.a)) == 1)
+
+        _ = await f.adapter.debugResume(freezeToken: token)
+        await f.settle()
+        #expect(await f.adapter.debugFreezeState.deferredSyncNow == false, "deferred follow-up did not run on resume")
+        #expect(count("bc-frozen-follow-up", in: f.frames(f.a)) == 1, "the event was resent after resume")
+    }
+
+    @Test("An event kept by the settle cycle arrives once after resume")
+    func eventKeptBySettleArrivesAfterResume() async throws {
+        let f = try await KeptEventsFixture.make(.tickless)
+        try await f.set("score", 2)
+
+        // The settle cycle is the held one: the event is queued after its merged frame was built.
+        f.recorder.holdNextBatch()
+        let adapter = f.adapter
+        let freeze = Task { try await adapter.debugFreeze() }
+        let recorder = f.recorder
+        try await waitUntil("the settle batch to be held") { recorder.isBatchHeld }
+        await f.broadcastEvent("bc-kept-by-settle")
+        recorder.releaseBatch()
+        let token = try await freeze.value.freezeToken
+        await f.settle()
+
+        #expect(count("bc-kept-by-settle", in: f.frames(f.a)) == 0, "a sync ran while frozen")
+        #expect(await f.adapter.debugFreezeState.deferredSyncNow, "no follow-up scheduled for the kept event")
+
+        _ = await f.adapter.debugResume(freezeToken: token)
+        try await f.waitForCount("bc-kept-by-settle", f.a)
+        #expect(count("bc-kept-by-settle", in: f.frames(f.a)) == 1)
+    }
+
+    @Test("A leave during the settle cycle's sends sets membershipChanged")
+    func leaveDuringSettleSendsFlagsMembership() async throws {
+        let f = try await KeptEventsFixture.make(.tickless, members: ["a", "b"])
+        try await f.set("score", 3)
+
+        // Hold the settle cycle's batch: its state copy is already taken.
+        f.recorder.holdNextBatch()
+        let adapter = f.adapter
+        let freeze = Task { try await adapter.debugFreeze() }
+        let recorder = f.recorder
+        try await waitUntil("the settle batch to be held") { recorder.isBatchHeld }
+        await f.adapter.onDisconnect(sessionID: f.b.session, clientID: f.b.client)
+        recorder.releaseBatch()
+        let token = try await freeze.value.freezeToken
+
+        let projection = try await f.adapter.debugProjection(playerID: f.a.player)
+        #expect(projection.membershipChanged, "a leave after the settle copy was taken is not flagged")
+        _ = await f.adapter.debugResume(freezeToken: token)
+        await f.settle()
+    }
+}

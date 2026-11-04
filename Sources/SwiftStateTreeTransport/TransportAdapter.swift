@@ -135,6 +135,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Encoded once when queued to avoid per-session re-encoding. Cleared after each sync.
     private var pendingEventManager = PendingEventManager()
 
+    /// Debug freeze bookkeeping (see `TransportAdapter+DebugFreeze.swift`).
+    var debugFreezeState = DebugFreezeState<State>()
+
     /// Whether to merge server events with state update (opcode 107). True when state update encoding is opcodeMessagePack.
     private var useStateUpdateWithEvents: Bool {
         stateUpdateEncoder.encoding == .opcodeMessagePack
@@ -1206,6 +1209,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// - Cache per-player snapshots if state hasn't changed
     /// - Consider incremental sync for large state trees
     func _syncNowImpl() async {
+        // While frozen, the settle cycle is the only sync; defer this one to resume.
+        if debugDeferSyncIfFrozen(broadcastOnly: false) { return }
         profilerCounters?.setSessionCounts(
             connected: membershipCoordinator.connectedSessions.count,
             joined: membershipCoordinator.joinedCount()
@@ -1712,6 +1717,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// - Debounce rapid broadcast changes to reduce sync frequency
     /// - Consider allowing concurrent broadcast-only syncs (read-only operation)
     func _syncBroadcastOnlyImpl() async {
+        // While frozen, the settle cycle is the only sync; defer this one to resume.
+        if debugDeferSyncIfFrozen(broadcastOnly: true) { return }
         // Note: Even if no players are connected, we still need to update the broadcast cache
         // This ensures that when a player reconnects, they see the correct state (not stale cache)
         let hasPlayers = !membershipCoordinator.isEmpty
@@ -2900,5 +2907,243 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             dict[keyString] = try messagePackValueToJSON(value)
         }
         return dict
+    }
+}
+
+// MARK: - Debug Freeze
+
+/// Debug freeze and projection, used by E2E state convergence checks.
+///
+/// A freeze pauses the land (no tick or sync body starts, tickless inputs are held), waits for
+/// in-flight work to finish, then runs one settle sync cycle. The projection is computed from
+/// the state copy that settle cycle synced, so every client that applied the settle frames can
+/// be compared with it. While frozen, `syncNow` and `syncBroadcastOnly` are deferred to resume.
+///
+/// Each freeze has a generation and a token. Further freezes while frozen add references to it;
+/// `debugResume(freezeToken:)` drops one, and a token of an older generation is a no-op. The
+/// freeze is released when the last reference is dropped, when the drain and settle miss their
+/// deadline, or by the auto-resume timer; release never waits for an unfinished settle.
+extension TransportAdapter {
+    /// Freeze the land and run the settle cycle; while already frozen, add a reference and return
+    /// the existing token without a new settle. Each call restarts the auto-resume timer.
+    ///
+    /// - Throws: `DebugFreezeError.settleTimedOut` when drain and settle miss their deadline (the
+    ///   freeze is released), `DebugFreezeError.released` when the freeze was released (e.g. by
+    ///   auto-resume) before its settle finished.
+    public func debugFreeze() async throws -> DebugFreezeResponse {
+        if debugFreezeState.count == 0 {
+            debugFreezeState.generation &+= 1
+            debugFreezeState.token = UUID().uuidString
+            debugFreezeState.settled = nil
+            let generation = debugFreezeState.generation
+            debugFreezeState.settleTask = Task { try await self.debugSettle(generation: generation) }
+        }
+        debugFreezeState.count += 1
+        let reused = debugFreezeState.count > 1
+        let generation = debugFreezeState.generation
+        let token = debugFreezeState.token
+        debugRestartAutoResumeTimer()
+
+        guard let settleTask = debugFreezeState.settleTask else {
+            throw DebugFreezeError.released
+        }
+        let settled: DebugFreezeState<State>.Settled
+        do {
+            settled = try await settleTask.value
+        } catch {
+            // Drop this caller's reference, only if its freeze is still the current one.
+            if debugFreezeState.generation == generation, debugFreezeState.count > 0 {
+                debugFreezeState.count -= 1
+                if debugFreezeState.count == 0 {
+                    await debugReleaseFreeze()
+                }
+            }
+            throw error
+        }
+        // Released (and maybe frozen again) while settling: this result describes nothing.
+        guard debugFreezeState.generation == generation, debugFreezeState.count > 0 else {
+            throw DebugFreezeError.released
+        }
+        debugFreezeState.settled = settled
+        return DebugFreezeResponse(
+            freezeToken: token,
+            tickId: settled.tickId,
+            freezeCount: debugFreezeState.count,
+            reused: reused
+        )
+    }
+
+    /// Projection of the settle copy for `playerID` (broadcast plus that player's view), or the
+    /// broadcast-only projection when `playerID` is nil. Side-effect free: uses a fresh
+    /// `SyncEngine`, so the adapter's diff caches are untouched.
+    public func debugProjection(playerID: PlayerID?) throws -> DebugProjectionResponse {
+        guard debugFreezeState.count > 0, let settled = debugFreezeState.settled else {
+            throw DebugFreezeError.notFrozen
+        }
+        let engine = SyncEngine()
+        let snapshot: StateSnapshot
+        if let playerID {
+            snapshot = try engine.snapshot(for: playerID, from: settled.state, mode: .all)
+        } else {
+            snapshot = try engine.extractBroadcastSnapshot(from: settled.state, mode: .all)
+        }
+        return DebugProjectionResponse(
+            freezeToken: debugFreezeState.token,
+            tickId: settled.tickId,
+            playerID: playerID?.rawValue,
+            membershipChanged: membershipCoordinator.membershipEpoch != settled.membershipEpoch,
+            state: snapshot.values
+        )
+    }
+
+    /// Drop one reference of the freeze identified by `freezeToken`. A token of a freeze that was
+    /// already released (e.g. by auto-resume) is a no-op, so it cannot release a newer freeze.
+    /// Releasing the last reference resumes the land and runs the syncs deferred while frozen.
+    public func debugResume(freezeToken: String) async -> DebugResumeResponse {
+        guard debugFreezeState.count > 0, freezeToken == debugFreezeState.token else {
+            return DebugResumeResponse(freezeCount: debugFreezeState.count, resumed: false)
+        }
+        debugFreezeState.count -= 1
+        guard debugFreezeState.count == 0 else {
+            return DebugResumeResponse(freezeCount: debugFreezeState.count, resumed: false)
+        }
+        await debugReleaseFreeze()
+        return DebugResumeResponse(freezeCount: 0, resumed: true)
+    }
+
+    /// Whether at least one freeze reference is held.
+    public func isDebugFrozen() -> Bool {
+        debugFreezeState.count > 0
+    }
+
+    /// Override the auto-resume timeout (default from `DEBUG_FREEZE_TIMEOUT_SECONDS`).
+    /// Takes effect at the next freeze call.
+    public func setDebugFreezeAutoResumeTimeout(_ timeout: Duration) {
+        debugFreezeState.autoResumeTimeout = timeout
+    }
+
+    /// Override the drain + settle deadline (default 10 s). Takes effect at the next freeze.
+    public func setDebugFreezeSettleDeadline(_ deadline: Duration) {
+        debugFreezeState.settleDeadline = deadline
+    }
+
+    /// While frozen, record the request and return true so the caller skips this sync.
+    func debugDeferSyncIfFrozen(broadcastOnly: Bool) -> Bool {
+        guard debugFreezeState.count > 0 else { return false }
+        if broadcastOnly {
+            debugFreezeState.deferredBroadcastOnly = true
+        } else {
+            debugFreezeState.deferredSyncNow = true
+        }
+        return true
+    }
+
+    private func debugIsCurrent(_ generation: UInt64) -> Bool {
+        debugFreezeState.generation == generation && debugFreezeState.count > 0
+    }
+
+    /// Pause and drain the keeper, then run one full sync cycle that `beginSync` accepted.
+    /// One deadline covers the drain and the wait for `beginSync`.
+    private func debugSettle(generation: UInt64) async throws -> DebugFreezeState<State>.Settled {
+        let deadline = ContinuousClock.now + debugFreezeState.settleDeadline
+        let drained = await keeper.debugFreeze(generation: generation, timeout: debugFreezeState.settleDeadline)
+        guard debugIsCurrent(generation) else { throw DebugFreezeError.released }
+        guard drained else { throw DebugFreezeError.settleTimedOut }
+
+        // A sync cycle may still be running (started before the freeze); `beginSync` rejects
+        // concurrent cycles, so retry until it accepts.
+        while true {
+            // Read before the copy is taken: a join or leave from here on is not in the copy
+            // and must show up as `membershipChanged`.
+            let membershipEpoch = membershipCoordinator.membershipEpoch
+            // An empty land has nothing to diff: take the copy without clearing dirty flags.
+            let hasMembers = !membershipCoordinator.isEmpty
+            if let state = await keeper.beginSync(clearDirtyFlags: enableDirtyTracking && hasMembers) {
+                do {
+                    if hasMembers {
+                        try await runSyncNowCycle(state: state)
+                    }
+                } catch {
+                    await keeper.endSync()
+                    throw error
+                }
+                await keeper.endSync()
+                let tickId = await keeper.debugLastCommittedTickId()
+                // Checked after the last await, so a release during the cycle is never published.
+                guard debugIsCurrent(generation) else { throw DebugFreezeError.released }
+                // As in `withSyncState`: events kept by this cycle need a follow-up when no
+                // periodic sync will deliver them. Syncs are frozen, so it runs on resume.
+                if pendingEventManager.hasAnyEvents && !keeper.hasPeriodicSync {
+                    debugFreezeState.deferredSyncNow = true
+                }
+                return DebugFreezeState<State>.Settled(
+                    state: state,
+                    tickId: tickId,
+                    membershipEpoch: membershipEpoch
+                )
+            }
+            guard debugIsCurrent(generation) else { throw DebugFreezeError.released }
+            guard ContinuousClock.now < deadline else {
+                throw DebugFreezeError.settleTimedOut
+            }
+            try await safeTaskSleep(for: .milliseconds(2))
+        }
+    }
+
+    /// Release the current freeze generation. Does not wait for an unfinished settle: it sees
+    /// the generation is no longer current and publishes nothing, and the keeper refuses to
+    /// freeze a released generation again.
+    private func debugReleaseFreeze() async {
+        let generation = debugFreezeState.generation
+        debugFreezeState.count = 0
+        debugFreezeState.autoResumeTask?.cancel()
+        debugFreezeState.autoResumeTask = nil
+        debugFreezeState.autoResumeGeneration &+= 1
+        debugFreezeState.settleTask = nil
+        debugFreezeState.settled = nil
+        let runSyncNow = debugFreezeState.deferredSyncNow
+        let runBroadcastOnly = debugFreezeState.deferredBroadcastOnly
+        debugFreezeState.deferredSyncNow = false
+        debugFreezeState.deferredBroadcastOnly = false
+
+        await keeper.debugResume(generation: generation)
+
+        // Frozen again meanwhile: that freeze defers syncs itself; keep these for its resume.
+        guard debugFreezeState.count == 0 else {
+            debugFreezeState.deferredSyncNow = debugFreezeState.deferredSyncNow || runSyncNow
+            debugFreezeState.deferredBroadcastOnly = debugFreezeState.deferredBroadcastOnly || runBroadcastOnly
+            return
+        }
+        // A full cycle also covers broadcast-only changes.
+        if runSyncNow {
+            await _syncNowImpl()
+        } else if runBroadcastOnly {
+            await _syncBroadcastOnlyImpl()
+        }
+    }
+
+    private func debugRestartAutoResumeTimer() {
+        debugFreezeState.autoResumeTask?.cancel()
+        debugFreezeState.autoResumeGeneration &+= 1
+        let timerGeneration = debugFreezeState.autoResumeGeneration
+        let timeout = debugFreezeState.autoResumeTimeout
+        debugFreezeState.autoResumeTask = Task { [weak self] in
+            do {
+                try await safeTaskSleep(for: timeout)
+            } catch {
+                return
+            }
+            await self?.debugAutoResume(timerGeneration: timerGeneration)
+        }
+    }
+
+    private func debugAutoResume(timerGeneration: UInt64) async {
+        guard debugFreezeState.count > 0,
+              debugFreezeState.autoResumeGeneration == timerGeneration else { return }
+        logger.warning("Debug freeze auto-resumed after timeout", metadata: [
+            "landID": .string(landID),
+            "freezeCount": .stringConvertible(debugFreezeState.count),
+        ])
+        await debugReleaseFreeze()
     }
 }

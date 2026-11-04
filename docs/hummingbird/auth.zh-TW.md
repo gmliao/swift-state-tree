@@ -480,6 +480,18 @@ curl -H "X-API-Key: your-secure-api-key" http://localhost:8080/admin/stats
 curl -X DELETE -H "X-API-Key: your-secure-api-key" http://localhost:8080/admin/lands/game-room-1
 ```
 
+### 除錯狀態路由（僅限測試）
+
+供 E2E 狀態收斂檢查使用。只有在設定 admin API key **且** `ENABLE_DEBUG_STATE_ROUTES=true` 時才會註冊，並需要 `admin` 角色。這些路由會回傳完整的 land 狀態，而 freeze 會暫停 land，因此一旦啟用，任何持有 key 的人都能造成服務中斷。**切勿在正式環境啟用。**
+
+| 路由 | 作用 |
+|---|---|
+| `POST /admin/lands/:landID/debug/freeze` | 暫停 land（不再開始 tick 或 sync，無 tick 的 land 會暫扣輸入），等進行中的工作結束，再送出一次 settle sync。回傳 `{ freezeToken, tickId, freezeCount, reused }`。freeze 有參照計數；已凍結時再 freeze 會回傳同一個 token，不會再 settle。若進行中的工作或執行中的 sync 讓 drain 與 settle 超過期限（10 秒），freeze 會被釋放並回 503；若 freeze 在 settle 完成前就被釋放，回 409。 |
+| `GET /admin/lands/:landID/debug/projection?playerID=...` | settle sync 描述給該玩家的狀態（broadcast 加上該玩家的 per-player 欄位）；不帶 `playerID` 時只回 broadcast 欄位。值的形狀與 state wire 相同（例如 `Position2` 是原始定點整數）。freeze 期間若有人加入或離開，`membershipChanged` 為 true。land 未凍結時回 409。 |
+| `POST /admin/lands/:landID/debug/resume?freezeToken=...` | 釋放回傳該 `freezeToken` 的 freeze 的一個參照（放在 query 或 JSON body `{ "freezeToken": ... }`；缺少時回 400）。最後一個釋放時 land 恢復執行，並補跑凍結期間被延後的 sync。已被釋放（例如自動恢復）的 freeze 的 token 不做任何事（`resumed: false`），因此不會釋放較新的 freeze。 |
+
+凍結的 land 會在 `DEBUG_FREEZE_TIMEOUT_SECONDS`（預設 30）秒後自動恢復；每次 freeze 都會重新計時。
+
 ## 錯誤處理
 
 ### JWT 驗證錯誤

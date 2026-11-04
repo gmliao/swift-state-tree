@@ -29,6 +29,9 @@ final class MembershipCoordinator: Sendable {
     // Membership versioning (for stale operation prevention)
     nonisolated(unsafe) private var membershipVersionByPlayer: [PlayerID: UInt64] = [:]
     nonisolated(unsafe) private var membershipVersionBySession: [SessionID: UInt64] = [:]
+
+    /// Incremented on every join, leave or session removal (any membership change).
+    nonisolated(unsafe) private(set) var membershipEpoch: UInt64 = 0
     
     // PlayerSlot allocation
     nonisolated(unsafe) private var slotToPlayer: [Int32: PlayerID] = [:]
@@ -61,6 +64,7 @@ final class MembershipCoordinator: Sendable {
     
     /// Unregister a session (on disconnect).
     func unregisterSession(sessionID: SessionID) {
+        membershipEpoch &+= 1
         sessionToPlayer.removeValue(forKey: sessionID)
         sessionToClient.removeValue(forKey: sessionID)
         sessionToAuthInfo.removeValue(forKey: sessionID)
@@ -87,6 +91,7 @@ final class MembershipCoordinator: Sendable {
     // MARK: - Membership Versioning
     
     private func nextMembershipVersion(for playerID: PlayerID) -> UInt64 {
+        membershipEpoch &+= 1
         let next = (membershipVersionByPlayer[playerID] ?? 0) + 1
         membershipVersionByPlayer[playerID] = next
         return next
