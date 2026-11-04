@@ -134,7 +134,10 @@ struct TransportAdapterInTurnSyncTests {
     func adapterSharesKeeperExecutor() async throws {
         let f = try await InTurnSyncFixture.make(encodingConfig: .json)
         #expect(f.adapter.runsSyncPhaseOnKeeperExecutor)
-        #expect(f.adapter.unownedExecutor == f.keeper.unownedExecutor)
+        // `runSyncPhaseInTurn` enters the adapter with `assumeIsolated`, which traps unless the
+        // keeper's executor is the adapter's: a tick turn with sync proves they are shared.
+        await f.keeper.stepTickOnce()
+        #expect(await f.adapter.syncFailedPlans == 0)
     }
 
     @Test("reentrancy probe: jobs enqueued on the shared executor during the turn run after its commit")
@@ -180,7 +183,7 @@ struct TransportAdapterInTurnSyncTests {
         #expect(frames.count == 2, "one event frame, one state frame: \(frames.count)")
         #expect(frames.first.map { contains("tick-event-1", $0) } == true, "the event comes first")
         #expect(frames.last.map { contains("tick-event-1", $0) } == false, "then the state frame")
-        #expect(await f.adapter.isSyncRecoveryPending() == false)
+        #expect(await f.adapter.syncFailedPlans == 0)
     }
 
     @Test("opcode 107: the tick's event rides in the merged frame of the same turn")
