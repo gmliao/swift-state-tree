@@ -23,11 +23,21 @@ export const INCONCLUSIVE_MARKER = "CONVERGENCE INCONCLUSIVE (membership changed
  * - Object keys whose value is `null` or `undefined` are dropped: a nil optional may reach the
  *   client as an explicit `null` or as a removed key, and both mean "no value".
  * - `bigint` (MessagePack 64-bit integers) becomes a `number`, the type JSON decoding yields.
+ * - An integer outside the safe range (|n| > 2^53 - 1, from a `bigint` or a JSON number) becomes
+ *   an `UnsafeInteger`, which never compares equal: both decoders may round two different
+ *   64-bit values to the same number, so equality there would be a false "converged".
  * - Key order does not matter (the comparison is key-set based).
  */
 export function normalizeForConvergence(value: unknown): unknown {
   if (value === null || value === undefined) return null;
-  if (typeof value === "bigint") return Number(value);
+  if (typeof value === "bigint") {
+    const asNumber = Number(value);
+    return Number.isSafeInteger(asNumber) ? asNumber : new UnsafeInteger(value.toString());
+  }
+  if (typeof value === "number" && Number.isInteger(value) && !Number.isSafeInteger(value)) {
+    return new UnsafeInteger(String(value));
+  }
+  if (value instanceof UnsafeInteger) return value;
   if (Array.isArray(value)) return value.map((item) => normalizeForConvergence(item));
   if (typeof value === "object") {
     const withJSON = value as { toJSON?: () => unknown };
@@ -42,6 +52,14 @@ export function normalizeForConvergence(value: unknown): unknown {
     return result;
   }
   return value;
+}
+
+/** An integer that cannot be compared exactly after decoding; always reported as a difference. */
+export class UnsafeInteger {
+  constructor(readonly digits: string) {}
+  toJSON(): string {
+    return `<unsafe integer ${this.digits}>`;
+  }
 }
 
 export type ConvergenceDifference = {
@@ -61,6 +79,10 @@ export function diffNormalized(
   path = "",
   out: ConvergenceDifference[] = [],
 ): ConvergenceDifference[] {
+  if (client instanceof UnsafeInteger || server instanceof UnsafeInteger) {
+    out.push({ path: path || "/", client, server });
+    return out;
+  }
   if (Object.is(client, server)) return out;
   const bothObjects =
     typeof client === "object" && client !== null &&
@@ -232,7 +254,9 @@ export async function checkConvergence(
     }),
   );
 
+  const log = options.log ?? ((line: string) => console.warn(line));
   let freeze: FreezeResponse | undefined;
+  let checkError: unknown;
   try {
     freeze = await debug.freeze(landID);
     // Barrier: the settle frames were sent before freeze answered; wait until every client
@@ -269,10 +293,26 @@ export async function checkConvergence(
       clients: results,
       converged: !membershipChanged && results.every((r) => r.differences.length === 0),
     };
+  } catch (error) {
+    checkError = error;
+    throw error;
   } finally {
     unsubscribes.forEach((unsubscribe) => unsubscribe());
     if (freeze) {
-      await debug.resume(landID, freeze.freezeToken);
+      try {
+        const resume = await debug.resume(landID, freeze.freezeToken);
+        if (!resume.resumed && resume.freezeCount === 0) {
+          // The token was stale: the server already auto-resumed, so the check outlived it.
+          log(`⚠️  ${label}: resume answered resumed=false (freeze already released, e.g. by auto-resume)`);
+        }
+      } catch (resumeError) {
+        // Never hide the error that ended the check; report the resume failure next to it.
+        if (checkError !== undefined) {
+          log(`⚠️  ${label}: resume failed after an earlier error: ${String(resumeError)}`);
+        } else {
+          throw resumeError;
+        }
+      }
     }
   }
 }

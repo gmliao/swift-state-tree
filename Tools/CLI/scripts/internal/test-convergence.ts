@@ -61,7 +61,17 @@ assert.deepEqual(
 
 // Integers above 2^53: MessagePack may decode a BigInt, JSON decodes a Number.
 assert.equal(normalizeForConvergence(BigInt(42)), 42, "bigint normalizes to number");
-assert.deepEqual(paths({ big: BigInt(2) ** BigInt(60) }, { big: 2 ** 60 }), [], "BigInt equals JSON Number");
+assert.deepEqual(paths({ big: BigInt(2) ** BigInt(40) }, { big: 2 ** 40 }), [], "safe BigInt equals JSON Number");
+// Above 2^53 both decoders may round; never call that equal.
+assert.deepEqual(paths({ big: BigInt(2) ** BigInt(60) }, { big: 2 ** 60 }), ["/big"], "unsafe BigInt is reported");
+assert.deepEqual(paths({ big: 2 ** 60 }, { big: 2 ** 60 }), ["/big"], "unsafe JSON integer is reported");
+assert.deepEqual(paths({ n: Number.MAX_SAFE_INTEGER }, { n: Number.MAX_SAFE_INTEGER }), [], "2^53 - 1 is still exact");
+assert.ok(
+  formatConvergence(
+    { label: "x", tickId: 1, membershipChanged: false, converged: false, clients: [{ name: "c", playerID: "p", differences: compareStates({ big: BigInt(2) ** BigInt(60) }, { big: 2 ** 60 }) }] },
+  )[1].includes("<unsafe integer 1152921504606846976>"),
+  "unsafe integer is printed with its digits",
+);
 
 // Type differences are reported.
 assert.deepEqual(paths({ n: "1" }, { n: 1 }), ["/n"], "string vs number");
@@ -207,6 +217,65 @@ async function main() {
         "projection failure",
       );
       assert.ok(calls.some((c) => c.startsWith("POST /admin/lands/counter%3Aa/debug/resume?freezeToken=tok-1")), "resume after failure");
+    },
+  );
+
+  // A resume failure does not hide the error that ended the check; it is logged instead.
+  await withServer(
+    (req, res) => {
+      if (req.url?.includes("/freeze")) return json(res, 200, ok(freezeBody));
+      if (req.url?.includes("/projection")) return json(res, 409, fail("not frozen"));
+      json(res, 500, fail("resume broke"));
+    },
+    async (client) => {
+      const logged: string[] = [];
+      await expectInfraError(
+        checkConvergence(client, "l:a", [{ name: "c0", view: fakeView({}) as any, playerID: "p1" }], {
+          quietMs: 10,
+          log: (line) => logged.push(line),
+        }),
+        409,
+        "original projection error survives a failing resume",
+      );
+      assert.ok(logged.some((l) => l.includes("resume failed after an earlier error")), `resume failure logged: ${logged}`);
+    },
+  );
+
+  // Without an earlier error, a resume failure is the error.
+  await withServer(
+    (req, res) => {
+      if (req.url?.includes("/freeze")) return json(res, 200, ok(freezeBody));
+      if (req.url?.includes("/projection")) {
+        return json(res, 200, ok({ freezeToken: "tok-1", tickId: 9, membershipChanged: false, state: {} }));
+      }
+      json(res, 500, fail("resume broke"));
+    },
+    async (client) => {
+      await expectInfraError(
+        checkConvergence(client, "l:a", [{ name: "c0", view: fakeView({}) as any, playerID: "p1" }], { quietMs: 10, log: () => {} }),
+        500,
+        "resume failure is fatal on its own",
+      );
+    },
+  );
+
+  // A stale token (already auto-resumed) is a warning line, not an error.
+  await withServer(
+    (req, res) => {
+      if (req.url?.includes("/freeze")) return json(res, 200, ok(freezeBody));
+      if (req.url?.includes("/projection")) {
+        return json(res, 200, ok({ freezeToken: "tok-1", tickId: 9, membershipChanged: false, state: {} }));
+      }
+      json(res, 200, ok({ freezeCount: 0, resumed: false }));
+    },
+    async (client) => {
+      const logged: string[] = [];
+      const result = await checkConvergence(client, "l:a", [{ name: "c0", view: fakeView({}) as any, playerID: "p1" }], {
+        quietMs: 10,
+        log: (line) => logged.push(line),
+      });
+      assert.equal(result.converged, true);
+      assert.ok(logged.some((l) => l.includes("resumed=false")), `stale resume warned: ${logged}`);
     },
   );
 
