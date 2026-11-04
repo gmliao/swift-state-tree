@@ -19,6 +19,22 @@ extension TransportAdapter: LandKeeperTransport {
     public func syncBroadcastOnlyFromTransport() async {
         await self.syncBroadcastOnly()
     }
+
+    /// Layer-3 spike: the adapter shares its keeper's executor (`unownedExecutor`).
+    public nonisolated var runsSyncPhaseOnKeeperExecutor: Bool { true }
+
+    /// Layer-3 spike: called by the keeper inside its turn. `assumeIsolated` checks that this
+    /// runs on the shared executor (it traps otherwise) and enters the adapter's isolation
+    /// without a hop.
+    public nonisolated func runSyncPhaseInTurn<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
+        includeSync: Bool
+    ) -> InTurnSyncResult {
+        assumeIsolated { adapter in
+            adapter.runSyncPhaseInTurnIsolated(state: state, events: events, includeSync: includeSync)
+        }
+    }
     
     /// Called by the keeper after its destroy handlers ran (no more sync cycles). Stops the
     /// outbound writer, waits (bounded) for queued frames to reach the transport, then runs the

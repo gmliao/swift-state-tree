@@ -52,5 +52,66 @@ public protocol LandKeeperTransport: Sendable {
     /// This allows the transport layer to perform cleanup, such as removing the land
     /// from LandManager's registry.
     func onLandDestroyed() async
+
+    /// Layer-3 spike: whether `runSyncPhaseInTurn` may be called from inside the keeper's actor
+    /// turn (the transport shares the keeper's serial executor).
+    var runsSyncPhaseOnKeeperExecutor: Bool { get }
+
+    /// Layer-3 spike: the synchronous entry of a keeper turn's output and sync phase.
+    ///
+    /// Called by the keeper inside its actor turn, with no suspension point between the turn's
+    /// state changes and this call: enqueue `events` in order (to the outbound writer, or to the
+    /// opcode 107 queue), then, if `includeSync`, plan and commit a full sync phase on `state`
+    /// and enqueue its frames. Synchronous, so the turn cannot suspend in it. An implementation
+    /// that is an actor must run on the keeper's executor and enter its isolation with
+    /// `assumeIsolated` (which traps on any other executor).
+    func runSyncPhaseInTurn<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
+        includeSync: Bool
+    ) -> InTurnSyncResult
 }
 
+
+// MARK: - In-turn sync (layer-3 spike)
+
+/// A server event emitted during a keeper turn, handed to the transport inside that turn.
+public struct InTurnServerEvent: Sendable {
+    public let event: AnyServerEvent
+    public let target: EventTarget
+
+    public init(event: AnyServerEvent, target: EventTarget) {
+        self.event = event
+        self.target = target
+    }
+}
+
+/// What `LandKeeperTransport.runSyncPhaseInTurn` did.
+public enum InTurnSyncResult: Sendable, Equatable {
+    /// The transport does not run sync phases in the keeper's turn.
+    case unsupported
+    /// Events were enqueued; no sync phase was requested.
+    case notRequested
+    /// A sync phase was requested but skipped (no members, or frozen): nothing was diffed.
+    case skipped
+    /// The sync phase committed. `clearDirtyFlags`: the plan diffed every synced field, so the
+    /// keeper clears the dirty flags now, still in the same turn (clearing is part of commit).
+    case committed(clearDirtyFlags: Bool)
+    /// The sync plan threw and committed nothing; dirty flags stay set.
+    case failed
+}
+
+extension LandKeeperTransport {
+    /// Whether `runSyncPhaseInTurn` may be called from inside the keeper's actor turn: the
+    /// transport runs on the keeper's executor.
+    public var runsSyncPhaseOnKeeperExecutor: Bool { false }
+
+    /// Default: in-turn sync is not supported.
+    public func runSyncPhaseInTurn<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
+        includeSync: Bool
+    ) -> InTurnSyncResult {
+        .unsupported
+    }
+}

@@ -377,6 +377,36 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// - Metrics: Track sync frequency and performance
     private var isSyncing = false
 
+    // MARK: In-turn sync (layer-3 spike)
+
+    /// Layer-3 spike: run the sync phase inside the keeper turn when the transport shares this
+    /// keeper's executor (`LandKeeperTransport.runsSyncPhaseOnKeeperExecutor`). Env
+    /// `IN_TURN_SYNC` (default on) turns it off for A/B runs.
+    private let inTurnSyncEnabled = EnvHelpers.getEnvBool(key: "IN_TURN_SYNC", defaultValue: true)
+
+    /// Set by the sync loop on a land whose tick loop runs: the next tick turn includes the sync
+    /// phase (tick + sync in one turn). Cleared when a turn's sync phase committed or was skipped.
+    private var inTurnSyncDue = false
+
+    /// Tests only: called with turn markers ("turn-begin", "sync-committed", "turn-end") and with
+    /// labels passed to `recordInTurnProbeForTesting`.
+    private var inTurnProbeForTesting: (@Sendable (String) -> Void)?
+
+    /// Installs `inTurnProbeForTesting` (tests only).
+    func setInTurnProbeForTesting(_ probe: (@Sendable (String) -> Void)?) {
+        inTurnProbeForTesting = probe
+    }
+
+    /// Tests only: a job on this keeper's executor that records `label`.
+    func recordInTurnProbeForTesting(_ label: String) {
+        inTurnProbeForTesting?(label)
+    }
+
+    /// Whether this keeper's turns run the sync phase in the turn (live mode only).
+    private var usesInTurnSync: Bool {
+        inTurnSyncEnabled && mode == .live && (transport?.runsSyncPhaseOnKeeperExecutor ?? false)
+    }
+
     // MARK: Debug freeze state (see `debugFreeze(generation:timeout:)`)
 
     /// While true, tick and sync bodies do not start and tickless inputs are held.
@@ -1642,6 +1672,24 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Returns the response from the last executed action (if any)
     /// - Parameter flushOutputsImmediately: If true, flush outputs after processing. If false, defer flushing (caller should flush after tick handler).
     private func processPendingActions(flushOutputsImmediately: Bool = true) async throws -> AnyCodable? {
+        let applied = try applyReadyPendingItems()
+        await finishAppliedPendingItems(applied, flushOutputsImmediately: flushOutputsImmediately)
+        return applied.lastActionResponse
+    }
+
+    /// What `applyReadyPendingItems` applied, for its async epilogue.
+    private struct AppliedPendingItems {
+        let executingTickId: Int64
+        let lastActionResponse: AnyCodable?
+        let recordedActions: [ReevaluationRecordedAction]
+        let recordedClientEvents: [ReevaluationRecordedClientEvent]
+        let recordedLifecycleEvents: [ReevaluationRecordedLifecycleEvent]
+        let shouldSyncBroadcastOnly: Bool
+    }
+
+    /// The synchronous part of `processPendingActions`: applies the ready pending items in order
+    /// (no suspension point). Recording, broadcast-only sync and output flushing are the caller's.
+    private func applyReadyPendingItems() throws -> AppliedPendingItems {
         // The tick currently executing (best-effort).
         // In the normal tick loop, nextTickId has already been incremented for this tick.
         // For tickless lands, ensure we have a valid tick ID for recording
@@ -1925,6 +1973,39 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             return executedSequences.contains(sequence)
         }
 
+        return AppliedPendingItems(
+            executingTickId: executingTickId,
+            lastActionResponse: lastActionResponse,
+            recordedActions: recordedActions,
+            recordedClientEvents: recordedClientEvents,
+            recordedLifecycleEvents: recordedLifecycleEvents,
+            shouldSyncBroadcastOnly: shouldSyncBroadcastOnly
+        )
+    }
+
+    /// Records applied inputs to the recorder (live), then the legacy outputs: broadcast-only
+    /// sync and, if requested, the output flush.
+    private func finishAppliedPendingItems(_ applied: AppliedPendingItems, flushOutputsImmediately: Bool) async {
+        await recordAppliedPendingItems(applied)
+
+        if applied.shouldSyncBroadcastOnly {
+            await transport?.syncBroadcastOnlyFromTransport()
+        }
+
+        // Flush deterministic outputs produced while processing pending items.
+        // Only flush immediately if requested (e.g., for tickless lands).
+        // In normal tick flow, flush is deferred until after tick handler to ensure
+        // outputs include state changes from the tick handler.
+        if flushOutputsImmediately {
+            await flushOutputs(forTick: applied.executingTickId)
+        }
+    }
+
+    /// Records the inputs `applyReadyPendingItems` applied (if any) and flushes the recorder.
+    private func recordAppliedPendingItems(_ applied: AppliedPendingItems) async {
+        let recordedActions = applied.recordedActions
+        let recordedClientEvents = applied.recordedClientEvents
+        let recordedLifecycleEvents = applied.recordedLifecycleEvents
         // Record inputs to ReevaluationRecorder
         if let recorder = reevaluationRecorder,
            !recordedActions.isEmpty || !recordedClientEvents.isEmpty || !recordedLifecycleEvents.isEmpty
@@ -1941,20 +2022,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // Flush if needed
             try? await recorder.flushIfNeeded(currentTick: recordingTickId)
         }
-
-        if shouldSyncBroadcastOnly {
-            await transport?.syncBroadcastOnlyFromTransport()
-        }
-
-        // Flush deterministic outputs produced while processing pending items.
-        // Only flush immediately if requested (e.g., for tickless lands).
-        // In normal tick flow, flush is deferred until after tick handler to ensure
-        // outputs include state changes from the tick handler.
-        if flushOutputsImmediately {
-            await flushOutputs(forTick: executingTickId)
-        }
-
-        return lastActionResponse
     }
 
     /// Re-evaluation only: move the shared sequence counter forward to a recorded watermark.
@@ -2145,6 +2212,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
         }
 
+        // Layer-3 spike: the whole turn (inputs, tick, events, sync plan + commit, writer
+        // enqueue) runs without a suspension point; recorder awaits follow the turn.
+        if usesInTurnSync, let transport {
+            let output = runTickTurn(handler: handler, tickId: tickId, transport: transport)
+            await finishTickTurn(output)
+            return
+        }
+
         // Sequence watermark W1 (before inputs). Live: captured synchronously, with no await
         // since `nextTickId += 1`. Re-evaluation: restored after the source-loading awaits.
         restoreSequenceWatermark(replayWatermarks?.beforeInputs, tickId: tickId, point: "beforeInputs")
@@ -2217,6 +2292,161 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Network synchronization is handled separately by the sync mechanism
     }
 
+    /// Layer-3 spike: what a tick turn leaves for the async work after it (recording only).
+    private struct TickTurnOutput {
+        let tickId: Int64
+        let applied: AppliedPendingItems?
+        let sequenceBeforeInputs: Int64
+        let sequenceBeforeTickHandler: Int64
+        let stateHash: String?
+        let stateSnapshot: StateSnapshot?
+        let emitted: [EmittedEvent]
+    }
+
+    /// Layer-3 spike: one tick turn, synchronous from the first input to the writer enqueue.
+    ///
+    /// Applies the ready inputs, runs the tick handler, takes the events emitted for this tick
+    /// and hands them to the transport in emit order together with the sync phase (when the sync
+    /// loop marked it due or a handler requested a sync), all in this actor turn. Being
+    /// non-async, it cannot contain an `await`; anything that must await (the recorder) is
+    /// returned in `TickTurnOutput` for `finishTickTurn`.
+    private func runTickTurn(
+        handler: (inout State, LandContext) -> Void,
+        tickId: Int64,
+        transport: any LandKeeperTransport
+    ) -> TickTurnOutput {
+        inTurnProbeForTesting?("turn-begin")
+        let sequenceBeforeInputs = outputCollector.nextSequence
+        var applied: AppliedPendingItems?
+        do {
+            applied = try applyReadyPendingItems()
+        } catch {
+            logger.error("Error processing pending actions", metadata: [
+                "error": .string(String(describing: error)),
+            ])
+        }
+
+        let ctx = makeContext(
+            playerID: systemPlayerID,
+            clientID: systemClientID,
+            sessionID: systemSessionID,
+            tickId: tickId
+        )
+        let sequenceBeforeTickHandler = outputCollector.nextSequence
+        handler(&state, ctx)
+        lastCommittedTickId = tickId
+
+        var stateHash: String?
+        var stateSnapshot: StateSnapshot?
+        if enableLiveStateHashRecording, reevaluationRecorder != nil {
+            if EnvHelpers.getEnvBool(key: "ENABLE_STATE_SNAPSHOT_RECORDING", defaultValue: false) {
+                let (hash, snapshot) = ReevaluationEngine.calculateStateHashAndSnapshot(state)
+                stateHash = hash
+                stateSnapshot = snapshot
+            } else {
+                stateHash = ReevaluationEngine.calculateStateHash(state)
+            }
+        }
+
+        // The events this turn emitted (inputs and tick handler), in sequence order.
+        let emitted = outputCollector.emittedEvents
+            .filter { $0.tickId == tickId }
+            .sorted { $0.sequence < $1.sequence }
+        if !emitted.isEmpty {
+            outputCollector.emittedEvents.removeAll { $0.tickId == tickId }
+        }
+        let requests = outputCollector.syncRequestsByTick.removeValue(forKey: tickId)
+        // A broadcast-only request runs the full phase here: in the turn, a leave's effects go out
+        // with the turn's sync phase (layer 3 removes broadcast-only cycles).
+        let wantsSync = inTurnSyncDue
+            || requests?.syncNow == true
+            || requests?.syncBroadcastOnly == true
+            || applied?.shouldSyncBroadcastOnly == true
+        // A legacy cycle (syncNow from the transport) holds the sync flag: leave the sync to it
+        // and keep the request due.
+        let includeSync = wantsSync && !isSyncing
+        let result = transport.runSyncPhaseInTurn(
+            state: state,
+            events: emitted.map { InTurnServerEvent(event: $0.event, target: $0.target) },
+            includeSync: includeSync
+        )
+        switch result {
+        case .committed(let clearDirtyFlags):
+            if clearDirtyFlags {
+                state.clearDirty()
+            }
+            inTurnSyncDue = false
+            inTurnProbeForTesting?("sync-committed")
+        case .skipped:
+            inTurnSyncDue = false
+        case .failed, .notRequested, .unsupported:
+            if wantsSync && !includeSync || result == .failed {
+                inTurnSyncDue = true
+            }
+        }
+        inTurnProbeForTesting?("turn-end")
+        return TickTurnOutput(
+            tickId: tickId,
+            applied: applied,
+            sequenceBeforeInputs: sequenceBeforeInputs,
+            sequenceBeforeTickHandler: sequenceBeforeTickHandler,
+            stateHash: stateHash,
+            stateSnapshot: stateSnapshot,
+            emitted: emitted
+        )
+    }
+
+    /// Layer-3 spike: the recorder work after a tick turn, in the legacy order: inputs, state
+    /// hash, server events, the tick frame with its sequence watermarks.
+    private func finishTickTurn(_ output: TickTurnOutput) async {
+        guard let recorder = reevaluationRecorder else { return }
+        if let applied = output.applied {
+            await recordAppliedPendingItems(applied)
+        }
+        if let hash = output.stateHash {
+            await recorder.setStateHash(tickId: output.tickId, stateHash: hash)
+            if let snapshot = output.stateSnapshot {
+                await recorder.recordStateSnapshot(tickId: output.tickId, stateSnapshot: snapshot)
+            }
+        }
+        if !output.emitted.isEmpty {
+            let records = output.emitted.map { item in
+                ReevaluationRecordedServerEvent(
+                    kind: "serverEvent",
+                    sequence: item.sequence,
+                    tickId: item.tickId,
+                    typeIdentifier: item.event.type,
+                    payload: item.event.payload,
+                    target: ReevaluationEventTargetRecord.from(item.target)
+                )
+            }
+            await recorder.recordServerEvents(tickId: output.tickId, events: records)
+        }
+        await recorder.record(
+            tickId: output.tickId,
+            actions: [],
+            clientEvents: [],
+            lifecycleEvents: [],
+            sequenceBeforeInputs: output.sequenceBeforeInputs,
+            sequenceBeforeTickHandler: output.sequenceBeforeTickHandler
+        )
+    }
+
+    /// Layer-3 spike: a sync-only turn (no inputs, no tick): the sync phase on the current state,
+    /// synchronous, with the dirty-flag clear in the same turn.
+    private func runSyncOnlyTurn(transport: any LandKeeperTransport) {
+        guard !isSyncing else { return }
+        inTurnProbeForTesting?("turn-begin")
+        let result = transport.runSyncPhaseInTurn(state: state, events: [], includeSync: true)
+        if case .committed(let clearDirtyFlags) = result {
+            if clearDirtyFlags {
+                state.clearDirty()
+            }
+            inTurnProbeForTesting?("sync-committed")
+        }
+        inTurnProbeForTesting?("turn-end")
+    }
+
     private func configureSyncLoop(interval: Duration) async {
         syncTask?.cancel()
         let phaseOffset = loopPhaseOffset(interval: interval)
@@ -2277,6 +2507,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
             // Pass state as value (read-only) to emphasize that it should not be modified
             handler(state, ctx)
+        }
+
+        // Layer-3 spike: with a running tick loop, the next tick turn includes the sync phase;
+        // otherwise this is a sync-only turn.
+        if usesInTurnSync, let transport {
+            if definition.lifetimeHandlers.tickHandler != nil, tickTask != nil {
+                inTurnSyncDue = true
+            } else {
+                runSyncOnlyTurn(transport: transport)
+            }
+            return
         }
 
         // Sync is read-only: only triggers synchronization mechanism

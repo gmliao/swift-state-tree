@@ -147,6 +147,12 @@ struct SyncPhasePlan {
 public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     private let keeper: LandKeeper<State>
+
+    /// Layer-3 spike: the adapter runs on its keeper's serial executor, so the keeper can call
+    /// `runSyncPhaseInTurn` synchronously inside its own turn (`assumeIsolated`).
+    public nonisolated var unownedExecutor: UnownedSerialExecutor {
+        keeper.unownedExecutor
+    }
     let transport: any Transport
     /// Ordered FIFO for every frame this adapter sends (#60). See `OutboundWriter`.
     let outboundWriter: OutboundWriter
@@ -1194,7 +1200,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// then tries `unpack(JSON bytes)` as MessagePack, which fails → returns nil. Without fallback, the event would
     /// be dropped silently. We therefore fall through to the normal send path and send the event as a separate frame.
     public func sendEvent(_ event: AnyServerEvent, to target: SwiftStateTree.EventTarget) async {
-        // Try queue mode (opcode 107): synchronous, no await
+        enqueueEventSynchronously(event, to: target)
+    }
+
+    /// The synchronous core of `sendEvent`: opcode 107 queues the event body for the next merged
+    /// frame; otherwise the event is encoded and enqueued to the outbound writer now, so events
+    /// reach the writer in the order they are passed here.
+    func enqueueEventSynchronously(_ event: AnyServerEvent, to target: SwiftStateTree.EventTarget) {
         if useStateUpdateWithEvents, let body = encodeServerEventBody(event) {
             eventSendingPipeline.queueForMergedSend(
                 eventBody: body,
@@ -1204,16 +1216,50 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             )
             return
         }
+        sendEventImmediately(event, to: target)
+    }
 
-        // Fallback to immediate mode: async, await
-        await sendEventImmediately(event, to: target)
+    /// Layer-3 spike: the isolated body of `runSyncPhaseInTurn`, run inside the keeper's turn.
+    ///
+    /// Enqueues `events` in order, then (if `includeSync`) plans and commits a full sync phase on
+    /// `state`, whose frames go to the writer after those events. Never suspends.
+    func runSyncPhaseInTurnIsolated<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
+        includeSync: Bool
+    ) -> InTurnSyncResult {
+        for item in events {
+            enqueueEventSynchronously(item.event, to: item.target)
+        }
+        guard includeSync else { return .notRequested }
+        if debugDeferSyncIfFrozen(broadcastOnly: false) { return .skipped }
+        profilerCounters?.setSessionCounts(
+            connected: membershipCoordinator.connectedSessions.count,
+            joined: membershipCoordinator.joinedCount()
+        )
+        guard !membershipCoordinator.isEmpty else { return .skipped }
+        guard let state = state as? State else {
+            preconditionFailure("runSyncPhaseInTurn called with a state of another land type")
+        }
+        // Read once: the auto-switch in the commit may change `enableDirtyTracking`.
+        let clearDirtyFlags = enableDirtyTracking
+        do {
+            try runFullSyncPhase(state: state)
+            return .committed(clearDirtyFlags: clearDirtyFlags)
+        } catch {
+            logger.error("Sync operation failed", metadata: [
+                "message": .string("❌ In-turn sync phase failed"),
+                "error": .string("\(error)")
+            ])
+            return .failed
+        }
     }
     
     /// Send event immediately (encode and transport.send).
     ///
     /// This is the fallback path when opcode 107 is disabled or encoding fails.
     /// Handles encoding, validation, logging, and actual transport.send call.
-    private func sendEventImmediately(_ event: AnyServerEvent, to target: SwiftStateTree.EventTarget) async {
+    private func sendEventImmediately(_ event: AnyServerEvent, to target: SwiftStateTree.EventTarget) {
         do {
             guard let decision = try eventSendingPipeline.prepareImmediateSend(
                 event: event,
