@@ -81,6 +81,34 @@ run_encoding_tests() {
     local failed_step=""
     run_cli_scenarios "$encoding" || failed_step="CLI scenarios"
 
+    # Negative test (#79), tick land and broadcast path in json: a client that drops the one
+    # /score diff must fail assertConverged with that path. Gating is forced on for this run.
+    if [ -z "$failed_step" ] && [ "$encoding" = "json" ]; then
+        print_step "Running convergence fault injection (drop one /score patch, $encoding)..."
+        local fault_log
+        fault_log=$(mktemp)
+        if npx tsx src/cli.ts script \
+            -u ws://localhost:${SERVER_PORT}/game/hero-defense \
+            -l hero-defense \
+            -s scenarios/fault/hero-defense-drop-score.json \
+            --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
+            --state-update-encoding ${state_update_encoding} \
+            --fault-drop-patch /score \
+            --convergence-gating > "$fault_log" 2>&1; then
+            cat "$fault_log"
+            print_error "Fault injection: assertConverged passed although the /score patch was dropped"
+            failed_step="fault injection (/score)"
+        elif ! grep -q "CONVERGENCE MISMATCH (gating) fault-drop-score" "$fault_log" || ! grep -qE "^  /score: client=" "$fault_log"; then
+            cat "$fault_log"
+            print_error "Fault injection: the script failed, but not with a /score convergence mismatch"
+            failed_step="fault injection (/score)"
+        else
+            grep -E "CONVERGENCE MISMATCH|^  /score: " "$fault_log"
+            print_success "Fault injection detected: dropped /score patch reported with its path"
+        fi
+        rm -f "$fault_log"
+    fi
+
     # Optional load variant (#79): E2E_CONVERGENCE_LOAD=true runs the burst scenario with
     # E2E_LOAD_CLIENTS clients in each of E2E_LOAD_ROOMS parallel rooms. Report-only for
     # mismatches; route and timeout errors still fail.

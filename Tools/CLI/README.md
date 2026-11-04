@@ -24,7 +24,12 @@ npm run build
 - `scenarios/cookie/`: Tests for the Cookie Clicker game (requires DemoServer).
 - `scenarios/game/`: Tests for the Hero Defense game (requires GameServer).
 - `scenarios/load/`: Convergence load variant (`burst` steps from every client); run with `--clients` / `--rooms`, not as part of `scenarios/game/`.
+  In a tick land a burst only queues, so a check right after it compares the pre-burst state
+  (labels `burst-N-immediate`, bursts 1 and 3); bursts 2, 4 and 5 wait 250 ms (several ticks and
+  sync periods) first and compare a state that contains the burst (`burst-N-after-ticks`).
 - `scenarios/fault/`: Negative tests run with fault injection (e.g. `--fault-drop-patch`); not run as a directory.
+  `test-e2e-ci.sh` drops a Demo counter `/count` patch (messagepack); `test-e2e-game.sh` drops the
+  hero-defense `/score` patch (json, tick land, broadcast field). Both must fail with the path.
 - `scenarios/internal/`: Internal protocol and compression validation scenarios.
 
 **AI Agents Tip**: When adding tests for a new project or Land, create a corresponding subdirectory under `scenarios/`. You can use your own created scenarios to verify new logic or bug fixes before submitting a PR.
@@ -158,12 +163,15 @@ Test scenarios are defined in JSON files within the `scenarios/` directory.
     client's state with the server projection for its player, then resumes with the freeze
     token (also when the check fails).
   - Comparison: SDK math types compare as raw fixed-point integers (the state-wire shape),
-    `null` and an absent key are equal, key order is ignored, 64-bit integers compare as numbers.
+    `null` and an absent key are equal, key order is ignored, 64-bit integers compare as numbers
+    while they are exact (|n| <= 2^53 - 1); a larger integer is always reported as a difference.
   - Mismatches print `CONVERGENCE MISMATCH (report-only)` with the first `maxPaths` (default 10)
     differing paths and do not fail the script, unless `--convergence-gating` (or
     `E2E_CONVERGENCE_GATING=true`) is set. A join or leave during the freeze prints
     `CONVERGENCE INCONCLUSIVE (membership changed)`. Route, auth, timeout and projection
-    errors always fail the script. The run ends with a `CONVERGENCE SUMMARY` line.
+    errors always fail the script; a resume failure is logged next to an earlier error instead of
+    replacing it, and `resumed=false` (freeze already released) is logged as a warning. The run
+    ends with a `CONVERGENCE SUMMARY` line.
   - Requires the server to run with `ENABLE_DEBUG_STATE_ROUTES=true` and an admin key, and the
     CLI to get the key from `--admin-key` or `E2E_ADMIN_KEY` (`--admin-url` defaults to the
     WebSocket host). `test-e2e-ci.sh` and `test-e2e-game.sh` set both.

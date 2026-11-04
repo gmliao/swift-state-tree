@@ -3,7 +3,7 @@
   "steps": [
     {
       "type": "log",
-      "message": "Convergence load variant: every client bursts actions and events back-to-back, then assertConverged right away (report-only). Run with --clients N --rooms R; not part of scenarios/game/."
+      "message": "Convergence load variant: every client bursts actions and events back-to-back, then assertConverged (report-only). In this tick land a burst only queues: an 'immediate' check freezes before the next tick, so it compares the pre-burst state with cycles in flight; an 'after-ticks' check waits 250 ms (5 ticks of 50 ms, 2 sync periods of 100 ms) so it compares a state containing the burst. Bursts 1 and 3 are immediate, bursts 2, 4 and 5 after-ticks. Run with --clients N --rooms R; not part of scenarios/game/."
     },
     {
       "type": "wait",
@@ -53,7 +53,7 @@
     {
       "type": "assertConverged",
       "assertConverged": {
-        "label": "burst-1"
+        "label": "burst-1-immediate"
       }
     },
     {
@@ -102,9 +102,13 @@
       }
     },
     {
+      "type": "wait",
+      "wait": 250
+    },
+    {
       "type": "assertConverged",
       "assertConverged": {
-        "label": "burst-2"
+        "label": "burst-2-after-ticks"
       }
     },
     {
@@ -155,7 +159,7 @@
     {
       "type": "assertConverged",
       "assertConverged": {
-        "label": "burst-3"
+        "label": "burst-3-immediate"
       }
     },
     {
@@ -204,9 +208,13 @@
       }
     },
     {
+      "type": "wait",
+      "wait": 250
+    },
+    {
       "type": "assertConverged",
       "assertConverged": {
-        "label": "burst-4"
+        "label": "burst-4-after-ticks"
       }
     },
     {
@@ -255,9 +263,13 @@
       }
     },
     {
+      "type": "wait",
+      "wait": 250
+    },
+    {
       "type": "assertConverged",
       "assertConverged": {
-        "label": "burst-5"
+        "label": "burst-5-after-ticks"
       }
     },
     {
