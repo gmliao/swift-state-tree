@@ -39,8 +39,8 @@ extension TransportAdapter {
     /// it addressed is ended and disconnected: those clients missed frames that later diffs
     /// assume they have, so they must rejoin and get a fresh firstSync (#61 adds a per-session
     /// policy).
-    func writeElement(_ frames: [SessionFrame]) {
-        guard outboundWriter.enqueue(frames) == .droppedOverCeiling else { return }
+    func writeElement(_ frames: [SessionFrame], isSyncCycle: Bool = false) {
+        guard outboundWriter.enqueue(frames, isSyncCycle: isSyncCycle) == .droppedOverCeiling else { return }
         var addressed: [SessionID] = []
         var seen = Set<SessionID>()
         for frame in frames where seen.insert(frame.sessionID).inserted {
@@ -77,7 +77,7 @@ extension TransportAdapter {
         let frames = cycleFrames ?? []
         cycleFrames = nil
         if !frames.isEmpty {
-            writeElement(frames)
+            writeElement(frames, isSyncCycle: true)
         }
     }
 
@@ -95,6 +95,14 @@ extension TransportAdapter {
         case .broadcastExcept(let excluded):
             return joinedSessionIDs().filter { $0 != excluded }
         }
+    }
+
+    /// Whether the writer still holds a sync cycle element (state frames) that has not been
+    /// handed to the transport. The sync back-pressure rule: a new state cycle waits while this
+    /// is true. Event and action-response elements are not counted, so an event-heavy land never
+    /// suppresses its own state syncs.
+    var hasPendingStateElement: Bool {
+        outboundWriter.backlog.syncCycleElements > 0
     }
 
     /// Queued frames of the outbound writer (tests and diagnostics).
@@ -118,6 +126,19 @@ extension TransportAdapter {
             try? await safeTaskSleep(for: .milliseconds(1))
         }
         return true
+    }
+}
+
+/// Sync cycles an adapter skipped before `beginSync`.
+public struct SyncSkipCounts: Sendable, Equatable {
+    /// Another cycle was in flight (`LandKeeper.beginSync` rejected the request).
+    public var busy = 0
+    /// The writer still held a sync cycle element from an earlier cycle (back-pressure).
+    public var outboundBacklog = 0
+
+    public init(busy: Int = 0, outboundBacklog: Int = 0) {
+        self.busy = busy
+        self.outboundBacklog = outboundBacklog
     }
 }
 

@@ -65,6 +65,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     var endedSessions = EndedSessionSet()
     /// Sessions the server disconnected after a writer ceiling drop.
     var outboundCeilingDisconnects = 0
+    /// Sync cycles skipped before `beginSync` (see `SyncSkipCounts`).
+    var syncSkips = SyncSkipCounts()
+    /// Syncs skipped for writer back-pressure on a land without periodic sync, to run once the
+    /// writer drained its sync cycle elements (see `deferSyncForOutboundBacklog`).
+    var backlogDeferredSyncNow = false
+    var backlogDeferredBroadcastOnly = false
+    var backlogRetryScheduled = false
     /// `landID` for the outbound extension's logs.
     var landIDForOutbound: String { landID }
     /// Logger for the outbound extension.
@@ -1270,6 +1277,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // here, once: the auto-switch at the end of the cycle may change `enableDirtyTracking`.
         let needsFollowUp = await withSyncState(
             clearDirtyFlags: enableDirtyTracking,
+            broadcastOnly: false,
             skipLogMessage: "⏭️ Sync skipped: another sync operation is in progress",
             errorLogMessage: "❌ Failed to extract broadcast snapshot"
         ) { state in
@@ -1288,6 +1296,47 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         Task { await self.syncNow() }
     }
 
+    /// After a back-pressure skip, or a request rejected because a cycle was in flight: a land
+    /// with periodic sync gets its next periodic cycle, which covers broadcast-only changes too.
+    /// Without periodic sync nothing else would run the skipped cycle, so run it once the
+    /// writer has drained its sync cycle elements (coalesced: one pending retry, a full cycle
+    /// when any skipped request was full).
+    private func deferSyncForOutboundBacklog(broadcastOnly: Bool, afterBusy: Bool = false) {
+        guard !keeper.hasPeriodicSync else { return }
+        if broadcastOnly {
+            backlogDeferredBroadcastOnly = true
+        } else {
+            backlogDeferredSyncNow = true
+        }
+        guard !backlogRetryScheduled else { return }
+        backlogRetryScheduled = true
+        let writer = outboundWriter
+        Task {
+            // After a busy rejection, let the cycle in flight reach `endSync` first.
+            if afterBusy { try? await safeTaskSleep(for: .milliseconds(1)) }
+            await writer.waitForSyncCycleDrain()
+            await self.runBacklogDeferredSync()
+        }
+    }
+
+    private func runBacklogDeferredSync() async {
+        let runSyncNow = backlogDeferredSyncNow
+        let runBroadcastOnly = backlogDeferredBroadcastOnly && !runSyncNow
+        backlogDeferredSyncNow = false
+        backlogDeferredBroadcastOnly = false
+        backlogRetryScheduled = false
+        if runSyncNow {
+            await syncNow()
+        } else if runBroadcastOnly {
+            await syncBroadcastOnly()
+        }
+    }
+
+    /// Sync cycles skipped so far (tests and diagnostics).
+    func syncSkipCounts() -> SyncSkipCounts {
+        syncSkips
+    }
+
     /// Runs `operation` on a state copy taken by `LandKeeper.beginSync(clearDirtyFlags:)`.
     ///
     /// Dirty flags are cleared (when `clearDirtyFlags` is set) in the same keeper turn that takes
@@ -1303,13 +1352,31 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// - `operation` completed: a cycle that throws every time must not retry forever;
     /// - events are queued now (kept by this cycle or queued after its cleanup);
     /// - the land has no periodic sync (`LandKeeper.hasPeriodicSync`) whose next cycle delivers them.
+    ///
+    /// Back-pressure: while the writer still holds a sync cycle element from an earlier cycle,
+    /// the cycle is skipped before `beginSync`, so dirty flags and queued events stay for the
+    /// next cycle, which diffs against the last state sent. Overload then turns into skipped
+    /// cycles instead of a growing writer queue that every later frame waits behind. Event and
+    /// action-response frames are not held back. A joiner's firstSync and the debug settle do
+    /// not run through here.
     private func withSyncState(
         clearDirtyFlags: Bool,
+        broadcastOnly: Bool,
         skipLogMessage: String,
         errorLogMessage: String,
         operation: (State) async throws -> Void
     ) async -> Bool {
+        if hasPendingStateElement {
+            syncSkips.outboundBacklog += 1
+            deferSyncForOutboundBacklog(broadcastOnly: broadcastOnly)
+            return false
+        }
         guard let state = await keeper.beginSync(clearDirtyFlags: clearDirtyFlags) else {
+            syncSkips.busy += 1
+            // On a land without periodic sync this request may be the only one for changes
+            // made after the cycle in flight took its copy (deferred cycles now run in the
+            // background, so requests overlap): run it once more after that cycle.
+            deferSyncForOutboundBacklog(broadcastOnly: broadcastOnly, afterBusy: true)
             if logger.logLevel <= .debug {
                 logger.debug("Sync skipped", metadata: ["message": .string(skipLogMessage)])
             }
@@ -1782,6 +1849,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // dictionary keys) accumulate until a syncNow runs with members: memory and work, not correctness.
         let needsFollowUp = await withSyncState(
             clearDirtyFlags: false,
+            broadcastOnly: true,
             skipLogMessage: "⏭️ Broadcast-only sync skipped: another sync operation is in progress",
             errorLogMessage: "❌ Failed to sync broadcast-only"
         ) { state in
@@ -2955,6 +3023,14 @@ extension TransportAdapter {
         // A sync cycle may still be running (started before the freeze); `beginSync` rejects
         // concurrent cycles, so retry until it accepts.
         while true {
+            // Not skipped for back-pressure: wait until earlier cycles' frames left the writer,
+            // so the settle frames are not queued behind them.
+            if hasPendingStateElement {
+                guard ContinuousClock.now < deadline else { throw DebugFreezeError.settleTimedOut }
+                try await safeTaskSleep(for: .milliseconds(2))
+                guard debugIsCurrent(generation) else { throw DebugFreezeError.released }
+                continue
+            }
             // Read before the copy is taken: a join or leave from here on is not in the copy
             // and must show up as `membershipChanged`.
             let membershipEpoch = membershipCoordinator.membershipEpoch
