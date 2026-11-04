@@ -31,6 +31,53 @@ public enum ReevaluationEngine {
         public let recordedStateHashes: [Int64: String]
         /// Mismatches between recorded and emitted server events (for verification).
         public let serverEventMismatches: [(tickId: Int64, expected: [ReevaluationRecordedServerEvent], actual: [ReevaluationRecordedServerEvent])]
+        /// Ticks whose recorded frame carries sequence watermarks.
+        ///
+        /// Server events of these ticks must match exactly, including `sequence`.
+        public let watermarkedTicks: Set<Int64>
+
+        /// Verdict on `serverEventMismatches`, decided per tick (see `classifyServerEventMismatches`).
+        public var serverEventVerification: ServerEventVerification {
+            ReevaluationEngine.classifyServerEventMismatches(serverEventMismatches, watermarkedTicks: watermarkedTicks)
+        }
+    }
+
+    /// Outcome of server-event verification for a re-evaluation run.
+    public enum ServerEventVerification: Sendable, Equatable {
+        /// Every compared tick matched exactly.
+        case passed
+        /// Only ticks without sequence watermarks mismatched, and only in `sequence`.
+        /// Older records cannot restore the sequence counter, so this is expected there.
+        case passedIgnoringSequence(ticks: [Int64])
+        /// At least one tick mismatched in a way that is not explained by missing watermarks:
+        /// any mismatch on a watermarked tick, or a content mismatch on any tick.
+        case failed(ticks: [Int64])
+    }
+
+    /// Decide server-event verification per mismatching tick.
+    ///
+    /// A watermarked tick fails on any mismatch. A tick without watermarks fails only when the
+    /// events differ in something other than `sequence` (count, tick, type, payload or target).
+    public static func classifyServerEventMismatches(
+        _ mismatches: [(tickId: Int64, expected: [ReevaluationRecordedServerEvent], actual: [ReevaluationRecordedServerEvent])],
+        watermarkedTicks: Set<Int64>
+    ) -> ServerEventVerification {
+        guard !mismatches.isEmpty else { return .passed }
+        var failedTicks: [Int64] = []
+        var sequenceOnlyTicks: [Int64] = []
+        for mismatch in mismatches {
+            if !watermarkedTicks.contains(mismatch.tickId),
+               serverEventsMatch(recorded: mismatch.expected, emitted: mismatch.actual, compareSequence: false)
+            {
+                sequenceOnlyTicks.append(mismatch.tickId)
+            } else {
+                failedTicks.append(mismatch.tickId)
+            }
+        }
+        if !failedTicks.isEmpty {
+            return .failed(ticks: failedTicks.sorted())
+        }
+        return .passedIgnoringSequence(ticks: sequenceOnlyTicks.sorted())
     }
     
     /// Load recorded state JSONL into a [tickId: [String: Any]] dictionary.
@@ -113,6 +160,7 @@ public enum ReevaluationEngine {
         var hashes: [Int64: String] = [:]
         var recordedHashes: [Int64: String] = [:]
         var serverEventMismatches: [(tickId: Int64, expected: [ReevaluationRecordedServerEvent], actual: [ReevaluationRecordedServerEvent])] = []
+        var watermarkedTicks: Set<Int64> = []
         if maxTickId >= 0 {
             for tickId in 0...maxTickId {
                 await keeper.stepTickOnce()
@@ -149,6 +197,9 @@ public enum ReevaluationEngine {
                 // Older frames may lack the server-event field entirely; keep comparing only when
                 // something was recorded.
                 let frameHasWatermarks = try await source.getSequenceWatermarks(for: tickId) != nil
+                if frameHasWatermarks {
+                    watermarkedTicks.insert(tickId)
+                }
                 let shouldCompare = frameHasWatermarks || !recordedEvents.isEmpty
                 if shouldCompare, !serverEventsMatch(recorded: recordedEvents, emitted: emittedEvents) {
                     serverEventMismatches.append((tickId: tickId, expected: recordedEvents, actual: emittedEvents))
@@ -173,17 +224,22 @@ public enum ReevaluationEngine {
             maxTickId: maxTickId,
             tickHashes: hashes,
             recordedStateHashes: recordedHashes,
-            serverEventMismatches: serverEventMismatches
+            serverEventMismatches: serverEventMismatches,
+            watermarkedTicks: watermarkedTicks
         )
     }
     
     /// Compare recorded vs emitted server events (by JSON encoding for AnyCodable payload equality).
-    private static func serverEventsMatch(recorded: [ReevaluationRecordedServerEvent], emitted: [ReevaluationRecordedServerEvent]) -> Bool {
+    private static func serverEventsMatch(
+        recorded: [ReevaluationRecordedServerEvent],
+        emitted: [ReevaluationRecordedServerEvent],
+        compareSequence: Bool = true
+    ) -> Bool {
         guard recorded.count == emitted.count else { return false }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         for (r, e) in zip(recorded, emitted) {
-            guard r.sequence == e.sequence,
+            guard !compareSequence || r.sequence == e.sequence,
                   r.tickId == e.tickId,
                   r.typeIdentifier == e.typeIdentifier
             else { return false }
