@@ -334,7 +334,7 @@ struct TransportAdapterOrderedSendTests {
         }
     }
 
-    @Test("5: a session's targeted events arrive once, after the merged frame and before its state frame (runSyncNowCycle order doc)")
+    @Test("5: a session's targeted events arrive once, after the merged frame and before its state frame (planSyncPhase order doc)")
     func targetedEventsPrecedeTheCycleStateFrame() async throws {
         let f = try await OrderedSendFixture.make(encoding: .messagepack)
         await f.waitForFinal(stamp: 0)

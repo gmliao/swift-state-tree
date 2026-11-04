@@ -775,6 +775,40 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         #expect(count("tg-pre", in: f.frames(f.a)) == 1)
     }
 
+    // The plan reads the event queue after the `beginSync` hop, in the same actor turn as its
+    // commit. An event queued while the cycle waits in that hop is therefore this cycle's.
+    @Test("8: an event queued during the beginSync hop is delivered by that cycle")
+    func eventQueuedDuringBeginSyncHopIsInThatCycle() async throws {
+        let f = try await KeptEventsFixture.make(.periodicSync)
+        let blocker = KeptEventsKeeperBlocker.shared
+
+        // Block the keeper so the cycle's beginSync hop waits there.
+        let keeper = f.keeper
+        let a = f.a
+        let blockingAction = Task {
+            let envelope = ActionEnvelope(
+                typeIdentifier: String(describing: KeptEventsSetAction.self),
+                payload: AnyCodable(KeptEventsSetAction(field: "block", value: 0))
+            )
+            _ = try await keeper.handleActionEnvelope(
+                envelope, playerID: a.player, clientID: a.client, sessionID: a.session
+            )
+        }
+        try await waitUntil("the keeper to be blocked") { blocker.isBlocking }
+        let adapter = f.adapter
+        let cycle = Task { await adapter.syncNow() }
+        await f.broadcastEvent("bc-begin-hop")
+        blocker.release()
+        _ = try await blockingAction.value
+        await cycle.value
+
+        // Periodic sync: no follow-up cycle, so only the cycle above can have delivered it.
+        try await f.waitForCount("bc-begin-hop", f.a)
+        #expect(count("bc-begin-hop", in: f.frames(f.a)) == 1)
+        let counts = await adapter.pendingEventCounts()
+        #expect(counts.targeted == 0 && counts.broadcast == 0, "the cycle consumed the event")
+    }
+
     // Since #60 the cycle has no suspension point between reading the event queue and its
     // cleanup, so the read→cleanup window (#77 marks) cannot be reached from outside; the marks
     // stay covered by the PendingEventManager unit tests. This test queues its event while the
