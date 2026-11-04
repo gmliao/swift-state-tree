@@ -144,7 +144,13 @@ public enum ReevaluationEngine {
 
                 let emittedEvents = await capturingSink.takeEmittedEvents(for: tickId)
                 let recordedEvents = try await source.getServerEvents(for: tickId)
-                if !recordedEvents.isEmpty, !serverEventsMatch(recorded: recordedEvents, emitted: emittedEvents) {
+                // Frames with sequence watermarks come from records that always store server events,
+                // so an empty recorded list is meaningful there and extra replay events are reported.
+                // Older frames may lack the server-event field entirely; keep comparing only when
+                // something was recorded.
+                let frameHasWatermarks = try await source.getSequenceWatermarks(for: tickId) != nil
+                let shouldCompare = frameHasWatermarks || !recordedEvents.isEmpty
+                if shouldCompare, !serverEventsMatch(recorded: recordedEvents, emitted: emittedEvents) {
                     serverEventMismatches.append((tickId: tickId, expected: recordedEvents, actual: emittedEvents))
                 }
 

@@ -25,6 +25,19 @@ public protocol ReevaluationSource: Sendable {
 
     /// Get the maximum tick ID available in the record.
     func getMaxTickId() async throws -> Int64
+
+    /// Get the recorded sequence watermarks for a specific tick.
+    ///
+    /// Returns nil when the record carries none for this tick (older records, tickless lands).
+    /// Re-evaluation then leaves the sequence counter alone.
+    func getSequenceWatermarks(for tickId: Int64) async throws -> ReevaluationSequenceWatermarks?
+}
+
+extension ReevaluationSource {
+    /// Default for conformers that do not record watermarks.
+    public func getSequenceWatermarks(for tickId: Int64) async throws -> ReevaluationSequenceWatermarks? {
+        nil
+    }
 }
 
 // MARK: - JSONReevaluationSource
@@ -92,5 +105,9 @@ public actor JSONReevaluationSource: ReevaluationSource {
 
     public func getMaxTickId() async throws -> Int64 {
         maxTickId
+    }
+
+    public func getSequenceWatermarks(for tickId: Int64) async throws -> ReevaluationSequenceWatermarks? {
+        framesByTickId[tickId]?.sequenceWatermarks
     }
 }
