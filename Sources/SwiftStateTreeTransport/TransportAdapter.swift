@@ -1245,8 +1245,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         var metricUpdates = makeMetricUpdatesBuffer(shouldCollect: shouldCollectChangeMetrics)
 
         if useStateUpdateWithEvents {
-            if shouldCollectChangeMetrics,
-               let broadcastMetric = try await sendMergedBroadcastUpdateIfNeeded(broadcastDiff: broadcastDiff) {
+            // Always send the merged broadcast frame; only the metric is optional.
+            let broadcastMetric = try await sendMergedBroadcastUpdateIfNeeded(broadcastDiff: broadcastDiff)
+            if shouldCollectChangeMetrics, let broadcastMetric {
                 metricUpdates.append(broadcastMetric)
             }
 
