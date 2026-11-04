@@ -27,6 +27,10 @@
                 "equals": 1,
                 "message": "Count should be 1 after one increment"
             }
+        },
+        {
+            "type": "assertConverged",
+            "assertConverged": { "label": "end" }
         }
     ]
 }

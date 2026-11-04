@@ -60,6 +60,10 @@
         "path": "privateStates",
         "exists": true
       }
+    },
+    {
+      "type": "assertConverged",
+      "assertConverged": { "label": "end" }
     }
   ]
 }
