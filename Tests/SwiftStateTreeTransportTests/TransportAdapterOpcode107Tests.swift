@@ -96,15 +96,15 @@ func testTransportAdapterOnlyMergesBroadcastEventsIntoOpcode107() async throws {
     let encoder = MessagePackTransportMessageEncoder()
     let clientData = try encoder.encode(clientMessage)
     await adapter.onMessage(clientData, from: sessionID)
-    await adapter.waitForOutboundDrain()
+    #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
     try await Task.sleep(for: .milliseconds(50))
 
     let serverEvent = AnyServerEvent(Opcode107MessageEvent(message: "hello"))
     await adapter.sendEvent(serverEvent, to: .client(clientID))
-    await adapter.waitForOutboundDrain()
+    #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
     await adapter.syncNow()
-    await adapter.waitForOutboundDrain()
+    #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
     let messages = await transport.recordedMessages()
     #expect(messages.count == 2, "Expected broadcast update + targeted event")
@@ -191,7 +191,7 @@ func testSendEventFallbackWhenBodyEncodingFails() async throws {
 
     let serverEvent = AnyServerEvent(Opcode107MessageEvent(message: "fallback-test"))
     await adapter.sendEvent(serverEvent, to: .client(clientID))
-    await adapter.waitForOutboundDrain()
+    #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
     let messages = await transport.recordedMessages()
     var foundEventFrame = false

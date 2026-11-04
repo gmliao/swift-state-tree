@@ -53,9 +53,22 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Frames of the running sync cycle, enqueued as one writer element when it ends.
     /// `nil` outside a cycle.
     var cycleFrames: [SessionFrame]?
-    /// Transport connection generation per joined session, recorded at registration; stamped
-    /// on every frame so frames for an ended connection never reach a reconnect.
+    /// Transport connection generation per joined session, stamped on every frame so the
+    /// transport drops frames for an ended connection. Read when the connection was accepted
+    /// (`LandRouter` passes it to `performJoin`), else when the session registers.
+    ///
+    /// Defence in depth: `NIOWebSocketServer` gives every connection a fresh `UUID` SessionID, so
+    /// this matters only for transports or tests that reuse SessionIDs.
     var connectionGenerations: [SessionID: UInt64] = [:]
+    /// Sessions that ended (disconnected, or disconnected by the server after a writer ceiling
+    /// drop). Frames for them are dropped before the writer, also unstamped ones.
+    var endedSessions = EndedSessionSet()
+    /// Sessions the server disconnected after a writer ceiling drop.
+    var outboundCeilingDisconnects = 0
+    /// `landID` for the outbound extension's logs.
+    var landIDForOutbound: String { landID }
+    /// Logger for the outbound extension.
+    var outboundLogger: Logger { logger }
     /// Diagnostics and tests only: awaited by a sync cycle after its frames were enqueued and
     /// before its `endSync` hop, while the cycle still owns the keeper's sync flag. Lets a test
     /// hold a cycle in flight now that the cycle no longer awaits the transport. `nil` (the
@@ -447,9 +460,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     private func handleDisconnectQueued(sessionID: SessionID, clientID: ClientID) async {
         profilerCounters?.incrementDisconnects()
-        // Frames issued from here on are unstamped; the session is no longer a member, so only
-        // frames addressed to it explicitly (e.g. a late action response) can still be issued.
+        // Late frames for this connection (e.g. an action response still in flight) are dropped,
+        // so they cannot reach a later connection that reuses the SessionID.
         connectionGenerations.removeValue(forKey: sessionID)
+        endedSessions.insert(sessionID)
         let joinedPlayerID = membershipCoordinator.playerID(for: sessionID)
 
         // If player had joined, handle leave
@@ -497,7 +511,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         sessionID: SessionID,
         clientID: ClientID,
         playerID: PlayerID,
-        authInfo: AuthenticatedInfo?
+        authInfo: AuthenticatedInfo?,
+        acceptedConnectionGeneration: UInt64? = nil
     ) async {
         _ = membershipCoordinator.registerPlayer(
             sessionID: sessionID,
@@ -508,8 +523,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
         // Record the session's connection generation (see `connectionGenerations`). Group
         // targets are expanded from this adapter's membership, not from the transport's maps.
+        endedSessions.remove(sessionID)
         if let webSocketTransport = transport as? WebSocketTransport {
-            connectionGenerations[sessionID] = await webSocketTransport.registerSession(sessionID, for: playerID)
+            let current = await webSocketTransport.registerSession(sessionID, for: playerID)
+            connectionGenerations[sessionID] = acceptedConnectionGeneration ?? current
+        } else if let acceptedConnectionGeneration {
+            connectionGenerations[sessionID] = acceptedConnectionGeneration
         }
 
         logger.info("Session registered via Router: session=\(sessionID.rawValue), player=\(playerID.rawValue)")
@@ -635,18 +654,22 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         public let playerSlot: Int32
     }
 
+    /// - Parameter connectionGeneration: The transport connection generation read when the
+    ///   session's connection was accepted (see `connectionGenerations`); `nil` reads it now.
     public func performJoin(
         playerSession: PlayerSession,
         clientID: ClientID,
         sessionID: SessionID,
-        authInfo: AuthenticatedInfo?
+        authInfo: AuthenticatedInfo?,
+        connectionGeneration: UInt64? = nil
     ) async throws -> JoinResult? {
         try await enqueueMembership {
             try await self.performJoinQueued(
                 playerSession: playerSession,
                 clientID: clientID,
                 sessionID: sessionID,
-                authInfo: authInfo
+                authInfo: authInfo,
+                connectionGeneration: connectionGeneration
             )
         }
     }
@@ -655,7 +678,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         playerSession: PlayerSession,
         clientID: ClientID,
         sessionID: SessionID,
-        authInfo: AuthenticatedInfo?
+        authInfo: AuthenticatedInfo?,
+        connectionGeneration: UInt64?
     ) async throws -> JoinResult? {
         // Attempt to join (updates keeper.players)
         let decision = try await keeper.join(
@@ -682,7 +706,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 sessionID: sessionID,
                 clientID: clientID,
                 playerID: playerID,
-                authInfo: authInfo
+                authInfo: authInfo,
+                connectionGeneration: connectionGeneration
             )
 
             // NOTE: Initial state snapshot is NOT sent here anymore.

@@ -51,6 +51,9 @@ public actor WebSocketTransport: Transport {
 
     /// Generation of the most recent connection; each `handleConnection` takes the next one.
     private var lastConnectionGeneration: UInt64 = 0
+    /// Sessions closed by `closeSession` whose server's own disconnect callback has not arrived
+    /// yet; that callback must not notify the delegate a second time.
+    private var serverClosedSessions: Set<SessionID> = []
 
     private static let missingTargetLogIntervalSeconds: TimeInterval = 2.0
     private static let missingTargetLogMapSoftLimit: Int = 5000
@@ -184,6 +187,10 @@ public actor WebSocketTransport: Transport {
     }
 
     public func handleDisconnection(sessionID: SessionID) async {
+        if sessionQueues[sessionID] == nil, serverClosedSessions.remove(sessionID) != nil {
+            // Already handled by `closeSession`; this is the server's own callback for it.
+            return
+        }
         if let queue = sessionQueues[sessionID] {
             queue.continuation.finish()
             queue.drainTask.cancel()
@@ -214,6 +221,15 @@ public actor WebSocketTransport: Transport {
         playerSessions[playerID, default: []].insert(sessionID)
         lastMissingPlayerLogAt.removeValue(forKey: playerID)
         return sessionQueues[sessionID]?.generation
+    }
+
+    /// Closes the session's connection from the server side: the delegate is told the session
+    /// disconnected (as for a client close), then the connection is closed.
+    public func closeSession(_ sessionID: SessionID) async {
+        guard let queue = sessionQueues[sessionID] else { return }
+        serverClosedSessions.insert(sessionID)
+        await handleDisconnection(sessionID: sessionID)
+        try? await queue.connection.close()
     }
 
     /// Generation of the session's current connection, or `nil` when it is not connected.

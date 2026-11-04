@@ -133,7 +133,7 @@ private struct TargetedOnceFixture {
         )
         // Settle the post-join cycle, then look only at what the checked cycle sends.
         await adapter.syncNow()
-        await adapter.waitForOutboundDrain()
+        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
         await transport.clear()
         return fixture
     }
@@ -143,7 +143,7 @@ private struct TargetedOnceFixture {
         await adapter.onConnect(sessionID: session, clientID: client)
         try await simulateRouterJoin(adapter: adapter, keeper: keeper, sessionID: session, clientID: client, playerID: player)
         await adapter.syncNow()
-        await adapter.waitForOutboundDrain()
+        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
         await transport.clear()
     }
 
@@ -165,7 +165,7 @@ private struct TargetedOnceFixture {
 
     func sendTargetedEvent(_ message: String, to target: PlayerID) async {
         await adapter.sendEvent(AnyServerEvent(TargetedOnceEvent(message: message)), to: .player(target))
-        await adapter.waitForOutboundDrain()
+        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
     }
 
     /// Runs `syncNow` held in flight (after it read the event queue, before `endSync`; see
@@ -184,7 +184,7 @@ private struct TargetedOnceFixture {
         }
         hold.release()
         await cycle.value
-        await adapter.waitForOutboundDrain()
+        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
     }
 
     /// Waits until a frame carrying `message` reached `sessionID` (the follow-up cycle runs in
@@ -199,9 +199,9 @@ private struct TargetedOnceFixture {
             }
             try await Task.sleep(for: .milliseconds(1))
         }
-        await adapter.waitForOutboundDrain()
+        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
         try await Task.sleep(for: .milliseconds(50))
-        await adapter.waitForOutboundDrain()
+        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
     }
 
     /// Indices (in send order) of frames that carry the targeted event with `message`.
@@ -244,7 +244,7 @@ struct TransportAdapterTargetedEventOnceTests {
         try await f.setScore(5)
         await f.sendTargetedEvent()
         await f.adapter.syncNow()
-        await f.adapter.waitForOutboundDrain()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         let frames = await f.transport.recordedFrames()
         let eventIndices = await f.eventFrameIndices()
@@ -262,7 +262,7 @@ struct TransportAdapterTargetedEventOnceTests {
 
         await f.sendTargetedEvent()
         await f.adapter.syncNow()
-        await f.adapter.waitForOutboundDrain()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         let frames = await f.transport.recordedFrames()
         let eventIndices = await f.eventFrameIndices()
@@ -354,7 +354,7 @@ struct TransportAdapterTargetedEventOnceTests {
         try await f.setScore(5)
         await f.sendTargetedEvent()
         await f.adapter.syncNow()
-        await f.adapter.waitForOutboundDrain()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         let frames = await f.transport.recordedFrames()
         let eventIndices = await f.eventFrameIndices()

@@ -532,6 +532,10 @@ final class BlockingTransportBox: @unchecked Sendable {
     private var recorded: [(SessionID?, Data)] = []
     private var isBlocked = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var closed: [SessionID] = []
+
+    func recordClose(_ sessionID: SessionID) { lock.lock(); closed.append(sessionID); lock.unlock() }
+    var closedSessions: [SessionID] { lock.lock(); defer { lock.unlock() }; return closed }
 
     func block() { lock.lock(); isBlocked = true; lock.unlock() }
 
@@ -583,6 +587,12 @@ actor BlockingTransport: Transport {
     nonisolated func release() { box.release() }
     nonisolated var frameCount: Int { box.frameCount }
     nonisolated func frames(for session: SessionID) -> [Data] { box.frames(for: session) }
+    /// Sessions closed through `closeSession`, in call order.
+    nonisolated var closedSessions: [SessionID] { box.closedSessions }
+
+    func closeSession(_ sessionID: SessionID) async {
+        box.recordClose(sessionID)
+    }
 
     /// `Transport.send` is synchronous: it records and returns. Only `sendBatch` can block.
     func send(_ message: Data, to target: SwiftStateTreeTransport.EventTarget) {

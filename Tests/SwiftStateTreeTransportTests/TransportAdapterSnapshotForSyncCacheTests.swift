@@ -85,7 +85,7 @@ func testSnapshotForSyncDoesNotReplayUnchangedBroadcastFieldsAfterPerPlayerOnlyD
     // where the diff engine used to spuriously emit a `.delete /tick` patch for the
     // untouched broadcast field. Decode what was actually sent and check neither symptom.
     await adapter.syncNow()
-    await adapter.waitForOutboundDrain()
+    #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
     try await Task.sleep(for: .milliseconds(100))
 
     let decoder = JSONStateUpdateDecoder()
@@ -105,7 +105,7 @@ func testSnapshotForSyncDoesNotReplayUnchangedBroadcastFieldsAfterPerPlayerOnlyD
 
     // Second sync: nothing changed at all.
     await adapter.syncNow()
-    await adapter.waitForOutboundDrain()
+    #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
     try await Task.sleep(for: .milliseconds(100))
 
     let updates = (await transport.messages(for: session)).compactMap { try? decoder.decode(data: $0).update }

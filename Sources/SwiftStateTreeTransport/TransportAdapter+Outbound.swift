@@ -5,6 +5,7 @@
 
 import Foundation
 import SwiftStateTree
+import Logging
 
 extension TransportAdapter {
     /// Enqueues `data` for `sessionID`, in issue order with every other frame of this adapter.
@@ -22,13 +23,39 @@ extension TransportAdapter {
     }
 
     /// Enqueues pre-built frames: into the running sync cycle's element when one is open (the
-    /// cycle's frames become one writer element), otherwise as their own element.
+    /// cycle's frames become one writer element), otherwise as their own element. Frames for an
+    /// ended session (see `endedSessions`) are dropped here.
     func enqueueFrames(_ frames: [SessionFrame]) {
-        guard !frames.isEmpty else { return }
+        let live = endedSessions.isEmpty ? frames : frames.filter { !endedSessions.contains($0.sessionID) }
+        guard !live.isEmpty else { return }
         if cycleFrames != nil {
-            cycleFrames?.append(contentsOf: frames)
+            cycleFrames?.append(contentsOf: live)
         } else {
-            outboundWriter.enqueue(frames)
+            writeElement(live)
+        }
+    }
+
+    /// Hands one element to the writer. When the writer drops it over its ceiling, every session
+    /// it addressed is ended and disconnected: those clients missed frames that later diffs
+    /// assume they have, so they must rejoin and get a fresh firstSync (#61 adds a per-session
+    /// policy).
+    func writeElement(_ frames: [SessionFrame]) {
+        guard outboundWriter.enqueue(frames) == .droppedOverCeiling else { return }
+        var addressed: [SessionID] = []
+        var seen = Set<SessionID>()
+        for frame in frames where seen.insert(frame.sessionID).inserted {
+            addressed.append(frame.sessionID)
+        }
+        outboundCeilingDisconnects += addressed.count
+        outboundLogger.error("Disconnecting sessions after an outbound frame drop (writer ceiling)", metadata: [
+            "landID": .string(landIDForOutbound),
+            "sessions": .string(addressed.map(\.rawValue).joined(separator: ",")),
+            "serverInitiatedDisconnectsTotal": .stringConvertible(outboundCeilingDisconnects),
+        ])
+        let transport = self.transport
+        for sessionID in addressed {
+            endedSessions.insert(sessionID)
+            Task { await transport.closeSession(sessionID) }
         }
     }
 
@@ -50,7 +77,7 @@ extension TransportAdapter {
         let frames = cycleFrames ?? []
         cycleFrames = nil
         if !frames.isEmpty {
-            outboundWriter.enqueue(frames)
+            writeElement(frames)
         }
     }
 
@@ -75,10 +102,15 @@ extension TransportAdapter {
         outboundWriter.backlog
     }
 
+    /// Sessions disconnected by the server after a writer ceiling drop (tests and diagnostics).
+    func outboundCeilingDisconnectCount() -> Int {
+        outboundCeilingDisconnects
+    }
+
     /// Waits until every frame enqueued so far was handed to the transport, or `timeout`
     /// passes. Returns whether the backlog drained. For tests and diagnostics: a sync cycle
-    /// never waits for the writer.
-    @discardableResult
+    /// never waits for the writer. Only covers frames enqueued so far: a follow-up cycle that
+    /// has not run yet enqueues later, so wait for its frames before asserting exact counts.
     func waitForOutboundDrain(timeout: Duration = .seconds(5)) async -> Bool {
         let deadline = ContinuousClock.now + timeout
         while outboundWriter.backlog.elements > 0 {
@@ -86,5 +118,51 @@ extension TransportAdapter {
             try? await safeTaskSleep(for: .milliseconds(1))
         }
         return true
+    }
+}
+
+/// Recently ended sessions of one adapter: frames for them are dropped, also unstamped ones, so
+/// a late frame for an ended connection (an action response, an error) never reaches a later
+/// connection that reuses the `SessionID`. Bounded: late frames follow the end within moments,
+/// so only the most recent `capacity` sessions are kept.
+struct EndedSessionSet {
+    /// Session → insertion sequence; eviction only removes the entry it inserted.
+    private var members: [SessionID: UInt64] = [:]
+    private var order: [(sessionID: SessionID, seq: UInt64)] = []
+    private var head = 0
+    private var nextSeq: UInt64 = 0
+    let capacity: Int
+
+    init(capacity: Int = 4096) {
+        self.capacity = max(1, capacity)
+    }
+
+    var isEmpty: Bool { members.isEmpty }
+
+    func contains(_ sessionID: SessionID) -> Bool {
+        members[sessionID] != nil
+    }
+
+    mutating func insert(_ sessionID: SessionID) {
+        guard members[sessionID] == nil else { return }
+        nextSeq += 1
+        members[sessionID] = nextSeq
+        order.append((sessionID, nextSeq))
+        while members.count > capacity, head < order.count {
+            let oldest = order[head]
+            head += 1
+            if members[oldest.sessionID] == oldest.seq {
+                members.removeValue(forKey: oldest.sessionID)
+            }
+        }
+        if head >= capacity {
+            order.removeFirst(head)
+            head = 0
+        }
+    }
+
+    /// The session joined again (a new connection registered under the same `SessionID`).
+    mutating func remove(_ sessionID: SessionID) {
+        members.removeValue(forKey: sessionID)
     }
 }

@@ -54,6 +54,13 @@ public protocol Transport: Actor {
     /// `connectionGeneration` differs from the session's current connection. The default
     /// implementation ignores generations and forwards to `sendBatch` with `.session` targets.
     func sendSessionFrames(_ frames: [SessionFrame]) async
+
+    /// Closes one session's connection from the server side. `TransportAdapter` calls it when it
+    /// had to drop a frame for the session (outbound writer ceiling): the client reconnects and
+    /// rejoins with a fresh firstSync instead of staying on state it can no longer patch.
+    ///
+    /// The default does nothing; the adapter still stops sending to the session.
+    func closeSession(_ sessionID: SessionID) async
 }
 
 extension Transport {
@@ -63,6 +70,9 @@ extension Transport {
             send(data, to: target)
         }
     }
+
+    /// Default: cannot close sessions.
+    public func closeSession(_ sessionID: SessionID) async {}
 
     /// Default: no generation check; forwards to `sendBatch`.
     public func sendSessionFrames(_ frames: [SessionFrame]) async {

@@ -46,6 +46,9 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     
     /// Maps sessionID to clientID for connected sessions
     private var sessionToClient: [SessionID: ClientID] = [:]
+    /// Connection generation read when the session's connection was accepted (passed to the
+    /// land's adapter on join, so its frames are stamped for that connection).
+    private var sessionToConnectionGeneration: [SessionID: UInt64] = [:]
     
     /// Maps sessionID to bound landID after successful join
     private var sessionToBoundLandID: [SessionID: LandID] = [:]
@@ -127,6 +130,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     public func onConnect(sessionID: SessionID, clientID: ClientID, authInfo: AuthenticatedInfo? = nil) async {
         sessionToClient[sessionID] = clientID
         sessionHandshakePhase[sessionID] = .awaitingJoin  // Initialize handshake state
+        sessionToConnectionGeneration[sessionID] = await transport.connectionGeneration(for: sessionID)
         
         if let authInfo = authInfo {
             sessionToAuthInfo[sessionID] = authInfo
@@ -147,6 +151,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         
         // Clean up session state
         sessionToClient.removeValue(forKey: sessionID)
+        sessionToConnectionGeneration.removeValue(forKey: sessionID)
         sessionToAuthInfo.removeValue(forKey: sessionID)
         sessionToBoundLandID.removeValue(forKey: sessionID)
         sessionHandshakePhase.removeValue(forKey: sessionID)  // Clean up handshake state
@@ -453,7 +458,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 playerSession: playerSession,
                 clientID: clientID,
                 sessionID: sessionID,
-                authInfo: jwtAuthInfo
+                authInfo: jwtAuthInfo,
+                connectionGeneration: sessionToConnectionGeneration[sessionID]
             ) {
                 // IMPORTANT: Send JoinResponse FIRST, then StateSnapshot
                 // This ensures client knows join succeeded before receiving state

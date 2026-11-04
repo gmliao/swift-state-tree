@@ -27,6 +27,16 @@ public struct SessionFrame: Sendable {
     }
 }
 
+/// Outcome of `OutboundWriter.enqueue`.
+enum OutboundEnqueueResult: Equatable {
+    case accepted
+    /// Dropped: the backlog was over its byte ceiling. The caller must disconnect the sessions
+    /// the element addressed; their clients rejoin and get a fresh firstSync.
+    case droppedOverCeiling
+    /// Dropped: the writer was finished (teardown).
+    case droppedAfterFinish
+}
+
 /// Backlog of an `OutboundWriter`, for tests and diagnostics.
 public struct OutboundBacklog: Sendable, Equatable {
     /// Elements enqueued but not yet handed to the transport.
@@ -71,8 +81,14 @@ private final class OutboundWriterCounters: @unchecked Sendable {
 /// element to `Transport.sendSessionFrames` and awaits it before taking the next.
 ///
 /// The backlog is bounded by `maxBytes`: an element that would push it over is dropped, counted
-/// and logged (the per-session policy is #61). An element larger than the whole ceiling is still
-/// accepted when the backlog is empty, so a single large frame cannot wedge a land.
+/// and logged, and `enqueue` returns `.droppedOverCeiling` so the adapter disconnects the
+/// sessions it addressed (a dropped frame must never leave a client silently on wrong state).
+/// An element larger than the whole ceiling is still accepted when the backlog is empty, so a
+/// single large frame cannot wedge a land.
+///
+/// The ceiling measures only the writer→transport handoff. `WebSocketTransport.sendSessionFrames`
+/// yields into each session's own stream and returns, so socket backpressure from a slow client
+/// never reaches this backlog: it is not a slow-client memory bound. That policy is #61.
 final class OutboundWriter: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: AsyncStream<[SessionFrame]>.Continuation?
@@ -102,6 +118,7 @@ final class OutboundWriter: @unchecked Sendable {
         self.counters = counters
         self.consumer = Task {
             for await element in stream {
+                if Task.isCancelled { break }
                 let start = ContinuousClock.now
                 await transport.sendSessionFrames(element)
                 onSent?(ContinuousClock.now - start, element.count)
@@ -114,10 +131,10 @@ final class OutboundWriter: @unchecked Sendable {
         continuation?.finish()
     }
 
-    /// Enqueues one element (frames in send order). Synchronous; returns whether it was accepted.
+    /// Enqueues one element (frames in send order). Synchronous.
     @discardableResult
-    func enqueue(_ frames: [SessionFrame]) -> Bool {
-        guard !frames.isEmpty else { return true }
+    func enqueue(_ frames: [SessionFrame]) -> OutboundEnqueueResult {
+        guard !frames.isEmpty else { return .accepted }
         let bytes = frames.reduce(0) { $0 + $1.data.count }
 
         lock.lock()
@@ -126,7 +143,7 @@ final class OutboundWriter: @unchecked Sendable {
             counters.lock.lock()
             counters.droppedAfterFinish += 1
             counters.lock.unlock()
-            return false
+            return .droppedAfterFinish
         }
         counters.lock.lock()
         if counters.elements > 0, counters.bytes + bytes > maxBytes {
@@ -137,20 +154,20 @@ final class OutboundWriter: @unchecked Sendable {
             let snapshot = (counters.elements, counters.bytes, counters.dropped)
             counters.lock.unlock()
             if shouldLog {
-                logger.error("Outbound writer backlog over its ceiling; dropping frames", metadata: [
+                logger.error("Outbound writer backlog over its ceiling; dropping frames and disconnecting their sessions", metadata: [
                     "queuedElements": .stringConvertible(snapshot.0),
                     "queuedBytes": .stringConvertible(snapshot.1),
                     "maxBytes": .stringConvertible(maxBytes),
                     "droppedTotal": .stringConvertible(snapshot.2),
                 ])
             }
-            return false
+            return .droppedOverCeiling
         }
         counters.elements += 1
         counters.bytes += bytes
         counters.lock.unlock()
         continuation.yield(frames)
-        return true
+        return .accepted
     }
 
     var backlog: OutboundBacklog {
@@ -167,31 +184,53 @@ final class OutboundWriter: @unchecked Sendable {
     }
 
     /// Stops accepting frames, lets the consumer hand the queued ones to the transport and waits
-    /// for that up to `timeout`. Logs what is left when the wait times out.
-    func finish(timeout: Duration) async {
+    /// for that up to `timeout`. Returns within about `timeout` even when the transport never
+    /// returns: the wait races the consumer against a deadline in unstructured tasks (a task
+    /// group would have to join the consumer), then cancels the consumer and logs what is left.
+    /// Returns whether the backlog drained.
+    @discardableResult
+    func finish(timeout: Duration) async -> Bool {
         takeContinuation()?.finish()
 
         let consumer = self.consumer
-        let drained = await withTaskGroup(of: Bool.self) { group in
-            group.addTask {
+        let drained = await withCheckedContinuation { (result: CheckedContinuation<Bool, Never>) in
+            let once = OutboundResumeOnce(result)
+            Task {
                 await consumer.value
-                return true
+                once.resume(true)
             }
-            group.addTask {
+            Task {
                 try? await safeTaskSleep(for: timeout)
-                return false
+                once.resume(false)
             }
-            let first = await group.next() ?? false
-            group.cancelAll()
-            return first
         }
         if !drained {
+            consumer.cancel()
             let backlog = counters.backlog
-            logger.warning("Outbound writer did not drain before teardown timeout", metadata: [
+            logger.warning("Outbound writer did not drain before teardown timeout; frames left unsent", metadata: [
                 "queuedElements": .stringConvertible(backlog.elements),
                 "queuedBytes": .stringConvertible(backlog.bytes),
             ])
         }
+        return drained
+    }
+}
+
+/// Resumes a continuation once; later calls are ignored.
+private final class OutboundResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    init(_ continuation: CheckedContinuation<Bool, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(_ value: Bool) {
+        lock.lock()
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: value)
     }
 }
 

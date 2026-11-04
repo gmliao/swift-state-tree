@@ -242,7 +242,7 @@ private struct DirtyWindowFixture {
         }
         hold.release()
         await cycle.value
-        await adapter.waitForOutboundDrain()
+        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
     }
 }
 
@@ -278,7 +278,7 @@ struct TransportAdapterSyncDirtyWindowTests {
     func mutationInsideKeeperWindowIsSentNextCycle(useSnapshotForSync: Bool) async throws {
         let f = try await DirtyWindowFixture.make(envConfig: makeDirtyWindowEnvConfig(useSnapshotForSync: useSnapshotForSync))
         await f.adapter.syncNow()
-        await f.adapter.waitForOutboundDrain()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         // A sync cycle has taken its copy; the keeper mutates `a` before the cycle ends.
         guard await f.keeper.beginSync(clearDirtyFlags: true) != nil else {
@@ -291,7 +291,7 @@ struct TransportAdapterSyncDirtyWindowTests {
         // Next cycle: `b` (same broadcast category) is dirty too, so no `.all` fallback.
         try await f.set("b", 2)
         await f.adapter.syncNow()
-        await f.adapter.waitForOutboundDrain()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         let client = await f.clientView(from: f.initialView)
         let server = await f.serverView()
@@ -304,16 +304,16 @@ struct TransportAdapterSyncDirtyWindowTests {
         // snapshot extraction on, auto-switch off.
         let f = try await DirtyWindowFixture.make(envConfig: makeDirtyWindowEnvConfig(useSnapshotForSync: true))
         await f.adapter.syncNow()
-        await f.adapter.waitForOutboundDrain()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         try await f.set("score", 5)
         await f.adapter.syncBroadcastOnly()
-        await f.adapter.waitForOutboundDrain()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         // A broadcast field is dirty in the next cycle, so it is not an `.all` cycle.
         try await f.set("a", 1)
         await f.adapter.syncNow()
-        await f.adapter.waitForOutboundDrain()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         let client = await f.clientView(from: f.initialView)
         let server = await f.serverView()
@@ -343,7 +343,7 @@ struct TransportAdapterSyncDirtyWindowTests {
 
         try await f.set("b", 2)
         await f.adapter.syncNow()
-        await f.adapter.waitForOutboundDrain()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         let client = await f.clientView(from: f.initialView)
         let server = await f.serverView()
@@ -355,7 +355,7 @@ struct TransportAdapterSyncDirtyWindowTests {
     func rejectedSyncRequestLosesNoMutation() async throws {
         let f = try await DirtyWindowFixture.make(envConfig: makeDirtyWindowEnvConfig(useSnapshotForSync: true))
         await f.adapter.syncNow()
-        await f.adapter.waitForOutboundDrain()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         try await f.set("a", 1)  // something for the held cycle to send
         try await f.syncNowHoldingSend {
@@ -363,12 +363,12 @@ struct TransportAdapterSyncDirtyWindowTests {
             // Rejected: the held cycle still owns the sync flag.
             #expect(await f.keeper.beginSync(clearDirtyFlags: true) == nil)
             await f.adapter.syncNow()
-            await f.adapter.waitForOutboundDrain()
+            #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
         }
 
         try await f.set("a", 3)
         await f.adapter.syncNow()
-        await f.adapter.waitForOutboundDrain()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         let client = await f.clientView(from: f.initialView)
         let server = await f.serverView()
@@ -380,7 +380,7 @@ struct TransportAdapterSyncDirtyWindowTests {
     func inFlightCycleMutationsReachClient(useSnapshotForSync: Bool) async throws {
         let f = try await DirtyWindowFixture.make(envConfig: makeDirtyWindowEnvConfig(useSnapshotForSync: useSnapshotForSync))
         await f.adapter.syncNow()
-        await f.adapter.waitForOutboundDrain()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         try await f.set("a", 1)  // something for the held cycle to send
         try await f.syncNowHoldingSend {
@@ -393,7 +393,7 @@ struct TransportAdapterSyncDirtyWindowTests {
         try await f.set("a", 2)
         try await f.set("bonus", 1)
         await f.adapter.syncNow()
-        await f.adapter.waitForOutboundDrain()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         let client = await f.clientView(from: f.initialView)
         let server = await f.serverView()

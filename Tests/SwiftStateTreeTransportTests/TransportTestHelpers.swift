@@ -63,7 +63,7 @@ func simulateRouterJoin<State: StateNodeProtocol>(
     // In tests we call it directly since we don't have the actual WebSocket message flow.
     await adapter.syncStateForNewPlayer(playerID: finalPlayerID, sessionID: sessionID)
     // The adapter's outbound writer sends asynchronously; let firstSync reach the transport.
-    await adapter.waitForOutboundDrain()
+    #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
 }
 
 /// Holds one sync cycle in flight at `TransportAdapter.debugCycleHoldBeforeEndSync`: after the

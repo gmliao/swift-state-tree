@@ -209,8 +209,42 @@ struct TransportAdapterOutboundWriterTests {
         #expect(leaked.isEmpty, "the new connection must not get the old connection's frames; got \(leaked.count)")
     }
 
-    @Test("blocked transport: the backlog counter grows, the ceiling drops and counts, release drains in order")
-    func backlogCounterAndCeiling() async throws {
+    @Test("after a disconnect, late frames for the session are dropped, also without a generation; a rejoin sends again")
+    func lateFramesForEndedSessionAreDropped() async throws {
+        // No generations: BlockingTransport is not a WebSocketTransport.
+        let transport = BlockingTransport()
+        let keeper = LandKeeper<WriterTestState>(definition: writerLand("writer-ended"), initialState: WriterTestState())
+        let adapter = TransportAdapter<WriterTestState>(
+            keeper: keeper,
+            transport: transport,
+            landID: "writer-ended",
+            transportEnvConfig: writerEnvConfig(),
+            encodingConfig: .json
+        )
+        await transport.setDelegate(adapter)
+        let session = SessionID("wr-ended-session")
+        let client = ClientID("wr-ended-client")
+        let player = PlayerID("wr-ended-player")
+        await adapter.onConnect(sessionID: session, clientID: client)
+        try await simulateRouterJoin(adapter: adapter, keeper: keeper, sessionID: session, clientID: client, playerID: player)
+        try await waitUntilTransportIdle(transport)
+
+        await adapter.onDisconnect(sessionID: session, clientID: client)
+        // A late frame for the ended connection, e.g. an action response still in flight.
+        await adapter.enqueueOutbound(Data("wr-late-frame".utf8), to: session)
+        #expect(await adapter.waitForOutboundDrain())
+        #expect(!transport.frames(for: session).contains { contains($0, "wr-late-frame") }, "late frame for an ended session must be dropped")
+
+        // A new connection under the same SessionID joins: frames flow again.
+        await adapter.onConnect(sessionID: session, clientID: client)
+        try await simulateRouterJoin(adapter: adapter, keeper: keeper, sessionID: session, clientID: client, playerID: player)
+        await adapter.enqueueOutbound(Data("wr-after-rejoin".utf8), to: session)
+        #expect(await adapter.waitForOutboundDrain())
+        #expect(transport.frames(for: session).contains { contains($0, "wr-after-rejoin") })
+    }
+
+    @Test("ceiling: a dropped element disconnects the sessions it addressed; others are unaffected; no later frame reaches them")
+    func ceilingDropDisconnectsAddressedSessions() async throws {
         let transport = BlockingTransport()
         let keeper = LandKeeper<WriterTestState>(definition: writerLand("writer-ceiling"), initialState: WriterTestState())
         let adapter = TransportAdapter<WriterTestState>(
@@ -221,36 +255,36 @@ struct TransportAdapterOutboundWriterTests {
             encodingConfig: .json
         )
         await transport.setDelegate(adapter)
-        let session = SessionID("wr-ceiling-session")
-        let client = ClientID("wr-ceiling-client")
-        await adapter.onConnect(sessionID: session, clientID: client)
-        try await simulateRouterJoin(
-            adapter: adapter, keeper: keeper,
-            sessionID: session, clientID: client, playerID: PlayerID("wr-ceiling-player")
-        )
+        let sessionA = SessionID("wr-ceiling-a")
+        let sessionB = SessionID("wr-ceiling-b")
+        let playerA = PlayerID("wr-ceiling-player-a")
+        let playerB = PlayerID("wr-ceiling-player-b")
+        for (session, player) in [(sessionA, playerA), (sessionB, playerB)] {
+            let client = ClientID("client-\(session.rawValue)")
+            await adapter.onConnect(sessionID: session, clientID: client)
+            try await simulateRouterJoin(adapter: adapter, keeper: keeper, sessionID: session, clientID: client, playerID: player)
+        }
         try await waitUntilTransportIdle(transport)
 
         transport.block()
-        // First element goes to the transport and blocks there; the rest wait in the writer.
+        // A's events only: the first element blocks in the transport, the rest wait in the writer
+        // until the ceiling drops one.
         for n in 0..<200 {
-            await adapter.sendEvent(AnyServerEvent(WriterEvent(message: "wr-fill-\(n)")), to: .all)
+            await adapter.sendEvent(AnyServerEvent(WriterEvent(message: "wr-fill-\(n)")), to: .player(playerA))
         }
         let backlog = await adapter.outboundBacklog()
         #expect(backlog.elements > 0 && backlog.bytes > 0, "backlog while blocked: \(backlog)")
         #expect(backlog.bytes <= 4096, "the ceiling bounds the queued bytes: \(backlog)")
         #expect(backlog.dropped > 0, "elements over the ceiling are dropped and counted: \(backlog)")
+        #expect(await adapter.outboundCeilingDisconnectCount() == 1, "one session addressed by the dropped elements")
 
         transport.release()
-        try await orderedWaitUntil("the backlog to drain") {
-            transport.frameCount > 0
-        }
-        let deadline = ContinuousClock.now + .seconds(3)
-        while await adapter.outboundBacklog().elements > 0, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(2))
-        }
-        #expect(await adapter.outboundBacklog().elements == 0)
-        #expect(await adapter.outboundBacklog().bytes == 0)
-        let delivered = transport.frames(for: session)
+        #expect(await adapter.waitForOutboundDrain())
+        try await orderedWaitUntil("A to be closed") { transport.closedSessions.contains(sessionA) }
+        #expect(transport.closedSessions == [sessionA], "only the addressed session is closed: \(transport.closedSessions)")
+
+        // Kept frames stay in issue order; nothing after the drop reaches A.
+        let delivered = transport.frames(for: sessionA)
             .map { String(decoding: $0, as: UTF8.self) }
             .compactMap { text -> Int? in
                 guard let range = text.range(of: "wr-fill-") else { return nil }
@@ -258,6 +292,23 @@ struct TransportAdapterOutboundWriterTests {
             }
         #expect(delivered == delivered.sorted(), "kept frames stay in issue order")
         #expect(delivered.first == 0, "the first frame was not dropped")
+
+        let aBefore = transport.frames(for: sessionA).count
+        await adapter.sendEvent(AnyServerEvent(WriterEvent(message: "wr-after-drop")), to: .all)
+        let envelope = ActionEnvelope(
+            typeIdentifier: String(describing: WriterSetAction.self),
+            payload: AnyCodable(WriterSetAction(stamp: 9))
+        )
+        _ = try await keeper.handleActionEnvelope(
+            envelope, playerID: playerB, clientID: ClientID("client-\(sessionB.rawValue)"), sessionID: sessionB
+        )
+        await adapter.syncNow()
+        #expect(await adapter.waitForOutboundDrain())
+        try await orderedWaitUntil("B to get the later frames") {
+            transport.frames(for: sessionB).contains { contains($0, writerMarker(9)) }
+        }
+        #expect(transport.frames(for: sessionA).count == aBefore, "no frame reaches A after its disconnect")
+        #expect(transport.frames(for: sessionB).contains { contains($0, "wr-after-drop") }, "B is unaffected")
     }
 
     @Test("teardown drains queued frames; frames enqueued after it are not sent")
@@ -297,6 +348,39 @@ struct TransportAdapterOutboundWriterTests {
         await adapter.sendEvent(AnyServerEvent(WriterEvent(message: "wr-after-teardown")), to: .all)
         try await Task.sleep(for: .milliseconds(50))
         #expect(!transport.frames(for: session).contains { contains($0, "wr-after-teardown") })
+    }
+
+    @Test("teardown is bounded: onLandDestroyed returns within the deadline when the transport never returns")
+    func teardownIsBoundedWhenTransportNeverReturns() async throws {
+        let transport = BlockingTransport()
+        let keeper = LandKeeper<WriterTestState>(definition: writerLand("writer-stuck"), initialState: WriterTestState())
+        let destroyed = OrderedSendFlag()
+        let adapter = TransportAdapter<WriterTestState>(
+            keeper: keeper,
+            transport: transport,
+            landID: "writer-stuck",
+            onLandDestroyed: { destroyed.set() },
+            transportEnvConfig: writerEnvConfig(),
+            encodingConfig: .json
+        )
+        await transport.setDelegate(adapter)
+        let session = SessionID("wr-stuck-session")
+        let client = ClientID("wr-stuck-client")
+        await adapter.onConnect(sessionID: session, clientID: client)
+        try await simulateRouterJoin(
+            adapter: adapter, keeper: keeper,
+            sessionID: session, clientID: client, playerID: PlayerID("wr-stuck-player")
+        )
+        try await waitUntilTransportIdle(transport)
+
+        transport.block()  // not released before teardown returns
+        await adapter.sendEvent(AnyServerEvent(WriterEvent(message: "wr-stuck")), to: .all)
+        let start = ContinuousClock.now
+        await adapter.onLandDestroyed()
+        let elapsed = ContinuousClock.now - start
+        #expect(destroyed.isSet, "the destroy callback runs although the transport never returned")
+        #expect(elapsed < TransportAdapter<WriterTestState>.outboundTeardownTimeout + .seconds(1), "teardown took \(elapsed)")
+        transport.release()
     }
 
     @Test("the writer's consumer does not keep the adapter alive")

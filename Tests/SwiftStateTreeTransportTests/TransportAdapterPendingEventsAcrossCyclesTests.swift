@@ -389,7 +389,7 @@ private struct KeptEventsFixture {
             )
         }
         await adapter.syncNow()
-        await adapter.waitForOutboundDrain()
+        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
         await settle(transport)
         transport.recorder.clear()
         let fixture = KeptEventsFixture(keeper: keeper, adapter: adapter, transport: transport, members: members)
@@ -412,13 +412,15 @@ private struct KeptEventsFixture {
     }
 
     func broadcastEvent(_ message: String) async {
+        // opcodeMessagePack queues events for the next cycle; nothing to drain here (and some
+        // tests call this with the transport gated).
         await adapter.sendEvent(AnyServerEvent(KeptEventsEvent(message: message)), to: .all)
-        await adapter.waitForOutboundDrain()
     }
 
     func targetedEvent(_ message: String, to member: KeptEventsMember) async {
+        // opcodeMessagePack queues events for the next cycle; nothing to drain here (and some
+        // tests call this with the transport gated).
         await adapter.sendEvent(AnyServerEvent(KeptEventsEvent(message: message)), to: .player(member.player))
-        await adapter.waitForOutboundDrain()
     }
 
     /// Runs `syncNow` held in flight, runs `duringBatch`, then lets the cycle finish. Before
@@ -559,7 +561,7 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         await f.settle()
 
         await f.adapter.syncNow()
-        await f.adapter.waitForOutboundDrain()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
         try await f.waitForCount("bc-late", f.a)
         try await f.waitForCount("tg-late", f.a)
         let frames = f.frames(f.a)
@@ -582,12 +584,12 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         await f.settle()
         // Cycle N+1: nothing new, only the kept event.
         await f.adapter.syncNow()
-        await f.adapter.waitForOutboundDrain()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
         await f.settle()
         try await f.waitForCount("bc-2", f.a)
         // Cycle N+2: nothing at all.
         await f.adapter.syncNow()
-        await f.adapter.waitForOutboundDrain()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
         await f.settle()
 
         let frames = f.frames(f.a)
@@ -608,7 +610,7 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         await f.broadcastEvent("bc-drop")
         await f.targetedEvent("tg-drop", to: f.a)
         await f.adapter.syncNow()
-        await f.adapter.waitForOutboundDrain()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
         await f.settle()
         var counts = await f.adapter.pendingEventCounts()
         #expect(counts.targeted == 0 && counts.broadcast == 0, "syncNow drops them; left \(counts)")
@@ -617,7 +619,7 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         await f.broadcastEvent("bc-drop-2")
         await f.targetedEvent("tg-drop-2", to: f.a)
         await f.adapter.syncBroadcastOnly()
-        await f.adapter.waitForOutboundDrain()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
         await f.settle()
         counts = await f.adapter.pendingEventCounts()
         #expect(counts.targeted == 0 && counts.broadcast == 0, "broadcast-only drops them; left \(counts)")
@@ -632,7 +634,7 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         await f.broadcastEvent("bc-window")
         await f.targetedEvent("tg-window-b", to: f.b)
         await f.adapter.syncNow()
-        await f.adapter.waitForOutboundDrain()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
         try await f.waitForCount("bc-window", f.a)
 
         #expect(count("bc-window", in: f.frames(f.a)) == 1, "the eligible session gets the broadcast event")
@@ -641,7 +643,11 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         #expect(counts.targeted == 0 && counts.broadcast == 0, "the cycle consumed both; left \(counts)")
     }
 
-    @Test("7: without periodic sync, an event kept by a cycle arrives through the follow-up cycle")
+    // Since #60 the cycle has no suspension point between reading the event queue and its
+    // cleanup, so the read→cleanup window (#77 marks) cannot be reached from outside; the marks
+    // stay covered by the PendingEventManager unit tests. This test queues its event while the
+    // cycle is held after cleanup, before endSync, and checks the post-endSync follow-up.
+    @Test("7: without periodic sync, an event queued after a cycle's cleanup arrives through the post-endSync follow-up")
     func followUpDeliversKeptEventsWithoutPeriodicSync() async throws {
         let f = try await KeptEventsFixture.make(.tickless)
         #expect(f.keeper.hasPeriodicSync == false)
@@ -678,7 +684,11 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         #expect(count("bc-tick-3", in: frames) == 0, "the last kept event waits for the next periodic cycle")
     }
 
-    @Test("7c: without periodic sync, an event during every cycle gives events + 1 cycles, and syncNow returns after one")
+    // Since #60 the cycle has no suspension point between reading the event queue and its
+    // cleanup, so the read→cleanup window (#77 marks) cannot be reached from outside; the marks
+    // stay covered by the PendingEventManager unit tests. This test queues its event while the
+    // cycle is held after cleanup, before endSync, and checks the post-endSync follow-up.
+    @Test("7c: without periodic sync, an event queued after every cycle's cleanup gives events + 1 cycles, and syncNow returns after one")
     func followUpsAreBoundedAndDoNotBlockTheCaller() async throws {
         let f = try await KeptEventsFixture.make(.tickless)
         let events = 3
@@ -691,7 +701,7 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         let returned = KeptEventsFlag()
         let cycle = Task {
             await adapter.syncNow()
-            await adapter.waitForOutboundDrain()
+            #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
             returned.set()
         }
         for index in 1...events {
@@ -765,7 +775,11 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         #expect(count("tg-pre", in: f.frames(f.a)) == 1)
     }
 
-    @Test("7d: a sync loop that does not auto-start is not periodic sync; the follow-up still delivers")
+    // Since #60 the cycle has no suspension point between reading the event queue and its
+    // cleanup, so the read→cleanup window (#77 marks) cannot be reached from outside; the marks
+    // stay covered by the PendingEventManager unit tests. This test queues its event while the
+    // cycle is held after cleanup, before endSync, and checks the post-endSync follow-up.
+    @Test("7d: a sync loop that does not auto-start is not periodic sync; the post-endSync follow-up delivers an event queued after cleanup")
     func followUpWhenLoopsDoNotAutoStart() async throws {
         let f = try await KeptEventsFixture.make(.periodicSync, autoStartLoops: false)
         #expect(f.keeper.hasPeriodicSync == false)
@@ -881,7 +895,11 @@ struct LandKeeperHasPeriodicSyncTests {
 
 @Suite("Kept events and follow-up cycles under a debug freeze (#79)", .timeLimit(.minutes(1)))
 struct TransportAdapterKeptEventsDebugFreezeTests {
-    @Test("A follow-up requested while frozen is deferred, then runs on resume")
+    // Since #60 the cycle has no suspension point between reading the event queue and its
+    // cleanup, so the read→cleanup window (#77 marks) cannot be reached from outside; the marks
+    // stay covered by the PendingEventManager unit tests. This test queues its event while the
+    // cycle is held after cleanup, before endSync, and checks the post-endSync follow-up.
+    @Test("A post-endSync follow-up requested while frozen is deferred, then runs on resume")
     func followUpDeferredWhileFrozen() async throws {
         let f = try await KeptEventsFixture.make(.tickless)
         #expect(f.keeper.hasPeriodicSync == false)
@@ -912,7 +930,11 @@ struct TransportAdapterKeptEventsDebugFreezeTests {
         #expect(count("bc-frozen-follow-up", in: f.frames(f.a)) == 1, "the event was resent after resume")
     }
 
-    @Test("An event kept by the settle cycle arrives once after resume")
+    // Since #60 the cycle has no suspension point between reading the event queue and its
+    // cleanup, so the read→cleanup window (#77 marks) cannot be reached from outside; the marks
+    // stay covered by the PendingEventManager unit tests. This test queues its event while the
+    // cycle is held after cleanup, before endSync, and checks the post-endSync follow-up.
+    @Test("An event queued after the settle cycle's cleanup arrives once after resume")
     func eventKeptBySettleArrivesAfterResume() async throws {
         let f = try await KeptEventsFixture.make(.tickless)
         try await f.set("score", 2)

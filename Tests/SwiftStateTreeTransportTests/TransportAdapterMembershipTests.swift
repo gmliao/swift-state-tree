@@ -101,7 +101,7 @@ func testQueuedTargetedEventDroppedAfterRejoin() async throws {
     await transport.clear()
 
     await adapter.sendEvent(AnyServerEvent(MembershipMessageEvent(message: "old")), to: .player(player))
-    await adapter.waitForOutboundDrain()
+    #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
     await adapter.onDisconnect(sessionID: session1, clientID: client1)
 
     let session2 = SessionID("sess-2")
@@ -116,7 +116,7 @@ func testQueuedTargetedEventDroppedAfterRejoin() async throws {
     )
 
     await adapter.syncNow()
-    await adapter.waitForOutboundDrain()
+    #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
     let messages = await transport.recordedMessages()
     var opcode103Count = 0
@@ -165,7 +165,7 @@ func testQueuedTargetedEventDroppedAfterDuplicateLoginKick() async throws {
         metadata: nil
     )
     await adapter.onMessage(try messageEncoder.encode(joinA), from: sessionA)
-    await adapter.waitForOutboundDrain()
+    #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
     try await Task.sleep(for: .milliseconds(50))
     await transport.clear()
 
@@ -186,7 +186,7 @@ func testQueuedTargetedEventDroppedAfterDuplicateLoginKick() async throws {
         metadata: nil
     )
     await adapter.onMessage(try messageEncoder.encode(joinB), from: sessionB)
-    await adapter.waitForOutboundDrain()
+    #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
     try await Task.sleep(for: .milliseconds(50))
 
     // Verify lifecycle state
@@ -220,7 +220,7 @@ func testQueuedTargetedEventDroppedAfterDuplicateLoginKick() async throws {
     )
 
     await adapter.syncNow()
-    await adapter.waitForOutboundDrain()
+    #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
     let frames = await transport.recordedFrames()
     #expect(!frames.isEmpty, "Expected outbound messages after sync")
