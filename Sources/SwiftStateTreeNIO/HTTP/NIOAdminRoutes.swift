@@ -435,8 +435,9 @@ extension NIOAdminRoutes {
         "/admin/lands/:landID/debug/resume",
     ]
 
-    /// `POST .../debug/freeze`, `GET .../debug/projection?playerID=...`, `POST .../debug/resume`.
-    /// All require the `.admin` role.
+    /// `POST .../debug/freeze`, `GET .../debug/projection?playerID=...`,
+    /// `POST .../debug/resume?freezeToken=...` (or body `{ "freezeToken": ... }`; a token of an
+    /// already released freeze is a no-op). All require the `.admin` role.
     fileprivate func registerDebugStateRoutes(
         on router: NIOHTTPRouter,
         corsOptionsHandler: @escaping NIOHTTPHandler
@@ -461,7 +462,9 @@ extension NIOAdminRoutes {
             case .notFrozen:
                 return try errorResponse(.invalidRequest, "Land is not frozen", status: .conflict, landID: landID)
             case .settleTimedOut:
-                return try errorResponse(.internalError, "Settle sync did not start in time", status: .serviceUnavailable, landID: landID)
+                return try errorResponse(.internalError, "Drain or settle sync missed the deadline; the freeze was released", status: .serviceUnavailable, landID: landID)
+            case .released:
+                return try errorResponse(.invalidRequest, "The freeze was released before its settle finished", status: .conflict, landID: landID)
             case nil:
                 return try errorResponse(.internalError, "Debug state operation failed: \(error)", status: .internalServerError, landID: landID)
             }
@@ -516,7 +519,12 @@ extension NIOAdminRoutes {
             guard let landIDString = request.pathParam("landID") else {
                 return try errorResponse(.invalidRequest, "Missing landID", status: .badRequest)
             }
-            guard let resume = await landRealm.debugResume(landID: LandID(landIDString)) else {
+            // Token from the query (`?freezeToken=`) or a JSON body `{ "freezeToken": ... }`.
+            let bodyToken = request.body.flatMap { try? JSONDecoder().decode(DebugResumeRequest.self, from: $0) }?.freezeToken
+            guard let freezeToken = request.queryParam("freezeToken") ?? bodyToken, !freezeToken.isEmpty else {
+                return try errorResponse(.invalidRequest, "Missing freezeToken", status: .badRequest, landID: landIDString)
+            }
+            guard let resume = await landRealm.debugResume(landID: LandID(landIDString), freezeToken: freezeToken) else {
                 return try errorResponse(.notFound, "Land not found", status: .notFound, landID: landIDString)
             }
             return try NIOHTTPResponse.json(AdminAPIResponse.success(resume)).withCORS()

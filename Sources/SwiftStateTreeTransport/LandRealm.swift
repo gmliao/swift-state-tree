@@ -30,7 +30,7 @@ public actor LandRealm {
         nonisolated(unsafe) let removeLandClosure: (LandID) async -> Void
         nonisolated(unsafe) let debugFreezeClosure: (LandID) async throws -> DebugFreezeResponse?
         nonisolated(unsafe) let debugProjectionClosure: (LandID, PlayerID?) async throws -> DebugProjectionResponse?
-        nonisolated(unsafe) let debugResumeClosure: (LandID) async -> DebugResumeResponse?
+        nonisolated(unsafe) let debugResumeClosure: (LandID, String) async -> DebugResumeResponse?
         
         init<Server: LandServerProtocol>(
             landType: String,
@@ -74,8 +74,8 @@ public actor LandRealm {
                 try await server.debugProjection(landID: landID, playerID: playerID)
             }
 
-            self.debugResumeClosure = { landID in
-                await server.debugResume(landID: landID)
+            self.debugResumeClosure = { landID, freezeToken in
+                await server.debugResume(landID: landID, freezeToken: freezeToken)
             }
         }
     }
@@ -294,10 +294,6 @@ public actor LandRealm {
         }
     }
 
-    /// Get the current re-evaluation record for a specific land across all registered servers.
-    ///
-    /// - Parameter landID: The unique identifier for the land.
-    /// - Returns: JSON data for the record if found, nil otherwise.
     // MARK: - Debug freeze
 
     /// Servers to ask for `landID`: its land type's server when known, otherwise all of them.
@@ -328,16 +324,21 @@ public actor LandRealm {
         return nil
     }
 
-    /// Drop one freeze reference of a land. Returns nil if no server has the land.
-    public func debugResume(landID: LandID) async -> DebugResumeResponse? {
+    /// Drop one reference of the land's freeze identified by `freezeToken`.
+    /// Returns nil if no server has the land.
+    public func debugResume(landID: LandID, freezeToken: String) async -> DebugResumeResponse? {
         for serverInfo in debugCandidateServers(for: landID) {
-            if let response = await serverInfo.debugResumeClosure(landID) {
+            if let response = await serverInfo.debugResumeClosure(landID, freezeToken) {
                 return response
             }
         }
         return nil
     }
 
+    /// Get the current re-evaluation record for a specific land across all registered servers.
+    ///
+    /// - Parameter landID: The unique identifier for the land.
+    /// - Returns: JSON data for the record if found, nil otherwise.
     public func getReevaluationRecord(landID: LandID) async throws -> Data? {
         // Fast path: use landType routing when available
         if !landID.landType.isEmpty, let serverInfo = servers[landID.landType] {

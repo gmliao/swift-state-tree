@@ -1,7 +1,8 @@
 // Tests/SwiftStateTreeTests/LandKeeperDebugFreezeTests.swift
 //
-// LandKeeper.debugFreeze(): no tick body starts while frozen, in-flight work is drained before
-// it returns, and tickless inputs are held until debugResume() (#79).
+// LandKeeper.debugFreeze(generation:timeout:): no tick body starts while frozen, in-flight work
+// is drained before it returns, tickless inputs are held until debugResume(generation:), the
+// drain has a deadline, and a released generation cannot freeze again (#79).
 
 import Foundation
 import Testing
@@ -36,6 +37,12 @@ struct DebugFreezeSetValueAction: ActionPayload {
 
 @Payload
 struct DebugFreezeGatedAction: ActionPayload {
+    typealias Response = DebugFreezeAck
+    let value: String
+}
+
+@Payload
+struct DebugFreezeStuckAction: ActionPayload {
     typealias Response = DebugFreezeAck
     let value: String
 }
@@ -81,6 +88,11 @@ private func makeTicklessDefinition() -> LandDefinition<DebugFreezeKeeperState> 
             }
             HandleAction(DebugFreezeGatedAction.self, resolvers: DebugFreezeGatedResolver.self) {
                 (state: inout DebugFreezeKeeperState, action: DebugFreezeGatedAction, _: LandContext) in
+                state.value = action.value
+                return DebugFreezeAck(ok: true)
+            }
+            HandleAction(DebugFreezeStuckAction.self, resolvers: DebugFreezeStuckResolver.self) {
+                (state: inout DebugFreezeKeeperState, action: DebugFreezeStuckAction, _: LandContext) in
                 state.value = action.value
                 return DebugFreezeAck(ok: true)
             }
@@ -141,6 +153,17 @@ struct DebugFreezeGatedResolver: ContextResolver {
     }
 }
 
+/// Resolver that stays stuck until the test opens its gate; only `drainDeadline` uses it.
+struct DebugFreezeStuckResolver: ContextResolver {
+    typealias Output = DebugFreezeGatedResolverOutput
+    static let gate = DebugFreezeGate(open: false)
+
+    static func resolve(ctx: ResolverContext) async throws -> DebugFreezeGatedResolverOutput {
+        await gate.pass()
+        return DebugFreezeGatedResolverOutput(ok: true)
+    }
+}
+
 struct DebugFreezeGatedResolverOutput: ResolverOutput {
     let ok: Bool
 }
@@ -174,7 +197,7 @@ private func envelope<A: ActionPayload>(_ action: A) -> ActionEnvelope {
 
 // MARK: - Tests
 
-@Suite("LandKeeper debug freeze (#79)")
+@Suite("LandKeeper debug freeze (#79)", .timeLimit(.minutes(1)))
 struct LandKeeperDebugFreezeTests {
     let player = PlayerID("p1")
     let client = ClientID("c1")
@@ -198,14 +221,15 @@ struct LandKeeperDebugFreezeTests {
 
         let freezeDone = DoneFlag()
         let freeze = Task {
-            await keeper.debugFreeze()
+            let drained = await keeper.debugFreeze(generation: 1, timeout: .seconds(10))
             await freezeDone.set()
+            return drained
         }
         await settleScheduler()
         #expect(await freezeDone.isDone == false, "freeze returned while a tick was still running")
 
         await transport.gate.open()
-        await freeze.value
+        #expect(await freeze.value)
         await tick.value
         #expect(await keeper.currentState().ticks == 1)
         #expect(await keeper.isDebugFrozen())
@@ -214,7 +238,7 @@ struct LandKeeperDebugFreezeTests {
         await keeper.stepTickOnce()
         #expect(await keeper.currentState().ticks == 1)
 
-        await keeper.debugResume()
+        await keeper.debugResume(generation: 1)
         await keeper.stepTickOnce()
         #expect(await keeper.currentState().ticks == 2)
     }
@@ -227,7 +251,7 @@ struct LandKeeperDebugFreezeTests {
         )
         try await keeper.join(playerID: player, clientID: client, sessionID: session)
 
-        await keeper.debugFreeze()
+        #expect(await keeper.debugFreeze(generation: 1, timeout: .seconds(10)))
         let action = Task { [player, client, session] in
             try await keeper.handleActionEnvelope(
                 envelope(DebugFreezeSetValueAction(value: "after-resume")),
@@ -237,7 +261,7 @@ struct LandKeeperDebugFreezeTests {
         await settleScheduler()
         #expect(await keeper.currentState().value == "", "action applied while frozen")
 
-        await keeper.debugResume()
+        await keeper.debugResume(generation: 1)
         _ = try await action.value
         #expect(await keeper.currentState().value == "after-resume")
     }
@@ -261,17 +285,18 @@ struct LandKeeperDebugFreezeTests {
 
         let freezeDone = DoneFlag()
         let freeze = Task {
-            await keeper.debugFreeze()
+            let drained = await keeper.debugFreeze(generation: 1, timeout: .seconds(10))
             await freezeDone.set()
+            return drained
         }
         await settleScheduler()
         #expect(await freezeDone.isDone == false, "freeze returned while a resolver was in flight")
 
         await DebugFreezeGatedResolver.gate.open()
-        await freeze.value
+        #expect(await freeze.value)
         #expect(await keeper.currentState().value == "resolved", "drained action not applied before freeze returned")
         _ = try await action.value
-        await keeper.debugResume()
+        await keeper.debugResume(generation: 1)
     }
 
     @Test("Tickless: a client event sent while frozen is held and applied after resume")
@@ -282,7 +307,7 @@ struct LandKeeperDebugFreezeTests {
         )
         try await keeper.join(playerID: player, clientID: client, sessionID: session)
 
-        await keeper.debugFreeze()
+        #expect(await keeper.debugFreeze(generation: 1, timeout: .seconds(10)))
         let event = Task { [player, client, session] in
             try await keeper.handleClientEvent(
                 AnyClientEvent(DebugFreezeBumpEvent(amount: 3)),
@@ -292,8 +317,59 @@ struct LandKeeperDebugFreezeTests {
         await settleScheduler()
         #expect(await keeper.currentState().events == 0, "client event applied while frozen")
 
-        await keeper.debugResume()
+        await keeper.debugResume(generation: 1)
         try await event.value
         #expect(await eventually { await keeper.currentState().events == 3 })
+    }
+
+    @Test("The drain has a deadline: a stuck resolver makes freeze return false, and resume releases")
+    func drainDeadline() async throws {
+        let keeper = LandKeeper<DebugFreezeKeeperState>(
+            definition: makeTicklessDefinition(),
+            initialState: DebugFreezeKeeperState()
+        )
+        try await keeper.join(playerID: player, clientID: client, sessionID: session)
+
+        let gate = DebugFreezeStuckResolver.gate
+        let action = Task { [player, client, session] in
+            try await keeper.handleActionEnvelope(
+                envelope(DebugFreezeStuckAction(value: "late")),
+                playerID: player, clientID: client, sessionID: session
+            )
+        }
+        #expect(await eventually { await gate.waitingCount == 1 })
+
+        let start = ContinuousClock.now
+        #expect(await keeper.debugFreeze(generation: 1, timeout: .milliseconds(100)) == false)
+        #expect(ContinuousClock.now - start < .seconds(2), "drain ignored its deadline")
+        #expect(await keeper.isDebugFrozen(), "a missed deadline keeps the freeze until it is released")
+
+        await keeper.debugResume(generation: 1)
+        #expect(await keeper.isDebugFrozen() == false)
+
+        await gate.open()
+        _ = try await action.value
+        #expect(await keeper.currentState().value == "late")
+        #expect(await keeper.isDebugFrozen() == false, "late drain re-froze the land")
+    }
+
+    @Test("A released generation cannot freeze again; a stale resume does not release a newer freeze")
+    func generations() async throws {
+        let keeper = LandKeeper<DebugFreezeKeeperState>(
+            definition: makeTicklessDefinition(),
+            initialState: DebugFreezeKeeperState()
+        )
+        #expect(await keeper.debugFreeze(generation: 1, timeout: .seconds(1)))
+        await keeper.debugResume(generation: 1)
+
+        // A late freeze of generation 1 (e.g. an aborted settle) is refused.
+        #expect(await keeper.debugFreeze(generation: 1, timeout: .seconds(1)) == false)
+        #expect(await keeper.isDebugFrozen() == false)
+
+        #expect(await keeper.debugFreeze(generation: 2, timeout: .seconds(1)))
+        await keeper.debugResume(generation: 1)
+        #expect(await keeper.isDebugFrozen(), "a stale resume released a newer freeze")
+        await keeper.debugResume(generation: 2)
+        #expect(await keeper.isDebugFrozen() == false)
     }
 }

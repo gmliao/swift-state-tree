@@ -486,9 +486,9 @@ Used by E2E state convergence checks. They are registered only when the admin AP
 
 | Route | Effect |
 |---|---|
-| `POST /admin/lands/:landID/debug/freeze` | Pause the land (no tick or sync starts, tickless inputs are held), wait for in-flight work, then send one settle sync. Returns `{ freezeToken, tickId, freezeCount, reused }`. Freezes are reference counted; a freeze while frozen returns the same token without a new settle. |
+| `POST /admin/lands/:landID/debug/freeze` | Pause the land (no tick or sync starts, tickless inputs are held), wait for in-flight work, then send one settle sync. Returns `{ freezeToken, tickId, freezeCount, reused }`. Freezes are reference counted; a freeze while frozen returns the same token without a new settle. If in-flight work or a running sync keeps the drain and settle past their deadline (10 s), the freeze is released and the route answers 503; if the freeze is released before its settle finishes, it answers 409. |
 | `GET /admin/lands/:landID/debug/projection?playerID=...` | The state the settle sync described for that player (broadcast plus per-player fields), or broadcast fields only without `playerID`. Values use the state-wire shape (e.g. `Position2` as raw fixed-point integers). `membershipChanged` is true after a join or leave during the freeze. Answers 409 when the land is not frozen. |
-| `POST /admin/lands/:landID/debug/resume` | Drop one freeze reference; the last one resumes the land and runs syncs requested while frozen. |
+| `POST /admin/lands/:landID/debug/resume?freezeToken=...` | Drop one reference of the freeze that returned `freezeToken` (query or JSON body `{ "freezeToken": ... }`; 400 without it). The last one resumes the land and runs syncs requested while frozen. A token of a freeze that was already released (e.g. by auto-resume) is a no-op (`resumed: false`), so it cannot release a newer freeze. |
 
 A frozen land resumes on its own after `DEBUG_FREEZE_TIMEOUT_SECONDS` (default 30); every freeze call restarts the timer.
 

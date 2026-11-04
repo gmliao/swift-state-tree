@@ -77,10 +77,10 @@ public protocol LandServerProtocol<State> {
     /// - Throws: `DebugFreezeError.notFrozen` if the land is not frozen.
     func debugProjection(landID: LandID, playerID: PlayerID?) async throws -> DebugProjectionResponse?
 
-    /// Drop one freeze reference of a land.
+    /// Drop one reference of the land's freeze identified by `freezeToken`.
     ///
     /// - Returns: nil if the land does not exist on this server.
-    func debugResume(landID: LandID) async -> DebugResumeResponse?
+    func debugResume(landID: LandID, freezeToken: String) async -> DebugResumeResponse?
 }
 
 extension LandServerProtocol {
@@ -91,5 +91,5 @@ extension LandServerProtocol {
     public func debugProjection(landID: LandID, playerID: PlayerID?) async throws -> DebugProjectionResponse? { nil }
 
     /// Default: debug freeze is not supported, the land is reported as not found.
-    public func debugResume(landID: LandID) async -> DebugResumeResponse? { nil }
+    public func debugResume(landID: LandID, freezeToken: String) async -> DebugResumeResponse? { nil }
 }

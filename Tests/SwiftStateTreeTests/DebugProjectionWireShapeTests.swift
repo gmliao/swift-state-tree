@@ -75,7 +75,7 @@ func debugProjectionUsesWireShapeForFixedPoint() async throws {
     }
     let wire = try #require(wireValue, "state wire did not carry /position")
 
-    _ = try await adapter.debugFreeze()
+    let freeze = try await adapter.debugFreeze()
     let projection = try await adapter.debugProjection(playerID: player)
     #expect(projection.state["position"] == wire)
 
@@ -86,5 +86,5 @@ func debugProjectionUsesWireShapeForFixedPoint() async throws {
     #expect(vector?["x"] as? Int == 1500)
     #expect(vector?["y"] as? Int == -250)
 
-    _ = await adapter.debugResume()
+    _ = await adapter.debugResume(freezeToken: freeze.freezeToken)
 }

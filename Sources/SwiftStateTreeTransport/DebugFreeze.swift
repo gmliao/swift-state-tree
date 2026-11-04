@@ -58,11 +58,22 @@ public struct DebugProjectionResponse: Codable, Sendable, Equatable {
     }
 }
 
+/// Body of a debug resume request.
+public struct DebugResumeRequest: Codable, Sendable, Equatable {
+    /// The token returned by the freeze being released.
+    public let freezeToken: String
+
+    public init(freezeToken: String) {
+        self.freezeToken = freezeToken
+    }
+}
+
 /// Response of a debug resume.
 public struct DebugResumeResponse: Codable, Sendable, Equatable {
-    /// Freeze references left after this call.
+    /// References left on the current freeze after this call.
     public let freezeCount: Int
-    /// True when this call released the last reference and the land runs again.
+    /// True when this call released the last reference and the land runs again. False for a
+    /// token of a freeze that was already released (e.g. by auto-resume).
     public let resumed: Bool
 
     public init(freezeCount: Int, resumed: Bool) {
@@ -75,8 +86,11 @@ public struct DebugResumeResponse: Codable, Sendable, Equatable {
 public enum DebugFreezeError: Error, Sendable, Equatable {
     /// A projection was requested while the land is not frozen.
     case notFrozen
-    /// The settle cycle could not start before the deadline (another sync kept running).
+    /// Drain and settle missed their deadline (in-flight work or another sync kept running);
+    /// the freeze was released.
     case settleTimedOut
+    /// The freeze was released (resume or auto-resume) before its settle finished.
+    case released
 }
 
 // MARK: - Configuration
@@ -105,24 +119,27 @@ public enum DebugFreezeDefaults: Sendable {
 /// Per-adapter freeze state. Owned by `TransportAdapter`.
 struct DebugFreezeState<State: StateNodeProtocol>: Sendable {
     struct Settled: Sendable {
-        let token: String
         let state: State
         let tickId: Int64
         let membershipEpoch: UInt64
     }
 
-    /// Active freeze references.
+    /// Active references to the current freeze.
     var count = 0
+    /// Identifies the current (or last) freeze; bumped when a freeze starts from zero references.
+    var generation: UInt64 = 0
+    /// Token of the current freeze, returned to callers and required by resume.
+    var token = ""
     /// Settle in progress or finished for the current freeze.
     var settleTask: Task<Settled, Error>?
     var settled: Settled?
     /// Syncs requested while frozen, run on resume.
     var deferredSyncNow = false
     var deferredBroadcastOnly = false
-    /// Auto-resume timer; the generation ignores timers replaced by a later freeze call.
+    /// Auto-resume timer; its own generation ignores timers replaced by a later freeze call.
     var autoResumeTask: Task<Void, Never>?
     var autoResumeGeneration: UInt64 = 0
     var autoResumeTimeout: Duration = DebugFreezeDefaults.autoResumeTimeout()
-    /// How long the settle cycle waits for a running sync to finish.
+    /// Deadline for the drain plus the wait for `beginSync`.
     var settleDeadline: Duration = .seconds(10)
 }

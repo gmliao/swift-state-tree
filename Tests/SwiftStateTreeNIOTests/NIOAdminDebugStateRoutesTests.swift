@@ -51,7 +51,7 @@ struct NIOAdminDebugStateRoutesTests {
         }
     }
 
-    @Test("Freeze, projection and resume round trip; projection before freeze answers 409")
+    @Test("Freeze, projection and resume round trip; 409 before freeze; resume needs the current token")
     func roundTrip() async throws {
         let router = try await makeRouter(enableDebugStateRoutes: true)
         let base = "/admin/lands/\(landID.stringValue)/debug"
@@ -73,7 +73,15 @@ struct NIOAdminDebugStateRoutesTests {
         let broadcast = try #require(try await router.handle(request(.GET, "\(base)/projection")))
         #expect(try decode(DebugProjectionResponse.self, from: broadcast).playerID == nil)
 
-        let resume = try #require(try await router.handle(request(.POST, "\(base)/resume")))
+        let missingToken = try #require(try await router.handle(request(.POST, "\(base)/resume")))
+        #expect(missingToken.status == .badRequest)
+
+        let stale = try #require(try await router.handle(request(.POST, "\(base)/resume?freezeToken=old-token")))
+        #expect(stale.status == .ok)
+        #expect(try decode(DebugResumeResponse.self, from: stale) == DebugResumeResponse(freezeCount: 1, resumed: false))
+
+        let body = try JSONEncoder().encode(DebugResumeRequest(freezeToken: freezeBody.freezeToken))
+        let resume = try #require(try await router.handle(request(.POST, "\(base)/resume", body: body)))
         #expect(resume.status == .ok)
         #expect(try decode(DebugResumeResponse.self, from: resume) == DebugResumeResponse(freezeCount: 0, resumed: true))
     }
@@ -83,7 +91,7 @@ struct NIOAdminDebugStateRoutesTests {
 
 private func debugRoutes(for id: LandID = landID) -> [(HTTPMethod, String)] {
     let base = "/admin/lands/\(id.stringValue)/debug"
-    return [(.POST, "\(base)/freeze"), (.GET, "\(base)/projection"), (.POST, "\(base)/resume")]
+    return [(.POST, "\(base)/freeze"), (.GET, "\(base)/projection"), (.POST, "\(base)/resume?freezeToken=t")]
 }
 
 private func makeRouter(enableDebugStateRoutes: Bool) async throws -> NIOHTTPRouter {
@@ -99,12 +107,15 @@ private func makeRouter(enableDebugStateRoutes: Bool) async throws -> NIOHTTPRou
     return router
 }
 
-private func request(_ method: HTTPMethod, _ uri: String, apiKey key: String? = apiKey) -> NIOHTTPRequest {
+private func request(_ method: HTTPMethod, _ uri: String, apiKey key: String? = apiKey, body: Data? = nil) -> NIOHTTPRequest {
     var headers = HTTPHeaders()
     if let key {
         headers.add(name: "X-API-Key", value: key)
     }
-    return NIOHTTPRequest(method: method, uri: uri, headers: headers, body: nil)
+    if body != nil {
+        headers.add(name: "Content-Type", value: "application/json")
+    }
+    return NIOHTTPRequest(method: method, uri: uri, headers: headers, body: body)
 }
 
 private func decode<T: Codable & Sendable>(_ type: T.Type, from response: NIOHTTPResponse) throws -> T {
@@ -134,7 +145,10 @@ private actor MockDebugLand {
         )
     }
 
-    func resume() -> DebugResumeResponse {
+    func resume(freezeToken: String) -> DebugResumeResponse {
+        guard frozen, freezeToken == "token-1" else {
+            return DebugResumeResponse(freezeCount: frozen ? 1 : 0, resumed: false)
+        }
         frozen = false
         return DebugResumeResponse(freezeCount: 0, resumed: true)
     }
@@ -167,8 +181,8 @@ private struct MockDebugLandServer: LandServerProtocol {
         return try await debug.projection(playerID: playerID)
     }
 
-    func debugResume(landID id: LandID) async -> DebugResumeResponse? {
+    func debugResume(landID id: LandID, freezeToken: String) async -> DebugResumeResponse? {
         guard id == landID else { return nil }
-        return await debug.resume()
+        return await debug.resume(freezeToken: freezeToken)
     }
 }

@@ -36,6 +36,46 @@ struct DebugFreezeUpdateAck: ResponsePayload {
     let ok: Bool
 }
 
+@Payload
+struct DebugFreezeStuckAction: ActionPayload {
+    typealias Response = DebugFreezeUpdateAck
+    let headline: String
+}
+
+/// Gate the stuck resolver waits on; only `stuckResolverTimesOut` uses it.
+actor DebugFreezeStuckGate {
+    static let shared = DebugFreezeStuckGate()
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var waitingCount = 0
+
+    func pass() async {
+        guard !isOpen else { return }
+        waitingCount += 1
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        let pending = waiters
+        waiters.removeAll()
+        pending.forEach { $0.resume() }
+    }
+}
+
+struct DebugFreezeStuckResolver: ContextResolver {
+    typealias Output = DebugFreezeStuckOutput
+
+    static func resolve(ctx: ResolverContext) async throws -> DebugFreezeStuckOutput {
+        await DebugFreezeStuckGate.shared.pass()
+        return DebugFreezeStuckOutput(ok: true)
+    }
+}
+
+struct DebugFreezeStuckOutput: ResolverOutput {
+    let ok: Bool
+}
+
 /// Tickless land; leaving removes the player from a broadcast map, which requests a
 /// broadcast-only sync.
 private func makeDefinition() -> LandDefinition<DebugFreezeAdapterState> {
@@ -46,6 +86,11 @@ private func makeDefinition() -> LandDefinition<DebugFreezeAdapterState> {
             }
             OnLeave { (state: inout DebugFreezeAdapterState, ctx: LandContext) in
                 state.members.removeValue(forKey: ctx.playerID)
+            }
+            HandleAction(DebugFreezeStuckAction.self, resolvers: DebugFreezeStuckResolver.self) {
+                (state: inout DebugFreezeAdapterState, action: DebugFreezeStuckAction, _: LandContext) in
+                state.headline = action.headline
+                return DebugFreezeUpdateAck(ok: true)
             }
             HandleAction(DebugFreezeUpdateAction.self) {
                 (state: inout DebugFreezeAdapterState, action: DebugFreezeUpdateAction, ctx: LandContext) in
@@ -172,9 +217,18 @@ private actor DoneFlag {
     func set() { isDone = true }
 }
 
+/// Wait (bounded) until `condition` holds.
+private func eventually(_ condition: @Sendable () async -> Bool) async -> Bool {
+    for _ in 0..<500 {
+        if await condition() { return true }
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    return await condition()
+}
+
 // MARK: - Tests
 
-@Suite("TransportAdapter debug freeze (#79)")
+@Suite("TransportAdapter debug freeze (#79)", .timeLimit(.minutes(1)))
 struct TransportAdapterDebugFreezeTests {
 
     @Test("Freeze sends a settle cycle with pending changes; projection equals the snapshot of that state")
@@ -204,7 +258,7 @@ struct TransportAdapterDebugFreezeTests {
 
         // The projection leaves the diff caches alone: after resume nothing is left to send.
         await f.transport.clear()
-        let resume = await f.adapter.debugResume()
+        let resume = await f.adapter.debugResume(freezeToken: freeze.freezeToken)
         #expect(resume == DebugResumeResponse(freezeCount: 0, resumed: true))
         await f.adapter.syncNow()
         await drainSends()
@@ -225,13 +279,15 @@ struct TransportAdapterDebugFreezeTests {
         await drainSends()
         #expect(await f.aliceFrames().isEmpty, "second freeze sent frames")
 
-        #expect(await f.adapter.debugResume() == DebugResumeResponse(freezeCount: 1, resumed: false))
+        let token = first.freezeToken
+        #expect(await f.adapter.debugResume(freezeToken: "unknown") == DebugResumeResponse(freezeCount: 2, resumed: false))
+        #expect(await f.adapter.debugResume(freezeToken: token) == DebugResumeResponse(freezeCount: 1, resumed: false))
         #expect(await f.adapter.isDebugFrozen())
         #expect(await f.keeper.isDebugFrozen())
-        #expect(await f.adapter.debugResume() == DebugResumeResponse(freezeCount: 0, resumed: true))
+        #expect(await f.adapter.debugResume(freezeToken: token) == DebugResumeResponse(freezeCount: 0, resumed: true))
         #expect(await f.adapter.isDebugFrozen() == false)
         #expect(await f.keeper.isDebugFrozen() == false)
-        #expect(await f.adapter.debugResume() == DebugResumeResponse(freezeCount: 0, resumed: false))
+        #expect(await f.adapter.debugResume(freezeToken: token) == DebugResumeResponse(freezeCount: 0, resumed: false))
     }
 
     @Test("Projection without a freeze throws notFrozen")
@@ -261,16 +317,16 @@ struct TransportAdapterDebugFreezeTests {
         #expect(await done.isDone == false, "freeze returned while beginSync was rejecting")
 
         await f.keeper.endSync()
-        _ = try await freeze.value
+        let token = try await freeze.value.freezeToken
         await drainSends()
         #expect(frames(await f.aliceFrames(), contain: "retry-marker-7d0e"))
-        _ = await f.adapter.debugResume()
+        _ = await f.adapter.debugResume(freezeToken: token)
     }
 
     @Test("While frozen, syncNow, syncBroadcastOnly and a leave's sync send nothing; they run on resume")
     func syncsDeferredWhileFrozen() async throws {
         let f = try await Fixture()
-        _ = try await f.adapter.debugFreeze()
+        let token = try await f.adapter.debugFreeze().freezeToken
         await drainSends()
         await f.transport.clear()
 
@@ -284,7 +340,7 @@ struct TransportAdapterDebugFreezeTests {
         let projection = try await f.adapter.debugProjection(playerID: f.alice.player)
         #expect(projection.membershipChanged, "leave during freeze not flagged")
 
-        _ = await f.adapter.debugResume()
+        _ = await f.adapter.debugResume(freezeToken: token)
         await drainSends()
         #expect(patchCount(await f.aliceFrames()) > 0, "deferred sync did not run on resume")
     }
@@ -292,7 +348,7 @@ struct TransportAdapterDebugFreezeTests {
     @Test("A join during freeze sets membershipChanged")
     func joinFlagsMembershipChange() async throws {
         let f = try await Fixture()
-        _ = try await f.adapter.debugFreeze()
+        let token = try await f.adapter.debugFreeze().freezeToken
         let carol = (session: SessionID("s-carol"), client: ClientID("c-carol"), player: PlayerID("carol"))
         await f.adapter.onConnect(sessionID: carol.session, clientID: carol.client)
         try await simulateRouterJoin(
@@ -300,7 +356,7 @@ struct TransportAdapterDebugFreezeTests {
             sessionID: carol.session, clientID: carol.client, playerID: carol.player
         )
         #expect(try await f.adapter.debugProjection(playerID: f.alice.player).membershipChanged)
-        _ = await f.adapter.debugResume()
+        _ = await f.adapter.debugResume(freezeToken: token)
     }
 
     @Test("Auto-resume after the timeout; each freeze call restarts the timer")
@@ -331,5 +387,88 @@ struct TransportAdapterDebugFreezeTests {
     func autoResumeTimeoutFromEnvironment() {
         #expect(DebugFreezeDefaults.autoResumeTimeout(environment: [:]) == .seconds(30))
         #expect(DebugFreezeDefaults.autoResumeTimeout(environment: [EnvKeys.Debug.freezeTimeoutSeconds: "2.5"]) == .milliseconds(2500))
+    }
+
+    @Test("A stale token after auto-resume does not release a newer freeze")
+    func staleTokenAfterAutoResume() async throws {
+        let f = try await Fixture()
+        await f.adapter.setDebugFreezeAutoResumeTimeout(.milliseconds(100))
+        let clientA = try await f.adapter.debugFreeze()
+        #expect(await eventually { await f.adapter.isDebugFrozen() == false }, "auto-resume did not fire")
+
+        await f.adapter.setDebugFreezeAutoResumeTimeout(.seconds(30))
+        let clientB = try await f.adapter.debugFreeze()
+        #expect(clientB.freezeToken != clientA.freezeToken)
+        #expect(clientB.reused == false)
+
+        // Client A's `finally` resume arrives late.
+        #expect(await f.adapter.debugResume(freezeToken: clientA.freezeToken) == DebugResumeResponse(freezeCount: 1, resumed: false))
+        #expect(await f.adapter.isDebugFrozen(), "a stale token released the newer freeze")
+        #expect(await f.keeper.isDebugFrozen())
+        _ = try await f.adapter.debugProjection(playerID: f.alice.player)
+
+        #expect(await f.adapter.debugResume(freezeToken: clientB.freezeToken) == DebugResumeResponse(freezeCount: 0, resumed: true))
+    }
+
+    @Test("Drain has a deadline: a stuck resolver makes freeze fail and leaves the land running")
+    func stuckResolverTimesOut() async throws {
+        let f = try await Fixture()
+        await f.adapter.setDebugFreezeSettleDeadline(.milliseconds(150))
+        let gate = DebugFreezeStuckGate.shared
+        let stuck = Task {
+            _ = try await f.keeper.handleActionEnvelope(
+                ActionEnvelope(
+                    typeIdentifier: String(describing: DebugFreezeStuckAction.self),
+                    payload: AnyCodable(DebugFreezeStuckAction(headline: "stuck-marker"))
+                ),
+                playerID: f.alice.player, clientID: f.alice.client, sessionID: f.alice.session
+            )
+        }
+        #expect(await eventually { await gate.waitingCount == 1 })
+
+        let start = ContinuousClock.now
+        await #expect(throws: DebugFreezeError.settleTimedOut) {
+            try await f.adapter.debugFreeze()
+        }
+        #expect(ContinuousClock.now - start < .seconds(3), "freeze ignored its deadline")
+        #expect(await f.adapter.isDebugFrozen() == false)
+        #expect(await f.keeper.isDebugFrozen() == false, "the keeper stayed frozen after the failed freeze")
+
+        // Inputs are not held any more, and the late drain does not re-freeze.
+        try await f.update(headline: "after-timeout", score: 1)
+        #expect(await f.keeper.currentState().headline == "after-timeout")
+        await gate.open()
+        _ = try await stuck.value
+        #expect(await f.keeper.isDebugFrozen() == false)
+    }
+
+    @Test("A freeze released before its settle finished reports released, not a token")
+    func releasedBeforeSettleFinished() async throws {
+        let f = try await Fixture()
+        await f.adapter.setDebugFreezeAutoResumeTimeout(.milliseconds(100))
+        // Hold the sync flag so the settle keeps retrying past the auto-resume.
+        _ = await f.keeper.beginSync(clearDirtyFlags: false)
+
+        await #expect(throws: DebugFreezeError.released) {
+            try await f.adapter.debugFreeze()
+        }
+        #expect(await f.adapter.isDebugFrozen() == false)
+        #expect(await f.keeper.isDebugFrozen() == false)
+        await f.keeper.endSync()
+    }
+
+    @Test("Freezing an empty land keeps its dirty flags for the next real sync")
+    func emptyLandKeepsDirtyFlags() async throws {
+        let f = try await Fixture()
+        for member in [f.alice, f.bob] {
+            await f.adapter.onDisconnect(sessionID: member.session, clientID: member.client)
+        }
+        try await f.update(headline: "dirty-while-empty", score: 4)
+        #expect(await f.keeper.currentState().getDirtyFields().contains("headline"))
+
+        let freeze = try await f.adapter.debugFreeze()
+        #expect(await f.keeper.currentState().getDirtyFields().contains("headline"), "settle cleared dirty flags without a diff")
+        #expect(try await f.adapter.debugProjection(playerID: nil).state["headline"] == .string("dirty-while-empty"))
+        _ = await f.adapter.debugResume(freezeToken: freeze.freezeToken)
     }
 }

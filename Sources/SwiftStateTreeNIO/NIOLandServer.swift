@@ -114,8 +114,8 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
         return try await container.transportAdapter.debugProjection(playerID: playerID)
     }
 
-    public func debugResume(landID: LandID) async -> DebugResumeResponse? {
+    public func debugResume(landID: LandID, freezeToken: String) async -> DebugResumeResponse? {
         guard let container = await landManager.getLand(landID: landID) else { return nil }
-        return await container.transportAdapter.debugResume()
+        return await container.transportAdapter.debugResume(freezeToken: freezeToken)
     }
 }
