@@ -52,6 +52,7 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
             eventHashes: configuration.eventHashes,
             clientEventHashes: configuration.clientEventHashes,
             keeperModeResolver: configuration.keeperModeResolver,
+            enableLoopPhaseOffset: configuration.enableLoopPhaseOffset,
             logger: configuration.logger
         )
         
