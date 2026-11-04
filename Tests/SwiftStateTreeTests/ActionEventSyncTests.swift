@@ -380,9 +380,11 @@ func testActionWithTickTriggersSync() async throws {
     }
     
     let mockTransport = MockLandKeeperTransport()
+    // No loop phase offset: the tick and sync loops start one interval after creation.
     let keeper = LandKeeper<ActionEventSyncTestState>(
         definition: definition,
-        initialState: ActionEventSyncTestState()
+        initialState: ActionEventSyncTestState(),
+        enableLoopPhaseOffset: false
     )
     
     await keeper.setTransport(mockTransport)
@@ -404,8 +406,13 @@ func testActionWithTickTriggersSync() async throws {
     let action = IncrementAction(amount: 5)
     _ = try await keeper.sendAction(action, playerID: playerID, clientID: clientID, sessionID: sessionID)
     
-    // Wait for sync to trigger (sync interval is 20ms, wait for at least one sync cycle)
-    try await Task.sleep(for: .milliseconds(50))
+    // Wait (bounded) for the tick that applies the action and a sync cycle after it.
+    await waitFor("the action to be applied and synced", timeout: .seconds(2)) {
+        let syncNow = await mockTransport.syncNowCallCount
+        let syncBroadcast = await mockTransport.syncBroadcastOnlyCallCount
+        let synced = syncNow > 0 || syncBroadcast > 0
+        return await keeper.currentState().count == 5 && synced
+    }
     
     // Assert: Verify state was modified
     let state = await keeper.currentState()
@@ -449,9 +456,11 @@ func testEventWithTickTriggersSync() async throws {
     }
     
     let mockTransport = MockLandKeeperTransport()
+    // No loop phase offset: the tick and sync loops start one interval after creation.
     let keeper = LandKeeper<ActionEventSyncTestState>(
         definition: definition,
-        initialState: ActionEventSyncTestState()
+        initialState: ActionEventSyncTestState(),
+        enableLoopPhaseOffset: false
     )
     
     await keeper.setTransport(mockTransport)
@@ -473,8 +482,13 @@ func testEventWithTickTriggersSync() async throws {
     let event = AnyClientEvent(IncrementEvent(amount: 3))
     try await keeper.handleClientEvent(event, playerID: playerID, clientID: clientID, sessionID: sessionID)
     
-    // Wait for sync to trigger (sync interval is 20ms, wait for at least one sync cycle)
-    try await Task.sleep(for: .milliseconds(50))
+    // Wait (bounded) for the tick that applies the event and a sync cycle after it.
+    await waitFor("the event to be applied and synced", timeout: .seconds(2)) {
+        let syncNow = await mockTransport.syncNowCallCount
+        let syncBroadcast = await mockTransport.syncBroadcastOnlyCallCount
+        let synced = syncNow > 0 || syncBroadcast > 0
+        return await keeper.currentState().count == 3 && synced
+    }
     
     // Assert: Verify state was modified
     let state = await keeper.currentState()
