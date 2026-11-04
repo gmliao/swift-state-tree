@@ -303,9 +303,7 @@ struct ParentDirtyFlagsTestState: StateNodeProtocol {
     public init() {}
 }
 
-@Test("endSync() automatically clears dirty flags after sync")
-func testEndSync_ClearsDirtyFlags() async throws {
-    // Arrange
+private func makeDirtyFlagsKeeper() -> LandKeeper<DirtyFlagsTestState> {
     let definition = Land(
         "dirty-flags-test",
         using: DirtyFlagsTestState.self
@@ -319,17 +317,16 @@ func testEndSync_ClearsDirtyFlags() async throws {
             }
         }
     }
-
-    let keeper = LandKeeper<DirtyFlagsTestState>(
+    return LandKeeper<DirtyFlagsTestState>(
         definition: definition,
         initialState: DirtyFlagsTestState()
     )
+}
 
-    // Act: Modify state (marks as dirty)
-    let action = IncrementCounterAction(amount: 5, modifier: "test")
+private func incrementDirtyFlagsState(_ keeper: LandKeeper<DirtyFlagsTestState>, amount: Int) async throws {
     let envelope = ActionEnvelope(
         typeIdentifier: String(describing: IncrementCounterAction.self),
-        payload: AnyCodable(action)
+        payload: AnyCodable(IncrementCounterAction(amount: amount, modifier: "test"))
     )
     _ = try await keeper.handleActionEnvelope(
         envelope,
@@ -337,6 +334,14 @@ func testEndSync_ClearsDirtyFlags() async throws {
         clientID: ClientID("client1"),
         sessionID: SessionID("session1")
     )
+}
+
+@Test("beginSync() clears live dirty flags; mutations after beginSync stay dirty after endSync()")
+func testBeginSync_ClearsDirtyFlags_MutationsDuringSyncStayDirty() async throws {
+    let keeper = makeDirtyFlagsKeeper()
+
+    // Act: Modify state (marks as dirty)
+    try await incrementDirtyFlagsState(keeper, amount: 5)
 
     // Verify state is dirty before sync
     let stateBeforeSync = await keeper.currentState()
@@ -345,22 +350,57 @@ func testEndSync_ClearsDirtyFlags() async throws {
     #expect(stateBeforeSync.getDirtyFields().contains("players"), "Should contain 'players' in dirty fields")
     #expect(stateBeforeSync.getDirtyFields().contains("score"), "Should contain 'score' in dirty fields")
 
-    // Perform sync (beginSync -> endSync)
-    guard let _ = await keeper.beginSync() else {
+    guard let snapshot = await keeper.beginSync() else {
         Issue.record("Failed to begin sync")
         return
     }
 
-    // endSync() should automatically clear dirty flags
+    // The snapshot keeps its dirty flags so the cycle can diff what changed.
+    #expect(snapshot.getDirtyFields() == ["round", "players", "score"], "Snapshot should keep its dirty fields")
+
+    // The live state is clean as soon as the snapshot is taken.
+    let stateAtBegin = await keeper.currentState()
+    #expect(stateAtBegin.isDirty() == false, "Live state should not be dirty after beginSync()")
+    #expect(stateAtBegin.getDirtyFields().isEmpty == true, "Live state should have no dirty fields after beginSync()")
+
+    // A mutation while the sync is in flight is not in the snapshot; it must stay dirty.
+    try await incrementDirtyFlagsState(keeper, amount: 1)
     await keeper.endSync()
 
-    // Verify dirty flags are cleared after endSync()
     let stateAfterSync = await keeper.currentState()
-    #expect(stateAfterSync.isDirty() == false, "State should not be dirty after endSync()")
-    #expect(stateAfterSync.getDirtyFields().isEmpty == true, "Should have no dirty fields after endSync()")
+    #expect(stateAfterSync.getDirtyFields() == ["round", "players", "score"], "Mutation during sync must stay dirty after endSync()")
+
+    // The deprecated endSync(clearDirtyFlags:) is a no-op for dirty flags.
+    guard await keeper.beginSync(clearDirtyFlags: false) != nil else {
+        Issue.record("Failed to begin sync")
+        return
+    }
+    await keeper.endSync(clearDirtyFlags: true)
+    let stateAfterDeprecatedEnd = await keeper.currentState()
+    #expect(stateAfterDeprecatedEnd.getDirtyFields() == ["round", "players", "score"], "Deprecated endSync(clearDirtyFlags:) must not clear dirty flags")
+    #expect(await keeper.beginSync() != nil, "Deprecated endSync(clearDirtyFlags:) must release the sync flag")
+    await keeper.endSync()
 }
 
-@Test("Multiple sync rounds with endSync() should keep all dirty flags cleared")
+@Test("beginSync(clearDirtyFlags: false) leaves dirty flags untouched")
+func testBeginSync_WithoutClearing_LeavesDirtyFlags() async throws {
+    let keeper = makeDirtyFlagsKeeper()
+    try await incrementDirtyFlagsState(keeper, amount: 5)
+
+    guard let snapshot = await keeper.beginSync(clearDirtyFlags: false) else {
+        Issue.record("Failed to begin sync")
+        return
+    }
+    #expect(snapshot.getDirtyFields() == ["round", "players", "score"])
+    let stateDuringSync = await keeper.currentState()
+    #expect(stateDuringSync.getDirtyFields() == ["round", "players", "score"], "Live dirty flags must be untouched by beginSync(clearDirtyFlags: false)")
+
+    await keeper.endSync()
+    let stateAfterSync = await keeper.currentState()
+    #expect(stateAfterSync.getDirtyFields() == ["round", "players", "score"], "Live dirty flags must be untouched by endSync()")
+}
+
+@Test("Multiple sync rounds keep all dirty flags cleared")
 func testMultipleSyncRounds_EndSync_KeepsAllFlagsCleared() async throws {
     // Arrange
     let definition = Land(
@@ -407,10 +447,10 @@ func testMultipleSyncRounds_EndSync_KeepsAllFlagsCleared() async throws {
             return
         }
 
-        // endSync() should automatically clear dirty flags
+        // beginSync() cleared the dirty flags; endSync() leaves them clean
         await keeper.endSync()
 
-        // Verify dirty flags are cleared after endSync()
+        // Verify dirty flags are still cleared after endSync()
         let stateAfterSync = await keeper.currentState()
         #expect(stateAfterSync.isDirty() == false, "State should not be dirty after endSync() (round \(round))")
         #expect(stateAfterSync.getDirtyFields().isEmpty == true, "Should have no dirty fields after endSync() (round \(round))")
@@ -422,7 +462,7 @@ func testMultipleSyncRounds_EndSync_KeepsAllFlagsCleared() async throws {
     #expect(finalState.getDirtyFields().isEmpty == true, "Should have no dirty fields after 10 sync rounds")
 }
 
-@Test("endSync() recursively clears nested StateNode dirty flags")
+@Test("A sync cycle recursively clears nested StateNode dirty flags")
 func testEndSync_RecursivelyClearsNestedStateNode() async throws {
     // Arrange
     let definition = Land(
@@ -470,7 +510,7 @@ func testEndSync_RecursivelyClearsNestedStateNode() async throws {
         return
     }
 
-    // endSync() should automatically clear dirty flags (including nested)
+    // beginSync() cleared the dirty flags (including nested); endSync() leaves them clean
     await keeper.endSync()
 
     // Verify all dirty flags are cleared (including nested)
@@ -528,7 +568,7 @@ func testMultipleSyncRounds_WithNestedStateNode_RecursivelyClearsAllFlags() asyn
             return
         }
 
-        // endSync() should automatically clear dirty flags (including nested)
+        // beginSync() cleared the dirty flags (including nested); endSync() leaves them clean
         await keeper.endSync()
 
         // Verify all dirty flags are cleared (including nested)

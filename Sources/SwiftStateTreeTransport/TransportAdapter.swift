@@ -59,7 +59,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///
     /// When disabled, sync will:
     /// - Always use `.all` snapshot mode (no dirty-field filtering)
-    /// - Skip `clearDirty()` in `LandKeeper.endSync(clearDirtyFlags:)` to avoid recursive reset cost
+    /// - Skip `clearDirty()` in `LandKeeper.beginSync(clearDirtyFlags:)` to avoid recursive reset cost
     ///
     /// Performance: With high update ratio (most fields changing every frame), disabling dirty tracking may be faster.
     /// With low-to-medium update ratio (typical game usage), keep it enabled to save serialization and diff cost.
@@ -1177,7 +1177,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             return
         }
 
+        // A full cycle diffs every synced field, so it may clear dirty flags. The flag is read
+        // here, once: the auto-switch at the end of the cycle may change `enableDirtyTracking`.
         await withSyncState(
+            clearDirtyFlags: enableDirtyTracking,
             skipLogMessage: "⏭️ Sync skipped: another sync operation is in progress",
             errorLogMessage: "❌ Failed to extract broadcast snapshot"
         ) { state in
@@ -1185,12 +1188,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
+    /// Runs `operation` on a state copy taken by `LandKeeper.beginSync(clearDirtyFlags:)`.
+    ///
+    /// Dirty flags are cleared (when `clearDirtyFlags` is set) in the same keeper turn that takes
+    /// the copy, so mutations made while `operation` awaits stay dirty for the next cycle.
+    /// If `operation` throws, the cleared flags are not restored: the broadcast cache may already
+    /// have advanced, so the next cycle diffs against it either way.
     private func withSyncState(
+        clearDirtyFlags: Bool,
         skipLogMessage: String,
         errorLogMessage: String,
         operation: (State) async throws -> Void
     ) async {
-        guard let state = await keeper.beginSync() else {
+        guard let state = await keeper.beginSync(clearDirtyFlags: clearDirtyFlags) else {
             if logger.logLevel <= .debug {
                 logger.debug("Sync skipped", metadata: ["message": .string(skipLogMessage)])
             }
@@ -1206,7 +1216,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
         }
 
-        await keeper.endSync(clearDirtyFlags: enableDirtyTracking)
+        await keeper.endSync()
     }
 
     private func runSyncNowCycle(state: State) async throws {
@@ -1592,7 +1602,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // This ensures that when a player reconnects, they see the correct state (not stale cache)
         let hasPlayers = !membershipCoordinator.isEmpty
 
+        // Never clears dirty flags: this cycle does not diff per-player fields. The next syncNow
+        // re-diffs broadcast fields against the updated cache (extra work, no extra patches).
         await withSyncState(
+            clearDirtyFlags: false,
             skipLogMessage: "⏭️ Broadcast-only sync skipped: another sync operation is in progress",
             errorLogMessage: "❌ Failed to sync broadcast-only"
         ) { state in
