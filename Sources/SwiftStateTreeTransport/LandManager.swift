@@ -104,6 +104,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private var landMetadata: [LandID: [String: String]] = [:]
     
     private let enableLiveStateHashRecording: Bool
+    private let enableLoopPhaseOffset: Bool
     
     /// Initialize a LandManager.
     ///
@@ -113,6 +114,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     ///   - transport: Optional shared WebSocketTransport instance.
     ///   - createGuestSession: Optional closure to create PlayerSession for guest users.
     ///   - transportEncoding: Encoding configuration for transport messages and state updates.
+    ///   - enableLoopPhaseOffset: Per-land phase offset of live lands' tick and sync loops
+    ///     (`LandLoopPhase`). Defaults to on unless `LAND_LOOP_PHASE_OFFSET` is false.
     ///   - logger: Optional logger instance.
     public init(
         landFactory: @escaping @Sendable (LandID) -> LandDefinition<State>,
@@ -128,6 +131,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         eventHashes: [String: Int]? = nil,
         clientEventHashes: [String: Int]? = nil,
         keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)? = nil,
+        enableLoopPhaseOffset: Bool = LandLoopPhase.isEnabled(),
         logger: Logger? = nil
     ) {
         self.landFactory = landFactory
@@ -137,6 +141,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         self.createGuestSession = createGuestSession
         self.transportEncoding = transportEncoding
         self.enableLiveStateHashRecording = enableLiveStateHashRecording
+        self.enableLoopPhaseOffset = enableLoopPhaseOffset
         self.pathHashes = pathHashes
         self.eventHashes = eventHashes
         self.clientEventHashes = clientEventHashes
@@ -228,6 +233,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                     initialState: initial,
                     services: metadataServices,
                     enableLiveStateHashRecording: enableLiveStateHashRecording,
+                    enableLoopPhaseOffset: enableLoopPhaseOffset,
                     logger: logger
                 )
             }
@@ -237,6 +243,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                 initialState: initial,
                 services: metadataServices,
                 enableLiveStateHashRecording: enableLiveStateHashRecording,
+                enableLoopPhaseOffset: enableLoopPhaseOffset,
                 logger: logger
             )
         }

@@ -190,6 +190,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private var transport: LandKeeperTransport?
     private let logger: Logger
     private let autoStartLoops: Bool
+    /// Delay each loop's first iteration by `LandLoopPhase.offset` (see `loopPhaseOffset`).
+    private let enableLoopPhaseOffset: Bool
     private let enableLiveStateHashRecording: Bool
     private let reevaluationOutputMode: ReevaluationOutputMode
 
@@ -405,6 +407,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///   - reevaluationSource: Optional re-evaluation source. Required when mode is .reevaluation.
     ///   - reevaluationSink: Optional sink for emitted events. Used when mode is .reevaluation.
     ///   - reevaluationOutputMode: When mode is .reevaluation, controls whether emitted events go to sink only (.sinkOnly) or both transport and sink (.transportAndSink). Defaults to .sinkOnly.
+    ///   - enableLoopPhaseOffset: Delay the first tick and the first sync by a per-land offset in
+    ///     `[0, interval)` (`LandLoopPhase`), keeping the period, so lands created together do not
+    ///     run their loops in phase. Live mode only. Defaults to on unless
+    ///     `LAND_LOOP_PHASE_OFFSET` is false.
     ///   - transport: Optional transport interface for sending events and syncing state.
     ///                If not provided, operations will be no-ops (useful for testing).
     ///   - logger: Optional logger instance. If not provided, a default logger will be created.
@@ -418,6 +424,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         services: LandServices = LandServices(),
         enableLiveStateHashRecording: Bool = false,
         autoStartLoops: Bool = true,
+        enableLoopPhaseOffset: Bool = LandLoopPhase.isEnabled(),
         transport: LandKeeperTransport? = nil,
         logger: Logger? = nil
     ) {
@@ -439,6 +446,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         self.transport = transport
         self.autoStartLoops = autoStartLoops
+        // Live lands only: re-evaluation replays recorded ticks, its timing is not live load.
+        self.enableLoopPhaseOffset = (mode == .live) ? enableLoopPhaseOffset : false
         self.enableLiveStateHashRecording = (mode == .live) ? enableLiveStateHashRecording : false
         let resolvedLogger = logger ?? createColoredLogger(
             loggerIdentifier: "com.swiftstatetree.runtime",
@@ -1563,9 +1572,20 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
     }
 
+    /// Delay before the first iteration of a loop with `interval`: `LandLoopPhase.offset` of
+    /// this land's instance ID (the land type until `setLandID`), or `.zero` when disabled.
+    func loopPhaseOffset(interval: Duration) -> Duration {
+        guard enableLoopPhaseOffset else { return .zero }
+        return LandLoopPhase.offset(landID: actualLandID ?? definition.id, interval: interval)
+    }
+
     private func configureTickLoop(interval: Duration) async {
         tickTask?.cancel()
+        let phaseOffset = loopPhaseOffset(interval: interval)
         tickTask = Task { [weak self] in
+            if phaseOffset > .zero {
+                try? await safeTaskSleep(for: phaseOffset)
+            }
             guard let self = self else { return }
 
             var nextTickTime = ContinuousClock.now + interval
@@ -2185,7 +2205,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     private func configureSyncLoop(interval: Duration) async {
         syncTask?.cancel()
+        let phaseOffset = loopPhaseOffset(interval: interval)
         syncTask = Task { [weak self] in
+            if phaseOffset > .zero {
+                try? await safeTaskSleep(for: phaseOffset)
+            }
             guard let self = self else { return }
 
             var nextSyncTime = ContinuousClock.now + interval

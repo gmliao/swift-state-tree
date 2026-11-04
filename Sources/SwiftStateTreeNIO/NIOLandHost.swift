@@ -125,6 +125,11 @@ public struct NIOLandServerConfiguration: Sendable {
     /// Record live per-tick state hashes into the re-evaluation record (ground truth).
     public var enableLiveStateHashRecording: Bool
 
+    /// Delay each live land's first tick and first sync by a per-land offset in `[0, interval)`
+    /// (`LandLoopPhase`), so lands created together do not run their loops in phase. Defaults to
+    /// on unless `LAND_LOOP_PHASE_OFFSET` is false.
+    public var enableLoopPhaseOffset: Bool
+
     /// Suffix appended to base land type to form the replay land type (e.g. "-replay").
     public var replayLandSuffix: String
 
@@ -148,9 +153,11 @@ public struct NIOLandServerConfiguration: Sendable {
         servicesFactory: @Sendable @escaping (LandID, [String: String]) -> LandServices = { _, _ in
             LandServices()
         },
-        keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)? = nil
+        keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)? = nil,
+        enableLoopPhaseOffset: Bool = LandLoopPhase.isEnabled()
     ) {
         self.logger = logger
+        self.enableLoopPhaseOffset = enableLoopPhaseOffset
         self.jwtConfig = jwtConfig
         self.jwtValidator = jwtValidator
         self.allowGuestMode = allowGuestMode
