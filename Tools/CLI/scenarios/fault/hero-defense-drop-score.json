@@ -1,0 +1,11 @@
+{
+  "maxDuration": 15000,
+  "steps": [
+    { "type": "log", "message": "Negative test (tick land, broadcast field): run with --fault-drop-patch /score --convergence-gating; must fail on /score" },
+    { "type": "wait", "wait": 500 },
+    { "type": "log", "message": "One Play only: a later /score diff would repair the dropped one" },
+    { "type": "action", "action": "Play", "payload": {} },
+    { "type": "wait", "wait": 500 },
+    { "type": "assertConverged", "assertConverged": { "label": "fault-drop-score" } }
+  ]
+}

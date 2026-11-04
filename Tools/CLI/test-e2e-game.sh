@@ -13,6 +13,10 @@ export TIMEOUT=${TIMEOUT:-120}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/e2e-test-common.sh"
 
+# Debug state routes for the assertConverged step (#79), guarded by the admin key.
+export ENABLE_DEBUG_STATE_ROUTES=true
+export E2E_ADMIN_KEY=${E2E_ADMIN_KEY:-${HERO_DEFENSE_ADMIN_KEY:-hero-defense-admin-key}}
+
 # Server-specific configuration
 SERVER_NAME="GameServer"
 SERVER_DIR_NAME="GameDemo"
@@ -29,26 +33,39 @@ start_server() {
     start_server_impl "$encoding" "$SERVER_NAME" "$server_dir" "$SERVER_CMD"
 }
 
+# Map a server encoding to the CLI's state update decoding mode
+state_update_encoding_for() {
+    case "$1" in
+        json) echo "jsonObject" ;;
+        jsonOpcode|json_opcode) echo "opcodeJsonArray" ;;
+        messagepack) echo "messagepack" ;;
+        *) return 1 ;;
+    esac
+}
+
+# Run the hero-defense CLI scenarios (run from Tools/CLI)
+run_cli_scenarios() {
+    local encoding=$1
+    local state_update_encoding
+    state_update_encoding=$(state_update_encoding_for "$encoding") || return 1
+    local server_encoding=$(normalize_encoding_for_server "$encoding" "gameserver")
+    local scenario_path="${E2E_SCENARIO:-scenarios/game/}"
+    TRANSPORT_ENCODING=${server_encoding} npx tsx src/cli.ts script \
+        -u ws://localhost:${SERVER_PORT}/game/hero-defense \
+        -l hero-defense \
+        -s "$scenario_path" \
+        --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
+        --state-update-encoding ${state_update_encoding}
+}
+
 # Function to run tests for a specific encoding
 run_encoding_tests() {
     local encoding=$1
-    local state_update_encoding=""
-    
-    case "$encoding" in
-        json)
-            state_update_encoding="jsonObject"
-            ;;
-        jsonOpcode|json_opcode)
-            state_update_encoding="opcodeJsonArray"
-            ;;
-        messagepack)
-            state_update_encoding="messagepack"
-            ;;
-        *)
-            print_error "Unknown encoding: $encoding"
-            return 1
-            ;;
-    esac
+    local state_update_encoding
+    if ! state_update_encoding=$(state_update_encoding_for "$encoding"); then
+        print_error "Unknown encoding: $encoding"
+        return 1
+    fi
     
     print_step "Running ${SERVER_NAME} E2E tests ($encoding)..."
     local project_root="$(pwd)"
@@ -60,46 +77,87 @@ run_encoding_tests() {
         npm ci
     fi
     
-    # Normalize encoding for server (GameServer accepts json_opcode)
-    local server_encoding=$(normalize_encoding_for_server "$encoding" "gameserver")
-    
-    local scenario_path="${E2E_SCENARIO:-scenarios/game/}"
-    TRANSPORT_ENCODING=${server_encoding} npx tsx src/cli.ts script \
-        -u ws://localhost:${SERVER_PORT}/game/hero-defense \
-        -l hero-defense \
-        -s "$scenario_path" \
-        --state-update-encoding ${state_update_encoding}
+    # Each step is checked explicitly: `set -e` does not apply inside a function called from `if !`.
+    local failed_step=""
+    run_cli_scenarios "$encoding" || failed_step="CLI scenarios"
+
+    # Negative test (#79), tick land and broadcast path in json: a client that drops the one
+    # /score diff must fail assertConverged with that path. Gating is forced on for this run.
+    if [ -z "$failed_step" ] && [ "$encoding" = "json" ]; then
+        print_step "Running convergence fault injection (drop one /score patch, $encoding)..."
+        local fault_log
+        fault_log=$(mktemp)
+        if npx tsx src/cli.ts script \
+            -u ws://localhost:${SERVER_PORT}/game/hero-defense \
+            -l hero-defense \
+            -s scenarios/fault/hero-defense-drop-score.json \
+            --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
+            --state-update-encoding ${state_update_encoding} \
+            --fault-drop-patch /score \
+            --convergence-gating > "$fault_log" 2>&1; then
+            cat "$fault_log"
+            print_error "Fault injection: assertConverged passed although the /score patch was dropped"
+            failed_step="fault injection (/score)"
+        elif ! grep -q "CONVERGENCE MISMATCH (gating) fault-drop-score" "$fault_log" || ! grep -qE "^  /score: client=" "$fault_log"; then
+            cat "$fault_log"
+            print_error "Fault injection: the script failed, but not with a /score convergence mismatch"
+            failed_step="fault injection (/score)"
+        else
+            grep -E "CONVERGENCE MISMATCH|^  /score: " "$fault_log"
+            print_success "Fault injection detected: dropped /score patch reported with its path"
+        fi
+        rm -f "$fault_log"
+    fi
+
+    # Optional load variant (#79): E2E_CONVERGENCE_LOAD=true runs the burst scenario with
+    # E2E_LOAD_CLIENTS clients in each of E2E_LOAD_ROOMS parallel rooms. Report-only for
+    # mismatches; route and timeout errors still fail.
+    if [ -z "$failed_step" ] && [ "${E2E_CONVERGENCE_LOAD:-false}" = "true" ]; then
+        print_step "Running ${SERVER_NAME} convergence load variant ($encoding, ${E2E_LOAD_CLIENTS:-4} clients x ${E2E_LOAD_ROOMS:-4} rooms)..."
+        local server_encoding=$(normalize_encoding_for_server "$encoding" "gameserver")
+        TRANSPORT_ENCODING=${server_encoding} npx tsx src/cli.ts script \
+            -u ws://localhost:${SERVER_PORT}/game/hero-defense \
+            -l hero-defense \
+            -s scenarios/load/hero-defense-burst.json \
+            --clients "${E2E_LOAD_CLIENTS:-4}" \
+            --rooms "${E2E_LOAD_ROOMS:-4}" \
+            --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
+            --state-update-encoding ${state_update_encoding} || failed_step="convergence load variant"
+    fi
 
     # Re-evaluation record + offline verify (Hero Defense): only required for messagepack
-    if [ "$encoding" = "messagepack" ]; then
+    if [ -z "$failed_step" ] && [ "$encoding" = "messagepack" ]; then
         print_step "Running ${SERVER_NAME} re-evaluation record+verify ($encoding)..."
         HERO_DEFENSE_ADMIN_KEY=${HERO_DEFENSE_ADMIN_KEY:-hero-defense-admin-key} npx tsx src/reevaluation-e2e-game.ts \
             --ws-url ws://localhost:${SERVER_PORT}/game/hero-defense \
             --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
-            --state-update-encoding ${state_update_encoding}
+            --state-update-encoding ${state_update_encoding} || failed_step="re-evaluation record+verify"
 
-        print_step "Running ${SERVER_NAME} replay record verification ($encoding)..."
-        HERO_DEFENSE_ADMIN_KEY=${HERO_DEFENSE_ADMIN_KEY:-hero-defense-admin-key} npx tsx src/verify-replay-record.ts \
-            --admin-url="http://${SERVER_HOST}:${SERVER_PORT}" \
-            --wait-ms=12000 \
-            --min-events=1
+        if [ -z "$failed_step" ]; then
+            print_step "Running ${SERVER_NAME} replay record verification ($encoding)..."
+            HERO_DEFENSE_ADMIN_KEY=${HERO_DEFENSE_ADMIN_KEY:-hero-defense-admin-key} npx tsx src/verify-replay-record.ts \
+                --admin-url="http://${SERVER_HOST}:${SERVER_PORT}" \
+                --wait-ms=12000 \
+                --min-events=1 || failed_step="replay record verification"
+        fi
     fi
 
     # Server-side replay stream should pass in all transport encodings.
-    print_step "Running ${SERVER_NAME} server replay stream E2E ($encoding)..."
-    HERO_DEFENSE_ADMIN_KEY=${HERO_DEFENSE_ADMIN_KEY:-hero-defense-admin-key} npx tsx src/reevaluation-replay-e2e-game.ts \
-        --ws-url ws://localhost:${SERVER_PORT}/game/hero-defense \
-        --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
-        --state-update-encoding ${state_update_encoding}
-    
-    local test_result=$?
+    if [ -z "$failed_step" ]; then
+        print_step "Running ${SERVER_NAME} server replay stream E2E ($encoding)..."
+        HERO_DEFENSE_ADMIN_KEY=${HERO_DEFENSE_ADMIN_KEY:-hero-defense-admin-key} npx tsx src/reevaluation-replay-e2e-game.ts \
+            --ws-url ws://localhost:${SERVER_PORT}/game/hero-defense \
+            --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
+            --state-update-encoding ${state_update_encoding} || failed_step="server replay stream"
+    fi
+
     cd "$project_root"
     
-    if [ $test_result -eq 0 ]; then
+    if [ -z "$failed_step" ]; then
         print_success "${SERVER_NAME} E2E tests ($encoding) completed successfully"
         return 0
     else
-        print_error "${SERVER_NAME} E2E tests ($encoding) failed"
+        print_error "${SERVER_NAME} E2E tests ($encoding) failed: $failed_step"
         return 1
     fi
 }
@@ -201,6 +259,32 @@ main() {
         
         echo ""
     done
+
+    # #80: messagepack with AUTO_DIRTY_TRACKING=false (change-object metrics off), where #67
+    # hid. Same CLI scenarios (broadcast field, broadcast event, assertConverged); no replay.
+    local variant="messagepack (AUTO_DIRTY_TRACKING=false)"
+    echo "=========================================="
+    echo "  Testing encoding: $variant"
+    echo "=========================================="
+    echo ""
+    export AUTO_DIRTY_TRACKING=false
+    if start_server "messagepack" && wait_for_server "$SERVER_NAME" "messagepack"; then
+        print_step "Running ${SERVER_NAME} E2E scenarios ($variant)..."
+        if (cd "$project_root/Tools/CLI" && run_cli_scenarios "messagepack"); then
+            print_success "${SERVER_NAME} E2E scenarios ($variant) completed successfully"
+        else
+            print_error "${SERVER_NAME} E2E scenarios ($variant) failed"
+            show_logs "$SERVER_NAME" "messagepack"
+            failed_encodings+=("$variant")
+        fi
+    else
+        print_error "Server failed to start for $variant"
+        show_logs "$SERVER_NAME" "messagepack"
+        failed_encodings+=("$variant")
+    fi
+    stop_server "$SERVER_NAME" "messagepack"
+    unset AUTO_DIRTY_TRACKING
+    echo ""
     
     # Summary
     echo "=========================================="
