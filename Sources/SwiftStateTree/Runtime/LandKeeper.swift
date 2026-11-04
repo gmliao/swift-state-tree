@@ -631,12 +631,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///
     /// This is a read-only view of the state. Mutations should be done through action/event handlers.
     ///
-    /// Note: This method does not check sync lock. For sync operations, use `beginSync()` instead.
+    /// Note: This method does not check sync lock. For sync operations, use `beginSync(clearDirtyFlags:)` instead.
     public func currentState() -> State {
         state
     }
 
     /// Begin a sync operation, taking a snapshot of current state.
+    ///
+    /// For the sync pipeline only; use `currentState()` to read the state.
     ///
     /// **Simplified Model**: Sync uses snapshot model - it takes a snapshot at the start
     /// and works with that snapshot. Mutations are NOT blocked during sync.
@@ -647,8 +649,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// cycle, while any mutation that runs after this call (the sync cycle awaits, and actions or
     /// ticks can run on this actor meanwhile) stays dirty for the next cycle.
     ///
-    /// - Parameter clearDirtyFlags: Pass `true` only for cycles that diff every synced field.
-    ///   Pass `false` for partial cycles (e.g. broadcast-only) and when dirty tracking is disabled.
+    /// - Parameter clearDirtyFlags: Required, so every caller decides. Pass `true` only for cycles
+    ///   that diff every synced field. Pass `false` for partial cycles (e.g. broadcast-only) and
+    ///   when dirty tracking is disabled.
     /// - Returns: The current state snapshot if sync can proceed, `nil` if another sync is already in progress (deduplication).
     ///   A rejected call leaves the dirty flags untouched.
     /// - Important: Always call `endSync()` after sync completes, even if an error occurs.
@@ -661,20 +664,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///
     /// Example:
     /// ```swift
-    /// guard let state = await keeper.beginSync() else {
+    /// guard let state = await keeper.beginSync(clearDirtyFlags: true) else {
     ///     // Another sync in progress, skip this one (deduplication)
     ///     return
     /// }
     /// defer { await keeper.endSync() }
     /// // ... perform sync operations with state snapshot ...
     /// ```
-    public func beginSync(clearDirtyFlags: Bool = true) -> State? {
+    public func beginSync(clearDirtyFlags: Bool) -> State? {
         guard !isSyncing else {
             return nil // Deduplication: skip concurrent sync requests
         }
         isSyncing = true
         let snapshot = state
-        // PERFORMANCE: clearDirty() only recurses into nested StateNodes whose wrapper is dirty.
         if clearDirtyFlags {
             state.clearDirty()
         }
@@ -692,8 +694,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// End a sync operation, releasing the sync flag.
     ///
-    /// - Parameter clearDirtyFlags: Ignored. Dirty flags are cleared by `beginSync(clearDirtyFlags:)`.
-    @available(*, deprecated, message: "dirty flags are cleared in beginSync(clearDirtyFlags:); call endSync()")
+    /// - Parameter clearDirtyFlags: Ignored. Pass the clearing choice to `beginSync(clearDirtyFlags:)`.
+    @available(*, deprecated, message: "pass clearDirtyFlags to beginSync(clearDirtyFlags:); call endSync()")
     public func endSync(clearDirtyFlags: Bool) {
         endSync()
     }

@@ -71,7 +71,7 @@ func testSyncUsesSnapshotModel() async throws {
     )
 
     // Act: Start a sync operation (takes snapshot)
-    guard let syncState = await keeper.beginSync() else {
+    guard let syncState = await keeper.beginSync(clearDirtyFlags: true) else {
         Issue.record("Failed to begin sync")
         return
     }
@@ -149,11 +149,11 @@ func testMultipleSyncOperationsSerialized() async throws {
 
     // Act: Try to start two sync operations concurrently
     let sync1Task = Task {
-        await keeper.beginSync()
+        await keeper.beginSync(clearDirtyFlags: true)
     }
 
     let sync2Task = Task {
-        await keeper.beginSync()
+        await keeper.beginSync(clearDirtyFlags: true)
     }
 
     // Wait for both to complete
@@ -181,7 +181,7 @@ func testSyncLockReleasedAfterError() async throws {
     )
 
     // Act: Acquire sync lock
-    guard let _ = await keeper.beginSync() else {
+    guard let _ = await keeper.beginSync(clearDirtyFlags: true) else {
         Issue.record("Failed to acquire sync lock")
         return
     }
@@ -190,7 +190,7 @@ func testSyncLockReleasedAfterError() async throws {
     await keeper.endSync()
 
     // Verify lock is released - should be able to acquire again
-    let secondSync = await keeper.beginSync()
+    let secondSync = await keeper.beginSync(clearDirtyFlags: true)
     #expect(secondSync != nil, "Should be able to acquire sync lock after release")
 
     // Clean up
@@ -221,7 +221,7 @@ func testSyncSnapshotRemainsConsistent() async throws {
     )
 
     // Act: Start sync and capture snapshot
-    guard let syncState = await keeper.beginSync() else {
+    guard let syncState = await keeper.beginSync(clearDirtyFlags: true) else {
         Issue.record("Failed to acquire sync lock")
         return
     }
@@ -350,7 +350,7 @@ func testBeginSync_ClearsDirtyFlags_MutationsDuringSyncStayDirty() async throws 
     #expect(stateBeforeSync.getDirtyFields().contains("players"), "Should contain 'players' in dirty fields")
     #expect(stateBeforeSync.getDirtyFields().contains("score"), "Should contain 'score' in dirty fields")
 
-    guard let snapshot = await keeper.beginSync() else {
+    guard let snapshot = await keeper.beginSync(clearDirtyFlags: true) else {
         Issue.record("Failed to begin sync")
         return
     }
@@ -378,7 +378,7 @@ func testBeginSync_ClearsDirtyFlags_MutationsDuringSyncStayDirty() async throws 
     await keeper.endSync(clearDirtyFlags: true)
     let stateAfterDeprecatedEnd = await keeper.currentState()
     #expect(stateAfterDeprecatedEnd.getDirtyFields() == ["round", "players", "score"], "Deprecated endSync(clearDirtyFlags:) must not clear dirty flags")
-    #expect(await keeper.beginSync() != nil, "Deprecated endSync(clearDirtyFlags:) must release the sync flag")
+    #expect(await keeper.beginSync(clearDirtyFlags: true) != nil, "Deprecated endSync(clearDirtyFlags:) must release the sync flag")
     await keeper.endSync()
 }
 
@@ -442,7 +442,7 @@ func testMultipleSyncRounds_EndSync_KeepsAllFlagsCleared() async throws {
         #expect(stateBeforeSync.isDirty() == true, "State should be dirty after modification (round \(round))")
 
         // Perform sync (beginSync -> endSync)
-        guard let _ = await keeper.beginSync() else {
+        guard let _ = await keeper.beginSync(clearDirtyFlags: true) else {
             Issue.record("Failed to begin sync (round \(round))")
             return
         }
@@ -505,7 +505,7 @@ func testEndSync_RecursivelyClearsNestedStateNode() async throws {
     #expect(stateBeforeSync.nested.getDirtyFields().contains("nestedValue"), "Nested should contain 'nestedValue'")
 
     // Perform sync (beginSync -> endSync)
-    guard let _ = await keeper.beginSync() else {
+    guard let _ = await keeper.beginSync(clearDirtyFlags: true) else {
         Issue.record("Failed to begin sync")
         return
     }
@@ -563,7 +563,7 @@ func testMultipleSyncRounds_WithNestedStateNode_RecursivelyClearsAllFlags() asyn
         #expect(stateBeforeSync.nested.isDirty() == true, "Nested should be dirty (round \(round))")
 
         // Perform sync (beginSync -> endSync)
-        guard let _ = await keeper.beginSync() else {
+        guard let _ = await keeper.beginSync(clearDirtyFlags: true) else {
             Issue.record("Failed to begin sync (round \(round))")
             return
         }

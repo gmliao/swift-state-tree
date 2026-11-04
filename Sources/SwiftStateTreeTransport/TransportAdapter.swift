@@ -1192,8 +1192,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///
     /// Dirty flags are cleared (when `clearDirtyFlags` is set) in the same keeper turn that takes
     /// the copy, so mutations made while `operation` awaits stay dirty for the next cycle.
-    /// If `operation` throws, the cleared flags are not restored: the broadcast cache may already
-    /// have advanced, so the next cycle diffs against it either way.
+    /// If `operation` throws, the cleared flags are not restored. When it throws before the broadcast
+    /// cache advances (e.g. during extraction), fields dirty only in the failed cycle stay stale
+    /// until they change again; clearing on failure predates the move into `beginSync`.
     private func withSyncState(
         clearDirtyFlags: Bool,
         skipLogMessage: String,
@@ -1604,6 +1605,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
         // Never clears dirty flags: this cycle does not diff per-player fields. The next syncNow
         // re-diffs broadcast fields against the updated cache (extra work, no extra patches).
+        // syncNow skips empty lands before beginSync, so in an empty land flags (including removed
+        // dictionary keys) accumulate until a syncNow runs with members: memory and work, not correctness.
         await withSyncState(
             clearDirtyFlags: false,
             skipLogMessage: "⏭️ Broadcast-only sync skipped: another sync operation is in progress",
