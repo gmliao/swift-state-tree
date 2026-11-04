@@ -18,6 +18,7 @@ public final class TransportProfilerCounters: Sendable {
     private let disconnects = ManagedAtomic<Int>(0)
     private let errors = ManagedAtomic<Int>(0)
     private let syncRecoveryCycles = ManagedAtomic<Int>(0)
+    private let syncQuarantinedRecipients = ManagedAtomic<Int>(0)
     private let connectedSessions = ManagedAtomic<Int>(0)
     private let joinedSessions = ManagedAtomic<Int>(0)
 
@@ -52,12 +53,17 @@ public final class TransportProfilerCounters: Sendable {
         syncRecoveryCycles.wrappingIncrement(by: delta, ordering: .relaxed)
     }
 
+    /// A sync recipient was quarantined (its state updates keep failing to encode).
+    func incrementSyncQuarantinedRecipients(by delta: Int = 1) {
+        syncQuarantinedRecipients.wrappingIncrement(by: delta, ordering: .relaxed)
+    }
+
     func setSessionCounts(connected: Int, joined: Int) {
         connectedSessions.store(connected, ordering: .relaxed)
         joinedSessions.store(joined, ordering: .relaxed)
     }
 
-    func takeAndReset() -> (actions: Int, stateUpdates: Int, messagesReceived: Int, bytesReceived: Int64, disconnects: Int, errors: Int, syncRecoveryCycles: Int, connected: Int, joined: Int) {
+    func takeAndReset() -> (actions: Int, stateUpdates: Int, messagesReceived: Int, bytesReceived: Int64, disconnects: Int, errors: Int, syncRecoveryCycles: Int, syncQuarantinedRecipients: Int, connected: Int, joined: Int) {
         (
             actions.exchange(0, ordering: .relaxed),
             stateUpdates.exchange(0, ordering: .relaxed),
@@ -66,6 +72,7 @@ public final class TransportProfilerCounters: Sendable {
             disconnects.exchange(0, ordering: .relaxed),
             errors.exchange(0, ordering: .relaxed),
             syncRecoveryCycles.exchange(0, ordering: .relaxed),
+            syncQuarantinedRecipients.exchange(0, ordering: .relaxed),
             connectedSessions.load(ordering: .relaxed),
             joinedSessions.load(ordering: .relaxed)
         )
@@ -190,6 +197,7 @@ public actor TransportProfilingActor {
                 "disconnects": stats.disconnects,
                 "errors": stats.errors,
                 "syncRecoveryCycles": stats.syncRecoveryCycles,
+                "syncQuarantinedRecipients": stats.syncQuarantinedRecipients,
                 "connectedSessions": stats.connected,
                 "joinedSessions": stats.joined,
             ] as [String: Any],
