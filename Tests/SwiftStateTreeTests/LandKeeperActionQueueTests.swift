@@ -44,7 +44,8 @@ func testActionQueuing() async throws {
         }
     }
 
-    let keeper = LandKeeper(definition: definition, initialState: QueueTestState())
+    // No loop phase offset: the first tick comes one interval after creation.
+    let keeper = LandKeeper(definition: definition, initialState: QueueTestState(), enableLoopPhaseOffset: false)
     let alice = PlayerID("alice")
     try await keeper.join(playerID: alice, clientID: ClientID("c1"), sessionID: SessionID("s1"))
 
@@ -66,10 +67,10 @@ func testActionQueuing() async throws {
     let stateAfterAction = await keeper.currentState()
     #expect(stateAfterAction.counter == 0, "Counter should be 0 immediately after handleAction (should be queued)")
 
-    // Wait for tick
-    try await Task.sleep(for: .milliseconds(100))
-
-    // State SHOULD be updated now
+    // Wait (bounded) for the tick that applies the queued action.
+    await waitFor("the queued action to run in a tick", timeout: .seconds(2)) {
+        await keeper.currentState().counter == 1
+    }
     let stateAfterTick = await keeper.currentState()
     #expect(stateAfterTick.counter == 1, "Counter should be 1 after tick execution")
 }

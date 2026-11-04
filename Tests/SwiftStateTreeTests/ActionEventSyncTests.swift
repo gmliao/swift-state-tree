@@ -100,6 +100,20 @@ actor MockLandKeeperTransport: LandKeeperTransport {
     var syncBroadcastOnlyCallCount = 0
     var lastEvent: AnyServerEvent?
     var lastTarget: CoreEventTarget?
+    /// Reads the land state a sync request would send (set by tests that check what was synced).
+    private var stateProbe: (@Sendable () async -> Int?)?
+    /// `count` as each sync request saw it, in call order.
+    private(set) var syncObservedCounts: [Int] = []
+
+    func setStateProbe(_ probe: @escaping @Sendable () async -> Int?) {
+        stateProbe = probe
+    }
+
+    private func recordSyncObservation() async {
+        if let stateProbe, let count = await stateProbe() {
+            syncObservedCounts.append(count)
+        }
+    }
     
     func sendEventToTransport(_ event: AnyServerEvent, to target: CoreEventTarget) async {
         sendEventCallCount += 1
@@ -109,10 +123,12 @@ actor MockLandKeeperTransport: LandKeeperTransport {
     
     func syncNowFromTransport() async {
         syncNowCallCount += 1
+        await recordSyncObservation()
     }
     
     func syncBroadcastOnlyFromTransport() async {
         syncBroadcastOnlyCallCount += 1
+        await recordSyncObservation()
     }
     
     func onLandDestroyed() async {
@@ -125,6 +141,7 @@ actor MockLandKeeperTransport: LandKeeperTransport {
         syncBroadcastOnlyCallCount = 0
         lastEvent = nil
         lastTarget = nil
+        syncObservedCounts = []
     }
 }
 
@@ -380,12 +397,15 @@ func testActionWithTickTriggersSync() async throws {
     }
     
     let mockTransport = MockLandKeeperTransport()
+    // No loop phase offset: the tick and sync loops start one interval after creation.
     let keeper = LandKeeper<ActionEventSyncTestState>(
         definition: definition,
-        initialState: ActionEventSyncTestState()
+        initialState: ActionEventSyncTestState(),
+        enableLoopPhaseOffset: false
     )
     
     await keeper.setTransport(mockTransport)
+    await mockTransport.setStateProbe { [weak keeper] in await keeper?.currentState().count }
     
     let playerID = PlayerID("test-player")
     let clientID = ClientID("test-client")
@@ -404,17 +424,19 @@ func testActionWithTickTriggersSync() async throws {
     let action = IncrementAction(amount: 5)
     _ = try await keeper.sendAction(action, playerID: playerID, clientID: clientID, sessionID: sessionID)
     
-    // Wait for sync to trigger (sync interval is 20ms, wait for at least one sync cycle)
-    try await Task.sleep(for: .milliseconds(50))
+    // Wait (bounded) for a sync request that sees the action's change: a sync before the
+    // tick applied it would see the old count and does not count.
+    await waitFor("a sync that includes the action's change", timeout: .seconds(2)) {
+        await mockTransport.syncObservedCounts.contains(5)
+    }
     
     // Assert: Verify state was modified
     let state = await keeper.currentState()
     #expect(state.count == 5, "State count should be 5 after action")
     
     // Assert: Verify sync was called by sync mechanism
-    let syncNowCount = await mockTransport.syncNowCallCount
-    let syncBroadcastCount = await mockTransport.syncBroadcastOnlyCallCount
-    #expect(syncNowCount > 0 || syncBroadcastCount > 0, "Sync should be called by tick mechanism after action modifies state")
+    let observed = await mockTransport.syncObservedCounts
+    #expect(observed.contains(5), "a sync after the action should see count == 5; syncs saw \(observed)")
 }
 
 @Test("Event execution with tick mechanism triggers sync")
@@ -449,12 +471,15 @@ func testEventWithTickTriggersSync() async throws {
     }
     
     let mockTransport = MockLandKeeperTransport()
+    // No loop phase offset: the tick and sync loops start one interval after creation.
     let keeper = LandKeeper<ActionEventSyncTestState>(
         definition: definition,
-        initialState: ActionEventSyncTestState()
+        initialState: ActionEventSyncTestState(),
+        enableLoopPhaseOffset: false
     )
     
     await keeper.setTransport(mockTransport)
+    await mockTransport.setStateProbe { [weak keeper] in await keeper?.currentState().count }
     
     let playerID = PlayerID("test-player")
     let clientID = ClientID("test-client")
@@ -473,17 +498,19 @@ func testEventWithTickTriggersSync() async throws {
     let event = AnyClientEvent(IncrementEvent(amount: 3))
     try await keeper.handleClientEvent(event, playerID: playerID, clientID: clientID, sessionID: sessionID)
     
-    // Wait for sync to trigger (sync interval is 20ms, wait for at least one sync cycle)
-    try await Task.sleep(for: .milliseconds(50))
+    // Wait (bounded) for a sync request that sees the event's change: a sync before the
+    // tick applied it would see the old count and does not count.
+    await waitFor("a sync that includes the event's change", timeout: .seconds(2)) {
+        await mockTransport.syncObservedCounts.contains(3)
+    }
     
     // Assert: Verify state was modified
     let state = await keeper.currentState()
     #expect(state.count == 3, "State count should be 3 after event")
     
     // Assert: Verify sync was called by sync mechanism
-    let syncNowCount = await mockTransport.syncNowCallCount
-    let syncBroadcastCount = await mockTransport.syncBroadcastOnlyCallCount
-    #expect(syncNowCount > 0 || syncBroadcastCount > 0, "Sync should be called by tick mechanism after event modifies state")
+    let observed = await mockTransport.syncObservedCounts
+    #expect(observed.contains(3), "a sync after the event should see count == 3; syncs saw \(observed)")
 }
 
 @Test("Manual syncNow() in spawn triggers sync")
