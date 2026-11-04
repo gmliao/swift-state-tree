@@ -1579,12 +1579,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
     }
 
-    /// Delay before the first iteration of a loop with `interval`: `LandLoopPhase.offset` of
-    /// this land's instance ID (the land type until `setLandID`), or `.zero` when disabled.
     /// Offsets the tick and sync loops captured when they were configured (nil: not started).
     private(set) var appliedTickPhaseOffset: Duration?
     private(set) var appliedSyncPhaseOffset: Duration?
 
+    /// Delay before the first iteration of a loop with `interval`: `LandLoopPhase.offset` of
+    /// this land's instance ID, or `.zero` when disabled. A keeper created without `landID:`
+    /// falls back to the land type until `setLandID(_:)`.
     func loopPhaseOffset(interval: Duration) -> Duration {
         guard enableLoopPhaseOffset else { return .zero }
         return LandLoopPhase.offset(landID: actualLandID ?? definition.id, interval: interval)
