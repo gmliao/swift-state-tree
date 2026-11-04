@@ -392,22 +392,25 @@ Synchronization uses snapshot mode, doesn't block state changes:
 
 ```swift
 // Start sync
-public func beginSync() -> State? {
+public func beginSync(clearDirtyFlags: Bool = true) -> State? {
     guard !isSyncing else {
         return nil  // Deduplication: skip concurrent sync requests
     }
     isSyncing = true
-    return state  // Get snapshot directly, non-blocking
+    let snapshot = state  // Get snapshot directly, non-blocking
+    if clearDirtyFlags {
+        state.clearDirty()  // Clear live dirty flags; the snapshot keeps its own
+    }
+    return snapshot
 }
 
 // End sync
-public func endSync(clearDirtyFlags: Bool = true) {
+public func endSync() {
     isSyncing = false
-    if clearDirtyFlags {
-        state.clearDirty()  // Clear dirty flags
-    }
 }
 ```
+
+Dirty flags are cleared in `beginSync`, in the same actor turn that takes the snapshot. The snapshot keeps its dirty flags, so the sync cycle sees every change since the previous cycle, and a mutation that runs while the cycle is in flight stays dirty for the next one. `TransportAdapter` passes `clearDirtyFlags: false` for broadcast-only cycles (they do not diff per-player fields) and when dirty tracking is disabled. `endSync(clearDirtyFlags:)` is deprecated and ignores its argument.
 
 ### Sync Deduplication
 
@@ -431,7 +434,7 @@ var players: [PlayerID: PlayerState] = [:] {
 }
 ```
 
-After sync completes, dirty flags can be cleared:
+Dirty flags are cleared when a full sync cycle takes its snapshot (see Sync Flow). To clear them manually:
 
 ```swift
 // Clear all dirty flags
