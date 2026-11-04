@@ -1777,10 +1777,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///
     /// The counter is never moved back. If replay has already taken more numbers than live did,
     /// the extra server event shows up in the per-tick server-event comparison instead.
-    private func restoreSequenceWatermark(_ watermark: Int64?) {
+    private func restoreSequenceWatermark(_ watermark: Int64?, tickId: Int64, point: String) {
         guard mode == .reevaluation, let watermark else { return }
         if outputCollector.nextSequence <= watermark {
             outputCollector.nextSequence = watermark
+        } else {
+            // Replay has taken more numbers than live did; later ticks may mismatch because of
+            // this, so log where it started.
+            logger.warning("Re-evaluation sequence counter is past the recorded watermark", metadata: [
+                "tickId": .stringConvertible(tickId),
+                "point": .string(point),
+                "counter": .stringConvertible(outputCollector.nextSequence),
+                "watermark": .stringConvertible(watermark),
+            ])
         }
     }
 
@@ -1949,7 +1958,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Sequence watermark W1 (before inputs). Live: captured synchronously, with no await
         // since `nextTickId += 1`. Re-evaluation: restored after the source-loading awaits.
-        restoreSequenceWatermark(replayWatermarks?.beforeInputs)
+        restoreSequenceWatermark(replayWatermarks?.beforeInputs, tickId: tickId, point: "beforeInputs")
         let sequenceBeforeInputs = outputCollector.nextSequence
 
         // Process pending actions before tick handler
@@ -1972,7 +1981,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Sequence watermark W2 (before the tick handler). processPendingActions awaits after
         // its item loop, so inputs arriving then may have taken numbers since W1.
-        restoreSequenceWatermark(replayWatermarks?.beforeTickHandler)
+        restoreSequenceWatermark(replayWatermarks?.beforeTickHandler, tickId: tickId, point: "beforeTickHandler")
         let sequenceBeforeTickHandler = outputCollector.nextSequence
 
         // Execute handler synchronously - no copying needed
