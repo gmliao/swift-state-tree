@@ -37,6 +37,10 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
     /// Maximum messages per batch before immediate flush
     private static let maxBatchSize = 64
 
+    /// Connect, message batches and disconnect reach the transport in this order (a join sent
+    /// right after the upgrade must not overtake the connection's registration).
+    private let inbound = InboundTaskChain()
+
     /// Fragment reassembly: buffer for accumulating fragmented message payloads
     private var fragmentBuffer: ByteBuffer?
 
@@ -80,7 +84,7 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         self.connection = connection
 
         // Register with transport
-        Task {
+        inbound.enqueue {
             await self.transport.handleConnection(
                 sessionID: self.sessionID,
                 connection: connection,
@@ -108,7 +112,7 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         guard !isClosed else { return }
         isClosed = true
 
-        Task {
+        inbound.enqueue {
             await self.transport.handleDisconnection(sessionID: self.sessionID)
 
             self.logger.info(
@@ -204,7 +208,7 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         let messages = pendingMessages
         pendingMessages = []
 
-        Task {
+        inbound.enqueue {
             for data in messages {
                 await self.transport.handleIncomingMessage(
                     sessionID: self.sessionID,
@@ -296,7 +300,7 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         _ = context.writeAndFlush(wrapOutboundOut(closeFrame))
         context.close(promise: nil)
 
-        Task {
+        inbound.enqueue {
             await self.transport.handleDisconnection(sessionID: self.sessionID)
         }
     }
