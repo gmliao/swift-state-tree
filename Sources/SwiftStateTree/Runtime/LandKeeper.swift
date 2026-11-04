@@ -352,7 +352,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
 
         if let req = outputCollector.syncRequestsByTick.removeValue(forKey: tickId) {
-            if mode == .live {
+            // Layer-3 spike: a sync-only turn per drain (a broadcast-only request runs the full
+            // phase, as in a tick turn).
+            if usesInTurnSync, let transport, req.syncNow || req.syncBroadcastOnly {
+                runSyncOnlyTurn(transport: transport)
+            } else if mode == .live {
                 if req.syncNow {
                     await transport?.syncNowFromTransport()
                 } else if req.syncBroadcastOnly {

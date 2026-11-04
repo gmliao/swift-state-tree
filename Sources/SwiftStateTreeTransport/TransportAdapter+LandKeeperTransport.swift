@@ -26,9 +26,9 @@ extension TransportAdapter: LandKeeperTransport {
         isAttached(to: keeper)
     }
 
-    /// Layer-3 spike stub: waits for the outbound writer to drain. TODO wire #86's final API.
+    /// Layer-3 spike: returns once the writer holds no sync cycle element.
     public func waitForWriterDrainForInTurnSync() async {
-        _ = await waitForOutboundDrain(timeout: .seconds(5))
+        await outboundWriter.waitForSyncCycleDrain()
     }
 
     /// Layer-3 spike: called by the keeper inside its turn. `assumeIsolated` checks that this

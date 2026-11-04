@@ -479,7 +479,7 @@ struct TransportAdapterInTurnSyncTests {
         let f = try await InTurnSyncFixture.make(encoding: .messagepack)
         let pressured = InTurnSwitch()
         pressured.set(true)
-        await f.adapter.setWriterBackPressureStubForTesting { pressured.isOn }
+        await f.adapter.setWriterBackPressureOverrideForTesting { pressured.isOn }
 
         let deferred = await f.tick()
         #expect(deferred.allSatisfy { !$0.contains(.state("ticks", 1)) }, "no state frame: \(deferred)")

@@ -727,7 +727,7 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         }
     }
 
-    @Test("7e: an event queued during the endSync hop (after cleanup) still gets a follow-up")
+    @Test("7e: an event queued during the endSync hop (after cleanup) still gets a follow-up", .disabled("Layer-3 spike: the adapter shares the keeper's executor, so blocking the keeper blocks the adapter and the beginSync/endSync hop this test opens no longer exists"))
     func eventQueuedDuringEndSyncHopIsDelivered() async throws {
         let f = try await KeptEventsFixture.make(.tickless)
         let blocker = KeptEventsKeeperBlocker.shared
@@ -778,7 +778,7 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
 
     // The plan reads the event queue after the `beginSync` hop, in the same actor turn as its
     // commit. An event queued while the cycle waits in that hop is therefore this cycle's.
-    @Test("8: an event queued during the beginSync hop is delivered by that cycle")
+    @Test("8: an event queued during the beginSync hop is delivered by that cycle", .disabled("Layer-3 spike: the adapter shares the keeper's executor, so blocking the keeper blocks the adapter and the beginSync/endSync hop this test opens no longer exists"))
     func eventQueuedDuringBeginSyncHopIsInThatCycle() async throws {
         let f = try await KeptEventsFixture.make(.periodicSync)
         let blocker = KeptEventsKeeperBlocker.shared

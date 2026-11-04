@@ -165,18 +165,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         body()
     }
 
-    /// Tests only: stands in for #86's writer back-pressure check until its API lands.
-    private var writerBackPressureStubForTesting: (@Sendable () -> Bool)?
+    /// Tests only: forces the writer back-pressure check on (in addition to the real one).
+    private var writerBackPressureOverrideForTesting: (@Sendable () -> Bool)?
 
-    /// Installs `writerBackPressureStubForTesting` (tests only).
-    func setWriterBackPressureStubForTesting(_ stub: (@Sendable () -> Bool)?) {
-        writerBackPressureStubForTesting = stub
+    /// Installs `writerBackPressureOverrideForTesting` (tests only).
+    func setWriterBackPressureOverrideForTesting(_ override: (@Sendable () -> Bool)?) {
+        writerBackPressureOverrideForTesting = override
     }
 
-    /// Layer-3 spike: whether the land's outbound writer still holds an earlier element (#86:
-    /// the land's state cycle is skipped then). Stub: TODO wire #86's final API.
+    /// Layer-3 spike: the back-pressure rule of `withSyncState`: the writer still holds a sync
+    /// cycle element from an earlier cycle (`hasPendingStateElement`). Event elements are not
+    /// counted, so this turn's own event frames never trigger it.
     private func writerHoldsEarlierElementForInTurnSync() -> Bool {
-        writerBackPressureStubForTesting?() ?? false
+        hasPendingStateElement || (writerBackPressureOverrideForTesting?() ?? false)
     }
     let transport: any Transport
     /// Ordered FIFO for every frame this adapter sends (#60). See `OutboundWriter`.
@@ -1249,8 +1250,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Enqueues `events` in order, then (if `includeSync`) plans and commits a full sync phase on
     /// `state`, whose frames go to the writer after those events. Never suspends.
     ///
-    /// Back-pressure (#86) is sampled before this turn enqueues its own event frames and checked
-    /// before anything is planned: `.deferredBackPressure` (opcode 107 events stay queued).
+    /// Back-pressure (`hasPendingStateElement`) is checked before anything is planned:
+    /// `.deferredBackPressure` (opcode 107 events stay queued).
     ///
     /// Inherited opcode 107 limit (from the sync phase plan): per session the merged broadcast
     /// frame comes first, then the targeted event frames, then the per-player frame. A targeted
@@ -1260,12 +1261,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         events: [InTurnServerEvent],
         includeSync: Bool
     ) -> InTurnSyncResult {
-        let backPressured = includeSync && writerHoldsEarlierElementForInTurnSync()
         for item in events {
             enqueueEventSynchronously(item.event, to: item.target)
         }
         guard includeSync else { return .notRequested }
-        if backPressured { return .deferredBackPressure }
+        if writerHoldsEarlierElementForInTurnSync() {
+            syncSkips.outboundBacklog += 1
+            return .deferredBackPressure
+        }
         if debugDeferSyncIfFrozen(broadcastOnly: false) { return .skipped }
         profilerCounters?.setSessionCounts(
             connected: membershipCoordinator.connectedSessions.count,
