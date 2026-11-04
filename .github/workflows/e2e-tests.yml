@@ -28,6 +28,8 @@ jobs:
       # assertConverged (#79): DemoServer mounts the debug state routes, the CLI sends the admin key.
       ENABLE_DEBUG_STATE_ROUTES: "true"
       E2E_ADMIN_KEY: demo-admin-key
+      # A convergence mismatch fails the run (the CLI default is report-only).
+      E2E_CONVERGENCE_GATING: "true"
 
     steps:
     - uses: actions/checkout@v4

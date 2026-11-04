@@ -55,6 +55,15 @@ public actor WebSocketTransport: Transport {
     /// yet; that callback must not notify the delegate a second time.
     private var serverClosedSessions: Set<SessionID> = []
 
+    /// How long `closeSession` waits for the server's own disconnect callback before it logs
+    /// the close as unconfirmed and forgets the session.
+    private(set) var serverCloseConfirmTimeout: Duration = .seconds(10)
+
+    /// Override the close-confirmation timeout (tests).
+    func setServerCloseConfirmTimeout(_ timeout: Duration) {
+        serverCloseConfirmTimeout = timeout
+    }
+
     private static let missingTargetLogIntervalSeconds: TimeInterval = 2.0
     private static let missingTargetLogMapSoftLimit: Int = 5000
 
@@ -230,7 +239,29 @@ public actor WebSocketTransport: Transport {
         serverClosedSessions.insert(sessionID)
         await handleDisconnection(sessionID: sessionID)
         try? await queue.connection.close()
+        let timeout = serverCloseConfirmTimeout
+        Task { [weak self] in
+            try? await safeTaskSleep(for: timeout)
+            await self?.expireUnconfirmedServerClose(sessionID)
+        }
     }
+
+    /// The server never reported the closed connection as disconnected: log it and stop
+    /// waiting, so the set does not grow with connections whose callback never comes.
+    private func expireUnconfirmedServerClose(_ sessionID: SessionID) {
+        guard sessionQueues[sessionID] == nil, serverClosedSessions.remove(sessionID) != nil else { return }
+        logger.warning("Server-closed session was not confirmed by a disconnect callback", metadata: [
+            "session": .string(sessionID.rawValue),
+            "timeout": .string("\(serverCloseConfirmTimeout)"),
+        ])
+    }
+
+    /// Sessions closed by `closeSession` still waiting for the server's disconnect callback (tests).
+    func pendingServerClosedSessionCount() -> Int {
+        serverClosedSessions.count
+    }
+
+    public nonisolated var supportsCloseSession: Bool { true }
 
     /// Generation of the session's current connection, or `nil` when it is not connected.
     ///

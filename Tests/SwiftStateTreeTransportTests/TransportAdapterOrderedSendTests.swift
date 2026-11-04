@@ -620,6 +620,8 @@ actor BlockingTransport: Transport {
         box.recordClose(sessionID)
     }
 
+    nonisolated var supportsCloseSession: Bool { true }
+
     /// `Transport.send` is synchronous: it records and returns. Only `sendBatch` can block.
     func send(_ message: Data, to target: SwiftStateTreeTransport.EventTarget) {
         box.record(message, target)
