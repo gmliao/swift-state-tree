@@ -70,9 +70,8 @@ struct PendingEventManager: Sendable {
     ///   - clientID: Client ID to filter for (optional)
     ///   - isSessionCurrent: Closure to check if session membership is current
     ///   - isPlayerCurrent: Closure to check if player membership is current
-    ///   - startIndex: Skip the first `startIndex` queued events (see `targetedEventCount`)
-    ///   - endIndex: Stop before this index; `nil` reads to the current end. The result covers
-    ///     the half-open slice `[startIndex, endIndex)`.
+    ///   - endIndex: Stop before this index (the count a sync plan read, see
+    ///     `targetedEventCount`); `nil` reads to the current end. The result covers `[0, endIndex)`.
     /// - Returns: Array of event bodies for this client
     func pendingTargetedBodies(
         for sessionID: SessionID,
@@ -80,19 +79,17 @@ struct PendingEventManager: Sendable {
         clientID: ClientID?,
         isSessionCurrent: (SessionID, UInt64) -> Bool,
         isPlayerCurrent: (PlayerID, UInt64) -> Bool,
-        startingAt startIndex: Int = 0,
         endingBefore endIndex: Int? = nil
     ) -> [MessagePackValue] {
         let end = endIndex ?? targetedEvents.count
         // The queue is append-only within a cycle, so a count taken earlier is never past the end.
         assert(end <= targetedEvents.count, "endIndex past the end: the targeted event queue shrank")
-        assert(startIndex <= end, "startIndex past endIndex")
-        guard startIndex < end else { return [] }
-        
+        guard end > 0 else { return [] }
+
         var bodies: [MessagePackValue] = []
-        bodies.reserveCapacity(end - startIndex)
-        
-        for event in targetedEvents[startIndex..<end] {
+        bodies.reserveCapacity(end)
+
+        for event in targetedEvents[0..<end] {
             switch event.target {
             case .session(let s) where s == sessionID:
                 guard let stamp = event.stamp,

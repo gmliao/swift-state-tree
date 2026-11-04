@@ -17,6 +17,7 @@ public final class TransportProfilerCounters: Sendable {
     private let bytesReceived = ManagedAtomic<Int64>(0)
     private let disconnects = ManagedAtomic<Int>(0)
     private let errors = ManagedAtomic<Int>(0)
+    private let syncRecoveryCycles = ManagedAtomic<Int>(0)
     private let connectedSessions = ManagedAtomic<Int>(0)
     private let joinedSessions = ManagedAtomic<Int>(0)
 
@@ -46,12 +47,17 @@ public final class TransportProfilerCounters: Sendable {
         errors.wrappingIncrement(by: delta, ordering: .relaxed)
     }
 
+    /// A sync plan ran as a recovery cycle (the previous plan failed).
+    func incrementSyncRecoveryCycles(by delta: Int = 1) {
+        syncRecoveryCycles.wrappingIncrement(by: delta, ordering: .relaxed)
+    }
+
     func setSessionCounts(connected: Int, joined: Int) {
         connectedSessions.store(connected, ordering: .relaxed)
         joinedSessions.store(joined, ordering: .relaxed)
     }
 
-    func takeAndReset() -> (actions: Int, stateUpdates: Int, messagesReceived: Int, bytesReceived: Int64, disconnects: Int, errors: Int, connected: Int, joined: Int) {
+    func takeAndReset() -> (actions: Int, stateUpdates: Int, messagesReceived: Int, bytesReceived: Int64, disconnects: Int, errors: Int, syncRecoveryCycles: Int, connected: Int, joined: Int) {
         (
             actions.exchange(0, ordering: .relaxed),
             stateUpdates.exchange(0, ordering: .relaxed),
@@ -59,6 +65,7 @@ public final class TransportProfilerCounters: Sendable {
             bytesReceived.exchange(0, ordering: .relaxed),
             disconnects.exchange(0, ordering: .relaxed),
             errors.exchange(0, ordering: .relaxed),
+            syncRecoveryCycles.exchange(0, ordering: .relaxed),
             connectedSessions.load(ordering: .relaxed),
             joinedSessions.load(ordering: .relaxed)
         )
@@ -182,6 +189,7 @@ public actor TransportProfilingActor {
                 "bytesReceived": stats.bytesReceived,
                 "disconnects": stats.disconnects,
                 "errors": stats.errors,
+                "syncRecoveryCycles": stats.syncRecoveryCycles,
                 "connectedSessions": stats.connected,
                 "joinedSessions": stats.joined,
             ] as [String: Any],

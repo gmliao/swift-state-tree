@@ -50,12 +50,16 @@ struct SyncPhaseRecipient: Sendable {
     let playerID: PlayerID
 }
 
-/// A per-player state update that failed to encode. Its session got no state frame although
-/// the diff cache advanced, so the commit requests a recovery cycle.
-struct SyncPhaseEncodeFailure: Sendable {
+/// A state update of a sync plan failed to encode for `playerID`. The plan fails with it, so
+/// nothing of the cycle is committed and the next plan is a recovery cycle.
+struct SyncPhaseEncodeError: Error, CustomStringConvertible {
     let sessionID: SessionID
     let playerID: PlayerID
-    let message: String
+    let underlying: any Error
+
+    var description: String {
+        "encoding the state update for player \(playerID.rawValue) (session \(sessionID.rawValue)) failed: \(underlying)"
+    }
 }
 
 /// Input of the change-object metrics, applied by the commit.
@@ -75,14 +79,19 @@ struct SyncPhaseBroadcastLog {
 ///
 /// The sync phase of a room turn has two synchronous steps, run in the same actor turn:
 /// - **plan** (`planSyncPhase`, `planBroadcastOnlySyncPhase`, `planFirstSync`): reads the state
-///   copy, the recipients and the event queue, passed as parameters; advances the diff caches in
-///   place; encodes every frame. It changes nothing else.
-/// - **commit** (`commitSyncPhase`): removes the consumed events, applies the metric and
-///   dirty-tracking updates, and enqueues the frames as one writer element.
+///   copy, the recipients and the event queue, passed as parameters; computes the diffs, staging
+///   the cache updates in `staged` instead of writing them; encodes every frame. It changes
+///   nothing else, except the encoders' dynamic key tables (see `syncRecoveryPending`). It also reads the adapter's
+///   configuration (encoding, dirty-tracking settings) and membership details (player slots,
+///   membership stamps) directly; that is synchronous and fine until the sync phase runs inside
+///   the keeper's turn.
+/// - **commit** (`commitSyncPhase`): writes the staged caches and firstSync marks, removes the
+///   consumed events, applies the metric and dirty-tracking updates, and enqueues the frames as
+///   one writer element.
 ///
-/// A plan that throws commits nothing: events stay queued and metrics unchanged. Its diffs may
-/// already have advanced the caches, and the cycle's `beginSync` already cleared the dirty flags,
-/// so the next plan runs as a full-snapshot cycle (`TransportAdapter.syncRecoveryPending`).
+/// A plan that throws (including any encode failure) commits nothing: caches, firstSync marks,
+/// events and metrics are unchanged. The cycle's `beginSync` already cleared the dirty flags, so
+/// the next plan is a recovery cycle (`TransportAdapter.syncRecoveryPending`).
 struct SyncPhasePlan {
     /// Frames in issue order. Per session: merged broadcast frame, targeted event frames,
     /// per-player state frame.
@@ -92,13 +101,10 @@ struct SyncPhasePlan {
     var consumedEvents = SyncPhaseConsumedEvents()
     /// Whether the plan diffed every synced field (`syncNow`): only such a commit ends a recovery.
     var coversAllFields = false
-    var encodeFailures: [SyncPhaseEncodeFailure] = []
-    /// Time spent encoding per-player updates (profiling sample), when sampled.
-    var encodeDuration: Duration?
+    /// Cache updates and firstSync marks; the commit writes them to the sync engine.
+    var staged = SyncEngine.StagedCaches()
     /// Change-object metric input; `nil` when metrics are not collected.
     var metrics: SyncPhaseMetrics?
-    /// The player whose firstSync this plan carries; the commit marks it as synced.
-    var firstSyncPlayer: PlayerID?
     var broadcastOnlyLog: SyncPhaseBroadcastLog?
 }
 
@@ -141,9 +147,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         syncPlanFaultForTesting = fault
     }
 
-    /// Whether the next sync plan runs as a recovery (full-snapshot) cycle (tests and diagnostics).
+    /// Whether the next sync plan runs as a recovery cycle (tests and diagnostics).
     func isSyncRecoveryPending() -> Bool {
         syncRecoveryPending
+    }
+
+    /// The sync engine's caches (tests).
+    func syncEngineForTesting() -> SyncEngine {
+        syncEngine
     }
 
     /// How long teardown waits for queued frames to reach the transport.
@@ -219,16 +230,35 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     
     private var initialSyncingPlayers: Set<PlayerID> = []
 
-    /// Set when a sync plan failed, or a state update failed to encode: the next plan runs as a
-    /// full-snapshot cycle (`.all` extraction, `.empty` baseline for broadcast and per-player
-    /// diffs), so every client gets its whole view again. The failed plan may already have
-    /// advanced the diff caches, and its `beginSync` already cleared the dirty flags; the
-    /// full-snapshot cycle needs neither. Cleared by the commit of the next plan that covers all
-    /// fields without an encode failure.
+    /// Set when a sync plan failed (any throw, including an encode failure): the next plan is a
+    /// recovery cycle.
+    ///
+    /// The failed plan committed nothing, so the caches still hold what every client was last
+    /// sent; its `beginSync` already cleared the dirty flags, though. A recovery cycle therefore
+    /// extracts `.all` and diffs against the cached baseline (`.empty` under the full-snapshot
+    /// strategy), which yields every change, deletions included, at any depth. Every recipient
+    /// gets its update typed `.firstSync`, even when empty: the encoders reset the dynamic key
+    /// tables of the scope and the client clears its key map for that scope, so key slots a failed
+    /// encode allocated without the client learning them are never referenced. The client applies
+    /// a firstSync's patches onto its view like a diff, so the update carries a diff.
+    ///
+    /// Cleared by the commit of the next plan that covers all fields. A deterministic failure
+    /// keeps the land in recovery and sends nothing; `syncRecoveryCycles` and a rate-limited
+    /// error log make that visible.
     private var syncRecoveryPending = false
 
-    /// Tests only: called at the end of every sync plan, after its diffs advanced the caches and
-    /// its frames were encoded. A throw fails the plan there.
+    /// Sync cycles that requested `beginSync`, counted in the turn that starts the hop (tests:
+    /// once the count is readable, that cycle is suspended in or past its `beginSync` hop).
+    private(set) var beginSyncRequests = 0
+
+    /// Sync plans run as recovery cycles since the adapter started (diagnostics).
+    private(set) var syncRecoveryCycles = 0
+
+    /// When the last "sync in recovery" error was logged (rate limit).
+    private var lastSyncRecoveryLog: ContinuousClock.Instant?
+
+    /// Tests only: called at the end of every sync plan, after its diffs were staged and its
+    /// frames encoded. A throw fails the plan there.
     private var syncPlanFaultForTesting: (@Sendable () throws -> Void)?
 
     /// Membership queue prevents stale join/leave work from delivering after rejoin.
@@ -1329,7 +1359,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Dirty flags are cleared (when `clearDirtyFlags` is set) in the same keeper turn that takes
     /// the copy, so mutations made after it stay dirty for the next cycle (#68). The commit owns
     /// the decision: a committed plan leaves them cleared; a plan that throws makes the next plan a
-    /// full-snapshot cycle (`syncRecoveryPending`), which does not depend on them.
+    /// recovery cycle (`syncRecoveryPending`), which does not depend on them.
     ///
     /// Returns `true` when the caller must start a follow-up `syncNow` cycle, decided after
     /// `endSync()` returned: a sync request made before that is rejected by `beginSync`, so events
@@ -1344,6 +1374,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         errorLogMessage: String,
         phase: (State) throws -> Void
     ) async -> Bool {
+        beginSyncRequests += 1
         guard let state = await keeper.beginSync(clearDirtyFlags: clearDirtyFlags) else {
             if logger.logLevel <= .debug {
                 logger.debug("Sync skipped", metadata: ["message": .string(skipLogMessage)])
@@ -1373,32 +1404,55 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Plans and commits one sync phase in the same actor turn. A plan that throws commits
     /// nothing and makes the next plan a recovery cycle (`syncRecoveryPending`).
+    ///
+    /// With profiling on, the plan's duration (extraction, diffs and encoding) is sampled as the
+    /// encode latency; the clock is read here, never inside a plan.
     private func runSyncPhase(_ plan: () throws -> SyncPhasePlan) throws {
+        let planStart: ContinuousClock.Instant? = profiler != nil ? ContinuousClock.now : nil
         let planned: SyncPhasePlan
         do {
             planned = try plan()
         } catch {
             syncRecoveryPending = true
+            logSyncRecoveryIfDue(error)
             throw error
         }
         commitSyncPhase(planned)
+        if let planStart {
+            recordEncodeSample(ContinuousClock.now - planStart)
+        }
+    }
+
+    /// Logs that the land's sync is in recovery, at most every 10 seconds: a deterministic
+    /// failure fails every recovery plan too, and would otherwise log every cycle.
+    private func logSyncRecoveryIfDue(_ error: any Error) {
+        let now = ContinuousClock.now
+        if let last = lastSyncRecoveryLog, now - last < .seconds(10) {
+            return
+        }
+        lastSyncRecoveryLog = now
+        logger.error("❌ Sync plan failed; the next cycle is a recovery cycle", metadata: [
+            "landID": .string(landID),
+            "recoveryCycles": .string("\(syncRecoveryCycles)"),
+            "error": .string("\(error)")
+        ])
     }
 
     /// One full sync cycle on `state`: plan, then commit.
     private func runFullSyncPhase(state: State) throws {
+        if syncRecoveryPending {
+            syncRecoveryCycles += 1
+            profilerCounters?.incrementSyncRecoveryCycles()
+        }
         try runSyncPhase {
             try planSyncPhase(
                 state: state,
                 recipients: syncPhaseRecipients(),
                 events: pendingEventManager,
-                fullSnapshot: planAsFullSnapshot
+                fullSnapshot: syncStrategy == .fullSnapshot,
+                recovery: syncRecoveryPending
             )
         }
-    }
-
-    /// Whether the next plan runs as a full-snapshot cycle: by strategy, or to recover.
-    private var planAsFullSnapshot: Bool {
-        syncStrategy == .fullSnapshot || syncRecoveryPending
     }
 
     /// This cycle's recipients, in membership order.
@@ -1416,32 +1470,22 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// The commit of a sync phase: synchronous, in the same actor turn as its plan.
     ///
-    /// Removes the events the plan consumed, marks a firstSync player as synced, applies the
-    /// metric and dirty-tracking updates, and enqueues the frames as one writer element. Dirty
-    /// flags were cleared by the keeper when `beginSync` took the copy (#68); this step decides
-    /// whether a recovery cycle follows.
+    /// Writes the staged caches and firstSync marks, removes the events the plan consumed, applies
+    /// the metric and dirty-tracking updates, and enqueues the frames as one writer element. Dirty
+    /// flags were cleared by the keeper when `beginSync` took the copy (#68); a committed plan
+    /// that covers all fields ends a recovery.
     private func commitSyncPhase(_ plan: SyncPhasePlan) {
+        syncEngine.applyStaged(plan.staged)
         pendingEventManager.removeConsumed(
             targeted: plan.consumedEvents.targeted,
             broadcast: plan.consumedEvents.broadcast
         )
-        if let player = plan.firstSyncPlayer {
-            syncEngine.markFirstSyncReceived(for: player)
-        }
-        for failure in plan.encodeFailures {
-            logger.error("❌ Failed to encode state update", metadata: [
-                "playerID": .string(failure.playerID.rawValue),
-                "sessionID": .string(failure.sessionID.rawValue),
-                "error": .string(failure.message)
-            ])
-        }
-        if !plan.encodeFailures.isEmpty {
-            syncRecoveryPending = true
-        } else if plan.coversAllFields {
+        if plan.coversAllFields && syncRecoveryPending {
             syncRecoveryPending = false
-        }
-        if let duration = plan.encodeDuration {
-            recordEncodeSample(duration)
+            logger.info("Sync recovered", metadata: [
+                "landID": .string(landID),
+                "recoveryCycles": .string("\(syncRecoveryCycles)")
+            ])
         }
         if plan.stateUpdateCount > 0 {
             profilerCounters?.incrementStateUpdates(by: plan.stateUpdateCount)
@@ -1458,9 +1502,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Plan of one full sync cycle (`syncNow`).
     ///
     /// Synchronous: nothing else runs on this adapter between reading its inputs and the commit.
-    /// Reads `state` (the copy taken by `beginSync`), `recipients` and `events`; advances the diff
-    /// caches in place; encodes every frame. `fullSnapshot` extracts `.all` and diffs against the
-    /// `.empty` baseline (full-snapshot strategy, or a recovery cycle).
+    /// Reads `state` (the copy taken by `beginSync`), `recipients` and `events`; stages the cache
+    /// updates in the plan; encodes every frame. `fullSnapshot` (the full-snapshot strategy)
+    /// extracts `.all` and diffs against the `.empty` baseline. `recovery` extracts `.all` and
+    /// types every recipient's updates `.firstSync` (see `syncRecoveryPending`).
     ///
     /// Frames per session, in order (the outbound writer keeps it, #60):
     /// - opcode 107: the merged broadcast frame (broadcast state update + broadcast events), then
@@ -1472,13 +1517,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         state: State,
         recipients: [SyncPhaseRecipient],
         events: PendingEventManager,
-        fullSnapshot: Bool
+        fullSnapshot: Bool,
+        recovery: Bool
     ) throws -> SyncPhasePlan {
         var plan = SyncPhasePlan()
-        plan.coversAllFields = true
+        // A recovery cycle without a recipient reset no client's key tables: stay in recovery.
+        plan.coversAllFields = !(recovery && recipients.isEmpty)
         let baseline: SyncEngine.DiffBaseline = fullSnapshot ? .empty : .cached
+        let extractAll = fullSnapshot || recovery
         let shouldCollectChangeMetrics = enableChangeObjectMetrics || enableAutoDirtyTracking
-        let (requestedBroadcastMode, requestedPerPlayerMode) = computeSyncModes(for: state, fullSnapshot: fullSnapshot)
+        let (requestedBroadcastMode, requestedPerPlayerMode) = computeSyncModes(for: state, extractAll: extractAll)
         // `extractSyncSnapshots` may extract with a different mode than requested
         // when `useSnapshotForSync` is enabled: it derives a single combined dirty-field mode from
         // `state.getDirtyFields()` rather than reusing `requestedBroadcastMode`/`requestedPerPlayerMode`
@@ -1490,23 +1538,32 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             recipients: recipients,
             broadcastMode: requestedBroadcastMode,
             perPlayerMode: requestedPerPlayerMode,
-            fullSnapshot: fullSnapshot
+            extractAll: extractAll
         )
 
         let broadcastDiff = syncEngine.computeBroadcastDiffFromSnapshot(
             currentBroadcast: broadcastSnapshot,
             onlyPaths: nil,
             mode: broadcastMode,
-            baseline: baseline
+            baseline: baseline,
+            staged: &plan.staged
         )
 
+        // Recipients whose player has no committed firstSync (e.g. its firstSync plan failed):
+        // their client view is empty. Read before any update below stages a mark.
+        let unsyncedRecipients = recipients.filter {
+            !syncEngine.hasReceivedFirstSync($0.playerID, staged: plan.staged)
+        }
+        let unsyncedPlayers = Set(unsyncedRecipients.map(\.playerID))
+
         var metricUpdates: [StateUpdate] = []
-        let pendingUpdates: [PendingSyncUpdate]
+        var pendingUpdates: [PendingSyncUpdate]
         if useStateUpdateWithEvents {
             if let broadcastUpdate = try planMergedBroadcastFrame(
                 broadcastDiff: broadcastDiff,
                 recipients: recipients,
                 events: events,
+                recovery: recovery,
                 into: &plan
             ), shouldCollectChangeMetrics {
                 metricUpdates.append(broadcastUpdate)
@@ -1515,7 +1572,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 recipients: recipients,
                 perPlayerByPlayer: perPlayerByPlayer,
                 perPlayerMode: perPlayerMode,
-                baseline: baseline
+                baseline: baseline,
+                recovery: recovery,
+                skipping: unsyncedPlayers,
+                staged: &plan.staged
             )
         } else {
             pendingUpdates = collectCombinedPendingUpdates(
@@ -1523,28 +1583,70 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 broadcastDiff: broadcastDiff,
                 perPlayerByPlayer: perPlayerByPlayer,
                 perPlayerMode: perPlayerMode,
-                baseline: baseline
+                baseline: baseline,
+                recovery: recovery,
+                skipping: unsyncedPlayers,
+                staged: &plan.staged
             )
+        }
+        for recipient in unsyncedRecipients {
+            pendingUpdates.append(try planFullViewUpdate(state: state, recipient: recipient, staged: &plan.staged))
         }
         if shouldCollectChangeMetrics {
             metricUpdates.append(contentsOf: pendingUpdates.map(\.update))
             plan.metrics = SyncPhaseMetrics(updates: metricUpdates, broadcastSnapshot: broadcastSnapshot)
         }
-        planPerPlayerFrames(pendingUpdates, recipients: recipients, events: events, into: &plan)
+        try planPerPlayerFrames(pendingUpdates, recipients: recipients, events: events, into: &plan)
 
         try syncPlanFaultForTesting?()
         return plan
     }
 
+    /// The whole view of a recipient whose client has none (its firstSync plan failed), as a
+    /// diff from empty typed `.firstSync`, like `planFirstSync`. Stages the player's caches from
+    /// `.all` snapshots and its firstSync mark.
+    private func planFullViewUpdate(
+        state: State,
+        recipient: SyncPhaseRecipient,
+        staged: inout SyncEngine.StagedCaches
+    ) throws -> PendingSyncUpdate {
+        let snapshot = try syncEngine.lateJoinSnapshot(for: recipient.playerID, from: state, staged: &staged)
+        staged.perPlayer[recipient.playerID] = try syncEngine.extractPerPlayerSnapshot(
+            for: recipient.playerID,
+            from: state,
+            mode: .all
+        )
+        staged.firstSyncReceived.insert(recipient.playerID)
+        let patches = syncEngine.computeDiff(from: StateSnapshot(values: [:]), to: snapshot, onlyPaths: nil)
+        return makePendingSyncUpdate(
+            sessionID: recipient.sessionID,
+            playerID: recipient.playerID,
+            update: .firstSync(patches)
+        )
+    }
+
+    /// A recovery cycle's update: always sent, typed `.firstSync` so the encoder and the client
+    /// reset the scope's dynamic key table; its patches are the diff against the cache.
+    private func recoveryUpdate(_ update: StateUpdate) -> StateUpdate {
+        switch update {
+        case .noChange:
+            return .firstSync([])
+        case .diff(let patches), .firstSync(let patches):
+            return .firstSync(patches)
+        }
+    }
+
     /// opcode 107: the merged broadcast frame for every recipient, carrying the queued broadcast
     /// events. Returns the broadcast update (for the metrics), `nil` when no frame is planned.
+    /// A recovery cycle always plans it, typed `.firstSync` (broadcast key scope reset).
     private func planMergedBroadcastFrame(
         broadcastDiff: [StatePatch],
         recipients: [SyncPhaseRecipient],
         events: PendingEventManager,
+        recovery: Bool,
         into plan: inout SyncPhasePlan
     ) throws -> StateUpdate? {
-        guard !broadcastDiff.isEmpty || events.hasAnyEvents else {
+        guard recovery || !broadcastDiff.isEmpty || events.hasAnyEvents else {
             return nil
         }
         guard let first = recipients.first else {
@@ -1558,7 +1660,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             return nil
         }
 
-        let broadcastUpdate: StateUpdate = broadcastDiff.isEmpty ? .noChange : .diff(broadcastDiff)
+        let broadcastUpdate: StateUpdate = recovery
+            ? .firstSync(broadcastDiff)
+            : (broadcastDiff.isEmpty ? .noChange : .diff(broadcastDiff))
         let data = try encodeMergedBroadcastFrame(
             update: broadcastUpdate,
             playerID: first.playerID,
@@ -1611,28 +1715,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Per-player state frames in recipient order. With opcode 107 each recipient's targeted event
     /// frames come right before its per-player frame (alone when it has none), and the plan
-    /// consumes the targeted events it read.
+    /// consumes the targeted events it read. An encode failure fails the plan.
     private func planPerPlayerFrames(
         _ pendingUpdates: [PendingSyncUpdate],
         recipients: [SyncPhaseRecipient],
         events: PendingEventManager,
         into plan: inout SyncPhasePlan
-    ) {
+    ) throws {
         var payloadBySession: [SessionID: Data] = [:]
-        if !pendingUpdates.isEmpty {
-            let encoded = encodeUpdatesSerially(pendingUpdates)
-            plan.encodeDuration = encoded.duration
-            for update in encoded.updates {
-                if let payload = update.payload {
-                    payloadBySession[update.sessionID] = payload
-                } else {
-                    plan.encodeFailures.append(SyncPhaseEncodeFailure(
-                        sessionID: update.sessionID,
-                        playerID: update.playerID,
-                        message: update.errorMessage ?? "unknown error"
-                    ))
-                }
-            }
+        for update in try encodeUpdatesSerially(pendingUpdates) {
+            payloadBySession[update.sessionID] = update.payload
         }
 
         let targetedEnd = useStateUpdateWithEvents ? events.targetedEventCount : 0
@@ -1659,9 +1751,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     private func computeSyncModes(
         for state: State,
-        fullSnapshot: Bool
+        extractAll: Bool
     ) -> (broadcastMode: SnapshotMode, perPlayerMode: SnapshotMode) {
-        if fullSnapshot {
+        if extractAll {
             return (.all, .all)
         }
 
@@ -1686,7 +1778,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         recipients: [SyncPhaseRecipient],
         broadcastMode: SnapshotMode,
         perPlayerMode: SnapshotMode,
-        fullSnapshot: Bool
+        extractAll: Bool
     ) throws -> (
         broadcastSnapshot: StateSnapshot,
         perPlayerByPlayer: [PlayerID: StateSnapshot],
@@ -1698,7 +1790,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let playerIDs = recipients.compactMap { seenPlayers.insert($0.playerID).inserted ? $0.playerID : nil }
 
         if useSnapshotForSync {
-            let fullMode: SnapshotMode = (!fullSnapshot && enableDirtyTracking && state.isDirty())
+            let fullMode: SnapshotMode = (!extractAll && enableDirtyTracking && state.isDirty())
                 ? .dirtyTracking(state.getDirtyFields())
                 : .all
             let extracted = try syncEngine.extractWithSnapshotForSync(
@@ -1740,25 +1832,30 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         recipients: [SyncPhaseRecipient],
         perPlayerByPlayer: [PlayerID: StateSnapshot],
         perPlayerMode: SnapshotMode,
-        baseline: SyncEngine.DiffBaseline
+        baseline: SyncEngine.DiffBaseline,
+        recovery: Bool,
+        skipping skippedPlayers: Set<PlayerID>,
+        staged: inout SyncEngine.StagedCaches
     ) -> [PendingSyncUpdate] {
         var pendingUpdates: [PendingSyncUpdate] = []
         pendingUpdates.reserveCapacity(recipients.count)
 
-        for recipient in recipients {
+        for recipient in recipients where !skippedPlayers.contains(recipient.playerID) {
             guard let perPlayerSnapshot = perPlayerByPlayer[recipient.playerID] else {
                 continue
             }
 
-            let update = syncEngine.generatePerPlayerUpdateFromSnapshot(
+            var update = syncEngine.generatePerPlayerUpdateFromSnapshot(
                 for: recipient.playerID,
                 perPlayerSnapshot: perPlayerSnapshot,
                 perPlayerMode: perPlayerMode,
                 onlyPaths: nil,
-                baseline: baseline
+                baseline: baseline,
+                staged: &staged
             )
-
-            if case .noChange = update {
+            if recovery {
+                update = recoveryUpdate(update)
+            } else if case .noChange = update {
                 continue
             }
 
@@ -1777,23 +1874,28 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         broadcastDiff: [StatePatch],
         perPlayerByPlayer: [PlayerID: StateSnapshot],
         perPlayerMode: SnapshotMode,
-        baseline: SyncEngine.DiffBaseline
+        baseline: SyncEngine.DiffBaseline,
+        recovery: Bool,
+        skipping skippedPlayers: Set<PlayerID>,
+        staged: inout SyncEngine.StagedCaches
     ) -> [PendingSyncUpdate] {
         var pendingUpdates: [PendingSyncUpdate] = []
         pendingUpdates.reserveCapacity(recipients.count)
 
-        for recipient in recipients {
+        for recipient in recipients where !skippedPlayers.contains(recipient.playerID) {
             let perPlayerSnapshot = perPlayerByPlayer[recipient.playerID] ?? StateSnapshot(values: [:])
-            let update = syncEngine.generateUpdateFromBroadcastDiff(
+            var update = syncEngine.generateUpdateFromBroadcastDiff(
                 for: recipient.playerID,
                 broadcastDiff: broadcastDiff,
                 perPlayerSnapshot: perPlayerSnapshot,
                 perPlayerMode: perPlayerMode,
                 onlyPaths: nil,
-                baseline: baseline
+                baseline: baseline,
+                staged: &staged
             )
-
-            if case .noChange = update {
+            if recovery {
+                update = recoveryUpdate(update)
+            } else if case .noChange = update {
                 continue
             }
 
@@ -1859,13 +1961,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             skipLogMessage: "⏭️ Broadcast-only sync skipped: another sync operation is in progress",
             errorLogMessage: "❌ Failed to sync broadcast-only"
         ) { state in
+            // A recovery needs every field and every recipient: run it as a full cycle (it does
+            // not read dirty flags, so not clearing them here is still correct).
+            if syncRecoveryPending && !membershipCoordinator.isEmpty {
+                try runFullSyncPhase(state: state)
+                return
+            }
             try runSyncPhase {
                 try planBroadcastOnlySyncPhase(
                     state: state,
                     recipients: syncPhaseRecipients(),
                     hasMembers: !membershipCoordinator.isEmpty,
                     events: pendingEventManager,
-                    fullSnapshot: planAsFullSnapshot
+                    fullSnapshot: syncStrategy == .fullSnapshot
                 )
             }
         }
@@ -1888,7 +1996,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         fullSnapshot: Bool
     ) throws -> SyncPhasePlan {
         var plan = SyncPhasePlan()
-        let (broadcastDiff, broadcastMode) = try extractAndComputeBroadcastDiff(state: state, fullSnapshot: fullSnapshot)
+        let (broadcastDiff, broadcastMode) = try extractAndComputeBroadcastDiff(
+            state: state,
+            fullSnapshot: fullSnapshot,
+            staged: &plan.staged
+        )
 
         guard hasMembers && !broadcastDiff.isEmpty else {
             logBroadcastCacheUpdate(patchCount: broadcastDiff.count, mode: broadcastMode, hasPlayers: hasMembers)
@@ -1913,7 +2025,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 }
             }
         } else {
-            updateSize = planBroadcastOnlySeparateFrames(update: update, recipients: recipients, into: &plan)
+            updateSize = try planBroadcastOnlySeparateFrames(update: update, recipients: recipients, into: &plan)
         }
         plan.broadcastOnlyLog = SyncPhaseBroadcastLog(patchCount: broadcastDiff.count, bytes: updateSize, mode: broadcastMode)
 
@@ -1929,10 +2041,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// - Parameters:
     ///   - state: Current state to extract from
     ///   - fullSnapshot: Extract `.all` and diff against the `.empty` baseline.
+    ///   - staged: Receives the broadcast cache update.
     /// - Returns: Tuple of (diff patches, snapshot mode used)
     private func extractAndComputeBroadcastDiff(
         state: State,
-        fullSnapshot: Bool
+        fullSnapshot: Bool,
+        staged: inout SyncEngine.StagedCaches
     ) throws -> (diff: [StatePatch], mode: SnapshotMode) {
         // Determine snapshot mode based on dirty tracking
         let broadcastMode: SnapshotMode
@@ -1945,7 +2059,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Only extract and compare dirty broadcast fields
             broadcastMode = broadcastFields.isEmpty ? .all : .dirtyTracking(broadcastFields)
         } else {
-            // Full snapshot (strategy or recovery), dirty tracking disabled, or state not dirty: always use .all mode
+            // Full-snapshot strategy, dirty tracking disabled, or state not dirty: always use .all mode
             broadcastMode = .all
         }
 
@@ -1960,7 +2074,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             currentBroadcast: broadcastSnapshot,
             onlyPaths: nil,
             mode: broadcastMode,
-            baseline: fullSnapshot ? .empty : .cached
+            baseline: fullSnapshot ? .empty : .cached,
+            staged: &staged
         )
 
         return (broadcastDiff, broadcastMode)
@@ -1996,13 +2111,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// json / opcodeJsonArray, broadcast-only: the update encoded per recipient (no event
-    /// merging). A recipient whose encoding fails gets no frame and the commit requests a
-    /// recovery cycle. Returns the size of the last encoded frame (for logging).
+    /// merging). An encode failure fails the plan. Returns the size of the last encoded frame
+    /// (for logging).
     private func planBroadcastOnlySeparateFrames(
         update: StateUpdate,
         recipients: [SyncPhaseRecipient],
         into plan: inout SyncPhasePlan
-    ) -> Int? {
+    ) throws -> Int? {
         var lastUpdateSize: Int?
         for recipient in recipients {
             do {
@@ -2029,11 +2144,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 plan.frames.append(SyncPhaseFrame(data: updateData, sessionID: recipient.sessionID))
                 plan.stateUpdateCount += 1
             } catch {
-                plan.encodeFailures.append(SyncPhaseEncodeFailure(
-                    sessionID: recipient.sessionID,
-                    playerID: recipient.playerID,
-                    message: "\(error)"
-                ))
+                throw SyncPhaseEncodeError(sessionID: recipient.sessionID, playerID: recipient.playerID, underlying: error)
             }
         }
         return lastUpdateSize
@@ -2079,8 +2190,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let playerID: PlayerID
         let updateType: String
         let patchCount: Int
-        let payload: Data?
-        let errorMessage: String?
+        let payload: Data
     }
 
     /// Describe update type and patch count
@@ -2239,13 +2349,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-    /// Encode updates serially. Returns the encoding time when the profiler samples it; the
-    /// commit records the sample.
+    /// Encode updates serially. The first failure fails the plan (`SyncPhaseEncodeError`).
     private func encodeUpdatesSerially(
         _ pendingUpdates: [PendingSyncUpdate]
-    ) -> (updates: [EncodedSyncUpdate], duration: Duration?) {
-        let encodeStart: ContinuousClock.Instant? = profiler != nil ? ContinuousClock.now : nil
-        let result = pendingUpdates.map { pending in
+    ) throws -> [EncodedSyncUpdate] {
+        try pendingUpdates.map { pending in
             do {
                 let data = try stateUpdateEncoder.encode(
                     update: pending.update,
@@ -2258,24 +2366,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     playerID: pending.playerID,
                     updateType: pending.updateType,
                     patchCount: pending.patchCount,
-                    payload: data,
-                    errorMessage: nil
+                    payload: data
                 )
             } catch {
-                return EncodedSyncUpdate(
-                    sessionID: pending.sessionID,
-                    playerID: pending.playerID,
-                    updateType: pending.updateType,
-                    patchCount: pending.patchCount,
-                    payload: nil,
-                    errorMessage: "\(error)"
-                )
+                throw SyncPhaseEncodeError(sessionID: pending.sessionID, playerID: pending.playerID, underlying: error)
             }
         }
-        return (result, encodeStart.map { ContinuousClock.now - $0 })
     }
 
-    /// Records a sampled encode duration (1 in 100) with the profiler.
+    /// Records a sampled sync plan duration (1 in 100) as the profiler's encode latency.
     private func recordEncodeSample(_ duration: Duration) {
         guard let profiler else { return }
         let encodeMs = Double(duration.components.seconds) * 1000 + Double(duration.components.attoseconds) / 1e15
@@ -2288,9 +2387,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Internal implementation of syncStateForNewPlayer without initialSyncingPlayers management.
     /// Caller is responsible for managing initialSyncingPlayers.
     ///
-    /// Plan + commit like a sync cycle. A failed plan sends nothing; `lateJoinSnapshot` may
-    /// already have filled the player's caches, so the next cycle is a recovery cycle, which gives
-    /// the player its whole view as its first state update.
+    /// Plan + commit like a sync cycle. A failed plan commits nothing, so the player stays unmarked
+    /// and its next update is a firstSync. The failure still makes the next cycle a recovery cycle
+    /// for every recipient, not only this player: firstSync failures are rare, and one rule for
+    /// every failed plan is simpler than a per-player variant.
     private func _syncStateForNewPlayer(playerID: PlayerID, sessionID: SessionID) async {
         let state = await keeper.currentState()
         do {
@@ -2308,8 +2408,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Plan of a joining player's firstSync: its complete view as a diff from empty.
     private func planFirstSync(state: State, playerID: PlayerID, sessionID: SessionID) throws -> SyncPhasePlan {
-        // Extract a complete snapshot for this player and populate cache.
-        let snapshot = try syncEngine.lateJoinSnapshot(for: playerID, from: state)
+        var plan = SyncPhasePlan()
+        // Extract a complete snapshot for this player; stage the cache population.
+        let snapshot = try syncEngine.lateJoinSnapshot(for: playerID, from: state, staged: &plan.staged)
 
         // Generate full patch set (assume client starts from empty state)
         // This is effectively a "diff from empty" -> series of .set operations
@@ -2351,11 +2452,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
         }
 
-        var plan = SyncPhasePlan()
         plan.frames = [SyncPhaseFrame(data: updateData, sessionID: sessionID)]
         plan.stateUpdateCount = 1
         // Marked as synced in the commit, so subsequent updates use diffs.
-        plan.firstSyncPlayer = playerID
+        plan.staged.firstSyncReceived.insert(playerID)
 
         try syncPlanFaultForTesting?()
         return plan
