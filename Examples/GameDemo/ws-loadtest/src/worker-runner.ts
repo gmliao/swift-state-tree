@@ -1,3 +1,5 @@
+import { writeFileSync } from "node:fs";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { WorkerClient, WorkerSession, selectAction } from "./worker";
 import { sendMessageWithAck } from "./ipc";
 import { renderTemplateObject } from "./payload";
@@ -32,9 +34,40 @@ async function runWorker(config: StartConfig): Promise<void> {
     const clients: WorkerClient[] = [];
     const sessions: WorkerSession[] = [];
 
+    // Measurement only (LOADTEST_DIAG_DIR): close/error log, event-loop lag and CPU per second.
+    const diagDir = process.env.LOADTEST_DIAG_DIR;
+    const diagT0 = Date.now();
+    const diagSamples: Array<Record<string, number>> = [];
+    if (diagDir) {
+        (globalThis as any).__spikeDiag = [];
+        const lag = monitorEventLoopDelay({ resolution: 10 });
+        lag.enable();
+        let lastCpu = process.cpuUsage();
+        let lastT = Date.now();
+        setInterval(() => {
+            const c = process.cpuUsage();
+            const t = Date.now();
+            diagSamples.push({
+                t,
+                cpuPct: ((c.user - lastCpu.user) + (c.system - lastCpu.system)) / 10 / Math.max(1, t - lastT),
+                lagMaxMs: lag.max / 1e6,
+                lagP99Ms: lag.percentile(99) / 1e6
+            });
+            lag.reset();
+            lastCpu = c;
+            lastT = t;
+        }, 1000).unref();
+    }
+    // Measurement only: LOADTEST_PLAYERS_PER_ROOM groups connections into rooms whose ids are
+    // shared by every phase; the first player per room connects at once, the others after
+    // 300 ms (simultaneous joins to a new id race on auto-create) unless LOADTEST_STAGGER=0.
+    const playersPerRoom = Number(process.env.LOADTEST_PLAYERS_PER_ROOM || 0);
+
     for (let i = 0; i < config.connectionCount; i += 1) {
         const playerId = `${config.workerIndex}-${i}`;
-        const landInstanceId = `${config.phaseName}-${config.workerIndex}-${i}`;
+        const landInstanceId = playersPerRoom > 0
+            ? `room-${config.workerIndex}-${Math.floor(i / playersPerRoom)}`
+            : `${config.phaseName}-${config.workerIndex}-${i}`;
         const joinMetadata = config.joinPayloadTemplate
             ? renderTemplateObject(config.joinPayloadTemplate, { playerId })
             : undefined;
@@ -46,7 +79,11 @@ async function runWorker(config: StartConfig): Promise<void> {
             actions: config.actions,
             joinMetadata
         });
-        client.connect();
+        if (playersPerRoom <= 0 || i % playersPerRoom === 0 || process.env.LOADTEST_STAGGER === "0") {
+            client.connect();
+        } else {
+            setTimeout(() => client.connect(), 300);
+        }
         clients.push(client);
         sessions.push(client.getSession());
     }
@@ -70,6 +107,17 @@ async function runWorker(config: StartConfig): Promise<void> {
     setTimeout(async () => {
         clearInterval(timer);
         const report = aggregateSessions(sessions);
+        if (diagDir) {
+            try {
+                writeFileSync(`${diagDir}/${config.phaseName}-w${config.workerIndex}.json`, JSON.stringify({
+                    phase: config.phaseName, worker: config.workerIndex, t0: diagT0, tEnd: Date.now(),
+                    connections: clients.length, joinedAtEnd: clients.filter((c) => c.isJoined()).length,
+                    samples: diagSamples, events: (globalThis as any).__spikeDiag
+                }));
+            } catch {
+                // diagnostics are best effort
+            }
+        }
         const send = (message: unknown, callback?: (error?: Error | null) => void) => {
             if (!process.send) {
                 return false;

@@ -32,6 +32,7 @@ actor ClientSimulator {
     private(set) var totalActionsSent = 0
     private var actionsSentInWindow = 0
     private(set) var elapsedSeconds = 0
+    private var spikeActionCounter = 0
 
     init(
         config: LoadTestConfig,
@@ -171,6 +172,34 @@ actor ClientSimulator {
 
         let actionsPerPlayer = config.actionsPerPlayerPerSecond
 
+        if SpikeClientModel.sendActions {
+            // Spike: the same workload as ws-loadtest (one PlayAction per player per second).
+            let codec = TransportEncoding.messagepack.makeCodec()
+            for _ in 0 ..< actionsPerPlayer {
+                await withTaskGroup(of: Void.self) { group in
+                    for sessionID in connectedSessions {
+                        spikeActionCounter += 1
+                        let requestID = "a-\(spikeActionCounter)"
+                        group.addTask { [self] in
+                            let msg = TransportMessage(
+                                kind: .action,
+                                payload: .action(TransportActionPayload(
+                                    requestID: requestID,
+                                    action: ActionEnvelope(typeIdentifier: "PlayAction", payload: AnyCodable([String: AnyCodable]()))
+                                ))
+                            )
+                            guard let data = try? codec.encode(msg) else { return }
+                            await traffic.recordSent(bytes: data.count)
+                            SpikeClientModel.noteSent(requestID: requestID)
+                            await transport.handleIncomingMessage(sessionID: sessionID, data: data)
+                        }
+                    }
+                }
+            }
+            totalActionsSent += connectedSessions.count * actionsPerPlayer
+            actionsSentInWindow += connectedSessions.count * actionsPerPlayer
+            return
+        }
         do {
             let payloadData = try makeClientEventData(t)
 
@@ -221,6 +250,7 @@ struct CountingWebSocketConnection: WebSocketConnection, Sendable {
     let messageKindRecorder: MessageKindRecorder?
 
     func send(_ data: Data) async throws {
+        SpikeClientModel.received(data, sessionID: sessionID.rawValue)
         // Server sends to Client = Client receives
         await counter.recordReceived(bytes: data.count)
         if let messageKindRecorder {

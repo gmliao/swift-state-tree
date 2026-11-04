@@ -33,6 +33,7 @@ func runServerLoadTest() async throws {
     let landDef = HeroDefense.makeLand()
     let schema = SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(landDef)])
     let pathHashes = schema.lands[config.landType]?.pathHashes
+    for (path, hash) in pathHashes ?? [:] { SpikeClientModel.reversePathHashes[hash] = path }
 
     let nioServerConfig = NIOLandServerConfiguration(
         logger: logger,

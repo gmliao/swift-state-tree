@@ -15,8 +15,20 @@ function extractRequestID(message: any, kind: "actionResponse" | "error"): strin
     );
 }
 
+/** Measurement only: diagnostics buffer, set by worker-runner when LOADTEST_DIAG_DIR is set. */
+export function spikeDiag(): any[] | undefined {
+    return (globalThis as any).__spikeDiag;
+}
+
+function spikeDiagError(message: unknown): void {
+    const g = globalThis as any;
+    if (!g.__spikeDiag || (g.__spikeDiagErrors ?? 0) >= 200) return;
+    g.__spikeDiagErrors = (g.__spikeDiagErrors ?? 0) + 1;
+    g.__spikeDiag.push({ ev: "serverError", t: Date.now(), msg: JSON.stringify(message).slice(0, 300) });
+}
+
 export interface WebSocketLike {
-    on(event: "open" | "message" | "close" | "error", handler: (data?: any) => void): void;
+    on(event: "open" | "message" | "close" | "error" | "unexpected-response", handler: (data?: any, extra?: any) => void): void;
     send(data: string | Uint8Array): void;
     close(): void;
 }
@@ -125,6 +137,7 @@ export class WorkerSession {
             }
             if (message.kind === "error") {
                 this.metrics.errorCount += 1;
+                spikeDiagError(message);
                 const requestID = extractRequestID(message, "error");
                 if (typeof requestID === "string") {
                     this.recordRTT(requestID, now);
@@ -186,11 +199,17 @@ export class WorkerClient {
         this.socket.on("message", (data) => {
             this.handleMessage(data);
         });
-        this.socket.on("close", () => {
+        this.socket.on("close", (code?: any, reason?: any) => {
             this.session.recordDisconnect();
+            // Measurement only (LOADTEST_DIAG_DIR): per-close code, reason and time.
+            spikeDiag()?.push({ ev: "close", t: Date.now(), player: this.config.playerId, room: this.config.landInstanceId, joined: this.joined, code, reason: String(reason ?? "") });
         });
-        this.socket.on("error", () => {
+        this.socket.on("error", (err?: any) => {
             this.session.metrics.errorCount += 1;
+            spikeDiag()?.push({ ev: "error", t: Date.now(), player: this.config.playerId, joined: this.joined, msg: String(err?.message ?? err) });
+        });
+        this.socket.on("unexpected-response", (_req?: any, res?: any) => {
+            spikeDiag()?.push({ ev: "unexpected-response", t: Date.now(), player: this.config.playerId, status: res?.statusCode });
         });
     }
 
