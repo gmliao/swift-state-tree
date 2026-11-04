@@ -83,9 +83,10 @@ struct WatermarkThrowingResolver: ContextResolver {
     }
 }
 
-/// Test-controlled gate: the gated resolver signals entry and then waits until released.
-final class WatermarkResolverGate: @unchecked Sendable {
-    static let shared = WatermarkResolverGate()
+/// Test-controlled gate: the caller signals entry and then waits until the test releases it.
+final class WatermarkGate: @unchecked Sendable {
+    /// Gate used by `WatermarkGatedResolver` (resolvers are static, so the gate is shared).
+    static let resolver = WatermarkGate()
 
     private let lock = NSLock()
     private var entered = false
@@ -134,12 +135,12 @@ final class WatermarkResolverGate: @unchecked Sendable {
     }
 }
 
-/// Resolver that completes only when the test releases `WatermarkResolverGate.shared`.
+/// Resolver that completes only when the test releases `WatermarkGate.resolver`.
 struct WatermarkGatedResolver: ContextResolver {
     typealias Output = WatermarkResolverOutput
 
     static func resolve(ctx: ResolverContext) async throws -> WatermarkResolverOutput {
-        await WatermarkResolverGate.shared.enterAndWait()
+        await WatermarkGate.resolver.enterAndWait()
         return WatermarkResolverOutput(value: 7)
     }
 }
@@ -310,8 +311,23 @@ private actor CollectingSink: ReevaluationSink {
 
 private actor RecordingTransport: LandKeeperTransport {
     private(set) var sent: [String] = []
+    private let gate: WatermarkGate?
+    private var gateArmed = false
+
+    init(gate: WatermarkGate? = nil) {
+        self.gate = gate
+    }
+
+    /// The next send suspends on `gate` until the test releases it.
+    func armGate() {
+        gateArmed = true
+    }
 
     func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {
+        if gateArmed, let gate {
+            gateArmed = false
+            await gate.enterAndWait()
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let payload = (try? encoder.encode(event.payload)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
@@ -449,11 +465,14 @@ struct ReplaySequenceWatermarkTests {
             typeIdentifier: String(describing: WatermarkThrowingAction.self),
             payload: AnyCodable(WatermarkThrowingAction(amount: 100))
         )
-        await #expect(throws: (any Error).self) {
+        do {
             _ = try await keeper.handleActionEnvelope(
                 throwing,
                 playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1")
             )
+            Issue.record("Expected the resolver to throw")
+        } catch let ResolverExecutionError.resolverFailed(_, underlyingError) {
+            #expect(underlyingError is WatermarkResolverFailure)
         }
 
         _ = try await keeper.handleActionEnvelope(
@@ -465,6 +484,20 @@ struct ReplaySequenceWatermarkTests {
 
         let recorder = try #require(await keeper.getReevaluationRecorder())
         try await recorder.save(to: path)
+
+        // The failed action took exactly one number that appears nowhere in the record.
+        let frames = await recorder.getAllFrames()
+        let recordedSequences = Set(
+            frames.flatMap { frame in
+                frame.actions.map(\.sequence)
+                    + frame.clientEvents.map(\.sequence)
+                    + frame.lifecycleEvents.map(\.sequence)
+                    + frame.serverEvents.map(\.sequence)
+            }
+        )
+        let highest = try #require(recordedSequences.max())
+        let gaps = (0...highest).filter { !recordedSequences.contains($0) }
+        #expect(gaps.count == 1)
 
         let result = try await ReevaluationEngine.run(
             definition: definition,
@@ -497,7 +530,7 @@ struct ReplaySequenceWatermarkTests {
             )
         }
         // The gated action has taken its sequence number once the resolver is entered.
-        await WatermarkResolverGate.shared.waitUntilEntered()
+        await WatermarkGate.resolver.waitUntilEntered()
 
         // Inputs arriving while the gated resolver is pending take later sequence numbers.
         _ = try await keeper.handleActionEnvelope(
@@ -507,15 +540,26 @@ struct ReplaySequenceWatermarkTests {
         await keeper.stepTickOnce()
         await keeper.stepTickOnce()
 
-        WatermarkResolverGate.shared.release()
+        WatermarkGate.resolver.release()
         _ = try await gatedTask.value
         await keeper.stepTickOnce()
         await keeper.stepTickOnce()
 
         let liveState = await keeper.currentState()
         #expect(liveState.total == 53)
+        // The action that arrived after the gated one ran first; the gated one ran ticks later.
+        #expect(liveState.actionTicks.count == 2)
+        if liveState.actionTicks.count == 2 {
+            #expect(liveState.actionTicks[1] > liveState.actionTicks[0])
+        }
 
         let recorder = try #require(await keeper.getReevaluationRecorder())
+        let actions = await recorder.getAllFrames().flatMap(\.actions)
+        let gatedRecord = try #require(actions.first { $0.typeIdentifier == String(describing: WatermarkGatedAction.self) })
+        let laterRecord = try #require(actions.first { $0.typeIdentifier == String(describing: WatermarkEmitAction.self) })
+        // Numbered first, resolved later.
+        #expect(gatedRecord.sequence < laterRecord.sequence)
+        #expect(gatedRecord.resolvedAtTick > laterRecord.resolvedAtTick)
         try await recorder.save(to: path)
 
         let result = try await ReevaluationEngine.run(
@@ -687,7 +731,7 @@ struct ReplaySequenceWatermarkTests {
     }
 
     // Test 9
-    @Test("Live behaviour is unchanged by recording: same sent events and action execution ticks")
+    @Test("Recording on vs off: same sent event content and order, same action execution ticks")
     func liveBehaviourUnchangedByRecording() async throws {
         func run(recording: Bool) async throws -> (sent: [String], state: WatermarkTestState) {
             let transport = RecordingTransport()
@@ -715,6 +759,66 @@ struct ReplaySequenceWatermarkTests {
         #expect(withRecording.sent == withoutRecording.sent)
         #expect(withRecording.state.actionTicks == withoutRecording.state.actionTicks)
         #expect(withRecording.state.total == withoutRecording.state.total)
+    }
+
+    // Test 9b
+    @Test("An input that arrives while a live tick is suspended after its watermarks: replay still matches")
+    func inputDuringTickSuspensionStillMatches() async throws {
+        let definition = makeWatermarkTestDefinition()
+        let gate = WatermarkGate()
+        let transport = RecordingTransport(gate: gate)
+        let keeper = await makeLiveKeeper(definition: definition, transport: transport)
+        let path = tempRecordPath("mid-tick-input")
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try await keeper.join(playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1"))
+        await keeper.stepTickOnce()
+
+        // Tick 1 suspends in its output flush (after the tick handler); an action arrives then.
+        _ = try await keeper.handleActionEnvelope(
+            emitActionEnvelope(1),
+            playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1")
+        )
+        await transport.armGate()
+        let suspendedTick = Task { await keeper.stepTickOnce() }
+        await gate.waitUntilEntered()
+        _ = try await keeper.handleActionEnvelope(
+            emitActionEnvelope(2),
+            playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1")
+        )
+        gate.release()
+        await suspendedTick.value
+        await keeper.stepTickOnce()
+        await keeper.stepTickOnce()
+
+        let recorder = try #require(await keeper.getReevaluationRecorder())
+        let frames = await recorder.getAllFrames()
+        // The mid-tick action took its number after tick 1's W2, so its number lies between
+        // tick 1's watermarks and tick 2's first watermark.
+        let tick1 = try #require(frames.first { $0.tickId == 1 })
+        let tick2 = try #require(frames.first { $0.tickId == 2 })
+        let actionAmount: (ReevaluationRecordedAction) -> Int? = { record in
+            guard let data = try? JSONEncoder().encode(record.payload) else { return nil }
+            return (try? JSONDecoder().decode(WatermarkEmitAction.self, from: data))?.amount
+        }
+        let midTick = try #require(frames.flatMap(\.actions).first { actionAmount($0) == 2 })
+        let tick1W2 = try #require(tick1.sequenceBeforeTickHandler)
+        let tick2W1 = try #require(tick2.sequenceBeforeInputs)
+        #expect(midTick.sequence > tick1W2)
+        #expect(midTick.sequence < tick2W1)
+        try await recorder.save(to: path)
+
+        let sink = CollectingSink()
+        let result = try await ReevaluationEngine.run(
+            definition: definition,
+            initialState: WatermarkTestState(),
+            recordFilePath: path,
+            sink: sink
+        )
+        #expect(result.serverEventMismatches.isEmpty)
+        #expect(result.tickHashes == result.recordedStateHashes)
+        let replayed = await sink.events.sorted { $0.sequence < $1.sequence }
+        #expect(replayed.map(\.sequence) == serverEvents(in: frames).map(\.sequence))
     }
 
     // Test 10
@@ -759,5 +863,92 @@ struct ReplaySequenceWatermarkTests {
         #expect(mismatch.tickId == 0)
         #expect(mismatch.expected.isEmpty)
         #expect(mismatch.actual.map(\.typeIdentifier) == [eventType(WatermarkInitEvent(value: 1))])
+    }
+
+    // MARK: Per-tick verification rule (shared by the engine and the GameDemo runner)
+
+    private static let tickEvent = recordedEvent(sequence: 5, tickId: 0, WatermarkTickEvent(tick: 1))
+    private static let renumbered = recordedEvent(sequence: 9, tickId: 0, WatermarkTickEvent(tick: 1))
+    private static let otherPayload = recordedEvent(sequence: 5, tickId: 0, WatermarkTickEvent(tick: 2))
+
+    @Test("Verdict: no mismatches passes")
+    func verdictEmpty() {
+        #expect(ReevaluationEngine.classifyServerEventMismatches([], watermarkedTicks: []) == .passed)
+        #expect(ReevaluationEngine.classifyServerEventMismatches([], watermarkedTicks: [0, 1]) == .passed)
+    }
+
+    @Test("Verdict: every tick watermarked fails on a sequence-only mismatch")
+    func verdictAllWatermarked() {
+        let mismatches = [(tickId: Int64(0), expected: [Self.tickEvent], actual: [Self.renumbered])]
+        #expect(ReevaluationEngine.classifyServerEventMismatches(mismatches, watermarkedTicks: [0]) == .failed(ticks: [0]))
+    }
+
+    @Test("Verdict: no tick watermarked passes sequence-only and fails content mismatches")
+    func verdictNoneWatermarked() {
+        let sequenceOnly = [(tickId: Int64(0), expected: [Self.tickEvent], actual: [Self.renumbered])]
+        #expect(ReevaluationEngine.classifyServerEventMismatches(sequenceOnly, watermarkedTicks: []) == .passedIgnoringSequence(ticks: [0]))
+
+        let content = [(tickId: Int64(0), expected: [Self.tickEvent], actual: [Self.otherPayload])]
+        #expect(ReevaluationEngine.classifyServerEventMismatches(content, watermarkedTicks: []) == .failed(ticks: [0]))
+
+        let count = [(tickId: Int64(0), expected: [Self.tickEvent], actual: [])]
+        #expect(ReevaluationEngine.classifyServerEventMismatches(count, watermarkedTicks: []) == .failed(ticks: [0]))
+    }
+
+    @Test("Verdict: mixed record decides per tick, so one legacy frame does not disable strict ticks")
+    func verdictMixed() {
+        let mismatches = [
+            (tickId: Int64(3), expected: [Self.tickEvent], actual: [Self.renumbered]),
+            (tickId: Int64(7), expected: [Self.tickEvent], actual: [Self.renumbered]),
+        ]
+        // Tick 3 is legacy (sequence-only is tolerated), tick 7 is watermarked (must match exactly).
+        #expect(ReevaluationEngine.classifyServerEventMismatches(mismatches, watermarkedTicks: [7]) == .failed(ticks: [7]))
+        #expect(ReevaluationEngine.classifyServerEventMismatches(Array(mismatches.prefix(1)), watermarkedTicks: [7]) == .passedIgnoringSequence(ticks: [3]))
+    }
+
+    @Test("Empty record: nothing to compare, verification passes")
+    func emptyRecordPasses() async throws {
+        let path = tempRecordPath("empty")
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        try writeRecordFile(metadata: watermarkMetadata(), frames: [], to: path)
+
+        let result = try await ReevaluationEngine.run(
+            definition: makeWatermarkTestDefinition(),
+            initialState: WatermarkTestState(),
+            recordFilePath: path
+        )
+        #expect(result.maxTickId == -1)
+        #expect(result.watermarkedTicks.isEmpty)
+        #expect(result.serverEventVerification == .passed)
+    }
+
+    @Test("A frame with only one watermark field counts as watermarked; the missing point is not restored")
+    func singleWatermarkField() async throws {
+        // Only W1 recorded: replay restores 10 before inputs, the tick handler then takes 11.
+        let frame = ReevaluationTickFrame(
+            tickId: 0,
+            actions: [recordedAction(sequence: 3, amount: 2, resolvedAtTick: -1)],
+            clientEvents: [],
+            lifecycleEvents: [],
+            serverEvents: [
+                recordedEvent(sequence: 10, tickId: 0, WatermarkActionEvent(amount: 2)),
+                recordedEvent(sequence: 11, tickId: 0, WatermarkTickEvent(tick: 1)),
+            ],
+            sequenceBeforeInputs: 10,
+            sequenceBeforeTickHandler: nil
+        )
+        #expect(frame.sequenceWatermarks == ReevaluationSequenceWatermarks(beforeInputs: 10, beforeTickHandler: nil))
+        let path = tempRecordPath("one-field")
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        try writeRecordFile(metadata: watermarkMetadata(), frames: [frame], to: path)
+
+        let result = try await ReevaluationEngine.run(
+            definition: makeWatermarkTestDefinition(),
+            initialState: WatermarkTestState(),
+            recordFilePath: path
+        )
+        #expect(result.watermarkedTicks == [0])
+        #expect(result.serverEventMismatches.isEmpty)
+        #expect(result.serverEventVerification == .passed)
     }
 }
