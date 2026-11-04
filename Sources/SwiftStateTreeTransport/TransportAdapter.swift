@@ -3030,6 +3030,11 @@ extension TransportAdapter {
                     throw error
                 }
                 await keeper.endSync()
+                // As in `withSyncState`: events kept by this cycle need a follow-up when no
+                // periodic sync will deliver them. Syncs are frozen, so it runs on resume.
+                if pendingEventManager.hasAnyEvents && !keeper.hasPeriodicSync {
+                    debugFreezeState.deferredSyncNow = true
+                }
                 return DebugFreezeState<State>.Settled(
                     token: UUID().uuidString,
                     state: state,
