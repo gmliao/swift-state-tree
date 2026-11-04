@@ -24,6 +24,10 @@ jobs:
     runs-on: ubuntu-22.04 # Linux runner (production target)
     container:
       image: swift:6.2
+    env:
+      # assertConverged (#79): DemoServer mounts the debug state routes, the CLI sends the admin key.
+      ENABLE_DEBUG_STATE_ROUTES: "true"
+      E2E_ADMIN_KEY: demo-admin-key
 
     steps:
     - uses: actions/checkout@v4

@@ -1,0 +1,18 @@
+{
+  "maxDuration": 45000,
+  "steps": [
+    { "type": "log", "message": "Broadcast field change and broadcast event both arrive (#80: also runs with AUTO_DIRTY_TRACKING=false)" },
+    { "type": "action", "action": "Play", "payload": {} },
+    {
+      "type": "waitForState",
+      "waitForState": { "path": "score", "greaterThanOrEqual": 1, "timeout": 3000, "interval": 50, "message": "broadcast field score should reach 1" }
+    },
+    { "type": "event", "event": "MoveTo", "payload": { "target": { "__type": "Position2", "value": { "x": 64000, "y": 36000 } } } },
+    { "type": "log", "message": "Stay near the base until the auto-shoot broadcasts PlayerShoot" },
+    {
+      "type": "waitForEvent",
+      "waitForEvent": { "event": "PlayerShoot", "minCount": 1, "timeout": 30000, "message": "broadcast event PlayerShoot should arrive" }
+    },
+    { "type": "assertConverged", "assertConverged": { "label": "end" } }
+  ]
+}

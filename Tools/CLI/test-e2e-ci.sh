@@ -10,6 +10,10 @@ source "${SCRIPT_DIR}/e2e-test-common.sh"
 
 # Use release server when E2E_BUILD_MODE=release (e.g. E2E_BUILD_MODE=release ./test-e2e-ci.sh)
 
+# Debug state routes for the assertConverged step (#79), guarded by the admin key.
+export ENABLE_DEBUG_STATE_ROUTES=true
+export E2E_ADMIN_KEY=${E2E_ADMIN_KEY:-demo-admin-key}
+
 # Server-specific configuration
 SERVER_NAME="DemoServer"
 SERVER_DIR_NAME="Demo"
@@ -49,7 +53,42 @@ run_encoding_tests() {
     local cli_dir="$project_root/Tools/CLI"
     cd "$cli_dir"
     
-    TRANSPORT_ENCODING=${encoding} $test_command
+    # Checked explicitly: `set -e` does not apply inside a function called from `if !`.
+    if ! TRANSPORT_ENCODING=${encoding} $test_command; then
+        cd "$project_root"
+        return 1
+    fi
+
+    # Negative test (#79): a client that drops one patch must fail assertConverged with the
+    # path in the output. Gating is forced on for this run only.
+    if [ "$encoding" = "messagepack" ]; then
+        print_step "Running convergence fault injection (drop one /count patch, $encoding)..."
+        local fault_log
+        fault_log=$(mktemp)
+        if npx tsx src/cli.ts script \
+            -u ws://localhost:${SERVER_PORT}/game/counter \
+            -l counter \
+            -s scenarios/fault/counter-drop-one-patch.json \
+            --state-update-encoding messagepack \
+            --fault-drop-patch /count \
+            --convergence-gating > "$fault_log" 2>&1; then
+            cat "$fault_log"
+            rm -f "$fault_log"
+            print_error "Fault injection: assertConverged passed although a patch was dropped"
+            cd "$project_root"
+            return 1
+        fi
+        if ! grep -q "CONVERGENCE MISMATCH (gating) fault-drop-one-patch" "$fault_log" || ! grep -qE "^  /count: client=" "$fault_log"; then
+            cat "$fault_log"
+            rm -f "$fault_log"
+            print_error "Fault injection: the script failed, but not with a /count convergence mismatch"
+            cd "$project_root"
+            return 1
+        fi
+        grep -E "CONVERGENCE MISMATCH|^  /count: " "$fault_log"
+        rm -f "$fault_log"
+        print_success "Fault injection detected: dropped /count patch reported with its path"
+    fi
     
     cd "$project_root"
     print_success "E2E tests ($encoding) completed successfully"

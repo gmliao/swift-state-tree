@@ -114,6 +114,10 @@
       }
     },
     {
+      "type": "assertConverged",
+      "assertConverged": { "label": "mid-run after Play burst" }
+    },
+    {
       "type": "log",
       "message": "Testing movement to different positions"
     },
@@ -208,6 +212,10 @@
     },
     {
       "type": "state"
+    },
+    {
+      "type": "assertConverged",
+      "assertConverged": { "label": "end" }
     }
   ]
 }

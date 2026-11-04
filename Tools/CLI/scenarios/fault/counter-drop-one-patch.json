@@ -1,0 +1,10 @@
+{
+  "maxDuration": 15000,
+  "steps": [
+    { "type": "log", "message": "Negative test: run with --fault-drop-patch /count --convergence-gating; must fail on /count" },
+    { "type": "log", "message": "One change only: a later diff of /count would repair the dropped one" },
+    { "type": "action", "action": "Increment", "payload": {} },
+    { "type": "wait", "wait": 500 },
+    { "type": "assertConverged", "assertConverged": { "label": "fault-drop-one-patch" } }
+  ]
+}
