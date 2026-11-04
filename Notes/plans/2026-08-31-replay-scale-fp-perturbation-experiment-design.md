@@ -84,6 +84,7 @@ Fixed: 5 players, MoveTo every 20 ticks, no turrets, single room, same host (App
    state evolution is identical. The runner now re-checks such mismatches by content (tickId,
    type, payload, target) and reports a pure sequence difference as an explicit warning instead
    of a failure. A core fix (advancing the counter during replay) is tracked as follow-up work.
+   Resolved by #72 (watermarked records only).
 2. **Order-dependent game logic (real determinism bug, found by scaling).** The first full run
    failed 28/30: replays diverged from recordings at scattered ticks, and one seed even diverged
    between two replays in the same process. Field-level diff at the first divergent tick showed

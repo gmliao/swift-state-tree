@@ -144,6 +144,9 @@ Swift 6.3.2，故此結果同時跨 CPU 架構、作業系統與 toolchain 版�
 - **重播的 server event sequence 編號與錄製不同**（重播不推進共用序號計數器，已知缺口）：
   Runner 以內容級比對（tickId/type/payload/target）複核，純序號差異降為明示警告；core 修復
   為後續工作。本表所有 record 的事件內容比對皆通過。
+  - Update 2026-11-04: fixed by #72 for records with sequence watermarks (recorded from then on);
+    those are verified exactly, including `sequence`. The records behind the table above predate
+    the fix and carry no watermarks, so they still go through the content-only re-check.
 - 錄製與重播同為 arm64/macOS；跨架構（arm64→x86_64）證據見
   `deep-research/emse-artifacts/evidence-2026-02-06-*`。
 - 擾動作用於當 tick 所有移動中的玩家（非單一玩家）；latency 以「首個 mismatch tick − 600」計。
