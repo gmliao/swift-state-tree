@@ -30,9 +30,10 @@ import SwiftStateTreeMessagePack
 /// failure, not an encode failure).
 struct SyncPhaseFragile: Codable, Sendable, Equatable, SnapshotValueConvertible {
     var broken = false
+    var value = 0
     func toSnapshotValue() throws -> SnapshotValue {
         if broken { throw SyncPhaseFault() }
-        return .int(0)
+        return .int(value)
     }
 }
 
@@ -115,6 +116,7 @@ private func syncPhaseRules() -> RulesNode {
                 case "ratio": state.ratios[key] = Double(action.value)
                 case "nanratio": state.ratios[key] = .nan
                 case "fragile": state.fragile.broken = action.value != 0
+                case "fragileval": state.fragile.value = action.value
                 case "speed": state.speeds[ctx.playerID] = Double(action.value)
                 case "infspeed": state.speeds[ctx.playerID] = .infinity
                 default: state.scores[ctx.playerID] = action.value
@@ -485,11 +487,11 @@ private struct SyncPhaseClient {
 
 // MARK: - Fixture
 
-private func makeSyncPhaseEnvConfig(useSnapshotForSync: Bool) -> TransportEnvConfig {
+private func makeSyncPhaseEnvConfig(useSnapshotForSync: Bool, fullSnapshot: Bool = false) -> TransportEnvConfig {
     TransportEnvConfig(
         enableDirtyTracking: true,
         useSnapshotForSync: useSnapshotForSync,
-        syncStrategy: .delta,
+        syncStrategy: fullSnapshot ? .fullSnapshot : .delta,
         enableChangeObjectMetrics: false,
         changeObjectMetricsLogEvery: 10,
         changeObjectMetricsEmaAlpha: 0.2,
@@ -529,6 +531,7 @@ private struct SyncPhaseFixture {
         useSnapshotForSync: Bool = true,
         realMessagePack: Bool = false,
         periodicSync: Bool = true,
+        fullSnapshot: Bool = false,
         join: Bool = true
     ) async throws -> SyncPhaseFixture {
         let transport = SyncPhaseTransport()
@@ -539,7 +542,7 @@ private struct SyncPhaseFixture {
         let failDiffs = SyncPhaseSwitch()
         let failingPlayer = SyncPhaseFailingPlayer()
         let hasher = PathHasher(pathHashes: syncPhasePathHashes)
-        let envConfig = makeSyncPhaseEnvConfig(useSnapshotForSync: useSnapshotForSync)
+        let envConfig = makeSyncPhaseEnvConfig(useSnapshotForSync: useSnapshotForSync, fullSnapshot: fullSnapshot)
         let adapter: TransportAdapter<SyncPhaseTestState>
         if encoding == .messagepack && realMessagePack {
             adapter = TransportAdapter<SyncPhaseTestState>(
@@ -662,7 +665,7 @@ private struct SyncPhaseFixture {
     }
 
     /// The authoritative view of `player` (or `player2`). A broken `fragile` field reads as its
-    /// last extractable value (`.int(0)`), which is what clients keep while it is dropped.
+    /// value, which is what clients keep while it is dropped if they had it.
     func serverView(second: Bool = false) async throws -> [String: SnapshotValue] {
         var state = await keeper.currentState()
         state.fragile.broken = false
@@ -1207,6 +1210,38 @@ struct TransportAdapterSyncPhaseTests {
         #expect(client.value(at: "/fragile") == .int(0), "the dropped field keeps its last sent value")
         #expect(await f.adapter.syncFailedPlans == 0)
         #expect(await f.adapter.isKeyScopeResetPending() == false)
+    }
+
+    @Test(
+        "full snapshot: a dropped field sends nothing, so a joiner with a newer value keeps it",
+        arguments: SyncPhaseEncoding.allCases, [true, false]
+    )
+    func fullSnapshotDroppedFieldDoesNotRollBackAJoiner(encoding: SyncPhaseEncoding, useSnapshotForSync: Bool) async throws {
+        let f = try await SyncPhaseFixture.make(
+            encoding: encoding,
+            useSnapshotForSync: useSnapshotForSync,
+            fullSnapshot: true
+        )
+        await f.sync()
+        // The broadcast cache holds fragile = 0. The state moves to 7, and a player joins before
+        // the next cycle: its firstSync carries 7, while the cache still holds 0.
+        try await f.set("fragileval", 7)
+        try await f.joinSecond()
+        #expect(await f.clientState(second: true).value(at: "/fragile") == .int(7), "precondition")
+
+        // Now the field's extraction throws; the next cycle (diff from empty) drops it.
+        try await f.set("fragile", 1)
+        try await f.set("a", 3)
+        await f.sync()
+        #expect(await f.adapter.syncFailedPlans == 0, "the plan commits")
+        #expect(await f.adapter.syncDroppedUpdates > 0, "the drop is counted")
+        let joiner = await f.clientState(second: true)
+        #expect(joiner.decodeErrors.isEmpty, "decode errors \(joiner.decodeErrors)")
+        #expect(joiner.value(at: "/fragile") == .int(7), "no .set of the cached older value")
+        #expect(joiner.value(at: "/a") == .int(3), "healthy changes still flow")
+        let first = await f.clientState()
+        #expect(first.decodeErrors.isEmpty, "decode errors \(first.decodeErrors)")
+        #expect(first.value(at: "/a") == .int(3))
     }
 
     @Test("a joiner whose extraction throws for one field gets the rest of its view")
