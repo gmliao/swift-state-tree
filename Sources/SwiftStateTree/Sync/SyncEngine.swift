@@ -86,16 +86,6 @@ public struct SyncEngine: Sendable {
         hasReceivedFirstSync.contains(playerID) || staged.firstSyncReceived.contains(playerID)
     }
 
-    /// The cached broadcast snapshot: the broadcast view last committed.
-    package var cachedBroadcastSnapshot: StateSnapshot? {
-        lastBroadcastSnapshot
-    }
-
-    /// The cached per-player snapshot of `playerID`: its per-player view last committed.
-    package func cachedPerPlayerSnapshot(_ playerID: PlayerID) -> StateSnapshot? {
-        lastPerPlayerSnapshots[playerID]
-    }
-
     /// The cached broadcast snapshot (tests).
     package var cachedBroadcastSnapshotForTesting: StateSnapshot? {
         lastBroadcastSnapshot

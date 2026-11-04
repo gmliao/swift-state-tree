@@ -59,11 +59,9 @@ struct SyncPhaseEncodeError: Error, CustomStringConvertible {
         let message: String
     }
 
+    /// Room-wide failures (see `TransportAdapter.syncRoomWideFailureBound`); a failure of some
+    /// players only is handled inside the plan by dropping their unencodable patches.
     let failures: [Failure]
-    /// The failures hit some of the plan's players but not all: the cause is per-player data, so
-    /// a recovery may quarantine the player (`TransportAdapter.quarantinedPlayers`). A failure of
-    /// every player, or of the broadcast frame, is room-wide (`syncRoomWideFailureBound`).
-    let perRecipient: Bool
 
     var description: String {
         let list = failures.map { "player \($0.playerID.rawValue) (session \($0.sessionID.rawValue)): \($0.message)" }
@@ -183,22 +181,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         syncEngine
     }
 
-    /// Whether `playerID` is quarantined from per-player sync (tests and diagnostics).
-    func isSyncQuarantined(_ playerID: PlayerID) -> Bool {
-        quarantinedPlayers[playerID] != nil
-    }
-
-    /// Overrides the quarantine retry interval (tests).
-    func setSyncQuarantineRetryIntervalForTesting(_ cycles: Int) {
-        syncQuarantineRetryInterval = max(1, cycles)
-        for playerID in quarantinedPlayers.keys {
-            quarantinedPlayers[playerID]?.cyclesUntilRetry = min(
-                quarantinedPlayers[playerID]?.cyclesUntilRetry ?? cycles,
-                syncQuarantineRetryInterval
-            )
-        }
-    }
-
     /// Installs `syncEncodeFaultForTesting` (tests only).
     func setSyncEncodeFaultForTesting(_ fault: (@Sendable (PlayerID) -> Bool)?) {
         syncEncodeFaultForTesting = fault
@@ -289,10 +271,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// encode allocated without the client learning them are never referenced. The client applies
     /// a firstSync's patches onto its view like a diff, so the update carries a diff.
     ///
-    /// Cleared by the commit of the next plan that covers all fields. A deterministic failure
-    /// is bounded: one attributed to a player quarantines its per-player frames
-    /// (`quarantinedPlayers`); a room-wide one makes plans lossy after `syncRoomWideFailureBound`
-    /// failed recovery plans (`lossySyncPending`). `syncRecoveryCycles` and rate-limited error
+    /// Cleared by the commit of the next plan that covers all fields. An encode failure of some
+    /// players only never fails a plan: their unencodable patches are dropped (see
+    /// `planPerPlayerFrames`). A room-wide deterministic failure is bounded: plans become lossy
+    /// after `syncRoomWideFailureBound` failed recovery plans (`lossySyncPending`). `syncRecoveryCycles` and rate-limited error
     /// logs make it visible.
     private var syncRecoveryPending = false
 
@@ -300,48 +282,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// once the count is readable, that cycle is suspended in or past its `beginSync` hop).
     private(set) var beginSyncRequests = 0
 
-    /// A player whose per-player frames the room's sync skips because they keep failing to encode.
-    struct QuarantinedPlayer: Sendable {
-        /// Full cycles until the next retry.
-        var cyclesUntilRetry: Int
-        /// json / opcodeJsonArray: the broadcast cache when the player was quarantined, the
-        /// broadcast part of its client's view (its combined frames are skipped, so it misses the
-        /// broadcast diffs too). With opcode 107 it keeps receiving the broadcast frames.
-        let broadcastBaseline: StateSnapshot?
-    }
-
-    /// Consecutive failed recovery plans after which the player causing them is quarantined.
-    static var syncQuarantineThreshold: Int { 3 }
-
     /// Consecutive failed room-wide recovery plans after which plans are lossy: they commit
     /// without the updates that do not encode (`lossySyncPending`).
     static var syncRoomWideFailureBound: Int { 3 }
 
     /// Failed plans in a row after which no delayed follow-up is scheduled any more (enough for a
-    /// recovery to reach the quarantine or the lossy plan).
-    static var syncFailedPlanFollowUpLimit: Int { max(syncQuarantineThreshold, syncRoomWideFailureBound) + 2 }
+    /// recovery to reach the lossy plans).
+    static var syncFailedPlanFollowUpLimit: Int { syncRoomWideFailureBound + 2 }
 
     /// Delay of the follow-up after a failed plan on a land without periodic sync.
     static var syncFailedPlanFollowUpDelay: Duration { .milliseconds(100) }
-
-    /// Full cycles between retries of a quarantined player.
-    private var syncQuarantineRetryInterval = 50
-
-    /// Players whose per-player frames sync plans skip (see `noteRecoveryEncodeFailures`).
-    ///
-    /// Without this, a deterministic per-player encode failure would keep the whole room in
-    /// recovery. Only the per-player part is withheld, as before this change: with opcode 107 the
-    /// player's sessions still get every merged broadcast frame and their targeted events; with
-    /// json / opcodeJsonArray their combined state frames are skipped (that frame carries the
-    /// broadcast diff too) and events are still sent when emitted. The player's per-player cache
-    /// is not advanced, so it keeps the last view its client was sent. Every
-    /// `syncQuarantineRetryInterval` full cycles the player is retried with `.all` diffed against
-    /// that view, typed `.firstSync` (deletions included); on success it rejoins. Removed when
-    /// the player leaves.
-    private var quarantinedPlayers: [PlayerID: QuarantinedPlayer] = [:]
-
-    /// Per player: consecutive failed recovery plans attributed to its per-player encode.
-    private var recoveryEncodeFailureCounts: [PlayerID: Int] = [:]
 
     /// Consecutive failed recovery plans whose encode failure is room-wide.
     private var roomWideRecoveryFailures = 0
@@ -354,19 +304,22 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// against the caches, every update typed `.firstSync`) and drops what does not encode
     /// instead of failing: a deterministic failure degrades to stale fields, the caches advance
     /// and the event queue drains. Each drop counts in `syncDroppedUpdates`.
+    ///
+    /// - Cost: while it lasts (e.g. a NaN, which differs from itself and so is in every diff),
+    ///   every cycle is recovery-style: `.all` extraction and `.firstSync` frames that reset the
+    ///   key scopes, so frames are larger and plans use more CPU.
+    /// - Granularity: a patch is dropped whole, so healthy values inside it (siblings in the same
+    ///   object or array patch) are dropped with it.
+    /// - "Dropped nothing" only means the current values encode: a field dropped earlier reaches
+    ///   the clients on its next change, not when the mode ends.
     private var lossySyncPending = false
 
     /// When the last dropped-updates error was logged (rate limit).
     private var lastDroppedUpdatesLog: ContinuousClock.Instant?
 
-    /// Players quarantined since the adapter started (diagnostics).
-    private(set) var syncQuarantinedRecipients = 0
-
-    /// Patches or updates dropped by lossy plans since the adapter started (diagnostics).
+    /// Patches or updates dropped because they did not encode, since the adapter started
+    /// (diagnostics): per-player drops and lossy plans.
     private(set) var syncDroppedUpdates = 0
-
-    /// When the last quarantine retry failure was logged (rate limit).
-    private var lastQuarantineRetryLog: ContinuousClock.Instant?
 
     /// Tests only: per-player state updates of a player for which this returns `true` fail to
     /// encode (any update type, any encoding).
@@ -717,8 +670,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // This ensures reconnection behaves like first connection
             syncEngine.clearCacheForDisconnectedPlayer(playerID)
             initialSyncingPlayers.remove(playerID)
-            quarantinedPlayers.removeValue(forKey: playerID)
-            recoveryEncodeFailureCounts.removeValue(forKey: playerID)
 
             // Release playerSlot for this player
             membershipCoordinator.releasePlayerSlot(playerID: playerID)
@@ -1476,9 +1427,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         Task { await self.syncNow() }
     }
 
-    /// After a failed plan on a land without periodic sync: one follow-up after a short delay,
-    /// so the recovery does not wait for an unrelated sync request. Bounded by
-    /// `syncFailedPlanFollowUpLimit` failed plans in a row.
+    /// After a failed plan (a sync cycle's or a joiner's firstSync) on a land without periodic
+    /// sync: one follow-up after a short delay, so the recovery does not wait for an unrelated
+    /// sync request. Bounded by `syncFailedPlanFollowUpLimit` failed plans in a row.
+    private func noteFailedPlanForFollowUp() {
+        consecutiveFailedPlans += 1
+        if !keeper.hasPeriodicSync && consecutiveFailedPlans <= Self.syncFailedPlanFollowUpLimit {
+            startDelayedFollowUpSync()
+        }
+    }
+
     private func startDelayedFollowUpSync() {
         Task {
             try? await safeTaskSleep(for: Self.syncFailedPlanFollowUpDelay)
@@ -1533,9 +1491,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             await hold()
         }
         await keeper.endSync()
-        consecutiveFailedPlans = completed ? 0 : consecutiveFailedPlans + 1
-        if !completed && !keeper.hasPeriodicSync && consecutiveFailedPlans <= Self.syncFailedPlanFollowUpLimit {
-            startDelayedFollowUpSync()
+        if completed {
+            consecutiveFailedPlans = 0
+        } else {
+            noteFailedPlanForFollowUp()
         }
         return completed && pendingEventManager.hasAnyEvents && !keeper.hasPeriodicSync
     }
@@ -1584,7 +1543,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         ])
     }
 
-    /// One full sync cycle on `state`: plan, then commit; then the quarantine retries due.
+    /// One full sync cycle on `state`: plan, then commit.
     private func runFullSyncPhase(state: State) throws {
         let recovery = syncRecoveryPending
         if recovery {
@@ -1611,156 +1570,23 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 )
             }
         } catch let error as SyncPhaseEncodeError where recovery {
-            if error.perRecipient {
-                roomWideRecoveryFailures = 0
-                noteRecoveryEncodeFailures(error)
-            } else {
-                recoveryEncodeFailureCounts.removeAll()
-                roomWideRecoveryFailures += 1
-            }
-            throw error
-        } catch {
-            recoveryEncodeFailureCounts.removeAll()
+            roomWideRecoveryFailures += 1
             throw error
         }
-        recoveryEncodeFailureCounts.removeAll()
         roomWideRecoveryFailures = 0
-        retryQuarantinedPlayers(state: state)
     }
 
-    /// Counts a failed recovery plan against the players whose per-player encode failed; a
-    /// player that caused `syncQuarantineThreshold` consecutive ones is quarantined, so the next
-    /// recovery plan skips its per-player frames and the room proceeds.
-    private func noteRecoveryEncodeFailures(_ error: SyncPhaseEncodeError) {
-        var failuresByPlayer: [PlayerID: SyncPhaseEncodeError.Failure] = [:]
-        for failure in error.failures where failuresByPlayer[failure.playerID] == nil {
-            failuresByPlayer[failure.playerID] = failure
-        }
-        recoveryEncodeFailureCounts = recoveryEncodeFailureCounts.filter { failuresByPlayer[$0.key] != nil }
-        for (playerID, failure) in failuresByPlayer {
-            let failedPlans = (recoveryEncodeFailureCounts[playerID] ?? 0) + 1
-            guard failedPlans >= Self.syncQuarantineThreshold else {
-                recoveryEncodeFailureCounts[playerID] = failedPlans
-                continue
-            }
-            recoveryEncodeFailureCounts.removeValue(forKey: playerID)
-            quarantinedPlayers[playerID] = QuarantinedPlayer(
-                cyclesUntilRetry: syncQuarantineRetryInterval,
-                broadcastBaseline: useStateUpdateWithEvents ? nil : syncEngine.cachedBroadcastSnapshot
-            )
-            syncQuarantinedRecipients += 1
-            profilerCounters?.incrementSyncQuarantinedRecipients()
-            logger.error("❌ Sync player quarantined: its per-player state updates keep failing to encode", metadata: [
-                "landID": .string(landID),
-                "playerID": .string(playerID.rawValue),
-                "failedRecoveryPlans": .string("\(failedPlans)"),
-                "retryEveryCycles": .string("\(syncQuarantineRetryInterval)"),
-                "error": .string(failure.message)
-            ])
-        }
-    }
-
-    /// After a committed full cycle on `state`: retries each quarantined player that is due, in
-    /// its own plan + commit. On success it rejoins the room's per-player sync; on failure it stays
-    /// quarantined and the room is not affected.
-    private func retryQuarantinedPlayers(state: State) {
-        guard !quarantinedPlayers.isEmpty else { return }
-        let joined = membershipCoordinator.allJoinedEntries()
-        for (playerID, entry) in quarantinedPlayers {
-            var entry = entry
-            entry.cyclesUntilRetry -= 1
-            guard entry.cyclesUntilRetry <= 0 else {
-                quarantinedPlayers[playerID] = entry
-                continue
-            }
-            let sessions = joined.filter { $0.playerID == playerID }.map(\.sessionID)
-            guard !sessions.isEmpty else {
-                quarantinedPlayers.removeValue(forKey: playerID)
-                continue
-            }
-            if initialSyncingPlayers.contains(playerID) {
-                quarantinedPlayers[playerID] = entry
-                continue
-            }
-            do {
-                try runSyncPhase(requestsRecoveryOnFailure: false) {
-                    try planQuarantineRetry(state: state, playerID: playerID, sessions: sessions, entry: entry)
-                }
-                quarantinedPlayers.removeValue(forKey: playerID)
-                logger.info("Sync player left quarantine", metadata: [
-                    "landID": .string(landID),
-                    "playerID": .string(playerID.rawValue)
-                ])
-            } catch {
-                entry.cyclesUntilRetry = syncQuarantineRetryInterval
-                quarantinedPlayers[playerID] = entry
-                logQuarantineRetryFailureIfDue(playerID: playerID, error: error)
-            }
-        }
-    }
-
-    /// Plan of a quarantine retry: the player's whole view diffed against the last view its
-    /// client was sent, typed `.firstSync` (per-player key scope reset), to each of its sessions.
-    ///
-    /// That last view is the player's per-player cache (not advanced while quarantined) plus,
-    /// with opcode 107, the current broadcast cache (its sessions kept receiving the broadcast
-    /// frames) or, with json / opcodeJsonArray, the broadcast cache when it was quarantined. A
-    /// player without a committed firstSync is diffed from empty.
-    private func planQuarantineRetry(
-        state: State,
-        playerID: PlayerID,
-        sessions: [SessionID],
-        entry: QuarantinedPlayer
-    ) throws -> SyncPhasePlan {
-        var plan = SyncPhasePlan()
-        var lastSent = StateSnapshot(values: [:])
-        if syncEngine.hasReceivedFirstSync(playerID, staged: plan.staged) {
-            if let broadcast = useStateUpdateWithEvents ? syncEngine.cachedBroadcastSnapshot : entry.broadcastBaseline {
-                lastSent.merge(broadcast, overwrite: true)
-            }
-            if let perPlayer = syncEngine.cachedPerPlayerSnapshot(playerID) {
-                lastSent.merge(perPlayer, overwrite: true)
-            }
-        } else {
-            _ = try syncEngine.lateJoinSnapshot(for: playerID, from: state, staged: &plan.staged)
-        }
-        let current = try syncEngine.snapshot(for: playerID, from: state, mode: .all)
-        plan.staged.perPlayer[playerID] = try syncEngine.extractPerPlayerSnapshot(for: playerID, from: state, mode: .all)
-        plan.staged.firstSyncReceived.insert(playerID)
-        let update = StateUpdate.firstSync(syncEngine.computeDiff(from: lastSent, to: current, onlyPaths: nil))
-        let data = try encodePerPlayerUpdate(update, playerID: playerID, playerSlot: getPlayerSlot(for: playerID))
-        for sessionID in sessions {
-            plan.frames.append(SyncPhaseFrame(data: data, sessionID: sessionID))
-        }
-        plan.stateUpdateCount = sessions.count
-        return plan
-    }
-
-    /// Logs updates a lossy plan dropped (data loss), at most every 10 seconds.
+    /// Logs dropped updates (data loss), at most every 10 seconds.
     private func logDroppedUpdatesIfDue(_ dropped: Int) {
         let now = ContinuousClock.now
         if let last = lastDroppedUpdatesLog, now - last < .seconds(10) {
             return
         }
         lastDroppedUpdatesLog = now
-        logger.error("❌ Sync dropped updates that do not encode (data loss: those fields stay stale on clients)", metadata: [
+        logger.error("❌ Sync dropped updates that do not encode (data loss: those fields stay stale on clients until they change)", metadata: [
             "landID": .string(landID),
             "dropped": .string("\(dropped)"),
             "droppedTotal": .string("\(syncDroppedUpdates)")
-        ])
-    }
-
-    /// Logs a failed quarantine retry, at most every 10 seconds.
-    private func logQuarantineRetryFailureIfDue(playerID: PlayerID, error: any Error) {
-        let now = ContinuousClock.now
-        if let last = lastQuarantineRetryLog, now - last < .seconds(10) {
-            return
-        }
-        lastQuarantineRetryLog = now
-        logger.error("❌ Quarantined sync player still fails to encode", metadata: [
-            "landID": .string(landID),
-            "playerID": .string(playerID.rawValue),
-            "error": .string("\(error)")
         ])
     }
 
@@ -1827,7 +1653,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// extracts `.all` and diffs against the `.empty` baseline. `recovery` extracts `.all` and
     /// types every recipient's updates `.firstSync`, sent even when empty (see
     /// `syncRecoveryPending`). `lossy` (`lossySyncPending`) drops what does not encode instead of failing.
-    /// Quarantined players get no per-player update.
     ///
     /// Frames per session, in order (the outbound writer keeps it, #60):
     /// - opcode 107: the merged broadcast frame (broadcast state update + broadcast events), then
@@ -1876,10 +1701,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Recipients whose player has no committed firstSync (e.g. its firstSync plan failed):
         // their client view is empty. Read before any update below stages a mark.
         let unsyncedRecipients = recipients.filter {
-            quarantinedPlayers[$0.playerID] == nil
-                && !syncEngine.hasReceivedFirstSync($0.playerID, staged: plan.staged)
+            !syncEngine.hasReceivedFirstSync($0.playerID, staged: plan.staged)
         }
-        let skippedPlayers = Set(unsyncedRecipients.map(\.playerID)).union(quarantinedPlayers.keys)
+        let skippedPlayers = Set(unsyncedRecipients.map(\.playerID))
 
         var metricUpdates: [StateUpdate] = []
         var pendingUpdates: [PendingSyncUpdate]
@@ -1926,7 +1750,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             pendingUpdates,
             recipients: recipients,
             events: events,
-            attributionPool: Set(recipients.map(\.playerID)).subtracting(quarantinedPlayers.keys),
             lossy: lossy,
             into: &plan
         )
@@ -2011,8 +1834,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         sessionID: first.sessionID,
                         playerID: first.playerID,
                         message: "broadcast frame: \(error)"
-                    )],
-                    perRecipient: false
+                    )]
                 )
             }
             // A lossy plan is a recovery plan, so the update is a firstSync: trial encodes reset
@@ -2080,26 +1902,25 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// frames come right before its per-player frame (alone when it has none), and the plan
     /// consumes the targeted events it read. An encode failure fails the plan.
     ///
-    /// An encode failure fails the plan; it is per-player when some player of `attributionPool`
-    /// encoded. A `lossy` plan instead drops the patches that do not encode (the whole update if
-    /// it still fails).
+    /// Encode failures of some recipients' players only (another player's update encoded) are
+    /// per-player data: those updates are re-encoded without the patches that do not encode (the
+    /// whole update is dropped if that still fails) and the plan commits, so only the bad values
+    /// are lost; before plan + commit the whole update was lost. A failure of every recipient's
+    /// player is room-wide and fails the plan, unless the plan is `lossy`, which drops as well.
     private func planPerPlayerFrames(
         _ pendingUpdates: [PendingSyncUpdate],
         recipients: [SyncPhaseRecipient],
         events: PendingEventManager,
-        attributionPool: Set<PlayerID>,
         lossy: Bool,
         into plan: inout SyncPhasePlan
     ) throws {
         var payloadBySession: [SessionID: Data] = [:]
         let (encoded, failures) = encodeUpdatesSerially(pendingUpdates)
         if !failures.isEmpty {
-            guard lossy else {
-                let failedPlayers = Set(failures.map(\.playerID))
-                throw SyncPhaseEncodeError(
-                    failures: failures,
-                    perRecipient: attributionPool.contains { !failedPlayers.contains($0) }
-                )
+            let failedPlayers = Set(failures.map(\.playerID))
+            let perPlayer = recipients.contains { !failedPlayers.contains($0.playerID) }
+            guard lossy || perPlayer else {
+                throw SyncPhaseEncodeError(failures: failures)
             }
             let failedSessions = Set(failures.map(\.sessionID))
             for pending in pendingUpdates where failedSessions.contains(pending.sessionID) {
@@ -2532,14 +2353,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 plan.frames.append(SyncPhaseFrame(data: updateData, sessionID: recipient.sessionID))
                 plan.stateUpdateCount += 1
             } catch {
-                // The same broadcast update for every recipient: room-wide, never quarantined.
+                // The same broadcast update for every recipient: room-wide.
                 throw SyncPhaseEncodeError(
                     failures: [SyncPhaseEncodeError.Failure(
                         sessionID: recipient.sessionID,
                         playerID: recipient.playerID,
                         message: "\(error)"
-                    )],
-                    perRecipient: false
+                    )]
                 )
             }
         }
@@ -2782,11 +2602,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         return try stateUpdateEncoder.encode(update: update, landID: landID, playerID: playerID, playerSlot: playerSlot)
     }
 
-    /// A lossy plan's encode of an update that failed: every patch that encodes on its own is
-    /// kept. Returns the frame (`nil` if even the reduced update fails) and how many patches (or,
-    /// for a failed frame, at least one update) were dropped. Lossy plans are recovery plans, so
-    /// the update is a firstSync: trial encodes reset the player's key table and the final encode
-    /// defines every key it uses.
+    /// Re-encode of an update that failed: every patch that encodes on its own is kept. Returns
+    /// the frame (`nil` if even the reduced update fails) and how many patches (or, for a failed
+    /// frame, at least one update) were dropped. The update is typed `.firstSync` (clients merge
+    /// it like a diff): trial encodes reset the player's key table, and the final encode resets
+    /// the client's and defines every key it uses, so slots allocated by the failed encodes are
+    /// never referenced.
     private func encodeDroppingUnencodablePatches(_ pending: PendingSyncUpdate) -> (Data?, dropped: Int) {
         let patches = pending.update.patchesForLossyEncoding
         let kept = patches.filter { patch in
@@ -2827,6 +2648,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "sessionID": .string(sessionID.rawValue),
                 "error": .string("\(error)")
             ])
+            // The next full cycle gives the player its whole view; without periodic sync, start it.
+            noteFailedPlanForFollowUp()
         }
     }
 
