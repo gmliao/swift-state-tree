@@ -65,6 +65,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     var endedSessions = EndedSessionSet()
     /// Sessions the server disconnected after a writer ceiling drop.
     var outboundCeilingDisconnects = 0
+    /// The no-op-`closeSession` warning was logged (once per adapter).
+    var warnedNoCloseSession = false
     /// Sync cycles skipped before `beginSync` (see `SyncSkipCounts`).
     var syncSkips = SyncSkipCounts()
     /// Syncs skipped for writer back-pressure on a land without periodic sync, to run once the

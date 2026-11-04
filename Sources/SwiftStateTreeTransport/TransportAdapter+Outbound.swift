@@ -53,6 +53,13 @@ extension TransportAdapter {
             "serverInitiatedDisconnectsTotal": .stringConvertible(outboundCeilingDisconnects),
         ])
         let transport = self.transport
+        if !transport.supportsCloseSession, !warnedNoCloseSession {
+            warnedNoCloseSession = true
+            outboundLogger.warning("Transport cannot close sessions: the ended sessions stay connected but get no frames until they reconnect", metadata: [
+                "landID": .string(landIDForOutbound),
+                "transport": .string(String(describing: type(of: transport))),
+            ])
+        }
         for sessionID in addressed {
             endedSessions.insert(sessionID)
             Task { await transport.closeSession(sessionID) }
@@ -145,7 +152,8 @@ public struct SyncSkipCounts: Sendable, Equatable {
 /// Recently ended sessions of one adapter: frames for them are dropped, also unstamped ones, so
 /// a late frame for an ended connection (an action response, an error) never reaches a later
 /// connection that reuses the `SessionID`. Bounded: late frames follow the end within moments,
-/// so only the most recent `capacity` sessions are kept.
+/// so only the most recent `capacity` sessions are kept, and the insertion log is compacted
+/// when stale entries (from `remove` and re-insert of a reused `SessionID`) pile up.
 struct EndedSessionSet {
     /// Session → insertion sequence; eviction only removes the entry it inserted.
     private var members: [SessionID: UInt64] = [:]
@@ -180,7 +188,16 @@ struct EndedSessionSet {
             order.removeFirst(head)
             head = 0
         }
+        // Without evictions (members stay under capacity) a SessionID that is removed and
+        // inserted again leaves its old entry behind: drop entries no longer in `members`.
+        if order.count - head > 2 * capacity {
+            order = order[head...].filter { members[$0.sessionID] == $0.seq }
+            head = 0
+        }
     }
+
+    /// Length of the insertion log (tests).
+    var orderCount: Int { order.count - head }
 
     /// The session joined again (a new connection registered under the same `SessionID`).
     mutating func remove(_ sessionID: SessionID) {

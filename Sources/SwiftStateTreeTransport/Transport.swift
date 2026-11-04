@@ -61,6 +61,10 @@ public protocol Transport: Actor {
     ///
     /// The default does nothing; the adapter still stops sending to the session.
     func closeSession(_ sessionID: SessionID) async
+
+    /// Whether `closeSession` actually closes the connection. `false` (the default) means a
+    /// session the adapter ends stays connected but gets no more frames until it reconnects.
+    nonisolated var supportsCloseSession: Bool { get }
 }
 
 extension Transport {
@@ -73,6 +77,9 @@ extension Transport {
 
     /// Default: cannot close sessions.
     public func closeSession(_ sessionID: SessionID) async {}
+
+    /// Default: `closeSession` is a no-op.
+    public nonisolated var supportsCloseSession: Bool { false }
 
     /// Default: no generation check; forwards to `sendBatch`.
     public func sendSessionFrames(_ frames: [SessionFrame]) async {
