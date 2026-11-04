@@ -125,6 +125,24 @@ public struct ReevaluationRecordedLifecycleEvent: Codable, Sendable {
     }
 }
 
+/// Values of the shared sequence counter captured at fixed points of a live tick.
+///
+/// Live mode numbers actions, client events, lifecycle events and emitted server events
+/// from one counter. Inputs take numbers when they arrive (possibly ticks before they run,
+/// or without ever being recorded), so re-evaluation cannot derive the counter from the
+/// recorded inputs alone. These watermarks let re-evaluation restore it exactly.
+public struct ReevaluationSequenceWatermarks: Sendable, Equatable {
+    /// Counter value right before pending inputs are processed in the tick.
+    public let beforeInputs: Int64?
+    /// Counter value right before the tick handler runs.
+    public let beforeTickHandler: Int64?
+
+    public init(beforeInputs: Int64?, beforeTickHandler: Int64?) {
+        self.beforeInputs = beforeInputs
+        self.beforeTickHandler = beforeTickHandler
+    }
+}
+
 /// A single tick frame of recorded inputs and outputs for deterministic re-evaluation.
 public struct ReevaluationTickFrame: Codable, Sendable {
     public let tickId: Int64
@@ -135,6 +153,10 @@ public struct ReevaluationTickFrame: Codable, Sendable {
     public let lifecycleEvents: [ReevaluationRecordedLifecycleEvent]
     /// Server events emitted during this tick (for verification).
     public let serverEvents: [ReevaluationRecordedServerEvent]
+    /// Sequence counter right before pending inputs were processed (ticked lands only; nil in older records).
+    public let sequenceBeforeInputs: Int64?
+    /// Sequence counter right before the tick handler ran (ticked lands only; nil in older records).
+    public let sequenceBeforeTickHandler: Int64?
 
     public init(
         tickId: Int64,
@@ -142,7 +164,9 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         actions: [ReevaluationRecordedAction],
         clientEvents: [ReevaluationRecordedClientEvent],
         lifecycleEvents: [ReevaluationRecordedLifecycleEvent],
-        serverEvents: [ReevaluationRecordedServerEvent] = []
+        serverEvents: [ReevaluationRecordedServerEvent] = [],
+        sequenceBeforeInputs: Int64? = nil,
+        sequenceBeforeTickHandler: Int64? = nil
     ) {
         self.tickId = tickId
         self.stateHash = stateHash
@@ -150,6 +174,8 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         self.clientEvents = clientEvents
         self.lifecycleEvents = lifecycleEvents
         self.serverEvents = serverEvents
+        self.sequenceBeforeInputs = sequenceBeforeInputs
+        self.sequenceBeforeTickHandler = sequenceBeforeTickHandler
     }
 
     public init(from decoder: Decoder) throws {
@@ -160,10 +186,44 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         clientEvents = try container.decode([ReevaluationRecordedClientEvent].self, forKey: .clientEvents)
         lifecycleEvents = try container.decode([ReevaluationRecordedLifecycleEvent].self, forKey: .lifecycleEvents)
         serverEvents = try container.decodeIfPresent([ReevaluationRecordedServerEvent].self, forKey: .serverEvents) ?? []
+        sequenceBeforeInputs = try container.decodeIfPresent(Int64.self, forKey: .sequenceBeforeInputs)
+        sequenceBeforeTickHandler = try container.decodeIfPresent(Int64.self, forKey: .sequenceBeforeTickHandler)
+    }
+
+    /// The frame's sequence watermarks, or nil when the frame carries none (older records, tickless lands).
+    public var sequenceWatermarks: ReevaluationSequenceWatermarks? {
+        guard sequenceBeforeInputs != nil || sequenceBeforeTickHandler != nil else { return nil }
+        return ReevaluationSequenceWatermarks(
+            beforeInputs: sequenceBeforeInputs,
+            beforeTickHandler: sequenceBeforeTickHandler
+        )
+    }
+
+    /// Copy with replaced contents; the watermarks are carried over unless new values are given.
+    func replacing(
+        stateHash: String?? = nil,
+        actions: [ReevaluationRecordedAction]? = nil,
+        clientEvents: [ReevaluationRecordedClientEvent]? = nil,
+        lifecycleEvents: [ReevaluationRecordedLifecycleEvent]? = nil,
+        serverEvents: [ReevaluationRecordedServerEvent]? = nil,
+        sequenceBeforeInputs: Int64? = nil,
+        sequenceBeforeTickHandler: Int64? = nil
+    ) -> ReevaluationTickFrame {
+        ReevaluationTickFrame(
+            tickId: tickId,
+            stateHash: stateHash ?? self.stateHash,
+            actions: actions ?? self.actions,
+            clientEvents: clientEvents ?? self.clientEvents,
+            lifecycleEvents: lifecycleEvents ?? self.lifecycleEvents,
+            serverEvents: serverEvents ?? self.serverEvents,
+            sequenceBeforeInputs: sequenceBeforeInputs ?? self.sequenceBeforeInputs,
+            sequenceBeforeTickHandler: sequenceBeforeTickHandler ?? self.sequenceBeforeTickHandler
+        )
     }
 
     private enum CodingKeys: String, CodingKey {
         case tickId, stateHash, actions, clientEvents, lifecycleEvents, serverEvents
+        case sequenceBeforeInputs, sequenceBeforeTickHandler
     }
 }
 
@@ -346,11 +406,17 @@ public actor ReevaluationRecorder {
     }
     
     /// Record actions and client events for a specific tick.
+    ///
+    /// - Parameters:
+    ///   - sequenceBeforeInputs: Sequence watermark captured before pending inputs were processed (live ticks only).
+    ///   - sequenceBeforeTickHandler: Sequence watermark captured before the tick handler ran (live ticks only).
     public func record(
         tickId: Int64,
         actions: [ReevaluationRecordedAction],
         clientEvents: [ReevaluationRecordedClientEvent],
-        lifecycleEvents: [ReevaluationRecordedLifecycleEvent]
+        lifecycleEvents: [ReevaluationRecordedLifecycleEvent],
+        sequenceBeforeInputs: Int64? = nil,
+        sequenceBeforeTickHandler: Int64? = nil
     ) {
         // If this is a new tick, finalize the previous frame
         if tickId != currentTickId {
@@ -377,18 +443,19 @@ public actor ReevaluationRecorder {
                 actions: actions,
                 clientEvents: clientEvents,
                 lifecycleEvents: lifecycleEvents,
-                serverEvents: []
+                serverEvents: [],
+                sequenceBeforeInputs: sequenceBeforeInputs,
+                sequenceBeforeTickHandler: sequenceBeforeTickHandler
             )
             return
         }
         
-        frame = ReevaluationTickFrame(
-            tickId: frame.tickId,
-            stateHash: frame.stateHash,
+        frame = frame.replacing(
             actions: frame.actions + actions,
             clientEvents: frame.clientEvents + clientEvents,
             lifecycleEvents: frame.lifecycleEvents + lifecycleEvents,
-            serverEvents: frame.serverEvents
+            sequenceBeforeInputs: sequenceBeforeInputs,
+            sequenceBeforeTickHandler: sequenceBeforeTickHandler
         )
         currentFrame = frame
     }
@@ -422,14 +489,7 @@ public actor ReevaluationRecorder {
             return
         }
 
-        frame = ReevaluationTickFrame(
-            tickId: frame.tickId,
-            stateHash: frame.stateHash,
-            actions: frame.actions,
-            clientEvents: frame.clientEvents,
-            lifecycleEvents: frame.lifecycleEvents + [event],
-            serverEvents: frame.serverEvents
-        )
+        frame = frame.replacing(lifecycleEvents: frame.lifecycleEvents + [event])
         currentFrame = frame
     }
 
@@ -463,14 +523,7 @@ public actor ReevaluationRecorder {
             return
         }
 
-        currentFrame = ReevaluationTickFrame(
-            tickId: frame.tickId,
-            stateHash: stateHash,
-            actions: frame.actions,
-            clientEvents: frame.clientEvents,
-            lifecycleEvents: frame.lifecycleEvents,
-            serverEvents: frame.serverEvents
-        )
+        currentFrame = frame.replacing(stateHash: .some(stateHash))
     }
 
     /// Record a full state snapshot for a specific tick (debug-only, enabled via ENABLE_STATE_SNAPSHOT_RECORDING).
@@ -506,14 +559,7 @@ public actor ReevaluationRecorder {
             )
             return
         }
-        currentFrame = ReevaluationTickFrame(
-            tickId: frame.tickId,
-            stateHash: frame.stateHash,
-            actions: frame.actions,
-            clientEvents: frame.clientEvents,
-            lifecycleEvents: frame.lifecycleEvents,
-            serverEvents: events
-        )
+        currentFrame = frame.replacing(serverEvents: events)
     }
 
     /// Flush frames to disk if needed (based on flushInterval)

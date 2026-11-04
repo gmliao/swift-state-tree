@@ -240,23 +240,21 @@ struct ReevaluationRunnerMain {
             exit(5)
         }
 
-        if !first.serverEventMismatches.isEmpty {
-            // Re-check ignoring the `sequence` field: re-evaluation replays recorded inputs with
-            // their recorded sequences but does not advance the shared sequence counter past them,
-            // so events emitted during replay carry different sequence numbers even when their
-            // content is identical (known accounting gap; core fix tracked separately).
-            let contentMismatches = first.serverEventMismatches.filter { _, expected, actual in
-                !serverEventsContentMatch(recorded: expected, emitted: actual)
+        // Decided per tick by the engine: ticks with sequence watermarks must match exactly,
+        // including `sequence`; ticks without them (older records) may differ in `sequence` only.
+        switch first.serverEventVerification {
+        case .passed:
+            break
+        case let .passedIgnoringSequence(ticks):
+            print("⚠️ Server event sequence numbering differs in replay on \(ticks.count) ticks without sequence watermarks (older record format); event content matches")
+        case let .failed(ticks):
+            print("❌ Verification failed: server event mismatches=\(ticks.count)")
+            let failedTicks = Set(ticks)
+            for (tickId, expected, actual) in first.serverEventMismatches.filter({ failedTicks.contains($0.tickId) }).prefix(5) {
+                let mode = first.watermarkedTicks.contains(tickId) ? "exact" : "content"
+                print("  tick \(tickId) [\(mode)]: expected \(expected.count) events \(describe(expected)), got \(actual.count) events \(describe(actual))")
             }
-            if contentMismatches.isEmpty {
-                print("⚠️ Server event sequence numbering differs in replay (known accounting gap); event content matches for all \(first.serverEventMismatches.count) affected ticks")
-            } else {
-                print("❌ Verification failed: server event content mismatches=\(contentMismatches.count)")
-                for (tickId, expected, actual) in contentMismatches.prefix(5) {
-                    print("  tick \(tickId): expected \(expected.count) events, got \(actual.count)")
-                }
-                exit(6)
-            }
+            exit(6)
         }
         
         let second = try await ReevaluationEngine.run(
@@ -340,22 +338,9 @@ struct ReevaluationRunnerMain {
         print("✅ Recorded \(ticks) ticks to \(outputPath) (landID=\(landID))")
     }
 
-    /// Compare server events by content only (tickId, type, payload, target), ignoring the
-    /// `sequence` field — see the accounting-gap note at the call site.
-    private static func serverEventsContentMatch(
-        recorded: [ReevaluationRecordedServerEvent],
-        emitted: [ReevaluationRecordedServerEvent]
-    ) -> Bool {
-        guard recorded.count == emitted.count else { return false }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        for (r, e) in zip(recorded, emitted) {
-            guard r.tickId == e.tickId, r.typeIdentifier == e.typeIdentifier else { return false }
-            guard (try? encoder.encode(r.payload)) == (try? encoder.encode(e.payload)),
-                  (try? encoder.encode(r.target)) == (try? encoder.encode(e.target))
-            else { return false }
-        }
-        return true
+    /// Short "sequence:type" listing of server events for mismatch output.
+    private static func describe(_ events: [ReevaluationRecordedServerEvent]) -> String {
+        "[" + events.map { "\($0.sequence):\($0.typeIdentifier)" }.joined(separator: ", ") + "]"
     }
 
     private static func diffAgainstRecorded(
