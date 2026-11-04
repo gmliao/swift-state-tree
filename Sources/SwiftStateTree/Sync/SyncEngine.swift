@@ -1297,3 +1297,147 @@ extension SyncEngine {
         return StateSnapshot(values: broadcastValues)
     }
 }
+
+// MARK: - Extraction that drops fields whose conversion throws
+
+/// Top-level fields a sync plan's extraction left out because their snapshot conversion threw.
+package struct ExtractionDrops: Sendable {
+    /// Dropped field extractions (one per field and extracted snapshot).
+    package var count = 0
+    /// The first conversion error, for the dropped-updates log.
+    package var firstError: String?
+
+    package init() {}
+
+    mutating func note(_ error: any Error, field: String) {
+        count += 1
+        if firstError == nil {
+            firstError = "field \(field): \(error)"
+        }
+    }
+}
+
+extension SyncEngine {
+    /// `extract(fields)`; if it throws, each candidate field (within `fields`) is extracted alone
+    /// and the fields that throw are dropped (`drops`). A dropped field takes its cached value
+    /// (`fallback`), so a diff against the cache yields nothing for it, neither a change nor a
+    /// removal, and the cache keeps what clients were last sent; without a cached value it is
+    /// left out. Like a patch that does not encode, the field stays stale until it extracts again.
+    private static func extractDroppingThrowingFields(
+        candidates: [String],
+        fields: Set<String>?,
+        fallback: (String) -> SnapshotValue?,
+        drops: inout ExtractionDrops,
+        _ extract: (Set<String>?) throws -> StateSnapshot
+    ) -> StateSnapshot {
+        if let snapshot = try? extract(fields) {
+            return snapshot
+        }
+        var values: [String: SnapshotValue] = [:]
+        for name in candidates where fields?.contains(name) ?? true {
+            do {
+                for (key, value) in try extract([name]).values {
+                    values[key] = value
+                }
+            } catch {
+                drops.note(error, field: name)
+                if let cached = fallback(name) {
+                    values[name] = cached
+                }
+            }
+        }
+        return StateSnapshot(values: values)
+    }
+
+    /// `extractBroadcastSnapshot(from:mode:)`, dropping the fields whose conversion throws.
+    package func extractBroadcastSnapshot<State: StateNodeProtocol>(
+        from state: State,
+        mode: SnapshotMode,
+        drops: inout ExtractionDrops
+    ) -> StateSnapshot {
+        let names = state.getSyncFields().filter { $0.policyType == .broadcast }.map(\.name)
+        let cache = lastBroadcastSnapshot
+        return Self.extractDroppingThrowingFields(
+            candidates: names,
+            fields: mode.fields,
+            fallback: { cache?.values[$0] },
+            drops: &drops
+        ) { fields in
+            try state.broadcastSnapshot(dirtyFields: fields)
+        }
+    }
+
+    /// `extractPerPlayerSnapshot(for:from:mode:)`, dropping the fields whose conversion throws.
+    package func extractPerPlayerSnapshot<State: StateNodeProtocol>(
+        for playerID: PlayerID,
+        from state: State,
+        mode: SnapshotMode,
+        drops: inout ExtractionDrops
+    ) -> StateSnapshot {
+        let names = state.getSyncFields()
+            .filter { $0.policyType != .broadcast && $0.policyType != .serverOnly }
+            .map(\.name)
+        let cache = lastPerPlayerSnapshots[playerID]
+        return Self.extractDroppingThrowingFields(
+            candidates: names,
+            fields: mode.fields,
+            fallback: { cache?.values[$0] },
+            drops: &drops
+        ) { fields in
+            try self.extractPerPlayerSnapshot(
+                for: playerID,
+                from: state,
+                mode: fields.map { .include($0) } ?? .all
+            )
+        }
+    }
+
+    /// `extractWithSnapshotForSync(from:playerIDs:mode:)`, dropping the fields whose conversion
+    /// throws. If the one-pass extraction throws, it falls back to the separate broadcast and
+    /// per-player extractions, which filter every field by `mode` and so can be retried per field.
+    package func extractWithSnapshotForSync<State: StateNodeProtocol>(
+        from state: State,
+        playerIDs: [PlayerID],
+        mode: SnapshotMode,
+        drops: inout ExtractionDrops
+    ) -> (broadcast: StateSnapshot, perPlayer: [PlayerID: StateSnapshot]) {
+        if let extracted = try? state.snapshotForSync(playerIDs: playerIDs, dirtyFields: mode.fields) {
+            return extracted
+        }
+        let broadcast = extractBroadcastSnapshot(from: state, mode: mode, drops: &drops)
+        var perPlayer: [PlayerID: StateSnapshot] = [:]
+        perPlayer.reserveCapacity(playerIDs.count)
+        for playerID in playerIDs {
+            perPlayer[playerID] = extractPerPlayerSnapshot(for: playerID, from: state, mode: mode, drops: &drops)
+        }
+        return (broadcast, perPlayer)
+    }
+
+    /// `lateJoinSnapshot(for:from:staged:)`, dropping the fields whose conversion throws (a
+    /// dropped field takes the value the caches hold, if any).
+    package func lateJoinSnapshot<State: StateNodeProtocol>(
+        for playerID: PlayerID,
+        from state: State,
+        staged: inout StagedCaches,
+        drops: inout ExtractionDrops
+    ) -> StateSnapshot {
+        let names = state.getSyncFields().filter { $0.policyType != .serverOnly }.map(\.name)
+        let broadcastCache = lastBroadcastSnapshot
+        let perPlayerCache = lastPerPlayerSnapshots[playerID]
+        let snapshot = Self.extractDroppingThrowingFields(
+            candidates: names,
+            fields: nil,
+            fallback: { broadcastCache?.values[$0] ?? perPlayerCache?.values[$0] },
+            drops: &drops
+        ) { fields in
+            try state.snapshot(for: playerID, dirtyFields: fields)
+        }
+        if lastBroadcastSnapshot == nil {
+            staged.broadcast = extractBroadcastSnapshot(from: state, mode: .all, drops: &drops)
+        }
+        if staged.perPlayer[playerID] == nil && lastPerPlayerSnapshots[playerID] == nil {
+            staged.perPlayer[playerID] = extractPerPlayerSnapshot(for: playerID, from: state, mode: .all, drops: &drops)
+        }
+        return snapshot
+    }
+}
