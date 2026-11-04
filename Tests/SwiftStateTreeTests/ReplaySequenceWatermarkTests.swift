@@ -891,7 +891,7 @@ struct ReplaySequenceWatermarkTests {
         let content = [(tickId: Int64(0), expected: [Self.tickEvent], actual: [Self.otherPayload])]
         #expect(ReevaluationEngine.classifyServerEventMismatches(content, watermarkedTicks: []) == .failed(ticks: [0]))
 
-        let count = [(tickId: Int64(0), expected: [Self.tickEvent], actual: [])]
+        let count = [(tickId: Int64(0), expected: [Self.tickEvent], actual: [ReevaluationRecordedServerEvent]())]
         #expect(ReevaluationEngine.classifyServerEventMismatches(count, watermarkedTicks: []) == .failed(ticks: [0]))
     }
 
