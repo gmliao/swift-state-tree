@@ -671,7 +671,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// - Returns: The current state snapshot if sync can proceed, `nil` if another sync is already in progress (deduplication).
     ///   A rejected call leaves the dirty flags untouched.
     /// - Important: Always call `endSync()` after sync completes, even if an error occurs.
-    ///   Flags cleared here are not restored if the cycle fails.
+    ///   Flags cleared here are not restored if the cycle fails; the transport adapter then runs
+    ///   its next cycle as a full-snapshot cycle, which does not depend on them.
     ///
     /// **Why snapshot model works**:
     /// - Each sync gets a consistent snapshot (actor serialization ensures this)

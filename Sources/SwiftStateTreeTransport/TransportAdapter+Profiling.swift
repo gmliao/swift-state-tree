@@ -36,25 +36,4 @@ extension TransportAdapter {
             }
         }
     }
-
-    /// Enqueues a state frame on the outbound writer and counts it (profiling). The send
-    /// latency is sampled by the writer's consumer.
-    func sendWithProfiling(_ data: Data, to target: EventTarget) {
-        profilerCounters?.incrementStateUpdates()
-        enqueueOutbound(data, toSessions: sessionIDs(for: target))
-    }
-
-    /// Enqueues a batch of frames on the outbound writer, in order, and counts its state
-    /// updates (profiling).
-    func sendBatchWithProfiling(_ batch: [(Data, EventTarget)], stateUpdateCount: Int) {
-        profilerCounters?.incrementStateUpdates(by: stateUpdateCount)
-        var frames: [SessionFrame] = []
-        frames.reserveCapacity(batch.count)
-        for (data, target) in batch {
-            for sessionID in sessionIDs(for: target) {
-                frames.append(sessionFrame(data, to: sessionID))
-            }
-        }
-        enqueueFrames(frames)
-    }
 }
