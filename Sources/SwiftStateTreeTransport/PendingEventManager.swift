@@ -74,6 +74,8 @@ struct PendingEventManager: Sendable {
         isPlayerCurrent: (PlayerID, UInt64) -> Bool,
         startingAt startIndex: Int = 0
     ) -> [MessagePackValue] {
+        // The queue is append-only until clearAll(), so an earlier count is never past the end.
+        assert(startIndex <= targetedEvents.count, "startIndex past the end: the targeted event queue shrank")
         guard startIndex < targetedEvents.count else { return [] }
         
         var bodies: [MessagePackValue] = []

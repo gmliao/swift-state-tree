@@ -1115,8 +1115,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         for encoded in encodedUpdates {
             guard let updateData = encoded.payload else { continue }
             if !mergeEvents, useStateUpdateWithEvents {
-                // The session's queued targeted events go before its state frame
-                // (events of a cycle precede that cycle's state frame); record them as sent.
+                // Targeted events queued so far go right before this session's per-player frame;
+                // record them as sent so the flush only sends later ones.
                 targetedEventsSentInBatch.sessions.insert(encoded.sessionID)
                 targetedEventsSentInBatch.eventCount = pendingEventManager.targetedEventCount
                 let eventBodies = pendingTargetedEventBodies(for: encoded.sessionID, playerID: encoded.playerID)
@@ -1239,11 +1239,18 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// One full sync cycle.
     ///
-    /// Protocol order: events of a cycle precede that cycle's state frame. On the opcode 107 path
-    /// the merged broadcast frame carries broadcast events ahead of its state update, and a
-    /// session's targeted event frames are sent before its per-player state frame (or alone, by
-    /// `flushTargetedEventBodiesIfNeeded`, when the session has no state update this cycle).
-    /// On json / opcodeJsonArray, events are sent when emitted, before the sync is requested.
+    /// Event order guaranteed per frame:
+    /// - opcode 107, broadcast events: they ride inside the merged broadcast frame, ahead of that
+    ///   frame's state update. The merged frame is sent before the per-player batch.
+    /// - opcode 107, targeted events queued before the batch is built: sent to their session
+    ///   immediately before that session's per-player state frame, once.
+    /// - opcode 107, targeted events queued later in the cycle (e.g. during the batch send): sent
+    ///   once by `flushTargetedEventBodiesIfNeeded`, after that session's per-player frame. A session
+    ///   with no per-player frame this cycle gets all its targeted events from the flush.
+    /// - json / opcodeJsonArray: events are not queued; each is sent when emitted, so it precedes
+    ///   every state frame sent after it.
+    ///
+    /// So a session's targeted events do not precede the merged broadcast frame of the same cycle.
     private func runSyncNowCycle(state: State) async throws {
         let shouldCollectChangeMetrics = enableChangeObjectMetrics || enableAutoDirtyTracking
         let (requestedBroadcastMode, requestedPerPlayerMode) = computeSyncModes(for: state)
