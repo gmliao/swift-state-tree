@@ -30,6 +30,11 @@ public protocol ReevaluationSource: Sendable {
     ///
     /// Returns nil when the record carries none for this tick (older records, tickless lands).
     /// Re-evaluation then leaves the sequence counter alone.
+    ///
+    /// Returning non-nil also asserts that `getServerEvents(for:)` returns the complete list of
+    /// server events for this tick: `ReevaluationEngine` then compares server events exactly
+    /// (including `sequence`) even when that list is empty, so a source that returns watermarks
+    /// but drops server events reports false mismatches.
     func getSequenceWatermarks(for tickId: Int64) async throws -> ReevaluationSequenceWatermarks?
 }
 
