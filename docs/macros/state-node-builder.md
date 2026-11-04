@@ -171,7 +171,7 @@ let snapshot = try gameState.broadcastSnapshot(dirtyFields: dirtyFields)
 Dirty tracking is used to track which fields have been modified, optimizing sync performance:
 
 - **Auto-marking**: Automatically mark as dirty when fields are modified
-- **Batch clearing**: Can clear all dirty flags after sync completes
+- **Batch clearing**: All dirty flags are cleared when a full sync cycle takes its snapshot
 - **Performance optimization**: Only sync changed fields, reduce serialization costs
 
 ### Usage

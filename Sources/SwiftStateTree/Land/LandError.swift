@@ -17,8 +17,8 @@ public enum LandError: Error {
     /// Thrown when an unsupported node type is encountered during DSL processing.
     case unsupportedNode
     /// Thrown when attempting to mutate state during sync operation.
-    /// This prevents dirty flags from being cleared incorrectly for modifications
-    /// that occurred after beginSync() but before endSync().
+    /// Not thrown by `LandKeeper`: mutations during a sync are allowed, and their dirty flags
+    /// survive the sync because `beginSync(clearDirtyFlags:)` clears flags when it takes the snapshot.
     case syncInProgress
 }
 
