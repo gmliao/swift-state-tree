@@ -1,17 +1,19 @@
 // Tests/SwiftStateTreeTransportTests/TransportAdapterSyncDirtyWindowTests.swift
 //
 // Regression tests for #68: a sync cycle must not clear dirty flags of mutations that happen
-// after it took its state copy. `LandKeeper.beginSync()` returns a copy of the state; the cycle
+// after it took its state copy. `LandKeeper.beginSync(clearDirtyFlags:)` returns a copy of the state; the cycle
 // then awaits (encoding, sends, actor hops), and the keeper can run actions or ticks in that
 // window. Those mutations are not in the copy, so their dirty flags must survive the cycle;
 // otherwise the next dirty-tracking cycle skips them and clients keep the stale value.
 //
 // The window is injected deterministically, never raced:
-// - keeper-level: call `keeper.beginSync()` directly, mutate, then `keeper.endSync()`;
+// - keeper-level: call `keeper.beginSync(clearDirtyFlags: true)` directly, mutate, then `keeper.endSync()`;
 // - adapter-level: a transport whose `sendBatch` suspends until the test releases it.
 //
-// Every scenario dirties one more field of the same policy category before the checked cycle.
-// A cycle with nothing dirty falls back to `.all`, which would repair the lost update and hide it.
+// Every scenario dirties one more field before the checked cycle, so it is not an `.all` cycle:
+// a cycle with nothing dirty falls back to `.all`, which would repair the lost update and hide it.
+// With `useSnapshotForSync` off the fallback is per policy category, so those runs dirty one more
+// field of each category under test (`a` for broadcast `b`, `bonus` for per-player `score`).
 
 import Foundation
 import Testing
@@ -25,13 +27,14 @@ struct DirtyWindowTestState: StateNodeProtocol {
     @Sync(.broadcast) var a: Int = 0
     @Sync(.broadcast) var b: Int = 0
     @Sync(.perPlayerSlice()) var scores: [PlayerID: Int] = [:]
+    @Sync(.perPlayerSlice()) var bonuses: [PlayerID: Int] = [:]
     init() {}
 }
 
 @Payload
 struct DirtyWindowSetAction: ActionPayload {
     typealias Response = DirtyWindowSetResponse
-    /// "a", "b" or "score" (the calling player's `scores` entry).
+    /// "a", "b", "score" or "bonus" (the calling player's `scores` / `bonuses` entry).
     let field: String
     let value: Int
 }
@@ -46,11 +49,13 @@ private func makeDirtyWindowLand() -> LandDefinition<DirtyWindowTestState> {
         Rules {
             OnJoin { (state: inout DirtyWindowTestState, ctx: LandContext) in
                 state.scores[ctx.playerID] = 0
+                state.bonuses[ctx.playerID] = 0
             }
             HandleAction(DirtyWindowSetAction.self) { (state: inout DirtyWindowTestState, action: DirtyWindowSetAction, ctx: LandContext) in
                 switch action.field {
                 case "a": state.a = action.value
                 case "b": state.b = action.value
+                case "bonus": state.bonuses[ctx.playerID] = action.value
                 default: state.scores[ctx.playerID] = action.value
                 }
                 return DirtyWindowSetResponse(ok: true)
@@ -121,19 +126,23 @@ private struct DirtyWindowClientView: Equatable, CustomStringConvertible {
     var a: Int
     var b: Int
     var score: Int?
+    var bonus: Int?
 
-    init(a: Int, b: Int, score: Int?) {
+    init(a: Int, b: Int, score: Int?, bonus: Int?) {
         self.a = a
         self.b = b
         self.score = score
+        self.bonus = bonus
     }
 
     /// The projection the server state implies for `player`.
     init(server state: DirtyWindowTestState, player: PlayerID) {
-        self.init(a: state.a, b: state.b, score: state.scores[player])
+        self.init(a: state.a, b: state.b, score: state.scores[player], bonus: state.bonuses[player])
     }
 
-    var description: String { "a=\(a) b=\(b) score=\(score.map { String($0) } ?? "nil")" }
+    var description: String {
+        "a=\(a) b=\(b) score=\(score.map { String($0) } ?? "nil") bonus=\(bonus.map { String($0) } ?? "nil")"
+    }
 
     mutating func apply(_ updates: [StateUpdate], player: PlayerID) {
         for update in updates {
@@ -159,6 +168,8 @@ private struct DirtyWindowClientView: Equatable, CustomStringConvertible {
         case "/b": b = value.flatMap(Self.int) ?? 0
         case "/scores/\(player.rawValue)": score = value.flatMap(Self.int)
         case "/scores": score = value?.objectValue?[player.rawValue].flatMap(Self.int)
+        case "/bonuses/\(player.rawValue)": bonus = value.flatMap(Self.int)
+        case "/bonuses": bonus = value?.objectValue?[player.rawValue].flatMap(Self.int)
         default: break
         }
     }
@@ -182,8 +193,7 @@ private struct DirtyWindowFixture {
     let client = ClientID("dw-client")
     let player = PlayerID("dw-player")
 
-    /// - Parameter envConfig: `nil` uses the adapter's default configuration (env lookup).
-    static func make(envConfig: TransportEnvConfig?) async throws -> DirtyWindowFixture {
+    static func make(envConfig: TransportEnvConfig) async throws -> DirtyWindowFixture {
         let transport = DirtyWindowTransport()
         let keeper = LandKeeper<DirtyWindowTestState>(
             definition: makeDirtyWindowLand(),
@@ -205,7 +215,7 @@ private struct DirtyWindowFixture {
             clientID: fixture.client,
             playerID: fixture.player
         )
-        try await Task.sleep(for: .milliseconds(100))
+        // simulateRouterJoin awaits the initial sync, so the player is already syncable here.
         return fixture
     }
 
@@ -222,9 +232,9 @@ private struct DirtyWindowFixture {
         )
     }
 
-    /// The client view right after the join: initial state plus the OnJoin score entry.
+    /// The client view right after the join: initial state plus the OnJoin per-player entries.
     var initialView: DirtyWindowClientView {
-        DirtyWindowClientView(a: 0, b: 0, score: 0)
+        DirtyWindowClientView(a: 0, b: 0, score: 0, bonus: 0)
     }
 
     /// Client view rebuilt from every state update this session received after the join.
@@ -245,7 +255,14 @@ private struct DirtyWindowFixture {
         await transport.holdNextBatch()
         let cycle = Task { await adapter.syncNow() }
         await transport.waitUntilHeld()
-        try await duringCycle()
+        do {
+            try await duringCycle()
+        } catch {
+            // Release the held send so the test fails instead of hanging.
+            await transport.release()
+            await cycle.value
+            throw error
+        }
         await transport.release()
         await cycle.value
     }
@@ -285,7 +302,7 @@ struct TransportAdapterSyncDirtyWindowTests {
         await f.adapter.syncNow()
 
         // A sync cycle has taken its copy; the keeper mutates `a` before the cycle ends.
-        guard await f.keeper.beginSync() != nil else {
+        guard await f.keeper.beginSync(clearDirtyFlags: true) != nil else {
             Issue.record("beginSync rejected with no cycle in flight")
             return
         }
@@ -303,8 +320,9 @@ struct TransportAdapterSyncDirtyWindowTests {
 
     @Test("a broadcast-only sync does not drop pending per-player changes")
     func broadcastOnlySyncKeepsPerPlayerDirtyFlags() async throws {
-        // Default adapter configuration (no env config override).
-        let f = try await DirtyWindowFixture.make(envConfig: nil)
+        // Production defaults, fixed so env vars cannot change the path: delta, dirty tracking on,
+        // snapshot extraction on, auto-switch off.
+        let f = try await DirtyWindowFixture.make(envConfig: makeDirtyWindowEnvConfig(useSnapshotForSync: true))
         await f.adapter.syncNow()
 
         try await f.set("score", 5)
@@ -358,7 +376,7 @@ struct TransportAdapterSyncDirtyWindowTests {
         try await f.syncNowHoldingSend {
             try await f.set("b", 2)
             // Rejected: the held cycle still owns the sync flag.
-            #expect(await f.keeper.beginSync() == nil)
+            #expect(await f.keeper.beginSync(clearDirtyFlags: false) == nil)
             await f.adapter.syncNow()
         }
 
@@ -382,8 +400,10 @@ struct TransportAdapterSyncDirtyWindowTests {
             try await f.set("score", 9)
         }
 
-        // `a` (same broadcast category as `b`) is dirty in the next cycle, so it is not an `.all` cycle.
+        // `a` (broadcast, like `b`) and `bonus` (per-player, like `score`) are dirty in the next
+        // cycle, so neither category falls back to `.all`.
         try await f.set("a", 2)
+        try await f.set("bonus", 1)
         await f.adapter.syncNow()
 
         let client = await f.clientView(from: f.initialView)
