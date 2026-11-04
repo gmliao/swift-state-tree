@@ -796,7 +796,20 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         }
         try await waitUntil("the keeper to be blocked") { blocker.isBlocking }
         let adapter = f.adapter
+        let requestsBefore = await adapter.beginSyncRequests
         let cycle = Task { await adapter.syncNow() }
+        // Barrier: the cycle counted its request in the turn that starts the hop, so once the
+        // count is readable the cycle is suspended at `beginSync`; the blocked keeper cannot have
+        // run it yet.
+        let deadline = ContinuousClock.now + .seconds(5)
+        while await adapter.beginSyncRequests == requestsBefore {
+            guard ContinuousClock.now < deadline else {
+                Issue.record("timed out waiting for the cycle to reach beginSync")
+                throw CancellationError()
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(blocker.isBlocking, "precondition: the keeper is still blocked, so beginSync has not run")
         await f.broadcastEvent("bc-begin-hop")
         blocker.release()
         _ = try await blockingAction.value
@@ -859,7 +872,7 @@ struct PendingEventManagerConsumedPrefixTests {
         #expect(remaining == [body(3)])
     }
 
-    @Test("pendingTargetedBodies reads the half-open slice [start, end)")
+    @Test("pendingTargetedBodies reads the prefix [0, end)")
     func targetedSlice() {
         var manager = PendingEventManager()
         let session = SessionID("s")
@@ -873,10 +886,9 @@ struct PendingEventManagerConsumedPrefixTests {
             clientID: nil,
             isSessionCurrent: { _, _ in true },
             isPlayerCurrent: { _, _ in true },
-            startingAt: 1,
             endingBefore: 4
         )
-        #expect(slice == [body(1), body(2), body(3)])
+        #expect(slice == [body(0), body(1), body(2), body(3)])
     }
 
     @Test("removing nothing (a cycle that threw before its cleanup) keeps the queue")

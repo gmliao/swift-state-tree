@@ -1,13 +1,20 @@
 // Tests/SwiftStateTreeTransportTests/TransportAdapterSyncPhaseTests.swift
 //
-// The sync phase as plan + commit: a plan is synchronous and changes nothing but the diff
-// caches; its commit removes the consumed events, applies the metric updates and enqueues the
-// frames. A plan that fails commits nothing and makes the next plan a full-snapshot cycle
-// (`.all` extraction, `.empty` baseline for broadcast and per-player diffs), because the failed
-// cycle already advanced the caches and its `beginSync` already cleared the dirty flags.
+// The sync phase as plan + commit: a plan is synchronous and stages its cache updates instead of
+// writing them; its commit writes the staged caches, removes the consumed events, applies the
+// metric updates and enqueues the frames. A plan that fails (any throw, including an encode
+// failure) commits nothing, so the caches still hold what every client was last sent. Its
+// `beginSync` already cleared the dirty flags, so the next plan is a recovery cycle: `.all`
+// extraction against the cached baseline (deletions included), every recipient's update typed
+// `.firstSync` so the encoders and the client reset the scope's dynamic key table.
 //
 // Failures are injected deterministically: a fault hook that throws at the end of a plan (after
-// the caches advanced and every frame was encoded), or an encoder that fails on demand.
+// its diffs were staged and every frame was encoded), or an encoder that fails on demand.
+//
+// The client model decodes all three encodings the way the TypeScript SDK does: opcode 107
+// frames use the broadcast key map, plain state frames the per-player key map, a firstSync clears
+// the map it is decoded with, a slot used before its definition is an error, and every update
+// (firstSync included) is applied onto the existing view.
 
 import Foundation
 import Testing
@@ -21,15 +28,19 @@ import SwiftStateTreeMessagePack
 struct SyncPhaseTestState: StateNodeProtocol {
     @Sync(.broadcast) var a: Int = 0
     @Sync(.broadcast) var b: Int = 0
+    @Sync(.broadcast) var items: [String: Int] = [:]
     @Sync(.perPlayerSlice()) var scores: [PlayerID: Int] = [:]
     @Sync(.perPlayerSlice()) var bonuses: [PlayerID: Int] = [:]
+    @Sync(.perPlayerSlice()) var bags: [PlayerID: [String: Int]] = [:]
     init() {}
 }
 
 @Payload
 struct SyncPhaseSetAction: ActionPayload {
     typealias Response = SyncPhaseSetResponse
-    /// "a", "b", "score" or "bonus" (the calling player's `scores` / `bonuses` entry).
+    /// "a", "b", "score", "bonus" (the calling player's `scores` / `bonuses` entry), "unscore"
+    /// (remove it), "item:<key>" / "unitem:<key>" (broadcast `items`), "bag:<key>" /
+    /// "unbag:<key>" (the calling player's `bags` entry).
     let field: String
     let value: Int
 }
@@ -60,10 +71,17 @@ private func makeSyncPhaseLand() -> LandDefinition<SyncPhaseTestState> {
                 state.bonuses[ctx.playerID] = 0
             }
             HandleAction(SyncPhaseSetAction.self) { (state: inout SyncPhaseTestState, action: SyncPhaseSetAction, ctx: LandContext) in
-                switch action.field {
+                let parts = action.field.split(separator: ":", maxSplits: 1).map(String.init)
+                let key = parts.count > 1 ? parts[1] : ""
+                switch parts[0] {
                 case "a": state.a = action.value
                 case "b": state.b = action.value
                 case "bonus": state.bonuses[ctx.playerID] = action.value
+                case "unscore": state.scores.removeValue(forKey: ctx.playerID)
+                case "item": state.items[key] = action.value
+                case "unitem": state.items.removeValue(forKey: key)
+                case "bag": state.bags[ctx.playerID, default: [:]][key] = action.value
+                case "unbag": state.bags[ctx.playerID]?.removeValue(forKey: key)
                 default: state.scores[ctx.playerID] = action.value
                 }
                 return SyncPhaseSetResponse(ok: true)
@@ -71,6 +89,24 @@ private func makeSyncPhaseLand() -> LandDefinition<SyncPhaseTestState> {
         }
     }
 }
+
+// MARK: - Encodings and path hashes
+
+enum SyncPhaseEncoding: String, CaseIterable, Sendable, CustomStringConvertible {
+    case json
+    case opcodeJsonArray
+    case messagepack
+
+    var description: String { rawValue }
+}
+
+private let syncPhasePathPatterns = [
+    "a", "b", "items", "items.*", "scores", "scores.*", "bonuses", "bonuses.*", "bags", "bags.*", "bags.*.*"
+]
+
+private let syncPhasePathHashes: [String: UInt32] = Dictionary(
+    uniqueKeysWithValues: syncPhasePathPatterns.map { ($0, DeterministicHash.fnv1a32($0)) }
+)
 
 // MARK: - Transport, encoder, fault
 
@@ -111,21 +147,34 @@ private final class SyncPhaseSwitch: @unchecked Sendable {
     func set(_ value: Bool) { lock.lock(); on = value; lock.unlock() }
 }
 
-/// JSON encoder that fails every `.diff` update while `failDiffs` is on (firstSync and
-/// `.noChange` still encode).
-private struct FailingDiffEncoder: StateUpdateEncoder {
+/// Wraps a real encoder; while `failDiffs` is on, every per-player-scope `.diff` update fails
+/// (firstSync, `.noChange` and the broadcast-scope opcode 107 state still encode).
+private struct FailingDiffEncoder: StateUpdateEncoderWithScope {
+    let inner: any StateUpdateEncoder
     let failDiffs: SyncPhaseSwitch
-    private let inner = JSONStateUpdateEncoder()
 
     var encoding: StateUpdateEncoding { inner.encoding }
 
     func encode(update: StateUpdate, landID: String, playerID: PlayerID) throws -> Data {
-        try encode(update: update, landID: landID, playerID: playerID, playerSlot: nil)
+        try encode(update: update, landID: landID, playerID: playerID, playerSlot: nil, scope: .perPlayer)
     }
 
     func encode(update: StateUpdate, landID: String, playerID: PlayerID, playerSlot: Int32?) throws -> Data {
-        if case .diff = update, failDiffs.isOn {
+        try encode(update: update, landID: landID, playerID: playerID, playerSlot: playerSlot, scope: .perPlayer)
+    }
+
+    func encode(
+        update: StateUpdate,
+        landID: String,
+        playerID: PlayerID,
+        playerSlot: Int32?,
+        scope: StateUpdateKeyScope
+    ) throws -> Data {
+        if case .diff = update, case .perPlayer = scope, failDiffs.isOn {
             throw SyncPhaseFault()
+        }
+        if let scoped = inner as? StateUpdateEncoderWithScope {
+            return try scoped.encode(update: update, landID: landID, playerID: playerID, playerSlot: playerSlot, scope: scope)
         }
         return try inner.encode(update: update, landID: landID, playerID: playerID, playerSlot: playerSlot)
     }
@@ -133,62 +182,254 @@ private struct FailingDiffEncoder: StateUpdateEncoder {
 
 // MARK: - Client-side model
 
-/// The client's view of `SyncPhaseTestState` for one player, rebuilt from received patches.
-private struct SyncPhaseClientView: Equatable, CustomStringConvertible {
-    var a = 0
-    var b = 0
-    var score: Int?
-    var bonus: Int?
+/// A decoded wire value (JSON or MessagePack).
+private indirect enum SyncPhaseWire {
+    case null
+    case bool(Bool)
+    case int(Int)
+    case double(Double)
+    case string(String)
+    case array([SyncPhaseWire])
+    case map([String: SyncPhaseWire])
 
-    init() {}
-
-    init(server state: SyncPhaseTestState, player: PlayerID) {
-        a = state.a
-        b = state.b
-        score = state.scores[player]
-        bonus = state.bonuses[player]
+    init(json: Any) {
+        if let s = json as? String {
+            self = .string(s)
+        } else if let a = json as? [Any] {
+            self = .array(a.map(SyncPhaseWire.init(json:)))
+        } else if let m = json as? [String: Any] {
+            self = .map(m.mapValues(SyncPhaseWire.init(json:)))
+        } else if let n = json as? NSNumber {
+            // The test state has no Bool or fractional values.
+            self = n.doubleValue == Double(n.intValue) ? .int(n.intValue) : .double(n.doubleValue)
+        } else {
+            self = .null
+        }
     }
 
-    var description: String {
-        "a=\(a) b=\(b) score=\(score.map { String($0) } ?? "nil") bonus=\(bonus.map { String($0) } ?? "nil")"
+    init(msgpack: MessagePackValue) {
+        switch msgpack {
+        case .bool(let v): self = .bool(v)
+        case .int(let v): self = .int(Int(v))
+        case .uint(let v): self = .int(Int(v))
+        case .float(let v): self = .double(Double(v))
+        case .double(let v): self = .double(v)
+        case .string(let v): self = .string(v)
+        case .array(let v): self = .array(v.map(SyncPhaseWire.init(msgpack:)))
+        case .map(let v):
+            var map: [String: SyncPhaseWire] = [:]
+            for (key, value) in v {
+                if case .string(let k) = key { map[k] = SyncPhaseWire(msgpack: value) }
+            }
+            self = .map(map)
+        default: self = .null
+        }
     }
 
-    mutating func apply(_ updates: [StateUpdate], player: PlayerID) {
-        for update in updates {
-            switch update {
-            case .noChange:
-                continue
-            case .firstSync(let patches), .diff(let patches):
-                for patch in patches {
-                    apply(patch, player: player)
-                }
+    var intValue: Int? {
+        if case .int(let v) = self { return v }
+        return nil
+    }
+
+    var snapshotValue: SnapshotValue {
+        switch self {
+        case .null: return .null
+        case .bool(let v): return .bool(v)
+        case .int(let v): return .int(v)
+        case .double(let v): return .double(v)
+        case .string(let v): return .string(v)
+        case .array(let v): return .array(v.map(\.snapshotValue))
+        case .map(let v): return .object(v.mapValues(\.snapshotValue))
+        }
+    }
+}
+
+private struct SyncPhaseDecodeError: Error, CustomStringConvertible {
+    let description: String
+}
+
+/// One session's client, decoding like the TypeScript SDK (see the file header).
+private struct SyncPhaseClient {
+    let encoding: SyncPhaseEncoding
+    var view: [String: SnapshotValue] = [:]
+    /// State update opcodes in arrival order: 0 noChange, 1 firstSync, 2 diff.
+    var updateTypes: [Int] = []
+    var decodeErrors: [String] = []
+    private var broadcastKeys: [Int: String] = [:]
+    private var perPlayerKeys: [Int: String] = [:]
+    private let hashToPattern = Dictionary(uniqueKeysWithValues: syncPhasePathHashes.map { (Int($1), $0) })
+
+    init(encoding: SyncPhaseEncoding) {
+        self.encoding = encoding
+    }
+
+    mutating func receive(_ frames: [Data]) {
+        for frame in frames {
+            do {
+                try receive(frame)
+            } catch {
+                decodeErrors.append("\(error)")
             }
         }
     }
 
-    private mutating func apply(_ patch: StatePatch, player: PlayerID) {
-        let value: SnapshotValue?
-        switch patch.operation {
-        case .set(let v), .add(let v): value = v
-        case .delete: value = nil
-        }
-        switch patch.path {
-        case "/a": a = value.flatMap(Self.int) ?? 0
-        case "/b": b = value.flatMap(Self.int) ?? 0
-        case "/scores/\(player.rawValue)": score = value.flatMap(Self.int)
-        case "/scores": score = value?.objectValue?[player.rawValue].flatMap(Self.int)
-        case "/bonuses/\(player.rawValue)": bonus = value.flatMap(Self.int)
-        case "/bonuses": bonus = value?.objectValue?[player.rawValue].flatMap(Self.int)
-        default: break
+    private mutating func receive(_ frame: Data) throws {
+        switch encoding {
+        case .json:
+            // Join responses and events are not state updates.
+            guard let decoded = try? JSONStateUpdateDecoder().decode(data: frame) else { return }
+            switch decoded.update {
+            case .noChange:
+                updateTypes.append(0)
+            case .firstSync(let patches):
+                updateTypes.append(1)
+                apply(patches)
+            case .diff(let patches):
+                updateTypes.append(2)
+                apply(patches)
+            }
+        case .opcodeJsonArray:
+            guard let json = try? JSONSerialization.jsonObject(with: frame),
+                  let array = json as? [Any],
+                  let opcode = (array.first as? NSNumber)?.intValue,
+                  (0...2).contains(opcode) else { return }
+            try applyStateArray(array.map(SyncPhaseWire.init(json:)), keys: &perPlayerKeys)
+        case .messagepack:
+            guard let value = try? unpack(frame),
+                  case .array(let array) = value,
+                  let opcode = array.first.flatMap({ SyncPhaseWire(msgpack: $0).intValue }) else { return }
+            let wire = array.map(SyncPhaseWire.init(msgpack:))
+            if opcode == 107 {
+                guard wire.count >= 2, case .array(let state) = wire[1] else {
+                    throw SyncPhaseDecodeError(description: "invalid opcode 107 frame")
+                }
+                try applyStateArray(state, keys: &broadcastKeys)
+            } else if (0...2).contains(opcode) {
+                try applyStateArray(wire, keys: &perPlayerKeys)
+            }
         }
     }
 
-    private static func int(_ value: SnapshotValue) -> Int? {
-        switch value {
-        case .int(let v): return v
-        case .double(let v): return Int(v)
-        default: return nil
+    private mutating func applyStateArray(_ array: [SyncPhaseWire], keys: inout [Int: String]) throws {
+        guard let opcode = array.first?.intValue else {
+            throw SyncPhaseDecodeError(description: "state update without opcode")
         }
+        if opcode == 1 {
+            keys.removeAll()
+        }
+        updateTypes.append(opcode)
+        var patches: [StatePatch] = []
+        for entry in array.dropFirst() {
+            guard case .array(let parts) = entry, parts.count >= 2 else {
+                throw SyncPhaseDecodeError(description: "invalid patch entry")
+            }
+            let path: String
+            let op: Int?
+            let value: SyncPhaseWire?
+            if case .string(let legacyPath) = parts[0] {
+                path = legacyPath
+                op = parts[1].intValue
+                value = parts.count > 2 ? parts[2] : nil
+            } else {
+                guard let hash = parts[0].intValue, let pattern = hashToPattern[hash] else {
+                    throw SyncPhaseDecodeError(description: "unknown path hash \(parts[0])")
+                }
+                let dynamicKeys = try resolveDynamicKeys(parts[1], keys: &keys)
+                path = reconstructPath(pattern, dynamicKeys)
+                op = parts.count > 2 ? parts[2].intValue : nil
+                value = parts.count > 3 ? parts[3] : nil
+            }
+            switch op {
+            case StatePatchOpcode.set.rawValue:
+                patches.append(StatePatch(path: path, operation: .set(value?.snapshotValue ?? .null)))
+            case StatePatchOpcode.remove.rawValue:
+                patches.append(StatePatch(path: path, operation: .delete))
+            case StatePatchOpcode.add.rawValue:
+                patches.append(StatePatch(path: path, operation: .add(value?.snapshotValue ?? .null)))
+            default:
+                throw SyncPhaseDecodeError(description: "unknown patch opcode \(String(describing: op))")
+            }
+        }
+        apply(patches)
+    }
+
+    private func resolveOneKey(_ raw: SyncPhaseWire, keys: inout [Int: String]) throws -> String? {
+        switch raw {
+        case .null:
+            return nil
+        case .string(let key):
+            return key
+        case .int(let slot):
+            guard let key = keys[slot] else {
+                throw SyncPhaseDecodeError(description: "Dynamic key slot \(slot) used before definition")
+            }
+            return key
+        case .array(let pair):
+            guard pair.count == 2, let slot = pair[0].intValue, case .string(let key) = pair[1] else {
+                throw SyncPhaseDecodeError(description: "invalid dynamic key definition")
+            }
+            keys[slot] = key
+            return key
+        default:
+            throw SyncPhaseDecodeError(description: "invalid dynamic key")
+        }
+    }
+
+    private func resolveDynamicKeys(_ raw: SyncPhaseWire, keys: inout [Int: String]) throws -> [String] {
+        if case .array(let items) = raw {
+            let isSingleDefinition = items.count == 2 && items[0].intValue != nil && { if case .string = items[1] { return true }; return false }()
+            if !isSingleDefinition {
+                return try items.compactMap { try resolveOneKey($0, keys: &keys) }
+            }
+        }
+        return try resolveOneKey(raw, keys: &keys).map { [$0] } ?? []
+    }
+
+    private func reconstructPath(_ pattern: String, _ dynamicKeys: [String]) -> String {
+        var remaining = dynamicKeys[...]
+        let components = pattern.split(separator: ".").map { component -> String in
+            if component == "*", let key = remaining.popFirst() { return key }
+            return String(component)
+        }
+        return "/" + components.joined(separator: "/")
+    }
+
+    private mutating func apply(_ patches: [StatePatch]) {
+        for patch in patches {
+            let parts = patch.path.split(separator: "/").map(String.init)
+            guard !parts.isEmpty else { continue }
+            switch patch.operation {
+            case .set(let value), .add(let value): view = Self.setting(view, parts[...], value)
+            case .delete: view = Self.deleting(view, parts[...])
+            }
+        }
+    }
+
+    private static func setting(_ obj: [String: SnapshotValue], _ parts: ArraySlice<String>, _ value: SnapshotValue) -> [String: SnapshotValue] {
+        var obj = obj
+        let key = parts[parts.startIndex]
+        if parts.count == 1 { obj[key] = value; return obj }
+        let child = obj[key]?.objectValue ?? [:]
+        obj[key] = .object(setting(child, parts.dropFirst(), value))
+        return obj
+    }
+
+    private static func deleting(_ obj: [String: SnapshotValue], _ parts: ArraySlice<String>) -> [String: SnapshotValue] {
+        var obj = obj
+        let key = parts[parts.startIndex]
+        if parts.count == 1 { obj[key] = nil; return obj }
+        guard let child = obj[key]?.objectValue else { return obj }
+        obj[key] = .object(deleting(child, parts.dropFirst()))
+        return obj
+    }
+
+    /// The value at a JSON Pointer path, `nil` when absent.
+    func value(at path: String) -> SnapshotValue? {
+        var current: SnapshotValue? = .object(view)
+        for part in path.split(separator: "/").map(String.init) {
+            current = current?.objectValue?[part]
+        }
+        return current
     }
 }
 
@@ -211,22 +452,26 @@ private func makeSyncPhaseEnvConfig(useSnapshotForSync: Bool) -> TransportEnvCon
 }
 
 private struct SyncPhaseFixture {
+    let encoding: SyncPhaseEncoding
     let keeper: LandKeeper<SyncPhaseTestState>
     let adapter: TransportAdapter<SyncPhaseTestState>
     let transport: SyncPhaseTransport
-    /// JSON runs only: while on, the encoder fails every `.diff` update.
+    /// While on, the encoder fails every per-player `.diff` update (see `FailingDiffEncoder`).
     let diffEncodingFails: SyncPhaseSwitch
     let session = SessionID("sp-session")
     let client = ClientID("sp-client")
     let player = PlayerID("sp-player")
 
     /// - Parameters:
-    ///   - messagepack: opcode 107 (events queued for the next cycle); otherwise JSON with the
-    ///     failing-on-demand encoder.
+    ///   - encoding: State update encoding; opcode encodings use the test path hashes.
+    ///   - realMessagePack: messagepack only: the production configuration (MessagePack
+    ///     messages, so events are queued for the next cycle) instead of the failing-on-demand
+    ///     wrapper around the MessagePack state encoder.
     ///   - join: run the join (and its firstSync) before returning.
     static func make(
+        encoding: SyncPhaseEncoding = .json,
         useSnapshotForSync: Bool = true,
-        messagepack: Bool = false,
+        realMessagePack: Bool = false,
         join: Bool = true
     ) async throws -> SyncPhaseFixture {
         let transport = SyncPhaseTransport()
@@ -235,26 +480,42 @@ private struct SyncPhaseFixture {
             initialState: SyncPhaseTestState()
         )
         let failDiffs = SyncPhaseSwitch()
+        let hasher = PathHasher(pathHashes: syncPhasePathHashes)
+        let envConfig = makeSyncPhaseEnvConfig(useSnapshotForSync: useSnapshotForSync)
         let adapter: TransportAdapter<SyncPhaseTestState>
-        if messagepack {
+        if encoding == .messagepack && realMessagePack {
             adapter = TransportAdapter<SyncPhaseTestState>(
                 keeper: keeper,
                 transport: transport,
                 landID: "sync-phase-test",
-                transportEnvConfig: makeSyncPhaseEnvConfig(useSnapshotForSync: useSnapshotForSync),
-                encodingConfig: .messagepack
+                transportEnvConfig: envConfig,
+                encodingConfig: .messagepack,
+                pathHashes: syncPhasePathHashes
             )
         } else {
+            let inner: any StateUpdateEncoder
+            switch encoding {
+            case .json: inner = JSONStateUpdateEncoder()
+            case .opcodeJsonArray: inner = OpcodeJSONStateUpdateEncoder(pathHasher: hasher)
+            case .messagepack: inner = OpcodeMessagePackStateUpdateEncoder(pathHasher: hasher)
+            }
             adapter = TransportAdapter<SyncPhaseTestState>(
                 keeper: keeper,
                 transport: transport,
                 landID: "sync-phase-test",
-                transportEnvConfig: makeSyncPhaseEnvConfig(useSnapshotForSync: useSnapshotForSync),
-                stateUpdateEncoder: FailingDiffEncoder(failDiffs: failDiffs)
+                transportEnvConfig: envConfig,
+                stateUpdateEncoder: FailingDiffEncoder(inner: inner, failDiffs: failDiffs),
+                pathHashes: encoding == .json ? nil : syncPhasePathHashes
             )
         }
         await transport.setDelegate(adapter)
-        let fixture = SyncPhaseFixture(keeper: keeper, adapter: adapter, transport: transport, diffEncodingFails: failDiffs)
+        let fixture = SyncPhaseFixture(
+            encoding: encoding,
+            keeper: keeper,
+            adapter: adapter,
+            transport: transport,
+            diffEncodingFails: failDiffs
+        )
         await adapter.onConnect(sessionID: fixture.session, clientID: fixture.client)
         if join {
             try await fixture.join()
@@ -272,7 +533,7 @@ private struct SyncPhaseFixture {
         )
     }
 
-    func set(_ field: String, _ value: Int) async throws {
+    func set(_ field: String, _ value: Int = 0) async throws {
         let envelope = ActionEnvelope(
             typeIdentifier: String(describing: SyncPhaseSetAction.self),
             payload: AnyCodable(SyncPhaseSetAction(field: field, value: value))
@@ -304,19 +565,29 @@ private struct SyncPhaseFixture {
         await transport.messages(for: session).count
     }
 
-    /// JSON runs: the client view rebuilt from every state update this session received.
-    func clientView() async -> SyncPhaseClientView {
-        var view = SyncPhaseClientView()
-        view.apply(decodeStateUpdates(await transport.messages(for: session)), player: player)
-        return view
+    /// The client of `session`, fed every frame the session received.
+    func clientState() async -> SyncPhaseClient {
+        var client = SyncPhaseClient(encoding: encoding)
+        client.receive(await transport.messages(for: session))
+        return client
     }
 
-    func serverView() async -> SyncPhaseClientView {
-        SyncPhaseClientView(server: await keeper.currentState(), player: player)
+    /// The authoritative view of `player`.
+    func serverView() async throws -> [String: SnapshotValue] {
+        try SyncEngine().snapshot(for: player, from: await keeper.currentState()).values
     }
 
     func queueEvent(_ message: String, to target: SwiftStateTree.EventTarget) async {
         await adapter.sendEvent(AnyServerEvent(SyncPhaseEvent(message: message)), to: target)
+    }
+
+    /// The client must have decoded every frame and must equal the server view.
+    func expectConverged(_ label: String, sourceLocation: SourceLocation = #_sourceLocation) async throws -> SyncPhaseClient {
+        let client = await clientState()
+        let server = try await serverView()
+        #expect(client.decodeErrors.isEmpty, "\(label): decode errors \(client.decodeErrors)", sourceLocation: sourceLocation)
+        #expect(client.view == server, "\(label): client \(client.view) must equal server \(server)", sourceLocation: sourceLocation)
+        return client
     }
 }
 
@@ -330,9 +601,12 @@ private func count(_ message: String, in frames: [Data]) -> Int {
 @Suite("TransportAdapter sync phase: plan + commit", .timeLimit(.minutes(1)))
 struct TransportAdapterSyncPhaseTests {
 
-    @Test("a plan that throws after the dirty flags were cleared: the next cycle delivers the change", arguments: [true, false])
-    func throwingPlanAfterClearIsRecoveredNextCycle(useSnapshotForSync: Bool) async throws {
-        let f = try await SyncPhaseFixture.make(useSnapshotForSync: useSnapshotForSync)
+    @Test(
+        "a plan that throws after the dirty flags were cleared: the next cycle delivers the change",
+        arguments: SyncPhaseEncoding.allCases, [true, false]
+    )
+    func throwingPlanAfterClearIsRecoveredNextCycle(encoding: SyncPhaseEncoding, useSnapshotForSync: Bool) async throws {
+        let f = try await SyncPhaseFixture.make(encoding: encoding, useSnapshotForSync: useSnapshotForSync)
         await f.sync()
 
         try await f.set("a", 1)
@@ -344,26 +618,121 @@ struct TransportAdapterSyncPhaseTests {
         #expect(await f.keeper.currentState().isDirty() == false, "precondition: beginSync cleared the dirty flags")
         #expect(await f.adapter.isSyncRecoveryPending(), "a failed plan requests a recovery cycle")
 
-        // Another field of each category is dirty, so the next cycle is a dirty-tracking cycle,
-        // not an `.all` fallback that would repair the loss on its own.
+        // Another field of each category is dirty, so without recovery the next cycle would be a
+        // dirty-tracking cycle that misses a and score.
         try await f.set("b", 2)
         try await f.set("bonus", 3)
+        let updatesBefore = await f.clientState().updateTypes.count
         await f.sync()
 
-        let client = await f.clientView()
-        let server = await f.serverView()
-        #expect(client.a == 1, "broadcast change of the failed cycle must arrive; client \(client)")
-        #expect(client.score == 5, "per-player change of the failed cycle must arrive; client \(client)")
-        #expect(client == server, "client \(client) must equal server \(server)")
+        let client = try await f.expectConverged("after recovery")
+        #expect(client.value(at: "/a") == .int(1), "broadcast change of the failed cycle must arrive")
+        #expect(client.value(at: "/scores/\(f.player.rawValue)") == .int(5), "per-player change of the failed cycle must arrive")
+        let recoveryTypes = Array(client.updateTypes.dropFirst(updatesBefore))
+        #expect(!recoveryTypes.isEmpty && recoveryTypes.allSatisfy { $0 == 1 }, "recovery updates are typed firstSync: \(recoveryTypes)")
         #expect(await f.adapter.isSyncRecoveryPending() == false, "the recovery cycle's commit ends the recovery")
+        #expect(await f.adapter.syncRecoveryCycles == 1)
     }
 
-    @Test("a failed broadcast-only plan is recovered by the next full cycle")
-    func throwingBroadcastOnlyPlanIsRecovered() async throws {
-        let f = try await SyncPhaseFixture.make()
+    @Test(
+        "a failed plan leaves every cache and firstSync mark untouched",
+        arguments: SyncPhaseEncoding.allCases
+    )
+    func failedPlanLeavesCachesUntouched(encoding: SyncPhaseEncoding) async throws {
+        let f = try await SyncPhaseFixture.make(encoding: encoding)
+        await f.sync()
+
+        try await f.set("a", 1)
+        try await f.set("score", 5)
+        try await f.set("item:x", 1)
+        try await f.set("bag:sword", 1)
+        let before = await f.adapter.syncEngineForTesting()
+        await f.failNextPlan()
+        await f.sync()
+        let after = await f.adapter.syncEngineForTesting()
+
+        #expect(before.cachedBroadcastSnapshotForTesting != nil, "precondition: the broadcast cache is populated")
+        #expect(after.cachedBroadcastSnapshotForTesting == before.cachedBroadcastSnapshotForTesting)
+        #expect(after.cachedPerPlayerSnapshotForTesting(f.player) == before.cachedPerPlayerSnapshotForTesting(f.player))
+        #expect(after.hasReceivedFirstSyncForTesting(f.player))
+    }
+
+    @Test("a failed firstSync plan leaves the joiner's caches and mark untouched", arguments: SyncPhaseEncoding.allCases)
+    func failedFirstSyncPlanLeavesCachesUntouched(encoding: SyncPhaseEncoding) async throws {
+        let f = try await SyncPhaseFixture.make(encoding: encoding, join: false)
+        await f.failNextPlan()
+        try await f.join()
+        let engine = await f.adapter.syncEngineForTesting()
+        #expect(engine.cachedBroadcastSnapshotForTesting == nil)
+        #expect(engine.cachedPerPlayerSnapshotForTesting(f.player) == nil)
+        #expect(engine.hasReceivedFirstSyncForTesting(f.player) == false)
+    }
+
+    @Test(
+        "keys removed in a failed cycle (top-level and nested, broadcast and per-player) are removed by the recovery",
+        arguments: SyncPhaseEncoding.allCases, [true, false]
+    )
+    func removalsOfAFailedCycleAreRecovered(encoding: SyncPhaseEncoding, useSnapshotForSync: Bool) async throws {
+        let f = try await SyncPhaseFixture.make(encoding: encoding, useSnapshotForSync: useSnapshotForSync)
+        try await f.set("item:x", 1)
+        try await f.set("item:y", 2)
+        try await f.set("bag:sword", 1)
+        try await f.set("bag:shield", 2)
+        try await f.set("score", 5)
+        await f.sync()
+        let seeded = try await f.expectConverged("seeded")
+        let me = f.player.rawValue
+        #expect(seeded.value(at: "/items/x") == .int(1), "precondition")
+        #expect(seeded.value(at: "/bags/\(me)/sword") == .int(1), "precondition")
+        #expect(seeded.value(at: "/scores/\(me)") == .int(5), "precondition")
+
+        try await f.set("unitem:x")       // broadcast, nested key
+        try await f.set("unbag:sword")    // per-player, nested key
+        try await f.set("unscore")        // per-player, the slice's top-level entry
+        await f.failNextPlan()
+        await f.sync()
+
+        try await f.set("b", 1)
+        await f.sync()
+
+        let client = try await f.expectConverged("after recovery")
+        #expect(client.value(at: "/items/x") == nil, "broadcast nested key must be removed")
+        #expect(client.value(at: "/items/y") == .int(2))
+        #expect(client.value(at: "/bags/\(me)/sword") == nil, "per-player nested key must be removed")
+        #expect(client.value(at: "/bags/\(me)/shield") == .int(2))
+        #expect(client.value(at: "/scores/\(me)") == nil, "per-player top-level entry must be removed")
+    }
+
+    @Test(
+        "a dynamic-key slot allocated by a failed encode is redefined by the recovery",
+        arguments: [SyncPhaseEncoding.opcodeJsonArray, .messagepack]
+    )
+    func slotAllocatedByFailedEncodeIsRedefined(encoding: SyncPhaseEncoding) async throws {
+        let f = try await SyncPhaseFixture.make(encoding: encoding)
+        await f.sync()
+
+        // First use of "k1": the failed plan's encode allocates its slot; the frame never leaves.
+        try await f.set("item:k1", 1)
+        await f.failNextPlan()
+        await f.sync()
+
+        try await f.set("b", 1)
+        await f.sync()
+        // A plain diff now refers to "k1" by slot only; the client must know the slot.
+        try await f.set("item:k1", 3)
+        await f.sync()
+
+        let client = try await f.expectConverged("after recovery and a later diff")
+        #expect(client.value(at: "/items/k1") == .int(3))
+    }
+
+    @Test("a failed broadcast-only plan is recovered by the next cycle", arguments: SyncPhaseEncoding.allCases)
+    func throwingBroadcastOnlyPlanIsRecovered(encoding: SyncPhaseEncoding) async throws {
+        let f = try await SyncPhaseFixture.make(encoding: encoding)
         await f.sync()
 
         try await f.set("a", 4)
+        try await f.set("item:z", 1)
         await f.failNextPlan()
         await f.adapter.syncBroadcastOnly()
         #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
@@ -372,55 +741,77 @@ struct TransportAdapterSyncPhaseTests {
         try await f.set("b", 1)
         await f.sync()
 
-        let client = await f.clientView()
-        let server = await f.serverView()
-        #expect(client.a == 4, "client \(client)")
-        #expect(client == server, "client \(client) must equal server \(server)")
+        let client = try await f.expectConverged("after recovery")
+        #expect(client.value(at: "/a") == .int(4))
+        #expect(client.value(at: "/items/z") == .int(1))
+        #expect(await f.adapter.isSyncRecoveryPending() == false)
     }
 
-    @Test("a per-player encode failure requests recovery; the next cycle delivers the change")
-    func perPlayerEncodeFailureIsRecovered() async throws {
-        let f = try await SyncPhaseFixture.make(useSnapshotForSync: false)
+    @Test("a broadcast-only cycle during a recovery runs the recovery", arguments: SyncPhaseEncoding.allCases)
+    func broadcastOnlyCycleRunsPendingRecovery(encoding: SyncPhaseEncoding) async throws {
+        let f = try await SyncPhaseFixture.make(encoding: encoding)
+        await f.sync()
+
+        try await f.set("score", 9)
+        await f.failNextPlan()
+        await f.sync()
+        #expect(await f.adapter.isSyncRecoveryPending())
+
+        await f.adapter.syncBroadcastOnly()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
+
+        let client = try await f.expectConverged("after the broadcast-only cycle")
+        #expect(client.value(at: "/scores/\(f.player.rawValue)") == .int(9), "a per-player change must arrive too")
+        #expect(await f.adapter.isSyncRecoveryPending() == false)
+    }
+
+    @Test("an encode failure fails the plan; the next cycle delivers the change", arguments: SyncPhaseEncoding.allCases)
+    func encodeFailureIsRecovered(encoding: SyncPhaseEncoding) async throws {
+        let f = try await SyncPhaseFixture.make(encoding: encoding, useSnapshotForSync: false)
         await f.sync()
 
         try await f.set("score", 7)
+        try await f.set("a", 2)
+        let framesBefore = await f.frameCount()
         f.diffEncodingFails.set(true)
         await f.sync()
+        // Deterministic failure: every plan fails while it lasts, and nothing is sent.
+        try await f.set("bonus", 4)
+        await f.sync()
         f.diffEncodingFails.set(false)
+        #expect(await f.frameCount() == framesBefore, "a failed plan enqueues nothing")
         #expect(await f.adapter.isSyncRecoveryPending(), "an encode failure requests a recovery cycle")
 
         try await f.set("bonus", 1)
         await f.sync()
 
-        let client = await f.clientView()
-        let server = await f.serverView()
-        #expect(client.score == 7, "client \(client)")
-        #expect(client == server, "client \(client) must equal server \(server)")
+        let client = try await f.expectConverged("after recovery")
+        #expect(client.value(at: "/scores/\(f.player.rawValue)") == .int(7))
+        #expect(client.value(at: "/a") == .int(2))
         #expect(await f.adapter.isSyncRecoveryPending() == false)
     }
 
-    @Test("a failed firstSync plan: the next cycle gives the joiner its full view")
-    func throwingFirstSyncPlanIsRecovered() async throws {
-        let f = try await SyncPhaseFixture.make(join: false)
+    @Test("a failed firstSync plan: the next cycle gives the joiner its full view", arguments: SyncPhaseEncoding.allCases)
+    func throwingFirstSyncPlanIsRecovered(encoding: SyncPhaseEncoding) async throws {
+        let f = try await SyncPhaseFixture.make(encoding: encoding, join: false)
         await f.failNextPlan()
         try await f.join()
-        #expect(await f.frameCount() == 0, "the failed firstSync enqueues nothing")
+        let stateFrames = await f.clientState().updateTypes
+        #expect(stateFrames.isEmpty, "the failed firstSync sends no state update: \(stateFrames)")
 
         try await f.set("a", 2)
         await f.sync()
 
-        let updates = decodeStateUpdates(await f.transport.messages(for: f.session))
-        if case .firstSync = updates.first {} else {
-            Issue.record("the joiner's first state update must be a firstSync, got \(String(describing: updates.first))")
-        }
-        let client = await f.clientView()
-        let server = await f.serverView()
-        #expect(client == server, "client \(client) must equal server \(server)")
+        let client = try await f.expectConverged("after the next cycle")
+        // In opcode 107 the merged broadcast frame comes first; the per-player frame is the
+        // joiner's full view.
+        #expect(client.updateTypes.contains(1), "the joiner gets a firstSync: \(client.updateTypes)")
+        #expect(client.value(at: "/scores/\(f.player.rawValue)") == .int(0))
     }
 
     @Test("a failed plan keeps queued events; the next cycle delivers each once (opcode 107)")
     func throwingPlanKeepsQueuedEvents() async throws {
-        let f = try await SyncPhaseFixture.make(messagepack: true)
+        let f = try await SyncPhaseFixture.make(encoding: .messagepack, realMessagePack: true)
         await f.sync()
 
         try await f.set("a", 1)
@@ -439,11 +830,12 @@ struct TransportAdapterSyncPhaseTests {
         #expect(count("tg-kept", in: frames) == 1, "targeted event exactly once")
         let drained = await f.adapter.pendingEventCounts()
         #expect(drained.targeted == 0 && drained.broadcast == 0)
+        _ = try await f.expectConverged("after recovery")
     }
 
     @Test("per session: merged frame, then targeted event frames, then the per-player frame (opcode 107)")
     func frameOrderWithinACycle() async throws {
-        let f = try await SyncPhaseFixture.make(messagepack: true)
+        let f = try await SyncPhaseFixture.make(encoding: .messagepack, realMessagePack: true)
         await f.sync()
         let start = await f.frameCount()
 
