@@ -480,6 +480,18 @@ Delete a specific room (requires admin permission):
 curl -X DELETE -H "X-API-Key: your-secure-api-key" http://localhost:8080/admin/lands/game-room-1
 ```
 
+### Debug State Routes (testing only)
+
+Used by E2E state convergence checks. They are registered only when the admin API key is set **and** `ENABLE_DEBUG_STATE_ROUTES=true`, and require the `admin` role. They return full land state, and a freeze pauses the land, so an enabled deployment gives any key holder a denial-of-service lever. **Never enable them in production.**
+
+| Route | Effect |
+|---|---|
+| `POST /admin/lands/:landID/debug/freeze` | Pause the land (no tick or sync starts, tickless inputs are held), wait for in-flight work, then send one settle sync. Returns `{ freezeToken, tickId, freezeCount, reused }`. Freezes are reference counted; a freeze while frozen returns the same token without a new settle. |
+| `GET /admin/lands/:landID/debug/projection?playerID=...` | The state the settle sync described for that player (broadcast plus per-player fields), or broadcast fields only without `playerID`. Values use the state-wire shape (e.g. `Position2` as raw fixed-point integers). `membershipChanged` is true after a join or leave during the freeze. Answers 409 when the land is not frozen. |
+| `POST /admin/lands/:landID/debug/resume` | Drop one freeze reference; the last one resumes the land and runs syncs requested while frozen. |
+
+A frozen land resumes on its own after `DEBUG_FREEZE_TIMEOUT_SECONDS` (default 30); every freeze call restarts the timer.
+
 ## Error Handling
 
 ### JWT Validation Errors
