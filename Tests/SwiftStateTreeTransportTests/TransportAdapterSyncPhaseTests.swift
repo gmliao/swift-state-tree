@@ -24,12 +24,23 @@ import SwiftStateTreeMessagePack
 
 // MARK: - Test state and action
 
+/// A value whose snapshot conversion throws while `broken` is set (a deterministic extraction
+/// failure, not an encode failure).
+struct SyncPhaseFragile: Codable, Sendable, Equatable, SnapshotValueConvertible {
+    var broken = false
+    func toSnapshotValue() throws -> SnapshotValue {
+        if broken { throw SyncPhaseFault() }
+        return .int(0)
+    }
+}
+
 @StateNodeBuilder
 struct SyncPhaseTestState: StateNodeProtocol {
     @Sync(.broadcast) var a: Int = 0
     @Sync(.broadcast) var b: Int = 0
     @Sync(.broadcast) var items: [String: Int] = [:]
     @Sync(.broadcast) var ratios: [String: Double] = [:]
+    @Sync(.broadcast) var fragile = SyncPhaseFragile()
     @Sync(.perPlayerSlice()) var scores: [PlayerID: Int] = [:]
     @Sync(.perPlayerSlice()) var bonuses: [PlayerID: Int] = [:]
     @Sync(.perPlayerSlice()) var bags: [PlayerID: [String: Int]] = [:]
@@ -101,6 +112,7 @@ private func syncPhaseRules() -> RulesNode {
                 case "unbag": state.bags[ctx.playerID]?.removeValue(forKey: key)
                 case "ratio": state.ratios[key] = Double(action.value)
                 case "nanratio": state.ratios[key] = .nan
+                case "fragile": state.fragile.broken = action.value != 0
                 case "speed": state.speeds[ctx.playerID] = Double(action.value)
                 case "infspeed": state.speeds[ctx.playerID] = .infinity
                 default: state.scores[ctx.playerID] = action.value
@@ -121,7 +133,7 @@ enum SyncPhaseEncoding: String, CaseIterable, Sendable, CustomStringConvertible 
 }
 
 private let syncPhasePathPatterns = [
-    "a", "b", "items", "items.*", "ratios", "ratios.*", "scores", "scores.*", "bonuses", "bonuses.*", "bags", "bags.*", "bags.*.*", "speeds", "speeds.*"
+    "a", "b", "items", "items.*", "ratios", "ratios.*", "fragile", "scores", "scores.*", "bonuses", "bonuses.*", "bags", "bags.*", "bags.*.*", "speeds", "speeds.*"
 ]
 
 private let syncPhasePathHashes: [String: UInt32] = Dictionary(
@@ -157,7 +169,7 @@ private actor SyncPhaseTransport: Transport {
     }
 }
 
-private struct SyncPhaseFault: Error {}
+struct SyncPhaseFault: Error {}
 
 /// A player whose per-player-scope updates all fail to encode while set (any update type).
 private final class SyncPhaseFailingPlayer: @unchecked Sendable {
@@ -1144,6 +1156,58 @@ struct TransportAdapterSyncPhaseTests {
         #expect(decoded.value(at: "/bags/\(f.player.rawValue)/k2") == .int(2))
         #expect(decoded.value(at: "/items/x1") == .int(1))
         #expect(decoded.value(at: "/speeds/\(f.player.rawValue)") == nil)
+    }
+
+    @Test(
+        "a deterministic extraction throw ends the recovery after the bound; other changes flow again",
+        arguments: SyncPhaseEncoding.allCases
+    )
+    func deterministicThrowAbandonsRecoveryAfterBound(encoding: SyncPhaseEncoding) async throws {
+        let f = try await SyncPhaseFixture.make(encoding: encoding)
+        await f.sync()
+
+        // The fragile field is dirty: its extraction throws in this cycle (which cleared its
+        // flag) and in every recovery plan (`.all`).
+        try await f.set("fragile", 1)
+        await f.sync()
+        #expect(await f.adapter.isSyncRecoveryPending(), "precondition: the plan threw")
+        let bound = TransportAdapter<SyncPhaseTestState>.syncRecoveryFailureBound
+        for cycle in 1...bound {
+            #expect(await f.adapter.isSyncRecoveryPending(), "still in recovery before failed recovery plan \(cycle)")
+            await f.sync()
+        }
+        #expect(await f.adapter.isSyncRecoveryPending() == false, "the recovery is abandoned after the bound")
+        #expect(await f.adapter.syncDroppedUpdates == 1, "the abandoned recovery is counted")
+
+        // The next plan is dirty-only, as before plan + commit: a change to another field (and a
+        // per-player one) reaches the client.
+        try await f.set("a", 5)
+        try await f.set("score", 6)
+        await f.sync()
+        #expect(await f.adapter.isSyncRecoveryPending() == false)
+        let client = await f.clientState()
+        #expect(client.decodeErrors.isEmpty, "decode errors \(client.decodeErrors)")
+        #expect(client.value(at: "/a") == .int(5))
+        #expect(client.value(at: "/scores/\(f.player.rawValue)") == .int(6))
+    }
+
+    @Test("a joiner whose firstSync does not encode even empty is skipped unmarked, without room-wide recovery")
+    func unencodableJoinerIsSkippedAndRetried() async throws {
+        let f = try await SyncPhaseFixture.make(encoding: .messagepack, realMessagePack: true, join: false)
+        let player = f.player
+        await f.adapter.setSyncEncodeFaultForTesting { $0 == player }
+        try await f.join()
+        #expect(await f.adapter.isSyncRecoveryPending() == false, "no room-wide recovery")
+        #expect(await f.adapter.syncEngineForTesting().hasReceivedFirstSyncForTesting(player) == false, "not marked")
+        #expect(await f.adapter.syncDroppedUpdates > 0, "the drop is counted")
+
+        // The next full cycle's from-empty path retries it.
+        await f.adapter.setSyncEncodeFaultForTesting(nil)
+        try await f.set("a", 2)
+        await f.sync()
+        #expect(await f.adapter.syncEngineForTesting().hasReceivedFirstSyncForTesting(player))
+        let client = try await f.expectConverged("after the retry")
+        #expect(client.value(at: "/a") == .int(2))
     }
 
     @Test("without periodic sync, a failed firstSync plan is retried by a delayed follow-up", arguments: SyncPhaseEncoding.allCases)
