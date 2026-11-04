@@ -48,6 +48,7 @@ struct SyncPhaseTestState: StateNodeProtocol {
     @Sync(.perPlayerSlice()) var bonuses: [PlayerID: Int] = [:]
     @Sync(.perPlayerSlice()) var bags: [PlayerID: [String: Int]] = [:]
     @Sync(.perPlayerSlice()) var speeds: [PlayerID: Double] = [:]
+    @Sync(.perPlayerSlice()) var pfragiles: [PlayerID: SyncPhaseFragile] = [:]
     init() {}
 }
 
@@ -58,7 +59,10 @@ struct SyncPhaseSetAction: ActionPayload {
     /// (remove it), "item:<key>" / "unitem:<key>" (broadcast `items`), "bag:<key>" /
     /// "unbag:<key>" (the calling player's `bags` entry), "ratio:<key>" / "nanratio:<key>"
     /// (broadcast `ratios`: the value, or NaN, which JSON cannot encode), "speed" / "infspeed"
-    /// (the calling player's `speeds` entry: the value, or infinity, which JSON cannot encode).
+    /// (the calling player's `speeds` entry: the value, or infinity, which JSON cannot encode),
+    /// "fragile" / "fragileval" (broadcast `fragile`: broken or not, its value), "pfragile" /
+    /// "pbreak" / "unpfragile" (the calling player's `pfragiles` entry: its value, broken or
+    /// not, remove it).
     let field: String
     let value: Int
 }
@@ -117,6 +121,9 @@ private func syncPhaseRules() -> RulesNode {
                 case "nanratio": state.ratios[key] = .nan
                 case "fragile": state.fragile.broken = action.value != 0
                 case "fragileval": state.fragile.value = action.value
+                case "pfragile": state.pfragiles[ctx.playerID, default: SyncPhaseFragile()].value = action.value
+                case "pbreak": state.pfragiles[ctx.playerID]?.broken = action.value != 0
+                case "unpfragile": state.pfragiles.removeValue(forKey: ctx.playerID)
                 case "speed": state.speeds[ctx.playerID] = Double(action.value)
                 case "infspeed": state.speeds[ctx.playerID] = .infinity
                 default: state.scores[ctx.playerID] = action.value
@@ -137,7 +144,7 @@ enum SyncPhaseEncoding: String, CaseIterable, Sendable, CustomStringConvertible 
 }
 
 private let syncPhasePathPatterns = [
-    "a", "b", "items", "items.*", "ratios", "ratios.*", "fragile", "scores", "scores.*", "bonuses", "bonuses.*", "bags", "bags.*", "bags.*.*", "speeds", "speeds.*"
+    "a", "b", "items", "items.*", "ratios", "ratios.*", "fragile", "scores", "scores.*", "bonuses", "bonuses.*", "bags", "bags.*", "bags.*.*", "speeds", "speeds.*", "pfragiles", "pfragiles.*"
 ]
 
 private let syncPhasePathHashes: [String: UInt32] = Dictionary(
@@ -664,11 +671,15 @@ private struct SyncPhaseFixture {
         )
     }
 
-    /// The authoritative view of `player` (or `player2`). A broken `fragile` field reads as its
-    /// value, which is what clients keep while it is dropped if they had it.
+    /// The authoritative view of `player` (or `player2`). A broken `fragile` field (or
+    /// `pfragiles` entry) reads as its value, which is what clients keep while it is dropped if
+    /// they had it.
     func serverView(second: Bool = false) async throws -> [String: SnapshotValue] {
         var state = await keeper.currentState()
         state.fragile.broken = false
+        for key in state.pfragiles.keys {
+            state.pfragiles[key]?.broken = false
+        }
         return try SyncEngine().snapshot(for: second ? player2 : player, from: state).values
     }
 
@@ -1242,6 +1253,49 @@ struct TransportAdapterSyncPhaseTests {
         let first = await f.clientState()
         #expect(first.decodeErrors.isEmpty, "decode errors \(first.decodeErrors)")
         #expect(first.value(at: "/a") == .int(3))
+    }
+
+    @Test(
+        "full snapshot: a per-player field dropped for one player is filtered for that player only",
+        arguments: SyncPhaseEncoding.allCases, [true, false]
+    )
+    func fullSnapshotPerPlayerDropIsPerPlayer(encoding: SyncPhaseEncoding, useSnapshotForSync: Bool) async throws {
+        let f = try await SyncPhaseFixture.make(
+            encoding: encoding,
+            useSnapshotForSync: useSnapshotForSync,
+            fullSnapshot: true
+        )
+        try await f.joinSecond()
+        let a = f.player.rawValue
+        let b = f.player2.rawValue
+        try await f.set("pfragile", 1)
+        try await f.set("pfragile", 2, second: true)
+        await f.sync()
+        #expect(await f.clientState().value(at: "/pfragiles/\(a)") == .int(1), "precondition")
+        #expect(await f.clientState(second: true).value(at: "/pfragiles/\(b)") == .int(2), "precondition")
+
+        // Same cycle: A's entry throws (dropped for A), B's entry is removed.
+        try await f.set("pbreak", 1)
+        try await f.set("unpfragile", second: true)
+        await f.sync()
+        #expect(await f.adapter.syncFailedPlans == 0, "the plan commits")
+        #expect(await f.adapter.syncDroppedUpdates > 0, "A's drop is counted")
+        #expect(await f.clientState().value(at: "/pfragiles/\(a)") == .int(1), "A keeps its last sent value")
+        _ = try await f.expectConverged("B received its removal", second: true)
+
+        // While A's copy keeps throwing, B's healthy changes to the same field are not held back.
+        try await f.set("pfragile", 5, second: true)
+        await f.sync()
+        let second = try await f.expectConverged("B's change", second: true)
+        #expect(second.value(at: "/pfragiles/\(b)") == .int(5))
+
+        // A recovers.
+        try await f.set("pbreak", 0)
+        try await f.set("pfragile", 3)
+        await f.sync()
+        let first = try await f.expectConverged("A after it recovers")
+        #expect(first.value(at: "/pfragiles/\(a)") == .int(3))
+        _ = try await f.expectConverged("B after A recovers", second: true)
     }
 
     @Test("a joiner whose extraction throws for one field gets the rest of its view")
