@@ -417,6 +417,24 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// phase (tick + sync in one turn). Cleared when a turn's sync phase committed or was skipped.
     private var inTurnSyncDue = false
 
+    /// Layer-3 spike (coincident-sync rule): deadline of the tick loop's next tick, set by the tick
+    /// loop and cleared when that tick starts. A sync loop firing within
+    /// `coincidentSyncWindow` of it folds its sync into that tick turn instead of running a
+    /// sync-only turn first, so a sync never overtakes a tick due at the same instant.
+    private var nextTickDeadline: ContinuousClock.Instant?
+
+    private func noteNextTickDeadline(_ deadline: ContinuousClock.Instant) {
+        nextTickDeadline = deadline
+    }
+
+    /// min(5 ms, min(tick, sync) / 4).
+    private var coincidentSyncWindow: Duration {
+        var window = Duration.milliseconds(5)
+        if let tick = definition.lifetimeHandlers.tickInterval { window = min(window, tick / 4) }
+        if let sync = definition.lifetimeHandlers.syncInterval { window = min(window, sync / 4) }
+        return window
+    }
+
     /// Tests only: called with turn markers ("turn-begin", "sync-committed", "turn-end") and with
     /// labels passed to `recordInTurnProbeForTesting`.
     private var inTurnProbeForTesting: (@Sendable (String) -> Void)?
@@ -1662,6 +1680,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             guard let self = self else { return }
 
             var nextTickTime = ContinuousClock.now + interval
+            await self.noteNextTickDeadline(nextTickTime)
 
             while !Task.isCancelled {
                 let now = ContinuousClock.now
@@ -1684,6 +1703,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 while nextTickTime <= ContinuousClock.now {
                     nextTickTime = nextTickTime + interval
                 }
+                await self.noteNextTickDeadline(nextTickTime)
             }
         }
     }
@@ -2099,6 +2119,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         debugBeginWork()
         defer { debugEndWork() }
 
+        if !allowWhenNoTickTask { nextTickDeadline = nil }
         let spikeTickStart = SpikeMetrics.now()
         if SpikeMetrics.isEnabled, definition.lifetimeHandlers.tickHandler != nil {
             if let last = spikeLastTickStart {
@@ -2613,6 +2634,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Layer-3 spike (sync-only-turn variant): the sync loop drives a sync-only turn at its own
         // interval; a tick turn includes the sync phase only when a handler requests it.
         if usesInTurnSync, let transport {
+            if tickTask != nil, let deadline = nextTickDeadline,
+               deadline - ContinuousClock.now <= coincidentSyncWindow {
+                // A tick is due now or within the window: fold the sync into that tick turn.
+                inTurnSyncDue = true
+                SpikeMetrics.count("foldedSyncs")
+                return
+            }
             runSyncOnlyTurn(transport: transport)
             return
         }
