@@ -1,9 +1,10 @@
 // State convergence check (#79): freeze the land, let the settle sync arrive, then compare each
 // client's reconstructed state with the server's projection of the same state copy.
 //
-// Until the ordered-writer work (#60) lands, frames of an earlier cycle can arrive after the
-// settle frames, so state mismatches are report-only by default. Route, auth, timeout and
-// projection errors are always fatal.
+// Since the ordered outbound writer (#60), a land's frames arrive in issue order, so the settle
+// frames are the last ones of the frozen state. The CLI reports state mismatches only unless
+// gating is on; the E2E scripts turn gating on by default. Route, auth, timeout and projection
+// errors are always fatal.
 
 import type { StateTreeView } from "@swiftstatetree/sdk/core";
 

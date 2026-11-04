@@ -167,7 +167,8 @@ Test scenarios are defined in JSON files within the `scenarios/` directory.
     while they are exact (|n| <= 2^53 - 1); a larger integer is always reported as a difference.
   - Mismatches print `CONVERGENCE MISMATCH (report-only)` with the first `maxPaths` (default 10)
     differing paths and do not fail the script, unless `--convergence-gating` (or
-    `E2E_CONVERGENCE_GATING=true`) is set. A join or leave during the freeze prints
+    `E2E_CONVERGENCE_GATING=true`) is set. `test-e2e-ci.sh` and `test-e2e-game.sh` turn gating
+    on by default (`E2E_CONVERGENCE_GATING=false` makes them report-only). A join or leave during the freeze prints
     `CONVERGENCE INCONCLUSIVE (membership changed)`. Route, auth, timeout and projection
     errors always fail the script; a resume failure is logged next to an earlier error instead of
     replacing it, and `resumed=false` (freeze already released) is logged as a warning. The run
@@ -191,7 +192,8 @@ Test scenarios are defined in JSON files within the `scenarios/` directory.
 - `--rooms <n>`: run each scenario in `n` lands in parallel, each with `--clients` clients.
   Load variant against GameServer: `npm run test:e2e:game:convergence-load`
   (`E2E_LOAD_CLIENTS` / `E2E_LOAD_ROOMS`, default 4 x 4), or `E2E_CONVERGENCE_LOAD=true
-  ./test-e2e-game.sh` to add it to every encoding pass. Mismatches stay report-only.
+  ./test-e2e-game.sh` to add it to every encoding pass. In `test-e2e-game.sh` mismatches gate,
+  as for the other scenarios.
 - `--fault-drop-patch <pathPrefix>`: client 0 drops the next diff patch under the prefix
   (negative test for `assertConverged`).
 

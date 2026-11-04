@@ -31,7 +31,7 @@ type ConvergenceContext = {
   landID: string;
   clients: ConvergenceClient[];
   debug?: DebugStateClient;
-  /** Mismatches fail the script (default: report-only until #60). */
+  /** Mismatches fail the script (CLI default: report-only; the E2E scripts turn it on). */
   gating: boolean;
   stats: { checks: number; converged: number; mismatches: number; inconclusive: number };
 };

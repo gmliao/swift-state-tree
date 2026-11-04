@@ -4,6 +4,10 @@
 
 set -e  # Exit on error
 
+# assertConverged gates by default in this script: a convergence mismatch fails the run.
+# Set E2E_CONVERGENCE_GATING=false for a report-only run.
+export E2E_CONVERGENCE_GATING="${E2E_CONVERGENCE_GATING:-true}"
+
 # GameServer startup can be slower (plugin/tooling + fresh container builds),
 # so allow a longer readiness window than the common default.
 # Must be set BEFORE sourcing e2e-test-common.sh to override its default.
@@ -110,8 +114,8 @@ run_encoding_tests() {
     fi
 
     # Optional load variant (#79): E2E_CONVERGENCE_LOAD=true runs the burst scenario with
-    # E2E_LOAD_CLIENTS clients in each of E2E_LOAD_ROOMS parallel rooms. Report-only for
-    # mismatches; route and timeout errors still fail.
+    # E2E_LOAD_CLIENTS clients in each of E2E_LOAD_ROOMS parallel rooms. Mismatches fail it
+    # like the other steps (gating, see the top of this script); route and timeout errors too.
     if [ -z "$failed_step" ] && [ "${E2E_CONVERGENCE_LOAD:-false}" = "true" ]; then
         print_step "Running ${SERVER_NAME} convergence load variant ($encoding, ${E2E_LOAD_CLIENTS:-4} clients x ${E2E_LOAD_ROOMS:-4} rooms)..."
         local server_encoding=$(normalize_encoding_for_server "$encoding" "gameserver")
