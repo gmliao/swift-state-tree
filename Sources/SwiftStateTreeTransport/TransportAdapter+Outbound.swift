@@ -23,19 +23,20 @@ extension TransportAdapter {
     }
 
     /// Enqueues pre-built frames as one writer element (a sync phase's commit enqueues all its
-    /// frames in one call). Frames for an ended session (see `endedSessions`) are dropped here.
-    func enqueueFrames(_ frames: [SessionFrame]) {
+    /// frames in one call, tagged `isSyncCycle` for the back-pressure rule unless it is a
+    /// joiner's firstSync). Frames for an ended session (see `endedSessions`) are dropped here.
+    func enqueueFrames(_ frames: [SessionFrame], isSyncCycle: Bool = false) {
         let live = endedSessions.isEmpty ? frames : frames.filter { !endedSessions.contains($0.sessionID) }
         guard !live.isEmpty else { return }
-        writeElement(live)
+        writeElement(live, isSyncCycle: isSyncCycle)
     }
 
     /// Hands one element to the writer. When the writer drops it over its ceiling, every session
     /// it addressed is ended and disconnected: those clients missed frames that later diffs
     /// assume they have, so they must rejoin and get a fresh firstSync (#61 adds a per-session
     /// policy).
-    func writeElement(_ frames: [SessionFrame]) {
-        guard outboundWriter.enqueue(frames) == .droppedOverCeiling else { return }
+    func writeElement(_ frames: [SessionFrame], isSyncCycle: Bool = false) {
+        guard outboundWriter.enqueue(frames, isSyncCycle: isSyncCycle) == .droppedOverCeiling else { return }
         var addressed: [SessionID] = []
         var seen = Set<SessionID>()
         for frame in frames where seen.insert(frame.sessionID).inserted {
@@ -75,6 +76,14 @@ extension TransportAdapter {
         }
     }
 
+    /// Whether the writer still holds a sync cycle element (state frames) that has not been
+    /// handed to the transport. The sync back-pressure rule: a new state cycle waits while this
+    /// is true. Event and action-response elements are not counted, so an event-heavy land never
+    /// suppresses its own state syncs.
+    var hasPendingStateElement: Bool {
+        outboundWriter.backlog.syncCycleElements > 0
+    }
+
     /// Queued frames of the outbound writer (tests and diagnostics).
     func outboundBacklog() -> OutboundBacklog {
         outboundWriter.backlog
@@ -96,6 +105,19 @@ extension TransportAdapter {
             try? await safeTaskSleep(for: .milliseconds(1))
         }
         return true
+    }
+}
+
+/// Sync cycles an adapter skipped before `beginSync`.
+public struct SyncSkipCounts: Sendable, Equatable {
+    /// Another cycle was in flight (`LandKeeper.beginSync` rejected the request).
+    public var busy = 0
+    /// The writer still held a sync cycle element from an earlier cycle (back-pressure).
+    public var outboundBacklog = 0
+
+    public init(busy: Int = 0, outboundBacklog: Int = 0) {
+        self.busy = busy
+        self.outboundBacklog = outboundBacklog
     }
 }
 

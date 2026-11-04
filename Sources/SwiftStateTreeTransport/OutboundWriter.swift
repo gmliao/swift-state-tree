@@ -47,6 +47,22 @@ public struct OutboundBacklog: Sendable, Equatable {
     public let dropped: Int
     /// Elements dropped because they were enqueued after `finish`.
     public let droppedAfterFinish: Int
+    /// Queued elements that are a sync cycle's frames (a subset of `elements`).
+    public let syncCycleElements: Int
+
+    public init(elements: Int, bytes: Int, dropped: Int, droppedAfterFinish: Int, syncCycleElements: Int = 0) {
+        self.elements = elements
+        self.bytes = bytes
+        self.dropped = dropped
+        self.droppedAfterFinish = droppedAfterFinish
+        self.syncCycleElements = syncCycleElements
+    }
+}
+
+/// One writer element: frames in send order, and whether they are a sync cycle's output.
+struct OutboundElement: Sendable {
+    let frames: [SessionFrame]
+    let isSyncCycle: Bool
 }
 
 /// Lock-protected counters shared by the writer and its consumer task (which must not retain
@@ -57,19 +73,49 @@ private final class OutboundWriterCounters: @unchecked Sendable {
     var bytes = 0
     var dropped = 0
     var droppedAfterFinish = 0
+    var syncCycleElements = 0
     var lastCeilingLogAt: ContinuousClock.Instant?
+    /// Waiters for `syncCycleElements == 0` (see `OutboundWriter.waitForSyncCycleDrain`).
+    var syncCycleDrainWaiters: [CheckedContinuation<Void, Never>] = []
+    /// Set when the consumer task ended; later waits return at once.
+    var consumerEnded = false
 
-    func sent(bytes sentBytes: Int) {
+    func sent(bytes sentBytes: Int, isSyncCycle: Bool) {
         lock.lock()
         elements -= 1
         bytes -= sentBytes
+        var waiters: [CheckedContinuation<Void, Never>] = []
+        if isSyncCycle {
+            syncCycleElements -= 1
+            if syncCycleElements == 0 {
+                waiters = syncCycleDrainWaiters
+                syncCycleDrainWaiters = []
+            }
+        }
         lock.unlock()
+        for waiter in waiters { waiter.resume() }
+    }
+
+    /// Resumes every waiter (the consumer ended: nothing more will drain).
+    func releaseWaiters() {
+        lock.lock()
+        consumerEnded = true
+        let waiters = syncCycleDrainWaiters
+        syncCycleDrainWaiters = []
+        lock.unlock()
+        for waiter in waiters { waiter.resume() }
     }
 
     var backlog: OutboundBacklog {
         lock.lock()
         defer { lock.unlock() }
-        return OutboundBacklog(elements: elements, bytes: bytes, dropped: dropped, droppedAfterFinish: droppedAfterFinish)
+        return OutboundBacklog(
+            elements: elements,
+            bytes: bytes,
+            dropped: dropped,
+            droppedAfterFinish: droppedAfterFinish,
+            syncCycleElements: syncCycleElements
+        )
     }
 }
 
@@ -91,7 +137,7 @@ private final class OutboundWriterCounters: @unchecked Sendable {
 /// never reaches this backlog: it is not a slow-client memory bound. That policy is #61.
 final class OutboundWriter: @unchecked Sendable {
     private let lock = NSLock()
-    private var continuation: AsyncStream<[SessionFrame]>.Continuation?
+    private var continuation: AsyncStream<OutboundElement>.Continuation?
     private let consumer: Task<Void, Never>
     private let counters: OutboundWriterCounters
     private let maxBytes: Int
@@ -112,7 +158,7 @@ final class OutboundWriter: @unchecked Sendable {
     ) {
         self.maxBytes = max(1, maxBytes)
         self.logger = logger
-        let (stream, continuation) = AsyncStream<[SessionFrame]>.makeStream(bufferingPolicy: .unbounded)
+        let (stream, continuation) = AsyncStream<OutboundElement>.makeStream(bufferingPolicy: .unbounded)
         self.continuation = continuation
         let counters = OutboundWriterCounters()
         self.counters = counters
@@ -120,10 +166,11 @@ final class OutboundWriter: @unchecked Sendable {
             for await element in stream {
                 if Task.isCancelled { break }
                 let start = ContinuousClock.now
-                await transport.sendSessionFrames(element)
-                onSent?(ContinuousClock.now - start, element.count)
-                counters.sent(bytes: element.reduce(0) { $0 + $1.data.count })
+                await transport.sendSessionFrames(element.frames)
+                onSent?(ContinuousClock.now - start, element.frames.count)
+                counters.sent(bytes: element.frames.reduce(0) { $0 + $1.data.count }, isSyncCycle: element.isSyncCycle)
             }
+            counters.releaseWaiters()
         }
     }
 
@@ -131,9 +178,10 @@ final class OutboundWriter: @unchecked Sendable {
         continuation?.finish()
     }
 
-    /// Enqueues one element (frames in send order). Synchronous.
+    /// Enqueues one element (frames in send order). Synchronous. `isSyncCycle` marks a sync
+    /// cycle's frames, counted in `OutboundBacklog.syncCycleElements` (sync back-pressure).
     @discardableResult
-    func enqueue(_ frames: [SessionFrame]) -> OutboundEnqueueResult {
+    func enqueue(_ frames: [SessionFrame], isSyncCycle: Bool = false) -> OutboundEnqueueResult {
         guard !frames.isEmpty else { return .accepted }
         let bytes = frames.reduce(0) { $0 + $1.data.count }
 
@@ -165,8 +213,9 @@ final class OutboundWriter: @unchecked Sendable {
         }
         counters.elements += 1
         counters.bytes += bytes
+        if isSyncCycle { counters.syncCycleElements += 1 }
         counters.lock.unlock()
-        continuation.yield(frames)
+        continuation.yield(OutboundElement(frames: frames, isSyncCycle: isSyncCycle))
         return .accepted
     }
 
@@ -174,8 +223,23 @@ final class OutboundWriter: @unchecked Sendable {
         counters.backlog
     }
 
+    /// Returns once no sync cycle element is queued (at once when none is), or when the
+    /// consumer has ended.
+    func waitForSyncCycleDrain() async {
+        await withCheckedContinuation { (waiter: CheckedContinuation<Void, Never>) in
+            counters.lock.lock()
+            if counters.syncCycleElements == 0 || counters.consumerEnded {
+                counters.lock.unlock()
+                waiter.resume()
+                return
+            }
+            counters.syncCycleDrainWaiters.append(waiter)
+            counters.lock.unlock()
+        }
+    }
+
     /// Removes the continuation, so later `enqueue` calls are dropped.
-    private func takeContinuation() -> AsyncStream<[SessionFrame]>.Continuation? {
+    private func takeContinuation() -> AsyncStream<OutboundElement>.Continuation? {
         lock.lock()
         defer { lock.unlock() }
         let continuation = self.continuation

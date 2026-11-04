@@ -301,6 +301,20 @@ struct TransportAdapterOrderedSendTests {
         }
     }
 
+    /// Like `runBackToBack`, but each cycle's frames leave the writer before the next cycle
+    /// starts, so sync back-pressure never skips a cycle.
+    private func runDrainedBackToBack(_ f: OrderedSendFixture, iterations: Int) async throws -> Int {
+        for i in 1...iterations {
+            try await f.set(stamp: 2 * i, mine: i)
+            await f.adapter.syncNow()
+            #expect(await f.adapter.waitForOutboundDrain())
+            try await f.set(stamp: 2 * i + 1, mine: -1)
+            await f.adapter.syncBroadcastOnly()
+            #expect(await f.adapter.waitForOutboundDrain())
+        }
+        return 2 * iterations + 1
+    }
+
     @Test(
         "4: per-session frame counts per cycle are unchanged",
         arguments: allEncodings.map(\.0)
@@ -314,9 +328,13 @@ struct TransportAdapterOrderedSendTests {
             before[member.session] = await member.connection.recorded().count
         }
 
+        // Cycles that do run send the same frames as before; back-to-back cycles while the
+        // writer still holds the previous one are skipped (sync back-pressure), so drain between.
         let iterations = 10
-        let final = try await runBackToBack(f, iterations: iterations)
+        let skipsBefore = await f.adapter.syncSkipCounts()
+        let final = try await runDrainedBackToBack(f, iterations: iterations)
         await f.waitForFinal(stamp: final)
+        #expect(await f.adapter.syncSkipCounts() == skipsBefore, "no cycle was skipped")
 
         // Per iteration and session: syncNow sends one combined update (json, opcodeJsonArray) or
         // a merged broadcast frame plus a per-player frame (opcodeMessagePack); syncBroadcastOnly
@@ -375,10 +393,13 @@ struct TransportAdapterOrderedSendTests {
 
         let sender = f.members[0]
         let iterations = 15
+        let skipsBefore = await f.adapter.syncSkipCounts()
         for i in 1...iterations {
-            // State frame of this cycle (marker mk-2i).
+            // State frame of this cycle (marker mk-2i). Drained before the next cycle, so sync
+            // back-pressure never skips one and every cycle's frame is expected below.
             try await f.set(stamp: 2 * i, mine: -1)
             await f.adapter.syncNow()
+            #expect(await f.adapter.waitForOutboundDrain())
             // Immediate event (json sends events when emitted).
             await f.adapter.sendEvent(AnyServerEvent(OrderedSendEvent(message: marker("ev", i))), to: .all)
             // Action through the adapter: its response goes to the sender only. Its state change
@@ -390,9 +411,11 @@ struct TransportAdapterOrderedSendTests {
             let message = TransportMessage.action(requestID: "req-\(i)", action: envelope)
             await f.adapter.onMessage(try JSONEncoder().encode(message), from: sender.session)
         }
+        #expect(await f.adapter.waitForOutboundDrain())
         try await f.set(stamp: 2 * iterations + 2, mine: -1)
         await f.adapter.syncNow()
         await f.waitForFinal(stamp: 2 * iterations + 2)
+        #expect(await f.adapter.syncSkipCounts() == skipsBefore, "no cycle was skipped")
 
         for member in f.members {
             let frames = Array(await member.connection.recorded().dropFirst(before[member.session]!))
@@ -473,15 +496,18 @@ struct TransportAdapterOrderedSendTests {
             if state != nil { await keeper.endSync() }
         }
 
+        // Cycle 1's element blocks in the transport; cycles 2...n are skipped while it is in the
+        // writer (sync back-pressure) and run once, after the release, with the latest state.
+        #expect(await adapter.syncSkipCounts().outboundBacklog == cycles - 1)
         transport.release()
-        try await orderedWaitUntil("every cycle's frames to be delivered") {
+        try await orderedWaitUntil("the deferred cycle to deliver the latest state") {
             markerSequence("mk", in: transport.frames(for: member.session)).contains(cycles)
         }
         let frames = transport.frames(for: member.session)
         let stamps = markerSequence("mk", in: frames).filter { $0 > 0 }
         let mine = markerSequence("pp", in: frames).filter { $0 > 0 }
-        #expect(stamps == Array(1...cycles), "broadcast markers after release: \(stamps)")
-        #expect(mine == Array(1...cycles), "per-player markers after release: \(mine)")
+        #expect(stamps == [1, cycles], "broadcast markers after release: \(stamps)")
+        #expect(mine == [1, cycles], "per-player markers after release: \(mine)")
     }
 
     @Test("WebSocketTransport exposes no polling send queue")

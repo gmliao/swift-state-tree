@@ -38,7 +38,12 @@ func testClientEventQueuedUntilTick() async throws {
         }
     }
 
-    let keeper = LandKeeper(definition: definition, initialState: ClientEventQueueTestState())
+    // The fixed 300 ms wait below assumes the first tick at 200 ms: no per-land phase offset.
+    let keeper = LandKeeper(
+        definition: definition,
+        initialState: ClientEventQueueTestState(),
+        enableLoopPhaseOffset: false
+    )
     let playerID = PlayerID("alice")
     let clientID = ClientID("c1")
     let sessionID = SessionID("s1")
