@@ -164,6 +164,8 @@ let package = Package(
                 "SwiftStateTreeMacros",
                 "SwiftStateTreeTransport",
                 "SwiftStateTreeReevaluationMonitor",
+                "SwiftStateTreeDeterministicMath",
+                .product(name: "Logging", package: "swift-log"),
             ],
             path: "Tests/SwiftStateTreeTests"
         ),
@@ -174,6 +176,7 @@ let package = Package(
             dependencies: [
                 "SwiftStateTreeTransport",
                 "SwiftStateTree",
+                "SwiftStateTreeMessagePack",
                 .product(name: "Atomics", package: "swift-atomics"),
             ],
             path: "Tests/SwiftStateTreeTransportTests"
@@ -189,6 +192,9 @@ let package = Package(
                 "SwiftStateTreeReevaluationMonitor",
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
+                .product(name: "NIOHTTP1", package: "swift-nio"),
+                .product(name: "NIOWebSocket", package: "swift-nio"),
+                .product(name: "Logging", package: "swift-log"),
             ],
             path: "Tests/SwiftStateTreeNIOTests"
         ),
@@ -198,6 +204,7 @@ let package = Package(
             name: "SwiftStateTreeMacrosTests",
             dependencies: [
                 "SwiftStateTreeMacros",
+                .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
                 .product(name: "SwiftSyntaxMacrosTestSupport", package: "swift-syntax"),
             ],
             path: "Tests/SwiftStateTreeMacrosTests"
