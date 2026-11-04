@@ -1693,7 +1693,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 baseline: baseline,
                 staged: &plan.staged
             ),
-            drops: drops,
+            dropped: drops.broadcastFields,
             baseline: baseline
         )
 
@@ -2321,43 +2321,49 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             staged: &staged
         )
 
-        return (withoutDroppedFields(broadcastDiff, drops: drops, baseline: fullSnapshot ? .empty : .cached), broadcastMode)
+        return (withoutDroppedFields(broadcastDiff, dropped: drops.broadcastFields, baseline: fullSnapshot ? .empty : .cached), broadcastMode)
     }
 
     /// Under the `.empty` baseline (full-snapshot strategy), `patches` without those of the
-    /// fields the extraction dropped. A dropped field holds its cached value, which keeps the
-    /// `.empty` diff from deleting it but would otherwise be a real `.set` of an older value (a
-    /// client that already has a newer one, e.g. a joiner's firstSync, would roll back). Against
-    /// the `.cached` baseline the cached value yields no patch, so nothing is filtered.
+    /// fields the extraction dropped in their scope (`dropped`). A dropped field holds its cached
+    /// value, which keeps the `.empty` diff from deleting it but would otherwise be a real `.set`
+    /// of an older value (a client that already has a newer one, e.g. a joiner's firstSync, would
+    /// roll back). Against the `.cached` baseline the cached value yields no patch, so nothing is
+    /// filtered.
     private func withoutDroppedFields(
         _ patches: [StatePatch],
-        drops: ExtractionDrops,
+        dropped: Set<String>,
         baseline: SyncEngine.DiffBaseline
     ) -> [StatePatch] {
-        guard case .empty = baseline, !drops.fields.isEmpty else { return patches }
+        guard case .empty = baseline, !dropped.isEmpty else { return patches }
         return patches.filter { patch in
             let field = patch.path.split(separator: "/").first.map(String.init) ?? ""
-            return !drops.fields.contains(field)
+            return !dropped.contains(field)
         }
     }
 
-    /// `withoutDroppedFields` for every pending update; an update left with no change is not sent
-    /// (one typed `.firstSync` is kept: it may reset a key scope).
+    /// `withoutDroppedFields` for every pending update, each filtered by the per-player fields
+    /// dropped for its own player (its broadcast patches were filtered with the broadcast diff).
+    /// An update left with no change is not sent (one typed `.firstSync` is kept: it may reset a
+    /// key scope).
     private func withoutDroppedFields(
         _ updates: [PendingSyncUpdate],
         drops: ExtractionDrops,
         baseline: SyncEngine.DiffBaseline
     ) -> [PendingSyncUpdate] {
-        guard case .empty = baseline, !drops.fields.isEmpty else { return updates }
+        guard case .empty = baseline, !drops.perPlayerFields.isEmpty else { return updates }
         return updates.compactMap { pending in
+            guard let dropped = drops.perPlayerFields[pending.playerID], !dropped.isEmpty else {
+                return pending
+            }
             let update: StateUpdate
             switch pending.update {
             case .noChange:
                 return pending
             case .firstSync(let patches):
-                update = .firstSync(withoutDroppedFields(patches, drops: drops, baseline: baseline))
+                update = .firstSync(withoutDroppedFields(patches, dropped: dropped, baseline: baseline))
             case .diff(let patches):
-                let kept = withoutDroppedFields(patches, drops: drops, baseline: baseline)
+                let kept = withoutDroppedFields(patches, dropped: dropped, baseline: baseline)
                 guard !kept.isEmpty else { return nil }
                 update = .diff(kept)
             }

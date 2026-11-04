@@ -1304,16 +1304,30 @@ extension SyncEngine {
 package struct ExtractionDrops: Sendable {
     /// Dropped field extractions (one per field and extracted snapshot).
     package var count = 0
-    /// The dropped top-level field names.
-    package var fields: Set<String> = []
+    /// The broadcast fields dropped (from the broadcast snapshot).
+    package var broadcastFields: Set<String> = []
+    /// The per-player fields dropped, per player (from that player's per-player snapshot).
+    package var perPlayerFields: [PlayerID: Set<String>] = [:]
     /// The first conversion error, for the dropped-updates log.
     package var firstError: String?
 
     package init() {}
 
-    mutating func note(_ error: any Error, field: String) {
+    /// Where a dropped field was extracted: each scope's diff is filtered by its own set.
+    enum Scope {
+        case broadcast
+        case perPlayer(PlayerID)
+        /// A whole view (late join), diffed from empty for a joiner: not recorded per scope.
+        case view
+    }
+
+    mutating func note(_ error: any Error, field: String, scope: Scope) {
         count += 1
-        fields.insert(field)
+        switch scope {
+        case .broadcast: broadcastFields.insert(field)
+        case .perPlayer(let playerID): perPlayerFields[playerID, default: []].insert(field)
+        case .view: break
+        }
         if firstError == nil {
             firstError = "field \(field): \(error)"
         }
@@ -1328,13 +1342,15 @@ extension SyncEngine {
     /// left out. Like a patch that does not encode, the field stays stale until it extracts again.
     ///
     /// Against the `.empty` baseline (full-snapshot strategy) the cached value would become a real
-    /// `.set` of an older value: callers leave the patches of `drops.fields` out of such a diff.
+    /// `.set` of an older value: callers leave the patches of the scope's dropped fields
+    /// (`broadcastFields`, or the player's `perPlayerFields`) out of such a diff.
     /// The cached value is still needed there, since an `.empty` diff deletes the top-level keys
     /// that vanished since the cache.
     private static func extractDroppingThrowingFields(
         candidates: [String],
         fields: Set<String>?,
         fallback: (String) -> SnapshotValue?,
+        scope: ExtractionDrops.Scope,
         drops: inout ExtractionDrops,
         _ extract: (Set<String>?) throws -> StateSnapshot
     ) -> StateSnapshot {
@@ -1348,7 +1364,7 @@ extension SyncEngine {
                     values[key] = value
                 }
             } catch {
-                drops.note(error, field: name)
+                drops.note(error, field: name, scope: scope)
                 if let cached = fallback(name) {
                     values[name] = cached
                 }
@@ -1369,6 +1385,7 @@ extension SyncEngine {
             candidates: names,
             fields: mode.fields,
             fallback: { cache?.values[$0] },
+            scope: .broadcast,
             drops: &drops
         ) { fields in
             try state.broadcastSnapshot(dirtyFields: fields)
@@ -1390,6 +1407,7 @@ extension SyncEngine {
             candidates: names,
             fields: mode.fields,
             fallback: { cache?.values[$0] },
+            scope: .perPlayer(playerID),
             drops: &drops
         ) { fields in
             try self.extractPerPlayerSnapshot(
@@ -1436,6 +1454,7 @@ extension SyncEngine {
             candidates: names,
             fields: nil,
             fallback: { broadcastCache?.values[$0] ?? perPlayerCache?.values[$0] },
+            scope: .view,
             drops: &drops
         ) { fields in
             try state.snapshot(for: playerID, dirtyFields: fields)
