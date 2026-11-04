@@ -85,7 +85,9 @@ private final class OutboundWriterCounters: @unchecked Sendable {
         elements -= 1
         bytes -= sentBytes
         var waiters: [CheckedContinuation<Void, Never>] = []
-        if isSyncCycle {
+        // After `releaseWaiters` the count was settled to 0: a send that returns late from a
+        // consumer teardown gave up on must not take it below 0.
+        if isSyncCycle, !consumerEnded {
             syncCycleElements -= 1
             if syncCycleElements == 0 {
                 waiters = syncCycleDrainWaiters

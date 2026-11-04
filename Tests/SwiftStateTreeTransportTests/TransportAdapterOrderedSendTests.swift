@@ -478,8 +478,10 @@ struct TransportAdapterOrderedSendTests {
         let rounds = 5
         for i in 1...rounds {
             transport.block()
-            // Blocker: an event element that the transport holds, so everything after it queues.
-            await adapter.sendEvent(AnyServerEvent(OrderedSendEvent(message: marker("bl", i))), to: .all)
+            // Blocker: a frame written straight to the writer (not an event, so an event path
+            // that bypassed the writer could not bypass it too). The transport holds it, so
+            // everything issued after it queues.
+            await adapter.enqueueOutbound(Data("{\"blocker\":\"\(marker("bl", i))\"}".utf8), toSessions: members.map(\.session))
             try await orderedWaitUntil("blocker \(i) to reach the transport") {
                 members.allSatisfy { m in transport.frames(for: m.session).contains { markers("bl", in: $0).contains(i) } }
             }
@@ -491,6 +493,10 @@ struct TransportAdapterOrderedSendTests {
             _ = try await keeper.handleActionEnvelope(set, playerID: sender.player, clientID: sender.client, sessionID: sender.session)
             await adapter.syncNow()
             #expect(await adapter.hasPendingStateElement, "round \(i): the cycle's element is queued")
+            for member in members {
+                let reached = transport.frames(for: member.session).contains { markers("mk", in: $0).contains(2 * i) }
+                #expect(!reached, "round \(i): the cycle's state has not reached the transport yet")
+            }
             await adapter.sendEvent(AnyServerEvent(OrderedSendEvent(message: marker("ev", i))), to: .all)
             let action = ActionEnvelope(
                 typeIdentifier: String(describing: OrderedSendSetAction.self),
