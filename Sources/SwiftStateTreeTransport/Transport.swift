@@ -46,6 +46,14 @@ public protocol Transport: Actor {
     ///
     /// - Parameter updates: Pairs of (message, target) to send.
     func sendBatch(_ updates: [(Data, EventTarget)]) async
+
+    /// Sends frames that each address one session, in array order. This is the only call a
+    /// `TransportAdapter` makes to send (through its `OutboundWriter`).
+    ///
+    /// A transport that tracks connection generations drops a frame whose
+    /// `connectionGeneration` differs from the session's current connection. The default
+    /// implementation ignores generations and forwards to `sendBatch` with `.session` targets.
+    func sendSessionFrames(_ frames: [SessionFrame]) async
 }
 
 extension Transport {
@@ -54,6 +62,11 @@ extension Transport {
         for (data, target) in updates {
             send(data, to: target)
         }
+    }
+
+    /// Default: no generation check; forwards to `sendBatch`.
+    public func sendSessionFrames(_ frames: [SessionFrame]) async {
+        await sendBatch(frames.map { ($0.data, .session($0.sessionID)) })
     }
 }
 
@@ -78,6 +91,9 @@ public protocol TransportDelegate: Sendable {
 // MARK: - Transport Send Queue
 
 /// Thread-safe queue for non-blocking send. When available, producers enqueue without awaiting the transport actor.
+///
+/// No longer used: `TransportAdapter` sends through its own ordered `OutboundWriter` (#60), and
+/// `WebSocketTransport.transportSendQueue` returns `nil`. Kept for source compatibility.
 public protocol TransportSendQueue: Sendable {
     func enqueue(_ message: Data, to target: EventTarget)
     func enqueueBatch(_ updates: [(Data, EventTarget)])

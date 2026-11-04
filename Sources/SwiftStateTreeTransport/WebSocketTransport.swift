@@ -2,54 +2,13 @@ import Foundation
 import Logging
 import SwiftStateTree
 
-// MARK: - WebSocket Transport Send Queue
-
-/// Lock-based queue for non-blocking enqueue. Drain task batches and dispatches to the actor.
-private final class WebSocketTransportSendQueue: @unchecked Sendable, TransportSendQueue {
-    private let lock = NSLock()
-    private var buffer: [(Data, EventTarget)] = []
-    private let maxBatchSize: Int
-    private let drainIntervalNanoseconds: UInt64
-
-    init(maxBatchSize: Int = 64, drainIntervalMs: Double = 1.0) {
-        self.maxBatchSize = maxBatchSize
-        self.drainIntervalNanoseconds = UInt64(drainIntervalMs * 1_000_000)
-    }
-
-    func enqueue(_ message: Data, to target: EventTarget) {
-        lock.lock()
-        defer { lock.unlock() }
-        buffer.append((message, target))
-    }
-
-    func enqueueBatch(_ updates: [(Data, EventTarget)]) {
-        guard !updates.isEmpty else { return }
-        lock.lock()
-        defer { lock.unlock() }
-        buffer.append(contentsOf: updates)
-    }
-
-    /// Remove and return up to maxBatchSize items. Capacity is reused for the returned array.
-    func drainBatch() -> [(Data, EventTarget)] {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !buffer.isEmpty else { return [] }
-        let count = min(buffer.count, maxBatchSize)
-        var batch: [(Data, EventTarget)] = []
-        batch.reserveCapacity(count)
-        for i in 0..<count {
-            batch.append(buffer[i])
-        }
-        buffer.removeFirst(count)
-        return batch
-    }
-}
-
 // MARK: - Per-Session Send Queue
 
 /// Per-session send queue: enqueue returns immediately; a drain Task sends to the connection.
 private struct SessionSendQueue: Sendable {
     let connection: WebSocketConnection
+    /// Connection generation (see `WebSocketTransport.connectionGeneration(for:)`).
+    var generation: UInt64 = 0
     let continuation: AsyncStream<Data>.Continuation
     let drainTask: Task<Void, Never>
 
@@ -90,26 +49,21 @@ public actor WebSocketTransport: Transport {
     private var lastMissingPlayerLogAt: [PlayerID: Date] = [:]
     private let logger: Logger
 
-    /// Queue-based send path: producers enqueue without await; drain task batches and dispatches.
-    private let sendQueue: WebSocketTransportSendQueue
-    /// Drain task started in init; must be nonisolated(unsafe) for init assignment.
-    private nonisolated(unsafe) var drainTask: Task<Void, Never>?
-    private static let drainBatchSize = 64
-    /// Drain idle sleep interval. Lower = less client-perceived latency, higher = less CPU when idle.
-    /// Default 0.2ms balances responsiveness (5x faster than 1ms) with idle CPU.
-    private let drainIntervalNanoseconds: UInt64
+    /// Generation of the most recent connection; each `handleConnection` takes the next one.
+    private var lastConnectionGeneration: UInt64 = 0
 
     private static let missingTargetLogIntervalSeconds: TimeInterval = 2.0
     private static let missingTargetLogMapSoftLimit: Int = 5000
 
-    /// Non-blocking send queue. When set, TransportAdapter uses enqueueBatch instead of await sendBatch.
-    public nonisolated var transportSendQueue: (any TransportSendQueue)? { sendQueue }
+    /// Always `nil`: the polling send queue was removed. Each `TransportAdapter` sends through its
+    /// own ordered `OutboundWriter` (#60).
+    @available(*, deprecated, message: "TransportAdapter sends through its own OutboundWriter; this is always nil")
+    public nonisolated var transportSendQueue: (any TransportSendQueue)? { nil }
 
     /// - Parameters:
     ///   - logger: Optional logger. If nil, a default colored logger is created.
-    ///   - drainIntervalMs: Idle sleep interval for the send queue drain task (default 0.2ms).
-    ///     Lower values reduce client-perceived latency but increase CPU when idle.
-    ///     P1 queue-based send uses this; if clients feel laggy, try 0.1 or 0.05.
+    ///   - drainIntervalMs: Ignored. It tuned the removed polling send queue; kept for source
+    ///     compatibility.
     public init(logger: Logger? = nil, drainIntervalMs: Double = 0.2) {
         // Create logger with scope if not provided
         if let logger = logger {
@@ -120,24 +74,7 @@ public actor WebSocketTransport: Transport {
                 scope: "WebSocketTransport"
             )
         }
-        self.drainIntervalNanoseconds = UInt64(max(0.01, drainIntervalMs) * 1_000_000)
-        self.sendQueue = WebSocketTransportSendQueue(
-            maxBatchSize: Self.drainBatchSize,
-            drainIntervalMs: Double(self.drainIntervalNanoseconds) / 1_000_000
-        )
-        let sq = self.sendQueue
-        let intervalNs = self.drainIntervalNanoseconds
-        self.drainTask = Task { [weak self] in
-            guard let self else { return }
-            while !Task.isCancelled {
-                let batch = sq.drainBatch()
-                if !batch.isEmpty {
-                    await self.dispatchBatch(batch)
-                } else {
-                    try? await Task.sleep(nanoseconds: intervalNs)
-                }
-            }
-        }
+        _ = drainIntervalMs
     }
 
     /// Set delegate from outside the actor.
@@ -150,8 +87,6 @@ public actor WebSocketTransport: Transport {
     }
 
     public func stop() async throws {
-        drainTask?.cancel()
-        drainTask = nil
         // Finish all continuations so drain tasks exit, then close connections
         for (_, queue) in sessionQueues {
             queue.continuation.finish()
@@ -202,7 +137,7 @@ public actor WebSocketTransport: Transport {
         dispatchBatch(updates)
     }
 
-    /// Internal: dispatch batch to session queues. Used by drain task and sendBatch.
+    /// Internal: dispatch batch to session queues. Used by sendBatch.
     private func dispatchBatch(_ updates: [(Data, EventTarget)]) {
         for (message, target) in updates {
             logOutgoing(message, target: target)
@@ -236,7 +171,9 @@ public actor WebSocketTransport: Transport {
     // MARK: - Connection Management (Called by the concrete server integration)
 
     public func handleConnection(sessionID: SessionID, connection: WebSocketConnection, authInfo: AuthenticatedInfo? = nil) async {
-        let queue = SessionSendQueue.create(sessionID: sessionID, connection: connection, logger: logger)
+        var queue = SessionSendQueue.create(sessionID: sessionID, connection: connection, logger: logger)
+        lastConnectionGeneration += 1
+        queue.generation = lastConnectionGeneration
         sessionQueues[sessionID] = queue
         lastMissingSessionLogAt.removeValue(forKey: sessionID)
         // Generate short client ID (6 characters) for better identification
@@ -270,9 +207,45 @@ public actor WebSocketTransport: Transport {
         await delegate?.onMessage(data, from: sessionID)
     }
 
-    public func registerSession(_ sessionID: SessionID, for playerID: PlayerID) {
+    /// Maps a player to a session for `.player` targets, and returns the session's current
+    /// connection generation (`nil` when the session is not connected).
+    @discardableResult
+    public func registerSession(_ sessionID: SessionID, for playerID: PlayerID) -> UInt64? {
         playerSessions[playerID, default: []].insert(sessionID)
         lastMissingPlayerLogAt.removeValue(forKey: playerID)
+        return sessionQueues[sessionID]?.generation
+    }
+
+    /// Generation of the session's current connection, or `nil` when it is not connected.
+    ///
+    /// Every `handleConnection` gives the connection a new generation, also when it reuses a
+    /// `SessionID`. Frames stamped with an older generation are dropped by `sendSessionFrames`.
+    public func connectionGeneration(for sessionID: SessionID) -> UInt64? {
+        sessionQueues[sessionID]?.generation
+    }
+
+    /// Sends single-session frames in order. A frame whose `connectionGeneration` is set and
+    /// differs from the session's current connection is dropped: it was produced for a connection
+    /// that has ended.
+    public func sendSessionFrames(_ frames: [SessionFrame]) async {
+        for frame in frames {
+            logOutgoing(frame.data, target: .session(frame.sessionID))
+            guard let queue = sessionQueues[frame.sessionID] else {
+                logDropMissingSession(sessionID: frame.sessionID, bytes: frame.data.count)
+                continue
+            }
+            if let generation = frame.connectionGeneration, generation != queue.generation {
+                if logger.logLevel <= .debug {
+                    logger.debug("Dropping frame for an ended connection", metadata: [
+                        "session": .string(frame.sessionID.rawValue),
+                        "frameGeneration": .stringConvertible(generation),
+                        "currentGeneration": .stringConvertible(queue.generation),
+                    ])
+                }
+                continue
+            }
+            queue.continuation.yield(frame.data)
+        }
     }
 
     // MARK: - Logging helpers

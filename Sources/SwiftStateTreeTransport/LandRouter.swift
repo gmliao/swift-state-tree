@@ -472,7 +472,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                     landID: landID.rawValue,
                     playerID: joinResult.playerID.rawValue,
                     playerSlot: joinResult.playerSlot,
-                    encoding: encoding
+                    encoding: encoding,
+                    via: container.transportAdapter
                 )
                 
                 // Complete handshake: transition to joined state AFTER sending joinResponse
@@ -583,7 +584,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         playerID: String? = nil,
         playerSlot: Int32? = nil,
         encoding: String? = nil,
-        reason: String? = nil
+        reason: String? = nil,
+        via adapter: TransportAdapter<State>? = nil
     ) async {
         do {
             let response = TransportMessage.joinResponse(
@@ -608,8 +610,12 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             }
             
             let responseData = try encoder.encode(response)
-            await transport.send(responseData, to: .session(sessionID))
-            await Task.yield()
+            if let adapter {
+                // Joined: same FIFO as the land's state frames, so it precedes firstSync (#60).
+                await adapter.enqueueOutbound(responseData, to: sessionID)
+            } else {
+                await transport.send(responseData, to: .session(sessionID))
+            }
         } catch {
             logger.error("Failed to send join response", metadata: [
                 "requestID": .string(requestID),
@@ -644,8 +650,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             }
             
             let errorData = try encoder.encode(errorResponse)
-            await transport.send(errorData, to: .session(sessionID))
-            await Task.yield()
+            await deliver(errorData, to: sessionID)
         } catch {
             logger.error("Failed to send join error", metadata: [
                 "requestID": .string(requestID),
@@ -676,8 +681,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             }
             
             let errorData = try encoder.encode(errorResponse)
-            await transport.send(errorData, to: .session(sessionID))
-            await Task.yield()
+            await deliver(errorData, to: sessionID)
         } catch {
             logger.error("Failed to send error", metadata: [
                 "sessionID": .string(sessionID.rawValue),
@@ -686,6 +690,19 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
     
+    /// Sends a router frame. For a session that joined a land, the frame goes through that
+    /// land's `TransportAdapter` writer, in order with the land's own frames (#60); during the
+    /// handshake it goes to the transport directly.
+    private func deliver(_ data: Data, to sessionID: SessionID) async {
+        if sessionHandshakePhase[sessionID] == .joined,
+           let landID = sessionToBoundLandID[sessionID],
+           let container = await landManager.getLand(landID: landID) {
+            await container.transportAdapter.enqueueOutbound(data, to: sessionID)
+        } else {
+            await transport.send(data, to: .session(sessionID))
+        }
+    }
+
     // MARK: - Query Methods
     
     /// Check if a session is connected.

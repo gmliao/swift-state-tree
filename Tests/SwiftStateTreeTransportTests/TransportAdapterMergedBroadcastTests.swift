@@ -219,6 +219,7 @@ private func runBroadcastCycle(_ testCase: MergedBroadcastCase) async throws -> 
     await adapter.onConnect(sessionID: session, clientID: client)
     try await simulateRouterJoin(adapter: adapter, keeper: keeper, sessionID: session, clientID: client, playerID: player)
     await adapter.syncNow()
+    await adapter.waitForOutboundDrain()
     await transport.clear()
 
     let headline = "headline-marker-6c1f"
@@ -233,6 +234,7 @@ private func runBroadcastCycle(_ testCase: MergedBroadcastCase) async throws -> 
         sessionID: session
     )
     await adapter.syncNow()
+    await adapter.waitForOutboundDrain()
 
     let stateChangeDelivered = await transport.waitUntil(session: session, player: player) {
         frameCount($0, containing: headline) > 0
@@ -244,6 +246,7 @@ private func runBroadcastCycle(_ testCase: MergedBroadcastCase) async throws -> 
     // Nothing is dirty and no event is pending now; this sync must not resend the event.
     // Its sends (if any) are dispatched in tasks, so give them a few turns to land.
     await adapter.syncNow()
+    await adapter.waitForOutboundDrain()
     for _ in 0..<20 { await Task.yield() }
     let eventFrameCount = frameCount(await transport.frames(for: session, playerID: player), containing: announcement)
 

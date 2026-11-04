@@ -15,6 +15,7 @@ enum TransportEnvKeys {
     static let autoDirtyOffThreshold = "AUTO_DIRTY_OFF_THRESHOLD"
     static let autoDirtyOnThreshold = "AUTO_DIRTY_ON_THRESHOLD"
     static let autoDirtyRequiredSamples = "AUTO_DIRTY_REQUIRED_SAMPLES"
+    static let outboundWriterMaxBytes = "OUTBOUND_WRITER_MAX_BYTES"
 
     enum Profiling {
         static let jsonlPath = "TRANSPORT_PROFILE_JSONL_PATH"

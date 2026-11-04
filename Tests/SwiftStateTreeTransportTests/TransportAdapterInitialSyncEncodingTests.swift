@@ -335,6 +335,7 @@ func testTransportAdapterUsesPlayerSlotInOpcodeEncoding() async throws {
     
     // Send initial sync (this should use playerSlot in encoding)
     await adapter.syncStateForNewPlayer(playerID: result.playerID, sessionID: sessionID)
+    await adapter.waitForOutboundDrain()
     
     let messages = await transport.recordedMessages()
     #expect(messages.count >= 1, "Expected at least one message (initial sync)")
@@ -490,8 +491,10 @@ func testTransportAdapterDiffAfterFirstSyncKeepsNestedPositionV() async throws {
     let moveMessage = TransportMessage.event(event: .fromClient(event: moveEvent))
     let moveData = try JSONEncoder().encode(moveMessage)
     await adapter.onMessage(moveData, from: sessionID)
+    await adapter.waitForOutboundDrain()
     try await Task.sleep(for: .milliseconds(20))
     await adapter.syncNow()
+    await adapter.waitForOutboundDrain()
     try await Task.sleep(for: .milliseconds(50))
 
     let messages = await transport.recordedMessages()
@@ -595,8 +598,10 @@ func testTransportAdapterSendsDiffAfterIncrementActionJsonObject() async throws 
     let actionMessage = TransportMessage.action(requestID: "req-increment-1", action: actionEnvelope)
     let actionData = try JSONEncoder().encode(actionMessage)
     await adapter.onMessage(actionData, from: sessionID)
+    await adapter.waitForOutboundDrain()
     try await Task.sleep(for: .milliseconds(20))
     await adapter.syncNow()
+    await adapter.waitForOutboundDrain()
     try await Task.sleep(for: .milliseconds(50))
 
     let messages = await transport.recordedMessages()
@@ -662,8 +667,10 @@ func testTransportAdapterSendsDiffAfterIncrementActionOpcodeJsonArray() async th
     let actionMessage = TransportMessage.action(requestID: "req-increment-2", action: actionEnvelope)
     let actionData = try JSONEncoder().encode(actionMessage)
     await adapter.onMessage(actionData, from: sessionID)
+    await adapter.waitForOutboundDrain()
     try await Task.sleep(for: .milliseconds(20))
     await adapter.syncNow()
+    await adapter.waitForOutboundDrain()
     try await Task.sleep(for: .milliseconds(50))
 
     let messages = await transport.recordedMessages()

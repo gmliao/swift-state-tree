@@ -59,6 +59,7 @@ func debugProjectionUsesWireShapeForFixedPoint() async throws {
     )
     // As the router does after the join response: the joiner's firstSync.
     await adapter.syncStateForNewPlayer(playerID: player, sessionID: session)
+    await adapter.waitForOutboundDrain()
 
     // The value the state wire carried for `position` in the joiner's firstSync.
     let decoder = JSONStateUpdateDecoder()

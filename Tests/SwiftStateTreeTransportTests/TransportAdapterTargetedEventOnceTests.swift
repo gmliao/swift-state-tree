@@ -45,14 +45,10 @@ struct TargetedOnceEvent: ServerEventPayload {
 /// Unique text carried by the targeted event; a frame contains it iff it carries the event.
 private let targetedOnceMarker = "targeted-once-marker-7f3a"
 
-/// Records every frame in send order. When armed with `holdNextBatch()`, the next `sendBatch`
-/// records its frames and suspends until `release()`.
+/// Records every frame in send order. Cycles are held in flight with `SyncCycleHold`.
 private actor TargetedOnceRecordingTransport: Transport {
     var delegate: TransportDelegate?
     private var frames: [(target: SwiftStateTreeTransport.EventTarget, data: Data)] = []
-    private var shouldHoldNextBatch = false
-    private var heldBatch: CheckedContinuation<Void, Never>?
-    private var holdWaiter: CheckedContinuation<Void, Never>?
 
     func setDelegate(_ delegate: TransportDelegate?) { self.delegate = delegate }
     func start() async throws {}
@@ -64,24 +60,6 @@ private actor TargetedOnceRecordingTransport: Transport {
         for (data, target) in updates {
             frames.append((target, data))
         }
-        guard shouldHoldNextBatch else { return }
-        shouldHoldNextBatch = false
-        await withCheckedContinuation { continuation in
-            heldBatch = continuation
-            holdWaiter?.resume()
-            holdWaiter = nil
-        }
-    }
-    func holdNextBatch() { shouldHoldNextBatch = true }
-    func waitUntilHeld() async {
-        if heldBatch != nil { return }
-        await withCheckedContinuation { continuation in
-            holdWaiter = continuation
-        }
-    }
-    func release() {
-        heldBatch?.resume()
-        heldBatch = nil
     }
     /// All frames in send order (for single-session fixtures).
     func recordedFrames() -> [Data] { frames.map(\.data) }
@@ -99,6 +77,7 @@ private struct TargetedOnceFixture {
     let keeper: LandKeeper<TargetedOnceTestState>
     let adapter: TransportAdapter<TargetedOnceTestState>
     let transport: TargetedOnceRecordingTransport
+    let hold = SyncCycleHold()
     let session = SessionID("to-session")
     let client = ClientID("to-client")
     let player = PlayerID("to-player")
@@ -143,6 +122,7 @@ private struct TargetedOnceFixture {
         )
         await transport.setDelegate(adapter)
         let fixture = TargetedOnceFixture(keeper: keeper, adapter: adapter, transport: transport)
+        await fixture.hold.install(on: adapter)
         await adapter.onConnect(sessionID: fixture.session, clientID: fixture.client)
         try await simulateRouterJoin(
             adapter: adapter,
@@ -153,6 +133,7 @@ private struct TargetedOnceFixture {
         )
         // Settle the post-join cycle, then look only at what the checked cycle sends.
         await adapter.syncNow()
+        await adapter.waitForOutboundDrain()
         await transport.clear()
         return fixture
     }
@@ -162,6 +143,7 @@ private struct TargetedOnceFixture {
         await adapter.onConnect(sessionID: session, clientID: client)
         try await simulateRouterJoin(adapter: adapter, keeper: keeper, sessionID: session, clientID: client, playerID: player)
         await adapter.syncNow()
+        await adapter.waitForOutboundDrain()
         await transport.clear()
     }
 
@@ -183,6 +165,43 @@ private struct TargetedOnceFixture {
 
     func sendTargetedEvent(_ message: String, to target: PlayerID) async {
         await adapter.sendEvent(AnyServerEvent(TargetedOnceEvent(message: message)), to: .player(target))
+        await adapter.waitForOutboundDrain()
+    }
+
+    /// Runs `syncNow` held in flight (after it read the event queue, before `endSync`; see
+    /// `SyncCycleHold`), runs `duringCycle`, then lets the cycle finish.
+    func syncNowHolding(_ duringCycle: () async throws -> Void) async throws {
+        hold.arm()
+        let adapter = self.adapter
+        let cycle = Task { await adapter.syncNow() }
+        do {
+            try await hold.waitUntilHeld()
+            try await duringCycle()
+        } catch {
+            hold.release()
+            await cycle.value
+            throw error
+        }
+        hold.release()
+        await cycle.value
+        await adapter.waitForOutboundDrain()
+    }
+
+    /// Waits until a frame carrying `message` reached `sessionID` (the follow-up cycle runs in
+    /// its own task), then a little longer so a late duplicate is seen too.
+    func waitForEvent(_ message: String, at sessionID: SessionID) async throws {
+        let marker = Data(message.utf8)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(await transport.frames(for: sessionID)).contains(where: { $0.range(of: marker) != nil }) {
+            guard ContinuousClock.now < deadline else {
+                Issue.record("timed out waiting for \(message) at \(sessionID.rawValue)")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        await adapter.waitForOutboundDrain()
+        try await Task.sleep(for: .milliseconds(50))
+        await adapter.waitForOutboundDrain()
     }
 
     /// Indices (in send order) of frames that carry the targeted event with `message`.
@@ -225,6 +244,7 @@ struct TransportAdapterTargetedEventOnceTests {
         try await f.setScore(5)
         await f.sendTargetedEvent()
         await f.adapter.syncNow()
+        await f.adapter.waitForOutboundDrain()
 
         let frames = await f.transport.recordedFrames()
         let eventIndices = await f.eventFrameIndices()
@@ -242,6 +262,7 @@ struct TransportAdapterTargetedEventOnceTests {
 
         await f.sendTargetedEvent()
         await f.adapter.syncNow()
+        await f.adapter.waitForOutboundDrain()
 
         let frames = await f.transport.recordedFrames()
         let eventIndices = await f.eventFrameIndices()
@@ -249,21 +270,21 @@ struct TransportAdapterTargetedEventOnceTests {
         #expect(messagePackStateFrameIndices(frames).isEmpty, "no state frame expected without a state change")
     }
 
-    @Test("opcode 107: a targeted event queued while the batch is in flight is still sent, once")
+    // Before #60 the cycle awaited the transport between the per-player batch and the flush,
+    // and this test queued the late event in that window (served by the flush). The cycle no
+    // longer suspends there, so the late event is queued while the cycle is held before
+    // `endSync`, after it read the queue: it is kept and the follow-up cycle sends it, once.
+    @Test("opcode 107: a targeted event queued while a cycle is in flight, after it read the queue, is still sent, once")
     func targetedEventQueuedDuringBatchIsSentOnce() async throws {
         let f = try await TargetedOnceFixture.make(encoding: .messagepack)
         let lateMarker = "targeted-once-late-marker-c41d"
 
         try await f.setScore(5)
         await f.sendTargetedEvent()
-        await f.transport.holdNextBatch()
-        let adapter = f.adapter
-        let cycle = Task { await adapter.syncNow() }
-        await f.transport.waitUntilHeld()
-        // Queued after the batch was built: the flush must send it, and only it.
-        await f.sendTargetedEvent(lateMarker)
-        await f.transport.release()
-        await cycle.value
+        try await f.syncNowHolding {
+            await f.sendTargetedEvent(lateMarker)
+        }
+        try await f.waitForEvent(lateMarker, at: f.session)
 
         let earlyIndices = await f.eventFrameIndices()
         let lateIndices = await f.eventFrameIndices(lateMarker)
@@ -271,7 +292,9 @@ struct TransportAdapterTargetedEventOnceTests {
         #expect(lateIndices.count == 1, "event queued during the batch must arrive exactly once; frames at \(lateIndices)")
     }
 
-    @Test("opcode 107: two sessions with interleaved pre-batch and in-batch events each get their own events once")
+    // As above: the "in-batch" events are now queued while the cycle is held before `endSync`
+    // and the follow-up cycle sends them; the per-session and ordering claims are unchanged.
+    @Test("opcode 107: two sessions with interleaved pre-batch and in-flight events each get their own events once")
     func twoSessionsInterleavedEventsArriveOnceAtTheirOwnSession() async throws {
         let f = try await TargetedOnceFixture.make(encoding: .messagepack)
         let sessionB = SessionID("to-session-b")
@@ -284,14 +307,12 @@ struct TransportAdapterTargetedEventOnceTests {
         await f.sendTargetedEvent("evt-a1-pre", to: f.player)
         await f.sendTargetedEvent("evt-b1-pre", to: playerB)
         await f.sendTargetedEvent("evt-a2-pre", to: f.player)
-        await f.transport.holdNextBatch()
-        let adapter = f.adapter
-        let cycle = Task { await adapter.syncNow() }
-        await f.transport.waitUntilHeld()
-        await f.sendTargetedEvent("evt-a3-held", to: f.player)
-        await f.sendTargetedEvent("evt-b3-held", to: playerB)
-        await f.transport.release()
-        await cycle.value
+        try await f.syncNowHolding {
+            await f.sendTargetedEvent("evt-a3-held", to: f.player)
+            await f.sendTargetedEvent("evt-b3-held", to: playerB)
+        }
+        try await f.waitForEvent("evt-a3-held", at: f.session)
+        try await f.waitForEvent("evt-b3-held", at: sessionB)
 
         let aFrames = await f.transport.frames(for: f.session)
         let bFrames = await f.transport.frames(for: sessionB)
@@ -333,6 +354,7 @@ struct TransportAdapterTargetedEventOnceTests {
         try await f.setScore(5)
         await f.sendTargetedEvent()
         await f.adapter.syncNow()
+        await f.adapter.waitForOutboundDrain()
 
         let frames = await f.transport.recordedFrames()
         let eventIndices = await f.eventFrameIndices()

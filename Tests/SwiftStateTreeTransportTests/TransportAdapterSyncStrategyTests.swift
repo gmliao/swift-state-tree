@@ -84,8 +84,10 @@ func testFullSnapshotSendsEverySync(useSnapshotForSync: Bool) async throws {
 
     // Two syncs with no state change at all.
     await adapter.syncNow()
+    await adapter.waitForOutboundDrain()
     try await Task.sleep(for: .milliseconds(100))
     await adapter.syncNow()
+    await adapter.waitForOutboundDrain()
     try await Task.sleep(for: .milliseconds(100))
 
     let updates = decodeStateUpdates(await transport.messages(for: session))
@@ -129,10 +131,12 @@ func testDeltaSendsNothingWhenUnchanged(useSnapshotForSync: Bool) async throws {
     try await Task.sleep(for: .milliseconds(100))
     // First regular sync after join may emit firstSync bookkeeping; drain it.
     await adapter.syncNow()
+    await adapter.waitForOutboundDrain()
     try await Task.sleep(for: .milliseconds(100))
     await transport.clear()
 
     await adapter.syncNow()
+    await adapter.waitForOutboundDrain()
     try await Task.sleep(for: .milliseconds(100))
     let updates = decodeStateUpdates(await transport.messages(for: session))
     #expect(updates.isEmpty, "delta must not send when unchanged; got \(updates)")

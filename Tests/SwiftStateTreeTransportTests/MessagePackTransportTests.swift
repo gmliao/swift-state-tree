@@ -178,6 +178,7 @@ func testMessagePackTransportAdapterJoin() async throws {
     )
     let joinData = try encoder.encode(joinMessage)
     await transport.handleIncomingMessage(sessionID: sessionID, data: joinData)
+    await adapter.waitForOutboundDrain()
 
     let messages = await connection.recordedMessages()
     #expect(messages.count >= 1)

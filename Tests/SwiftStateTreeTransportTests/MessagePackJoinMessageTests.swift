@@ -142,6 +142,7 @@ func testTransportAdapterHandlesClientSDKJoin() async throws {
     
     // Send to adapter
     await transport.handleIncomingMessage(sessionID: sessionID, data: joinData)
+    await adapter.waitForOutboundDrain()
     
     // Check that we got a response
     let messages = await connection.recordedMessages()
