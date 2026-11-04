@@ -27,7 +27,6 @@ private enum HexEncoding {
     }
 }
 
-/// Adapts Transport events to LandKeeper calls.
 /// The prefix of each pending event queue that one sync cycle has read, i.e. what its cleanup
 /// may remove. A per-cycle value: every cycle starts at 0 (remove nothing), so a cycle that throws
 /// before its cleanup removes nothing and no later cycle can see a stale mark.
@@ -44,6 +43,7 @@ struct ConsumedEventMarks: Sendable {
     var broadcast = 0
 }
 
+/// Adapts Transport events to LandKeeper calls.
 public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     private let keeper: LandKeeper<State>
@@ -1206,29 +1206,34 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// - Cache per-player snapshots if state hasn't changed
     /// - Consider incremental sync for large state trees
     func _syncNowImpl() async {
-        // A cycle that kept late-queued events asks for a follow-up when nothing else will sync.
-        while await runSyncNowOnce() {}
-    }
-
-    /// Runs one `syncNow` cycle. Returns `true` when a follow-up cycle is needed (see `withSyncState`).
-    private func runSyncNowOnce() async -> Bool {
         profilerCounters?.setSessionCounts(
             connected: membershipCoordinator.connectedSessions.count,
             joined: membershipCoordinator.joinedCount()
         )
         guard !membershipCoordinator.isEmpty else {
-            return false
+            return
         }
 
         // A full cycle diffs every synced field, so it may clear dirty flags. The flag is read
         // here, once: the auto-switch at the end of the cycle may change `enableDirtyTracking`.
-        return await withSyncState(
+        let needsFollowUp = await withSyncState(
             clearDirtyFlags: enableDirtyTracking,
             skipLogMessage: "⏭️ Sync skipped: another sync operation is in progress",
             errorLogMessage: "❌ Failed to extract broadcast snapshot"
         ) { state in
             try await runSyncNowCycle(state: state)
         }
+        if needsFollowUp {
+            startFollowUpSync()
+        }
+    }
+
+    /// Starts the follow-up cycle that `withSyncState` asked for, without making the caller of
+    /// the current cycle wait for it (on tickless lands that caller is an action's response).
+    /// If `beginSync` rejects it, another cycle is in flight: that cycle reads the kept events at
+    /// the front of the queue, and its own check after `endSync()` covers anything queued later.
+    private func startFollowUpSync() {
+        Task { await self.syncNow() }
     }
 
     /// Runs `operation` on a state copy taken by `LandKeeper.beginSync(clearDirtyFlags:)`.
@@ -1239,16 +1244,18 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// cache advances (e.g. during extraction), fields dirty only in the failed cycle stay stale
     /// until they change again; clearing on failure predates the move into `beginSync`.
     ///
-    /// `operation` returns whether events queued after the cycle read the queue were kept for the
-    /// next cycle. Returns `true` when the caller must run a follow-up `syncNow` cycle: events were
-    /// kept and the land has no periodic sync (`LandKeeper.hasPeriodicSync`) that would deliver
-    /// them. The caller starts the follow-up only after this returns, i.e. after `endSync()`: a
-    /// request made earlier would be rejected by `beginSync` and dropped.
+    /// Returns `true` when the caller must start a follow-up `syncNow` cycle, decided after
+    /// `endSync()` returned: a sync request made before that is rejected by `beginSync`, so events
+    /// queued up to then (including during the `endSync()` hop) have no other cycle to deliver them.
+    /// A follow-up is needed when all of these hold:
+    /// - `operation` completed: a cycle that throws every time must not retry forever;
+    /// - events are queued now (kept by this cycle or queued after its cleanup);
+    /// - the land has no periodic sync (`LandKeeper.hasPeriodicSync`) whose next cycle delivers them.
     private func withSyncState(
         clearDirtyFlags: Bool,
         skipLogMessage: String,
         errorLogMessage: String,
-        operation: (State) async throws -> Bool
+        operation: (State) async throws -> Void
     ) async -> Bool {
         guard let state = await keeper.beginSync(clearDirtyFlags: clearDirtyFlags) else {
             if logger.logLevel <= .debug {
@@ -1257,9 +1264,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             return false
         }
 
-        var keptEvents = false
+        var completed = false
         do {
-            keptEvents = try await operation(state)
+            try await operation(state)
+            completed = true
         } catch {
             logger.error("Sync operation failed", metadata: [
                 "message": .string(errorLogMessage),
@@ -1268,7 +1276,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
 
         await keeper.endSync()
-        return keptEvents && !keeper.hasPeriodicSync
+        return completed && pendingEventManager.hasAnyEvents && !keeper.hasPeriodicSync
     }
 
     /// One full sync cycle.
@@ -1287,9 +1295,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///   frame is built, targeted events after the flush starts) are delivered by the next cycle.
     /// - json / opcodeJsonArray: events are not queued; each is sent when emitted, so it precedes
     ///   every state frame sent after it.
-    ///
-    /// - Returns: Whether events queued after this cycle read the queue are kept for the next one.
-    private func runSyncNowCycle(state: State) async throws -> Bool {
+    private func runSyncNowCycle(state: State) async throws {
         var marks = ConsumedEventMarks()
         let shouldCollectChangeMetrics = enableChangeObjectMetrics || enableAutoDirtyTracking
         let (requestedBroadcastMode, requestedPerPlayerMode) = computeSyncModes(for: state)
@@ -1346,14 +1352,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             await encodeAndSendPendingUpdates(pendingUpdates)
         }
 
-        let keptEvents = cleanupPendingSyncEvents(marks: marks)
+        cleanupPendingSyncEvents(marks: marks)
         if shouldCollectChangeMetrics {
             logChangeObjectMetrics(
                 updates: metricUpdates,
                 broadcastSnapshot: broadcastSnapshot
             )
         }
-        return keptEvents
     }
 
     /// Diff baseline implied by the sync strategy.
@@ -1679,11 +1684,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// Removes the events this cycle read (`marks`) and keeps the rest for the next cycle.
-    /// - Returns: Whether any events are left in the queue.
-    private func cleanupPendingSyncEvents(marks: ConsumedEventMarks) -> Bool {
+    private func cleanupPendingSyncEvents(marks: ConsumedEventMarks) {
         pendingEventManager.removeConsumed(targeted: marks.targeted, broadcast: marks.broadcast)
         targetedEventsSentInBatch = ([], 0)
-        return pendingEventManager.hasAnyEvents
     }
 
     /// Marks covering everything queued now, so the cleanup drops it all.
@@ -1730,7 +1733,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // If no players are connected or no changes, log and return (queued events stay queued)
             guard hasPlayers && !broadcastDiff.isEmpty else {
                 logBroadcastCacheUpdate(patchCount: broadcastDiff.count, mode: broadcastMode, hasPlayers: hasPlayers)
-                return false
+                return
             }
             
             // 2. Send broadcast update to all players
@@ -1741,12 +1744,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             await sendPendingTargetedEvents(marks: &marks)
             
             // 4. Cleanup and log
-            let keptEvents = cleanupPendingSyncEvents(marks: marks)
+            cleanupPendingSyncEvents(marks: marks)
             logBroadcastSync(patchCount: broadcastDiff.count, bytes: lastUpdateSize, mode: broadcastMode)
-            return keptEvents
         }
         if needsFollowUp {
-            await _syncNowImpl()
+            startFollowUpSync()
         }
     }
     

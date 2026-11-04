@@ -46,6 +46,39 @@ struct KeptEventsEvent: ServerEventPayload {
     }
 }
 
+// MARK: - Keeper blocker
+
+/// Blocks the keeper actor from inside an action handler (the "block" action of the test land),
+/// so a hop onto the keeper, such as `endSync()`, waits until the test releases it.
+private final class KeptEventsKeeperBlocker: @unchecked Sendable {
+    static let shared = KeptEventsKeeperBlocker()
+    private let condition = NSCondition()
+    private var entered = false
+    private var released = false
+
+    func block() {
+        condition.lock()
+        entered = true
+        released = false
+        condition.broadcast()
+        while !released { condition.wait() }
+        entered = false
+        condition.unlock()
+    }
+
+    var isBlocking: Bool {
+        condition.lock(); defer { condition.unlock() }
+        return entered
+    }
+
+    func release() {
+        condition.lock()
+        released = true
+        condition.broadcast()
+        condition.unlock()
+    }
+}
+
 // MARK: - Gated transport
 
 /// Serial executor whose jobs run on a private queue. While closed, jobs are held until the test
@@ -223,6 +256,13 @@ private actor KeptEventsTransport: Transport {
 
 // MARK: - Helpers
 
+private final class KeptEventsFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func set() { lock.lock(); value = true; lock.unlock() }
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+}
+
 /// Polls `condition` (no fixed sleeps as synchronization; the poll only waits for work in flight).
 private func waitUntil(
     _ what: String,
@@ -302,6 +342,8 @@ private struct KeptEventsFixture {
                     HandleAction(KeptEventsSetAction.self) { (state: inout KeptEventsTestState, action: KeptEventsSetAction, ctx: LandContext) in
                         if action.field == "tick" {
                             state.tick = action.value
+                        } else if action.field == "block" {
+                            KeptEventsKeeperBlocker.shared.block()
                         } else {
                             state.scores[ctx.playerID] = action.value
                         }
@@ -322,6 +364,8 @@ private struct KeptEventsFixture {
                     HandleAction(KeptEventsSetAction.self) { (state: inout KeptEventsTestState, action: KeptEventsSetAction, ctx: LandContext) in
                         if action.field == "tick" {
                             state.tick = action.value
+                        } else if action.field == "block" {
+                            KeptEventsKeeperBlocker.shared.block()
                         } else {
                             state.scores[ctx.playerID] = action.value
                         }
@@ -423,16 +467,29 @@ private struct KeptEventsFixture {
         await KeptEventsFixture.settle(transport)
     }
 
+    /// Waits until `message` reached `member` at least `expected` times, then settles, so an exact
+    /// count asserted afterwards also sees duplicates that land late.
+    func waitForCount(_ message: String, _ member: KeptEventsMember, _ expected: Int = 1) async throws {
+        let recorder = self.recorder
+        try await waitUntil("\(expected)x \(message) at \(member.session.rawValue)") {
+            count(message, in: recorder.frames(for: member.session)) >= expected
+        }
+        await settle()
+    }
+
     /// The merged frame goes out from one unstructured task per session, so it can land after
-    /// `syncNow` returns. Waits until no frame arrived for a while (bounded).
+    /// `syncNow` returns; follow-up cycles run in their own task too. Waits until no frame arrived
+    /// for a while. A heuristic: tests wait for the frames they expect first (`waitForCount`), so
+    /// this only guards against late extra frames. Awaited sends (#60) let this helper go away.
     static func settle(_ transport: KeptEventsTransport) async {
         var last = -1
-        for _ in 0..<100 {
+        for _ in 0..<250 {
             let now = transport.recorder.frameCount
             if now == last, transport.executor.heldCount == 0, transport.executor.runningCount == 0 { return }
             last = now
             try? await Task.sleep(for: .milliseconds(20))
         }
+        Issue.record("frames kept arriving: transport did not settle within 5 s")
     }
 }
 
@@ -455,7 +512,7 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
 
         f.recorder.clear()
         await f.adapter.syncNow()  // the next periodic cycle
-        await f.settle()
+        try await f.waitForCount("bc-held", f.a)
         let frames = f.frames(f.a)
         #expect(count("bc-held", in: frames) == 1, "kept broadcast event must arrive exactly once next cycle")
         let carrier = frames.first { $0.range(of: Data("bc-held".utf8)) != nil }
@@ -486,7 +543,8 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         await f.settle()
 
         await f.adapter.syncNow()  // the next periodic cycle
-        await f.settle()
+        try await f.waitForCount("late-a", f.a)
+        try await f.waitForCount("late-b", f.b)
         let aFrames = f.frames(f.a)
         let bFrames = f.frames(f.b)
         #expect(count("pre-a", in: aFrames) == 1)
@@ -513,7 +571,8 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         await f.settle()
 
         await f.adapter.syncNow()
-        await f.settle()
+        try await f.waitForCount("bc-late", f.a)
+        try await f.waitForCount("tg-late", f.a)
         let frames = f.frames(f.a)
         #expect(count("bc-late", in: frames) == 1, "broadcast event must arrive exactly once")
         #expect(count("tg-late", in: frames) == 1, "targeted event must arrive exactly once")
@@ -535,6 +594,7 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         // Cycle N+1: nothing new, only the kept event.
         await f.adapter.syncNow()
         await f.settle()
+        try await f.waitForCount("bc-2", f.a)
         // Cycle N+2: nothing at all.
         await f.adapter.syncNow()
         await f.settle()
@@ -579,7 +639,7 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         await f.broadcastEvent("bc-window")
         await f.targetedEvent("tg-window-b", to: f.b)
         await f.adapter.syncNow()
-        await f.settle()
+        try await f.waitForCount("bc-window", f.a)
 
         #expect(count("bc-window", in: f.frames(f.a)) == 1, "the eligible session gets the broadcast event")
         #expect(f.frames(f.b).isEmpty, "the initial-syncing session gets nothing")
@@ -596,8 +656,8 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         try await f.syncNowHoldingBatch {
             await f.broadcastEvent("bc-follow-up")
         }
-        await f.settle()
         // No further sync request from the test.
+        try await f.waitForCount("bc-follow-up", f.a)
         #expect(count("bc-follow-up", in: f.frames(f.a)) == 1, "the follow-up cycle must deliver the kept event once")
         #expect(f.recorder.batchCount == 1, "the follow-up has no per-player change, so no batch")
         let counts = await f.adapter.pendingEventCounts()
@@ -617,14 +677,15 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
             }
             await f.settle()
         }
+        try await f.waitForCount("bc-tick-2", f.a)
         #expect(f.recorder.batchCount == 3, "one cycle per periodic sync, no follow-ups")
         let frames = f.frames(f.a)
         #expect(count("bc-tick-1", in: frames) == 1 && count("bc-tick-2", in: frames) == 1)
         #expect(count("bc-tick-3", in: frames) == 0, "the last kept event waits for the next periodic cycle")
     }
 
-    @Test("7c: without periodic sync, a source emitting during every cycle gives at most events + 1 cycles")
-    func followUpsAreBoundedByEvents() async throws {
+    @Test("7c: without periodic sync, an event during every cycle gives events + 1 cycles, and syncNow returns after one")
+    func followUpsAreBoundedAndDoNotBlockTheCaller() async throws {
         let f = try await KeptEventsFixture.make(.tickless)
         let events = 3
 
@@ -633,22 +694,80 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         try await f.set("score", 100)
         f.recorder.holdNextBatch()
         let adapter = f.adapter
-        let cycle = Task { await adapter.syncNow() }
+        let returned = KeptEventsFlag()
+        let cycle = Task {
+            await adapter.syncNow()
+            returned.set()
+        }
         for index in 1...events {
             try await waitUntil("batch \(index) to be held") { f.recorder.isBatchHeld }
             await f.broadcastEvent("bc-source-\(index)")
             try await f.set("score", 100 + index)
             if index < events { f.recorder.holdNextBatch() }
             f.recorder.releaseBatch()
+            if index == 1 {
+                // The follow-up's batch gets held, yet the caller's syncNow returns: it waits for
+                // one cycle, not for the chain.
+                try await waitUntil("the first syncNow to return while the follow-up runs") { returned.isSet }
+            }
         }
         await cycle.value
-        await f.settle()
+        try await f.waitForCount("bc-source-\(events)", f.a)
 
         #expect(f.recorder.batchCount == events + 1, "cycles must be events + 1; got \(f.recorder.batchCount)")
         let frames = f.frames(f.a)
         for index in 1...events {
             #expect(count("bc-source-\(index)", in: frames) == 1, "bc-source-\(index) must arrive exactly once")
         }
+    }
+
+    @Test("7e: an event queued during the endSync hop (after cleanup) still gets a follow-up")
+    func eventQueuedDuringEndSyncHopIsDelivered() async throws {
+        let f = try await KeptEventsFixture.make(.tickless)
+        let blocker = KeptEventsKeeperBlocker.shared
+
+        // tg-pre goes out in the batch and is removed at cleanup: the queue goes 1 -> 0 there.
+        try await f.set("score", 1)
+        await f.targetedEvent("tg-pre", to: f.a)
+        f.recorder.holdNextBatch()
+        let adapter = f.adapter
+        let cycle = Task { await adapter.syncNow() }
+        try await waitUntil("the batch send to be held") { f.recorder.isBatchHeld }
+
+        // Block the keeper so the cycle's endSync() hop waits there.
+        let keeper = f.keeper
+        let a = f.a
+        let blockingAction = Task {
+            let envelope = ActionEnvelope(
+                typeIdentifier: String(describing: KeptEventsSetAction.self),
+                payload: AnyCodable(KeptEventsSetAction(field: "block", value: 0))
+            )
+            _ = try await keeper.handleActionEnvelope(
+                envelope, playerID: a.player, clientID: a.client, sessionID: a.session
+            )
+        }
+        try await waitUntil("the keeper to be blocked") { blocker.isBlocking }
+        f.recorder.releaseBatch()
+
+        // Cleanup is done once the queue is empty; the cycle's next step is the endSync() hop.
+        let deadline = ContinuousClock.now + .seconds(5)
+        while await adapter.pendingEventCounts() != (0, 0) {
+            guard ContinuousClock.now < deadline else {
+                blocker.release()
+                Issue.record("the cycle never reached its cleanup")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        await f.broadcastEvent("bc-hop")
+        blocker.release()
+        _ = try await blockingAction.value
+        await cycle.value
+
+        // No further sync request from the test: the post-endSync check must start the follow-up.
+        try await f.waitForCount("bc-hop", f.a)
+        #expect(count("bc-hop", in: f.frames(f.a)) == 1)
+        #expect(count("tg-pre", in: f.frames(f.a)) == 1)
     }
 
     @Test("7d: a sync loop that does not auto-start is not periodic sync; the follow-up still delivers")
@@ -660,7 +779,7 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         try await f.syncNowHoldingBatch {
             await f.broadcastEvent("bc-no-loops")
         }
-        await f.settle()
+        try await f.waitForCount("bc-no-loops", f.a)
         #expect(count("bc-no-loops", in: f.frames(f.a)) == 1, "the follow-up cycle must deliver the kept event once")
     }
 }
