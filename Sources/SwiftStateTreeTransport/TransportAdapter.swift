@@ -27,6 +27,22 @@ private enum HexEncoding {
     }
 }
 
+/// The prefix of each pending event queue that one sync cycle has read, i.e. what its cleanup
+/// may remove. A per-cycle value: every cycle starts at 0 (remove nothing), so a cycle that throws
+/// before its cleanup removes nothing and no later cycle can see a stale mark.
+///
+/// Each event is sent exactly once because:
+/// (a) the targeted mark is taken at the start of the cycle's targeted flush, before its
+///     `hasTargetedEvents` guard and before any await, so the flush reads exactly `[0, mark)`;
+/// (b) the batch offset recorded by `buildSendBatch` is <= the flush mark (the queue is
+///     append-only between batch and flush), so the batch and the flush split `[0, mark)`;
+/// (c) the cleanup removes exactly `[0, mark)`; later events stay for the next cycle.
+/// The broadcast mark is taken in the same synchronous block that reads the broadcast events.
+struct ConsumedEventMarks: Sendable {
+    var targeted = 0
+    var broadcast = 0
+}
+
 /// Adapts Transport events to LandKeeper calls.
 public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
@@ -1026,11 +1042,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Encoded targeted event bodies for a given client (sessionID + playerID).
     ///
-    /// - Parameter startIndex: Skip the first `startIndex` queued targeted events.
+    /// - Parameters:
+    ///   - startIndex: Skip the first `startIndex` queued targeted events.
+    ///   - endIndex: Stop before this index (`nil`: the current end).
     private func pendingTargetedEventBodies(
         for sessionID: SessionID,
         playerID: PlayerID,
-        startingAt startIndex: Int = 0
+        startingAt startIndex: Int = 0,
+        endingBefore endIndex: Int? = nil
     ) -> [MessagePackValue] {
         let clientID = membershipCoordinator.clientID(for: sessionID)
         return pendingEventManager.pendingTargetedBodies(
@@ -1043,7 +1062,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             isPlayerCurrent: { playerID, version in
                 membershipCoordinator.isPlayerCurrent(playerID, expected: version)
             },
-            startingAt: startIndex
+            startingAt: startIndex,
+            endingBefore: endIndex
         )
     }
 
@@ -1196,13 +1216,24 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
         // A full cycle diffs every synced field, so it may clear dirty flags. The flag is read
         // here, once: the auto-switch at the end of the cycle may change `enableDirtyTracking`.
-        await withSyncState(
+        let needsFollowUp = await withSyncState(
             clearDirtyFlags: enableDirtyTracking,
             skipLogMessage: "⏭️ Sync skipped: another sync operation is in progress",
             errorLogMessage: "❌ Failed to extract broadcast snapshot"
         ) { state in
             try await runSyncNowCycle(state: state)
         }
+        if needsFollowUp {
+            startFollowUpSync()
+        }
+    }
+
+    /// Starts the follow-up cycle that `withSyncState` asked for, without making the caller of
+    /// the current cycle wait for it (on tickless lands that caller is an action's response).
+    /// If `beginSync` rejects it, another cycle is in flight: that cycle reads the kept events at
+    /// the front of the queue, and its own check after `endSync()` covers anything queued later.
+    private func startFollowUpSync() {
+        Task { await self.syncNow() }
     }
 
     /// Runs `operation` on a state copy taken by `LandKeeper.beginSync(clearDirtyFlags:)`.
@@ -1212,21 +1243,31 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// If `operation` throws, the cleared flags are not restored. When it throws before the broadcast
     /// cache advances (e.g. during extraction), fields dirty only in the failed cycle stay stale
     /// until they change again; clearing on failure predates the move into `beginSync`.
+    ///
+    /// Returns `true` when the caller must start a follow-up `syncNow` cycle, decided after
+    /// `endSync()` returned: a sync request made before that is rejected by `beginSync`, so events
+    /// queued up to then (including during the `endSync()` hop) have no other cycle to deliver them.
+    /// A follow-up is needed when all of these hold:
+    /// - `operation` completed: a cycle that throws every time must not retry forever;
+    /// - events are queued now (kept by this cycle or queued after its cleanup);
+    /// - the land has no periodic sync (`LandKeeper.hasPeriodicSync`) whose next cycle delivers them.
     private func withSyncState(
         clearDirtyFlags: Bool,
         skipLogMessage: String,
         errorLogMessage: String,
         operation: (State) async throws -> Void
-    ) async {
+    ) async -> Bool {
         guard let state = await keeper.beginSync(clearDirtyFlags: clearDirtyFlags) else {
             if logger.logLevel <= .debug {
                 logger.debug("Sync skipped", metadata: ["message": .string(skipLogMessage)])
             }
-            return
+            return false
         }
 
+        var completed = false
         do {
             try await operation(state)
+            completed = true
         } catch {
             logger.error("Sync operation failed", metadata: [
                 "message": .string(errorLogMessage),
@@ -1235,6 +1276,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
 
         await keeper.endSync()
+        return completed && pendingEventManager.hasAnyEvents && !keeper.hasPeriodicSync
     }
 
     /// One full sync cycle.
@@ -1249,9 +1291,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// - opcode 107, targeted events queued later in the cycle (e.g. during the batch send): sent
     ///   once by `flushTargetedEventBodiesIfNeeded`, after that session's per-player frame. A session
     ///   with no per-player frame this cycle gets all its targeted events from the flush.
+    /// - opcode 107, events queued after the cycle read the queue (broadcast events after the merged
+    ///   frame is built, targeted events after the flush starts) are delivered by the next cycle.
     /// - json / opcodeJsonArray: events are not queued; each is sent when emitted, so it precedes
     ///   every state frame sent after it.
     private func runSyncNowCycle(state: State) async throws {
+        var marks = ConsumedEventMarks()
         let shouldCollectChangeMetrics = enableChangeObjectMetrics || enableAutoDirtyTracking
         let (requestedBroadcastMode, requestedPerPlayerMode) = computeSyncModes(for: state)
         // `extractSyncSnapshots` may extract with a different mode than requested
@@ -1277,7 +1322,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
         if useStateUpdateWithEvents {
             // Always send the merged broadcast frame; only the metric is optional.
-            let broadcastMetric = try await sendMergedBroadcastUpdateIfNeeded(broadcastDiff: broadcastDiff)
+            let broadcastMetric = try await sendMergedBroadcastUpdateIfNeeded(broadcastDiff: broadcastDiff, marks: &marks)
             if shouldCollectChangeMetrics, let broadcastMetric {
                 metricUpdates.append(broadcastMetric)
             }
@@ -1292,7 +1337,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 shouldCollect: shouldCollectChangeMetrics
             )
             await encodeAndSendPendingUpdates(pendingUpdates)
-            await flushTargetedEventBodiesIfNeeded()
+            await flushTargetedEventBodiesIfNeeded(marks: &marks)
         } else {
             let pendingUpdates = collectCombinedPendingUpdates(
                 broadcastDiff: broadcastDiff,
@@ -1307,7 +1352,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             await encodeAndSendPendingUpdates(pendingUpdates)
         }
 
-        cleanupPendingSyncEvents()
+        cleanupPendingSyncEvents(marks: marks)
         if shouldCollectChangeMetrics {
             logChangeObjectMetrics(
                 updates: metricUpdates,
@@ -1396,7 +1441,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     private func sendMergedBroadcastUpdateIfNeeded(
-        broadcastDiff: [StatePatch]
+        broadcastDiff: [StatePatch],
+        marks: inout ConsumedEventMarks
     ) async throws -> StateUpdate? {
         let shouldSendBroadcastUpdate = !broadcastDiff.isEmpty || pendingEventManager.hasAnyEvents
         guard shouldSendBroadcastUpdate else {
@@ -1406,8 +1452,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         guard let firstSession = membershipCoordinator.firstJoined(where: { _, playerID in
             !initialSyncingPlayers.contains(playerID)
         }) else {
+            // No eligible session (all members are in initial sync): drop the queued events, as
+            // before. Initial-syncing players miss events of their join window even when another
+            // session is eligible; the boundary belongs at the firstSync snapshot (#69).
+            marks = Self.marksDroppingAllQueued(pendingEventManager)
             return nil
         }
+
+        // Read the broadcast events and take their mark in one synchronous block, before any await.
+        let broadcastEventBodies = pendingEventManager.pendingBroadcastBodies()
+        marks.broadcast = pendingEventManager.broadcastEventCount
 
         let broadcastUpdate: StateUpdate = broadcastDiff.isEmpty ? .noChange : .diff(broadcastDiff)
         let dataToSend: Data
@@ -1421,7 +1475,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             )
             if let combined = buildStateUpdateWithEventBodies(
                 stateUpdateArray: updateArray,
-                eventBodies: pendingEventManager.pendingBroadcastBodies(),
+                eventBodies: broadcastEventBodies,
                 allowEmptyEvents: true
             ) {
                 dataToSend = combined
@@ -1437,7 +1491,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             )
             if let combined = buildStateUpdateWithEventBodies(
                 stateUpdateData: updateData,
-                eventBodies: pendingEventManager.pendingBroadcastBodies(),
+                eventBodies: broadcastEventBodies,
                 allowEmptyEvents: true
             ) {
                 dataToSend = combined
@@ -1594,7 +1648,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// Sends each session the targeted event frames it did not already get in this cycle's batch.
-    private func flushTargetedEventBodiesIfNeeded() async {
+    ///
+    /// Reads `[0, mark)` with the mark taken first (condition (a) on `ConsumedEventMarks`); events
+    /// queued while this loop awaits are left for the next cycle, for every session.
+    private func flushTargetedEventBodiesIfNeeded(marks: inout ConsumedEventMarks) async {
+        let end = pendingEventManager.targetedEventCount
+        marks.targeted = end
         let alreadySent = targetedEventsSentInBatch
         targetedEventsSentInBatch = ([], 0)
         guard pendingEventManager.hasTargetedEvents else {
@@ -1607,16 +1666,32 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
             // Sessions served by the batch only get events queued after it was built.
             let startIndex = alreadySent.sessions.contains(sessionID) ? alreadySent.eventCount : 0
-            let eventBodies = pendingTargetedEventBodies(for: sessionID, playerID: playerID, startingAt: startIndex)
+            let eventBodies = pendingTargetedEventBodies(
+                for: sessionID,
+                playerID: playerID,
+                startingAt: startIndex,
+                endingBefore: end
+            )
             if !eventBodies.isEmpty {
                 await sendEventBodiesSeparately(eventBodies, to: sessionID)
             }
         }
     }
 
-    private func cleanupPendingSyncEvents() {
-        pendingEventManager.clearAll()
+    /// Number of queued targeted and broadcast events (for tests).
+    func pendingEventCounts() -> (targeted: Int, broadcast: Int) {
+        (pendingEventManager.targetedEventCount, pendingEventManager.broadcastEventCount)
+    }
+
+    /// Removes the events this cycle read (`marks`) and keeps the rest for the next cycle.
+    private func cleanupPendingSyncEvents(marks: ConsumedEventMarks) {
+        pendingEventManager.removeConsumed(targeted: marks.targeted, broadcast: marks.broadcast)
         targetedEventsSentInBatch = ([], 0)
+    }
+
+    /// Marks covering everything queued now, so the cleanup drops it all.
+    private static func marksDroppingAllQueued(_ manager: PendingEventManager) -> ConsumedEventMarks {
+        ConsumedEventMarks(targeted: manager.targetedEventCount, broadcast: manager.broadcastEventCount)
     }
 
     /// Sync only broadcast changes to all connected players.
@@ -1645,15 +1720,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // re-diffs broadcast fields against the updated cache (extra work, no extra patches).
         // syncNow skips empty lands before beginSync, so in an empty land flags (including removed
         // dictionary keys) accumulate until a syncNow runs with members: memory and work, not correctness.
-        await withSyncState(
+        let needsFollowUp = await withSyncState(
             clearDirtyFlags: false,
             skipLogMessage: "⏭️ Broadcast-only sync skipped: another sync operation is in progress",
             errorLogMessage: "❌ Failed to sync broadcast-only"
         ) { state in
+            var marks = ConsumedEventMarks()
+
             // 1. Extract snapshot and compute diff
             let (broadcastDiff, broadcastMode) = try extractAndComputeBroadcastDiff(state: state)
             
-            // If no players are connected or no changes, log and return
+            // If no players are connected or no changes, log and return (queued events stay queued)
             guard hasPlayers && !broadcastDiff.isEmpty else {
                 logBroadcastCacheUpdate(patchCount: broadcastDiff.count, mode: broadcastMode, hasPlayers: hasPlayers)
                 return
@@ -1661,14 +1738,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             
             // 2. Send broadcast update to all players
             let update = StateUpdate.diff(broadcastDiff)
-            let lastUpdateSize = try await sendBroadcastUpdate(update: update)
+            let lastUpdateSize = try await sendBroadcastUpdate(update: update, marks: &marks)
             
             // 3. Send pending targeted events (if any)
-            await sendPendingTargetedEvents()
+            await sendPendingTargetedEvents(marks: &marks)
             
             // 4. Cleanup and log
-            cleanupPendingSyncEvents()
+            cleanupPendingSyncEvents(marks: marks)
             logBroadcastSync(patchCount: broadcastDiff.count, bytes: lastUpdateSize, mode: broadcastMode)
+        }
+        if needsFollowUp {
+            startFollowUpSync()
         }
     }
     
@@ -1719,9 +1799,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///
     /// - Parameter update: State update to send
     /// - Returns: Size of last encoded update (for logging)
-    private func sendBroadcastUpdate(update: StateUpdate) async throws -> Int? {
+    private func sendBroadcastUpdate(update: StateUpdate, marks: inout ConsumedEventMarks) async throws -> Int? {
         if useStateUpdateWithEvents {
-            return try await sendBroadcastUpdateWithEvents(update: update)
+            return try await sendBroadcastUpdateWithEvents(update: update, marks: &marks)
         } else {
             return try await sendBroadcastUpdateSeparately(update: update)
         }
@@ -1734,10 +1814,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///
     /// - Parameter update: State update to send
     /// - Returns: Size of encoded update
-    private func sendBroadcastUpdateWithEvents(update: StateUpdate) async throws -> Int? {
+    private func sendBroadcastUpdateWithEvents(
+        update: StateUpdate,
+        marks: inout ConsumedEventMarks
+    ) async throws -> Int? {
         guard let firstSession = membershipCoordinator.firstJoined(where: { _, playerID in
             !initialSyncingPlayers.contains(playerID)
         }) else {
+            // No eligible session: drop the queued events, as before (see #69).
+            marks = Self.marksDroppingAllQueued(pendingEventManager)
             return nil
         }
         
@@ -1767,9 +1852,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             playerSlot: nil,
             scope: .broadcast
         )
+        // Read the broadcast events and take their mark in one synchronous block, before any await.
+        let broadcastEventBodies = pendingEventManager.pendingBroadcastBodies()
+        marks.broadcast = pendingEventManager.broadcastEventCount
         if let combined = buildStateUpdateWithEventBodies(
             stateUpdateArray: updateArray,
-            eventBodies: pendingEventManager.pendingBroadcastBodies(),
+            eventBodies: broadcastEventBodies,
             allowEmptyEvents: true
         ) {
             dataToSend = combined
@@ -1847,7 +1935,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///
     /// Only called when opcode 107 is enabled and there are targeted events pending.
     /// Sends events separately (not merged with state update).
-    private func sendPendingTargetedEvents() async {
+    private func sendPendingTargetedEvents(marks: inout ConsumedEventMarks) async {
+        // Mark first, before the guard and any await (condition (a) on `ConsumedEventMarks`).
+        let end = pendingEventManager.targetedEventCount
+        marks.targeted = end
         guard useStateUpdateWithEvents, pendingEventManager.hasTargetedEvents else {
             return
         }
@@ -1856,7 +1947,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             if initialSyncingPlayers.contains(playerID) {
                 continue
             }
-            let eventBodies = pendingTargetedEventBodies(for: sessionID, playerID: playerID)
+            let eventBodies = pendingTargetedEventBodies(for: sessionID, playerID: playerID, endingBefore: end)
             if !eventBodies.isEmpty {
                 await sendEventBodiesSeparately(eventBodies, to: sessionID)
             }
