@@ -77,10 +77,23 @@ struct LandKeeperLoopPhaseOffsetTests {
         #expect(buckets.count == 10)
     }
 
-    @Test("A zero or negative interval gives no offset")
+    @Test("A zero or negative interval gives no offset, and extreme intervals do not trap")
     func nonPositiveIntervalGivesZero() {
         #expect(LandLoopPhase.offset(landID: "x", interval: .zero) == .zero)
         #expect(LandLoopPhase.offset(landID: "x", interval: .milliseconds(-5)) == .zero)
+        #expect(LandLoopPhase.offset(landID: "x", interval: .seconds(Int64.min)) == .zero)
+        let huge = LandLoopPhase.offset(landID: "x", interval: .seconds(Int64.max))
+        #expect(huge >= .zero && huge < LandLoopPhase.maxOffset)
+    }
+
+    @Test("A slow loop is delayed by at most maxOffset, not by up to a whole interval")
+    func offsetIsBoundedForSlowLoops() {
+        // Same as the 100 ms window: FNV-1a("hero-defense:room-1") % 100 ms.
+        #expect(LandLoopPhase.offset(landID: "hero-defense:room-1", interval: .seconds(30)) == .nanoseconds(34_994_091))
+        for index in 0..<200 {
+            let offset = LandLoopPhase.offset(landID: "timer:\(index)", interval: .seconds(30))
+            #expect(offset >= .zero && offset < LandLoopPhase.maxOffset)
+        }
     }
 
     @Test("The first tick waits for the land's offset; the period after it is unchanged")
@@ -89,14 +102,14 @@ struct LandKeeperLoopPhaseOffsetTests {
         let landID = "counter:550e8400-e29b-41d4-a716-446655440000"  // offset 88.5 ms
         let offset = LandLoopPhase.offset(landID: landID, interval: interval)
         let recorder = TickInstants()
+        // The instance ID goes in through init, so the loops cannot start with the type's offset.
+        let start = ContinuousClock.now
         let keeper = LandKeeper<PhaseOffsetTestState>(
             definition: phaseOffsetLand(tick: interval, recorder: recorder),
             initialState: PhaseOffsetTestState(),
-            enableLoopPhaseOffset: true
+            enableLoopPhaseOffset: true,
+            landID: landID
         )
-        await keeper.setLandID(landID)
-
-        let start = ContinuousClock.now
         try await keeper.join(playerID: PlayerID("p"), clientID: ClientID("c"), sessionID: SessionID("s"))
         let deadline = ContinuousClock.now + .seconds(5)
         while recorder.all.count < 6, ContinuousClock.now < deadline {
@@ -106,11 +119,25 @@ struct LandKeeperLoopPhaseOffsetTests {
 
         let ticks = recorder.all
         try #require(ticks.count >= 6, "expected at least 6 ticks, got \(ticks.count)")
+        #expect(await keeper.appliedTickPhaseOffset == offset)
         // First tick: the offset, then one interval (5 ms slack for clock granularity).
         #expect(ticks[0] - start >= offset + interval - .milliseconds(5), "first tick after \(ticks[0] - start)")
         // Fixed rate after the first tick: the span of five periods stays close to 5 × interval.
         let span = milliseconds(ticks[5] - ticks[0])
         #expect(span >= 480 && span <= 650, "five periods took \(span) ms")
+    }
+
+    @Test("A land ID passed to init seeds the default RNG and is the land's ID from the start")
+    func initLandIDSeedsRng() async {
+        let landID = "counter:550e8400-e29b-41d4-a716-446655440000"
+        let keeper = LandKeeper<PhaseOffsetTestState>(
+            definition: phaseOffsetLand(tick: .milliseconds(100), recorder: TickInstants()),
+            initialState: PhaseOffsetTestState(),
+            autoStartLoops: false,
+            landID: landID
+        )
+        #expect(await keeper.getRngSeed() == DeterministicSeed.fromLandID(landID))
+        #expect(await keeper.loopPhaseOffset(interval: .milliseconds(100)) == LandLoopPhase.offset(landID: landID, interval: .milliseconds(100)))
     }
 
     @Test("With the offset disabled, the keeper applies none")

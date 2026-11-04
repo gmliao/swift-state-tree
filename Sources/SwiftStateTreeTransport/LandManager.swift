@@ -234,6 +234,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                     services: metadataServices,
                     enableLiveStateHashRecording: enableLiveStateHashRecording,
                     enableLoopPhaseOffset: enableLoopPhaseOffset,
+                    landID: landID.stringValue,
                     logger: logger
                 )
             }
@@ -244,12 +245,13 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                 services: metadataServices,
                 enableLiveStateHashRecording: enableLiveStateHashRecording,
                 enableLoopPhaseOffset: enableLoopPhaseOffset,
+                landID: landID.stringValue,
                 logger: logger
             )
         }
         
-        // Set the actual land instance ID before recording metadata
-        // This ensures the RNG seed is updated to use the actual landID (not just definition.id)
+        // Live keepers already got the instance ID in init (before their eager initialization).
+        // This also covers the re-evaluation keeper, whose RNG seed comes from the record.
         await keeper.setLandID(landID.stringValue)
 
         // Configure record metadata (deterministic re-evaluation)

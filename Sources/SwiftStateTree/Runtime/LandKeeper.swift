@@ -408,9 +408,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///   - reevaluationSink: Optional sink for emitted events. Used when mode is .reevaluation.
     ///   - reevaluationOutputMode: When mode is .reevaluation, controls whether emitted events go to sink only (.sinkOnly) or both transport and sink (.transportAndSink). Defaults to .sinkOnly.
     ///   - enableLoopPhaseOffset: Delay the first tick and the first sync by a per-land offset in
-    ///     `[0, interval)` (`LandLoopPhase`), keeping the period, so lands created together do not
+    ///     `[0, min(interval, 100 ms))` (`LandLoopPhase`), keeping the period, so lands created together do not
     ///     run their loops in phase. Live mode only. Defaults to on unless
     ///     `LAND_LOOP_PHASE_OFFSET` is false.
+    ///   - landID: The land instance ID (e.g. "counter:550e8400-..."), when known at creation.
+    ///     Set before the eager initialization can start, so OnInitialize, the default RNG seed
+    ///     and the loop phase offset all use the instance ID instead of the land type. Without
+    ///     it, `setLandID(_:)` sets the ID later, racing with that initialization.
     ///   - transport: Optional transport interface for sending events and syncing state.
     ///                If not provided, operations will be no-ops (useful for testing).
     ///   - logger: Optional logger instance. If not provided, a default logger will be created.
@@ -425,20 +429,23 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         enableLiveStateHashRecording: Bool = false,
         autoStartLoops: Bool = true,
         enableLoopPhaseOffset: Bool = LandLoopPhase.isEnabled(),
+        landID: String? = nil,
         transport: LandKeeperTransport? = nil,
         logger: Logger? = nil
     ) {
         self.definition = definition
+        self.actualLandID = landID
         state = initialState
         self.mode = mode
         self.reevaluationSink = reevaluationSink
         self.reevaluationOutputMode = reevaluationOutputMode
 
         // Ensure DeterministicRngService is always registered for deterministic behavior
-        // If not provided, create one based on definition.id (will be updated with actualLandID later)
+        // If not provided, seed it from the instance ID when known, else from definition.id
+        // (setLandID(_:) replaces a definition.id seed later).
         var resolvedServices = services
         if resolvedServices.get(DeterministicRngService.self) == nil {
-            let seed = DeterministicSeed.fromLandID(definition.id)
+            let seed = DeterministicSeed.fromLandID(landID ?? definition.id)
             let rngService = DeterministicRngService(seed: seed)
             resolvedServices.register(rngService, as: DeterministicRngService.self)
         }
@@ -1574,6 +1581,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Delay before the first iteration of a loop with `interval`: `LandLoopPhase.offset` of
     /// this land's instance ID (the land type until `setLandID`), or `.zero` when disabled.
+    /// Offsets the tick and sync loops captured when they were configured (nil: not started).
+    private(set) var appliedTickPhaseOffset: Duration?
+    private(set) var appliedSyncPhaseOffset: Duration?
+
     func loopPhaseOffset(interval: Duration) -> Duration {
         guard enableLoopPhaseOffset else { return .zero }
         return LandLoopPhase.offset(landID: actualLandID ?? definition.id, interval: interval)
@@ -1582,6 +1593,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func configureTickLoop(interval: Duration) async {
         tickTask?.cancel()
         let phaseOffset = loopPhaseOffset(interval: interval)
+        appliedTickPhaseOffset = phaseOffset
         tickTask = Task { [weak self] in
             if phaseOffset > .zero {
                 try? await safeTaskSleep(for: phaseOffset)
@@ -2206,6 +2218,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func configureSyncLoop(interval: Duration) async {
         syncTask?.cancel()
         let phaseOffset = loopPhaseOffset(interval: interval)
+        appliedSyncPhaseOffset = phaseOffset
         syncTask = Task { [weak self] in
             if phaseOffset > .zero {
                 try? await safeTaskSleep(for: phaseOffset)

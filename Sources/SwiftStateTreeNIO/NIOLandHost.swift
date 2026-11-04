@@ -125,7 +125,7 @@ public struct NIOLandServerConfiguration: Sendable {
     /// Record live per-tick state hashes into the re-evaluation record (ground truth).
     public var enableLiveStateHashRecording: Bool
 
-    /// Delay each live land's first tick and first sync by a per-land offset in `[0, interval)`
+    /// Delay each live land's first tick and first sync by a per-land offset in `[0, min(interval, 100 ms))`
     /// (`LandLoopPhase`), so lands created together do not run their loops in phase. Defaults to
     /// on unless `LAND_LOOP_PHASE_OFFSET` is false.
     public var enableLoopPhaseOffset: Bool
