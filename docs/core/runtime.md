@@ -49,7 +49,7 @@ await withTaskGroup(of: Void.self) { group in
 
 ```swift
 // Sync flow
-guard let state = await keeper.beginSync() else {
+guard let state = await keeper.beginSync(clearDirtyFlags: true) else {
     // Another sync is in progress, skip (deduplication)
     return
 }
@@ -89,14 +89,14 @@ func withMutableStateSync<T>(_ operation: (inout State) throws -> T) rethrows ->
 There are two ways to read state:
 
 1. **Current state**: `currentState()` - Get snapshot of current state (read-only)
-2. **Sync snapshot**: `beginSync()` - Snapshot obtained when starting sync operation
+2. **Sync snapshot**: `beginSync(clearDirtyFlags:)` - Snapshot obtained when starting sync operation. For the sync pipeline only; use `currentState()` to read the state. With `clearDirtyFlags: true` it clears the live dirty flags, so a reader that only wants a copy would make the next sync skip those changes.
 
 ```swift
 // Read current state (read-only)
 let current = await keeper.currentState()
 
 // Start sync (get snapshot)
-guard let snapshot = await keeper.beginSync() else { return }
+guard let snapshot = await keeper.beginSync(clearDirtyFlags: true) else { return }
 defer { await keeper.endSync() }
 // Use snapshot for sync operations
 ```
@@ -392,22 +392,25 @@ Synchronization uses snapshot mode, doesn't block state changes:
 
 ```swift
 // Start sync
-public func beginSync() -> State? {
+public func beginSync(clearDirtyFlags: Bool) -> State? {
     guard !isSyncing else {
         return nil  // Deduplication: skip concurrent sync requests
     }
     isSyncing = true
-    return state  // Get snapshot directly, non-blocking
+    let snapshot = state  // Get snapshot directly, non-blocking
+    if clearDirtyFlags {
+        state.clearDirty()  // Clear live dirty flags; the snapshot keeps its own
+    }
+    return snapshot
 }
 
 // End sync
-public func endSync(clearDirtyFlags: Bool = true) {
+public func endSync() {
     isSyncing = false
-    if clearDirtyFlags {
-        state.clearDirty()  // Clear dirty flags
-    }
 }
 ```
+
+Dirty flags are cleared in `beginSync`, in the same actor turn that takes the snapshot. The snapshot keeps its dirty flags, so the sync cycle sees every change since the previous clearing cycle, and a mutation that runs while the cycle is in flight stays dirty for the next one. `TransportAdapter` passes `clearDirtyFlags: false` for broadcast-only cycles (they do not diff per-player fields) and when dirty tracking is disabled. `clearDirtyFlags` has no default, so every caller decides. `endSync(clearDirtyFlags:)` is deprecated and ignores its argument; pass the choice to `beginSync(clearDirtyFlags:)` instead.
 
 ### Sync Deduplication
 
@@ -431,7 +434,7 @@ var players: [PlayerID: PlayerState] = [:] {
 }
 ```
 
-After sync completes, dirty flags can be cleared:
+Dirty flags are cleared when a full sync cycle takes its snapshot (see Sync Flow). To clear them manually:
 
 ```swift
 // Clear all dirty flags

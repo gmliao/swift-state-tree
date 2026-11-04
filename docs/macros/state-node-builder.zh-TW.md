@@ -171,7 +171,7 @@ let snapshot = try gameState.broadcastSnapshot(dirtyFields: dirtyFields)
 Dirty tracking 用於追蹤哪些欄位已被修改，優化同步效能：
 
 - **自動標記**：當欄位被修改時自動標記為 dirty
-- **批次清除**：同步完成後可以清除所有 dirty 標記
+- **批次清除**：完整的同步週期在取得快照時清除所有 dirty 標記
 - **效能優化**：只同步變更的欄位，減少序列化成本
 
 ### 使用方式

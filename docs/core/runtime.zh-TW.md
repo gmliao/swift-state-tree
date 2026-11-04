@@ -49,7 +49,7 @@ await withTaskGroup(of: Void.self) { group in
 
 ```swift
 // Sync 流程
-guard let state = await keeper.beginSync() else {
+guard let state = await keeper.beginSync(clearDirtyFlags: true) else {
     // 另一個同步正在進行，跳過（去重）
     return
 }
@@ -89,14 +89,14 @@ func withMutableStateSync<T>(_ operation: (inout State) throws -> T) rethrows ->
 讀取狀態有兩種方式：
 
 1. **當前狀態**：`currentState()` - 取得當前狀態的快照（只讀）
-2. **同步快照**：`beginSync()` - 開始同步操作時取得的快照
+2. **同步快照**：`beginSync(clearDirtyFlags:)` - 開始同步操作時取得的快照。僅供同步流程使用；讀取狀態請用 `currentState()`。傳入 `clearDirtyFlags: true` 會清除即時狀態的 dirty 標記，只想取得副本的讀取者若這樣呼叫，下一次同步就會漏掉這些變更。
 
 ```swift
 // 讀取當前狀態（只讀）
 let current = await keeper.currentState()
 
 // 開始同步（取得快照）
-guard let snapshot = await keeper.beginSync() else { return }
+guard let snapshot = await keeper.beginSync(clearDirtyFlags: true) else { return }
 defer { await keeper.endSync() }
 // 使用 snapshot 進行同步操作
 ```
@@ -392,22 +392,25 @@ private func runTick() async {
 
 ```swift
 // 開始同步
-public func beginSync() -> State? {
+public func beginSync(clearDirtyFlags: Bool) -> State? {
     guard !isSyncing else {
         return nil  // 去重：跳過並發的同步請求
     }
     isSyncing = true
-    return state  // 直接取得快照，不阻塞
+    let snapshot = state  // 直接取得快照，不阻塞
+    if clearDirtyFlags {
+        state.clearDirty()  // 清除即時狀態的 dirty 標記；快照保留自己的標記
+    }
+    return snapshot
 }
 
 // 結束同步
-public func endSync(clearDirtyFlags: Bool = true) {
+public func endSync() {
     isSyncing = false
-    if clearDirtyFlags {
-        state.clearDirty()  // 清除 dirty 標記
-    }
 }
 ```
+
+Dirty 標記在 `beginSync` 中清除，與取得快照位於同一個 actor 回合。快照保留自己的 dirty 標記，因此同步週期能看到上一個會清除標記的週期以來的所有變更；同步進行中發生的狀態變更則維持 dirty，留給下一個週期。`TransportAdapter` 在 broadcast-only 週期（不比對 per-player 欄位）以及停用 dirty tracking 時傳入 `clearDirtyFlags: false`。`clearDirtyFlags` 沒有預設值，每個呼叫端都必須明確決定。`endSync(clearDirtyFlags:)` 已標記為 deprecated，並忽略其參數；請改把這個選擇傳給 `beginSync(clearDirtyFlags:)`。
 
 ### 同步去重
 
@@ -431,7 +434,7 @@ var players: [PlayerID: PlayerState] = [:] {
 }
 ```
 
-同步完成後可以選擇清除 dirty 標記：
+完整的同步週期在取得快照時會清除 dirty 標記（見同步流程）。若要手動清除：
 
 ```swift
 // 清除所有 dirty 標記
