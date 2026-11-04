@@ -41,6 +41,10 @@ import SwiftStateTreeTransport
 @main
 struct GameServer {
     static func main() async throws {
+        if ProcessInfo.processInfo.environment["SPIKE_SAVEPOINT_BENCH"] == "1" {
+            print(SpikeSavepointBench.run(sizes: [10, 100, 1000, 10000], iterations: 20000))
+            return
+        }
         let logLevelForProfile = getEnvLogLevel(key: "LOG_LEVEL", defaultValue: .info)
         let loggerForProfile = createGameLogger(scope: "HeroDefenseServer", logLevel: logLevelForProfile)
         // Run Swift Profile Recorder in background when PROFILE_RECORDER_SERVER_URL_PATTERN is set.
@@ -68,7 +72,7 @@ struct GameServer {
         ])
 
         // Schema and path hashes (replay land types only when reevaluation enabled)
-        let liveLand = HeroDefense.makeLand()
+        let liveLand = HeroDefense.makeLand(maxPlayers: Int(ProcessInfo.processInfo.environment["SPIKE_MAX_PLAYERS"] ?? "") ?? 10)
         let schemaLands: [AnyLandDefinition] = enableReevaluation
             ? [AnyLandDefinition(liveLand), AnyLandDefinition(ReevaluationMonitor.makeLand())]
             : [AnyLandDefinition(liveLand)]
@@ -187,7 +191,7 @@ private struct GameServerReevaluationFactory: ReevaluationTargetFactory {
             )
 
             return try await ConcreteReevaluationRunner(
-                definition: HeroDefense.makeLand(),
+                definition: HeroDefense.makeLand(maxPlayers: Int(ProcessInfo.processInfo.environment["SPIKE_MAX_PLAYERS"] ?? "") ?? 10),
                 initialState: HeroDefenseState(),
                 recordFilePath: recordFilePath,
                 requiredRecordVersion: requiredRecordVersion,

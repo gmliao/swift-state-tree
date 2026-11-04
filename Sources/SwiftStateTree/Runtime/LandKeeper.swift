@@ -1729,9 +1729,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 }
 
                 // Decode action from AnyCodable
+                let spikeRedecodeStart = SpikeMetrics.now()
                 let decoder = JSONDecoder()
                 let payloadData = try JSONEncoder().encode(actionItem.action)
                 let decodedAction = try decoder.decode(actionItem.actionType, from: payloadData)
+                SpikeMetrics.record("redecode", since: spikeRedecodeStart)
 
                 // Create context with resolver outputs
                 let ctx = makeContext(
@@ -1743,9 +1745,20 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 )
 
                 // Execute handler and capture response
-                let response = try withMutableStateSync { state in
-                    try handler.invokeErased(&state, action: decodedAction, ctx: ctx)
+                let spikeApplyStart = SpikeMetrics.now()
+                // Spike: CoW savepoint prototype (SPIKE_SAVEPOINT=1): restore on throw.
+                let spikeSavepoint: State? = SpikeMetrics.savepointEnabled ? state : nil
+                let response: AnyCodable
+                do {
+                    response = try withMutableStateSync { state in
+                        try handler.invokeErased(&state, action: decodedAction, ctx: ctx)
+                    }
+                } catch {
+                    if let spikeSavepoint { state = spikeSavepoint }
+                    throw error
                 }
+                withExtendedLifetime(spikeSavepoint) {}
+                SpikeMetrics.record("apply", since: spikeApplyStart)
                 lastActionResponse = response
 
                 // Record action for deterministic re-evaluation
@@ -1977,6 +1990,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
     }
 
+    /// Spike measurement: start of the previous tick.
+    private var spikeLastTickStart: ContinuousClock.Instant?
+
     private func runTick(allowWhenNoTickTask: Bool) async {
         // Check if task was cancelled before executing tick
         // This prevents ticks from running after shutdown has started
@@ -1986,6 +2002,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         guard !debugFrozen else { return }
         debugBeginWork()
         defer { debugEndWork() }
+
+        let spikeTickStart = SpikeMetrics.now()
+        if SpikeMetrics.isEnabled, definition.lifetimeHandlers.tickHandler != nil {
+            if let last = spikeLastTickStart {
+                SpikeMetrics.record("tickInterval", duration: spikeTickStart - last)
+            }
+            spikeLastTickStart = spikeTickStart
+        }
+        defer {
+            if definition.lifetimeHandlers.tickHandler != nil {
+                SpikeMetrics.record("tick", since: spikeTickStart)
+            }
+        }
 
         guard let handler = definition.lifetimeHandlers.tickHandler else {
             // Even if there's no tick handler, we still need to process pending actions

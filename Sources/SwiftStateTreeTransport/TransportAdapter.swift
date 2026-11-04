@@ -936,6 +936,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let decodeStart = ContinuousClock.now
             
             transportMsg = try decodingPipeline.decode(message)
+            SpikeMetrics.record("decode", since: decodeStart)
 
             if let profiler {
                 let decodeElapsed = ContinuousClock.now - decodeStart
@@ -1530,13 +1531,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         errorLogMessage: String,
         phase: (State) throws -> Void
     ) async -> Bool {
+        let spikeSyncStart = SpikeMetrics.now()
+        defer { SpikeMetrics.record("sync", since: spikeSyncStart) }
         if hasPendingStateElement {
+            SpikeMetrics.count("backlogSkips")
             syncSkips.outboundBacklog += 1
             deferSyncForOutboundBacklog(broadcastOnly: broadcastOnly)
             return false
         }
         beginSyncRequests += 1
         guard let state = await keeper.beginSync(clearDirtyFlags: clearDirtyFlags) else {
+            SpikeMetrics.count("busySkips")
             syncSkips.busy += 1
             // On a land without periodic sync this request may be the only one for changes
             // made after the cycle in flight took its copy (deferred cycles now run in the
