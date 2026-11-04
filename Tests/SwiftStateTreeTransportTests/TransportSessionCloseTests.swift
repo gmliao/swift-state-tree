@@ -14,9 +14,23 @@ private actor SilentConnection: WebSocketConnection {
     func close() async throws {}  // never reports a disconnect back
 }
 
-/// Records frames; `closeSession` is the protocol's no-op default.
+/// Once `hold()` is called, holds every send until `releaseAll()` (so the writer backs up); `closeSession` is the
+/// protocol's no-op default.
 private actor NoCloseTransport: Transport {
     var delegate: TransportDelegate?
+    private var held: [CheckedContinuation<Void, Never>] = []
+    private var holding = false
+    func hold() { holding = true }
+    func sendSessionFrames(_ frames: [SessionFrame]) async {
+        guard holding else { return }
+        await withCheckedContinuation { held.append($0) }
+    }
+    func releaseAll() {
+        holding = false
+        let pending = held
+        held = []
+        for continuation in pending { continuation.resume() }
+    }
     func setDelegate(_ delegate: TransportDelegate?) { self.delegate = delegate }
     func start() async throws {}
     func stop() async throws {}
@@ -116,10 +130,12 @@ struct TransportSessionCloseTests {
             try await simulateRouterJoin(adapter: adapter, keeper: keeper, sessionID: session, clientID: client, playerID: PlayerID("close-noop-player-\(n)"))
         }
         // A 1-byte ceiling: any element queued behind another is dropped and its sessions ended.
+        await transport.hold()
         for n in 0..<50 {
             await adapter.sendEvent(AnyServerEvent(SessionCloseEvent(message: "close-noop-\(n)")), to: .all)
         }
         #expect(await adapter.outboundCeilingDisconnectCount() > 0)
         #expect(await adapter.warnedNoCloseSession == true)
+        await transport.releaseAll()
     }
 }

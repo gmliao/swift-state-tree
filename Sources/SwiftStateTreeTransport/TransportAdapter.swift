@@ -1304,7 +1304,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// writer has drained its sync cycle elements (coalesced: one pending retry, a full cycle
     /// when any skipped request was full).
     private func deferSyncForOutboundBacklog(broadcastOnly: Bool, afterBusy: Bool = false) {
-        guard !keeper.hasPeriodicSync else { return }
+        // After teardown nothing is sent any more: do not schedule a retry.
+        guard !keeper.hasPeriodicSync, !outboundWriter.isFinished else { return }
         if broadcastOnly {
             backlogDeferredBroadcastOnly = true
         } else {
@@ -1321,7 +1322,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
+    /// Number of deferred retries started so far (tests).
+    private(set) var backlogRetryRuns = 0
+
     private func runBacklogDeferredSync() async {
+        backlogRetryRuns += 1
         let runSyncNow = backlogDeferredSyncNow
         let runBroadcastOnly = backlogDeferredBroadcastOnly && !runSyncNow
         backlogDeferredSyncNow = false

@@ -96,10 +96,12 @@ private final class OutboundWriterCounters: @unchecked Sendable {
         for waiter in waiters { waiter.resume() }
     }
 
-    /// Resumes every waiter (the consumer ended: nothing more will drain).
+    /// Resumes every waiter: the consumer ended, or teardown gave up on it, so nothing more
+    /// will drain. Elements it did not send no longer count as pending sync cycles.
     func releaseWaiters() {
         lock.lock()
         consumerEnded = true
+        syncCycleElements = 0
         let waiters = syncCycleDrainWaiters
         syncCycleDrainWaiters = []
         lock.unlock()
@@ -225,6 +227,14 @@ final class OutboundWriter: @unchecked Sendable {
 
     /// Returns once no sync cycle element is queued (at once when none is), or when the
     /// consumer has ended.
+    /// Whether `finish(timeout:)` was called: later frames are dropped, so no sync cycle needs
+    /// to wait for the writer any more.
+    var isFinished: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return continuation == nil
+    }
+
     func waitForSyncCycleDrain() async {
         await withCheckedContinuation { (waiter: CheckedContinuation<Void, Never>) in
             counters.lock.lock()
@@ -271,6 +281,8 @@ final class OutboundWriter: @unchecked Sendable {
         if !drained {
             consumer.cancel()
             let backlog = counters.backlog
+            // The consumer may stay suspended in the transport: release drain waiters now.
+            counters.releaseWaiters()
             logger.warning("Outbound writer did not drain before teardown timeout; frames left unsent", metadata: [
                 "queuedElements": .stringConvertible(backlog.elements),
                 "queuedBytes": .stringConvertible(backlog.bytes),
