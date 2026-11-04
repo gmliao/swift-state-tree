@@ -379,10 +379,35 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     // MARK: In-turn sync (layer-3 spike)
 
-    /// Layer-3 spike: run the sync phase inside the keeper turn when the transport shares this
-    /// keeper's executor (`LandKeeperTransport.runsSyncPhaseOnKeeperExecutor`). Env
+    /// Layer-3 spike: run the sync phase inside the keeper turn when the transport is attached to
+    /// this keeper and shares its executor (`LandKeeperTransport.runsSyncPhaseInTurn(of:)`). Env
     /// `IN_TURN_SYNC` (default on) turns it off for A/B runs.
-    private let inTurnSyncEnabled = EnvHelpers.getEnvBool(key: "IN_TURN_SYNC", defaultValue: true)
+    private var inTurnSyncEnabled = EnvHelpers.getEnvBool(key: "IN_TURN_SYNC", defaultValue: true)
+
+    /// Tests only: overrides `IN_TURN_SYNC` (e.g. the replay parity test runs both paths).
+    func setInTurnSyncEnabledForTesting(_ enabled: Bool) {
+        inTurnSyncEnabled = enabled
+    }
+
+    /// Turns whose sync phase was deferred by writer back-pressure (diagnostics).
+    private(set) var inTurnDeferredTurns = 0
+
+    /// A tickless land's deferred sync-only turn waits for the writer to drain (one at a time).
+    private var inTurnDrainRetriggerPending = false
+
+    /// Tests only (the probe's negative control): one `await Task.yield()` inside the tick turn,
+    /// after "turn-begin" and before the synchronous core.
+    private var inTurnYieldForTesting = false
+
+    /// Installs `inTurnYieldForTesting` (tests only).
+    func setInTurnYieldForTesting(_ enabled: Bool) {
+        inTurnYieldForTesting = enabled
+    }
+
+    /// Tests only: runs `body` as a job on this keeper's executor.
+    func runIsolatedForTesting(_ body: @Sendable () -> Void) {
+        body()
+    }
 
     /// Set by the sync loop on a land whose tick loop runs: the next tick turn includes the sync
     /// phase (tick + sync in one turn). Cleared when a turn's sync phase committed or was skipped.
@@ -404,7 +429,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Whether this keeper's turns run the sync phase in the turn (live mode only).
     private var usesInTurnSync: Bool {
-        inTurnSyncEnabled && mode == .live && (transport?.runsSyncPhaseOnKeeperExecutor ?? false)
+        inTurnSyncEnabled && mode == .live && (transport?.runsSyncPhaseInTurn(of: self) ?? false)
     }
 
     // MARK: Debug freeze state (see `debugFreeze(generation:timeout:)`)
@@ -2010,8 +2035,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if let recorder = reevaluationRecorder,
            !recordedActions.isEmpty || !recordedClientEvents.isEmpty || !recordedLifecycleEvents.isEmpty
         {
-            // Use the tick ID that was used for processing (nextTickId - 1, since we incremented it before processing)
-            let recordingTickId = nextTickId - 1
+            // The tick the items were applied in (`applyReadyPendingItems`).
+            let recordingTickId = applied.executingTickId
             await recorder.record(
                 tickId: recordingTickId,
                 actions: recordedActions,
@@ -2215,6 +2240,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Layer-3 spike: the whole turn (inputs, tick, events, sync plan + commit, writer
         // enqueue) runs without a suspension point; recorder awaits follow the turn.
         if usesInTurnSync, let transport {
+            inTurnProbeForTesting?("turn-begin")
+            if inTurnYieldForTesting {
+                // Negative control (tests only): a suspension point inside the turn, which the
+                // reentrancy probe must detect.
+                await Task.yield()
+            }
             let output = runTickTurn(handler: handler, tickId: tickId, transport: transport)
             await finishTickTurn(output)
             return
@@ -2315,7 +2346,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         tickId: Int64,
         transport: any LandKeeperTransport
     ) -> TickTurnOutput {
-        inTurnProbeForTesting?("turn-begin")
         let sequenceBeforeInputs = outputCollector.nextSequence
         var applied: AppliedPendingItems?
         do {
@@ -2379,6 +2409,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             inTurnProbeForTesting?("sync-committed")
         case .skipped:
             inTurnSyncDue = false
+        case .deferredBackPressure:
+            // Nothing was planned: dirty flags stay set, the sync stays due for the next turn.
+            inTurnSyncDue = true
+            inTurnDeferredTurns += 1
         case .failed, .notRequested, .unsupported:
             if wantsSync && !includeSync || result == .failed {
                 inTurnSyncDue = true
@@ -2398,6 +2432,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Layer-3 spike: the recorder work after a tick turn, in the legacy order: inputs, state
     /// hash, server events, the tick frame with its sequence watermarks.
+    ///
+    /// Layer-3 PR item (not in the spike): one recorder submission per tick
+    /// (`recordTick(TickRecord)`) instead of these four awaits.
     private func finishTickTurn(_ output: TickTurnOutput) async {
         guard let recorder = reevaluationRecorder else { return }
         if let applied = output.applied {
@@ -2438,13 +2475,38 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         guard !isSyncing else { return }
         inTurnProbeForTesting?("turn-begin")
         let result = transport.runSyncPhaseInTurn(state: state, events: [], includeSync: true)
-        if case .committed(let clearDirtyFlags) = result {
+        switch result {
+        case .committed(let clearDirtyFlags):
             if clearDirtyFlags {
                 state.clearDirty()
             }
             inTurnProbeForTesting?("sync-committed")
+        case .deferredBackPressure:
+            // Same rule as a tick turn (flags kept). No tick turn follows on a tickless land, so
+            // re-trigger once the writer drains.
+            inTurnDeferredTurns += 1
+            retriggerSyncOnlyTurnOnWriterDrain(transport: transport)
+        case .skipped, .failed, .notRequested, .unsupported:
+            break
         }
         inTurnProbeForTesting?("turn-end")
+    }
+
+    /// Layer-3 spike: after a sync-only turn deferred by back-pressure, one sync-only turn once
+    /// the writer drains (at most one pending).
+    private func retriggerSyncOnlyTurnOnWriterDrain(transport: any LandKeeperTransport) {
+        guard !inTurnDrainRetriggerPending else { return }
+        inTurnDrainRetriggerPending = true
+        Task { [weak self] in
+            await transport.waitForWriterDrainForInTurnSync()
+            await self?.runRetriggeredSyncOnlyTurn()
+        }
+    }
+
+    private func runRetriggeredSyncOnlyTurn() {
+        inTurnDrainRetriggerPending = false
+        guard usesInTurnSync, let transport else { return }
+        runSyncOnlyTurn(transport: transport)
     }
 
     private func configureSyncLoop(interval: Duration) async {

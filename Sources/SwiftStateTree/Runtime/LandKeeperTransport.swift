@@ -53,9 +53,15 @@ public protocol LandKeeperTransport: Sendable {
     /// from LandManager's registry.
     func onLandDestroyed() async
 
-    /// Layer-3 spike: whether `runSyncPhaseInTurn` may be called from inside the keeper's actor
-    /// turn (the transport shares the keeper's serial executor).
-    var runsSyncPhaseOnKeeperExecutor: Bool { get }
+    /// Layer-3 spike: whether `runSyncPhaseInTurn` may be called from inside the actor turn of
+    /// `keeper`: the transport is attached to that keeper (identity) and shares its serial
+    /// executor. A transport attached to another keeper answers `false`, so that keeper never
+    /// calls in (its `assumeIsolated` would trap).
+    func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool
+
+    /// Layer-3 spike: returns once the outbound writer no longer holds an earlier element (a
+    /// tickless land re-triggers a sync-only turn that was deferred by back-pressure).
+    func waitForWriterDrainForInTurnSync() async
 
     /// Layer-3 spike: the synchronous entry of a keeper turn's output and sync phase.
     ///
@@ -94,6 +100,10 @@ public enum InTurnSyncResult: Sendable, Equatable {
     case notRequested
     /// A sync phase was requested but skipped (no members, or frozen): nothing was diffed.
     case skipped
+    /// A sync phase was requested but deferred because the land's outbound writer still holds an
+    /// earlier element (#86 back-pressure). Nothing was planned: the keeper keeps the dirty flags
+    /// and the sync due, and opcode 107 events stay queued.
+    case deferredBackPressure
     /// The sync phase committed. `clearDirtyFlags`: the plan diffed every synced field, so the
     /// keeper clears the dirty flags now, still in the same turn (clearing is part of commit).
     case committed(clearDirtyFlags: Bool)
@@ -102,9 +112,11 @@ public enum InTurnSyncResult: Sendable, Equatable {
 }
 
 extension LandKeeperTransport {
-    /// Whether `runSyncPhaseInTurn` may be called from inside the keeper's actor turn: the
-    /// transport runs on the keeper's executor.
-    public var runsSyncPhaseOnKeeperExecutor: Bool { false }
+    /// Default: in-turn sync is not supported for any keeper.
+    public func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { false }
+
+    /// Default: returns immediately.
+    public func waitForWriterDrainForInTurnSync() async {}
 
     /// Default: in-turn sync is not supported.
     public func runSyncPhaseInTurn<S: StateNodeProtocol>(

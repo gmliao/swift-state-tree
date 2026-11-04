@@ -153,6 +153,31 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     public nonisolated var unownedExecutor: UnownedSerialExecutor {
         keeper.unownedExecutor
     }
+
+    /// Layer-3 spike: whether `keeper` is this adapter's keeper (identity), i.e. the one whose
+    /// executor it shares.
+    nonisolated func isAttached(to keeper: AnyObject) -> Bool {
+        keeper === self.keeper
+    }
+
+    /// Tests only: runs `body` as a job on this adapter's (the keeper's) executor.
+    func runIsolatedForTesting(_ body: @Sendable () -> Void) {
+        body()
+    }
+
+    /// Tests only: stands in for #86's writer back-pressure check until its API lands.
+    private var writerBackPressureStubForTesting: (@Sendable () -> Bool)?
+
+    /// Installs `writerBackPressureStubForTesting` (tests only).
+    func setWriterBackPressureStubForTesting(_ stub: (@Sendable () -> Bool)?) {
+        writerBackPressureStubForTesting = stub
+    }
+
+    /// Layer-3 spike: whether the land's outbound writer still holds an earlier element (#86:
+    /// the land's state cycle is skipped then). Stub: TODO wire #86's final API.
+    private func writerHoldsEarlierElementForInTurnSync() -> Bool {
+        writerBackPressureStubForTesting?() ?? false
+    }
     let transport: any Transport
     /// Ordered FIFO for every frame this adapter sends (#60). See `OutboundWriter`.
     let outboundWriter: OutboundWriter
@@ -1223,15 +1248,24 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///
     /// Enqueues `events` in order, then (if `includeSync`) plans and commits a full sync phase on
     /// `state`, whose frames go to the writer after those events. Never suspends.
+    ///
+    /// Back-pressure (#86) is sampled before this turn enqueues its own event frames and checked
+    /// before anything is planned: `.deferredBackPressure` (opcode 107 events stay queued).
+    ///
+    /// Inherited opcode 107 limit (from the sync phase plan): per session the merged broadcast
+    /// frame comes first, then the targeted event frames, then the per-player frame. A targeted
+    /// event of this turn therefore reaches its client after the turn's broadcast state.
     func runSyncPhaseInTurnIsolated<S: StateNodeProtocol>(
         state: S,
         events: [InTurnServerEvent],
         includeSync: Bool
     ) -> InTurnSyncResult {
+        let backPressured = includeSync && writerHoldsEarlierElementForInTurnSync()
         for item in events {
             enqueueEventSynchronously(item.event, to: item.target)
         }
         guard includeSync else { return .notRequested }
+        if backPressured { return .deferredBackPressure }
         if debugDeferSyncIfFrozen(broadcastOnly: false) { return .skipped }
         profilerCounters?.setSessionCounts(
             connected: membershipCoordinator.connectedSessions.count,
@@ -1243,14 +1277,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         // Read once: the auto-switch in the commit may change `enableDirtyTracking`.
         let clearDirtyFlags = enableDirtyTracking
+        // Failure bookkeeping as in `withSyncState`.
         do {
             try runFullSyncPhase(state: state)
+            consecutiveFailedPlans = 0
             return .committed(clearDirtyFlags: clearDirtyFlags)
         } catch {
             logger.error("Sync operation failed", metadata: [
                 "message": .string("❌ In-turn sync phase failed"),
                 "error": .string("\(error)")
             ])
+            noteFailedPlanForFollowUp()
             return .failed
         }
     }

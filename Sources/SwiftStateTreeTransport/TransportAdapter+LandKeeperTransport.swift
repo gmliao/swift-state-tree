@@ -20,8 +20,16 @@ extension TransportAdapter: LandKeeperTransport {
         await self.syncBroadcastOnly()
     }
 
-    /// Layer-3 spike: the adapter shares its keeper's executor (`unownedExecutor`).
-    public nonisolated var runsSyncPhaseOnKeeperExecutor: Bool { true }
+    /// Layer-3 spike: only for the adapter's own keeper, whose executor it shares
+    /// (`unownedExecutor`).
+    public nonisolated func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool {
+        isAttached(to: keeper)
+    }
+
+    /// Layer-3 spike stub: waits for the outbound writer to drain. TODO wire #86's final API.
+    public func waitForWriterDrainForInTurnSync() async {
+        _ = await waitForOutboundDrain(timeout: .seconds(5))
+    }
 
     /// Layer-3 spike: called by the keeper inside its turn. `assumeIsolated` checks that this
     /// runs on the shared executor (it traps otherwise) and enters the adapter's isolation
