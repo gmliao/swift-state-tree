@@ -105,6 +105,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     
     private var initialSyncingPlayers: Set<PlayerID> = []
 
+    /// Sessions whose targeted event frames `buildSendBatch` already put in this cycle's batch
+    /// (opcode 107 only), with the number of queued targeted events the batch covered.
+    /// `flushTargetedEventBodiesIfNeeded` sends those sessions only events queued after that
+    /// point, so each targeted event is sent once per cycle. Reset at the end of every cycle.
+    private var targetedEventsSentInBatch: (sessions: Set<SessionID>, eventCount: Int) = ([], 0)
+
     /// Membership queue prevents stale join/leave work from delivering after rejoin.
     /// See docs/plans/2026-02-01-membership-queue-reconnect.md.
     private var membershipQueueTail: Task<Void, Never>?
@@ -1019,7 +1025,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// Encoded targeted event bodies for a given client (sessionID + playerID).
-    private func pendingTargetedEventBodies(for sessionID: SessionID, playerID: PlayerID) -> [MessagePackValue] {
+    ///
+    /// - Parameter startIndex: Skip the first `startIndex` queued targeted events.
+    private func pendingTargetedEventBodies(
+        for sessionID: SessionID,
+        playerID: PlayerID,
+        startingAt startIndex: Int = 0
+    ) -> [MessagePackValue] {
         let clientID = membershipCoordinator.clientID(for: sessionID)
         return pendingEventManager.pendingTargetedBodies(
             for: sessionID,
@@ -1030,7 +1042,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             },
             isPlayerCurrent: { playerID, version in
                 membershipCoordinator.isPlayerCurrent(playerID, expected: version)
-            }
+            },
+            startingAt: startIndex
         )
     }
 
@@ -1102,6 +1115,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         for encoded in encodedUpdates {
             guard let updateData = encoded.payload else { continue }
             if !mergeEvents, useStateUpdateWithEvents {
+                // The session's queued targeted events go before its state frame
+                // (events of a cycle precede that cycle's state frame); record them as sent.
+                targetedEventsSentInBatch.sessions.insert(encoded.sessionID)
+                targetedEventsSentInBatch.eventCount = pendingEventManager.targetedEventCount
                 let eventBodies = pendingTargetedEventBodies(for: encoded.sessionID, playerID: encoded.playerID)
                 for body in eventBodies {
                     guard case .array(let bodyArray) = body else { continue }
@@ -1220,6 +1237,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         await keeper.endSync()
     }
 
+    /// One full sync cycle.
+    ///
+    /// Protocol order: events of a cycle precede that cycle's state frame. On the opcode 107 path
+    /// the merged broadcast frame carries broadcast events ahead of its state update, and a
+    /// session's targeted event frames are sent before its per-player state frame (or alone, by
+    /// `flushTargetedEventBodiesIfNeeded`, when the session has no state update this cycle).
+    /// On json / opcodeJsonArray, events are sent when emitted, before the sync is requested.
     private func runSyncNowCycle(state: State) async throws {
         let shouldCollectChangeMetrics = enableChangeObjectMetrics || enableAutoDirtyTracking
         let (requestedBroadcastMode, requestedPerPlayerMode) = computeSyncModes(for: state)
@@ -1561,7 +1585,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
+    /// Sends each session the targeted event frames it did not already get in this cycle's batch.
     private func flushTargetedEventBodiesIfNeeded() async {
+        let alreadySent = targetedEventsSentInBatch
+        targetedEventsSentInBatch = ([], 0)
         guard pendingEventManager.hasTargetedEvents else {
             return
         }
@@ -1570,7 +1597,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             if initialSyncingPlayers.contains(playerID) {
                 continue
             }
-            let eventBodies = pendingTargetedEventBodies(for: sessionID, playerID: playerID)
+            // Sessions served by the batch only get events queued after it was built.
+            let startIndex = alreadySent.sessions.contains(sessionID) ? alreadySent.eventCount : 0
+            let eventBodies = pendingTargetedEventBodies(for: sessionID, playerID: playerID, startingAt: startIndex)
             if !eventBodies.isEmpty {
                 await sendEventBodiesSeparately(eventBodies, to: sessionID)
             }
@@ -1579,6 +1608,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     private func cleanupPendingSyncEvents() {
         pendingEventManager.clearAll()
+        targetedEventsSentInBatch = ([], 0)
     }
 
     /// Sync only broadcast changes to all connected players.
