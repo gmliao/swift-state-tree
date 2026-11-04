@@ -426,10 +426,17 @@ program
 
       for (const scriptPath of scripts) {
         try {
-          // Rooms run in parallel; each has its own land and clients.
-          await Promise.all(
+          // Rooms run in parallel; each has its own land and clients. Wait for every room to
+          // settle before failing, so no room exits while its freeze is still held.
+          const results = await Promise.allSettled(
             Array.from({ length: rooms }, (_, room) => runScenarioInRoom(scriptPath, room)),
           );
+          const failed = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+          if (failed.length > 0) {
+            throw rooms > 1
+              ? new Error(`${failed.length}/${rooms} room(s) failed; first: ${failed[0].reason}`)
+              : failed[0].reason;
+          }
         } catch (scriptError) {
           console.error(
             chalk.red(
