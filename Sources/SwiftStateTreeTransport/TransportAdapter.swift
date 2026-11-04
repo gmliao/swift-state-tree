@@ -117,6 +117,10 @@ struct SyncPhasePlan {
     var resetsKeyScopes = false
     /// A frame the plan encoded for was not produced (not even an empty update encoded), so the
     /// encoders' key tables may hold slots no client learned: the next full plan resets them.
+    /// A nil per-player frame also drops that player's staged per-player cache and mark, and a nil
+    /// opcode 107 merged frame the staged broadcast cache. A nil combined or broadcast-only
+    /// separate frame leaves the shared broadcast cache advanced for every other player, so that
+    /// player misses those broadcast changes until they change again, as before plan + commit.
     var leavesKeyTablesAhead = false
     /// Cache updates and firstSync marks; the commit writes them to the sync engine.
     var staged = SyncEngine.StagedCaches()
@@ -281,6 +285,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// the cache (dirty-only with dirty tracking); clients apply a firstSync's patches onto their
     /// view like a diff. Cleared by that commit (one with at least one recipient). While it is
     /// set, a broadcast-only cycle runs as a full cycle.
+    ///
+    /// Limit: the reset covers the plan's recipients only. A player in initial sync
+    /// (`initialSyncingPlayers`) is not one, so its broadcast key map is not reset by that commit;
+    /// its per-player scope is reset by its own firstSync, and the broadcast scope of joiners is
+    /// #90's.
     private var keyScopeResetPending = false
 
     /// Dirty fields of full plans that failed: their `beginSync` cleared the flags, but nothing
@@ -1676,12 +1685,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             drops: &drops
         )
 
-        let broadcastDiff = syncEngine.computeBroadcastDiffFromSnapshot(
-            currentBroadcast: broadcastSnapshot,
-            onlyPaths: nil,
-            mode: broadcastMode,
-            baseline: baseline,
-            staged: &plan.staged
+        let broadcastDiff = withoutDroppedFields(
+            syncEngine.computeBroadcastDiffFromSnapshot(
+                currentBroadcast: broadcastSnapshot,
+                onlyPaths: nil,
+                mode: broadcastMode,
+                baseline: baseline,
+                staged: &plan.staged
+            ),
+            drops: drops,
+            baseline: baseline
         )
 
         // Recipients whose player has no committed firstSync (e.g. its firstSync plan failed):
@@ -1724,6 +1737,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 staged: &plan.staged
             )
         }
+        pendingUpdates = withoutDroppedFields(pendingUpdates, drops: drops, baseline: baseline)
         for recipient in unsyncedRecipients {
             pendingUpdates.append(planFullViewUpdate(state: state, recipient: recipient, staged: &plan.staged, drops: &drops))
         }
@@ -1930,9 +1944,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 }
                 plan.droppedUpdates += dropped
                 if data == nil {
-                    // Nothing goes to this player: drop its staged caches and firstSync mark, so
-                    // the next cycle diffs from what its client has (an unsynced player stays
-                    // unmarked and gets its whole view then).
+                    // Nothing goes to this player: drop its staged per-player cache and firstSync
+                    // mark, so the next cycle diffs its per-player fields from what its client
+                    // has (an unsynced player stays unmarked and gets its whole view then).
+                    // Limit: the shared broadcast cache stays advanced for the other players, so
+                    // with a combined (json / opcodeJsonArray) frame this player misses that
+                    // cycle's broadcast changes until they change again, as before plan + commit.
+                    // Only the opcode 107 merged broadcast frame unstages the broadcast cache.
                     plan.staged.perPlayer.removeValue(forKey: playerID)
                     plan.staged.firstSyncReceived.remove(playerID)
                     plan.leavesKeyTablesAhead = true
@@ -2290,7 +2308,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Extract broadcast snapshot (only dirty fields if using dirty tracking)
         let broadcastSnapshot = syncEngine.extractBroadcastSnapshot(from: state, mode: broadcastMode, drops: &drops)
 
-        // Compute broadcast diff (only compares dirty fields)
+        // Compute broadcast diff (only compares dirty fields); under the full-snapshot strategy
+        // without the dropped fields (`withoutDroppedFields`).
         // This updates the shared broadcast cache
         // IMPORTANT: We always compute the diff to update the cache, even if no players are connected
         // This ensures the cache reflects the current state when players reconnect
@@ -2302,7 +2321,48 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             staged: &staged
         )
 
-        return (broadcastDiff, broadcastMode)
+        return (withoutDroppedFields(broadcastDiff, drops: drops, baseline: fullSnapshot ? .empty : .cached), broadcastMode)
+    }
+
+    /// Under the `.empty` baseline (full-snapshot strategy), `patches` without those of the
+    /// fields the extraction dropped. A dropped field holds its cached value, which keeps the
+    /// `.empty` diff from deleting it but would otherwise be a real `.set` of an older value (a
+    /// client that already has a newer one, e.g. a joiner's firstSync, would roll back). Against
+    /// the `.cached` baseline the cached value yields no patch, so nothing is filtered.
+    private func withoutDroppedFields(
+        _ patches: [StatePatch],
+        drops: ExtractionDrops,
+        baseline: SyncEngine.DiffBaseline
+    ) -> [StatePatch] {
+        guard case .empty = baseline, !drops.fields.isEmpty else { return patches }
+        return patches.filter { patch in
+            let field = patch.path.split(separator: "/").first.map(String.init) ?? ""
+            return !drops.fields.contains(field)
+        }
+    }
+
+    /// `withoutDroppedFields` for every pending update; an update left with no change is not sent
+    /// (one typed `.firstSync` is kept: it may reset a key scope).
+    private func withoutDroppedFields(
+        _ updates: [PendingSyncUpdate],
+        drops: ExtractionDrops,
+        baseline: SyncEngine.DiffBaseline
+    ) -> [PendingSyncUpdate] {
+        guard case .empty = baseline, !drops.fields.isEmpty else { return updates }
+        return updates.compactMap { pending in
+            let update: StateUpdate
+            switch pending.update {
+            case .noChange:
+                return pending
+            case .firstSync(let patches):
+                update = .firstSync(withoutDroppedFields(patches, drops: drops, baseline: baseline))
+            case .diff(let patches):
+                let kept = withoutDroppedFields(patches, drops: drops, baseline: baseline)
+                guard !kept.isEmpty else { return nil }
+                update = .diff(kept)
+            }
+            return makePendingSyncUpdate(sessionID: pending.sessionID, playerID: pending.playerID, update: update)
+        }
     }
 
     /// opcode 107, broadcast-only: the update merged with the queued broadcast events, one frame

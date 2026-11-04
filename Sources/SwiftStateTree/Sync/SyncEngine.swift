@@ -1304,6 +1304,8 @@ extension SyncEngine {
 package struct ExtractionDrops: Sendable {
     /// Dropped field extractions (one per field and extracted snapshot).
     package var count = 0
+    /// The dropped top-level field names.
+    package var fields: Set<String> = []
     /// The first conversion error, for the dropped-updates log.
     package var firstError: String?
 
@@ -1311,6 +1313,7 @@ package struct ExtractionDrops: Sendable {
 
     mutating func note(_ error: any Error, field: String) {
         count += 1
+        fields.insert(field)
         if firstError == nil {
             firstError = "field \(field): \(error)"
         }
@@ -1323,6 +1326,11 @@ extension SyncEngine {
     /// (`fallback`), so a diff against the cache yields nothing for it, neither a change nor a
     /// removal, and the cache keeps what clients were last sent; without a cached value it is
     /// left out. Like a patch that does not encode, the field stays stale until it extracts again.
+    ///
+    /// Against the `.empty` baseline (full-snapshot strategy) the cached value would become a real
+    /// `.set` of an older value: callers leave the patches of `drops.fields` out of such a diff.
+    /// The cached value is still needed there, since an `.empty` diff deletes the top-level keys
+    /// that vanished since the cache.
     private static func extractDroppingThrowingFields(
         candidates: [String],
         fields: Set<String>?,
