@@ -1241,7 +1241,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///
     /// Event order guaranteed per frame:
     /// - opcode 107, broadcast events: they ride inside the merged broadcast frame, ahead of that
-    ///   frame's state update. The merged frame is sent before the per-player batch.
+    ///   frame's state update. The merged frame is issued before the per-player batch, but each
+    ///   session's copy is sent from an unstructured task, so until #60 its arrival order relative
+    ///   to the batch and the targeted event frames is not guaranteed.
     /// - opcode 107, targeted events queued before the batch is built: sent to their session
     ///   immediately before that session's per-player state frame, once.
     /// - opcode 107, targeted events queued later in the cycle (e.g. during the batch send): sent
@@ -1249,8 +1251,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///   with no per-player frame this cycle gets all its targeted events from the flush.
     /// - json / opcodeJsonArray: events are not queued; each is sent when emitted, so it precedes
     ///   every state frame sent after it.
-    ///
-    /// So a session's targeted events do not precede the merged broadcast frame of the same cycle.
     private func runSyncNowCycle(state: State) async throws {
         let shouldCollectChangeMetrics = enableChangeObjectMetrics || enableAutoDirtyTracking
         let (requestedBroadcastMode, requestedPerPlayerMode) = computeSyncModes(for: state)
