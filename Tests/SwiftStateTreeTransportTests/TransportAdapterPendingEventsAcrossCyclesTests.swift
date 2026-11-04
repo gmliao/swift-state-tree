@@ -480,7 +480,8 @@ private struct KeptEventsFixture {
 
 // MARK: - Tests
 
-@Suite("TransportAdapter keeps late-queued events for the next sync cycle (#77)", .timeLimit(.minutes(1)))
+// Serialized: two tests block the keeper through the process-wide `KeptEventsKeeperBlocker`.
+@Suite("TransportAdapter keeps late-queued events for the next sync cycle (#77)", .serialized, .timeLimit(.minutes(1)))
 struct TransportAdapterPendingEventsAcrossCyclesTests {
 
     @Test("1: a broadcast event queued during the batch send arrives once, in the next cycle's merged frame")

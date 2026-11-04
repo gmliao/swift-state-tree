@@ -139,6 +139,14 @@ private actor SyncPhaseTransport: Transport {
 
 private struct SyncPhaseFault: Error {}
 
+/// A player whose per-player-scope updates all fail to encode while set (any update type).
+private final class SyncPhaseFailingPlayer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var player: PlayerID?
+    var current: PlayerID? { lock.lock(); defer { lock.unlock() }; return player }
+    func set(_ value: PlayerID?) { lock.lock(); player = value; lock.unlock() }
+}
+
 /// A switch the tests flip from outside the adapter.
 private final class SyncPhaseSwitch: @unchecked Sendable {
     private let lock = NSLock()
@@ -152,6 +160,7 @@ private final class SyncPhaseSwitch: @unchecked Sendable {
 private struct FailingDiffEncoder: StateUpdateEncoderWithScope {
     let inner: any StateUpdateEncoder
     let failDiffs: SyncPhaseSwitch
+    let failingPlayer: SyncPhaseFailingPlayer
 
     var encoding: StateUpdateEncoding { inner.encoding }
 
@@ -171,6 +180,9 @@ private struct FailingDiffEncoder: StateUpdateEncoderWithScope {
         scope: StateUpdateKeyScope
     ) throws -> Data {
         if case .diff = update, case .perPlayer = scope, failDiffs.isOn {
+            throw SyncPhaseFault()
+        }
+        if case .perPlayer = scope, failingPlayer.current == playerID {
             throw SyncPhaseFault()
         }
         if let scoped = inner as? StateUpdateEncoderWithScope {
@@ -293,7 +305,7 @@ private struct SyncPhaseClient {
                   let array = json as? [Any],
                   let opcode = (array.first as? NSNumber)?.intValue,
                   (0...2).contains(opcode) else { return }
-            try applyStateArray(array.map(SyncPhaseWire.init(json:)), keys: &perPlayerKeys)
+            try applyStateArray(array.map(SyncPhaseWire.init(json:)), broadcastScope: false)
         case .messagepack:
             guard let value = try? unpack(frame),
                   case .array(let array) = value,
@@ -303,14 +315,18 @@ private struct SyncPhaseClient {
                 guard wire.count >= 2, case .array(let state) = wire[1] else {
                     throw SyncPhaseDecodeError(description: "invalid opcode 107 frame")
                 }
-                try applyStateArray(state, keys: &broadcastKeys)
+                try applyStateArray(state, broadcastScope: true)
             } else if (0...2).contains(opcode) {
-                try applyStateArray(wire, keys: &perPlayerKeys)
+                try applyStateArray(wire, broadcastScope: false)
             }
         }
     }
 
-    private mutating func applyStateArray(_ array: [SyncPhaseWire], keys: inout [Int: String]) throws {
+    private mutating func applyStateArray(_ array: [SyncPhaseWire], broadcastScope: Bool) throws {
+        var keys = broadcastScope ? broadcastKeys : perPlayerKeys
+        defer {
+            if broadcastScope { broadcastKeys = keys } else { perPlayerKeys = keys }
+        }
         guard let opcode = array.first?.intValue else {
             throw SyncPhaseDecodeError(description: "state update without opcode")
         }
@@ -458,9 +474,14 @@ private struct SyncPhaseFixture {
     let transport: SyncPhaseTransport
     /// While on, the encoder fails every per-player `.diff` update (see `FailingDiffEncoder`).
     let diffEncodingFails: SyncPhaseSwitch
+    /// While set, every per-player update of that player fails to encode (deterministic).
+    let failingPlayer: SyncPhaseFailingPlayer
     let session = SessionID("sp-session")
     let client = ClientID("sp-client")
     let player = PlayerID("sp-player")
+    let session2 = SessionID("sp-session-2")
+    let client2 = ClientID("sp-client-2")
+    let player2 = PlayerID("sp-player-2")
 
     /// - Parameters:
     ///   - encoding: State update encoding; opcode encodings use the test path hashes.
@@ -480,6 +501,7 @@ private struct SyncPhaseFixture {
             initialState: SyncPhaseTestState()
         )
         let failDiffs = SyncPhaseSwitch()
+        let failingPlayer = SyncPhaseFailingPlayer()
         let hasher = PathHasher(pathHashes: syncPhasePathHashes)
         let envConfig = makeSyncPhaseEnvConfig(useSnapshotForSync: useSnapshotForSync)
         let adapter: TransportAdapter<SyncPhaseTestState>
@@ -504,7 +526,7 @@ private struct SyncPhaseFixture {
                 transport: transport,
                 landID: "sync-phase-test",
                 transportEnvConfig: envConfig,
-                stateUpdateEncoder: FailingDiffEncoder(inner: inner, failDiffs: failDiffs),
+                stateUpdateEncoder: FailingDiffEncoder(inner: inner, failDiffs: failDiffs, failingPlayer: failingPlayer),
                 pathHashes: encoding == .json ? nil : syncPhasePathHashes
             )
         }
@@ -514,7 +536,8 @@ private struct SyncPhaseFixture {
             keeper: keeper,
             adapter: adapter,
             transport: transport,
-            diffEncodingFails: failDiffs
+            diffEncodingFails: failDiffs,
+            failingPlayer: failingPlayer
         )
         await adapter.onConnect(sessionID: fixture.session, clientID: fixture.client)
         if join {
@@ -533,16 +556,29 @@ private struct SyncPhaseFixture {
         )
     }
 
-    func set(_ field: String, _ value: Int = 0) async throws {
+    /// Connects and joins the second session (`session2` / `player2`).
+    func joinSecond() async throws {
+        await adapter.onConnect(sessionID: session2, clientID: client2)
+        try await simulateRouterJoin(
+            adapter: adapter,
+            keeper: keeper,
+            sessionID: session2,
+            clientID: client2,
+            playerID: player2
+        )
+    }
+
+    /// Runs the action as `player`, or as `player2` when `second` is set.
+    func set(_ field: String, _ value: Int = 0, second: Bool = false) async throws {
         let envelope = ActionEnvelope(
             typeIdentifier: String(describing: SyncPhaseSetAction.self),
             payload: AnyCodable(SyncPhaseSetAction(field: field, value: value))
         )
         _ = try await keeper.handleActionEnvelope(
             envelope,
-            playerID: player,
-            clientID: client,
-            sessionID: session
+            playerID: second ? player2 : player,
+            clientID: second ? client2 : client,
+            sessionID: second ? session2 : session
         )
     }
 
@@ -565,16 +601,16 @@ private struct SyncPhaseFixture {
         await transport.messages(for: session).count
     }
 
-    /// The client of `session`, fed every frame the session received.
-    func clientState() async -> SyncPhaseClient {
+    /// The client of `session` (or `session2`), fed every frame the session received.
+    func clientState(second: Bool = false) async -> SyncPhaseClient {
         var client = SyncPhaseClient(encoding: encoding)
-        client.receive(await transport.messages(for: session))
+        client.receive(await transport.messages(for: second ? session2 : session))
         return client
     }
 
-    /// The authoritative view of `player`.
-    func serverView() async throws -> [String: SnapshotValue] {
-        try SyncEngine().snapshot(for: player, from: await keeper.currentState()).values
+    /// The authoritative view of `player` (or `player2`).
+    func serverView(second: Bool = false) async throws -> [String: SnapshotValue] {
+        try SyncEngine().snapshot(for: second ? player2 : player, from: await keeper.currentState()).values
     }
 
     func queueEvent(_ message: String, to target: SwiftStateTree.EventTarget) async {
@@ -775,9 +811,6 @@ struct TransportAdapterSyncPhaseTests {
         let framesBefore = await f.frameCount()
         f.diffEncodingFails.set(true)
         await f.sync()
-        // Deterministic failure: every plan fails while it lasts, and nothing is sent.
-        try await f.set("bonus", 4)
-        await f.sync()
         f.diffEncodingFails.set(false)
         #expect(await f.frameCount() == framesBefore, "a failed plan enqueues nothing")
         #expect(await f.adapter.isSyncRecoveryPending(), "an encode failure requests a recovery cycle")
@@ -807,6 +840,91 @@ struct TransportAdapterSyncPhaseTests {
         // joiner's full view.
         #expect(client.updateTypes.contains(1), "the joiner gets a firstSync: \(client.updateTypes)")
         #expect(client.value(at: "/scores/\(f.player.rawValue)") == .int(0))
+    }
+
+    @Test(
+        "a deterministic per-player encode failure quarantines that recipient; the others keep receiving",
+        arguments: SyncPhaseEncoding.allCases
+    )
+    func deterministicPerPlayerFailureIsQuarantined(encoding: SyncPhaseEncoding) async throws {
+        let f = try await SyncPhaseFixture.make(encoding: encoding)
+        try await f.joinSecond()
+        await f.sync()
+
+        f.failingPlayer.set(f.player2)
+        try await f.set("a", 1)
+        try await f.set("score", 5)
+        try await f.set("score", 6, second: true)
+        // One failed plan starts the recovery; `syncQuarantineThreshold` failed recovery plans
+        // quarantine the recipient; the plan after that excludes it and commits.
+        let threshold = TransportAdapter<SyncPhaseTestState>.syncQuarantineThreshold
+        for cycle in 0...threshold {
+            #expect(await f.adapter.isSyncQuarantined(f.session2) == false, "not quarantined before failed recovery plan \(cycle)")
+            await f.sync()
+        }
+        #expect(await f.adapter.isSyncQuarantined(f.session2), "quarantined after \(threshold) failed recovery plans")
+        #expect(await f.adapter.syncQuarantinedRecipients == 1)
+        #expect(await f.adapter.isSyncQuarantined(f.session) == false)
+
+        await f.sync()
+        #expect(await f.adapter.isSyncRecoveryPending() == false, "the room recovers without the quarantined recipient")
+        let first = try await f.expectConverged("the other recipient after the quarantine")
+        #expect(first.value(at: "/a") == .int(1))
+        #expect(first.value(at: "/scores/\(f.player.rawValue)") == .int(5))
+
+        // The room keeps syncing.
+        try await f.set("b", 7)
+        await f.sync()
+        let later = try await f.expectConverged("the other recipient, later")
+        #expect(later.value(at: "/b") == .int(7))
+    }
+
+    @Test(
+        "a quarantined recipient whose data encodes again is unquarantined by the retry",
+        arguments: SyncPhaseEncoding.allCases
+    )
+    func fixedRecipientIsUnquarantinedByRetry(encoding: SyncPhaseEncoding) async throws {
+        let f = try await SyncPhaseFixture.make(encoding: encoding)
+        try await f.joinSecond()
+        await f.sync()
+        await f.adapter.setSyncQuarantineRetryIntervalForTesting(3)
+
+        f.failingPlayer.set(f.player2)
+        try await f.set("score", 6, second: true)
+        let threshold = TransportAdapter<SyncPhaseTestState>.syncQuarantineThreshold
+        for _ in 0...threshold {
+            await f.sync()
+        }
+        #expect(await f.adapter.isSyncQuarantined(f.session2), "precondition: quarantined")
+
+        // Retries while the failure lasts keep it quarantined and do not disturb the room.
+        for _ in 0..<4 {
+            await f.sync()
+        }
+        #expect(await f.adapter.isSyncQuarantined(f.session2))
+        #expect(await f.adapter.isSyncRecoveryPending() == false)
+
+        f.failingPlayer.set(nil)
+        try await f.set("item:k1", 1)
+        try await f.set("bonus", 2, second: true)
+        for _ in 0..<4 {
+            await f.sync()
+        }
+        #expect(await f.adapter.isSyncQuarantined(f.session2) == false, "the retry unquarantines it")
+
+        // After rejoining, a later change still reaches it (diffs and broadcast keys decode).
+        try await f.set("item:k1", 3)
+        try await f.set("score", 9, second: true)
+        await f.sync()
+        let client = await f.clientState(second: true)
+        let server = try await f.serverView(second: true)
+        #expect(client.decodeErrors.isEmpty, "decode errors \(client.decodeErrors)")
+        for (key, value) in server {
+            #expect(client.view[key] == value, "\(key): client \(String(describing: client.view[key])) must equal server \(value)")
+        }
+        #expect(client.value(at: "/items/k1") == .int(3))
+        #expect(client.value(at: "/scores/\(f.player2.rawValue)") == .int(9))
+        _ = try await f.expectConverged("the other recipient")
     }
 
     @Test("a failed plan keeps queued events; the next cycle delivers each once (opcode 107)")
