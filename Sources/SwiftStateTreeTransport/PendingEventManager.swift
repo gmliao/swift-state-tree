@@ -23,6 +23,12 @@ struct PendingEventManager: Sendable {
     var hasTargetedEvents: Bool {
         !targetedEvents.isEmpty
     }
+
+    /// Number of queued targeted events. Events are only appended until `clearAll()`, so a count
+    /// taken earlier marks which events were already queued at that point.
+    var targetedEventCount: Int {
+        targetedEvents.count
+    }
     
     /// Whether any events (targeted or broadcast) are queued.
     var hasAnyEvents: Bool {
@@ -58,20 +64,24 @@ struct PendingEventManager: Sendable {
     ///   - clientID: Client ID to filter for (optional)
     ///   - isSessionCurrent: Closure to check if session membership is current
     ///   - isPlayerCurrent: Closure to check if player membership is current
+    ///   - startIndex: Skip the first `startIndex` queued events (see `targetedEventCount`)
     /// - Returns: Array of event bodies for this client
     func pendingTargetedBodies(
         for sessionID: SessionID,
         playerID: PlayerID,
         clientID: ClientID?,
         isSessionCurrent: (SessionID, UInt64) -> Bool,
-        isPlayerCurrent: (PlayerID, UInt64) -> Bool
+        isPlayerCurrent: (PlayerID, UInt64) -> Bool,
+        startingAt startIndex: Int = 0
     ) -> [MessagePackValue] {
-        guard !targetedEvents.isEmpty else { return [] }
+        // The queue is append-only until clearAll(), so an earlier count is never past the end.
+        assert(startIndex <= targetedEvents.count, "startIndex past the end: the targeted event queue shrank")
+        guard startIndex < targetedEvents.count else { return [] }
         
         var bodies: [MessagePackValue] = []
-        bodies.reserveCapacity(targetedEvents.count)
+        bodies.reserveCapacity(targetedEvents.count - startIndex)
         
-        for event in targetedEvents {
+        for event in targetedEvents[startIndex...] {
             switch event.target {
             case .session(let s) where s == sessionID:
                 guard let stamp = event.stamp,
