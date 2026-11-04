@@ -50,31 +50,19 @@ struct SyncPhaseRecipient: Sendable {
     let playerID: PlayerID
 }
 
-/// State updates of a sync plan failed to encode. The plan fails with it, so nothing of the
-/// cycle is committed and the next plan is a recovery cycle.
-struct SyncPhaseEncodeError: Error, CustomStringConvertible {
-    struct Failure: Sendable {
-        let sessionID: SessionID
-        let playerID: PlayerID
-        let message: String
-    }
-
-    /// Room-wide failures (see `TransportAdapter.syncRoomWideFailureBound`); a failure of some
-    /// players only is handled inside the plan by dropping their unencodable patches.
-    let failures: [Failure]
-
-    var description: String {
-        let list = failures.map { "player \($0.playerID.rawValue) (session \($0.sessionID.rawValue)): \($0.message)" }
-        return "state update encoding failed for " + list.joined(separator: "; ")
-    }
+/// A state update that failed to encode (`TransportAdapter.encodeUpdatesSerially`).
+struct SyncPhaseEncodeFailure: Sendable {
+    let sessionID: SessionID
+    let playerID: PlayerID
+    let message: String
 }
 
 /// The failure `TransportAdapter.syncEncodeFaultForTesting` injects.
 struct SyncPhaseInjectedEncodeFault: Error {}
 
 extension StateUpdate {
-    /// The patches a lossy plan tries one by one (none for `.noChange`).
-    var patchesForLossyEncoding: [StatePatch] {
+    /// The patches a re-encode after an encode failure tries one by one (none for `.noChange`).
+    var patchesForDroppingEncode: [StatePatch] {
         switch self {
         case .noChange: return []
         case .diff(let patches), .firstSync(let patches): return patches
@@ -109,9 +97,11 @@ struct SyncPhaseBroadcastLog {
 ///   consumed events, applies the metric and dirty-tracking updates, and enqueues the frames as
 ///   one writer element.
 ///
-/// A plan that throws (including any encode failure) commits nothing: caches, firstSync marks,
-/// events and metrics are unchanged. The cycle's `beginSync` already cleared the dirty flags, so
-/// the next plan is a recovery cycle (`TransportAdapter.syncRecoveryPending`).
+/// An encode failure does not fail a plan: the update is re-encoded without the patches that do
+/// not encode (`droppedUpdates`). A plan that throws (extraction, or anything else that is not
+/// an encode failure) commits nothing: caches, firstSync marks, events and metrics are unchanged.
+/// The cycle's `beginSync` already cleared the dirty flags, so the next plan is a recovery cycle
+/// (`TransportAdapter.syncRecoveryPending`).
 struct SyncPhasePlan {
     /// Frames in issue order. Per session: merged broadcast frame, targeted event frames,
     /// per-player state frame.
@@ -123,10 +113,10 @@ struct SyncPhasePlan {
     var coversAllFields = false
     /// Cache updates and firstSync marks; the commit writes them to the sync engine.
     var staged = SyncEngine.StagedCaches()
-    /// A lossy plan (`TransportAdapter.lossySyncPending`).
-    var isLossy = false
-    /// Patches (or whole updates) a lossy plan dropped because they did not encode.
+    /// Patches (or whole updates) dropped because they did not encode.
     var droppedUpdates = 0
+    /// The first encode failure's message (for the dropped-updates log).
+    var dropReason: String?
     /// Change-object metric input; `nil` when metrics are not collected.
     var metrics: SyncPhaseMetrics?
     var broadcastOnlyLog: SyncPhaseBroadcastLog?
@@ -259,66 +249,42 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     
     private var initialSyncingPlayers: Set<PlayerID> = []
 
-    /// Set when a sync plan failed (any throw, including an encode failure): the next plan is a
-    /// recovery cycle.
+    /// Set when a sync plan threw (not an encode failure: those drop the patches that do not
+    /// encode and commit, see `encodeDroppingUnencodablePatches`): the next plan is a recovery
+    /// cycle.
     ///
     /// The failed plan committed nothing, so the caches still hold what every client was last
     /// sent; its `beginSync` already cleared the dirty flags, though. A recovery cycle therefore
     /// extracts `.all` and diffs against the cached baseline (`.empty` under the full-snapshot
     /// strategy), which yields every change, deletions included, at any depth. Every recipient
     /// gets its update typed `.firstSync`, even when empty: the encoders reset the dynamic key
-    /// tables of the scope and the client clears its key map for that scope, so key slots a failed
-    /// encode allocated without the client learning them are never referenced. The client applies
+    /// tables of the scope and the client clears its key map for that scope, so key slots the
+    /// failed plan's encodes allocated without the client learning them are never referenced. The client applies
     /// a firstSync's patches onto its view like a diff, so the update carries a diff.
     ///
-    /// Cleared by the commit of the next plan that covers all fields. An encode failure of some
-    /// players only never fails a plan: their unencodable patches are dropped (see
-    /// `planPerPlayerFrames`). A room-wide deterministic failure is bounded: plans become lossy
-    /// after `syncRoomWideFailureBound` failed recovery plans (`lossySyncPending`). `syncRecoveryCycles` and rate-limited error
-    /// logs make it visible.
+    /// Cleared by the commit of the next plan that covers all fields. A deterministic throw keeps
+    /// the land in recovery with nothing sent, as before plan + commit (nothing was sent then
+    /// either); `syncRecoveryCycles` and a rate-limited error log make it visible.
     private var syncRecoveryPending = false
 
     /// Sync cycles that requested `beginSync`, counted in the turn that starts the hop (tests:
     /// once the count is readable, that cycle is suspended in or past its `beginSync` hop).
     private(set) var beginSyncRequests = 0
 
-    /// Consecutive failed room-wide recovery plans after which plans are lossy: they commit
-    /// without the updates that do not encode (`lossySyncPending`).
-    static var syncRoomWideFailureBound: Int { 3 }
-
-    /// Failed plans in a row after which no delayed follow-up is scheduled any more (enough for a
-    /// recovery to reach the lossy plans).
-    static var syncFailedPlanFollowUpLimit: Int { syncRoomWideFailureBound + 2 }
+    /// Failed plans in a row after which no delayed follow-up is scheduled any more.
+    static var syncFailedPlanFollowUpLimit: Int { 3 }
 
     /// Delay of the follow-up after a failed plan on a land without periodic sync.
     static var syncFailedPlanFollowUpDelay: Duration { .milliseconds(100) }
 
-    /// Consecutive failed recovery plans whose encode failure is room-wide.
-    private var roomWideRecoveryFailures = 0
-
     /// Failed plans in a row (any kind), for the follow-up limit.
     private var consecutiveFailedPlans = 0
-
-    /// Plans are lossy: set after `syncRoomWideFailureBound` failed room-wide recovery plans,
-    /// cleared by a lossy plan that dropped nothing. A lossy plan runs like a recovery (`.all`
-    /// against the caches, every update typed `.firstSync`) and drops what does not encode
-    /// instead of failing: a deterministic failure degrades to stale fields, the caches advance
-    /// and the event queue drains. Each drop counts in `syncDroppedUpdates`.
-    ///
-    /// - Cost: while it lasts (e.g. a NaN, which differs from itself and so is in every diff),
-    ///   every cycle is recovery-style: `.all` extraction and `.firstSync` frames that reset the
-    ///   key scopes, so frames are larger and plans use more CPU.
-    /// - Granularity: a patch is dropped whole, so healthy values inside it (siblings in the same
-    ///   object or array patch) are dropped with it.
-    /// - "Dropped nothing" only means the current values encode: a field dropped earlier reaches
-    ///   the clients on its next change, not when the mode ends.
-    private var lossySyncPending = false
 
     /// When the last dropped-updates error was logged (rate limit).
     private var lastDroppedUpdatesLog: ContinuousClock.Instant?
 
     /// Patches or updates dropped because they did not encode, since the adapter started
-    /// (diagnostics): per-player drops and lossy plans.
+    /// (diagnostics). Each is data loss: the field stays stale on clients until it changes.
     private(set) var syncDroppedUpdates = 0
 
     /// Tests only: per-player state updates of a player for which this returns `true` fail to
@@ -1507,19 +1473,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// With profiling on, the plan's duration (extraction, diffs and encoding) is sampled as the
     /// encode latency; the clock is read here, never inside a plan.
     private func runSyncPhase(_ plan: () throws -> SyncPhasePlan) throws {
-        try runSyncPhase(requestsRecoveryOnFailure: true, plan)
-    }
-
-    private func runSyncPhase(requestsRecoveryOnFailure: Bool, _ plan: () throws -> SyncPhasePlan) throws {
         let planStart: ContinuousClock.Instant? = profiler != nil ? ContinuousClock.now : nil
         let planned: SyncPhasePlan
         do {
             planned = try plan()
         } catch {
-            if requestsRecoveryOnFailure {
-                syncRecoveryPending = true
-                logSyncRecoveryIfDue(error)
-            }
+            syncRecoveryPending = true
+            logSyncRecoveryIfDue(error)
             throw error
         }
         commitSyncPhase(planned)
@@ -1550,34 +1510,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             syncRecoveryCycles += 1
             profilerCounters?.incrementSyncRecoveryCycles()
         }
-        if recovery && roomWideRecoveryFailures >= Self.syncRoomWideFailureBound && !lossySyncPending {
-            lossySyncPending = true
-            logger.error("❌ Sync recovery keeps failing for every recipient: syncing without the updates that do not encode", metadata: [
-                "landID": .string(landID),
-                "failedRecoveryPlans": .string("\(roomWideRecoveryFailures)")
-            ])
+        try runSyncPhase {
+            try planSyncPhase(
+                state: state,
+                recipients: syncPhaseRecipients(),
+                events: pendingEventManager,
+                fullSnapshot: syncStrategy == .fullSnapshot,
+                recovery: recovery
+            )
         }
-        let lossy = lossySyncPending
-        do {
-            try runSyncPhase {
-                try planSyncPhase(
-                    state: state,
-                    recipients: syncPhaseRecipients(),
-                    events: pendingEventManager,
-                    fullSnapshot: syncStrategy == .fullSnapshot,
-                    recovery: recovery || lossy,
-                    lossy: lossy
-                )
-            }
-        } catch let error as SyncPhaseEncodeError where recovery {
-            roomWideRecoveryFailures += 1
-            throw error
-        }
-        roomWideRecoveryFailures = 0
     }
 
     /// Logs dropped updates (data loss), at most every 10 seconds.
-    private func logDroppedUpdatesIfDue(_ dropped: Int) {
+    private func logDroppedUpdatesIfDue(_ dropped: Int, reason: String?) {
         let now = ContinuousClock.now
         if let last = lastDroppedUpdatesLog, now - last < .seconds(10) {
             return
@@ -1586,7 +1531,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         logger.error("❌ Sync dropped updates that do not encode (data loss: those fields stay stale on clients until they change)", metadata: [
             "landID": .string(landID),
             "dropped": .string("\(dropped)"),
-            "droppedTotal": .string("\(syncDroppedUpdates)")
+            "droppedTotal": .string("\(syncDroppedUpdates)"),
+            "error": .string(reason ?? "unknown")
         ])
     }
 
@@ -1611,16 +1557,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// that covers all fields ends a recovery.
     private func commitSyncPhase(_ plan: SyncPhasePlan) {
         syncEngine.applyStaged(plan.staged)
-        if plan.isLossy {
-            lossySyncPending = plan.droppedUpdates > 0
-            if !lossySyncPending {
-                logger.info("Sync no longer drops updates", metadata: ["landID": .string(landID)])
-            }
-        }
         if plan.droppedUpdates > 0 {
             syncDroppedUpdates += plan.droppedUpdates
             profilerCounters?.incrementSyncDroppedUpdates(by: plan.droppedUpdates)
-            logDroppedUpdatesIfDue(plan.droppedUpdates)
+            logDroppedUpdatesIfDue(plan.droppedUpdates, reason: plan.dropReason)
         }
         pendingEventManager.removeConsumed(
             targeted: plan.consumedEvents.targeted,
@@ -1652,7 +1592,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// updates in the plan; encodes every frame. `fullSnapshot` (the full-snapshot strategy)
     /// extracts `.all` and diffs against the `.empty` baseline. `recovery` extracts `.all` and
     /// types every recipient's updates `.firstSync`, sent even when empty (see
-    /// `syncRecoveryPending`). `lossy` (`lossySyncPending`) drops what does not encode instead of failing.
+    /// `syncRecoveryPending`). Updates that fail to encode are re-encoded without the patches
+    /// that do not encode (`encodeDroppingUnencodablePatches`).
     ///
     /// Frames per session, in order (the outbound writer keeps it, #60):
     /// - opcode 107: the merged broadcast frame (broadcast state update + broadcast events), then
@@ -1665,13 +1606,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         recipients: [SyncPhaseRecipient],
         events: PendingEventManager,
         fullSnapshot: Bool,
-        recovery: Bool,
-        lossy: Bool = false
+        recovery: Bool
     ) throws -> SyncPhasePlan {
         var plan = SyncPhasePlan()
         // A recovery cycle without a recipient reset no client's key tables: stay in recovery.
         plan.coversAllFields = !(recovery && recipients.isEmpty)
-        plan.isLossy = lossy
         let baseline: SyncEngine.DiffBaseline = fullSnapshot ? .empty : .cached
         let extractAll = fullSnapshot || recovery
         let shouldCollectChangeMetrics = enableChangeObjectMetrics || enableAutoDirtyTracking
@@ -1713,7 +1652,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 recipients: recipients,
                 events: events,
                 resetsKeyScope: recovery,
-                lossy: lossy,
                 into: &plan
             ), shouldCollectChangeMetrics {
                 metricUpdates.append(broadcastUpdate)
@@ -1746,11 +1684,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             metricUpdates.append(contentsOf: pendingUpdates.map(\.update))
             plan.metrics = SyncPhaseMetrics(updates: metricUpdates, broadcastSnapshot: broadcastSnapshot)
         }
-        try planPerPlayerFrames(
+        planPerPlayerFrames(
             pendingUpdates,
             recipients: recipients,
             events: events,
-            lossy: lossy,
             into: &plan
         )
 
@@ -1795,14 +1732,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// opcode 107: the merged broadcast frame for every recipient, carrying the queued broadcast
     /// events. Returns the broadcast update (for the metrics), `nil` when no frame is planned.
     /// With `resetsKeyScope` it is always planned, typed `.firstSync` (broadcast key scope reset).
-    /// An encode failure is room-wide; a `lossy` plan drops the patches that do not encode, and if
-    /// the frame still fails, sends the broadcast events as event frames without the state.
+    /// If it fails to encode, it is re-encoded typed `.firstSync` without the patches that do not
+    /// encode (broadcast key scope reset, the same frame for every recipient); if even an empty
+    /// update fails, the broadcast events go as event frames without the state.
     private func planMergedBroadcastFrame(
         broadcastDiff: [StatePatch],
         recipients: [SyncPhaseRecipient],
         events: PendingEventManager,
         resetsKeyScope: Bool,
-        lossy: Bool,
         into plan: inout SyncPhasePlan
     ) throws -> StateUpdate? {
         guard resetsKeyScope || !broadcastDiff.isEmpty || events.hasAnyEvents else {
@@ -1824,41 +1761,42 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             : (broadcastDiff.isEmpty ? .noChange : .diff(broadcastDiff))
         let eventBodies = events.pendingBroadcastBodies()
         plan.consumedEvents.broadcast = events.broadcastEventCount
-        let data: Data
-        do {
-            data = try encodeMergedBroadcastFrame(update: broadcastUpdate, playerID: first.playerID, eventBodies: eventBodies)
-        } catch {
-            guard lossy else {
-                throw SyncPhaseEncodeError(
-                    failures: [SyncPhaseEncodeError.Failure(
-                        sessionID: first.sessionID,
-                        playerID: first.playerID,
-                        message: "broadcast frame: \(error)"
-                    )]
-                )
+        guard let data = encodeMergedBroadcastFrameDropping(
+            broadcastUpdate,
+            playerID: first.playerID,
+            eventBodies: eventBodies,
+            into: &plan
+        ) else {
+            for recipient in recipients {
+                appendEventFrames(eventBodies, to: recipient.sessionID, into: &plan.frames)
             }
-            // A lossy plan is a recovery plan, so the update is a firstSync: trial encodes reset
-            // the broadcast key table and the final encode defines every key it uses.
-            let patches = broadcastUpdate.patchesForLossyEncoding
-            let kept = patches.filter { patch in
-                (try? encodeMergedBroadcastFrame(update: .firstSync([patch]), playerID: first.playerID, eventBodies: [])) != nil
-            }
-            if let reduced = try? encodeMergedBroadcastFrame(update: .firstSync(kept), playerID: first.playerID, eventBodies: eventBodies) {
-                plan.droppedUpdates += patches.count - kept.count
-                data = reduced
-            } else {
-                plan.droppedUpdates += max(1, patches.count)
-                for recipient in recipients {
-                    appendEventFrames(eventBodies, to: recipient.sessionID, into: &plan.frames)
-                }
-                return nil
-            }
+            return nil
         }
         for recipient in recipients {
             plan.frames.append(SyncPhaseFrame(data: data, sessionID: recipient.sessionID))
         }
         plan.stateUpdateCount += recipients.count
         return broadcastUpdate
+    }
+
+    /// `encodeMergedBroadcastFrame`; on failure, the update without the patches that do not encode,
+    /// typed `.firstSync` (see `encodeDroppingUnencodablePatches`). `nil` if even that fails.
+    private func encodeMergedBroadcastFrameDropping(
+        _ update: StateUpdate,
+        playerID: PlayerID,
+        eventBodies: [MessagePackValue],
+        into plan: inout SyncPhasePlan
+    ) -> Data? {
+        do {
+            return try encodeMergedBroadcastFrame(update: update, playerID: playerID, eventBodies: eventBodies)
+        } catch {
+            plan.dropReason = plan.dropReason ?? "broadcast frame: \(error)"
+            let (data, dropped) = encodeDroppingUnencodablePatches(update.patchesForDroppingEncode) { patches in
+                try self.encodeMergedBroadcastFrame(update: .firstSync(patches), playerID: playerID, eventBodies: eventBodies)
+            }
+            plan.droppedUpdates += dropped
+            return data
+        }
     }
 
     /// The broadcast state update merged with `eventBodies` (opcode 107), encoded once for every
@@ -1900,39 +1838,48 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Per-player state frames in recipient order. With opcode 107 each recipient's targeted event
     /// frames come right before its per-player frame (alone when it has none), and the plan
-    /// consumes the targeted events it read. An encode failure fails the plan.
+    /// consumes the targeted events it read.
     ///
-    /// Encode failures of some recipients' players only (another player's update encoded) are
-    /// per-player data: those updates are re-encoded without the patches that do not encode (the
-    /// whole update is dropped if that still fails) and the plan commits, so only the bad values
-    /// are lost; before plan + commit the whole update was lost. A failure of every recipient's
-    /// player is room-wide and fails the plan, unless the plan is `lossy`, which drops as well.
+    /// When an update of a player fails to encode, that player's updates (every session's, merged
+    /// by path) are re-encoded once without the patches that do not encode, typed `.firstSync`,
+    /// and that one frame goes to every session of the player: the re-encode resets the player's
+    /// key table, so every session's client must reset its map with it. Only the bad values are
+    /// lost; before plan + commit the whole update was lost.
     private func planPerPlayerFrames(
         _ pendingUpdates: [PendingSyncUpdate],
         recipients: [SyncPhaseRecipient],
         events: PendingEventManager,
-        lossy: Bool,
         into plan: inout SyncPhasePlan
-    ) throws {
+    ) {
         var payloadBySession: [SessionID: Data] = [:]
         let (encoded, failures) = encodeUpdatesSerially(pendingUpdates)
-        if !failures.isEmpty {
-            let failedPlayers = Set(failures.map(\.playerID))
-            let perPlayer = recipients.contains { !failedPlayers.contains($0.playerID) }
-            guard lossy || perPlayer else {
-                throw SyncPhaseEncodeError(failures: failures)
-            }
-            let failedSessions = Set(failures.map(\.sessionID))
-            for pending in pendingUpdates where failedSessions.contains(pending.sessionID) {
-                let (data, dropped) = encodeDroppingUnencodablePatches(pending)
-                plan.droppedUpdates += dropped
-                if let data {
-                    payloadBySession[pending.sessionID] = data
-                }
-            }
-        }
         for update in encoded {
             payloadBySession[update.sessionID] = update.payload
+        }
+        if let firstFailure = failures.first {
+            plan.dropReason = plan.dropReason ?? firstFailure.message
+            var failedPlayers: [PlayerID] = []
+            for failure in failures where !failedPlayers.contains(failure.playerID) {
+                failedPlayers.append(failure.playerID)
+            }
+            for playerID in failedPlayers {
+                let updates = pendingUpdates.filter { $0.playerID == playerID }
+                var seenPaths = Set<String>()
+                var patches: [StatePatch] = []
+                for update in updates {
+                    for patch in update.update.patchesForDroppingEncode where seenPaths.insert(patch.path).inserted {
+                        patches.append(patch)
+                    }
+                }
+                let playerSlot = updates.first?.playerSlot
+                let (data, dropped) = encodeDroppingUnencodablePatches(patches) { kept in
+                    try self.encodePerPlayerUpdate(.firstSync(kept), playerID: playerID, playerSlot: playerSlot)
+                }
+                plan.droppedUpdates += dropped
+                for recipient in recipients where recipient.playerID == playerID {
+                    payloadBySession[recipient.sessionID] = data
+                }
+            }
         }
 
         let targetedEnd = useStateUpdateWithEvents ? events.targetedEventCount : 0
@@ -2169,10 +2116,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             skipLogMessage: "⏭️ Broadcast-only sync skipped: another sync operation is in progress",
             errorLogMessage: "❌ Failed to sync broadcast-only"
         ) { state in
-            // A recovery (or a lossy plan, which runs like one) needs every field and every
-            // recipient: run a full cycle (a recovery does not read dirty flags, so not
-            // clearing them here is still correct).
-            if (syncRecoveryPending || lossySyncPending) && !membershipCoordinator.isEmpty {
+            // A recovery needs every field and every recipient: run it as a full cycle (it does
+            // not read dirty flags, so not clearing them here is still correct).
+            if syncRecoveryPending && !membershipCoordinator.isEmpty {
                 try runFullSyncPhase(state: state)
                 return
             }
@@ -2234,7 +2180,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 }
             }
         } else {
-            updateSize = try planBroadcastOnlySeparateFrames(update: update, recipients: recipients, into: &plan)
+            updateSize = planBroadcastOnlySeparateFrames(update: update, recipients: recipients, into: &plan)
         }
         plan.broadcastOnlyLog = SyncPhaseBroadcastLog(patchCount: broadcastDiff.count, bytes: updateSize, mode: broadcastMode)
 
@@ -2306,12 +2252,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             )
             return nil
         }
-        let data = try encodeMergedBroadcastFrame(
-            update: update,
-            playerID: first.playerID,
-            eventBodies: events.pendingBroadcastBodies()
-        )
+        let eventBodies = events.pendingBroadcastBodies()
         plan.consumedEvents.broadcast = events.broadcastEventCount
+        guard let data = encodeMergedBroadcastFrameDropping(
+            update,
+            playerID: first.playerID,
+            eventBodies: eventBodies,
+            into: &plan
+        ) else {
+            for recipient in recipients {
+                appendEventFrames(eventBodies, to: recipient.sessionID, into: &plan.frames)
+            }
+            return nil
+        }
         for recipient in recipients {
             plan.frames.append(SyncPhaseFrame(data: data, sessionID: recipient.sessionID))
         }
@@ -2319,49 +2272,53 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         return data.count
     }
 
-    /// json / opcodeJsonArray, broadcast-only: the update encoded per recipient (no event
-    /// merging). An encode failure fails the plan. Returns the size of the last encoded frame
-    /// (for logging).
+    /// json / opcodeJsonArray, broadcast-only: the update encoded per player (no event merging),
+    /// the same frame for each of its sessions. If it fails to encode for a player, it is
+    /// re-encoded for that player typed `.firstSync` without the patches that do not encode (see
+    /// `encodeDroppingUnencodablePatches`). Returns the size of the last encoded frame (for
+    /// logging).
     private func planBroadcastOnlySeparateFrames(
         update: StateUpdate,
         recipients: [SyncPhaseRecipient],
         into plan: inout SyncPhasePlan
-    ) throws -> Int? {
+    ) -> Int? {
         var lastUpdateSize: Int?
+        var dataByPlayer: [PlayerID: Data?] = [:]
         for recipient in recipients {
-            do {
-                let playerSlot = getPlayerSlot(for: recipient.playerID)
-                let updateData = try stateUpdateEncoder.encode(
-                    update: update,
-                    landID: landID,
-                    playerID: recipient.playerID,
-                    playerSlot: playerSlot
-                )
-                lastUpdateSize = updateData.count
-
-                // Debug: Log first few bytes to verify encoding format
-                if logger.logLevel <= .trace,
-                   let preview = String(data: updateData.prefix(100), encoding: .utf8)
-                {
-                    logger.trace("📤 Encoded update preview", metadata: [
-                        "playerID": .string(recipient.playerID.rawValue),
-                        "bytes": .string("\(updateData.count)"),
-                        "preview": .string(preview)
-                    ])
+            let updateData: Data?
+            if let cached = dataByPlayer[recipient.playerID] {
+                updateData = cached
+            } else {
+                let playerID = recipient.playerID
+                let playerSlot = getPlayerSlot(for: playerID)
+                do {
+                    updateData = try encodePerPlayerUpdate(update, playerID: playerID, playerSlot: playerSlot)
+                } catch {
+                    plan.dropReason = plan.dropReason ?? "\(error)"
+                    let (data, dropped) = encodeDroppingUnencodablePatches(update.patchesForDroppingEncode) { kept in
+                        try self.encodePerPlayerUpdate(.firstSync(kept), playerID: playerID, playerSlot: playerSlot)
+                    }
+                    plan.droppedUpdates += dropped
+                    updateData = data
                 }
-
-                plan.frames.append(SyncPhaseFrame(data: updateData, sessionID: recipient.sessionID))
-                plan.stateUpdateCount += 1
-            } catch {
-                // The same broadcast update for every recipient: room-wide.
-                throw SyncPhaseEncodeError(
-                    failures: [SyncPhaseEncodeError.Failure(
-                        sessionID: recipient.sessionID,
-                        playerID: recipient.playerID,
-                        message: "\(error)"
-                    )]
-                )
+                dataByPlayer[playerID] = updateData
             }
+            guard let updateData else { continue }
+            lastUpdateSize = updateData.count
+
+            // Debug: Log first few bytes to verify encoding format
+            if logger.logLevel <= .trace,
+               let preview = String(data: updateData.prefix(100), encoding: .utf8)
+            {
+                logger.trace("📤 Encoded update preview", metadata: [
+                    "playerID": .string(recipient.playerID.rawValue),
+                    "bytes": .string("\(updateData.count)"),
+                    "preview": .string(preview)
+                ])
+            }
+
+            plan.frames.append(SyncPhaseFrame(data: updateData, sessionID: recipient.sessionID))
+            plan.stateUpdateCount += 1
         }
         return lastUpdateSize
     }
@@ -2566,13 +2523,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// Encode updates serially. Every update is attempted, so a failure is attributed to exactly
-    /// the recipients whose update failed; the caller fails the plan if any did.
+    /// the recipients whose update failed.
     private func encodeUpdatesSerially(
         _ pendingUpdates: [PendingSyncUpdate]
-    ) -> (encoded: [EncodedSyncUpdate], failures: [SyncPhaseEncodeError.Failure]) {
+    ) -> (encoded: [EncodedSyncUpdate], failures: [SyncPhaseEncodeFailure]) {
         var encoded: [EncodedSyncUpdate] = []
         encoded.reserveCapacity(pendingUpdates.count)
-        var failures: [SyncPhaseEncodeError.Failure] = []
+        var failures: [SyncPhaseEncodeFailure] = []
         for pending in pendingUpdates {
             do {
                 let data = try encodePerPlayerUpdate(pending.update, playerID: pending.playerID, playerSlot: pending.playerSlot)
@@ -2584,7 +2541,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     payload: data
                 ))
             } catch {
-                failures.append(SyncPhaseEncodeError.Failure(
+                failures.append(SyncPhaseEncodeFailure(
                     sessionID: pending.sessionID,
                     playerID: pending.playerID,
                     message: "\(error)"
@@ -2602,19 +2559,27 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         return try stateUpdateEncoder.encode(update: update, landID: landID, playerID: playerID, playerSlot: playerSlot)
     }
 
-    /// Re-encode of an update that failed: every patch that encodes on its own is kept. Returns
-    /// the frame (`nil` if even the reduced update fails) and how many patches (or, for a failed
-    /// frame, at least one update) were dropped. The update is typed `.firstSync` (clients merge
-    /// it like a diff): trial encodes reset the player's key table, and the final encode resets
-    /// the client's and defines every key it uses, so slots allocated by the failed encodes are
-    /// never referenced.
-    private func encodeDroppingUnencodablePatches(_ pending: PendingSyncUpdate) -> (Data?, dropped: Int) {
-        let patches = pending.update.patchesForLossyEncoding
-        let kept = patches.filter { patch in
-            (try? encodePerPlayerUpdate(.firstSync([patch]), playerID: pending.playerID, playerSlot: pending.playerSlot)) != nil
-        }
-        if let data = try? encodePerPlayerUpdate(.firstSync(kept), playerID: pending.playerID, playerSlot: pending.playerSlot) {
+    /// Re-encode after an encode failure: `encode` (which types the patches `.firstSync`) is tried
+    /// with each patch alone, then with every patch that encoded alone. If that fails too, an
+    /// empty update is encoded, which still resets the key scope on both sides. Returns the frame
+    /// (`nil` only if even the empty update fails) and how many patches were dropped (at least one
+    /// when the frame is `nil`).
+    ///
+    /// The `.firstSync` type matters: the failed encode and the trials may have allocated key
+    /// slots the client never learned, and the final encode resets the scope's key table (the
+    /// client resets its map) and defines every key it uses. Clients merge a firstSync's patches
+    /// like a diff. A patch is dropped whole, so healthy values inside it (siblings in the same
+    /// object or array patch) go with it; the field reaches clients again on its next change.
+    private func encodeDroppingUnencodablePatches(
+        _ patches: [StatePatch],
+        encode: ([StatePatch]) throws -> Data
+    ) -> (Data?, dropped: Int) {
+        let kept = patches.filter { patch in (try? encode([patch])) != nil }
+        if let data = try? encode(kept) {
             return (data, patches.count - kept.count)
+        }
+        if let data = try? encode([]) {
+            return (data, patches.count)
         }
         return (nil, max(1, patches.count))
     }
@@ -2674,7 +2639,18 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Thread-safe DynamicKeyTable ensures no corruption during concurrent access
         // .firstSync triggers "Define-on-first-use" for correct client mapping
         let playerSlot = getPlayerSlot(for: playerID)
-        let updateData = try encodePerPlayerUpdate(update, playerID: playerID, playerSlot: playerSlot)
+        let updateData: Data
+        do {
+            updateData = try encodePerPlayerUpdate(update, playerID: playerID, playerSlot: playerSlot)
+        } catch {
+            plan.dropReason = "\(error)"
+            let (data, dropped) = encodeDroppingUnencodablePatches(patches) { kept in
+                try self.encodePerPlayerUpdate(.firstSync(kept), playerID: playerID, playerSlot: playerSlot)
+            }
+            plan.droppedUpdates += dropped
+            guard let data else { throw error }
+            updateData = data
+        }
 
         // Only compute logging metadata if debug logging is enabled
         if logger.logLevel <= .debug {
