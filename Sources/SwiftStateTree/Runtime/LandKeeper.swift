@@ -2509,6 +2509,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// synchronous, with the dirty-flag clear in the same turn.
     private func runSyncOnlyTurn(transport: any LandKeeperTransport) {
         guard !isSyncing else { return }
+        let spikeSyncTurnStart = SpikeMetrics.now()
+        defer { SpikeMetrics.record("syncTurn", since: spikeSyncTurnStart) }
         inTurnProbeForTesting?("turn-begin")
         let result = transport.runSyncPhaseInTurn(state: state, events: [], includeSync: true)
         switch result {
@@ -2608,14 +2610,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             handler(state, ctx)
         }
 
-        // Layer-3 spike: with a running tick loop, the next tick turn includes the sync phase;
-        // otherwise this is a sync-only turn.
+        // Layer-3 spike (sync-only-turn variant): the sync loop drives a sync-only turn at its own
+        // interval; a tick turn includes the sync phase only when a handler requests it.
         if usesInTurnSync, let transport {
-            if definition.lifetimeHandlers.tickHandler != nil, tickTask != nil {
-                inTurnSyncDue = true
-            } else {
-                runSyncOnlyTurn(transport: transport)
-            }
+            runSyncOnlyTurn(transport: transport)
             return
         }
 
