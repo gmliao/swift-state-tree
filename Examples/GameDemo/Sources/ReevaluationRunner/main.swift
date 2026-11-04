@@ -241,15 +241,31 @@ struct ReevaluationRunnerMain {
         }
 
         if !first.serverEventMismatches.isEmpty {
-            // Re-check ignoring the `sequence` field: re-evaluation replays recorded inputs with
-            // their recorded sequences but does not advance the shared sequence counter past them,
-            // so events emitted during replay carry different sequence numbers even when their
-            // content is identical (known accounting gap; core fix tracked separately).
+            // Records with sequence watermarks let re-evaluation restore the shared sequence
+            // counter, so their server events must match exactly, including `sequence`.
+            // Older records carry no watermarks: replayed events can differ in `sequence`
+            // only, so re-check them ignoring that field.
+            var everyFrameHasWatermarks = maxTickId >= 0
+            if maxTickId >= 0 {
+                for tickId in 0...maxTickId {
+                    if try await source.getSequenceWatermarks(for: tickId) == nil {
+                        everyFrameHasWatermarks = false
+                        break
+                    }
+                }
+            }
+            if everyFrameHasWatermarks {
+                print("❌ Verification failed: server event mismatches=\(first.serverEventMismatches.count)")
+                for (tickId, expected, actual) in first.serverEventMismatches.prefix(5) {
+                    print("  tick \(tickId): expected \(expected.map(\.sequence)), got \(actual.map(\.sequence))")
+                }
+                exit(6)
+            }
             let contentMismatches = first.serverEventMismatches.filter { _, expected, actual in
                 !serverEventsContentMatch(recorded: expected, emitted: actual)
             }
             if contentMismatches.isEmpty {
-                print("⚠️ Server event sequence numbering differs in replay (known accounting gap); event content matches for all \(first.serverEventMismatches.count) affected ticks")
+                print("⚠️ Record has no sequence watermarks; server event sequence numbering differs in replay, event content matches for all \(first.serverEventMismatches.count) affected ticks")
             } else {
                 print("❌ Verification failed: server event content mismatches=\(contentMismatches.count)")
                 for (tickId, expected, actual) in contentMismatches.prefix(5) {
