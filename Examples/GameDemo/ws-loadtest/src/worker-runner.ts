@@ -12,6 +12,7 @@ import type { ConnectionSpec } from "./layout";
 import type { ActionConfig } from "./types";
 import { concatAll } from "./samples";
 import { startCpuSampler, type CpuSample } from "./client-cpu";
+import { untilWallClock } from "./timer-at";
 
 /** One phase for this worker. The worker lives for the whole run and keeps its connections. */
 export interface PhaseStartConfig {
@@ -226,7 +227,9 @@ async function runPhase(phase: PreparedPhase, originAt: number): Promise<WorkerP
         startEventSending(config, event, generators, phaseClients, originAt, endAt)
     );
 
-    await new Promise((resolve) => setTimeout(resolve, Math.max(0, endAt - Date.now())));
+    // Not before the phase end: an early timer would end the phase (and its CPU samples) before
+    // the measured window does.
+    await untilWallClock(endAt);
     const cpuSamples = stopCpuSampler();
     stopSending();
     stopEvents.forEach((stop) => stop());

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { timerAt } from "../src/timer-at";
+import { timerAt, untilWallClock } from "../src/timer-at";
 
 describe("timerAt", () => {
     it("re-arms when the timer fires before the wall-clock target", () => {
@@ -34,5 +34,13 @@ describe("timerAt", () => {
         armed[1]();
         expect(fired).toBe(false);
         expect(cleared).toEqual([2]);
+    });
+
+    it("untilWallClock resolves no earlier than its target", async () => {
+        for (let i = 0; i < 20; i += 1) {
+            const target = Date.now() + 3;
+            await untilWallClock(target);
+            expect(Date.now()).toBeGreaterThanOrEqual(target);
+        }
     });
 });
