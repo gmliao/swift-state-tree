@@ -4,6 +4,7 @@ import path from "node:path";
 import { runScenario } from "./run";
 import { buildReport, writeReportFiles } from "./report/render-html";
 import { readSystemMetrics } from "./system-metrics";
+import { readServerSync } from "./server-sync";
 import { LAYOUTS } from "./layout";
 import type { Layout } from "./layout";
 import { BOUNDARY_MODES, CONNECT_MODES, DEFAULT_CONNECT_RATE } from "./connect-schedule";
@@ -15,6 +16,8 @@ export interface CliArgs {
     scenarioPath: string;
     workers: number;
     systemMetricsPath?: string;
+    /** The server's transport profile JSONL; its sync counters go in the report's `serverSync`. */
+    transportProfilePath?: string;
     outputDir?: string;
     outputName?: string;
     /** `rooms` (default) or `per-connection` (legacy: one land per connection). */
@@ -48,6 +51,7 @@ export function parseArgs(argv: string[]): CliArgs {
     let scenarioPath = "scenarios/hero-defense/default.json";
     let workers = Math.max(1, os.cpus().length);
     let systemMetricsPath: string | undefined;
+    let transportProfilePath: string | undefined;
     let outputDir: string | undefined;
     let outputName: string | undefined;
     let layout: Layout = "rooms";
@@ -73,6 +77,9 @@ export function parseArgs(argv: string[]): CliArgs {
             i += 1;
         } else if (arg === "--system-metrics") {
             systemMetricsPath = args[i + 1];
+            i += 1;
+        } else if (arg === "--transport-profile") {
+            transportProfilePath = args[i + 1];
             i += 1;
         } else if (arg === "--output-dir") {
             outputDir = args[i + 1];
@@ -161,6 +168,7 @@ export function parseArgs(argv: string[]): CliArgs {
         scenarioPath,
         workers,
         systemMetricsPath,
+        transportProfilePath,
         outputDir,
         outputName,
         layout,
@@ -183,6 +191,7 @@ export async function main(): Promise<void> {
         scenarioPath,
         workers,
         systemMetricsPath,
+        transportProfilePath,
         outputDir,
         outputName,
         layout,
@@ -219,7 +228,8 @@ export async function main(): Promise<void> {
     });
     const metricsPath = systemMetricsPath ? path.resolve(process.cwd(), systemMetricsPath) : undefined;
     const systemMetrics = metricsPath && fs.existsSync(metricsPath) ? readSystemMetrics(metricsPath) : { system: [] };
-    const report = buildReport(result, systemMetrics);
+    const profilePath = transportProfilePath ? path.resolve(process.cwd(), transportProfilePath) : undefined;
+    const report = buildReport(result, systemMetrics, readServerSync(profilePath));
     const outputDirectory = outputDir ? path.resolve(process.cwd(), outputDir) : path.resolve(process.cwd(), "results");
     const baseName = outputName ?? `ws-loadtest-${Date.now()}`;
     writeReportFiles(report, outputDirectory, baseName);

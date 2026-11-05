@@ -16,6 +16,7 @@ import type { ListenCounters } from "../net-stats";
 import type { Thresholds } from "../types";
 import type { PermessageDeflateCounts } from "../worker";
 import type { SystemMetrics } from "../system-metrics";
+import { SERVER_SYNC_FIELDS, type ServerSyncSummary } from "../server-sync";
 
 export interface PhaseSummary {
     name: string;
@@ -68,9 +69,14 @@ export interface Report {
     };
     phases: PhaseSummary[];
     system: SystemMetrics["system"];
+    /**
+     * Server-side sync counters from the transport profile (`--transport-profile`); null when
+     * the run had no profile or the server predates the counters ("n/a" in the HTML).
+     */
+    serverSync: ServerSyncSummary | null;
 }
 
-export function buildReport(run: RunResult, systemMetrics: SystemMetrics): Report {
+export function buildReport(run: RunResult, systemMetrics: SystemMetrics, serverSync: ServerSyncSummary | null = null): Report {
     const phases = run.phases.map((phase) => summarizePhase(phase, run.runConfig));
     return {
         meta: {
@@ -83,7 +89,8 @@ export function buildReport(run: RunResult, systemMetrics: SystemMetrics): Repor
             listenQueue: run.listenQueue
         },
         phases,
-        system: systemMetrics.system
+        system: systemMetrics.system,
+        serverSync
     };
 }
 
@@ -311,6 +318,25 @@ export function loopDelayCell(measurement?: Pick<PhaseMeasurement, "clientLoopDe
     return `${delay.p50Ms.max.toFixed(1)} / ${delay.p99Ms.max.toFixed(1)} / ${delay.maxMs.toFixed(0)} ms`;
 }
 
+/** The server sync section: counters summed over the profile windows, or "n/a". */
+export function serverSyncSection(sync: ServerSyncSummary | null): string {
+    const rate = sync?.overdueFoldsPer1000Syncs;
+    const headline = !sync
+        ? "n/a (no transport profile, or a server without these counters)"
+        : `overdue folds per 1000 syncs: ${rate === null || rate === undefined ? "n/a (no sync cycles)" : rate.toFixed(2)}; windows with an overdue fold: ${sync.windowsWithOverdueFold} of ${sync.windows}`;
+    const rows = sync
+        ? SERVER_SYNC_FIELDS.map((field) => `
+            <tr><td class="px-4 py-1 text-slate-300">${field}</td><td class="px-4 py-1 text-slate-300">${sync.totals[field]}</td><td class="px-4 py-1 text-slate-300">${sync.maxWindow[field]}</td></tr>`).join("")
+        : "";
+    return `<section class="glass-panel rounded-xl p-6 mb-8">
+      <h2 class="text-lg font-semibold text-white mb-2">Server sync (transport profile)</h2>
+      <p class="text-slate-300 text-sm mb-2">${headline}</p>${sync ? `
+      <table class="text-sm"><thead><tr><th class="px-4 py-1 text-left">counter</th><th class="px-4 py-1 text-left">total</th><th class="px-4 py-1 text-left">max per window</th></tr></thead>
+        <tbody>${rows}
+        </tbody></table>` : ""}
+    </section>`;
+}
+
 export function renderHtml(report: Report): string {
     const json = JSON.stringify(report, null, 2).replace(/<\/script>/g, "<\\/script>");
     const hintHtml = clientJitterHint(report);
@@ -419,6 +445,7 @@ export function renderHtml(report: Report): string {
       <h2 class="text-lg font-semibold text-white mb-2">Client delay (indirect)</h2>
       <div class="text-slate-300 text-sm [&_code]:bg-slate-700 [&_code]:px-1 [&_code]:rounded [&_strong]:text-white [&_strong]:font-medium">${(hintHtml.match(/<p>([\s\S]*?)<\/p>/) ?? ["", hintHtml])[1]}</div>
     </section>` : ""}
+    ${serverSyncSection(report.serverSync)}
     <section class="glass-panel rounded-xl p-6">
       <h2 class="text-lg font-semibold text-white mb-4">Raw JSON</h2>
       <pre class="bg-slate-900/80 rounded-lg p-4 text-xs text-slate-300 overflow-x-auto max-h-96">${json}</pre>

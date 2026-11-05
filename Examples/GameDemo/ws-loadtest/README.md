@@ -40,8 +40,11 @@ node dist/cli.js \
   --scenario scenarios/hero-defense/default.json \
   --workers 4 \
   --output-dir results \
-  --system-metrics monitoring/system-metrics.json
+  --system-metrics monitoring/system-metrics.json \
+  --transport-profile results/transport-profile.jsonl
 ```
+
+`--transport-profile` reads the server's transport profile (JSONL, one window per line, written when the server runs with `TRANSPORT_PROFILE_JSONL_PATH`; `run-ws-loadtest.sh --profile` sets it and passes the file). The report's `serverSync` block then gives the server-wide sync counters over the run: committed sync cycles, skips (writer backlog, cycle in flight), in-turn deferrals, folds into a tick and folds into an overdue tick. For each it gives the total and the max in one window, plus the windows with an overdue fold and the overdue folds per 1000 sync cycles, which compares across room counts. Without a profile, or with one from a server older than these counters, the block is `null` and the HTML says "n/a".
 
 ## Room layout and connections
 
