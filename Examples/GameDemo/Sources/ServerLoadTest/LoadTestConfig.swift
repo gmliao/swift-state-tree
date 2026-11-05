@@ -34,9 +34,9 @@ struct LoadTestConfig: Sendable {
  *   second, joins evenly spaced, an in-flight cap.
  * - `aligned`: deadline-based seconds and the in-flight cap, but every send at the second's
  *   start. Not comparable with runs before deadline pacing.
- * - `legacy`: the generator before deadline pacing (join pool cap, awaited action rounds, a full
- *   second's sleep after the work). The sampler is deadline-based in every mode, so per-second
- *   samples are still not comparable with earlier runs.
+ * - `legacy`: legacy generator, deadline sampler — rows are not comparable with old reports. The
+ *   generator is the one before deadline pacing (join pool cap, awaited action rounds, a full
+ *   second's sleep after the work); the sampler is deadline-based in every mode.
  */
 enum Pacing: String, Sendable, CaseIterable {
     case spread
@@ -123,10 +123,10 @@ func printUsageAndExit() -> Never {
                                                 second, joins evenly spaced;
                                                 aligned: deadline-based seconds, every send at the
                                                 second's start (not comparable with earlier runs);
-                                                legacy: the earlier generator (join pool cap,
-                                                awaited action rounds, 1 s sleep after the work);
-                                                the sampler is deadline-based in every mode, so
-                                                per-second samples differ from earlier runs
+                                                legacy: legacy generator, deadline sampler --
+                                                rows are not comparable with old reports (join
+                                                pool cap, awaited action rounds, 1 s sleep after
+                                                the work)
       --max-in-flight <count>                   Joins and actions in flight at most in spread and
                                                 aligned (default: 10000); sends over the cap are
                                                 skipped and counted per second

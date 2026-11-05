@@ -129,13 +129,18 @@ func runServerLoadTest() async throws {
     var lastActionsCompleted = 0
     var actionsCompletedPerSecond: [Int] = []
 
-    func logProgress(sample: SecondSample) {
+    func logProgress(sample: SecondSample, pacing: (late: Int, skipped: Int, inFlight: Int)?) {
         let sentKB = Double(sample.sentBytesPerSecond) / 1024.0
         let recvKB = Double(sample.recvBytesPerSecond) / 1024.0
         let message = "t=\(sample.t)/\(totalSeconds) rooms=\(sample.roomsCreated)/\(sample.roomsTarget) players=\(sample.playersActiveExpected) " +
             "sent=\(String(format: "%.1f", sentKB))KB/s recv=\(String(format: "%.1f", recvKB))KB/s " +
-            "msgsOut=\(sample.sentMessagesPerSecond)/s msgsIn=\(sample.recvMessagesPerSecond)/s"
-        logger.info(Logger.Message(stringLiteral: message))
+            "msgsOut=\(sample.sentMessagesPerSecond)/s msgsIn=\(sample.recvMessagesPerSecond)/s" +
+            (pacing.map { " late=\($0.late) skipped=\($0.skipped) inFlight=\($0.inFlight)" } ?? "")
+        if let pacing, pacing.late > 0 || pacing.skipped > 0 {
+            logger.warning(Logger.Message(stringLiteral: message))
+        } else {
+            logger.info(Logger.Message(stringLiteral: message))
+        }
     }
 
     for t in 0 ..< totalSeconds {
@@ -189,7 +194,13 @@ func runServerLoadTest() async throws {
             estimatedUpdatesPerSecond: estimatedUpdatesPerSecond
         )
         seconds.append(sample)
-        logProgress(sample: sample)
+        // Running totals so far (the current second's stats land once its sends are issued).
+        let pacing: (late: Int, skipped: Int, inFlight: Int)? = config.pacing == .legacy ? nil : (
+            late: await clientSimulator.lateSecondsSoFar,
+            skipped: await clientSimulator.skippedByCapSoFar,
+            inFlight: await clientSimulator.inFlight.current
+        )
+        logProgress(sample: sample, pacing: pacing)
     }
 
     // Stop client simulation and let started sends finish, so the pacing stats are complete.
@@ -200,6 +211,21 @@ func runServerLoadTest() async throws {
     let peakInFlight = await clientSimulator.inFlight.peak
     let totalActionsSent = await clientSimulator.totalActionsSent
     let totalActionsCompleted = await clientSimulator.totalActionsCompleted
+    // One pacing line for the run; a warning when the generator fell behind or hit the cap.
+    if config.pacing != .legacy {
+        let lateSeconds = periodStats.filter(\.late).count
+        let skipped = periodStats.reduce(0) { $0 + $1.skippedByCap }
+        let maxLagMs = periodStats.map { LoadTestPacing.milliseconds($0.startLag) }.max() ?? 0
+        let line = "pacing \(config.pacing.rawValue): lateSeconds=\(lateSeconds) skippedByCap=\(skipped) " +
+            "maxInFlight=\(config.maxInFlight) peakInFlight=\(peakInFlight) maxStartLagMs=\(String(format: "%.1f", maxLagMs))"
+        if lateSeconds > 0 || skipped > 0 {
+            logger.warning(Logger.Message(stringLiteral: line))
+        } else {
+            logger.info(Logger.Message(stringLiteral: line))
+        }
+    } else {
+        logger.info("pacing legacy: legacy generator, deadline sampler; no per-second pacing stats")
+    }
 
     // Final cleanup
     await server.landManager.shutdownAllLands()

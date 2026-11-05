@@ -137,7 +137,8 @@ public enum LoadTestPacing {
      * starts at `deadline + offset` (at once if that has passed) or, when `limit` is full, is
      * skipped and handed to `skipped`. `onPeriod` gets each period's stats once its sends are
      * issued. A period is late when its issuing started more than `lateAfter` (default a tenth
-     * of the period) after its deadline. Returns when every started send has finished.
+     * of the period) after its deadline. Cancelling the calling task stops the loop: no
+     * further period or send starts. Returns when every started send has finished.
      */
     public static func runPeriods<Item: Sendable>(
         origin: ContinuousClock.Instant,
@@ -154,9 +155,11 @@ public enum LoadTestPacing {
         let lateThreshold = lateAfter ?? period / 10
         await withDiscardingTaskGroup { group in
             for p in 0 ..< count {
-                guard await shouldContinue() else { break }
+                guard !Task.isCancelled, await shouldContinue() else { break }
                 let deadline = origin + period * p
                 await sleep(until: deadline)
+                // `sleep(until:)` returns early when cancelled; don't start the period then.
+                if Task.isCancelled { break }
                 let inFlight = await limit.current
                 let items = await plan(p)
                 let startLag = ContinuousClock.now - deadline
@@ -164,6 +167,7 @@ public enum LoadTestPacing {
                 var skippedCount = 0
                 for scheduled in items {
                     await sleep(until: deadline + scheduled.offset)
+                    if Task.isCancelled { break }
                     if await limit.tryAcquire() {
                         started += 1
                         group.addTask {

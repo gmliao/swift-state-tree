@@ -197,6 +197,40 @@ struct LoadTestPacingTests {
         #expect(periods.filter(\.late).count >= 2)
     }
 
+    @Test("Cancelling a run stops it: no further period starts")
+    func cancellation() async {
+        let period = Duration.milliseconds(50)
+        let stats = StatsLog()
+        let planned = Counter()
+        let origin = ContinuousClock.now + .milliseconds(10)
+        let run = Task {
+            await LoadTestPacing.runPeriods(
+                origin: origin,
+                period: period,
+                count: 20,
+                limit: LoadTestPacing.InFlightLimit(cap: 100),
+                plan: { _ in
+                    await planned.increment()
+                    return (0 ..< 5).map { LoadTestPacing.Scheduled(offset: period / 5 * $0, item: $0) }
+                },
+                perform: { _ in },
+                onPeriod: { await stats.append($0) }
+            )
+        }
+        // Cancel inside period 2.
+        await LoadTestPacing.sleep(until: origin + period * 2 + .milliseconds(20))
+        run.cancel()
+        let cancelledAt = ContinuousClock.now
+        await run.value
+        #expect(ContinuousClock.now - cancelledAt < .milliseconds(30))
+        let plannedPeriods = await planned.value
+        #expect(plannedPeriods >= 2 && plannedPeriods <= 4, "planned \(plannedPeriods)")
+        // Nothing starts after the cancel, so the remaining 16+ periods never run.
+        await LoadTestPacing.sleep(until: ContinuousClock.now + period * 3)
+        #expect(await planned.value == plannedPeriods)
+        #expect(await stats.all.count <= plannedPeriods)
+    }
+
     @Test("A past deadline returns at once")
     func pastDeadline() async {
         let before = ContinuousClock.now
@@ -213,6 +247,11 @@ private actor Concurrency {
         peak = max(peak, current)
     }
     func leave() { current -= 1 }
+}
+
+private actor Counter {
+    private(set) var value = 0
+    func increment() { value += 1 }
 }
 
 private actor StatsLog {

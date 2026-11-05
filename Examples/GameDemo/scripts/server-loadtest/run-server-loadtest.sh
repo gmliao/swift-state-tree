@@ -22,6 +22,8 @@ DURATION_SECONDS=60
 RAMP_UP_SECONDS=30  # Increased from 5 to 30 for more realistic ramp-up
 RAMP_DOWN_SECONDS=10  # Increased from 5 to 10 for smoother ramp-down
 ACTIONS_PER_PLAYER_PER_SECOND=1
+PACING=spread
+MAX_IN_FLIGHT=10000
 TUI=false
 LOG_LEVEL=error
 ENABLE_MONITORING=true  # Set to false to disable monitoring for precise benchmarks
@@ -52,6 +54,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --actions-per-player-per-second)
             ACTIONS_PER_PLAYER_PER_SECOND="$2"
+            shift 2
+            ;;
+        --pacing)
+            PACING="$2"
+            shift 2
+            ;;
+        --max-in-flight)
+            MAX_IN_FLIGHT="$2"
             shift 2
             ;;
         --tui)
@@ -93,6 +103,9 @@ while [[ $# -gt 0 ]]; do
             echo "  --profile                           Enable transport profiling (decode/handle/encode/send JSONL)"
             echo "  --ramp-down-seconds <N>             (default: $RAMP_DOWN_SECONDS)"
             echo "  --actions-per-player-per-second <N>  (default: $ACTIONS_PER_PLAYER_PER_SECOND)"
+            echo "  --pacing <spread|aligned|legacy>    (default: $PACING; legacy = legacy generator, deadline"
+            echo "                                      sampler: rows are not comparable with old reports)"
+            echo "  --max-in-flight <N>                 (default: $MAX_IN_FLIGHT; spread and aligned)"
             echo "  --tui <true|false>                  (default: $TUI)"
             echo "  --log-level <level>                 (default: $LOG_LEVEL)"
             echo "  --build-mode <debug|release>        (default: auto-detect)"
@@ -278,6 +291,8 @@ swift run -c "$BUILD_MODE" ServerLoadTest \
     --ramp-up-seconds "$RAMP_UP_SECONDS" \
     --ramp-down-seconds "$RAMP_DOWN_SECONDS" \
     --actions-per-player-per-second "$ACTIONS_PER_PLAYER_PER_SECOND" \
+    --pacing "$PACING" \
+    --max-in-flight "$MAX_IN_FLIGHT" \
     --tui "$TUI" \
     --log-level "$LOG_LEVEL" 2>&1 | tee "$TEMP_DIR/test_output.log"
 

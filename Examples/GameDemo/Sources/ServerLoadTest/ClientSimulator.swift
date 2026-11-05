@@ -47,6 +47,9 @@ actor ClientSimulator {
     private(set) var elapsedSeconds = 0
     /// Per-second pacing stats (paced modes), by second.
     private(set) var periodStats: [LoadTestPacing.PeriodStats] = []
+    /// Running totals of `periodStats` for the progress log.
+    private(set) var lateSecondsSoFar = 0
+    private(set) var skippedByCapSoFar = 0
 
     init(
         config: LoadTestConfig,
@@ -108,6 +111,8 @@ actor ClientSimulator {
 
     private func record(_ stats: LoadTestPacing.PeriodStats) {
         periodStats.append(stats)
+        if stats.late { lateSecondsSoFar += 1 }
+        skippedByCapSoFar += stats.skippedByCap
     }
 
     /// Phase bookkeeping and ramp-down for second `t`, and the second's joins and actions.
