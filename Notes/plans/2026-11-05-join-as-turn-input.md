@@ -1,128 +1,197 @@
 # Join as a turn input: firstSync with OnJoin in one turn (#69, with #90 and #92)
 
-Status: plan, not started. Base: main f05d7ea.
+Status: plan **rev 2**, not started; decisions recorded (maintainer, 2026-11-05). Base: main d7ea8e3. Rev 1's review found 3 blocking, 7 should and 3 nits; the "Changes from rev 1" section maps each one to where this revision answers it.
 
 ## Problem
 
 A join today is several actor segments with awaits between them. Router path (`LandRouter` → `TransportAdapter.performJoin`, inside the membership queue):
 
-1. `await keeper.join(...)`: CanJoin (and its resolvers), the max-players check, "kick old" (`await leave`), `players[playerID] = …`, then OnJoin is **queued** as a lifecycle `PendingItem`. A land with a tick handler returns at once; OnJoin runs in a later tick turn. A tickless land waits for its input turn.
+1. `await keeper.join(...)`:
+   - CanJoin (and its resolvers), the max-players check, and "kick old" (`await leave`, which runs OnLeave);
+   - `players[playerID] = …`, then OnJoin is queued as a lifecycle `PendingItem`;
+   - a land with a tick handler returns at once (OnJoin runs in a later tick turn). A tickless in-turn land awaits its input turn (`awaitInputTurn`) before returning.
 2. `membershipCoordinator.registerPlayer`, slot allocation, `await registerSession` (WebSocketTransport actor).
-3. Back in the router: `await sendJoinResponse` (JSON handshake encoding), `sessionHandshakePhase = .joined`, then `await syncStateForNewPlayer`, which inserts the player into `initialSyncingPlayers`, reads `await keeper.currentStateLocated()`, then plans and commits the firstSync.
+3. Back in the router:
+   - `await sendJoinResponse` (JSON handshake encoding), then `sessionHandshakePhase = .joined`;
+   - `await syncStateForNewPlayer`: inserts into `initialSyncingPlayers`, reads `await keeper.currentStateLocated()`, then plans and commits the firstSync.
 
-That gives four windows:
+Windows:
 
-- **W1 (#69)**: from step 2 to the insert in step 3, the player is a joined recipient and not initial-syncing, so a sync phase sends its session a diff before its `JoinResponse` and firstSync.
-- **W2**: with a tick handler, the firstSync's state read can come before the joiner's own OnJoin has run. Its OnJoin effects then arrive as a later diff, or (with W3) not at all.
-- **W3 (#69 comment 1)**: a full cycle while the joiner is skipped clears dirty flags, so a per-player change made in that window can be lost for the joiner.
-- **W4 (#69 comment 2)**: events emitted while the joiner is initial-syncing are skipped for it and then removed at the end of the cycle, although they come after its snapshot point.
+- **W1 (#69)**: from step 2 to the insert in step 3, the player is a recipient and not initial-syncing, so it gets a diff before its JoinResponse and firstSync.
+- **W2**: on tick lands, the firstSync read can come before the joiner's own OnJoin.
+- **W3 (#69 comment 1)**: a full cycle while the joiner is skipped clears dirty flags, so a per-player change can be lost for it.
+- **W4 (#69 comment 2)**: events emitted while the joiner is initial-syncing are skipped for it, then removed.
 
-#90 (late joiners can't decode merged 107 frames) and #92 (two sessions of one player share key tables and caches; the router never kicks the old session; the old session's disconnect wipes the new one's per-player state) have the same root: per-player and per-session state that the join and disconnect paths change across awaits, with no single point where a session becomes a recipient.
+#90 (late joiners can't decode merged 107 frames) and #92 (two sessions of one player; the router never kicks the old one; the old session's disconnect wipes the new one's per-player state) share the root: per-player and per-session state changed across awaits, with no single point where a session becomes a recipient.
 
 ## Target shape (in-turn sync on)
 
-A join is admitted in one synchronous segment and becomes a recipient in one keeper turn.
+### 1. Admission: one synchronous segment with the keeper's append (B1)
 
-**Admission** (membership queue, one synchronous segment after the keeper's checks):
+- The keeper's join keeps its async part (CanJoin, resolvers, kick-old) up to the append of the OnJoin input.
+- **In the same synchronous segment as that append** (or, for a join without an OnJoin input, as the `players` insert), the keeper calls the transport's new `admitJoiningSession(...)` (through `assumeIsolated` on the shared executor, as `runSyncPhaseInTurn` does).
+- **The adapter records `.joining`** with:
+  - session, clientID, playerID, generation;
+  - the join input's sequence (or `nil`);
+  - the router-built JSON JoinResponse frame and the player slot, allocated in that segment;
+  - `transportRegistered = false`.
 
-- The keeper's part stays where it is: CanJoin, resolvers, max players and the `players` insert. OnJoin is queued as a lifecycle input, as now.
-- The adapter registers the session as **`.joining(generation)`** in the membership coordinator: it holds its player slot and its transport registration, but it is **not** a sync or event recipient. This replaces the later `initialSyncingPlayers.insert` and closes W1 on both paths (on and off).
-- Duplicate login (#92, option 1): in the same segment, every other session of the player is marked leaving: it is removed as a recipient, and its close is enqueued. Its later disconnect callback finds that it no longer owns the player (generation check, below) and clears nothing shared.
-- The membership queue is released **before** waiting for the turn. Holding it would serialize joins at one per tick, about 20 joins/s per land at 50 ms ticks, which breaks the connect ramps.
+  A `.joining` session holds its slot but is **not** a sync or event recipient. This replaces the late `initialSyncingPlayers.insert` and closes W1.
+- **The keeper doesn't await the turn** on the in-turn path, so tickless lands no longer block inside `keeper.join`. The join's caller awaits `awaitJoined(sessionID)` instead.
+- **The `await registerSession` (transport map)** runs after admission and sets `transportRegistered = true`. A session can't flip before that (see the flip conditions).
+- **The membership queue** is released before `awaitJoined`. Holding it would serialize joins at about one per tick.
 
-**The join turn**: the turn that applies the join's lifecycle input. That is the next tick turn for a land with a tick handler, or an input turn right away for a tickless land.
+### 2. The flip: only in a turn whose full sync phase commits (B2, S2)
 
-- **Joins without an OnJoin input** (reconnects, a second session, reevaluation observers, lands without OnJoin) still need a turn for the atomic flip. They get a "join-sync" input that changes no state, so it can run as an immediate sync-only-style turn without waiting for a tick. Replay determinism is unaffected, because nothing in the state changes.
-- **Inputs first**: the turn applies its inputs (OnJoin among them), then the tick handler, as now.
-- **The flip**: in the turn's output step (`runTurnOutputs`, the same synchronous segment as the sync phase), each `.joining` session whose input was applied, and whose generation is still current, flips to joined. It gets its frames in the turn's writer element, after the other recipients' frames: first the **JoinResponse**, then the **firstSync** of the end-of-turn state.
-  - **The JoinResponse** is built by the router (it stays a JSON handshake frame, and the router knows landType, instanceId and encoding). It is handed to the adapter with the join and enqueued by the turn.
-  - **The firstSync** is planned in that segment. When this turn's sync phase is due, the firstSync goes in the same plan and commit as the other recipients' diffs. When it isn't due, the plan has only the joiners' firstSyncs and leaves everyone else's cadence alone.
-- **Snapshot point = end of the join turn.** This is the boundary #69 comment 2 asks for:
-  - events emitted in the join turn, OnJoin's included, are reflected in the firstSync and not delivered to the joiner;
-  - events from the next turn on reach it.
-  - **Decision for Main**: an OnJoin event targeted at the joiner itself (a "welcome" event) is dropped by this rule. Option B delivers events *targeted at the joiner* from its join turn as separate event frames after its firstSync. Recommendation: A (the rule as stated) now, and B as a follow-up if a game needs it.
-- **Router and legacy join paths** both call `performJoin(…, joinResponse:)`. It returns after admission (slot known), and a second call, `awaitJoined(sessionID)`, resolves when the flip has happened (or fails if the session ended first). The router sets `.joined` in its handshake as before, but no longer calls `sendJoinResponse`/`syncStateForNewPlayer` itself on the in-turn path.
+A `.joining` session flips to joined in the output step of the **first turn whose full sync phase commits** after all of these hold:
 
-What this removes on the in-turn path:
+- its join input's sequence has been applied (or it has none);
+- `transportRegistered`;
+- its generation is current;
+- it is within the turn's flip budget (S6, default 64 per land per turn, configurable).
 
-- **W1**: there is no recipient before the flip.
-- **W2**: the firstSync reads the state after OnJoin, in the same segment.
-- **W3**: the joiner's cache is staged from the snapshot of the segment that commits it, and no cycle runs between the read and the commit.
-- **W4**: the boundary is the snapshot point.
+The condition is "this input's sequence has been applied", not "applied in this turn" (B1). In that commit, the joiner's **firstSync** (end-of-turn state) is planned with the other recipients' diffs, and the joiner's frames go after theirs in the turn's writer element: the **JoinResponse**, then the **firstSync**.
 
-`initialSyncingPlayers` is no longer used on that path.
+Why the flip waits for a committed sync, not just any turn (B2): after this commit, the shared broadcast cache equals the end-of-turn state, which equals the joiner's firstSync. So the joiner's first diff is computed against the same baseline as everyone else's. A flip at a non-committing turn would leave the joiner's next diff based on an older broadcast cache, and sequences like A→B→A or spawn→despawn between syncs would produce no patch: a stuck value or a ghost entity. Rev 1's "accepted overlap" is withdrawn.
 
-**One accepted overlap**: after a firstSync taken at a turn whose sync wasn't due, the next cycle's broadcast diff (computed from the shared broadcast cache) can repeat changes the joiner already has. Patches are absolute (`set`/`remove` by path), and today's firstSync already relies on this, so I'll keep it and test it.
+How each kind of land gets that commit:
 
-**Leave and disconnect**: a disconnect before the flip enqueues the leave lifecycle input after the join input (same input order), and the turn skips the flip for an ended generation. `handleDisconnectQueued` clears per-player state (sync cache, firstSync mark, slot) only when the disconnecting session still owns the player (generation check). This is #92 comment 1, and it is needed on both paths.
+- **Tick lands**: the next due sync (coincident-sync rule). Join latency is at most one sync interval plus one tick, and the cadence is unchanged.
+- **Tickless lands and joins without an OnJoin input**: admission requests a sync-only turn (the existing `runSyncOnlyTurn` path). No extra input or output sequence is created (S3).
+
+How each early return in `runSyncPhaseInTurn` affects the flip (S2):
+
+| Early return | Flip? |
+|---|---|
+| `!includeSync` | no (not a sync turn) |
+| `.deferredBackPressure` | no; the joiner waits for the next commit |
+| freeze (`debugDeferSyncIfFrozen`) | no |
+| `outboundWriter.isFinished` | no; the joiner's waiter fails (teardown, B3) |
+| `membershipCoordinator.isEmpty` | **changed**: the guard counts `.joining` sessions, so the first joiner on an empty land flips |
+
+**Back-pressure** (`hasPendingStateElement`) is writer-wide, so a persistently backlogged writer delays every join. That's bounded by the join timeout (B3). The deferral count is reported (`deferredTurns` on the measure branch), and the 7600X runs check it.
+
+**Events** (the snapshot is the boundary; decision 1 = B):
+
+- Broadcast and targeted events emitted after the join input was applied and before the flip are reflected in the firstSync, and not delivered.
+- The joiner isn't a recipient of the flip turn's merged 107 frame. Its first merged frame comes from a later turn, so opcodeMessagePack doesn't re-deliver unstamped broadcast events already in the snapshot.
+- **Exception (decision 1 = B)**: events *targeted at the joiner* (its player, session or client) from its OnJoin, or emitted while it is `.joining`, are kept per joining session and enqueued right after its firstSync, in the same writer element, as event frames.
+
+**Encode failure at the flip (S5)**: the JoinResponse is still sent and the joiner flips. Its firstSync goes through the existing `skippedJoiner` path, so it isn't marked as having received its firstSync, and the next full cycle's from-empty path gives it its whole view.
+
+**The recorder (S3)**:
+
+- `planFirstSync` no longer sets `isFirstSync` for the whole plan. A merged plan records the turn as usual, with each joiner's seed (`digest.seeds[playerID]`) as that player's reset point.
+- A joiner-only commit (a sync-only turn) records as a sync-only turn with seeds.
+- A kick (see §4) records a clear marker for the kicked session's player before the new seed.
+
+### 3. Failure, teardown, timeout and freeze (B3)
+
+- **The router keeps the session binding** (`sessionToBoundLandID`) until `awaitJoined` returns. On failure, it routes the session's disconnect to the adapter as usual, so the normal cleanup runs: membership, slot, transport registration, and `keeper.leave`, which queues OnLeave after OnJoin.
+- **`awaitJoined` fails** when:
+  - the session's generation ends (a disconnect or a kick while `.joining`);
+  - the land is torn down, destroyed or recreated (#116), at which point every waiter fails;
+  - it times out (`JOIN_FLIP_TIMEOUT`, default 10 s, read through EnvHelpers).
+
+  On a failure, the router sends a join error and the session cleanup above runs.
+- **Freeze**: no sync commits while frozen, so joins admitted before the freeze wait, and the timeout keeps running. A join that times out under freeze is rejected and cleaned up. New admissions during a freeze are allowed (they wait the same way). This is documented on `debugFreeze`.
+
+### 4. Duplicate login: newest wins (#92 option 1; S4)
+
+- **Semantics**: a join of player P while P has sessions = **OnLeave, then OnJoin** (the keeper's kick-old path already does this). The new session is P's only session.
+- **The adapter side** runs in the admission segment: every other session of P is marked leaving, stops being a recipient, has its inbound dropped and its close enqueued. Its later disconnect callback finds that it doesn't own P any more, and clears nothing shared (PR 1's check, which this extends with the generation).
+- **The keeper-kick → admission gap (S4)**: between the kick's `leave` and the new append, the old session can still send actions as P. The keeper's action and event intake checks the sender's `clientID` against `players[P].clientID`, and rejects a mismatch (logged and counted). This also covers the old session after admission until its close lands.
+- **`keeper.leave(playerID:clientID:)` (nit)**: clientIDs are short (6 hex). `leave` and the intake check also compare the session (`lastSessionID`), so two clients with colliding IDs can't remove each other.
+- **The legacy path** (`handleJoinRequest`) drops `handleDuplicateLoginIfNeeded`, whose check goes stale across `onDisconnect`, and gets the same admission-segment kick.
+
+### 5. Router handshake (S1)
+
+- After `performJoin` returns (admission done), the router sets a new **`.joinPending`** phase. It accepts the negotiated message encoding (MessagePack included) and forwards to the adapter.
+- The adapter **defers inbound messages from `.joining` sessions**, keeping them in order and applying them after the flip; they are dropped if the join fails. A client can't normally send before its JoinResponse, which only goes out at the flip. This covers a client that acts on a late or duplicated JoinResponse.
+- After `awaitJoined`, the phase becomes `.joined`.
 
 ## Off path (`IN_TURN_SYNC=false`, the kill switch)
 
 It keeps today's structure, plus the parts that don't need a turn:
 
 - `.joining` at admission (W1);
-- the disconnect generation check;
-- the duplicate-login kick in the admission segment (#92 on the router path, and the legacy race in #92 comment 2: check and kick under the membership queue, all sessions of the player).
+- the disconnect ownership check;
+- newest-wins in the admission segment;
+- the keeper intake clientID/session check;
+- the encode-failure rule: `.joining` is cleared when its firstSync attempt ends, whatever the outcome (S5).
 
-W2–W4 stay as known limits of the kill-switch path and are documented in code.
+W2–W4 stay as documented limits of the kill-switch path (decision 2).
 
-**Decision for Main**: is parity on the off path required before reruns? Recommendation: no, since reruns use in-turn sync. The off path only has to stay correct for what it promised before.
+## #90: broadcast key table for joiners (decision 3 = (ii))
 
-## #90: broadcast key table for joiners
-
-The join turn gives a place where no 107 frame can come between the joiner's firstSync and its first broadcast frame, but the key table still has to reach the joiner. There are two options, and the choice is **Main's decision**:
-
-- **(i) Broadcast-scope reset per join turn.** It reuses the existing reset mechanism (`keyScopeResetPending`, firstSync-typed updates): in a turn that flips a joiner, every recipient's broadcast scope is reset and redefined, at most once per turn.
-  - Pros: no protocol or SDK change, and the code path is already tested.
-  - Cost: definitions for every broadcast key go to every client on every turn that admits a joiner (ramps: up to 20 resets/s). Slots are renumbered for everyone, which goes against #90's "Expected" line; that line would need amending.
-- **(ii) A key-table frame for the joiner only.** After its firstSync and before any 107, the joiner gets a "define broadcast slots" frame holding the current broadcast table (slot → key; the whole table, not only keys present in the state, because a removed and re-added key comes back as a bare slot).
-  - Needs: a new frame kind, an encoder "dump without reset" and SDK handling.
-  - Pros: no cost to other clients and no renumbering.
-
-**Recommendation: (ii).** Its cost doesn't scale with joins × clients, and the ramp is exactly when we measure. It's a protocol change, so it gets its own PR and an SDK version note.
-
-Reconnects take the same path (a reconnect is a join with a new session), so the SDK clearing both maps on reconnect is covered.
-
-## #92: duplicate login and per-player state
-
-- **Option 1** (one session per player; the newest wins) falls out of the admission segment above. It also removes these #92 symptoms:
-  - (a) and (b): shared per-player key tables;
-  - the shared diff cache;
-  - the per-player firstSync mark;
-  - the wiped state on the old session's disconnect, which is the generation check.
-- **Option 2** (multi-session, `.perSession` scopes and caches) is not planned. It would be needed for multi-device play.
+- **(ii)**: after its firstSync and before any 107 frame (both in the flip's writer element), the joiner gets a **broadcast key-table frame** with the **whole current broadcast table** (slot → key, not only the keys present in the state, because a key that was removed and re-added comes back as a bare slot). This needs an encoder "dump without reset" and SDK handling.
+- **Version gate**: the client advertises its SDK protocol version in the handshake (join metadata). A client without support gets the (i) behaviour instead: the flip turn resets the broadcast scope for every recipient (existing `keyScopeResetPending` machinery, at most once per turn).
+- **Reconnects** take the same path (a reconnect is a join with a new session), so the SDK clearing both maps on reconnect is covered.
 
 ## Tests
 
-All tests force the interleaving with holds at the awaits (the keeper's `joinHook`, `inTurnProbeForTesting` and adapter holds), not with timing.
+Interleavings are forced with holds at the awaits (keeper `joinHook`, `inTurnProbeForTesting`, adapter holds), never with timing. The test numbers are referenced in the PR split.
 
-1. **No frame before firstSync (W1)**: hold a join between admission and its turn, and run a tick turn with a due sync. The joiner's session has received nothing. In its join turn it receives JoinResponse, then firstSync, then only later diffs. Its final view equals the server projection.
-2. **OnJoin in the firstSync (W2)**: a tick land whose OnJoin adds a player entity. The firstSync contains it, and no later diff re-adds it as new.
-3. **No lost per-player change (W3)**: a per-player change by another input in the join turn, and one in the next turn. Both are in the joiner's view, and none is lost to dirty-flag clearing.
-4. **Event boundary (W4)**: events emitted in the join turn don't reach the joiner (their effects are in its firstSync), and events from the next turn do. Shown for opcodeJsonArray and opcodeMessagePack, broadcast and targeted.
-5. **Disconnect before the flip**: the join input is applied, the turn skips the flip, no frame goes to the ended session, OnLeave runs after OnJoin, and the slot is released once.
-6. **Old session's disconnect (#92 comment 1)**: join P as S1, then join P as S2 with S2 held before its turn, and disconnect S1. P's slot, cache and joining state are unchanged, and S2 flips normally.
-7. **Duplicate login, router and legacy (#92)**: two joins of P, the first held before admission. Afterwards exactly one session of P is joined, the other is closed, and `allJoinedEntries` has one entry.
-8. **Joins don't serialize on the turn**: 200 joins to one tick land are admitted while the first waits for its turn, and all flip in one or two turns.
-9. **#90**: the reproduction from the issue (opcodeMessagePack plus path hashes, a broadcast `[String: T]`): join A, add k, sync; join B, mutate k, sync. B's frames decode with the SDK rules, with no "used before definition". SDK side: feed the captured frames to the runtime. Reconnect variant included.
-10. **Off path**: tests 1, 6 and 7 with `IN_TURN_SYNC=false`. W2–W4 are documented as limits and not tested.
-11. **E2E**: hero-defense scenarios in `Tools/CLI/scenarios/` with a late joiner (after monsters spawned), a reconnect, and two clients with one playerID, under messagepack with gating `assertConverged`. They run on both CI matrix legs.
+1. **W1**: hold between admission and the flip, and run a tick turn with a due sync. The joiner received nothing. At the flip it receives JoinResponse, then firstSync, then only later diffs, and its view equals the server projection.
+2. **W2**: a tick land whose OnJoin adds an entity. The firstSync contains it, and no later diff re-adds it.
+3. **W3**: per-player changes by other inputs in the OnJoin turn, in a non-due turn before the flip, and after the flip are all in the joiner's view.
+4. **W4 and decision 1**: broadcast events between the join input and the flip don't reach the joiner. Events targeted at it (OnJoin's included) arrive after its firstSync, and events from later turns arrive normally. opcodeJsonArray and opcodeMessagePack (unstamped broadcast events at a non-due flip).
+5. **B2 regressions**: A→B→A and spawn→despawn between the OnJoin turn and the flip, and between the flip and the next sync. The joiner's view equals the projection, with no stuck value and no ghost.
+6. **B1 hops**, forced holds at:
+   - the append → admission callback (a tickless land, whose input turn runs immediately);
+   - `registerSession` (the flip waits for `transportRegistered`);
+   - `awaitJoined` → router `.joined`.
 
-## PR split
+   No hang, and the frame order holds.
+7. **Early returns (S2)**: back-pressure (flip deferred, then done), freeze (deferred, and the timeout rejects with cleanup), the first joiner on an empty land (flips), and `!includeSync` turns (no flip).
+8. **B3 failures**: a disconnect while `.joining`, a kick while `.joining`, destroy/recreate while `.joining`, and a timeout. Each one: the waiter fails, the router sends a join error, and the slot, membership, transport registration and `keeper.players[P]` are cleaned up, with OnLeave after OnJoin.
+9. **Old session's disconnect (#92 comment 1)**: covered by PR 1's tests, extended with the generation.
+10. **Newest wins (#92)**: router and legacy. Two joins of P, the first held before admission. Afterwards exactly one joined session, the old one closed, the old session's action in the kick → admission gap rejected, and the kick's clear marker recorded.
+11. **Flip budget (S6)**: 200 joins on one land flip over ceil(200/64) commits, all succeed, and none hits the timeout.
+12. **Encode failure at the flip (S5)**, on and off: the JoinResponse is sent, the from-empty repair follows, and `.joining` is never stuck.
+13. **Handshake (S1)**: a MessagePack action arriving right after the JoinResponse is applied, in order. One arriving while `.joining` is applied after the flip.
+14. **Recorder (S3)**: a merged plan with a joiner records the turn plus the joiner's seed. A joiner-only commit records a sync-only turn. Replay of a recorded run with late joins has 0 mismatches.
+15. **#90**: the issue's reproduction (opcodeMessagePack plus path hashes, a broadcast `[String: T]`, a key removed and re-added) for the late joiner and for a reconnect. SDK runtime test with the captured frames, plus the old-SDK fallback.
+16. **Off path**: tests 1, 9, 10 and 12 with `IN_TURN_SYNC=false`.
+17. **E2E** (`Tools/CLI/scenarios/`): a late joiner after monsters spawned, a reconnect, and two clients with one playerID, under messagepack with gating `assertConverged`, on both CI matrix legs.
 
-Each PR is core, reviewed, with `Closes`/`Refs` as listed. The order keeps each one small and leaves main shippable.
+## PR split (order changed: duplicate login before the turn work)
 
-1. **Disconnect ownership** (Refs #92): the generation check in `handleDisconnectQueued`, plus test 6. Small and independent.
-2. **`.joining` at admission** (Refs #69): replaces the late `initialSyncingPlayers` insert on both paths, with tests 1 and 10 (W1 only). This fixes W1 even before the turn work.
-3. **Join as a turn input** (Closes #69): the join and join-sync inputs, the flip in `runTurnOutputs`, `awaitJoined`, and the router and legacy paths moved onto it, with tests 2–5, 8 and test 1 redone at the turn level. The largest PR; it gets a Notes/plans design check before review.
-4. **Duplicate login policy** (Closes #92): the admission-segment kick for router and legacy, with test 7 and the two-sessions E2E.
-5. **Broadcast key table for joiners** (Closes #90): the encoder, frame kind and SDK, with test 9 and the late-joiner and reconnect E2E.
+1. **Disconnect ownership** (Refs #92): clear per-player state only for the player's last session, checked after the `keeper.leave` await. In review as its own PR now.
+2. **`.joining` at admission** (Refs #69): on both paths, with the admission-in-the-append-segment callback (B1). Tests 1 (on and off) and 6 (first two hops).
+3. **Newest wins** (Closes #92): the admission-segment kick for router and legacy, the keeper intake clientID/session check, and the `leave` session check. Tests 10 and 16 (part).
+4. **Join as a turn input** (Closes #69):
+   - the flip at committed sync, flip conditions and budget, `awaitJoined`, failures and timeout, freeze;
+   - the router `.joinPending` phase, adapter inbound deferral, the recorder changes, and the targeted-event exception.
 
-**Measurements**: PR 3 changes join latency for tick lands (a join completes at its turn, at most one tick later) and moves firstSync work into the turn. Before merge, the json50 and ramp runs on the 7600X need: zero join failures under the new ws-loadtest join checks, and the turn p99 from the measure branch compared with the current baseline.
+   Tests 2–8 and 11–14. It gets a design check before review and 7600X runs before merge (below).
+5. **Broadcast key table for joiners** (Closes #90): the encoder dump, frame kind, SDK and version gate. Test 15 and the E2E.
 
-## Decisions requested
+**Before PR 4 merges** (7600X):
+- json50 and ramp runs with zero join failures under the new ws-loadtest checks;
+- turn p99, `deferredTurns` and join latency (JoinResponse arrival − connect) against the current baseline, from the measure branch.
 
-1. An OnJoin event targeted at the joiner: A (not delivered, since the snapshot is the boundary) or B (delivered after the firstSync)? Recommendation: A.
-2. Off-path parity for W2–W4 before reruns? Recommendation: no.
-3. #90 approach: (i) reset per join turn, or (ii) a key-table frame for the joiner? Recommendation: (ii).
-4. #92 policy: option 1 (one session per player, newest wins)? Recommendation: yes.
+## Changes from rev 1
+
+| Review item | Answered in |
+|---|---|
+| B1 the flip can miss `.joining` | §1 (admission in the append segment, no turn await in `keeper.join`), §2 (flip on "sequence applied" + `transportRegistered`), test 6 |
+| B2 overlap loses updates | §2 (flip only at a committed sync; overlap withdrawn), tests 4 and 5 |
+| B3 post-admission failure leaks | §3, test 8 |
+| S1 handshake race | §5, test 13 |
+| S2 early returns, empty land, back-pressure | §2 table, test 7 |
+| S3 recorder | §2 recorder, test 14; no extra input or output sequence for joins without OnJoin |
+| S4 reconnect semantics, kick → admission gap | §4, test 10 |
+| S5 encode failure | §2 and the off path, test 12 |
+| S6 flip budget | §2, test 11 |
+| S7 forced-hold tests, A→B→A, spawn/despawn, MessagePack events | tests 4–8 |
+| Nit: version gate | #90 section |
+| Nit: duplicate login before the turn work | PR split (3 before 4) |
+| Nit: `leave` clientID collisions | §4 |
+
+## Decisions (maintainer, 2026-11-05)
+
+1. **An OnJoin event targeted at the joiner: B.** It is delivered right after the firstSync, never dropped. The same holds for other events targeted at the joiner while it is `.joining`.
+2. **Off path:** only the admission fix (`.joining`, the generation check, the newest-wins kick). W2–W4 stay documented limits.
+3. **#90: option (ii).** A joiner-only key-table frame (a new frame kind plus TS SDK support), gated on an SDK version in the handshake. A client below that version falls back to the per-turn broadcast-scope reset (i).
+4. **#92: one session per player, newest wins.** For the game this is OnLeave, then OnJoin.
