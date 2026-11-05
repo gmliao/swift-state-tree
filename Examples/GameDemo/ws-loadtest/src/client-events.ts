@@ -40,6 +40,9 @@ export function eventRandom(runSeed: number, eventName: string, connectionKey: s
 /** The hero-defense world, in world units (`GameConfig.WORLD_WIDTH` / `WORLD_HEIGHT`). */
 export const HERO_DEFENSE_WORLD = { width: 128, height: 72 } as const;
 
+/** The visibility-test arena, in world units (`VisibilityTestConfig.arenaSize` on both axes). */
+export const VISIBILITY_TEST_ARENA = { width: 100, height: 100 } as const;
+
 /** A point drawn uniformly inside `[0, width) × [0, height)`, in world units (floats). */
 export function uniformPoint(random: Random, bounds: { width: number; height: number }): { x: number; y: number } {
     return { x: random() * bounds.width, y: random() * bounds.height };
@@ -67,8 +70,9 @@ export async function loadFixedPointTypes(): Promise<FixedPointTypes> {
 
 /**
  * The payload generators a scenario can name. `moveTo` gives a `MoveToEvent` (generated client
- * type) whose target is drawn uniformly inside the hero-defense world and encoded by the SDK's
- * `Position2`, so the fixed-point scale is the SDK's, not a hand-written one.
+ * type) whose target is drawn uniformly inside the hero-defense world, and `moveViewer` a
+ * visibility-test `MoveViewerEvent` whose position is drawn uniformly inside its arena. Both are
+ * encoded by the SDK's `Position2`, so the fixed-point scale is the SDK's, not a hand-written one.
  */
 export function payloadGenerators(types: FixedPointTypes): Record<string, PayloadGenerator> {
     return {
@@ -77,12 +81,21 @@ export function payloadGenerators(types: FixedPointTypes): Record<string, Payloa
             const target = new types.Position2(new types.IVec2(x, y, false), false);
             const event: MoveToEventWire = { target: target.toJSON() as MoveToEventWire["target"] };
             return event as unknown as Record<string, unknown>;
+        },
+        moveViewer: (random) => {
+            const { x, y } = uniformPoint(random, VISIBILITY_TEST_ARENA);
+            const position = new types.Position2(new types.IVec2(x, y, false), false);
+            const event: MoveViewerEventWire = { position: position.toJSON() as MoveViewerEventWire["position"] };
+            return event as unknown as Record<string, unknown>;
         }
     };
 }
 
 /** `MoveToEvent` (`Examples/GameDemo/WebClient/src/generated/defs.ts`) as JSON on the wire. */
 type MoveToEventWire = { target: { v: { x: number; y: number } } };
+
+/** `MoveViewerEvent` (visibility-test) as JSON on the wire. */
+type MoveViewerEventWire = { position: { v: { x: number; y: number } } };
 
 /** The moving-players overlay: `MoveTo` events with targets from the `moveTo` generator. */
 export const MOVE_TO_EVENT_NAME = "MoveTo";

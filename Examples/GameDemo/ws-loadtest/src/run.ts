@@ -404,7 +404,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
                             type: "prepare",
                             config: {
                                 serverUrl: scenario.serverUrl,
-                                landType: "hero-defense",
+                                landType: scenario.landType,
                                 phaseName: phase.name,
                                 actions: scenario.actions,
                                 events,

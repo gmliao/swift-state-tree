@@ -4,6 +4,7 @@ import { describe, it, expect } from "vitest";
 import { decode as msgpackDecode, encode as msgpackEncode } from "@msgpack/msgpack";
 import {
     HERO_DEFENSE_WORLD,
+    VISIBILITY_TEST_ARENA,
     effectiveEvents,
     eventRandom,
     loadFixedPointTypes,
@@ -276,3 +277,26 @@ class FakeSocket {
     }
     close(): void {}
 }
+
+describe("moveViewer payload generator", () => {
+    it("gives a MoveViewerEvent with an integer fixed-point position inside the visibility-test arena", async () => {
+        const types = await loadFixedPointTypes();
+        const { FIXED_POINT_SCALE } = await import("@swiftstatetree/sdk/core/deterministic-math");
+        const moveViewer = payloadGenerators(types).moveViewer;
+        const random = eventRandom(7, "MoveViewer", "k");
+        const shadow = eventRandom(7, "MoveViewer", "k");
+        for (let i = 0; i < 2_000; i += 1) {
+            const payload = moveViewer(random) as { position: { v: { x: number; y: number } } };
+            expect(Object.keys(payload)).toEqual(["position"]);
+            const point = uniformPoint(shadow, VISIBILITY_TEST_ARENA);
+            const { x, y } = payload.position.v;
+            expect(Number.isInteger(x) && Number.isInteger(y)).toBe(true);
+            expect(x).toBeGreaterThanOrEqual(0);
+            expect(x).toBeLessThanOrEqual(100 * FIXED_POINT_SCALE);
+            expect(y).toBeGreaterThanOrEqual(0);
+            expect(y).toBeLessThanOrEqual(100 * FIXED_POINT_SCALE);
+            expect(Math.abs(x - point.x * FIXED_POINT_SCALE)).toBeLessThanOrEqual(1);
+            expect(Math.abs(y - point.y * FIXED_POINT_SCALE)).toBeLessThanOrEqual(1);
+        }
+    });
+});

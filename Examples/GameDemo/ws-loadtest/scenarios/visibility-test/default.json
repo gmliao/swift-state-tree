@@ -1,0 +1,69 @@
+{
+  "name": "visibility-test-default",
+  "serverUrl": "ws://localhost:8080/game/visibility-test",
+  "landType": "visibility-test",
+  "syncIntervalMs": 50,
+  "actions": [
+    {
+      "name": "SetMotionAction",
+      "weight": 1,
+      "payloadTemplate": {
+        "enabled": true
+      }
+    }
+  ],
+  "events": [
+    {
+      "name": "MoveViewer",
+      "ratePerSecond": 2,
+      "payloadGenerator": "moveViewer"
+    }
+  ],
+  "phases": {
+    "preflight": {
+      "durationSeconds": 10,
+      "rooms": 20,
+      "playersPerRoom": 4,
+      "actionsPerSecond": 1,
+      "verify": true,
+      "thresholds": {
+        "errorRate": 0.001,
+        "disconnectRate": 0.001,
+        "rttP95": 100,
+        "rttP99": 250,
+        "updateP95": 70,
+        "updateP99": 250
+      }
+    },
+    "steady": {
+      "durationSeconds": 60,
+      "rooms": 200,
+      "playersPerRoom": 4,
+      "actionsPerSecond": 1,
+      "verify": false,
+      "thresholds": {
+        "errorRate": 0.001,
+        "disconnectRate": 0.001,
+        "rttP95": 100,
+        "rttP99": 250,
+        "updateP95": 70,
+        "updateP99": 250
+      }
+    },
+    "postflight": {
+      "durationSeconds": 10,
+      "rooms": 20,
+      "playersPerRoom": 4,
+      "actionsPerSecond": 1,
+      "verify": true,
+      "thresholds": {
+        "errorRate": 0.001,
+        "disconnectRate": 0.001,
+        "rttP95": 100,
+        "rttP99": 250,
+        "updateP95": 70,
+        "updateP99": 250
+      }
+    }
+  }
+}

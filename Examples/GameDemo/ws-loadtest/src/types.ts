@@ -33,6 +33,8 @@ import type { EventConfig } from "./client-events";
 export interface Scenario {
     name: string;
     serverUrl: string;
+    /** Land type sent in every join; from the scenario, else the `/game/<landType>` server path. */
+    landType: string;
     /** Server StateSync interval in ms (e.g. 100 for 10 Hz). Used to derive default updateP95/updateP99 = interval + margin. */
     syncIntervalMs?: number;
     phases: Record<PhaseName, PhaseConfig>;

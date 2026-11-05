@@ -79,13 +79,16 @@ node dist/cli.js \
 
 ## Scenario Format
 
-Scenarios are JSON files under `scenarios/hero-defense/`. Each contains:
+Scenarios are JSON files under `scenarios/<landType>/` (`hero-defense/`, `visibility-test/`). Each contains:
+- `serverUrl` and `landType` (optional): the land type sent in every join. Without `landType` it is the last segment of a `/game/<landType>` server path, else `hero-defense`.
 - `actions` with weights + payload templates
 - `phases` (`preflight`, `steady`, `postflight`) with durations, rooms, players, rates, and thresholds
 
 - `events` (optional): client events every player sends, e.g. `[{ "name": "MoveTo", "ratePerSecond": 2, "payloadGenerator": "moveTo" }]`, and `eventSeed` (optional integer, default 1) for the payload generators.
 
 **Moving players** (`--move-to-rate <n>`, `--event-seed <n>`): players send `MoveTo` client events at `n` per second each, overlaid on any scenario and any CLI overrides. A positive rate sets (or replaces) the scenario's `MoveTo` event; `0` removes it; without the flag the scenario's `events` stand. The `moveTo` generator draws each target uniformly inside the hero-defense world (128 × 72) from a PRNG seeded per connection by the event seed, the event name and the connection, so with the same seed every connection draws the same target sequence: its n-th target is the same in every run. How many targets a connection sends depends on when it joined, so two runs share the same prefix of each sequence, not necessarily the same count. Targets are encoded with the SDK's `Position2`/`IVec2` (fixed point), loaded from `@swiftstatetree/sdk` (a `file:` dependency on `sdk/ts`; `npm install` builds it). `meta.runConfig` records the effective `events`, the `eventSeed` and the client's `nodeVersion`. `scenarios/hero-defense/moving-players.json` is `default.json` with `MoveTo` at 2/s as an example; for capacity runs, add `--move-to-rate 2` to the usual scenario and overrides instead.
+
+**Visibility test land** (`scenarios/visibility-test/`, #65): the land on `/game/visibility-test` moves 40 entities and syncs them through a per-player filter, so it exercises per-player projection at load. Its scenarios use 4 players per room (one per viewer slot), `SetMotionAction { enabled: true }` as the RTT action (it keeps the entities moving), and `MoveViewer` client events at 2/s from the `moveViewer` generator, which draws each viewer position uniformly inside the 100 × 100 arena the same way `moveTo` does. The land has no `StateSync` and ticks every 50 ms; the scenarios set `syncIntervalMs: 50` and `updateP95: 70`. In a 1-room smoke run on a Mac, clients saw about 39 state updates per player per second, with intervals of p50 42 ms and p95 55 ms.
 
 **Thresholds and sync interval**: For lands that use `StateSync(every: N ms)`, set update thresholds to **N + margin** (e.g. Hero Defense: StateSync 100ms → `updateP95: 120`, `updateP99: 250`). This accounts for client-observed interval including event-loop jitter; do not set `updateP95` to exactly N or healthy runs may fail. You can set **`syncIntervalMs`** in the scenario root (e.g. `100`); if a phase’s `thresholds` omits `updateP95`/`updateP99`, they are derived as `syncIntervalMs + 20` and `250`.
 

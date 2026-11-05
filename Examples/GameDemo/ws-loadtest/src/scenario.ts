@@ -132,6 +132,27 @@ function parseEvents(raw: unknown): EventConfig[] {
     });
 }
 
+/** Land type when neither the scenario nor its server URL names one. */
+const DEFAULT_LAND_TYPE = "hero-defense";
+
+/** The scenario's `landType`, else the last segment of a `/game/<landType>` server path. */
+function parseLandType(raw: unknown, serverUrl: string): string {
+    if (raw !== undefined) {
+        if (typeof raw !== "string" || raw.length === 0) {
+            throw new Error("Scenario landType must be a non-empty string");
+        }
+        return raw;
+    }
+    let pathname: string;
+    try {
+        pathname = new URL(serverUrl).pathname;
+    } catch {
+        return DEFAULT_LAND_TYPE;
+    }
+    const match = /^\/game\/([^/]+)\/?$/.exec(pathname);
+    return match ? decodeURIComponent(match[1]) : DEFAULT_LAND_TYPE;
+}
+
 export function parseScenario(raw: unknown): Scenario {
     if (!isRecord(raw)) {
         throw new Error("Scenario must be an object");
@@ -146,9 +167,11 @@ export function parseScenario(raw: unknown): Scenario {
         postflight: parsePhase("postflight", phasesRaw.postflight, syncIntervalMs)
     };
 
+    const serverUrl = typeof raw.serverUrl === "string" ? raw.serverUrl : DEFAULT_SERVER_URL;
     return {
         name: typeof raw.name === "string" ? raw.name : "hero-defense-loadtest",
-        serverUrl: typeof raw.serverUrl === "string" ? raw.serverUrl : DEFAULT_SERVER_URL,
+        serverUrl,
+        landType: parseLandType(raw.landType, serverUrl),
         syncIntervalMs,
         phases,
         actions: parseActions(raw.actions),
