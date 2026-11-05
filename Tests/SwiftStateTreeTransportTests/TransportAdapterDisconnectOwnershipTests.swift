@@ -61,17 +61,19 @@ func olderSessionDisconnectKeepsPlayerState() async throws {
     await adapter.syncStateForNewPlayer(playerID: player, sessionID: s1)
     #expect(await adapter.syncEngineForTesting().hasReceivedFirstSyncForTesting(player))
 
-    // S2 joins as the same player; its initial sync is held (marked, not yet sent).
+    // S2 joins as the same player and supersedes S1 (newest wins): S1 leaves the membership,
+    // and the player's sync state restarts with S2. Its initial sync is held (marked, not sent).
     let second = try await join(adapter, session: s2, client: c2, player: player)
     #expect(second.playerSlot == first.playerSlot)
+    #expect(await adapter.membershipSessionIDs(for: player) == [s2])
+    #expect(await adapter.syncEngineForTesting().hasReceivedFirstSyncForTesting(player) == false)
     await adapter.beginInitialSync(for: player)
 
-    // S1's queued disconnect runs while S2 is in its initial sync.
+    // S1's queued disconnect runs while S2 is in its initial sync: it clears nothing of S2's.
     await adapter.onDisconnect(sessionID: s1, clientID: c1)
 
     #expect(await adapter.isInitialSyncingForTesting(player))
     #expect(await adapter.getPlayerSlot(for: player) == first.playerSlot)
-    #expect(await adapter.syncEngineForTesting().hasReceivedFirstSyncForTesting(player))
     #expect(await adapter.membershipSessionIDs(for: player) == [s2])
 
     // The last session's disconnect clears it all.

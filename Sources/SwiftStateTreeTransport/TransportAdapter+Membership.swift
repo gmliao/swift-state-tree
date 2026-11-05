@@ -10,6 +10,10 @@ extension TransportAdapter {
         await _onDisconnectImpl(sessionID: sessionID, clientID: clientID)
     }
 
+    /// Registers a joined session directly, without the admission (`performJoin` does both).
+    /// It bypasses newest wins (#92): the player's other sessions stay members. Use it only for
+    /// a session whose keeper join the caller already did.
+    ///
     /// - Parameter connectionGeneration: The transport connection generation read when the
     ///   session's connection was accepted; `nil` reads the current one.
     public func registerSession(
