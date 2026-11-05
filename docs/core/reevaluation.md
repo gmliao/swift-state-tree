@@ -128,7 +128,13 @@ await client.sendAction("resumeVerification", {});
 
 ### State Hash Proves Reevaluation
 
-The per-tick `stateHash` is a deterministic FNV-1a64 hash of the full state snapshot. When live and replay produce the same hash for every tick, the state transition logic is deterministic. Server events are derived from the same handlers and inputs; recording them allows an additional consistency check.
+The per-tick `stateHash` is a deterministic FNV-1a64 hash of the state's broadcast view (`snapshot(for: nil)`): every field and nested state node as its `@Sync` policy shows it to no particular player, so server-only fields are not covered (#180 tracks hashing the full state). When live and replay produce the same hash for every tick, the state transition logic is deterministic. Server events are derived from the same handlers and inputs; recording them allows an additional consistency check.
+
+### Records Older Than 2.3 (#175)
+
+Before record format 2.3, a `@SnapshotConvertible` state node inside a `[String: X]` or `[PlayerID: X]` map was converted with every field, server-only ones included (Hero Defense's `players.*.lastFireTick`). Its state hash, its initialize hash and its sync-output hashes covered those fields. This build leaves them out, so such a record no longer reproduces its hashes.
+
+Hashes are still compared for every record. Whether a land is affected is decided from its state type, not from the recording (`ReevaluationRecordVersion.hashChangedByNestedNodePolicies`): a `@SnapshotConvertible` state node as the value of a `[String: X]` or `[PlayerID: X]` map, at any depth, reached through `.broadcast` fields only, since the hash covers the broadcast view. Hero Defense is affected; visibility-test is not (its `entities` map is `.perPlayer`). When a record older than 2.3 of an affected land has a differing state or initialize hash, the reader reports it as not comparable ("recorded before #175, hash not comparable"), not as a replay difference: `RunResult.hashIncomparability` carries the reason, the initialize check reports `notComparable`, and `ReevaluationRunner --verify` exits with code 10. Re-record such sessions with a 2.3 build. Every other mismatch is a failure as before: any mismatch of an unaffected land, whatever its record version, and every sync-output failure (exit 8). Two consequences, both on the safe side: a pre-2.3 visibility-test record verifies its state hash but fails its sync outputs (exit 8), since its per-player patches changed; and a map inside a non-node `@SnapshotConvertible` value is not detected, so such a land's mismatch fails (exit 5). This rule is transitional: #180 changes the hash for every land.
 
 ### Server Event Verification
 

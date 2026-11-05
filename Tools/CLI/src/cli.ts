@@ -17,6 +17,7 @@ import {
 import { ChalkLogger } from "./logger";
 import { joinWithTimeout } from "./join-timeout";
 import { fetchSchema, printSchema } from "./schema";
+import { formatViolations, watchSchemaConformance, type ConformanceSchema, type ConformanceViolation } from "./schema-conformance.js";
 import * as admin from "./admin";
 import { evaluateAssertion } from "./scenarioAssertions.js";
 import {
@@ -274,6 +275,10 @@ program
     "Fail the script on a convergence mismatch (or E2E_CONVERGENCE_GATING=true); default report-only",
   )
   .option(
+    "--conformance-schema <file>",
+    "Check received state against this schema file instead of the server's (e.g. a newer schema against an older server)",
+  )
+  .option(
     "--fault-drop-patch <pathPrefix>",
     "Fault injection: client 0 drops the next patch whose path starts with this prefix",
   )
@@ -311,6 +316,11 @@ program
 
       const schemaBaseUrl = options.schemaUrl ?? deriveSchemaBaseUrl(wsUrl);
       const schema = await fetchSchema(schemaBaseUrl);
+      const conformanceSchema = (options.conformanceSchema
+        ? JSON.parse(readFileSync(options.conformanceSchema, "utf-8"))
+        : schema) as ConformanceSchema;
+      // Every client's received state is checked against the schema; any violation fails the run.
+      const conformanceViolations: string[] = [];
 
       const stats = statSync(options.script);
       const scripts = stats.isDirectory()
@@ -369,6 +379,11 @@ program
             metadata,
             logger,
           });
+          // Installed before the join, so the joiner's firstSync is checked too.
+          const conformanceLandType = landID.split(":")[0];
+          const conformanceReports: Array<[string, () => ConformanceViolation[]]> = [
+            ["client-0", watchSchemaConformance(view, conformanceSchema, conformanceLandType)],
+          ];
 
           const joinResult = await joinWithTimeout(view, landID);
           if (!joinResult.success) {
@@ -398,6 +413,7 @@ program
             extraRuntimes.push(extra);
             await extra.connect(wsUrl);
             const extraView = extra.createView(joinedLandID, { schema: schema as any, logger });
+            conformanceReports.push([`client-${i}`, watchSchemaConformance(extraView, conformanceSchema, conformanceLandType)]);
             const extraJoin = await joinWithTimeout(extraView, joinedLandID);
             if (!extraJoin.success || !extraJoin.playerID) {
               throw new Error(`client-${i} failed to join ${joinedLandID}: ${extraJoin.reason || "Unknown reason"}`);
@@ -417,6 +433,11 @@ program
           });
           if (droppedPatch) {
             console.log(chalk.yellow(`⚠️  Fault injection dropped: ${droppedPatch() ?? "<nothing>"}`));
+          }
+          for (const [name, report] of conformanceReports) {
+            for (const line of formatViolations(name, report())) {
+              if (!conformanceViolations.includes(line)) conformanceViolations.push(line);
+            }
           }
         } finally {
           // Disconnect runtimes after the scenario completes or fails
@@ -450,6 +471,12 @@ program
       }
 
       printConvergenceSummary(convergenceStats);
+      if (conformanceViolations.length > 0) {
+        conformanceViolations.forEach((line) => console.error(chalk.red(line)));
+        console.error(chalk.red(`\n❌ ${conformanceViolations.length} schema conformance violation(s)`));
+        process.exit(1);
+      }
+      console.log("SCHEMA CONFORMANCE OK");
       console.log(chalk.yellow("\n👋 All scripts completed successfully"));
       process.exit(0);
     } catch (error) {

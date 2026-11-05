@@ -136,7 +136,60 @@ public enum ReevaluationRecordVersion {
     /// `recordsSyncStream`) and the initialize record; 2.2 adds what the sync-output verifier
     /// needs (`syncConfig`, `perPlayerUnverified`, `perPlayerUncommitted`, `resetsKeyScopes`,
     /// `eventsThroughSequence`). A 2.1 record is still read; its sync outputs are not verified.
-    public static let current = "2.2"
+    /// 2.3 marks hashes computed with nested state nodes' own `@Sync` policies applied (#175);
+    /// an older record's state and sync-output hashes are not comparable with this build's.
+    public static let current = "2.3"
+
+    /// The first minor whose state and sync-output hashes this build can reproduce: before it,
+    /// a `@SnapshotConvertible` state node in a `[String: X]` / `[PlayerID: X]` map was
+    /// converted with every field, server-only ones included (#175).
+    public static let nestedNodePoliciesMinor = 3
+
+    /// Why a state hash mismatch in a record written as `recorded` does not mean a replay
+    /// difference, or nil when it does. Only a record older than 2.3 of a land whose state type
+    /// has the shape #175 changed (`hashChangedByNestedNodePolicies`) qualifies; every other
+    /// mismatch is a real failure. Only meaningful for a compatible record (`isCompatible`).
+    public static func hashIncomparability(recorded: String?, stateType: any StateNodeProtocol.Type) -> String? {
+        guard let minor = minor(of: recorded), minor < nestedNodePoliciesMinor,
+              hashChangedByNestedNodePolicies(stateType)
+        else { return nil }
+        return "recorded before #175 (record \(recorded ?? "?")), hash not comparable"
+    }
+
+    /// Whether `stateType` has, at any depth, a state node that is also `SnapshotValueConvertible`
+    /// (`@SnapshotConvertible`) as the value of a `[String: X]` or `[PlayerID: X]` map, reached
+    /// through `.broadcast` fields only: the only shape whose broadcast view, and so whose state
+    /// hash, #175 changed. Fields of other policies are not in that view, or (masked, custom)
+    /// not followed, so a mismatch there stays a failure. Decided from the type, not from a
+    /// recording.
+    public static func hashChangedByNestedNodePolicies(_ stateType: any StateNodeProtocol.Type) -> Bool {
+        var visited: Set<ObjectIdentifier> = []
+        return containsChangedShape(stateType, visited: &visited)
+    }
+
+    private static func containsChangedShape(_ type: Any.Type, visited: inout Set<ObjectIdentifier>) -> Bool {
+        if let wrapped = OptionalTypeHelper.wrappedType(of: type) {
+            return containsChangedShape(wrapped, visited: &visited)
+        }
+        if let valueType = SchemaHelper.dictionaryValueType(from: type) {
+            let keyType = SchemaHelper.dictionaryKeyType(from: type)
+            let stringKeyed = keyType == String.self || keyType == PlayerID.self
+            if stringKeyed, valueType is any StateNodeProtocol.Type, valueType is any SnapshotValueConvertible.Type {
+                return true
+            }
+            return containsChangedShape(valueType, visited: &visited)
+        }
+        if let elementType = SchemaHelper.arrayElementType(from: type) {
+            return containsChangedShape(elementType, visited: &visited)
+        }
+        if let nodeType = type as? any StateNodeProtocol.Type {
+            guard visited.insert(ObjectIdentifier(nodeType)).inserted else { return false }
+            return nodeType.getFieldMetadata().contains {
+                $0.policy == .broadcast && containsChangedShape($0.type, visited: &visited)
+            }
+        }
+        return false
+    }
 
     /// Whether a record written as `recorded` can be read by a reader that requires `required`.
     public static func isCompatible(recorded: String?, required: String) -> Bool {
@@ -894,5 +947,20 @@ public actor ReevaluationRecorder {
             allFrames.append(frame)
         }
         return allFrames.sorted { $0.tickId < $1.tickId }
+    }
+}
+
+/// Unwraps `Optional<T>` to `T` at the type level.
+private protocol OptionalTypeProtocol {
+    static var wrappedType: Any.Type { get }
+}
+
+extension Optional: OptionalTypeProtocol {
+    fileprivate static var wrappedType: Any.Type { Wrapped.self }
+}
+
+private enum OptionalTypeHelper {
+    static func wrappedType(of type: Any.Type) -> Any.Type? {
+        (type as? any OptionalTypeProtocol.Type)?.wrappedType
     }
 }

@@ -76,7 +76,7 @@ struct E2EStateSnapshotDiffTests {
             createdAt: Date(timeIntervalSince1970: 1_700_000_000),
             metadata: [:],
             rngSeed: DeterministicSeed.fromLandID(landID),
-            version: "2.0"
+            version: ReevaluationRecordVersion.current
         ))
 
         // Player joins — initial position set via ctx.random (key suspect for divergence)
@@ -186,7 +186,7 @@ struct E2EStateSnapshotDiffTests {
             metadata: [:],
             landDefinitionID: definition.id,
             rngSeed: DeterministicSeed.fromLandID(landID),
-            version: "2.0"
+            version: ReevaluationRecordVersion.current
         ))
 
         try await keeper.join(
@@ -278,7 +278,7 @@ struct E2EStateSnapshotDiffTests {
             createdAt: Date(timeIntervalSince1970: 1_700_000_000),
             metadata: [:],
             rngSeed: DeterministicSeed.fromLandID(landID),
-            version: "2.0"
+            version: ReevaluationRecordVersion.current
         ))
 
         try await keeper.join(

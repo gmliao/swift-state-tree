@@ -42,6 +42,12 @@ public enum ReevaluationEngine {
         public let syncOutput: SyncOutputVerification
         /// The check of OnInitialize's events and post-initialize state hash.
         public let initialize: InitializeVerification
+        /// For a record older than 2.3 of a land whose state type has the shape #175 changed,
+        /// why a state hash mismatch is not a replay difference; nil otherwise, and then every
+        /// mismatch is a failure. Hashes are compared either way: a reader reports a mismatch
+        /// with this reason instead of as a failure, and an older record that matches is
+        /// verified. Sync-output failures are failures regardless.
+        public let hashIncomparability: String?
 
         /// Verdict on `serverEventMismatches`, decided per tick (see `classifyServerEventMismatches`).
         public var serverEventVerification: ServerEventVerification {
@@ -57,10 +63,13 @@ public enum ReevaluationEngine {
         case notRecorded
         case passed
         case failed(reason: String)
+        /// The state hash differs, in a record whose hash this build cannot reproduce (#175).
+        case notComparable(reason: String)
 
         public var summary: String {
             switch self {
             case .notRecorded: return "not recorded"
+            case .notComparable(let reason): return "not verified: \(reason)"
             case .passed: return "verified"
             case .failed(let reason): return "FAILED: \(reason)"
             }
@@ -71,7 +80,8 @@ public enum ReevaluationEngine {
     package static func verifyInitialize<State: StateNodeProtocol>(
         record: ReevaluationRecordedInitialize?,
         emitted: [ReevaluationRecordedServerEvent],
-        state: State
+        state: State,
+        hashIncomparability: String? = nil
     ) -> InitializeVerification {
         guard let record else { return .notRecorded }
         if !serverEventsMatch(recorded: record.serverEvents, emitted: emitted) {
@@ -80,6 +90,9 @@ public enum ReevaluationEngine {
         if let recorded = record.stateHash {
             let replayed = calculateStateHash(state)
             if recorded != replayed {
+                if let hashIncomparability {
+                    return .notComparable(reason: hashIncomparability)
+                }
                 return .failed(reason: "state hash differs (recorded \(recorded), replayed \(replayed))")
             }
         }
@@ -197,7 +210,13 @@ public enum ReevaluationEngine {
         let initializeRecord = try await source.getInitializeRecord()
         let stateAfterInitialize = await keeper.currentState()
         let initializeEvents = await capturingSink.takeEmittedEvents(for: -1)
-        let initialize = verifyInitialize(record: initializeRecord, emitted: initializeEvents, state: stateAfterInitialize)
+        let hashIncomparability = ReevaluationRecordVersion.hashIncomparability(recorded: metadata.version, stateType: State.self)
+        let initialize = verifyInitialize(
+            record: initializeRecord,
+            emitted: initializeEvents,
+            state: stateAfterInitialize,
+            hashIncomparability: hashIncomparability
+        )
         var syncOutputDriver = SyncOutputReplayDriver<State>(metadata: metadata, stream: try await source.getSyncStream())
         syncOutputDriver.begin(
             beforeInitialize: initialState,
@@ -293,7 +312,8 @@ public enum ReevaluationEngine {
             watermarkedTicks: watermarkedTicks,
             syncStreamPresence: try await source.getSyncStreamPresence(),
             syncOutput: syncOutputDriver.finish(),
-            initialize: initialize
+            initialize: initialize,
+            hashIncomparability: hashIncomparability
         )
     }
     

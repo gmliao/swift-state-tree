@@ -186,6 +186,21 @@ public struct TypeToSchemaConverter {
             if let defaultValue = field.defaultValue {
                 fieldSchema.defaultValue = defaultValue
             }
+
+            // Every field records its own sync policy, so a reader can tell which fields a client
+            // may receive (a server-only one never). Maps and arrays already carry it; leaves and
+            // `$ref` fields did not.
+            if let policy = field.policy, fieldSchema.xStateTree?.sync == nil {
+                let existing = fieldSchema.xStateTree
+                fieldSchema.xStateTree = StateTreeMetadata(
+                    nodeKind: existing?.nodeKind ?? field.nodeKind,
+                    sync: SyncMetadata(policy: policy.rawValue),
+                    atomic: existing?.atomic,
+                    optional: existing?.optional,
+                    innerType: existing?.innerType,
+                    keyType: existing?.keyType
+                )
+            }
             
             properties[field.name] = fieldSchema
             
