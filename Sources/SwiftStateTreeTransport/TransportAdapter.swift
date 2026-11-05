@@ -395,6 +395,27 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     
     private var initialSyncingPlayers: Set<PlayerID> = []
 
+    /// A session admitted by a join (#69) whose initial sync hasn't started yet.
+    struct JoiningSession: Sendable {
+        let playerID: PlayerID
+        let playerSlot: Int32
+    }
+
+    /// Sessions admitted by a join and not yet in their initial sync (`.joining`). Recorded in
+    /// the admission segment (`admitJoining`), together with the membership and the player
+    /// slot, and handed over to `initialSyncingPlayers` when the initial sync starts. A joining
+    /// session is not a sync recipient and not reached by `.player` or `.broadcast` frames (it
+    /// still gets frames addressed to it, such as its JoinResponse), so it can't get a diff or an
+    /// event before its JoinResponse and firstSync.
+    private var joiningSessions: [SessionID: JoiningSession] = [:]
+
+    /// Joins in `performJoinQueued` waiting for the keeper's in-turn admission callback, with
+    /// what the admission needs that the keeper doesn't pass.
+    private var expectedAdmissions: [SessionID: AuthenticatedInfo?] = [:]
+
+    /// Admissions made by the keeper's in-turn callback (tests only).
+    private(set) var inTurnAdmissionCountForTesting = 0
+
     /// Set when a sync plan failed (its encodes may have allocated key slots in the encoders'
     /// dynamic key tables that no client learned, the frames were never sent) or a committed
     /// plan dropped a frame it had encoded for (`SyncPhasePlan.leavesKeyTablesAhead`).
@@ -772,6 +793,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // so they cannot reach a later connection that reuses the SessionID.
         connectionGenerations.removeValue(forKey: sessionID)
         endedSessions.insert(sessionID)
+        joiningSessions.removeValue(forKey: sessionID)
         let joinedPlayerID = membershipCoordinator.playerID(for: sessionID)
 
         // If player had joined, handle leave
@@ -850,6 +872,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         membershipCoordinator.allJoinedEntries().map(\.sessionID)
     }
 
+    /// Whether `sessionID` is admitted and waiting for its initial sync (`joiningSessions`).
+    func isJoining(_ sessionID: SessionID) -> Bool {
+        joiningSessions[sessionID] != nil
+    }
+
     /// This land's sessions of `playerID`, for `.player` frames.
     func membershipSessionIDs(for playerID: PlayerID) -> [SessionID] {
         membershipCoordinator.sessionIDs(for: playerID)
@@ -860,13 +887,61 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Execute a block while marking player as initial syncing.
     /// Automatically removes the player from initialSyncingPlayers when done (even on error).
     /// This ensures syncNow() and syncBroadcastOnly() skip this player during initial sync.
+    ///
+    /// `sessionID`'s `.joining` mark (`joiningSessions`) is handed over to the initial-sync
+    /// mark here, in one synchronous segment, so the session is excluded throughout.
     private func withInitialSync<T: Sendable>(
         for playerID: PlayerID,
+        sessionID: SessionID? = nil,
         operation: () async throws -> T
     ) async rethrows -> T {
         initialSyncingPlayers.insert(playerID)
+        if let sessionID {
+            joiningSessions.removeValue(forKey: sessionID)
+        }
         defer { initialSyncingPlayers.remove(playerID) }
         return try await operation()
+    }
+
+    // MARK: - Admission (#69)
+
+    /// Admits `sessionID` as joining `playerID`: membership, player slot and the `.joining`
+    /// mark, in one synchronous segment. Returns the slot.
+    private func admitJoining(
+        sessionID: SessionID,
+        playerID: PlayerID,
+        authInfo: AuthenticatedInfo?
+    ) -> Int32 {
+        _ = membershipCoordinator.registerPlayer(
+            sessionID: sessionID,
+            playerID: playerID,
+            authInfo: authInfo
+        )
+        // Allocate playerSlot (uses playerID as accountKey by default)
+        let slot = allocatePlayerSlot(accountKey: playerID.rawValue, for: playerID)
+        joiningSessions[sessionID] = JoiningSession(playerID: playerID, playerSlot: slot)
+        return slot
+    }
+
+    /// The keeper's in-turn admission (`LandKeeperTransport.admitJoiningSession`), on the
+    /// keeper's executor. Admits only a join `performJoinQueued` is waiting for.
+    func admitJoiningSessionIsolated(playerID: PlayerID, clientID: ClientID, sessionID: SessionID) -> Bool {
+        guard let authInfo = expectedAdmissions.removeValue(forKey: sessionID) else { return false }
+        _ = admitJoining(sessionID: sessionID, playerID: playerID, authInfo: authInfo)
+        inTurnAdmissionCountForTesting += 1
+        return true
+    }
+
+    /// Undoes an admission whose join then failed (the keeper's join threw after admitting):
+    /// the session leaves the membership, and the slot is released when the player has no
+    /// other session.
+    private func abandonJoining(sessionID: SessionID) {
+        guard let joining = joiningSessions.removeValue(forKey: sessionID) else { return }
+        membershipCoordinator.invalidateMembership(sessionID: sessionID, playerID: joining.playerID)
+        membershipCoordinator.unregisterSession(sessionID: sessionID)
+        if membershipCoordinator.sessionIDs(for: joining.playerID).isEmpty {
+            membershipCoordinator.releasePlayerSlot(playerID: joining.playerID)
+        }
     }
     
     /// Mark a player as undergoing initial sync to avoid pre-firstSync updates.
@@ -990,25 +1065,34 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         authInfo: AuthenticatedInfo?,
         connectionGeneration: UInt64?
     ) async throws -> JoinResult? {
-        // Attempt to join (updates keeper.players)
-        let decision = try await keeper.join(
-            session: playerSession,
-            clientID: clientID,
-            sessionID: sessionID,
-            services: LandServices()
-        )
-
-        switch decision {
-        case .allow(let playerID):
-            // Update TransportAdapter state (synchronization point)
-            _ = membershipCoordinator.registerPlayer(
+        // Attempt to join (updates keeper.players). On the in-turn path the keeper admits the
+        // session inside the join, in the segment of its state change (`admitJoiningSession`);
+        // otherwise it is admitted below, right after the join returns, before any await.
+        expectedAdmissions[sessionID] = authInfo
+        defer { expectedAdmissions.removeValue(forKey: sessionID) }
+        let outcome: LandKeeper<State>.JoinOutcome
+        do {
+            outcome = try await keeper.joinReportingAdmission(
+                session: playerSession,
+                clientID: clientID,
                 sessionID: sessionID,
-                playerID: playerID,
-                authInfo: authInfo
+                services: LandServices(),
+                admitThroughTransport: true
             )
-            
-            // Allocate playerSlot (uses playerID as accountKey by default)
-            let slot = allocatePlayerSlot(accountKey: playerID.rawValue, for: playerID)
+        } catch {
+            abandonJoining(sessionID: sessionID)
+            throw error
+        }
+
+        switch outcome.decision {
+        case .allow(let playerID):
+            // Admission: membership, slot and the `.joining` mark (exactly once).
+            let slot: Int32
+            if outcome.admitted, let joining = joiningSessions[sessionID] {
+                slot = joining.playerSlot
+            } else {
+                slot = admitJoining(sessionID: sessionID, playerID: playerID, authInfo: authInfo)
+            }
 
             // Register session
             await registerSession(
@@ -2005,7 +2089,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         var recipients: [SyncPhaseRecipient] = []
         recipients.reserveCapacity(membershipCoordinator.joinedCount())
         for (sessionID, playerID) in membershipCoordinator.allJoinedEntries() {
-            if initialSyncingPlayers.contains(playerID) {
+            if initialSyncingPlayers.contains(playerID) || joiningSessions[sessionID] != nil {
                 continue
             }
             recipients.append(SyncPhaseRecipient(sessionID: sessionID, playerID: playerID))
@@ -3302,7 +3386,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// This sends the complete initial state as a series of patches (with compressed keys).
     /// Automatically manages initialSyncingPlayers to prevent concurrent diff updates.
     public func syncStateForNewPlayer(playerID: PlayerID, sessionID: SessionID) async {
-        await withInitialSync(for: playerID) {
+        await withInitialSync(for: playerID, sessionID: sessionID) {
             await _syncStateForNewPlayer(playerID: playerID, sessionID: sessionID)
         }
     }
@@ -3642,7 +3726,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         playerSession: PlayerSession,
         joinResult: JoinResult
     ) async {
-        await withInitialSync(for: joinResult.playerID) {
+        await withInitialSync(for: joinResult.playerID, sessionID: joinResult.sessionID) {
             await sendJoinResponse(
                 requestID: requestID,
                 sessionID: sessionID,

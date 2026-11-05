@@ -1181,6 +1181,36 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         sessionID: SessionID,
         services: LandServices
     ) async throws -> JoinDecision {
+        try await joinReportingAdmission(
+            session: session,
+            clientID: clientID,
+            sessionID: sessionID,
+            services: services,
+            admitThroughTransport: false
+        ).decision
+    }
+
+    /// What `joinReportingAdmission` did.
+    package struct JoinOutcome: Sendable {
+        package let decision: JoinDecision
+        /// The transport admitted the session inside the join
+        /// (`LandKeeperTransport.admitJoiningSession` returned `true`). When `false`, the caller
+        /// admits it after the join returns, so a session is admitted exactly once.
+        package let admitted: Bool
+    }
+
+    /// `join(session:clientID:sessionID:services:)`, and, when `admitThroughTransport` and this
+    /// keeper's turns run the sync phase in the turn (`usesInTurnSync`), the transport's
+    /// `admitJoiningSession` in the same synchronous segment as the player's insert (or as its
+    /// OnJoin input's append, for a first join with OnJoin). Off that path, or for a non-live
+    /// keeper, nothing is admitted here (`admitted == false`).
+    package func joinReportingAdmission(
+        session: PlayerSession,
+        clientID: ClientID,
+        sessionID: SessionID,
+        services: LandServices,
+        admitThroughTransport: Bool
+    ) async throws -> JoinOutcome {
         await ensureInitialized()
         // Call CanJoin handler if defined
         var decision: JoinDecision = .allow(playerID: PlayerID(session.playerID))
@@ -1214,7 +1244,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // If denied, return early
         guard case let .allow(playerID) = decision else {
-            return decision
+            return JoinOutcome(decision: decision, admitted: false)
         }
 
         // Check maxPlayers limit after CanJoin handler (using the playerID returned by CanJoin)
@@ -1274,7 +1304,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // In reevaluation mode, replay viewers are observers: add to players for sync but skip OnJoin
         // so they are not added to game state (which would create an extra player in the replay).
         guard isFirst, definition.lifetimeHandlers.onJoin != nil, mode != .reevaluation else {
-            return decision
+            // No OnJoin input: admitted in the same segment as the insert.
+            let admitted = admitThroughTransport && admitJoiningInTurn(playerID: playerID, clientID: clientID, sessionID: sessionID)
+            return JoinOutcome(decision: decision, admitted: admitted)
         }
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
@@ -1325,6 +1357,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
         )
         pendingItems.append(pendingItem)
+        // Admitted in the same segment as the append, before the OnJoin turn can run.
+        let admitted = admitThroughTransport && admitJoiningInTurn(playerID: playerID, clientID: clientID, sessionID: sessionID)
 
         // If there's no tick handler, process lifecycle immediately (backward-compatible mode)
         if definition.lifetimeHandlers.tickHandler == nil {
@@ -1335,7 +1369,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
         }
 
-        return decision
+        return JoinOutcome(decision: decision, admitted: admitted)
+    }
+
+    /// The transport's admission of a joining session, only on the in-turn path (the transport
+    /// shares this keeper's executor, so its synchronous call can't trap). Synchronous: called in
+    /// the segment of the state change it belongs to.
+    private func admitJoiningInTurn(playerID: PlayerID, clientID: ClientID, sessionID: SessionID) -> Bool {
+        guard usesInTurnSync, let transport else { return false }
+        return transport.admitJoiningSession(playerID: playerID, clientID: clientID, sessionID: sessionID)
     }
 
     /// Handles a player/client leaving the Land.
