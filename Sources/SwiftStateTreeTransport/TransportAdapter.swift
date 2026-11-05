@@ -1415,8 +1415,20 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         initialSyncingPlayers[playerID] != nil
     }
 
+    /// The authenticated `playerID` a join request contradicts, or nil when it doesn't: with
+    /// authenticated info (a JWT), the join may name no `playerID` or the token's own, and any
+    /// other one is rejected (#209). Without authenticated info it never contradicts anything.
+    /// Both join paths (`LandRouter` and `handleJoinRequest`) check it before their first await.
+    public static func playerIDMismatch(requestedPlayerID: String?, authInfo: AuthenticatedInfo?) -> String? {
+        guard let authInfo, let requestedPlayerID, requestedPlayerID != authInfo.playerID else { return nil }
+        return authInfo.playerID
+    }
+
     /// Prepare PlayerSession from join request parameters.
-    /// Handles priority: join message > JWT payload > guest session.
+    /// The playerID comes from the authenticated info (JWT) when there is one, else from the join
+    /// message, else from the guest session (#209: a token's identity is never overridden; a join
+    /// naming another player is rejected before this, see `playerIDMismatch`). The deviceID and
+    /// metadata keep the order join message > JWT payload > guest session.
     ///
     /// This is shared logic used by both LandRouter and TransportAdapter.handleJoinRequest.
     public func preparePlayerSession(
@@ -1432,9 +1444,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ? createGuestSession(sessionID, clientID)
             : nil
 
-        // Determine playerID: join message > JWT payload > guest session
-        let finalPlayerID: String = requestedPlayerID
-            ?? jwtAuthInfo?.playerID
+        // Determine playerID: JWT payload > join message > guest session (#209)
+        let finalPlayerID: String = jwtAuthInfo?.playerID
+            ?? requestedPlayerID
             ?? guestSession?.playerID
             ?? sessionID.rawValue
 
@@ -1472,7 +1484,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             finalMetadata = guestMetadata
         }
 
-        // Determine isGuest: true if this is a guest session (no JWT auth and no requested playerID)
+        // Determine isGuest: true if this is a guest session (no JWT auth and no requested playerID).
+        // With a token the join is never a guest, also when it names no playerID.
         let finalIsGuest = (requestedPlayerID == nil && jwtAuthInfo == nil)
 
         // PlayerSession.init will automatically add isGuest to metadata when isGuest is true
@@ -4282,6 +4295,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             requestID: requestID,
             requestLandID: landID,
             sessionID: sessionID,
+            requestedPlayerID: requestedPlayerID,
             metadata: metadata
         ) else {
             return
@@ -4309,6 +4323,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         requestID: String,
         requestLandID: String,
         sessionID: SessionID,
+        requestedPlayerID: String?,
         metadata: [String: AnyCodable]?
     ) async -> ClientID? {
         guard let clientID = membershipCoordinator.clientID(for: sessionID) else {
@@ -4364,6 +4379,25 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 )
                 return nil
             }
+        }
+
+        // An authenticated session joins as its token's player (#209).
+        if let tokenPlayerID = Self.playerIDMismatch(
+            requestedPlayerID: requestedPlayerID,
+            authInfo: membershipCoordinator.authInfo(for: sessionID)
+        ) {
+            logger.warning("Join request names a player other than its token's", metadata: [
+                "sessionID": .string(sessionID.rawValue),
+                "tokenPlayerID": .string(tokenPlayerID),
+                "requestedPlayerID": .string(requestedPlayerID ?? ""),
+            ])
+            await sendJoinError(
+                requestID: requestID,
+                sessionID: sessionID,
+                code: .joinPlayerMismatch,
+                message: "playerID does not match the authenticated player"
+            )
+            return nil
         }
 
         return clientID

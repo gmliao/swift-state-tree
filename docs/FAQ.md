@@ -204,6 +204,7 @@ A: Main error codes include:
 - `JOIN_DENIED`: Join denied
 - `JOIN_ROOM_FULL`: Room is full
 - `JOIN_ROOM_NOT_FOUND`: Room not found
+- `JOIN_PLAYER_MISMATCH`: The join's `playerID` differs from the JWT's
 
 **Action errors**:
 - `ACTION_NOT_REGISTERED`: Action not registered

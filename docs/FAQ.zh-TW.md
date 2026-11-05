@@ -204,6 +204,7 @@ A: 主要錯誤碼包括：
 - `JOIN_DENIED`：加入被拒絕
 - `JOIN_ROOM_FULL`：房間已滿
 - `JOIN_ROOM_NOT_FOUND`：房間不存在
+- `JOIN_PLAYER_MISMATCH`：join 的 `playerID` 與 JWT 的不符
 
 **Action 錯誤**：
 - `ACTION_NOT_REGISTERED`：Action 未註冊

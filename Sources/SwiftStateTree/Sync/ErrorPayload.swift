@@ -11,6 +11,8 @@ public enum ErrorCode: String, Codable, Sendable {
     case joinRoomFull = "JOIN_ROOM_FULL"
     case joinRoomNotFound = "JOIN_ROOM_NOT_FOUND"
     case joinLandTypeNotFound = "JOIN_LAND_TYPE_NOT_FOUND"
+    /// The join asked for a `playerID` other than its authenticated identity's (JWT, #209).
+    case joinPlayerMismatch = "JOIN_PLAYER_MISMATCH"
     
     // Action errors
     case actionNotRegistered = "ACTION_NOT_REGISTERED"

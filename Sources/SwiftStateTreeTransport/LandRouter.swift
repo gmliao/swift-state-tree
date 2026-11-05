@@ -364,6 +364,26 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             )
             return
         }
+
+        // An authenticated session joins as its token's player (#209). Checked before any land
+        // is looked up or created.
+        if let tokenPlayerID = TransportAdapter<State>.playerIDMismatch(
+            requestedPlayerID: requestedPlayerID,
+            authInfo: sessionToAuthInfo[sessionID]
+        ) {
+            logger.warning("Join request names a player other than its token's", metadata: [
+                "sessionID": .string(sessionID.rawValue),
+                "tokenPlayerID": .string(tokenPlayerID),
+                "requestedPlayerID": .string(requestedPlayerID ?? ""),
+            ])
+            await sendJoinError(
+                requestID: requestID,
+                sessionID: sessionID,
+                code: .joinPlayerMismatch,
+                message: "playerID does not match the authenticated player"
+            )
+            return
+        }
         
         // Determine target landID
         let landID: LandID
