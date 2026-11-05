@@ -75,15 +75,90 @@ export function classifyDecoded(decoded: any): any {
 }
 
 export function decodeMessage(data: string | ArrayBuffer | Uint8Array): any {
+    return classifyDecoded(decodeRaw(data));
+}
+
+/** A frame as decoded from JSON or MessagePack, before `classifyDecoded`. */
+export function decodeRaw(data: string | ArrayBuffer | Uint8Array): any {
     if (typeof data === "string") {
-        return classifyDecoded(JSON.parse(data));
+        return JSON.parse(data);
     }
     const buffer = data instanceof Uint8Array ? data : new Uint8Array(data);
     try {
-        return classifyDecoded(msgpackDecode(buffer));
+        return msgpackDecode(buffer);
     } catch {
         const text = new TextDecoder().decode(buffer);
-        return classifyDecoded(JSON.parse(text));
+        return JSON.parse(text);
+    }
+}
+
+/**
+ * Follows one connection's dynamic key tables the way the TypeScript SDK decodes them, to count
+ * frames a real client could not decode (#90, #191). Opcode 107 frames use the broadcast map,
+ * plain opcode state updates the per-player map; a firstSync clears the map it is decoded with;
+ * `[slot, key]` defines a slot, a bare slot must be defined. A frame fails at its first
+ * undefined slot (definitions before it in the frame still apply, as in the SDK). Patches are
+ * not applied: only the keys are tracked.
+ */
+export class DynamicKeyTracker {
+    private readonly broadcast = new Map<number, string>();
+    private readonly perPlayer = new Map<number, string>();
+    /** Frames with a slot used before its definition. */
+    errors = 0;
+    /** The first error, for the report. */
+    firstError: string | undefined;
+
+    /** Checks one raw decoded frame (`decodeRaw`). */
+    observe(raw: unknown): void {
+        if (!Array.isArray(raw) || typeof raw[0] !== "number") {
+            return;
+        }
+        const opcode = raw[0];
+        if (opcode === MessageKindOpcode.stateUpdateWithEvents) {
+            if (Array.isArray(raw[1])) this.observeStateArray(raw[1], this.broadcast);
+        } else if (
+            opcode === StateUpdateOpcode.noChange ||
+            opcode === StateUpdateOpcode.firstSync ||
+            opcode === StateUpdateOpcode.diff
+        ) {
+            this.observeStateArray(raw, this.perPlayer);
+        }
+    }
+
+    private observeStateArray(array: unknown[], keys: Map<number, string>): void {
+        if (array[0] === StateUpdateOpcode.firstSync) {
+            keys.clear();
+        }
+        for (let i = 1; i < array.length; i += 1) {
+            const entry = array[i];
+            // Path-hash patches only: [pathHash, dynamicKey, op, value?].
+            if (!Array.isArray(entry) || typeof entry[0] !== "number") continue;
+            const missing = this.resolve(entry[1], keys);
+            if (missing !== undefined) {
+                this.errors += 1;
+                this.firstError ??= `Dynamic key slot ${missing} used before definition`;
+                return;
+            }
+        }
+    }
+
+    /** Applies the key's definitions; returns the first undefined slot, if any. */
+    private resolve(raw: unknown, keys: Map<number, string>): number | undefined {
+        if (typeof raw === "number") {
+            return keys.has(raw) ? undefined : raw;
+        }
+        if (!Array.isArray(raw)) {
+            return undefined;
+        }
+        if (raw.length === 2 && typeof raw[0] === "number" && typeof raw[1] === "string") {
+            keys.set(raw[0], raw[1]);
+            return undefined;
+        }
+        for (const key of raw) {
+            const missing = this.resolve(key, keys);
+            if (missing !== undefined) return missing;
+        }
+        return undefined;
     }
 }
 

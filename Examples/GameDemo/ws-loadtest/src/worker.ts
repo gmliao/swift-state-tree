@@ -1,5 +1,5 @@
 import type { ActionConfig } from "./types";
-import { MessageKindOpcode, decodeMessage, encodeMessageToMessagePack } from "./protocol";
+import { DynamicKeyTracker, MessageKindOpcode, classifyDecoded, decodeRaw, encodeMessageToMessagePack } from "./protocol";
 
 /** Extract requestID from actionResponse or error message. Handles both JSON (nested payload) and MessagePack (normalized top-level). */
 function extractRequestID(message: any, kind: "actionResponse" | "error"): string | undefined {
@@ -153,6 +153,16 @@ export interface WorkerMetrics {
     /** RTT origins of responses that took longer than `lateAfterMs` (their RTT is still recorded). */
     lateResponseOrigins: number[];
     errorCount: number;
+    /**
+     * When each frame arrived that a real client could not decode (a dynamic key slot used
+     * before its definition, #90, #191), before the client began to close. Any of these fails
+     * the phase, wherever it falls: a #90-class error shows right after a join, in the ramp.
+     */
+    decodeErrorAt: number[];
+    /** Decode errors after the client began to close: counted, not failed (#190). */
+    decodeErrorsAfterLeave: number;
+    /** The first such error, for the report. */
+    firstDecodeError?: string;
     /** Closes the client did not ask for. */
     disconnectCount: number;
     actionsSent: number;
@@ -186,6 +196,8 @@ function emptyMetrics(): WorkerMetrics {
         errorAt: [],
         lateResponseOrigins: [],
         errorCount: 0,
+        decodeErrorAt: [],
+        decodeErrorsAfterLeave: 0,
         disconnectCount: 0,
         actionsSent: 0,
         eventSentAt: {},
@@ -294,6 +306,16 @@ export class WorkerSession {
         return origins;
     }
 
+    /** A frame this connection's client could not decode, at `now`; `leaving` once it began to close. */
+    recordDecodeError(now: number, message: string, leaving = false): void {
+        if (leaving) {
+            this.metrics.decodeErrorsAfterLeave += 1;
+            return;
+        }
+        this.metrics.decodeErrorAt.push(now);
+        this.metrics.firstDecodeError ??= message;
+    }
+
     recordClose(record: CloseRecord): void {
         this.metrics.closes.push(record);
         if (record.initiator === "server") {
@@ -365,6 +387,8 @@ export class WorkerClient {
     private joinTimer?: ReturnType<typeof setTimeout>;
     private readonly joinTimeoutMs: number;
     private readonly session = new WorkerSession();
+    /** This connection's dynamic key tables, as its client would hold them. */
+    private keyTracker = new DynamicKeyTracker();
     private readonly now: () => number;
     private readonly createSocket: (url: string) => WebSocketLike;
 
@@ -380,6 +404,8 @@ export class WorkerClient {
     }
 
     connect(): void {
+        // A new connection: the server's key tables for it start empty, so do the client's.
+        this.keyTracker = new DynamicKeyTracker();
         this.socket = this.createSocket(this.config.serverUrl);
         this.joinTimer = setTimeout(() => {
             this.joinTimer = undefined;
@@ -580,7 +606,13 @@ export class WorkerClient {
     }
 
     private handleMessage(data: any): void {
-        const decoded = decodeMessage(data);
+        const raw = decodeRaw(data);
+        const errorsBefore = this.keyTracker.errors;
+        this.keyTracker.observe(raw);
+        if (this.keyTracker.errors > errorsBefore) {
+            this.session.recordDecodeError(this.now(), this.keyTracker.firstError ?? "decode error", this.closeRequested || this.closed);
+        }
+        const decoded = classifyDecoded(raw);
         if (decoded && decoded.kind === "joinResponse") {
             const success = decoded.success ?? decoded.payload?.joinResponse?.success;
             if (!success && !this.joined) {

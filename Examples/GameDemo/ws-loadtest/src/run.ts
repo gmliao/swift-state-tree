@@ -31,14 +31,44 @@ export interface WorkerReport {
     rttMs: number[];
     stateUpdateIntervalsMs: number[];
     errorCount: number;
+    /** Frames no client could decode before leaving, in the measured window (#191). */
+    decodeErrorCount: number;
     /** Server-initiated closes in the measured window. */
     disconnectCount: number;
     actionsSent: number;
 }
 
+export interface DecodeErrorBreakdown {
+    beforeWindow: number;
+    inWindow: number;
+    afterWindow: number;
+    /** After the client began to close: reported, never failed (SDK disconnect race, #190). */
+    afterLeave: number;
+}
+
+/** Splits the phase's decode errors around the measured window `[from, to)`. */
+export function decodeErrorBreakdown(reports: WorkerPhaseReport[], from: number, to: number): DecodeErrorBreakdown {
+    const at = reports.flatMap((r) => r.decodeErrorAt ?? []);
+    return {
+        beforeWindow: at.filter((t) => t < from).length,
+        inWindow: at.filter((t) => t >= from && t < to).length,
+        afterWindow: at.filter((t) => t >= to).length,
+        afterLeave: reports.reduce((sum, r) => sum + (r.decodeErrorsAfterLeave ?? 0), 0)
+    };
+}
+
 /** Counts over the whole phase, transition included (the previous phase's surplus closes). */
 export interface PhaseTotals {
     errorCount: number;
+    /**
+     * Frames no client could decode before it began to close, over the whole phase (ramp and
+     * transition included). Any fails the phase (#191).
+     */
+    decodeErrorCount: number;
+    /** Where those fell: before, inside and after the measured window. */
+    decodeErrors?: DecodeErrorBreakdown;
+    /** The first such error, if any. */
+    firstDecodeError?: string;
     disconnectCount: number;
     actionsSent: number;
 }
@@ -495,6 +525,9 @@ export async function runScenario(filePath: string, options: RunOptions | number
                 report: aggregateReports(reports, measureFrom, measureTo),
                 phaseTotals: {
                     errorCount: reports.reduce((sum, r) => sum + r.errorCount, 0),
+                    decodeErrorCount: reports.reduce((sum, r) => sum + (r.decodeErrorAt?.length ?? 0), 0),
+                    decodeErrors: decodeErrorBreakdown(reports, measureFrom, measureTo),
+                    firstDecodeError: reports.find((r) => r.firstDecodeError !== undefined)?.firstDecodeError,
                     disconnectCount: reports.reduce((sum, r) => sum + r.disconnectCount, 0),
                     actionsSent: reports.reduce((sum, r) => sum + r.actionsSent, 0)
                 }
@@ -598,6 +631,7 @@ export function aggregateReports(reports: WorkerPhaseReport[], measureFrom: numb
             reports.map((r) => selectByTime(r.stateUpdateIntervalsMs, r.updateAt, measureFrom, measureTo))
         ),
         errorCount: reports.reduce((sum, r) => sum + countInRange(r.errorAt, measureFrom, measureTo), 0),
+        decodeErrorCount: reports.reduce((sum, r) => sum + countInRange(r.decodeErrorAt ?? [], measureFrom, measureTo), 0),
         disconnectCount: reports.reduce(
             (sum, r) =>
                 sum + countInRange(r.closes.filter((c) => c.initiator === "server").map((c) => c.t), measureFrom, measureTo),

@@ -151,6 +151,24 @@ export function joinFailuresOf(phase: PhaseResult, runConfig?: Pick<RunConfig, "
 }
 
 /**
+ * Wire checks, independent of the scenario's thresholds and not turned off by any flag: any
+ * frame a real client could not decode before it began to close (a dynamic key slot used
+ * before its definition, #90) fails the phase, ramp included, since that's where joins
+ * happen. Errors after a client began to close are reported only (#190).
+ */
+export function decodeFailuresOf(phase: PhaseResult): string[] {
+    const totals = phase.phaseTotals;
+    const count = totals?.decodeErrorCount ?? phase.report.decodeErrorCount ?? 0;
+    if (count === 0) {
+        return [];
+    }
+    const split = totals?.decodeErrors;
+    const where = split ? ` (before window ${split.beforeWindow}, in window ${split.inWindow}, after window ${split.afterWindow})` : "";
+    const first = totals?.firstDecodeError;
+    return [`decodeErrors ${count} > 0 before leave${where}${first ? `; first: ${first}` : ""}`];
+}
+
+/**
  * Warnings that don't fail the phase. Joined clients with no state-update samples in the
  * measured window mean the update metrics are empty (update p50/p95/p99 report 0), as when a
  * frame kind isn't recognized (#138), not that updates were fast.
@@ -198,6 +216,11 @@ function summarizePhase(phase: PhaseResult, runConfig?: RunConfig): PhaseSummary
     if (joinFailures.length > 0) {
         passed = false;
         failures = [...failures, ...joinFailures];
+    }
+    const decodeFailures = decodeFailuresOf(phase);
+    if (decodeFailures.length > 0) {
+        passed = false;
+        failures = [...failures, ...decodeFailures];
     }
 
     return {

@@ -46,6 +46,12 @@ export interface WorkerPhaseReport {
     sendLagMs: number[];
     sentAt: number[];
     errorCount: number;
+    /** Frames no client could decode before leaving, by arrival time (`WorkerMetrics.decodeErrorAt`). */
+    decodeErrorAt: number[];
+    /** Decode errors after a client began to close (`WorkerMetrics.decodeErrorsAfterLeave`). */
+    decodeErrorsAfterLeave: number;
+    /** The first such error in this worker, if any. */
+    firstDecodeError?: string;
     disconnectCount: number;
     actionsSent: number;
     /** Send time of each client event, by event name. */
@@ -435,6 +441,9 @@ function aggregateSessions(sessions: WorkerSession[]) {
         errorAt: concatAll(metrics.map((m) => m.errorAt)),
         lateResponseOrigins: concatAll(metrics.map((m) => m.lateResponseOrigins)),
         errorCount: metrics.reduce((sum, m) => sum + m.errorCount, 0),
+        decodeErrorAt: concatAll(metrics.map((m) => m.decodeErrorAt)),
+        decodeErrorsAfterLeave: metrics.reduce((sum, m) => sum + m.decodeErrorsAfterLeave, 0),
+        firstDecodeError: metrics.find((m) => m.firstDecodeError !== undefined)?.firstDecodeError,
         disconnectCount: metrics.reduce((sum, m) => sum + m.disconnectCount, 0),
         actionsSent: metrics.reduce((sum, m) => sum + m.actionsSent, 0),
         eventSentAt: mergeEventSentAt(metrics.map((m) => m.eventSentAt)),
