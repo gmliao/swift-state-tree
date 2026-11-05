@@ -1423,3 +1423,33 @@ struct TransportAdapterSyncPhaseTests {
         #expect(kinds.last.map { (0...2).contains($0) } == true, "frames: \(kinds)")
     }
 }
+
+// MARK: - Late joiners and the broadcast key table (#90)
+
+@Suite("TransportAdapter sync phase: late joiners decode merged broadcast frames (#90)", .timeLimit(.minutes(1)))
+struct TransportAdapterSyncPhaseLateJoinerTests {
+    @Test(
+        "A player joining after a broadcast dynamic key was defined decodes every later frame, and so does the member",
+        arguments: SyncPhaseEncoding.allCases
+    )
+    func lateJoinerDecodesBroadcastKeysDefinedBeforeItJoined(encoding: SyncPhaseEncoding) async throws {
+        let fixture = try await SyncPhaseFixture.make(encoding: encoding, realMessagePack: true)
+        // A broadcast dynamic key the member learns (opcode 107 defines it) before the join.
+        try await fixture.set("item:x", 1)
+        await fixture.sync()
+
+        try await fixture.joinSecond()
+        await fixture.sync()
+        // The pre-join key changes, and a new key appears.
+        try await fixture.set("item:x", 2)
+        try await fixture.set("item:y", 3, second: true)
+        await fixture.sync()
+
+        let member = await fixture.clientState()
+        let joiner = await fixture.clientState(second: true)
+        #expect(member.decodeErrors.isEmpty, "member: \(member.decodeErrors), types \(member.updateTypes)")
+        #expect(joiner.decodeErrors.isEmpty, "joiner: \(joiner.decodeErrors), types \(joiner.updateTypes)")
+        #expect(member.view == (try await fixture.serverView()))
+        #expect(joiner.view == (try await fixture.serverView(second: true)))
+    }
+}
