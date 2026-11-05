@@ -81,6 +81,39 @@ func olderSessionDisconnectKeepsPlayerState() async throws {
     #expect(await adapter.syncEngineForTesting().hasReceivedFirstSyncForTesting(player) == false)
 }
 
+@Test("A session of the player registered while the disconnect awaits keeper.leave keeps the player's state")
+func sessionRegisteredDuringLeaveKeepsPlayerState() async throws {
+    let (adapter, keeper) = await makeAdapter()
+    let player = PlayerID("p1")
+    let s1 = SessionID("s1"), c1 = ClientID("c1")
+    let s2 = SessionID("s2"), c2 = ClientID("c2")
+
+    let first = try await join(adapter, session: s1, client: c1, player: player)
+    await adapter.syncStateForNewPlayer(playerID: player, sessionID: s1)
+
+    // Hold S1's disconnect at `keeper.leave`; S1 is already unregistered, P has no session.
+    let leaveGate = TestGate()
+    await keeper.setLeaveHook { await leaveGate.arrive() }
+    let disconnect = Task { await adapter.onDisconnect(sessionID: s1, clientID: c1) }
+    #expect(await leaveGate.waitForArrivals(1))
+    #expect(await adapter.membershipSessionIDs(for: player).isEmpty)
+
+    // During the hold, S2 is registered for P (a re-join admitted meanwhile) and starts its
+    // initial sync.
+    await adapter.onConnect(sessionID: s2, clientID: c2)
+    await adapter.registerSession(sessionID: s2, clientID: c2, playerID: player, authInfo: nil)
+    await adapter.beginInitialSync(for: player)
+
+    leaveGate.open()
+    await disconnect.value
+
+    // The ownership check runs after the await: S2 now owns P, so nothing is cleared.
+    #expect(await adapter.isInitialSyncingForTesting(player))
+    #expect(await adapter.getPlayerSlot(for: player) == first.playerSlot)
+    #expect(await adapter.syncEngineForTesting().hasReceivedFirstSyncForTesting(player))
+    #expect(await adapter.membershipSessionIDs(for: player) == [s2])
+}
+
 @Test("A player's only session clears the player's state on disconnect")
 func onlySessionDisconnectClearsPlayerState() async throws {
     let (adapter, _) = await makeAdapter()

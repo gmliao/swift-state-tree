@@ -780,6 +780,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 logger.debug("Player \(playerID.rawValue) disconnecting: session=\(sessionID.rawValue), clientID=\(clientID.rawValue)")
             }
 
+            // Invalidating the membership bumps the player's version, so its queued `.player`
+            // events are dropped for every session of the player, a remaining one included.
+            let droppedPlayerEvents = pendingEventManager.currentPlayerEventCount(for: playerID) { player, version in
+                membershipCoordinator.isPlayerCurrent(player, expected: version)
+            }
             membershipCoordinator.invalidateMembership(sessionID: sessionID, playerID: playerID)
             membershipCoordinator.unregisterSession(sessionID: sessionID)
 
@@ -819,7 +824,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 logger.info("Client disconnected; player still has another session, its state is kept", metadata: [
                     "sessionID": .string(sessionID.rawValue),
                     "playerID": .string(playerID.rawValue),
-                    "otherSessions": .stringConvertible(otherSessions.count)
+                    "otherSessions": .stringConvertible(otherSessions.count),
+                    "droppedPlayerEvents": .stringConvertible(droppedPlayerEvents)
                 ])
             }
         } else {
