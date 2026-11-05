@@ -337,6 +337,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     func setJoinHook(_ hook: (@Sendable () async -> Void)?) {
         joinHook = hook
     }
+
+    /// Awaited at the start of `leave(playerID:clientID:)` (tests only), to hold a leave there.
+    private var leaveHook: (@Sendable () async -> Void)?
+
+    func setLeaveHook(_ hook: (@Sendable () async -> Void)?) {
+        leaveHook = hook
+    }
     private var initializationTask: Task<Void, Never>?
     private var didInitialize = false
 
@@ -1348,6 +1355,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///   - clientID: The client instance identifier.
     public func leave(playerID: PlayerID, clientID: ClientID) async throws {
         await ensureInitialized()
+        if let leaveHook {
+            await leaveHook()
+        }
         guard let session = players[playerID] else {
             if logger.logLevel <= .debug {
                 logger.debug("Leave called for player \(playerID.rawValue) but not found in players dictionary")
