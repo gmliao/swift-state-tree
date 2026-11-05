@@ -34,6 +34,7 @@ struct ReevaluationRecordVersionTests {
         #expect(changed(PlayerKeyedHashState.self), "[PlayerID: convertible node]")
         #expect(changed(NestedHashState.self), "inside a node in an array in an optional")
         #expect(!changed(UnaffectedHashState.self), "Int keys, plain nodes, convertible values that are not nodes")
+        #expect(!changed(PerPlayerHashState.self), "a per-player field is not in the broadcast view")
     }
 
     @Test("An older record's differing initialize hash is not comparable; a 2.3 record's fails")
@@ -237,6 +238,14 @@ struct UnaffectedHashState: StateNodeProtocol {
     @Sync(.broadcast) var plain: [String: PlainHashNode] = [:]
     @Sync(.broadcast) var values: [String: ConvertibleHashValue] = [:]
     @Sync(.broadcast) var single: HashPinNode = HashPinNode()
+
+    init() {}
+}
+
+@StateNodeBuilder
+struct PerPlayerHashState: StateNodeProtocol {
+    @Sync(.perPlayer({ (value: [String: HashPinNode], _: PlayerID) in value }))
+    var nodes: [String: HashPinNode] = [:]
 
     init() {}
 }

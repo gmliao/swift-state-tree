@@ -157,9 +157,11 @@ public enum ReevaluationRecordVersion {
     }
 
     /// Whether `stateType` has, at any depth, a state node that is also `SnapshotValueConvertible`
-    /// (`@SnapshotConvertible`) as the value of a `[String: X]` or `[PlayerID: X]` map: the only
-    /// shape whose broadcast view, and so whose state hash, #175 changed. Decided from the type,
-    /// not from a recording.
+    /// (`@SnapshotConvertible`) as the value of a `[String: X]` or `[PlayerID: X]` map, reached
+    /// through `.broadcast` fields only: the only shape whose broadcast view, and so whose state
+    /// hash, #175 changed. Fields of other policies are not in that view, or (masked, custom)
+    /// not followed, so a mismatch there stays a failure. Decided from the type, not from a
+    /// recording.
     public static func hashChangedByNestedNodePolicies(_ stateType: any StateNodeProtocol.Type) -> Bool {
         var visited: Set<ObjectIdentifier> = []
         return containsChangedShape(stateType, visited: &visited)
@@ -182,7 +184,9 @@ public enum ReevaluationRecordVersion {
         }
         if let nodeType = type as? any StateNodeProtocol.Type {
             guard visited.insert(ObjectIdentifier(nodeType)).inserted else { return false }
-            return nodeType.getFieldMetadata().contains { containsChangedShape($0.type, visited: &visited) }
+            return nodeType.getFieldMetadata().contains {
+                $0.policy == .broadcast && containsChangedShape($0.type, visited: &visited)
+            }
         }
         return false
     }
