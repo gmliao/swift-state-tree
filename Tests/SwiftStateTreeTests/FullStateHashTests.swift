@@ -349,3 +349,29 @@ struct FullStateHashReviewTests {
         }
     }
 }
+
+@StateNodeBuilder
+struct UnsignedRoundTripState: StateNodeProtocol, StateFromSnapshotDecodable {
+    @Sync(.broadcast) var big: UInt64 = 0
+    @Sync(.broadcast) var bigUInt: UInt = 0
+    @Sync(.broadcast) var small: UInt64 = 0
+}
+
+@Test("UInt64.max and UInt.max round-trip through the broadcast snapshot as decimal strings")
+func unsignedRoundTrip() throws {
+    var state = UnsignedRoundTripState()
+    state.big = UInt64.max
+    state.bigUInt = UInt.max
+    state.small = 7
+    let snapshot = try state.broadcastSnapshot(dirtyFields: nil)
+    #expect(snapshot.values["big"] == .string("18446744073709551615"))
+    #expect(snapshot.values["small"] == .int(7))
+    let decoded = try UnsignedRoundTripState(fromBroadcastSnapshot: snapshot)
+    #expect(decoded.big == UInt64.max)
+    #expect(decoded.bigUInt == UInt.max)
+    #expect(decoded.small == 7)
+    // Only the canonical form above Int.max is accepted as a string.
+    #expect(throws: SnapshotDecodeError.self) { try UInt64(fromSnapshotValue: .string("7")) }
+    #expect(throws: SnapshotDecodeError.self) { try UInt64(fromSnapshotValue: .string("018446744073709551615")) }
+    #expect(throws: SnapshotDecodeError.self) { try UInt64(fromSnapshotValue: .string("x")) }
+}
