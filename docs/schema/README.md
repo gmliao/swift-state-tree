@@ -42,7 +42,7 @@ graph LR
 
 3. **Output Schema**:
    - Use `SchemaGenCLI` to output JSON file
-   - Or get through Hummingbird `/schema` endpoint
+   - Or get it from the server's `/schema` endpoint
 
 ## Usage
 
@@ -138,9 +138,9 @@ try SchemaGenCLI.generate(
 )
 ```
 
-## Hummingbird Schema Endpoint
+## Schema Endpoint
 
-`LandServer` automatically provides `/schema` endpoint, outputting JSON schema for current Land.
+`NIOLandHost` serves `GET /schema` when `NIOLandHostConfiguration.schemaProvider` is set; the provider returns the schema JSON (for example, the output of `SchemaGen`). Without a provider, `/schema` answers 404.
 
 ### Usage
 

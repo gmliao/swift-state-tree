@@ -42,7 +42,7 @@ graph LR
 
 3. **輸出 Schema**：
    - 使用 `SchemaGenCLI` 輸出 JSON 檔案
-   - 或透過 Hummingbird `/schema` endpoint 取得
+   - 或從 server 的 `/schema` endpoint 取得
 
 ## 使用方式
 
@@ -138,9 +138,9 @@ try SchemaGenCLI.generate(
 )
 ```
 
-## Hummingbird Schema 端點
+## Schema 端點
 
-`LandServer` 會自動提供 `/schema` endpoint，輸出當前 Land 的 JSON schema。
+設定 `NIOLandHostConfiguration.schemaProvider` 時，`NIOLandHost` 會提供 `GET /schema`；provider 回傳 schema JSON（例如 `SchemaGen` 的輸出）。沒有 provider 時，`/schema` 回 404。
 
 ### 使用方式
 

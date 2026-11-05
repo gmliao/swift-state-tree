@@ -88,7 +88,7 @@ SchemaGen is used to generate JSON Schema from LandDefinition and StateNode for 
 
 - **Metadata Generation**: `@StateNodeBuilder` and `@Payload` generate field metadata
 - **Schema Extraction**: `SchemaExtractor` generates complete JSON schema from `LandDefinition`
-- **Auto Endpoint**: Hummingbird provides `/schema` endpoint to output schema
+- **Schema Endpoint**: `NIOLandHost` serves the schema at `/schema` when `NIOLandHostConfiguration.schemaProvider` is set
 
 ### Use Cases
 

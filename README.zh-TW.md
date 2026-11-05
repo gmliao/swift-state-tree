@@ -63,12 +63,12 @@ SwiftStateTree 採用以下核心設計：
 |------|------|
 | **SwiftStateTree** | 核心模組（StateTree、Land DSL、Sync、Runtime、SchemaGen） |
 | **SwiftStateTreeTransport** | Transport 層（WebSocketTransport、TransportAdapter、Land 管理） |
-| **SwiftStateTreeHummingbird** | Hummingbird 整合（LandServer、JWT/Guest、Admin 路由） |
+| **SwiftStateTreeNIO** | 基於 NIO 的伺服器 hosting（NIOLandHost、NIOLandServer、WebSocket） |
 | **SwiftStateTreeBenchmarks** | 基準測試執行檔 |
 
 ## 🚚 傳輸編碼格式（Transport Encodings）
 
-SwiftStateTree 目前支援 **三種**傳輸編碼組合。建議預設使用 **MessagePack**，搭配 opcode array 協議、PathHash 與執行期 dynamic-key（slot）壓縮，以獲得更小的封包與更快的解析速度。
+SwiftStateTree 目前支援 **三種**傳輸編碼組合。正式環境建議使用 **MessagePack**（函式庫預設為 JSON，見下方），它搭配 opcode array 協議、PathHash 與執行期 dynamic-key（slot）壓縮，以獲得更小的封包與更快的解析速度。
 
 | 模式 | Message 編碼 | StateUpdate 編碼 | 說明 |
 |---|---|---|---|
@@ -139,7 +139,7 @@ WebClient 會運行在另一個端口（通常是 `http://localhost:5173`），�
 
 ```swift
 import SwiftStateTree
-import SwiftStateTreeHummingbird
+import SwiftStateTreeNIO
 
 // 1. 定義狀態
 @StateNodeBuilder
@@ -184,10 +184,11 @@ let counterLand = Land("counter", using: CounterState.self) {
 @main
 struct DemoServer {
     static func main() async throws {
-        // Create LandHost to manage HTTP server and game logic
-        let host = LandHost(configuration: LandHost.HostConfiguration(
+        // Create NIOLandHost to manage HTTP server and game logic
+        let host = NIOLandHost(configuration: NIOLandHostConfiguration(
             host: "localhost",
-            port: 8080
+            port: 8080,
+            adminAPIKey: "demo-admin-key"
         ))
 
         // Register land type
@@ -196,11 +197,11 @@ struct DemoServer {
             land: counterLand,
             initialState: CounterState(),
             webSocketPath: "/game/counter",
-            configuration: LandServerConfiguration(
-                allowGuestMode: true,
+            configuration: NIOLandServerConfiguration(
                 allowAutoCreateOnJoin: true
             )
         )
+        await host.registerAdminRoutes()
 
         // Run unified server
         try await host.run()
@@ -330,8 +331,10 @@ SwiftStateTree/
 ├── Sources/
 │   ├── SwiftStateTree/              # 核心模組
 │   ├── SwiftStateTreeTransport/     # Transport 層
-│   ├── SwiftStateTreeHummingbird/   # Hummingbird 整合
+│   ├── SwiftStateTreeNIO/           # 基於 NIO 的伺服器 hosting
 │   └── SwiftStateTreeBenchmarks/    # 基準測試
+├── Archive/
+│   └── SwiftStateTreeHummingbird/   # 已歸檔的 Hummingbird 整合（僅供參考）
 ├── Tests/                           # 單元測試
 ├── Examples/                        # 範例專案
 │   └── Demo/
@@ -393,7 +396,7 @@ let gameLand = Land("game-room", using: GameStateTree.self) {
 - 🏛️ [Land DSL](docs/core/land-dsl.zh-TW.md) - 領域定義指南
 - 🔄 [同步規則](docs/core/sync.zh-TW.md) - 狀態同步詳解
 - 🌐 [Transport](docs/transport/README.zh-TW.md) - 網路傳輸層
-- 🐦 [Hummingbird](docs/hummingbird/README.zh-TW.md) - 伺服器整合
+- 🌐 [伺服器 hosting（NIO）](docs/overview.zh-TW.md) - NIOLandHost、NIOLandServer
 
 設計與開發筆記請參考 [`Notes/`](Notes/index.md)（計劃的狀態索引在 [`Notes/plans/README.md`](Notes/plans/README.md)），實驗資料在 [`deep-research/`](deep-research/README.md)。
 

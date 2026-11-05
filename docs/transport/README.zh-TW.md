@@ -33,7 +33,7 @@ Client ↔ WebSocketTransport ↔ TransportAdapter ↔ LandKeeper
 - LandManager / Registry：管理多房間
 - LandRouter / LandRealm：跨房間路由與控制
 
-若要將 SwiftStateTree 與其他 HTTP/WebSocket 框架（如 Vapor、Kitura）整合，請參閱 [Server 整合指南](server-integration.zh-TW.md)。
+若要將 SwiftStateTree 與其他 HTTP/WebSocket 框架（如 Vapor、Kitura）整合，請參閱 [Server 整合指南](server-integration.zh-TW.md)。JWT 驗證、Guest 模式與 admin API key 請參閱 [JWT 與 Guest 模式](auth.zh-TW.md)。
 
 ## Join 與 Session 流程
 

@@ -34,8 +34,8 @@ If this is your first time with SwiftStateTree, we recommend reading in the foll
 - **[Matchmaking Two-Plane Architecture](matchmaking-two-plane.md)** - Control plane (NestJS) and Runtime plane (Swift) relationship, client flow, connectUrl
 - **[Transport Layer](transport/README.md)** - WebSocket, connection management, multi-room support
 - **[Transport Evolution](transport_evolution.md)** - Evolution history from JSON to MessagePack binary encoding
-- **[Hummingbird Integration](hummingbird/README.md)** - Server configuration, single-room/multi-room modes
-- **[Authentication](hummingbird/auth.md)** - JWT, Guest mode, Admin routes
+- **[Authentication](transport/auth.md)** - JWT, Guest mode, Admin routes
+- **[Deploy & Load Balancing](deploy/README.md)** - nginx/K8s path-based routing to rooms
 
 ### Examples
 
@@ -60,7 +60,7 @@ If this is your first time with SwiftStateTree, we recommend reading in the foll
 
 1. [Quick Start](quickstart.md) - Basic setup
 2. [Land DSL](core/land-dsl.md) - Define game logic
-3. [Hummingbird Integration](hummingbird/README.md) - Deploy server
+3. [Deploy & Load Balancing](deploy/README.md) - Deploy server
 
 ### I want to understand state synchronization
 
@@ -76,7 +76,7 @@ If this is your first time with SwiftStateTree, we recommend reading in the foll
 
 1. [Architecture Layers](architecture.md) - Understand component layers and relationships
 2. [Transport Layer](transport/README.md) - Multi-room management
-3. [Hummingbird Integration](hummingbird/README.md) - Multi-room mode configuration
+3. [Deploy & Load Balancing](deploy/README.md) - Route clients to rooms
 
 ### I want to optimize performance
 

@@ -88,7 +88,7 @@ SchemaGen 用於從 LandDefinition 和 StateNode 產生 JSON Schema，供客戶�
 
 - **Metadata 生成**：`@StateNodeBuilder` 與 `@Payload` 產生欄位 metadata
 - **Schema 提取**：`SchemaExtractor` 由 `LandDefinition` 產生完整 JSON schema
-- **自動端點**：Hummingbird 會提供 `/schema` endpoint 輸出 schema
+- **Schema 端點**：設定 `NIOLandHostConfiguration.schemaProvider` 時，`NIOLandHost` 會在 `/schema` 提供 schema
 
 ### 使用場景
 

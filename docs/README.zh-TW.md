@@ -16,8 +16,7 @@
 - `core/` - StateNode、Sync、Land DSL、Runtime
 
 ### 整合與部署
-- `transport/` - Transport 層與連線管理
-- `hummingbird/` - Hummingbird 伺服器整合
+- `transport/` - Transport 層、連線管理與 JWT/Guest 認證
 
 ### 參考文檔
 - `schema/` - Schema 生成

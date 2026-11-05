@@ -70,7 +70,7 @@ SwiftStateTree adopts the following core design:
 
 ## 🚚 Transport Encodings
 
-SwiftStateTree supports **three** transport encoding combinations. The recommended default is **MessagePack**, which combines an opcode array protocol with PathHash + runtime dynamic-key (slot) compression for small packets.
+SwiftStateTree supports **three** transport encoding combinations. **MessagePack** is recommended for production (the library default is JSON, see below); it combines an opcode array protocol with PathHash + runtime dynamic-key (slot) compression for small packets.
 
 | Mode | Message encoding | State update encoding | Notes |
 |---|---|---|---|

@@ -33,7 +33,7 @@ and supporting multi-device, multi-connection behavior control.
 - LandManager / Registry: Manage multiple rooms
 - LandRouter / LandRealm: Cross-room routing and control
 
-For integrating SwiftStateTree with another HTTP/WebSocket framework (e.g. Vapor, Kitura), see [Server Integration Guide](server-integration.md).
+For integrating SwiftStateTree with another HTTP/WebSocket framework (e.g. Vapor, Kitura), see [Server Integration Guide](server-integration.md). For JWT validation, guest mode and the admin API key, see [JWT and Guest Mode](auth.md).
 
 ## Join and Session Flow
 

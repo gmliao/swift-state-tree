@@ -314,7 +314,7 @@ Lifetime {
 
 ### Q: How do I configure JWT authentication?
 
-A: Use `LandServerConfiguration` and register through `LandHost`:
+A: Set `jwtConfig` in `NIOLandServerConfiguration` and register through `NIOLandHost`:
 
 ```swift
 // Create JWT configuration
@@ -324,8 +324,8 @@ let jwtConfig = JWTConfiguration(
     validateExpiration: true
 )
 
-// Create LandHost
-let host = LandHost(configuration: LandHost.HostConfiguration(
+// Create NIOLandHost
+let host = NIOLandHost(configuration: NIOLandHostConfiguration(
     host: "localhost",
     port: 8080
 ))
@@ -336,7 +336,7 @@ try await host.register(
     land: demoLand,
     initialState: GameState(),
     webSocketPath: "/game",
-    configuration: LandServerConfiguration(
+    configuration: NIOLandServerConfiguration(
         jwtConfig: jwtConfig,
         allowGuestMode: true // Allow Guest mode
     )
@@ -345,7 +345,7 @@ try await host.register(
 try await host.run()
 ```
 
-For detailed information, please refer to [Authentication](hummingbird/auth.md).
+For detailed information, please refer to [Authentication](transport/auth.md).
 
 ### Q: What's the priority order between Guest mode and JWT?
 

@@ -34,8 +34,8 @@
 - **[配對雙層架構](matchmaking-two-plane.zh-TW.md)** - Control Plane（NestJS）與 Runtime Plane（Swift）關係、客戶端流程、connectUrl
 - **[Transport 層](transport/README.zh-TW.md)** - WebSocket、連線管理、多房間支援
 - **[傳輸層演進](transport_evolution.zh-TW.md)** - 從 JSON 到 MessagePack 二進位編碼的演進歷程
-- **[Hummingbird 整合](hummingbird/README.zh-TW.md)** - 伺服器設定、單房間/多房間模式
-- **[認證機制](hummingbird/auth.zh-TW.md)** - JWT、Guest 模式、Admin 路由
+- **[認證機制](transport/auth.zh-TW.md)** - JWT、Guest 模式、Admin 路由
+- **[部署與負載平衡](deploy/README.md)** - 以 nginx/K8s 依路徑把連線導到房間
 
 ### 範例
 
@@ -60,7 +60,7 @@
 
 1. [快速開始](quickstart.zh-TW.md) - 基本設定
 2. [Land DSL](core/land-dsl.zh-TW.md) - 定義遊戲邏輯
-3. [Hummingbird 整合](hummingbird/README.zh-TW.md) - 部署伺服器
+3. [部署與負載平衡](deploy/README.md) - 部署伺服器
 
 ### 我想了解狀態同步機制
 
@@ -76,7 +76,7 @@
 
 1. [架構分層](architecture.zh-TW.md) - 了解組件分層與關係
 2. [Transport 層](transport/README.zh-TW.md) - 多房間管理
-3. [Hummingbird 整合](hummingbird/README.zh-TW.md) - 多房間模式設定
+3. [部署與負載平衡](deploy/README.md) - 把客戶端導到房間
 
 ### 我想優化效能
 

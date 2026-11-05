@@ -314,7 +314,7 @@ Lifetime {
 
 ### Q: 如何設定 JWT 認證？
 
-A: 使用 `LandServerConfiguration` 並通過 `LandHost` 註冊：
+A: 在 `NIOLandServerConfiguration` 設定 `jwtConfig`，並通過 `NIOLandHost` 註冊：
 
 ```swift
 // Create JWT configuration
@@ -324,8 +324,8 @@ let jwtConfig = JWTConfiguration(
     validateExpiration: true
 )
 
-// Create LandHost
-let host = LandHost(configuration: LandHost.HostConfiguration(
+// Create NIOLandHost
+let host = NIOLandHost(configuration: NIOLandHostConfiguration(
     host: "localhost",
     port: 8080
 ))
@@ -336,7 +336,7 @@ try await host.register(
     land: demoLand,
     initialState: GameState(),
     webSocketPath: "/game",
-    configuration: LandServerConfiguration(
+    configuration: NIOLandServerConfiguration(
         jwtConfig: jwtConfig,
         allowGuestMode: true // 允許 Guest 模式
     )
@@ -345,7 +345,7 @@ try await host.register(
 try await host.run()
 ```
 
-詳細說明請參考 [認證機制](hummingbird/auth.zh-TW.md)。
+詳細說明請參考 [認證機制](transport/auth.zh-TW.md)。
 
 ### Q: Guest 模式和 JWT 的優先順序是什麼？
 

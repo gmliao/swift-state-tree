@@ -16,8 +16,7 @@ This directory holds the official SwiftStateTree documentation, written for read
 - `core/` - StateNode, Sync, Land DSL, Runtime
 
 ### Integration and deployment
-- `transport/` - the transport layer and connection management
-- `hummingbird/` - Hummingbird server integration
+- `transport/` - the transport layer, connection management, and JWT/guest authentication
 
 ### Reference
 - `schema/` - schema generation
