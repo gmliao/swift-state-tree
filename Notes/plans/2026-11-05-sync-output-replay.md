@@ -318,8 +318,10 @@ The patch applier for `SnapshotValue` exists only in tests today. Two copies are
 JSON-pointer appliers (`SyncStrategyEquivalenceTests`, `TransportAdapterSyncPhaseTests`); two are
 typed projections onto their own client models (`SyncEngineEndToEndTests`,
 `TransportAdapterSyncDirtyWindowTests`) and stay as they are. This work adds one package-level
-applier in `SwiftStateTree/Sync` and moves the two generic copies onto it. It is strict: a set
-below a missing or non-object parent, or a delete of a missing field, throws. It has its own path parsing (no shared
+applier in `SwiftStateTree/Sync` and moves the two generic copies onto it. It follows the client
+where a correct diff can lead (a set below a missing parent creates it as an empty object) and
+throws where only a wrong diff can (a set below a non-object parent, a delete of a missing field).
+It has its own path parsing (no shared
 helpers with the diff), and its own unit tests against hand-written patches and expected values,
 independent of the diff.
 
