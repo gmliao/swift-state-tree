@@ -128,7 +128,7 @@ WebClient will run on another port (usually `http://localhost:5173`), accessible
 - 📖 [Complete Documentation Index](docs/index.md)
 - 🚀 [Quick Start Guide](docs/quickstart.md)
 - 📐 [Architecture Overview](docs/overview.md)
-- 🔎 [Deep Research Notes](deep-research/README.md)
+- 🔎 [Experiment data](deep-research/README.md)
 
 ### 4. Simplest Example
 

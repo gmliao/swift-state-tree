@@ -1,6 +1,8 @@
 [English](README.md) | [中文版](README.zh-TW.md)
 
-## 實驗
+# 實驗
+
+SwiftStateTree 的實驗資料。
 
 Each folder answers one question and has its own README (question, environment, commands, results, caveats). Where there's a `regenerate.py`, `python3 regenerate.py --check` confirms that the README's tables match the raw results.
 
@@ -12,19 +14,3 @@ Each folder answers one question and has its own README (question, environment, 
 | [multiroom-load-2026-02/](multiroom-load-2026-02/README.md) | Raw multi-room load-test and EncodingBenchmark evidence from February 2026 (NIO transport, 100/300/500 rooms), with the generator for its tables and figure | 2026-02-07 | `generate_tables.py` |
 
 The machine, toolchain and commit for each result are in that folder's README; results from different machines are compared only as trends.
-
-## 關於本文件
-
-本文件為作者主導的深度研究與分析整理，過程中使用 AI 工具協助。
-
-AI 作為研究加速器，用於：
-- 文獻探索與交叉參照
-- 假設擴展與反例生成
-- 複雜架構概念的結構化整理
-
-所有結論、架構判斷與取捨由作者基於工程經驗與批判性評估做出。
-本文件應視為工程研究筆記，而非學術證明。
-
-## 文件
-
-- [智能代理時代的架構重構：LSP 增強型 AI 與 ECS 系統化架構的深度評估報告](lsp-ai-ecs-architecture-report.zh-TW.md)

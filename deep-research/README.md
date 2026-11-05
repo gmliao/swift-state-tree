@@ -1,6 +1,8 @@
 [English](README.md) | [中文版](README.zh-TW.md)
 
-## Experiments
+# Experiments
+
+Experiment data for SwiftStateTree.
 
 Each folder answers one question and has its own README (question, environment, commands, results, caveats). Where there's a `regenerate.py`, `python3 regenerate.py --check` confirms that the README's tables match the raw results.
 
@@ -12,19 +14,3 @@ Each folder answers one question and has its own README (question, environment, 
 | [multiroom-load-2026-02/](multiroom-load-2026-02/README.md) | Raw multi-room load-test and EncodingBenchmark evidence from February 2026 (NIO transport, 100/300/500 rooms), with the generator for its tables and figure | 2026-02-07 | `generate_tables.py` |
 
 The machine, toolchain and commit for each result are in that folder's README; results from different machines are compared only as trends.
-
-## About This Document
-
-This document is the result of a deep research and analysis process conducted with the assistance of AI tools.
-
-AI was used as a research accelerator for:
-- literature exploration and cross-referencing
-- hypothesis expansion and counter-argument generation
-- structural organization of complex architectural concepts
-
-All conclusions, architectural judgments, and trade-off decisions were made by the author based on engineering experience and critical evaluation.
-This document should be considered an engineering research note rather than an academic proof.
-
-## Documents
-
-- [LSP-Enhanced AI and ECS Architecture Report (zh-TW)](lsp-ai-ecs-architecture-report.zh-TW.md)
