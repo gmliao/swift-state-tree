@@ -136,6 +136,10 @@ The per-tick `stateHash` is a deterministic FNV-1a64 hash of the sorted-keys JSO
 
 The hash is never sent to clients and no sync path computes it: client output is unchanged by it. Map keys become strings as for clients (two keys of one map that become the same string make the hash unavailable), and set elements are ordered by their canonical encoding, so insertion order never reaches the hash.
 
+### Oldest Readable Record (2.5)
+
+Record format 2.5 (#154) writes `PlayerID`, `ClientID` and `SessionID` as strings, and a dictionary keyed by one as an object keyed by the string, the shape every encoder now sends. Older records hold them as `{"rawValue": ...}` objects, which no longer decode, and they are not converted: a reader rejects any record older than 2.5 as unsupported before replaying it (`ReevaluationRecordVersionError.unsupported`). `ReevaluationRunner --verify` prints "unsupported record version ...; re-record with the current server" and exits 10 (not comparable, never a mismatch), and the admin replay start route answers 409 `RECORD_VERSION_UNSUPPORTED`. Re-record such sessions with the current server. The sections below on older formats describe how those records were verified.
+
 ### Which Hash a Record Holds
 
 | Record format | State and initialize hash | Verified against |
