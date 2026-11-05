@@ -42,6 +42,23 @@ public enum ReevaluationOutputMode: Sendable {
     case transportAndSink
 }
 
+/// Where a `LandKeeper` awaits its test hold hook (`installHolds`).
+enum LandKeeperHoldPoint: Hashable, Sendable {
+    /// The start of the destruction, after `isDraining` is set and before any destroy handler.
+    case drainStart
+    /// Both `join` variants, after their checks and before the player insert.
+    case join
+    /// The start of `leave(playerID:clientID:sessionID:)`.
+    case leave
+    /// A tickless client event's task, before it waits for its input turn.
+    case clientEventWait
+    /// The start of each input drain, before its first turn.
+    case inputDrain
+    /// Before an input turn's or a legacy pass's record is submitted: the inputs are applied and
+    /// their callers wait only for the record.
+    case turnRecord
+}
+
 public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Unified pending item for actions and client events
     public enum PendingItem: Sendable {
@@ -321,10 +338,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// awaiting the keeper, so a caller can check it in the same synchronous segment as its act.
     public nonisolated var isDraining: Bool { drainFlag.isSet }
 
-    /// Test hook: awaited at the start of the destruction, after `isDraining` is set and before
-    /// any destroy handler runs.
-    private var drainHook: (@Sendable () async -> Void)?
-
     /// Waits until this keeper's destruction has finished, handlers and the transport's
     /// `onLandDestroyed` included. Returns at once when no destruction started.
     ///
@@ -336,25 +349,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
     }
 
-    /// Installs the drain hook (tests).
-    func setDrainHook(_ hook: (@Sendable () async -> Void)?) {
-        drainHook = hook
-    }
+    /// Forced-interleaving hold points (tests only; a no-op unless installed).
+    private var holds = HoldPoints<LandKeeperHoldPoint>()
 
-    /// Test hook: awaited in both `join` variants after their checks and before the player
-    /// insert, so a test can start a destruction while a join is suspended there.
-    private var joinHook: (@Sendable () async -> Void)?
-
-    /// Installs the join hook (tests).
-    func setJoinHook(_ hook: (@Sendable () async -> Void)?) {
-        joinHook = hook
-    }
-
-    /// Awaited at the start of `leave(playerID:clientID:)` (tests only), to hold a leave there.
-    private var leaveHook: (@Sendable () async -> Void)?
-
-    func setLeaveHook(_ hook: (@Sendable () async -> Void)?) {
-        leaveHook = hook
+    /// Installs (or, with `nil`, removes) the hold hook for every `LandKeeperHoldPoint` (tests).
+    func installHolds(_ hook: (@Sendable (LandKeeperHoldPoint) async -> Void)?) {
+        holds.install(hook)
     }
     private var initializationTask: Task<Void, Never>?
     private var didInitialize = false
@@ -539,28 +539,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         inTurnProbeForTesting?(label)
     }
 
-    /// Tests only: awaited by a tickless client event's task before it waits for its input turn.
-    private var clientEventWaitHoldForTesting: (@Sendable () async -> Void)?
-
-    /// Tests only: awaited at the start of each input drain, before its first turn.
-    private var inputDrainHoldForTesting: (@Sendable () async -> Void)?
-    /// Awaited before an input turn's or a legacy pass's record is submitted (tests only): the
-    /// inputs are applied and their callers wait only for the record.
-    private var turnRecordHoldForTesting: (@Sendable () async -> Void)?
 
     /// Tests only: the ticks with sync requests still in the output collector.
     func syncRequestTicksForTesting() -> [Int64] {
         outputCollector.syncRequestsByTick.keys.sorted()
-    }
-
-    /// Installs `clientEventWaitHoldForTesting` (tests only).
-    func setClientEventWaitHoldForTesting(_ hold: (@Sendable () async -> Void)?) {
-        clientEventWaitHoldForTesting = hold
-    }
-
-    /// Installs `turnRecordHoldForTesting` (tests only).
-    func setTurnRecordHoldForTesting(_ hold: (@Sendable () async -> Void)?) {
-        turnRecordHoldForTesting = hold
     }
 
     /// Inputs `applyPendingItem` skipped because the destroy handlers had started (tests read it;
@@ -570,13 +552,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Tickless intake callers held by a freeze (tests only).
     var debugHeldInputCount: Int { debugHeldInputs.count }
 
-    /// Installs `inputDrainHoldForTesting` (tests only).
-    func setInputDrainHoldForTesting(_ hold: (@Sendable () async -> Void)?) {
-        inputDrainHoldForTesting = hold
-    }
-
     private func holdClientEventWaitForTesting() async {
-        if let hold = clientEventWaitHoldForTesting { await hold() }
+        await holds.at(.clientEventWait)
     }
 
     /// Installs `inTurnYieldForTesting` (tests only).
@@ -1183,9 +1160,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         services: LandServices = LandServices()
     ) async throws {
         await ensureInitialized()
-        if let joinHook {
-            await joinHook()
-        }
+        await holds.at(.join)
         // Check for duplicate playerID login (Kick Old strategy)
         if let existingSession = players[playerID], let oldClientID = existingSession.clientID {
             logger.info("Duplicate playerID login detected: \(playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
@@ -1382,9 +1357,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
         }
 
-        if let joinHook {
-            await joinHook()
-        }
+        await holds.at(.join)
         // Check for duplicate playerID login (Kick Old strategy)
         if let existingSession = players[playerID], let oldClientID = existingSession.clientID {
             logger.info("Duplicate playerID login detected: \(playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
@@ -1658,9 +1631,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// can collide, so a client's leave can't remove another client's entry that shares its ID.
     public func leave(playerID: PlayerID, clientID: ClientID, sessionID: SessionID?) async throws {
         await ensureInitialized()
-        if let leaveHook {
-            await leaveHook()
-        }
+        await holds.at(.leave)
         guard let session = players[playerID] else {
             if logger.logLevel <= .debug {
                 logger.debug("Leave called for player \(playerID.rawValue) but not found in players dictionary")
@@ -2502,7 +2473,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         for (sequence, outcome) in application.outcomes where legacyPassCallers.contains(sequence) {
             legacyPassResults[sequence] = outcome
         }
-        if let hold = turnRecordHoldForTesting { await hold() }
+        await holds.at(.turnRecord)
         let recordedActions = applied.recordedActions
         let recordedClientEvents = applied.recordedClientEvents
         let recordedLifecycleEvents = applied.recordedLifecycleEvents
@@ -3174,7 +3145,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Submits `record` after every earlier submission (turn order) and returns once it is
     /// recorded. No-op without a recorder.
     private func submitTurnRecord(_ record: ReevaluationTickRecord) async {
-        if let hold = turnRecordHoldForTesting { await hold() }
+        await holds.at(.turnRecord)
         await enqueueRecorderSubmission(record)?.value
     }
 
@@ -3323,7 +3294,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Between turns the drain yields, so sync-only turns and other jobs interleave whether or
     /// not a recorder is attached. The caller has set `inputDrainScheduled`.
     private func runInputDrain() async {
-        if let hold = inputDrainHoldForTesting { await hold() }
+        await holds.at(.inputDrain)
         while true {
             let batch = Array(readyPendingItemsInOrder().prefix(Self.inputTurnBatchLimit))
             if batch.isEmpty { break }
@@ -3515,9 +3486,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// The destruction proper: stop the loops, run the destroy handlers, notify the transport.
     private func drainAfterIdleCheck() async {
-        if let drainHook {
-            await drainHook()
-        }
+        await holds.at(.drainStart)
         // Cancel tick and sync tasks FIRST to prevent any new ticks/syncs from starting
         // This must be done before executing destroy handlers to ensure no ticks/syncs run after destroy
         tickTask?.cancel()

@@ -224,6 +224,18 @@ struct SyncOutputRead {
     let position: SyncReadPosition?
 }
 
+/// Where a `TransportAdapter` awaits its test hold hook (`installHolds`).
+enum TransportAdapterHoldPoint: Hashable, Sendable {
+    /// A failed plan's delayed follow-up, before its `syncNow()`, so a test decides when that
+    /// cycle runs instead of racing its 100 ms delay.
+    case failedPlanFollowUp
+    /// A sync cycle after its frames were enqueued and before its `endSync` hop, while the cycle
+    /// still owns the keeper's sync flag: holds a cycle in flight.
+    case cycleBeforeEndSync
+    /// Before the initial sync reads the state.
+    case initialSync
+}
+
 /// Adapts Transport events to LandKeeper calls.
 public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
@@ -272,13 +284,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         writerBackPressureOverrideForTesting = override
     }
 
-    /// Tests only: awaited by a failed plan's delayed follow-up before its `syncNow()`, so a test
-    /// decides when that cycle runs instead of racing its 100 ms delay.
-    private var failedPlanFollowUpHoldForTesting: (@Sendable () async -> Void)?
+    /// Forced-interleaving hold points (tests only; a no-op unless installed).
+    private var holds = HoldPoints<TransportAdapterHoldPoint>()
 
-    /// Installs `failedPlanFollowUpHoldForTesting` (tests only).
-    func setFailedPlanFollowUpHoldForTesting(_ hold: (@Sendable () async -> Void)?) {
-        failedPlanFollowUpHoldForTesting = hold
+    /// Installs (or, with `nil`, removes) the hold hook for every `TransportAdapterHoldPoint`
+    /// (tests).
+    func installHolds(_ hook: (@Sendable (TransportAdapterHoldPoint) async -> Void)?) {
+        holds.install(hook)
     }
 
     /// Whether a test forces the in-turn back-pressure check on.
@@ -320,16 +332,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     var landIDForOutbound: String { landID }
     /// Logger for the outbound extension.
     var outboundLogger: Logger { logger }
-    /// Diagnostics and tests only: awaited by a sync cycle after its frames were enqueued and
-    /// before its `endSync` hop, while the cycle still owns the keeper's sync flag. Lets a test
-    /// hold a cycle in flight now that the cycle no longer awaits the transport. `nil` (the
-    /// default) costs one load per cycle.
-    var debugCycleHoldBeforeEndSync: (@Sendable () async -> Void)?
-
-    /// Installs `debugCycleHoldBeforeEndSync` (diagnostics and tests only).
-    func setDebugCycleHoldBeforeEndSync(_ hold: (@Sendable () async -> Void)?) {
-        debugCycleHoldBeforeEndSync = hold
-    }
 
     /// Installs `syncPlanFaultForTesting` (tests only).
     func setSyncPlanFaultForTesting(_ fault: (@Sendable () throws -> Void)?) {
@@ -1061,12 +1063,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         return try await operation(ticket)
     }
 
-    /// Awaited before the initial sync reads the state (tests only), to hold it there.
-    private var initialSyncHoldForTesting: (@Sendable () async -> Void)?
-
-    func setInitialSyncHoldForTesting(_ hold: (@Sendable () async -> Void)?) {
-        initialSyncHoldForTesting = hold
-    }
 
     // MARK: - Admission (#69)
 
@@ -1993,9 +1989,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private func startDelayedFollowUpSync() {
         Task {
             try? await safeTaskSleep(for: Self.syncFailedPlanFollowUpDelay)
-            if let hold = self.failedPlanFollowUpHoldForTesting {
-                await hold()
-            }
+            await self.holds.at(.failedPlanFollowUp)
             await self.syncNow()
         }
     }
@@ -2112,9 +2106,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
         }
 
-        if let hold = debugCycleHoldBeforeEndSync {
-            await hold()
-        }
+        await holds.at(.cycleBeforeEndSync)
         await keeper.endSync()
         if completed {
             consecutiveFailedPlans = 0
@@ -3596,7 +3588,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Plan + commit like a sync cycle. A failed plan commits nothing, so the player stays unmarked
     /// and the next full cycle gives it its whole view (`planFullViewUpdate`).
     private func _syncStateForNewPlayer(playerID: PlayerID, sessionID: SessionID, ticket: Ticket<SessionID>) async {
-        if let initialSyncHoldForTesting { await initialSyncHoldForTesting() }
+        await holds.at(.initialSync)
         let state: State
         var read: SyncOutputRead?
         if inTurnSyncEnabled {
@@ -4361,9 +4353,7 @@ extension TransportAdapter {
                     await keeper.endSync()
                     throw error
                 }
-                if let hold = debugCycleHoldBeforeEndSync {
-                    await hold()
-                }
+                await holds.at(.cycleBeforeEndSync)
                 await keeper.endSync()
                 let tickId = await keeper.debugLastCommittedTickId()
                 // Checked after the last await, so a release during the cycle is never published.

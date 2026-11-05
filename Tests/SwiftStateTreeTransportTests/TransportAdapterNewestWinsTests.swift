@@ -423,7 +423,7 @@ struct TransportAdapterNewestWinsTests {
         // S1's initial sync is held at its state read (first hold); S2's at its own (second).
         let firstHold = TestGate(), secondHold = TestGate()
         let holds = HoldSequence([firstHold, secondHold])
-        await f.adapter.setInitialSyncHoldForTesting { await holds.next() }
+        await f.adapter.installHolds(HoldRegistry.at(.initialSync) { await holds.next() })
 
         await f.connect(s1, c1)
         let firstJoin = try #require(try await f.adapter.performJoin(

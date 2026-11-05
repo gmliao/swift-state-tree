@@ -345,7 +345,7 @@ struct LandKeeperInputTurnTests {
         let limit = LandKeeper<InputTurnTestState>.inputTurnBatchLimit
         let count = limit + 10
         let gate = InputTurnGate()
-        await keeper.setInputDrainHoldForTesting { await gate.wait() }
+        await keeper.installHolds(HoldRegistry.at(.inputDrain) { await gate.wait() })
         let spawned = InputTurnSwitch()
         let started = InputTurnSwitch()
         await keeper.setInTurnProbeForTesting { label in
@@ -371,7 +371,7 @@ struct LandKeeperInputTurnTests {
             try await safeTaskSleep(for: .milliseconds(5))
         }
         try await f.waitForPending(count)
-        await keeper.setInputDrainHoldForTesting(nil)
+        await keeper.installHolds(nil)
         await gate.release()
         try await actions.value
 
@@ -387,7 +387,7 @@ struct LandKeeperInputTurnTests {
     func clientEventAppliedBeforeItsWait() async throws {
         let f = try await InputTurnFixture.make()
         let gate = InputTurnGate()
-        await f.keeper.setClientEventWaitHoldForTesting { await gate.wait() }
+        await f.keeper.installHolds(HoldRegistry.at(.clientEventWait) { await gate.wait() })
         try await f.sendBump(3)  // its task is held before it waits for its turn
         for _ in 0..<400 where await gate.waiting == 0 {
             try await safeTaskSleep(for: .milliseconds(5))
@@ -397,7 +397,7 @@ struct LandKeeperInputTurnTests {
         #expect(await f.keeper.currentState().total == 4)
         #expect(await f.keeper.pendingItemSequencesForTesting().isEmpty)
 
-        await f.keeper.setClientEventWaitHoldForTesting(nil)
+        await f.keeper.installHolds(nil)
         await gate.release()
         let frozen = await f.keeper.debugFreeze(generation: 1, timeout: .seconds(1))
         #expect(frozen, "no in-flight work left behind by the event's task")
@@ -456,7 +456,7 @@ struct LandKeeperInputTurnTests {
             let gate = InputTurnGate()
             if inTurn {
                 // Both inputs wait in the queue, so one turn applies them together.
-                await f.keeper.setInputDrainHoldForTesting { await gate.wait() }
+                await f.keeper.installHolds(HoldRegistry.at(.inputDrain) { await gate.wait() })
             }
             let first = Task { try await f.add(1) }
             if inTurn {
@@ -467,7 +467,7 @@ struct LandKeeperInputTurnTests {
             let poison = Task { try await f.add(-5) }
             if inTurn {
                 try await f.waitForPending(2)
-                await f.keeper.setInputDrainHoldForTesting(nil)
+                await f.keeper.installHolds(nil)
                 await gate.release()
             }
             let firstResult = try? await first.value

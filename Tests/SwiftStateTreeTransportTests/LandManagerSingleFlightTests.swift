@@ -193,7 +193,7 @@ struct LandManagerSingleFlightTests {
     func concurrentFirstJoinsShareOneCreation() async throws {
         let manager = makeManager()
         let gate = TestGate()
-        await manager.setCreationHook { _ in await gate.arrive() }
+        await manager.installHolds(HoldRegistry.at(.creation) { await gate.arrive() })
         let landID = LandID(landType: "sf-game", instanceId: "room-0-0")
 
         let calls = concurrentCreations(8, manager: manager, landID: landID)
@@ -222,7 +222,7 @@ struct LandManagerSingleFlightTests {
             landID.landType.hasSuffix("-replay") ? .reevaluation(recordFilePath: recordFile.path) : nil
         })
         let gate = TestGate()
-        await manager.setCreationHook { _ in await gate.arrive() }
+        await manager.installHolds(HoldRegistry.at(.creation) { await gate.arrive() })
         let landID = LandID(landType: "sf-game-replay", instanceId: "viewer-room")
 
         let calls = concurrentCreations(2, manager: manager, landID: landID)
@@ -243,7 +243,7 @@ struct LandManagerSingleFlightTests {
         let resolver = FailingResolver(failures: 1)
         let manager = makeManager(keeperModeResolver: { resolver.resolve($0, $1) })
         let gate = TestGate()
-        await manager.setCreationHook { _ in await gate.arrive() }
+        await manager.installHolds(HoldRegistry.at(.creation) { await gate.arrive() })
         let landID = LandID(landType: "sf-game", instanceId: "fails-once")
 
         let calls = concurrentCreations(3, manager: manager, landID: landID)
@@ -267,7 +267,7 @@ struct LandManagerSingleFlightTests {
     func cancelledWaiterDoesNotCancelCreation() async throws {
         let manager = makeManager()
         let gate = TestGate()
-        await manager.setCreationHook { _ in await gate.arrive() }
+        await manager.installHolds(HoldRegistry.at(.creation) { await gate.arrive() })
         let landID = LandID(landType: "sf-game", instanceId: "impatient")
 
         let calls = concurrentCreations(2, manager: manager, landID: landID)
@@ -289,7 +289,7 @@ struct LandManagerSingleFlightTests {
         let landID = LandID(landType: "sf-game", instanceId: "reused-a")
         let manager = makeManager()
         let reachedWait = signal()
-        await manager.setDrainWaitHook { _ in await reachedWait.arrive() }
+        await manager.installHolds(HoldRegistry.at(.drainWait) { await reachedWait.arrive() })
         let old = try await manager.getOrCreateLand(
             landID: landID,
             definition: oldInstanceLand(landID, log: log, afterFinalizeGate: nil),
@@ -297,7 +297,7 @@ struct LandManagerSingleFlightTests {
             metadata: [:]
         )
         // Hold the destruction after it started (isDraining) and before any finalize handler.
-        await old.keeper.setDrainHook { await drainGate.arrive() }
+        await old.keeper.installHolds(HoldRegistry.at(.drainStart) { await drainGate.arrive() })
 
         let destruction = Task { await old.keeper.forceShutdown() }
         #expect(await drainGate.waitForArrivals(1))
@@ -340,7 +340,7 @@ struct LandManagerSingleFlightTests {
         let landID = LandID(landType: "sf-game", instanceId: "reused-b")
         let manager = makeManager()
         let reachedWait = signal()
-        await manager.setDrainWaitHook { _ in await reachedWait.arrive() }
+        await manager.installHolds(HoldRegistry.at(.drainWait) { await reachedWait.arrive() })
         let old = try await manager.getOrCreateLand(
             landID: landID,
             definition: oldInstanceLand(landID, log: log, afterFinalizeGate: afterFinalizeGate),
@@ -429,14 +429,14 @@ struct LandManagerSingleFlightTests {
         let landID = LandID(landType: "sf-game", instanceId: "admin-draining")
         let manager = makeManager()
         let reachedWait = signal()
-        await manager.setDrainWaitHook { _ in await reachedWait.arrive() }
+        await manager.installHolds(HoldRegistry.at(.drainWait) { await reachedWait.arrive() })
         let old = try await manager.getOrCreateLand(
             landID: landID,
             definition: oldInstanceLand(landID, log: log, afterFinalizeGate: nil),
             initialState: SingleFlightTestState(),
             metadata: [:]
         )
-        await old.keeper.setDrainHook { await drainGate.arrive() }
+        await old.keeper.installHolds(HoldRegistry.at(.drainStart) { await drainGate.arrive() })
         let destruction = Task { await old.keeper.forceShutdown() }
         #expect(await drainGate.waitForArrivals(1))
 
@@ -471,7 +471,7 @@ struct LandManagerSingleFlightTests {
         let manager = makeManager()
         await manager.setDrainWaitTimeout(.milliseconds(200))
         let old = try await concurrentCreations(1, manager: manager, landID: landID)[0].value
-        await old.keeper.setDrainHook { await drainGate.arrive() }
+        await old.keeper.installHolds(HoldRegistry.at(.drainStart) { await drainGate.arrive() })
         let destruction = Task { await old.keeper.forceShutdown() }
         #expect(await drainGate.waitForArrivals(1))
 
@@ -494,7 +494,7 @@ struct LandManagerSingleFlightTests {
     func shutdownRejectsNewCreations() async throws {
         let manager = makeManager()
         let gate = TestGate()
-        await manager.setCreationHook { _ in await gate.arrive() }
+        await manager.installHolds(HoldRegistry.at(.creation) { await gate.arrive() })
         let held = LandID(landType: "sf-game", instanceId: "held")
         let late = LandID(landType: "sf-game", instanceId: "late")
 
@@ -536,7 +536,7 @@ struct LandManagerSingleFlightTests {
             initialState: SingleFlightTestState(),
             metadata: [:]
         )
-        await old.keeper.setDrainHook { await drainGate.arrive() }
+        await old.keeper.installHolds(HoldRegistry.at(.drainStart) { await drainGate.arrive() })
         let first = Task { await old.keeper.forceShutdown() }
         #expect(await drainGate.waitForArrivals(1))
         let second = Task {
@@ -558,7 +558,7 @@ struct LandManagerSingleFlightTests {
         let landID = LandID(landType: "sf-game", instanceId: "join-vs-drain")
         let container = try await concurrentCreations(1, manager: manager, landID: landID)[0].value
         let joinGate = TestGate()
-        await container.keeper.setJoinHook { await joinGate.arrive() }
+        await container.keeper.installHolds(HoldRegistry.at(.join) { await joinGate.arrive() })
 
         let join = Task {
             try await container.keeper.join(playerID: PlayerID("p"), clientID: ClientID("c"), sessionID: SessionID("s"))

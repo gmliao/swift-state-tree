@@ -78,7 +78,7 @@ final class SyncCycleHold: @unchecked Sendable {
 
     /// Installs the hold on `adapter`; it only acts once armed.
     func install<State: StateNodeProtocol>(on adapter: TransportAdapter<State>) async {
-        await adapter.setDebugCycleHoldBeforeEndSync { [self] in await self.holdIfArmed() }
+        await adapter.installHolds(HoldRegistry.at(.cycleBeforeEndSync) { [self] in await self.holdIfArmed() })
     }
 
     /// The next cycle that reaches the hold point waits there until `release()`.

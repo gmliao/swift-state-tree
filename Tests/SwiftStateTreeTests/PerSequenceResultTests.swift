@@ -159,6 +159,28 @@ private final class PerSequenceInTurnTransport: LandKeeperTransport, @unchecked 
     }
 }
 
+/// In-turn transport that counts the turns whose output step included the sync phase.
+private final class InTurnSyncSpyTransport: LandKeeperTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var syncs = 0
+    var syncPhases: Int { lock.withLock { syncs } }
+
+    func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
+    func syncNowFromTransport() async {}
+    func syncBroadcastOnlyFromTransport() async {}
+    func onLandDestroyed() async {}
+    func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { true }
+    func runSyncPhaseInTurn<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
+        includeSync: Bool
+    ) -> InTurnSyncResult {
+        guard includeSync else { return .notRequested }
+        lock.withLock { syncs += 1 }
+        return .committed(clearDirtyFlags: true)
+    }
+}
+
 /// Counts the legacy broadcast-only syncs (the one a leave asks for).
 private actor BroadcastSpyTransport: LandKeeperTransport {
     private(set) var broadcastSyncs = 0
@@ -401,7 +423,7 @@ struct PerSequenceResultTests {
 
         // P fails in its pass (or turn), which then holds before its record.
         let recordGate = WatermarkGate()
-        await keeper.setTurnRecordHoldForTesting { await recordGate.enterAndWait() }
+        await keeper.installHolds(HoldRegistry.at(.turnRecord) { await recordGate.enterAndWait() })
         let failing = Task { await outcome(keeper, PerSequenceThrowingAction(amount: 1, tag: "w")) }
         guard try await withinDeadline("P's pass holds before its record", {
             await recordGate.waitUntilEntered()
@@ -409,7 +431,7 @@ struct PerSequenceResultTests {
 
         await keeper.forceShutdown()
         #expect(await outcome(keeper, PerSequencePlainAction(amount: 5)) == "closed")
-        await keeper.setTurnRecordHoldForTesting(nil)
+        await keeper.installHolds(nil)
         recordGate.release()
 
         guard let failed = try await withinDeadline("P's caller returns", { await failing.value }) else { return }
@@ -433,6 +455,25 @@ struct PerSequenceResultTests {
         // Its write before the throw stays in the state (and goes out with that sync; #87).
         #expect(await keeper.currentState().log == ["join:p1", "join:p2", "leaveFailed:p2"])
         // The land goes on: the next input applies.
+        #expect(await outcome(keeper, PerSequencePlainAction(amount: 3)) == "ok 3")
+    }
+
+    @Test("In-turn tickless: a throwing OnLeave fails its caller, the player is removed and its turn runs the sync phase")
+    func throwingOnLeaveInTurnSyncs() async throws {
+        let spy = InTurnSyncSpyTransport()
+        let keeper = await makePerSequenceKeeper(inTurn: true, failLeave: ["p2"], transport: spy)
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
+        let before = spy.syncPhases
+
+        await #expect(throws: PerSequenceHandlerFailure(tag: "leave")) {
+            try await keeper.leave(playerID: p2, clientID: c2, sessionID: s2)
+        }
+        #expect(await keeper.playerCount() == 1)
+        // The leave's broadcast-only request (set before the handler) makes its input turn run
+        // the sync phase (takeSyncRequest), so the removal goes out in that turn's frames.
+        #expect(spy.syncPhases == before + 1)
+        #expect(await keeper.currentState().log == ["join:p1", "join:p2", "leaveFailed:p2"])
         #expect(await outcome(keeper, PerSequencePlainAction(amount: 3)) == "ok 3")
     }
 

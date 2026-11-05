@@ -10,6 +10,14 @@ public enum LandKeeperModeConfig: Sendable {
     case invalidReplaySession(message: String)
 }
 
+/// Where a `LandManager` awaits its test hold hook (`installHolds`).
+enum LandManagerHoldPoint: Hashable, Sendable {
+    /// The start of each creation, after the existence check.
+    case creation
+    /// Right before a creation waits for a draining previous instance.
+    case drainWait
+}
+
 /// Manager for multiple game lands.
 ///
 /// Handles land lifecycle, routing, and provides access to individual lands.
@@ -107,11 +115,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// How long a creation waits for the previous instance's destruction before it fails with
     /// `JoinError.landShuttingDown` (not cached; the next join waits again).
     private var drainWaitTimeout: Duration = landDrainWaitTimeout
-    /// Test hook: awaited at the start of each creation, after the existence check, so a test
-    /// can hold a creation there and issue concurrent calls deterministically.
-    private var creationHook: (@Sendable (LandID) async -> Void)?
-    /// Test hook: awaited right before a creation waits for a draining previous instance.
-    private var drainWaitHook: (@Sendable (LandID) async -> Void)?
+    /// Forced-interleaving hold points (tests only; a no-op unless installed).
+    private var holds = HoldPoints<LandManagerHoldPoint>()
     /// Calls that joined a creation already in flight (tests: proves the calls shared it).
     private var creationJoins = 0
     private let landFactory: (LandID) -> LandDefinition<State>
@@ -264,14 +269,10 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             // prevents only the map ABA, not this overlap.
             let previous = drainingInstances(of: landID)
             if !previous.isEmpty {
-                if let drainWaitHook {
-                    await drainWaitHook(landID)
-                }
+                await holds.at(.drainWait)
                 try await waitForDrains(of: previous, landID: landID)
             }
-            if let creationHook {
-                await creationHook(landID)
-            }
+            await holds.at(.creation)
             let container = try await buildLand(
                 landID: landID,
                 definition: definition,
@@ -546,14 +547,9 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         detached[landID] = entries.isEmpty ? nil : entries
     }
 
-    /// Installs the creation hook (tests).
-    func setCreationHook(_ hook: (@Sendable (LandID) async -> Void)?) {
-        creationHook = hook
-    }
-
-    /// Installs the drain-wait hook (tests).
-    func setDrainWaitHook(_ hook: (@Sendable (LandID) async -> Void)?) {
-        drainWaitHook = hook
+    /// Installs (or, with `nil`, removes) the hold hook for every `LandManagerHoldPoint` (tests).
+    func installHolds(_ hook: (@Sendable (LandManagerHoldPoint) async -> Void)?) {
+        holds.install(hook)
     }
 
     /// Sets the bound on waiting for a previous instance's destruction (tests).

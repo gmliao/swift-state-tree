@@ -297,7 +297,7 @@ struct TransportAdapterJoiningAdmissionTests {
         await adapter.onDisconnect(sessionID: s1, clientID: c1)
         let started = TestGate()
         started.open()
-        await adapter.setInitialSyncHoldForTesting { await started.arrive() }
+        await adapter.installHolds(HoldRegistry.at(.initialSync) { await started.arrive() })
         await adapter.syncStateForNewPlayer(playerID: p1, sessionID: s1)
         // The handover refused: the initial sync never started (no state read).
         #expect(started.arrivalCount == 0)
@@ -315,7 +315,7 @@ struct TransportAdapterJoiningAdmissionTests {
         _ = try await join(fixture, session: s1, client: c1, player: p1)
 
         let readGate = TestGate()
-        await adapter.setInitialSyncHoldForTesting { await readGate.arrive() }
+        await adapter.installHolds(HoldRegistry.at(.initialSync) { await readGate.arrive() })
         let initialSync = Task { await adapter.syncStateForNewPlayer(playerID: p1, sessionID: s1) }
         #expect(await readGate.waitForArrivals(1))
         await adapter.onDisconnect(sessionID: s1, clientID: c1)
@@ -337,10 +337,10 @@ struct TransportAdapterJoiningAdmissionTests {
 
         // The old initial sync is held at its state read.
         let readGate = TestGate()
-        await adapter.setInitialSyncHoldForTesting { await readGate.arrive() }
+        await adapter.installHolds(HoldRegistry.at(.initialSync) { await readGate.arrive() })
         let oldInitialSync = Task { await adapter.syncStateForNewPlayer(playerID: p1, sessionID: s1) }
         #expect(await readGate.waitForArrivals(1))
-        await adapter.setInitialSyncHoldForTesting(nil)
+        await adapter.installHolds(nil)
 
         // The session ends and a new connection with the same SessionID joins as the same
         // player: the membership matches again, but the admission is a new generation.
@@ -364,7 +364,7 @@ struct TransportAdapterJoiningAdmissionTests {
         _ = try await join(fixture, session: s1, client: c1, player: p1)
 
         let readGate = TestGate()
-        await adapter.setInitialSyncHoldForTesting { await readGate.arrive() }
+        await adapter.installHolds(HoldRegistry.at(.initialSync) { await readGate.arrive() })
         let initialSync = Task { await adapter.syncStateForNewPlayer(playerID: p1, sessionID: s1) }
         #expect(await readGate.waitForArrivals(1))
 

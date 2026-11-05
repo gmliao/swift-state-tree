@@ -560,7 +560,7 @@ struct DrainTurnTests {
         // A is applied in an input turn whose record is held; B arrives meanwhile and stays
         // pending (the drain loop is suspended at A's record).
         let recordGate = WatermarkGate()
-        await keeper.setTurnRecordHoldForTesting { await recordGate.enterAndWait() }
+        await keeper.installHolds(HoldRegistry.at(.turnRecord) { await recordGate.enterAndWait() })
         let applied = Task {
             try await keeper.handleActionEnvelope(plainAction(2), playerID: p1, clientID: c1, sessionID: s1)
         }
@@ -574,7 +574,7 @@ struct DrainTurnTests {
 
         await keeper.forceShutdown()
         try await expectLandClosed("the pending action's caller returns after the drain", pending)
-        await keeper.setTurnRecordHoldForTesting(nil)
+        await keeper.installHolds(nil)
         recordGate.release()
 
         guard let response = try await withinDeadline("the applied action returns", { try await applied.value }) else {
