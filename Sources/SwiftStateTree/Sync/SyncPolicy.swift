@@ -9,7 +9,7 @@ import Foundation
 /// - `.broadcast`: Field is synced to all clients with the same value (returns `Value` as-is)
 /// - `.perPlayer`: Field is filtered per player (returns `Value?`, same type, can be different for each player)
 /// - `.masked`: Field is masked for all players (returns `Value`, same type, same value for all)
-/// - `.custom`: Fully custom filtering logic (returns `Value?`, same type, can be different for each player)
+/// - `.custom`: Deprecated; the same as `.perPlayer` with the arguments swapped (#173)
 public enum SyncPolicy<Value: Sendable>: Sendable {
     /// Field is not synced to clients
     case serverOnly
@@ -27,13 +27,15 @@ public enum SyncPolicy<Value: Sendable>: Sendable {
     /// - Parameter: `Value` - The field value
     /// - Returns: `Value` - The masked value (MUST be the same type as input)
     /// - Note: Must return the same type to ensure type safety in macro-generated code
-    ///   If you need to return a different type, use `.custom` instead
     case masked(@Sendable (Value) -> Value)
     
-    /// Fully custom filtering logic with playerID and value
+    /// Per-player filtering with the arguments in the other order: the same as `.perPlayer`.
     /// - Parameter: `(PlayerID, Value)` - The player ID and the field value (note: order differs from `.perPlayer`)
     /// - Returns: `Value?` - The filtered value for this player (same type), or `nil` to hide the field
-    /// - Note: Must return the same type as input to ensure type safety in macro-generated code
+    /// - Note: Deprecated (#173). Since every policy returns `Value`, `.custom` cannot change the
+    ///   type, so it duplicates `.perPlayer`. Replace `.custom { playerID, value in ... }` with
+    ///   `.perPlayer { value, playerID in ... }`. It will be removed in the next minor release.
+    @available(*, deprecated, message: "Use .perPlayer; its closure takes (value, playerID), the reverse of .custom")
     case custom(@Sendable (PlayerID, Value) -> Value?)
 
     /// Filter value for a player, returning the same type as input (Value?)

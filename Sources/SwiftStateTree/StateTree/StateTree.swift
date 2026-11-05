@@ -12,6 +12,7 @@ public enum PolicyType: String, Sendable, Codable {
     case perPlayer = "perPlayer"
     case perPlayerSlice = "perPlayerSlice"
     case masked = "masked"
+    /// A field declared with the deprecated `SyncPolicy.custom` (#173); filtered like `.perPlayer`.
     case custom = "custom"
     case unknown = "unknown"
 }

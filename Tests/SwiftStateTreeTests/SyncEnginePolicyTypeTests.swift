@@ -24,13 +24,13 @@ struct NodeWithMasked: StateNodeProtocol {
     var hp: Int = 100
 }
 
-/// Test node with custom policy
+/// Test node with a filter on the player ID alone (formerly `.custom`, #173)
 @StateNodeBuilder
 struct NodeWithCustom: StateNodeProtocol {
     @Sync(.broadcast)
     var name: String = ""
     
-    @Sync(.custom { playerID, data in
+    @Sync(.perPlayer { data, playerID in
         // Only return data if playerID matches a condition
         if playerID.rawValue == "admin" {
             return data
@@ -54,6 +54,15 @@ struct NodeWithPerPlayer: StateNodeProtocol {
         return nil
     })
     var inventory: [PlayerID: [String]] = [:]
+}
+
+/// Pins the deprecated `.custom` until it is removed (#173): it must keep filtering like
+/// `.perPlayer` with the arguments swapped.
+@available(*, deprecated, message: "Uses the deprecated SyncPolicy.custom on purpose")
+@StateNodeBuilder
+struct NodeWithDeprecatedCustom: StateNodeProtocol {
+    @Sync(.custom { playerID, value in playerID.rawValue == "admin" ? value : nil })
+    var adminData: String = "secret"
 }
 
 /// Root node for testing all policy types
@@ -80,8 +89,8 @@ struct RootNodeWithAllPolicies: StateNodeProtocol {
     })
     var maskedField: String = "secret_password"
     
-    @Sync(.custom { playerID, value in
-        // Custom: only return if playerID starts with "a"
+    @Sync(.perPlayer { value, playerID in
+        // Formerly `.custom` (#173): only return if playerID starts with "a"
         if playerID.rawValue.hasPrefix("a") {
             return value
         }
@@ -415,5 +424,23 @@ struct SyncEnginePolicyTypeTests {
         #expect(snapshot["customField"] == nil, 
                 "Bob should NOT see customField (doesn't start with 'a')")
     }
-}
 
+    @available(*, deprecated, message: "Uses the deprecated SyncPolicy.custom on purpose")
+    @Test("Deprecated .custom filters like .perPlayer with swapped arguments (#173)")
+    func deprecatedCustomFiltersLikePerPlayer() throws {
+        let custom = SyncPolicy<String>.custom { playerID, value in playerID.rawValue == "admin" ? value : nil }
+        let perPlayer = SyncPolicy<String>.perPlayer { value, playerID in playerID.rawValue == "admin" ? value : nil }
+        for player in [PlayerID("admin"), PlayerID("bob")] {
+            #expect(custom.filteredValue("secret", for: player) == perPlayer.filteredValue("secret", for: player))
+        }
+        #expect(custom.filteredValue("secret", for: nil as PlayerID?) == nil, "not a broadcast field")
+
+        let node = NodeWithDeprecatedCustom()
+        #expect(node.getSyncFields().map(\.policyType) == [.custom])
+        let syncEngine = SyncEngine()
+        let admin = try syncEngine.snapshot(for: PlayerID("admin"), from: node)
+        let bob = try syncEngine.snapshot(for: PlayerID("bob"), from: node)
+        #expect(admin["adminData"] != nil)
+        #expect(bob["adminData"] == nil)
+    }
+}
