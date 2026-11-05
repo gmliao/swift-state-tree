@@ -220,7 +220,7 @@
 
 ## Execution Handoff
 
-Plan saved to `docs/plans/2026-02-21-matchmaking-comprehensive-e2e-test-plan.md`.
+Plan saved to `Notes/plans/2026-02-21-matchmaking-comprehensive-e2e-test-plan.md`.
 
 **Execution options:**
 1. **Subagent-Driven** — Dispatch subagent per task, review between tasks.

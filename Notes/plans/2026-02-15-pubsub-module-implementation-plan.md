@@ -505,7 +505,7 @@ git commit -m "docs: update README for pubsub module"
 
 ## Execution Handoff
 
-Plan complete and saved to `docs/plans/2026-02-15-pubsub-module-implementation-plan.md`.
+Plan complete and saved to `Notes/plans/2026-02-15-pubsub-module-implementation-plan.md`.
 
 **Two execution options:**
 

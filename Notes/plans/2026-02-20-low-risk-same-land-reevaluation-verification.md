@@ -75,5 +75,5 @@ cd Tools/CLI && npm run test:e2e:game:replay
 
 ## Related
 
-- Plan: `docs/plans/2026-02-20-low-risk-same-land-reevaluation-plan.md`
+- Plan: `Notes/plans/2026-02-20-low-risk-same-land-reevaluation-plan.md`
 - Schema convention: `SchemaGenCLI.generateSchema(..., replayLandTypes: ["hero-defense"])`

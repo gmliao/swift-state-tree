@@ -868,7 +868,7 @@ After this refactoring, we can more easily:
 
 - Current Implementation: `Sources/SwiftStateTreeTransport/TransportAdapter.swift`
 - Related Docs:
-  - `docs/plans/2026-02-01-membership-queue-reconnect.md` (Membership queue design)
+  - `Notes/plans/2026-02-01-membership-queue-reconnect.md` (Membership queue design)
   - `Notes/guides/DEBUGGING_TECHNIQUES.md` (Debugging patterns)
 - Testing:
   - Unit Tests: `Tests/SwiftStateTreeTransportTests/`

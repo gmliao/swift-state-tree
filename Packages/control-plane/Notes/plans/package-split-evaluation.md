@@ -1,6 +1,6 @@
 # Package 拆解評估：對照 Infra 設計文件
 
-> **設計文件參考**：`docs/plans/2026-02-12-matchmaking-control-plane-design.md` 定義 Package Layout：
+> **設計文件參考**：`Notes/plans/2026-02-12-matchmaking-control-plane-design.md` 定義 Package Layout：
 > - `MatchmakingContracts`：DTOs、error codes、protocol contracts
 > - `MatchmakingCore`：strategy、queueing、dedupe、assignment lifecycle
 > - `MatchmakingInfraRedis`：Redis adapter
@@ -143,7 +143,7 @@ Packages/control-plane/src/
 - Gateway：在 connect 時 registerSession、heartbeat refresh
 - 將 `matchmaking:assigned` 改為或並存為 node inbox 投遞（需 routing lookup）
 
-> **實作計畫**：`docs/plans/2026-02-15-phase2-cluster-directory-node-inbox.md`
+> **實作計畫**：`Notes/plans/2026-02-15-phase2-cluster-directory-node-inbox.md`
 
 ### Phase 3：Provision Job + Dispatch Worker
 

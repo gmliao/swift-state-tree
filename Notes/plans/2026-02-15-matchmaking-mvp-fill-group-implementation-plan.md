@@ -8,7 +8,7 @@
 
 **Tech Stack:** NestJS, BullMQ, Redis, existing provisioning/JWT, ws.
 
-**Reference:** `docs/plans/2026-02-15-matchmaking-mvp-fill-group-design-analysis.md`
+**Reference:** `Notes/plans/2026-02-15-matchmaking-mvp-fill-group-design-analysis.md`
 
 ---
 

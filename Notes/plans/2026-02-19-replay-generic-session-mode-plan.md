@@ -16,7 +16,7 @@
 
 - Baseline tag: `replay-baseline-v1`
 - Baseline branch: `codex/replay-baseline-v1`
-- Baseline checklist: `docs/plans/2026-02-19-replay-generic-baseline-checklist.md`
+- Baseline checklist: `Notes/plans/2026-02-19-replay-generic-baseline-checklist.md`
 - Non-goal: changing deterministic tick semantics or introducing replay-specific `LandKeeper` runtime mode.
 
 ### Task 1: Server-facing Reevaluation Feature API (one declaration setup)
@@ -112,8 +112,8 @@ git commit -m "feat: support type-erased replay event forwarding"
 - Modify: `Examples/GameDemo/Sources/GameContent/HeroDefenseReplayLand.swift`
 - Modify: `Sources/SwiftStateTreeReevaluationMonitor/ReevaluationFeature.swift`
 - Test: `Examples/GameDemo/Tests/HeroDefenseReplayStateParityTests.swift`
-- Docs: `docs/plans/2026-02-15-server-replay-compatible-mode-plan.md`
-- Docs: `docs/plans/2026-02-15-server-replay-compatible-mode-plan.zh-TW.md` (create if missing)
+- Docs: `Notes/plans/2026-02-15-server-replay-compatible-mode-plan.md`
+- Docs: `Notes/plans/2026-02-15-server-replay-compatible-mode-plan.zh-TW.md` (create if missing)
 
 **Step 1: Write failing tests for event policy behavior**
 
@@ -144,7 +144,7 @@ Expected: PASS.
 **Step 5: Commit**
 
 ```bash
-git add Examples/GameDemo/Sources/GameContent/HeroDefenseReplayLand.swift Sources/SwiftStateTreeReevaluationMonitor/ReevaluationFeature.swift Examples/GameDemo/Tests/HeroDefenseReplayStateParityTests.swift docs/plans/2026-02-15-server-replay-compatible-mode-plan.md docs/plans/2026-02-15-server-replay-compatible-mode-plan.zh-TW.md
+git add Examples/GameDemo/Sources/GameContent/HeroDefenseReplayLand.swift Sources/SwiftStateTreeReevaluationMonitor/ReevaluationFeature.swift Examples/GameDemo/Tests/HeroDefenseReplayStateParityTests.swift Notes/plans/2026-02-15-server-replay-compatible-mode-plan.md Notes/plans/2026-02-15-server-replay-compatible-mode-plan.zh-TW.md
 git commit -m "feat: add replay event policy with strict default"
 ```
 
@@ -281,10 +281,10 @@ git commit -m "refactor(web): migrate replay flow to sdk session mode api"
 
 **Files:**
 - Modify: `Tools/CLI/src/reevaluation-replay-e2e-game.ts` (only if needed)
-- Modify: `docs/plans/2026-02-19-replay-generic-baseline-checklist.md`
-- Modify: `docs/plans/2026-02-19-replay-generic-baseline-checklist.zh-TW.md`
-- Create: `docs/plans/2026-02-19-replay-generic-session-mode-verification.md`
-- Create: `docs/plans/2026-02-19-replay-generic-session-mode-verification.zh-TW.md`
+- Modify: `Notes/plans/2026-02-19-replay-generic-baseline-checklist.md`
+- Modify: `Notes/plans/2026-02-19-replay-generic-baseline-checklist.zh-TW.md`
+- Create: `Notes/plans/2026-02-19-replay-generic-session-mode-verification.md`
+- Create: `Notes/plans/2026-02-19-replay-generic-session-mode-verification.zh-TW.md`
 
 **Step 1: Run full verification matrix**
 
@@ -314,7 +314,7 @@ Write markdown report with:
 **Step 4: Commit**
 
 ```bash
-git add Tools/CLI/src/reevaluation-replay-e2e-game.ts docs/plans/2026-02-19-replay-generic-baseline-checklist.md docs/plans/2026-02-19-replay-generic-baseline-checklist.zh-TW.md docs/plans/2026-02-19-replay-generic-session-mode-verification.md docs/plans/2026-02-19-replay-generic-session-mode-verification.zh-TW.md
+git add Tools/CLI/src/reevaluation-replay-e2e-game.ts Notes/plans/2026-02-19-replay-generic-baseline-checklist.md Notes/plans/2026-02-19-replay-generic-baseline-checklist.zh-TW.md Notes/plans/2026-02-19-replay-generic-session-mode-verification.md Notes/plans/2026-02-19-replay-generic-session-mode-verification.zh-TW.md
 git commit -m "docs: publish generic replay session mode verification report"
 ```
 

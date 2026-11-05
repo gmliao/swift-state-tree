@@ -181,7 +181,7 @@ git commit -m "refactor: switch hero replay to same-land reevaluation execution"
 ### Task 6: 全量驗證與效能證明
 
 **Files:**
-- Create: `docs/plans/2026-02-20-low-risk-same-land-reevaluation-verification.md`
+- Create: `Notes/plans/2026-02-20-low-risk-same-land-reevaluation-verification.md`
 
 **Step 1: 跑 deterministic correctness 測試**
 
@@ -216,7 +216,7 @@ Expected:
 **Step 5: Commit**
 
 ```bash
-git add docs/plans/2026-02-20-low-risk-same-land-reevaluation-verification.md
+git add Notes/plans/2026-02-20-low-risk-same-land-reevaluation-verification.md
 git commit -m "docs: add same-land reevaluation verification report"
 ```
 

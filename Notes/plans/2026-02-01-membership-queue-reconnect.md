@@ -258,14 +258,14 @@ guard isSessionCurrent(sessionID, expected: sessionVersion) else { return }
 **Step 8: Minimal English comment to document intent**
 
 Add 1–2 lines near membership queue/stamps:  
-`// Membership queue + version stamps prevent stale join/leave work from delivering after rejoin. See docs/plans/2026-02-01-membership-queue-reconnect.md.`
+`// Membership queue + version stamps prevent stale join/leave work from delivering after rejoin. See Notes/plans/2026-02-01-membership-queue-reconnect.md.`
 
 ---
 
 ### Task 3: Update documentation (design note in this plan)
 
 **Files:**
-- Update: `docs/plans/2026-02-01-membership-queue-reconnect.md` (this file, keep as design reference)
+- Update: `Notes/plans/2026-02-01-membership-queue-reconnect.md` (this file, keep as design reference)
 
 **Step 1: Add a short “Edge Cases” section**
 

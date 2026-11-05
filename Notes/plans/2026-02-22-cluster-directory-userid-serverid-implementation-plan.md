@@ -8,7 +8,7 @@
 
 **Tech Stack:** NestJS, TypeScript, ioredis, Jest.
 
-**Design reference:** `docs/plans/2026-02-22-cluster-directory-userid-serverid-design.md`
+**Design reference:** `Notes/plans/2026-02-22-cluster-directory-userid-serverid-design.md`
 
 ---
 
@@ -675,7 +675,7 @@ git commit -m "docs: update for UserIdDirectory and ServerIdDirectory"
 
 ## Execution Handoff
 
-Plan complete and saved to `docs/plans/2026-02-22-cluster-directory-userid-serverid-implementation-plan.md`.
+Plan complete and saved to `Notes/plans/2026-02-22-cluster-directory-userid-serverid-implementation-plan.md`.
 
 **Two execution options:**
 

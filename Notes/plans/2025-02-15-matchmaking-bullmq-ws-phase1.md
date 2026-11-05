@@ -805,7 +805,7 @@ Before considering Phase 1 complete:
 
 ## Execution Handoff
 
-Plan complete and saved to `docs/plans/2025-02-15-matchmaking-bullmq-ws-phase1.md`.
+Plan complete and saved to `Notes/plans/2025-02-15-matchmaking-bullmq-ws-phase1.md`.
 
 **Two execution options:**
 

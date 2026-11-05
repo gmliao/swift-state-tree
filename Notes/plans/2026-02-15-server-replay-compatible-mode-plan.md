@@ -269,7 +269,7 @@ git commit -m "refactor: keep replay client path protocol-compatible with live m
 ### Task 7: Full verification gate (must pass before claiming complete)
 
 **Files:**
-- Modify: `docs/plans/2026-02-15-server-reevaluation-replay-stream-verification.md`
+- Modify: `Notes/plans/2026-02-15-server-reevaluation-replay-stream-verification.md`
 - Modify: `Examples/GameDemo/WebClient/README.md`
 
 **Step 1: Run full Swift test suite**
@@ -298,7 +298,7 @@ Expected: PASS
 **Step 5: Commit**
 
 ```bash
-git add docs/plans/2026-02-15-server-reevaluation-replay-stream-verification.md Examples/GameDemo/WebClient/README.md
+git add Notes/plans/2026-02-15-server-reevaluation-replay-stream-verification.md Examples/GameDemo/WebClient/README.md
 git commit -m "docs: record replay compatible-mode verification results"
 ```
 
@@ -307,7 +307,7 @@ git commit -m "docs: record replay compatible-mode verification results"
 **Files:**
 - Modify: `Examples/GameDemo/Sources/GameContent/HeroDefenseReplayLand.swift`
 - Modify: `Sources/SwiftStateTreeReevaluationMonitor/ReevaluationInterfaces.swift`
-- Modify: `docs/plans/2026-02-15-server-reevaluation-replay-stream.md`
+- Modify: `Notes/plans/2026-02-15-server-reevaluation-replay-stream.md`
 
 **Step 1: Remove legacy replay-only fields with no compatibility fallback**
 
@@ -330,7 +330,7 @@ Expected: PASS
 **Step 4: Commit**
 
 ```bash
-git add Examples/GameDemo/Sources/GameContent/HeroDefenseReplayLand.swift Sources/SwiftStateTreeReevaluationMonitor/ReevaluationInterfaces.swift docs/plans/2026-02-15-server-reevaluation-replay-stream.md
+git add Examples/GameDemo/Sources/GameContent/HeroDefenseReplayLand.swift Sources/SwiftStateTreeReevaluationMonitor/ReevaluationInterfaces.swift Notes/plans/2026-02-15-server-reevaluation-replay-stream.md
 git commit -m "chore: deprecate legacy replay-only payload path"
 ```
 

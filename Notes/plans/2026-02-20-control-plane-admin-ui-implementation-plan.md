@@ -513,7 +513,7 @@ git commit -m "ci: add admin UI and admin API e2e to workflows"
 
 ## Execution Handoff
 
-Plan complete and saved to `docs/plans/2026-02-20-control-plane-admin-ui-implementation-plan.md`.
+Plan complete and saved to `Notes/plans/2026-02-20-control-plane-admin-ui-implementation-plan.md`.
 
 **Two execution options:**
 

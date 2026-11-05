@@ -188,7 +188,7 @@ git commit -m "refactor: switch replay mode to server stream endpoint"
 - Modify: `Tools/CLI/test-e2e-game.sh`
 - Modify: `Tools/CLI/package.json`
 - Modify: `Examples/GameDemo/WebClient/README.md`
-- Create: `docs/plans/2026-02-15-server-reevaluation-replay-stream-verification.md`
+- Create: `Notes/plans/2026-02-15-server-reevaluation-replay-stream-verification.md`
 
 **Step 1: Write the failing verification script update**
 
@@ -215,7 +215,7 @@ Expected: PASS all commands.
 **Step 5: Commit**
 
 ```bash
-git add Tools/CLI/test-e2e-game.sh Tools/CLI/package.json Examples/GameDemo/WebClient/README.md docs/plans/2026-02-15-server-reevaluation-replay-stream-verification.md
+git add Tools/CLI/test-e2e-game.sh Tools/CLI/package.json Examples/GameDemo/WebClient/README.md Notes/plans/2026-02-15-server-reevaluation-replay-stream-verification.md
 git commit -m "test: add replay stream verification coverage"
 ```
 

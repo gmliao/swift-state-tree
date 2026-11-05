@@ -75,5 +75,5 @@ cd Tools/CLI && npm run test:e2e:game:replay
 
 ## 相關
 
-- 計畫：`docs/plans/2026-02-20-low-risk-same-land-reevaluation-plan.md`
+- 計畫：`Notes/plans/2026-02-20-low-risk-same-land-reevaluation-plan.md`
 - Schema 約定：`SchemaGenCLI.generateSchema(..., replayLandTypes: ["hero-defense"])`

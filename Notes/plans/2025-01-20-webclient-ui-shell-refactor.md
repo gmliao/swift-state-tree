@@ -779,7 +779,7 @@ Create a verification report:
 
 ```bash
 # Create verification report
-cat > docs/plans/2025-01-20-webclient-ui-shell-refactor-verification.md << 'EOF'
+cat > Notes/plans/2025-01-20-webclient-ui-shell-refactor-verification.md << 'EOF'
 # WebClient UI Shell Refactor - Verification Report
 
 **Date:** 2025-01-20
@@ -815,7 +815,7 @@ All features working as expected. UI shell refactor successfully
 extracts common patterns while keeping core demo logic explicit.
 EOF
 
-git add docs/plans/2025-01-20-webclient-ui-shell-refactor-verification.md
+git add Notes/plans/2025-01-20-webclient-ui-shell-refactor-verification.md
 git commit -m "docs: add UI shell refactor verification report"
 ```
 

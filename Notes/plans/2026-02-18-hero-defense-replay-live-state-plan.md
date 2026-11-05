@@ -188,8 +188,8 @@ git commit -m "test: enforce live-state semantic assertions for replay e2e"
 ### Task 5: Prove hash correctness and replay correctness end-to-end
 
 **Files:**
-- Modify: `docs/plans/2026-02-15-server-reevaluation-replay-stream-verification.md`
-- (Optional note update) `docs/plans/2026-02-15-server-reevaluation-replay-stream.md`
+- Modify: `Notes/plans/2026-02-15-server-reevaluation-replay-stream-verification.md`
+- (Optional note update) `Notes/plans/2026-02-15-server-reevaluation-replay-stream.md`
 
 **Step 1: Run Swift regression suites**
 
@@ -228,7 +228,7 @@ Add:
 **Step 5: Commit**
 
 ```bash
-git add docs/plans/2026-02-15-server-reevaluation-replay-stream-verification.md docs/plans/2026-02-15-server-reevaluation-replay-stream.md
+git add Notes/plans/2026-02-15-server-reevaluation-replay-stream-verification.md Notes/plans/2026-02-15-server-reevaluation-replay-stream.md
 git commit -m "docs: record replay hash-proof verification evidence"
 ```
 

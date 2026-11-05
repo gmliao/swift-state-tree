@@ -1,6 +1,6 @@
 # NestJS Matchmaking Control Plane Implementation Plan
 
-> **Status (2026-02-14):** MVP implemented. Provisioning is now built into the control plane (in-memory registry). MatchmakingSwiftProvisioningStub and ProvisioningService have been removed. See `docs/plans/2026-02-14-provisioning-rest-api-migration-plan.md` for the migration.
+> **Status (2026-02-14):** MVP implemented. Provisioning is now built into the control plane (in-memory registry). MatchmakingSwiftProvisioningStub and ProvisioningService have been removed. See `Notes/plans/2026-02-14-provisioning-rest-api-migration-plan.md` for the migration.
 
 **Goal:** Build a NestJS-based matchmaking control plane MVP with InMemory storage, JWT/JWKS token flow, Matchmaking Gateway-facing API, and game-runtime provisioning integration.
 
@@ -461,7 +461,7 @@ git commit -m "feat(matchmaking): add gateway-facing matchmaking endpoints"
 **Files:**
 
 - Create: `Packages/control-plane/README.md`
-- Modify: `docs/plans/2026-02-12-matchmaking-control-plane-design.md`
+- Modify: `Notes/plans/2026-02-12-matchmaking-control-plane-design.md`
 - Create: `docs/operations/matchmaking-control-plane-mvp.md`
 
 **Step 1: Write docs test checklist**
@@ -481,7 +481,7 @@ Document: InMemory only, restart drops queue, no automatic reassignment.
 **Step 4: Commit**
 
 ```bash
-git add Packages/control-plane/README.md docs/plans/2026-02-12-matchmaking-control-plane-design.md docs/operations/matchmaking-control-plane-mvp.md
+git add Packages/control-plane/README.md Notes/plans/2026-02-12-matchmaking-control-plane-design.md docs/operations/matchmaking-control-plane-mvp.md
 git commit -m "docs(matchmaking): add MVP runbook and operational constraints"
 ```
 
