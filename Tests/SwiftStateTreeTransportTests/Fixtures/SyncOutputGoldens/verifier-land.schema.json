@@ -1,0 +1,255 @@
+{
+  "defs" : {
+    "Any" : {
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf",
+        "sync" : {
+          "policy" : "broadcast"
+        }
+      }
+    },
+    "StateDiff" : {
+      "properties" : {
+        "patches" : {
+          "items" : {
+            "properties" : {
+              "op" : {
+                "type" : "string"
+              },
+              "path" : {
+                "type" : "string"
+              },
+              "value" : {
+                "type" : "object"
+              }
+            },
+            "required" : [
+              "op",
+              "path"
+            ],
+            "type" : "object"
+          },
+          "type" : "array"
+        }
+      },
+      "required" : [
+        "patches"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
+    "SyncStreamSetResponse" : {
+      "properties" : {
+        "ok" : {
+          "type" : "boolean"
+        }
+      },
+      "required" : [
+        "ok"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
+    "SyncStreamTestEvent" : {
+      "properties" : {
+        "message" : {
+          "type" : "string"
+        }
+      },
+      "required" : [
+        "message"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
+    "VerifierBox" : {
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
+    "VerifierSetAction" : {
+      "properties" : {
+        "field" : {
+          "type" : "string"
+        },
+        "value" : {
+          "type" : "integer"
+        }
+      },
+      "required" : [
+        "field",
+        "value"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
+    "VerifierState" : {
+      "properties" : {
+        "board" : {
+          "additionalProperties" : {
+            "type" : "integer"
+          },
+          "default" : {
+
+          },
+          "type" : "object",
+          "x-stateTree" : {
+            "keyType" : "String",
+            "nodeKind" : "map",
+            "sync" : {
+              "policy" : "broadcast"
+            }
+          }
+        },
+        "box" : {
+          "$ref" : "#\/defs\/Any",
+          "default" : 0
+        },
+        "boxes" : {
+          "additionalProperties" : {
+            "$ref" : "#\/defs\/VerifierBox"
+          },
+          "default" : {
+
+          },
+          "type" : "object",
+          "x-stateTree" : {
+            "keyType" : "PlayerID",
+            "nodeKind" : "map",
+            "sync" : {
+              "policy" : "perPlayerSlice"
+            }
+          }
+        },
+        "fragile" : {
+          "$ref" : "#\/defs\/Any",
+          "default" : 0
+        },
+        "missesDirty" : {
+          "$ref" : "#\/defs\/Any",
+          "default" : false
+        },
+        "missesPerPlayerDirty" : {
+          "$ref" : "#\/defs\/Any",
+          "default" : false
+        },
+        "quiet" : {
+          "$ref" : "#\/defs\/Any",
+          "default" : false
+        },
+        "scores" : {
+          "additionalProperties" : {
+            "type" : "integer"
+          },
+          "default" : {
+
+          },
+          "type" : "object",
+          "x-stateTree" : {
+            "keyType" : "PlayerID",
+            "nodeKind" : "map",
+            "sync" : {
+              "policy" : "perPlayerSlice"
+            }
+          }
+        },
+        "speeds" : {
+          "additionalProperties" : {
+            "type" : "number"
+          },
+          "default" : {
+
+          },
+          "type" : "object",
+          "x-stateTree" : {
+            "keyType" : "PlayerID",
+            "nodeKind" : "map",
+            "sync" : {
+              "policy" : "perPlayerSlice"
+            }
+          }
+        },
+        "ticks" : {
+          "default" : 0,
+          "type" : "integer"
+        }
+      },
+      "required" : [
+        "ticks",
+        "board",
+        "fragile",
+        "box",
+        "scores",
+        "speeds",
+        "boxes",
+        "missesDirty",
+        "missesPerPlayerDirty",
+        "quiet"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "object"
+      }
+    }
+  },
+  "lands" : {
+    "sync-output-verifier-test" : {
+      "actions" : {
+        "VerifierSet" : {
+          "$ref" : "#\/defs\/VerifierSetAction"
+        }
+      },
+      "clientEventHashes" : {
+
+      },
+      "clientEvents" : {
+
+      },
+      "eventHashes" : {
+        "SyncStreamTest" : 1
+      },
+      "events" : {
+        "SyncStreamTest" : {
+          "$ref" : "#\/defs\/SyncStreamTestEvent"
+        }
+      },
+      "pathHashes" : {
+        "board" : 813835065,
+        "board.*" : 7055119,
+        "box" : 319081195,
+        "boxes" : 2466133344,
+        "boxes.*" : 404459988,
+        "fragile" : 3852003202,
+        "missesDirty" : 2302004752,
+        "missesPerPlayerDirty" : 1649569862,
+        "quiet" : 2016970947,
+        "scores" : 651715769,
+        "scores.*" : 3307516493,
+        "speeds" : 3620079911,
+        "speeds.*" : 1758872483,
+        "ticks" : 367461337
+      },
+      "stateType" : "VerifierState",
+      "sync" : {
+        "diff" : {
+          "$ref" : "#\/defs\/StateDiff"
+        },
+        "snapshot" : {
+          "$ref" : "#\/defs\/VerifierState"
+        }
+      }
+    }
+  },
+  "schemaHash" : "1011909bbc02d16a",
+  "version" : "0.1.0"
+}

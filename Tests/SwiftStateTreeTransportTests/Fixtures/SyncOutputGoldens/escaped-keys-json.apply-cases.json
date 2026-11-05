@@ -1,0 +1,436 @@
+[
+  {
+    "after" : {
+      "board" : {
+        "init" : 1
+      },
+      "box" : 0,
+      "fragile" : 0,
+      "ticks" : 0
+    },
+    "before" : {
+
+    },
+    "patches" : [
+      {
+        "op" : "replace",
+        "path" : "\/board",
+        "value" : {
+          "init" : 1
+        }
+      },
+      {
+        "op" : "replace",
+        "path" : "\/box",
+        "value" : 0
+      },
+      {
+        "op" : "replace",
+        "path" : "\/fragile",
+        "value" : 0
+      },
+      {
+        "op" : "replace",
+        "path" : "\/ticks",
+        "value" : 0
+      }
+    ],
+    "scope" : "seed (player p1)",
+    "streamIndex" : 0
+  },
+  {
+    "after" : {
+      "board" : {
+        "init" : 1,
+        "t1" : 1
+      },
+      "box" : 0,
+      "fragile" : 0,
+      "ticks" : 1
+    },
+    "before" : {
+      "board" : {
+        "init" : 1
+      },
+      "box" : 0,
+      "fragile" : 0,
+      "ticks" : 0
+    },
+    "patches" : [
+      {
+        "op" : "replace",
+        "path" : "\/board\/t1",
+        "value" : 1
+      },
+      {
+        "op" : "replace",
+        "path" : "\/ticks",
+        "value" : 1
+      }
+    ],
+    "scope" : "broadcast",
+    "streamIndex" : 1
+  },
+  {
+    "after" : {
+      "board" : {
+        "init" : 1,
+        "t1" : 1
+      },
+      "box" : 0,
+      "fragile" : 0,
+      "ticks" : 1
+    },
+    "before" : {
+      "board" : {
+        "init" : 1
+      },
+      "box" : 0,
+      "fragile" : 0,
+      "ticks" : 0
+    },
+    "patches" : [
+      {
+        "op" : "replace",
+        "path" : "\/board\/t1",
+        "value" : 1
+      },
+      {
+        "op" : "replace",
+        "path" : "\/ticks",
+        "value" : 1
+      }
+    ],
+    "scope" : "per-player (player p1)",
+    "streamIndex" : 1
+  },
+  {
+    "after" : {
+      "board" : {
+        "a\/b" : 1,
+        "init" : 1,
+        "t1" : 1,
+        "t2" : 2,
+        "t~1" : 1,
+        "x[1]" : 1
+      },
+      "box" : 0,
+      "fragile" : 0,
+      "ticks" : 2
+    },
+    "before" : {
+      "board" : {
+        "init" : 1,
+        "t1" : 1
+      },
+      "box" : 0,
+      "fragile" : 0,
+      "ticks" : 1
+    },
+    "patches" : [
+      {
+        "op" : "replace",
+        "path" : "\/board\/a~1b",
+        "value" : 1
+      },
+      {
+        "op" : "replace",
+        "path" : "\/board\/t2",
+        "value" : 2
+      },
+      {
+        "op" : "replace",
+        "path" : "\/board\/t~01",
+        "value" : 1
+      },
+      {
+        "op" : "replace",
+        "path" : "\/board\/x[1]",
+        "value" : 1
+      },
+      {
+        "op" : "replace",
+        "path" : "\/ticks",
+        "value" : 2
+      }
+    ],
+    "scope" : "broadcast",
+    "streamIndex" : 2
+  },
+  {
+    "after" : {
+      "board" : {
+        "a\/b" : 1,
+        "init" : 1,
+        "t1" : 1,
+        "t2" : 2,
+        "t~1" : 1,
+        "x[1]" : 1
+      },
+      "box" : 0,
+      "fragile" : 0,
+      "ticks" : 2
+    },
+    "before" : {
+      "board" : {
+        "init" : 1,
+        "t1" : 1
+      },
+      "box" : 0,
+      "fragile" : 0,
+      "ticks" : 1
+    },
+    "patches" : [
+      {
+        "op" : "replace",
+        "path" : "\/board\/a~1b",
+        "value" : 1
+      },
+      {
+        "op" : "replace",
+        "path" : "\/board\/t2",
+        "value" : 2
+      },
+      {
+        "op" : "replace",
+        "path" : "\/board\/t~01",
+        "value" : 1
+      },
+      {
+        "op" : "replace",
+        "path" : "\/board\/x[1]",
+        "value" : 1
+      },
+      {
+        "op" : "replace",
+        "path" : "\/ticks",
+        "value" : 2
+      }
+    ],
+    "scope" : "per-player (player p1)",
+    "streamIndex" : 2
+  },
+  {
+    "after" : {
+      "board" : {
+        "a\/b" : 1,
+        "init" : 1,
+        "t1" : 1,
+        "t2" : 2,
+        "t~1" : 1,
+        "x[1]" : 1
+      },
+      "box" : 0,
+      "fragile" : 0,
+      "ticks" : 2
+    },
+    "before" : {
+
+    },
+    "patches" : [
+      {
+        "op" : "replace",
+        "path" : "\/board",
+        "value" : {
+          "a\/b" : 1,
+          "init" : 1,
+          "t1" : 1,
+          "t2" : 2,
+          "t~1" : 1,
+          "x[1]" : 1
+        }
+      },
+      {
+        "op" : "replace",
+        "path" : "\/box",
+        "value" : 0
+      },
+      {
+        "op" : "replace",
+        "path" : "\/fragile",
+        "value" : 0
+      },
+      {
+        "op" : "replace",
+        "path" : "\/ticks",
+        "value" : 2
+      }
+    ],
+    "scope" : "seed (player p2)",
+    "streamIndex" : 3
+  },
+  {
+    "after" : {
+      "board" : {
+        "a\/b" : 2,
+        "init" : 1,
+        "t1" : 1,
+        "t2" : 2,
+        "t3" : 3,
+        "t~1" : 2,
+        "x[1]" : 2
+      },
+      "box" : 0,
+      "fragile" : 0,
+      "ticks" : 3
+    },
+    "before" : {
+      "board" : {
+        "a\/b" : 1,
+        "init" : 1,
+        "t1" : 1,
+        "t2" : 2,
+        "t~1" : 1,
+        "x[1]" : 1
+      },
+      "box" : 0,
+      "fragile" : 0,
+      "ticks" : 2
+    },
+    "patches" : [
+      {
+        "op" : "replace",
+        "path" : "\/board\/a~1b",
+        "value" : 2
+      },
+      {
+        "op" : "replace",
+        "path" : "\/board\/t3",
+        "value" : 3
+      },
+      {
+        "op" : "replace",
+        "path" : "\/board\/t~01",
+        "value" : 2
+      },
+      {
+        "op" : "replace",
+        "path" : "\/board\/x[1]",
+        "value" : 2
+      },
+      {
+        "op" : "replace",
+        "path" : "\/ticks",
+        "value" : 3
+      }
+    ],
+    "scope" : "broadcast",
+    "streamIndex" : 4
+  },
+  {
+    "after" : {
+      "board" : {
+        "a\/b" : 2,
+        "init" : 1,
+        "t1" : 1,
+        "t2" : 2,
+        "t3" : 3,
+        "t~1" : 2,
+        "x[1]" : 2
+      },
+      "box" : 0,
+      "fragile" : 0,
+      "ticks" : 3
+    },
+    "before" : {
+      "board" : {
+        "a\/b" : 1,
+        "init" : 1,
+        "t1" : 1,
+        "t2" : 2,
+        "t~1" : 1,
+        "x[1]" : 1
+      },
+      "box" : 0,
+      "fragile" : 0,
+      "ticks" : 2
+    },
+    "patches" : [
+      {
+        "op" : "replace",
+        "path" : "\/board\/a~1b",
+        "value" : 2
+      },
+      {
+        "op" : "replace",
+        "path" : "\/board\/t3",
+        "value" : 3
+      },
+      {
+        "op" : "replace",
+        "path" : "\/board\/t~01",
+        "value" : 2
+      },
+      {
+        "op" : "replace",
+        "path" : "\/board\/x[1]",
+        "value" : 2
+      },
+      {
+        "op" : "replace",
+        "path" : "\/ticks",
+        "value" : 3
+      }
+    ],
+    "scope" : "per-player (player p1)",
+    "streamIndex" : 4
+  },
+  {
+    "after" : {
+      "board" : {
+        "a\/b" : 2,
+        "init" : 1,
+        "t1" : 1,
+        "t2" : 2,
+        "t3" : 3,
+        "t~1" : 2,
+        "x[1]" : 2
+      },
+      "box" : 0,
+      "fragile" : 0,
+      "ticks" : 3
+    },
+    "before" : {
+      "board" : {
+        "a\/b" : 1,
+        "init" : 1,
+        "t1" : 1,
+        "t2" : 2,
+        "t~1" : 1,
+        "x[1]" : 1
+      },
+      "box" : 0,
+      "fragile" : 0,
+      "ticks" : 2
+    },
+    "patches" : [
+      {
+        "op" : "replace",
+        "path" : "\/board\/a~1b",
+        "value" : 2
+      },
+      {
+        "op" : "replace",
+        "path" : "\/board\/t3",
+        "value" : 3
+      },
+      {
+        "op" : "replace",
+        "path" : "\/board\/t~01",
+        "value" : 2
+      },
+      {
+        "op" : "replace",
+        "path" : "\/board\/x[1]",
+        "value" : 2
+      },
+      {
+        "op" : "replace",
+        "path" : "\/ticks",
+        "value" : 3
+      }
+    ],
+    "scope" : "per-player (player p2)",
+    "streamIndex" : 4
+  }
+]
