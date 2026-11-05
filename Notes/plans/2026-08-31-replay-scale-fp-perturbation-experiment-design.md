@@ -27,7 +27,7 @@ magnitude slower, adds transport nondeterminism unrelated to the question, and c
 
 **Why this answers the Question:** live-mode `LandKeeper` records injected actions/client
 events and per-tick hashes exactly as the server path does; replaying these records through
-`ReevaluationEngine` is the same verification the paper describes, now at ~30 × 1,200 ticks.
+`ReevaluationEngine` is the same verification described in `docs/core/reevaluation.md`, now at ~30 × 1,200 ticks.
 
 ### D2: Perturbation hook — env-driven, inside `MovementSystem.updatePlayerMovement`
 
@@ -42,7 +42,7 @@ normal replay are untouched).
 core PR and couples the engine to an experiment concern); patching the record file itself
 (tests the parser, not the determinism pipeline).
 
-**Why this answers the Question:** the reviewer objection is about sensitivity to FP
+**Why this answers the Question:** the open question is sensitivity to FP
 non-determinism in game logic. Perturbing the actual movement computation during replay is
 exactly that failure mode; sub-LSB float noise vs >=1 LSB shifts separates "absorbed by
 fixed-point quantization" from "detected by hash comparison".

@@ -3,7 +3,7 @@
 > 本文檔系統化地說明 SwiftStateTree 的 **Re-evaluation** 能力（Action / Rule 兩種重評估方式）與「傳統 replay 做法」的差異。
 >
 > 適用於：
-> - 論文的 **conceptual comparison section**
+> - 概念比較（和傳統 replay 的差異）
 > - SST 文件的 **core concept 定義**
 > - 對外說明時避免被誤解
 >
@@ -217,7 +217,7 @@ where
 
 ---
 
-### 正式定義（English, ready for paper）
+### 正式定義（English）
 
 > **Rule Re-evaluation**  
 > Rule re-evaluation denotes a form of re-evaluation in which a fixed input timeline is re-executed under different rule or system parameter variants, while preserving the original execution order and resolved world context.  

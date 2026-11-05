@@ -9,7 +9,7 @@ Provide a controlled baseline for the delta synchronization strategy: the same
 hero-defense Land, the same workload, the same encoder, on the same machine, with
 the only variable being *what* is sent per sync — the full visible view of each
 recipient (snapshot) versus only the changed fields (delta). The result is one
-extra column in the RQ1 payload table and two extra rows of the single-room
+extra column in the multi-room payload table and two extra rows of the single-room
 entity-scaling sweeps, plus a proof that both strategies produce identical
 client-side views.
 
@@ -164,7 +164,7 @@ A second small test checks `SYNC_STRATEGY` parsing: unset → init default,
 Design run under `sst-experiment` (new metric semantics for the `full` cells).
 
 Question: at equal encoding, how much does delta synchronization save over a
-per-sync full snapshot, and does the saving track |ΔSt| / |S| as Eq. (6)
+per-sync full snapshot, and does the saving track |ΔSt| / |S| as the |ΔSt| / |S| model
 predicts?
 
 Fixed: `messagepack-pathhash`, `ticksPerSync = 2`, `iterations = 200`, release
@@ -172,7 +172,7 @@ build, single machine (Apple M2 / macOS, same as the entity-scaling topic).
 
 | Axis | Cells | Strategy |
 |---|---|---|
-| RQ1 rooms | players 5 × rooms 10, 30, 50 | delta, full |
+| Rooms | players 5 × rooms 10, 30, 50 | delta, full |
 | Monster axis | rooms 1, players 5, `--monster-cap` 4, 10, 50, 100 | delta, full |
 | Active-player axis | rooms 1, `--monster-cap 4`, `--active-players` = players = 5, 10, 20, 50 | delta, full |
 
@@ -202,9 +202,9 @@ unchanged fields only, since |ΔSt| → |S|.
    Verification: `./Tools/CLI/test-e2e-game.sh`.
 3. Experiment PR via `sst-experiment` step 7: §6 plus this spec's companion
    design note under `Notes/plans/` (the step-2b artefact).
-4. Paper: RQ1 Table VI gains a `full snapshot` column; §IV-B2 gains one
-   sentence tying the saving ratio to Eq. (6); the conclusion's
-   `ENABLE_DIRTY_TRACKING` sentence is replaced by the measured result.
+4. Write-up: the multi-room payload table gains a `full snapshot` column, the saving
+   ratio is tied to |ΔSt| / |S|, and the `ENABLE_DIRTY_TRACKING` estimate is replaced by
+   the measured result.
 
 ## 8. Risks
 

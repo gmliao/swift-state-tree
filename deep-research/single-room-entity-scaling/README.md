@@ -10,7 +10,7 @@ hero-defense 單一房間內，玩家數與怪物數各自（及同時）增長�
 - git_sha: 怪物軸 `648fce5`；玩家軸與 joint cell `9f65c9e`（`--active-players` 與 `makeLand(maxPlayers:)` 落地後；兩版間 hero-defense 演化邏輯無變更）
 - swift_version: Apple Swift 6.3.2, build_config: release
 - host: Apple M2, macOS（8 cores, 16 GB）
-- `USE_SNAPSHOT_FOR_SYNC=false`（legacy sync 路徑，與 RQ1 Stage 1 同口徑）
+- `USE_SNAPSHOT_FOR_SYNC=false`（legacy sync 路徑，與 2026-02 多房間 payload 基線同口徑）
 
 ## Command(s)
 
@@ -122,7 +122,7 @@ USE_SNAPSHOT_FOR_SYNC=false swift run -c release EncodingBenchmark --scalability
 - active 注入的 `MoveTo` 事件也使 `targetPosition`（broadcast 欄位）入 diff；這符合真實客戶端行為。
 - 怪物軸用 refill-to-cap 機制，非自然 spawn/擊殺動態。
 - 每 cell 1 run；serial/parallel 差 <1.5%（事件時序）。
-- host 為 Apple M2 macOS，與 2026-02 RQ1 基線（AMD/WSL2, Swift 6.2.3）不同機器；跨表僅比相對趨勢。
+- host 為 Apple M2 macOS，與 2026-02 多房間 payload 基線（AMD/WSL2, Swift 6.2.3）不同機器；跨表僅比相對趨勢。
 - 未變動軸：ticksPerSync、iterations、砲塔數（0）、rooms（1）、dirty tracking（on）。
 
 Raw benchmark envelopes: `raw/`（EncodingBenchmark 原始輸出，含完整 metadata 與 git sha）。

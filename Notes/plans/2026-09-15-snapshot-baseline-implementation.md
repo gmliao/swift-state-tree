@@ -883,7 +883,7 @@ gh pr create --title "Add full-snapshot SyncStrategy as a measurement baseline" 
 - Equivalence test: delta and full-snapshot rebuild identical client views after every sync, on both extraction paths
 - Default behaviour unchanged (env unset + init default ⇒ identical bytes)
 
-Design: `Notes/plans/specs/2026-09-15-snapshot-baseline-design.md`. Purpose: same-testbed baseline for the paper's RQ1 (delta vs per-sync full snapshot at equal encoding). Not a production mode.
+Design: `Notes/plans/specs/2026-09-15-snapshot-baseline-design.md`. Purpose: same-testbed baseline for the multi-room payload comparison (delta vs per-sync full snapshot at equal encoding). Not a production mode.
 
 ## Verification
 - `swift test`: <paste closing line>

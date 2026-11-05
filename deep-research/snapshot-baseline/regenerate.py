@@ -44,7 +44,7 @@ def tables(runs):
         d = pick(runs, axis="rooms", rooms=rooms, sync_strategy="delta", encoding="messagepack-pathhash")
         f = pick(runs, axis="rooms", rooms=rooms, sync_strategy="full-snapshot", encoding="messagepack-pathhash")
         out.append(pair_row(f"rooms {rooms} (players {5 * rooms})", d, f))
-    out.append("\n### Table VI replacement (all rows measured at the same commit)\n")
+    out.append("\n### 10/30/50-room re-measurement (all rows measured at the same commit)\n")
     out.append("| Format / Strategy | Rooms | Total Players | bytesPerSync |\n|---|---:|---:|---:|")
     for label, enc, strat in (("JSON Object, delta", "json-object", "delta"),
                               ("Opcode MsgPack (PathHash), delta", "messagepack-pathhash", "delta"),
@@ -64,7 +64,7 @@ def tables(runs):
         d = pick(runs, axis="active", players=p, sync_strategy="delta")
         f = pick(runs, axis="active", players=p, sync_strategy="full-snapshot")
         out.append(pair_row(f"players {p}", d, f))
-    out.append("\n### Table IX replacement (100/300/500 rooms, same commit)\n")
+    out.append("\n### 100/300/500-room re-measurement (same commit)\n")
     out.append("| Format / Strategy | Rooms | Total Players | bytesPerSync |\n|---|---:|---:|---:|")
     for label, enc, strat in (("JSON Object, delta", "json-object", "delta"),
                               ("Opcode MsgPack (PathHash), delta", "messagepack-pathhash", "delta"),
@@ -87,8 +87,8 @@ def tables(runs):
             r = pick(runs, axis="active", players=p, sync_strategy="delta")
             ab, rb = a["metrics"]["bytes_per_sync"], r["metrics"]["bytes_per_sync"]
             out.append(f"| active players {p} | {fmt(ab)} | {fmt(rb)} | {(rb - ab) / ab * 100:+.1f}% |")
-    out.append("\n### Rooms axis vs the paper's archived RQ1 tables (per-room bytesPerSync)\n")
-    out.append("| Format | archived Table VI (2026-01-25, 10 rooms) | archived Table IX (2026-02-06, 100 rooms) | this topic (10 rooms) | this topic (100 rooms) |\n|---|---:|---:|---:|---:|")
+    out.append("\n### Rooms axis vs the archived 2026-01/02 payload tables (per-room bytesPerSync)\n")
+    out.append("| Format | archived 2026-01-25 (10 rooms) | archived 2026-02-06 (100 rooms) | this topic (10 rooms) | this topic (100 rooms) |\n|---|---:|---:|---:|---:|")
     archive_vi = {"json-object": 17627, "messagepack-pathhash": 4572}
     archive_ix = {"json-object": 175471, "messagepack-pathhash": 49851}
     for label, enc in (("JSON Object", "json-object"), ("Opcode MsgPack (PathHash)", "messagepack-pathhash")):
