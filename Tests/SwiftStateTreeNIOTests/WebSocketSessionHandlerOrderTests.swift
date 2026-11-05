@@ -72,11 +72,13 @@ private final class HoldingDelegate: TransportDelegate, @unchecked Sendable {
     }
 }
 
-private func waitUntil(_ condition: () -> Bool) async {
+@discardableResult
+private func waitUntil(_ condition: () -> Bool) async -> Bool {
     let deadline = ContinuousClock.now + .seconds(5)
     while !condition(), ContinuousClock.now < deadline {
         try? await Task.sleep(for: .milliseconds(5))
     }
+    return condition()
 }
 
 private func makeSession(
@@ -150,6 +152,47 @@ struct WebSocketSessionHandlerOrderTests {
         delegate.release("s1")
         _ = try? held.finish()
         _ = try? other.finish()
-        await waitUntil { delegate.events.contains("disconnect:s1") && delegate.events.contains("disconnect:s2") }
+        let bothDisconnected = await waitUntil {
+            delegate.events.contains("disconnect:s1") && delegate.events.contains("disconnect:s2")
+        }
+        #expect(bothDisconnected)
+    }
+
+    @Test("A message read in the same event-loop turn as the close frame precedes the disconnect")
+    func messageInSameTurnAsCloseComesFirst() async throws {
+        let delegate = HoldingDelegate()
+        let transport = WebSocketTransport()
+        await transport.setDelegate(delegate)
+
+        let channel = try makeSession("s1", transport: transport)
+        await waitUntil { delegate.events.contains("connect:s1") }
+        // No loop run between the two frames: the message's batch flush is still scheduled
+        // when the close frame arrives.
+        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .text, data: ByteBuffer(string: "last-action")))
+        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .connectionClose, data: ByteBuffer()))
+        channel.embeddedEventLoop.run()
+
+        let disconnected = await waitUntil { delegate.events.contains("disconnect:s1") }
+        #expect(disconnected)
+        #expect(delegate.events == ["connect-start:s1", "connect:s1", "message:s1:last-action", "disconnect:s1"])
+    }
+
+    @Test("A close the server starts (pong timeout) still disconnects the session")
+    func pongTimeoutDisconnects() async throws {
+        let delegate = HoldingDelegate()
+        let transport = WebSocketTransport()
+        await transport.setDelegate(delegate)
+
+        let channel = try makeSession("s1", transport: transport)
+        await waitUntil { delegate.events.contains("connect:s1") }
+        // First interval: ping sent. Second interval: no pong came back, so the handler closes.
+        channel.embeddedEventLoop.advanceTime(by: .seconds(30))
+        channel.embeddedEventLoop.advanceTime(by: .seconds(30))
+        channel.embeddedEventLoop.run()
+
+        let disconnected = await waitUntil { delegate.events.contains("disconnect:s1") }
+        #expect(disconnected, "events: \(delegate.events)")
+        #expect(delegate.events.filter { $0 == "disconnect:s1" }.count == 1)
+        _ = try? channel.finish()
     }
 }

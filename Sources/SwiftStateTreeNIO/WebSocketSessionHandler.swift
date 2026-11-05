@@ -40,6 +40,8 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
     /// Connect, message batches and disconnect reach the transport in this order (a join sent
     /// right after the upgrade must not overtake the connection's registration).
     private let inbound = InboundTaskChain()
+    /// The disconnect went into `inbound` (exactly once, whoever started the close).
+    private var disconnectEnqueued = false
 
     /// Fragment reassembly: buffer for accumulating fragmented message payloads
     private var fragmentBuffer: ByteBuffer?
@@ -109,9 +111,19 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         pingTask?.cancel()
         pingTask = nil
         
-        guard !isClosed else { return }
+        // Also after a close this handler started (`close(code:)`, e.g. a pong timeout) or a
+        // client close frame: the transport must learn the session ended in every case.
         isClosed = true
+        enqueueDisconnect()
+    }
 
+    /// Hands the session's disconnect to the transport after every message read before it.
+    private func enqueueDisconnect() {
+        guard !disconnectEnqueued else { return }
+        disconnectEnqueued = true
+        // A batch smaller than `maxBatchSize` is flushed from a later event-loop task; a frame
+        // read in the same turn as the close would otherwise be enqueued after the disconnect.
+        flushPendingMessages()
         inbound.enqueue {
             await self.transport.handleDisconnection(sessionID: self.sessionID)
 
@@ -300,9 +312,7 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         _ = context.writeAndFlush(wrapOutboundOut(closeFrame))
         context.close(promise: nil)
 
-        inbound.enqueue {
-            await self.transport.handleDisconnection(sessionID: self.sessionID)
-        }
+        enqueueDisconnect()
     }
 
     // MARK: - Outbound
