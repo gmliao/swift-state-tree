@@ -66,6 +66,10 @@ jobs:
       working-directory: Tools/CLI
       run: npm run build
 
+    - name: CLI unit tests
+      working-directory: Tools/CLI
+      run: npm run test:cli:unit
+
     - name: Build DemoServer
       working-directory: Examples/Demo
       run: swift build

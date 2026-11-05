@@ -2,6 +2,7 @@
 import { ref, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { useGameClient } from "../utils/gameClient";
+import { connectURL } from "../utils/serverConfig";
 import "@/styles/ui-tokens.css";
 
 const router = useRouter();
@@ -15,7 +16,8 @@ function generateRandomUserName(): string {
   return `user-${randomNum}`;
 }
 
-const wsUrl = ref("ws://localhost:8080/game/hero-defense");
+// Shared with the re-evaluation views, which derive the admin and replay URLs from it.
+const wsUrl = connectURL;
 const playerName = ref("");
 const roomId = ref("default");
 

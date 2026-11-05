@@ -573,6 +573,9 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
         let detail: String
         do {
             try view.apply(patches)
+            SyncOutputApplyCaseRecorder.current?.add(.init(
+                streamIndex: position.streamIndex, scope: scope, before: old, patches: patches, after: view.fields
+            ))
             guard !SnapshotValue.sameFields(view.fields, expected) else { return nil }
             detail = "first differing path: \(firstDifference(expected, view.fields) ?? "?")"
         } catch {
@@ -842,5 +845,47 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
         case .marker(let marker):
             return marker.kind == .seed ? (marker.observedTickId ?? -1) : nil
         }
+    }
+}
+
+/// Collects the apply oracle's cases (the view before, the patches, the oracle's view after)
+/// while bound with `$current`. The golden recordings export them, so the TypeScript SDK can
+/// apply the same patches and be compared with the oracle (#121).
+package final class SyncOutputApplyCaseRecorder: @unchecked Sendable {
+    package struct Case: Codable, Sendable, Equatable {
+        /// The stream entry (output or marker) the case belongs to.
+        package let streamIndex: UInt64
+        package let scope: String
+        package let before: [String: SnapshotValue]
+        /// In canonical order: the diff's own order depends on hashing, and canonical order
+        /// only moves patches to unrelated paths, so applying it gives the same view.
+        package let patches: [StatePatch]
+        package let after: [String: SnapshotValue]
+
+        package init(streamIndex: UInt64, scope: String, before: [String: SnapshotValue], patches: [StatePatch], after: [String: SnapshotValue]) {
+            self.streamIndex = streamIndex
+            self.scope = scope
+            self.before = before
+            self.patches = CanonicalPatchList(patches).patches
+            self.after = after
+        }
+    }
+
+    @TaskLocal package static var current: SyncOutputApplyCaseRecorder?
+
+    private let lock = NSLock()
+    private var recorded: [Case] = []
+
+    package init() {}
+
+    package func add(_ applyCase: Case) {
+        lock.withLock { recorded.append(applyCase) }
+    }
+
+    /// By stream entry, then scope: the order within one entry depends on hashing.
+    package var cases: [Case] {
+        lock.withLock { recorded }.enumerated().sorted { a, b in
+            (a.element.streamIndex, a.element.scope, a.offset) < (b.element.streamIndex, b.element.scope, b.offset)
+        }.map(\.element)
     }
 }

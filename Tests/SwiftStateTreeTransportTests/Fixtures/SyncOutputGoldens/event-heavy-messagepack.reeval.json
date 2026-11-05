@@ -1,0 +1,843 @@
+{
+  "recordMetadata" : {
+    "createdAt" : "1970-01-01T00:00:00Z",
+    "landDefinitionID" : "sync-output-verifier-test",
+    "landID" : "sync-output-verifier-test",
+    "landType" : "sync-output-verifier-test",
+    "metadata" : {
+
+    },
+    "recordsSyncStream" : true,
+    "syncConfig" : {
+      "fullSnapshot" : false,
+      "mergedBroadcastFrame" : true
+    },
+    "version" : "2.2"
+  },
+  "tickFrames" : [
+    {
+      "actions" : [
+
+      ],
+      "clientEvents" : [
+
+      ],
+      "initialize" : {
+        "sequence" : 0,
+        "serverEvents" : [
+          {
+            "kind" : "serverEvent",
+            "payload" : {
+              "message" : "init"
+            },
+            "sequence" : 1,
+            "target" : {
+              "ids" : [
+
+              ],
+              "kind" : "all"
+            },
+            "tickId" : -1,
+            "typeIdentifier" : "SyncStreamTest"
+          }
+        ],
+        "stateHash" : "80521007aaf62a89"
+      },
+      "lifecycleEvents" : [
+        {
+          "kind" : "initialize",
+          "metadata" : {
+
+          },
+          "resolvedAtTick" : -1,
+          "resolverOutputs" : {
+
+          },
+          "sequence" : 0,
+          "tickId" : 0
+        }
+      ],
+      "sequenceBeforeInputs" : 2,
+      "sequenceBeforeTickHandler" : 2,
+      "serverEvents" : [
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "a-1"
+          },
+          "sequence" : 2,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "all"
+          },
+          "tickId" : 0,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "nobody-1"
+          },
+          "sequence" : 3,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "players"
+          },
+          "tickId" : 0,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "b-1"
+          },
+          "sequence" : 4,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "all"
+          },
+          "tickId" : 0,
+          "typeIdentifier" : "SyncStreamTest"
+        }
+      ],
+      "stateHash" : "3caf96fc8d06f428",
+      "syncMarkers" : [
+        {
+          "kind" : "seed",
+          "observedTickId" : -1,
+          "playerID" : "p1",
+          "rejoin" : false,
+          "sequence" : 2,
+          "streamIndex" : 0,
+          "viewHash" : "e4c898f95337e3ba"
+        },
+        {
+          "kind" : "seed",
+          "observedTickId" : -1,
+          "playerID" : "p2",
+          "rejoin" : false,
+          "sequence" : 2,
+          "streamIndex" : 1,
+          "viewHash" : "e4c898f95337e3ba"
+        }
+      ],
+      "syncOutputs" : [
+        {
+          "broadcastHash" : "0a4bd620a721827e",
+          "encodeDropScopes" : [
+
+          ],
+          "eventsHash" : "7877e9b30d81d940",
+          "eventsNotQueued" : [
+            3
+          ],
+          "eventsThroughSequence" : 4,
+          "extractionDrops" : {
+
+          },
+          "index" : 0,
+          "observedTickId" : 0,
+          "perPlayerHash" : "a8c7f832281a39c5",
+          "sequence" : 5,
+          "streamIndex" : 2,
+          "turnKind" : "tick"
+        }
+      ],
+      "tickId" : 0
+    },
+    {
+      "actions" : [
+        {
+          "clientID" : "c1",
+          "kind" : "action",
+          "payload" : {
+            "field" : "burst",
+            "value" : 6
+          },
+          "playerID" : "p1",
+          "resolvedAtTick" : 0,
+          "resolverOutputs" : {
+
+          },
+          "sequence" : 5,
+          "sessionID" : "s1",
+          "typeIdentifier" : "VerifierSetAction"
+        },
+        {
+          "clientID" : "c2",
+          "kind" : "action",
+          "payload" : {
+            "field" : "burst",
+            "value" : 4
+          },
+          "playerID" : "p2",
+          "resolvedAtTick" : 0,
+          "resolverOutputs" : {
+
+          },
+          "sequence" : 6,
+          "sessionID" : "s2",
+          "typeIdentifier" : "VerifierSetAction"
+        }
+      ],
+      "clientEvents" : [
+
+      ],
+      "lifecycleEvents" : [
+
+      ],
+      "sequenceBeforeInputs" : 7,
+      "sequenceBeforeTickHandler" : 27,
+      "serverEvents" : [
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "to-p1-0"
+          },
+          "sequence" : 7,
+          "target" : {
+            "ids" : [
+              "p1"
+            ],
+            "kind" : "player"
+          },
+          "tickId" : 1,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "all-0"
+          },
+          "sequence" : 8,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "all"
+          },
+          "tickId" : 1,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "to-p1-1"
+          },
+          "sequence" : 9,
+          "target" : {
+            "ids" : [
+              "p1"
+            ],
+            "kind" : "player"
+          },
+          "tickId" : 1,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "all-1"
+          },
+          "sequence" : 10,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "all"
+          },
+          "tickId" : 1,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "to-p1-2"
+          },
+          "sequence" : 11,
+          "target" : {
+            "ids" : [
+              "p1"
+            ],
+            "kind" : "player"
+          },
+          "tickId" : 1,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "all-2"
+          },
+          "sequence" : 12,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "all"
+          },
+          "tickId" : 1,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "to-p1-3"
+          },
+          "sequence" : 13,
+          "target" : {
+            "ids" : [
+              "p1"
+            ],
+            "kind" : "player"
+          },
+          "tickId" : 1,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "all-3"
+          },
+          "sequence" : 14,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "all"
+          },
+          "tickId" : 1,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "to-p1-4"
+          },
+          "sequence" : 15,
+          "target" : {
+            "ids" : [
+              "p1"
+            ],
+            "kind" : "player"
+          },
+          "tickId" : 1,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "all-4"
+          },
+          "sequence" : 16,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "all"
+          },
+          "tickId" : 1,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "to-p1-5"
+          },
+          "sequence" : 17,
+          "target" : {
+            "ids" : [
+              "p1"
+            ],
+            "kind" : "player"
+          },
+          "tickId" : 1,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "all-5"
+          },
+          "sequence" : 18,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "all"
+          },
+          "tickId" : 1,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "to-p2-0"
+          },
+          "sequence" : 19,
+          "target" : {
+            "ids" : [
+              "p2"
+            ],
+            "kind" : "player"
+          },
+          "tickId" : 1,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "all-0"
+          },
+          "sequence" : 20,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "all"
+          },
+          "tickId" : 1,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "to-p2-1"
+          },
+          "sequence" : 21,
+          "target" : {
+            "ids" : [
+              "p2"
+            ],
+            "kind" : "player"
+          },
+          "tickId" : 1,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "all-1"
+          },
+          "sequence" : 22,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "all"
+          },
+          "tickId" : 1,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "to-p2-2"
+          },
+          "sequence" : 23,
+          "target" : {
+            "ids" : [
+              "p2"
+            ],
+            "kind" : "player"
+          },
+          "tickId" : 1,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "all-2"
+          },
+          "sequence" : 24,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "all"
+          },
+          "tickId" : 1,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "to-p2-3"
+          },
+          "sequence" : 25,
+          "target" : {
+            "ids" : [
+              "p2"
+            ],
+            "kind" : "player"
+          },
+          "tickId" : 1,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "all-3"
+          },
+          "sequence" : 26,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "all"
+          },
+          "tickId" : 1,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "a-2"
+          },
+          "sequence" : 27,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "all"
+          },
+          "tickId" : 1,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "nobody-2"
+          },
+          "sequence" : 28,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "players"
+          },
+          "tickId" : 1,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "b-2"
+          },
+          "sequence" : 29,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "all"
+          },
+          "tickId" : 1,
+          "typeIdentifier" : "SyncStreamTest"
+        }
+      ],
+      "stateHash" : "aa5c94aceb81f741",
+      "syncOutputs" : [
+        {
+          "broadcastHash" : "b1c59ace262562d3",
+          "encodeDropScopes" : [
+
+          ],
+          "eventsHash" : "5451fb07329e9b54",
+          "eventsNotQueued" : [
+            28
+          ],
+          "eventsThroughSequence" : 29,
+          "extractionDrops" : {
+
+          },
+          "index" : 0,
+          "observedTickId" : 1,
+          "perPlayerHash" : "a8c7f832281a39c5",
+          "sequence" : 30,
+          "streamIndex" : 3,
+          "turnKind" : "tick"
+        }
+      ],
+      "tickId" : 1
+    },
+    {
+      "actions" : [
+        {
+          "clientID" : "c1",
+          "kind" : "action",
+          "payload" : {
+            "field" : "burst",
+            "value" : 3
+          },
+          "playerID" : "p1",
+          "resolvedAtTick" : 1,
+          "resolverOutputs" : {
+
+          },
+          "sequence" : 30,
+          "sessionID" : "s1",
+          "typeIdentifier" : "VerifierSetAction"
+        }
+      ],
+      "clientEvents" : [
+
+      ],
+      "lifecycleEvents" : [
+
+      ],
+      "sequenceBeforeInputs" : 31,
+      "sequenceBeforeTickHandler" : 37,
+      "serverEvents" : [
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "to-p1-0"
+          },
+          "sequence" : 31,
+          "target" : {
+            "ids" : [
+              "p1"
+            ],
+            "kind" : "player"
+          },
+          "tickId" : 2,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "all-0"
+          },
+          "sequence" : 32,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "all"
+          },
+          "tickId" : 2,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "to-p1-1"
+          },
+          "sequence" : 33,
+          "target" : {
+            "ids" : [
+              "p1"
+            ],
+            "kind" : "player"
+          },
+          "tickId" : 2,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "all-1"
+          },
+          "sequence" : 34,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "all"
+          },
+          "tickId" : 2,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "to-p1-2"
+          },
+          "sequence" : 35,
+          "target" : {
+            "ids" : [
+              "p1"
+            ],
+            "kind" : "player"
+          },
+          "tickId" : 2,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "all-2"
+          },
+          "sequence" : 36,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "all"
+          },
+          "tickId" : 2,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "a-3"
+          },
+          "sequence" : 37,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "all"
+          },
+          "tickId" : 2,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "nobody-3"
+          },
+          "sequence" : 38,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "players"
+          },
+          "tickId" : 2,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "b-3"
+          },
+          "sequence" : 39,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "all"
+          },
+          "tickId" : 2,
+          "typeIdentifier" : "SyncStreamTest"
+        }
+      ],
+      "stateHash" : "7676f986e6d4ce90",
+      "syncOutputs" : [
+        {
+          "broadcastHash" : "790225d73fa0c09c",
+          "encodeDropScopes" : [
+
+          ],
+          "eventsHash" : "7ce0d509865fe7eb",
+          "eventsNotQueued" : [
+            38
+          ],
+          "eventsThroughSequence" : 39,
+          "extractionDrops" : {
+
+          },
+          "index" : 0,
+          "observedTickId" : 2,
+          "perPlayerHash" : "a8c7f832281a39c5",
+          "sequence" : 40,
+          "streamIndex" : 4,
+          "turnKind" : "tick"
+        }
+      ],
+      "tickId" : 2
+    },
+    {
+      "actions" : [
+
+      ],
+      "clientEvents" : [
+
+      ],
+      "lifecycleEvents" : [
+
+      ],
+      "sequenceBeforeInputs" : 40,
+      "sequenceBeforeTickHandler" : 40,
+      "serverEvents" : [
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "a-4"
+          },
+          "sequence" : 40,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "all"
+          },
+          "tickId" : 3,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "nobody-4"
+          },
+          "sequence" : 41,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "players"
+          },
+          "tickId" : 3,
+          "typeIdentifier" : "SyncStreamTest"
+        },
+        {
+          "kind" : "serverEvent",
+          "payload" : {
+            "message" : "b-4"
+          },
+          "sequence" : 42,
+          "target" : {
+            "ids" : [
+
+            ],
+            "kind" : "all"
+          },
+          "tickId" : 3,
+          "typeIdentifier" : "SyncStreamTest"
+        }
+      ],
+      "stateHash" : "f519a3dbb780887d",
+      "syncOutputs" : [
+        {
+          "broadcastHash" : "2c1c121e36deb3e9",
+          "encodeDropScopes" : [
+
+          ],
+          "eventsHash" : "8cebe1973a3dab54",
+          "eventsNotQueued" : [
+            41
+          ],
+          "eventsThroughSequence" : 42,
+          "extractionDrops" : {
+
+          },
+          "index" : 0,
+          "observedTickId" : 3,
+          "perPlayerHash" : "a8c7f832281a39c5",
+          "sequence" : 43,
+          "streamIndex" : 5,
+          "turnKind" : "tick"
+        }
+      ],
+      "tickId" : 3
+    }
+  ]
+}

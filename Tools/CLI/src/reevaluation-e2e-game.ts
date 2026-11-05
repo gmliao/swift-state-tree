@@ -4,6 +4,7 @@ import { join, resolve } from 'path'
 import { execFileSync } from 'child_process'
 import chalk from 'chalk'
 import { downloadReevaluationRecord } from './admin'
+import { assertSyncOutputCompared } from './sync-output-verdict'
 
 type Args = Record<string, string | boolean>
 
@@ -82,10 +83,17 @@ async function main() {
   // Offline verify using the GameDemo reevaluation runner.
   const gameDemoDir = join(projectRoot, 'Examples', 'GameDemo')
   console.log(chalk.blue('🧪 Offline verify via GameDemo ReevaluationRunner...'))
-  execFileSync('swift', ['run', 'ReevaluationRunner', '--input', recordPath, '--verify'], {
+  const verifyOutput = execFileSync('swift', ['run', 'ReevaluationRunner', '--input', recordPath, '--verify'], {
     cwd: gameDemoDir,
-    stdio: 'inherit'
+    stdio: ['inherit', 'pipe', 'inherit'],
+    encoding: 'utf-8'
   })
+  process.stdout.write(verifyOutput)
+  // The replay must have compared sync outputs, not only found no mismatch.
+  const syncOutput = assertSyncOutputCompared(verifyOutput)
+  console.log(chalk.green(syncOutput.verdict === 'skipped'
+    ? `✅ Sync output ${syncOutput.line} (expected with in-turn sync off)`
+    : `✅ Sync output ${syncOutput.verdict}, every scope compared`))
 
   console.log(chalk.green('✅ Hero Defense re-evaluation record+verify passed (messagepack)'))
 }
