@@ -1,6 +1,6 @@
 // Tests/SwiftStateTreeTests/ReevaluationRecordVersionTests.swift
 //
-// Record format versions are compared by major version only.
+// Record format versions: the same major, from `minimumSupported` (2.5, #154) on.
 
 import Foundation
 import Testing
@@ -8,9 +8,10 @@ import Testing
 
 @Suite("Re-evaluation record version")
 struct ReevaluationRecordVersionTests {
-    @Test("The producer writes 2.4")
+    @Test("The producer writes 2.5 and reads 2.5 and later")
     func currentVersion() {
-        #expect(ReevaluationRecordVersion.current == "2.4")
+        #expect(ReevaluationRecordVersion.current == "2.5")
+        #expect(ReevaluationRecordVersion.minimumSupported == "2.5")
     }
 
     @Test("Only an affected land's record older than 2.3 has a not-comparable hash (#175)")
@@ -86,13 +87,28 @@ struct ReevaluationRecordVersionTests {
         #expect(ReevaluationEngine.calculateStateHash(state) != ReevaluationEngine.calculateStateHash(HashPinState()))
     }
 
-    @Test("Same major, any minor, is compatible in both directions")
+    @Test("Same major from 2.5 on is compatible, whatever minor the reader requires")
     func sameMajor() {
-        #expect(ReevaluationRecordVersion.isCompatible(recorded: "2.1", required: "2.0"))
-        #expect(ReevaluationRecordVersion.isCompatible(recorded: "2.0", required: "2.1"))
-        #expect(ReevaluationRecordVersion.isCompatible(recorded: "2.0", required: "2.0"))
+        #expect(ReevaluationRecordVersion.isCompatible(recorded: "2.5", required: "2.5"))
+        #expect(ReevaluationRecordVersion.isCompatible(recorded: "2.7", required: "2.5"))
+        #expect(ReevaluationRecordVersion.isCompatible(recorded: "2.5", required: "2.7"))
         #expect(ReevaluationRecordVersion.isCompatible(recorded: "2.7", required: "2"))
-        #expect(ReevaluationRecordVersion.isCompatible(recorded: "2", required: "2.1"))
+        #expect(ReevaluationRecordVersion.unsupportedReason(recorded: "2.5") == nil)
+        #expect(ReevaluationRecordVersion.unsupportedReason(recorded: "2.9") == nil)
+    }
+
+    @Test("A record older than 2.5 is unsupported, with a re-record reason (#154)")
+    func olderThanMinimum() {
+        for old in ["2", "2.0", "2.1", "2.3", "2.4"] {
+            #expect(!ReevaluationRecordVersion.isCompatible(recorded: old, required: ReevaluationRecordVersion.current), "\(old)")
+            let reason = ReevaluationRecordVersion.unsupportedReason(recorded: old)
+            #expect(reason?.contains("unsupported record version \(old)") == true, "\(reason ?? "nil")")
+            #expect(reason?.contains("re-record") == true)
+        }
+        // Another major, a missing or a malformed version is incompatible, not unsupported.
+        for other in ["1.0", "3.0", "", "x", nil] as [String?] {
+            #expect(ReevaluationRecordVersion.unsupportedReason(recorded: other) == nil, "\(other ?? "nil")")
+        }
     }
 
     @Test("A different major, a missing or a malformed version is not")
@@ -141,16 +157,33 @@ struct ReevaluationRecordVersionTests {
         }
     }
 
-    @Test("ReevaluationEngine.run accepts a 2.0 record")
+    @Test("ReevaluationEngine.run rejects a 2.4 record as unsupported before replaying (#154)")
+    func engineRejectsOlderMinor() async throws {
+        for version in ["2.4", "2.0"] {
+            let url = try Self.writeEmptyRecord(version: version)
+            defer { try? FileManager.default.removeItem(at: url) }
+            let expected = ReevaluationRecordVersionError.unsupported(recorded: version, minimum: "2.5")
+            await #expect(throws: expected) {
+                _ = try await ReevaluationEngine.run(
+                    definition: makeReevaluationEngineTestDefinition(),
+                    initialState: ReevaluationEngineTestState(),
+                    recordFilePath: url.path
+                )
+            }
+            #expect(expected.description.contains("re-record"))
+        }
+    }
+
+    @Test("ReevaluationEngine.run accepts a 2.5 record")
     func engineAcceptsSameMajor() async throws {
-        let url = try Self.writeEmptyRecord(version: "2.0")
+        let url = try Self.writeEmptyRecord(version: "2.5")
         defer { try? FileManager.default.removeItem(at: url) }
         let result = try await ReevaluationEngine.run(
             definition: makeReevaluationEngineTestDefinition(),
             initialState: ReevaluationEngineTestState(),
             recordFilePath: url.path
         )
-        #expect(result.syncStreamPresence == .absent(reason: "record version 2.0 predates sync-output recording"))
+        #expect(result.hashDefinition == .fullState)
     }
 
     private static func writeEmptyRecord(version: String?) throws -> URL {

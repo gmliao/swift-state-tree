@@ -186,8 +186,11 @@ public enum ReevaluationEngine {
     ) async throws -> RunResult {
         let source = try JSONReevaluationSource(filePath: recordFilePath)
         let metadata = try await source.getMetadata()
-        // Same rule as the runner and the replay start route: same major version only. Checked
-        // before anything is replayed.
+        // Same rule as the runner and the replay start route: the same major version, not older
+        // than `minimumSupported`. Checked before anything is replayed.
+        if let recorded = metadata.version, ReevaluationRecordVersion.unsupportedReason(recorded: recorded) != nil {
+            throw ReevaluationRecordVersionError.unsupported(recorded: recorded, minimum: ReevaluationRecordVersion.minimumSupported)
+        }
         guard ReevaluationRecordVersion.isCompatible(recorded: metadata.version, required: requiredRecordVersion) else {
             throw ReevaluationRecordVersionError.incompatible(recorded: metadata.version, required: requiredRecordVersion)
         }

@@ -145,8 +145,20 @@ public struct ReevaluationSyncConfig: Codable, Sendable, Equatable {
 }
 
 /// A record whose version a reader cannot read (different major, missing or malformed).
-public enum ReevaluationRecordVersionError: Error, Equatable, Sendable {
+public enum ReevaluationRecordVersionError: Error, Equatable, Sendable, CustomStringConvertible {
     case incompatible(recorded: String?, required: String)
+    /// The major version matches, but the record is older than the oldest version this build
+    /// reads (`ReevaluationRecordVersion.minimumSupported`): re-record it with the current server.
+    case unsupported(recorded: String, minimum: String)
+
+    public var description: String {
+        switch self {
+        case let .incompatible(recorded, required):
+            return "incompatible record version \(recorded ?? "missing") (this build reads \(required))"
+        case let .unsupported(recorded, _):
+            return ReevaluationRecordVersion.unsupportedReason(recorded: recorded) ?? "unsupported record version \(recorded)"
+        }
+    }
 }
 
 /// What a recorded state or initialize hash covers.
@@ -160,9 +172,9 @@ public enum ReevaluationHashDefinition: Sendable, Equatable {
 
 /// Record format versions, `"<major>.<minor>"`.
 ///
-/// Readers accept any record with their major version: a newer minor adds keys an older reader
-/// ignores, and an older minor lacks features a newer reader reports as skipped. Only a different
-/// major (or a missing or malformed version) is incompatible.
+/// Readers accept a record with their major version from `minimumSupported` on: a newer minor adds
+/// keys an older reader ignores. A record older than `minimumSupported` is unsupported (re-record
+/// it); a different major, or a missing or malformed version, is incompatible.
 public enum ReevaluationRecordVersion {
     /// The version this package writes. 2.1 adds the sync stream (`syncOutputs`, `syncMarkers`,
     /// `recordsSyncStream`) and the initialize record; 2.2 adds what the sync-output verifier
@@ -172,8 +184,28 @@ public enum ReevaluationRecordVersion {
     /// an older record's state and sync-output hashes are not comparable with this build's.
     /// 2.4 records full-state hashes (`ReevaluationHashDefinition.fullState`, #180) and
     /// `stateHashUnavailable`; older records hold broadcast-view hashes and are verified
-    /// against those.
-    public static let current = "2.4"
+    /// against those. 2.5 writes `PlayerID`, `ClientID` and `SessionID` as strings, and a
+    /// dictionary keyed by one as an object, in recorded payloads and events (#154).
+    public static let current = "2.5"
+
+    /// The first minor this build reads. Records before 2.5 hold identifiers as `{rawValue}`
+    /// objects, which no longer decode (#154); they are not converted, but rejected as
+    /// unsupported (not comparable, never a mismatch): re-record them with the current server.
+    public static let minimumSupportedMinor = 5
+
+    /// `"<major>.<minimumSupportedMinor>"` of `current`.
+    public static var minimumSupported: String {
+        "\(current.split(separator: ".").first ?? "2").\(minimumSupportedMinor)"
+    }
+
+    /// Why a record written as `recorded` cannot be read by this build although its major version
+    /// matches (it is older than `minimumSupported`), or nil when it can be (or is incompatible).
+    public static func unsupportedReason(recorded: String?) -> String? {
+        guard let recorded, let parsed = parse(recorded), let currentMajor = parse(current)?.major,
+              parsed.major == currentMajor, parsed.minor < minimumSupportedMinor
+        else { return nil }
+        return "unsupported record version \(recorded) (this build reads \(minimumSupported) and later); re-record with the current server"
+    }
 
     /// The first minor whose state and initialize hashes cover the full state (#180).
     public static let fullStateHashMinor = 4
@@ -237,13 +269,14 @@ public enum ReevaluationRecordVersion {
         return false
     }
 
-    /// Whether a record written as `recorded` can be read by a reader that requires `required`.
+    /// Whether a record written as `recorded` can be read by a reader that requires `required`:
+    /// the same major, and not older than `minimumSupported` (`unsupportedReason` says why not).
     public static func isCompatible(recorded: String?, required: String) -> Bool {
         guard let recorded,
               let recordedMajor = parse(recorded)?.major,
               let requiredMajor = parse(required)?.major
         else { return false }
-        return recordedMajor == requiredMajor
+        return recordedMajor == requiredMajor && unsupportedReason(recorded: recorded) == nil
     }
 
     /// The minor version of `version` (0 when it has none), nil when missing or malformed.

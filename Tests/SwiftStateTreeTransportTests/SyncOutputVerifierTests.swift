@@ -783,16 +783,14 @@ struct SyncOutputVerifierTests {
         #expect(clean.hashDefinition == .fullState)
     }
 
-    @Test("A record without syncConfig (2.1) is skipped, never guessed")
+    @Test("A 2.1 record (before syncConfig) is rejected as unsupported, never guessed (#154)")
     func missingSyncConfigIsSkipped() async throws {
         guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: .json)
         try await playScript(f)
-        let result = try await f.replay(version: "2.1", withSyncConfig: false)
-        #expect(result.syncOutput.verdict == .skipped(reason: "record 2.1 predates syncConfig"))
-        // The fixture records 2.4 full-state hashes; relabeled as 2.1 the reader expects
-        // broadcast-view hashes, so the hashes are checked without the relabel.
-        #expect(result.hashDefinition == .broadcastView)
+        await #expect(throws: ReevaluationRecordVersionError.unsupported(recorded: "2.1", minimum: "2.5")) {
+            _ = try await f.replay(version: "2.1", withSyncConfig: false)
+        }
         let unrelabeled = try await f.replay(withSyncConfig: false)
         #expect(unrelabeled.tickHashes == unrelabeled.recordedStateHashes)
     }
@@ -823,19 +821,12 @@ struct SyncOutputVerifierTests {
         let f = await VerifierFixture.make(encoding: .json)
         try await f.join(1)
         await f.tick(2)
-        let result = try await f.replay(version: "2.0", withSyncConfig: false) { frames in
+        let result = try await f.replay(withSyncConfig: false) { frames in
             frames = frames.map { replacingInitialize($0, with: nil) }
         }
         #expect(result.initialize == .notRecorded)
         #expect(!result.recordedStateHashes.isEmpty)
-        #expect(result.hashDefinition == .broadcastView)
-        // The fixture records 2.4 full-state hashes, so the hashes are checked without the
-        // version relabel, still without an initialize record.
-        let unrelabeled = try await f.replay(withSyncConfig: false) { frames in
-            frames = frames.map { replacingInitialize($0, with: nil) }
-        }
-        #expect(unrelabeled.initialize == .notRecorded)
-        #expect(unrelabeled.tickHashes == unrelabeled.recordedStateHashes, "tick 0 still applies OnInitialize")
+        #expect(result.tickHashes == result.recordedStateHashes, "tick 0 still applies OnInitialize")
     }
 
     @Test("Opcode 107: a per-player dirty-tracking miss in an output with no other per-player change is detected")

@@ -169,6 +169,8 @@ public struct NIOWebSocketServerConfiguration: Sendable {
         public let systemCap: Int?
 
         /// The backlog the kernel queues: the requested value, capped at `systemCap` if known.
+        /// When the cap is unread this is the requested value, not a measurement: macOS also caps
+        /// the backlog (`kern.ipc.somaxconn`, 128 by default) but has no `/proc` to read it from.
         public var effective: Int { systemCap.map { min(requested, $0) } ?? requested }
         /// Whether the kernel lowers the requested backlog.
         public var isCapped: Bool { systemCap.map { $0 < requested } ?? false }
@@ -189,7 +191,9 @@ public struct NIOWebSocketServerConfiguration: Sendable {
         return ListenBacklogCheck(requested: requested, systemCap: cap)
     }
 
-    /// The listen backlog check for `requested` on this host.
+    /// The listen backlog check for `requested` on this host. Only Linux's cap is read; elsewhere
+    /// the check is unchecked, which does not mean the kernel queues the requested backlog (macOS
+    /// caps it at `kern.ipc.somaxconn`, 128 by default).
     public static func listenBacklogCheck(requested: Int) -> ListenBacklogCheck {
         listenBacklogCheck(requested: requested, read: readSystemFile)
     }

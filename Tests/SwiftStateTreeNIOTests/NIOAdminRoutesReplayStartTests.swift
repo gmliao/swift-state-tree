@@ -14,7 +14,7 @@ struct NIOAdminRoutesReplayStartTests {
         let recordFileURL = try writeRecordFile(
             landType: "hero-defense",
             landDefinitionID: "hero-defense",
-            version: "2.0"
+            version: "2.5"
         )
         defer { try? FileManager.default.removeItem(at: recordFileURL) }
 
@@ -134,7 +134,7 @@ struct NIOAdminRoutesReplayStartTests {
         let requestBody = try JSONSerialization.data(withJSONObject: [
             "landType": "hero-defense",
             "recordFilePath": recordFileURL.path,
-            "expectedRecordVersion": "2.0",
+            "expectedRecordVersion": "2.5",
         ])
 
         let response = try await sendReplayStartRequest(body: requestBody, on: router)
@@ -143,11 +143,11 @@ struct NIOAdminRoutesReplayStartTests {
         let decoded = try decodeAdminResponse(from: response)
         #expect(decoded.success == false)
         #expect(decoded.error?.code == "RECORD_VERSION_MISMATCH")
-        #expect(detailString(decoded.error?.details, key: "expectedRecordVersion") == "2.0")
+        #expect(detailString(decoded.error?.details, key: "expectedRecordVersion") == "2.5")
         #expect(detailString(decoded.error?.details, key: "recordedRecordVersion") == "1.0")
     }
 
-    @Test("Replay start accepts a record with the same major version and another minor", arguments: [("2.1", "2.0"), ("2.0", "2.1")])
+    @Test("Replay start accepts a record with the same major version and another minor", arguments: [("2.6", "2.5"), ("2.5", "2.6")])
     func replayStartAcceptsSameMajor(versions: (recorded: String, expected: String)) async throws {
         let router = try await makeRouter()
         let recordFileURL = try writeRecordFile(
@@ -168,13 +168,36 @@ struct NIOAdminRoutesReplayStartTests {
         #expect(try decodeAdminResponse(from: response).success)
     }
 
+    @Test("Replay start rejects a record older than 2.5 as unsupported, with or without an expected version (#154)", arguments: [nil, "2.5"] as [String?])
+    func replayStartRejectsUnsupportedRecord(expected: String?) async throws {
+        let router = try await makeRouter()
+        let recordFileURL = try writeRecordFile(
+            landType: "hero-defense",
+            landDefinitionID: "hero-defense",
+            version: "2.4"
+        )
+        defer { try? FileManager.default.removeItem(at: recordFileURL) }
+
+        var body: [String: Any] = ["landType": "hero-defense", "recordFilePath": recordFileURL.path]
+        if let expected { body["expectedRecordVersion"] = expected }
+        let response = try await sendReplayStartRequest(body: try JSONSerialization.data(withJSONObject: body), on: router)
+        #expect(response.status == .conflict)
+
+        let decoded = try decodeAdminResponse(from: response)
+        #expect(decoded.success == false)
+        #expect(decoded.error?.code == "RECORD_VERSION_UNSUPPORTED")
+        #expect(decoded.error?.message.contains("re-record") == true)
+        #expect(detailString(decoded.error?.details, key: "recordedRecordVersion") == "2.4")
+        #expect(detailString(decoded.error?.details, key: "minimumRecordVersion") == "2.5")
+    }
+
     @Test("Replay start returns land type mismatch conflict with actionable details")
     func replayStartLandTypeMismatchPayload() async throws {
         let router = try await makeRouter()
         let recordFileURL = try writeRecordFile(
             landType: "counter",
             landDefinitionID: "counter",
-            version: "2.0"
+            version: "2.5"
         )
         defer { try? FileManager.default.removeItem(at: recordFileURL) }
 
@@ -199,7 +222,7 @@ struct NIOAdminRoutesReplayStartTests {
         let recordFileURL = try writeRecordFile(
             landType: "hero-defense",
             landDefinitionID: "hero-defense",
-            version: "2.0"
+            version: "2.5"
         )
         defer { try? FileManager.default.removeItem(at: recordFileURL) }
 
