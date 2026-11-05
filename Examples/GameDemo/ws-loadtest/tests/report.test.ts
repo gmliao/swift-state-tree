@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { buildReport, clientCpuCell, loopDelayCell, phaseWarningsOf, warningsList } from "../src/report/render-html";
+import { buildReport, clientCpuCell, closesCell, loopDelayCell, phaseWarningsOf, warningsList } from "../src/report/render-html";
+import { summarizeCloses } from "../src/run";
 
 describe("buildReport", () => {
     it("includes thresholds and phase summary", () => {
@@ -54,5 +55,33 @@ describe("load client CPU cell", () => {
         expect(clientCpuCell(undefined)).toBe("–");
         expect(clientCpuCell({} as any)).toBe("–");
         expect(clientCpuCell({ clientCpu: { workers: 0, perWorkerPct: { min: 0, mean: 0, max: 0 }, totalPct: 0, cores: 8 } })).toBe("–");
+    });
+});
+
+describe("server close codes (#108)", () => {
+    const record = (initiator: "client" | "server", code?: number, t = 0) =>
+        ({ t, key: "k", landInstanceId: "l", initiator, code, joined: true }) as any;
+
+    it("counts server-initiated closes by code, apart from client ones", () => {
+        const closes = summarizeCloses([record("client", 1000), record("server", 1001), record("server", 1001), record("server")]);
+        expect(closes.byCode).toEqual({ "1000": 1, "1001": 2, none: 1 });
+        expect(closes.serverByCode).toEqual({ "1001": 2, none: 1 });
+    });
+
+    it("shows the server codes in the closes cell", () => {
+        expect(closesCell(summarizeCloses([record("client", 1000), record("server", 1001), record("server", 1006)]))).toBe(
+            "1 / 2 (1001×1, 1006×1)"
+        );
+        expect(closesCell(summarizeCloses([record("client", 1000)]))).toBe("1 / 0");
+        expect(closesCell(undefined)).toBe("–");
+    });
+
+    it("warns on server closes with 1001, and only on those", () => {
+        const phaseWith = (records: any[]) =>
+            ({ connections: { joinedAtEnd: 0, closes: summarizeCloses(records) }, report: { stateUpdateIntervalsMs: [] } }) as any;
+        expect(phaseWarningsOf(phaseWith([record("server", 1001), record("server", 1001)]))).toEqual([
+            "2 server closes with 1001 (going away): a keepalive pong timeout (WS_PONG_TIMEOUT_MS) or a server shutdown"
+        ]);
+        expect(phaseWarningsOf(phaseWith([record("client", 1001), record("server", 1006)]))).toEqual([]);
     });
 });
