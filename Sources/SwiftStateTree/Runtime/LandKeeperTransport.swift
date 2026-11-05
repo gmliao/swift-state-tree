@@ -61,6 +61,18 @@ public protocol LandKeeperTransport: Sendable {
     /// no keeper ever reaches an `assumeIsolated` that would trap.
     func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool
 
+    /// Admits `sessionID` as joining `playerID`, in the keeper's join (#69).
+    ///
+    /// Called by the keeper inside its actor turn, in the same synchronous segment as the
+    /// player's insert or, for a first join with an OnJoin handler, as the append of its OnJoin
+    /// input, and only for a join that asked for it (`joinReportingAdmission`) when
+    /// `runsSyncPhaseInTurn(of:)` is `true` for the caller. Being synchronous, the join cannot
+    /// suspend between that state change and the admission. Returns whether the transport
+    /// admitted the session; `false` leaves the admission to the join's caller after the join
+    /// returns. An implementation that is an actor enters its own isolation with
+    /// `assumeIsolated`.
+    func admitJoiningSession(playerID: PlayerID, clientID: ClientID, sessionID: SessionID) -> Bool
+
     /// Returns once the outbound writer no longer holds a state element from an earlier sync
     /// phase. A keeper without periodic sync waits on it before retrying a sync phase that was
     /// deferred by back-pressure.
@@ -126,6 +138,9 @@ public enum InTurnSyncResult: Sendable, Equatable {
 extension LandKeeperTransport {
     /// Default: in-turn sync is not supported for any keeper.
     public func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { false }
+
+    /// Default: nothing is admitted; the join's caller admits after the join returns.
+    public func admitJoiningSession(playerID: PlayerID, clientID: ClientID, sessionID: SessionID) -> Bool { false }
 
     /// Default: returns immediately.
     public func waitForWriterDrainForInTurnSync() async {}

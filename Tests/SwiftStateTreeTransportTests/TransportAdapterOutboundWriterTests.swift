@@ -142,16 +142,17 @@ struct TransportAdapterOutboundWriterTests {
             Issue.record("session not bound to a land")
             return
         }
+        // Sent by the client on its connection (the keeper only takes inputs from the player's
+        // current client and session).
         let envelope = ActionEnvelope(
             typeIdentifier: String(describing: WriterSetAction.self),
             payload: AnyCodable(WriterSetAction(stamp: 7))
         )
-        _ = try await container.keeper.handleActionEnvelope(
-            envelope,
-            playerID: PlayerID("wr-join-player"),
-            clientID: ClientID("wr-join-client"),
-            sessionID: session
-        )
+        let action = TransportMessage.action(requestID: "wr-join-action", action: envelope)
+        await transport.handleIncomingMessage(sessionID: session, data: try JSONEncoder().encode(action))
+        _ = try await waitForFrames(connection, "the action response") { frames in
+            frames.contains { contains($0, "wr-join-action") }
+        }
         await container.transportAdapter.syncNow()
         let frames = try await waitForFrames(connection, "the first diff") { frames in
             frames.contains { contains($0, writerMarker(7)) }

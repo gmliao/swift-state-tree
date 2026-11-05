@@ -1140,7 +1140,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             logger.info("Duplicate playerID login detected: \(playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
             // Kick old connection by calling leave
             // This will call OnLeave handler and clean up state
-            try await leave(playerID: playerID, clientID: oldClientID)
+            try await leave(playerID: playerID, clientID: oldClientID, sessionID: existingSession.lastSessionID)
         }
 
         var session = players[playerID] ?? InternalPlayerSession(services: services)
@@ -1148,6 +1148,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         session.clientID = clientID
         session.lastSessionID = sessionID
+        session.joinSequence = nil
         session.services = services
         // Checked in the same synchronous segment as the insert: a destruction that started
         // during this join's awaits must not get a player after it stopped the loops.
@@ -1163,6 +1164,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
         let sequence = outputCollector.takeNextSequence()
+        // Same segment as the insert: the entry belongs to this join's OnJoin input.
+        players[playerID]?.joinSequence = sequence
 
         // Snapshot tick at request time; update after resolver completion for async determinism.
         var resolvedAtTick = lastCommittedTickId
@@ -1236,6 +1239,36 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         sessionID: SessionID,
         services: LandServices
     ) async throws -> JoinDecision {
+        try await joinReportingAdmission(
+            session: session,
+            clientID: clientID,
+            sessionID: sessionID,
+            services: services,
+            admitThroughTransport: false
+        ).decision
+    }
+
+    /// What `joinReportingAdmission` did.
+    package struct JoinOutcome: Sendable {
+        package let decision: JoinDecision
+        /// The transport admitted the session inside the join
+        /// (`LandKeeperTransport.admitJoiningSession` returned `true`). When `false`, the caller
+        /// admits it after the join returns, so a session is admitted exactly once.
+        package let admitted: Bool
+    }
+
+    /// `join(session:clientID:sessionID:services:)`, and, when `admitThroughTransport` and this
+    /// keeper's turns run the sync phase in the turn (`usesInTurnSync`), the transport's
+    /// `admitJoiningSession` in the same synchronous segment as the player's insert (or as its
+    /// OnJoin input's append, for a first join with OnJoin). Off that path, or for a non-live
+    /// keeper, nothing is admitted here (`admitted == false`).
+    package func joinReportingAdmission(
+        session: PlayerSession,
+        clientID: ClientID,
+        sessionID: SessionID,
+        services: LandServices,
+        admitThroughTransport: Bool
+    ) async throws -> JoinOutcome {
         await ensureInitialized()
         // Call CanJoin handler if defined
         var decision: JoinDecision = .allow(playerID: PlayerID(session.playerID))
@@ -1269,7 +1302,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // If denied, return early
         guard case let .allow(playerID) = decision else {
-            return decision
+            return JoinOutcome(decision: decision, admitted: false)
         }
 
         // Check maxPlayers limit after CanJoin handler (using the playerID returned by CanJoin)
@@ -1295,7 +1328,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             logger.info("Duplicate playerID login detected: \(playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
             // Kick old connection by calling leave
             // This will call OnLeave handler and clean up state
-            try await leave(playerID: playerID, clientID: oldClientID)
+            try await leave(playerID: playerID, clientID: oldClientID, sessionID: existingSession.lastSessionID)
         }
 
         // Proceed with join
@@ -1309,6 +1342,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         playerSession.clientID = clientID
         playerSession.lastSessionID = sessionID
+        playerSession.joinSequence = nil
         playerSession.services = services
         // Update deviceID, isGuest, and metadata if provided (for reconnection scenarios)
         if let deviceID = session.deviceID {
@@ -1329,11 +1363,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // In reevaluation mode, replay viewers are observers: add to players for sync but skip OnJoin
         // so they are not added to game state (which would create an extra player in the replay).
         guard isFirst, definition.lifetimeHandlers.onJoin != nil, mode != .reevaluation else {
-            return decision
+            // No OnJoin input: admitted in the same segment as the insert.
+            let admitted = admitThroughTransport && admitJoiningInTurn(playerID: playerID, clientID: clientID, sessionID: sessionID)
+            return JoinOutcome(decision: decision, admitted: admitted)
         }
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
         let sequence = outputCollector.takeNextSequence()
+        // Same segment as the insert: the entry belongs to this join's OnJoin input.
+        players[playerID]?.joinSequence = sequence
 
         // Snapshot tick at request time; update after resolver completion for async determinism.
         var resolvedAtTick = lastCommittedTickId
@@ -1380,6 +1418,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
         )
         pendingItems.append(pendingItem)
+        // Admitted in the same segment as the append, before the OnJoin turn can run.
+        let admitted = admitThroughTransport && admitJoiningInTurn(playerID: playerID, clientID: clientID, sessionID: sessionID)
 
         // If there's no tick handler, process lifecycle immediately (backward-compatible mode)
         if definition.lifetimeHandlers.tickHandler == nil {
@@ -1390,7 +1430,69 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
         }
 
-        return decision
+        return JoinOutcome(decision: decision, admitted: admitted)
+    }
+
+    /// Called in the segment where `item`'s handler threw. A join whose OnJoin threw never
+    /// completed: its input is removed (so no later pass runs that OnJoin again for a player that
+    /// isn't there) and so is the player it inserted, without OnLeave, so the failed join holds
+    /// no capacity and doesn't keep the land alive. The player is removed only if it is still
+    /// that join's entry (its `joinSequence`). OnJoin's partial state changes are not rolled back (no per-input
+    /// savepoints, #87).
+    private func discardIfFailedJoin(_ item: PendingItem) {
+        guard case let .lifecycle(lifecycle) = item, lifecycle.kind == .join,
+              let playerID = lifecycle.playerID else { return }
+        pendingItems.removeAll { $0.sequence == lifecycle.sequence }
+        if let session = players[playerID], session.joinSequence == lifecycle.sequence {
+            players.removeValue(forKey: playerID)
+            scheduleDestroyIfNeeded()
+        }
+        logger.warning("OnJoin threw: the join's input and player were removed", metadata: [
+            "playerID": .string(playerID.rawValue),
+            "sessionID": .string(lifecycle.sessionID?.rawValue ?? "nil"),
+        ])
+    }
+
+    /// The transport's admission of a joining session, only on the in-turn path (the transport
+    /// shares this keeper's executor, so its synchronous call can't trap). Synchronous: called in
+    /// the segment of the state change it belongs to.
+    private func admitJoiningInTurn(playerID: PlayerID, clientID: ClientID, sessionID: SessionID) -> Bool {
+        guard usesInTurnSync, let transport else { return false }
+        return transport.admitJoiningSession(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    }
+
+    /// Inputs rejected by `rejectSenderIfSuperseded` so far.
+    private(set) var supersededSenderRejections = 0
+
+    /// Intake check for actions and client events (#92, newest wins): rejects a sender only when
+    /// the player has an entry and that entry is another client or session, i.e. a newer join
+    /// of the player replaced the sender's session. Called on `.live` keepers only (the intake
+    /// returns earlier otherwise), at intake and again in the segment that queues the input
+    /// when an await (the action's resolvers) lies between them.
+    ///
+    /// Unchanged: a player with no entry (direct callers that send before or without a join),
+    /// the system player and client, and a sender matching the entry (a join, then sends with the
+    /// same client and session).
+    private func rejectSenderIfSuperseded(
+        playerID: PlayerID,
+        clientID: ClientID,
+        sessionID: SessionID,
+        input: String
+    ) throws {
+        guard playerID != systemPlayerID, clientID != systemClientID,
+              let entry = players[playerID] else { return }
+        let otherClient = entry.clientID.map { $0 != clientID } ?? false
+        let otherSession = entry.lastSessionID.map { $0 != sessionID } ?? false
+        guard otherClient || otherSession else { return }
+        supersededSenderRejections += 1
+        logger.warning("Input rejected: a newer session of the player replaced the sender's", metadata: [
+            "playerID": .string(playerID.rawValue),
+            "clientID": .string(clientID.rawValue),
+            "sessionID": .string(sessionID.rawValue),
+            "input": .string(input),
+            "rejectedTotal": .stringConvertible(supersededSenderRejections),
+        ])
+        throw LandInputRejection.senderSuperseded
     }
 
     /// Handles a player/client leaving the Land.
@@ -1402,6 +1504,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///   - playerID: The player's unique identifier.
     ///   - clientID: The client instance identifier.
     public func leave(playerID: PlayerID, clientID: ClientID) async throws {
+        try await leave(playerID: playerID, clientID: clientID, sessionID: nil)
+    }
+
+    /// `leave(playerID:clientID:)` for one session: when `sessionID` is given and the player's
+    /// entry records a session, the leave applies only to that session. Client IDs are short and
+    /// can collide, so a client's leave can't remove another client's entry that shares its ID.
+    public func leave(playerID: PlayerID, clientID: ClientID, sessionID: SessionID?) async throws {
         await ensureInitialized()
         if let leaveHook {
             await leaveHook()
@@ -1417,6 +1526,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         guard session.clientID == clientID else {
             if logger.logLevel <= .debug {
                 logger.debug("Leave called for player \(playerID.rawValue) with mismatched clientID: expected=\(session.clientID?.rawValue ?? "nil"), received=\(clientID.rawValue)")
+            }
+            return
+        }
+        if let sessionID, let recorded = session.lastSessionID, recorded != sessionID {
+            if logger.logLevel <= .debug {
+                logger.debug("Leave called for player \(playerID.rawValue) with mismatched session: expected=\(recorded.rawValue), received=\(sessionID.rawValue)")
             }
             return
         }
@@ -1583,6 +1698,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let payloadData = try JSONEncoder().encode(envelope.payload)
         let decodedAction = try decoder.decode(actionPayloadType, from: payloadData)
 
+        try rejectSenderIfSuperseded(playerID: playerID, clientID: clientID, sessionID: sessionID, input: typeIdentifier)
+
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent)
         let sequence = outputCollector.takeNextSequence()
 
@@ -1618,6 +1735,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
             // Bind to the tick that was current when resolvers completed (deterministic ordering)
             resolvedAtTick = lastCommittedTickId
+
+            // Re-checked after the resolver await, in the append's segment: a newer join of the
+            // player may have replaced the sender's session meanwhile.
+            try rejectSenderIfSuperseded(playerID: playerID, clientID: clientID, sessionID: sessionID, input: typeIdentifier)
         }
 
         // Create pending item and add to queue
@@ -1745,6 +1866,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
             throw LandError.eventNotRegistered
         }
+
+        try rejectSenderIfSuperseded(playerID: playerID, clientID: clientID, sessionID: sessionID, input: event.type)
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent)
         let sequence = outputCollector.takeNextSequence()
@@ -2218,8 +2341,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         var lastActionResponse: AnyCodable? = nil
         var applied = AppliedInputs(executingTickId: executingTickId)
         for item in sortedItems {
-            if case let .action(response) = try applyPendingItem(item, executingTickId: executingTickId, into: &applied) {
-                lastActionResponse = response
+            do {
+                if case let .action(response) = try applyPendingItem(item, executingTickId: executingTickId, into: &applied) {
+                    lastActionResponse = response
+                }
+            } catch {
+                discardIfFailedJoin(item)
+                throw error
             }
         }
 
@@ -2614,6 +2742,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     applied.actionResults[item.sequence] = .success(response)
                 }
             } catch {
+                discardIfFailedJoin(item)
                 let appliedItems = Array(batch[..<index])
                 removePendingItems(appliedItems)
                 return InputBatchApplication(
@@ -3321,6 +3450,11 @@ private final class DrainFlag: @unchecked Sendable {
 private struct InternalPlayerSession: Sendable {
     var clientID: ClientID?
     var lastSessionID: SessionID?
+    /// The sequence of the OnJoin input of the join that inserted this entry, or `nil` (no
+    /// OnJoin input, or a later join of the player replaced the entry). Identifies the entry a
+    /// failed OnJoin may remove (`discardIfFailedJoin`): client and session IDs can repeat
+    /// across joins of the same player.
+    var joinSequence: Int64?
     var services: LandServices
     // PlayerSession info (from join request)
     var deviceID: String?

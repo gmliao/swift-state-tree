@@ -26,6 +26,15 @@ extension TransportAdapter: LandKeeperTransport {
         inTurnSyncEnabled && isAttached(to: keeper)
     }
 
+    /// Called by the keeper inside its join, on the shared executor (in-turn sync only; the
+    /// keeper never calls it otherwise). `assumeIsolated` traps off that executor.
+    public nonisolated func admitJoiningSession(playerID: PlayerID, clientID: ClientID, sessionID: SessionID) -> Bool {
+        guard inTurnSyncEnabled else { return false }
+        return assumeIsolated { adapter in
+            adapter.admitJoiningSessionIsolated(playerID: playerID, clientID: clientID, sessionID: sessionID)
+        }
+    }
+
     /// Returns once the writer holds no sync cycle element (and, in tests, once the forced
     /// back-pressure is off).
     public func waitForWriterDrainForInTurnSync() async {
