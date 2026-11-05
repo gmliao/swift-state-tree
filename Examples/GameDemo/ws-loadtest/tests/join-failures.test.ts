@@ -103,6 +103,9 @@ describe("join failures against a stub server", () => {
             expect(phase.connections.joinFailures).toEqual({ phase: 0, measured: 0, byReason: {} });
             expect(phase.measurement.joined.average).toBe(4);
             expect(phase.measurement.joined.atMeasuredStart).toBe(4);
+            // The one worker's CPU samples cover the measured window.
+            expect(phase.measurement.clientCpu.workers).toBe(1);
+            expect(phase.measurement.clientCpu.totalPct).toBeGreaterThan(0);
         }
         expect(report.phases.map((p) => p.failures)).toEqual([[], [], []]);
         expect(report.phases.every((p) => p.passed)).toBe(true);

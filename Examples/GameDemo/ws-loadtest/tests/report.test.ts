@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildReport, phaseWarningsOf, warningsList } from "../src/report/render-html";
+import { buildReport, clientCpuCell, phaseWarningsOf, warningsList } from "../src/report/render-html";
 
 describe("buildReport", () => {
     it("includes thresholds and phase summary", () => {
@@ -23,5 +23,18 @@ describe("phase warnings (#138)", () => {
         expect(phaseWarningsOf(phaseWith(4, [50]))).toEqual([]);
         expect(phaseWarningsOf(phaseWith(0, []))).toEqual([]);
         expect(warningsList([])).toBe("");
+    });
+});
+
+describe("load client CPU cell", () => {
+    it("shows worker mean / max and the total over the cores", () => {
+        const clientCpu = { workers: 4, perWorkerPct: { min: 20, mean: 35.4, max: 61.6 }, totalPct: 141.6, cores: 12 };
+        expect(clientCpuCell({ clientCpu })).toBe("35% / 62% · 142% of 12 cores");
+    });
+
+    it("shows a dash without samples (older results, or no worker covering the window)", () => {
+        expect(clientCpuCell(undefined)).toBe("–");
+        expect(clientCpuCell({} as any)).toBe("–");
+        expect(clientCpuCell({ clientCpu: { workers: 0, perWorkerPct: { min: 0, mean: 0, max: 0 }, totalPct: 0, cores: 8 } })).toBe("–");
     });
 });

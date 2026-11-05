@@ -11,6 +11,7 @@ import type { SendMode } from "./send-schedule";
 import type { ConnectionSpec } from "./layout";
 import type { ActionConfig } from "./types";
 import { concatAll } from "./samples";
+import { startCpuSampler, type CpuSample } from "./client-cpu";
 
 /** One phase for this worker. The worker lives for the whole run and keeps its connections. */
 export interface PhaseStartConfig {
@@ -51,6 +52,8 @@ export interface WorkerPhaseReport {
     updateBytes: number[];
     /** Connections opened in this phase, by whether permessage-deflate was negotiated. */
     permessageDeflate: PermessageDeflateCounts;
+    /** This worker process's CPU time through the phase (`client-cpu`). */
+    cpuSamples: CpuSample[];
     /** Every close seen during the phase, including the ones closing the previous phase's surplus. */
     closes: CloseRecord[];
     /** New connections planned for this phase. */
@@ -202,6 +205,8 @@ async function preparePhase(config: PhaseStartConfig): Promise<PreparedPhase> {
 
 async function runPhase(phase: PreparedPhase, originAt: number): Promise<WorkerPhaseReport> {
     const { config, phaseClients, newClients, reused, transitionCloses } = phase;
+    // Started before the origin and stopped after the phase end, so it covers the measured window.
+    const stopCpuSampler = startCpuSampler();
     // Connect delays count from the origin, like the send schedules.
     const delays = connectDelaysMs(
         newClients.map((client) => client.getKey()),
@@ -222,6 +227,7 @@ async function runPhase(phase: PreparedPhase, originAt: number): Promise<WorkerP
     );
 
     await new Promise((resolve) => setTimeout(resolve, Math.max(0, endAt - Date.now())));
+    const cpuSamples = stopCpuSampler();
     stopSending();
     stopEvents.forEach((stop) => stop());
     connectTimers.forEach((t) => clearTimeout(t));
@@ -254,6 +260,7 @@ async function runPhase(phase: PreparedPhase, originAt: number): Promise<WorkerP
         connectRampMs: delays.length > 0 ? Math.round(delays[delays.length - 1]) : 0,
         pendingAtEnd,
         activeIntervals,
+        cpuSamples,
         joinFailures: phaseClients.flatMap((client) => {
             const failure = client.takeJoinFailure();
             return failure ? [failure] : [];
