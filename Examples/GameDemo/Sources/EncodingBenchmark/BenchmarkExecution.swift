@@ -146,6 +146,8 @@ struct BenchmarkResult {
     let syncStrategy: String = SyncStrategy.parse(
         ProcessInfo.processInfo.environment[SyncStrategy.environmentKey], default: .delta
     ).rawValue
+    /// `--dirty-tracking` mode, set in the environment the same way before any adapter exists.
+    let dirtyTracking: String = DirtyTrackingMode.current
     
     // Additional metrics for comparison
     var throughputSyncsPerSecond: Double {

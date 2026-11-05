@@ -3,6 +3,7 @@
 // Command line argument parsing and configuration types.
 
 import Foundation
+import SwiftStateTree
 import SwiftStateTreeTransport
 
 // MARK: - Encoding Format
@@ -49,6 +50,46 @@ enum EncodingFormat: String, CaseIterable {
     }
 }
 
+// MARK: - Dirty Tracking
+
+/// `--dirty-tracking`: whether every `TransportAdapter` diffs only dirty fields.
+///
+/// `on` and `off` fix the setting for the whole run (auto dirty tracking is turned off with
+/// them, so the adapter never switches); `auto` keeps the adapter's default, dirty tracking on
+/// with automatic switching, which is what the benchmark measured before this option.
+/// Dirty tracking should not change the bytes on the wire, only how much state is scanned.
+enum DirtyTrackingMode: String, CaseIterable {
+    case auto
+    case on
+    case off
+
+    /// The transport environment keys this mode sets, read by every `TransportAdapter` the
+    /// benchmark constructs. They mirror `TransportEnvKeys`, which is internal to the transport
+    /// module. The environment, not the `enableDirtyTracking:` argument, because the adapter's
+    /// auto switch would otherwise turn dirty tracking back on mid-run.
+    static let enableKey = "ENABLE_DIRTY_TRACKING"
+    static let autoKey = "AUTO_DIRTY_TRACKING"
+    /// Set by `EncodingBenchmark.main()` so results can report the mode.
+    static let modeKey = "ENCODING_BENCHMARK_DIRTY_TRACKING"
+
+    /// Applies the mode to this process's environment, before any adapter exists.
+    func apply() {
+        switch self {
+        case .auto:
+            break
+        case .on, .off:
+            setenv(Self.enableKey, self == .on ? "true" : "false", 1)
+            setenv(Self.autoKey, "false", 1)
+        }
+        setenv(Self.modeKey, rawValue, 1)
+    }
+
+    /// The mode `apply()` set, for result metadata.
+    static var current: String {
+        EnvHelpers.getEnvString(key: modeKey, defaultValue: DirtyTrackingMode.auto.rawValue)
+    }
+}
+
 // MARK: - Output Format
 
 enum OutputFormat: String {
@@ -68,6 +109,7 @@ enum GameType: String {
 struct BenchmarkConfig {
     var format: EncodingFormat = .messagepackPathHash
     var syncStrategy: SyncStrategy = .delta
+    var dirtyTracking: DirtyTrackingMode = .auto
     var players: Int = 10
     var rooms: Int = 1
     var playersPerRoom: Int = 10
@@ -128,6 +170,15 @@ enum ArgumentParser {
             } else {
                 print("Error: --sync-strategy requires delta or full-snapshot")
                 exit(1)
+            }
+        case "--dirty-tracking":
+            if i + 1 < args.count {
+                guard let mode = DirtyTrackingMode(rawValue: args[i + 1]) else {
+                    print("Invalid --dirty-tracking value: \(args[i + 1]) (expected on, off or auto)")
+                    exit(1)
+                }
+                config.dirtyTracking = mode
+                i += 1
             }
         case "--players":
             if i + 1 < args.count, let count = Int(args[i + 1]) {
@@ -230,6 +281,10 @@ enum ArgumentParser {
                               Values: json-object, opcode-json, opcode-json-pathhash,
                                       messagepack, messagepack-pathhash
       --sync-strategy <s>     Sync strategy: delta (default) or full-snapshot (send full view every sync)
+      --dirty-tracking <m>    on, off or auto (default: auto). on/off fix dirty tracking for the run
+                              (auto switching off); auto keeps the adapter default (on, switching
+                              automatically). Bytes should match across modes; compare times only
+                              from -c release builds.
       --players <count>       Number of players (default: 10, single room mode)
       --rooms <count>         Number of rooms (default: 1, single room mode)
       --players-per-room <count>  Number of players per room (default: 10)
@@ -248,6 +303,10 @@ enum ArgumentParser {
       --ticks-per-sync <int>  Number of ticks per sync iteration (e.g. 2 for tick20/sync10)
       --progress-every <int>  Print progress every N iterations (e.g. 50); 0 disables
       --help, -h              Show this help message
+
+    Saved JSON results record memory in metadata.memory: peakRSSMiB (peak resident memory of
+    the whole process) and endRSSMiB (resident memory when the results are saved). Timing and
+    memory are only comparable between -c release builds.
 
     Examples:
       swift run EncodingBenchmark --format messagepack-pathhash --players 10

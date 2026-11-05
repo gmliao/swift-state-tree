@@ -156,6 +156,9 @@ enum ResultsManager {
         // Minimal, safe allowlist (avoid secrets).
         let allowEnvKeys = [
             "TRANSPORT_ENCODING",
+            DirtyTrackingMode.enableKey,
+            DirtyTrackingMode.autoKey,
+            DirtyTrackingMode.modeKey,
             "WSL_DISTRO_NAME",
             "WSL_INTEROP"
         ]
@@ -178,6 +181,10 @@ enum ResultsManager {
 
         return [
             "timestampUTC": iso.string(from: Date()),
+            // Read when the results are saved: peak over the whole process, and RSS at the end.
+            "memory": ProcessMemory.report(),
+            // `--dirty-tracking`, for every mode (single results also carry it per result).
+            "dirtyTracking": DirtyTrackingMode.current,
             "commandLine": CommandLine.arguments,
             "build": [
                 "configuration": Self.buildConfigurationName(),
