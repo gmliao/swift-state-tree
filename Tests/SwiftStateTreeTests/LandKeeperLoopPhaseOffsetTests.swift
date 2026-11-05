@@ -122,9 +122,15 @@ struct LandKeeperLoopPhaseOffsetTests {
         #expect(await keeper.appliedTickPhaseOffset == offset)
         // First tick: the offset, then one interval (5 ms slack for clock granularity).
         #expect(ticks[0] - start >= offset + interval - .milliseconds(5), "first tick after \(ticks[0] - start)")
-        // Fixed rate after the first tick: the span of five periods stays close to 5 × interval.
-        let span = milliseconds(ticks[5] - ticks[0])
-        #expect(span >= 480 && span <= 650, "five periods took \(span) ms")
+        // Fixed rate after the first tick, against the schedule rather than tick-to-tick gaps: a
+        // late tick (a loaded runner) is followed by on-schedule ones, so gaps can shrink, but no
+        // tick runs before its slot and the run as a whole is not late.
+        for k in 1...5 {
+            let scheduled = offset + interval * (k + 1)
+            #expect(ticks[k] - start >= scheduled - .milliseconds(5), "tick \(k) after \(ticks[k] - start), slot \(scheduled)")
+        }
+        let late = milliseconds(ticks[5] - start) - milliseconds(offset + interval * 6)
+        #expect(late <= 150, "tick 5 is \(late) ms behind its slot")
     }
 
     @Test("A land ID passed to init seeds the default RNG and is the land's ID from the start")
