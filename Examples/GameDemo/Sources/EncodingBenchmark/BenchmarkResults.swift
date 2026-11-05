@@ -43,7 +43,6 @@ enum OutputFormatter {
         "dirtyTracking": result.dirtyTracking,
         "dirtyTrackingEffective": result.dirtyTrackingEffective.json,
         "syncSkips": result.syncSkips,
-        "syncTimingIncludesDrain": result.syncTimingIncludesDrain,
         "timeMs": result.timeMs,
         "totalBytes": result.totalBytes,
         "bytesPerSync": result.bytesPerSync,

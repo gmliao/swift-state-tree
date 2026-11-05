@@ -794,6 +794,8 @@ func collectResultsMetadata(benchmarkConfig: [String: Any]) -> [String: Any] {
         // Bytes are counted after each adapter's outbound writer drained, with no skipped
         // cycle (#160). Results without this key counted before the drain: do not mix them.
         "bytesCountedAfterDrain": true,
+        // timeMs covers ticks and syncs only: the drain is never timed, in every mode.
+        "syncTimingExcludesDrain": true,
         "commandLine": CommandLine.arguments,
         "build": [
             "configuration": buildConfigurationName(),
@@ -880,7 +882,6 @@ func printJSON(_ result: BenchmarkResult) {
         "dirtyTracking": result.dirtyTracking,
         "dirtyTrackingEffective": result.dirtyTrackingEffective.json,
         "syncSkips": result.syncSkips,
-        "syncTimingIncludesDrain": result.syncTimingIncludesDrain,
         "timeMs": result.timeMs,
         "totalBytes": result.totalBytes,
         "bytesPerSync": result.bytesPerSync,
@@ -988,7 +989,6 @@ struct EncodingBenchmark {
                 "dirtyTracking": result.dirtyTracking,
                 "dirtyTrackingEffective": result.dirtyTrackingEffective.json,
                 "syncSkips": result.syncSkips,
-                "syncTimingIncludesDrain": result.syncTimingIncludesDrain,
                 "timeMs": result.timeMs,
                 "totalBytes": result.totalBytes,
                 "bytesPerSync": result.bytesPerSync,
@@ -1089,7 +1089,6 @@ struct EncodingBenchmark {
                 "dirtyTracking": result.dirtyTracking,
                 "dirtyTrackingEffective": result.dirtyTrackingEffective.json,
                 "syncSkips": result.syncSkips,
-                "syncTimingIncludesDrain": result.syncTimingIncludesDrain,
                 "timeMs": result.timeMs,
                 "totalBytes": result.totalBytes,
                 "bytesPerSync": result.bytesPerSync,
@@ -1793,6 +1792,7 @@ struct EncodingBenchmark {
                     "bytesPerSync": currentResult.bytesPerSync,
                     "throughputSyncsPerSecond": currentResult.throughputSyncsPerSecond,
                     "avgCostPerSyncMs": currentResult.avgCostPerSyncMs,
+                    "syncSkips": currentResult.syncSkips,
                     "tasksCreated": currentTasks
                 ],
                 "staticWorkerPool": [
@@ -1801,6 +1801,7 @@ struct EncodingBenchmark {
                     "bytesPerSync": workerPoolResult.bytesPerSync,
                     "throughputSyncsPerSecond": workerPoolResult.throughputSyncsPerSecond,
                     "avgCostPerSyncMs": workerPoolResult.avgCostPerSyncMs,
+                    "syncSkips": workerPoolResult.syncSkips,
                     "tasksCreated": workerPoolTasks,
                     "workerCount": workerCount
                 ],
@@ -1810,6 +1811,7 @@ struct EncodingBenchmark {
                     "bytesPerSync": dynamicPoolResult.bytesPerSync,
                     "throughputSyncsPerSecond": dynamicPoolResult.throughputSyncsPerSecond,
                     "avgCostPerSyncMs": dynamicPoolResult.avgCostPerSyncMs,
+                    "syncSkips": dynamicPoolResult.syncSkips,
                     "tasksCreated": dynamicPoolTasks,
                     "workerCount": cpuCores
                 ],

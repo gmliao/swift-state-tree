@@ -90,33 +90,50 @@ struct CardGameRoomContext: Sendable {
 
 // MARK: - Work Queue for Dynamic Worker Pool
 
-/// Thread-safe work queue for dynamic worker pool
-/// Workers pull work items from this shared queue until empty
-actor WorkQueue {
-    private var items: [(iteration: Int, roomIndex: Int)] = []
-    
-    func enqueue(_ newItems: [(Int, Int)]) {
-        items.append(contentsOf: newItems)
+/// Hands each iteration's rooms to long-lived workers, one item per room, and returns from
+/// `runIteration` once every item completed: a room never has two syncs in flight, and the
+/// caller can drain between iterations outside the timed span (#160).
+actor IterationWorkQueue {
+    private var items: [Int] = []
+    private var remaining = 0
+    private var waiters: [CheckedContinuation<Int?, Never>] = []
+    private var iterationDone: CheckedContinuation<Void, Never>?
+    private var finished = false
+
+    /// Runs one iteration's room indices on the workers and waits for all of them.
+    func runIteration(_ roomIndices: [Int]) async {
+        guard !roomIndices.isEmpty else { return }
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            items = roomIndices
+            remaining = roomIndices.count
+            iterationDone = done
+            while !items.isEmpty, !waiters.isEmpty {
+                waiters.removeFirst().resume(returning: items.removeFirst())
+            }
+        }
     }
-    
-    func dequeue() -> (Int, Int)? {
-        guard !items.isEmpty else { return nil }
-        return items.removeFirst()
+
+    /// The next room index of the current iteration; waits for the next iteration; `nil` after `finish()`.
+    func next() async -> Int? {
+        if !items.isEmpty { return items.removeFirst() }
+        if finished { return nil }
+        return await withCheckedContinuation { waiters.append($0) }
     }
-    
-    func dequeueBatch(count: Int) -> [(Int, Int)] {
-        let batchSize = min(count, items.count)
-        let batch = Array(items.prefix(batchSize))
-        items.removeFirst(batchSize)
-        return batch
+
+    /// A worker finished the item `next()` gave it.
+    func complete() {
+        remaining -= 1
+        if remaining == 0 {
+            iterationDone?.resume()
+            iterationDone = nil
+        }
     }
-    
-    var isEmpty: Bool {
-        items.isEmpty
-    }
-    
-    var count: Int {
-        items.count
+
+    /// Ends the workers waiting in `next()`.
+    func finish() {
+        finished = true
+        for waiter in waiters { waiter.resume(returning: nil) }
+        waiters.removeAll()
     }
 }
 
@@ -154,9 +171,6 @@ struct BenchmarkResult {
     /// Measured sync cycles the adapters skipped (back-pressure or a cycle in flight); the run
     /// exits unless it is 0 (#160).
     var syncSkips = 0
-    /// Whether `timeMs` includes the wait for the outbound writer to drain (the dynamic worker
-    /// pool, which has no per-iteration barrier). Elsewhere only ticks and syncs are timed.
-    var syncTimingIncludesDrain = false
     
     // Additional metrics for comparison
     var throughputSyncsPerSecond: Double {
@@ -675,55 +689,47 @@ enum BenchmarkRunner {
             effectiveWorkerCount = cpuCores
         }
         
-        // Prepare all work items (iteration × room combinations)
-        let workItems = (0..<iterations).flatMap { iter in
-            (0..<rooms.count).map { roomIdx in (iter, roomIdx) }
-        }
-        
-        let workQueue = WorkQueue()
-        await workQueue.enqueue(workItems)
-        
+        // Long-lived workers pull each iteration's rooms from a shared queue. The iteration is
+        // the barrier: a room has one sync in flight at a time (a second one would be skipped),
+        // and the drain after it runs outside the timed span, as in the other modes.
+        let workQueue = IterationWorkQueue()
+        let allRooms = Array(rooms.indices)
+
         let skipsBefore = await MeasuredSync.skipCount(rooms.map(\.adapter))
-        let start = ContinuousClock.now
-        let label = progressLabel ?? "dynamic-pool"
-        
-        // Dynamic Worker Pool: Fixed number of long-lived workers pulling from shared queue
+        var duration = Duration.zero
+
         await withTaskGroup(of: Void.self) { group in
             for workerID in 0..<effectiveWorkerCount {
                 group.addTask { [rooms, workQueue] in
                     var processed = 0
-                    
-                    // Worker loop: continuously pull work until queue is empty
-                    while let (iteration, roomIdx) = await workQueue.dequeue() {
+                    while let roomIdx = await workQueue.next() {
                         let room = rooms[roomIdx]
-                        
                         if ticksPerSync > 0 {
                             for _ in 0 ..< ticksPerSync {
                                 await room.keeper.stepTickOnce()
                             }
                         }
                         await room.adapter.syncNow()
-                        // No per-iteration barrier here: drain inside the timed loop, so this mode
-                        // times the drain too (`syncTimingIncludesDrain`).
-                        await MeasuredSync.drain([room.adapter])
-                        
+                        await workQueue.complete()
                         processed += 1
-                        
-                        // Progress reporting per worker
                         if progressEvery > 0, processed % progressEvery == 0 {
                             print("  [worker-\(workerID)] processed \(processed) tasks")
                         }
                     }
-                    
-                    // Worker completed
                     if progressEvery > 0 {
                         print("  [worker-\(workerID)] completed \(processed) tasks total")
                     }
                 }
             }
+            for _ in 0 ..< iterations {
+                let iterationStart = ContinuousClock.now
+                await workQueue.runIteration(allRooms)
+                duration += iterationStart.duration(to: ContinuousClock.now)
+                await MeasuredSync.drain(rooms.map(\.adapter))
+            }
+            await workQueue.finish()
         }
-        
-        let duration = start.duration(to: ContinuousClock.now)
+
         let syncSkips = await MeasuredSync.skipCount(rooms.map(\.adapter)) - skipsBefore
         let timeMs = Double(duration.components.seconds) * 1000.0 +
             Double(duration.components.attoseconds) / 1_000_000_000_000_000.0
@@ -756,7 +762,6 @@ enum BenchmarkRunner {
         )
         result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
         result.syncSkips = syncSkips
-        result.syncTimingIncludesDrain = true
         MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
         return result
     }
