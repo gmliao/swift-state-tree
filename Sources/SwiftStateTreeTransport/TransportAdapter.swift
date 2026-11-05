@@ -441,16 +441,24 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Membership coordinator (centralizes all membership management).
     private let membershipCoordinator: MembershipCoordinator
     
-    /// Players in their initial sync, each with the session whose initial sync set the mark
-    /// (`nil` from `beginInitialSync(for:)`). Only that session's initial sync removes it: when a
+    /// Players in their initial sync, each with the session ticket whose initial sync set the
+    /// mark (`nil` from `beginInitialSync(for:)`). Only that initial sync removes it: when a
     /// newer session of the player (newest wins) starts its initial sync while an older one is
     /// still finishing, the older one must not clear the newer one's mark.
-    private var initialSyncingPlayers: [PlayerID: SessionID?] = [:]
+    private var initialSyncingPlayers: [PlayerID: Ticket<SessionID>?] = [:]
+
+    /// One generation per admitted session: issued in the admission segment (`admitJoining`),
+    /// ended when the session disconnects, is superseded or its join is abandoned. Work that
+    /// awaits after the admission (the initial sync) captures the ticket and acts only while it
+    /// is current, so it never acts for a session that ended meanwhile, also when a later
+    /// connection reuses the SessionID.
+    private var sessionTickets = GenerationTable<SessionID>()
 
     /// A session admitted by a join (#69) whose initial sync hasn't started yet.
     struct JoiningSession: Sendable {
         let playerID: PlayerID
         let playerSlot: Int32
+        let ticket: Ticket<SessionID>
     }
 
     /// Sessions admitted by a join and not yet in their initial sync (`.joining`). Recorded in
@@ -864,6 +872,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         connectionGenerations.removeValue(forKey: sessionID)
         endedSessions.insert(sessionID)
         joiningSessions.removeValue(forKey: sessionID)
+        sessionTickets.end(sessionID)
         let joinedPlayerID = membershipCoordinator.playerID(for: sessionID)
 
         // If player had joined, handle leave
@@ -939,6 +948,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         authInfo: AuthenticatedInfo?,
         acceptedConnectionGeneration: UInt64? = nil
     ) async {
+        // Rebinding the session to another player starts a new generation: work captured for
+        // the previous player's binding (an initial sync reading the state) must not act on it.
+        if let previous = membershipCoordinator.playerID(for: sessionID), previous != playerID {
+            sessionTickets.end(sessionID)
+        }
         _ = membershipCoordinator.registerPlayer(
             sessionID: sessionID,
             playerID: playerID,
@@ -957,6 +971,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
 
         logger.info("Session registered via Router: session=\(sessionID.rawValue), player=\(playerID.rawValue)")
+    }
+
+    /// Ends every session ticket, at the land's teardown: work still holding one (an initial
+    /// sync) commits nothing for the destroyed land.
+    func endSessionTicketsForTeardown() {
+        sessionTickets.endAll()
     }
 
     // MARK: - Outbound target expansion
@@ -988,26 +1008,48 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// `playerID` any more (its disconnect ran after `performJoin` returned), nothing runs and
     /// `nil` is returned, so no firstSync re-creates the per-player state the disconnect
     /// cleared. A session that is a member without an admission (registered directly) runs.
+    ///
+    /// A `.joining` mark of another player (the SessionID was admitted again meanwhile) is
+    /// left alone and nothing runs.
+    ///
+    /// `operation` gets the session's ticket (`sessionTickets`): the admission's, or for a
+    /// directly registered member its current one (issued here if it has none). Work after an
+    /// `await` in `operation` acts only while that ticket is current.
     private func withInitialSync<T: Sendable>(
         for playerID: PlayerID,
         sessionID: SessionID,
-        operation: () async throws -> T
+        operation: (Ticket<SessionID>) async throws -> T
     ) async rethrows -> T? {
-        let isJoining = joiningSessions.removeValue(forKey: sessionID) != nil
-        guard isJoining || membershipCoordinator.playerID(for: sessionID) == playerID else {
+        let ticket: Ticket<SessionID>
+        if let joining = joiningSessions[sessionID] {
+            // Another player's admission of this SessionID (the session ended and was admitted
+            // again meanwhile): it isn't this initial sync's to take.
+            guard joining.playerID == playerID else {
+                logger.info("Initial sync skipped: the session was admitted again for another player", metadata: [
+                    "sessionID": .string(sessionID.rawValue),
+                    "playerID": .string(playerID.rawValue),
+                    "admittedPlayerID": .string(joining.playerID.rawValue),
+                ])
+                return nil
+            }
+            joiningSessions.removeValue(forKey: sessionID)
+            ticket = joining.ticket
+        } else if membershipCoordinator.playerID(for: sessionID) == playerID {
+            ticket = sessionTickets.ticket(for: sessionID) ?? sessionTickets.issue(sessionID)
+        } else {
             logger.info("Initial sync skipped: the session left before it started", metadata: [
                 "sessionID": .string(sessionID.rawValue),
                 "playerID": .string(playerID.rawValue),
             ])
             return nil
         }
-        initialSyncingPlayers[playerID] = .some(sessionID)
+        initialSyncingPlayers[playerID] = .some(ticket)
         defer {
-            if initialSyncingPlayers[playerID] == .some(.some(sessionID)) {
+            if initialSyncingPlayers[playerID] == .some(.some(ticket)) {
                 initialSyncingPlayers.removeValue(forKey: playerID)
             }
         }
-        return try await operation()
+        return try await operation(ticket)
     }
 
     /// Awaited before the initial sync reads the state (tests only), to hold it there.
@@ -1037,7 +1079,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         )
         // Allocate playerSlot (uses playerID as accountKey by default)
         let slot = allocatePlayerSlot(accountKey: playerID.rawValue, for: playerID)
-        joiningSessions[sessionID] = JoiningSession(playerID: playerID, playerSlot: slot)
+        let ticket = sessionTickets.issue(sessionID)
+        joiningSessions[sessionID] = JoiningSession(playerID: playerID, playerSlot: slot, ticket: ticket)
         return slot
     }
 
@@ -1063,6 +1106,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             membershipCoordinator.invalidateMembership(sessionID: old, playerID: playerID)
             membershipCoordinator.unregisterSession(sessionID: old)
             joiningSessions.removeValue(forKey: old)
+            sessionTickets.end(old)
             connectionGenerations.removeValue(forKey: old)
             endedSessions.insert(old)
             supersededSessionCount += 1
@@ -1094,6 +1138,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// can send another join on it.
     private func abandonJoining(sessionID: SessionID) {
         guard let joining = joiningSessions.removeValue(forKey: sessionID) else { return }
+        sessionTickets.end(joining.ticket)
         membershipCoordinator.removeJoinedPlayer(sessionID: sessionID)
         if membershipCoordinator.sessionIDs(for: joining.playerID).isEmpty {
             membershipCoordinator.releasePlayerSlot(playerID: joining.playerID)
@@ -3530,7 +3575,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///
     /// Plan + commit like a sync cycle. A failed plan commits nothing, so the player stays unmarked
     /// and the next full cycle gives it its whole view (`planFullViewUpdate`).
-    private func _syncStateForNewPlayer(playerID: PlayerID, sessionID: SessionID) async {
+    private func _syncStateForNewPlayer(playerID: PlayerID, sessionID: SessionID, ticket: Ticket<SessionID>) async {
         if let initialSyncHoldForTesting { await initialSyncHoldForTesting() }
         let state: State
         var read: SyncOutputRead?
@@ -3542,10 +3587,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         } else {
             state = await keeper.currentState()
         }
-        // Re-checked after the state read, in the same synchronous segment as the commit: a
-        // disconnect during the read cleared the player's state, and committing now would
-        // re-create its cache, firstSync mark and recorder seed for a session that is gone.
-        guard membershipCoordinator.playerID(for: sessionID) == playerID else {
+        // The session's ticket, and its membership as `playerID`, are checked after the state
+        // read, in the same synchronous segment as the commit: a disconnect, supersede or rebind
+        // during the read ended the ticket (and a disconnect cleared the player's state), and
+        // committing now would re-create its cache, firstSync mark and recorder seed for a
+        // session that is gone or bound to another player.
+        guard sessionTickets.isCurrent(ticket),
+              membershipCoordinator.playerID(for: sessionID) == playerID else {
             logger.info("Initial sync dropped: the session left during it", metadata: [
                 "sessionID": .string(sessionID.rawValue),
                 "playerID": .string(playerID.rawValue),
@@ -3650,8 +3698,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// This sends the complete initial state as a series of patches (with compressed keys).
     /// Automatically manages initialSyncingPlayers to prevent concurrent diff updates.
     public func syncStateForNewPlayer(playerID: PlayerID, sessionID: SessionID) async {
-        _ = await withInitialSync(for: playerID, sessionID: sessionID) {
-            await _syncStateForNewPlayer(playerID: playerID, sessionID: sessionID)
+        _ = await withInitialSync(for: playerID, sessionID: sessionID) { ticket in
+            await _syncStateForNewPlayer(playerID: playerID, sessionID: sessionID, ticket: ticket)
         }
     }
 
@@ -3980,7 +4028,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         playerSession: PlayerSession,
         joinResult: JoinResult
     ) async {
-        _ = await withInitialSync(for: joinResult.playerID, sessionID: joinResult.sessionID) {
+        _ = await withInitialSync(for: joinResult.playerID, sessionID: joinResult.sessionID) { ticket in
             await sendJoinResponse(
                 requestID: requestID,
                 sessionID: sessionID,
@@ -3988,7 +4036,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 playerID: joinResult.playerID.rawValue,
                 playerSlot: joinResult.playerSlot
             )
-            await _syncStateForNewPlayer(playerID: joinResult.playerID, sessionID: joinResult.sessionID)
+            await _syncStateForNewPlayer(playerID: joinResult.playerID, sessionID: joinResult.sessionID, ticket: ticket)
         }
 
         logger.info("Client joined: session=\(sessionID.rawValue), player=\(joinResult.playerID.rawValue), playerID=\(playerSession.playerID)")
