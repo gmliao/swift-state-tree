@@ -44,15 +44,27 @@ const goldens = readdirSync(fixtures).filter(f => f.endsWith('.apply-cases.json'
 const schema: ProtocolSchema = JSON.parse(readFileSync(join(fixtures, 'verifier-land.schema.json'), 'utf-8'))
 
 /**
- * Patch paths where `view.ts` is known to differ from RFC 6901 (#121): it writes the keys "a~1b"
- * and "t~01" instead of "a/b" and "t~1", and an array `x` instead of the key "x[1]". A case with
- * a patch at one of them runs as an expected failure, so fixing #121 makes it fail until the
- * path is removed from this list.
+ * The one patch path where `view.ts` is known to differ from RFC 6901: it reads `name[n]` as an
+ * array index, so the key "x[1]" lands in an array `x` (#202). A case with this path must
+ * match the oracle everywhere else, and must still show that divergence, so fixing it makes the
+ * test fail until the path is removed from this set. The escaped keys "a~1b" and "t~01" match
+ * since #121.
  */
-const knownDivergentPaths = new Set<string>(['/board/a~1b', '/board/t~01', '/board/x[1]'])
+const knownDivergentPaths = new Set<string>(['/board/x[1]'])
 
 function isKnownDivergence(applyCase: ApplyCase): boolean {
   return applyCase.patches.some(patch => knownDivergentPaths.has(patch.path))
+}
+
+/** Removes the bracket-key divergence: the key "x[1]" and the array `x` the view writes for it. */
+function withoutBracketKey(state: Record<string, unknown>): Record<string, unknown> {
+  const copy = structuredClone(state)
+  const board = copy.board as Record<string, unknown> | undefined
+  if (board) {
+    delete board['x[1]']
+    delete board.x
+  }
+  return copy
 }
 
 function applyWithView(applyCase: ApplyCase): Record<string, unknown> {
@@ -72,9 +84,14 @@ describe('view.ts applies the golden recordings like the apply oracle', () => {
     const cases: ApplyCase[] = JSON.parse(readFileSync(join(fixtures, golden), 'utf-8'))
     describe(name, () => {
       cases.forEach((applyCase, index) => {
-        const test = isKnownDivergence(applyCase) ? it.fails : it
-        test(`${index}: ${applyCase.scope}, ${applyCase.patches.length} patches`, () => {
-          expect(applyWithView(applyCase)).toEqual(applyCase.after)
+        it(`${index}: ${applyCase.scope}, ${applyCase.patches.length} patches`, () => {
+          const actual = applyWithView(applyCase)
+          if (!isKnownDivergence(applyCase)) {
+            expect(actual).toEqual(applyCase.after)
+            return
+          }
+          expect(Array.isArray((actual.board as Record<string, unknown>)?.x)).toBe(true) // still divergent
+          expect(withoutBracketKey(actual)).toEqual(withoutBracketKey(applyCase.after))
         })
       })
     })

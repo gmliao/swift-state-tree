@@ -1206,13 +1206,14 @@ export class StateTreeView {
       return
     }
 
-    const parts = path.split('/').filter((p: string) => p !== '')
-    if (parts.length === 0) {
+    // Components stay escaped (RFC 6901) so restPath is still a pointer; keys are unescaped where used (#121)
+    const parts = splitPointer(path)
+    if (parts.length === 0 || path === '/') {
       this.logger.error(`Empty patch path: ${path}`)
       return
     }
 
-    const key = parts[0]
+    const key = unescapePointerToken(parts[0])
     const restPath = '/' + parts.slice(1).join('/')
 
     // Check if key is an array index (e.g., "positions[0]") - check this first, even for top-level
@@ -1251,7 +1252,7 @@ export class StateTreeView {
       switch (patch.op) {
         case 'replace':
         case 'add':
-          const topLevelPath = `/${key}`
+          const topLevelPath = `/${escapePointerToken(key)}`
           this.currentState[key] = this.decodeSnapshotValue(patch.value, topLevelPath)
           break
         case 'remove':
@@ -1310,7 +1311,7 @@ export class StateTreeView {
           this.currentState[key] = {}
         }
         // applyNestedPatch now handles conversion internally, so we don't need redecodeObject
-        this.applyNestedPatch(this.currentState[key], { ...patch, path: restPath }, this.currentState, key, key)
+        this.applyNestedPatch(this.currentState[key], { ...patch, path: restPath }, this.currentState, key, escapePointerToken(key))
       }
     }
 
@@ -1525,10 +1526,10 @@ export class StateTreeView {
   private applyNestedPatch(obj: any, patch: StatePatch, parent?: any, parentKey?: string, pathPrefix: string = ''): void {
     const path = patch.path
     const fullPath = pathPrefix + path
-    const parts = path.split('/').filter((p: string) => p !== '')
+    const parts = splitPointer(path)
 
     if (parts.length === 1) {
-      const key = parts[0]
+      const key = unescapePointerToken(parts[0])
       
       // Check if key is an array index (e.g., "items[0]")
       const arrayIndexMatch = key.match(/^(.+)\[(\d+)\]$/)
@@ -1560,7 +1561,7 @@ export class StateTreeView {
           case 'add':
             // With atomic types, server always sends whole objects (e.g., entire IVec2, not just x or y)
             // Use decodeSnapshotValue to create class instances based on schema
-            const updatePath = pathPrefix ? `${pathPrefix}/${key}` : `/${key}`
+            const updatePath = pathPrefix ? `${pathPrefix}/${escapePointerToken(key)}` : `/${escapePointerToken(key)}`
             obj[key] = this.decodeSnapshotValue(patch.value, updatePath)
             break
           case 'remove':
@@ -1569,7 +1570,7 @@ export class StateTreeView {
         }
       }
     } else {
-      const key = parts[0]
+      const key = unescapePointerToken(parts[0])
       
       // Check if key is an array index
       const arrayIndexMatch = key.match(/^(.+)\[(\d+)\]$/)
@@ -1602,7 +1603,7 @@ export class StateTreeView {
         }
         
         // Pass current obj as parent, and key as parentKey for the recursive call
-        const newPathPrefix = (pathPrefix ? pathPrefix + '/' : '') + key
+        const newPathPrefix = (pathPrefix ? pathPrefix + '/' : '') + escapePointerToken(key)
         this.applyNestedPatch(obj[key], { ...patch, path: restPath }, obj, key, newPathPrefix)
       }
     }
@@ -1635,4 +1636,22 @@ export class StateTreeView {
   get joined(): boolean {
     return this.isJoined
   }
+}
+
+/**
+ * Splits a JSON Pointer into its components, still escaped. Empty components are kept, so an
+ * empty-string key (`/items/`) is a key, not dropped (#121).
+ */
+function splitPointer(path: string): string[] {
+  return path.split('/').slice(1)
+}
+
+/** Unescapes one JSON Pointer component: `~1` → `/`, then `~0` → `~` (RFC 6901, #121). */
+function unescapePointerToken(token: string): string {
+  return token.includes('~') ? token.replace(/~1/g, '/').replace(/~0/g, '~') : token
+}
+
+/** Escapes a key as a JSON Pointer component: `~` → `~0`, then `/` → `~1`. */
+function escapePointerToken(key: string): string {
+  return key.replace(/~/g, '~0').replace(/\//g, '~1')
 }
