@@ -103,6 +103,11 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 GAMEDEMO_DIR="$(cd "$ROOT_DIR/.." && pwd)"
+# The reports directory, resolved once: --output-dir is relative to ws-loadtest/ unless absolute.
+case "$OUTPUT_DIR" in
+  /*) OUTPUT_PATH="$OUTPUT_DIR" ;;
+  *) OUTPUT_PATH="$ROOT_DIR/$OUTPUT_DIR" ;;
+esac
 
 SCENARIO_PATH="$ROOT_DIR/$SCENARIO"
 SYSTEM_METRICS_PATH="$ROOT_DIR/monitoring/system-metrics.json"
@@ -157,7 +162,7 @@ mkdir -p "$REEVALUATION_RECORDS_DIR" >/dev/null 2>&1 || true
 
 # Transport profiling: when --profile is used, server writes JSONL (per-run when output-dir is used)
 if [ "$ENABLE_PROFILING" = true ]; then
-  export TRANSPORT_PROFILE_JSONL_PATH="$ROOT_DIR/$OUTPUT_DIR/transport-profile.jsonl"
+  export TRANSPORT_PROFILE_JSONL_PATH="$OUTPUT_PATH/transport-profile.jsonl"
   mkdir -p "$(dirname "$TRANSPORT_PROFILE_JSONL_PATH")" 2>/dev/null || true
   rm -f "$TRANSPORT_PROFILE_JSONL_PATH" 2>/dev/null || true
   echo "Transport profiling enabled: $TRANSPORT_PROFILE_JSONL_PATH"
@@ -169,9 +174,13 @@ cd "$GAMEDEMO_DIR"
 # variables above are guaranteed to reach the GameServer process.
 swift build -c release --product GameServer >/tmp/ws-loadtest-gameserver.build.log 2>&1 || true
 BIN_DIR=$(swift build -c release --show-bin-path 2>/dev/null || true)
-# Record the toolchain next to the reports: runs are comparable only on the same toolchain.
-mkdir -p "$ROOT_DIR/$OUTPUT_DIR" 2>/dev/null || true
-swift --version > "$ROOT_DIR/$OUTPUT_DIR/toolchain.txt" 2>&1 || true
+# Record the toolchains next to the reports (the server's Swift and the load client's Node):
+# runs are comparable only on the same toolchains.
+mkdir -p "$OUTPUT_PATH" 2>/dev/null || true
+{
+  swift --version 2>&1
+  echo "node $(node --version 2>&1)"
+} > "$OUTPUT_PATH/toolchain.txt" || true
 SERVER_BIN="$BIN_DIR/GameServer"
 if [ -z "$BIN_DIR" ] || [ ! -x "$SERVER_BIN" ]; then
   echo "Failed to locate GameServer binary (binDir='$BIN_DIR')."
@@ -224,7 +233,7 @@ MONITOR_PID=$!
 cd "$ROOT_DIR"
 npm run build
 
-CMD=(node dist/cli.js --scenario "$SCENARIO" --system-metrics "$SYSTEM_METRICS_PATH" --output-dir "$OUTPUT_DIR")
+CMD=(node dist/cli.js --scenario "$SCENARIO" --system-metrics "$SYSTEM_METRICS_PATH" --output-dir "$OUTPUT_PATH")
 if [ -n "$WORKERS" ]; then
   CMD+=(--workers "$WORKERS")
 fi
@@ -319,4 +328,4 @@ else
   echo "Reevaluation: no records generated (as expected)."
 fi
 
-echo "Done. Reports in $ROOT_DIR/$OUTPUT_DIR"
+echo "Done. Reports in $OUTPUT_PATH"
