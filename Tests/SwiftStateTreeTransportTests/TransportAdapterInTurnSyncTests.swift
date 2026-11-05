@@ -389,9 +389,15 @@ private struct InTurnSyncFixture {
 }
 
 /// Sorted-key JSON of the recorded tick frames.
-private func recordedFramesJSON(_ keeper: LandKeeper<InTurnSyncTestState>) async throws -> Data {
+private func recordedFramesJSON(
+    _ keeper: LandKeeper<InTurnSyncTestState>,
+    withoutSyncStream: Bool = false
+) async throws -> Data {
     let recorder = try #require(await keeper.getReevaluationRecorder())
-    let frames = await recorder.getAllFrames()
+    var frames = await recorder.getAllFrames()
+    if withoutSyncStream {
+        frames = frames.map { $0.replacing(syncOutputs: [], syncMarkers: []) }
+    }
     #expect(!frames.isEmpty)
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
@@ -555,6 +561,7 @@ struct TransportAdapterInTurnSyncTests {
 
     @Test("replay parity: in-turn and legacy paths record identical frames (sequences, ticks, watermarks, hashes)")
     func replayParity() async throws {
+        // Only the in-turn path records a sync stream (record format 2.1); everything else matches.
         var recorded: [Data] = []
         for inTurn in [true, false] {
             let f = try await InTurnSyncFixture.make(encoding: .json, inTurn: inTurn, recording: true)
@@ -565,7 +572,8 @@ struct TransportAdapterInTurnSyncTests {
                 }
                 await f.keeper.stepTickOnce()
             }
-            recorded.append(try await recordedFramesJSON(f.keeper))
+            await f.keeper.waitForRecorderSubmissionsForTesting()
+            recorded.append(try await recordedFramesJSON(f.keeper, withoutSyncStream: true))
         }
         #expect(recorded[0] == recorded[1], "in-turn \(String(decoding: recorded[0], as: UTF8.self)) vs legacy \(String(decoding: recorded[1], as: UTF8.self))")
     }

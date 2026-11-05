@@ -247,6 +247,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// records its sync stream (a recorder and in-turn sync), in the same synchronous segment as
     /// the entry it numbers; replay orders the stream by it.
     private var syncStreamCounter: UInt64 = 0
+    /// The kind of turn whose sync phase is running, for the sync outputs it records.
+    private var inTurnSyncTurnKind: ReevaluationRecordedSyncOutput.TurnKind = .tick
+    /// The last recorded output's `observedTickId` and how many outputs were recorded after it
+    /// (`ReevaluationRecordedSyncOutput.index`).
+    private var syncOutputIndexCursor: (observedTickId: Int64?, count: Int) = (nil, 0)
 
     /// Source for reading recorded inputs during re-evaluation (only in .reevaluation mode).
     private var reevaluationSource: (any ReevaluationSource)?
@@ -879,6 +884,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// defer { await keeper.endSync() }
     /// // ... perform sync operations with state snapshot ...
     /// ```
+    /// `beginSync`, with where its copy was taken (`SyncReadPosition`), from the same job.
+    package func beginSyncLocated(clearDirtyFlags: Bool) -> (state: State, position: SyncReadPosition)? {
+        let position = syncReadPosition()
+        return beginSync(clearDirtyFlags: clearDirtyFlags).map { ($0, position) }
+    }
+
+    /// `currentState()`, with where it was read, from the same job.
+    package func currentStateLocated() -> (state: State, position: SyncReadPosition) {
+        (state, syncReadPosition())
+    }
+
     public func beginSync(clearDirtyFlags: Bool) -> State? {
         guard !isSyncing else {
             return nil // Deduplication: skip concurrent sync requests
@@ -2570,7 +2586,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
         let result = transport.runSyncPhaseInTurn(
             state: state,
-            events: events.map { InTurnServerEvent(event: $0.event, target: $0.target) },
+            events: events.map { InTurnServerEvent(event: $0.event, target: $0.target, sequence: $0.sequence) },
             includeSync: includeSync
         )
         applyInTurnSyncResult(result, transport: transport)
@@ -2738,6 +2754,72 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return index
     }
 
+    // MARK: - Sync stream (record format 2.1), for the adapter while in-turn sync is on
+
+    /// Whether this keeper records its sync stream: live, with a recorder, and in-turn sync on.
+    /// The adapter asks it (through `assumeIsolated`, on the shared executor) before planning.
+    package var recordsSyncStream: Bool {
+        mode == .live && reevaluationRecorder != nil && usesInTurnSync
+    }
+
+    /// Where a plan reading the state now reads it.
+    package func syncReadPosition() -> SyncReadPosition {
+        SyncReadPosition(observedTickId: lastCommittedTickId, sequence: outputCollector.nextSequence)
+    }
+
+    /// The kind of the turn whose sync phase is running (`tick` or `syncOnly`).
+    package var currentSyncTurnKind: ReevaluationRecordedSyncOutput.TurnKind {
+        inTurnSyncTurnKind
+    }
+
+    /// Numbers and records one sync output: `make` gets its `streamIndex` and `index`. Called in
+    /// the same synchronous segment as the commit it describes; the record is submitted after
+    /// every earlier submission without waiting.
+    package func recordSyncOutput(
+        observedTickId: Int64?,
+        _ make: (_ streamIndex: UInt64, _ index: Int) -> ReevaluationRecordedSyncOutput
+    ) {
+        guard reevaluationRecorder != nil else { return }
+        let index: Int
+        if let cursorTick = syncOutputIndexCursor.observedTickId, cursorTick == observedTickId {
+            index = syncOutputIndexCursor.count
+        } else {
+            index = 0
+        }
+        syncOutputIndexCursor = (observedTickId, index + 1)
+        let output = make(takeSyncStreamIndex(), index)
+        enqueueSyncStreamRecord(ReevaluationTickRecord(
+            tickId: max(observedTickId ?? lastCommittedTickId, 0),
+            syncOutputs: [output]
+        ))
+    }
+
+    /// Numbers and records one marker: `make` gets its `streamIndex`. A seed goes into the frame
+    /// of its `observedTickId`, a clear into the current tick's.
+    package func recordSyncMarker(_ make: (_ streamIndex: UInt64) -> ReevaluationRecordedSyncMarker) {
+        guard reevaluationRecorder != nil else { return }
+        let marker = make(takeSyncStreamIndex())
+        enqueueSyncStreamRecord(ReevaluationTickRecord(
+            tickId: max(marker.observedTickId ?? lastCommittedTickId, 0),
+            syncMarkers: [marker]
+        ))
+    }
+
+    /// Submits `record` after every earlier submission, without waiting for it.
+    private func enqueueSyncStreamRecord(_ record: ReevaluationTickRecord) {
+        guard let recorder = reevaluationRecorder else { return }
+        let previous = recorderSubmissionTail
+        recorderSubmissionTail = Task {
+            await previous?.value
+            await recorder.recordTick(record)
+        }
+    }
+
+    /// Tests only: waits until every recorder submission so far is recorded.
+    func waitForRecorderSubmissionsForTesting() async {
+        await recorderSubmissionTail?.value
+    }
+
     /// Tests only: the next sync-stream position (how many entries were numbered).
     func syncStreamCounterForTesting() -> UInt64 {
         syncStreamCounter
@@ -2765,6 +2847,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             return
         }
         inTurnProbeForTesting?("turn-begin")
+        inTurnSyncTurnKind = .syncOnly
+        defer { inTurnSyncTurnKind = .tick }
         let result = transport.runSyncPhaseInTurn(state: state, events: [], includeSync: true)
         applyInTurnSyncResult(result, transport: transport)
         inTurnProbeForTesting?("turn-end")

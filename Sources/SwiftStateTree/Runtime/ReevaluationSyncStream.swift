@@ -189,3 +189,15 @@ public struct ReevaluationRecordedInitialize: Codable, Sendable {
         self.stateHash = stateHash
     }
 }
+
+/// Where a sync plan read state: the keeper's `lastCommittedTickId` and output sequence, taken
+/// in the same job as the state.
+package struct SyncReadPosition: Sendable, Equatable {
+    package let observedTickId: Int64
+    package let sequence: Int64
+
+    package init(observedTickId: Int64, sequence: Int64) {
+        self.observedTickId = observedTickId
+        self.sequence = sequence
+    }
+}

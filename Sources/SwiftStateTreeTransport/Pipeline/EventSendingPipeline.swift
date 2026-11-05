@@ -40,29 +40,30 @@ struct EventSendingPipeline: Sendable {
         eventBody: MessagePackValue,
         target: SwiftStateTree.EventTarget,
         pendingEventManager: inout PendingEventManager,
-        membershipCoordinator: MembershipCoordinator
+        membershipCoordinator: MembershipCoordinator,
+        digest: CanonicalSyncEvent? = nil
     ) {
         switch target {
         case .all:
-            pendingEventManager.queueBroadcast(body: eventBody)
+            pendingEventManager.queueBroadcast(body: eventBody, digest: digest)
             
         case .players(let playerIDs):
             for playerID in playerIDs {
                 let stamp = membershipCoordinator.currentMembershipStamp(for: playerID)
-                pendingEventManager.queueTargeted(target: .player(playerID), body: eventBody, stamp: stamp)
+                pendingEventManager.queueTargeted(target: .player(playerID), body: eventBody, stamp: stamp, digest: digest)
             }
             
         case .client(let clientID):
             if let sessionID = membershipCoordinator.sessionID(for: clientID) {
                 let stamp = membershipCoordinator.currentMembershipStamp(for: sessionID)
-                pendingEventManager.queueTargeted(target: .session(sessionID), body: eventBody, stamp: stamp)
+                pendingEventManager.queueTargeted(target: .session(sessionID), body: eventBody, stamp: stamp, digest: digest)
             } else {
                 logger.warning("No session found for client: \(clientID.rawValue)")
             }
             
         default:
             let stamp = membershipCoordinator.currentMembershipStamp(for: target)
-            pendingEventManager.queueTargeted(target: target, body: eventBody, stamp: stamp)
+            pendingEventManager.queueTargeted(target: target, body: eventBody, stamp: stamp, digest: digest)
         }
     }
     
