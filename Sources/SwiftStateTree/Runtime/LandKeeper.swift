@@ -201,6 +201,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Delay each loop's first iteration by `LandLoopPhase.offset` (see `loopPhaseOffset`).
     private let enableLoopPhaseOffset: Bool
     private let enableLiveStateHashRecording: Bool
+    private var stateHashUnavailableTotal = 0
     private let reevaluationOutputMode: ReevaluationOutputMode
 
     private var pendingItems: [PendingItem] = []
@@ -2860,13 +2861,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 key: EnvKeys.Runtime.stateSnapshotRecording,
                 defaultValue: false
             )
+            let (hash, snapshot) = liveStateHash(tickId: tickId)
+            await recorder.setStateHash(tickId: tickId, stateHash: hash)
             if enableStateSnapshotRecording {
-                let (hash, snapshot) = ReevaluationEngine.calculateStateHashAndSnapshot(state)
-                await recorder.setStateHash(tickId: tickId, stateHash: hash)
                 await recorder.recordStateSnapshot(tickId: tickId, stateSnapshot: snapshot)
-            } else {
-                let hash = ReevaluationEngine.calculateStateHash(state)
-                await recorder.setStateHash(tickId: tickId, stateHash: hash)
             }
         }
 
@@ -3012,12 +3010,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         var stateHash: String?
         var stateSnapshot: StateSnapshot?
         if enableLiveStateHashRecording, reevaluationRecorder != nil {
+            let (hash, snapshot) = liveStateHash(tickId: tickId)
+            stateHash = hash
             if EnvHelpers.getEnvBool(key: EnvKeys.Runtime.stateSnapshotRecording, defaultValue: false) {
-                let (hash, snapshot) = ReevaluationEngine.calculateStateHashAndSnapshot(state)
-                stateHash = hash
                 stateSnapshot = snapshot
-            } else {
-                stateHash = ReevaluationEngine.calculateStateHash(state)
             }
         }
 
@@ -3084,8 +3080,28 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     target: ReevaluationEventTargetRecord.from(item.target)
                 )
             },
-            stateHash: enableLiveStateHashRecording ? ReevaluationEngine.calculateStateHash(state) : nil
+            stateHash: enableLiveStateHashRecording ? liveStateHash(tickId: tickId).hash : nil
         )
+    }
+
+    /// Ticks (and initialize) whose live state hash could not be computed and were recorded as
+    /// `ReevaluationEngine.unavailableHash`.
+    public var stateHashUnavailableCount: Int { stateHashUnavailableTotal }
+
+    /// The full-state hash of the current state for live recording (#180). A conversion that
+    /// throws never stops the tick: the hash is recorded as unavailable, logged and counted, and
+    /// replay reports that tick as unverifiable.
+    private func liveStateHash(tickId: Int64) -> (hash: String, snapshot: StateSnapshot) {
+        let (hash, snapshot) = ReevaluationEngine.calculateStateHashAndSnapshot(state)
+        if ReevaluationEngine.isUnavailableHash(hash) {
+            stateHashUnavailableTotal += 1
+            logger.error("State hash unavailable; tick recorded without a hash", metadata: [
+                "tickId": .stringConvertible(tickId),
+                "reason": .string(hash),
+                "unavailableCount": .stringConvertible(stateHashUnavailableTotal),
+            ])
+        }
+        return (hash, snapshot)
     }
 
     /// The next sync-stream position. Callers take it only while the land records its sync

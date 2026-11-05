@@ -48,6 +48,12 @@ public enum ReevaluationEngine {
         /// with this reason instead of as a failure, and an older record that matches is
         /// verified. Sync-output failures are failures regardless.
         public let hashIncomparability: String?
+        /// What the recorded and replayed state hashes cover, from the record's version.
+        public let hashDefinition: ReevaluationHashDefinition
+        /// Ticks whose state hash could not be computed, live (recorded as unavailable) or in
+        /// the replay, with the reason. They are not verified, and a verifier fails on them
+        /// instead of comparing the markers.
+        public let unverifiableStateHashes: [Int64: String]
 
         /// Verdict on `serverEventMismatches`, decided per tick (see `classifyServerEventMismatches`).
         public var serverEventVerification: ServerEventVerification {
@@ -81,6 +87,7 @@ public enum ReevaluationEngine {
         record: ReevaluationRecordedInitialize?,
         emitted: [ReevaluationRecordedServerEvent],
         state: State,
+        hashDefinition: ReevaluationHashDefinition = .fullState,
         hashIncomparability: String? = nil
     ) -> InitializeVerification {
         guard let record else { return .notRecorded }
@@ -88,7 +95,9 @@ public enum ReevaluationEngine {
             return .failed(reason: "server events differ (recorded \(record.serverEvents.count), replayed \(emitted.count))")
         }
         if let recorded = record.stateHash {
-            let replayed = calculateStateHash(state)
+            guard !isUnavailableHash(recorded), let replayed = stateHash(state, definition: hashDefinition) else {
+                return .failed(reason: "state hash unavailable, not verifiable (recorded \(recorded))")
+            }
             if recorded != replayed {
                 if let hashIncomparability {
                     return .notComparable(reason: hashIncomparability)
@@ -210,11 +219,13 @@ public enum ReevaluationEngine {
         let initializeRecord = try await source.getInitializeRecord()
         let stateAfterInitialize = await keeper.currentState()
         let initializeEvents = await capturingSink.takeEmittedEvents(for: -1)
+        let hashDefinition = ReevaluationRecordVersion.hashDefinition(recorded: metadata.version)
         let hashIncomparability = ReevaluationRecordVersion.hashIncomparability(recorded: metadata.version, stateType: State.self)
         let initialize = verifyInitialize(
             record: initializeRecord,
             emitted: initializeEvents,
             state: stateAfterInitialize,
+            hashDefinition: hashDefinition,
             hashIncomparability: hashIncomparability
         )
         var syncOutputDriver = SyncOutputReplayDriver<State>(metadata: metadata, stream: try await source.getSyncStream())
@@ -224,7 +235,6 @@ public enum ReevaluationEngine {
             initializeEvents: initializeEvents
         )
         
-        let syncEngine = SyncEngine()
         let snapshotEncoder = JSONEncoder()
         snapshotEncoder.outputFormatting = [.sortedKeys]
         
@@ -239,6 +249,7 @@ public enum ReevaluationEngine {
 
         var hashes: [Int64: String] = [:]
         var recordedHashes: [Int64: String] = [:]
+        var unverifiable: [Int64: String] = [:]
         var serverEventMismatches: [(tickId: Int64, expected: [ReevaluationRecordedServerEvent], actual: [ReevaluationRecordedServerEvent])] = []
         var watermarkedTicks: Set<Int64> = []
         if maxTickId >= 0 {
@@ -246,20 +257,25 @@ public enum ReevaluationEngine {
                 await keeper.stepTickOnce()
                 let state = await keeper.currentState()
 
-                // A field whose conversion throws hashes as "error", as the live recording does
-                // (`calculateStateHash`); the replay goes on, as the live run did.
-                let extracted = try? syncEngine.snapshot(from: state, mode: .all)
-                let snapshot = extracted ?? StateSnapshot()
+                // The hash the record holds (`hashDefinition`). A conversion that throws makes
+                // the tick unverifiable; the replay goes on, as the live run did.
+                let snapshot: StateSnapshot
                 let stateHash: String
-                if extracted != nil, let data = try? snapshotEncoder.encode(snapshot) {
-                    stateHash = DeterministicHash.toHex64(DeterministicHash.fnv1a64(data))
-                } else {
-                    stateHash = "error"
+                do {
+                    (stateHash, snapshot) = try stateHashAndSnapshot(state, definition: hashDefinition)
+                } catch {
+                    snapshot = StateSnapshot()
+                    stateHash = unavailableHash(error)
                 }
                 hashes[tickId] = stateHash
 
                 if let recorded = try await source.getStateHash(for: tickId) {
                     recordedHashes[tickId] = recorded
+                    if isUnavailableHash(recorded) {
+                        unverifiable[tickId] = "recorded \(recorded)"
+                    } else if isUnavailableHash(stateHash) {
+                        unverifiable[tickId] = "replayed \(stateHash)"
+                    }
                 }
 
                 // Field-level diff against recorded state snapshot when requested.
@@ -313,7 +329,9 @@ public enum ReevaluationEngine {
             syncStreamPresence: try await source.getSyncStreamPresence(),
             syncOutput: syncOutputDriver.finish(),
             initialize: initialize,
-            hashIncomparability: hashIncomparability
+            hashIncomparability: hashIncomparability,
+            hashDefinition: hashDefinition,
+            unverifiableStateHashes: unverifiable
         )
     }
     
@@ -341,39 +359,77 @@ public enum ReevaluationEngine {
         return true
     }
 
-    /// Calculate a deterministic hash and capture the full state snapshot (for debug recording).
-    public static func calculateStateHashAndSnapshot<State: StateNodeProtocol>(_ state: State) -> (hash: String, snapshot: StateSnapshot) {
-        let syncEngine = SyncEngine()
-        let snapshot: StateSnapshot
-        do {
-            snapshot = try syncEngine.snapshot(from: state, mode: .all)
-        } catch {
-            return ("error", StateSnapshot())
+    /// The snapshot a state hash of `definition` covers.
+    public static func hashedSnapshot<State: StateNodeProtocol>(
+        _ state: State,
+        definition: ReevaluationHashDefinition
+    ) throws -> StateSnapshot {
+        switch definition {
+        case .fullState:
+            FullStateConversionProbe.record()
+            return try state.fullStateSnapshot()
+        case .broadcastView:
+            return try state.snapshot(for: nil, dirtyFields: nil)
         }
+    }
+
+    /// FNV-1a64 over the sorted-keys JSON of `hashedSnapshot`, with that snapshot. Throws when a
+    /// value cannot be converted (for the full state, also two map keys that collide as strings).
+    public static func stateHashAndSnapshot<State: StateNodeProtocol>(
+        _ state: State,
+        definition: ReevaluationHashDefinition
+    ) throws -> (hash: String, snapshot: StateSnapshot) {
+        let snapshot = try hashedSnapshot(state, definition: definition)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(snapshot) else {
-            return ("error", snapshot)
-        }
+        let data = try encoder.encode(snapshot)
         return (DeterministicHash.toHex64(DeterministicHash.fnv1a64(data)), snapshot)
     }
 
-    /// Calculate a deterministic hash of the full state snapshot.
-    public static func calculateStateHash<State: StateNodeProtocol>(_ state: State) -> String {
-        let syncEngine = SyncEngine()
-        let snapshot: StateSnapshot
+    /// The state hash of `definition`, or nil when the conversion throws.
+    public static func stateHash<State: StateNodeProtocol>(
+        _ state: State,
+        definition: ReevaluationHashDefinition
+    ) -> String? {
+        try? stateHashAndSnapshot(state, definition: definition).hash
+    }
+
+    /// Prefix of a recorded state hash the live run could not compute (`unavailableHash`). A
+    /// tick recorded with it, or whose replayed hash cannot be computed, is unverifiable, never a
+    /// match.
+    public static let unavailableHashPrefix = "unavailable: "
+
+    /// The value recorded in place of a hash whose conversion threw.
+    public static func unavailableHash(_ error: any Error) -> String {
+        "\(unavailableHashPrefix)\(error)"
+    }
+
+    /// Whether a recorded hash value says the hash could not be computed: the 2.4 marker, or
+    /// `"error"` as older builds recorded it.
+    public static func isUnavailableHash(_ value: String) -> Bool {
+        value == "error" || value.hasPrefix(unavailableHashPrefix)
+    }
+
+    /// The full-state hash (`ReevaluationHashDefinition.fullState`) and its snapshot, for live
+    /// recording; an unconvertible state gives `unavailableHash` and an empty snapshot.
+    public static func calculateStateHashAndSnapshot<State: StateNodeProtocol>(_ state: State) -> (hash: String, snapshot: StateSnapshot) {
         do {
-            snapshot = try syncEngine.snapshot(from: state, mode: .all)
+            return try stateHashAndSnapshot(state, definition: .fullState)
         } catch {
-            return "error"
+            return (unavailableHash(error), StateSnapshot())
         }
-        
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(snapshot) else {
-            return "error"
-        }
-        return DeterministicHash.toHex64(DeterministicHash.fnv1a64(data))
+    }
+
+    /// The full-state hash (`ReevaluationHashDefinition.fullState`), what a 2.4 record holds;
+    /// `unavailableHash` when the state cannot be converted.
+    public static func calculateStateHash<State: StateNodeProtocol>(_ state: State) -> String {
+        calculateStateHashAndSnapshot(state).hash
+    }
+
+    /// The broadcast-view hash, what records before 2.4 hold; `"error"` when the state cannot
+    /// be converted, as those builds recorded it.
+    public static func calculateBroadcastViewHash<State: StateNodeProtocol>(_ state: State) -> String {
+        stateHash(state, definition: .broadcastView) ?? "error"
     }
 }
 

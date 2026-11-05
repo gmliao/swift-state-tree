@@ -126,6 +126,15 @@ public enum ReevaluationRecordVersionError: Error, Equatable, Sendable {
     case incompatible(recorded: String?, required: String)
 }
 
+/// What a recorded state or initialize hash covers.
+public enum ReevaluationHashDefinition: Sendable, Equatable {
+    /// Every `@Sync` field at every depth, whatever its policy (`fullStateSnapshot()`); not
+    /// `@Internal` properties. Records from 2.4 on.
+    case fullState
+    /// The broadcast view, `snapshot(for: nil)`: what the hash covered before 2.4.
+    case broadcastView
+}
+
 /// Record format versions, `"<major>.<minor>"`.
 ///
 /// Readers accept any record with their major version: a newer minor adds keys an older reader
@@ -138,7 +147,21 @@ public enum ReevaluationRecordVersion {
     /// `eventsThroughSequence`). A 2.1 record is still read; its sync outputs are not verified.
     /// 2.3 marks hashes computed with nested state nodes' own `@Sync` policies applied (#175);
     /// an older record's state and sync-output hashes are not comparable with this build's.
-    public static let current = "2.3"
+    /// 2.4 records full-state hashes (`ReevaluationHashDefinition.fullState`, #180) and
+    /// `stateHashUnavailable`; older records hold broadcast-view hashes and are verified
+    /// against those.
+    public static let current = "2.4"
+
+    /// The first minor whose state and initialize hashes cover the full state (#180).
+    public static let fullStateHashMinor = 4
+
+    /// The hash a record written as `recorded` holds: the full state from 2.4 on, the broadcast
+    /// view before. A missing or malformed version (an incompatible record) maps to the
+    /// current definition.
+    public static func hashDefinition(recorded: String?) -> ReevaluationHashDefinition {
+        guard let minor = minor(of: recorded), minor < fullStateHashMinor else { return .fullState }
+        return .broadcastView
+    }
 
     /// The first minor whose state and sync-output hashes this build can reproduce: before it,
     /// a `@SnapshotConvertible` state node in a `[String: X]` / `[PlayerID: X]` map was
