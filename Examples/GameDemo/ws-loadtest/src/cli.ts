@@ -4,7 +4,7 @@ import path from "node:path";
 import { runScenario } from "./run";
 import { buildReport, writeReportFiles } from "./report/render-html";
 import { readSystemMetrics } from "./system-metrics";
-import { readServerSync } from "./server-sync";
+import { measuredSpans, readProfileAfter, serverSyncByPhase } from "./server-sync";
 import { LAYOUTS } from "./layout";
 import type { Layout } from "./layout";
 import { BOUNDARY_MODES, CONNECT_MODES, DEFAULT_CONNECT_RATE } from "./connect-schedule";
@@ -229,7 +229,12 @@ export async function main(): Promise<void> {
     const metricsPath = systemMetricsPath ? path.resolve(process.cwd(), systemMetricsPath) : undefined;
     const systemMetrics = metricsPath && fs.existsSync(metricsPath) ? readSystemMetrics(metricsPath) : { system: [] };
     const profilePath = transportProfilePath ? path.resolve(process.cwd(), transportProfilePath) : undefined;
-    const report = buildReport(result, systemMetrics, readServerSync(profilePath));
+    // The server sync counters cover each phase's measured window, the span of the client
+    // metrics; wait for the profile window that closes the last one to be flushed.
+    const spans = measuredSpans(result.phases);
+    const lastEnd = spans.reduce((max, span) => Math.max(max, span.endAt), 0);
+    const profile = await readProfileAfter(profilePath, lastEnd);
+    const report = buildReport(result, systemMetrics, serverSyncByPhase(profile, spans));
     const outputDirectory = outputDir ? path.resolve(process.cwd(), outputDir) : path.resolve(process.cwd(), "results");
     const baseName = outputName ?? `ws-loadtest-${Date.now()}`;
     writeReportFiles(report, outputDirectory, baseName);

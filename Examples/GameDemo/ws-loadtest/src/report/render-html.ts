@@ -16,7 +16,7 @@ import type { ListenCounters } from "../net-stats";
 import type { Thresholds } from "../types";
 import type { PermessageDeflateCounts } from "../worker";
 import type { SystemMetrics } from "../system-metrics";
-import { SERVER_SYNC_FIELDS, type ServerSyncSummary } from "../server-sync";
+import { SERVER_SYNC_FIELDS, SERVER_SYNC_LABELS, type ServerSyncPhase } from "../server-sync";
 
 export interface PhaseSummary {
     name: string;
@@ -70,13 +70,15 @@ export interface Report {
     phases: PhaseSummary[];
     system: SystemMetrics["system"];
     /**
-     * Server-side sync counters from the transport profile (`--transport-profile`); null when
-     * the run had no profile or the server predates the counters ("n/a" in the HTML).
+     * Server-side sync counters from the transport profile (`--transport-profile`), per phase,
+     * over the phase's measured window (the client metrics' span). Null when the run had no
+     * profile or the server predates the counters; a phase's summary is null when no profile
+     * window lies inside its measured window ("n/a" in the HTML).
      */
-    serverSync: ServerSyncSummary | null;
+    serverSync: ServerSyncPhase[] | null;
 }
 
-export function buildReport(run: RunResult, systemMetrics: SystemMetrics, serverSync: ServerSyncSummary | null = null): Report {
+export function buildReport(run: RunResult, systemMetrics: SystemMetrics, serverSync: ServerSyncPhase[] | null = null): Report {
     const phases = run.phases.map((phase) => summarizePhase(phase, run.runConfig));
     return {
         meta: {
@@ -318,22 +320,28 @@ export function loopDelayCell(measurement?: Pick<PhaseMeasurement, "clientLoopDe
     return `${delay.p50Ms.max.toFixed(1)} / ${delay.p99Ms.max.toFixed(1)} / ${delay.maxMs.toFixed(0)} ms`;
 }
 
-/** The server sync section: counters summed over the profile windows, or "n/a". */
-export function serverSyncSection(sync: ServerSyncSummary | null): string {
-    const rate = sync?.overdueFoldsPer1000Syncs;
-    const headline = !sync
-        ? "n/a (no transport profile, or a server without these counters)"
-        : `overdue folds per 1000 syncs: ${rate === null || rate === undefined ? "n/a (no sync cycles)" : rate.toFixed(2)}; windows with an overdue fold: ${sync.windowsWithOverdueFold} of ${sync.windows}`;
-    const rows = sync
-        ? SERVER_SYNC_FIELDS.map((field) => `
-            <tr><td class="px-4 py-1 text-slate-300">${field}</td><td class="px-4 py-1 text-slate-300">${sync.totals[field]}</td><td class="px-4 py-1 text-slate-300">${sync.maxWindow[field]}</td></tr>`).join("")
-        : "";
-    return `<section class="glass-panel rounded-xl p-6 mb-8">
-      <h2 class="text-lg font-semibold text-white mb-2">Server sync (transport profile)</h2>
-      <p class="text-slate-300 text-sm mb-2">${headline}</p>${sync ? `
+/** The server sync section, per phase over its measured window, or "n/a". */
+export function serverSyncSection(phases: ServerSyncPhase[] | null): string {
+    const body = !phases
+        ? `<p class="text-slate-300 text-sm">n/a (no transport profile, or a server without these counters)</p>`
+        : phases.map(({ phase, summary }) => {
+            if (!summary) {
+                return `<h3 class="text-white font-medium mt-4">${phase}</h3>
+      <p class="text-slate-300 text-sm">n/a (no profile window inside the measured window)</p>`;
+            }
+            const rate = summary.overdueFoldsPer1000Syncs;
+            const seconds = (summary.span.coveredEndAt - summary.span.coveredStartAt) / 1000;
+            const rows = SERVER_SYNC_FIELDS.map((field) => `
+            <tr><td class="px-4 py-1 text-slate-300">${SERVER_SYNC_LABELS[field]}</td><td class="px-4 py-1 text-slate-300">${summary.totals[field]}</td><td class="px-4 py-1 text-slate-300">${summary.maxWindow[field]}</td></tr>`).join("");
+            return `<h3 class="text-white font-medium mt-4">${phase}</h3>
+      <p class="text-slate-300 text-sm mb-2">covers ${seconds.toFixed(1)} s of the measured window (${summary.windows} profile windows wholly inside it); overdue folds per 1000 syncs: ${rate === null ? "n/a (no sync cycles)" : rate.toFixed(2)}; windows with an overdue fold: ${summary.windowsWithOverdueFold} of ${summary.windows}</p>
       <table class="text-sm"><thead><tr><th class="px-4 py-1 text-left">counter</th><th class="px-4 py-1 text-left">total</th><th class="px-4 py-1 text-left">max per window</th></tr></thead>
         <tbody>${rows}
-        </tbody></table>` : ""}
+        </tbody></table>`;
+        }).join("");
+    return `<section class="glass-panel rounded-xl p-6 mb-8">
+      <h2 class="text-lg font-semibold text-white mb-2">Server sync (transport profile, measured windows)</h2>
+      ${body}
     </section>`;
 }
 
