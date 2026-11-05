@@ -159,9 +159,9 @@ struct SyncOutputDigestInput {
     /// Scopes ("broadcast" or a player ID) whose encoding dropped patches: unverifiable.
     var encodeDropScopes: Set<String> = []
     /// Players whose whole view this plan sends (a firstSync, or a full view after a failed
-    /// one), with that view's patches; nil patches when the view is not verifiable (extraction
-    /// or encode drops). Each gets a seed marker instead of a per-player scope in the output.
-    var seeds: [PlayerID: [StatePatch]?] = [:]
+    /// one). Each gets a seed marker instead of a per-player scope in the output; a view that
+    /// was not sent at all has no entry.
+    var seeds: [PlayerID: SeedDigest] = [:]
     /// Opcode 107: the events the plan consumed, in emit order; nil in the other encodings.
     var events: [CanonicalSyncEvent]?
     /// A firstSync plan: it records seed markers only, no output.
@@ -171,13 +171,22 @@ struct SyncOutputDigestInput {
     /// The events scope in `encodeDropScopes`: a consumed event without a canonical form.
     static let eventsScope = "events"
 
-    /// A player's encode dropped patches: its scope is unverifiable; with no frame at all
-    /// (`committed` false) its per-player cache was not committed either, so it leaves the output.
+    /// A seed's planned view, and what was dropped from the view the client got.
+    struct SeedDigest {
+        var patches: [StatePatch]
+        var drops: Set<ReevaluationRecordedSyncMarker.ViewDrop> = []
+    }
+
+    /// A player's encode dropped patches: its scope is unverifiable. With a frame (`committed`)
+    /// its seed, if any, was degraded; with none, its per-player cache and firstSync mark were
+    /// not committed and nothing reached the client, so it leaves the output and has no seed.
     mutating func noteEncodeDrop(playerID: PlayerID, committed: Bool) {
         encodeDropScopes.insert(playerID.rawValue)
-        if !committed {
+        if committed {
+            seeds[playerID]?.drops.insert(.encode)
+        } else {
             perPlayerPatches.removeValue(forKey: playerID)
-            if seeds[playerID] != nil { seeds[playerID] = .some(nil) }
+            seeds.removeValue(forKey: playerID)
         }
     }
 
@@ -412,7 +421,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Where the plan being run read its state, set for one plan + commit (`runSyncPhase`) when
     /// the keeper records its sync stream; nil otherwise, and then no plan fills a digest.
     private var syncOutputRead: SyncOutputRead?
-    /// Players seeded in the sync stream so far: a later seed is a rejoin.
+    /// Players seeded in the sync stream so far: a later seed is a rejoin. Never pruned (a
+    /// leave keeps the player, so its next seed is a rejoin); it grows by one entry per distinct
+    /// player over the adapter's life, only while the sync stream is recorded.
     private var syncStreamSeededPlayers: Set<PlayerID> = []
     /// Tests only: plans that filled a `SyncOutputDigestInput`.
     private(set) var syncOutputDigestCountForTesting = 0
@@ -1905,9 +1916,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 }
             }
         }
-        for (playerID, patches) in digest.seeds.sorted(by: { SnapshotValue.utf8Less($0.key.rawValue, $1.key.rawValue) }) {
+        for (playerID, seed) in digest.seeds.sorted(by: { SnapshotValue.utf8Less($0.key.rawValue, $1.key.rawValue) }) {
             let rejoin = !syncStreamSeededPlayers.insert(playerID).inserted
-            let viewHash = patches.map { Self.scopeHash($0, scope: playerID.rawValue) }
+            let viewDrops = seed.drops.sorted { $0.rawValue < $1.rawValue }
+            let viewHash = viewDrops.isEmpty ? Self.scopeHash(seed.patches, scope: playerID.rawValue) : nil
             keeper.assumeIsolated { keeper in
                 keeper.recordSyncMarker { streamIndex in
                     ReevaluationRecordedSyncMarker(
@@ -1917,7 +1929,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         streamIndex: streamIndex,
                         sequence: sequence,
                         rejoin: rejoin,
-                        viewHash: viewHash
+                        viewHash: viewHash,
+                        viewDrops: viewDrops
                     )
                 }
             }
@@ -2014,8 +2027,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     targeted: plan.consumedEvents.targeted,
                     broadcast: plan.consumedEvents.broadcast
                 )
-                digest.events = consumed.events
-                if !consumed.complete {
+                if consumed.complete {
+                    digest.events = consumed.events
+                } else {
+                    // Unverifiable, never a hash over a partial set.
                     digest.encodeDropScopes.insert(SyncOutputDigestInput.eventsScope)
                 }
             }
@@ -2161,14 +2176,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             for update in pendingUpdates where plan.digest?.perPlayerPatches[update.playerID] == nil {
                 plan.digest?.perPlayerPatches[update.playerID] = update.update.patchesForDroppingEncode
             }
-            plan.digest?.noteDrops(drops)
         }
         for recipient in unsyncedRecipients {
             let dropsBefore = drops.count
             let update = planFullViewUpdate(state: state, recipient: recipient, staged: &plan.staged, drops: &drops)
             pendingUpdates.append(update)
-            plan.digest?.seeds[recipient.playerID] = drops.count == dropsBefore ? update.update.patchesForDroppingEncode : .some(nil)
+            if plan.digest != nil {
+                var seed = SyncOutputDigestInput.SeedDigest(patches: update.update.patchesForDroppingEncode)
+                if drops.count != dropsBefore { seed.drops.insert(.extraction) }
+                plan.digest?.seeds[recipient.playerID] = seed
+            }
         }
+        // After the full views: their drops are this plan's extraction drops too.
+        plan.digest?.noteDrops(drops)
         plan.noteExtractionDrops(drops)
         if shouldCollectChangeMetrics {
             metricUpdates.append(contentsOf: pendingUpdates.map(\.update))
@@ -3219,7 +3239,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
         // Wrap in firstSync to trigger Force Definition in Encoder
         let update = StateUpdate.firstSync(patches)
-        plan.digest?.seeds[playerID] = drops.count == 0 ? patches : .some(nil)
+        if plan.digest != nil {
+            var seed = SyncOutputDigestInput.SeedDigest(patches: patches)
+            if drops.count > 0 { seed.drops.insert(.extraction) }
+            plan.digest?.seeds[playerID] = seed
+        }
 
         // Encode using the shared stateUpdateEncoder
         // Thread-safe DynamicKeyTable ensures no corruption during concurrent access
@@ -3243,7 +3267,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 return skipped
             }
             plan.droppedUpdates += dropped
-            plan.digest?.seeds[playerID] = .some(nil)
+            plan.digest?.noteEncodeDrop(playerID: playerID, committed: true)
             updateData = data
         }
 

@@ -83,6 +83,14 @@ public struct ReevaluationRecordedSyncMarker: Codable, Sendable, Equatable {
         case initialize
     }
 
+    /// Why a seed's view is not verifiable (its `viewHash` is then nil).
+    public enum ViewDrop: String, Codable, Sendable {
+        /// A field's snapshot conversion threw and was left out of the view.
+        case extraction
+        /// Patches that did not encode were dropped from the frame the client got.
+        case encode
+    }
+
     public let kind: Kind
     /// Seed and clear only.
     public let playerID: String?
@@ -92,8 +100,10 @@ public struct ReevaluationRecordedSyncMarker: Codable, Sendable, Equatable {
     public let sequence: Int64
     /// Seed only: a rejoin (reconnection) rather than a first join.
     public let rejoin: Bool
-    /// Seed only: the per-player hash of the firstSync view.
+    /// Seed only: the per-player hash of the firstSync view; nil when `viewDrops` is not empty.
     public let viewHash: UInt64?
+    /// Seed only: what was dropped from the view the client got (sorted); empty for a full view.
+    public let viewDrops: [ViewDrop]
 
     public init(
         kind: Kind,
@@ -102,7 +112,8 @@ public struct ReevaluationRecordedSyncMarker: Codable, Sendable, Equatable {
         streamIndex: UInt64,
         sequence: Int64,
         rejoin: Bool = false,
-        viewHash: UInt64? = nil
+        viewHash: UInt64? = nil,
+        viewDrops: [ViewDrop] = []
     ) {
         self.kind = kind
         self.playerID = playerID
@@ -111,6 +122,37 @@ public struct ReevaluationRecordedSyncMarker: Codable, Sendable, Equatable {
         self.sequence = sequence
         self.rejoin = rejoin
         self.viewHash = viewHash
+        self.viewDrops = viewDrops
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind, playerID, observedTickId, streamIndex, sequence, rejoin, viewHash, viewDrops
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try container.decode(Kind.self, forKey: .kind)
+        playerID = try container.decodeIfPresent(String.self, forKey: .playerID)
+        observedTickId = try container.decodeIfPresent(Int64.self, forKey: .observedTickId)
+        streamIndex = try container.decode(UInt64.self, forKey: .streamIndex)
+        sequence = try container.decode(Int64.self, forKey: .sequence)
+        rejoin = try container.decode(Bool.self, forKey: .rejoin)
+        viewHash = try container.decodeIfPresent(UInt64.self, forKey: .viewHash)
+        viewDrops = try container.decodeIfPresent([ViewDrop].self, forKey: .viewDrops) ?? []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(kind, forKey: .kind)
+        try container.encodeIfPresent(playerID, forKey: .playerID)
+        try container.encodeIfPresent(observedTickId, forKey: .observedTickId)
+        try container.encode(streamIndex, forKey: .streamIndex)
+        try container.encode(sequence, forKey: .sequence)
+        try container.encode(rejoin, forKey: .rejoin)
+        try container.encodeIfPresent(viewHash, forKey: .viewHash)
+        if !viewDrops.isEmpty {
+            try container.encode(viewDrops, forKey: .viewDrops)
+        }
     }
 }
 
