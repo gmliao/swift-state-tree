@@ -187,3 +187,81 @@ struct SyncEngineVisibilityTransitionTests {
         try h.expectConverged("hidden from p2 again")
     }
 }
+
+/// The cache-merge sites the multi-player harness does not reach: a single player's
+/// `generateDiff` (per-player cache, unstaged), a broadcast diff from a hand-built snapshot
+/// (broadcast cache, staged), and `onlyPaths`.
+@Suite("Dirty-tracking cache after a field leaves the view")
+struct SyncEngineVanishedFieldCacheTests {
+    let p1 = PlayerID("p1")
+
+    /// One `generateDiff` cycle for `p1`, applied to `client`; the state's dirty flags clear.
+    private func sync(
+        _ engine: inout SyncEngine,
+        _ state: inout VisibilityTransitionState,
+        _ client: inout SnapshotClientView,
+        onlyPaths: Set<String>? = nil,
+        useDirtyTracking: Bool = true
+    ) throws {
+        switch try engine.generateDiff(for: p1, from: state, onlyPaths: onlyPaths, useDirtyTracking: useDirtyTracking) {
+        case .noChange: break
+        case .firstSync(let patches), .diff(let patches): try client.apply(patches)
+        }
+        state.clearDirty()
+    }
+
+    @Test("A single player's generateDiff: hidden, then back with the value it last saw")
+    func singlePlayerGenerateDiff() throws {
+        var engine = SyncEngine()
+        var state = VisibilityTransitionState()
+        var client = SnapshotClientView(fields: try engine.lateJoinSnapshot(for: p1, from: state).values)
+        for (step, banner) in [("visible", "p1:x"), ("hidden", "nobody:x"), ("hidden, new value", "nobody:y"), ("back, the value it last saw", "p1:x")] {
+            state.banner = banner
+            try sync(&engine, &state, &client)
+            #expect(client.fields == (try state.snapshot(for: p1, dirtyFields: nil).values), "\(step)")
+        }
+    }
+
+    @Test("A removal outside onlyPaths stays cached and is delivered by the next unfiltered sync")
+    func filteredRemovalIsDeliveredLater() throws {
+        var engine = SyncEngine()
+        var state = VisibilityTransitionState()
+        var client = SnapshotClientView(fields: try engine.lateJoinSnapshot(for: p1, from: state).values)
+        state.banner = "p1:x"
+        try sync(&engine, &state, &client)
+        #expect(client.fields["banner"] == .string("p1:x"))
+
+        // Hidden in a cycle limited to /tick: the client keeps the banner for now.
+        state.banner = "nobody:x"
+        state.tick = 1
+        try sync(&engine, &state, &client, onlyPaths: ["/tick"])
+        #expect(client.fields["banner"] == .string("p1:x"))
+        #expect(client.fields["tick"] == .int(1))
+
+        // The next unfiltered sync sends the delete the filtered one held back.
+        try sync(&engine, &state, &client, useDirtyTracking: false)
+        #expect(client.fields == (try state.snapshot(for: p1, dirtyFields: nil).values))
+        #expect(client.fields["banner"] == nil)
+    }
+
+    @Test("The broadcast cache drops a dirty field the snapshot no longer has")
+    func broadcastSnapshotDiff() {
+        var engine = SyncEngine()
+        func diff(_ values: [String: SnapshotValue], dirty: Set<String>) -> [StatePatch] {
+            engine.computeBroadcastDiffFromSnapshot(currentBroadcast: StateSnapshot(values: values), mode: .dirtyTracking(dirty))
+        }
+        _ = engine.computeBroadcastDiffFromSnapshot(currentBroadcast: StateSnapshot(values: ["a": .int(1), "b": .int(2)]), mode: .all)
+        var client = SnapshotClientView(fields: ["a": .int(1), "b": .int(2)])
+
+        let steps: [(String, [String: SnapshotValue], Set<String>)] = [
+            ("b leaves", [:], ["b"]),
+            ("b still gone, dirty again", [:], ["b"]),
+            ("b back with its old value", ["b": .int(2)], ["b"]),
+        ]
+        for (step, values, dirty) in steps {
+            let patches = diff(values, dirty: dirty)
+            #expect((try? client.apply(patches)) != nil, "\(step): \(patches)")
+        }
+        #expect(client.fields == ["a": .int(1), "b": .int(2)])
+    }
+}
