@@ -82,11 +82,13 @@ export function buildReport(run: RunResult, systemMetrics: SystemMetrics): Repor
 }
 
 /**
- * Join checks, independent of the scenario's thresholds. A phase fails when any join failed, or
- * when fewer connections than the target were joined over the measured window (time-weighted;
- * with no measured window, at the phase end). `--allow-join-failures` turns both off. With
- * `--allow-partial-ramp`, which opens fewer connections than the target by design, the joined
- * count at the phase end is compared with the connections the phase held (kept or started).
+ * Join checks, independent of the scenario's thresholds. A phase fails when any join failed,
+ * when fewer connections than the target are joined at the phase end, or, when the warm-up is
+ * longer than the connect ramp, at the measured-window start (`measurement.joined
+ * .atMeasuredStart`). The time-weighted `joined.average` is reported only.
+ * `--allow-join-failures` turns all of these off. With `--allow-partial-ramp`, which opens fewer
+ * connections than the target by design, the joined counts are compared with the connections
+ * the phase held (kept or started).
  */
 export function joinFailuresOf(phase: PhaseResult, runConfig?: Pick<RunConfig, "allowJoinFailures" | "allowPartialRamp">): string[] {
     if (runConfig?.allowJoinFailures) {
@@ -101,22 +103,22 @@ export function joinFailuresOf(phase: PhaseResult, runConfig?: Pick<RunConfig, "
             .join(", ");
         failures.push(`joinFailures ${joinFailures} > 0 (${reasons})`);
     }
-    if (connections && runConfig?.allowPartialRamp) {
-        // A partial ramp opens fewer connections than the target by design: every connection
-        // the phase holds (kept or started by the ramp) must still have joined by the end.
-        const held = connections.reused + connections.started;
-        if (connections.joinedAtEnd < held) {
-            failures.push(`joined ${connections.joinedAtEnd} < opened ${held} (at the phase end, partial ramp)`);
-        }
-    } else if (connections) {
-        const target = connections.target;
-        const measured = phase.measurement?.measuredMs ?? 0;
-        const joined = measured > 0 ? phase.measurement.joined?.average : connections.joinedAtEnd;
-        // 0.01 absorbs the rounding of the average (two decimals).
-        if (joined !== undefined && joined < target - 0.01) {
-            const what = measured > 0 ? "time-weighted over the measured window" : "at the phase end";
-            failures.push(`joined ${joined} < target ${target} (${what})`);
-        }
+    if (!connections) {
+        return failures;
+    }
+    // A partial ramp opens fewer connections than the target by design: compare with the
+    // connections the phase held (kept or started by the ramp).
+    const partial = runConfig?.allowPartialRamp === true;
+    const expected = partial ? connections.reused + connections.started : connections.target;
+    const expectedLabel = partial ? `opened ${expected}` : `target ${expected}`;
+    if (connections.joinedAtEnd < expected) {
+        failures.push(`joined ${connections.joinedAtEnd} < ${expectedLabel} (at the phase end${partial ? ", partial ramp" : ""})`);
+    }
+    // Slow joins: with a warm-up longer than the ramp, everything must be joined when the
+    // measured window starts, or the window ran partly unloaded.
+    const atStart = phase.measurement?.joined?.atMeasuredStart;
+    if (typeof atStart === "number" && atStart < expected) {
+        failures.push(`joined ${atStart} < ${expectedLabel} (at the measured-window start)`);
     }
     return failures;
 }
@@ -219,6 +221,16 @@ export function joinFailuresCell(connections?: PhaseConnections): string {
     return `<span class="text-red-400">${failures.phase} (${escapeHtml(reasons)})</span>`;
 }
 
+/** The joined count at the measured-window start, or why it isn't checked. */
+function joinedAtStartLine(measurement?: PhaseMeasurement): string {
+    const joined = measurement?.joined;
+    if (!joined) {
+        return "";
+    }
+    const value = joined.atMeasuredStart ?? joined.atMeasuredStartNote ?? "–";
+    return `<div class="text-xs text-slate-400">at window start: ${escapeHtml(String(value))}</div>`;
+}
+
 /** Why a phase failed, listed under its status. */
 export function failuresList(failures: string[]): string {
     if (failures.length === 0) {
@@ -248,7 +260,7 @@ export function renderHtml(report: Report): string {
                     <td class="px-4 py-2 font-medium text-slate-200">${phase.name}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.connections}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.layout ? `${phase.layout.lands} × ${phase.layout.playersPerLand.min === phase.layout.playersPerLand.max ? phase.layout.playersPerLand.max : `${phase.layout.playersPerLand.min}–${phase.layout.playersPerLand.max}`}` : "–"}</td>
-                    <td class="px-4 py-2 text-slate-300">${phase.connectionLifecycle ? `${phase.connectionLifecycle.joinedAtEnd} / ${phase.connectionLifecycle.target}` : "–"}</td>
+                    <td class="px-4 py-2 text-slate-300">${phase.connectionLifecycle ? `${phase.connectionLifecycle.joinedAtEnd} / ${phase.connectionLifecycle.target}` : "–"}${joinedAtStartLine(phase.measurement)}</td>
                     <td class="px-4 py-2 text-slate-300">${joinFailuresCell(phase.connectionLifecycle)}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.connectionLifecycle ? `${phase.connectionLifecycle.closes.clientInitiated} / ${phase.connectionLifecycle.closes.serverInitiated}` : "–"}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.connectionLifecycle?.transitionMs !== undefined ? `${phase.connectionLifecycle.transitionMs} ms` : "–"}</td>

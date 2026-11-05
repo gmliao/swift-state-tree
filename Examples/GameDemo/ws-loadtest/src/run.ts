@@ -134,10 +134,12 @@ export interface PhaseMeasurement {
     };
     windows: WindowSample[];
     /**
-     * Joined, open connections over the measured window: time-weighted average (`average`;
-     * connections that joined or dropped mid-window count partly) and the count at its end.
+     * Joined, open connections. `average`: time-weighted over the measured window (connections
+     * that joined or dropped mid-window count partly), reported only. `atEnd`: at the phase end.
+     * `atMeasuredStart`: at origin + warm-up, when the warm-up is longer than the connect ramp
+     * (the default); otherwise `null`, with the reason in `atMeasuredStartNote`.
      */
-    joined: { average: number; atEnd: number };
+    joined: { average: number; atEnd: number; atMeasuredStart: number | null; atMeasuredStartNote?: string };
 }
 
 export interface PhaseResult {
@@ -416,7 +418,15 @@ export async function runScenario(filePath: string, options: RunOptions | number
                     measured: counterDelta(countersAtMeasureStart, countersAtEnd),
                     readAt: { phaseStartAt: phaseStartReadAt, measuredStartAt: measuredStartReadAt, endAt: endReadAt }
                 },
-                measurement: measurePhase(reports, originAt, durationMs, warmupsMs[p], windowMs, phase.config.actionsPerSecond),
+                measurement: measurePhase(
+                    reports,
+                    originAt,
+                    durationMs,
+                    warmupsMs[p],
+                    windowMs,
+                    phase.config.actionsPerSecond,
+                    rampsMs[p]
+                ),
                 report: aggregateReports(reports, measureFrom, measureTo),
                 phaseTotals: {
                     errorCount: reports.reduce((sum, r) => sum + r.errorCount, 0),
@@ -568,6 +578,33 @@ export function summarizeJoinFailures(
     };
 }
 
+/**
+ * Connections joined and open at the measured-window start. Only meaningful when the warm-up is
+ * longer than the connect ramp: a shorter one (e.g. `--warmup-seconds 0`, or a burst connect
+ * with no warm-up) starts the window while connections are still joining.
+ */
+function joinedAtMeasuredStart(
+    reports: Array<Pick<WorkerPhaseReport, "activeIntervals">>,
+    measureFrom: number,
+    measureTo: number,
+    warmupMs: number,
+    rampMs: number
+): { atMeasuredStart: number | null; atMeasuredStartNote?: string } {
+    if (measureTo <= measureFrom) {
+        return { atMeasuredStart: null, atMeasuredStartNote: "n/a (no measured window)" };
+    }
+    if (warmupMs <= rampMs) {
+        return { atMeasuredStart: null, atMeasuredStartNote: "n/a (warm-up <= ramp)" };
+    }
+    let count = 0;
+    for (const r of reports) {
+        for (const [from, to] of r.activeIntervals) {
+            if (from <= measureFrom && to > measureFrom) count += 1;
+        }
+    }
+    return { atMeasuredStart: count };
+}
+
 /** The phase's measurement window, send rate and per-window samples. */
 export function measurePhase(
     reports: WorkerPhaseReport[],
@@ -575,7 +612,8 @@ export function measurePhase(
     durationMs: number,
     warmupMs: number,
     windowMs: number,
-    actionsPerSecond: number
+    actionsPerSecond: number,
+    rampMs: number = 0
 ): PhaseMeasurement {
     const measureFrom = originAt + warmupMs;
     const measureTo = originAt + durationMs;
@@ -620,7 +658,8 @@ export function measurePhase(
         windows: windowSamples(samples, originAt, durationMs, windowMs, warmupMs),
         joined: {
             average: Math.round(averageActive * 100) / 100,
-            atEnd: reports.reduce((sum, r) => sum + r.joinedAtEnd, 0)
+            atEnd: reports.reduce((sum, r) => sum + r.joinedAtEnd, 0),
+            ...joinedAtMeasuredStart(reports, measureFrom, measureTo, warmupMs, rampMs)
         }
     };
 }

@@ -19,6 +19,8 @@ describe("join failures against a stub server", () => {
     let url: string;
     let capacity = 2;
     let rejectMode: RejectMode = "error";
+    /** Delay before an admitted join is answered. */
+    let joinDelayMs = 0;
     const joinedPerLand = new Map<string, number>();
 
     beforeAll(async () => {
@@ -34,10 +36,15 @@ describe("join failures against a stub server", () => {
                     const joined = joinedPerLand.get(land) ?? 0;
                     if (joined < capacity) {
                         joinedPerLand.set(land, joined + 1);
-                        socket.send(JSON.stringify({
+                        const answer = () => socket.send(JSON.stringify({
                             kind: "joinResponse",
                             payload: { joinResponse: { requestID, success: true, encoding: "json" } }
                         }));
+                        if (joinDelayMs > 0) {
+                            setTimeout(answer, joinDelayMs);
+                        } else {
+                            answer();
+                        }
                     } else if (rejectMode === "error") {
                         socket.send(JSON.stringify({
                             kind: "error",
@@ -66,10 +73,10 @@ describe("join failures against a stub server", () => {
         await new Promise<void>((resolve) => server.close(() => resolve()));
     });
 
-    function writeScenario(playersPerRoom: number): string {
+    function writeScenario(playersPerRoom: number, durationSeconds = 1.5): string {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ws-loadtest-join-failures-"));
         const file = path.join(dir, "scenario.json");
-        const phase = { durationSeconds: 1.5, rooms: 1, playersPerRoom, actionsPerSecond: 2, verify: false };
+        const phase = { durationSeconds, rooms: 1, playersPerRoom, actionsPerSecond: 2, verify: false };
         fs.writeFileSync(
             file,
             JSON.stringify({ name: "join-failures", serverUrl: url, phases: { preflight: phase, steady: phase, postflight: phase } })
@@ -95,6 +102,7 @@ describe("join failures against a stub server", () => {
         for (const phase of result.phases) {
             expect(phase.connections.joinFailures).toEqual({ phase: 0, measured: 0, byReason: {} });
             expect(phase.measurement.joined.average).toBe(4);
+            expect(phase.measurement.joined.atMeasuredStart).toBe(4);
         }
         expect(report.phases.map((p) => p.failures)).toEqual([[], [], []]);
         expect(report.phases.every((p) => p.passed)).toBe(true);
@@ -113,13 +121,18 @@ describe("join failures against a stub server", () => {
         expect(report.phases[0].errorRate).toBe(0);
         expect(report.phases[0].passed).toBe(false);
         expect(report.phases[0].failures.some((f) => f.startsWith("joinFailures 2 > 0 (error 2)"))).toBe(true);
-        expect(report.phases[0].failures.some((f) => f.startsWith("joined 2 < target 4"))).toBe(true);
+        expect(report.phases[0].failures).toEqual([
+            "joinFailures 2 > 0 (error 2)",
+            "joined 2 < target 4 (at the phase end)",
+            "joined 2 < target 4 (at the measured-window start)"
+        ]);
         // The HTML shows the join failures with reasons and why each FAIL row failed.
         const html = renderHtml(report);
         expect(html).toContain("Join failures (phase)");
         expect(html).toContain("2 (error 2)</span>");
         expect(html).toContain("<li>joinFailures 2 &gt; 0 (error 2)</li>");
-        expect(html).toContain("<li>joined 2 &lt; target 4 (time-weighted over the measured window)</li>");
+        expect(html).toContain("<li>joined 2 &lt; target 4 (at the phase end)</li>");
+        expect(html).toContain("at window start: 2</div>");
         // Only joined connections are kept: the 2 refused ones are closed at the transition, and
         // the next phase opens 2 new ones that join again (and are refused again).
         for (const [i, phase] of [steady, post].entries()) {
@@ -131,7 +144,8 @@ describe("join failures against a stub server", () => {
             expect(report.phases[i + 1].passed).toBe(false);
             expect(report.phases[i + 1].failures).toEqual([
                 "joinFailures 2 > 0 (error 2)",
-                "joined 2 < target 4 (time-weighted over the measured window)"
+                "joined 2 < target 4 (at the phase end)",
+                "joined 2 < target 4 (at the measured-window start)"
             ]);
         }
     }, 30_000);
@@ -182,10 +196,53 @@ describe("join failures against a stub server", () => {
         const { report } = await run(4, false, { allowPartialRamp: true });
         expect(report.phases[0].failures).toEqual([
             "joinFailures 1 > 0 (error 1)",
-            "joined 3 < opened 4 (at the phase end, partial ramp)"
+            "joined 3 < opened 4 (at the phase end, partial ramp)",
+            "joined 3 < opened 4 (at the measured-window start)"
         ]);
         capacity = 4;
         const healthy = await run(4, false, { allowPartialRamp: true });
         expect(healthy.report.phases.every((p) => p.passed)).toBe(true);
     }, 60_000);
+
+    it("legacy flags with warm-up 0 pass when every join succeeds; the window-start check is n/a", async () => {
+        capacity = 4;
+        joinedPerLand.clear();
+        const result = await runScenario(writeScenario(1), {
+            workers: 1,
+            layout: "per-connection",
+            connectMode: "burst",
+            boundaryMode: "abrupt",
+            sendMode: "lockstep",
+            warmupSeconds: 0
+        });
+        const report = buildReport(result, { system: [] });
+        for (const phase of result.phases) {
+            expect(phase.connections.joinFailures.phase).toBe(0);
+            expect(phase.measurement.joined.atMeasuredStart).toBeNull();
+            expect(phase.measurement.joined.atMeasuredStartNote).toBe("n/a (warm-up <= ramp)");
+        }
+        expect(report.phases.map((p) => p.failures)).toEqual([[], [], []]);
+        expect(renderHtml(report)).toContain("at window start: n/a (warm-up &lt;= ramp)");
+    }, 30_000);
+
+    it("joins answered after the measured window starts fail on the window-start check (default warm-up)", async () => {
+        capacity = 4;
+        joinDelayMs = 1300;
+        try {
+            joinedPerLand.clear();
+            // 2 s phases: the default warm-up is ramp + 2 s capped at half the phase, 1 s.
+            const result = await runScenario(writeScenario(2, 2), { workers: 1, layout: "rooms" });
+            const report = buildReport(result, { system: [] });
+            const pre = result.phases[0];
+            expect(result.runConfig.phases[0].warmupMs).toBe(1000);
+            expect(pre.connections.joinFailures.phase).toBe(0);
+            expect(pre.connections.joinedAtEnd).toBe(2);
+            expect(pre.measurement.joined.atMeasuredStart).toBe(0);
+            expect(report.phases[0].failures).toEqual(["joined 0 < target 2 (at the measured-window start)"]);
+            // Later phases keep the joined connections: joined from the start, they pass.
+            expect(report.phases[1].passed).toBe(true);
+        } finally {
+            joinDelayMs = 0;
+        }
+    }, 30_000);
 });
