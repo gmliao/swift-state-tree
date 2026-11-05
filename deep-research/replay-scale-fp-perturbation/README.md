@@ -135,6 +135,47 @@ Ubuntu / Swift 6.2.3）重播 **41/41 通過、0 mismatch**——錄製端為 ar
 Swift 6.3.2，故此結果同時跨 CPU 架構、作業系統與 toolchain 版本三軸，
 `E_t` 錄下後 δ 的重評估不依賴錄製平台。
 
+## Re-measurement at record format 2.4 (full-state hash, #180)
+
+The runs above, and every record before format 2.4, hashed the **broadcast view** of the state
+(`snapshot(for: nil)`). Server-only fields such as `MonsterState.pathProgress` (`Float`),
+`players.*.lastFireTick` and `nextMonsterID` were not covered. From record format 2.4 (#185,
+merge commit `f84892f`), the per-tick state hash covers the full state: every `@Sync` field at
+every depth, whatever its policy, but not `@Internal` properties. Part A was re-recorded and
+verified with that hash on 2026-11-06 at commit `2c9d2849` (the PR head that was merged).
+
+**Matrix:** Part A as above, 41 recordings:
+- seeds 1–30: 5 players, MoveTo every 20 ticks, 1,200 ticks;
+- 101–103: 2 players;
+- 111–113: 10 players;
+- 121–123: MoveTo every 5 ticks;
+- 201–202: 12,000 ticks.
+
+Each was recorded with `ReevaluationRunner --record --seed-id <N> --players <P> --move-every <M> --ticks <T>` and checked with `--input s<N>.json --verify`.
+
+| machine | arch | swift | build | recordings | verified | tick mismatches | ticks | client events | actions |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|
+| Apple M2, macOS | arm64 | Apple Swift 6.4.2 | release | 41 | 41 | 0 | 70,800 | 20,760 | 0 |
+| AMD Ryzen 5 7600X, `swift:6.2.4-noble` container | x86_64 | 6.2.4 | release | 41 | 41 | 0 | 70,800 | 20,760 | 0 |
+
+Every tick carries a full-state hash (70,800 of 70,800 on each machine). The totals equal the
+original Part A.
+
+**Cross-architecture and cross-toolchain identity:**
+- The two batches were recorded independently, one on each machine.
+- The records are byte-deterministic: sorted-keys JSON, a fixed `createdAt` in `--record`, and no host fields.
+- All 41 x86_64 files are byte-identical to the arm64 files, by per-file sha256, 41/41 equal.
+- The per-file list is `results/batch-2.4-SHA256SUMS.txt`. The list itself has sha256 `8cd1c29ead1b67afdf4cde21e6618ffd8ebc4a15f98c2164f7c0b0582a6a2ed5`, on both machines.
+
+Each machine's verification of its own batch therefore also verifies the other's, in both directions. The comparison crosses three things at once:
+- CPU architecture: arm64 and x86_64;
+- operating system: macOS and Linux;
+- toolchain: Apple Swift 6.4.2 and Swift 6.2.4.
+
+With the full-state hash this covers the server-only `Float` `pathProgress`. In Hero Defense it is computed from integer square roots, dequantized, then one IEEE division and `min`, with no library math.
+
+Part B (perturbation) was not re-run at 2.4.
+
 ## Caveats
 
 - **本實驗過程中發現並修正了一個真實的決定性 bug**：hero-defense tick handler 與最近目標選擇
