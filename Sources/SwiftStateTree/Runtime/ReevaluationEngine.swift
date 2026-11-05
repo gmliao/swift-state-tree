@@ -50,9 +50,10 @@ public enum ReevaluationEngine {
         public let hashIncomparability: String?
         /// What the recorded and replayed state hashes cover, from the record's version.
         public let hashDefinition: ReevaluationHashDefinition
-        /// Ticks whose state hash could not be computed, live (recorded as unavailable) or in
-        /// the replay, with the reason. They are not verified, and a verifier fails on them
-        /// instead of comparing the markers.
+        /// Ticks whose state hash the live run could not compute (recorded as unavailable), with
+        /// the recorded reason. They are not compared; a verifier reports them only after every
+        /// definite failure. A replay whose conversion throws against a valid recorded hash is a
+        /// mismatch, not one of these.
         public let unverifiableStateHashes: [Int64: String]
 
         /// Verdict on `serverEventMismatches`, decided per tick (see `classifyServerEventMismatches`).
@@ -71,11 +72,14 @@ public enum ReevaluationEngine {
         case failed(reason: String)
         /// The state hash differs, in a record whose hash this build cannot reproduce (#175).
         case notComparable(reason: String)
+        /// The live run could not compute the state hash and recorded it as unavailable (#180).
+        case unverifiable(reason: String)
 
         public var summary: String {
             switch self {
             case .notRecorded: return "not recorded"
             case .notComparable(let reason): return "not verified: \(reason)"
+            case .unverifiable(let reason): return "unverifiable: \(reason)"
             case .passed: return "verified"
             case .failed(let reason): return "FAILED: \(reason)"
             }
@@ -95,8 +99,12 @@ public enum ReevaluationEngine {
             return .failed(reason: "server events differ (recorded \(record.serverEvents.count), replayed \(emitted.count))")
         }
         if let recorded = record.stateHash {
-            guard !isUnavailableHash(recorded), let replayed = stateHash(state, definition: hashDefinition) else {
-                return .failed(reason: "state hash unavailable, not verifiable (recorded \(recorded))")
+            if isUnavailableHash(recorded) {
+                return .unverifiable(reason: "state hash recorded as \(recorded)")
+            }
+            // A valid recorded hash the replay cannot compute is a divergence.
+            guard let replayed = stateHash(state, definition: hashDefinition) else {
+                return .failed(reason: "state hash recorded \(recorded), replayed conversion threw")
             }
             if recorded != replayed {
                 if let hashIncomparability {
@@ -271,10 +279,11 @@ public enum ReevaluationEngine {
 
                 if let recorded = try await source.getStateHash(for: tickId) {
                     recordedHashes[tickId] = recorded
+                    // Only a hash the live run could not compute is unverifiable. A valid
+                    // recorded hash that the replay cannot reproduce, also because its
+                    // conversion throws, is a mismatch like any other.
                     if isUnavailableHash(recorded) {
                         unverifiable[tickId] = "recorded \(recorded)"
-                    } else if isUnavailableHash(stateHash) {
-                        unverifiable[tickId] = "replayed \(stateHash)"
                     }
                 }
 

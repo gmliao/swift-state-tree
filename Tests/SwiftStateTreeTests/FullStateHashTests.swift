@@ -238,3 +238,114 @@ func liveUnavailableStateHash() async throws {
     #expect(hashes.count >= 2)
     #expect(hashes.allSatisfy { ReevaluationEngine.isUnavailableHash($0) && $0.hasPrefix(ReevaluationEngine.unavailableHashPrefix) }, "\(hashes)")
 }
+
+// MARK: - Review round 1 (#185)
+
+@SnapshotConvertible
+struct NodeHolder: Sendable {
+    var label: String = ""
+    var node: FullHashMonster = FullHashMonster()
+}
+
+enum NodeChoice: Sendable {
+    case none
+    case one(FullHashMonster)
+}
+
+@StateNodeBuilder
+struct WrapperHashState: StateNodeProtocol {
+    @Sync(.serverOnly) var holder: NodeHolder = NodeHolder()
+    @Sync(.serverOnly) var choice: NodeChoice = NodeChoice.none
+    @Sync(.serverOnly) var big: UInt64 = UInt64.max
+    @Sync(.broadcast) var bigShown: UInt64 = UInt64.max
+    @Sync(.broadcast) var bigUInt: UInt = UInt.max
+    @Sync(.serverOnly) var ratio: Double = 0
+
+    init() {}
+}
+
+@Suite("Full-state replay hash: wrappers, unsigned values, NaN")
+struct FullStateHashReviewTests {
+    @Test("A node inside a @SnapshotConvertible value or an enum payload is hashed in full")
+    func nodesInsideWrappers() throws {
+        var state = WrapperHashState()
+        state.holder.node = FullHashMonster(hp: 1, progress: 2)
+        state.choice = .one(FullHashMonster(hp: 3, progress: 4))
+        let values = try state.fullStateSnapshot().values
+        #expect(values["holder"] == .object(["label": .string(""), "node": .object(["hp": .int(1), "progress": .int(2)])]))
+        #expect(values["choice"] == .object(["one": .object(["hp": .int(3), "progress": .int(4)])]))
+        var changed = state
+        changed.holder.node.progress = 9
+        #expect(ReevaluationEngine.calculateStateHash(changed) != ReevaluationEngine.calculateStateHash(state))
+        changed = state
+        changed.choice = .one(FullHashMonster(hp: 3, progress: 5))
+        #expect(ReevaluationEngine.calculateStateHash(changed) != ReevaluationEngine.calculateStateHash(state))
+        #expect(try WrapperHashState().fullStateSnapshot().values["choice"] == .string("none"))
+    }
+
+    @Test("Unsigned values above Int.max convert losslessly instead of trapping")
+    func largeUnsigned() throws {
+        let state = WrapperHashState()
+        let full = try state.fullStateSnapshot().values
+        #expect(full["big"] == .string("18446744073709551615"))
+        let broadcast = try state.snapshot(for: nil, dirtyFields: nil).values
+        #expect(broadcast["bigShown"] == .string("18446744073709551615"), "the broadcast path no longer traps")
+        #expect(broadcast["bigUInt"] == .string(String(UInt.max)))
+        #expect(try SnapshotValue.make(from: UInt64(5)) == .int(5), "values that fit stay ints")
+        #expect(!ReevaluationEngine.isUnavailableHash(ReevaluationEngine.calculateStateHash(state)))
+    }
+
+    @Test("A server-only UInt64.max is recorded with a valid live hash (#185)")
+    func largeUnsignedLive() async throws {
+        let definition = Land("big-unsigned", using: WrapperHashState.self) {
+            Rules {}
+            Lifetime {
+                Tick(every: .seconds(3600)) { (state: inout WrapperHashState, _: LandContext) in
+                    state.ratio += 1
+                }
+            }
+        }
+        let keeper = LandKeeper<WrapperHashState>(
+            definition: definition,
+            initialState: WrapperHashState(),
+            enableLiveStateHashRecording: true,
+            autoStartLoops: false
+        )
+        let recorder = try #require(await keeper.getReevaluationRecorder())
+        await keeper.stepTickOnce()
+        await keeper.waitForRecorderSubmissionsForTesting()
+        #expect(await keeper.stateHashUnavailableCount == 0)
+        let hashes = await recorder.getAllFrames().compactMap(\.stateHash)
+        #expect(!hashes.isEmpty && hashes.allSatisfy { !ReevaluationEngine.isUnavailableHash($0) }, "\(hashes)")
+    }
+
+    @Test("NaN makes a tick's state hash unavailable")
+    func nanIsUnavailable() {
+        var state = WrapperHashState()
+        state.ratio = .nan
+        #expect(ReevaluationEngine.stateHash(state, definition: .fullState) == nil)
+        #expect(ReevaluationEngine.isUnavailableHash(ReevaluationEngine.calculateStateHash(state)))
+    }
+
+    @Test("Initialize: recorded unavailable is unverifiable; a valid recording the replay cannot compute fails")
+    func initializeUnavailable() {
+        let unavailable = ReevaluationEngine.verifyInitialize(
+            record: ReevaluationRecordedInitialize(sequence: 0, serverEvents: [], stateHash: "unavailable: x"),
+            emitted: [], state: FullHashState()
+        )
+        guard case .unverifiable = unavailable else {
+            Issue.record("expected unverifiable, got \(unavailable)")
+            return
+        }
+        var throwing = FullHashState()
+        throwing.byKey = [CollidingKey(id: 1): 1, CollidingKey(id: 2): 2]
+        let diverged = ReevaluationEngine.verifyInitialize(
+            record: ReevaluationRecordedInitialize(sequence: 0, serverEvents: [], stateHash: "0123456789abcdef"),
+            emitted: [], state: throwing
+        )
+        guard case .failed = diverged else {
+            Issue.record("expected failed, got \(diverged)")
+            return
+        }
+    }
+}
