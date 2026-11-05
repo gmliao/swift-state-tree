@@ -159,6 +159,46 @@ public struct NIOWebSocketServerConfiguration: Sendable {
         return min(value, Int(Int32.max))
     }
 
+    /// The listen backlog the kernel uses for a requested one (#124). The kernel caps the backlog
+    /// at `somaxconn` without telling the application, and drops SYNs once the capped queue is
+    /// full, so the startup log reports this instead of only the requested value.
+    public struct ListenBacklogCheck: Equatable, Sendable {
+        /// The backlog the server asks `listen()` for.
+        public let requested: Int
+        /// `net.core.somaxconn`, or nil when it could not be read (no `/proc`, as on macOS).
+        public let systemCap: Int?
+
+        /// The backlog the kernel queues: the requested value, capped at `systemCap` if known.
+        public var effective: Int { systemCap.map { min(requested, $0) } ?? requested }
+        /// Whether the kernel lowers the requested backlog.
+        public var isCapped: Bool { systemCap.map { $0 < requested } ?? false }
+    }
+
+    /// Where Linux exposes the listen backlog cap.
+    static let somaxconnPath = "/proc/sys/net/core/somaxconn"
+
+    /// Checks `requested` against `somaxconn`, read with `read` (a file path to its contents, or
+    /// nil if it does not exist). Contents that are not a positive integer count as unread.
+    static func listenBacklogCheck(
+        requested: Int,
+        read: (String) -> String?
+    ) -> ListenBacklogCheck {
+        let cap = read(somaxconnPath)
+            .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            .flatMap { $0 > 0 ? $0 : nil }
+        return ListenBacklogCheck(requested: requested, systemCap: cap)
+    }
+
+    /// The listen backlog check for `requested` on this host.
+    public static func listenBacklogCheck(requested: Int) -> ListenBacklogCheck {
+        listenBacklogCheck(requested: requested, read: readSystemFile)
+    }
+
+    /// The contents of a small system file, or nil if it does not exist or cannot be read.
+    static func readSystemFile(_ path: String) -> String? {
+        try? String(contentsOfFile: path, encoding: .utf8)
+    }
+
     public init(
         host: String = "127.0.0.1",
         port: Int = 8080,
@@ -351,6 +391,17 @@ public actor NIOWebSocketServer {
         self.isRunning = true
 
         let cpus = NIOWebSocketServerConfiguration.availableCPUs()
+        let backlog = NIOWebSocketServerConfiguration.listenBacklogCheck(requested: configuration.listenBacklog)
+        if backlog.isCapped, let cap = backlog.systemCap {
+            configuration.logger.warning(
+                "The kernel caps the listen backlog below the requested value; raise net.core.somaxconn to queue more connections",
+                metadata: [
+                    "listenBacklog": .stringConvertible(backlog.requested),
+                    "somaxconn": .stringConvertible(cap),
+                    "effectiveListenBacklog": .stringConvertible(backlog.effective),
+                ]
+            )
+        }
         if cpus.affinityMaskUnparsable {
             configuration.logger.warning(
                 "Cpus_allowed_list in /proc/self/status did not parse; the CPU count ignores the affinity mask",
@@ -369,8 +420,10 @@ public actor NIOWebSocketServer {
                 "cpuSource": .string(cpus.source.rawValue),
                 "machineCPUs": .stringConvertible(System.coreCount),
                 "eventLoopThreadsEnv": .string(EnvHelpers.getEnvStringOptional(key: EnvKeys.Server.eventLoopThreads) ?? "unset"),
-                // Requested; the kernel caps it at somaxconn.
-                "listenBacklog": .stringConvertible(configuration.listenBacklog),
+                // Requested; the kernel caps it at somaxconn ("unchecked" where it can't be read).
+                "listenBacklog": .stringConvertible(backlog.requested),
+                "somaxconn": .string(backlog.systemCap.map(String.init) ?? "unchecked"),
+                "effectiveListenBacklog": .stringConvertible(backlog.effective),
             ]
         )
     }
