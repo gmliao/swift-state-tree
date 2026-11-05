@@ -28,7 +28,8 @@ public struct NIOWebSocketServerConfiguration: Sendable {
     /// Listen backlog requested for the server socket: how many connections the kernel queues
     /// before `accept`. The kernel caps it at `somaxconn` but never raises it, so a small value
     /// drops SYNs when many clients connect at once. Defaults to `LISTEN_BACKLOG`, else
-    /// `defaultListenBacklog`.
+    /// `defaultListenBacklog`. An explicit value of 0 or below also gives `defaultListenBacklog`
+    /// (as `LISTEN_BACKLOG` does), and values above `Int32.max` are capped.
     public var listenBacklog: Int
 
     /// The listen backlog without `LISTEN_BACKLOG`.
@@ -39,11 +40,16 @@ public struct NIOWebSocketServerConfiguration: Sendable {
     public static func listenBacklog(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Int {
-        let value = EnvHelpers.getEnvInt(
+        normalizedListenBacklog(EnvHelpers.getEnvInt(
             key: EnvKeys.Server.listenBacklog,
             defaultValue: defaultListenBacklog,
             environment: environment
-        )
+        ))
+    }
+
+    /// `value` as a valid listen backlog: 0 or below gives `defaultListenBacklog`, and values
+    /// above `Int32.max` are capped.
+    public static func normalizedListenBacklog(_ value: Int) -> Int {
         guard value > 0 else { return defaultListenBacklog }
         return min(value, Int(Int32.max))
     }
@@ -63,7 +69,7 @@ public struct NIOWebSocketServerConfiguration: Sendable {
         self.maxFrameSize = maxFrameSize
         self.logger = logger
         self.schemaProvider = schemaProvider
-        self.listenBacklog = min(max(listenBacklog, 1), Int(Int32.max))
+        self.listenBacklog = Self.normalizedListenBacklog(listenBacklog)
     }
 }
 

@@ -31,10 +31,26 @@ struct NIOWebSocketServerConfigurationTests {
         #expect(NIOWebSocketServerConfiguration.listenBacklog(environment: [EnvKeys.Server.listenBacklog: huge]) == Int(Int32.max))
     }
 
-    @Test("An explicit listenBacklog wins and is clamped to 1...Int32.max")
+    @Test("An explicit listenBacklog wins; 0 or below gives 4096, as the env path does")
     func explicitValue() {
         #expect(NIOWebSocketServerConfiguration(listenBacklog: 1024).listenBacklog == 1024)
-        #expect(NIOWebSocketServerConfiguration(listenBacklog: 0).listenBacklog == 1)
+        #expect(NIOWebSocketServerConfiguration(listenBacklog: 0).listenBacklog == 4096)
+        #expect(NIOWebSocketServerConfiguration(listenBacklog: -5).listenBacklog == 4096)
         #expect(NIOWebSocketServerConfiguration(listenBacklog: Int.max).listenBacklog == Int(Int32.max))
+    }
+
+    @Test("A NIOLandHostConfiguration listenBacklog reaches the server configuration")
+    func hostValueReachesServer() {
+        let host = NIOLandHostConfiguration(host: "127.0.0.1", port: 9999, eventLoopThreads: 2, listenBacklog: 2048)
+        #expect(host.listenBacklog == 2048)
+        let server = host.webSocketServerConfiguration()
+        #expect(server.listenBacklog == 2048)
+        #expect(server.host == "127.0.0.1")
+        #expect(server.port == 9999)
+        #expect(server.eventLoopThreads == 2)
+
+        #expect(NIOLandHostConfiguration(listenBacklog: 0).listenBacklog == 4096)
+        // Without an argument the host uses the same env-or-default value as the server.
+        #expect(NIOLandHostConfiguration().listenBacklog == NIOWebSocketServerConfiguration.listenBacklog())
     }
 }

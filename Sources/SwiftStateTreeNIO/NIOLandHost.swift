@@ -65,6 +65,9 @@ public struct NIOLandHostConfiguration: Sendable {
     public var replayWebSocketPathResolver: (@Sendable (String) -> String)?
     /// Lifecycle middlewares (run at start/shutdown). Order: start runs in order; shutdown runs in reverse.
     public var middlewares: [any HostMiddleware]
+    /// Listen backlog for the WebSocket server socket; see `NIOWebSocketServerConfiguration.listenBacklog`.
+    /// Defaults to `LISTEN_BACKLOG`, else 4096; 0 or below gives 4096.
+    public var listenBacklog: Int
 
     public init(
         host: String = "localhost",
@@ -74,7 +77,8 @@ public struct NIOLandHostConfiguration: Sendable {
         schemaProvider: (@Sendable () -> Data?)? = nil,
         adminAPIKey: String? = nil,
         replayWebSocketPathResolver: (@Sendable (String) -> String)? = nil,
-        middlewares: [any HostMiddleware] = []
+        middlewares: [any HostMiddleware] = [],
+        listenBacklog: Int = NIOWebSocketServerConfiguration.listenBacklog()
     ) {
         self.host = host
         self.port = port
@@ -84,6 +88,19 @@ public struct NIOLandHostConfiguration: Sendable {
         self.adminAPIKey = adminAPIKey
         self.replayWebSocketPathResolver = replayWebSocketPathResolver
         self.middlewares = middlewares
+        self.listenBacklog = NIOWebSocketServerConfiguration.normalizedListenBacklog(listenBacklog)
+    }
+
+    /// The WebSocket server configuration this host starts its server with.
+    func webSocketServerConfiguration() -> NIOWebSocketServerConfiguration {
+        NIOWebSocketServerConfiguration(
+            host: host,
+            port: Int(port),
+            eventLoopThreads: eventLoopThreads,
+            logger: logger,
+            schemaProvider: schemaProvider,
+            listenBacklog: listenBacklog
+        )
     }
 }
 
@@ -392,13 +409,7 @@ public actor NIOLandHost {
         let authInfoResolver: (any AuthInfoResolverProtocol)? = configs.isEmpty ? nil : makeAuthResolver(configs)
 
         // Create and start server with HTTP router
-        let serverConfig = NIOWebSocketServerConfiguration(
-            host: configuration.host,
-            port: Int(configuration.port),
-            eventLoopThreads: configuration.eventLoopThreads,
-            logger: configuration.logger,
-            schemaProvider: configuration.schemaProvider
-        )
+        let serverConfig = configuration.webSocketServerConfiguration()
 
         let server = NIOWebSocketServer(
             configuration: serverConfig,
