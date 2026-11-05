@@ -28,8 +28,10 @@ import Foundation
 ///   sync while such a cycle is in flight leaves it to a sync-only turn after `endSync`.
 /// - Opcode 107 keeps emit order per frame kind only: per session the merged broadcast frame
 ///   comes first, then targeted event frames, then the per-player frame.
-/// - A handler that throws keeps the legacy semantics: the pass is aborted and its inputs stay
-///   pending; the state keeps what the handlers wrote before the throw.
+/// - A handler that throws keeps the legacy semantics: in a tick turn the pass is aborted and its
+///   inputs stay pending; in an input turn the inputs before the throwing one are applied (as in
+///   their own legacy passes) and it and the inputs after it stay pending, with its error. The
+///   state keeps what the throwing handler wrote before the throw.
 /// - Re-evaluation keepers always use the legacy path.
 public enum InTurnSync {
     /// Whether in-turn sync is enabled by the environment: `true` unless `IN_TURN_SYNC` is false.
