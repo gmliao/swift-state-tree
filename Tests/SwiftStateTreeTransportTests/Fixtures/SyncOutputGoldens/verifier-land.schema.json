@@ -113,7 +113,13 @@
         },
         "box" : {
           "$ref" : "#\/defs\/Any",
-          "default" : 0
+          "default" : 0,
+          "x-stateTree" : {
+            "nodeKind" : "leaf",
+            "sync" : {
+              "policy" : "broadcast"
+            }
+          }
         },
         "boxes" : {
           "additionalProperties" : {
@@ -133,19 +139,43 @@
         },
         "fragile" : {
           "$ref" : "#\/defs\/Any",
-          "default" : 0
+          "default" : 0,
+          "x-stateTree" : {
+            "nodeKind" : "leaf",
+            "sync" : {
+              "policy" : "broadcast"
+            }
+          }
         },
         "missesDirty" : {
           "$ref" : "#\/defs\/Any",
-          "default" : false
+          "default" : false,
+          "x-stateTree" : {
+            "nodeKind" : "leaf",
+            "sync" : {
+              "policy" : "serverOnly"
+            }
+          }
         },
         "missesPerPlayerDirty" : {
           "$ref" : "#\/defs\/Any",
-          "default" : false
+          "default" : false,
+          "x-stateTree" : {
+            "nodeKind" : "leaf",
+            "sync" : {
+              "policy" : "serverOnly"
+            }
+          }
         },
         "quiet" : {
           "$ref" : "#\/defs\/Any",
-          "default" : false
+          "default" : false,
+          "x-stateTree" : {
+            "nodeKind" : "leaf",
+            "sync" : {
+              "policy" : "serverOnly"
+            }
+          }
         },
         "scores" : {
           "additionalProperties" : {
@@ -181,7 +211,13 @@
         },
         "ticks" : {
           "default" : 0,
-          "type" : "integer"
+          "type" : "integer",
+          "x-stateTree" : {
+            "nodeKind" : "leaf",
+            "sync" : {
+              "policy" : "broadcast"
+            }
+          }
         }
       },
       "required" : [
@@ -250,6 +286,6 @@
       }
     }
   },
-  "schemaHash" : "1011909bbc02d16a",
+  "schemaHash" : "93b12fc01e106534",
   "version" : "0.1.0"
 }
