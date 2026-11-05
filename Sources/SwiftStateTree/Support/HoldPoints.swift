@@ -5,8 +5,8 @@
 
 import Foundation
 
-/// One optional hook per instance, called at named points. A no-op (one `nil` check) unless a
-/// test installs it.
+/// One optional hook per instance, called at named points. A no-op (one `nil` check, no
+/// suspension, no executor hop) unless a test installs it.
 ///
 /// In the owning type:
 /// ```swift
@@ -26,8 +26,15 @@ package struct HoldPoints<Point: Hashable & Sendable>: Sendable {
     }
 
     /// Awaits the hook at `point`, if one is installed.
-    package func at(_ point: Point) async {
-        if let hook { await hook(point) }
+    ///
+    /// Runs on the caller's executor (`isolation`), and with nothing installed it returns without
+    /// suspending: an actor's code before and after `await holds.at(...)` stays one synchronous
+    /// segment, so no other job of that actor runs in between. A plain nonisolated `async`
+    /// method would hop off the actor here even with no hook, and open a reentrancy window at
+    /// every hold point in production.
+    package func at(_ point: Point, isolation: isolated (any Actor)? = #isolation) async {
+        guard let hook else { return }
+        await hook(point)
     }
 }
 
