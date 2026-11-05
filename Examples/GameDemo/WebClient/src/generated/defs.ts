@@ -20,8 +20,13 @@ export type HeroDefenseState = { base: BaseState; monsters: { [key: string]: Mon
 export type MonsterState = { health: number; id: number; maxHealth: number; pathProgress: number; position: Position2; reward: number; rotation: Angle; spawnPosition: Position2 }
 // @ts-ignore - DeterministicMath classes (Position2) are used in type definitions
 export type MoveToEvent = { target: Position2 }
+// @ts-ignore - DeterministicMath classes (Position2) are used in type definitions
+export type MoveViewerEvent = { position: Position2 }
+export type ParkEntitiesAction = { [key: string]: any }
 export type PauseVerificationAction = { [key: string]: any }
 export type PauseVerificationResponse = { [key: string]: any }
+// @ts-ignore - DeterministicMath classes (Position2) are used in type definitions
+export type PlaceEntityAction = { id: string; positions: Position2[] }
 // @ts-ignore - DeterministicMath classes (Position2) are used in type definitions
 export type PlaceTurretEvent = { position: Position2 }
 export type PlayAction = { [key: string]: any }
@@ -35,6 +40,7 @@ export type PlayerState = { health: number; lastFireTick: number; maxHealth: num
 export type ReevaluationMonitorState = { correctTicks: number; currentActualHash: string; currentExpectedHash: string; currentIsMatch: boolean; currentTickId: number; errorMessage: string; isPaused: boolean; mismatchedTicks: number; processedTicks: number; recordFilePath: string; status: string; totalTicks: number }
 export type ResumeVerificationAction = { [key: string]: any }
 export type ResumeVerificationResponse = { [key: string]: any }
+export type SetMotionAction = { enabled: boolean }
 export type ShootEvent = { [key: string]: any }
 export type StartVerificationAction = { landType: string; recordFilePath: string }
 export type StartVerificationResponse = { [key: string]: any }
@@ -53,6 +59,11 @@ export type UpgradeWeaponEvent = { [key: string]: any }
 export type VerificationCompleteEvent = { correctTicks: number; mismatchedTicks: number; mismatches: TickMismatch[]; totalTicks: number }
 export type VerificationFailedEvent = { errorMessage: string }
 export type VerificationProgressEvent = { processedTicks: number; totalTicks: number }
+export type Viewer = { [key: string]: any }
+export type VisibilityTestResponse = { viewEntries: number; viewExits: number }
+export type VisibilityTestState = { entities: { [key: string]: VisibleEntity }; motion: boolean; tickCount: number; viewEntries: number; viewExits: number; viewers: { [key: string]: Viewer } }
+// @ts-ignore - DeterministicMath classes (IVec2, Position2) are used in type definitions
+export type VisibleEntity = { id: string; position: Position2; step: IVec2; visibleTo: PlayerID[] }
 
 // Generic Optional type for all Optional<T> usages
 export type Optional<T> = T | null | undefined

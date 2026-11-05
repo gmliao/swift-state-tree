@@ -175,32 +175,51 @@ struct ReevaluationRunnerMain {
         }
         print("")
         
-        guard landType == "hero-defense" else {
+        // Replays a record of the land it names; the batch recorder below is Hero Defense only.
+        typealias EngineRun = (_ sink: (any ReevaluationSink)?, _ exportJsonlPath: String?, _ diffWithPath: String?, _ logger: Logger) async throws -> ReevaluationEngine.RunResult
+        let runEngine: EngineRun
+        switch landType {
+        case "hero-defense":
+            var services = LandServices()
+            services.register(
+                GameConfigProviderService(provider: DefaultGameConfigProvider()),
+                as: GameConfigProviderService.self
+            )
+            runEngine = { sink, exportJsonlPath, diffWithPath, logger in
+                try await ReevaluationEngine.run(
+                    definition: HeroDefense.makeLand(),
+                    initialState: HeroDefenseState(),
+                    recordFilePath: inputFile,
+                    services: services,
+                    sink: sink,
+                    exportJsonlPath: exportJsonlPath,
+                    diffWithPath: diffWithPath,
+                    logger: logger
+                )
+            }
+        case VisibilityTestConfig.landType:
+            runEngine = { sink, exportJsonlPath, diffWithPath, logger in
+                try await ReevaluationEngine.run(
+                    definition: VisibilityTest.makeLand(),
+                    initialState: VisibilityTestState(),
+                    recordFilePath: inputFile,
+                    sink: sink,
+                    exportJsonlPath: exportJsonlPath,
+                    diffWithPath: diffWithPath,
+                    logger: logger
+                )
+            }
+        default:
             print("Unsupported landType for GameDemo ReevaluationRunner: \(landType)")
             printHelpAndExit(exitCode: 2)
         }
-        
-        var services = LandServices()
-        services.register(
-            GameConfigProviderService(provider: DefaultGameConfigProvider()),
-            as: GameConfigProviderService.self
-        )
         
         // Use a logger that only shows errors to suppress info logs like "Player joined/left"
         var logger = Logger(label: "reevaluation-runner")
         logger.logLevel = .error
         
         let sink = CountingSink()
-        let first = try await ReevaluationEngine.run(
-            definition: HeroDefense.makeLand(),
-            initialState: HeroDefenseState(),
-            recordFilePath: inputFile,
-            services: services,
-            sink: sink,
-            exportJsonlPath: exportJsonlPath,
-            diffWithPath: diffWithPath,
-            logger: logger
-        )
+        let first = try await runEngine(sink, exportJsonlPath, diffWithPath, logger)
         
         let eventCount = await sink.totalEvents
         
@@ -274,13 +293,7 @@ struct ReevaluationRunnerMain {
             exit(9)
         }
         
-        let second = try await ReevaluationEngine.run(
-            definition: HeroDefense.makeLand(),
-            initialState: HeroDefenseState(),
-            recordFilePath: inputFile,
-            services: services,
-            logger: logger
-        )
+        let second = try await runEngine(nil, nil, nil, logger)
         
         let mismatches = diffHashes(a: first.tickHashes, b: second.tickHashes)
         if mismatches.isEmpty {

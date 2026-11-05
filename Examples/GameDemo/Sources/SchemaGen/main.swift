@@ -13,12 +13,13 @@ struct SchemaGen {
         let landDefinitions = [
             AnyLandDefinition(HeroDefense.makeLand()),
             AnyLandDefinition(ReevaluationMonitor.makeLand()),
+            AnyLandDefinition(VisibilityTest.makeLand()),
         ]
 
         do {
             let schema = SchemaGenCLI.generateSchema(
                 landDefinitions: landDefinitions,
-                replayLandTypes: ["hero-defense"]
+                replayLandTypes: ["hero-defense", VisibilityTestConfig.landType]
             )
             let outputPath = parseOutputPath(from: CommandLine.arguments)
             let encoder = JSONEncoder()

@@ -3,13 +3,15 @@
 
 export const SCHEMA_VERSION = "0.1.0" as const
 
-export const LAND_IDS = ["hero-defense","hero-defense-replay","reevaluation-monitor"] as const
+export const LAND_IDS = ["hero-defense","hero-defense-replay","reevaluation-monitor","visibility-test","visibility-test-replay"] as const
 export type LandID = (typeof LAND_IDS)[number]
 
 export const ACTION_IDS = {
   "hero-defense": ["Play"] as const,
   "hero-defense-replay": ["Play"] as const,
   "reevaluation-monitor": ["PauseVerification","ResumeVerification","StartVerification"] as const,
+  "visibility-test": ["ParkEntities","PlaceEntity","SetMotion"] as const,
+  "visibility-test-replay": ["ParkEntities","PlaceEntity","SetMotion"] as const,
 } as const
 export type AnyActionID = (typeof ACTION_IDS)[LandID][number]
 export type ActionIDFor<L extends LandID> = (typeof ACTION_IDS)[L][number]
@@ -18,6 +20,8 @@ export const CLIENT_EVENT_IDS = {
   "hero-defense": ["MoveTo","PlaceTurret","Shoot","UpdateRotation","UpgradeTurret","UpgradeWeapon"] as const,
   "hero-defense-replay": ["MoveTo","PlaceTurret","Shoot","UpdateRotation","UpgradeTurret","UpgradeWeapon"] as const,
   "reevaluation-monitor": [] as const,
+  "visibility-test": ["MoveViewer"] as const,
+  "visibility-test-replay": ["MoveViewer"] as const,
 } as const
 export type AnyClientEventID = (typeof CLIENT_EVENT_IDS)[LandID][number]
 export type ClientEventIDFor<L extends LandID> = (typeof CLIENT_EVENT_IDS)[L][number]
@@ -26,6 +30,8 @@ export const SERVER_EVENT_IDS = {
   "hero-defense": ["PlayerShoot","TurretFire"] as const,
   "hero-defense-replay": ["PlayerShoot","TurretFire"] as const,
   "reevaluation-monitor": ["TickProcessed","TickSummary","VerificationComplete","VerificationFailed","VerificationProgress"] as const,
+  "visibility-test": [] as const,
+  "visibility-test-replay": [] as const,
 } as const
 export type AnyServerEventID = (typeof SERVER_EVENT_IDS)[LandID][number]
 export type ServerEventIDFor<L extends LandID> = (typeof SERVER_EVENT_IDS)[L][number]
@@ -299,6 +305,20 @@ export const SCHEMA = {
         "nodeKind": "leaf"
       }
     },
+    "MoveViewerEvent": {
+      "properties": {
+        "position": {
+          "$ref": "#/defs/Position2"
+        }
+      },
+      "required": [
+        "position"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
     "Optional<PlayerID>": {
       "type": "object",
       "x-stateTree": {
@@ -322,6 +342,14 @@ export const SCHEMA = {
         }
       }
     },
+    "ParkEntitiesAction": {
+      "properties": {},
+      "required": [],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
     "PauseVerificationAction": {
       "properties": {},
       "required": [],
@@ -333,6 +361,30 @@ export const SCHEMA = {
     "PauseVerificationResponse": {
       "properties": {},
       "required": [],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "PlaceEntityAction": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "positions": {
+          "items": {
+            "$ref": "#/defs/Position2"
+          },
+          "type": "array",
+          "x-stateTree": {
+            "nodeKind": "array"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "positions"
+      ],
       "type": "object",
       "x-stateTree": {
         "nodeKind": "leaf"
@@ -558,6 +610,20 @@ export const SCHEMA = {
     "ResumeVerificationResponse": {
       "properties": {},
       "required": [],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "SetMotionAction": {
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "enabled"
+      ],
       "type": "object",
       "x-stateTree": {
         "nodeKind": "leaf"
@@ -863,6 +929,137 @@ export const SCHEMA = {
       "x-stateTree": {
         "nodeKind": "leaf"
       }
+    },
+    "Viewer": {
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "VisibilityTestResponse": {
+      "properties": {
+        "viewEntries": {
+          "type": "integer"
+        },
+        "viewExits": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "viewEntries",
+        "viewExits"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "VisibilityTestState": {
+      "properties": {
+        "entities": {
+          "additionalProperties": {
+            "$ref": "#/defs/VisibleEntity"
+          },
+          "default": {},
+          "type": "object",
+          "x-stateTree": {
+            "keyType": "String",
+            "nodeKind": "map",
+            "sync": {
+              "policy": "perPlayer"
+            }
+          }
+        },
+        "motion": {
+          "default": true,
+          "type": "boolean"
+        },
+        "tickCount": {
+          "default": 0,
+          "type": "integer"
+        },
+        "viewEntries": {
+          "default": 0,
+          "type": "integer"
+        },
+        "viewExits": {
+          "default": 0,
+          "type": "integer"
+        },
+        "viewers": {
+          "additionalProperties": {
+            "$ref": "#/defs/Viewer"
+          },
+          "default": {},
+          "type": "object",
+          "x-stateTree": {
+            "keyType": "PlayerID",
+            "nodeKind": "map",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
+        }
+      },
+      "required": [
+        "entities",
+        "viewers",
+        "motion",
+        "viewEntries",
+        "viewExits",
+        "tickCount"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "object"
+      }
+    },
+    "VisibleEntity": {
+      "properties": {
+        "id": {
+          "default": "",
+          "type": "string"
+        },
+        "position": {
+          "$ref": "#/defs/Position2",
+          "default": {
+            "v": {
+              "x": 0,
+              "y": 0
+            }
+          }
+        },
+        "step": {
+          "$ref": "#/defs/IVec2",
+          "default": {
+            "x": 0,
+            "y": 0
+          }
+        },
+        "visibleTo": {
+          "default": [],
+          "items": {
+            "$ref": "#/defs/PlayerID"
+          },
+          "type": "array",
+          "x-stateTree": {
+            "nodeKind": "array",
+            "sync": {
+              "policy": "serverOnly"
+            }
+          }
+        }
+      },
+      "required": [
+        "id",
+        "position",
+        "step",
+        "visibleTo"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "object"
+      }
     }
   },
   "lands": {
@@ -1151,9 +1348,113 @@ export const SCHEMA = {
           "$ref": "#/defs/ReevaluationMonitorState"
         }
       }
+    },
+    "visibility-test": {
+      "actions": {
+        "ParkEntities": {
+          "$ref": "#/defs/ParkEntitiesAction"
+        },
+        "PlaceEntity": {
+          "$ref": "#/defs/PlaceEntityAction"
+        },
+        "SetMotion": {
+          "$ref": "#/defs/SetMotionAction"
+        }
+      },
+      "clientEventHashes": {
+        "MoveViewer": 1
+      },
+      "clientEvents": {
+        "MoveViewer": {
+          "$ref": "#/defs/MoveViewerEvent"
+        }
+      },
+      "eventHashes": {},
+      "events": {},
+      "pathHashes": {
+        "entities": 3907947930,
+        "entities.*": 1243226249,
+        "entities.*.id": 4142263523,
+        "entities.*.position": 3850929751,
+        "entities.*.position.v": 3449745570,
+        "entities.*.position.v.x": 31306179,
+        "entities.*.position.v.y": 31306524,
+        "entities.*.step": 3583572624,
+        "entities.*.step.x": 896858757,
+        "entities.*.step.y": 896860150,
+        "entities.*.visibleTo": 671605792,
+        "entities.*.visibleTo.*": 4241175370,
+        "motion": 142627127,
+        "tickCount": 1649279712,
+        "viewEntries": 3232148722,
+        "viewExits": 3811044760,
+        "viewers": 2271237816,
+        "viewers.*": 3135492932
+      },
+      "stateType": "VisibilityTestState",
+      "sync": {
+        "diff": {
+          "$ref": "#/defs/StateDiff"
+        },
+        "snapshot": {
+          "$ref": "#/defs/VisibilityTestState"
+        }
+      }
+    },
+    "visibility-test-replay": {
+      "actions": {
+        "ParkEntities": {
+          "$ref": "#/defs/ParkEntitiesAction"
+        },
+        "PlaceEntity": {
+          "$ref": "#/defs/PlaceEntityAction"
+        },
+        "SetMotion": {
+          "$ref": "#/defs/SetMotionAction"
+        }
+      },
+      "clientEventHashes": {
+        "MoveViewer": 1
+      },
+      "clientEvents": {
+        "MoveViewer": {
+          "$ref": "#/defs/MoveViewerEvent"
+        }
+      },
+      "eventHashes": {},
+      "events": {},
+      "pathHashes": {
+        "entities": 3907947930,
+        "entities.*": 1243226249,
+        "entities.*.id": 4142263523,
+        "entities.*.position": 3850929751,
+        "entities.*.position.v": 3449745570,
+        "entities.*.position.v.x": 31306179,
+        "entities.*.position.v.y": 31306524,
+        "entities.*.step": 3583572624,
+        "entities.*.step.x": 896858757,
+        "entities.*.step.y": 896860150,
+        "entities.*.visibleTo": 671605792,
+        "entities.*.visibleTo.*": 4241175370,
+        "motion": 142627127,
+        "tickCount": 1649279712,
+        "viewEntries": 3232148722,
+        "viewExits": 3811044760,
+        "viewers": 2271237816,
+        "viewers.*": 3135492932
+      },
+      "stateType": "VisibilityTestState",
+      "sync": {
+        "diff": {
+          "$ref": "#/defs/StateDiff"
+        },
+        "snapshot": {
+          "$ref": "#/defs/VisibilityTestState"
+        }
+      }
     }
   },
-  "schemaHash": "4875865f9c1987c3",
+  "schemaHash": "892e6d77378c91cb",
   "version": "0.1.0"
 } as const
 

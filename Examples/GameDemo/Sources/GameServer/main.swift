@@ -86,12 +86,15 @@ struct GameServer {
 
         // Schema and path hashes (replay land types only when reevaluation enabled)
         let liveLand = HeroDefense.makeLand(maxPlayers: maxPlayers)
+        // Test lands (#65), each on its own path; Hero Defense's registration is unchanged.
+        let visibilityLand = VisibilityTest.makeLand()
+        let testLands = [AnyLandDefinition(visibilityLand)]
         let schemaLands: [AnyLandDefinition] = enableReevaluation
-            ? [AnyLandDefinition(liveLand), AnyLandDefinition(ReevaluationMonitor.makeLand())]
-            : [AnyLandDefinition(liveLand)]
+            ? [AnyLandDefinition(liveLand), AnyLandDefinition(ReevaluationMonitor.makeLand())] + testLands
+            : [AnyLandDefinition(liveLand)] + testLands
         let schema = SchemaGenCLI.generateSchema(
             landDefinitions: schemaLands,
-            replayLandTypes: enableReevaluation ? ["hero-defense"] : nil
+            replayLandTypes: enableReevaluation ? ["hero-defense", VisibilityTestConfig.landType] : nil
         )
         let pathHashes = schema.lands["hero-defense"]?.pathHashes
         logPathHashes(pathHashes, logger: logger)
@@ -127,6 +130,29 @@ struct GameServer {
             liveInitialState: HeroDefenseState(),
             liveWebSocketPath: "/game/hero-defense",
             configuration: serverConfig,
+            reevaluation: ReevaluationFeatureConfiguration(
+                enabled: enableReevaluation,
+                replayEventPolicy: .projectedOnly,
+                runnerServiceFactory: { ReevaluationRunnerService(factory: GameServerReevaluationFactory(requiredRecordVersion: requiredReplayRecordVersion, maxPlayers: maxPlayers)) }
+            )
+        )
+
+        let visibilityConfig = NIOLandServerConfiguration(
+            logger: logger,
+            allowAutoCreateOnJoin: true,
+            transportEncoding: transportEncoding,
+            enableLiveStateHashRecording: enableReevaluation,
+            pathHashes: schema.lands[VisibilityTestConfig.landType]?.pathHashes,
+            eventHashes: nil,
+            clientEventHashes: nil,
+            servicesFactory: { _, _ in makeTestLandServices(enableReevaluation: enableReevaluation, requiredRecordVersion: requiredReplayRecordVersion, maxPlayers: maxPlayers) }
+        )
+        try await nioHost.registerWithGenericReplay(
+            landType: VisibilityTestConfig.landType,
+            liveLand: visibilityLand,
+            liveInitialState: VisibilityTestState(),
+            liveWebSocketPath: "/game/\(VisibilityTestConfig.landType)",
+            configuration: visibilityConfig,
             reevaluation: ReevaluationFeatureConfiguration(
                 enabled: enableReevaluation,
                 replayEventPolicy: .projectedOnly,
@@ -191,6 +217,16 @@ private func makeGameServices(enableReevaluation: Bool, requiredRecordVersion: S
     return services
 }
 
+/// Services for the test lands: no game config, the reevaluation services when enabled.
+private func makeTestLandServices(enableReevaluation: Bool, requiredRecordVersion: String, maxPlayers: Int) -> LandServices {
+    var services = LandServices()
+    if enableReevaluation {
+        services.register(ReevaluationRunnerService(factory: GameServerReevaluationFactory(requiredRecordVersion: requiredRecordVersion, maxPlayers: maxPlayers)), as: ReevaluationRunnerService.self)
+        services.register(ReevaluationReplayPolicyService(eventPolicy: .projectedOnly), as: ReevaluationReplayPolicyService.self)
+    }
+    return services
+}
+
 private struct GameServerReevaluationFactory: ReevaluationTargetFactory {
     let requiredRecordVersion: String
     /// The live land's player limit, so replayed joins are admitted the same way.
@@ -211,6 +247,14 @@ private struct GameServerReevaluationFactory: ReevaluationTargetFactory {
                 recordFilePath: recordFilePath,
                 requiredRecordVersion: requiredRecordVersion,
                 services: services
+            )
+        case VisibilityTestConfig.landType:
+            return try await ConcreteReevaluationRunner(
+                definition: VisibilityTest.makeLand(),
+                initialState: VisibilityTestState(),
+                recordFilePath: recordFilePath,
+                requiredRecordVersion: requiredRecordVersion,
+                services: LandServices()
             )
         default:
             throw ReevaluationError.unknownLandType(landType)

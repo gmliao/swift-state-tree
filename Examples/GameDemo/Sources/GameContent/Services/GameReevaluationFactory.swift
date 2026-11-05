@@ -22,6 +22,13 @@ public struct GameReevaluationFactory: ReevaluationTargetFactory {
                 recordFilePath: recordFilePath,
                 services: services
             )
+        case VisibilityTestConfig.landType:
+            return try await ConcreteReevaluationRunner(
+                definition: VisibilityTest.makeLand(),
+                initialState: VisibilityTestState(),
+                recordFilePath: recordFilePath,
+                services: LandServices()
+            )
         default:
             throw ReevaluationError.unknownLandType(landType)
         }
