@@ -15,6 +15,9 @@ struct LoadTestConfig: Sendable {
     var rampUpSeconds: Int = 5
     var rampDownSeconds: Int = 5
     var actionsPerPlayerPerSecond: Int = 1
+    var pacing: Pacing = .spread
+    /// Joins and actions in flight at most (`spread` and `aligned`); further sends are skipped and counted.
+    var maxInFlight: Int = 10_000
     var createRoomsFirst: Bool = false
     var tui: Bool = false
     var logLevel: Logger.Level = .info
@@ -23,6 +26,22 @@ struct LoadTestConfig: Sendable {
     var totalSeconds: Int { rampUpSeconds + durationSeconds + rampDownSeconds }
     var playersPerSecondUp: Int { max(1, totalPlayers / max(1, rampUpSeconds)) }
     var sessionsPerSecondDown: Int { max(1, totalPlayers / max(1, rampDownSeconds)) }
+}
+
+/**
+ * How the generator paces joins and actions.
+ * - `spread` (default): deadline-based seconds, each session's actions at a stable offset in the
+ *   second, joins evenly spaced, an in-flight cap.
+ * - `aligned`: deadline-based seconds and the in-flight cap, but every send at the second's
+ *   start. Not comparable with runs before deadline pacing.
+ * - `legacy`: legacy generator, deadline sampler — rows are not comparable with old reports. The
+ *   generator is the one before deadline pacing (join pool cap, awaited action rounds, a full
+ *   second's sleep after the work); the sampler is deadline-based in every mode.
+ */
+enum Pacing: String, Sendable, CaseIterable {
+    case spread
+    case aligned
+    case legacy
 }
 
 // MARK: - Argument Parsing
@@ -57,6 +76,10 @@ func parseArguments() -> LoadTestConfig {
             if let next, let v = readInt(next) { config.rampDownSeconds = v; i += 1 }
         case "--actions-per-player-per-second":
             if let next, let v = readInt(next) { config.actionsPerPlayerPerSecond = v; i += 1 }
+        case "--pacing":
+            if let next, let v = Pacing(rawValue: next.lowercased()) { config.pacing = v; i += 1 }
+        case "--max-in-flight":
+            if let next, let v = readInt(next), v > 0 { config.maxInFlight = v; i += 1 }
         case "--tui":
             if let next, let v = readBool(next) { config.tui = v; i += 1 }
         case "--log-level":
@@ -95,6 +118,18 @@ func printUsageAndExit() -> Never {
       --ramp-up-seconds <seconds>               Ramp-up duration (default: 5)
       --ramp-down-seconds <seconds>             Ramp-down duration (default: 5)
       --actions-per-player-per-second <count>   Actions per player per second (default: 1)
+      --pacing <spread|aligned|legacy>          spread (default): deadline-based seconds, each
+                                                session's actions at a stable offset in the
+                                                second, joins evenly spaced;
+                                                aligned: deadline-based seconds, every send at the
+                                                second's start (not comparable with earlier runs);
+                                                legacy: legacy generator, deadline sampler --
+                                                rows are not comparable with old reports (join
+                                                pool cap, awaited action rounds, 1 s sleep after
+                                                the work)
+      --max-in-flight <count>                   Joins and actions in flight at most in spread and
+                                                aligned (default: 10000); sends over the cap are
+                                                skipped and counted per second
       --log-level <level>                       Log level (default: info)
       --help, -h                                Show this help message
 
