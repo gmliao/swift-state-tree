@@ -30,12 +30,15 @@ no policy, filter or mask can reach it, and no change to it can reach a client.
   `syncEngine.snapshot(from:mode:)`; it moves to the same entry point, so there is exactly one
   definition. The recorded debug `fullSnapshot` and `--diff-with` use the same snapshot, so a
   field-level diff points at the field the hash saw.
-- **`@Internal` properties (decision for Review):** they are server state too, not in any
-  snapshot today. Proposal: include them when their type converts (`makeFull` succeeds), under
-  the key `"@internal.<name>"`, so a nondeterministic internal (a `Date`, a cache keyed by an
-  object identity) shows up as a replay mismatch instead of being silently skipped. Alternative:
-  `@Sync` fields only, and say so in the docs. Hero Defense and visibility-test have no
-  `@Internal` fields, so either choice gives the same pinned hashes for them.
+- **`@Internal` properties are not hashed** (decided in the design check). The documented use
+  of `@Internal` is a wall-clock value (`var lastProcessedTimestamp: Date = Date()` in
+  `StateNodeProtocol`'s doc), which would make every replay mismatch for a reason that is not a
+  game-logic divergence, and an internal that influences state shows up in `@Sync` fields
+  anyway. The docs say so. An opt-in (`@Internal(hashed)`) can come later if someone needs it.
+- **API break:** with no protocol default, a hand-written `StateNodeProtocol` conformance no
+  longer compiles until it implements `fullStateSnapshot()` (every field by name, values through
+  `SnapshotValue.makeFull(from:)`). The release note and the changelog say this and show the
+  implementation. `@StateNodeBuilder` types need nothing.
 
 ## 2. Deterministic ordering
 
@@ -45,28 +48,46 @@ no policy, filter or mask can reach it, and no change to it can reach a client.
   throw (they would hash ambiguously).
 - Arrays keep their order (it is state).
 - `Set` (and any other unordered collection found through `Mirror` `.set`): elements are
-  sorted by their canonical encoding (sorted-keys JSON bytes) before hashing. Today's `make`
+  sorted by their canonical encoding under the full conversion (sorted-keys JSON bytes of
+  `makeFull`), not the broadcast one, so two elements that differ only in server-only fields
+  never sort as equal. Today's `make`
   path takes Mirror's order for sets; the full conversion does not.
 - Floating point: values are encoded as today (`Double` via `JSONEncoder`); game state uses
   DeterministicMath, so no new float paths appear.
 - A test hashes the same state built in different insertion orders (maps, sets) and gets one
   hash.
 
-## 3. Record format 2.4 and the not-comparable rule
+## 3. Record format 2.4, and how older records are verified
 
-- `ReevaluationRecordVersion.current` becomes `"2.4"`.
-- The hash definition changes for every land, so every record older than 2.4 is not
-  comparable: a state or initialize hash mismatch is reported as
-  "recorded before #180 (full-state hash), hash not comparable", and `ReevaluationRunner
-  --verify` exits 10. This replaces #178's per-land rule for state and initialize hashes
-  (`hashChangedByNestedNodePolicies` is removed with it: a 2.3 record has the broadcast-view
-  hash too). A matching older record still verifies (a land whose state has no server-only,
-  per-player, masked or internal data hashes the same both ways).
+- `ReevaluationRecordVersion.current` becomes `"2.4"`; a 2.4 record holds full-state hashes.
+- **No record is excused wholesale** (design check). The broadcast-view hash stays in code as
+  `ReevaluationEngine.calculateBroadcastViewHash` (today's definition). Replay picks the
+  definition by the record's version:
+  - 2.4 and later: the full-state hash, compared exactly.
+  - 2.3: the broadcast-view hash, compared exactly.
+  - Older than 2.3: the broadcast-view hash, with #178's rule: a mismatch is "recorded before
+    #175, hash not comparable" (exit 10) only for a land with the #175 shape reached through
+    `.broadcast` fields (`hashChangedByNestedNodePolicies`, kept); any other mismatch fails.
+  The initialize hash follows the same choice. A 2.4 build verifies every older record it
+  verified before, and nothing more is excused.
 - Sync-output hashes are unchanged: they hash what clients receive, which #180 does not touch.
-  Every sync-output failure stays a failure (exit 8), as in #178.
-- Pinned: the full-state hash of the fixed Hero Defense state from #178's test, and of a fixed
-  visibility-test state, plus a test that changing any server-only field changes the hash (the
-  inverse of #178's test, which goes away).
+  Every sync-output failure stays a failure (exit 8).
+- Pinned: the full-state hash of the fixed Hero Defense state from #178's test and of a fixed
+  visibility-test state, the broadcast-view hash of the same Hero Defense state (#178's pin
+  stays, now for `calculateBroadcastViewHash`), and a test that changing any server-only field
+  changes the full-state hash.
+
+### When the full-state conversion throws
+
+`makeFull` throws on a map whose keys collide as strings (and on any value it cannot convert).
+Today a throwing conversion records `stateHash: "error"`, and replay compares `"error"` with
+`"error"` as a match. #180 changes that:
+- **Live keeper:** the throw never crashes or stalls the tick. It is logged with the tick and
+  the error, counted (`stateHashUnavailable` in the land's metrics), and the tick is recorded
+  without a hash plus a 2.4 key `stateHashUnavailable: "<reason>"`.
+- **Replay:** a tick with that key, or whose replayed conversion throws, is unverifiable, never
+  a match. `RunResult` lists those ticks, and `ReevaluationRunner --verify` fails on them with
+  its own exit code (11), naming the first tick and the reason.
 
 ## 4. Off every client path
 
@@ -77,6 +98,8 @@ no policy, filter or mask can reach it, and no change to it can reach a client.
   encodings with live hash recording off: the counter stays 0 and every client output is
   byte-identical to a run on #178's head. With recording on, the counter equals ticks +
   initialize, and client outputs are still identical.
+- Also with recording on: `snapshotForSync`, `lateJoinSnapshot` and `generateDiff` called
+  directly leave the counter unchanged; only the recorder's entry point moves it.
 - The CLI schema-conformance check from #178 keeps checking the wire in E2E.
 
 ## 5. Cost measurement
@@ -92,13 +115,31 @@ no policy, filter or mask can reach it, and no change to it can reach a client.
   hasher instead of building a `StateSnapshot` and JSON. That is a follow-up, not part of #180,
   unless the numbers say otherwise.
 
-## 6. Re-records and docs
+## 6. Floats, re-records and docs
 
+- **Server-only floats are hashed now.** Hero Defense's `MonsterState.pathProgress: Float` is
+  `.serverOnly`; it was outside the broadcast-view hash. Before any full-state pin goes in:
+  - record on arm64 (Mac) and verify on the 7600X (x86_64), and the reverse, not only on the
+    same machine. If FMA contraction or library math makes a value differ across
+    architectures, that is a determinism finding and is reported as one, before the pin;
+  - scan the example lands for server-only `Float`/`Double` fields and for `Date` or other
+    clock-derived values in `@Sync` fields.
 - Re-record a `deep-research/replay-scale-fp-perturbation` batch with a 2.4 build, show 0
-  mismatches, and rerun its perturbation detection. Detection can get faster: a perturbation in
-  a server-only float (`pathProgress`) was invisible to the broadcast-view hash.
-- Docs: `docs/core/reevaluation` (both languages) says what the hash covers, the 2.4 rule, and
-  that the hash is not a client-visible value.
+  mismatches (same-machine and cross-architecture), and rerun its perturbation detection.
+  Detection can get faster: a perturbation in a server-only float (`pathProgress`) was
+  invisible to the broadcast-view hash.
+- Docs: `docs/core/reevaluation` (both languages) says what the hash covers (every `@Sync` field
+  at every depth, not `@Internal`), how 2.4, 2.3 and older records are verified, the
+  unavailable-hash marker, and that the hash is not a client-visible value. The release note
+  covers the `StateNodeProtocol` source break.
+
+## Design check (2026-11-05)
+
+Review: go, with these changes, now folded in: `@Sync` fields only (no `@Internal`); older
+records verified against the broadcast-view hash instead of being excused (§3); the live-keeper
+throw path (§3); the API break note (§1); cross-architecture float check (§6); the sort key of
+unordered collections under the full conversion (§2); and the counter assertion for
+`snapshotForSync`/`lateJoinSnapshot` with recording on (§4).
 
 ## Order
 
