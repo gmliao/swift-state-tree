@@ -20,6 +20,7 @@ import { counterDelta, readListenCounters } from "./net-stats";
 import type { ListenCounters } from "./net-stats";
 import { effectiveEvents } from "./client-events";
 import type { EventConfig } from "./client-events";
+import { timerAt } from "./timer-at";
 
 /** The phase's measured window `[origin + warm-up, phase end)`: thresholds apply to these. */
 export interface WorkerReport {
@@ -422,17 +423,17 @@ export async function runScenario(filePath: string, options: RunOptions | number
             const measureTo = originAt + durationMs;
             let countersAtMeasureStart: ListenCounters | undefined;
             let measuredStartReadAt: number | undefined;
-            const measureStartTimer = setTimeout(() => {
+            const measureStartTimer = timerAt(measureFrom, () => {
                 countersAtMeasureStart = readListenCounters();
                 measuredStartReadAt = Date.now();
-            }, Math.max(0, measureFrom - Date.now()));
+            });
             if (warmupsMs[p] >= durationMs) {
-                clearTimeout(measureStartTimer);
+                measureStartTimer.cancel();
             }
             const reports = await Promise.all(
                 pool.map((worker) => worker.request<WorkerPhaseReport>({ type: "start", originAt }, "report", timeoutMs))
             );
-            clearTimeout(measureStartTimer);
+            measureStartTimer.cancel();
             const countersAtEnd = readListenCounters();
             const endReadAt = Date.now();
             const closes: CloseRecord[] = [];
