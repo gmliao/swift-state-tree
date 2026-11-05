@@ -352,7 +352,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
 
         if let req = outputCollector.syncRequestsByTick.removeValue(forKey: tickId) {
-            if mode == .live {
+            if usesInTurnSync, req.syncNow || req.syncBroadcastOnly {
+                // In-turn paths take their own requests; one left here runs as a sync-only turn
+                // (a broadcast-only request runs the full phase, as in a turn).
+                runSyncOnlyTurnIfInTurn()
+            } else if mode == .live {
                 if req.syncNow {
                     await transport?.syncNowFromTransport()
                 } else if req.syncBroadcastOnly {
@@ -376,6 +380,119 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// - Debouncing: Debounce rapid sync requests to reduce frequency
     /// - Metrics: Track sync frequency and performance
     private var isSyncing = false
+
+    // MARK: In-turn sync state (see `InTurnSync`)
+
+    /// Whether this keeper's turns run the sync phase inside the turn: live mode, and the
+    /// transport runs it for this keeper (`LandKeeperTransport.runsSyncPhaseInTurn(of:)`, which
+    /// follows the adapter's switch). Never true for a transport attached to another keeper, so
+    /// no turn reaches an `assumeIsolated` that would trap. The switch is fixed once the
+    /// transport is set.
+    private var usesInTurnSync: Bool {
+        mode == .live && (transport?.runsSyncPhaseInTurn(of: self) ?? false)
+    }
+
+    /// The next tick turn includes the sync phase: set when the sync loop fires within
+    /// `coincidentSyncWindow` of the next tick (the coincident-sync rule).
+    private var inTurnSyncDue = false
+
+    /// Syncs the sync loop folded into a coincident tick turn (diagnostics).
+    private(set) var foldedSyncs = 0
+
+    /// Turns whose sync phase was deferred by writer back-pressure (diagnostics).
+    private(set) var inTurnDeferredTurns = 0
+
+    /// Sync-only turns run to repair a failed in-turn plan (diagnostics).
+    private(set) var inTurnRepairTurns = 0
+
+    /// A land without periodic sync: a sync-only turn waits for the writer to drain (at most one).
+    private var inTurnDrainRetryPending = false
+
+    /// A land without periodic sync: a repair sync-only turn is scheduled (at most one).
+    private var inTurnRepairPending = false
+
+    /// A turn wanted a sync phase while a legacy cycle (`beginSync` ... `endSync`: the debug
+    /// settle, a joiner's path) held the sync flag: `endSync` then runs a sync-only turn, so the
+    /// request is not lost.
+    private var syncOnlyTurnAfterLegacyCycle = false
+
+    /// The tick loop's next deadline: set by the loop after each tick, cleared when the tick starts.
+    private var nextTickDeadline: ContinuousClock.Instant?
+
+    /// The coincident-sync window: min(5 ms, tick / 4, sync / 4). A sync loop firing this close
+    /// to the next tick folds into that tick turn instead of overtaking it.
+    private var coincidentSyncWindow: Duration {
+        var window = Duration.milliseconds(5)
+        if let tick = definition.lifetimeHandlers.tickInterval { window = min(window, tick / 4) }
+        if let sync = definition.lifetimeHandlers.syncInterval { window = min(window, sync / 4) }
+        return window
+    }
+
+    /// Tickless lands: an input drain is scheduled or running (one at a time).
+    private var inputDrainScheduled = false
+
+    /// Tickless lands: callers waiting for their input's turn, by input sequence. Actions get
+    /// their own response; other inputs get an empty one (or the handler's error).
+    private var inputTurnWaiters: [Int64: CheckedContinuation<AnyCodable, any Error>] = [:]
+
+    /// Maximum inputs applied in one tickless input turn, so continuous input cannot starve the
+    /// sync loop (other jobs run between turns).
+    static var inputTurnBatchLimit: Int { 64 }
+
+    /// Delay before a repair sync-only turn after a failed in-turn plan.
+    static var inTurnRepairDelay: Duration { .milliseconds(100) }
+
+    /// The last recorder submission. Each submission awaits the one before it, so turn records
+    /// reach the recorder in turn order.
+    private var recorderSubmissionTail: Task<Void, Never>?
+
+    /// Tests only: called with turn markers ("turn-begin", "sync-committed", "turn-end") and with
+    /// labels passed to `recordInTurnProbeForTesting`.
+    private var inTurnProbeForTesting: (@Sendable (String) -> Void)?
+
+    /// Tests only (the probe's negative control): one `await Task.yield()` inside the tick turn,
+    /// after "turn-begin" and before the synchronous core.
+    private var inTurnYieldForTesting = false
+
+    /// Installs `inTurnProbeForTesting` (tests only).
+    func setInTurnProbeForTesting(_ probe: (@Sendable (String) -> Void)?) {
+        inTurnProbeForTesting = probe
+    }
+
+    /// Tests only: a job on this keeper's executor that records `label`.
+    func recordInTurnProbeForTesting(_ label: String) {
+        inTurnProbeForTesting?(label)
+    }
+
+    /// Installs `inTurnYieldForTesting` (tests only).
+    func setInTurnYieldForTesting(_ enabled: Bool) {
+        inTurnYieldForTesting = enabled
+    }
+
+    /// Tests only: runs `body` as a job on this keeper's executor.
+    func runIsolatedForTesting(_ body: @Sendable () -> Void) {
+        body()
+    }
+
+    /// Tests only: sets the tick loop's next deadline (the coincident-sync rule's input).
+    func setNextTickDeadlineForTesting(_ deadline: ContinuousClock.Instant?) {
+        nextTickDeadline = deadline
+    }
+
+    /// Tests only: one sync loop iteration (`runSync`), as the loop runs it.
+    func runSyncLoopIterationForTesting() async {
+        await runSync()
+    }
+
+    /// Tests only: the sequences of the queued inputs, in queue order.
+    func pendingItemSequencesForTesting() -> [Int64] {
+        pendingItems.map(\.sequence)
+    }
+
+    /// Whether this keeper runs its sync phases in its turns (tests and diagnostics).
+    public func isUsingInTurnSync() -> Bool {
+        usesInTurnSync
+    }
 
     // MARK: Debug freeze state (see `debugFreeze(generation:timeout:)`)
 
@@ -554,6 +671,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     "error": .string(String(describing: error)),
                 ])
             }
+            // In-turn sync: OnInitialize is a turn; its events and sync request go out in it.
+            let initializeIsTurn = usesInTurnSync
+            if initializeIsTurn, let transport {
+                let emitted = takeEmittedEvents(forTick: ctx.tickId ?? lastCommittedTickId)
+                let wantsSync = takeSyncRequest(forTick: ctx.tickId ?? lastCommittedTickId, applied: nil)
+                runTurnOutputs(transport: transport, events: emitted, wantsSync: wantsSync)
+            }
 
             if let recorder = reevaluationRecorder {
                 let resolverOutputsDict = ctx.getAllResolverOutputs().mapValues { output in
@@ -575,12 +699,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     resolverOutputs: resolverOutputsDict,
                     resolvedAtTick: lastCommittedTickId
                 )
-                await recorder.record(
-                    tickId: 0,
-                    actions: [],
-                    clientEvents: [],
-                    lifecycleEvents: [recorded]
-                )
+                if initializeIsTurn {
+                    await submitTurnRecord(ReevaluationTickRecord(tickId: 0, lifecycleEvents: [recorded]))
+                } else {
+                    await recorder.record(
+                        tickId: 0,
+                        actions: [],
+                        clientEvents: [],
+                        lifecycleEvents: [recorded]
+                    )
+                }
             }
         }
 
@@ -723,6 +851,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// mutations made while the sync was in flight stay dirty for the next cycle.
     public func endSync() {
         isSyncing = false
+        // A turn found this cycle in flight and left its sync phase to a sync-only turn now.
+        if syncOnlyTurnAfterLegacyCycle {
+            syncOnlyTurnAfterLegacyCycle = false
+            Task { [weak self] in
+                await self?.runSyncOnlyTurnIfInTurn()
+            }
+        }
     }
 
     /// End a sync operation, releasing the sync flag.
@@ -951,7 +1086,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // If there's no tick handler, process lifecycle immediately (backward-compatible mode)
         if definition.lifetimeHandlers.tickHandler == nil {
-            _ = try await processPendingActions()
+            if usesInTurnSync {
+                _ = try await awaitInputTurn(sequence: sequence)
+            } else {
+                _ = try await processPendingActions()
+            }
         }
     }
 
@@ -1114,7 +1253,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // If there's no tick handler, process lifecycle immediately (backward-compatible mode)
         if definition.lifetimeHandlers.tickHandler == nil {
-            _ = try await processPendingActions()
+            if usesInTurnSync {
+                _ = try await awaitInputTurn(sequence: sequence)
+            } else {
+                _ = try await processPendingActions()
+            }
         }
 
         return decision
@@ -1214,7 +1357,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // If there's no tick handler, process lifecycle immediately (backward-compatible mode)
         if definition.lifetimeHandlers.tickHandler == nil {
-            _ = try await processPendingActions()
+            if usesInTurnSync {
+                _ = try await awaitInputTurn(sequence: sequence)
+            } else {
+                _ = try await processPendingActions()
+            }
         }
 
         scheduleDestroyIfNeeded()
@@ -1358,6 +1505,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // If there's no tick handler, process pending actions immediately and return response
         // This maintains backward compatibility for tests and simple use cases
         if definition.lifetimeHandlers.tickHandler == nil {
+            if usesInTurnSync {
+                // An input turn applies it (with the other ready inputs) and returns its response.
+                return try await awaitInputTurn(sequence: sequence)
+            }
             do {
                 if let response = try await processPendingActions() {
                     return response
@@ -1490,6 +1641,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if definition.lifetimeHandlers.tickHandler == nil {
             // Counted as in-flight from now until the task finishes, so `debugFreeze` drains it.
             debugBeginWork()
+            if usesInTurnSync {
+                // An input turn applies it; handler errors are logged there.
+                Task { [weak self] in
+                    guard let self = self else { return }
+                    _ = try? await self.awaitInputTurn(sequence: sequence)
+                    await self.debugEndWork()
+                }
+                return
+            }
             Task { [weak self] in
                 guard let self = self else { return }
                 do {
@@ -1603,6 +1763,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             guard let self = self else { return }
 
             var nextTickTime = ContinuousClock.now + interval
+            await self.noteNextTickDeadline(nextTickTime)
 
             while !Task.isCancelled {
                 let now = ContinuousClock.now
@@ -1625,30 +1786,60 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 while nextTickTime <= ContinuousClock.now {
                     nextTickTime = nextTickTime + interval
                 }
+                await self.noteNextTickDeadline(nextTickTime)
             }
         }
+    }
+
+    private func noteNextTickDeadline(_ deadline: ContinuousClock.Instant) {
+        nextTickDeadline = deadline
     }
 
     /// Manually execute a single tick (for deterministic tests/tools).
     ///
     /// This bypasses the internal tick loop guard and allows stepping a land deterministically
     /// without relying on wall-clock time.
+    ///
+    /// With in-turn sync (`InTurnSync`) this is one tick turn: ready inputs, the tick handler,
+    /// the emitted events and, only when a sync is due (coincident-sync rule) or a handler
+    /// requested one, the sync phase. The phase can be deferred by writer back-pressure, and
+    /// returning does not mean the writer has sent the frames. On a tickless land it runs the
+    /// ready inputs as input turns.
     public func stepTickOnce() async {
         await ensureInitialized()
         await runTick(allowWhenNoTickTask: true)
     }
 
-    /// Process pending actions and client events that are ready to execute
-    /// Returns the response from the last executed action (if any)
-    /// - Parameter flushOutputsImmediately: If true, flush outputs after processing. If false, defer flushing (caller should flush after tick handler).
-    private func processPendingActions(flushOutputsImmediately: Bool = true) async throws -> AnyCodable? {
-        // The tick currently executing (best-effort).
-        // In the normal tick loop, nextTickId has already been incremented for this tick.
-        // For tickless lands, ensure we have a valid tick ID for recording
+    /// What applying pending items produced, for recording and output.
+    private struct AppliedInputs {
+        let executingTickId: Int64
+        var recordedActions: [ReevaluationRecordedAction] = []
+        var recordedClientEvents: [ReevaluationRecordedClientEvent] = []
+        var recordedLifecycleEvents: [ReevaluationRecordedLifecycleEvent] = []
+        /// A leave ran: the legacy path follows with a broadcast-only sync.
+        var shouldSyncBroadcastOnly = false
+        /// In-turn path: each applied action's response, by input sequence.
+        var actionResults: [Int64: Result<AnyCodable, any Error>] = [:]
+
+        init(executingTickId: Int64) {
+            self.executingTickId = executingTickId
+        }
+
+        var isEmpty: Bool {
+            recordedActions.isEmpty && recordedClientEvents.isEmpty && recordedLifecycleEvents.isEmpty
+        }
+    }
+
+    private enum AppliedItem {
+        case action(response: AnyCodable)
+        case other
+        case skipped
+    }
+
+    /// The tick a tickless drain (or a pending-items pass) records under: `nextTickId - 1`,
+    /// advancing `nextTickId` first when no tick has been taken yet, so records never use -1.
+    private func executingTickIdForPendingItems() -> Int64 {
         var executingTickId = nextTickId - 1
-        
-        // If executingTickId is negative (e.g., nextTickId is 0 and hasn't been advanced),
-        // advance nextTickId to ensure valid tick IDs for recording
         if executingTickId < 0 {
             nextTickId = max(lastCommittedTickId + 1, 0)
             executingTickId = nextTickId - 1
@@ -1658,272 +1849,243 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 executingTickId = 0
             }
         }
+        return executingTickId
+    }
 
-        // Filter items that are ready to execute (resolvedAtTick < nextTickId)
-        let readyItems = pendingItems.filter { item in
-            let resolvedAtTick: Int64
-            switch item {
-            case let .action(actionItem):
-                resolvedAtTick = actionItem.resolvedAtTick
-            case let .clientEvent(eventItem):
-                resolvedAtTick = eventItem.resolvedAtTick
-            case let .lifecycle(lifecycleItem):
-                resolvedAtTick = lifecycleItem.resolvedAtTick
-            }
-            return resolvedAtTick < nextTickId
-        }
-
-        // Sort by resolvedAtTick (primary) and sequence (secondary)
-        let sortedItems = readyItems.sorted { item1, item2 in
-            let (resolvedAtTick1, sequence1): (Int64, Int64)
-            let (resolvedAtTick2, sequence2): (Int64, Int64)
-
-            switch item1 {
-            case let .action(actionItem):
-                resolvedAtTick1 = actionItem.resolvedAtTick
-                sequence1 = actionItem.sequence
-            case let .clientEvent(eventItem):
-                resolvedAtTick1 = eventItem.resolvedAtTick
-                sequence1 = eventItem.sequence
-            case let .lifecycle(lifecycleItem):
-                resolvedAtTick1 = lifecycleItem.resolvedAtTick
-                sequence1 = lifecycleItem.sequence
-            }
-
-            switch item2 {
-            case let .action(actionItem):
-                resolvedAtTick2 = actionItem.resolvedAtTick
-                sequence2 = actionItem.sequence
-            case let .clientEvent(eventItem):
-                resolvedAtTick2 = eventItem.resolvedAtTick
-                sequence2 = eventItem.sequence
-            case let .lifecycle(lifecycleItem):
-                resolvedAtTick2 = lifecycleItem.resolvedAtTick
-                sequence2 = lifecycleItem.sequence
-            }
-
-            if resolvedAtTick1 != resolvedAtTick2 {
-                return resolvedAtTick1 < resolvedAtTick2
-            }
-            return sequence1 < sequence2
-        }
-
-        // Execute each item and track the last action response
-        var lastActionResponse: AnyCodable? = nil
-        var recordedActions: [ReevaluationRecordedAction] = []
-        var recordedClientEvents: [ReevaluationRecordedClientEvent] = []
-        var recordedLifecycleEvents: [ReevaluationRecordedLifecycleEvent] = []
-        var shouldSyncBroadcastOnly = false
-
-        for item in sortedItems {
-            switch item {
-            case let .action(actionItem):
-                // Find handler for this action type
-                guard let handler = definition.actionHandlers.first(where: { handler in
-                    handler.canHandle(actionItem.actionType)
-                }) else {
-                    logger.error("Handler not found for action type", metadata: [
-                        "actionType": .string(String(describing: actionItem.actionType)),
-                    ])
-                    continue
+    /// The pending items ready to execute (`resolvedAtTick < nextTickId`), in execution order:
+    /// by `resolvedAtTick`, then by sequence.
+    private func readyPendingItemsInOrder() -> [PendingItem] {
+        pendingItems
+            .filter { $0.resolvedAtTick < nextTickId }
+            .sorted { lhs, rhs in
+                if lhs.resolvedAtTick != rhs.resolvedAtTick {
+                    return lhs.resolvedAtTick < rhs.resolvedAtTick
                 }
+                return lhs.sequence < rhs.sequence
+            }
+    }
 
-                // Decode action from AnyCodable
-                let decoder = JSONDecoder()
-                let payloadData = try JSONEncoder().encode(actionItem.action)
-                let decodedAction = try decoder.decode(actionItem.actionType, from: payloadData)
+    /// Removes `items` from the pending queue (by sequence).
+    private func removePendingItems(_ items: [PendingItem]) {
+        guard !items.isEmpty else { return }
+        let executedSequences = Set(items.map(\.sequence))
+        pendingItems.removeAll { executedSequences.contains($0.sequence) }
+    }
 
-                // Create context with resolver outputs
+    /// Applies one pending item to the state (synchronous) and appends its record to `applied`.
+    /// A handler that throws propagates the error; its item is not recorded.
+    private func applyPendingItem(
+        _ item: PendingItem,
+        executingTickId: Int64,
+        into applied: inout AppliedInputs
+    ) throws -> AppliedItem {
+        switch item {
+        case let .action(actionItem):
+            // Find handler for this action type
+            guard let handler = definition.actionHandlers.first(where: { handler in
+                handler.canHandle(actionItem.actionType)
+            }) else {
+                logger.error("Handler not found for action type", metadata: [
+                    "actionType": .string(String(describing: actionItem.actionType)),
+                ])
+                return .skipped
+            }
+
+            // Decode action from AnyCodable
+            let decoder = JSONDecoder()
+            let payloadData = try JSONEncoder().encode(actionItem.action)
+            let decodedAction = try decoder.decode(actionItem.actionType, from: payloadData)
+
+            // Create context with resolver outputs
+            let ctx = makeContext(
+                playerID: actionItem.playerID,
+                clientID: actionItem.clientID,
+                sessionID: actionItem.sessionID,
+                tickId: executingTickId,
+                resolverOutputs: actionItem.resolverOutputs
+            )
+
+            // Execute handler and capture response
+            let response = try withMutableStateSync { state in
+                try handler.invokeErased(&state, action: decodedAction, ctx: ctx)
+            }
+
+            // Record action for deterministic re-evaluation
+            let resolverOutputsDict = actionItem.resolverOutputs.mapValues { output in
+                ReevaluationRecordedResolverOutput(
+                    typeIdentifier: String(describing: type(of: output)),
+                    value: AnyCodable(output)
+                )
+            }
+            let recordedAction = ReevaluationRecordedAction(
+                kind: "action",
+                sequence: actionItem.sequence,
+                typeIdentifier: String(describing: actionItem.actionType),
+                payload: actionItem.action,
+                playerID: actionItem.playerID.rawValue,
+                clientID: actionItem.clientID.rawValue,
+                sessionID: actionItem.sessionID.rawValue,
+                resolverOutputs: resolverOutputsDict,
+                resolvedAtTick: actionItem.resolvedAtTick
+            )
+            applied.recordedActions.append(recordedAction)
+            return .action(response: response)
+
+        case let .clientEvent(eventItem):
+            // Find handlers for this event type
+            guard let descriptor = definition.clientEventRegistry.findDescriptor(for: eventItem.event.type) else {
+                logger.error("Event descriptor not found", metadata: [
+                    "eventType": .string(eventItem.event.type),
+                ])
+                return .skipped
+            }
+
+            let matchingHandlers = definition.eventHandlers.filter { handler in
+                handler.canHandle(descriptor.type)
+            }
+
+            guard !matchingHandlers.isEmpty else {
+                logger.error("No handler found for client event", metadata: [
+                    "eventType": .string(eventItem.event.type),
+                ])
+                return .skipped
+            }
+
+            // Create context (client events don't have resolver outputs)
+            let ctx = makeContext(
+                playerID: eventItem.playerID,
+                clientID: eventItem.clientID,
+                sessionID: eventItem.sessionID,
+                tickId: executingTickId,
+                resolverOutputs: [:]
+            )
+
+            // Execute handlers
+            try withMutableStateSync { state in
+                for handler in matchingHandlers {
+                    try handler.invoke(&state, event: eventItem.event, ctx: ctx)
+                }
+            }
+
+            // Record client event for deterministic re-evaluation
+            let recordedClientEvent = ReevaluationRecordedClientEvent(
+                kind: "clientEvent",
+                sequence: eventItem.sequence,
+                typeIdentifier: eventItem.event.type,
+                payload: eventItem.event.payload,
+                playerID: eventItem.playerID.rawValue,
+                clientID: eventItem.clientID.rawValue,
+                sessionID: eventItem.sessionID.rawValue,
+                resolvedAtTick: eventItem.resolvedAtTick
+            )
+            applied.recordedClientEvents.append(recordedClientEvent)
+
+        case let .lifecycle(lifecycleItem):
+            switch lifecycleItem.kind {
+            case .initialize:
+                guard let handler = definition.lifetimeHandlers.onInitialize else { break }
                 let ctx = makeContext(
-                    playerID: actionItem.playerID,
-                    clientID: actionItem.clientID,
-                    sessionID: actionItem.sessionID,
+                    playerID: systemPlayerID,
+                    clientID: systemClientID,
+                    sessionID: systemSessionID,
                     tickId: executingTickId,
-                    resolverOutputs: actionItem.resolverOutputs
+                    resolverOutputs: lifecycleItem.resolverOutputs
                 )
-
-                // Execute handler and capture response
-                let response = try withMutableStateSync { state in
-                    try handler.invokeErased(&state, action: decodedAction, ctx: ctx)
-                }
-                lastActionResponse = response
-
-                // Record action for deterministic re-evaluation
-                let resolverOutputsDict = actionItem.resolverOutputs.mapValues { output in
-                    ReevaluationRecordedResolverOutput(
-                        typeIdentifier: String(describing: type(of: output)),
-                        value: AnyCodable(output)
-                    )
-                }
-                let recordedAction = ReevaluationRecordedAction(
-                    kind: "action",
-                    sequence: actionItem.sequence,
-                    typeIdentifier: String(describing: actionItem.actionType),
-                    payload: actionItem.action,
-                    playerID: actionItem.playerID.rawValue,
-                    clientID: actionItem.clientID.rawValue,
-                    sessionID: actionItem.sessionID.rawValue,
-                    resolverOutputs: resolverOutputsDict,
-                    resolvedAtTick: actionItem.resolvedAtTick
-                )
-                recordedActions.append(recordedAction)
-
-            case let .clientEvent(eventItem):
-                // Find handlers for this event type
-                guard let descriptor = definition.clientEventRegistry.findDescriptor(for: eventItem.event.type) else {
-                    logger.error("Event descriptor not found", metadata: [
-                        "eventType": .string(eventItem.event.type),
-                    ])
-                    continue
-                }
-
-                let matchingHandlers = definition.eventHandlers.filter { handler in
-                    handler.canHandle(descriptor.type)
-                }
-
-                guard !matchingHandlers.isEmpty else {
-                    logger.error("No handler found for client event", metadata: [
-                        "eventType": .string(eventItem.event.type),
-                    ])
-                    continue
-                }
-
-                // Create context (client events don't have resolver outputs)
-                let ctx = makeContext(
-                    playerID: eventItem.playerID,
-                    clientID: eventItem.clientID,
-                    sessionID: eventItem.sessionID,
-                    tickId: executingTickId,
-                    resolverOutputs: [:]
-                )
-
-                // Execute handlers
+                // Execute handler synchronously (resolver outputs already injected)
                 try withMutableStateSync { state in
-                    for handler in matchingHandlers {
-                        try handler.invoke(&state, event: eventItem.event, ctx: ctx)
-                    }
+                    try handler(&state, ctx)
                 }
-
-                // Record client event for deterministic re-evaluation
-                let recordedClientEvent = ReevaluationRecordedClientEvent(
-                    kind: "clientEvent",
-                    sequence: eventItem.sequence,
-                    typeIdentifier: eventItem.event.type,
-                    payload: eventItem.event.payload,
-                    playerID: eventItem.playerID.rawValue,
-                    clientID: eventItem.clientID.rawValue,
-                    sessionID: eventItem.sessionID.rawValue,
-                    resolvedAtTick: eventItem.resolvedAtTick
-                )
-                recordedClientEvents.append(recordedClientEvent)
-
-            case let .lifecycle(lifecycleItem):
-                switch lifecycleItem.kind {
-                case .initialize:
-                    guard let handler = definition.lifetimeHandlers.onInitialize else { break }
-                    let ctx = makeContext(
-                        playerID: systemPlayerID,
-                        clientID: systemClientID,
-                        sessionID: systemSessionID,
-                        tickId: executingTickId,
-                        resolverOutputs: lifecycleItem.resolverOutputs
-                    )
-                    // Execute handler synchronously (resolver outputs already injected)
-                    try withMutableStateSync { state in
-                        try handler(&state, ctx)
-                    }
-                case .join:
-                    guard
-                        let playerID = lifecycleItem.playerID,
-                        let clientID = lifecycleItem.clientID,
-                        let sessionID = lifecycleItem.sessionID,
-                        let handler = definition.lifetimeHandlers.onJoin
-                    else { break }
-                    let ctx = makeContext(
-                        playerID: playerID,
-                        clientID: clientID,
-                        sessionID: sessionID,
-                        deviceID: lifecycleItem.deviceID,
-                        isGuest: lifecycleItem.isGuest,
-                        metadata: lifecycleItem.metadata,
-                        tickId: executingTickId,
-                        resolverOutputs: lifecycleItem.resolverOutputs
-                    )
-                    try withMutableStateSync { state in
-                        try handler(&state, ctx)
-                    }
-                case .leave:
-                    guard
-                        let playerID = lifecycleItem.playerID,
-                        let clientID = lifecycleItem.clientID,
-                        let sessionID = lifecycleItem.sessionID,
-                        let handler = definition.lifetimeHandlers.onLeave
-                    else { break }
-                    let ctx = makeContext(
-                        playerID: playerID,
-                        clientID: clientID,
-                        sessionID: sessionID,
-                        deviceID: lifecycleItem.deviceID,
-                        isGuest: lifecycleItem.isGuest,
-                        metadata: lifecycleItem.metadata,
-                        tickId: executingTickId,
-                        resolverOutputs: lifecycleItem.resolverOutputs
-                    )
-                    try withMutableStateSync { state in
-                        try handler(&state, ctx)
-                    }
-                    // Defer sync until after pending item removal to avoid duplicate execution races.
-                    shouldSyncBroadcastOnly = true
-                }
-
-                // Record lifecycle event for deterministic re-evaluation
-                let resolverOutputsDict = lifecycleItem.resolverOutputs.mapValues { output in
-                    ReevaluationRecordedResolverOutput(
-                        typeIdentifier: String(describing: type(of: output)),
-                        value: AnyCodable(output)
-                    )
-                }
-                let recordedLifecycleEvent = ReevaluationRecordedLifecycleEvent(
-                    kind: lifecycleItem.kind.rawValue,
-                    sequence: lifecycleItem.sequence,
-                    tickId: executingTickId,
-                    playerID: lifecycleItem.playerID?.rawValue,
-                    clientID: lifecycleItem.clientID?.rawValue,
-                    sessionID: lifecycleItem.sessionID?.rawValue,
+            case .join:
+                guard
+                    let playerID = lifecycleItem.playerID,
+                    let clientID = lifecycleItem.clientID,
+                    let sessionID = lifecycleItem.sessionID,
+                    let handler = definition.lifetimeHandlers.onJoin
+                else { break }
+                let ctx = makeContext(
+                    playerID: playerID,
+                    clientID: clientID,
+                    sessionID: sessionID,
                     deviceID: lifecycleItem.deviceID,
                     isGuest: lifecycleItem.isGuest,
                     metadata: lifecycleItem.metadata,
-                    resolverOutputs: resolverOutputsDict,
-                    resolvedAtTick: lifecycleItem.resolvedAtTick
+                    tickId: executingTickId,
+                    resolverOutputs: lifecycleItem.resolverOutputs
                 )
-                recordedLifecycleEvents.append(recordedLifecycleEvent)
+                try withMutableStateSync { state in
+                    try handler(&state, ctx)
+                }
+            case .leave:
+                guard
+                    let playerID = lifecycleItem.playerID,
+                    let clientID = lifecycleItem.clientID,
+                    let sessionID = lifecycleItem.sessionID,
+                    let handler = definition.lifetimeHandlers.onLeave
+                else { break }
+                let ctx = makeContext(
+                    playerID: playerID,
+                    clientID: clientID,
+                    sessionID: sessionID,
+                    deviceID: lifecycleItem.deviceID,
+                    isGuest: lifecycleItem.isGuest,
+                    metadata: lifecycleItem.metadata,
+                    tickId: executingTickId,
+                    resolverOutputs: lifecycleItem.resolverOutputs
+                )
+                try withMutableStateSync { state in
+                    try handler(&state, ctx)
+                }
+                // Defer sync until after pending item removal to avoid duplicate execution races.
+                applied.shouldSyncBroadcastOnly = true
+            }
+
+            // Record lifecycle event for deterministic re-evaluation
+            let resolverOutputsDict = lifecycleItem.resolverOutputs.mapValues { output in
+                ReevaluationRecordedResolverOutput(
+                    typeIdentifier: String(describing: type(of: output)),
+                    value: AnyCodable(output)
+                )
+            }
+            let recordedLifecycleEvent = ReevaluationRecordedLifecycleEvent(
+                kind: lifecycleItem.kind.rawValue,
+                sequence: lifecycleItem.sequence,
+                tickId: executingTickId,
+                playerID: lifecycleItem.playerID?.rawValue,
+                clientID: lifecycleItem.clientID?.rawValue,
+                sessionID: lifecycleItem.sessionID?.rawValue,
+                deviceID: lifecycleItem.deviceID,
+                isGuest: lifecycleItem.isGuest,
+                metadata: lifecycleItem.metadata,
+                resolverOutputs: resolverOutputsDict,
+                resolvedAtTick: lifecycleItem.resolvedAtTick
+            )
+            applied.recordedLifecycleEvents.append(recordedLifecycleEvent)
+        }
+        return .other
+    }
+
+    /// Process pending actions and client events that are ready to execute
+    /// Returns the response from the last executed action (if any)
+    /// - Parameter flushOutputsImmediately: If true, flush outputs after processing. If false, defer flushing (caller should flush after tick handler).
+    private func processPendingActions(flushOutputsImmediately: Bool = true) async throws -> AnyCodable? {
+        let executingTickId = executingTickIdForPendingItems()
+        let sortedItems = readyPendingItemsInOrder()
+
+        // Execute each item and track the last action response
+        var lastActionResponse: AnyCodable? = nil
+        var applied = AppliedInputs(executingTickId: executingTickId)
+        for item in sortedItems {
+            if case let .action(response) = try applyPendingItem(item, executingTickId: executingTickId, into: &applied) {
+                lastActionResponse = response
             }
         }
 
         // Remove executed items from queue
-        let executedSequences = Set(sortedItems.map { item -> Int64 in
-            switch item {
-            case let .action(actionItem):
-                return actionItem.sequence
-            case let .clientEvent(eventItem):
-                return eventItem.sequence
-            case let .lifecycle(lifecycleItem):
-                return lifecycleItem.sequence
-            }
-        })
-
-        pendingItems.removeAll { item in
-            let sequence: Int64
-            switch item {
-            case let .action(actionItem):
-                sequence = actionItem.sequence
-            case let .clientEvent(eventItem):
-                sequence = eventItem.sequence
-            case let .lifecycle(lifecycleItem):
-                sequence = lifecycleItem.sequence
-            }
-            return executedSequences.contains(sequence)
-        }
+        removePendingItems(sortedItems)
+        let recordedActions = applied.recordedActions
+        let recordedClientEvents = applied.recordedClientEvents
+        let recordedLifecycleEvents = applied.recordedLifecycleEvents
+        let shouldSyncBroadcastOnly = applied.shouldSyncBroadcastOnly
 
         // Record inputs to ReevaluationRecorder
         if let recorder = reevaluationRecorder,
@@ -1982,12 +2144,23 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // This prevents ticks from running after shutdown has started
         guard !Task.isCancelled else { return }
 
+        // The loop's tick is starting: a sync firing from now on no longer folds into it.
+        if !allowWhenNoTickTask { nextTickDeadline = nil }
+
         // No tick body starts while frozen; a body already running is drained by `debugFreeze`.
         guard !debugFrozen else { return }
         debugBeginWork()
         defer { debugEndWork() }
 
         guard let handler = definition.lifetimeHandlers.tickHandler else {
+            if usesInTurnSync {
+                // Tickless: the ready inputs run as input turns (or join the drain in progress).
+                if !inputDrainScheduled {
+                    inputDrainScheduled = true
+                    await runInputDrain()
+                }
+                return
+            }
             // Even if there's no tick handler, we still need to process pending actions
             // processPendingActions() will automatically advance tick counter if needed
             do {
@@ -2018,6 +2191,20 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 tickTask = nil
                 return
             }
+        }
+
+        // In-turn sync (live only): the whole turn (inputs, tick handler, events, sync plan and
+        // commit, writer enqueue) runs without a suspension point; the recorder follows the turn.
+        if usesInTurnSync, let transport {
+            inTurnProbeForTesting?("turn-begin")
+            if inTurnYieldForTesting {
+                // Negative control (tests only): a suspension point inside the turn, which the
+                // reentrancy probe must detect.
+                await Task.yield()
+            }
+            let output = runTickTurn(handler: handler, tickId: tickId, transport: transport)
+            await finishTickTurn(output)
+            return
         }
 
         // Recorded sequence watermarks for this tick (re-evaluation only; nil for older records).
@@ -2217,6 +2404,357 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Network synchronization is handled separately by the sync mechanism
     }
 
+    // MARK: - In-turn sync: turns
+
+    /// The events emitted for `tickId`, in sequence order, removed from the collector.
+    private func takeEmittedEvents(forTick tickId: Int64) -> [EmittedEvent] {
+        let emitted = outputCollector.emittedEvents
+            .filter { $0.tickId == tickId }
+            .sorted { $0.sequence < $1.sequence }
+        if !emitted.isEmpty {
+            outputCollector.emittedEvents.removeAll { $0.tickId == tickId }
+        }
+        return emitted
+    }
+
+    /// Whether the sync requests handlers made for `tickId` (taken from the collector) or a
+    /// leave in `applied` ask for a sync phase. A broadcast-only request runs the full phase in a
+    /// turn: the leave's effects go out with the turn's frames.
+    private func takeSyncRequest(forTick tickId: Int64, applied: AppliedInputs?) -> Bool {
+        let requests = outputCollector.syncRequestsByTick.removeValue(forKey: tickId)
+        return requests?.syncNow == true
+            || requests?.syncBroadcastOnly == true
+            || applied?.shouldSyncBroadcastOnly == true
+    }
+
+    /// Applies `items` in order inside a turn (synchronous), with the legacy throw semantics of
+    /// `processPendingActions`: a handler that throws aborts the pass, every item stays pending,
+    /// nothing of the pass is recorded, and the state keeps what the handlers wrote before the
+    /// throw. (Failing only the throwing input needs a per-input savepoint; not in this change.)
+    private func applyInputsInTurn(_ items: [PendingItem], executingTickId: Int64) throws -> AppliedInputs {
+        var applied = AppliedInputs(executingTickId: executingTickId)
+        for item in items {
+            if case let .action(response) = try applyPendingItem(item, executingTickId: executingTickId, into: &applied) {
+                applied.actionResults[item.sequence] = .success(response)
+            }
+        }
+        removePendingItems(items)
+        return applied
+    }
+
+    /// The output step of a turn, synchronous: the turn's events, then (when `wantsSync`) the sync
+    /// phase, handed to the transport in this actor turn, and the result applied in it.
+    ///
+    /// While a legacy cycle holds the sync flag, the phase is left to a sync-only turn run by
+    /// `endSync`; the events still go out now.
+    private func runTurnOutputs(
+        transport: any LandKeeperTransport,
+        events: [EmittedEvent],
+        wantsSync: Bool
+    ) {
+        var includeSync = wantsSync
+        if wantsSync && isSyncing {
+            includeSync = false
+            inTurnSyncDue = false
+            syncOnlyTurnAfterLegacyCycle = true
+        }
+        let result = transport.runSyncPhaseInTurn(
+            state: state,
+            events: events.map { InTurnServerEvent(event: $0.event, target: $0.target) },
+            includeSync: includeSync
+        )
+        applyInTurnSyncResult(result, transport: transport)
+    }
+
+    /// Applies what an in-turn sync phase did, in the same turn.
+    ///
+    /// - committed: the dirty flags are cleared now when the plan diffed every synced field.
+    /// - deferred by back-pressure: nothing was planned, so the dirty flags and the adapter's
+    ///   queued events stay. A land with periodic sync relies on its next sync-only turn; one
+    ///   without gets one sync-only turn once the writer drains.
+    /// - failed: the flags stay set. A land with periodic sync relies on its next sync-only turn;
+    ///   one without gets a repair sync-only turn while the adapter allows it.
+    private func applyInTurnSyncResult(_ result: InTurnSyncResult, transport: any LandKeeperTransport) {
+        switch result {
+        case let .committed(clearDirtyFlags):
+            if clearDirtyFlags {
+                state.clearDirty()
+            }
+            inTurnSyncDue = false
+            inTurnProbeForTesting?("sync-committed")
+        case .skipped:
+            inTurnSyncDue = false
+        case .deferredBackPressure:
+            inTurnSyncDue = false
+            inTurnDeferredTurns += 1
+            if !hasPeriodicSync {
+                retrySyncOnlyTurnAfterWriterDrain(transport: transport)
+            }
+        case let .failed(repairAllowed):
+            inTurnSyncDue = false
+            if repairAllowed && !hasPeriodicSync {
+                scheduleRepairSyncOnlyTurn()
+            }
+        case .notRequested, .unsupported:
+            break
+        }
+    }
+
+    /// What a tick turn leaves for the work after it (the recorder).
+    private struct TickTurnOutput {
+        let record: ReevaluationTickRecord
+    }
+
+    /// One tick turn, synchronous from the first input to the writer enqueue.
+    ///
+    /// Applies the ready inputs, runs the tick handler, takes the events emitted in this tick and
+    /// hands them to the transport in emit order, with the sync phase when it is due
+    /// (coincident-sync rule) or a handler requested one, all in this actor turn. Being
+    /// non-async, it cannot contain an `await`; the recorder submission is returned for
+    /// `finishTickTurn`.
+    private func runTickTurn(
+        handler: (inout State, LandContext) -> Void,
+        tickId: Int64,
+        transport: any LandKeeperTransport
+    ) -> TickTurnOutput {
+        // Sequence watermark W1 (before inputs).
+        let sequenceBeforeInputs = outputCollector.nextSequence
+        let applied: AppliedInputs
+        do {
+            applied = try applyInputsInTurn(readyPendingItemsInOrder(), executingTickId: tickId)
+        } catch {
+            // As the legacy tick: logged, and the tick handler still runs.
+            logger.error("Error processing pending actions", metadata: [
+                "error": .string(String(describing: error)),
+            ])
+            applied = AppliedInputs(executingTickId: tickId)
+        }
+
+        let ctx = makeContext(
+            playerID: systemPlayerID,
+            clientID: systemClientID,
+            sessionID: systemSessionID,
+            tickId: tickId
+        )
+        // Sequence watermark W2 (before the tick handler).
+        let sequenceBeforeTickHandler = outputCollector.nextSequence
+        handler(&state, ctx)
+        lastCommittedTickId = tickId
+
+        var stateHash: String?
+        var stateSnapshot: StateSnapshot?
+        if enableLiveStateHashRecording, reevaluationRecorder != nil {
+            if EnvHelpers.getEnvBool(key: "ENABLE_STATE_SNAPSHOT_RECORDING", defaultValue: false) {
+                let (hash, snapshot) = ReevaluationEngine.calculateStateHashAndSnapshot(state)
+                stateHash = hash
+                stateSnapshot = snapshot
+            } else {
+                stateHash = ReevaluationEngine.calculateStateHash(state)
+            }
+        }
+
+        let emitted = takeEmittedEvents(forTick: tickId)
+        let wantsSync = inTurnSyncDue || takeSyncRequest(forTick: tickId, applied: applied)
+        runTurnOutputs(transport: transport, events: emitted, wantsSync: wantsSync)
+        inTurnProbeForTesting?("turn-end")
+
+        var record = makeTurnRecord(tickId: tickId, applied: applied, emitted: emitted)
+        record.stateHash = stateHash
+        record.stateSnapshot = stateSnapshot
+        record.sequenceBeforeInputs = sequenceBeforeInputs
+        record.sequenceBeforeTickHandler = sequenceBeforeTickHandler
+        return TickTurnOutput(record: record)
+    }
+
+    /// After a tick turn: one recorder submission with everything the turn recorded. Live mode
+    /// records a frame for every tick, even without inputs.
+    private func finishTickTurn(_ output: TickTurnOutput) async {
+        await submitTurnRecord(output.record)
+    }
+
+    /// The record of a turn's inputs and server events for `tickId`.
+    private func makeTurnRecord(
+        tickId: Int64,
+        applied: AppliedInputs,
+        emitted: [EmittedEvent]
+    ) -> ReevaluationTickRecord {
+        ReevaluationTickRecord(
+            tickId: tickId,
+            actions: applied.recordedActions,
+            clientEvents: applied.recordedClientEvents,
+            lifecycleEvents: applied.recordedLifecycleEvents,
+            serverEvents: emitted.map { item in
+                ReevaluationRecordedServerEvent(
+                    kind: "serverEvent",
+                    sequence: item.sequence,
+                    tickId: item.tickId,
+                    typeIdentifier: item.event.type,
+                    payload: item.event.payload,
+                    target: ReevaluationEventTargetRecord.from(item.target)
+                )
+            }
+        )
+    }
+
+    /// Submits `record` after every earlier submission (turn order) and returns once it is
+    /// recorded. No-op without a recorder.
+    private func submitTurnRecord(_ record: ReevaluationTickRecord) async {
+        guard let recorder = reevaluationRecorder else { return }
+        let previous = recorderSubmissionTail
+        let submission = Task {
+            await previous?.value
+            await recorder.recordTick(record)
+        }
+        recorderSubmissionTail = submission
+        await submission.value
+    }
+
+    /// A sync-only turn (no inputs, no tick): the sync phase on the current state, synchronous,
+    /// with the dirty-flag clear in the same turn. While a legacy cycle holds the sync flag, it
+    /// runs again after that cycle's `endSync` instead.
+    private func runSyncOnlyTurn(transport: any LandKeeperTransport) {
+        guard !isSyncing else {
+            syncOnlyTurnAfterLegacyCycle = true
+            return
+        }
+        inTurnProbeForTesting?("turn-begin")
+        let result = transport.runSyncPhaseInTurn(state: state, events: [], includeSync: true)
+        applyInTurnSyncResult(result, transport: transport)
+        inTurnProbeForTesting?("turn-end")
+    }
+
+    /// A sync-only turn, if this keeper still runs in-turn sync (scheduled turns).
+    private func runSyncOnlyTurnIfInTurn() {
+        guard usesInTurnSync, let transport else { return }
+        runSyncOnlyTurn(transport: transport)
+    }
+
+    /// After a deferred phase on a land without periodic sync: one sync-only turn once the writer
+    /// has drained its sync cycle elements (at most one pending).
+    private func retrySyncOnlyTurnAfterWriterDrain(transport: any LandKeeperTransport) {
+        guard !inTurnDrainRetryPending else { return }
+        inTurnDrainRetryPending = true
+        Task { [weak self] in
+            await transport.waitForWriterDrainForInTurnSync()
+            await self?.runRetriedSyncOnlyTurn()
+        }
+    }
+
+    private func runRetriedSyncOnlyTurn() {
+        inTurnDrainRetryPending = false
+        runSyncOnlyTurnIfInTurn()
+    }
+
+    /// After a failed plan on a land without periodic sync: one repair sync-only turn after
+    /// `inTurnRepairDelay` (at most one pending; the adapter bounds failures in a row).
+    private func scheduleRepairSyncOnlyTurn() {
+        guard !inTurnRepairPending else { return }
+        inTurnRepairPending = true
+        Task { [weak self] in
+            try? await safeTaskSleep(for: Self.inTurnRepairDelay)
+            await self?.runRepairSyncOnlyTurn()
+        }
+    }
+
+    private func runRepairSyncOnlyTurn() {
+        inTurnRepairPending = false
+        inTurnRepairTurns += 1
+        runSyncOnlyTurnIfInTurn()
+    }
+
+    // MARK: - In-turn sync: tickless input turns
+
+    /// Waits until the input with `sequence` (already queued) has run in an input turn, and
+    /// returns its response: the action's response, an empty one for other inputs, or the
+    /// handler's error.
+    private func awaitInputTurn(sequence: Int64) async throws -> AnyCodable {
+        try await withCheckedThrowingContinuation { continuation in
+            inputTurnWaiters[sequence] = continuation
+            scheduleInputDrain()
+        }
+    }
+
+    /// Schedules the input drain unless one is scheduled or running.
+    private func scheduleInputDrain() {
+        guard !inputDrainScheduled else { return }
+        inputDrainScheduled = true
+        Task { [weak self] in
+            await self?.runInputDrain()
+        }
+    }
+
+    /// Runs input turns until no ready input is left. Each turn takes an ordered snapshot of at
+    /// most `inputTurnBatchLimit` ready inputs; inputs arriving during a turn go to a later one.
+    /// Between turns the drain awaits the recorder, so sync-only turns and other jobs interleave.
+    /// The caller has set `inputDrainScheduled`.
+    private func runInputDrain() async {
+        while true {
+            let batch = Array(readyPendingItemsInOrder().prefix(Self.inputTurnBatchLimit))
+            if batch.isEmpty { break }
+            guard let record = runInputTurn(batch) else {
+                // The pass threw: its callers got the error and its inputs stay pending. As in
+                // the legacy path, the next tickless input runs them again.
+                break
+            }
+            if !record.isEmpty {
+                await submitTurnRecord(record)
+            }
+            resumeInputTurnWaiters(for: batch)
+        }
+        inputDrainScheduled = false
+    }
+
+    /// The input-turn outcome of each waiting caller, kept until the turn's record is submitted.
+    private var inputTurnResults: [Int64: Result<AnyCodable, any Error>] = [:]
+
+    /// One tickless input turn, synchronous: applies `batch`, takes the events emitted and the
+    /// sync requests made, and hands them to the transport with the sync phase when requested.
+    /// Returns the turn's record; the outcomes wait in `inputTurnResults`.
+    ///
+    /// A handler that throws aborts the turn with the legacy semantics (`applyInputsInTurn`):
+    /// every waiting caller gets the error (as each legacy caller ran a pass that threw),
+    /// and the events and sync requests made so far stay in the collector for the next pass.
+    /// Returns nil then.
+    private func runInputTurn(_ batch: [PendingItem]) -> ReevaluationTickRecord? {
+        inTurnProbeForTesting?("turn-begin")
+        inTurnProbeForTesting?("input-batch-\(batch.count)")
+        let executingTickId = executingTickIdForPendingItems()
+        let applied: AppliedInputs
+        do {
+            applied = try applyInputsInTurn(batch, executingTickId: executingTickId)
+        } catch {
+            logger.error("Error processing pending actions", metadata: [
+                "error": .string(String(describing: error)),
+            ])
+            inTurnProbeForTesting?("turn-end")
+            // Every waiting caller: in the legacy path each one ran its own pass over the same
+            // pending items, which hit the same throw.
+            let waiters = inputTurnWaiters
+            inputTurnWaiters.removeAll()
+            waiters.values.forEach { $0.resume(throwing: error) }
+            return nil
+        }
+        let emitted = takeEmittedEvents(forTick: executingTickId)
+        let wantsSync = takeSyncRequest(forTick: executingTickId, applied: applied)
+        if let transport, usesInTurnSync {
+            runTurnOutputs(transport: transport, events: emitted, wantsSync: wantsSync)
+        }
+        inTurnProbeForTesting?("turn-end")
+        for item in batch {
+            inputTurnResults[item.sequence] = applied.actionResults[item.sequence] ?? .success(AnyCodable(()))
+        }
+        return makeTurnRecord(tickId: executingTickId, applied: applied, emitted: emitted)
+    }
+
+    /// Resumes the callers of `batch` with their outcomes, after the turn was recorded (as the
+    /// legacy path records before it returns).
+    private func resumeInputTurnWaiters(for batch: [PendingItem]) {
+        for item in batch {
+            let result = inputTurnResults.removeValue(forKey: item.sequence) ?? .success(AnyCodable(()))
+            inputTurnWaiters.removeValue(forKey: item.sequence)?.resume(with: result)
+        }
+    }
+
     private func configureSyncLoop(interval: Duration) async {
         syncTask?.cancel()
         let phaseOffset = loopPhaseOffset(interval: interval)
@@ -2277,6 +2815,21 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
             // Pass state as value (read-only) to emphasize that it should not be modified
             handler(state, ctx)
+        }
+
+        // In-turn sync: a sync-only turn at the sync loop's own interval, unless a tick is due
+        // within the coincident-sync window: then the sync folds into that tick turn, so it
+        // never overtakes a tick due at the same instant.
+        if usesInTurnSync, let transport {
+            if tickTask != nil, let deadline = nextTickDeadline,
+               deadline - ContinuousClock.now <= coincidentSyncWindow
+            {
+                inTurnSyncDue = true
+                foldedSyncs += 1
+                return
+            }
+            runSyncOnlyTurn(transport: transport)
+            return
         }
 
         // Sync is read-only: only triggers synchronization mechanism
@@ -2430,5 +2983,25 @@ private struct InternalPlayerSession: Sendable {
         self.deviceID = deviceID
         self.isGuest = isGuest
         self.metadata = metadata
+    }
+}
+
+extension LandKeeper.PendingItem {
+    /// The input's sequence number (shared counter across inputs and server events).
+    var sequence: Int64 {
+        switch self {
+        case let .action(item): return item.sequence
+        case let .clientEvent(item): return item.sequence
+        case let .lifecycle(item): return item.sequence
+        }
+    }
+
+    /// The committed tick the input is bound to; it runs in the first tick after it.
+    var resolvedAtTick: Int64 {
+        switch self {
+        case let .action(item): return item.resolvedAtTick
+        case let .clientEvent(item): return item.resolvedAtTick
+        case let .lifecycle(item): return item.resolvedAtTick
+        }
     }
 }
