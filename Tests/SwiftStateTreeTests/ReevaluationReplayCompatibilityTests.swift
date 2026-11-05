@@ -594,6 +594,65 @@ struct ReevaluationReplayCompatibilityTests {
     }
 }
 
+@Suite("Re-evaluation record version 2.1 compatibility")
+struct ReevaluationRecordVersionCompatibilityTests {
+    private func runner(
+        recorded: String,
+        required: String,
+        recordsSyncStream: Bool?
+    ) async throws -> ConcreteReevaluationRunner<ReevaluationEngineTestState> {
+        let definition = makeReevaluationEngineTestDefinition()
+        let recordingFile = try await createRecordingFile(
+            definition: definition,
+            landID: "reeval-version-\(recorded)-\(required):local",
+            metadataLandDefinitionID: definition.id,
+            metadataVersion: recorded,
+            recordsSyncStream: recordsSyncStream,
+            actions: [1, 2]
+        )
+        defer { try? FileManager.default.removeItem(at: recordingFile) }
+        return try await ConcreteReevaluationRunner(
+            definition: definition,
+            initialState: ReevaluationEngineTestState(),
+            recordFilePath: recordingFile.path,
+            requiredRecordVersion: required
+        )
+    }
+
+    @Test("A 2.1 record with an empty sync stream is read by a runner that requires 2.0")
+    func newRecordOnRunnerRequiring20() async throws {
+        let runner = try await runner(recorded: "2.1", required: "2.0", recordsSyncStream: true)
+        // Recorded and empty: reported as recorded with 0 outputs, never as absent.
+        #expect(runner.syncStreamPresence == .recorded(outputs: 0, markers: 0))
+        try await runner.prepare()
+        var steps = 0
+        while let result = try await runner.step() {
+            #expect(result.isMatch, "tick \(result.tickId): the state-hash check still runs")
+            steps += 1
+        }
+        #expect(steps > 0)
+    }
+
+    @Test("A 2.0 record decodes with an empty sync stream and reports it absent")
+    func oldRecordOnNewRunner() async throws {
+        let runner = try await runner(recorded: "2.0", required: "2.1", recordsSyncStream: nil)
+        #expect(runner.syncStreamPresence == .absent(reason: "record version 2.0 predates sync-output recording"))
+    }
+
+    @Test("A record made with in-turn sync off reports the sync stream absent, with the reason")
+    func inTurnOffRecord() async throws {
+        let runner = try await runner(recorded: "2.1", required: "2.1", recordsSyncStream: false)
+        #expect(runner.syncStreamPresence == .absent(reason: "recorded with in-turn sync off"))
+    }
+
+    @Test("A different major version is the only hard failure")
+    func majorMismatch() async throws {
+        await #expect(throws: ReevaluationReplayCompatibilityError.self) {
+            _ = try await runner(recorded: "3.0", required: "2.1", recordsSyncStream: true)
+        }
+    }
+}
+
 private enum ReevaluationReplayCompatibilityTestError: Error {
     case reevaluationRecorderUnavailable
 }
@@ -684,6 +743,7 @@ private func createRecordingFile(
     metadataLandType: String? = nil,
     metadataLandDefinitionID: String?,
     metadataVersion: String = "1.0",
+    recordsSyncStream: Bool? = nil,
     actions: [Int]
 ) async throws -> URL {
     let expectedSeed = DeterministicSeed.fromLandID(landID)
@@ -716,7 +776,8 @@ private func createRecordingFile(
         ruleVariantId: nil,
         ruleParams: nil,
         version: metadataVersion,
-        extensions: nil
+        extensions: nil,
+        recordsSyncStream: recordsSyncStream
     )
     await recorder.setMetadata(metadata)
 

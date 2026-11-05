@@ -83,6 +83,9 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
     private let capturingSink = CapturingSink()
 
     public let maxTickId: Int64
+    /// Whether the record carries a sync stream; `absent` (with the header's reason) is never
+    /// reported as a pass.
+    public nonisolated let syncStreamPresence: ReevaluationSyncStreamPresence
     private var currentTickId: Int64 = -1
 
     public init(
@@ -98,6 +101,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             expectedLandDefinitionID: definition.id,
             requiredRecordVersion: requiredRecordVersion
         )
+        syncStreamPresence = try await source.getSyncStreamPresence()
         maxTickId = try await source.getMaxTickId()
 
         let initialState = State() // Assuming generic init or we need to pass it
@@ -151,6 +155,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             expectedLandDefinitionID: definition.id,
             requiredRecordVersion: requiredRecordVersion
         )
+        syncStreamPresence = try await source.getSyncStreamPresence()
         maxTickId = try await source.getMaxTickId()
 
         // Use provided services as base
@@ -265,7 +270,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         }
 
         if let requiredRecordVersion,
-           metadata.version != requiredRecordVersion {
+           !ReevaluationRecordVersion.isCompatible(recorded: metadata.version, required: requiredRecordVersion) {
             throw ReevaluationReplayCompatibilityError.recordVersionMismatch(
                 expectedVersion: requiredRecordVersion,
                 recordedVersion: metadata.version

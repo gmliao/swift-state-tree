@@ -35,6 +35,9 @@ public enum ReevaluationEngine {
         ///
         /// Server events of these ticks must match exactly, including `sequence`.
         public let watermarkedTicks: Set<Int64>
+        /// Whether the record carries a sync stream. `absent` is never a pass: the sync output
+        /// check has nothing to compare.
+        public let syncStreamPresence: ReevaluationSyncStreamPresence
 
         /// Verdict on `serverEventMismatches`, decided per tick (see `classifyServerEventMismatches`).
         public var serverEventVerification: ServerEventVerification {
@@ -225,7 +228,8 @@ public enum ReevaluationEngine {
             tickHashes: hashes,
             recordedStateHashes: recordedHashes,
             serverEventMismatches: serverEventMismatches,
-            watermarkedTicks: watermarkedTicks
+            watermarkedTicks: watermarkedTicks,
+            syncStreamPresence: try await source.getSyncStreamPresence()
         )
     }
     
