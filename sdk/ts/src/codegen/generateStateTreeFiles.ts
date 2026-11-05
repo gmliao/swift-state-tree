@@ -581,8 +581,11 @@ function generateIndexTs(
     lines.push(`import type { StateTreeRuntime, Logger, StatePatch } from '@swiftstatetree/sdk/core'`)
   }
   lines.push(`import { StateTreeView } from '@swiftstatetree/sdk/core'`)
+  // EventSubscription and EventHandler are used only by server-event subscriptions; importing
+  // them for a land without server events fails noUnusedLocals.
+  const eventTypes = serverEvents.length > 0 ? ', EventSubscription, EventHandler' : ''
   lines.push(
-    `import type { LandState, Actions, ClientEvents, ServerEventSubscriptions, EventSubscription, EventHandler } from './bindings'`
+    `import type { LandState, Actions, ClientEvents, ServerEventSubscriptions${eventTypes} } from './bindings'`
   )
   lines.push(`import { LAND_TYPE } from './bindings'`)
   // Import SCHEMA for type checking if available
