@@ -884,17 +884,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// defer { await keeper.endSync() }
     /// // ... perform sync operations with state snapshot ...
     /// ```
-    /// `beginSync`, with where its copy was taken (`SyncReadPosition`), from the same job.
-    package func beginSyncLocated(clearDirtyFlags: Bool) -> (state: State, position: SyncReadPosition)? {
-        let position = syncReadPosition()
-        return beginSync(clearDirtyFlags: clearDirtyFlags).map { ($0, position) }
-    }
-
-    /// `currentState()`, with where it was read, from the same job.
-    package func currentStateLocated() -> (state: State, position: SyncReadPosition) {
-        (state, syncReadPosition())
-    }
-
     public func beginSync(clearDirtyFlags: Bool) -> State? {
         guard !isSyncing else {
             return nil // Deduplication: skip concurrent sync requests
@@ -905,6 +894,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             state.clearDirty()
         }
         return snapshot
+    }
+
+    /// `beginSync`, with where its copy was taken (`SyncReadPosition`), from the same job.
+    package func beginSyncLocated(clearDirtyFlags: Bool) -> (state: State, position: SyncReadPosition)? {
+        let position = syncReadPosition()
+        return beginSync(clearDirtyFlags: clearDirtyFlags).map { ($0, position) }
+    }
+
+    /// `currentState()`, with where it was read, from the same job.
+    package func currentStateLocated() -> (state: State, position: SyncReadPosition) {
+        (state, syncReadPosition())
     }
 
     /// End a sync operation, releasing the sync flag.
@@ -2788,7 +2788,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
         syncOutputIndexCursor = (observedTickId, index + 1)
         let output = make(takeSyncStreamIndex(), index)
-        enqueueSyncStreamRecord(ReevaluationTickRecord(
+        enqueueRecorderSubmission(ReevaluationTickRecord(
             tickId: max(observedTickId ?? lastCommittedTickId, 0),
             syncOutputs: [output]
         ))
@@ -2799,20 +2799,24 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     package func recordSyncMarker(_ make: (_ streamIndex: UInt64) -> ReevaluationRecordedSyncMarker) {
         guard reevaluationRecorder != nil else { return }
         let marker = make(takeSyncStreamIndex())
-        enqueueSyncStreamRecord(ReevaluationTickRecord(
+        enqueueRecorderSubmission(ReevaluationTickRecord(
             tickId: max(marker.observedTickId ?? lastCommittedTickId, 0),
             syncMarkers: [marker]
         ))
     }
 
-    /// Submits `record` after every earlier submission, without waiting for it.
-    private func enqueueSyncStreamRecord(_ record: ReevaluationTickRecord) {
-        guard let recorder = reevaluationRecorder else { return }
+    /// Submits `record` after every earlier submission, without waiting for it; returns the
+    /// submission (nil without a recorder).
+    @discardableResult
+    private func enqueueRecorderSubmission(_ record: ReevaluationTickRecord) -> Task<Void, Never>? {
+        guard let recorder = reevaluationRecorder else { return nil }
         let previous = recorderSubmissionTail
-        recorderSubmissionTail = Task {
+        let submission = Task {
             await previous?.value
             await recorder.recordTick(record)
         }
+        recorderSubmissionTail = submission
+        return submission
     }
 
     /// Tests only: waits until every recorder submission so far is recorded.
@@ -2828,14 +2832,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Submits `record` after every earlier submission (turn order) and returns once it is
     /// recorded. No-op without a recorder.
     private func submitTurnRecord(_ record: ReevaluationTickRecord) async {
-        guard let recorder = reevaluationRecorder else { return }
-        let previous = recorderSubmissionTail
-        let submission = Task {
-            await previous?.value
-            await recorder.recordTick(record)
-        }
-        recorderSubmissionTail = submission
-        await submission.value
+        await enqueueRecorderSubmission(record)?.value
     }
 
     /// A sync-only turn (no inputs, no tick): the sync phase on the current state, synchronous,
