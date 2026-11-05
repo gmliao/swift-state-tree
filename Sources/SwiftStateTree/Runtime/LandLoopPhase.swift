@@ -46,7 +46,8 @@ public enum LandLoopPhase {
 
 /// The clock the keeper's tick loop reads and sleeps on: the continuous clock in production, a
 /// manual one in tests, so a test steps the loop's phase offset and fixed-rate schedule on
-/// simulated time and checks its deadlines exactly.
+/// simulated time and checks its deadlines exactly. Only the tick loop uses it: the sync loop and
+/// the fold and overdue counters read the real clock.
 package struct TickLoopClock: Sendable {
     package var now: @Sendable () -> ContinuousClock.Instant
     /// Sleeps for the phase offset; returns early when the task is cancelled.
