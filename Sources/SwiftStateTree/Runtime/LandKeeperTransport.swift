@@ -52,5 +52,88 @@ public protocol LandKeeperTransport: Sendable {
     /// This allows the transport layer to perform cleanup, such as removing the land
     /// from LandManager's registry.
     func onLandDestroyed() async
+
+    /// Whether `keeper` may call `runSyncPhaseInTurn` from inside its own actor turn.
+    ///
+    /// `true` only when in-turn sync is on for this transport and it is attached to that keeper
+    /// (identity) and runs on its serial executor (`InTurnSync`). A keeper asks this once per
+    /// turn; a transport attached to another keeper, or with in-turn sync off, answers `false`, so
+    /// no keeper ever reaches an `assumeIsolated` that would trap.
+    func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool
+
+    /// Returns once the outbound writer no longer holds a state element from an earlier sync
+    /// phase. A keeper without periodic sync waits on it before retrying a sync phase that was
+    /// deferred by back-pressure.
+    func waitForWriterDrainForInTurnSync() async
+
+    /// The synchronous output step of a keeper turn.
+    ///
+    /// Called by the keeper inside its actor turn, with no suspension point between the turn's
+    /// state changes and this call: enqueue `events` in emit order (to the outbound writer, or to
+    /// the opcode 107 queue), then, if `includeSync`, plan and commit a full sync phase on
+    /// `state` and enqueue its frames after those events. Being synchronous, the turn cannot
+    /// suspend in it. An implementation that is an actor runs on the keeper's executor and enters
+    /// its own isolation with `assumeIsolated`.
+    ///
+    /// Only called when `runsSyncPhaseInTurn(of:)` returned `true` for the caller.
+    func runSyncPhaseInTurn<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
+        includeSync: Bool
+    ) -> InTurnSyncResult
+}
+
+// MARK: - In-turn sync
+
+/// A server event emitted during a keeper turn, handed to the transport inside that turn.
+public struct InTurnServerEvent: Sendable {
+    public let event: AnyServerEvent
+    public let target: EventTarget
+
+    public init(event: AnyServerEvent, target: EventTarget) {
+        self.event = event
+        self.target = target
+    }
+}
+
+/// What `LandKeeperTransport.runSyncPhaseInTurn` did.
+public enum InTurnSyncResult: Sendable, Equatable {
+    /// The transport does not run sync phases in the keeper's turn.
+    case unsupported
+    /// The events were enqueued; no sync phase was requested.
+    case notRequested
+    /// A sync phase was requested but skipped (no members, or the land is frozen): nothing was
+    /// planned and the request is consumed.
+    case skipped
+    /// A sync phase was requested but deferred because the land's outbound writer still holds a
+    /// state element from an earlier phase (back-pressure). Nothing was planned: the dirty flags
+    /// and the queued events (opcode 107) are kept, and the turn's request is consumed. A land
+    /// with periodic sync re-syncs on its next sync-only turn; a land without one retries once
+    /// after the writer drains.
+    case deferredBackPressure
+    /// The sync phase committed. `clearDirtyFlags`: the plan diffed every synced field, so the
+    /// keeper clears the dirty flags now, in the same turn (clearing is part of the commit).
+    case committed(clearDirtyFlags: Bool)
+    /// The sync plan threw and committed nothing; the dirty flags stay set. `repairAllowed`: the
+    /// failure count is still within the follow-up limit, so a land without periodic sync may
+    /// schedule one repair sync-only turn (a land with periodic sync relies on its next one).
+    case failed(repairAllowed: Bool)
+}
+
+extension LandKeeperTransport {
+    /// Default: in-turn sync is not supported for any keeper.
+    public func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { false }
+
+    /// Default: returns immediately.
+    public func waitForWriterDrainForInTurnSync() async {}
+
+    /// Default: in-turn sync is not supported.
+    public func runSyncPhaseInTurn<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
+        includeSync: Bool
+    ) -> InTurnSyncResult {
+        .unsupported
+    }
 }
 

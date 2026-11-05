@@ -120,11 +120,19 @@ struct LandKeeperLoopPhaseOffsetTests {
         let ticks = recorder.all
         try #require(ticks.count >= 6, "expected at least 6 ticks, got \(ticks.count)")
         #expect(await keeper.appliedTickPhaseOffset == offset)
-        // First tick: the offset, then one interval (5 ms slack for clock granularity).
-        #expect(ticks[0] - start >= offset + interval - .milliseconds(5), "first tick after \(ticks[0] - start)")
-        // Fixed rate after the first tick: the span of five periods stays close to 5 × interval.
+        // First tick: the offset, then one interval (5 ms slack for clock granularity), measured
+        // from the loop's own start, so a slow initialization or join does not hide an early tick.
+        let loopStart = try #require(await keeper.tickLoopConfiguredAt)
+        #expect(loopStart >= start)
+        #expect(ticks[0] - loopStart >= offset + interval - .milliseconds(5), "first tick \(ticks[0] - loopStart) after the loop started (offset \(offset))")
+        // The period after the first tick is unchanged: the median of the five gaps stays close to
+        // the interval. The fixed-rate loop follows a late tick (a loaded runner) with
+        // on-schedule ones, which distorts only the gaps around it, so the median is robust where
+        // the span from tick 0 is not. The span still has an upper bound.
+        let gaps = (1...5).map { milliseconds(ticks[$0] - ticks[$0 - 1]) }.sorted()
+        #expect(gaps[2] >= 80 && gaps[2] <= 120, "median gap \(gaps[2]) ms, gaps \(gaps)")
         let span = milliseconds(ticks[5] - ticks[0])
-        #expect(span >= 480 && span <= 650, "five periods took \(span) ms")
+        #expect(span <= 650, "five periods took \(span) ms")
     }
 
     @Test("A land ID passed to init seeds the default RNG and is the land's ID from the start")

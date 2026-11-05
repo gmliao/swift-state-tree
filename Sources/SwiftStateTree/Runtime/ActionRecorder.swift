@@ -227,6 +227,65 @@ public struct ReevaluationTickFrame: Codable, Sendable {
     }
 }
 
+/// Everything one keeper turn recorded for a tick, submitted with
+/// `ReevaluationRecorder.recordTick(_:)`.
+public struct ReevaluationTickRecord: Sendable {
+    public let tickId: Int64
+    public var actions: [ReevaluationRecordedAction]
+    public var clientEvents: [ReevaluationRecordedClientEvent]
+    public var lifecycleEvents: [ReevaluationRecordedLifecycleEvent]
+    public var serverEvents: [ReevaluationRecordedServerEvent]
+    public var stateHash: String?
+    public var stateSnapshot: StateSnapshot?
+    public var sequenceBeforeInputs: Int64?
+    public var sequenceBeforeTickHandler: Int64?
+
+    public init(
+        tickId: Int64,
+        actions: [ReevaluationRecordedAction] = [],
+        clientEvents: [ReevaluationRecordedClientEvent] = [],
+        lifecycleEvents: [ReevaluationRecordedLifecycleEvent] = [],
+        serverEvents: [ReevaluationRecordedServerEvent] = [],
+        stateHash: String? = nil,
+        stateSnapshot: StateSnapshot? = nil,
+        sequenceBeforeInputs: Int64? = nil,
+        sequenceBeforeTickHandler: Int64? = nil
+    ) {
+        self.tickId = tickId
+        self.actions = actions
+        self.clientEvents = clientEvents
+        self.lifecycleEvents = lifecycleEvents
+        self.serverEvents = serverEvents
+        self.stateHash = stateHash
+        self.stateSnapshot = stateSnapshot
+        self.sequenceBeforeInputs = sequenceBeforeInputs
+        self.sequenceBeforeTickHandler = sequenceBeforeTickHandler
+    }
+}
+
+extension ReevaluationTickRecord {
+    /// No inputs, server events, hash or watermarks.
+    public var isEmpty: Bool {
+        actions.isEmpty && clientEvents.isEmpty && lifecycleEvents.isEmpty && serverEvents.isEmpty
+            && stateHash == nil && sequenceBeforeInputs == nil && sequenceBeforeTickHandler == nil
+    }
+}
+
+extension ReevaluationTickFrame {
+    /// This frame with `record` merged in: lists appended, hash and watermarks set when present.
+    func merging(_ record: ReevaluationTickRecord) -> ReevaluationTickFrame {
+        replacing(
+            stateHash: record.stateHash.map { .some($0) },
+            actions: actions + record.actions,
+            clientEvents: clientEvents + record.clientEvents,
+            lifecycleEvents: lifecycleEvents + record.lifecycleEvents,
+            serverEvents: serverEvents + record.serverEvents,
+            sequenceBeforeInputs: record.sequenceBeforeInputs,
+            sequenceBeforeTickHandler: record.sequenceBeforeTickHandler
+        )
+    }
+}
+
 /// Recorded action for re-evaluation.
 public struct ReevaluationRecordedAction: Codable, Sendable {
     public let kind: String // "action"
@@ -560,6 +619,45 @@ public actor ReevaluationRecorder {
             return
         }
         currentFrame = frame.replacing(serverEvents: events)
+    }
+
+    /// Records everything one keeper turn produced for `record.tickId`, in one call.
+    ///
+    /// Merges into that tick's frame: inputs and server events are appended (several tickless
+    /// drains in one tick never overwrite each other's events); the state hash, snapshot and
+    /// sequence watermarks are set when present. A record for a newer tick finalizes the
+    /// current frame first. Keepers submit turn records in turn order, so a record for an older
+    /// tick only merges into its already finalized frame.
+    public func recordTick(_ record: ReevaluationTickRecord) {
+        if record.tickId == currentTickId, let frame = currentFrame {
+            currentFrame = frame.merging(record)
+        } else if record.tickId > currentTickId || currentFrame == nil {
+            if let frame = currentFrame {
+                frames.append(frame)
+            }
+            currentTickId = record.tickId
+            currentFrame = ReevaluationTickFrame(
+                tickId: record.tickId,
+                actions: [],
+                clientEvents: [],
+                lifecycleEvents: []
+            ).merging(record)
+        } else if let index = frames.lastIndex(where: { $0.tickId == record.tickId }) {
+            frames[index] = frames[index].merging(record)
+        } else {
+            frames.append(ReevaluationTickFrame(
+                tickId: record.tickId,
+                actions: [],
+                clientEvents: [],
+                lifecycleEvents: []
+            ).merging(record))
+        }
+        if let snapshot = record.stateSnapshot {
+            stateSnapshotsByTick[record.tickId] = snapshot
+        }
+        if record.tickId - lastFlushTick >= flushInterval {
+            lastFlushTick = record.tickId
+        }
     }
 
     /// Flush frames to disk if needed (based on flushInterval)

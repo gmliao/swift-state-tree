@@ -23,9 +23,17 @@ on:
 
 jobs:
   build:
+    name: build (in-turn sync ${{ matrix.in_turn_sync }})
     runs-on: ubuntu-22.04 # Linux runner (matching production environment)
     container:
       image: swift:6.2.4-noble
+    strategy:
+      fail-fast: false
+      matrix:
+        # The kill switch: "false" runs the whole suite on the legacy sync path.
+        in_turn_sync: ["true", "false"]
+    env:
+      IN_TURN_SYNC: ${{ matrix.in_turn_sync }}
 
     steps:
     - uses: actions/checkout@v4

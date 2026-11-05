@@ -215,11 +215,19 @@ jobs:
         done
 
   e2e-game-tests:
+    name: e2e-game-tests (in-turn sync ${{ matrix.in_turn_sync }})
     # A hung step fails the job instead of running until the 6 h limit.
     timeout-minutes: 30
     runs-on: ubuntu-22.04 # Linux runner (production target)
     container:
       image: swift:6.2.4-noble
+    strategy:
+      fail-fast: false
+      matrix:
+        # The kill switch: "false" runs GameServer on the legacy sync path.
+        in_turn_sync: ["true", "false"]
+    env:
+      IN_TURN_SYNC: ${{ matrix.in_turn_sync }}
 
     steps:
     - uses: actions/checkout@v4
