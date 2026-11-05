@@ -129,4 +129,4 @@ Enable `swift-lsp` and `typescript-lsp` in your local `.claude/settings.json` (o
 
 ### Research Notes
 
-Paper-revision working notes live in `deep-research/` (e.g. `related-systems-matrix.md`, `emse-artifacts/`), not in `docs/`. `docs/` is the official bilingual documentation and is bound by the bilingual-sync rule in AGENTS.md. Repository prose (CLAUDE.md, README, code comments, commit messages) is English; Chinese is reserved for design documents and `.zh-TW.md` translations.
+`deep-research/` holds experiment data with a README per experiment (question, environment, commands, results, `regenerate.py`), not in `docs/`. Keep that data and its READMEs neutral and technical; drafts, plans and strategy notes for publications don't belong in this repository. `docs/` is the official bilingual documentation and is bound by the bilingual-sync rule in AGENTS.md. Repository prose (CLAUDE.md, README, code comments, commit messages) is English; Chinese is reserved for design documents and `.zh-TW.md` translations.

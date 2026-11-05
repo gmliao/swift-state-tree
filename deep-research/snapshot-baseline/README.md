@@ -9,7 +9,7 @@ every sync), and does the saving track |ΔSt| / |S| as Eq. (6) of the paper pred
 This is a **same-testbed internal baseline**: the same hero-defense Land, the same workload
 generator, the same encoder, the same machine, the same sweep — the only variable is the
 `SyncStrategy` (`delta` vs `full-snapshot`) introduced in PR #53. It is deliberately not a
-cross-framework comparison (see `deep-research/related-systems-matrix.md` for that axis).
+cross-framework comparison.
 
 Design note: `Notes/plans/specs/2026-09-15-snapshot-baseline-design.md` (§3 semantics,
 §6 matrix). Equivalence of the two strategies is proven by

@@ -13,9 +13,7 @@ extra column in the RQ1 payload table and two extra rows of the single-room
 entity-scaling sweeps, plus a proof that both strategies produce identical
 client-side views.
 
-This is deliberately **not** a cross-framework comparison. See
-`deep-research/related-systems-matrix.md` for the capability-based comparison the
-paper uses for other systems.
+This is deliberately **not** a cross-framework comparison.
 
 ## 2. Scope
 
