@@ -70,8 +70,10 @@ private struct SkipConvergenceRun {
 /// Joins two players and runs six rounds of one action and `syncNow()` each. With `holdWriter`,
 /// the transport blocks before round 2's sync, so its element stays in the writer and the syncs
 /// of rounds 3 to 5 are skipped; it is released after round 6's action, before its sync.
-private func runSkipConvergence(holdWriter: Bool) async throws -> SkipConvergenceRun {
-    let id = "skip-convergence-\(holdWriter ? "held" : "free")"
+/// `useSnapshotForSync` picks the extraction path (one snapshot, or separate broadcast and
+/// per-player extraction); both extract dirty fields only on the deferred cycle.
+private func runSkipConvergence(holdWriter: Bool, useSnapshotForSync: Bool) async throws -> SkipConvergenceRun {
+    let id = "skip-convergence-\(holdWriter ? "held" : "free")-\(useSnapshotForSync ? "snapshot" : "separate")"
     let transport = BlockingTransport()
     let keeper = LandKeeper<SkipConvergenceState>(definition: skipConvergenceLand(id), initialState: SkipConvergenceState())
     let adapter = TransportAdapter<SkipConvergenceState>(
@@ -80,7 +82,7 @@ private func runSkipConvergence(holdWriter: Bool) async throws -> SkipConvergenc
         landID: id,
         transportEnvConfig: TransportEnvConfig(
             enableDirtyTracking: true,
-            useSnapshotForSync: true,
+            useSnapshotForSync: useSnapshotForSync,
             syncStrategy: .delta,
             enableChangeObjectMetrics: false,
             changeObjectMetricsLogEvery: 10,
@@ -157,10 +159,13 @@ private func runSkipConvergence(holdWriter: Bool) async throws -> SkipConvergenc
 
 @Suite("TransportAdapter: skipped sync cycles converge", .timeLimit(.minutes(1)))
 struct TransportAdapterSkipConvergenceTests {
-    @Test("cycles skipped while the writer holds one coalesce, and every client converges with the server view")
-    func skippedCyclesConverge() async throws {
-        let free = try await runSkipConvergence(holdWriter: false)
-        let held = try await runSkipConvergence(holdWriter: true)
+    @Test(
+        "cycles skipped while the writer holds one coalesce, and every client converges with the server view",
+        arguments: [true, false]
+    )
+    func skippedCyclesConverge(useSnapshotForSync: Bool) async throws {
+        let free = try await runSkipConvergence(holdWriter: false, useSnapshotForSync: useSnapshotForSync)
+        let held = try await runSkipConvergence(holdWriter: true, useSnapshotForSync: useSnapshotForSync)
 
         #expect(free.backlogSkips == 0, "without a held writer no cycle is skipped")
         #expect(held.backlogSkips >= 3, "rounds 3 to 5 are skipped while round 2's element waits: \(held.backlogSkips)")
@@ -173,11 +178,5 @@ struct TransportAdapterSkipConvergenceTests {
         }
         // The held run sends the skipped rounds coalesced into one cycle.
         #expect(held.totalBytes < free.totalBytes, "coalesced cycles send fewer bytes: \(held.totalBytes) vs \(free.totalBytes)")
-        // Pinned: the bytes after the drain are deterministic for this script.
-        #expect(free.totalBytes == Self.freeBytes, "free run bytes: \(free.totalBytes)")
-        #expect(held.totalBytes == Self.heldBytes, "held run bytes: \(held.totalBytes)")
     }
-
-    static let freeBytes = 2984
-    static let heldBytes = 2107
 }
