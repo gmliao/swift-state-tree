@@ -30,11 +30,15 @@ async function main() {
   const wsUrl = (args['ws-url'] as string) ?? 'ws://localhost:8080/game/hero-defense'
   const adminUrl = (args['admin-url'] as string) ?? 'http://localhost:8080'
   const stateUpdateEncoding = (args['state-update-encoding'] as string) ?? 'messagepack'
+  // Hero Defense by default; the test lands (#65) pass their land type, scenario and clients.
+  const landType = (args['land-type'] as string) ?? 'hero-defense'
+  const scenario = (args['scenario'] as string) ?? 'scenarios/game/test-hero-defense-shape-invariants.json'
+  const clients = (args['clients'] as string) ?? '1'
 
   const apiKey = (process.env.HERO_DEFENSE_ADMIN_KEY || process.env.ADMIN_API_KEY || 'hero-defense-admin-key').trim()
 
   const landInstanceId = `reeval-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-  const landID = `hero-defense:${landInstanceId}`
+  const landID = `${landType}:${landInstanceId}`
 
   console.log(chalk.blue(`🏠 LandID: ${landID}`))
   console.log(chalk.blue(`🔌 WS: ${wsUrl}`))
@@ -46,7 +50,7 @@ async function main() {
   // a race condition where multiple clients join the same land in quick succession.
   // For lands with tick handlers, lifecycle events (OnJoin/OnLeave) are queued
   // and processed in the next tick, which can cause stale state in firstSync.
-  console.log(chalk.blue('🎮 Running Hero Defense scenario...'))
+  console.log(chalk.blue(`🎮 Running ${landType} scenario ${scenario}...`))
   execFileSync(
     'npx',
     [
@@ -58,9 +62,16 @@ async function main() {
       '-l',
       landID,
       '-s',
-      'scenarios/game/test-hero-defense-shape-invariants.json',
+      scenario,
+      '--clients',
+      clients,
       '--state-update-encoding',
-      stateUpdateEncoding
+      stateUpdateEncoding,
+      // assertConverged steps (the visibility scenario) need the debug routes.
+      '--admin-url',
+      adminUrl,
+      '--admin-key',
+      apiKey
     ],
     { cwd: resolve(process.cwd()), stdio: 'inherit' }
   )
@@ -76,7 +87,7 @@ async function main() {
   const parentDir = join(projectRoot, 'tmp', 'e2e')
   mkdirSync(parentDir, { recursive: true })
   const dir = mkdtempSync(join(parentDir, 'swiftstatetree-reeval-game-'))
-  const recordPath = resolve(dir, `hero-defense-${landInstanceId}.reeval.json`)
+  const recordPath = resolve(dir, `${landType}-${landInstanceId}.reeval.json`)
   writeFileSync(recordPath, JSON.stringify(record, null, 2), 'utf-8')
   console.log(chalk.green(`✅ Saved record: ${recordPath}`))
 
@@ -95,11 +106,11 @@ async function main() {
     ? `✅ Sync output ${syncOutput.line} (expected with in-turn sync off)`
     : `✅ Sync output ${syncOutput.verdict}, every scope compared`))
 
-  console.log(chalk.green('✅ Hero Defense re-evaluation record+verify passed (messagepack)'))
+  console.log(chalk.green(`✅ ${landType} re-evaluation record+verify passed (${stateUpdateEncoding})`))
 }
 
 main().catch(err => {
-  console.error(chalk.red(`❌ Hero Defense re-evaluation E2E failed: ${err?.message || err}`))
+  console.error(chalk.red(`❌ Re-evaluation E2E failed: ${err?.message || err}`))
   process.exit(1)
 })
 

@@ -1,0 +1,394 @@
+{
+  "maxDuration": 60000,
+  "steps": [
+    {
+      "type": "log",
+      "message": "Viewer slots by join order: client-0 (20,20), client-1 (80,20), client-2 (20,80); view radius 15"
+    },
+    {
+      "type": "action",
+      "action": "SetMotion",
+      "payload": {
+        "enabled": false
+      }
+    },
+    {
+      "type": "action",
+      "action": "ParkEntities",
+      "payload": {}
+    },
+    {
+      "type": "waitForState",
+      "waitForState": {
+        "path": "entities.e0",
+        "exists": false,
+        "timeout": 3000,
+        "interval": 20,
+        "message": "parked entities leave client-0's view"
+      }
+    },
+    {
+      "type": "assertConverged",
+      "assertConverged": {
+        "label": "parked: no entity in any view"
+      }
+    },
+    {
+      "type": "log",
+      "message": "Enter: e0 enters client-0's view"
+    },
+    {
+      "type": "action",
+      "action": "PlaceEntity",
+      "payload": {
+        "id": "e0",
+        "positions": [
+          {
+            "__type": "Position2",
+            "value": {
+              "x": 25000,
+              "y": 20000
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "waitForState",
+      "waitForState": {
+        "path": "entities.e0",
+        "exists": true,
+        "timeout": 3000,
+        "interval": 20,
+        "message": "e0 should enter client-0's view"
+      }
+    },
+    {
+      "type": "assertConverged",
+      "assertConverged": {
+        "label": "enter: e0 into client-0"
+      }
+    },
+    {
+      "type": "log",
+      "message": "Leave: e0 leaves client-0's view"
+    },
+    {
+      "type": "action",
+      "action": "PlaceEntity",
+      "payload": {
+        "id": "e0",
+        "positions": [
+          {
+            "__type": "Position2",
+            "value": {
+              "x": 50000,
+              "y": 50000
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "waitForState",
+      "waitForState": {
+        "path": "entities.e0",
+        "exists": false,
+        "timeout": 3000,
+        "interval": 20,
+        "message": "e0 should leave client-0's view"
+      }
+    },
+    {
+      "type": "assertConverged",
+      "assertConverged": {
+        "label": "leave: e0 out of client-0"
+      }
+    },
+    {
+      "type": "log",
+      "message": "Enter for one viewer and exit for another in one input"
+    },
+    {
+      "type": "action",
+      "action": "PlaceEntity",
+      "payload": {
+        "id": "e1",
+        "positions": [
+          {
+            "__type": "Position2",
+            "value": {
+              "x": 75000,
+              "y": 20000
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "assertConverged",
+      "assertConverged": {
+        "label": "e1 into client-1 only"
+      }
+    },
+    {
+      "type": "action",
+      "action": "PlaceEntity",
+      "payload": {
+        "id": "e1",
+        "positions": [
+          {
+            "__type": "Position2",
+            "value": {
+              "x": 25000,
+              "y": 20000
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "waitForState",
+      "waitForState": {
+        "path": "entities.e1",
+        "exists": true,
+        "timeout": 3000,
+        "interval": 20,
+        "message": "e1 should enter client-0's view"
+      }
+    },
+    {
+      "type": "assertConverged",
+      "assertConverged": {
+        "label": "swap: e1 out of client-1 and into client-0 in one input"
+      }
+    },
+    {
+      "type": "log",
+      "message": "Two entities crossing at once: e2 into client-2, e1 out of client-0"
+    },
+    {
+      "type": "action",
+      "action": "PlaceEntity",
+      "payload": {
+        "id": "e2",
+        "positions": [
+          {
+            "__type": "Position2",
+            "value": {
+              "x": 20000,
+              "y": 75000
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "action",
+      "action": "PlaceEntity",
+      "payload": {
+        "id": "e1",
+        "positions": [
+          {
+            "__type": "Position2",
+            "value": {
+              "x": 50000,
+              "y": 50000
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "waitForState",
+      "waitForState": {
+        "path": "entities.e1",
+        "exists": false,
+        "timeout": 3000,
+        "interval": 20,
+        "message": "e1 should leave client-0's view"
+      }
+    },
+    {
+      "type": "assertConverged",
+      "assertConverged": {
+        "label": "cross: e2 into client-2 while e1 leaves client-0"
+      }
+    },
+    {
+      "type": "log",
+      "message": "Exit and re-enter within one input (one sync interval)"
+    },
+    {
+      "type": "action",
+      "action": "PlaceEntity",
+      "payload": {
+        "id": "e2",
+        "positions": [
+          {
+            "__type": "Position2",
+            "value": {
+              "x": 50000,
+              "y": 50000
+            }
+          },
+          {
+            "__type": "Position2",
+            "value": {
+              "x": 20000,
+              "y": 75000
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "assertConverged",
+      "assertConverged": {
+        "label": "blink in one input: e2 out of and back into client-2"
+      }
+    },
+    {
+      "type": "log",
+      "message": "Exit and re-enter in two back-to-back inputs, usually within one sync interval"
+    },
+    {
+      "type": "action",
+      "action": "PlaceEntity",
+      "payload": {
+        "id": "e2",
+        "positions": [
+          {
+            "__type": "Position2",
+            "value": {
+              "x": 50000,
+              "y": 50000
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "action",
+      "action": "PlaceEntity",
+      "payload": {
+        "id": "e2",
+        "positions": [
+          {
+            "__type": "Position2",
+            "value": {
+              "x": 20000,
+              "y": 75000
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "assertConverged",
+      "assertConverged": {
+        "label": "blink in two inputs: e2 out of and back into client-2"
+      }
+    },
+    {
+      "type": "log",
+      "message": "An entity in two views at once, then in neither"
+    },
+    {
+      "type": "action",
+      "action": "PlaceEntity",
+      "payload": {
+        "id": "e3",
+        "positions": [
+          {
+            "__type": "Position2",
+            "value": {
+              "x": 20000,
+              "y": 50000
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "assertConverged",
+      "assertConverged": {
+        "label": "e3 between client-0 and client-2: in neither (distance 30)"
+      }
+    },
+    {
+      "type": "action",
+      "action": "PlaceEntity",
+      "payload": {
+        "id": "e3",
+        "positions": [
+          {
+            "__type": "Position2",
+            "value": {
+              "x": 20000,
+              "y": 35000
+            }
+          },
+          {
+            "__type": "Position2",
+            "value": {
+              "x": 20000,
+              "y": 50000
+            }
+          },
+          {
+            "__type": "Position2",
+            "value": {
+              "x": 20000,
+              "y": 65000
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "assertConverged",
+      "assertConverged": {
+        "label": "e3 swept from client-0's edge to client-2's edge in one input"
+      }
+    },
+    {
+      "type": "log",
+      "message": "Motion on: entities move and cross view radii every few ticks"
+    },
+    {
+      "type": "action",
+      "action": "SetMotion",
+      "payload": {
+        "enabled": true
+      }
+    },
+    {
+      "type": "waitForState",
+      "waitForState": {
+        "path": "viewEntries",
+        "greaterThanOrEqual": 20,
+        "timeout": 15000,
+        "interval": 100,
+        "message": "moving entities should enter views"
+      }
+    },
+    {
+      "type": "assertConverged",
+      "assertConverged": {
+        "label": "moving 1"
+      }
+    },
+    {
+      "type": "log",
+      "message": "Let the entities keep moving for 1.5 s",
+      "wait": 1500
+    },
+    {
+      "type": "assertConverged",
+      "assertConverged": {
+        "label": "moving 2"
+      }
+    }
+  ]
+}
