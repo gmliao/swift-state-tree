@@ -815,45 +815,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
     }
 
-    /// Execute OnInitialize handler with resolvers if needed
-    private func executeOnInitialize(
-        handler: @Sendable (inout State, LandContext) throws -> Void
-    ) async {
-        let ctx = makeContext(
-            playerID: systemPlayerID,
-            clientID: systemClientID,
-            sessionID: systemSessionID
-        )
-
-        do {
-            var updatedCtx = ctx
-
-            // Execute resolvers in parallel if any are declared
-            if !definition.lifetimeHandlers.onInitializeResolverExecutors.isEmpty {
-                let resolverContext = ResolverContext(
-                    landContext: ctx,
-                    actionPayload: nil,
-                    eventPayload: nil,
-                    currentState: state
-                )
-                updatedCtx = try await ResolverExecutor.executeResolvers(
-                    executors: definition.lifetimeHandlers.onInitializeResolverExecutors,
-                    resolverContext: resolverContext,
-                    landContext: ctx
-                )
-            }
-
-            // Execute handler synchronously (resolvers already executed above)
-            try withMutableStateSync { state in
-                try handler(&state, updatedCtx)
-            }
-        } catch {
-            logger.error("❌ OnInitialize handler failed", metadata: [
-                "error": .string(String(describing: error)),
-            ])
-        }
-    }
-
     /// Returns the current state snapshot.
     ///
     /// This is a read-only view of the state. Mutations should be done through action/event handlers.
