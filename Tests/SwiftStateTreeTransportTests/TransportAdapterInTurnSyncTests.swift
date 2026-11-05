@@ -823,14 +823,14 @@ struct TransportAdapterInTurnSyncTests {
     func syncDuringLegacyCycleRunsAfterEndSync() async throws {
         let f = try await InTurnSyncFixture.make(encoding: .json)
         let gate = InTurnGate()
-        await f.adapter.setDebugCycleHoldBeforeEndSync { await gate.wait() }
+        await f.adapter.installHolds(HoldRegistry.at(.cycleBeforeEndSync) { await gate.wait() })
         // A legacy cycle (the adapter's own syncNow), held before its endSync.
         let legacy = Task { await f.adapter.syncNow() }
         for _ in 0..<400 where await gate.waiting == 0 {
             try await safeTaskSleep(for: .milliseconds(5))
         }
         #expect(await gate.waiting == 1)
-        await f.adapter.setDebugCycleHoldBeforeEndSync(nil)
+        await f.adapter.installHolds(nil)
 
         let before = await f.frameCount()
         await f.keeper.stepTickOnce()  // requests a sync while the legacy cycle holds the flag

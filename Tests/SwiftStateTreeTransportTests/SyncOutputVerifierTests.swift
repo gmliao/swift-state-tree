@@ -179,7 +179,7 @@ struct VerifierFixture {
     /// whether a 100 ms timer fired first. Open it when the test is done with the record.
     func holdFailedPlanFollowUps() async -> TestGate {
         let gate = TestGate()
-        await adapter.setFailedPlanFollowUpHoldForTesting { await gate.arrive() }
+        await adapter.installHolds(HoldRegistry.at(.failedPlanFollowUp) { await gate.arrive() })
         return gate
     }
 

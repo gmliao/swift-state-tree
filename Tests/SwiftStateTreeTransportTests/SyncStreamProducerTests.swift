@@ -474,7 +474,7 @@ struct SyncStreamProducerDropTests {
         // after `fails.set(false)` it would send the seed before the tick. Hold it, so the seed
         // comes from the tick (#163).
         let followUps = TestGate()
-        await f.adapter.setFailedPlanFollowUpHoldForTesting { await followUps.arrive() }
+        await f.adapter.installHolds(HoldRegistry.at(.failedPlanFollowUp) { await followUps.arrive() })
         defer { followUps.open() }
         fails.set(true)
         try await f.join()  // the firstSync fails entirely: the joiner is skipped

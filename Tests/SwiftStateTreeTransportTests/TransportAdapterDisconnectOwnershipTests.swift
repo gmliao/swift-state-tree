@@ -95,7 +95,7 @@ func sessionRegisteredDuringLeaveKeepsPlayerState() async throws {
 
     // Hold S1's disconnect at `keeper.leave`; S1 is already unregistered, P has no session.
     let leaveGate = TestGate()
-    await keeper.setLeaveHook { await leaveGate.arrive() }
+    await keeper.installHolds(HoldRegistry.at(.leave) { await leaveGate.arrive() })
     let disconnect = Task { await adapter.onDisconnect(sessionID: s1, clientID: c1) }
     #expect(await leaveGate.waitForArrivals(1))
     #expect(await adapter.membershipSessionIDs(for: player).isEmpty)
