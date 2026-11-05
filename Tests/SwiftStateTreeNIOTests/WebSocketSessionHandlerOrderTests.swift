@@ -177,6 +177,25 @@ struct WebSocketSessionHandlerOrderTests {
         #expect(delegate.events == ["connect-start:s1", "connect:s1", "message:s1:last-action", "disconnect:s1"])
     }
 
+    @Test("A data frame read after the close frame does not reach the transport")
+    func dataAfterCloseIsDropped() async throws {
+        let delegate = HoldingDelegate()
+        let transport = WebSocketTransport()
+        await transport.setDelegate(delegate)
+
+        let channel = try makeSession("s1", transport: transport)
+        await waitUntil { delegate.events.contains("connect:s1") }
+        // Both frames in one read: the pipeline delivers them back to back.
+        channel.pipeline.fireChannelRead(NIOAny(WebSocketFrame(fin: true, opcode: .connectionClose, data: ByteBuffer())))
+        channel.pipeline.fireChannelRead(NIOAny(WebSocketFrame(fin: true, opcode: .text, data: ByteBuffer(string: "late"))))
+        channel.embeddedEventLoop.run()
+
+        let disconnected = await waitUntil { delegate.events.contains("disconnect:s1") }
+        #expect(disconnected)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(delegate.events == ["connect-start:s1", "connect:s1", "disconnect:s1"])
+    }
+
     @Test("A close the server starts (pong timeout) still disconnects the session")
     func pongTimeoutDisconnects() async throws {
         let delegate = HoldingDelegate()

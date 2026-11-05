@@ -200,6 +200,9 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
     }
 
     private func enqueueMessage(_ data: Data, context: ChannelHandlerContext) {
+        // A data frame read after the close (same read) would reach the transport after the
+        // session's disconnect, as a message from an unknown session: drop it.
+        guard !disconnectEnqueued else { return }
         pendingMessages.append(data)
 
         if pendingMessages.count >= Self.maxBatchSize {
