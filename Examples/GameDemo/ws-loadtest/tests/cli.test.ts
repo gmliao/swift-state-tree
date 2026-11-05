@@ -22,6 +22,13 @@ describe("parseArgs", () => {
         expect(parsed.connectRatePerSecond).toBe(250);
     });
 
+    it("leaves input latency off unless --input-latency on", () => {
+        expect(parseArgs(["node", "cli"]).inputLatency).toBe(false);
+        expect(parseArgs(["node", "cli", "--input-latency", "on"]).inputLatency).toBe(true);
+        expect(parseArgs(["node", "cli", "--input-latency", "off"]).inputLatency).toBe(false);
+        expect(() => parseArgs(["node", "cli", "--input-latency", "yes"])).toThrow(/--input-latency/);
+    });
+
     it("rejects unknown layouts, connect modes and rates", () => {
         expect(() => parseArgs(["node", "cli", "--layout", "rooms5"])).toThrow(/--layout/);
         expect(() => parseArgs(["node", "cli", "--connect", "slow"])).toThrow(/--connect/);

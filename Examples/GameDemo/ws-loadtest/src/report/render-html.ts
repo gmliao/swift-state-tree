@@ -14,6 +14,7 @@ import type {
 import type { LayoutSummary } from "../layout";
 import type { ListenCounters } from "../net-stats";
 import type { Thresholds } from "../types";
+import type { InputLatencyMeasurement } from "../input-latency";
 import type { PermessageDeflateCounts } from "../worker";
 import type { ServerCpuPhase, SystemMetrics } from "../system-metrics";
 import { SERVER_SYNC_FIELDS, SERVER_SYNC_LABELS, type ServerSyncPhase } from "../server-sync";
@@ -245,6 +246,14 @@ function summarizePhase(phase: PhaseResult, runConfig?: RunConfig): PhaseSummary
 
 /** RTT p95 below this (ms) is considered "low" for client-jitter hint. */
 const RTT_LOW_MS = 15;
+/** Input-to-visible latency of move events, or "–" when none was tracked. */
+function inputToVisibleCell(measurement: { inputToVisible?: InputLatencyMeasurement } | undefined): string {
+    const m = measurement?.inputToVisible;
+    if (!m) return "–";
+    const d = m.latencyMs;
+    return `${d.p50} / ${d.p95} / ${d.p99} ms<div class="text-xs text-slate-500">${m.seen} / ${m.sent}</div>`;
+}
+
 /** update p50 within ±this fraction of sync interval is "≈ sync interval". */
 const UPDATE_P50_TOLERANCE = 0.15;
 
@@ -264,7 +273,7 @@ function clientJitterHint(report: Report): string {
     const phaseNames = phasesWithEvidence.map((p) => p.name).join(", ");
     return `
   <h3>Client delay (indirect)</h3>
-  <p>No direct metric for client processing delay (Node.js <code>ws</code> does not expose packet arrival time). For phases <strong>${phaseNames}</strong>: RTT p95 is low (&lt; ${RTT_LOW_MS}ms) and update p50 ≈ sync interval (${syncMs}ms) → server is on time; update p95 above ${syncMs}ms is consistent with client event-loop jitter, not systematic client delay.</p>`;
+  <p>No direct metric for client processing delay (Node.js <code>ws</code> does not expose packet arrival time). For phases <strong>${phaseNames}</strong>: RTT p95 is low (&lt; ${RTT_LOW_MS}ms) and update inter-arrival p50 ≈ sync interval (${syncMs}ms) → server is on time; update inter-arrival p95 above ${syncMs}ms is consistent with client event-loop jitter, not systematic client delay.</p>`;
 }
 
 function escapeHtml(text: string): string {
@@ -431,6 +440,7 @@ export function renderHtml(report: Report): string {
                     <td class="px-4 py-2 text-slate-300">${phase.phaseTotals ? `${phase.phaseTotals.errorCount} / ${phase.phaseTotals.disconnectCount}` : "–"}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.rtt.p95.toFixed(2)}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.rtt.p99.toFixed(2)}</td>
+                    <td class="px-4 py-2 text-slate-300">${inputToVisibleCell(phase.measurement)}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.update.p95.toFixed(2)}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.update.p99.toFixed(2)}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.measurement?.stateUpdates ? phase.measurement.stateUpdates.perPlayerPerSecond.toFixed(1) : "–"}</td>
@@ -497,8 +507,9 @@ export function renderHtml(report: Report): string {
               <th class="px-4 py-3 font-semibold">Errors / disconnects (whole phase)</th>
               <th class="px-4 py-3 font-semibold">RTT p95</th>
               <th class="px-4 py-3 font-semibold">RTT p99</th>
-              <th class="px-4 py-3 font-semibold">Update p95</th>
-              <th class="px-4 py-3 font-semibold">Update p99</th>
+              <th class="px-4 py-3 font-semibold">Input to visible p50 / p95 / p99 (seen / sent)</th>
+              <th class="px-4 py-3 font-semibold">Update inter-arrival p95</th>
+              <th class="px-4 py-3 font-semibold">Update inter-arrival p99</th>
               <th class="px-4 py-3 font-semibold">Updates/s per player</th>
               <th class="px-4 py-3 font-semibold">Update payload bytes mean / p99</th>
               <th class="px-4 py-3 font-semibold">Events/s per player</th>

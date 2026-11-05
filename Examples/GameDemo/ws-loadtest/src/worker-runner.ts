@@ -1,5 +1,6 @@
 import { WorkerClient, WorkerSession, selectAction, type PermessageDeflateCounts } from "./worker";
 import type { CloseRecord, JoinFailure, SyncFrameGrouping } from "./worker";
+import type { InputLatencyMetrics } from "./input-latency";
 import { sendMessageWithAck } from "./ipc";
 import { renderTemplateObject } from "./payload";
 import { connectDelaysMs } from "./connect-schedule";
@@ -35,6 +36,8 @@ export interface PhaseStartConfig {
     durationSeconds: number;
     joinPayloadTemplate?: Record<string, unknown>;
     sendMode: SendMode;
+    /** Time move events until visible (`WorkerOptions.trackInputLatency`); absent means false. */
+    inputLatency?: boolean;
 }
 
 
@@ -62,6 +65,8 @@ export interface WorkerPhaseReport {
     permessageDeflate: PermessageDeflateCounts;
     /** Plain state frames after a 107 frame, grouped into its sync or not (`SyncFrameGrouping`). */
     syncFrameGrouping: SyncFrameGrouping;
+    /** Move events' input-to-visible samples, concatenated over connections (`InputLatencyMetrics`). */
+    inputLatency: InputLatencyMetrics;
     /** This worker process's CPU time through the phase (`client-cpu`). */
     cpuSamples: CpuSample[];
     /** This worker's event-loop delay in the measured window (`loop-delay`); null without a window. */
@@ -209,7 +214,7 @@ async function preparePhase(config: PhaseStartConfig): Promise<PreparedPhase> {
             playerId: spec.playerId,
             actions: config.actions,
             joinMetadata
-        });
+        }, { trackInputLatency: config.inputLatency ?? false });
         clients.set(spec.key, client);
         phaseClients.push(client);
         newClients.push(client);
@@ -465,6 +470,12 @@ function aggregateSessions(sessions: WorkerSession[]) {
         syncFrameGrouping: {
             grouped: metrics.reduce((sum, m) => sum + m.syncFrameGrouping.grouped, 0),
             ungroupedAfterBroadcast: metrics.reduce((sum, m) => sum + m.syncFrameGrouping.ungroupedAfterBroadcast, 0)
+        },
+        inputLatency: {
+            latencyMs: concatAll(metrics.map((m) => m.inputLatency.latencyMs)),
+            latencySentAt: concatAll(metrics.map((m) => m.inputLatency.latencySentAt)),
+            supersededSentAt: concatAll(metrics.map((m) => m.inputLatency.supersededSentAt)),
+            timedOutSentAt: concatAll(metrics.map((m) => m.inputLatency.timedOutSentAt))
         },
         closes: concatAll(metrics.map((m) => m.closes))
     };

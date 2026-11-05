@@ -25,6 +25,7 @@ import { measureClientCpu, startCpuSampler, type CpuSample } from "./client-cpu"
 import { summarizeLoopDelay, type ClientLoopDelay } from "./loop-delay";
 import type { ClientCpu } from "./client-cpu";
 import { timerAt } from "./timer-at";
+import { measureInputLatency, type InputLatencyMeasurement } from "./input-latency";
 
 /** The phase's measured window `[origin + warm-up, phase end)`: thresholds apply to these. */
 export interface WorkerReport {
@@ -204,6 +205,12 @@ export interface PhaseMeasurement {
         syncFrameGrouping: SyncFrameGrouping;
     };
     /**
+     * Input-to-visible latency of move events sent in the measured window (`input-latency`):
+     * from the send to the first state update that shows the event's point. Absent when no move
+     * event was tracked (no MoveTo / MoveViewer events, or `--input-latency off`).
+     */
+    inputToVisible?: InputLatencyMeasurement;
+    /**
      * Joined, open connections. `average`: time-weighted over the measured window (connections
      * that joined or dropped mid-window count partly), reported only. `atEnd`: at the phase end.
      * `atMeasuredStart`: at origin + warm-up, when the warm-up is longer than the connect ramp
@@ -239,6 +246,8 @@ export interface RunConfig {
     layout: Layout;
     boundaryMode: BoundaryMode;
     sendMode: SendMode;
+    /** Move events are timed until a state frame shows their point (`--input-latency`). */
+    inputLatency: boolean;
     windowMs: number;
     connectMode: ConnectMode;
     /** Total new connections per second over all workers (ramp mode). */
@@ -296,6 +305,8 @@ export interface RunOptions {
     /** Land id prefix; a new one per run by default. */
     runId?: string;
     sendMode?: SendMode;
+    /** Time move events until visible (default false). */
+    inputLatency?: boolean;
     windowMs?: number;
     /** Warm-up for every phase, overriding the scenario's and the default. */
     warmupSeconds?: number;
@@ -360,6 +371,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
     const boundaryMode = opts.boundaryMode ?? "clean";
     const runId = opts.runId ?? makeRunId();
     const sendMode = opts.sendMode ?? "spread";
+    const inputLatency = opts.inputLatency ?? false;
     const windowMs = opts.windowMs ?? DEFAULT_WINDOW_MS;
     const warn = opts.warn ?? ((message: string) => console.warn(message));
 
@@ -395,6 +407,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
         layout,
         boundaryMode,
         sendMode,
+        inputLatency,
         windowMs,
         connectMode,
         connectRatePerSecond,
@@ -456,7 +469,8 @@ export async function runScenario(filePath: string, options: RunOptions | number
                                 actionsPerSecond: phase.config.actionsPerSecond,
                                 durationSeconds: phase.config.durationSeconds,
                                 joinPayloadTemplate: phase.config.joinPayloadTemplate,
-                                sendMode
+                                sendMode,
+                                inputLatency
                             }
                         },
                         "prepared",
@@ -719,6 +733,15 @@ export function measureStateUpdates(
     };
 }
 
+function inputToVisibleOf(
+    reports: Array<Partial<Pick<WorkerPhaseReport, "inputLatency">>>,
+    from: number,
+    to: number
+): { inputToVisible?: InputLatencyMeasurement } {
+    const measured = measureInputLatency(reports.map((r) => r.inputLatency ?? {}), from, to);
+    return measured ? { inputToVisible: measured } : {};
+}
+
 function sumDeflate(counts: Array<PermessageDeflateCounts | undefined>): PermessageDeflateCounts {
     return {
         negotiated: counts.reduce((sum, c) => sum + (c?.negotiated ?? 0), 0),
@@ -850,6 +873,7 @@ export function measurePhase(
         windows: windowSamples(samples, originAt, durationMs, windowMs, warmupMs),
         events: measureEvents(reports, events, measureFrom, measureTo, averageActive),
         stateUpdates: measureStateUpdates(reports, measureFrom, measureTo, averageActive),
+        ...inputToVisibleOf(reports, measureFrom, measureTo),
         joined: {
             average: Math.round(averageActive * 100) / 100,
             atEnd: reports.reduce((sum, r) => sum + r.joinedAtEnd, 0),

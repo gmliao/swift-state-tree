@@ -1,4 +1,5 @@
 import type { ActionConfig } from "./types";
+import { InputLatencyTracker, echoPointOf, emptyInputLatencyMetrics, type InputLatencyMetrics } from "./input-latency";
 import { DynamicKeyTracker, MessageKindOpcode, classifyDecoded, decodeRaw, encodeMessageToMessagePack } from "./protocol";
 
 /** Extract requestID from actionResponse or error message. Handles both JSON (nested payload) and MessagePack (normalized top-level). */
@@ -68,6 +69,8 @@ export interface WorkerOptions {
     now?: () => number;
     /** How long a join may go unanswered before it counts as a `timeout` join failure. */
     joinTimeoutMs?: number;
+    /** Time move events until a state frame shows their point (`input-latency`). Default false. */
+    trackInputLatency?: boolean;
 }
 
 export interface JoinMessage {
@@ -179,6 +182,8 @@ export interface WorkerMetrics {
     permessageDeflate: PermessageDeflateCounts;
     /** How plain state frames after a 107 frame were counted (`SYNC_FRAME_GROUP_MS`). */
     syncFrameGrouping: SyncFrameGrouping;
+    /** Input-to-visible samples of move events (`input-latency`), by send time. */
+    inputLatency: InputLatencyMetrics;
     closes: CloseRecord[];
 }
 
@@ -220,6 +225,7 @@ function emptyMetrics(): WorkerMetrics {
         updateBytes: [],
         permessageDeflate: { negotiated: 0, notNegotiated: 0 },
         syncFrameGrouping: { grouped: 0, ungroupedAfterBroadcast: 0 },
+        inputLatency: emptyInputLatencyMetrics(),
         closes: []
     };
 }
@@ -238,9 +244,13 @@ export class WorkerSession {
     /** The last state frame was a 107 frame: when it arrived, and where its size went (if recorded). */
     private openBroadcastFrame?: { at: number; bytesIndex?: number };
     public metrics: WorkerMetrics = emptyMetrics();
+    /** Pending move events of this connection; writes into `metrics.inputLatency`. */
+    readonly inputLatency = new InputLatencyTracker();
 
     /** A response slower than this (ms) is a late response (a timeout in the report). */
-    constructor(private readonly lateAfterMs: number = RESPONSE_TIMEOUT_MS) {}
+    constructor(private readonly lateAfterMs: number = RESPONSE_TIMEOUT_MS) {
+        this.inputLatency.metrics = this.metrics.inputLatency;
+    }
 
     /**
      * Starts a new phase's metrics on a connection that stays open. The last update time carries
@@ -249,6 +259,7 @@ export class WorkerSession {
      */
     resetMetrics(): void {
         this.metrics = emptyMetrics();
+        this.inputLatency.metrics = this.metrics.inputLatency;
         if (this.openBroadcastFrame) {
             this.openBroadcastFrame = { at: this.openBroadcastFrame.at };
         }
@@ -415,10 +426,12 @@ export class WorkerClient {
     private keyTracker = new DynamicKeyTracker();
     private readonly now: () => number;
     private readonly createSocket: (url: string) => WebSocketLike;
+    private readonly trackInputLatency: boolean;
 
     constructor(private readonly config: WorkerConfig, options: WorkerOptions = {}) {
         this.now = options.now ?? (() => Date.now());
         this.joinTimeoutMs = options.joinTimeoutMs ?? RESPONSE_TIMEOUT_MS;
+        this.trackInputLatency = options.trackInputLatency ?? false;
         this.createSocket =
             options.createSocket ??
             ((url: string) => {
@@ -563,7 +576,12 @@ export class WorkerClient {
             return;
         }
         const sentAt = this.session.metrics.eventSentAt;
-        (sentAt[eventName] ??= []).push(this.now());
+        const now = this.now();
+        (sentAt[eventName] ??= []).push(now);
+        const point = this.trackInputLatency ? echoPointOf(payload) : undefined;
+        if (point) {
+            this.session.inputLatency.recordSent(point, now);
+        }
         if (this.messageEncoding === "messagepack") {
             this.socket.send(encodeMessageToMessagePack(buildEventMessage(eventName, payload)));
         } else {
@@ -668,7 +686,11 @@ export class WorkerClient {
             );
             return;
         }
-        this.session.handleDecodedMessage(decoded, this.now(), frameByteLength(data));
+        const now = this.now();
+        if (decoded && (decoded.type === "stateUpdate" || decoded.type === "stateUpdateWithEvents")) {
+            this.session.inputLatency.observe(raw, now);
+        }
+        this.session.handleDecodedMessage(decoded, now, frameByteLength(data));
     }
 
     /**
