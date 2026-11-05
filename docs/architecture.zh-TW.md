@@ -37,7 +37,7 @@ graph TB
     end
     
     subgraph "服務整合層級"
-        LandServer[LandServer&lt;State&gt;<br/>服務整合<br/>Hummingbird 實現]
+        LandServer[NIOLandServer&lt;State&gt;<br/>服務整合<br/>SwiftNIO 實現]
         
         subgraph "LandServer 內部組件"
             LandManager[LandManager&lt;State&gt;<br/>房間管理]
@@ -161,7 +161,7 @@ graph TB
 
 ### 5. LandServer<State> - 遊戲類型層級（服務整合）
 
-**位置**：`Sources/SwiftStateTreeHummingbird/LandServer.swift`（舊名為 `AppContainer`）
+**位置**：`Sources/SwiftStateTreeNIO/NIOLandServer.swift`（`NIOLandServer<State>`）
 
 **職責**：
 - **整合所有組件**：將 LandManager、LandRouter、Transport、HTTP Framework 組合在一起
@@ -171,7 +171,7 @@ graph TB
 
 **特點**：
 - **包含 `LandManager`**：LandServer **組合**（composition）LandManager，而非繼承關係
-- **Hummingbird 特定實現**：實現 `LandServerProtocol`，綁定 Hummingbird HTTP 框架
+- **NIO 實現**：以 SwiftNIO 實現 `LandServerProtocol`
 - 整合組件包括：
   - `LandManager<State>` - 房間管理
   - `LandRouter<State>` - 路由層
@@ -195,15 +195,15 @@ graph TB
 
 ### 7. LandHost - HTTP Server 層級
 
-**位置**：`Sources/SwiftStateTreeHummingbird/LandHost.swift`
+**位置**：`Sources/SwiftStateTreeNIO/NIOLandHost.swift`（`NIOLandHost`）
 
 **職責**：
-- 統一管理 Hummingbird `Application` 和 `Router`
+- 擁有 NIO HTTP/WebSocket server（`NIOWebSocketServer`）與其路由，包含 admin 路由
 - 解決多個 `LandServer` 實例端口衝突問題
 - 支援多個不同 State 類型的 `LandServer` 註冊到同一個 Host
 
 **特點**：
-- **必須使用**：目前所有 land type 都通過 `LandHost.register()` 註冊
+- **必須使用**：目前所有 land type 都通過 `NIOLandHost.register(landType:land:...)` 註冊
 - 提供統一的 HTTP Server 管理
 - 簡化多 land type 的部署流程
 - 支援多個 LandServer 共用同一個 HTTP Server
@@ -263,12 +263,12 @@ Client
 
 | 組件 | 模組 | 說明 |
 |------|------|------|
-| LandServer | SwiftStateTreeHummingbird | Hummingbird 實現，實現 `LandServerProtocol` |
-| LandHost | SwiftStateTreeHummingbird | Hummingbird 整合，HTTP Server 管理（可選） |
+| NIOLandServer | SwiftStateTreeNIO | 以 SwiftNIO 實現 `LandServerProtocol` |
+| NIOLandHost | SwiftStateTreeNIO | NIO HTTP/WebSocket server 與路由管理 |
 
 **設計說明**：
 - **框架無關層**：定義協議和抽象（如 `LandServerProtocol`），提供框架無關的核心功能（如 `LandManager`、`LandRouter`）
-- **平台實現層**：針對特定 HTTP 框架（目前為 Hummingbird）的實現，未來可擴展支援 Vapor、Kitura 等其他框架
+- **平台實現層**：針對特定 server 堆疊（目前為 SwiftNIO，位於 `SwiftStateTreeNIO`；先前的 Hummingbird 模組已移除）的實現，未來可擴展支援 Vapor、Kitura 等其他框架
 - **協議抽象**：`LandServerProtocol` 定義了服務整合的介面，不同框架可以實現自己的 `LandServer` 來滿足協議要求
 
 ## 設計原則
@@ -276,7 +276,7 @@ Client
 1. **分層清晰**：從規則定義到應用層級，每層職責明確
 2. **框架無關與平台實現分離**：
    - **框架無關層**（SwiftStateTreeTransport）：定義協議和核心功能，不依賴特定 HTTP 框架
-   - **平台實現層**（SwiftStateTreeHummingbird）：針對特定框架的實現，可擴展支援其他框架
+   - **平台實現層**（SwiftStateTreeNIO）：針對特定框架的實現，可擴展支援其他框架
    - 通過協議（如 `LandServerProtocol`）實現抽象，允許不同框架提供自己的實現
 3. **命名一致**：所有組件都以 "Land" 開頭，保持命名一致性
 4. **協議抽象**：使用 Protocol 定義介面，支援未來 distributed actor 替換和多框架支援

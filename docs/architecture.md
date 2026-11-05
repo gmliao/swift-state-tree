@@ -37,7 +37,7 @@ graph TB
     end
     
     subgraph "Service Integration Layer"
-        LandServer[LandServer&lt;State&gt;<br/>Service Integration<br/>Hummingbird Implementation]
+        LandServer[NIOLandServer&lt;State&gt;<br/>Service Integration<br/>SwiftNIO Implementation]
         
         subgraph "LandServer Internal Components"
             LandManager[LandManager&lt;State&gt;<br/>Room Management]
@@ -161,7 +161,7 @@ graph TB
 
 ### 5. LandServer<State> - Game Type Layer (Service Integration)
 
-**Location**: `Sources/SwiftStateTreeHummingbird/LandServer.swift` (formerly `AppContainer`)
+**Location**: `Sources/SwiftStateTreeNIO/NIOLandServer.swift` (`NIOLandServer<State>`)
 
 **Responsibilities**:
 - **Integrate all components**: Combine LandManager, LandRouter, Transport, HTTP Framework together
@@ -171,7 +171,7 @@ graph TB
 
 **Features**:
 - **Contains `LandManager`**: LandServer **composes** (composition) LandManager, not inheritance
-- **Hummingbird-specific implementation**: Implements `LandServerProtocol`, binds to Hummingbird HTTP framework
+- **NIO implementation**: Implements `LandServerProtocol` on SwiftNIO
 - Integrated components include:
   - `LandManager<State>` - Room management
   - `LandRouter<State>` - Routing layer
@@ -195,15 +195,15 @@ graph TB
 
 ### 7. LandHost - HTTP Server Layer
 
-**Location**: `Sources/SwiftStateTreeHummingbird/LandHost.swift`
+**Location**: `Sources/SwiftStateTreeNIO/NIOLandHost.swift` (`NIOLandHost`)
 
 **Responsibilities**:
-- Unified management of Hummingbird `Application` and `Router`
+- Owns the NIO HTTP/WebSocket server (`NIOWebSocketServer`) and its routes, including the admin routes
 - Resolve port conflict issues with multiple `LandServer` instances
 - Support multiple `LandServer` instances of different State types registered to the same Host
 
 **Features**:
-- **Must use**: Currently all land types are registered through `LandHost.register()`
+- **Must use**: Currently all land types are registered through `NIOLandHost.register(landType:land:...)`
 - Provides unified HTTP Server management
 - Simplifies deployment process for multiple land types
 - Supports multiple LandServers sharing the same HTTP Server
@@ -263,12 +263,12 @@ These components are implementations for specific HTTP frameworks:
 
 | Component | Module | Description |
 |-----------|--------|-------------|
-| LandServer | SwiftStateTreeHummingbird | Hummingbird implementation, implements `LandServerProtocol` |
-| LandHost | SwiftStateTreeHummingbird | Hummingbird integration, HTTP Server management (optional) |
+| NIOLandServer | SwiftStateTreeNIO | SwiftNIO implementation of `LandServerProtocol` |
+| NIOLandHost | SwiftStateTreeNIO | NIO HTTP/WebSocket server and route management |
 
 **Design Notes**:
 - **Framework-Agnostic Layer**: Defines protocols and abstractions (like `LandServerProtocol`), provides framework-agnostic core functionality (like `LandManager`, `LandRouter`)
-- **Platform Implementation Layer**: Implementations for specific HTTP frameworks (currently Hummingbird), can be extended to support other frameworks like Vapor, Kitura in the future
+- **Platform Implementation Layer**: Implementations for a specific server stack (currently SwiftNIO, in `SwiftStateTreeNIO`; the earlier Hummingbird module was removed), can be extended to support other frameworks like Vapor, Kitura in the future
 - **Protocol Abstraction**: `LandServerProtocol` defines service integration interface, different frameworks can implement their own `LandServer` to satisfy protocol requirements
 
 ## Design Principles
@@ -276,7 +276,7 @@ These components are implementations for specific HTTP frameworks:
 1. **Clear Layering**: From rule definition to application layer, each layer has clear responsibilities
 2. **Separation of Framework-Agnostic and Platform Implementation**:
    - **Framework-Agnostic Layer** (SwiftStateTreeTransport): Defines protocols and core functionality, no dependency on specific HTTP frameworks
-   - **Platform Implementation Layer** (SwiftStateTreeHummingbird): Implementation for specific frameworks, can be extended to support other frameworks
+   - **Platform Implementation Layer** (SwiftStateTreeNIO): Implementation for specific frameworks, can be extended to support other frameworks
    - Achieve abstraction through protocols (like `LandServerProtocol`), allowing different frameworks to provide their own implementations
 3. **Consistent Naming**: All components start with "Land", maintaining naming consistency
 4. **Protocol Abstraction**: Use Protocol to define interfaces, supporting future distributed actor replacement and multi-framework support
