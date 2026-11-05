@@ -19,8 +19,18 @@ func runServerLoadTest() async throws {
     let config = parseArguments()
     let logger = createGameLogger(scope: "ServerLoadTest", logLevel: config.logLevel)
 
-    // Run Swift Profile Recorder in background when PROFILE_RECORDER_SERVER_URL_PATTERN is set (e.g. for Instruments).
-    async let _ = ProfileRecorderServer(configuration: .parseFromEnvironment()).runIgnoringFailures(logger: logger)
+    // Run Swift Profile Recorder in background only when it is configured (e.g. for Instruments):
+    // reading its configuration starts NIO's singleton event-loop group (see ProfileRecorderEnvKeys).
+    if ProfileRecorderEnvKeys.isConfigured {
+        Task {
+            do {
+                let configuration = try await ProfileRecorderServerConfiguration.parseFromEnvironment()
+                await ProfileRecorderServer(configuration: configuration).runIgnoringFailures(logger: logger)
+            } catch {
+                logger.warning("Profile recorder not started: \(error)")
+            }
+        }
+    }
 
     if config.rooms == 0 || config.playersPerRoom == 0 {
         print("Nothing to do: rooms=\(config.rooms), playersPerRoom=\(config.playersPerRoom)")
