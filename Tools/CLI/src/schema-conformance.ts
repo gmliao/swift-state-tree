@@ -4,7 +4,6 @@
 // should never send is caught on the wire.
 
 import type { StateTreeView } from "@swiftstatetree/sdk/core";
-import { normalizeForConvergence } from "./convergence.js";
 
 /** Greppable line printed for each violation. */
 export const SCHEMA_VIOLATION_MARKER = "SCHEMA CONFORMANCE VIOLATION";
@@ -78,6 +77,19 @@ function step(
   return { star: false };
 }
 
+/**
+ * The value as the wire carried it: SDK classes (Position2, IVec2, ...) through `toJSON()`.
+ * Unlike `normalizeForConvergence`, keys whose value is `null` are kept: this check is about
+ * which fields a client received, and a server-only optional that is nil still leaked.
+ */
+function wireValue(value: unknown): unknown {
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    const withJSON = value as { toJSON?: () => unknown };
+    if (typeof withJSON.toJSON === "function") return withJSON.toJSON();
+  }
+  return value;
+}
+
 function checkValue(
   schema: ConformanceSchema,
   node: SchemaNode | undefined,
@@ -86,6 +98,7 @@ function checkValue(
   schemaPath: string[],
   out: ConformanceViolation[]
 ): void {
+  value = wireValue(value);
   if (value === null || value === undefined || typeof value !== "object") return;
   const entries: Array<[string, unknown]> = Array.isArray(value)
     ? value.map((v, i) => [String(i), v])
@@ -125,7 +138,7 @@ export function checkPatch(
     if (!node) return out;
   }
   if (patch.value !== undefined) {
-    checkValue(schema, node, normalizeForConvergence(patch.value), segments, [...schemaPath], out);
+    checkValue(schema, node, patch.value, segments, [...schemaPath], out);
   }
   return out;
 }
@@ -135,7 +148,7 @@ export function checkState(schema: ConformanceSchema, landType: string, state: u
   const land = schema.lands[landType];
   if (!land) return [];
   const out: ConformanceViolation[] = [];
-  checkValue(schema, schema.defs[land.stateType], normalizeForConvergence(state), [], [], out);
+  checkValue(schema, schema.defs[land.stateType], state, [], [], out);
   return out;
 }
 

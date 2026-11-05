@@ -49,6 +49,22 @@ assert.deepEqual(found({ path: "/list/0", value: { lastFireTick: 1 } }), ["serve
 assert.deepEqual(found({ path: "/maybe", value: { lastFireTick: 1 } }), ["server-only maybe.lastFireTick"]);
 assert.deepEqual(found({ path: "", value: { counter: 1, score: 2 } }), ["server-only counter"], "a root firstSync value");
 
+// A key sent with a null value was still sent: a nil server-only optional leaks too.
+assert.deepEqual(found({ path: "/players/alice", value: { name: "a", lastFireTick: null, extra: null } }), [
+  "server-only players.*.lastFireTick",
+  "not in schema players.*.extra",
+]);
+assert.deepEqual(
+  checkState(schema, "probe", { players: { a: { lastFireTick: null } } }).map((v) => v.schemaPath),
+  ["players.*.lastFireTick"],
+);
+// SDK classes are read through toJSON(), as on the wire.
+const position = { toJSON: () => ({ v: { x: 1, y: 2 } }) };
+assert.deepEqual(found({ path: "/players/alice", value: { name: "a", position } }), []);
+assert.deepEqual(found({ path: "/players/alice", value: { position: { toJSON: () => ({ v: { x: 1, z: 2 } }) } } }), [
+  "not in schema players.*.position.v.z",
+]);
+
 // Fields the schema does not declare.
 assert.deepEqual(found({ path: "/players/alice/extra", value: 1 }), ["not in schema players.*.extra"]);
 assert.deepEqual(found({ path: "/players/alice", value: { name: "a", extra: { deep: 1 } } }), ["not in schema players.*.extra"]);
