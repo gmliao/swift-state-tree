@@ -56,6 +56,12 @@ package struct GenerationTable<Key: Hashable & Sendable>: Sendable {
         current.removeValue(forKey: key)
     }
 
+    /// Ends every key's current generation (a teardown). The counter keeps counting, so no
+    /// ticket issued before becomes current again.
+    package mutating func endAll() {
+        current.removeAll()
+    }
+
     /// Ends `ticket`'s generation only if it is still the current one; returns whether it was.
     /// For a callback that can outlive its generation: it must not end a newer one.
     @discardableResult

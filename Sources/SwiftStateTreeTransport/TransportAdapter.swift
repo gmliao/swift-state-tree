@@ -938,6 +938,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         authInfo: AuthenticatedInfo?,
         acceptedConnectionGeneration: UInt64? = nil
     ) async {
+        // Rebinding the session to another player starts a new generation: work captured for
+        // the previous player's binding (an initial sync reading the state) must not act on it.
+        if let previous = membershipCoordinator.playerID(for: sessionID), previous != playerID {
+            sessionTickets.end(sessionID)
+        }
         _ = membershipCoordinator.registerPlayer(
             sessionID: sessionID,
             playerID: playerID,
@@ -956,6 +961,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
 
         logger.info("Session registered via Router: session=\(sessionID.rawValue), player=\(playerID.rawValue)")
+    }
+
+    /// Ends every session ticket, at the land's teardown: work still holding one (an initial
+    /// sync) commits nothing for the destroyed land.
+    func endSessionTicketsForTeardown() {
+        sessionTickets.endAll()
     }
 
     // MARK: - Outbound target expansion
@@ -3531,11 +3542,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         } else {
             state = await keeper.currentState()
         }
-        // The session's ticket is checked after the state read, in the same synchronous segment
-        // as the commit: a disconnect or supersede during the read ended it and cleared the
-        // player's state, and committing now would re-create its cache, firstSync mark and
-        // recorder seed for a session that is gone.
-        guard sessionTickets.isCurrent(ticket) else {
+        // The session's ticket, and its membership as `playerID`, are checked after the state
+        // read, in the same synchronous segment as the commit: a disconnect, supersede or rebind
+        // during the read ended the ticket (and a disconnect cleared the player's state), and
+        // committing now would re-create its cache, firstSync mark and recorder seed for a
+        // session that is gone or bound to another player.
+        guard sessionTickets.isCurrent(ticket),
+              membershipCoordinator.playerID(for: sessionID) == playerID else {
             logger.info("Initial sync dropped: the session left during it", metadata: [
                 "sessionID": .string(sessionID.rawValue),
                 "playerID": .string(playerID.rawValue),

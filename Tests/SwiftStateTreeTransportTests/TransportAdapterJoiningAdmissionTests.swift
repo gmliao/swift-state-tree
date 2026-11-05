@@ -356,6 +356,30 @@ struct TransportAdapterJoiningAdmissionTests {
         #expect(await adapter.syncEngineForTesting().hasReceivedFirstSyncForTesting(p1) == true)
     }
 
+    @Test("A direct register that rebinds the session during the initial sync's state read: the old sync commits nothing", arguments: [true, false])
+    func rebindDuringStateRead(inTurn: Bool) async throws {
+        let fixture = await makeFixture(inTurn: inTurn, tick: true)
+        let adapter = fixture.adapter
+        let s1 = SessionID("s1"), c1 = ClientID("c1"), p1 = PlayerID("p1"), p2 = PlayerID("p2")
+        _ = try await join(fixture, session: s1, client: c1, player: p1)
+
+        let readGate = TestGate()
+        await adapter.setInitialSyncHoldForTesting { await readGate.arrive() }
+        let initialSync = Task { await adapter.syncStateForNewPlayer(playerID: p1, sessionID: s1) }
+        #expect(await readGate.waitForArrivals(1))
+
+        // Rebound to p2 and back to p1: the membership matches p1 again, but the binding the
+        // initial sync started for has ended.
+        await adapter.registerSession(sessionID: s1, clientID: c1, playerID: p2, authInfo: nil)
+        await adapter.registerSession(sessionID: s1, clientID: c1, playerID: p1, authInfo: nil)
+        readGate.open()
+        await initialSync.value
+
+        #expect(await adapter.waitForOutboundDrain())
+        #expect(await fixture.sent.kinds(for: s1) == [])
+        #expect(await adapter.syncEngineForTesting().hasReceivedFirstSyncForTesting(p1) == false)
+    }
+
     @Test("A disconnect while joining clears the joining mark")
     func disconnectWhileJoining() async throws {
         let fixture = await makeFixture(inTurn: true, tick: true)

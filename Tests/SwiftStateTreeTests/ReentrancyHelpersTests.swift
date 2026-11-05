@@ -59,6 +59,20 @@ struct ReentrancyHelpersTests {
         #expect(acted == [new.description])
     }
 
+    @Test("endAll ends every generation, and no earlier ticket becomes current again")
+    func endAllKeepsCounting() {
+        var table = GenerationTable<String>()
+        let a = table.issue("a")
+        let b = table.issue("b")
+        table.endAll()
+        #expect(!table.isCurrent(a))
+        #expect(!table.isCurrent(b))
+        let a2 = table.issue("a")
+        #expect(a2 != a)
+        #expect(!table.isCurrent(a))
+        #expect(table.isCurrent(a2))
+    }
+
     @Test("Keys have independent generations")
     func keysAreIndependent() {
         var table = GenerationTable<String>()
