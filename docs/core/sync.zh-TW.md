@@ -19,6 +19,26 @@ StateTree 同步依賴 `@Sync` + `SyncPolicy`，由 SyncEngine 產生 snapshot/d
 - `.masked((Value) -> Value)`：同型別遮罩（所有玩家看到相同遮罩值）
 - `.custom((PlayerID, Value) -> Value?)`：完全自定義
 
+### 巢狀 State Node
+
+State node 不論位於何處，都套用其欄位自身的 policy：作為欄位、在 optional 中、在 array 中，或作為 `[String: X]`、`[PlayerID: X]` map 的值，任何深度皆然。每個 client 只會收到這些 policy 允許的內容，因此 per-player 的可見性可以放在 map 的值裡：
+
+```swift
+@StateNodeBuilder
+struct Unit: StateNodeProtocol {
+    @Sync(.broadcast) var hp: Int = 100                     // 所有玩家
+    @Sync(.serverOnly) var aiState: Int = 0                 // 不會送出
+    @Sync(.perPlayerSlice()) var hints: [PlayerID: Int] = [:] // 每個玩家只收到自己的項目
+}
+
+@StateNodeBuilder
+struct GameState: StateNodeProtocol {
+    @Sync(.broadcast) var units: [PlayerID: Unit] = [:]
+}
+```
+
+2026-11-05 之前（#178），位於 `[String: X]` 或 `[PlayerID: X]` map 中的 `@SnapshotConvertible` node 會連同所有欄位一起送出，包含 server-only 欄位。在那之前錄製的 recording 雜湊會不同；見 [Re-evaluation](reevaluation.zh-TW.md)。
+
 ## Snapshot 與 Diff
 
 - snapshot：完整狀態（含 per-player 過濾）

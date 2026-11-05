@@ -40,6 +40,8 @@ await withTaskGroup(of: Void.self) { group in
 
 ### Snapshot 同步模式
 
+> 本節與[同步流程](#同步流程)描述的是 legacy 路徑（`IN_TURN_SYNC=false`）。預設情況下 sync phase 在 keeper 自己的 turn 內執行，見 [In-Turn Sync](#in-turn-sync預設)。
+
 `LandKeeper` 使用 snapshot 模式進行同步，這是一個非阻塞的設計：
 
 - **同步時取得快照**：同步操作在開始時取得狀態快照
@@ -267,6 +269,12 @@ Lifetime {
 }
 ```
 
+### Tick 排程
+
+Tick loop 與 sync loop 都是固定速率（fixed-rate）。下一個 deadline 是上一個 deadline 加上間隔，而不是「現在加上間隔」，所以 tick 佔掉部分間隔時速率仍維持不變。超時的 tick 不會引發一連串補跑的 tick：錯過的 deadline 會被略過，loop 從下一個仍在未來的 deadline 繼續。
+
+每個 land 會以各自的 phase offset 延後其 loop 的第一次迭代，避免同時建立的 land（join ramp、server 啟動）在每個間隔的同一幾毫秒內跑 tick 與 sync。Offset 是 land ID 的 FNV-1a 64 對 `min(interval, 100 ms)` 取餘數（`LandLoopPhase`），在每個 process 都相同。它只移動 wall-clock 時間；tick ID、順序與 replay 不受影響。設定 `LAND_LOOP_PHASE_OFFSET=false` 可關閉。
+
 ### Event Queue 機制 (PendingItems)
 
 `LandKeeper` 使用統一的 `pendingItems` 佇列來管理所有輸入：
@@ -384,7 +392,44 @@ private func runTick() async {
 
 ## 同步機制
 
+### 更新模式
+
+Land 以三種方式之一同步（前兩種的 `LandKeeper.hasPeriodicSync` 為 true）：
+
+| Land | 同步 | 適用 |
+|---|---|---|
+| `Tick`（有無 `StateSync` 皆可） | sync loop 以 `StateSync` 間隔執行；未設定 `StateSync` 時以 tick 間隔執行 | 有模擬步進的即時遊戲（Hero Defense：tick 50 ms、`StateSync` 100 ms） |
+| 只有 `StateSync`、沒有 `Tick` | sync loop 以其間隔執行；input 一到就套用 | 狀態只因 input 改變、需要穩定更新頻率的遊戲 |
+| 兩者皆無 | 只在請求時同步：handler 內的 `ctx.requestSyncNow()` / `ctx.requestSyncBroadcastOnly()`，或 host 呼叫 adapter 的 `syncNow()` | 回合制或低流量的 land |
+
+沒有週期同步的 land 沒有下一個 cycle 可以依靠，因此 runtime 會重試它不得不略過的 cycle（見 [Writer Back-Pressure](#writer-back-pressure)）。
+
+### In-Turn Sync（預設）
+
+開啟 in-turn sync 時，land 的 `TransportAdapter` 在其 keeper 的 serial executor 上執行，keeper 在自己的 turn 內同步執行 sync phase，狀態變更與其產生的 frame 之間沒有任何 suspension point（`InTurnSync`）。Turn 的種類：
+
+- tick turn：就緒的 input、tick handler、送出的 event，以及 handler 請求或 sync loop 併入（fold）時的 sync phase。距下一個 tick 不到 min(5 ms, tick / 4, sync / 4) 的 sync 會在該 tick turn 執行（coincident sync），因此與 tick 重合的 sync 會看到該 tick 的結果；
+- sync-only turn：sync loop 自己的間隔，維持同步節奏；
+- input turn（沒有 tick 的 land）：最多 64 個就緒的 input、它們的 event，以及有請求時的 sync phase。Turn 進行中到達的 input 會留到之後的 turn。
+
+Sync phase 以 turn 中該時點的狀態規劃（plan）本次 cycle 的所有 frame，然後 commit：把 frame 放進 adapter 的 outbound writer，並清除 dirty flag。Plan 與 commit 之間沒有任何其他工作執行，因此不會有尚未送出的變更被清除。Plan 失敗時什麼都不 commit，dirty flag 保留到下一個 cycle。
+
+已知限制：
+
+- Joiner 的第一次同步，以及其 `OnJoin` 效果送給該 joiner 的部分，仍在 turn 之外執行。<!-- TODO(#194): #194 合併後描述 in-turn join。 -->
+- Debug freeze 的 settle 仍執行一次 `beginSync` / `endSync` cycle。
+- Handler 拋出錯誤的 input 單獨失敗，與 legacy 路徑相同：呼叫者收到錯誤，該 input 被移除並記錄，同一 turn 的其他 input 照常套用。狀態保留 handler 在拋出前寫入的內容，下一次同步會送出。
+- Re-evaluation 的 keeper 一律走 legacy 路徑。
+
+`IN_TURN_SYNC=false` 是 kill switch：adapter 保留自己的 executor，透過 `beginSync` / `endSync` 同步（[同步流程](#同步流程)）。Adapter 在 init 時決定一次，keeper 跟隨它。
+
+### Writer Back-Pressure
+
+每個 adapter 都透過一個有序的 outbound writer 送出。當 writer 仍持有先前 cycle 的 sync frame 時，新的 cycle 會在取得 copy 之前被略過：不做任何 plan，dirty flag 與排隊中的 event 保留，下一個 cycle 會與最後送出的狀態做 diff，因此包含所有變更。有週期同步的 land 靠它的下一個週期 cycle；沒有的 land 會在 writer 清空後重試一次。過載因此變成略過的 cycle，而不是不斷增長的佇列。Event 與 action response 的 frame 不會被擋下。開啟 in-turn sync 時，被略過的 phase 記為 deferred turn；transport profiler 會回報兩者（見 [Transport](../transport/README.zh-TW.md#profiling)）。
+
 ### 同步流程
+
+> Legacy 路徑（`IN_TURN_SYNC=false`）。
 
 同步使用 snapshot 模式，不阻塞狀態變更：
 

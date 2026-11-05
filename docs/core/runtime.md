@@ -40,6 +40,8 @@ await withTaskGroup(of: Void.self) { group in
 
 ### Snapshot Sync Mode
 
+> This section and [Sync Flow](#sync-flow) describe the legacy path (`IN_TURN_SYNC=false`). By default the sync phase runs inside the keeper's own turns; see [In-Turn Sync](#in-turn-sync-default).
+
 `LandKeeper` uses snapshot mode for synchronization, which is a non-blocking design:
 
 - **Get snapshot when syncing**: Sync operations get a state snapshot at the start
@@ -267,6 +269,12 @@ Lifetime {
 }
 ```
 
+### Tick Scheduling
+
+The tick loop and the sync loop are fixed-rate. Each next deadline is the previous deadline plus the interval, not "now plus the interval", so the rate holds while a tick takes part of its interval. A tick that overruns does not cause a burst of catch-up ticks: missed deadlines are skipped, and the loop continues at the next deadline still in the future.
+
+Each land delays the first iteration of its loops by a per-land phase offset, so lands created together (a join ramp, a server start) do not run their ticks and syncs in the same few milliseconds of each interval. The offset is FNV-1a 64 of the land ID modulo `min(interval, 100 ms)` (`LandLoopPhase`), the same in every process. It only shifts wall-clock timing; tick IDs, ordering and replay are unaffected. `LAND_LOOP_PHASE_OFFSET=false` turns it off.
+
 ### Event Queue Mechanism (PendingItems)
 
 `LandKeeper` uses a unified `pendingItems` queue to manage all inputs:
@@ -384,7 +392,44 @@ private func runTick() async {
 
 ## Synchronization Mechanism
 
+### Update Modes
+
+A land syncs in one of three ways (`LandKeeper.hasPeriodicSync` is true for the first two):
+
+| Land | Sync | Suits |
+|---|---|---|
+| `Tick` (with or without `StateSync`) | the sync loop at the `StateSync` interval, or at the tick interval when `StateSync` is not set | real-time games with a simulation step (Hero Defense: tick 50 ms, `StateSync` 100 ms) |
+| `StateSync` without `Tick` | the sync loop at its interval; inputs are applied as they arrive | games whose state changes only through inputs, with a steady update rate |
+| neither | only when requested: `ctx.requestSyncNow()` / `ctx.requestSyncBroadcastOnly()` in a handler, or the host calling the adapter's `syncNow()` | turn-based or low-traffic lands |
+
+A land without periodic sync has no next cycle to fall back on, so the runtime retries a cycle it had to skip (see [Writer Back-Pressure](#writer-back-pressure)).
+
+### In-Turn Sync (default)
+
+With in-turn sync, a land's `TransportAdapter` runs on its keeper's serial executor, and the keeper runs the sync phase synchronously inside its own turns, with no suspension point between the state changes and the frames they produce (`InTurnSync`). The turn kinds are:
+
+- tick turn: the ready inputs, the tick handler, the emitted events, and the sync phase when a handler requested one or the sync loop folded into it. A sync due within min(5 ms, tick / 4, sync / 4) of the next tick runs in that tick turn (coincident sync), so a sync coinciding with a tick sees the tick's result;
+- sync-only turn: the sync loop's own interval, so the sync cadence is kept;
+- input turn (lands without a tick): at most 64 ready inputs, their events, and the sync phase when requested. Inputs that arrive during a turn go to a later one.
+
+The sync phase plans every frame of the cycle from the state at that point of the turn, then commits: it enqueues the frames to the adapter's outbound writer and clears the dirty flags. Nothing runs between the plan and the commit, so no change is cleared unsent. A plan that fails commits nothing, and its dirty flags stay for the next cycle.
+
+Stated limits:
+
+- A joiner's first sync and the delivery of its `OnJoin` effects to the joiner still run outside the turn. <!-- TODO(#194): describe in-turn joins once #194 is merged. -->
+- The debug freeze settle still runs a `beginSync` / `endSync` cycle.
+- An input whose handler throws fails alone, as on the legacy path: its caller gets the error, it is removed and recorded, and the other inputs of the turn are applied. The state keeps what the throwing handler wrote before the throw, and the next sync sends it.
+- Re-evaluation keepers always use the legacy path.
+
+`IN_TURN_SYNC=false` is the kill switch: the adapter keeps its own executor and syncs through `beginSync` / `endSync` ([Sync Flow](#sync-flow)). The adapter decides once, at init, and the keeper follows it.
+
+### Writer Back-Pressure
+
+Each adapter sends through one ordered outbound writer. While the writer still holds a sync cycle's frames from an earlier cycle, a new cycle is skipped before it takes its copy: nothing is planned, the dirty flags and queued events stay, and the next cycle diffs against the last state sent, so it carries every change. On a land with periodic sync that is its next periodic cycle; a land without one gets one retry once the writer has drained. Overload thus turns into skipped cycles instead of a growing queue. Event and action-response frames are not held back. With in-turn sync a skipped phase is counted as a deferred turn; the transport profiler reports both (see [Transport](../transport/README.md#profiling)).
+
 ### Sync Flow
+
+> The legacy path (`IN_TURN_SYNC=false`).
 
 Synchronization uses snapshot mode, doesn't block state changes:
 
