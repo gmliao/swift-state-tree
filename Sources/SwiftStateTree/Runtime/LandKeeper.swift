@@ -67,6 +67,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         public let metadata: [String: String]
         public let resolverOutputs: [String: any ResolverOutput]
         public let resolvedAtTick: Int64
+        /// For a join's OnJoin: the generation of the player entry that join inserted (`nil`
+        /// otherwise, and in replay). A failed OnJoin removes the entry only while it is still
+        /// that generation (`discardIfFailedJoin`).
+        public let entryGeneration: Epoch?
 
         public init(
             sequence: Int64,
@@ -78,7 +82,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             isGuest: Bool?,
             metadata: [String: String],
             resolverOutputs: [String: any ResolverOutput],
-            resolvedAtTick: Int64
+            resolvedAtTick: Int64,
+            entryGeneration: Epoch? = nil
         ) {
             self.sequence = sequence
             self.kind = kind
@@ -90,6 +95,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             self.metadata = metadata
             self.resolverOutputs = resolverOutputs
             self.resolvedAtTick = resolvedAtTick
+            self.entryGeneration = entryGeneration
         }
     }
 
@@ -185,6 +191,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     private var state: State
     private var players: [PlayerID: InternalPlayerSession] = [:]
+    /// Mints `InternalPlayerSession.generation`: every insert of a player entry gets a new one.
+    private var entryGenerations = EpochCounter()
     private var services: LandServices
 
     private var transport: LandKeeperTransport?
@@ -1148,11 +1156,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         session.clientID = clientID
         session.lastSessionID = sessionID
-        session.joinSequence = nil
         session.services = services
         // Checked in the same synchronous segment as the insert: a destruction that started
         // during this join's awaits must not get a player after it stopped the loops.
         guard !isDraining else { throw JoinError.landShuttingDown }
+        let entryGeneration = entryGenerations.next()
+        session.generation = entryGeneration
         players[playerID] = session
 
         destroyTask?.cancel()
@@ -1164,8 +1173,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
         let sequence = outputCollector.takeNextSequence()
-        // Same segment as the insert: the entry belongs to this join's OnJoin input.
-        players[playerID]?.joinSequence = sequence
 
         // Snapshot tick at request time; update after resolver completion for async determinism.
         var resolvedAtTick = lastCommittedTickId
@@ -1206,7 +1213,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 isGuest: session.isGuest,
                 metadata: session.metadata,
                 resolverOutputs: resolverOutputs,
-                resolvedAtTick: resolvedAtTick
+                resolvedAtTick: resolvedAtTick,
+                entryGeneration: entryGeneration
             )
         )
         pendingItems.append(pendingItem)
@@ -1342,7 +1350,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         playerSession.clientID = clientID
         playerSession.lastSessionID = sessionID
-        playerSession.joinSequence = nil
         playerSession.services = services
         // Update deviceID, isGuest, and metadata if provided (for reconnection scenarios)
         if let deviceID = session.deviceID {
@@ -1355,6 +1362,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Checked in the same synchronous segment as the insert: a destruction that started
         // during this join's awaits must not get a player after it stopped the loops.
         guard !isDraining else { throw JoinError.landShuttingDown }
+        let entryGeneration = entryGenerations.next()
+        playerSession.generation = entryGeneration
         players[playerID] = playerSession
 
         destroyTask?.cancel()
@@ -1370,8 +1379,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
         let sequence = outputCollector.takeNextSequence()
-        // Same segment as the insert: the entry belongs to this join's OnJoin input.
-        players[playerID]?.joinSequence = sequence
 
         // Snapshot tick at request time; update after resolver completion for async determinism.
         var resolvedAtTick = lastCommittedTickId
@@ -1414,7 +1421,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 isGuest: session.isGuest,
                 metadata: session.metadata,
                 resolverOutputs: resolverOutputs,
-                resolvedAtTick: resolvedAtTick
+                resolvedAtTick: resolvedAtTick,
+                entryGeneration: entryGeneration
             )
         )
         pendingItems.append(pendingItem)
@@ -1437,13 +1445,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// completed: its input is removed (so no later pass runs that OnJoin again for a player that
     /// isn't there) and so is the player it inserted, without OnLeave, so the failed join holds
     /// no capacity and doesn't keep the land alive. The player is removed only if it is still
-    /// that join's entry (its `joinSequence`). OnJoin's partial state changes are not rolled back (no per-input
+    /// that join's entry (its `generation`). OnJoin's partial state changes are not rolled back (no per-input
     /// savepoints, #87).
     private func discardIfFailedJoin(_ item: PendingItem) {
         guard case let .lifecycle(lifecycle) = item, lifecycle.kind == .join,
               let playerID = lifecycle.playerID else { return }
         pendingItems.removeAll { $0.sequence == lifecycle.sequence }
-        if let session = players[playerID], session.joinSequence == lifecycle.sequence {
+        if let session = players[playerID], let generation = lifecycle.entryGeneration,
+           session.generation == generation {
             players.removeValue(forKey: playerID)
             scheduleDestroyIfNeeded()
         }
@@ -1467,8 +1476,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Intake check for actions and client events (#92, newest wins): rejects a sender only when
     /// the player has an entry and that entry is another client or session, i.e. a newer join
     /// of the player replaced the sender's session. Called on `.live` keepers only (the intake
-    /// returns earlier otherwise), at intake and again in the segment that queues the input
-    /// when an await (the action's resolvers) lies between them.
+    /// returns earlier otherwise), at intake. An action's resolvers lie between its intake and
+    /// its append; its delivery checks the entry's generation instead (`deliverResolvedAction`).
     ///
     /// Unchanged: a player with no entry (direct callers that send before or without a join),
     /// the system player and client, and a sender matching the entry (a join, then sends with the
@@ -1493,6 +1502,66 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             "rejectedTotal": .stringConvertible(supersededSenderRejections),
         ])
         throw LandInputRejection.senderSuperseded
+    }
+
+    /// What an action captured at intake about its sender, checked when its resolvers' result
+    /// is delivered (`deliverResolvedAction`).
+    struct ActionTicket: Sendable {
+        /// The sender's entry generation at intake; `nil` when the player had no entry (direct
+        /// callers that send before or without a join) or the sender is exempt (the system
+        /// player or client).
+        let entryGeneration: Epoch?
+    }
+
+    private func actionTicket(for playerID: PlayerID, clientID: ClientID) -> ActionTicket {
+        guard playerID != systemPlayerID, clientID != systemClientID else {
+            return ActionTicket(entryGeneration: nil)
+        }
+        return ActionTicket(entryGeneration: players[playerID]?.generation)
+    }
+
+    /// Delivers an action whose resolvers finished: the only code that runs after their
+    /// await, one synchronous segment. The result is an input like any other; it is validated
+    /// against the current state with the intake's ticket, and appended only when it holds:
+    /// - no entry at intake: accepted (nothing to compare);
+    /// - the sender's entry at intake, the same generation now: accepted;
+    /// - the sender's entry at intake, gone or replaced now (the player left, or a newer join
+    ///   replaced it): rejected with `LandInputRejection.senderSuperseded`.
+    ///
+    /// The input is bound to the tick current now (`resolvedAtTick`), so it applies in the
+    /// first turn after its resolvers finish, as recorded. A rejected input has taken a
+    /// sequence number and is never recorded; replay advances past the gap through the
+    /// recorded watermarks.
+    ///
+    /// Not checked yet (K-e): whether the land is draining or shut down. The ticket is the
+    /// sender's entry only, and finalize doesn't remove entries, so a result delivered after
+    /// either is still appended (and, on a tickless land, applied after finalize).
+    private func deliverResolvedAction(
+        _ item: PendingActionItem,
+        ticket: ActionTicket,
+        input: String
+    ) throws {
+        if let generation = ticket.entryGeneration, players[item.playerID]?.generation != generation {
+            supersededSenderRejections += 1
+            logger.warning("Action rejected at delivery: the sender's entry ended during its resolvers", metadata: [
+                "playerID": .string(item.playerID.rawValue),
+                "clientID": .string(item.clientID.rawValue),
+                "sessionID": .string(item.sessionID.rawValue),
+                "input": .string(input),
+                "rejectedTotal": .stringConvertible(supersededSenderRejections),
+            ])
+            throw LandInputRejection.senderSuperseded
+        }
+        pendingItems.append(.action(PendingActionItem(
+            sequence: item.sequence,
+            action: item.action,
+            actionType: item.actionType,
+            playerID: item.playerID,
+            clientID: item.clientID,
+            sessionID: item.sessionID,
+            resolverOutputs: item.resolverOutputs,
+            resolvedAtTick: lastCommittedTickId
+        )))
     }
 
     /// Handles a player/client leaving the Land.
@@ -1698,13 +1767,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let payloadData = try JSONEncoder().encode(envelope.payload)
         let decodedAction = try decoder.decode(actionPayloadType, from: payloadData)
 
+        // Intake segment: the sender check, the sequence and the ticket (the sender's entry
+        // generation). After the resolvers' await, only `deliverResolvedAction` runs, which
+        // validates the ticket against the current state and appends the input.
         try rejectSenderIfSuperseded(playerID: playerID, clientID: clientID, sessionID: sessionID, input: typeIdentifier)
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent)
         let sequence = outputCollector.takeNextSequence()
-
-        // Bind action to lastCommittedTickId; if resolvers are async, update after they complete.
-        var resolvedAtTick = lastCommittedTickId
+        let ticket = actionTicket(for: playerID, clientID: clientID)
 
         // Execute resolvers in parallel if any are declared
         var resolverOutputs: [String: any ResolverOutput] = [:]
@@ -1713,7 +1783,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 playerID: playerID,
                 clientID: clientID,
                 sessionID: sessionID,
-                tickId: resolvedAtTick
+                tickId: lastCommittedTickId
             )
 
             // ActionPayload already conforms to Sendable, so we can use it directly
@@ -1729,20 +1799,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 resolverContext: resolverContext,
                 landContext: ctx
             )
-
-            // Extract resolver outputs from context
             resolverOutputs = ctx.getAllResolverOutputs()
-
-            // Bind to the tick that was current when resolvers completed (deterministic ordering)
-            resolvedAtTick = lastCommittedTickId
-
-            // Re-checked after the resolver await, in the append's segment: a newer join of the
-            // player may have replaced the sender's session meanwhile.
-            try rejectSenderIfSuperseded(playerID: playerID, clientID: clientID, sessionID: sessionID, input: typeIdentifier)
         }
 
-        // Create pending item and add to queue
-        let pendingItem = PendingItem.action(
+        try deliverResolvedAction(
             PendingActionItem(
                 sequence: sequence,
                 action: envelope.payload,
@@ -1751,10 +1811,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 clientID: clientID,
                 sessionID: sessionID,
                 resolverOutputs: resolverOutputs,
-                resolvedAtTick: resolvedAtTick
-            )
+                // Rebound to the tick current at delivery (`deliverResolvedAction`).
+                resolvedAtTick: lastCommittedTickId
+            ),
+            ticket: ticket,
+            input: typeIdentifier
         )
-        pendingItems.append(pendingItem)
 
         // If there's no tick handler, process pending actions immediately and return response
         // This maintains backward compatibility for tests and simple use cases
@@ -3450,11 +3512,12 @@ private final class DrainFlag: @unchecked Sendable {
 private struct InternalPlayerSession: Sendable {
     var clientID: ClientID?
     var lastSessionID: SessionID?
-    /// The sequence of the OnJoin input of the join that inserted this entry, or `nil` (no
-    /// OnJoin input, or a later join of the player replaced the entry). Identifies the entry a
-    /// failed OnJoin may remove (`discardIfFailedJoin`): client and session IDs can repeat
-    /// across joins of the same player.
-    var joinSequence: Int64?
+    /// This entry's generation, new on every insert (`LandKeeper.entryGenerations`). Client and
+    /// session IDs can repeat across joins of the same player, so work that awaits after
+    /// reading the entry compares this instead: a failed OnJoin removes only its own join's
+    /// entry (`discardIfFailedJoin`), and an action is delivered only to the entry it was sent
+    /// to (`deliverResolvedAction`).
+    var generation = Epoch(rawValue: 0)
     var services: LandServices
     // PlayerSession info (from join request)
     var deviceID: String?
