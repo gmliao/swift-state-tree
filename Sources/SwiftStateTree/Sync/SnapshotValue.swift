@@ -215,11 +215,14 @@ public extension SnapshotValue {
             let mapped = intArray.map { SnapshotValue.int($0) }
             return .array(mapped)
         }
+        // Map elements go through `make` again, never straight to `toSnapshotValue()`: a state
+        // node that is also `SnapshotValueConvertible` (`@SnapshotConvertible`) must still be
+        // converted by its own `@Sync` policies, and `make` checks `StateNodeProtocol` first (#175).
         if let playerConvertibleDict = value as? [PlayerID: SnapshotValueConvertible] {
             var object: [String: SnapshotValue] = [:]
             object.reserveCapacity(playerConvertibleDict.count)
             for (key, val) in playerConvertibleDict {
-                object[key.rawValue] = try val.toSnapshotValue()
+                object[key.rawValue] = try make(from: val, for: playerID)
             }
             return .object(object)
         }
@@ -237,7 +240,7 @@ public extension SnapshotValue {
             var object: [String: SnapshotValue] = [:]
             object.reserveCapacity(stringConvertibleDict.count)
             for (key, val) in stringConvertibleDict {
-                object[key] = try val.toSnapshotValue()
+                object[key] = try make(from: val, for: playerID)
             }
             return .object(object)
         }
