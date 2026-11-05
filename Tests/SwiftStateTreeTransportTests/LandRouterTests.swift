@@ -16,6 +16,9 @@ struct RouterTestState: StateNodeProtocol {
     var players: [PlayerID: String] = [:]
 }
 
+/// OnJoin of player `bad-join` throws it.
+struct RouterTestJoinFailure: Error {}
+
 // MARK: - Tests
 
 @Suite("LandRouter Tests")
@@ -35,6 +38,7 @@ struct LandRouterTests {
                  return Land("basic-test", using: RouterTestState.self) {
                     Rules {
                         OnJoin { (state: inout RouterTestState, ctx: LandContext) in
+                            if ctx.playerID.rawValue == "bad-join" { throw RouterTestJoinFailure() }
                             state.players[ctx.playerID] = "Joined"
                         }
 
@@ -959,3 +963,72 @@ private func routerTestPollUntil(_ condition: () async -> Bool) async -> Bool {
     }
     return await condition()
 }
+
+// MARK: - In-turn join failures (#69)
+
+@Suite(
+    "LandRouter: an in-turn join that fails before its flip is cleaned up",
+    .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: the in-turn join path is off")
+)
+struct LandRouterJoinFlipFailureTests {
+    /// Joins `player-1` (creating the land), returns its container.
+    private func makeLand() async throws -> (LandRouter<RouterTestState>, LandContainer<RouterTestState>) {
+        let (_, router, landManager) = try await LandRouterTests().setupRouter()
+        let session = SessionID("sess-1")
+        await router.onConnect(sessionID: session, clientID: ClientID("cli-1"))
+        let join = TransportMessage.join(
+            requestID: "req-1", landType: "basic-test", landInstanceId: nil,
+            playerID: "player-1", deviceID: "dev-1", metadata: nil
+        )
+        await router.onMessage(try JSONEncoder().encode(join), from: session)
+        let landID = try #require(await router.getBoundLandID(for: session))
+        let container = try #require(await landManager.getLand(landID: landID))
+        return (router, container)
+    }
+
+    /// Sends `player`'s join from `sess-2` to the land; returns once the router handled it.
+    private func joinSecond(_ router: LandRouter<RouterTestState>, _ container: LandContainer<RouterTestState>, player: String) async throws {
+        await router.onConnect(sessionID: SessionID("sess-2"), clientID: ClientID("cli-2"))
+        let join = TransportMessage.join(
+            requestID: "req-2", landType: "basic-test", landInstanceId: container.landID.instanceId,
+            playerID: player, deviceID: "dev-2", metadata: nil
+        )
+        await router.onMessage(try JSONEncoder().encode(join), from: SessionID("sess-2"))
+    }
+
+    private func expectCleanedUp(_ container: LandContainer<RouterTestState>, player: String) async {
+        let adapter = container.transportAdapter, keeper = container.keeper
+        let session = SessionID("sess-2"), playerID = PlayerID(player)
+        let cleaned = await routerTestPollUntil {
+            let left = !(await adapter.isJoined(sessionID: session))
+            let notJoining = !(await adapter.isJoining(session))
+            let gone = await keeper.currentState().players[playerID] == nil
+            let count = await keeper.playerCount()
+            return left && notJoining && gone && count == 1
+        }
+        #expect(cleaned, "the failed join left adapter membership or a keeper player behind")
+        #expect(await adapter.isJoined(sessionID: SessionID("sess-1")), "the member stays")
+    }
+
+    @Test("OnJoin throws: no membership, joining record or keeper player is left")
+    func onJoinFailedIsCleanedUp() async throws {
+        let (router, container) = try await makeLand()
+        try await joinSecond(router, container, player: "bad-join")
+        await expectCleanedUp(container, player: "bad-join")
+        #expect(await container.transportAdapter.inTurnJoinFailures[.onJoinFailed] == 1)
+    }
+
+    @Test("Timeout: OnJoin ran, and the cleanup removes the player through OnLeave")
+    func timeoutIsCleanedUp() async throws {
+        let (router, container) = try await makeLand()
+        let adapter = container.transportAdapter
+        // No sync phase commits, so the join can't flip and times out.
+        await adapter.setJoinFlipLimitsForTesting(timeout: .milliseconds(100), budget: nil)
+        await adapter.setSyncPlanFaultForTesting { throw RouterTestJoinFailure() }
+        try await joinSecond(router, container, player: "player-2")
+        #expect(await adapter.inTurnJoinFailures[.timeout] == 1)
+        await adapter.setSyncPlanFaultForTesting(nil)
+        await expectCleanedUp(container, player: "player-2")
+    }
+}
+

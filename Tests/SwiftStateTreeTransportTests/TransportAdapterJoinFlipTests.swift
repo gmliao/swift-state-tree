@@ -353,18 +353,22 @@ struct TransportAdapterJoinFlipTests {
         #expect(await fixture.sent.kinds(for: s1) == ["joinResponse", "firstSync"])
     }
 
-    @Test("Tickless land whose plan always fails: a bounded number of retry turns, then the join times out")
-    func alwaysFailingPlanIsBounded() async throws {
+    @Test("Tickless land whose plan keeps failing: the join retries back off, doubling, and it flips once a plan commits")
+    func failingPlanRetriesBackOff() async throws {
         let fixture = await makeFixture(tick: false)
-        await fixture.adapter.setJoinFlipLimitsForTesting(timeout: .milliseconds(1500), budget: nil)
         await fixture.adapter.setSyncPlanFaultForTesting { throw OnJoinFailure() }
-        await #expect(throws: JoinFlipError.timeout) {
-            _ = try await joinInTurn(fixture, session: SessionID("s1"), player: PlayerID("p1"))
+        let join = Task { try await joinInTurn(fixture, session: SessionID("s1"), player: PlayerID("p1")) }
+        // Past the repair limit the retries back off, doubling from 100 ms, so a plan that keeps
+        // failing gives a bounded number of turns before the join's timeout.
+        await eventually("three retries scheduled") {
+            await fixture.keeper.joinSyncRetryDelaysForTesting.count >= 3
         }
-        // Delays double from 100 ms: past the repair limit, at most about log2(1.5 s / 100 ms)
-        // + 1 retry turns fit in the timeout.
-        let retries = await fixture.keeper.joinSyncTurnsForTesting
-        #expect(retries >= 1 && retries <= 6, "retry turns: \(retries)")
+        let delays = await fixture.keeper.joinSyncRetryDelaysForTesting
+        #expect(Array(delays.prefix(3)) == [.milliseconds(100), .milliseconds(200), .milliseconds(400)])
+        // Once a plan commits again, the next retry flips the join.
+        await fixture.adapter.setSyncPlanFaultForTesting(nil)
+        let result = try await join.value
+        #expect(result.completedInTurn)
     }
 
     @Test("Not registered with the transport yet: a consumed join doesn't flip until it is")
@@ -387,6 +391,7 @@ struct TransportAdapterJoinFlipTests {
         }
         await fixture.keeper.runSyncLoopIterationForTesting()
         _ = try await join.value
+        #expect(await fixture.adapter.waitForOutboundDrain())
         #expect(await fixture.sent.kinds(for: s1) == ["joinResponse", "firstSync"])
     }
 
@@ -400,6 +405,32 @@ struct TransportAdapterJoinFlipTests {
         await fixture.keeper.stepTickOnce()
         await fixture.keeper.runSyncLoopIterationForTesting()
         _ = try await join.value
+        #expect(await fixture.adapter.waitForOutboundDrain())
+        #expect(await fixture.sent.kinds(for: s1) == ["joinResponse", "firstSync"])
+        #expect(await fixture.adapter.eventsDroppedForJoiningSessions == 1, "the dropped event is counted")
+    }
+
+    @Test("Tickless land: a join that becomes ready during a debug freeze flips after the resume")
+    func joinReadyDuringFreezeFlipsAfterResume() async throws {
+        let fixture = await makeFixture(tick: false)
+        await fixture.adapter.setJoinFlipLimitsForTesting(timeout: .seconds(3), budget: nil)
+        let gate = TestGate()
+        await fixture.adapter.installHolds(HoldRegistry.at(.registerSession) { await gate.arrive() })
+        let s1 = SessionID("s1")
+        let join = Task { try await joinInTurn(fixture, session: s1, player: PlayerID("p1")) }
+        await eventually("the join at registerSession") { gate.arrivalCount == 1 }
+
+        let freeze = try await fixture.adapter.debugFreeze()
+        gate.open()
+        await fixture.adapter.installHolds(nil)
+        await eventually("s1 ready") { await fixture.adapter.hasJoinsAwaitingSyncForTesting() }
+        // The join's sync-only turn runs while frozen and is skipped.
+        await fixture.keeper.requestJoinSyncTurn()
+        #expect(await fixture.adapter.isJoiningInTurn(s1))
+
+        _ = await fixture.adapter.debugResume(freezeToken: freeze.freezeToken)
+        let result = try await join.value
+        #expect(result.completedInTurn)
         #expect(await fixture.adapter.waitForOutboundDrain())
         #expect(await fixture.sent.kinds(for: s1) == ["joinResponse", "firstSync"])
     }

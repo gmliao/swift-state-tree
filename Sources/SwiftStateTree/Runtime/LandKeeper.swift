@@ -1535,7 +1535,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// the transport when a join became ready outside a turn (its session registered with the
     /// transport). Does nothing when no join waits.
     package func requestJoinSyncTurn() async {
-        guard !hasPeriodicSync, transportHasJoinsAwaitingSync, let transport else { return }
+        // Draining: the drain fails the waiting joins with `landClosed`, none flips now.
+        guard !isDraining, !hasPeriodicSync, transportHasJoinsAwaitingSync, let transport else { return }
         runSyncOnlyTurn(transport: transport)
     }
 
@@ -2990,7 +2991,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // that keeps failing gives a bounded number of turns before the joins time out.
                 joinSyncRetryFailures += 1
                 let doublings = min(joinSyncRetryFailures - 1, 16)
-                scheduleJoinSyncTurn(after: Self.inTurnRepairDelay * (1 << doublings))
+                let delay = Self.inTurnRepairDelay * (1 << doublings)
+                joinSyncRetryDelaysForTesting.append(delay)
+                scheduleJoinSyncTurn(after: delay)
             }
         case .notRequested, .unsupported:
             break
@@ -3261,6 +3264,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private var joinSyncTurnPending = false
     /// Sync-only turns run for waiting joins (tests).
     private(set) var joinSyncTurnsForTesting = 0
+    /// The retry delays scheduled past the repair limit, in order (tests).
+    private(set) var joinSyncRetryDelaysForTesting: [Duration] = []
 
     /// One sync-only turn for joins waiting on a committed sync phase, after `delay` (at most one
     /// pending). It runs only if joins still wait then.
@@ -3277,7 +3282,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     private func runJoinSyncTurn() {
         joinSyncTurnPending = false
-        guard transportHasJoinsAwaitingSync, let transport else { return }
+        guard !isDraining, transportHasJoinsAwaitingSync, let transport else { return }
         joinSyncTurnsForTesting += 1
         runSyncOnlyTurn(transport: transport)
     }

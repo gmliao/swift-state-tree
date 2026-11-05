@@ -548,6 +548,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private var nextInTurnJoinOrder: UInt64 = 0
     /// Joins flipped in a committed sync phase so far, and failures by reason (diagnostics).
     private(set) var inTurnJoinFlips = 0
+    /// Targeted events (`.session`, `.client`, `.player`, `.players`) addressed to a session that
+    /// was still joining, and so not delivered to it: before its JoinResponse there is nowhere
+    /// to put them (#69; a follow-up keeps them for after the firstSync). Counted, with a
+    /// rate-limited debug log, so the gap is visible.
+    private(set) var eventsDroppedForJoiningSessions = 0
+    private var lastJoiningEventDropLog: ContinuousClock.Instant?
     private(set) var inTurnJoinFailures: [JoinFlipError: Int] = [:]
 
     /// Tests only: replaces `JoinFlipConfig.timeout` for joins admitted from now on.
@@ -1222,6 +1228,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// The waiter of an in-turn join and its timeout. The timeout runs through the membership
     /// queue and acts only while the admission's ticket is current and the session still joins.
+    /// So it is a lower bound: another join's resolvers ahead in the queue can delay it, and a
+    /// sync that commits meanwhile still flips the join (the late timeout then does nothing).
     private func startJoinWaiter(sessionID: SessionID, ticket: Ticket<SessionID>) {
         joinWaiters[sessionID]?.resolve(.failure(.superseded))
         let waiter = JoinWaiter(ticket: ticket)
@@ -2654,6 +2662,35 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// Logs dropped updates (data loss), at most every 10 seconds.
+    /// Counts targeted events a joining session doesn't get (`eventsDroppedForJoiningSessions`).
+    func noteEventsDroppedForJoiningSessions(_ count: Int) {
+        guard count > 0 else { return }
+        eventsDroppedForJoiningSessions += count
+        let now = ContinuousClock.now
+        if let last = lastJoiningEventDropLog, now - last < .seconds(10) { return }
+        lastJoiningEventDropLog = now
+        if logger.logLevel <= .debug {
+            logger.debug("Targeted events to a joining session were not delivered", metadata: [
+                "dropped": .stringConvertible(count),
+                "droppedTotal": .stringConvertible(eventsDroppedForJoiningSessions),
+            ])
+        }
+    }
+
+    /// Of the first `end` queued targeted events, those addressed to a session that is still
+    /// joining (sessions × events): a plan consumes them without delivering them to it.
+    private func targetedEventsForJoiningSessions(endingBefore end: Int) -> Int {
+        guard end > 0 else { return 0 }
+        return joiningSessions.reduce(0) { sum, entry in
+            sum + pendingTargetedEventBodies(
+                events: pendingEventManager,
+                for: entry.key,
+                playerID: entry.value.playerID,
+                endingBefore: end
+            ).count
+        }
+    }
+
     private func logDroppedUpdatesIfDue(_ dropped: Int, reason: String?) {
         let now = ContinuousClock.now
         if let last = lastDroppedUpdatesLog, now - last < .seconds(10) {
@@ -2710,6 +2747,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         if plan.skippedJoiner {
             noteFailedPlanForFollowUp()
         }
+        // Before the flips end their joining: what this plan consumes for joining sessions is
+        // not delivered to them.
+        noteEventsDroppedForJoiningSessions(targetedEventsForJoiningSessions(endingBefore: plan.consumedEvents.targeted))
         // The flips (#69), in the commit's segment: the joins end, their waiters resume.
         for flip in plan.flips where joiningSessions[flip.sessionID]?.ticket == flip.ticket {
             joiningSessions.removeValue(forKey: flip.sessionID)
@@ -4769,6 +4809,11 @@ extension TransportAdapter {
             await _syncNowImpl()
         } else if runBroadcastOnly {
             await _syncBroadcastOnlyImpl()
+        }
+        // That cycle runs without joiners: a tickless land's join that became ready during the
+        // freeze (its sync-only turn was skipped) needs its own turn to flip (#69).
+        if hasJoinsAwaitingSyncIsolated() {
+            await keeper.requestJoinSyncTurn()
         }
     }
 
