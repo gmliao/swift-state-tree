@@ -380,6 +380,30 @@ struct TransportAdapterJoiningAdmissionTests {
         #expect(await adapter.syncEngineForTesting().hasReceivedFirstSyncForTesting(p1) == false)
     }
 
+    @Test("An old join's initial sync after the SessionID was admitted again for another player: it takes nothing", arguments: [true, false])
+    func oldInitialSyncAfterReadmissionAsAnotherPlayer(inTurn: Bool) async throws {
+        let fixture = await makeFixture(inTurn: inTurn, tick: true)
+        let adapter = fixture.adapter
+        let s1 = SessionID("s1"), c1 = ClientID("c1"), p1 = PlayerID("p1"), p2 = PlayerID("p2")
+        _ = try await join(fixture, session: s1, client: c1, player: p1)
+        // The router's next step for p1's join is held; s1 ends and is admitted as p2.
+        await adapter.onDisconnect(sessionID: s1, clientID: c1)
+        _ = try await join(fixture, session: s1, client: c1, player: p2)
+        #expect(await adapter.isJoining(s1))
+
+        await adapter.syncStateForNewPlayer(playerID: p1, sessionID: s1)
+        // p2's admission is untouched: still joining, so not yet a sync recipient.
+        #expect(await adapter.isJoining(s1))
+        #expect(await adapter.waitForOutboundDrain())
+        #expect(await fixture.sent.kinds(for: s1) == [])
+        #expect(await adapter.syncEngineForTesting().hasReceivedFirstSyncForTesting(p1) == false)
+
+        await adapter.syncStateForNewPlayer(playerID: p2, sessionID: s1)
+        #expect(await adapter.waitForOutboundDrain())
+        #expect(await fixture.sent.kinds(for: s1) == ["firstSync"])
+        #expect(await adapter.syncEngineForTesting().hasReceivedFirstSyncForTesting(p2) == true)
+    }
+
     @Test("A disconnect while joining clears the joining mark")
     func disconnectWhileJoining() async throws {
         let fixture = await makeFixture(inTurn: true, tick: true)

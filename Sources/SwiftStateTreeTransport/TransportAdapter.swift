@@ -999,6 +999,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// `nil` is returned, so no firstSync re-creates the per-player state the disconnect
     /// cleared. A session that is a member without an admission (registered directly) runs.
     ///
+    /// A `.joining` mark of another player (the SessionID was admitted again meanwhile) is
+    /// left alone and nothing runs.
+    ///
     /// `operation` gets the session's ticket (`sessionTickets`): the admission's, or for a
     /// directly registered member its current one (issued here if it has none). Work after an
     /// `await` in `operation` acts only while that ticket is current.
@@ -1008,7 +1011,18 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         operation: (Ticket<SessionID>) async throws -> T
     ) async rethrows -> T? {
         let ticket: Ticket<SessionID>
-        if let joining = joiningSessions.removeValue(forKey: sessionID) {
+        if let joining = joiningSessions[sessionID] {
+            // Another player's admission of this SessionID (the session ended and was admitted
+            // again meanwhile): it isn't this initial sync's to take.
+            guard joining.playerID == playerID else {
+                logger.info("Initial sync skipped: the session was admitted again for another player", metadata: [
+                    "sessionID": .string(sessionID.rawValue),
+                    "playerID": .string(playerID.rawValue),
+                    "admittedPlayerID": .string(joining.playerID.rawValue),
+                ])
+                return nil
+            }
+            joiningSessions.removeValue(forKey: sessionID)
             ticket = joining.ticket
         } else if membershipCoordinator.playerID(for: sessionID) == playerID {
             ticket = sessionTickets.ticket(for: sessionID) ?? sessionTickets.issue(sessionID)
