@@ -1532,6 +1532,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// first turn after its resolvers finish, as recorded. A rejected input has taken a
     /// sequence number and is never recorded; replay advances past the gap through the
     /// recorded watermarks.
+    ///
+    /// Not checked yet (K-e): whether the land is draining or shut down. The ticket is the
+    /// sender's entry only, and finalize doesn't remove entries, so a result delivered after
+    /// either is still appended (and, on a tickless land, applied after finalize).
     private func deliverResolvedAction(
         _ item: PendingActionItem,
         ticket: ActionTicket,
