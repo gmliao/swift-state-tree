@@ -32,13 +32,14 @@ func testClientEventQueuedUntilTick() async throws {
         }
 
         Lifetime {
-            Tick(every: .milliseconds(200)) { (state: inout ClientEventQueueTestState, _: LandContext) in
+            // Hourly and stepped by hand: no real tick can run between the event and the
+            // "still queued" check (the 200 ms loop could on a loaded runner).
+            Tick(every: .seconds(3600)) { (state: inout ClientEventQueueTestState, _: LandContext) in
                 state.ticks += 1
             }
         }
     }
 
-    // The fixed 300 ms wait below assumes the first tick at 200 ms: no per-land phase offset.
     let keeper = LandKeeper(
         definition: definition,
         initialState: ClientEventQueueTestState(),
@@ -56,13 +57,13 @@ func testClientEventQueuedUntilTick() async throws {
     // Before first tick, event should not be applied yet.
     let stateBeforeTick = await keeper.currentState()
     #expect(stateBeforeTick.totalCookies == 0, "Event should be queued until the next tick")
+    #expect(stateBeforeTick.ticks == 0)
 
-    // Wait for at least one tick to fire.
-    try await Task.sleep(for: .milliseconds(300))
+    await keeper.stepTickOnce()
 
     let stateAfterTick = await keeper.currentState()
     #expect(stateAfterTick.totalCookies == 5, "Event should be applied during tick processing")
-    #expect(stateAfterTick.ticks >= 1, "Tick handler should have executed at least once")
+    #expect(stateAfterTick.ticks == 1, "Tick handler should have executed once")
 }
 
 @Test("Tickless land records events with valid tick ID")
