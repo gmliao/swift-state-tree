@@ -91,6 +91,39 @@ describe("worker helpers", () => {
         expect(client.getMessageEncoding()).toBe("messagepack");
         expect(client.isJoined()).toBe(true);
     });
+
+    it("an unanswered join becomes a timeout join failure after the join timeout; a late answer doesn't join", async () => {
+        const fake = new FakeWebSocket();
+        const client = new WorkerClient(
+            { serverUrl: "ws://x", landType: "hero-defense", landInstanceId: "room-1", playerId: "0-0", actions: [] },
+            { createSocket: () => fake, joinTimeoutMs: 30 }
+        );
+        client.connect();
+        fake.emit("open");
+        expect(client.takeJoinFailure()).toBeUndefined();
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        const failure = client.takeJoinFailure();
+        expect(failure?.reason).toBe("timeout");
+        expect(failure?.message).toBe("no join response within 30 ms");
+        expect(client.takeJoinFailure()).toBeUndefined();
+        fake.emit("message", JSON.stringify({ kind: "joinResponse", payload: { joinResponse: { success: true } } }));
+        expect(client.isJoined()).toBe(false);
+        expect(client.isUsable()).toBe(false);
+    });
+
+    it("a joined connection doesn't time out", async () => {
+        const fake = new FakeWebSocket();
+        const client = new WorkerClient(
+            { serverUrl: "ws://x", landType: "hero-defense", landInstanceId: "room-1", playerId: "0-0", actions: [] },
+            { createSocket: () => fake, joinTimeoutMs: 30 }
+        );
+        client.connect();
+        fake.emit("open");
+        fake.emit("message", JSON.stringify({ kind: "joinResponse", payload: { joinResponse: { success: true } } }));
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        expect(client.takeJoinFailure()).toBeUndefined();
+        expect(client.isUsable()).toBe(true);
+    });
 });
 
 class FakeWebSocket {

@@ -34,6 +34,11 @@ export interface PhaseSummary {
     actionsSent: number;
     /** Whole-phase counts, including the warm-up and the transition. */
     phaseTotals?: PhaseTotals;
+    /**
+     * Error frames and socket errors received in the measured window divided by the actions sent
+     * in it (0 when none were sent). Join failures are not errors here; they fail the phase on
+     * their own (`connectionLifecycle.joinFailures`), so a large action count can't dilute them.
+     */
     errorRate: number;
     disconnectRate: number;
     rtt: { p50: number; p95: number; p99: number };
@@ -61,7 +66,7 @@ export interface Report {
 }
 
 export function buildReport(run: RunResult, systemMetrics: SystemMetrics): Report {
-    const phases = run.phases.map((phase) => summarizePhase(phase));
+    const phases = run.phases.map((phase) => summarizePhase(phase, run.runConfig));
     return {
         meta: {
             scenarioName: run.scenarioName,
@@ -76,7 +81,49 @@ export function buildReport(run: RunResult, systemMetrics: SystemMetrics): Repor
     };
 }
 
-function summarizePhase(phase: PhaseResult): PhaseSummary {
+/**
+ * Join checks, independent of the scenario's thresholds. A phase fails when any join failed,
+ * when fewer connections than the target are joined at the phase end, or, when the warm-up is
+ * longer than the connect ramp, at the measured-window start (`measurement.joined
+ * .atMeasuredStart`). The time-weighted `joined.average` is reported only.
+ * `--allow-join-failures` turns all of these off. With `--allow-partial-ramp`, which opens fewer
+ * connections than the target by design, the joined counts are compared with the connections
+ * the phase held (kept or started).
+ */
+export function joinFailuresOf(phase: PhaseResult, runConfig?: Pick<RunConfig, "allowJoinFailures" | "allowPartialRamp">): string[] {
+    if (runConfig?.allowJoinFailures) {
+        return [];
+    }
+    const failures: string[] = [];
+    const connections = phase.connections;
+    const joinFailures = connections?.joinFailures?.phase ?? 0;
+    if (joinFailures > 0) {
+        const reasons = Object.entries(connections.joinFailures.byReason)
+            .map(([reason, count]) => `${reason} ${count}`)
+            .join(", ");
+        failures.push(`joinFailures ${joinFailures} > 0 (${reasons})`);
+    }
+    if (!connections) {
+        return failures;
+    }
+    // A partial ramp opens fewer connections than the target by design: compare with the
+    // connections the phase held (kept or started by the ramp).
+    const partial = runConfig?.allowPartialRamp === true;
+    const expected = partial ? connections.reused + connections.started : connections.target;
+    const expectedLabel = partial ? `opened ${expected}` : `target ${expected}`;
+    if (connections.joinedAtEnd < expected) {
+        failures.push(`joined ${connections.joinedAtEnd} < ${expectedLabel} (at the phase end${partial ? ", partial ramp" : ""})`);
+    }
+    // Slow joins: with a warm-up longer than the ramp, everything must be joined when the
+    // measured window starts, or the window ran partly unloaded.
+    const atStart = phase.measurement?.joined?.atMeasuredStart;
+    if (typeof atStart === "number" && atStart < expected) {
+        failures.push(`joined ${atStart} < ${expectedLabel} (at the measured-window start)`);
+    }
+    return failures;
+}
+
+function summarizePhase(phase: PhaseResult, runConfig?: RunConfig): PhaseSummary {
     const connections = phase.layout?.connections ?? phase.config.rooms * phase.config.playersPerRoom;
     const actionsSent = phase.report.actionsSent;
     const errorRate = actionsSent > 0 ? phase.report.errorCount / actionsSent : 0;
@@ -105,6 +152,11 @@ function summarizePhase(phase: PhaseResult): PhaseSummary {
         );
         passed = evaluated.passed;
         failures = evaluated.failures;
+    }
+    const joinFailures = joinFailuresOf(phase, runConfig);
+    if (joinFailures.length > 0) {
+        passed = false;
+        failures = [...failures, ...joinFailures];
     }
 
     return {
@@ -150,6 +202,44 @@ function clientJitterHint(report: Report): string {
   <p>No direct metric for client processing delay (Node.js <code>ws</code> does not expose packet arrival time). For phases <strong>${phaseNames}</strong>: RTT p95 is low (&lt; ${RTT_LOW_MS}ms) and update p50 ≈ sync interval (${syncMs}ms) → server is on time; update p95 above ${syncMs}ms is consistent with client event-loop jitter, not systematic client delay.</p>`;
 }
 
+function escapeHtml(text: string): string {
+    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/** Join failures over the phase, with their reasons, e.g. `80 (error 80)`. */
+export function joinFailuresCell(connections?: PhaseConnections): string {
+    const failures = connections?.joinFailures;
+    if (!failures) {
+        return "–";
+    }
+    if (failures.phase === 0) {
+        return "0";
+    }
+    const reasons = Object.entries(failures.byReason)
+        .map(([reason, count]) => `${reason} ${count}`)
+        .join(", ");
+    return `<span class="text-red-400">${failures.phase} (${escapeHtml(reasons)})</span>`;
+}
+
+/** The joined count at the measured-window start, or why it isn't checked. */
+function joinedAtStartLine(measurement?: PhaseMeasurement): string {
+    const joined = measurement?.joined;
+    if (!joined) {
+        return "";
+    }
+    const value = joined.atMeasuredStart ?? joined.atMeasuredStartNote ?? "–";
+    return `<div class="text-xs text-slate-400">at window start: ${escapeHtml(String(value))}</div>`;
+}
+
+/** Why a phase failed, listed under its status. */
+export function failuresList(failures: string[]): string {
+    if (failures.length === 0) {
+        return "";
+    }
+    const items = failures.map((f) => `<li>${escapeHtml(f)}</li>`).join("");
+    return `<ul class="mt-1 text-xs text-red-300 list-disc list-inside">${items}</ul>`;
+}
+
 function runConfigLine(report: Report): string {
     const config = report.meta.runConfig;
     if (!config) {
@@ -170,7 +260,8 @@ export function renderHtml(report: Report): string {
                     <td class="px-4 py-2 font-medium text-slate-200">${phase.name}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.connections}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.layout ? `${phase.layout.lands} × ${phase.layout.playersPerLand.min === phase.layout.playersPerLand.max ? phase.layout.playersPerLand.max : `${phase.layout.playersPerLand.min}–${phase.layout.playersPerLand.max}`}` : "–"}</td>
-                    <td class="px-4 py-2 text-slate-300">${phase.connectionLifecycle ? `${phase.connectionLifecycle.joinedAtEnd} / ${phase.connectionLifecycle.target}` : "–"}</td>
+                    <td class="px-4 py-2 text-slate-300">${phase.connectionLifecycle ? `${phase.connectionLifecycle.joinedAtEnd} / ${phase.connectionLifecycle.target}` : "–"}${joinedAtStartLine(phase.measurement)}</td>
+                    <td class="px-4 py-2 text-slate-300">${joinFailuresCell(phase.connectionLifecycle)}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.connectionLifecycle ? `${phase.connectionLifecycle.closes.clientInitiated} / ${phase.connectionLifecycle.closes.serverInitiated}` : "–"}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.connectionLifecycle?.transitionMs !== undefined ? `${phase.connectionLifecycle.transitionMs} ms` : "–"}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.actionsSent}</td>
@@ -185,7 +276,7 @@ export function renderHtml(report: Report): string {
                     <td class="px-4 py-2 text-slate-300">${phase.rtt.p99.toFixed(2)}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.update.p95.toFixed(2)}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.update.p99.toFixed(2)}</td>
-                    <td class="px-4 py-2"><span class="${phase.passed ? "text-green-500 font-medium" : "text-red-500 font-medium"}">${phase.passed ? "PASS" : "FAIL"}</span></td>
+                    <td class="px-4 py-2"><span class="${phase.passed ? "text-green-500 font-medium" : "text-red-500 font-medium"}">${phase.passed ? "PASS" : "FAIL"}</span>${failuresList(phase.failures)}</td>
                   </tr>`
         )
         .join("");
@@ -230,6 +321,7 @@ export function renderHtml(report: Report): string {
               <th class="px-4 py-3 font-semibold">Connections</th>
               <th class="px-4 py-3 font-semibold">Lands × players</th>
               <th class="px-4 py-3 font-semibold">Joined / target</th>
+              <th class="px-4 py-3 font-semibold">Join failures (phase)</th>
               <th class="px-4 py-3 font-semibold">Closes client / server</th>
               <th class="px-4 py-3 font-semibold">Transition</th>
               <th class="px-4 py-3 font-semibold">Actions Sent</th>
