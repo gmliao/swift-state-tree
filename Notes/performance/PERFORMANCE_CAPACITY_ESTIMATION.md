@@ -1,5 +1,7 @@
 # CPU 承載能力估算（以 30 人房間為例）
 
+> **Historical (2026-01).** These estimates come from Swift 6.0/6.2 benchmark runs on 2026-01-02/04, before the NIO transport, in-turn sync and the 2026-11 benchmark fixes (writer drain and skip accounting in #161). Don't use them as current capacity figures; current measurements live in `deep-research/` and the issues they cite.
+
 本文件的目標是把「TransportAdapter.syncNow() 的 benchmark 數據」轉成可用的容量估算方式，並把不同情境（dirty ratio / 公開狀態是否每次 sync 前都在變）分開說清楚。
 
 ## TL;DR（可引用結論）

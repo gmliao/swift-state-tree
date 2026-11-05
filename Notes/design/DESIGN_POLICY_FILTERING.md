@@ -1,5 +1,7 @@
 # Policy 過濾機制：篩子層層過濾與樹的深度優先遍歷
 
+> **Out of date (checked 2026-11-05).** Since fb384a9 every policy returns the field's own type (`Value?` / `Value`), so no policy can change the type, and `.custom` is the same as `.perPlayer` with the arguments swapped (#173). A policy closure only receives the field value and the player ID; it can't read other state, so examples below that call `getPlayer(...)` inside the closure don't compile. Precompute what the filter needs into the field (for example a per-entity `visibleTo` set). See `Sources/SwiftStateTree/Sync/SyncPolicy.swift` and `docs/core/sync.md` for the current API.
+
 > 本文檔說明 SwiftStateTree 的 Policy 過濾機制設計理念
 > 
 > 相關文檔：
@@ -241,7 +243,7 @@ var hands: [PlayerID: [Card]] = [:]
 - **必須返回相同類型**（`Value`，不能為 `nil`）
 - 所有玩家看到相同的遮罩後的值
 - 與 `.perPlayer` 不同：`.masked` 不依賴 `playerID`，所有玩家看到相同結果
-- 與 `.custom` 不同：`.masked` 只能返回相同類型，如果需要返回不同類型，使用 `.custom`
+- 與 `.perPlayer` / `.custom` 不同：`.masked` 不能隱藏欄位（不能回傳 `nil`）
 
 **範例**：
 ```swift
@@ -272,11 +274,11 @@ struct GameStateRootNode: StateNodeProtocol {
 
 **⚠️ 注意**：
 - `masked` **必須返回與輸入相同的類型**（`Value -> Value`）
-- 如果需要返回不同類型（例如 `Int -> String`），請使用 `.custom` policy
+- 所有 policy 都不能改變類型（例如 `Int -> String`）
 - 這個限制確保類型安全，避免運行時類型轉換錯誤
 - Macro 生成的代碼可以直接使用原始類型進行轉換，無需運行時類型檢查
 
-### 5. `.custom(@Sendable (PlayerID, Value) -> Any?)`
+### 5. `.custom(@Sendable (PlayerID, Value) -> Value?)`
 
 **用途**：完全自定義的過濾邏輯，結合 `playerID` 和 `value` 進行複雜判斷
 

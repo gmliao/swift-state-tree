@@ -395,7 +395,7 @@ let gameLand = Land("game-room", using: GameStateTree.self) {
 - 🌐 [Transport](docs/transport/README.zh-TW.md) - 網路傳輸層
 - 🐦 [Hummingbird](docs/hummingbird/README.zh-TW.md) - 伺服器整合
 
-設計與開發筆記請參考 `Notes/` 目錄。
+設計與開發筆記請參考 [`Notes/`](Notes/index.md)（計劃的狀態索引在 [`Notes/plans/README.md`](Notes/plans/README.md)），實驗資料在 [`deep-research/`](deep-research/README.md)。
 
 ## 🧪 測試
 

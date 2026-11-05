@@ -344,7 +344,7 @@ SwiftStateTree/
 └── Notes/                           # Design and development notes
 ```
 
-> **Note**: The `Notes/` directory contains development notes and design documents, primarily in Traditional Chinese. These are internal materials that will be archived to `docs/` after review and organization.
+> **Note**: `Notes/` holds design and development notes, mostly in Traditional Chinese; they record how the project got here, and `docs/` is the source of truth. Plans have a status index in [`Notes/plans/README.md`](Notes/plans/README.md). Experiment data lives in [`deep-research/`](deep-research/README.md).
 
 For detailed module descriptions, please refer to [docs/overview.md](docs/overview.md).
 

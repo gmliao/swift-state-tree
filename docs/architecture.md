@@ -181,7 +181,7 @@ graph TB
 - Backward compatible with existing single-room API
 
 **Related Documentation**:
-- [Multi-Room Architecture Design](../../Notes/design/DESIGN_MULTI_ROOM_ARCHITECTURE.md)
+- [Multi-Room Architecture Design](../Notes/design/DESIGN_MULTI_ROOM_ARCHITECTURE.md)
 
 ### 6. LandRealm - Application Layer (Optional)
 
@@ -288,5 +288,5 @@ These components are implementations for specific HTTP frameworks:
 - [Overview](overview.md) - System overview
 - [Runtime Operation](core/runtime.md) - LandKeeper detailed description
 - [Transport Layer](transport/README.md) - Transport layer detailed description
-- [Multi-Room Architecture Design](../../Notes/design/DESIGN_MULTI_ROOM_ARCHITECTURE.md) - Multi-room architecture design document
-- [System Architecture Design](../../Notes/design/DESIGN_SYSTEM_ARCHITECTURE.md) - System architecture design document
+- [Multi-Room Architecture Design](../Notes/design/DESIGN_MULTI_ROOM_ARCHITECTURE.md) - Multi-room architecture design document
+- [System Architecture Design](../Notes/design/DESIGN_SYSTEM_ARCHITECTURE.md) - System architecture design document

@@ -181,7 +181,7 @@ graph TB
 - 向後兼容現有的單房間 API
 
 **相關文檔**：
-- [多房間架構設計](../../Notes/design/DESIGN_MULTI_ROOM_ARCHITECTURE.md)
+- [多房間架構設計](../Notes/design/DESIGN_MULTI_ROOM_ARCHITECTURE.md)
 
 ### 6. LandRealm - 應用層級（可選）
 
@@ -288,5 +288,5 @@ Client
 - [概觀](overview.zh-TW.md) - 系統整體介紹
 - [Runtime 運作機制](core/runtime.zh-TW.md) - LandKeeper 詳細說明
 - [Transport 層](transport/README.zh-TW.md) - Transport 層詳細說明
-- [多房間架構設計](../../Notes/design/DESIGN_MULTI_ROOM_ARCHITECTURE.md) - 多房間架構設計文檔
-- [系統架構設計](../../Notes/design/DESIGN_SYSTEM_ARCHITECTURE.md) - 系統架構設計文檔
+- [多房間架構設計](../Notes/design/DESIGN_MULTI_ROOM_ARCHITECTURE.md) - 多房間架構設計文檔
+- [系統架構設計](../Notes/design/DESIGN_SYSTEM_ARCHITECTURE.md) - 系統架構設計文檔

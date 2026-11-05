@@ -97,6 +97,9 @@
 - `Notes/guides/` - 開發指南
 - `Notes/performance/` - 效能分析
 - `Notes/protocol/` - 通訊協定規格
+- `Notes/plans/` - 設計與實作計劃，附[狀態索引](../Notes/plans/README.md)
+
+實驗資料（每個實驗一份 README，並有 `regenerate.py` 可以重建表格）在 [deep-research/](../deep-research/README.md)。
 
 ## 💡 文檔結構說明
 

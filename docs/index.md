@@ -97,6 +97,9 @@ For detailed design documents and development notes, please refer to the [Notes/
 - `Notes/guides/` - Development guides
 - `Notes/performance/` - Performance analysis
 - `Notes/protocol/` - Communication protocol specifications
+- `Notes/plans/` - Design and implementation plans, with a [status index](../Notes/plans/README.md)
+
+Experiment data (one README per experiment, with a `regenerate.py` that rebuilds its tables) is in [deep-research/](../deep-research/README.md).
 
 ## 💡 Documentation Structure
 

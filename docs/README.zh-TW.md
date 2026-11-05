@@ -1,5 +1,7 @@
 # Documentation
 
+[English](README.md) | [中文版](README.zh-TW.md)
+
 本目錄包含 SwiftStateTree 的正式文檔，適合對外發布與閱讀。
 
 ## 📖 文檔入口
@@ -23,4 +25,5 @@
 
 ## 📝 其他文檔
 
-設計與開發筆記請參考 `../Notes/` 目錄。
+- `../Notes/` - 設計與開發筆記，計劃的狀態索引在 `../Notes/plans/README.md`
+- `../deep-research/` - 實驗資料，每個實驗各有一份 README

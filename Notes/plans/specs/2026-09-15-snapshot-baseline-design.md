@@ -164,8 +164,8 @@ A second small test checks `SYNC_STRATEGY` parsing: unset → init default,
 Design run under `sst-experiment` (new metric semantics for the `full` cells).
 
 Question: at equal encoding, how much does delta synchronization save over a
-per-sync full snapshot, and does the saving track |ΔSt| / |S| as the |ΔSt| / |S| model
-predicts?
+per-sync full snapshot, and does the saving track the changed fraction
+|ΔSt| / |S|?
 
 Fixed: `messagepack-pathhash`, `ticksPerSync = 2`, `iterations = 200`, release
 build, single machine (Apple M2 / macOS, same as the entity-scaling topic).

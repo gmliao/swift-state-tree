@@ -4,7 +4,7 @@
 
 At equal encoding (opcode MessagePack + PathHash), how much does delta synchronization
 (only changed fields) save over a per-sync full snapshot (each recipient's complete view
-every sync), and does the saving track |ΔSt| / |S| as the |ΔSt| / |S| model predicts?
+every sync), and does the saving track the changed fraction |ΔSt| / |S|?
 
 This is a **same-testbed internal baseline**: the same hero-defense Land, the same workload
 generator, the same encoder, the same machine, the same sweep — the only variable is the
