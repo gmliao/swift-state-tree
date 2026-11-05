@@ -400,7 +400,11 @@ private func recordedFramesJSON(_ keeper: LandKeeper<InTurnSyncTestState>) async
 
 // MARK: - Tests
 
-@Suite("In-turn sync: the sync phase inside the keeper turn", .timeLimit(.minutes(1)))
+@Suite(
+    "In-turn sync: the sync phase inside the keeper turn",
+    .timeLimit(.minutes(1)),
+    .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: these tests check the in-turn path")
+)
 struct TransportAdapterInTurnSyncTests {
 
     @Test("in-turn sync only for the adapter's own keeper; an adapter of another keeper does not trap")
@@ -563,28 +567,6 @@ struct TransportAdapterInTurnSyncTests {
             recorded.append(try await recordedFramesJSON(f.keeper))
         }
         #expect(recorded[0] == recorded[1], "in-turn \(String(decoding: recorded[0], as: UTF8.self)) vs legacy \(String(decoding: recorded[1], as: UTF8.self))")
-    }
-
-    // MARK: - Switch (A.1)
-
-    @Test("the switch: an adapter with in-turn sync off keeps the legacy path for its own keeper")
-    func switchOffKeepsLegacyPath() async throws {
-        let f = try await InTurnSyncFixture.make(encoding: .json, inTurn: false)
-        #expect(f.adapter.inTurnSyncEnabled == false)
-        #expect(f.adapter.runsSyncPhaseInTurn(of: f.keeper) == false)
-        #expect(await f.keeper.isUsingInTurnSync() == false)
-        // The tick's sync request still syncs, through the legacy cycle.
-        try await f.act(5)
-        let items = await f.tick().flatMap { $0 }
-        #expect(items.contains(.state("ticks", 1)), "items: \(items)")
-        #expect(items.contains(.state("total", 5)), "items: \(items)")
-    }
-
-    @Test("the switch: IN_TURN_SYNC defaults on; an explicit off wins")
-    func switchEnvironment() {
-        #expect(InTurnSync.isEnabled(environment: [:]))
-        #expect(InTurnSync.isEnabled(environment: [EnvKeys.Runtime.inTurnSync: "true"]))
-        #expect(InTurnSync.isEnabled(environment: [EnvKeys.Runtime.inTurnSync: "false"]) == false)
     }
 
     // MARK: - Coincident-sync rule and cadence (A.2)
@@ -762,5 +744,29 @@ struct TransportAdapterInTurnSyncTests {
         #expect(ticks.suffix(3).count == 3)
         let frames = await recorder.getAllFrames()
         #expect(frames.flatMap(\.actions).count == 1, "the input once")
+    }
+}
+
+/// The switch itself; runs whatever the environment says.
+@Suite("In-turn sync: the switch", .timeLimit(.minutes(1)))
+struct InTurnSyncSwitchTests {
+    @Test("the switch: an adapter with in-turn sync off keeps the legacy path for its own keeper")
+    func switchOffKeepsLegacyPath() async throws {
+        let f = try await InTurnSyncFixture.make(encoding: .json, inTurn: false)
+        #expect(f.adapter.inTurnSyncEnabled == false)
+        #expect(f.adapter.runsSyncPhaseInTurn(of: f.keeper) == false)
+        #expect(await f.keeper.isUsingInTurnSync() == false)
+        // The tick's sync request still syncs, through the legacy cycle.
+        try await f.act(5)
+        let items = await f.tick().flatMap { $0 }
+        #expect(items.contains(.state("ticks", 1)), "items: \(items)")
+        #expect(items.contains(.state("total", 5)), "items: \(items)")
+    }
+
+    @Test("the switch: IN_TURN_SYNC defaults on; an explicit off wins")
+    func switchEnvironment() {
+        #expect(InTurnSync.isEnabled(environment: [:]))
+        #expect(InTurnSync.isEnabled(environment: [EnvKeys.Runtime.inTurnSync: "true"]))
+        #expect(InTurnSync.isEnabled(environment: [EnvKeys.Runtime.inTurnSync: "false"]) == false)
     }
 }

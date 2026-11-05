@@ -829,7 +829,10 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         #expect(counts.targeted == 0 && counts.broadcast == 0, "the cycle consumed the event")
     }
 
-    @Test("7e-in-turn: an event queued while a cycle is held before endSync is delivered once by the follow-up")
+    @Test(
+        "7e-in-turn: an event queued while a cycle is held before endSync is delivered once by the follow-up",
+        .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: these tests check the in-turn path")
+    )
     func inTurnEventQueuedBeforeEndSyncIsDelivered() async throws {
         let f = try await KeptEventsFixture.make(.tickless)
         #expect(f.adapter.inTurnSyncEnabled)
@@ -846,7 +849,10 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         #expect(counts.targeted == 0 && counts.broadcast == 0, "nothing left queued")
     }
 
-    @Test("8-in-turn: an event queued before a cycle is delivered by that cycle, once")
+    @Test(
+        "8-in-turn: an event queued before a cycle is delivered by that cycle, once",
+        .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: these tests check the in-turn path")
+    )
     func inTurnEventQueuedBeforeCycleIsInThatCycle() async throws {
         let f = try await KeptEventsFixture.make(.periodicSync)
         #expect(f.adapter.inTurnSyncEnabled)

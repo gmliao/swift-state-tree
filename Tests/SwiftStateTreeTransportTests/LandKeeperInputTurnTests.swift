@@ -212,7 +212,11 @@ private struct InputTurnFixture {
 
 // MARK: - Tests
 
-@Suite("In-turn sync: tickless input turns", .timeLimit(.minutes(1)))
+@Suite(
+    "In-turn sync: tickless input turns",
+    .timeLimit(.minutes(1)),
+    .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: these tests check the in-turn path")
+)
 struct LandKeeperInputTurnTests {
 
     @Test("concurrent actions: each caller gets its own input's response")
