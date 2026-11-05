@@ -658,32 +658,163 @@ struct TransportAdapterInTurnSyncTests {
         await f.keeper.forceShutdown()
     }
 
-    @Test("cadence: with tick ≠ sync interval, state frames keep the sync loop's interval (ON vs OFF)")
+    @Test("cadence: with tick ≠ sync interval, state frames keep the sync loop's interval (ON vs OFF, stepped)")
     func cadenceMatchesLegacy() async throws {
-        var medians: [Bool: Duration] = [:]
-        var p90s: [Bool: Duration] = [:]
+        // A simulated 1 s with ticks every 20 ms and syncs every 50 ms, stepped by hand: the
+        // loops run hourly (so the keeper has both tasks) and never fire. At an instant with
+        // both, the sync runs first, with the tick due now (ON: it folds into that tick turn).
+        // Counted on simulated time, so the result doesn't depend on the runner's scheduler
+        // (#164); the wall-clock comparison belongs to the perf A/B.
+        var frameTimes: [Bool: [Int]] = [:]
+        var foldedSyncs: [Bool: Int] = [:]
         for inTurn in [true, false] {
-            let f = try await Self.makeTimedFixture(tick: .milliseconds(20), sync: .milliseconds(50), inTurn: inTurn)
-            try await safeTaskSleep(for: .milliseconds(1200))
-            let times = await f.transport.timedMessages(for: f.session)
-                .filter { decodeItems($0.data, encoding: .json).contains { if case .state = $0 { return true } else { return false } } }
-                .map(\.at)
+            let f = try await Self.makeTimedFixture(tick: .seconds(3600), sync: .seconds(3600), inTurn: inTurn)
+            for _ in 0..<200 where await f.keeper.appliedSyncPhaseOffset == nil {
+                try await safeTaskSleep(for: .milliseconds(5))
+            }
+            #expect(await f.adapter.waitForOutboundDrain())
+            var seen = await f.transport.messages(for: f.session).count
+            var times: [Int] = []
+            for t in stride(from: 10, through: 1000, by: 10) {
+                let tickDue = t % 20 == 0
+                if t % 50 == 0 {
+                    let untilTick: Duration = tickDue ? .milliseconds(1) : .seconds(10)
+                    await f.keeper.setNextTickDeadlineForTesting(ContinuousClock.now + untilTick)
+                    await f.keeper.runSyncLoopIterationForTesting()
+                }
+                if tickDue { await f.keeper.stepTickOnce() }
+                #expect(await f.adapter.waitForOutboundDrain())
+                let messages = await f.transport.messages(for: f.session)
+                let stateFrames = messages.dropFirst(seen).filter { message in
+                    decodeItems(message, encoding: .json).contains { if case .state = $0 { return true } else { return false } }
+                }
+                seen = messages.count
+                times += Array(repeating: t, count: stateFrames.count)
+            }
+            foldedSyncs[inTurn] = await f.keeper.foldedSyncs
+            // The coincident tick is due 1 ms after each fold, never overdue.
+            #expect(await f.keeper.overdueFoldedSyncs == 0)
             await f.keeper.forceShutdown()
-            let gaps = zip(times.dropFirst(), times).map { $0 - $1 }.sorted()
-            try #require(gaps.count >= 10, "state frames: \(times.count)")
-            medians[inTurn] = gaps[gaps.count / 2]
-            p90s[inTurn] = gaps[gaps.count * 9 / 10]
+            frameTimes[inTurn] = times
         }
-        // Relative to OFF measured in the same run; the absolute bounds are wide (scheduler
-        // jitter on small CI runners). The strict comparison belongs to the perf A/B.
-        let on = try #require(medians[true]), off = try #require(medians[false])
-        #expect(on > .milliseconds(25) && on < .milliseconds(100), "ON median \(on) (sync every 50 ms)")
-        let onMicros: Double = on / Duration.microseconds(1)
-        let offMicros: Double = off / Duration.microseconds(1)
-        let ratio = onMicros / max(1, offMicros)
-        #expect(ratio > 0.75 && ratio < 1.25, "ON median \(on) within 25% of OFF \(off)")
-        let onP90 = try #require(p90s[true]), offP90 = try #require(p90s[false])
-        #expect(onP90 <= max(offP90 * 3 / 2, .milliseconds(100)), "ON p90 \(onP90) vs OFF \(offP90)")
+        let every50 = Array(stride(from: 50, through: 1000, by: 50))
+        #expect(frameTimes[true] == every50, "ON: one state frame per sync, at its instant: \(frameTimes[true] ?? [])")
+        #expect(frameTimes[false] == every50, "OFF: \(frameTimes[false] ?? [])")
+        // 100, 200, ... 1000: the syncs coincident with a tick folded into it.
+        #expect(foldedSyncs[true] == 10)
+        #expect(foldedSyncs[false] == 0, "the legacy path has no coincident fold")
+    }
+
+    @Test("cadence smoke (wall clock): with running loops, state frames come near the sync interval (ON and OFF)", arguments: [true, false])
+    func cadenceSmokeWallClock(inTurn: Bool) async throws {
+        let report = try await Self.measureCadence(inTurn: inTurn, duration: .milliseconds(1200))
+        if ProcessInfo.processInfo.environment["CADENCE_REPORT"] == "1" {
+            print("CADENCE \(report.summary)")
+        }
+        try #require(report.gaps.count >= 10, "state frames: \(report.gaps.count + 1)")
+        // Tolerance: half to twice the 50 ms interval, on the median only (scheduler jitter on
+        // shared runners; tails belong to the perf A/B). The message names the mechanism behind
+        // each long gap, so a miss on CI says which one fired (#164).
+        let median = report.gaps.sorted()[report.gaps.count / 2]
+        #expect(median > .milliseconds(25) && median < .milliseconds(100), "median \(median): \(report.summary)")
+    }
+
+    /// Counters sampled while a cadence run goes.
+    struct CadenceSample {
+        var at: ContinuousClock.Instant
+        var backlogSkips: Int
+        var busySkips: Int
+        var deferredTurns: Int
+        var foldedSyncs: Int
+        var overdueFolds: Int
+        var ticks: Int64
+    }
+
+    /// A cadence run: the gaps between state frames, and each long one (over 1.5 sync intervals)
+    /// with the counters that moved inside it.
+    struct CadenceReport {
+        var inTurn: Bool
+        var gaps: [Duration]
+        var longGaps: [String]
+        var totals: String
+
+        var summary: String {
+            let sorted = gaps.sorted()
+            let p90 = sorted.isEmpty ? .zero : sorted[sorted.count * 9 / 10]
+            let median = sorted.isEmpty ? .zero : sorted[sorted.count / 2]
+            return "\(inTurn ? "ON" : "OFF") frames=\(gaps.count + 1) median=\(median) p90=\(p90) \(totals) long=[\(longGaps.joined(separator: "; "))]"
+        }
+    }
+
+    /// Runs the land (tick 20 ms, sync 50 ms) for `duration` with its loops, sampling the skip,
+    /// deferral and fold counters and the tick count every few milliseconds, and attributes
+    /// each long gap between state frames to the counters that moved inside it.
+    static func measureCadence(inTurn: Bool, duration: Duration) async throws -> CadenceReport {
+        let f = try await makeTimedFixture(tick: .milliseconds(20), sync: .milliseconds(50), inTurn: inTurn)
+        let keeper = f.keeper, adapter = f.adapter
+        // The probe runs on the measured executors (ON: the keeper's, shared with the adapter),
+        // so it is kept small: two calls per sample (the adapter's skip counts; the keeper's
+        // counters in one call, no state copy), every 10 ms, about 200 calls/s. 10 ms still puts
+        // several samples inside any gap over 75 ms, the only ones labelled.
+        let sampler = Task { () -> [CadenceSample] in
+            var samples: [CadenceSample] = []
+            while !Task.isCancelled {
+                let skips = await adapter.syncSkipCounts()
+                let counters = await keeper.cadenceCountersForTesting()
+                samples.append(CadenceSample(
+                    at: .now,
+                    backlogSkips: skips.outboundBacklog,
+                    busySkips: skips.busy,
+                    deferredTurns: counters.deferredTurns,
+                    foldedSyncs: counters.foldedSyncs,
+                    overdueFolds: counters.overdueFoldedSyncs,
+                    ticks: counters.ticksStarted
+                ))
+                guard (try? await safeTaskSleep(for: .milliseconds(10))) != nil else { break }
+            }
+            return samples
+        }
+        try await safeTaskSleep(for: duration)
+        sampler.cancel()
+        let samples = await sampler.value
+        // The first state frame is the join's firstSync; the gap from it to the first periodic
+        // frame is warm-up (loop start, several hundred ms on a loaded runner), not cadence.
+        let times = await f.transport.timedMessages(for: f.session)
+            .filter { decodeItems($0.data, encoding: .json).contains { if case .state = $0 { return true } else { return false } } }
+            .map(\.at)
+            .dropFirst()
+        await f.keeper.forceShutdown()
+
+        let start = times.first ?? .now
+        let ms: (Duration) -> Int = { Int($0 / .milliseconds(1)) }
+        func at(_ instant: ContinuousClock.Instant) -> CadenceSample? {
+            samples.last { $0.at <= instant } ?? samples.first
+        }
+        var longGaps: [String] = []
+        for (from, to) in zip(times, times.dropFirst()) where to - from > .milliseconds(75) {
+            guard let a = at(from), let b = at(to) else { continue }
+            var causes: [String] = []
+            if b.backlogSkips > a.backlogSkips { causes.append("backlogSkip×\(b.backlogSkips - a.backlogSkips)") }
+            if b.busySkips > a.busySkips { causes.append("busySkip×\(b.busySkips - a.busySkips)") }
+            if b.deferredTurns > a.deferredTurns { causes.append("deferredTurn×\(b.deferredTurns - a.deferredTurns)") }
+            let overdue = b.overdueFolds - a.overdueFolds
+            let coincident = b.foldedSyncs - a.foldedSyncs - overdue
+            if coincident > 0 { causes.append("fold×\(coincident)") }
+            if overdue > 0 { causes.append("overdueFold×\(overdue)") }
+            let ticks = b.ticks - a.ticks
+            // At 20 ms a 75 ms window holds three or more ticks; fewer means the tick loop stalled.
+            if Int(ticks) * 20 < ms(to - from) - 30 { causes.append("tickStall(ticks=\(ticks))") }
+            let label = causes.isEmpty ? "unattributed" : causes.joined(separator: "+")
+            longGaps.append("@\(ms(from - start))ms \(ms(to - from))ms \(label)")
+        }
+        let last = samples.last
+        let totals = "backlogSkips=\(last?.backlogSkips ?? 0) busySkips=\(last?.busySkips ?? 0) deferredTurns=\(last?.deferredTurns ?? 0) folded=\(last?.foldedSyncs ?? 0) overdueFolds=\(last?.overdueFolds ?? 0) ticks=\(last?.ticks ?? 0)"
+        return CadenceReport(
+            inTurn: inTurn,
+            gaps: zip(times.dropFirst(), times).map { $0 - $1 },
+            longGaps: longGaps,
+            totals: totals
+        )
     }
 
     // MARK: - No lost requests (A.4)
