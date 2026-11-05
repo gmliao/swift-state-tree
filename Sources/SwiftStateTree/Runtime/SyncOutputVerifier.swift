@@ -161,6 +161,10 @@ public struct SyncOutputVerification: Sendable, Equatable {
     /// without a recipient or not merged count here too when no output follows them, since an
     /// output lists those (`eventsNotQueued`, `eventsNotMerged`). Makes the verdict `partial`.
     public let eventsAfterLastOutput: Int
+    /// Opcode 107: events that missed the merged frame and went out as their own frame, and
+    /// those that were lost (`eventsNotMerged`); each makes its output's events unverifiable.
+    public let eventsSentAlone: Int
+    public let eventsLost: Int
 
     public init(
         verdict: SyncOutputVerdict,
@@ -172,7 +176,9 @@ public struct SyncOutputVerification: Sendable, Equatable {
         eventsApplicable: Bool = false,
         keyScopeResets: Int = 0,
         skipReasons: [SyncOutputSkipReason: Int] = [:],
-        eventsAfterLastOutput: Int = 0
+        eventsAfterLastOutput: Int = 0,
+        eventsSentAlone: Int = 0,
+        eventsLost: Int = 0
     ) {
         self.verdict = verdict
         self.broadcast = broadcast
@@ -184,6 +190,8 @@ public struct SyncOutputVerification: Sendable, Equatable {
         self.keyScopeResets = keyScopeResets
         self.skipReasons = skipReasons
         self.eventsAfterLastOutput = eventsAfterLastOutput
+        self.eventsSentAlone = eventsSentAlone
+        self.eventsLost = eventsLost
     }
 
     /// One line for the CLIs.
@@ -207,6 +215,8 @@ public struct SyncOutputVerification: Sendable, Equatable {
         }
         if keyScopeResets > 0 { line += "; \(keyScopeResets) key scope resets" }
         if eventsAfterLastOutput > 0 { line += "; \(eventsAfterLastOutput) events after the last output" }
+        if eventsSentAlone > 0 { line += "; \(eventsSentAlone) events sent outside the merged frame" }
+        if eventsLost > 0 { line += "; \(eventsLost) events lost (did not encode)" }
         return line
     }
 }
@@ -251,6 +261,8 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
     /// Patch-apply checks (one per diffed scope with a previous view, and per seed).
     private(set) var apply = SyncOutputScopeCounts()
     private(set) var keyScopeResets = 0
+    private(set) var eventsSentAlone = 0
+    private(set) var eventsLost = 0
     private(set) var mismatch: SyncOutputMismatch?
 
     package init(mergedBroadcastFrame: Bool) {
@@ -432,6 +444,8 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
         if mergedBroadcastFrame {
             notQueued.formUnion(output.eventsNotQueued ?? [])
             notQueued.formUnion(output.eventsNotMerged?.all ?? [])
+            eventsSentAlone += output.eventsNotMerged?.sentAlone.count ?? 0
+            eventsLost += output.eventsNotMerged?.lost.count ?? 0
             pendingEvents.removeAll { notQueued.contains($0.sequence) }
             let through = output.eventsThroughSequence ?? Int64.min
             let consumed = pendingEvents.filter { $0.sequence <= through }.sorted { $0.sequence < $1.sequence }
@@ -749,7 +763,9 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
             eventsApplicable: eventsApplicable,
             keyScopeResets: shadow.keyScopeResets,
             skipReasons: shadow.skipReasons,
-            eventsAfterLastOutput: shadow.unconsumedEvents
+            eventsAfterLastOutput: shadow.unconsumedEvents,
+            eventsSentAlone: shadow.eventsSentAlone,
+            eventsLost: shadow.eventsLost
         )
     }
 

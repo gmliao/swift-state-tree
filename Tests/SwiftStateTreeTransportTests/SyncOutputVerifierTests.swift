@@ -856,6 +856,8 @@ struct SyncOutputVerifierTests {
         #expect(sync.events.compared == 2)
         #expect(sync.events.unverifiable == 1)
         #expect(sync.eventsAfterLastOutput == 0)
+        #expect(fault == .all ? (sync.eventsLost, sync.eventsSentAlone) == (3, 0) : (sync.eventsLost, sync.eventsSentAlone) == (0, 3))
+        #expect(sync.summary.contains(fault == .all ? "3 events lost" : "3 events sent outside the merged frame"))
     }
 
     @Test("Opcode 107: an unsent per-player update is a benign skip once a later comparison sees the resend")
