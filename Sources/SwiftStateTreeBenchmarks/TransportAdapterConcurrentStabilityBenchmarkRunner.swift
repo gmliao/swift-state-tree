@@ -71,10 +71,10 @@ struct TransportAdapterConcurrentStabilityBenchmarkRunner: BenchmarkRunner {
                 concurrentSyncs: concurrentSyncs
             )
             
-            // Extract success rate from executionMode
-            let successRateStr = result.executionMode.components(separatedBy: "Success: ").last?.components(separatedBy: "%").first ?? "100"
-            let successRate = Double(successRateStr) ?? 100.0
-            print("    Success Rate: \(String(format: "%.2f", successRate))%")
+            // Extract the share of calls that ran their own cycle from executionMode
+            let ranRateStr = result.executionMode.components(separatedBy: "Ran: ").last?.components(separatedBy: "%").first ?? "100"
+            let ranRate = Double(ranRateStr) ?? 100.0
+            print("    Ran own cycle: \(String(format: "%.2f", ranRate))%")
             print("    Average Time: \(String(format: "%.4f", result.averageTime * 1000))ms")
             if let bytesPerPlayer = result.bytesPerPlayer {
                 print("    Total Payload: \(result.snapshotSize) bytes (per player: \(bytesPerPlayer) bytes)")
@@ -292,24 +292,27 @@ struct TransportAdapterConcurrentStabilityBenchmarkRunner: BenchmarkRunner {
         let bytesPerPlayer = playerIDs.count > 0 ? Int(totalBytesPerSync / Double(playerIDs.count)) : nil
         let skippedSyncs = await MeasuredSync.skipCount(adapter) - skipsBefore
         
-        // Calculate success rate
+        // A call that returned either ran its own cycle or was rejected because one was in flight
+        // (coalesced into it): only the first count as runs.
         let totalSyncOperations = iterations * concurrentSyncs
-        let successRate = totalSyncOperations > 0 ? Double(successfulSyncs) / Double(totalSyncOperations) : 0.0
+        let ranSyncs = successfulSyncs - skippedSyncs
+        let ranRate = totalSyncOperations > 0 ? Double(ranSyncs) / Double(totalSyncOperations) : 0.0
         
         // Build mode label with stability metrics
         var modeLabel = enableDirtyTracking ? "DirtyTracking: On" : "DirtyTracking: Off"
         modeLabel += ", Concurrent: \(concurrentSyncs)"
-        modeLabel += ", Success: \(String(format: "%.1f", successRate * 100))%"
+        modeLabel += ", Ran: \(String(format: "%.1f", ranRate * 100))%"
         if consistencyErrors > 0 {
             modeLabel += ", ConsistencyErrors: \(consistencyErrors)"
         }
         
         // Print detailed statistics
         print("    Total Sync Operations: \(totalSyncOperations)")
-        print("    Successful: \(successfulSyncs)")
-        print("    Failed: \(failedSyncs)")
+        print("    Returned: \(successfulSyncs)")
+        print("    Ran own cycle: \(ranSyncs)")
+        print("    Coalesced into a cycle in flight: \(skippedSyncs)")
+        print("    Did not return: \(failedSyncs)")
         print("    Consistency Errors: \(consistencyErrors)")
-        print("    Skipped (coalesced into a cycle in flight): \(skippedSyncs)")
         
         return BenchmarkResult(
             config: BenchmarkConfig(
@@ -329,5 +332,5 @@ struct TransportAdapterConcurrentStabilityBenchmarkRunner: BenchmarkRunner {
     }
 }
 
-// Note: Success rate is embedded in executionMode string for display
-// A proper implementation would extend BenchmarkResult to store successRate as a separate field
+// Note: the share of calls that ran their own cycle is embedded in the executionMode string for display
+// A proper implementation would extend BenchmarkResult to store it as a separate field

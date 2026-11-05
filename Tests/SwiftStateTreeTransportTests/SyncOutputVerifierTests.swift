@@ -174,6 +174,15 @@ struct VerifierFixture {
 
     static func player(_ n: Int) -> PlayerID { PlayerID("p\(n)") }
 
+    /// Holds every failed plan's delayed follow-up cycle (`startDelayedFollowUpSync`) until the
+    /// returned gate opens, so the recorded outputs follow from the test's own steps, not from
+    /// whether a 100 ms timer fired first. Open it when the test is done with the record.
+    func holdFailedPlanFollowUps() async -> TestGate {
+        let gate = TestGate()
+        await adapter.setFailedPlanFollowUpHoldForTesting { await gate.arrive() }
+        return gate
+    }
+
     func join(_ n: Int) async throws {
         await adapter.onConnect(sessionID: SessionID("s\(n)"), clientID: ClientID("c\(n)"))
         try await simulateRouterJoin(
@@ -844,6 +853,8 @@ struct SyncOutputVerifierTests {
         guard InTurnSync.isEnabled() else { return }
         let fails = VerifierSwitch()
         let f = await VerifierFixture.make(encoding: .json, encoder: VerifierFailingEncoder(fails: fails))
+        let followUps = await f.holdFailedPlanFollowUps()
+        defer { followUps.open() }
         try await f.join(1)
         await f.tick()
         fails.set(true)
@@ -988,6 +999,10 @@ struct SyncOutputVerifierTests {
                 encoding: .json,
                 encoder: VerifierFailingEncoder(fails: fails, player: VerifierFixture.player(2))
             )
+            // The failed firstSync and tick each schedule a follow-up cycle 100 ms later: run
+            // during the failing window it is a second unsent view (#163), after it a seed.
+            let followUps = await f.holdFailedPlanFollowUps()
+            defer { followUps.open() }
             try await f.join(1)
             await f.tick()
             fails.set(true)

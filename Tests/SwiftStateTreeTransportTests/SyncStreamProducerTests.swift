@@ -470,6 +470,12 @@ struct SyncStreamProducerDropTests {
         guard InTurnSync.isEnabled() else { return }
         let fails = SyncStreamSwitch()
         let f = await SyncStreamFixture<SyncStreamDropState>.makeDrop(encoder: SyncStreamFailingEncoder(fails: fails))
+        // The loops do not run, so each failed plan schedules a follow-up cycle 100 ms later:
+        // after `fails.set(false)` it would send the seed before the tick. Hold it, so the seed
+        // comes from the tick (#163).
+        let followUps = TestGate()
+        await f.adapter.setFailedPlanFollowUpHoldForTesting { await followUps.arrive() }
+        defer { followUps.open() }
         fails.set(true)
         try await f.join()  // the firstSync fails entirely: the joiner is skipped
         await f.tick()      // the full view fails entirely: nothing reaches the client

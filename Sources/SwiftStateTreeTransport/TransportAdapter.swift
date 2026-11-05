@@ -272,6 +272,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         writerBackPressureOverrideForTesting = override
     }
 
+    /// Tests only: awaited by a failed plan's delayed follow-up before its `syncNow()`, so a test
+    /// decides when that cycle runs instead of racing its 100 ms delay.
+    private var failedPlanFollowUpHoldForTesting: (@Sendable () async -> Void)?
+
+    /// Installs `failedPlanFollowUpHoldForTesting` (tests only).
+    func setFailedPlanFollowUpHoldForTesting(_ hold: (@Sendable () async -> Void)?) {
+        failedPlanFollowUpHoldForTesting = hold
+    }
+
     /// Whether a test forces the in-turn back-pressure check on.
     func writerBackPressureForcedForTesting() -> Bool {
         writerBackPressureOverrideForTesting?() ?? false
@@ -1982,6 +1991,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private func startDelayedFollowUpSync() {
         Task {
             try? await safeTaskSleep(for: Self.syncFailedPlanFollowUpDelay)
+            if let hold = self.failedPlanFollowUpHoldForTesting {
+                await hold()
+            }
             await self.syncNow()
         }
     }
