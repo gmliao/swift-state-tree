@@ -2132,27 +2132,30 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return LandLoopPhase.offset(landID: actualLandID ?? definition.id, interval: interval)
     }
 
+    /// The clock the tick loop reads and sleeps on: `TickLoopClock.forNewKeepers` when this
+    /// keeper was created (the continuous clock, unless a test bound a manual one).
+    private let tickLoopClock = TickLoopClock.forNewKeepers
+
     private func configureTickLoop(interval: Duration) async {
         tickTask?.cancel()
         let phaseOffset = loopPhaseOffset(interval: interval)
+        let clock = tickLoopClock
         appliedTickPhaseOffset = phaseOffset
-        tickLoopConfiguredAt = ContinuousClock.now
+        tickLoopConfiguredAt = clock.now()
         tickTask = Task { [weak self] in
             if phaseOffset > .zero {
-                try? await safeTaskSleep(for: phaseOffset)
+                await clock.sleepFor(phaseOffset)
             }
             guard let self = self else { return }
 
-            var nextTickTime = ContinuousClock.now + interval
+            var nextTickTime = clock.now() + interval
             await self.noteNextTickDeadline(nextTickTime)
 
             while !Task.isCancelled {
-                let now = ContinuousClock.now
-
                 // If we're already past the scheduled time, execute immediately
                 // Otherwise, sleep until the scheduled time
-                if now < nextTickTime {
-                    try? await Task.sleep(until: nextTickTime, clock: .continuous)
+                if clock.now() < nextTickTime {
+                    await clock.sleepUntil(nextTickTime)
                 }
 
                 await self.runTick(allowWhenNoTickTask: false)
@@ -2164,7 +2167,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
                 // If we're still behind schedule after skipping, continue skipping
                 // This prevents the loop from getting stuck if execution time consistently exceeds interval
-                while nextTickTime <= ContinuousClock.now {
+                while nextTickTime <= clock.now() {
                     nextTickTime = nextTickTime + interval
                 }
                 await self.noteNextTickDeadline(nextTickTime)

@@ -1,10 +1,10 @@
 // Tests/SwiftStateTreeTests/HoldPointsIsolationTests.swift
 //
 // With nothing installed, `await holds.at(...)` must not suspend: an actor's code before and
-// after it stays one synchronous segment, so no other job of that actor runs in between. A
-// nonisolated async `at` may hop off the actor there (SE-0338), a reentrancy window at every
-// hold point in production. `at` takes the caller's isolation and returns without suspending
-// when nothing is installed.
+// after it stays one synchronous segment, so no other job of that actor runs in between. These
+// tests guard against a future change that adds a suspension to `at` (or drops its caller
+// isolation): on Swift 6.4.2 (the one measured), a nonisolated async `at` that returns at once
+// showed no interleaving either, so they don't reproduce a past failure.
 
 import Foundation
 import Testing

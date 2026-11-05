@@ -43,3 +43,35 @@ public enum LandLoopPhase {
         )
     }
 }
+
+/// The clock the keeper's tick loop reads and sleeps on: the continuous clock in production, a
+/// manual one in tests, so a test steps the loop's phase offset and fixed-rate schedule on
+/// simulated time and checks its deadlines exactly.
+package struct TickLoopClock: Sendable {
+    package var now: @Sendable () -> ContinuousClock.Instant
+    /// Sleeps for the phase offset; returns early when the task is cancelled.
+    package var sleepFor: @Sendable (Duration) async -> Void
+    /// Sleeps until a tick deadline; returns early when the task is cancelled.
+    package var sleepUntil: @Sendable (ContinuousClock.Instant) async -> Void
+
+    package init(
+        now: @escaping @Sendable () -> ContinuousClock.Instant,
+        sleepFor: @escaping @Sendable (Duration) async -> Void,
+        sleepUntil: @escaping @Sendable (ContinuousClock.Instant) async -> Void
+    ) {
+        self.now = now
+        self.sleepFor = sleepFor
+        self.sleepUntil = sleepUntil
+    }
+
+    /// The clock a keeper created in this task uses for its tick loop, read once in its init.
+    /// Tests bind a manual clock around the keeper's creation (`$forNewKeepers.withValue`);
+    /// the loops start from init, so setting it afterwards would race them.
+    @TaskLocal package static var forNewKeepers: TickLoopClock = .continuous
+
+    package static let continuous = TickLoopClock(
+        now: { ContinuousClock.now },
+        sleepFor: { try? await safeTaskSleep(for: $0) },
+        sleepUntil: { try? await Task.sleep(until: $0, clock: .continuous) }
+    )
+}
