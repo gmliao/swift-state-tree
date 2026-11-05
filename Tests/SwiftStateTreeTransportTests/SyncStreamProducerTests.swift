@@ -200,6 +200,27 @@ struct SyncStreamProducerTests {
         #expect(output.eventsHash == CanonicalSyncEvent.hash([expected]))
     }
 
+    @Test("A newer session of the player records a clear; its seed is a rejoin (newest wins, #92)")
+    func supersedeRecordsClear() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await SyncStreamFixture<SyncStreamTestState>.make(encoding: .json)
+        try await f.join()
+        await f.tick()
+        let newer = SessionID("sst-session-2"), newerClient = ClientID("sst-client-2")
+        await f.adapter.onConnect(sessionID: newer, clientID: newerClient)
+        let joined = try #require(try await f.adapter.performJoin(
+            playerSession: PlayerSession(playerID: f.player.rawValue, deviceID: "dev-2", metadata: [:]),
+            clientID: newerClient,
+            sessionID: newer,
+            authInfo: nil
+        ))
+        await f.adapter.syncStateForNewPlayer(playerID: joined.playerID, sessionID: newer)
+        let found = markers(try await f.stream())
+        #expect(found.map(\.kind) == [.seed, .clear, .seed])
+        #expect(found.map(\.playerID) == Array(repeating: f.player.rawValue, count: 3))
+        #expect(found.map(\.rejoin) == [false, false, true])
+    }
+
     @Test("A disconnect records a clear; the reconnect's seed is a rejoin")
     func clearAndRejoin() async throws {
         guard InTurnSync.isEnabled() else { return }

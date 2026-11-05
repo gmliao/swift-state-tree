@@ -587,7 +587,14 @@ private struct SyncPhaseFixture {
     }
 
     /// Runs the action as `player`, or as `player2` when `second` is set.
-    func set(_ field: String, _ value: Int = 0, second: Bool = false) async throws {
+    /// Sends the set action as `player` (or `player2`). `from` overrides the sender's client
+    /// and session, for a player whose keeper entry is another session of it.
+    func set(
+        _ field: String,
+        _ value: Int = 0,
+        second: Bool = false,
+        from sender: (client: ClientID, session: SessionID)? = nil
+    ) async throws {
         let envelope = ActionEnvelope(
             typeIdentifier: String(describing: SyncPhaseSetAction.self),
             payload: AnyCodable(SyncPhaseSetAction(field: field, value: value))
@@ -595,8 +602,8 @@ private struct SyncPhaseFixture {
         _ = try await keeper.handleActionEnvelope(
             envelope,
             playerID: second ? player2 : player,
-            clientID: second ? client2 : client,
-            sessionID: second ? session2 : session
+            clientID: sender?.client ?? (second ? client2 : client),
+            sessionID: sender?.session ?? (second ? session2 : session)
         )
     }
 
@@ -1129,8 +1136,12 @@ struct TransportAdapterSyncPhaseTests {
     func reEncodeReachesEverySessionOfThePlayer(encoding: SyncPhaseEncoding) async throws {
         let f = try await SyncPhaseFixture.make(encoding: encoding)
         let other = SessionID("sp-session-1b")
-        try await f.joinAnotherSessionOfFirstPlayer(other, clientID: ClientID("sp-client-1b"))
-        try await f.set("bag:k1", 1)
+        let otherClient = ClientID("sp-client-1b")
+        // Registered directly (no admission), so both sessions stay members of the player. The
+        // keeper's entry is the newer session, so the actions are sent from it.
+        try await f.joinAnotherSessionOfFirstPlayer(other, clientID: otherClient)
+        let sender = (client: otherClient, session: other)
+        try await f.set("bag:k1", 1, from: sender)
         await f.sync()
 
         // The infinity fails the player's update: its sessions' updates are merged and
@@ -1139,9 +1150,9 @@ struct TransportAdapterSyncPhaseTests {
             f.session: await f.transport.messages(for: f.session).count,
             other: await f.transport.messages(for: other).count
         ]
-        try await f.set("infspeed")
-        try await f.set("bag:k2", 2)
-        try await f.set("item:x1", 1)
+        try await f.set("infspeed", from: sender)
+        try await f.set("bag:k2", 2, from: sender)
+        try await f.set("item:x1", 1, from: sender)
         await f.sync()
         #expect(await f.adapter.syncDroppedUpdates == 1, "only the infinity patch")
         let firstFrames = Array(await f.transport.messages(for: f.session).dropFirst(before[f.session]!))

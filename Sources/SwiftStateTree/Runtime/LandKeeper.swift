@@ -1140,7 +1140,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             logger.info("Duplicate playerID login detected: \(playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
             // Kick old connection by calling leave
             // This will call OnLeave handler and clean up state
-            try await leave(playerID: playerID, clientID: oldClientID)
+            try await leave(playerID: playerID, clientID: oldClientID, sessionID: existingSession.lastSessionID)
         }
 
         var session = players[playerID] ?? InternalPlayerSession(services: services)
@@ -1328,7 +1328,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             logger.info("Duplicate playerID login detected: \(playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
             // Kick old connection by calling leave
             // This will call OnLeave handler and clean up state
-            try await leave(playerID: playerID, clientID: oldClientID)
+            try await leave(playerID: playerID, clientID: oldClientID, sessionID: existingSession.lastSessionID)
         }
 
         // Proceed with join
@@ -1461,6 +1461,39 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return transport.admitJoiningSession(playerID: playerID, clientID: clientID, sessionID: sessionID)
     }
 
+    /// Inputs rejected by `rejectSenderIfSuperseded` so far.
+    private(set) var supersededSenderRejections = 0
+
+    /// Intake check for actions and client events (#92, newest wins): rejects a sender only when
+    /// the player has an entry and that entry is another client or session, i.e. a newer join
+    /// of the player replaced the sender's session. Called on `.live` keepers only (the intake
+    /// returns earlier otherwise), in the segment that queues the input.
+    ///
+    /// Unchanged: a player with no entry (direct callers that send before or without a join),
+    /// the system player and client, and a sender matching the entry (a join, then sends with the
+    /// same client and session).
+    private func rejectSenderIfSuperseded(
+        playerID: PlayerID,
+        clientID: ClientID,
+        sessionID: SessionID,
+        input: String
+    ) throws {
+        guard playerID != systemPlayerID, clientID != systemClientID,
+              let entry = players[playerID] else { return }
+        let otherClient = entry.clientID.map { $0 != clientID } ?? false
+        let otherSession = entry.lastSessionID.map { $0 != sessionID } ?? false
+        guard otherClient || otherSession else { return }
+        supersededSenderRejections += 1
+        logger.warning("Input rejected: a newer session of the player replaced the sender's", metadata: [
+            "playerID": .string(playerID.rawValue),
+            "clientID": .string(clientID.rawValue),
+            "sessionID": .string(sessionID.rawValue),
+            "input": .string(input),
+            "rejectedTotal": .stringConvertible(supersededSenderRejections),
+        ])
+        throw LandError.senderSuperseded
+    }
+
     /// Handles a player/client leaving the Land.
     ///
     /// If this is the player's last connection, the `OnLeave` handler is called.
@@ -1470,6 +1503,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///   - playerID: The player's unique identifier.
     ///   - clientID: The client instance identifier.
     public func leave(playerID: PlayerID, clientID: ClientID) async throws {
+        try await leave(playerID: playerID, clientID: clientID, sessionID: nil)
+    }
+
+    /// `leave(playerID:clientID:)` for one session: when `sessionID` is given and the player's
+    /// entry records a session, the leave applies only to that session. Client IDs are short and
+    /// can collide, so a client's leave can't remove another client's entry that shares its ID.
+    public func leave(playerID: PlayerID, clientID: ClientID, sessionID: SessionID?) async throws {
         await ensureInitialized()
         if let leaveHook {
             await leaveHook()
@@ -1485,6 +1525,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         guard session.clientID == clientID else {
             if logger.logLevel <= .debug {
                 logger.debug("Leave called for player \(playerID.rawValue) with mismatched clientID: expected=\(session.clientID?.rawValue ?? "nil"), received=\(clientID.rawValue)")
+            }
+            return
+        }
+        if let sessionID, let recorded = session.lastSessionID, recorded != sessionID {
+            if logger.logLevel <= .debug {
+                logger.debug("Leave called for player \(playerID.rawValue) with mismatched session: expected=\(recorded.rawValue), received=\(sessionID.rawValue)")
             }
             return
         }
@@ -1651,6 +1697,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let payloadData = try JSONEncoder().encode(envelope.payload)
         let decodedAction = try decoder.decode(actionPayloadType, from: payloadData)
 
+        try rejectSenderIfSuperseded(playerID: playerID, clientID: clientID, sessionID: sessionID, input: typeIdentifier)
+
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent)
         let sequence = outputCollector.takeNextSequence()
 
@@ -1813,6 +1861,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
             throw LandError.eventNotRegistered
         }
+
+        try rejectSenderIfSuperseded(playerID: playerID, clientID: clientID, sessionID: sessionID, input: event.type)
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent)
         let sequence = outputCollector.takeNextSequence()

@@ -434,7 +434,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Membership coordinator (centralizes all membership management).
     private let membershipCoordinator: MembershipCoordinator
     
-    private var initialSyncingPlayers: Set<PlayerID> = []
+    /// Players in their initial sync, each with the session whose initial sync set the mark
+    /// (`nil` from `beginInitialSync(for:)`). Only that session's initial sync removes it: when a
+    /// newer session of the player (newest wins) starts its initial sync while an older one is
+    /// still finishing, the older one must not clear the newer one's mark.
+    private var initialSyncingPlayers: [PlayerID: SessionID?] = [:]
 
     /// A session admitted by a join (#69) whose initial sync hasn't started yet.
     struct JoiningSession: Sendable {
@@ -868,7 +872,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
             // Now call keeper.leave() which will trigger syncBroadcastOnly()
             do {
-                try await keeper.leave(playerID: playerID, clientID: clientID)
+                try await keeper.leave(playerID: playerID, clientID: clientID, sessionID: sessionID)
                 if logger.logLevel <= .debug {
                     logger.debug("Successfully called keeper.leave() for player \(playerID.rawValue)")
                 }
@@ -892,7 +896,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 // This ensures reconnection behaves like first connection
                 syncEngine.clearCacheForDisconnectedPlayer(playerID)
                 recordSyncStreamClear(playerID)
-                initialSyncingPlayers.remove(playerID)
+                initialSyncingPlayers.removeValue(forKey: playerID)
 
                 // Release playerSlot for this player
                 membershipCoordinator.releasePlayerSlot(playerID: playerID)
@@ -983,8 +987,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
             return nil
         }
-        initialSyncingPlayers.insert(playerID)
-        defer { initialSyncingPlayers.remove(playerID) }
+        initialSyncingPlayers[playerID] = .some(sessionID)
+        defer {
+            if initialSyncingPlayers[playerID] == .some(.some(sessionID)) {
+                initialSyncingPlayers.removeValue(forKey: playerID)
+            }
+        }
         return try await operation()
     }
 
@@ -999,11 +1007,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Admits `sessionID` as joining `playerID`: membership, player slot and the `.joining`
     /// mark, in one synchronous segment. Returns the slot.
+    ///
+    /// One session per player, newest wins (#92): the player's other sessions are superseded in
+    /// the same segment (`supersedeSessions`), so there is never a moment with two members.
     private func admitJoining(
         sessionID: SessionID,
         playerID: PlayerID,
         authInfo: AuthenticatedInfo?
     ) -> Int32 {
+        supersedeSessions(of: playerID, keeping: sessionID)
         _ = membershipCoordinator.registerPlayer(
             sessionID: sessionID,
             playerID: playerID,
@@ -1013,6 +1025,44 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let slot = allocatePlayerSlot(accountKey: playerID.rawValue, for: playerID)
         joiningSessions[sessionID] = JoiningSession(playerID: playerID, playerSlot: slot)
         return slot
+    }
+
+    /// Sessions superseded by a newer join of their player so far.
+    private(set) var supersededSessionCount = 0
+
+    /// Ends every session of `playerID` other than `sessionID` (newest wins, #92). For the game
+    /// this is OnLeave then OnJoin: the keeper's join already left the old entry. Here, in the
+    /// admission segment:
+    /// - each old session leaves the membership (it stops being a recipient and its inbound
+    ///   finds no player), is ended (its frames are dropped) and its connection is closed; its
+    ///   later disconnect callback finds no membership, so it clears nothing and doesn't leave
+    ///   the keeper again;
+    /// - an old session still joining loses its mark;
+    /// - the player's per-player sync state (cache, firstSync mark, initial-sync mark) is
+    ///   cleared, and the clear recorded, so the new session's firstSync starts from empty like
+    ///   a first join. The player slot is kept.
+    private func supersedeSessions(of playerID: PlayerID, keeping sessionID: SessionID) {
+        let superseded = membershipCoordinator.sessionIDs(for: playerID).filter { $0 != sessionID }
+        guard !superseded.isEmpty else { return }
+        let transport = self.transport
+        for old in superseded {
+            membershipCoordinator.invalidateMembership(sessionID: old, playerID: playerID)
+            membershipCoordinator.unregisterSession(sessionID: old)
+            joiningSessions.removeValue(forKey: old)
+            connectionGenerations.removeValue(forKey: old)
+            endedSessions.insert(old)
+            supersededSessionCount += 1
+            logger.info("Session superseded by a newer join of its player", metadata: [
+                "playerID": .string(playerID.rawValue),
+                "supersededSessionID": .string(old.rawValue),
+                "newSessionID": .string(sessionID.rawValue),
+                "supersededTotal": .stringConvertible(supersededSessionCount),
+            ])
+            Task { await transport.closeSession(old) }
+        }
+        syncEngine.clearCacheForDisconnectedPlayer(playerID)
+        recordSyncStreamClear(playerID)
+        initialSyncingPlayers.removeValue(forKey: playerID)
     }
 
     /// The keeper's in-turn admission (`LandKeeperTransport.admitJoiningSession`), on the
@@ -1041,12 +1091,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Note: Prefer using `withInitialSync(for:operation:)` for automatic cleanup.
     /// This method is kept for backward compatibility but should be avoided in new code.
     func beginInitialSync(for playerID: PlayerID) {
-        initialSyncingPlayers.insert(playerID)
+        initialSyncingPlayers.updateValue(nil, forKey: playerID)
     }
 
     /// Whether `playerID` is marked as in its initial sync (tests only).
     func isInitialSyncingForTesting(_ playerID: PlayerID) -> Bool {
-        initialSyncingPlayers.contains(playerID)
+        initialSyncingPlayers[playerID] != nil
     }
 
     /// Prepare PlayerSession from join request parameters.
@@ -2251,7 +2301,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         var recipients: [SyncPhaseRecipient] = []
         recipients.reserveCapacity(membershipCoordinator.joinedCount())
         for (sessionID, playerID) in membershipCoordinator.allJoinedEntries() {
-            if initialSyncingPlayers.contains(playerID) || joiningSessions[sessionID] != nil {
+            if initialSyncingPlayers[playerID] != nil || joiningSessions[sessionID] != nil {
                 continue
             }
             recipients.append(SyncPhaseRecipient(sessionID: sessionID, playerID: playerID))
@@ -3731,7 +3781,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             metadata: metadata
         )
 
-        await handleDuplicateLoginIfNeeded(for: playerSession)
+        // A duplicate login is handled in the admission segment (newest wins, `admitJoining`).
         await finalizeJoinRequest(
             requestID: requestID,
             sessionID: sessionID,
@@ -3833,16 +3883,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
 
         return (playerSession, jwtAuthInfo)
-    }
-
-    private func handleDuplicateLoginIfNeeded(for playerSession: PlayerSession) async {
-        let targetPlayerID = PlayerID(playerSession.playerID)
-        if let oldSessionID = membershipCoordinator.firstSession(for: targetPlayerID) {
-            logger.info("Duplicate playerID login detected: \(playerSession.playerID), kicking old session: \(oldSessionID.rawValue)")
-            if let oldClientID = membershipCoordinator.clientID(for: oldSessionID) {
-                await onDisconnect(sessionID: oldSessionID, clientID: oldClientID)
-            }
-        }
     }
 
     private func finalizeJoinRequest(
