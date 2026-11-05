@@ -1100,6 +1100,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         session.clientID = clientID
         session.lastSessionID = sessionID
+        session.joinSequence = nil
         session.services = services
         // Checked in the same synchronous segment as the insert: a destruction that started
         // during this join's awaits must not get a player after it stopped the loops.
@@ -1115,6 +1116,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
         let sequence = outputCollector.takeNextSequence()
+        // Same segment as the insert: the entry belongs to this join's OnJoin input.
+        players[playerID]?.joinSequence = sequence
 
         // Snapshot tick at request time; update after resolver completion for async determinism.
         var resolvedAtTick = lastCommittedTickId
@@ -1291,6 +1294,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         playerSession.clientID = clientID
         playerSession.lastSessionID = sessionID
+        playerSession.joinSequence = nil
         playerSession.services = services
         // Update deviceID, isGuest, and metadata if provided (for reconnection scenarios)
         if let deviceID = session.deviceID {
@@ -1318,6 +1322,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
         let sequence = outputCollector.takeNextSequence()
+        // Same segment as the insert: the entry belongs to this join's OnJoin input.
+        players[playerID]?.joinSequence = sequence
 
         // Snapshot tick at request time; update after resolver completion for async determinism.
         var resolvedAtTick = lastCommittedTickId
@@ -1383,15 +1389,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// completed: its input is removed (so no later pass runs that OnJoin again for a player that
     /// isn't there) and so is the player it inserted, without OnLeave, so the failed join holds
     /// no capacity and doesn't keep the land alive. The player is removed only if it is still
-    /// that join's session. OnJoin's partial state changes are not rolled back (no per-input
+    /// that join's entry (its `joinSequence`). OnJoin's partial state changes are not rolled back (no per-input
     /// savepoints, #87).
     private func discardIfFailedJoin(_ item: PendingItem) {
         guard case let .lifecycle(lifecycle) = item, lifecycle.kind == .join,
               let playerID = lifecycle.playerID else { return }
         pendingItems.removeAll { $0.sequence == lifecycle.sequence }
-        if let session = players[playerID],
-           session.clientID == lifecycle.clientID,
-           session.lastSessionID == lifecycle.sessionID {
+        if let session = players[playerID], session.joinSequence == lifecycle.sequence {
             players.removeValue(forKey: playerID)
             scheduleDestroyIfNeeded()
         }
@@ -3342,6 +3346,11 @@ private final class DrainFlag: @unchecked Sendable {
 private struct InternalPlayerSession: Sendable {
     var clientID: ClientID?
     var lastSessionID: SessionID?
+    /// The sequence of the OnJoin input of the join that inserted this entry, or `nil` (no
+    /// OnJoin input, or a later join of the player replaced the entry). Identifies the entry a
+    /// failed OnJoin may remove (`discardIfFailedJoin`): client and session IDs can repeat
+    /// across joins of the same player.
+    var joinSequence: Int64?
     var services: LandServices
     // PlayerSession info (from join request)
     var deviceID: String?

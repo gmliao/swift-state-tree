@@ -326,3 +326,67 @@ struct TransportAdapterJoiningAdmissionTests {
         #expect(await fixture.adapter.getPlayerSlot(for: p1) == nil)
     }
 }
+
+// MARK: - A failed OnJoin removes only its own entry
+
+/// Holds the first OnJoin resolver call at `gate`; later calls pass. Each output carries its
+/// call index, so OnJoin can fail only the first join.
+private final class HeldJoinResolverControl: @unchecked Sendable {
+    static let shared = HeldJoinResolverControl()
+    let gate = TestGate()
+    private let lock = NSLock()
+    private var calls = 0
+    func nextCall() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        calls += 1
+        return calls - 1
+    }
+}
+
+struct HeldJoinResolver: ContextResolver {
+    typealias Output = HeldJoinResolverOutput
+
+    static func resolve(ctx: ResolverContext) async throws -> HeldJoinResolverOutput {
+        let call = HeldJoinResolverControl.shared.nextCall()
+        if call == 0 {
+            await HeldJoinResolverControl.shared.gate.arrive()
+        }
+        return HeldJoinResolverOutput(call: call)
+    }
+}
+
+struct HeldJoinResolverOutput: ResolverOutput {
+    let call: Int
+}
+
+@Test("A failed OnJoin doesn't remove a later join's entry with the same player, client and session")
+func failedOnJoinKeepsLaterJoinsEntry() async throws {
+    let definition = Land("failed-join-entry", using: JoiningAdmissionTestState.self) {
+        Rules {
+            OnJoin(resolvers: HeldJoinResolver.self) { (state: inout JoiningAdmissionTestState, ctx: LandContext) in
+                // The first join (held, then released) fails; the later one succeeds.
+                if (ctx.heldJoin as HeldJoinResolverOutput?)?.call == 0 { throw OnJoinFailure() }
+                state.joins += 1
+            }
+        }
+    }
+    let keeper = LandKeeper(definition: definition, initialState: JoiningAdmissionTestState(), autoStartLoops: false)
+    let session = PlayerSession(playerID: "p1", deviceID: "dev", metadata: [:])
+    let client = ClientID("c1"), sessionID = SessionID("s1")
+
+    // Join A inserts the player, then is held in its OnJoin resolver.
+    let joinA = Task {
+        try await keeper.join(session: session, clientID: client, sessionID: sessionID, services: LandServices())
+    }
+    #expect(await HeldJoinResolverControl.shared.gate.waitForArrivals(1))
+
+    // Join B of the same player, client and session (a reconnect) replaces the entry and completes.
+    _ = try await keeper.join(session: session, clientID: client, sessionID: sessionID, services: LandServices())
+    #expect(await keeper.playerCount() == 1)
+    #expect(await keeper.currentState().joins == 1)
+
+    // A is released and its OnJoin throws: B's entry stays.
+    HeldJoinResolverControl.shared.gate.open()
+    await #expect(throws: (any Error).self) { _ = try await joinA.value }
+    #expect(await keeper.playerCount() == 1)
+}
