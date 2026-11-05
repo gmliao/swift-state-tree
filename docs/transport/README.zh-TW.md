@@ -76,6 +76,15 @@ PlayerSession 欄位優先序：
 
 ## 狀態更新編碼（State Update Encoding）
 
+| `TransportEncodingConfig` | Message | State update | 預設於 |
+|---|---|---|---|
+| `.json` | `json` | `jsonObject` | `NIOLandServerConfiguration.transportEncoding`；DemoServer（`TRANSPORT_ENCODING=json`） |
+| `.jsonOpcode` | `json` | `opcodeJsonArray` | `TRANSPORT_ENCODING=jsonOpcode` |
+| `.opcode` | `opcodeJsonArray` | `opcodeJsonArray` | `TRANSPORT_ENCODING=opcode` |
+| `.messagepack` | `messagepack` | `opcodeMessagePack` | GameServer（`TRANSPORT_ENCODING=messagepack`）；建議用於正式環境 |
+
+`TransportEncodingConfig(message:stateUpdate:)` 本身預設為 `json` message 搭配 `opcodeJsonArray` state update；在每種使用 path hash 的 opcode state update 編碼中，dynamic-key compression 預設開啟。兩個範例 server 都讀取 `TRANSPORT_ENCODING`（`json`、`jsonOpcode`、`opcode`、`messagepack` 或 `msgpack`，不分大小寫）；無法辨識的值會回退為 `json`。
+
 狀態更新在每個 sync 週期內以串行方式編碼。同一房間內每位玩家的更新依序編碼；多房間場景下，每個 `TransportAdapter` 獨立管理一個房間。
 
 ## 環境變數
@@ -102,7 +111,7 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 
 由其他地方讀取：
 
-- `DYNAMIC_KEY_COMPRESSION`（Bool，預設 true）：使用 path hash 的 opcode state update 在 dynamic key 第一次使用後改送 table slot（true），或一律送完整字串（false）。只有以 `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo server 有）。
+- `DYNAMIC_KEY_COMPRESSION`（Bool，預設 true）：使用 path hash 的 opcode state update 在 dynamic key 第一次使用後改送 table slot（true），或一律送完整字串（false）。只有以 `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有）。
 - `IN_TURN_SYNC` 與 `LAND_LOOP_PHASE_OFFSET`（runtime，預設開啟）：見 [Runtime](../core/runtime.zh-TW.md#in-turn-sync預設)。
 
 布林解析：truthy = `1`, `true`, `yes`, `y`, `on`；falsy = `0`, `false`, `no`, `n`, `off`。

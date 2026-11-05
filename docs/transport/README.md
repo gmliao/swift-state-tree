@@ -84,6 +84,15 @@ Client must send Join with `landID: "landType:instanceId"`. See [Deploy & LB](..
 
 ## State Update Encoding
 
+| `TransportEncodingConfig` | Message | State update | Default where |
+|---|---|---|---|
+| `.json` | `json` | `jsonObject` | `NIOLandServerConfiguration.transportEncoding`; DemoServer (`TRANSPORT_ENCODING=json`) |
+| `.jsonOpcode` | `json` | `opcodeJsonArray` | `TRANSPORT_ENCODING=jsonOpcode` |
+| `.opcode` | `opcodeJsonArray` | `opcodeJsonArray` | `TRANSPORT_ENCODING=opcode` |
+| `.messagepack` | `messagepack` | `opcodeMessagePack` | GameServer (`TRANSPORT_ENCODING=messagepack`); recommended for production |
+
+`TransportEncodingConfig(message:stateUpdate:)` itself defaults to `json` messages with `opcodeJsonArray` state updates; dynamic-key compression is on by default in every opcode state-update encoding with path hashes. Both example servers read `TRANSPORT_ENCODING` (`json`, `jsonOpcode`, `opcode`, `messagepack` or `msgpack`, case-insensitive); an unknown value falls back to `json`.
+
 State updates are encoded serially per sync cycle. Per-player updates within a room are encoded one after another; for multi-room scenarios, each `TransportAdapter` manages one room independently.
 
 ## Environment Variables
@@ -110,7 +119,7 @@ Transport-related behavior can be tuned via environment variables. All variables
 
 Read elsewhere:
 
-- `DYNAMIC_KEY_COMPRESSION` (Bool, default true): opcode state updates with path hashes send dynamic keys as table slots after their first use (true) or always as full strings (false). Read only by servers that build their encoding config with `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()` (the Demo server does).
+- `DYNAMIC_KEY_COMPRESSION` (Bool, default true): opcode state updates with path hashes send dynamic keys as table slots after their first use (true) or always as full strings (false). Read only by servers that build their encoding config with `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()` (the Demo and Game servers do).
 - `IN_TURN_SYNC` and `LAND_LOOP_PHASE_OFFSET` (runtime, default on): see [Runtime](../core/runtime.md#in-turn-sync-default).
 
 Boolean parsing: truthy = `1`, `true`, `yes`, `y`, `on`; falsy = `0`, `false`, `no`, `n`, `off`.
