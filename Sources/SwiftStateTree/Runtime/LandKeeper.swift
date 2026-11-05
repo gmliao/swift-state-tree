@@ -1252,7 +1252,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             if usesInTurnSync {
                 _ = try await awaitInputTurn(sequence: sequence)
             } else {
-                _ = try await processPendingActions()
+                _ = try await runLegacyPass(for: sequence)
             }
         }
     }
@@ -1473,7 +1473,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             if usesInTurnSync {
                 _ = try await awaitInputTurn(sequence: sequence)
             } else {
-                _ = try await processPendingActions()
+                _ = try await runLegacyPass(for: sequence)
             }
         }
 
@@ -1738,7 +1738,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             if usesInTurnSync {
                 _ = try await awaitInputTurn(sequence: sequence)
             } else {
-                _ = try await processPendingActions()
+                _ = try await runLegacyPass(for: sequence)
             }
         }
 
@@ -1889,9 +1889,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 return try await awaitInputTurn(sequence: sequence)
             }
             do {
-                if let response = try await processPendingActions() {
-                    return response
-                }
+                return try await runLegacyPass(for: sequence)
             } catch {
                 logger.error("Error processing pending actions", metadata: [
                     "error": .string(String(describing: error)),
@@ -2039,7 +2037,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             Task { [weak self] in
                 guard let self = self else { return }
                 do {
-                    _ = try await self.processPendingActions(flushOutputsImmediately: true)
+                    try await self.processPendingActions(flushOutputsImmediately: true)
                 } catch {
                     self.logger.error("Error processing pending actions", metadata: [
                         "error": .string(String(describing: error)),
@@ -2465,29 +2463,43 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return .other
     }
 
-    /// Process pending actions and client events that are ready to execute
-    /// Returns the response from the last executed action (if any)
+    /// Applies the pending inputs that are ready (the legacy path: in-turn sync off, or a tick
+    /// land's tick), in order, then records them.
+    ///
+    /// Each applied input's outcome is kept by sequence for an off-path caller waiting for it
+    /// (`runLegacyPass`), not returned: one pass can apply several callers' inputs (#88). When an
+    /// input P throws, the inputs before it were applied: they are removed from the queue and
+    /// recorded, so no later pass applies them again; P and the inputs after it stay pending, and
+    /// the error is thrown after the record. (Running P again is #87.) As before, a pass that
+    /// throws skips the broadcast sync and the output flush; the next pass flushes.
     /// - Parameter flushOutputsImmediately: If true, flush outputs after processing. If false, defer flushing (caller should flush after tick handler).
-    private func processPendingActions(flushOutputsImmediately: Bool = true) async throws -> AnyCodable? {
+    private func processPendingActions(flushOutputsImmediately: Bool = true) async throws {
         let executingTickId = executingTickIdForPendingItems()
         let sortedItems = readyPendingItemsInOrder()
 
-        // Execute each item and track the last action response
-        var lastActionResponse: AnyCodable? = nil
         var applied = AppliedInputs(executingTickId: executingTickId)
-        for item in sortedItems {
+        var appliedItems = sortedItems
+        var failure: (any Error)?
+        for (index, item) in sortedItems.enumerated() {
             do {
-                if case let .action(response) = try applyPendingItem(item, executingTickId: executingTickId, into: &applied) {
-                    lastActionResponse = response
+                let outcome = try applyPendingItem(item, executingTickId: executingTickId, into: &applied)
+                if legacyPassCallers.contains(item.sequence) {
+                    if case let .action(response) = outcome {
+                        legacyPassResults[item.sequence] = response
+                    } else {
+                        legacyPassResults[item.sequence] = AnyCodable(())
+                    }
                 }
             } catch {
                 discardIfFailedJoin(item)
-                throw error
+                appliedItems = Array(sortedItems[..<index])
+                failure = error
+                break
             }
         }
 
-        // Remove executed items from queue
-        removePendingItems(sortedItems)
+        // Remove the applied inputs from the queue, in the same segment as their apply.
+        removePendingItems(appliedItems)
         let recordedActions = applied.recordedActions
         let recordedClientEvents = applied.recordedClientEvents
         let recordedLifecycleEvents = applied.recordedLifecycleEvents
@@ -2510,6 +2522,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             try? await recorder.flushIfNeeded(currentTick: recordingTickId)
         }
 
+        if let failure { throw failure }
+
         if shouldSyncBroadcastOnly {
             await transport?.syncBroadcastOnlyFromTransport()
         }
@@ -2521,8 +2535,33 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if flushOutputsImmediately {
             await flushOutputs(forTick: executingTickId)
         }
+    }
 
-        return lastActionResponse
+    /// Off-path tickless inputs whose caller waits in `runLegacyPass`, by sequence.
+    private var legacyPassCallers: Set<Int64> = []
+    /// The outcome of each such input, set by the pass that applied it.
+    private var legacyPassResults: [Int64: AnyCodable] = [:]
+
+    /// Off path (in-turn sync off), tickless: runs a pending-items pass for the input with
+    /// `sequence`, appended in this segment, and returns that input's own outcome (#88): its
+    /// action's response, or an empty one for a join or leave.
+    ///
+    /// The pass applies the input synchronously (a tickless input is always ready), so its
+    /// outcome is set before the pass's first `await`. If the pass throws on another input after
+    /// applying this one, this caller still gets its result, as on the in-turn path.
+    private func runLegacyPass(for sequence: Int64) async throws -> AnyCodable {
+        legacyPassCallers.insert(sequence)
+        defer {
+            legacyPassCallers.remove(sequence)
+            legacyPassResults.removeValue(forKey: sequence)
+        }
+        do {
+            try await processPendingActions()
+        } catch {
+            if let result = legacyPassResults[sequence] { return result }
+            throw error
+        }
+        return legacyPassResults[sequence] ?? AnyCodable(())
     }
 
     /// Re-evaluation only: move the shared sequence counter forward to a recorded watermark.
@@ -2570,7 +2609,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // Even if there's no tick handler, we still need to process pending actions
             // processPendingActions() will automatically advance tick counter if needed
             do {
-                _ = try await processPendingActions(flushOutputsImmediately: true)
+                try await processPendingActions(flushOutputsImmediately: true)
             } catch {
                 logger.error("Error processing pending actions", metadata: [
                     "error": .string(String(describing: error)),
@@ -2753,7 +2792,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Don't flush outputs yet - defer until after tick handler to ensure
         // outputs include state changes from the tick handler
         do {
-            _ = try await processPendingActions(flushOutputsImmediately: false)
+            try await processPendingActions(flushOutputsImmediately: false)
         } catch {
             logger.error("Error processing pending actions", metadata: [
                 "error": .string(String(describing: error)),
