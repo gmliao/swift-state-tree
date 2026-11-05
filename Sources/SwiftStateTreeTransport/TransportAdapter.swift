@@ -481,7 +481,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private var syncStreamUnqueuedEvents: [Int64] = []
     /// Opcode 107: sequences of in-turn events that had recipients but were not merged (sent
     /// alone, or lost), until the next recorded output lists them (`eventsNotMerged`).
-    private var syncStreamUnmergedEvents: [Int64] = []
+    private var syncStreamUnmergedEvents = ReevaluationUnmergedEvents()
     /// Tests only: plans that filled a `SyncOutputDigestInput`.
     private(set) var syncOutputDigestCountForTesting = 0
 
@@ -1414,8 +1414,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 return queued ? .queued : .noRecipient
             }
             // The body did not encode: the event goes out as its own frame, or is lost.
-            sendEventImmediately(event, to: target, failsEncoding: fault == .all)
-            return .notMerged
+            return sendEventImmediately(event, to: target, failsEncoding: fault == .all) ? .sentAlone : .lost
         }
 
         // Immediate mode: encoded and enqueued now
@@ -1430,9 +1429,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         /// Opcode 107, and nothing to queue: no recipient (`.players([])`, a client without a
         /// session).
         case noRecipient
-        /// Opcode 107, but the body did not encode: sent as its own frame, or lost when that
-        /// failed too.
-        case notMerged
+        /// Opcode 107, but the body did not encode: sent as its own frame.
+        case sentAlone
+        /// Opcode 107, but the body did not encode, and neither did its own frame: lost.
+        case lost
         /// Not opcode 107: sent as its own frame.
         case immediate
     }
@@ -1468,7 +1468,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             if digestsEvents, let sequence = item.sequence {
                 switch outcome {
                 case .noRecipient: syncStreamUnqueuedEvents.append(sequence)
-                case .notMerged: syncStreamUnmergedEvents.append(sequence)
+                case .sentAlone: syncStreamUnmergedEvents.sentAlone.append(sequence)
+                case .lost: syncStreamUnmergedEvents.lost.append(sequence)
                 case .queued, .immediate: break
                 }
             }
@@ -1509,11 +1510,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///
     /// This is the fallback path when opcode 107 is disabled or encoding fails.
     /// Handles encoding, validation, logging, and actual transport.send call.
+    /// Returns false when the event did not encode (it is lost); true otherwise, also when its
+    /// target has no current recipient.
+    @discardableResult
     private func sendEventImmediately(
         _ event: AnyServerEvent,
         to target: SwiftStateTree.EventTarget,
         failsEncoding: Bool = false
-    ) {
+    ) -> Bool {
         do {
             if failsEncoding {
                 throw EncodingError.invalidValue(event.type, .init(codingPath: [], debugDescription: "encoding fault (tests)"))
@@ -1523,12 +1527,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 target: target,
                 membershipCoordinator: membershipCoordinator
             ) else {
-                return  // Target is invalid or stale
+                return true  // Target is invalid or stale
             }
             
             guard case .immediate(let data, let transportTarget, let targetDescription) = decision else {
                 logger.warning("⚠️ Unexpected queued decision in immediate mode")
-                return
+                return true
             }
             
             let dataSize = data.count
@@ -1549,7 +1553,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     }
                     enqueueOutbound(data, toSessions: membershipCoordinator.sessionIDs(for: playerID))
                 }
-                return
+                return true
             }
             
             // Standard case: single target
@@ -1587,11 +1591,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Expanded to this land's sessions (#84): the transport is shared by every land
             // of the type, so its `.broadcast` and player map reach other lands' sessions.
             enqueueOutbound(data, toSessions: sessionIDs(for: transportTarget))
+            return true
         } catch {
             logger.error("❌ Failed to send event", metadata: [
                 "eventType": .string(event.type),
                 "error": .string("\(error)")
             ])
+            return false
         }
     }
 
@@ -2029,7 +2035,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let eventsNotQueued = syncStreamUnqueuedEvents.isEmpty ? nil : syncStreamUnqueuedEvents.sorted()
             syncStreamUnqueuedEvents.removeAll()
             let eventsNotMerged = syncStreamUnmergedEvents.isEmpty ? nil : syncStreamUnmergedEvents.sorted()
-            syncStreamUnmergedEvents.removeAll()
+            syncStreamUnmergedEvents = ReevaluationUnmergedEvents()
             let extractionDrops = digest.extractionDrops
             let encodeDropScopes = digest.encodeDropScopes.sorted { SnapshotValue.utf8Less($0, $1) }
             let turnKind = read.turnKind

@@ -277,9 +277,10 @@ struct ReevaluationRunnerMain {
           REEVALUATION_RECORD_SYNC_PATCHES=true (patch lists) on the recording server let the
           report name the player and the first differing patch.
           skipped    the record cannot be verified (no sync stream, or older than 2.2)
-          Benign skip: an opcode 107 per-player update that was not sent (its cache was not
+          Benign skips: an opcode 107 per-player update that was not sent (its cache was not
           committed, so the next diff resends it), once a later comparison for that player saw
-          the resend; if none did, it is not benign.
+          the resend; a joiner's full view that did not encode, once a later seed for that
+          player was compared. Without that later comparison neither is benign.
         Initialize: OnInitialize's events and state hash (--verify exits 9 on a mismatch).
         """)
         exit(exitCode)
