@@ -18,7 +18,8 @@ public struct NIOWebSocketServerConfiguration: Sendable {
     /// Port to bind to.
     public var port: Int
     /// Number of event loop threads. Defaults to `EVENT_LOOP_THREADS`, else
-    /// `availableCPUCount`; an explicit value of 0 or below also gives that default.
+    /// `availableCPUCount`. An explicit value of 0 or below gives `availableCPUCount` (not
+    /// `EVENT_LOOP_THREADS`).
     public var eventLoopThreads: Int
     /// Maximum WebSocket frame size.
     public var maxFrameSize: Int
@@ -37,35 +38,86 @@ public struct NIOWebSocketServerConfiguration: Sendable {
     /// cpuset on Linux) and the scheduler affinity mask, which `System.coreCount` does not read,
     /// so a server pinned with `taskset` would otherwise get a thread per CPU on the machine.
     /// The mask is read from `/proc/self/status` (`Cpus_allowed_list`, Linux); where that file
-    /// does not exist, `activeProcessorCount` stands in. At least 1.
-    public static var availableCPUCount: Int {
-        let affinity = affinityCPUCount() ?? ProcessInfo.processInfo.activeProcessorCount
-        return max(1, min(System.coreCount, affinity))
+    /// does not exist, or does not parse, `activeProcessorCount` stands in. At least 1.
+    public static var availableCPUCount: Int { availableCPUs().count }
+
+    /// Where `availableCPUCount` came from, as the startup log reports it.
+    public enum CPUCountSource: String, Sendable {
+        /// The affinity mask in `/proc/self/status`.
+        case cpusAllowedList
+        /// Foundation's count, used where `/proc/self/status` is missing or does not parse.
+        case activeProcessorCount
+        /// NIO's count (cgroup quota and cpuset), when it is the smaller one.
+        case coreCount
     }
 
-    /// CPUs in this process's scheduler affinity mask, from `/proc/self/status`; nil where the
-    /// file or the field is missing (not Linux) or does not parse.
-    static func affinityCPUCount(statusPath: String = "/proc/self/status") -> Int? {
-        guard let status = try? String(contentsOfFile: statusPath, encoding: .utf8) else { return nil }
-        return cpusAllowedCount(status: status)
+    /// `availableCPUCount` with its source.
+    public struct AvailableCPUs: Sendable, Equatable {
+        public var count: Int
+        public var source: CPUCountSource
+        /// `/proc/self/status` exists but its `Cpus_allowed_list` did not parse, so the affinity
+        /// mask was not applied; the server warns at startup.
+        public var affinityMaskUnparsable: Bool
+    }
+
+    /// What reading the affinity mask gave.
+    enum AffinityMaskReading: Equatable {
+        /// The mask's CPU count.
+        case cpus(Int)
+        /// No `/proc/<pid>/status` (not Linux).
+        case unavailable
+        /// The file exists but could not be read, or its `Cpus_allowed_list` did not parse.
+        case unparsable
+    }
+
+    static func availableCPUs(statusPath: String = "/proc/self/status") -> AvailableCPUs {
+        let reading = readAffinityMask(statusPath: statusPath)
+        var count: Int
+        var source: CPUCountSource
+        if case .cpus(let cpus) = reading {
+            (count, source) = (cpus, .cpusAllowedList)
+        } else {
+            (count, source) = (ProcessInfo.processInfo.activeProcessorCount, .activeProcessorCount)
+        }
+        if System.coreCount < count {
+            (count, source) = (System.coreCount, .coreCount)
+        }
+        return AvailableCPUs(count: max(1, count), source: source, affinityMaskUnparsable: reading == .unparsable)
+    }
+
+    static func readAffinityMask(statusPath: String = "/proc/self/status") -> AffinityMaskReading {
+        guard FileManager.default.fileExists(atPath: statusPath) else { return .unavailable }
+        guard let status = try? String(contentsOfFile: statusPath, encoding: .utf8),
+              let cpus = cpusAllowedCount(status: status)
+        else {
+            return .unparsable
+        }
+        return .cpus(cpus)
     }
 
     /// The CPU count of the `Cpus_allowed_list:` line of a `/proc/<pid>/status` text, such as
-    /// `0-3,8,10-11` (7 CPUs); nil if the line is missing or malformed.
+    /// `0-3,8,10-11` (7 CPUs). Nil if the line is missing or malformed: an empty piece (`0,,2`,
+    /// `-3`, `3-`), a non-number, a reversed range, or a count that overflows.
     static func cpusAllowedCount(status: String) -> Int? {
         guard let line = status.split(separator: "\n").first(where: { $0.hasPrefix("Cpus_allowed_list:") }) else {
             return nil
         }
         let list = line.dropFirst("Cpus_allowed_list:".count).trimmingCharacters(in: .whitespaces)
+        guard !list.isEmpty else { return nil }
         var count = 0
-        for range in list.split(separator: ",") {
-            let bounds = range.split(separator: "-", maxSplits: 1).map { Int($0.trimmingCharacters(in: .whitespaces)) }
-            guard let first = bounds.first ?? nil, let last = bounds.last ?? nil, first >= 0, last >= first else {
+        for piece in list.split(separator: ",", omittingEmptySubsequences: false) {
+            let bounds = piece.split(separator: "-", omittingEmptySubsequences: false).map { Int($0) }
+            guard bounds.count <= 2, let first = bounds.first ?? nil, let last = bounds.last ?? nil,
+                  first >= 0, last >= first
+            else {
                 return nil
             }
-            count += last - first + 1
+            let (width, widthOverflow) = (last - first).addingReportingOverflow(1)
+            let (sum, sumOverflow) = count.addingReportingOverflow(width)
+            guard !widthOverflow, !sumOverflow else { return nil }
+            count = sum
         }
-        return count > 0 ? count : nil
+        return count
     }
 
     /// The event-loop thread count from `EVENT_LOOP_THREADS`: a positive integer; missing or
@@ -296,6 +348,13 @@ public actor NIOWebSocketServer {
         self.serverChannel = channel
         self.isRunning = true
 
+        let cpus = NIOWebSocketServerConfiguration.availableCPUs()
+        if cpus.affinityMaskUnparsable {
+            configuration.logger.warning(
+                "Cpus_allowed_list in /proc/self/status did not parse; the CPU count ignores the affinity mask",
+                metadata: ["availableCPUs": .stringConvertible(cpus.count), "cpuSource": .string(cpus.source.rawValue)]
+            )
+        }
         configuration.logger.info(
             "NIO WebSocket server started",
             metadata: [
@@ -304,7 +363,8 @@ public actor NIOWebSocketServer {
                 "threads": .stringConvertible(configuration.eventLoopThreads),
                 // What the default is made of, to check the count against the CPUs the
                 // process may use (EVENT_LOOP_THREADS overrides it).
-                "availableCPUs": .stringConvertible(NIOWebSocketServerConfiguration.availableCPUCount),
+                "availableCPUs": .stringConvertible(cpus.count),
+                "cpuSource": .string(cpus.source.rawValue),
                 "machineCPUs": .stringConvertible(System.coreCount),
                 "eventLoopThreadsEnv": .string(EnvHelpers.getEnvStringOptional(key: EnvKeys.Server.eventLoopThreads) ?? "unset"),
                 // Requested; the kernel caps it at somaxconn.

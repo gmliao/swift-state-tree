@@ -19,9 +19,44 @@ struct NIOEventLoopThreadsTests {
         #expect(available >= 1)
         // Never more than NIO's count (cgroup quota and cpuset) or the affinity mask, which
         // NIO's count does not read.
-        let affinity = NIOWebSocketServerConfiguration.affinityCPUCount() ?? ProcessInfo.processInfo.activeProcessorCount
+        let affinity: Int
+        if case .cpus(let cpus) = NIOWebSocketServerConfiguration.readAffinityMask() {
+            affinity = cpus
+        } else {
+            affinity = ProcessInfo.processInfo.activeProcessorCount
+        }
         #expect(available == max(1, min(System.coreCount, affinity)))
         #expect(NIOWebSocketServerConfiguration.eventLoopThreads(environment: [:]) == available)
+        // An explicit 0 or below gives availableCPUCount, not EVENT_LOOP_THREADS.
+        #expect(NIOWebSocketServerConfiguration.normalizedEventLoopThreads(0) == available)
+    }
+
+    @Test("The CPU count reports its source, and a mask that does not parse is flagged")
+    func cpuCountSource() throws {
+        let missing = NIOWebSocketServerConfiguration.availableCPUs(statusPath: "/nonexistent/status")
+        #expect(!missing.affinityMaskUnparsable)
+        #expect(missing.source != .cpusAllowedList)
+        #expect(missing.count == max(1, min(System.coreCount, ProcessInfo.processInfo.activeProcessorCount)))
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("sst-cpus-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let status = directory.appendingPathComponent("status")
+
+        try "Name:\tx\nCpus_allowed_list:\t0,,2\n".write(to: status, atomically: true, encoding: .utf8)
+        let broken = NIOWebSocketServerConfiguration.availableCPUs(statusPath: status.path)
+        #expect(NIOWebSocketServerConfiguration.readAffinityMask(statusPath: status.path) == .unparsable)
+        #expect(broken.affinityMaskUnparsable)
+        #expect(broken.source != .cpusAllowedList)
+
+        try "Name:\tx\nCpus_allowed_list:\t0\n".write(to: status, atomically: true, encoding: .utf8)
+        let pinned = NIOWebSocketServerConfiguration.availableCPUs(statusPath: status.path)
+        #expect(pinned == .init(count: 1, source: .cpusAllowedList, affinityMaskUnparsable: false))
+
+        try "Name:\tx\nCpus_allowed_list:\t0-100000\n".write(to: status, atomically: true, encoding: .utf8)
+        let wide = NIOWebSocketServerConfiguration.availableCPUs(statusPath: status.path)
+        #expect(wide.source == .coreCount)
+        #expect(wide.count == max(1, System.coreCount))
     }
 
     @Test("Cpus_allowed_list parses into a CPU count")
@@ -36,8 +71,17 @@ struct NIOEventLoopThreadsTests {
         #expect(count("") == nil)
         #expect(count("3-1") == nil)
         #expect(count("a-b") == nil)
+        // Empty pieces and extra dashes.
+        #expect(count("0,,2") == nil)
+        #expect(count("-3") == nil)
+        #expect(count("3-") == nil)
+        #expect(count("0,") == nil)
+        #expect(count("1-2-3") == nil)
+        // A count that overflows is rejected, not trapped on.
+        #expect(count("0-\(Int.max)") == nil)
+        #expect(count("0-\(Int.max - 1),\(Int.max)") == nil)
         #expect(NIOWebSocketServerConfiguration.cpusAllowedCount(status: "Name:\tx\n") == nil)
-        #expect(NIOWebSocketServerConfiguration.affinityCPUCount(statusPath: "/nonexistent/status") == nil)
+        #expect(NIOWebSocketServerConfiguration.readAffinityMask(statusPath: "/nonexistent/status") == .unavailable)
     }
 
     #if os(Linux)
@@ -48,7 +92,8 @@ struct NIOEventLoopThreadsTests {
     func linuxDefaultFollowsAffinityMask() throws {
         let status = try String(contentsOfFile: "/proc/self/status", encoding: .utf8)
         let allowed = try #require(NIOWebSocketServerConfiguration.cpusAllowedCount(status: status), "Cpus_allowed_list did not parse")
-        #expect(NIOWebSocketServerConfiguration.affinityCPUCount() == allowed)
+        #expect(NIOWebSocketServerConfiguration.readAffinityMask() == .cpus(allowed))
+        #expect(NIOWebSocketServerConfiguration.availableCPUs().affinityMaskUnparsable == false)
         #expect(NIOWebSocketServerConfiguration.availableCPUCount == max(1, min(System.coreCount, allowed)))
     }
 
@@ -58,7 +103,12 @@ struct NIOEventLoopThreadsTests {
         guard let taskset else { return }  // util-linux missing: nothing to pin with
         let process = Process()
         process.executableURL = URL(fileURLWithPath: taskset)
-        process.arguments = ["-c", "0", "cat", "/proc/self/status"]
+        // Pin to the first CPU this process may use: CPU 0 is not always allowed (cpuset 8-15).
+        let status = try String(contentsOfFile: "/proc/self/status", encoding: .utf8)
+        let list = try #require(status.split(separator: "\n").first { $0.hasPrefix("Cpus_allowed_list:") })
+        let firstCPU = try #require(Int(list.dropFirst("Cpus_allowed_list:".count)
+            .trimmingCharacters(in: .whitespaces).prefix { $0.isNumber }))
+        process.arguments = ["-c", String(firstCPU), "cat", "/proc/self/status"]
         let pipe = Pipe()
         process.standardOutput = pipe
         try process.run()

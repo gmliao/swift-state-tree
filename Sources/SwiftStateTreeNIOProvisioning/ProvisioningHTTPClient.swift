@@ -30,6 +30,9 @@ enum ProvisioningHTTPClient: Sendable {
     /// One event loop of its own: register, heartbeat and deregister are a few requests a minute.
     /// The `.singleton` provider would start NIO's global group, one thread per machine CPU
     /// (`System.coreCount`, which ignores CPU affinity), next to the server's own event loops.
+    /// Like that singleton, the group and the client live for the process and are intentionally
+    /// never shut down: they are shared by every host in the process, so a per-host shutdown
+    /// would break the others.
     private static let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
     private static let shared = HTTPClient(eventLoopGroupProvider: .shared(group))
 
