@@ -328,6 +328,34 @@ struct TransportAdapterJoiningAdmissionTests {
         #expect(await adapter.getPlayerSlot(for: p1) == nil)
     }
 
+    @Test("A re-join on the same SessionID while the old initial sync reads the state: only the new one commits", arguments: [true, false])
+    func rejoinSameSessionDuringStateRead(inTurn: Bool) async throws {
+        let fixture = await makeFixture(inTurn: inTurn, tick: true)
+        let adapter = fixture.adapter
+        let s1 = SessionID("s1"), c1 = ClientID("c1"), p1 = PlayerID("p1")
+        _ = try await join(fixture, session: s1, client: c1, player: p1)
+
+        // The old initial sync is held at its state read.
+        let readGate = TestGate()
+        await adapter.setInitialSyncHoldForTesting { await readGate.arrive() }
+        let oldInitialSync = Task { await adapter.syncStateForNewPlayer(playerID: p1, sessionID: s1) }
+        #expect(await readGate.waitForArrivals(1))
+        await adapter.setInitialSyncHoldForTesting(nil)
+
+        // The session ends and a new connection with the same SessionID joins as the same
+        // player: the membership matches again, but the admission is a new generation.
+        await adapter.onDisconnect(sessionID: s1, clientID: c1)
+        _ = try await join(fixture, session: s1, client: c1, player: p1)
+        await adapter.syncStateForNewPlayer(playerID: p1, sessionID: s1)
+
+        readGate.open()
+        await oldInitialSync.value
+
+        #expect(await adapter.waitForOutboundDrain())
+        #expect(await fixture.sent.kinds(for: s1) == ["firstSync"])
+        #expect(await adapter.syncEngineForTesting().hasReceivedFirstSyncForTesting(p1) == true)
+    }
+
     @Test("A disconnect while joining clears the joining mark")
     func disconnectWhileJoining() async throws {
         let fixture = await makeFixture(inTurn: true, tick: true)
