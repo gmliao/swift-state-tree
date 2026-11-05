@@ -243,6 +243,8 @@ fetch('http://localhost:8080/schema')
 - 陣列：`array` with `items`
 - 參考：`$ref` 指向其他定義
 
+無號欄位（`UInt`、`UInt64`）宣告為 `integer`，但大於 `Int.max`（2^63 − 1）的值無法放入傳輸用的有號整數，會以十進位數字字串送出；較小的值仍以整數送出。解碼（`init(fromSnapshotValue:)`）兩種形式都接受。可能收到這類值的 client 必須處理兩種形式。
+
 ## Schema 版本對齊
 
 ### 版本管理

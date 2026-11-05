@@ -243,6 +243,8 @@ Each Land contains:
 - Arrays: `array` with `items`
 - References: `$ref` pointing to other definitions
 
+An unsigned field (`UInt`, `UInt64`) is declared `integer`, but a value above `Int.max` (2^63 − 1) arrives as its decimal digits in a string, since it does not fit the wire's signed integers; smaller values arrive as integers. Decoding (`init(fromSnapshotValue:)`) accepts both. A client that can receive such values must handle either form.
+
 ## Schema Version Alignment
 
 ### Version Management
