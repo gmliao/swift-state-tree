@@ -60,4 +60,7 @@ public enum JoinError: Error, Sendable {
     case banned
     /// A custom error with a specific message.
     case custom(String)
+    /// The Land is shutting down (it became empty and is being destroyed). Retry the join:
+    /// `LandManager.getOrCreateLand` creates a fresh instance for the same ID.
+    case landShuttingDown
 }

@@ -291,12 +291,16 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                     } catch {
                         // Join-domain errors (room creation, replay load, etc.) - not decode failures
                         sessionToBoundLandID.removeValue(forKey: sessionID)
-                        let errorCode: ErrorCode = .joinRoomNotFound
+                        // A creation that met a draining instance (or a manager shutdown)
+                        // throws a JoinError: answer it like a keeper's join error, so
+                        // `landShuttingDown` stays a retryable JOIN_DENIED here too.
+                        let (errorCode, errorMessage) = (error as? JoinError).map(Self.joinErrorResponse)
+                            ?? (ErrorCode.joinRoomNotFound, "\(error)")
                         await sendJoinError(
                             requestID: payload.requestID,
                             sessionID: sessionID,
                             code: errorCode,
-                            message: "\(error)"
+                            message: errorMessage
                         )
                         logger.error("Join failed (land creation or replay load)", metadata: [
                             "sessionID": .string(sessionID.rawValue),
@@ -508,28 +512,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             // Unbind session since join failed
             sessionToBoundLandID.removeValue(forKey: sessionID)
             
-            let errorCode: ErrorCode
-            let errorMessage: String
-            
-            if let joinError = error as? JoinError {
-                switch joinError {
-                case .roomIsFull:
-                    errorCode = .joinRoomFull
-                    errorMessage = "Land is full"
-                case .levelTooLow(let required):
-                    errorCode = .joinDenied
-                    errorMessage = "Level too low (required: \(required))"
-                case .banned:
-                    errorCode = .joinDenied
-                    errorMessage = "You are banned from this land"
-                case .custom(let message):
-                    errorCode = .joinDenied
-                    errorMessage = message
-                }
-            } else {
-                errorCode = .joinDenied
-                errorMessage = "\(error)"
-            }
+            let (errorCode, errorMessage) = (error as? JoinError).map(Self.joinErrorResponse)
+                ?? (ErrorCode.joinDenied, "\(error)")
             
             await sendJoinError(
                 requestID: requestID,
@@ -631,6 +615,24 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
     
+    /// The error code and message a join error is answered with.
+    static func joinErrorResponse(_ joinError: JoinError) -> (ErrorCode, String) {
+        switch joinError {
+        case .roomIsFull:
+            return (.joinRoomFull, "Land is full")
+        case .levelTooLow(let required):
+            return (.joinDenied, "Level too low (required: \(required))")
+        case .banned:
+            return (.joinDenied, "You are banned from this land")
+        case .custom(let message):
+            return (.joinDenied, message)
+        case .landShuttingDown:
+            // The land started its destruction during this join, or its previous instance has
+            // not finished destruction yet: a later join gets a fresh instance for the same ID.
+            return (.joinDenied, "Land is shutting down, retry the join")
+        }
+    }
+
     /// Send a join error to the client.
     private func sendJoinError(
         requestID: String,
