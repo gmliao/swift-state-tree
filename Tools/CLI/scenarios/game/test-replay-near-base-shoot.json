@@ -184,6 +184,41 @@
       "wait": 800
     },
     {
+      "type": "log",
+      "message": "Place a turret once two kills pay for it, then wait for it to fire (the replay fixture needs PlaceTurret and TurretFire)"
+    },
+    {
+      "type": "waitForState",
+      "waitForState": {
+        "path": "players.[PLAYER_ID].resources",
+        "greaterThanOrEqual": 15,
+        "timeout": 60000,
+        "interval": 200,
+        "message": "Player should earn the turret cost (15) by shooting monsters"
+      }
+    },
+    {
+      "type": "event",
+      "event": "PlaceTurret",
+      "payload": {
+        "position": {
+          "__type": "Position2",
+          "value": {
+            "x": 54000,
+            "y": 36000
+          }
+        }
+      }
+    },
+    {
+      "type": "waitForEvent",
+      "waitForEvent": {
+        "event": "TurretFire",
+        "timeout": 30000,
+        "message": "The placed turret should fire at an approaching monster"
+      }
+    },
+    {
       "type": "state"
     },
     {

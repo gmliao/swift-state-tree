@@ -4,7 +4,7 @@
 
 import assert from "assert";
 import { readFileSync } from "fs";
-import { checkPatch, checkState, type ConformanceSchema } from "../../src/schema-conformance.js";
+import { checkEventPayload, checkPatch, checkState, type ConformanceSchema } from "../../src/schema-conformance.js";
 
 const schema: ConformanceSchema = {
   lands: { probe: { stateType: "Root" } },
@@ -87,5 +87,54 @@ assert.deepEqual(gameFound("visibility-test", { path: "/entities/e1", value: { i
   "entities.*.visibleTo",
 ]);
 assert.deepEqual(gameFound("hero-defense", { path: "/monsters/1", value: { health: 1, reward: 5 } }), ["monsters.*.reward"]);
+
+// Server event payloads (#154): declared fields, of their schema type.
+const eventSchema: ConformanceSchema = {
+  lands: { probe: { stateType: "Root", events: { Shot: { $ref: "#/defs/ShotEvent" } } } },
+  defs: {
+    Root: { properties: {} },
+    PlayerID: { type: "string" },
+    ShotEvent: {
+      type: "object",
+      properties: {
+        playerID: { $ref: "#/defs/PlayerID" },
+        owners: { type: "array", items: { $ref: "#/defs/PlayerID" } },
+        hits: { type: "object", additionalProperties: { type: "integer" } },
+        from: { $ref: "#/defs/Position2" },
+        ratio: { type: "number" },
+      },
+    },
+    Position2: { properties: { v: { $ref: "#/defs/IVec2" } } },
+    IVec2: { properties: { x: { type: "integer" }, y: { type: "integer" } } },
+  },
+};
+const eventFound = (type: string, payload: unknown) =>
+  checkEventPayload(eventSchema, "probe", type, payload).map((v) => `${v.reason} ${v.schemaPath}${v.detail ? ` (${v.detail})` : ""}`);
+const shot = { playerID: "p1", owners: ["p2"], hits: { p3: 2 }, from: { v: { x: 1, y: 2 } }, ratio: 1 };
+assert.deepEqual(eventFound("Shot", shot), [], "every field in its schema shape");
+assert.deepEqual(eventFound("Shot", { ...shot, ratio: 0.5 }), [], "an integer or a fraction is a number");
+// The pre-#154 identifier shape is the wrong type, wherever it appears.
+assert.deepEqual(eventFound("Shot", { ...shot, playerID: { rawValue: "p1" } }), [
+  "wrong type events.Shot.playerID (schema string, received object)",
+]);
+assert.deepEqual(eventFound("Shot", { ...shot, owners: [{ rawValue: "p2" }] }), [
+  "wrong type events.Shot.owners.* (schema string, received object)",
+]);
+// The old key/value array form of an identifier-keyed map.
+assert.deepEqual(eventFound("Shot", { ...shot, hits: [{ rawValue: "p3" }, 2] }), [
+  "wrong type events.Shot.hits (schema object, received array)",
+]);
+assert.deepEqual(eventFound("Shot", { ...shot, from: { v: { x: "1", y: 2 } } }), [
+  "wrong type events.Shot.from.v.x (schema integer, received string)",
+]);
+assert.deepEqual(eventFound("Shot", { ...shot, extra: 1 }), ["not in schema events.Shot.extra"]);
+assert.deepEqual(eventFound("Unknown", {}), ["event not in schema events.Unknown"]);
+assert.deepEqual(checkEventPayload(eventSchema, "other", "Shot", { playerID: {} }), [], "an unknown land is not checked");
+
+// The GameDemo schema: PlayerShoot's playerID is a string.
+const gameEvent = (payload: unknown) => checkEventPayload(game, "hero-defense", "PlayerShoot", payload).map((v) => `${v.reason} ${v.schemaPath}`);
+const shotPosition = { v: { x: 1000, y: 2000 } };
+assert.deepEqual(gameEvent({ playerID: "p1", from: shotPosition, to: shotPosition }), []);
+assert.deepEqual(gameEvent({ playerID: { rawValue: "p1" }, from: shotPosition, to: shotPosition }), ["wrong type events.PlayerShoot.playerID"]);
 
 console.log("schema conformance unit tests passed");

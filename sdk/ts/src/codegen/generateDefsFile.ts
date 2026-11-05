@@ -174,14 +174,6 @@ export function generateDefsTs(schema: ProtocolSchema): string {
   for (const name of nonOptionalDefs) {
     const def = schema.defs[name]
     
-    // Special handling for PlayerID: Swift struct has rawValue: String property
-    // but schema may not include it, so we define it explicitly
-    if (name === 'PlayerID') {
-      lines.push('// PlayerID is a Swift struct with rawValue: String property')
-      lines.push('export type PlayerID = { rawValue: string }')
-      continue
-    }
-    
     const tsType = mapSchemaDefToTsType(def, ctx)
     // Add @ts-ignore for types that use DeterministicMath classes in type positions
     // This suppresses TypeScript's false positive warnings about unused imports

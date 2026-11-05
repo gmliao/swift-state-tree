@@ -1,5 +1,7 @@
 // Schema conformance (#175): every field a client receives must exist in the land's schema and
-// must not be server-only there. Independent of the server's own conversion, which both the
+// must not be server-only there. Server event payloads (#154) are also checked for value types,
+// so a field sent in another shape than its schema says (a PlayerID as an object, not a string)
+// is caught on the wire, whichever frame carried the event. Independent of the server's own conversion, which both the
 // convergence check (server projection) and the replay verifier share, so a field the server
 // should never send is caught on the wire.
 
@@ -19,7 +21,7 @@ interface SchemaNode {
 
 export interface ConformanceSchema {
   defs: Record<string, SchemaNode>;
-  lands: Record<string, { stateType: string }>;
+  lands: Record<string, { stateType: string; events?: Record<string, SchemaNode> }>;
 }
 
 export interface ConformanceViolation {
@@ -27,7 +29,9 @@ export interface ConformanceViolation {
   path: string;
   /** The schema path with map keys and indices as `*` (e.g. `players.*.lastFireTick`). */
   schemaPath: string;
-  reason: "not in schema" | "server-only";
+  reason: "not in schema" | "server-only" | "wrong type" | "event not in schema";
+  /** For "wrong type": what the schema says and what arrived. */
+  detail?: string;
 }
 
 /** Follows `$ref` and optional wrappers to the node that describes a present value. */
@@ -143,6 +147,80 @@ export function checkPatch(
   return out;
 }
 
+/** The JSON type of `value` as a schema would name it. */
+function jsonType(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  if (typeof value === "number") return Number.isInteger(value) ? "integer" : "number";
+  return typeof value;
+}
+
+/** Whether a value of JSON type `actual` is what a schema `type` allows. */
+function typeMatches(expected: string, actual: string): boolean {
+  if (expected === actual) return true;
+  return expected === "number" && actual === "integer";
+}
+
+/** Value-type and key violations of `value` against `node`, recursively. */
+function checkTypedValue(
+  schema: ConformanceSchema,
+  node: SchemaNode | undefined,
+  value: unknown,
+  path: string[],
+  schemaPath: string[],
+  out: ConformanceViolation[]
+): void {
+  value = wireValue(value);
+  const resolved = resolve(schema, node);
+  if (!resolved || value === null || value === undefined) return;
+  const at = { path: "/" + path.join("/"), schemaPath: schemaPath.join(".") };
+  const expected = resolved.type ?? (resolved.properties || resolved.additionalProperties ? "object" : undefined);
+  const actual = jsonType(value);
+  if (expected && !typeMatches(expected, actual)) {
+    out.push({ ...at, reason: "wrong type", detail: `schema ${expected}, received ${actual}` });
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, i) => checkTypedValue(schema, resolved.items, item, [...path, String(i)], [...schemaPath, "*"], out));
+    return;
+  }
+  if (actual !== "object") return;
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (resolved.properties) {
+      const property = resolved.properties[key];
+      if (!property) {
+        out.push({ path: at.path + "/" + key, schemaPath: [...schemaPath, key].join("."), reason: "not in schema" });
+        continue;
+      }
+      checkTypedValue(schema, property, child, [...path, key], [...schemaPath, key], out);
+    } else if (resolved.additionalProperties && typeof resolved.additionalProperties === "object") {
+      checkTypedValue(schema, resolved.additionalProperties, child, [...path, key], [...schemaPath, "*"], out);
+    }
+  }
+}
+
+/**
+ * Violations in one server event payload (#154): the event must be declared for the land, and
+ * every field must be declared and of its schema type. Paths start at `event:<type>`.
+ */
+export function checkEventPayload(
+  schema: ConformanceSchema,
+  landType: string,
+  eventType: string,
+  payload: unknown
+): ConformanceViolation[] {
+  const land = schema.lands[landType];
+  if (!land) return [];
+  const root = [`event:${eventType}`];
+  const node = land.events?.[eventType];
+  if (!node) {
+    return [{ path: "/" + root.join("/"), schemaPath: `events.${eventType}`, reason: "event not in schema" }];
+  }
+  const out: ConformanceViolation[] = [];
+  checkTypedValue(schema, node, payload, root, [`events.${eventType}`], out);
+  return out;
+}
+
 /** Violations in a whole client state. */
 export function checkState(schema: ConformanceSchema, landType: string, state: unknown): ConformanceViolation[] {
   const land = schema.lands[landType];
@@ -153,8 +231,10 @@ export function checkState(schema: ConformanceSchema, landType: string, state: u
 }
 
 /**
- * Checks every state update the view receives (firstSync and diffs) before it is applied.
- * Returns a function that reports the violations seen so far, once per schema path.
+ * Checks every state update the view receives (firstSync and diffs) before it is applied, and
+ * every server event payload (from event frames and from state updates with merged events)
+ * before the SDK decodes it. Returns a function that reports the violations seen so far, once
+ * per schema path.
  */
 export function watchSchemaConformance(
   view: StateTreeView,
@@ -168,12 +248,22 @@ export function watchSchemaConformance(
     throw new Error("schema conformance: StateTreeView.handleStateUpdate not found");
   }
   const seen = new Map<string, ConformanceViolation>();
+  const record = (violation: ConformanceViolation) => {
+    const key = `${violation.reason} ${violation.schemaPath}`;
+    if (!seen.has(key)) seen.set(key, violation);
+  };
+  const events = view as unknown as { decodeEventPayload?: (eventType: string, payload: unknown) => unknown };
+  const originalDecode = events.decodeEventPayload;
+  if (typeof originalDecode !== "function") {
+    throw new Error("schema conformance: StateTreeView.decodeEventPayload not found");
+  }
+  events.decodeEventPayload = function (this: unknown, eventType: string, payload: unknown) {
+    checkEventPayload(schema, landType, eventType, payload).forEach(record);
+    return originalDecode.call(this, eventType, payload);
+  };
   target.handleStateUpdate = function (this: unknown, update: Update) {
     for (const patch of update.patches ?? []) {
-      for (const violation of checkPatch(schema, landType, patch)) {
-        const key = `${violation.reason} ${violation.schemaPath}`;
-        if (!seen.has(key)) seen.set(key, violation);
-      }
+      checkPatch(schema, landType, patch).forEach(record);
     }
     return original.call(this, update);
   };
@@ -182,6 +272,6 @@ export function watchSchemaConformance(
 
 export function formatViolations(clientName: string, violations: ConformanceViolation[]): string[] {
   return violations.map(
-    (v) => `${SCHEMA_VIOLATION_MARKER} ${clientName}: ${v.schemaPath} (${v.reason}; first at ${v.path})`
+    (v) => `${SCHEMA_VIOLATION_MARKER} ${clientName}: ${v.schemaPath} (${v.reason}${v.detail ? `: ${v.detail}` : ""}; first at ${v.path})`
   );
 }
