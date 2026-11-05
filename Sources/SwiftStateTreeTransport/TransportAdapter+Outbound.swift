@@ -144,13 +144,14 @@ extension TransportAdapter {
     private static func completes(by deadline: ContinuousClock.Instant, _ operation: @escaping @Sendable () async -> Void) async -> Bool {
         await withCheckedContinuation { (result: CheckedContinuation<Bool, Never>) in
             let once = OutboundResumeOnce(result)
+            let timer = Task {
+                try? await safeTaskSleep(for: max(.zero, deadline - ContinuousClock.now))
+                once.resume(false)
+            }
             Task {
                 await operation()
                 once.resume(true)
-            }
-            Task {
-                try? await safeTaskSleep(for: max(.zero, deadline - ContinuousClock.now))
-                once.resume(false)
+                timer.cancel()
             }
         }
     }

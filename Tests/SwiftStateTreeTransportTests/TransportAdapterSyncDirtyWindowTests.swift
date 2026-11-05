@@ -412,12 +412,17 @@ struct TransportAdapterSyncDirtyWindowTests {
         f.hold.arm()
         let cycle = Task { await f.adapter.syncNow() }
         try await f.hold.waitUntilHeld()
+        // The held cycle's frames are enqueued: let the writer hand them over, so the next
+        // request is not skipped for back-pressure but reaches `beginSync` and is rejected busy.
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
         try await f.set("b", 2)
         await f.adapter.syncNow()  // rejected: the held cycle owns the sync flag; a retry is deferred
         f.hold.arm()  // hold the next cycle to reach the hold point: that deferred retry
         f.hold.release()
         await cycle.value
         try await f.hold.waitUntilHeld()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
+        #expect(await f.adapter.syncSkipCounts() == SyncSkipCounts(busy: 1, outboundBacklog: 0))
 
         // The test's last request arrives while the retry is in flight, so it is rejected too.
         try await f.set("a", 3)
@@ -428,16 +433,17 @@ struct TransportAdapterSyncDirtyWindowTests {
         // What the #142 failure showed: the frames handed over so far end at the retry's copy.
         #expect(early == DirtyWindowClientView(a: 1, b: 2, score: 0, bonus: 0), "client \(early)")
         #expect(server == DirtyWindowClientView(a: 3, b: 2, score: 0, bonus: 0), "server \(server)")
+        #expect(await f.adapter.syncSkipCounts().busy == 2, "both forced requests are rejected busy")
+        // The regression check is the held state above: the outbound drain has returned while the
+        // client is behind. After the release below, the last retry may already have finished
+        // before the test resumes, so the final step alone does not tell the two waits apart.
 
         f.hold.release()
         #expect(await f.adapter.waitForSyncQuiescenceForTesting(), "sync did not settle")
         let client = await f.clientView(from: f.initialView)
         #expect(client == server, "client \(client) must equal server \(server)")
-        // One deferred retry per forced rejection, at least: each was rejected while no retry was
-        // scheduled. Under load a retry can also find the writer still holding a sync cycle
-        // element and defer once more (a back-pressure skip), so the exact count is timing.
-        let retries = await f.adapter.backlogRetryRuns
-        let skips = await f.adapter.syncSkipCounts()
-        #expect(skips.busy >= 2 && retries >= 2, "a retry per rejected request; retries \(retries), skips \(skips)")
+        // A retry per forced rejection, at least: each was rejected while no retry was scheduled.
+        // A retry can itself find the writer busy and defer once more, so the count is a bound.
+        #expect(await f.adapter.backlogRetryRuns >= 2, "a retry per rejected request")
     }
 }
