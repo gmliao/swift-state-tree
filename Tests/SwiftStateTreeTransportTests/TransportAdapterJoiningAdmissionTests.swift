@@ -22,10 +22,23 @@ struct JoiningAdmissionTestEvent: ServerEventPayload {
     let note: String
 }
 
-/// Frames the transport was asked to send, with their targets.
-private actor SentFrames {
+/// The test transport: records every frame with its target in `send`, in send order. (Recording
+/// through a callback in an unstructured Task can reorder frames or miss the latest one.)
+private actor SentFrames: Transport {
+    var delegate: TransportDelegate?
     private(set) var frames: [(data: Data, target: SwiftStateTreeTransport.EventTarget)] = []
-    func append(_ data: Data, _ target: SwiftStateTreeTransport.EventTarget) { frames.append((data, target)) }
+
+    func setDelegate(_ delegate: TransportDelegate?) { self.delegate = delegate }
+    func start() async throws {}
+    func stop() async throws {}
+
+    func send(_ message: Data, to target: SwiftStateTreeTransport.EventTarget) {
+        frames.append((message, target))
+    }
+
+    func sendBatch(_ updates: [(Data, SwiftStateTreeTransport.EventTarget)]) async {
+        for (data, target) in updates { frames.append((data, target)) }
+    }
 
     /// What `sessionID` received, in order: "joinResponse", "firstSync", "diff", "noChange",
     /// "event" or "other".
@@ -95,9 +108,8 @@ private func makeFixture(
                 }
             }
         }
-    let transport = RecordingTransport()
     let sent = SentFrames()
-    await transport.setOnSend { data, target in await sent.append(data, target) }
+    let transport = sent
     let keeper = LandKeeper(
         definition: definition,
         initialState: JoiningAdmissionTestState(),
