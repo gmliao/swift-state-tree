@@ -28,10 +28,26 @@ extension TransportAdapter: LandKeeperTransport {
 
     /// Called by the keeper inside its join, on the shared executor (in-turn sync only; the
     /// keeper never calls it otherwise). `assumeIsolated` traps off that executor.
-    public nonisolated func admitJoiningSession(playerID: PlayerID, clientID: ClientID, sessionID: SessionID) -> Bool {
+    public nonisolated func admitJoiningSession(playerID: PlayerID, clientID: ClientID, sessionID: SessionID, joinSequence: Int64?) -> JoinAdmission {
+        guard inTurnSyncEnabled else { return .notAdmitted }
+        return assumeIsolated { adapter in
+            adapter.admitJoiningSessionIsolated(playerID: playerID, clientID: clientID, sessionID: sessionID, joinSequence: joinSequence)
+        }
+    }
+
+    /// Called by the keeper inside the turn that applied the join inputs (in-turn sync only).
+    public nonisolated func noteJoinInputsConsumed(_ results: [JoinInputResult]) {
+        guard inTurnSyncEnabled else { return }
+        assumeIsolated { adapter in
+            adapter.noteJoinInputsConsumedIsolated(results)
+        }
+    }
+
+    /// Read by the keeper inside its turn (in-turn sync only).
+    public nonisolated var hasJoinsAwaitingSync: Bool {
         guard inTurnSyncEnabled else { return false }
         return assumeIsolated { adapter in
-            adapter.admitJoiningSessionIsolated(playerID: playerID, clientID: clientID, sessionID: sessionID)
+            adapter.hasJoinsAwaitingSyncIsolated()
         }
     }
 

@@ -71,7 +71,22 @@ public protocol LandKeeperTransport: Sendable {
     /// admitted the session; `false` leaves the admission to the join's caller after the join
     /// returns. An implementation that is an actor enters its own isolation with
     /// `assumeIsolated`.
-    func admitJoiningSession(playerID: PlayerID, clientID: ClientID, sessionID: SessionID) -> Bool
+    ///
+    /// `joinSequence` is the sequence of the join's OnJoin input, `nil` when the join has none
+    /// (its insert is the whole join). The keeper reports it again when a turn consumes it
+    /// (`noteJoinInputsConsumed`).
+    func admitJoiningSession(playerID: PlayerID, clientID: ClientID, sessionID: SessionID, joinSequence: Int64?) -> JoinAdmission
+
+    /// The join inputs (OnJoin) a keeper turn just applied, in order, each with whether its
+    /// handler threw. Called by the keeper inside the turn that applied them (input, tick or
+    /// drain turn), after the inputs and before the turn's output step, only when
+    /// `runsSyncPhaseInTurn(of:)` is `true` for the caller and the keeper is live. Synchronous.
+    func noteJoinInputsConsumed(_ results: [JoinInputResult])
+
+    /// Whether an admitted join is ready to complete and waits for a committed sync phase
+    /// (in-turn joins, #69). A keeper without periodic sync runs a sync phase for it. Read inside
+    /// the keeper's turn; synchronous.
+    var hasJoinsAwaitingSync: Bool { get }
 
     /// Returns once the outbound writer no longer holds a state element from an earlier sync
     /// phase. A keeper without periodic sync waits on it before retrying a sync phase that was
@@ -149,7 +164,13 @@ extension LandKeeperTransport {
     public func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { false }
 
     /// Default: nothing is admitted; the join's caller admits after the join returns.
-    public func admitJoiningSession(playerID: PlayerID, clientID: ClientID, sessionID: SessionID) -> Bool { false }
+    public func admitJoiningSession(playerID: PlayerID, clientID: ClientID, sessionID: SessionID, joinSequence: Int64?) -> JoinAdmission { .notAdmitted }
+
+    /// Default: nothing.
+    public func noteJoinInputsConsumed(_ results: [JoinInputResult]) {}
+
+    /// Default: none.
+    public var hasJoinsAwaitingSync: Bool { false }
 
     /// Default: returns immediately.
     public func waitForWriterDrainForInTurnSync() async {}
@@ -170,3 +191,29 @@ extension LandKeeperTransport {
     }
 }
 
+/// What `LandKeeperTransport.admitJoiningSession` did.
+public enum JoinAdmission: Sendable, Equatable {
+    /// Not admitted: the join's caller admits after the join returns.
+    case notAdmitted
+    /// Admitted; the join's caller completes the join after it returns (the join awaits its
+    /// OnJoin turn as before).
+    case admitted
+    /// Admitted, and the transport completes the join in a turn (#69): the keeper doesn't await
+    /// the OnJoin turn; the transport learns of it through `noteJoinInputsConsumed`.
+    case admittedCompletesInTurn
+
+    public var isAdmitted: Bool { self != .notAdmitted }
+}
+
+/// A join input (OnJoin) a keeper turn applied (`LandKeeperTransport.noteJoinInputsConsumed`).
+public struct JoinInputResult: Sendable, Equatable {
+    /// The input's sequence, as passed to `admitJoiningSession(joinSequence:)`.
+    public let sequence: Int64
+    /// OnJoin threw: the keeper removed the input and the player it inserted.
+    public let failed: Bool
+
+    public init(sequence: Int64, failed: Bool) {
+        self.sequence = sequence
+        self.failed = failed
+    }
+}

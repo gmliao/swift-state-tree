@@ -50,6 +50,14 @@ struct SyncPhaseRecipient: Sendable {
     let playerID: PlayerID
 }
 
+/// A ready in-turn join flipped by a full sync phase (#69): its firstSync is planned from the
+/// turn's end state with the others' diffs, and its frames follow theirs.
+struct SyncPhaseJoiner: Sendable {
+    let recipient: SyncPhaseRecipient
+    let ticket: Ticket<SessionID>
+    let joinResponse: Data
+}
+
 /// A state update that failed to encode (`TransportAdapter.encodeUpdatesSerially`).
 struct SyncPhaseEncodeFailure: Sendable {
     let sessionID: SessionID
@@ -140,6 +148,9 @@ struct SyncPhasePlan {
     /// The plan encoded a merged broadcast frame with state patches: the shared broadcast key
     /// table may hold slots from here on (`broadcastKeysMayBeDefined`).
     var encodesBroadcastPatches = false
+    /// In-turn joins this plan flips (#69): the commit ends their joining and resumes their
+    /// waiters. Their frames (JoinResponse, then firstSync) are in `frames`.
+    var flips: [(sessionID: SessionID, ticket: Ticket<SessionID>)] = []
     /// Change-object metric input; `nil` when metrics are not collected.
     var metrics: SyncPhaseMetrics?
     var broadcastOnlyLog: SyncPhaseBroadcastLog?
@@ -235,6 +246,9 @@ struct SyncOutputRead {
 
 /// Where a `TransportAdapter` awaits its test hold hook (`installHolds`).
 enum TransportAdapterHoldPoint: Hashable, Sendable {
+    /// An in-turn join (#69) after its admission and before `registerSession`: admitted, its
+    /// OnJoin may be consumed, but it can't flip yet.
+    case registerSession
     /// A failed plan's delayed follow-up, before its `syncNow()`, so a test decides when that
     /// cycle runs instead of racing its 100 ms delay.
     case failedPlanFollowUp
@@ -479,6 +493,72 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let playerID: PlayerID
         let playerSlot: Int32
         let ticket: Ticket<SessionID>
+        /// Set when the join completes in a turn (in-turn path with a JoinResponse builder):
+        /// the session flips to joined in the commit of a full sync phase.
+        var inTurn: InTurnJoin?
+    }
+
+    /// A join that completes in a turn (#69): its JoinResponse and firstSync are frames of the
+    /// first committed full sync phase after it is ready (`isReadyToFlip`).
+    struct InTurnJoin: Sendable {
+        /// The OnJoin input's sequence; nil when the join has none.
+        let joinSequence: Int64?
+        /// Admission order: ready joins flip first in, first out.
+        let order: UInt64
+        /// The JSON JoinResponse frame, built in the admission segment.
+        let joinResponse: Data
+        /// A turn applied the OnJoin input (or the join has none).
+        var consumed: Bool
+        /// The session is registered with the transport (`registerSession` returned).
+        var transportRegistered = false
+        /// The join failed (its waiter got the reason); it never flips. The session stays
+        /// excluded until its disconnect removes the record.
+        var failed = false
+
+        var isReadyToFlip: Bool { consumed && transportRegistered && !failed }
+    }
+
+    /// The waiter of a join that completes in a turn (`awaitJoined`), created at admission. The
+    /// flip or a failure resolves it; it may resolve before the join's caller awaits it.
+    final class JoinWaiter {
+        let ticket: Ticket<SessionID>
+        var result: Result<Void, JoinFlipError>?
+        var continuation: CheckedContinuation<Void, any Error>?
+        var timeout: Task<Void, Never>?
+
+        init(ticket: Ticket<SessionID>) {
+            self.ticket = ticket
+        }
+
+        func resolve(_ outcome: Result<Void, JoinFlipError>) {
+            guard result == nil else { return }
+            result = outcome
+            timeout?.cancel()
+            timeout = nil
+            if let continuation {
+                self.continuation = nil
+                continuation.resume(with: outcome.mapError { $0 as any Error })
+            }
+        }
+    }
+
+    /// Waiters of joins that complete in a turn, by session (`awaitJoined` removes them).
+    private var joinWaiters: [SessionID: JoinWaiter] = [:]
+    /// Next admission order of an in-turn join.
+    private var nextInTurnJoinOrder: UInt64 = 0
+    /// Joins flipped in a committed sync phase so far, and failures by reason (diagnostics).
+    private(set) var inTurnJoinFlips = 0
+    private(set) var inTurnJoinFailures: [JoinFlipError: Int] = [:]
+
+    /// Tests only: replaces `JoinFlipConfig.timeout` for joins admitted from now on.
+    private var joinFlipTimeoutForTesting: Duration?
+    /// Tests only: replaces `JoinFlipConfig.budget`.
+    private var joinFlipBudgetForTesting: Int?
+
+    /// Tests only: see `joinFlipTimeoutForTesting` and `joinFlipBudgetForTesting`.
+    func setJoinFlipLimitsForTesting(timeout: Duration?, budget: Int?) {
+        joinFlipTimeoutForTesting = timeout
+        joinFlipBudgetForTesting = budget
     }
 
     /// Sessions admitted by a join and not yet in their initial sync (`.joining`). Recorded in
@@ -491,7 +571,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Joins in `performJoinQueued` waiting for the keeper's in-turn admission callback, with
     /// what the admission needs that the keeper doesn't pass.
-    private var expectedAdmissions: [SessionID: AuthenticatedInfo?] = [:]
+    private var expectedAdmissions: [SessionID: ExpectedAdmission] = [:]
+
+    struct ExpectedAdmission {
+        let authInfo: AuthenticatedInfo?
+        /// Builds the JSON JoinResponse from the final playerID and slot. With it, an in-turn
+        /// admission completes the join in a turn (`InTurnJoin`).
+        let joinResponse: (@Sendable (PlayerID, Int32) -> Data?)?
+    }
 
     /// Admissions made by the keeper's in-turn callback (tests only).
     private(set) var inTurnAdmissionCountForTesting = 0
@@ -905,6 +992,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // so they cannot reach a later connection that reuses the SessionID.
         connectionGenerations.removeValue(forKey: sessionID)
         endedSessions.insert(sessionID)
+        failInTurnJoin(sessionID: sessionID, reason: .disconnected, removeRecord: true)
         joiningSessions.removeValue(forKey: sessionID)
         sessionTickets.end(sessionID)
         let joinedPlayerID = membershipCoordinator.playerID(for: sessionID)
@@ -1011,6 +1099,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// sync) commits nothing for the destroyed land.
     func endSessionTicketsForTeardown() {
         sessionTickets.endAll()
+        for sessionID in Array(joinWaiters.keys) {
+            failInTurnJoin(sessionID: sessionID, reason: .landClosed)
+        }
     }
 
     // MARK: - Outbound target expansion
@@ -1023,6 +1114,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Whether `sessionID` is admitted and waiting for its initial sync (`joiningSessions`).
     func isJoining(_ sessionID: SessionID) -> Bool {
         joiningSessions[sessionID] != nil
+    }
+
+    /// Whether `sessionID` is admitted by a join that completes in a turn and hasn't flipped.
+    func isJoiningInTurn(_ sessionID: SessionID) -> Bool {
+        joiningSessions[sessionID]?.inTurn != nil
     }
 
     /// This land's sessions of `playerID`, for `.player` frames.
@@ -1097,7 +1193,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private func admitJoining(
         sessionID: SessionID,
         playerID: PlayerID,
-        authInfo: AuthenticatedInfo?
+        authInfo: AuthenticatedInfo?,
+        inTurn: (joinSequence: Int64?, joinResponse: @Sendable (PlayerID, Int32) -> Data?)? = nil
     ) -> Int32 {
         supersedeSessions(of: playerID, keeping: sessionID)
         _ = membershipCoordinator.registerPlayer(
@@ -1108,8 +1205,121 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Allocate playerSlot (uses playerID as accountKey by default)
         let slot = allocatePlayerSlot(accountKey: playerID.rawValue, for: playerID)
         let ticket = sessionTickets.issue(sessionID)
-        joiningSessions[sessionID] = JoiningSession(playerID: playerID, playerSlot: slot, ticket: ticket)
+        var joining = JoiningSession(playerID: playerID, playerSlot: slot, ticket: ticket)
+        if let inTurn, let response = inTurn.joinResponse(playerID, slot) {
+            nextInTurnJoinOrder += 1
+            joining.inTurn = InTurnJoin(
+                joinSequence: inTurn.joinSequence,
+                order: nextInTurnJoinOrder,
+                joinResponse: response,
+                consumed: inTurn.joinSequence == nil
+            )
+            startJoinWaiter(sessionID: sessionID, ticket: ticket)
+        }
+        joiningSessions[sessionID] = joining
         return slot
+    }
+
+    /// The waiter of an in-turn join and its timeout. The timeout runs through the membership
+    /// queue and acts only while the admission's ticket is current and the session still joins.
+    private func startJoinWaiter(sessionID: SessionID, ticket: Ticket<SessionID>) {
+        joinWaiters[sessionID]?.resolve(.failure(.superseded))
+        let waiter = JoinWaiter(ticket: ticket)
+        let timeout = joinFlipTimeoutForTesting ?? JoinFlipConfig.timeout
+        waiter.timeout = Task { [weak self] in
+            guard (try? await safeTaskSleep(for: timeout)) != nil, let adapter = self else { return }
+            try? await adapter.enqueueMembership {
+                await adapter.timeOutJoin(sessionID: sessionID, ticket: ticket)
+            }
+        }
+        joinWaiters[sessionID] = waiter
+    }
+
+    private func timeOutJoin(sessionID: SessionID, ticket: Ticket<SessionID>) {
+        guard joiningSessions[sessionID]?.ticket == ticket, joiningSessions[sessionID]?.inTurn != nil else { return }
+        failInTurnJoin(sessionID: sessionID, reason: .timeout)
+    }
+
+    /// Fails an in-turn join with `reason`: its waiter resumes with it, and the session never
+    /// flips. The record stays (the session remains excluded from recipients) until the
+    /// session's disconnect removes it; `removeRecord` removes it now.
+    private func failInTurnJoin(sessionID: SessionID, reason: JoinFlipError, removeRecord: Bool = false) {
+        if removeRecord {
+            joiningSessions.removeValue(forKey: sessionID)
+        } else {
+            joiningSessions[sessionID]?.inTurn?.failed = true
+        }
+        guard let waiter = joinWaiters[sessionID], waiter.result == nil else { return }
+        inTurnJoinFailures[reason, default: 0] += 1
+        logger.info("Join failed before it completed", metadata: [
+            "sessionID": .string(sessionID.rawValue),
+            "reason": .string("\(reason)"),
+        ])
+        waiter.resolve(.failure(reason))
+    }
+
+    /// Waits until the in-turn join of `sessionID` flips (returns) or fails (throws
+    /// `JoinFlipError`). Returns at once when the session has no such join.
+    func awaitJoined(sessionID: SessionID) async throws {
+        guard let waiter = joinWaiters[sessionID] else { return }
+        defer {
+            if joinWaiters[sessionID] === waiter { joinWaiters.removeValue(forKey: sessionID) }
+        }
+        if let result = waiter.result {
+            try result.get()
+            return
+        }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            if let result = waiter.result {
+                continuation.resume(with: result.mapError { $0 as any Error })
+            } else {
+                waiter.continuation = continuation
+            }
+        }
+    }
+
+    /// Ready in-turn joins (consumed, registered, current), first in first out, at most `limit`.
+    private func readyInTurnJoins(limit: Int) -> [(sessionID: SessionID, joining: JoiningSession)] {
+        joiningSessions
+            .filter { entry in
+                guard let inTurn = entry.value.inTurn, inTurn.isReadyToFlip else { return false }
+                return sessionTickets.isCurrent(entry.value.ticket)
+            }
+            .map { (sessionID: $0.key, joining: $0.value) }
+            .sorted { ($0.joining.inTurn?.order ?? 0) < ($1.joining.inTurn?.order ?? 0) }
+            .prefix(limit)
+            .map { $0 }
+    }
+
+    /// `LandKeeperTransport.noteJoinInputsConsumed`, on the keeper's executor.
+    func noteJoinInputsConsumedIsolated(_ results: [JoinInputResult]) {
+        for result in results {
+            guard let (sessionID, _) = joiningSessions.first(where: { $0.value.inTurn?.joinSequence == result.sequence }) else {
+                continue
+            }
+            if result.failed {
+                failInTurnJoin(sessionID: sessionID, reason: .onJoinFailed)
+            } else {
+                joiningSessions[sessionID]?.inTurn?.consumed = true
+            }
+        }
+    }
+
+    /// Whether `sessionID`'s in-turn join has registered with the transport (tests only).
+    func isInTurnJoinRegisteredForTesting(_ sessionID: SessionID) -> Bool {
+        joiningSessions[sessionID]?.inTurn?.transportRegistered == true
+    }
+
+    /// Whether a join is ready to flip (tests only).
+    func hasJoinsAwaitingSyncForTesting() -> Bool {
+        hasJoinsAwaitingSyncIsolated()
+    }
+
+    /// `LandKeeperTransport.hasJoinsAwaitingSync`, on the keeper's executor.
+    func hasJoinsAwaitingSyncIsolated() -> Bool {
+        joiningSessions.values.contains { joining in
+            joining.inTurn?.isReadyToFlip == true && sessionTickets.isCurrent(joining.ticket)
+        }
     }
 
     /// Sessions superseded by a newer join of their player so far.
@@ -1133,7 +1343,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         for old in superseded {
             membershipCoordinator.invalidateMembership(sessionID: old, playerID: playerID)
             membershipCoordinator.unregisterSession(sessionID: old)
-            joiningSessions.removeValue(forKey: old)
+            failInTurnJoin(sessionID: old, reason: .superseded, removeRecord: true)
             sessionTickets.end(old)
             connectionGenerations.removeValue(forKey: old)
             endedSessions.insert(old)
@@ -1153,11 +1363,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// The keeper's in-turn admission (`LandKeeperTransport.admitJoiningSession`), on the
     /// keeper's executor. Admits only a join `performJoinQueued` is waiting for.
-    func admitJoiningSessionIsolated(playerID: PlayerID, clientID: ClientID, sessionID: SessionID) -> Bool {
-        guard let authInfo = expectedAdmissions.removeValue(forKey: sessionID) else { return false }
-        _ = admitJoining(sessionID: sessionID, playerID: playerID, authInfo: authInfo)
+    func admitJoiningSessionIsolated(playerID: PlayerID, clientID: ClientID, sessionID: SessionID, joinSequence: Int64?) -> JoinAdmission {
+        guard let expected = expectedAdmissions.removeValue(forKey: sessionID) else { return .notAdmitted }
+        _ = admitJoining(
+            sessionID: sessionID,
+            playerID: playerID,
+            authInfo: expected.authInfo,
+            inTurn: expected.joinResponse.map { (joinSequence: joinSequence, joinResponse: $0) }
+        )
         inTurnAdmissionCountForTesting += 1
-        return true
+        return joiningSessions[sessionID]?.inTurn != nil ? .admittedCompletesInTurn : .admitted
     }
 
     /// Undoes an admission whose join then failed (the keeper's join threw after admitting):
@@ -1166,6 +1381,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// can send another join on it.
     private func abandonJoining(sessionID: SessionID) {
         guard let joining = joiningSessions.removeValue(forKey: sessionID) else { return }
+        // The join's caller gets the join's error; nobody awaits this waiter.
+        joinWaiters.removeValue(forKey: sessionID)?.resolve(.failure(.disconnected))
         sessionTickets.end(joining.ticket)
         membershipCoordinator.removeJoinedPlayer(sessionID: sessionID)
         if membershipCoordinator.sessionIDs(for: joining.playerID).isEmpty {
@@ -1270,26 +1487,42 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         public let sessionID: SessionID
         /// Deterministic slot (Int32) for efficient transport encoding
         public let playerSlot: Int32
+        /// The join completed in a turn (#69): its JoinResponse and firstSync were sent in the
+        /// commit of a sync phase, after OnJoin. The caller sends neither. When false, the
+        /// caller sends the JoinResponse, then calls `syncStateForNewPlayer`.
+        public var completedInTurn: Bool = false
     }
 
     /// - Parameter connectionGeneration: The transport connection generation read when the
     ///   session's connection was accepted (see `connectionGenerations`); `nil` reads it now.
+    ///
+    /// - Parameter joinResponse: Builds the JSON JoinResponse frame from the final playerID and
+    ///   slot. With it, on the in-turn path (in-turn sync, a live keeper that admits in its join),
+    ///   the join completes in a turn (#69): this method returns once the session's JoinResponse
+    ///   and firstSync were committed after OnJoin (`completedInTurn`), or throws
+    ///   `JoinFlipError`. The membership queue is not held while it waits.
     public func performJoin(
         playerSession: PlayerSession,
         clientID: ClientID,
         sessionID: SessionID,
         authInfo: AuthenticatedInfo?,
-        connectionGeneration: UInt64? = nil
+        connectionGeneration: UInt64? = nil,
+        joinResponse: (@Sendable (PlayerID, Int32) -> Data?)? = nil
     ) async throws -> JoinResult? {
-        try await enqueueMembership {
+        guard let result = try await enqueueMembership({
             try await self.performJoinQueued(
                 playerSession: playerSession,
                 clientID: clientID,
                 sessionID: sessionID,
                 authInfo: authInfo,
-                connectionGeneration: connectionGeneration
+                connectionGeneration: connectionGeneration,
+                joinResponse: joinResponse
             )
+        }) else { return nil }
+        if result.completedInTurn {
+            try await awaitJoined(sessionID: sessionID)
         }
+        return result
     }
 
     private func performJoinQueued(
@@ -1297,12 +1530,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         clientID: ClientID,
         sessionID: SessionID,
         authInfo: AuthenticatedInfo?,
-        connectionGeneration: UInt64?
+        connectionGeneration: UInt64?,
+        joinResponse: (@Sendable (PlayerID, Int32) -> Data?)?
     ) async throws -> JoinResult? {
         // Attempt to join (updates keeper.players). On the in-turn path the keeper admits the
         // session inside the join, in the segment of its state change (`admitJoiningSession`);
         // otherwise it is admitted below, right after the join returns, before any await.
-        expectedAdmissions[sessionID] = authInfo
+        expectedAdmissions[sessionID] = ExpectedAdmission(authInfo: authInfo, joinResponse: joinResponse)
         defer { expectedAdmissions.removeValue(forKey: sessionID) }
         let outcome: LandKeeper<State>.JoinOutcome
         do {
@@ -1328,6 +1562,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 slot = admitJoining(sessionID: sessionID, playerID: playerID, authInfo: authInfo)
             }
 
+            let admittedTicket = joiningSessions[sessionID]?.ticket
+            let completesInTurn = outcome.admitted && joiningSessions[sessionID]?.inTurn != nil
+            if completesInTurn {
+                // Admitted and not yet registered with the transport: not ready to flip.
+                await holds.at(.registerSession)
+            }
+
             // Register session
             await registerSession(
                 sessionID: sessionID,
@@ -1336,6 +1577,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 authInfo: authInfo,
                 connectionGeneration: connectionGeneration
             )
+
+            if completesInTurn {
+                // Ready once registered (and its OnJoin consumed): a land without periodic
+                // sync runs the sync phase that flips it; one with it flips at its next sync.
+                // Same segment as the check: the record must still be this admission's.
+                if let ticket = admittedTicket, joiningSessions[sessionID]?.ticket == ticket {
+                    joiningSessions[sessionID]?.inTurn?.transportRegistered = true
+                }
+                await keeper.requestJoinSyncTurn()
+                var result = JoinResult(playerID: playerID, sessionID: sessionID, playerSlot: slot)
+                result.completedInTurn = true
+                return result
+            }
 
             // NOTE: Initial state snapshot is NOT sent here anymore.
             // The caller should:
@@ -1746,8 +2000,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         // Read once: the auto-switch in the commit may change `enableDirtyTracking`.
         let clearDirtyFlags = enableDirtyTracking
+        let joiners = readyInTurnJoins(limit: joinFlipBudgetForTesting ?? JoinFlipConfig.budget).map { entry in
+            SyncPhaseJoiner(
+                recipient: SyncPhaseRecipient(sessionID: entry.sessionID, playerID: entry.joining.playerID),
+                ticket: entry.joining.ticket,
+                joinResponse: entry.joining.inTurn?.joinResponse ?? Data()
+            )
+        }
         do {
-            try runFullSyncPhase(state: state, read: inTurnSyncOutputRead())
+            try runFullSyncPhase(state: state, read: inTurnSyncOutputRead(), joiners: joiners)
             consecutiveFailedPlans = 0
             return .committed(clearDirtyFlags: clearDirtyFlags)
         } catch {
@@ -2190,12 +2451,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// One full sync cycle on `state`: plan, then commit. If the plan throws, the dirty fields
     /// this cycle's `beginSync` cleared are carried into the next plan.
-    private func runFullSyncPhase(state: State, read: SyncOutputRead? = nil) throws {
+    private func runFullSyncPhase(state: State, read: SyncOutputRead? = nil, joiners: [SyncPhaseJoiner] = []) throws {
         do {
             try runSyncPhase(read: read) {
                 try planSyncPhase(
                     state: state,
                     recipients: syncPhaseRecipients(),
+                    joiners: joiners,
                     events: pendingEventManager,
                     fullSnapshot: syncStrategy == .fullSnapshot,
                     resetsKeyScopes: keyScopeResetPending
@@ -2448,6 +2710,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         if plan.skippedJoiner {
             noteFailedPlanForFollowUp()
         }
+        // The flips (#69), in the commit's segment: the joins end, their waiters resume.
+        for flip in plan.flips where joiningSessions[flip.sessionID]?.ticket == flip.ticket {
+            joiningSessions.removeValue(forKey: flip.sessionID)
+            inTurnJoinFlips += 1
+            joinWaiters[flip.sessionID]?.resolve(.success(()))
+        }
         if plan.droppedUpdates > 0 {
             syncDroppedUpdates += plan.droppedUpdates
             profilerCounters?.incrementSyncDroppedUpdates(by: plan.droppedUpdates)
@@ -2512,6 +2780,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private func planSyncPhase(
         state: State,
         recipients: [SyncPhaseRecipient],
+        joiners: [SyncPhaseJoiner] = [],
         events: PendingEventManager,
         fullSnapshot: Bool,
         resetsKeyScopes: Bool
@@ -2619,6 +2888,22 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 plan.digest?.seeds[recipient.playerID] = seed
             }
         }
+        // Flipping joiners (#69): their whole view from the turn's end state, a seed each, like
+        // the unsynced recipients above. They are not recipients of the merged broadcast frame
+        // or of targeted events: that state is in their firstSync.
+        var joinerUpdates: [PendingSyncUpdate] = []
+        for joiner in joiners {
+            let dropsBefore = drops.count
+            let viewFieldsBefore = drops.viewFields.count
+            let update = planFullViewUpdate(state: state, recipient: joiner.recipient, staged: &plan.staged, drops: &drops)
+            joinerUpdates.append(update)
+            if plan.digest != nil {
+                var seed = SyncOutputDigestInput.SeedDigest(patches: update.update.patchesForDroppingEncode)
+                if drops.count != dropsBefore { seed.drops.insert(.extraction) }
+                seed.dropFields = Array(drops.viewFields[viewFieldsBefore...])
+                plan.digest?.seeds[joiner.recipient.playerID] = seed
+            }
+        }
         // After the full views: their drops are this plan's extraction drops too.
         plan.digest?.noteDrops(drops)
         plan.noteExtractionDrops(drops)
@@ -2632,6 +2917,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             events: events,
             into: &plan
         )
+        if !joiners.isEmpty {
+            planJoinerFrames(joinerUpdates, joiners: joiners, events: events, into: &plan)
+        }
 
         try syncPlanFaultForTesting?()
         return plan
@@ -2796,10 +3084,41 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// and that one frame goes to every session of the player: the re-encode resets the player's
     /// key table, so every session's client must reset its map with it. Only the bad values are
     /// lost; before plan + commit the whole update was lost.
+    /// The flipping joiners' frames, after everyone else's: per joiner its JoinResponse, then
+    /// its firstSync (#69). A firstSync that does not encode even empty leaves the joiner
+    /// unmarked (`skippedJoiner`): it still flips, and the next full cycle gives it its whole
+    /// view from empty.
+    private func planJoinerFrames(
+        _ updates: [PendingSyncUpdate],
+        joiners: [SyncPhaseJoiner],
+        events: PendingEventManager,
+        into plan: inout SyncPhasePlan
+    ) {
+        // A flipping joiner is left out of this plan's merged broadcast frame and gets a
+        // per-player firstSync only, so its broadcast key map ends empty, as after
+        // `planFirstSync`: the commit requests the same key scope reset (#90).
+        plan.needsBroadcastKeyReset = usesBroadcastKeyTable
+        let start = plan.frames.count
+        planPerPlayerFrames(updates, recipients: joiners.map(\.recipient), events: events, includesEvents: false, into: &plan)
+        let firstSyncFrames = Array(plan.frames[start...])
+        plan.frames.removeSubrange(start...)
+        for joiner in joiners {
+            let sessionID = joiner.recipient.sessionID
+            plan.frames.append(SyncPhaseFrame(data: joiner.joinResponse, sessionID: sessionID))
+            let own = firstSyncFrames.filter { $0.sessionID == sessionID }
+            if own.isEmpty {
+                plan.skippedJoiner = true
+            }
+            plan.frames.append(contentsOf: own)
+            plan.flips.append((sessionID: sessionID, ticket: joiner.ticket))
+        }
+    }
+
     private func planPerPlayerFrames(
         _ pendingUpdates: [PendingSyncUpdate],
         recipients: [SyncPhaseRecipient],
         events: PendingEventManager,
+        includesEvents: Bool = true,
         into plan: inout SyncPhasePlan
     ) {
         var payloadBySession: [SessionID: Data] = [:]
@@ -2847,10 +3166,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
 
         let targetedEnd = useStateUpdateWithEvents ? events.targetedEventCount : 0
-        if useStateUpdateWithEvents {
+        if useStateUpdateWithEvents && includesEvents {
             plan.consumedEvents.targeted = targetedEnd
         }
-        let hasTargetedEvents = useStateUpdateWithEvents && events.hasTargetedEvents
+        let hasTargetedEvents = includesEvents && useStateUpdateWithEvents && events.hasTargetedEvents
         for recipient in recipients {
             if hasTargetedEvents {
                 let eventBodies = pendingTargetedEventBodies(

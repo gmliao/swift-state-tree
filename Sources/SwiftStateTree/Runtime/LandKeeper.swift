@@ -1401,7 +1401,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // so they are not added to game state (which would create an extra player in the replay).
         guard isFirst, definition.lifetimeHandlers.onJoin != nil, mode != .reevaluation else {
             // No OnJoin input: admitted in the same segment as the insert.
-            let admitted = admitThroughTransport && admitJoiningInTurn(playerID: playerID, clientID: clientID, sessionID: sessionID)
+            let admitted = admitThroughTransport && admitJoiningInTurn(playerID: playerID, clientID: clientID, sessionID: sessionID, joinSequence: nil).isAdmitted
             return JoinOutcome(decision: decision, admitted: admitted)
         }
 
@@ -1466,11 +1466,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         )
         pendingItems.append(pendingItem)
         // Admitted in the same segment as the append, before the OnJoin turn can run.
-        let admitted = admitThroughTransport && admitJoiningInTurn(playerID: playerID, clientID: clientID, sessionID: sessionID)
+        let admission: JoinAdmission = admitThroughTransport
+            ? admitJoiningInTurn(playerID: playerID, clientID: clientID, sessionID: sessionID, joinSequence: sequence)
+            : .notAdmitted
+        let admitted = admission.isAdmitted
 
         // If there's no tick handler, process lifecycle immediately (backward-compatible mode)
         if definition.lifetimeHandlers.tickHandler == nil {
-            if usesInTurnSync {
+            if admission == .admittedCompletesInTurn {
+                // Admitted in the turn: the transport completes the join when a turn consumes
+                // the input (`noteJoinInputsConsumed`) and a sync phase commits for it. Nobody
+                // awaits the input turn here, so it is scheduled in this segment.
+                scheduleInputDrain()
+            } else if usesInTurnSync {
                 _ = try await awaitInputTurn(sequence: sequence)
             } else {
                 _ = try await runLegacyPass(for: sequence)
@@ -1504,9 +1512,31 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The transport's admission of a joining session, only on the in-turn path (the transport
     /// shares this keeper's executor, so its synchronous call can't trap). Synchronous: called in
     /// the segment of the state change it belongs to.
-    private func admitJoiningInTurn(playerID: PlayerID, clientID: ClientID, sessionID: SessionID) -> Bool {
-        guard usesInTurnSync, let transport else { return false }
-        return transport.admitJoiningSession(playerID: playerID, clientID: clientID, sessionID: sessionID)
+    private func admitJoiningInTurn(playerID: PlayerID, clientID: ClientID, sessionID: SessionID, joinSequence: Int64?) -> JoinAdmission {
+        guard usesInTurnSync, let transport else { return .notAdmitted }
+        return transport.admitJoiningSession(playerID: playerID, clientID: clientID, sessionID: sessionID, joinSequence: joinSequence)
+    }
+
+    /// Reports the join inputs a turn applied to an in-turn transport (`noteJoinInputsConsumed`),
+    /// in the segment that applied them. Live keepers only: re-evaluation feeds recorded joins.
+    private func noteJoinInputsConsumed(_ results: [JoinInputResult]) {
+        guard !results.isEmpty, usesInTurnSync, mode == .live, let transport else { return }
+        transport.noteJoinInputsConsumed(results)
+    }
+
+    /// Whether the transport has joins that wait for a committed sync phase, read in a turn.
+    private var transportHasJoinsAwaitingSync: Bool {
+        guard usesInTurnSync, mode == .live, let transport else { return false }
+        return transport.hasJoinsAwaitingSync
+    }
+
+    /// A sync-only turn for joins that wait for a committed sync phase, on a land without
+    /// periodic sync (#69); a land with periodic sync completes them at its next sync. Called by
+    /// the transport when a join became ready outside a turn (its session registered with the
+    /// transport). Does nothing when no join waits.
+    package func requestJoinSyncTurn() async {
+        guard !hasPeriodicSync, transportHasJoinsAwaitingSync, let transport else { return }
+        runSyncOnlyTurn(transport: transport)
     }
 
     /// Inputs rejected by `rejectSenderIfSuperseded` so far.
@@ -2563,14 +2593,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         var applied = AppliedInputs(executingTickId: executingTickId)
         var outcomes: [Int64: Result<AnyCodable, any Error>] = [:]
         var failureCount = 0
+        var joinResults: [JoinInputResult] = []
         for item in items {
             let sequenceBefore = outputCollector.nextSequence
+            let isJoin: Bool
+            if case let .lifecycle(lifecycle) = item, lifecycle.kind == .join { isJoin = true } else { isJoin = false }
             do {
                 switch try applyPendingItem(item, executingTickId: executingTickId, into: &applied) {
                 case .action(let response): outcomes[item.sequence] = .success(response)
                 case .other, .skipped: outcomes[item.sequence] = .success(AnyCodable(()))
                 }
+                if isJoin { joinResults.append(JoinInputResult(sequence: item.sequence, failed: false)) }
             } catch {
+                if isJoin { joinResults.append(JoinInputResult(sequence: item.sequence, failed: true)) }
                 failureCount += 1
                 outcomes[item.sequence] = .failure(error)
                 outputCollector.emittedEvents.removeAll { $0.sequence >= sequenceBefore }
@@ -2582,6 +2617,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
         }
         removePendingItems(items)
+        noteJoinInputsConsumed(joinResults)
         return InputApplication(applied: applied, outcomes: outcomes, failureCount: failureCount)
     }
 
@@ -2900,8 +2936,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         events: [EmittedEvent],
         wantsSync: Bool
     ) {
-        var includeSync = wantsSync
-        if wantsSync && isSyncing {
+        // A land without periodic sync runs the phase for joins waiting on it (#69): the turn
+        // that consumed a join's input completes it in its own output step.
+        var includeSync = wantsSync || (!hasPeriodicSync && transportHasJoinsAwaitingSync)
+        if includeSync && isSyncing {
             includeSync = false
             inTurnSyncDue = false
             syncOnlyTurnAfterLegacyCycle = true
@@ -2929,7 +2967,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 state.clearDirty()
             }
             inTurnSyncDue = false
+            joinSyncRetryFailures = 0
             inTurnProbeForTesting?("sync-committed")
+            // Joins left over a commit's budget: the next sync-only turn completes them.
+            if !hasPeriodicSync && transportHasJoinsAwaitingSync {
+                scheduleJoinSyncTurn(after: .zero)
+            }
         case .skipped:
             inTurnSyncDue = false
         case .deferredBackPressure:
@@ -2942,6 +2985,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             inTurnSyncDue = false
             if repairAllowed && !hasPeriodicSync {
                 scheduleRepairSyncOnlyTurn()
+            } else if !hasPeriodicSync && transportHasJoinsAwaitingSync {
+                // Past the repair limit, joins still wait: retry with a doubling delay, so a plan
+                // that keeps failing gives a bounded number of turns before the joins time out.
+                joinSyncRetryFailures += 1
+                let doublings = min(joinSyncRetryFailures - 1, 16)
+                scheduleJoinSyncTurn(after: Self.inTurnRepairDelay * (1 << doublings))
             }
         case .notRequested, .unsupported:
             break
@@ -3204,6 +3253,33 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func runRetriedSyncOnlyTurn() {
         inTurnDrainRetryPending = false
         runSyncOnlyTurnIfInTurn()
+    }
+
+    /// Failed sync phases in a row that left joins waiting, past the repair limit (backoff).
+    private var joinSyncRetryFailures = 0
+    /// A sync-only turn for waiting joins is scheduled.
+    private var joinSyncTurnPending = false
+    /// Sync-only turns run for waiting joins (tests).
+    private(set) var joinSyncTurnsForTesting = 0
+
+    /// One sync-only turn for joins waiting on a committed sync phase, after `delay` (at most one
+    /// pending). It runs only if joins still wait then.
+    private func scheduleJoinSyncTurn(after delay: Duration) {
+        guard !joinSyncTurnPending else { return }
+        joinSyncTurnPending = true
+        Task { [weak self] in
+            if delay > .zero {
+                try? await safeTaskSleep(for: delay)
+            }
+            await self?.runJoinSyncTurn()
+        }
+    }
+
+    private func runJoinSyncTurn() {
+        joinSyncTurnPending = false
+        guard transportHasJoinsAwaitingSync, let transport else { return }
+        joinSyncTurnsForTesting += 1
+        runSyncOnlyTurn(transport: transport)
     }
 
     /// After a failed plan on a land without periodic sync: one repair sync-only turn after
