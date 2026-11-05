@@ -23,6 +23,10 @@ struct PerSequenceTestState: StateNodeProtocol {
     @Sync(.broadcast)
     var attempts: [String: Int] = [:]
 
+    /// Players whose OnLeave throws (after logging "leaveFailed:<id>", a partial write).
+    @Sync(.broadcast)
+    var failLeave: [String] = []
+
     /// What ran, in order.
     @Sync(.broadcast)
     var log: [String] = []
@@ -102,6 +106,10 @@ private func perSequenceRules() -> RulesNode {
             state.log.append("join:\(ctx.playerID.rawValue)")
         }
         OnLeave { (state: inout PerSequenceTestState, ctx: LandContext) in
+            if state.failLeave.contains(ctx.playerID.rawValue) {
+                state.log.append("leaveFailed:\(ctx.playerID.rawValue)")
+                throw PerSequenceHandlerFailure(tag: "leave")
+            }
             state.log.append("leave:\(ctx.playerID.rawValue)")
         }
         HandleAction(PerSequencePlainAction.self) {
@@ -167,11 +175,13 @@ private func makePerSequenceKeeper(
     tick: Bool = false,
     inTurn: Bool,
     failuresLeft: [String: Int] = [:],
+    failLeave: [String] = [],
     recording: Bool = false,
     transport: (any LandKeeperTransport)? = nil
 ) async -> LandKeeper<PerSequenceTestState> {
     var initial = PerSequenceTestState()
     initial.failuresLeft = failuresLeft
+    initial.failLeave = failLeave
     let keeper = LandKeeper<PerSequenceTestState>(
         definition: makePerSequenceDefinition(tick: tick),
         initialState: initial,
@@ -343,15 +353,11 @@ struct PerSequenceResultTests {
         #expect(await keeper.currentState().log.contains("leave:p2"))
     }
 
-    @Test("Legacy tick with a recorder: a pass with OnJoin, OnLeave and a throwing input is recorded once, in order, and replays")
-    func recordedPassReplays() async throws {
+    @Test("Tick land with a recorder: a pass with OnJoin, OnLeave and a throwing input is recorded once, in order, and replays (ON and OFF)", arguments: [false, true])
+    func recordedPassReplays(inTurn: Bool) async throws {
         let keeper = await makePerSequenceKeeper(
-            tick: true, inTurn: false, failuresLeft: ["w": alwaysThrows], recording: true
+            tick: true, inTurn: inTurn, failuresLeft: ["w": alwaysThrows], recording: true
         )
-        let path = FileManager.default.temporaryDirectory
-            .appendingPathComponent("per-sequence-\(UUID().uuidString).json").path
-        defer { try? FileManager.default.removeItem(atPath: path) }
-
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         await keeper.stepTickOnce()
         // One tick's pass: OnJoin, an action, a throwing action, OnLeave, an action.
@@ -385,16 +391,7 @@ struct PerSequenceResultTests {
         #expect(!String(describing: passFrame.serverEvents.map(\.payload)).contains("-1"))
         #expect(frames.filter { !$0.actions.isEmpty }.count == 1)
 
-        try await recorder.save(to: path)
-        var initial = PerSequenceTestState()
-        initial.failuresLeft = ["w": alwaysThrows]
-        let result = try await ReevaluationEngine.run(
-            definition: makePerSequenceDefinition(tick: true),
-            initialState: initial,
-            recordFilePath: path
-        )
-        #expect(result.serverEventMismatches.isEmpty)
-        #expect(result.tickHashes == result.recordedStateHashes)
+        try await expectReplayMatches(recorder, failuresLeft: ["w": alwaysThrows])
     }
 
     @Test("Tickless: a drain starting after a throwing input's pass: its caller gets its error, a later caller landClosed", arguments: [false, true])
@@ -419,4 +416,77 @@ struct PerSequenceResultTests {
         #expect(failed == "threw w")
         #expect(await keeper.currentState().total == 0)
     }
+
+    @Test("Legacy tickless: a throwing OnLeave fails its caller, the player is removed and the broadcast runs")
+    func throwingOnLeaveStillBroadcasts() async throws {
+        let spy = BroadcastSpyTransport()
+        let keeper = await makePerSequenceKeeper(inTurn: false, failLeave: ["p2"], transport: spy)
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
+        let before = await spy.broadcastSyncs
+
+        await #expect(throws: PerSequenceHandlerFailure(tag: "leave")) {
+            try await keeper.leave(playerID: p2, clientID: c2, sessionID: s2)
+        }
+        #expect(await keeper.playerCount() == 1)
+        #expect(await spy.broadcastSyncs == before + 1)
+        // Its write before the throw stays in the state (and goes out with that sync; #87).
+        #expect(await keeper.currentState().log == ["join:p1", "join:p2", "leaveFailed:p2"])
+        // The land goes on: the next input applies.
+        #expect(await outcome(keeper, PerSequencePlainAction(amount: 3)) == "ok 3")
+    }
+
+    @Test("Tick land with a recorder: a throwing OnLeave is recorded once, in order, and replays (ON and OFF)", arguments: [false, true])
+    func throwingOnLeaveRecordedAndReplays(inTurn: Bool) async throws {
+        let keeper = await makePerSequenceKeeper(
+            tick: true, inTurn: inTurn, failLeave: ["p2"], recording: true
+        )
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
+        await keeper.stepTickOnce()
+        _ = try await send(keeper, PerSequencePlainAction(amount: 2))
+        try await keeper.leave(playerID: p2, clientID: c2, sessionID: s2)
+        _ = try await send(keeper, PerSequencePlainAction(amount: 4))
+        await keeper.stepTickOnce()
+        await keeper.stepTickOnce()
+
+        #expect(await keeper.playerCount() == 1)
+        #expect(await keeper.currentState().log
+            == ["join:p1", "join:p2", "tick", "plain:2", "leaveFailed:p2", "plain:4", "tick", "tick"])
+
+        let recorder = try #require(await keeper.getReevaluationRecorder())
+        let frames = await recorder.getAllFrames()
+        let leaves = frames.flatMap(\.lifecycleEvents).filter { $0.kind == "leave" }
+        #expect(leaves.count == 1)
+        let passFrame = try #require(frames.first { !$0.actions.isEmpty })
+        #expect(passFrame.lifecycleEvents.map(\.kind) == ["leave"])
+        let order = (passFrame.actions.map(\.sequence) + passFrame.lifecycleEvents.map(\.sequence)).sorted()
+        #expect(order.count == 3 && passFrame.lifecycleEvents[0].sequence == order[1])
+        try await expectReplayMatches(recorder, failLeave: ["p2"])
+    }
+}
+
+/// Saves `recorder`'s record and replays it on a tick land; the replay must match the live
+/// state hashes and server events.
+private func expectReplayMatches(
+    _ recorder: ReevaluationRecorder,
+    failuresLeft: [String: Int] = [:],
+    failLeave: [String] = [],
+    sourceLocation: SourceLocation = #_sourceLocation
+) async throws {
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("per-sequence-\(UUID().uuidString).json").path
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    try await recorder.save(to: path)
+    var initial = PerSequenceTestState()
+    initial.failuresLeft = failuresLeft
+    initial.failLeave = failLeave
+    let result = try await ReevaluationEngine.run(
+        definition: makePerSequenceDefinition(tick: true),
+        initialState: initial,
+        recordFilePath: path
+    )
+    #expect(!result.recordedStateHashes.isEmpty, sourceLocation: sourceLocation)
+    #expect(result.serverEventMismatches.isEmpty, sourceLocation: sourceLocation)
+    #expect(result.tickHashes == result.recordedStateHashes, sourceLocation: sourceLocation)
 }

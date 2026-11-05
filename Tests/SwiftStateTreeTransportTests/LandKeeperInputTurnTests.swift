@@ -444,6 +444,8 @@ struct LandKeeperInputTurnTests {
         #expect(on.total == off.total, "state ON \(on.total) vs OFF \(off.total)")
         #expect(on.errors == 1, "only the throwing input's caller gets an error")
         #expect(on.pending.isEmpty, "the throwing input was removed; the one after it applied")
+        // 1, then -5's write before its throw (kept, #87), then 2.
+        #expect(on.total == -2, "state \(on.total)")
     }
 
     @Test("a throw at P in a batch: the input before P succeeds, P fails and is removed (ON vs OFF)")
@@ -477,6 +479,8 @@ struct LandKeeperInputTurnTests {
         #expect(on.first == 1 && off.first == 1, "the input before P succeeds: ON \(String(describing: on.first)) OFF \(String(describing: off.first))")
         #expect(on.failed && off.failed, "P's caller gets its error")
         #expect(on.pending.isEmpty && off.pending.isEmpty, "P is removed, not left pending: ON \(on.pending) vs OFF \(off.pending)")
+        // 1, then P's write before its throw (kept, #87).
+        #expect(on.total == -4, "state \(on.total)")
         #expect(on.total == off.total, "state ON \(on.total) vs OFF \(off.total)")
     }
 

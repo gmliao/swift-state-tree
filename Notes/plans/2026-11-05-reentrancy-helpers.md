@@ -66,6 +66,10 @@ Rev 4 already makes OnJoin a turn input with the flip at a committed sync. Again
   - **An OnLeave delivery is never rejected for a stale entry**: a leave always ends in OnLeave for the game, even if the player re-joined meanwhile.
   - **P's OnJoin is gated on any outstanding OnLeave of P**, not just a kick's. A join of P while a leave of P is resolving waits for that leave's delivery, then runs its admission segment. Otherwise a slow OnLeave resolver followed by a reconnect would give OnJoin the lower `resolvedAtTick`: OnJoin would apply first and OnLeave would then remove the rejoined player.
   - Held tests: a slow OnLeave resolver followed by a reconnect; a kick with a slow OnLeave resolver.
+- **Constraints from #162's review (throwing OnLeave):**
+  - The keeper-side removal of the entry stays unconditional: it happens in the leave's segment, whether OnLeave later succeeds or throws.
+  - The broadcast-only flag is set before OnLeave's handler runs, so a throwing OnLeave still broadcasts the leave.
+  - An `OnLeaveFailed` hook, if PR 4 adds one, runs in the same turn, after the throwing OnLeave and before that broadcast, so it can clean up the state (for example the player's entry) before it goes out.
 - **A throwing OnLeave resolver (decided by the maintainer: a new callback).** Today `leave` removes `players[P]` before its resolvers, and on a throw never appends OnLeave: the game state keeps a ghost, and a later kick fails the new join. The change:
   - **A new optional DSL handler, `OnLeaveFailed { state, ctx, error in … }`**, next to `OnLeave` in `Rules` (named like the existing lifecycle DSL in `LandDSL.swift`/`LandBuilder.swift`). It runs **instead of** OnLeave when OnLeave's resolvers throw. It gets the resolver error and has no resolver outputs. OnLeave's own contract is unchanged: it always has its outputs.
   - **Without OnLeaveFailed**, OnLeave runs with empty outputs and `ctx.resolverFailure` set, so a land never keeps a ghost by default.

@@ -30,7 +30,7 @@ import Foundation
 ///   comes first, then targeted event frames, then the per-player frame.
 /// - An input whose handler throws fails alone, as on the legacy path: its caller gets its error,
 ///   it is removed and recorded, and the other inputs of the turn are applied. The state keeps
-///   what the throwing handler wrote before the throw (#87).
+///   what the throwing handler wrote before the throw, and the next sync sends it (#87).
 /// - Re-evaluation keepers always use the legacy path.
 public enum InTurnSync {
     /// Whether in-turn sync is enabled by the environment: `true` unless `IN_TURN_SYNC` is false.

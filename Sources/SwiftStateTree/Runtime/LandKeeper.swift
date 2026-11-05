@@ -2256,7 +2256,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// Applies one pending item to the state (synchronous) and appends its record to `applied`.
-    /// A handler that throws propagates the error; its item is not recorded.
+    /// The record is appended before the handler runs, so an item whose handler throws is
+    /// recorded too (replay fails it the same way); the error propagates to `applyInputs`.
     private func applyPendingItem(
         _ item: PendingItem,
         executingTickId: Int64,
@@ -2552,8 +2553,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// (`discardIfFailedJoin`), and the inputs after it continue in the same pass with their own
     /// outcomes. P is not run again and blocks nothing. P is recorded like the others, in order
     /// (`applyPendingItem` records before the handler runs), so replay runs it again and it
-    /// fails the same way. What P wrote to the state before it threw stays (a per-input
-    /// savepoint is #87).
+    /// fails the same way. What P wrote to the state before it threw stays and goes out with the
+    /// next sync like any other change (undoing it needs a per-input savepoint, #87). A throwing
+    /// OnLeave is such a case: the keeper has already removed the player and the broadcast-only
+    /// sync still runs, but whatever OnLeave would have cleaned up after the throw (say, the
+    /// player's entry in the state) stays in the state and is broadcast as it is.
     private func applyInputs(_ items: [PendingItem], executingTickId: Int64) -> InputApplication {
         var applied = AppliedInputs(executingTickId: executingTickId)
         var outcomes: [Int64: Result<AnyCodable, any Error>] = [:]
@@ -3325,8 +3329,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// caller gets P's error, P's events are dropped, and every other input of the batch is
     /// applied and its caller gets its own outcome. P is recorded in order, so replay fails it
     /// the same way. The tick's sync requests cannot be split per input: a request P made
-    /// before it threw is consumed by this turn, so P's partial writes go out with it (a
-    /// per-input savepoint is #87).
+    /// before it threw is consumed by this turn, so P's partial writes are kept and go out with
+    /// it, as with any other change (a per-input savepoint is #87).
     private func runInputTurn(_ batch: [PendingItem]) -> InputTurnOutcome {
         inTurnProbeForTesting?("turn-begin")
         inTurnProbeForTesting?("input-batch-\(batch.count)")
