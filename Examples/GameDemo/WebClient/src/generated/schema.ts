@@ -3,13 +3,15 @@
 
 export const SCHEMA_VERSION = "0.1.0" as const
 
-export const LAND_IDS = ["hero-defense","hero-defense-replay","reevaluation-monitor","visibility-test","visibility-test-replay"] as const
+export const LAND_IDS = ["hero-defense","hero-defense-replay","reevaluation-monitor","resolver-test","resolver-test-replay","visibility-test","visibility-test-replay"] as const
 export type LandID = (typeof LAND_IDS)[number]
 
 export const ACTION_IDS = {
   "hero-defense": ["Play"] as const,
   "hero-defense-replay": ["Play"] as const,
   "reevaluation-monitor": ["PauseVerification","ResumeVerification","StartVerification"] as const,
+  "resolver-test": ["CallService"] as const,
+  "resolver-test-replay": ["CallService"] as const,
   "visibility-test": ["ParkEntities","PlaceEntity","SetMotion"] as const,
   "visibility-test-replay": ["ParkEntities","PlaceEntity","SetMotion"] as const,
 } as const
@@ -20,6 +22,8 @@ export const CLIENT_EVENT_IDS = {
   "hero-defense": ["MoveTo","PlaceTurret","Shoot","UpdateRotation","UpgradeTurret","UpgradeWeapon"] as const,
   "hero-defense-replay": ["MoveTo","PlaceTurret","Shoot","UpdateRotation","UpgradeTurret","UpgradeWeapon"] as const,
   "reevaluation-monitor": [] as const,
+  "resolver-test": [] as const,
+  "resolver-test-replay": [] as const,
   "visibility-test": ["MoveViewer"] as const,
   "visibility-test-replay": ["MoveViewer"] as const,
 } as const
@@ -30,6 +34,8 @@ export const SERVER_EVENT_IDS = {
   "hero-defense": ["PlayerShoot","TurretFire"] as const,
   "hero-defense-replay": ["PlayerShoot","TurretFire"] as const,
   "reevaluation-monitor": ["TickProcessed","TickSummary","VerificationComplete","VerificationFailed","VerificationProgress"] as const,
+  "resolver-test": [] as const,
+  "resolver-test-replay": [] as const,
   "visibility-test": [] as const,
   "visibility-test-replay": [] as const,
 } as const
@@ -147,6 +153,50 @@ export const SCHEMA = {
         "sync": {
           "policy": "broadcast"
         }
+      }
+    },
+    "CallServiceAction": {
+      "properties": {
+        "deadlineMs": {
+          "type": "integer"
+        },
+        "delayMs": {
+          "type": "integer"
+        },
+        "outcome": {
+          "type": "string"
+        },
+        "tag": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "deadlineMs",
+        "delayMs",
+        "outcome",
+        "tag"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
+      }
+    },
+    "CallServiceResponse": {
+      "properties": {
+        "applied": {
+          "type": "integer"
+        },
+        "tickAdvance": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "applied",
+        "tickAdvance"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "leaf"
       }
     },
     "HeroDefenseState": {
@@ -809,6 +859,71 @@ export const SCHEMA = {
         "currentActualHash",
         "currentIsMatch",
         "errorMessage"
+      ],
+      "type": "object",
+      "x-stateTree": {
+        "nodeKind": "object"
+      }
+    },
+    "ResolverTestState": {
+      "properties": {
+        "applied": {
+          "default": 0,
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
+        },
+        "lastResult": {
+          "default": "",
+          "type": "string",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
+        },
+        "lastTag": {
+          "default": "",
+          "type": "string",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
+        },
+        "lastTickAdvance": {
+          "default": 0,
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
+        },
+        "tickCount": {
+          "default": 0,
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
+        }
+      },
+      "required": [
+        "applied",
+        "lastTag",
+        "lastResult",
+        "lastTickAdvance",
+        "tickCount"
       ],
       "type": "object",
       "x-stateTree": {
@@ -1643,6 +1758,60 @@ export const SCHEMA = {
         }
       }
     },
+    "resolver-test": {
+      "actions": {
+        "CallService": {
+          "$ref": "#/defs/CallServiceAction"
+        }
+      },
+      "clientEventHashes": {},
+      "clientEvents": {},
+      "eventHashes": {},
+      "events": {},
+      "pathHashes": {
+        "applied": 707093323,
+        "lastResult": 402733132,
+        "lastTag": 752692850,
+        "lastTickAdvance": 3031497782,
+        "tickCount": 1649279712
+      },
+      "stateType": "ResolverTestState",
+      "sync": {
+        "diff": {
+          "$ref": "#/defs/StateDiff"
+        },
+        "snapshot": {
+          "$ref": "#/defs/ResolverTestState"
+        }
+      }
+    },
+    "resolver-test-replay": {
+      "actions": {
+        "CallService": {
+          "$ref": "#/defs/CallServiceAction"
+        }
+      },
+      "clientEventHashes": {},
+      "clientEvents": {},
+      "eventHashes": {},
+      "events": {},
+      "pathHashes": {
+        "applied": 707093323,
+        "lastResult": 402733132,
+        "lastTag": 752692850,
+        "lastTickAdvance": 3031497782,
+        "tickCount": 1649279712
+      },
+      "stateType": "ResolverTestState",
+      "sync": {
+        "diff": {
+          "$ref": "#/defs/StateDiff"
+        },
+        "snapshot": {
+          "$ref": "#/defs/ResolverTestState"
+        }
+      }
+    },
     "visibility-test": {
       "actions": {
         "ParkEntities": {
@@ -1748,7 +1917,7 @@ export const SCHEMA = {
       }
     }
   },
-  "schemaHash": "fe81402d9f384064",
+  "schemaHash": "9271f476cc86bf03",
   "version": "0.1.0"
 } as const
 
