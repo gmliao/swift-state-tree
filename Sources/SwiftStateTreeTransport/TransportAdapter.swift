@@ -162,8 +162,21 @@ struct SyncOutputDigestInput {
     /// one). Each gets a seed marker instead of a per-player scope in the output; a view that
     /// was not sent at all has no entry.
     var seeds: [PlayerID: SeedDigest] = [:]
-    /// Opcode 107: the events the plan consumed, in emit order; nil in the other encodings.
+    /// Opcode 107: the events the plan consumed, in emit order; nil in the other encodings or
+    /// when one of them has no canonical form.
     var events: [CanonicalSyncEvent]?
+    /// Opcode 107: the largest keeper sequence among the consumed events that have one.
+    var eventsThroughSequence: Int64?
+    /// A full plan: it commits the per-player scope of its recipients (`recipients`). False for
+    /// a broadcast-only cycle and a firstSync.
+    var commitsPerPlayer = false
+    /// The plan reset its recipients' key scopes (`keyScopeResetPending`).
+    var resetsKeyScopes = false
+    /// A full plan's recipients that have a committed firstSync (not those it sends a full view).
+    var recipients: [PlayerID] = []
+    /// Recipients whose planned update was not sent at all: their per-player cache was not
+    /// committed.
+    var uncommitted: Set<PlayerID> = []
     /// A firstSync plan: it records seed markers only, no output.
     var isFirstSync = false
 
@@ -186,7 +199,9 @@ struct SyncOutputDigestInput {
             seeds[playerID]?.drops.insert(.encode)
         } else {
             perPlayerPatches.removeValue(forKey: playerID)
-            seeds.removeValue(forKey: playerID)
+            if seeds.removeValue(forKey: playerID) == nil {
+                uncommitted.insert(playerID)
+            }
         }
     }
 
@@ -217,6 +232,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// single source of truth for the switch: the keeper follows it through
     /// `runsSyncPhaseInTurn(of:)`.
     public nonisolated let inTurnSyncEnabled: Bool
+
+    /// How this adapter plans its syncs, for the record header (`ReevaluationSyncConfig`).
+    public nonisolated var syncConfigForRecord: ReevaluationSyncConfig {
+        ReevaluationSyncConfig(
+            mergedBroadcastFrame: stateUpdateEncoder.encoding == .opcodeMessagePack,
+            fullSnapshot: syncStrategy == .fullSnapshot
+        )
+    }
 
     /// With in-turn sync off: a private actor whose default executor this adapter uses, so it
     /// keeps an executor of its own, separate from the keeper's (the legacy behaviour).
@@ -300,6 +323,24 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Installs `syncPlanFaultForTesting` (tests only).
     func setSyncPlanFaultForTesting(_ fault: (@Sendable () throws -> Void)?) {
         syncPlanFaultForTesting = fault
+    }
+
+    /// Which encodings of an event fail (tests only).
+    enum EventEncodingFault: Sendable {
+        /// The opcode 107 body: the event falls back to its own frame.
+        case mergedBody
+        /// Every encoding: the event is lost.
+        case all
+    }
+
+    /// Installs `eventEncodingFaultForTesting` (tests only).
+    func setEventEncodingFaultForTesting(_ fault: (@Sendable (String) -> EventEncodingFault?)?) {
+        eventEncodingFaultForTesting = fault
+    }
+
+    /// Installs `syncOutputDigestFaultForTesting` (tests only).
+    func setSyncOutputDigestFaultForTesting(_ fault: (@Sendable (inout SyncOutputDigestInput) -> Void)?) {
+        syncOutputDigestFaultForTesting = fault
     }
 
     /// Whether the next committed full plan resets the key scopes (tests and diagnostics).
@@ -425,6 +466,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// leave keeps the player, so its next seed is a rejoin); it grows by one entry per distinct
     /// player over the adapter's life, only while the sync stream is recorded.
     private var syncStreamSeededPlayers: Set<PlayerID> = []
+    /// Players whose latest seed was not verifiable (`viewDrops` not empty), until a verifiable
+    /// seed or a clear: left out of `perPlayerHash` (`perPlayerUnverified`).
+    private var syncStreamUnverifiedPlayers: Set<PlayerID> = []
+    /// Opcode 107: sequences of in-turn events with no recipient, until the next recorded output
+    /// lists them (`eventsNotQueued`).
+    private var syncStreamUnqueuedEvents: [Int64] = []
+    /// Opcode 107: sequences of in-turn events that had recipients but were not merged (sent
+    /// alone, or lost), until the next recorded output lists them (`eventsNotMerged`).
+    private var syncStreamUnmergedEvents = ReevaluationUnmergedEvents()
     /// Tests only: plans that filled a `SyncOutputDigestInput`.
     private(set) var syncOutputDigestCountForTesting = 0
 
@@ -462,6 +512,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Tests only: called at the end of every sync plan, after its diffs were staged and its
     /// frames encoded. A throw fails the plan there.
     private var syncPlanFaultForTesting: (@Sendable () throws -> Void)?
+
+    /// Tests only: rewrites a committed plan's digest before it is hashed, standing in for a
+    /// diff that sent something else (the sync-output verifier must report it).
+    private var syncOutputDigestFaultForTesting: (@Sendable (inout SyncOutputDigestInput) -> Void)?
+    /// Tests only: makes an event's encoding fail, by event type.
+    private var eventEncodingFaultForTesting: (@Sendable (String) -> EventEncodingFault?)?
 
     /// Membership queue prevents stale join/leave work from delivering after rejoin.
     /// See docs/plans/2026-02-01-membership-queue-reconnect.md.
@@ -1351,25 +1407,49 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// The synchronous core of `sendEvent`: opcode 107 queues the event body for the next merged
     /// frame; otherwise the event is encoded and enqueued to the outbound writer now, so events
     /// reach the writer in the order they are passed here.
+    ///
+    /// Returns where the event went.
+    @discardableResult
     func enqueueEventSynchronously(
         _ event: AnyServerEvent,
         to target: SwiftStateTree.EventTarget,
         digest: CanonicalSyncEvent? = nil
-    ) {
+    ) -> EventEnqueueOutcome {
+        let fault = eventEncodingFaultForTesting?(event.type)
         // Queue mode (opcode 107)
-        if useStateUpdateWithEvents, let body = encodeServerEventBody(event) {
-            eventSendingPipeline.queueForMergedSend(
-                eventBody: body,
-                target: target,
-                pendingEventManager: &pendingEventManager,
-                membershipCoordinator: membershipCoordinator,
-                digest: digest
-            )
-            return
+        if useStateUpdateWithEvents {
+            if fault == nil, let body = encodeServerEventBody(event) {
+                let queued = eventSendingPipeline.queueForMergedSend(
+                    eventBody: body,
+                    target: target,
+                    pendingEventManager: &pendingEventManager,
+                    membershipCoordinator: membershipCoordinator,
+                    digest: digest
+                )
+                return queued ? .queued : .noRecipient
+            }
+            // The body did not encode: the event goes out as its own frame, or is lost.
+            return sendEventImmediately(event, to: target, failsEncoding: fault == .all) ? .sentAlone : .lost
         }
 
-        // Fallback to immediate mode: encoded and enqueued now
-        sendEventImmediately(event, to: target)
+        // Immediate mode: encoded and enqueued now
+        sendEventImmediately(event, to: target, failsEncoding: fault == .all)
+        return .immediate
+    }
+
+    /// Where `enqueueEventSynchronously` put an event.
+    enum EventEnqueueOutcome: Equatable {
+        /// Queued for the next merged frame (opcode 107).
+        case queued
+        /// Opcode 107, and nothing to queue: no recipient (`.players([])`, a client without a
+        /// session).
+        case noRecipient
+        /// Opcode 107, but the body did not encode: sent as its own frame.
+        case sentAlone
+        /// Opcode 107, but the body did not encode, and neither did its own frame: lost.
+        case lost
+        /// Not opcode 107: sent as its own frame.
+        case immediate
     }
 
     // MARK: - In-turn sync phase
@@ -1399,7 +1479,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let digestsEvents = useStateUpdateWithEvents && !events.isEmpty && keeperRecordsSyncStream()
         for item in events {
             let digest = digestsEvents ? Self.canonicalEvent(item) : nil
-            enqueueEventSynchronously(item.event, to: item.target, digest: digest)
+            let outcome = enqueueEventSynchronously(item.event, to: item.target, digest: digest)
+            if digestsEvents, let sequence = item.sequence {
+                switch outcome {
+                case .noRecipient: syncStreamUnqueuedEvents.append(sequence)
+                case .sentAlone: syncStreamUnmergedEvents.sentAlone.append(sequence)
+                case .lost: syncStreamUnmergedEvents.lost.append(sequence)
+                case .queued, .immediate: break
+                }
+            }
         }
         guard includeSync else { return .notRequested }
         // After teardown nothing is sent any more.
@@ -1437,19 +1525,29 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///
     /// This is the fallback path when opcode 107 is disabled or encoding fails.
     /// Handles encoding, validation, logging, and actual transport.send call.
-    private func sendEventImmediately(_ event: AnyServerEvent, to target: SwiftStateTree.EventTarget) {
+    /// Returns false when the event did not encode (it is lost); true otherwise, also when its
+    /// target has no current recipient.
+    @discardableResult
+    private func sendEventImmediately(
+        _ event: AnyServerEvent,
+        to target: SwiftStateTree.EventTarget,
+        failsEncoding: Bool = false
+    ) -> Bool {
         do {
+            if failsEncoding {
+                throw EncodingError.invalidValue(event.type, .init(codingPath: [], debugDescription: "encoding fault (tests)"))
+            }
             guard let decision = try eventSendingPipeline.prepareImmediateSend(
                 event: event,
                 target: target,
                 membershipCoordinator: membershipCoordinator
             ) else {
-                return  // Target is invalid or stale
+                return true  // Target is invalid or stale
             }
             
             guard case .immediate(let data, let transportTarget, let targetDescription) = decision else {
                 logger.warning("⚠️ Unexpected queued decision in immediate mode")
-                return
+                return true
             }
             
             let dataSize = data.count
@@ -1470,7 +1568,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     }
                     enqueueOutbound(data, toSessions: membershipCoordinator.sessionIDs(for: playerID))
                 }
-                return
+                return true
             }
             
             // Standard case: single target
@@ -1508,11 +1606,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Expanded to this land's sessions (#84): the transport is shared by every land
             // of the type, so its `.broadcast` and player map reach other lands' sessions.
             enqueueOutbound(data, toSessions: sessionIDs(for: transportTarget))
+            return true
         } catch {
             logger.error("❌ Failed to send event", metadata: [
                 "eventType": .string(event.type),
                 "error": .string("\(error)")
             ])
+            return false
         }
     }
 
@@ -1916,11 +2016,26 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let broadcastHash = broadcastCommitted
                 ? digest.broadcastPatches.map { Self.scopeHash($0, scope: SyncOutputDigestInput.broadcastScope) }
                 : nil
-            let perPlayer = digest.perPlayerPatches.filter { digest.seeds[$0.key] == nil }
-            let perPlayerHash: UInt64? = perPlayer.isEmpty ? nil : Self.combinedHash(
-                perPlayer.map { ($0.key.rawValue, Self.scopeHash($0.value, scope: $0.key.rawValue)) }
-            )
+            var perPlayerHash: UInt64?
+            var perPlayerUnverified: [String]?
+            var perPlayerUncommitted: [String]?
+            if digest.commitsPerPlayer {
+                // Players with patches only: an empty update (a key scope reset sends one) is
+                // the same as no update for the verifier.
+                let pairs = digest.perPlayerPatches
+                    .filter { digest.seeds[$0.key] == nil && !$0.value.isEmpty && !syncStreamUnverifiedPlayers.contains($0.key) }
+                    .map { ($0.key.rawValue, Self.scopeHash($0.value, scope: $0.key.rawValue)) }
+                perPlayerHash = CanonicalPatchList.combinedHash(pairs)
+                let unverified = digest.recipients.filter { syncStreamUnverifiedPlayers.contains($0) }
+                perPlayerUnverified = unverified.isEmpty ? nil : Self.sortedIDs(unverified)
+                perPlayerUncommitted = digest.uncommitted.isEmpty ? nil : Self.sortedIDs(Array(digest.uncommitted))
+            }
             let eventsHash = digest.events.map(CanonicalSyncEvent.hash)
+            let eventsThroughSequence = digest.eventsThroughSequence
+            let eventsNotQueued = syncStreamUnqueuedEvents.isEmpty ? nil : syncStreamUnqueuedEvents.sorted()
+            syncStreamUnqueuedEvents.removeAll()
+            let eventsNotMerged = syncStreamUnmergedEvents.isEmpty ? nil : syncStreamUnmergedEvents.sorted()
+            syncStreamUnmergedEvents = ReevaluationUnmergedEvents()
             let extractionDrops = digest.extractionDrops
             let encodeDropScopes = digest.encodeDropScopes.sorted { SnapshotValue.utf8Less($0, $1) }
             let turnKind = read.turnKind
@@ -1934,7 +2049,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         sequence: sequence,
                         broadcastHash: broadcastHash,
                         perPlayerHash: perPlayerHash,
+                        perPlayerUnverified: perPlayerUnverified,
+                        perPlayerUncommitted: perPlayerUncommitted,
                         eventsHash: eventsHash,
+                        eventsThroughSequence: eventsThroughSequence,
+                        eventsNotQueued: eventsNotQueued,
+                        eventsNotMerged: eventsNotMerged,
+                        resetsKeyScopes: digest.resetsKeyScopes ? true : nil,
                         extractionDrops: extractionDrops,
                         encodeDropScopes: encodeDropScopes
                     )
@@ -1944,6 +2065,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         for (playerID, seed) in digest.seeds.sorted(by: { SnapshotValue.utf8Less($0.key.rawValue, $1.key.rawValue) }) {
             let rejoin = !syncStreamSeededPlayers.insert(playerID).inserted
             let viewDrops = seed.drops.sorted { $0.rawValue < $1.rawValue }
+            if viewDrops.isEmpty {
+                syncStreamUnverifiedPlayers.remove(playerID)
+            } else {
+                syncStreamUnverifiedPlayers.insert(playerID)
+            }
             let viewHash = viewDrops.isEmpty ? Self.scopeHash(seed.patches, scope: playerID.rawValue) : nil
             keeper.assumeIsolated { keeper in
                 keeper.recordSyncMarker { streamIndex in
@@ -1973,6 +2099,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Records a clear marker: the player's per-player cache and firstSync mark were dropped.
     private func recordSyncStreamClear(_ playerID: PlayerID) {
         guard keeperRecordsSyncStream() else { return }
+        syncStreamUnverifiedPlayers.remove(playerID)
         keeper.assumeIsolated { keeper in
             let sequence = keeper.syncReadPosition().sequence
             keeper.recordSyncMarker { streamIndex in
@@ -1989,15 +2116,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         return list.hash
     }
 
-    /// One hash over (player ID, hash) pairs, sorted by player ID (byte-wise UTF-8).
-    private static func combinedHash(_ pairs: [(String, UInt64)]) -> UInt64 {
-        var hasher = DeterministicHash.FNV1a64()
-        hasher.combine(UInt64(pairs.count))
-        for (player, hash) in pairs.sorted(by: { SnapshotValue.utf8Less($0.0, $1.0) }) {
-            hasher.combine(player)
-            hasher.combine(hash)
-        }
-        return hasher.value
+    private static func sortedIDs(_ players: [PlayerID]) -> [String] {
+        players.map(\.rawValue).sorted { SnapshotValue.utf8Less($0, $1) }
     }
 
     /// The dirty fields a plan diffs: the state's, plus those carried from failed plans.
@@ -2052,6 +2172,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     targeted: plan.consumedEvents.targeted,
                     broadcast: plan.consumedEvents.broadcast
                 )
+                digest.eventsThroughSequence = consumed.events.map(\.sequence).max()
                 if consumed.complete {
                     digest.events = consumed.events
                 } else {
@@ -2059,6 +2180,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     digest.encodeDropScopes.insert(SyncOutputDigestInput.eventsScope)
                 }
             }
+            syncOutputDigestFaultForTesting?(&digest)
             recordSyncStream(digest, broadcastCommitted: plan.staged.broadcast != nil, read: read)
         }
         syncEngine.applyStaged(plan.staged)
@@ -2197,6 +2319,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         pendingUpdates = withoutDroppedFields(pendingUpdates, drops: drops, baseline: baseline)
         if plan.digest != nil {
+            plan.digest?.commitsPerPlayer = true
+            plan.digest?.resetsKeyScopes = resetsKeyScopes
+            plan.digest?.recipients = recipients.map(\.playerID).filter { !skippedPlayers.contains($0) }
             plan.digest?.broadcastPatches = broadcastDiff
             for update in pendingUpdates where plan.digest?.perPlayerPatches[update.playerID] == nil {
                 plan.digest?.perPlayerPatches[update.playerID] = update.update.patchesForDroppingEncode

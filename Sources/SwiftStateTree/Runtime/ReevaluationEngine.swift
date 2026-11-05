@@ -38,11 +38,52 @@ public enum ReevaluationEngine {
         /// Whether the record carries a sync stream. `absent` is never a pass: the sync output
         /// check has nothing to compare.
         public let syncStreamPresence: ReevaluationSyncStreamPresence
+        /// The sync-output verification (hashes of every recorded output and seed).
+        public let syncOutput: SyncOutputVerification
+        /// The check of OnInitialize's events and post-initialize state hash.
+        public let initialize: InitializeVerification
 
         /// Verdict on `serverEventMismatches`, decided per tick (see `classifyServerEventMismatches`).
         public var serverEventVerification: ServerEventVerification {
             ReevaluationEngine.classifyServerEventMismatches(serverEventMismatches, watermarkedTicks: watermarkedTicks)
         }
+    }
+
+    /// Outcome of the OnInitialize check: the replayed events and post-initialize state hash
+    /// against the record's initialize record.
+    public enum InitializeVerification: Sendable, Equatable {
+        /// The record has no initialize record (older than 2.1); OnInitialize was replayed as
+        /// part of tick 0, as before.
+        case notRecorded
+        case passed
+        case failed(reason: String)
+
+        public var summary: String {
+            switch self {
+            case .notRecorded: return "not recorded"
+            case .passed: return "verified"
+            case .failed(let reason): return "FAILED: \(reason)"
+            }
+        }
+    }
+
+    /// Compares OnInitialize's replayed events and state with the initialize record.
+    package static func verifyInitialize<State: StateNodeProtocol>(
+        record: ReevaluationRecordedInitialize?,
+        emitted: [ReevaluationRecordedServerEvent],
+        state: State
+    ) -> InitializeVerification {
+        guard let record else { return .notRecorded }
+        if !serverEventsMatch(recorded: record.serverEvents, emitted: emitted) {
+            return .failed(reason: "server events differ (recorded \(record.serverEvents.count), replayed \(emitted.count))")
+        }
+        if let recorded = record.stateHash {
+            let replayed = calculateStateHash(state)
+            if recorded != replayed {
+                return .failed(reason: "state hash differs (recorded \(recorded), replayed \(replayed))")
+            }
+        }
+        return .passed
     }
 
     /// Outcome of server-event verification for a re-evaluation run.
@@ -152,6 +193,17 @@ public enum ReevaluationEngine {
             logger: logger
         )
         await keeper.setLandID(metadata.landID)
+        await keeper.awaitInitialization()
+        let initializeRecord = try await source.getInitializeRecord()
+        let stateAfterInitialize = await keeper.currentState()
+        let initializeEvents = await capturingSink.takeEmittedEvents(for: -1)
+        let initialize = verifyInitialize(record: initializeRecord, emitted: initializeEvents, state: stateAfterInitialize)
+        var syncOutputDriver = SyncOutputReplayDriver<State>(metadata: metadata, stream: try await source.getSyncStream())
+        syncOutputDriver.begin(
+            beforeInitialize: initialState,
+            afterInitialize: stateAfterInitialize,
+            initializeEvents: initializeEvents
+        )
         
         let syncEngine = SyncEngine()
         let snapshotEncoder = JSONEncoder()
@@ -175,9 +227,12 @@ public enum ReevaluationEngine {
                 await keeper.stepTickOnce()
                 let state = await keeper.currentState()
 
-                let snapshot = try syncEngine.snapshot(from: state, mode: .all)
+                // A field whose conversion throws hashes as "error", as the live recording does
+                // (`calculateStateHash`); the replay goes on, as the live run did.
+                let extracted = try? syncEngine.snapshot(from: state, mode: .all)
+                let snapshot = extracted ?? StateSnapshot()
                 let stateHash: String
-                if let data = try? snapshotEncoder.encode(snapshot) {
+                if extracted != nil, let data = try? snapshotEncoder.encode(snapshot) {
                     stateHash = DeterministicHash.toHex64(DeterministicHash.fnv1a64(data))
                 } else {
                     stateHash = "error"
@@ -200,6 +255,7 @@ public enum ReevaluationEngine {
                 }
 
                 let emittedEvents = await capturingSink.takeEmittedEvents(for: tickId)
+                syncOutputDriver.stepped(tickId: tickId, state: state, events: emittedEvents)
                 let recordedEvents = try await source.getServerEvents(for: tickId)
                 // Frames with sequence watermarks come from records that always store server events,
                 // so an empty recorded list is meaningful there and extra replay events are reported.
@@ -235,7 +291,9 @@ public enum ReevaluationEngine {
             recordedStateHashes: recordedHashes,
             serverEventMismatches: serverEventMismatches,
             watermarkedTicks: watermarkedTicks,
-            syncStreamPresence: try await source.getSyncStreamPresence()
+            syncStreamPresence: try await source.getSyncStreamPresence(),
+            syncOutput: syncOutputDriver.finish(),
+            initialize: initialize
         )
     }
     

@@ -841,8 +841,8 @@ struct ReplaySequenceWatermarkTests {
     }
 
     // Test 11 (pins current behaviour; the live-side OnInitialize gap is tracked in #66)
-    @Test("OnInitialize emitting an event: replay reports it as an extra event at tick 0")
-    func onInitializeEmitIsFlaggedAtTickZero() async throws {
+    @Test("OnInitialize emitting an event: replay runs it before tick 0 and checks it against the initialize record")
+    func onInitializeEmitIsVerifiedBeforeTickZero() async throws {
         let definition = makeWatermarkTestDefinition(emitOnInitialize: true, emitFromTickHandler: false)
         let keeper = await makeLiveKeeper(definition: definition)
         let path = tempRecordPath("on-initialize")
@@ -858,11 +858,9 @@ struct ReplaySequenceWatermarkTests {
             initialState: WatermarkTestState(),
             recordFilePath: path
         )
-        #expect(result.serverEventMismatches.count == 1)
-        let mismatch = try #require(result.serverEventMismatches.first)
-        #expect(mismatch.tickId == 0)
-        #expect(mismatch.expected.isEmpty)
-        #expect(mismatch.actual.map(\.typeIdentifier) == [eventType(WatermarkInitEvent(value: 1))])
+        #expect(result.serverEventMismatches.isEmpty, "the event belongs to tick -1, not tick 0")
+        #expect(result.initialize == .passed)
+        #expect(result.tickHashes == result.recordedStateHashes)
     }
 
     // MARK: Per-tick verification rule (shared by the engine and the GameDemo runner)

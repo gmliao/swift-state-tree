@@ -213,8 +213,9 @@ struct ReevaluationRunnerMain {
         if let last = first.tickHashes[first.maxTickId] {
             print("   Final Tick Hash: \(last)")
         }
-        // Not a sync-output verdict: until it is verified, this only says whether a stream exists.
         print("   Sync Stream: \(first.syncStreamPresence.summary)")
+        print("   Sync Output: \(first.syncOutput.summary)")
+        print("   Initialize: \(first.initialize.summary)")
         print("")
         
         guard verify else { return }
@@ -257,6 +258,20 @@ struct ReevaluationRunnerMain {
                 print("  tick \(tickId) [\(mode)]: expected \(expected.count) events \(describe(expected)), got \(actual.count) events \(describe(actual))")
             }
             exit(6)
+        }
+
+        // Sync outputs and OnInitialize: `failed` and `malformed` fail verification; `partial` and
+        // `skipped` are reported, since older records and degraded views cannot be fully compared.
+        switch first.syncOutput.verdict {
+        case .failed, .malformed:
+            print("❌ Verification failed: sync output \(first.syncOutput.summary)")
+            exit(8)
+        case .passed, .partial, .skipped:
+            break
+        }
+        if case .failed(let reason) = first.initialize {
+            print("❌ Verification failed: OnInitialize \(reason)")
+            exit(9)
         }
         
         let second = try await ReevaluationEngine.run(
@@ -396,6 +411,22 @@ struct ReevaluationRunnerMain {
           --export-jsonl <path>  Export JSONL stream (snapshot + events per tick)
           --diff-with <path>     Compare with recorded state JSONL (output field-level diffs)
           --help, -h             Show this help message
+
+        Sync Output (records with a sync stream, format 2.2):
+          passed     every scope (broadcast, per-player, seed; events with opcode 107) was
+                     compared, nothing was unverifiable, every skip was benign, and no event
+                     was left after the last output
+          partial    no mismatch, but something could not be compared (a degraded view, an
+                     encode drop, an event sent outside the merged frame, a scope never seen),
+                     was skipped for a reason that is not benign, or events were left after
+                     the last output; the summary lists the skip reasons
+          failed     a recorded hash was not reproduced (--verify exits 8, also on malformed)
+          skipped    the record cannot be verified (no sync stream, or older than 2.2)
+          Benign skips: an opcode 107 per-player update that was not sent (its cache was not
+          committed, so the next diff resends it), once a later comparison for that player saw
+          the resend; a joiner's full view that did not encode, once a later seed for that
+          player was compared. Without that later comparison neither is benign.
+        Initialize: OnInitialize's events and state hash (--verify exits 9 on a mismatch).
         """)
         exit(exitCode)
     }

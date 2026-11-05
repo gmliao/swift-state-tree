@@ -30,12 +30,35 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
     public let sequence: Int64
     /// Nil when the broadcast scope was not committed.
     public let broadcastHash: UInt64?
-    /// One hash over (playerID, hash) pairs sorted by player ID, for committed players.
+    /// One hash over (playerID, hash) pairs sorted by player ID, for the committed players with
+    /// patches, leaving out `perPlayerUnverified` and `perPlayerUncommitted`. Nil when the plan
+    /// committed no per-player scope (a broadcast-only cycle).
     public let perPlayerHash: UInt64?
+    /// Recipients left out of `perPlayerHash` because their latest seed was not verifiable
+    /// (`viewHash` nil), until a verifiable seed; sorted. Nil when empty.
+    public let perPlayerUnverified: [String]?
+    /// Recipients whose update was planned but not sent at all (an encode failure): their
+    /// per-player cache was not committed. Sorted; nil when empty.
+    public let perPlayerUncommitted: [String]?
     /// Committed players' hashes; present only with `recordSyncDetails`.
     public let perPlayerHashes: [String: UInt64]?
     /// Opcode 107 mode only.
     public let eventsHash: UInt64?
+    /// Opcode 107 mode only: the largest keeper sequence among the events the plan consumed; nil
+    /// when it consumed none with a sequence. The verifier consumes its replayed events up to it.
+    public let eventsThroughSequence: Int64?
+    /// Opcode 107: sequences of in-turn events emitted since the previous output that had no
+    /// recipient (nothing was queued or sent); the verifier does not expect them. Sorted; nil
+    /// when empty.
+    public let eventsNotQueued: [Int64]?
+    /// Opcode 107: in-turn events emitted since the previous output that were not merged
+    /// although they had recipients (the body did not encode). The verifier does not expect them
+    /// in a merged frame, and this output's events scope is unverifiable. Nil when empty.
+    public let eventsNotMerged: ReevaluationUnmergedEvents?
+    /// The plan reset its recipients' dynamic key scopes: every recipient got a `.firstSync`
+    /// update, empty ones included. Empty updates carry no patches and are left out of
+    /// `perPlayerHash` like a no-change; the verifier counts them. Nil when false.
+    public let resetsKeyScopes: Bool?
     /// Top-level fields the plan's extraction dropped, per scope ("broadcast" or a player ID).
     public let extractionDrops: [String: [String]]
     /// Scopes whose patches did not encode and were dropped.
@@ -51,8 +74,14 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
         sequence: Int64,
         broadcastHash: UInt64? = nil,
         perPlayerHash: UInt64? = nil,
+        perPlayerUnverified: [String]? = nil,
+        perPlayerUncommitted: [String]? = nil,
         perPlayerHashes: [String: UInt64]? = nil,
         eventsHash: UInt64? = nil,
+        eventsThroughSequence: Int64? = nil,
+        eventsNotQueued: [Int64]? = nil,
+        eventsNotMerged: ReevaluationUnmergedEvents? = nil,
+        resetsKeyScopes: Bool? = nil,
         extractionDrops: [String: [String]] = [:],
         encodeDropScopes: [String] = [],
         patches: [String: [StatePatch]]? = nil
@@ -64,11 +93,129 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
         self.sequence = sequence
         self.broadcastHash = broadcastHash
         self.perPlayerHash = perPlayerHash
+        self.perPlayerUnverified = perPlayerUnverified
+        self.perPlayerUncommitted = perPlayerUncommitted
         self.perPlayerHashes = perPlayerHashes
         self.eventsHash = eventsHash
+        self.eventsThroughSequence = eventsThroughSequence
+        self.eventsNotQueued = eventsNotQueued
+        self.eventsNotMerged = eventsNotMerged
+        self.resetsKeyScopes = resetsKeyScopes
         self.extractionDrops = extractionDrops
         self.encodeDropScopes = encodeDropScopes
         self.patches = patches
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case index, turnKind, observedTickId, streamIndex, sequence, broadcastHash, perPlayerHash
+        case perPlayerUnverified, perPlayerUncommitted, perPlayerHashes, eventsHash, eventsThroughSequence, eventsNotQueued, eventsNotMerged
+        case resetsKeyScopes, extractionDrops, encodeDropScopes, patches
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        index = try container.decode(Int.self, forKey: .index)
+        turnKind = try container.decode(TurnKind.self, forKey: .turnKind)
+        observedTickId = try container.decodeIfPresent(Int64.self, forKey: .observedTickId)
+        streamIndex = try container.decode(UInt64.self, forKey: .streamIndex)
+        sequence = try container.decode(Int64.self, forKey: .sequence)
+        broadcastHash = try container.decodeSyncHashIfPresent(forKey: .broadcastHash)
+        perPlayerHash = try container.decodeSyncHashIfPresent(forKey: .perPlayerHash)
+        perPlayerUnverified = try container.decodeIfPresent([String].self, forKey: .perPlayerUnverified)
+        perPlayerUncommitted = try container.decodeIfPresent([String].self, forKey: .perPlayerUncommitted)
+        perPlayerHashes = try container.decodeIfPresent([String: SyncHashCoding].self, forKey: .perPlayerHashes)?
+            .mapValues(\.value)
+        eventsHash = try container.decodeSyncHashIfPresent(forKey: .eventsHash)
+        eventsThroughSequence = try container.decodeIfPresent(Int64.self, forKey: .eventsThroughSequence)
+        eventsNotQueued = try container.decodeIfPresent([Int64].self, forKey: .eventsNotQueued)
+        eventsNotMerged = try container.decodeIfPresent(ReevaluationUnmergedEvents.self, forKey: .eventsNotMerged)
+        resetsKeyScopes = try container.decodeIfPresent(Bool.self, forKey: .resetsKeyScopes)
+        extractionDrops = try container.decode([String: [String]].self, forKey: .extractionDrops)
+        encodeDropScopes = try container.decode([String].self, forKey: .encodeDropScopes)
+        patches = try container.decodeIfPresent([String: [StatePatch]].self, forKey: .patches)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(index, forKey: .index)
+        try container.encode(turnKind, forKey: .turnKind)
+        try container.encodeIfPresent(observedTickId, forKey: .observedTickId)
+        try container.encode(streamIndex, forKey: .streamIndex)
+        try container.encode(sequence, forKey: .sequence)
+        try container.encodeSyncHashIfPresent(broadcastHash, forKey: .broadcastHash)
+        try container.encodeSyncHashIfPresent(perPlayerHash, forKey: .perPlayerHash)
+        try container.encodeIfPresent(perPlayerUnverified, forKey: .perPlayerUnverified)
+        try container.encodeIfPresent(perPlayerUncommitted, forKey: .perPlayerUncommitted)
+        try container.encodeIfPresent(perPlayerHashes?.mapValues(SyncHashCoding.init), forKey: .perPlayerHashes)
+        try container.encodeSyncHashIfPresent(eventsHash, forKey: .eventsHash)
+        try container.encodeIfPresent(eventsThroughSequence, forKey: .eventsThroughSequence)
+        try container.encodeIfPresent(eventsNotQueued, forKey: .eventsNotQueued)
+        try container.encodeIfPresent(eventsNotMerged, forKey: .eventsNotMerged)
+        try container.encodeIfPresent(resetsKeyScopes, forKey: .resetsKeyScopes)
+        try container.encode(extractionDrops, forKey: .extractionDrops)
+        try container.encode(encodeDropScopes, forKey: .encodeDropScopes)
+        try container.encodeIfPresent(patches, forKey: .patches)
+    }
+}
+
+/// Opcode 107 events that had recipients but did not reach a merged frame, by what became of
+/// them; keeper sequences, sorted.
+public struct ReevaluationUnmergedEvents: Codable, Sendable, Equatable {
+    /// Sent as their own frame.
+    public var sentAlone: [Int64]
+    /// Their own frame did not encode either: no client got them.
+    public var lost: [Int64]
+
+    public init(sentAlone: [Int64] = [], lost: [Int64] = []) {
+        self.sentAlone = sentAlone
+        self.lost = lost
+    }
+
+    public var isEmpty: Bool { sentAlone.isEmpty && lost.isEmpty }
+    /// Every sequence, sorted.
+    public var all: [Int64] { (sentAlone + lost).sorted() }
+
+    /// Both lists sorted.
+    public func sorted() -> ReevaluationUnmergedEvents {
+        ReevaluationUnmergedEvents(sentAlone: sentAlone.sorted(), lost: lost.sorted())
+    }
+}
+
+/// A sync hash in a record: written as 16 lowercase hex digits (like the state hashes), since
+/// JSON numbers above 2^53 do not survive JavaScript readers (the admin download, the CLI
+/// tools). Read from hex, or from a JSON number as 2.1 records wrote it.
+package struct SyncHashCoding: Codable, Sendable {
+    package let value: UInt64
+
+    package init(_ value: UInt64) { self.value = value }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let hex = try? container.decode(String.self) {
+            guard hex.count == 16, let value = UInt64(hex, radix: 16) else {
+                throw DecodingError.dataCorruptedError(in: container, debugDescription: "sync hash \(hex) is not 16 hex digits")
+            }
+            self.value = value
+        } else {
+            value = try container.decode(UInt64.self)
+        }
+    }
+
+    package func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(DeterministicHash.toHex64(value))
+    }
+}
+
+extension KeyedDecodingContainer {
+    fileprivate func decodeSyncHashIfPresent(forKey key: Key) throws -> UInt64? {
+        try decodeIfPresent(SyncHashCoding.self, forKey: key)?.value
+    }
+}
+
+extension KeyedEncodingContainer {
+    fileprivate mutating func encodeSyncHashIfPresent(_ value: UInt64?, forKey key: Key) throws {
+        try encodeIfPresent(value.map(SyncHashCoding.init), forKey: key)
     }
 }
 
@@ -137,7 +284,7 @@ public struct ReevaluationRecordedSyncMarker: Codable, Sendable, Equatable {
         streamIndex = try container.decode(UInt64.self, forKey: .streamIndex)
         sequence = try container.decode(Int64.self, forKey: .sequence)
         rejoin = try container.decode(Bool.self, forKey: .rejoin)
-        viewHash = try container.decodeIfPresent(UInt64.self, forKey: .viewHash)
+        viewHash = try container.decodeSyncHashIfPresent(forKey: .viewHash)
         viewDrops = try container.decodeIfPresent([ViewDrop].self, forKey: .viewDrops) ?? []
     }
 
@@ -149,7 +296,7 @@ public struct ReevaluationRecordedSyncMarker: Codable, Sendable, Equatable {
         try container.encode(streamIndex, forKey: .streamIndex)
         try container.encode(sequence, forKey: .sequence)
         try container.encode(rejoin, forKey: .rejoin)
-        try container.encodeIfPresent(viewHash, forKey: .viewHash)
+        try container.encodeSyncHashIfPresent(viewHash, forKey: .viewHash)
         if !viewDrops.isEmpty {
             try container.encode(viewDrops, forKey: .viewDrops)
         }

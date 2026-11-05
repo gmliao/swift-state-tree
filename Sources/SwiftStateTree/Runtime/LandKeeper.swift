@@ -346,6 +346,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
     private var initializationTask: Task<Void, Never>?
     private var didInitialize = false
+    /// Re-evaluation: OnInitialize was replayed before tick 0 from the record's initialize
+    /// record, so tick 0 skips its `initialize` lifecycle event.
+    private var replayedInitializeBeforeTickZero = false
 
     /// Next tick ID (0-based, increments with each tick) for deterministic replay.
     /// This represents the ID that will be assigned to the next tick execution.
@@ -691,6 +694,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
     }
 
+    /// Waits until OnInitialize has run (re-evaluation: before the first tick is stepped).
+    package func awaitInitialization() async {
+        await ensureInitialized()
+    }
+
     private func ensureInitialized() async {
         if didInitialize { return }
         if let task = initializationTask {
@@ -708,7 +716,47 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         didInitialize = true
     }
 
+    /// Re-evaluation of a record with an initialize record (format 2.1): OnInitialize runs here,
+    /// before tick 0, as in the live run: at the recorded sequence, at tick -1 and with the
+    /// recorded resolver outputs. Its events are flushed at tick -1 for the initialize check.
+    private func replayInitializeBeforeTickZero() async {
+        guard mode == .reevaluation,
+              let source = reevaluationSource,
+              let handler = definition.lifetimeHandlers.onInitialize,
+              let record = try? await source.getInitializeRecord(),
+              let recorded = try? await source.getLifecycleEvents(for: 0)
+                .first(where: { $0.kind == LifecycleKind.initialize.rawValue })
+        else { return }
+        var resolverOutputs: [String: any ResolverOutput] = [:]
+        for (key, output) in recorded.resolverOutputs {
+            resolverOutputs[key] = AnyCodableResolverOutput(typeIdentifier: output.typeIdentifier, value: output.value)
+        }
+        outputCollector.nextSequence = record.sequence
+        _ = outputCollector.takeNextSequence()
+        let ctx = makeContext(
+            playerID: systemPlayerID,
+            clientID: systemClientID,
+            sessionID: systemSessionID,
+            tickId: lastCommittedTickId,
+            resolverOutputs: resolverOutputs
+        )
+        do {
+            try withMutableStateSync { state in
+                try handler(&state, ctx)
+            }
+        } catch {
+            logger.error("❌ OnInitialize handler failed during re-evaluation", metadata: [
+                "error": .string(String(describing: error)),
+            ])
+        }
+        replayedInitializeBeforeTickZero = true
+        await flushOutputs(forTick: lastCommittedTickId)
+    }
+
     private func performInitialization() async {
+        if mode == .reevaluation {
+            await replayInitializeBeforeTickZero()
+        }
         // Execute OnInitialize immediately in live mode (preserve existing semantics).
         // Record it as a lifecycle event under tick 0 so replay can apply it deterministically
         // before the first tick handler runs.
@@ -2077,7 +2125,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         case let .lifecycle(lifecycleItem):
             switch lifecycleItem.kind {
             case .initialize:
-                guard let handler = definition.lifetimeHandlers.onInitialize else { break }
+                guard let handler = definition.lifetimeHandlers.onInitialize,
+                      !replayedInitializeBeforeTickZero else { break }
                 let ctx = makeContext(
                     playerID: systemPlayerID,
                     clientID: systemClientID,

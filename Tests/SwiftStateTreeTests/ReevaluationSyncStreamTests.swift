@@ -130,3 +130,65 @@ struct ReevaluationSyncStreamTests {
         #expect(try await source.getSyncStreamPresence() == .recorded(outputs: 1, markers: 1))
     }
 }
+
+@Suite("Re-evaluation sync hashes in JSON")
+struct ReevaluationSyncHashCodingTests {
+    /// Above 2^53: a JSON number this large does not survive a reader that parses numbers as
+    /// doubles (JavaScript, `JSONSerialization`).
+    private static let large: UInt64 = 2_469_563_164_985_495_381
+
+    private static let sample = ReevaluationRecordedSyncOutput(
+        index: 0,
+        turnKind: .tick,
+        observedTickId: 3,
+        streamIndex: 7,
+        sequence: 11,
+        broadcastHash: large,
+        perPlayerHash: UInt64.max,
+        perPlayerHashes: ["p1": 1],
+        eventsHash: 0
+    )
+
+    @Test("Hashes are written as 16 hex digits and survive a double-based JSON reader")
+    func hexSurvivesDoubleReaders() throws {
+        let data = try JSONEncoder().encode(Self.sample)
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["broadcastHash"] as? String == "2245a69d3f598f55")
+        #expect(object["perPlayerHash"] as? String == "ffffffffffffffff")
+        #expect(object["eventsHash"] as? String == "0000000000000000")
+        #expect((object["perPlayerHashes"] as? [String: String])?["p1"] == "0000000000000001")
+        // Through a double-based reader and back: unchanged.
+        let roundTripped = try JSONSerialization.data(withJSONObject: object)
+        #expect(try JSONDecoder().decode(ReevaluationRecordedSyncOutput.self, from: roundTripped) == Self.sample)
+
+        let marker = ReevaluationRecordedSyncMarker(kind: .seed, playerID: "p1", observedTickId: -1, streamIndex: 0, sequence: 1, viewHash: Self.large)
+        let markerData = try JSONSerialization.data(withJSONObject: try JSONSerialization.jsonObject(with: JSONEncoder().encode(marker)))
+        #expect(try JSONDecoder().decode(ReevaluationRecordedSyncMarker.self, from: markerData).viewHash == Self.large)
+    }
+
+    @Test("The RNG seed is written as hex and read from hex or a number")
+    func rngSeedIsHex() throws {
+        let metadata = ReevaluationRecordMetadata(landID: "l", landType: "t", createdAt: Date(timeIntervalSince1970: 0), metadata: [:], rngSeed: Self.large)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let object = try #require(try JSONSerialization.jsonObject(with: encoder.encode(metadata)) as? [String: Any])
+        #expect(object["rngSeed"] as? String == "2245a69d3f598f55")
+        let roundTripped = try JSONSerialization.data(withJSONObject: object)
+        #expect(try decoder.decode(ReevaluationRecordMetadata.self, from: roundTripped).rngSeed == Self.large)
+        let numeric = #"{"landID":"l","landType":"t","createdAt":"1970-01-01T00:00:00Z","metadata":{},"rngSeed":2469563164985495381}"#
+        #expect(try decoder.decode(ReevaluationRecordMetadata.self, from: Data(numeric.utf8)).rngSeed == Self.large)
+        let absent = #"{"landID":"l","landType":"t","createdAt":"1970-01-01T00:00:00Z","metadata":{}}"#
+        #expect(try decoder.decode(ReevaluationRecordMetadata.self, from: Data(absent.utf8)).rngSeed == nil)
+    }
+
+    @Test("A 2.1 record's numeric hashes still decode")
+    func numericHashesDecode() throws {
+        let json = #"{"index":0,"turnKind":"tick","observedTickId":3,"streamIndex":7,"sequence":11,"broadcastHash":2469563164985495381,"extractionDrops":{},"encodeDropScopes":[]}"#
+        let output = try JSONDecoder().decode(ReevaluationRecordedSyncOutput.self, from: Data(json.utf8))
+        #expect(output.broadcastHash == Self.large)
+        let marker = #"{"kind":"seed","streamIndex":0,"sequence":1,"rejoin":false,"viewHash":2469563164985495381}"#
+        #expect(try JSONDecoder().decode(ReevaluationRecordedSyncMarker.self, from: Data(marker.utf8)).viewHash == Self.large)
+    }
+}
