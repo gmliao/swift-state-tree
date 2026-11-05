@@ -36,9 +36,8 @@ public enum VisibilityTestConfig {
 
 // MARK: - State
 
-/// One moving entity. Only its id and position should be synced; who sees it should stay on the
-/// server. Until #175 is fixed, `step` and `visibleTo` still reach clients: a `[String: X]` map
-/// of a `@SnapshotConvertible` node skips the node's `@Sync` policies.
+/// One moving entity. Only its id and position are synced; its step and who sees it stay on the
+/// server. The E2E schema conformance check fails if `step` or `visibleTo` reach a client (#175).
 @StateNodeBuilder
 @SnapshotConvertible
 public struct VisibleEntity: StateNodeProtocol {

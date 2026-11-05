@@ -91,11 +91,23 @@ export const SCHEMA = {
       "properties": {
         "health": {
           "default": 100,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "maxHealth": {
           "default": 100,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "position": {
           "$ref": "#/defs/Position2",
@@ -104,11 +116,23 @@ export const SCHEMA = {
               "x": 64000,
               "y": 36000
             }
+          },
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
           }
         },
         "radius": {
           "default": 3,
-          "type": "number"
+          "type": "number",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         }
       },
       "required": [
@@ -139,6 +163,12 @@ export const SCHEMA = {
               }
             },
             "radius": 3
+          },
+          "x-stateTree": {
+            "nodeKind": "object",
+            "sync": {
+              "policy": "broadcast"
+            }
           }
         },
         "monsters": {
@@ -157,11 +187,23 @@ export const SCHEMA = {
         },
         "nextMonsterID": {
           "default": 1,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "serverOnly"
+            }
+          }
         },
         "nextTurretID": {
           "default": 1,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "serverOnly"
+            }
+          }
         },
         "players": {
           "additionalProperties": {
@@ -179,7 +221,13 @@ export const SCHEMA = {
         },
         "score": {
           "default": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "turrets": {
           "additionalProperties": {
@@ -233,19 +281,43 @@ export const SCHEMA = {
       "properties": {
         "health": {
           "default": 10,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "id": {
           "default": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "maxHealth": {
           "default": 10,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "pathProgress": {
           "default": 0,
-          "type": "number"
+          "type": "number",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "serverOnly"
+            }
+          }
         },
         "position": {
           "$ref": "#/defs/Position2",
@@ -254,16 +326,34 @@ export const SCHEMA = {
               "x": 0,
               "y": 0
             }
+          },
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
           }
         },
         "reward": {
           "default": 10,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "serverOnly"
+            }
+          }
         },
         "rotation": {
           "$ref": "#/defs/Angle",
           "default": {
             "degrees": 0
+          },
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
           }
         },
         "spawnPosition": {
@@ -272,6 +362,12 @@ export const SCHEMA = {
             "v": {
               "x": 0,
               "y": 0
+            }
+          },
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "serverOnly"
             }
           }
         }
@@ -458,15 +554,33 @@ export const SCHEMA = {
       "properties": {
         "health": {
           "default": 100,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "lastFireTick": {
           "default": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "serverOnly"
+            }
+          }
         },
         "maxHealth": {
           "default": 100,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "position": {
           "$ref": "#/defs/Position2",
@@ -475,25 +589,55 @@ export const SCHEMA = {
               "x": 0,
               "y": 0
             }
+          },
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
           }
         },
         "resources": {
           "default": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "rotation": {
           "$ref": "#/defs/Angle",
           "default": {
             "degrees": 0
+          },
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
           }
         },
         "targetPosition": {
           "$ref": "#/defs/Optional<Position2>",
-          "default": null
+          "default": null,
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "weaponLevel": {
           "default": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         }
       },
       "required": [
@@ -533,51 +677,123 @@ export const SCHEMA = {
       "properties": {
         "correctTicks": {
           "default": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "currentActualHash": {
           "default": "",
-          "type": "string"
+          "type": "string",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "currentExpectedHash": {
           "default": "",
-          "type": "string"
+          "type": "string",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "currentIsMatch": {
           "default": true,
-          "type": "boolean"
+          "type": "boolean",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "currentTickId": {
           "default": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "errorMessage": {
           "default": "",
-          "type": "string"
+          "type": "string",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "isPaused": {
           "default": false,
-          "type": "boolean"
+          "type": "boolean",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "mismatchedTicks": {
           "default": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "processedTicks": {
           "default": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "recordFilePath": {
           "default": "",
-          "type": "string"
+          "type": "string",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "status": {
           "default": "idle",
-          "type": "string"
+          "type": "string",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "totalTicks": {
           "default": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         }
       },
       "required": [
@@ -787,19 +1003,43 @@ export const SCHEMA = {
       "properties": {
         "id": {
           "default": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "lastFireTick": {
           "default": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "serverOnly"
+            }
+          }
         },
         "level": {
           "default": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "ownerID": {
           "$ref": "#/defs/Optional<PlayerID>",
-          "default": null
+          "default": null,
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "position": {
           "$ref": "#/defs/Position2",
@@ -808,12 +1048,24 @@ export const SCHEMA = {
               "x": 0,
               "y": 0
             }
+          },
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
           }
         },
         "rotation": {
           "$ref": "#/defs/Angle",
           "default": {
             "degrees": 0
+          },
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
           }
         }
       },
@@ -972,19 +1224,43 @@ export const SCHEMA = {
         },
         "motion": {
           "default": true,
-          "type": "boolean"
+          "type": "boolean",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "tickCount": {
           "default": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "viewEntries": {
           "default": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "viewExits": {
           "default": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "viewers": {
           "additionalProperties": {
@@ -1018,7 +1294,13 @@ export const SCHEMA = {
       "properties": {
         "id": {
           "default": "",
-          "type": "string"
+          "type": "string",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "position": {
           "$ref": "#/defs/Position2",
@@ -1027,6 +1309,12 @@ export const SCHEMA = {
               "x": 0,
               "y": 0
             }
+          },
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
           }
         },
         "step": {
@@ -1034,6 +1322,12 @@ export const SCHEMA = {
           "default": {
             "x": 0,
             "y": 0
+          },
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "serverOnly"
+            }
           }
         },
         "visibleTo": {
@@ -1454,7 +1748,7 @@ export const SCHEMA = {
       }
     }
   },
-  "schemaHash": "892e6d77378c91cb",
+  "schemaHash": "fe81402d9f384064",
   "version": "0.1.0"
 } as const
 

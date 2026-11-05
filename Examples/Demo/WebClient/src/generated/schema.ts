@@ -137,11 +137,23 @@ export const SCHEMA = {
         },
         "ticks": {
           "default": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "totalCookies": {
           "default": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         }
       },
       "required": [
@@ -159,7 +171,13 @@ export const SCHEMA = {
       "properties": {
         "totalClicks": {
           "default": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "upgrades": {
           "additionalProperties": {
@@ -189,15 +207,33 @@ export const SCHEMA = {
       "properties": {
         "cookies": {
           "default": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "cookiesPerSecond": {
           "default": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         },
         "name": {
           "default": "",
-          "type": "string"
+          "type": "string",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         }
       },
       "required": [
@@ -214,7 +250,13 @@ export const SCHEMA = {
       "properties": {
         "count": {
           "default": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
         }
       },
       "required": [
@@ -232,6 +274,12 @@ export const SCHEMA = {
           "default": {
             "x": 0,
             "y": 0
+          },
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
           }
         },
         "playerAccelerations": {
@@ -493,7 +541,7 @@ export const SCHEMA = {
       }
     }
   },
-  "schemaHash": "d62c6ff067ac1cdb",
+  "schemaHash": "53735f97fa12154f",
   "version": "0.1.0"
 } as const
 
