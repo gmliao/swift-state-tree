@@ -119,7 +119,15 @@ export function selectAction(actions: ActionConfig[], index: number): ActionConf
 
 export interface WorkerMetrics {
     rttMs: number[];
+    /** When each RTT sample completed (same clock as `now`), parallel to `rttMs`. */
+    rttAt: number[];
     stateUpdateIntervalsMs: number[];
+    /** When each update interval ended, parallel to `stateUpdateIntervalsMs`. */
+    updateAt: number[];
+    /** Actual minus intended send time per action (0 in lockstep mode), parallel to `sentAt`. */
+    sendLagMs: number[];
+    /** Actual send time per action. */
+    sentAt: number[];
     errorCount: number;
     /** Closes the client did not ask for. */
     disconnectCount: number;
@@ -128,7 +136,18 @@ export interface WorkerMetrics {
 }
 
 function emptyMetrics(): WorkerMetrics {
-    return { rttMs: [], stateUpdateIntervalsMs: [], errorCount: 0, disconnectCount: 0, actionsSent: 0, closes: [] };
+    return {
+        rttMs: [],
+        rttAt: [],
+        stateUpdateIntervalsMs: [],
+        updateAt: [],
+        sendLagMs: [],
+        sentAt: [],
+        errorCount: 0,
+        disconnectCount: 0,
+        actionsSent: 0,
+        closes: []
+    };
 }
 
 export class WorkerSession {
@@ -145,9 +164,15 @@ export class WorkerSession {
         this.metrics = emptyMetrics();
     }
 
-    recordSend(requestID: string, sentAt: number): void {
-        this.pendingRequests.set(requestID, sentAt);
+    /**
+     * `originAt` is where RTT is measured from: the intended send time (spread mode) or the
+     * actual one (lockstep). `actualAt` defaults to `originAt`.
+     */
+    recordSend(requestID: string, originAt: number, actualAt: number = originAt): void {
+        this.pendingRequests.set(requestID, originAt);
         this.metrics.actionsSent += 1;
+        this.metrics.sentAt.push(actualAt);
+        this.metrics.sendLagMs.push(actualAt - originAt);
     }
 
     handleDecodedMessage(message: any, now: number): void {
@@ -185,6 +210,7 @@ export class WorkerSession {
         const sentAt = this.pendingRequests.get(requestID);
         if (sentAt !== undefined) {
             this.metrics.rttMs.push(now - sentAt);
+            this.metrics.rttAt.push(now);
             this.pendingRequests.delete(requestID);
         }
     }
@@ -192,6 +218,7 @@ export class WorkerSession {
     private recordStateUpdate(now: number): void {
         if (this.lastStateUpdateAt !== undefined) {
             this.metrics.stateUpdateIntervalsMs.push(now - this.lastStateUpdateAt);
+            this.metrics.updateAt.push(now);
         }
         this.lastStateUpdateAt = now;
     }
@@ -205,6 +232,7 @@ export class WorkerClient {
     private closeRequested = false;
     private closeWaiters: Array<() => void> = [];
     private abrupt = false;
+    private joinedCallbacks: Array<(at: number) => void> = [];
     private readonly session = new WorkerSession();
     private readonly now: () => number;
     private readonly createSocket: (url: string) => WebSocketLike;
@@ -246,6 +274,20 @@ export class WorkerClient {
     /** `connect()` was called (the connect ramp reached this client). */
     isStarted(): boolean {
         return this.socket !== undefined;
+    }
+
+    /** Calls `callback` with the join time once joined (right away if already joined). */
+    onJoined(callback: (at: number) => void): void {
+        if (this.joined) {
+            callback(this.now());
+        } else {
+            this.joinedCallbacks.push(callback);
+        }
+    }
+
+    /** Drops pending join callbacks (a phase ended before the join). */
+    clearJoinedCallbacks(): void {
+        this.joinedCallbacks = [];
     }
 
     /** Open and not closing: can be kept for the next phase. */
@@ -293,11 +335,13 @@ export class WorkerClient {
         return this.config.playerId;
     }
 
-    sendAction(requestID: string, actionName: string, payload: Record<string, unknown>): void {
+    /** Sends an action; RTT is measured from `intendedAt` when given, else from now. */
+    sendAction(requestID: string, actionName: string, payload: Record<string, unknown>, intendedAt?: number): void {
         if (!this.socket) {
             return;
         }
-        this.session.recordSend(requestID, this.now());
+        const now = this.now();
+        this.session.recordSend(requestID, intendedAt ?? now, now);
         if (this.messageEncoding === "messagepack") {
             const msg = buildActionMessage(actionName, requestID, payload);
             this.socket.send(encodeMessageToMessagePack(msg));
@@ -369,7 +413,13 @@ export class WorkerClient {
         if (decoded && decoded.kind === "joinResponse") {
             const success = decoded.success ?? decoded.payload?.joinResponse?.success;
             if (success) {
-                this.joined = true;
+                if (!this.joined) {
+                    this.joined = true;
+                    const callbacks = this.joinedCallbacks;
+                    this.joinedCallbacks = [];
+                    const at = this.now();
+                    callbacks.forEach((callback) => callback(at));
+                }
             }
             const encoding = decoded.encoding ?? decoded.payload?.joinResponse?.encoding;
             if (encoding) {

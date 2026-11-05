@@ -20,6 +20,8 @@ describe("phase lifecycle against a stub server", () => {
     let server: WebSocketServer;
     let url: string;
     const connections: ServerConnection[] = [];
+    /** Server-side arrival time of every action. */
+    const actionArrivals: number[] = [];
 
     beforeAll(async () => {
         server = new WebSocketServer({ port: 0 });
@@ -37,6 +39,7 @@ describe("phase lifecycle against a stub server", () => {
                         payload: { joinResponse: { requestID: msg.payload.join.requestID, success: true, encoding: "json" } }
                     }));
                 } else if (msg.kind === "action") {
+                    actionArrivals.push(Date.now());
                     socket.send(JSON.stringify({
                         kind: "actionResponse",
                         payload: { actionResponse: { requestID: msg.payload.requestID, response: {} } }
@@ -182,5 +185,44 @@ describe("phase lifecycle against a stub server", () => {
         expect(steady.connections.connectRampMs).toBeGreaterThanOrEqual(80);
         expect(steady.connections.connectRampMs).toBeLessThanOrEqual(100);
     }, 60_000);
+
+    /** Largest number of action arrivals within any `spanMs` interval. */
+    function maxInSpan(times: number[], spanMs: number): number {
+        const sorted = [...times].sort((a, b) => a - b);
+        let best = 0;
+        let start = 0;
+        for (let end = 0; end < sorted.length; end += 1) {
+            while (sorted[end] - sorted[start] >= spanMs) start += 1;
+            best = Math.max(best, end - start + 1);
+        }
+        return best;
+    }
+
+    it("spread sends don't arrive as one burst; lockstep sends do", async () => {
+        // 1 worker, 20 clients, 5 actions/s each (200 ms period).
+        const phase = { durationSeconds: 2, rooms: 4, playersPerRoom: 5, actionsPerSecond: 5, verify: false, warmupSeconds: 0.5 };
+        const file = writeScenario({ preflight: { ...phase, durationSeconds: 1 }, steady: phase, postflight: { ...phase, durationSeconds: 1 } });
+
+        actionArrivals.length = 0;
+        const spread = await runScenario(file, { workers: 1, layout: "rooms", connectMode: "burst", sendMode: "spread" });
+        const spreadBurst = maxInSpan(actionArrivals, 2);
+        actionArrivals.length = 0;
+        const lockstep = await runScenario(file, { workers: 1, layout: "rooms", connectMode: "burst", sendMode: "lockstep" });
+        const lockstepBurst = maxInSpan(actionArrivals, 2);
+
+        expect(lockstepBurst).toBeGreaterThanOrEqual(15);
+        expect(spreadBurst).toBeLessThanOrEqual(6);
+
+        const steady = spread.phases[1];
+        expect(spread.runConfig).toMatchObject({ sendMode: "spread", windowMs: 1000 });
+        expect(steady.measurement.warmupMs).toBe(500);
+        expect(steady.measurement.excludedSamples.rtt).toBeGreaterThan(0);
+        expect(steady.measurement.sendRate.targetPerSecond).toBe(100);
+        expect(steady.measurement.sendRate.achievedPerSecond).toBeGreaterThan(80);
+        expect(steady.measurement.sendRate.achievedPerSecond).toBeLessThan(120);
+        expect(steady.measurement.windows.map((w) => w.warmup)).toEqual([true, false]);
+        expect(steady.report.rttMs.length).toBeGreaterThan(100);
+        expect(lockstep.phases[1].measurement.sendRate.lagMs.max).toBe(0);
+    }, 40_000);
 });
 

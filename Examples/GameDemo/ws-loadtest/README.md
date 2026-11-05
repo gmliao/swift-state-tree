@@ -52,6 +52,15 @@ node dist/cli.js \
 - **Legacy topology**: `--layout per-connection --connect burst` gives the same topology and connect burst as the old tool. Phase boundaries still close cleanly, unlike the old tool's resets, so the boundary load and the first seconds of each phase differ. Add `--boundary abrupt` to drop the sockets at boundaries as the old tool did. The sockets are then dropped when the next phase starts rather than as each worker exits.
 - **Report**: `meta.runConfig` records the run id, layout, connect mode and rate, boundary mode, workers, and every phase's rooms, players, connections, lands and ramp time. Each phase has `layout` (lands, players per land) and `connectionLifecycle`: target, started, joined at the end, opened, reused, closed at start, ramp duration, and close counts split by initiator and code, plus the first 200 close records. `disconnectRate` counts only closes the client didn't ask for, including server closes on connections between phases. `meta.shutdownCloses` covers the end of the run.
 
+## Sending and measurement
+
+- **Send schedule** (`--send`, default `spread`): each client sends at `origin + offset + n · period` (`period = 1000 / actionsPerSecond` ms). The per-client offset in `[0, period)` comes from a stable hash of the connection, so a land's actions are spread over the tick and sync phase and runs are reproducible. A timer that fires late sends every slot it missed. `--send lockstep` is the earlier behaviour: one timer per worker sends for all of its joined clients at once.
+- **RTT origin**: in `spread` mode RTT is measured from the intended send time, so client-side queueing and stalls show up as larger RTT, not as missing samples (no coordinated omission). The report also gives the send lag (actual minus intended), the late sends (more than one period late) and the achieved send rate against the target (joined clients × rate). In `lockstep` mode RTT is measured from the actual send, as before.
+- **Warm-up**: RTT and update samples in the first `warmupSeconds` of each phase are excluded from the phase's metrics and thresholds. Set it per phase in the scenario or for all phases with `--warmup-seconds`. The default is the phase's connect ramp + 2 s, at most half the phase. Each phase's `measurement` block gives the resolved warm-up and the excluded sample counts.
+- **Windows**: `measurement.windows` has per-window (`--window-ms`, default 1000) RTT and update distributions and sends, with the warm-up windows flagged.
+- **Listen queue** (Linux): each phase's `listenQueue` and `meta.listenQueue` give the `ListenOverflows`/`ListenDrops` increase from `/proc/net/netstat`. The counters are host-wide (namespace-wide in a container), so they describe the server's listen queue when the server runs on the same host. They are absent on macOS.
+- **Closest to the old tool**: `--layout per-connection --connect burst --boundary abrupt --send lockstep --warmup-seconds 0`.
+
 ## Scenario Format
 
 Scenarios are JSON files under `scenarios/hero-defense/`. Each contains:
@@ -62,7 +71,7 @@ Scenarios are JSON files under `scenarios/hero-defense/`. Each contains:
 
 ## Metrics
 
-- **rtt**: Round-trip time (client sends action → client receives actionResponse). Measures server + network.
+- **rtt**: Round-trip time from the action's intended send time (`spread`) or actual send (`lockstep`) to receiving its actionResponse. Measures server + network + client-side queueing.
 - **update**: **Client-observed** interval between consecutive state-update messages (time between handling one `stateUpdate` and the next in the same connection). Uses `Date.now()` when the `message` callback runs. Hero Defense uses **StateSync(every: 100ms)** = 10 broadcasts/s.
   - **Worst case**: The server sends on time (e.g. at t=0 and t=100ms). The client receives both packets on time, but the *callback* for the second packet runs a few ms late (event loop busy with other connections). So we record "last update" at t=104 instead of t=100 — i.e. we observe 104ms between updates even though the packet arrived in time. So the measured interval = server interval + client processing delay.
   - **Thresholds**: When setting `updateP95` / `updateP99`, use **server sync interval + margin for client jitter** (e.g. 100ms + 20ms = 120ms for Hero Defense). Do not set the threshold to exactly the server interval (100ms), or healthy runs will fail due to client-side jitter.

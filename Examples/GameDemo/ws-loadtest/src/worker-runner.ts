@@ -4,8 +4,11 @@ import { sendMessageWithAck } from "./ipc";
 import { renderTemplateObject } from "./payload";
 import { connectDelaysMs } from "./connect-schedule";
 import type { BoundaryMode, ConnectMode } from "./connect-schedule";
+import { SendSchedule, sendOffsetMs } from "./send-schedule";
+import type { SendMode } from "./send-schedule";
 import type { ConnectionSpec } from "./layout";
 import type { ActionConfig } from "./types";
+import { concatAll } from "./samples";
 
 /** One phase for this worker. The worker lives for the whole run and keeps its connections. */
 export interface PhaseStartConfig {
@@ -23,11 +26,21 @@ export interface PhaseStartConfig {
     actionsPerSecond: number;
     durationSeconds: number;
     joinPayloadTemplate?: Record<string, unknown>;
+    sendMode: SendMode;
+    /**
+     * Phase origin (ms since epoch), the same for every worker: send schedules and the phase
+     * end (`originAt + durationSeconds`) are measured from it.
+     */
+    originAt: number;
 }
 
 export interface WorkerPhaseReport {
     rttMs: number[];
+    rttAt: number[];
     stateUpdateIntervalsMs: number[];
+    updateAt: number[];
+    sendLagMs: number[];
+    sentAt: number[];
     errorCount: number;
     disconnectCount: number;
     actionsSent: number;
@@ -147,27 +160,13 @@ async function runPhase(config: PhaseStartConfig): Promise<WorkerPhaseReport> {
         }
     });
 
-    const timer =
-        config.actionsPerSecond > 0
-            ? setInterval(() => {
-                  for (const client of phaseClients) {
-                      if (!client.isJoined() || !client.isUsable()) {
-                          continue;
-                      }
-                      const action = selectAction(config.actions, actionCounter++);
-                      const payload = renderTemplateObject(action.payloadTemplate ?? {}, {
-                          playerId: client.getPlayerId()
-                      });
-                      client.sendAction(`action-${process.pid}-${actionCounter}`, action.name, payload);
-                  }
-              }, Math.max(1, Math.floor(1000 / config.actionsPerSecond)))
-            : undefined;
+    const endAt = config.originAt + config.durationSeconds * 1000;
+    const stopSending = config.actionsPerSecond > 0 ? startSending(config, phaseClients, endAt) : () => {};
 
-    await new Promise((resolve) => setTimeout(resolve, config.durationSeconds * 1000));
-    if (timer) {
-        clearInterval(timer);
-    }
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, endAt - Date.now())));
+    stopSending();
     connectTimers.forEach((t) => clearTimeout(t));
+    phaseClients.forEach((client) => client.clearJoinedCallbacks());
 
     const report = aggregateSessions(phaseClients.map((client) => client.getSession()));
     // What was reported belongs to this phase; anything after it (late responses, closes at the
@@ -187,46 +186,78 @@ async function runPhase(config: PhaseStartConfig): Promise<WorkerPhaseReport> {
     };
 }
 
+function sendOne(config: PhaseStartConfig, client: WorkerClient, intendedAt?: number): void {
+    const action = selectAction(config.actions, actionCounter++);
+    const payload = renderTemplateObject(action.payloadTemplate ?? {}, {
+        playerId: client.getPlayerId()
+    });
+    client.sendAction(`action-${process.pid}-${actionCounter}`, action.name, payload, intendedAt);
+}
+
+/** Starts the phase's sends; returns a function that stops them. */
+function startSending(config: PhaseStartConfig, phaseClients: WorkerClient[], endAt: number): () => void {
+    const periodMs = 1000 / config.actionsPerSecond;
+
+    if (config.sendMode === "lockstep") {
+        // Legacy: one timer sends for every joined client at once; RTT from the actual send.
+        const timer = setInterval(() => {
+            for (const client of phaseClients) {
+                if (client.isJoined() && client.isUsable()) {
+                    sendOne(config, client);
+                }
+            }
+        }, Math.max(1, Math.floor(periodMs)));
+        return () => clearInterval(timer);
+    }
+
+    // Spread: each client on its own schedule from the common origin. A late timer sends every
+    // slot it missed, each measured from its intended time.
+    let stopped = false;
+    const timers = new Set<NodeJS.Timeout>();
+    for (const client of phaseClients) {
+        const schedule = new SendSchedule(config.originAt, periodMs, sendOffsetMs(client.getKey(), periodMs));
+        const arm = () => {
+            if (stopped || schedule.nextDueMs() >= endAt) {
+                return;
+            }
+            const timer = setTimeout(() => {
+                timers.delete(timer);
+                if (stopped) {
+                    return;
+                }
+                if (client.isUsable()) {
+                    for (const intendedAt of schedule.takeDue(Date.now(), endAt)) {
+                        sendOne(config, client, intendedAt);
+                    }
+                    arm();
+                }
+            }, Math.max(0, schedule.nextDueMs() - Date.now()));
+            timers.add(timer);
+        };
+        client.onJoined((joinedAt) => {
+            schedule.startAt(Math.max(joinedAt, config.originAt));
+            arm();
+        });
+    }
+    return () => {
+        stopped = true;
+        timers.forEach((timer) => clearTimeout(timer));
+        timers.clear();
+    };
+}
+
 function aggregateSessions(sessions: WorkerSession[]) {
-    // Do NOT use push(...arr) - with large loads, spreading can overflow the JS call stack.
-    let totalRtt = 0;
-    let totalUpd = 0;
-    let errorCount = 0;
-    let disconnectCount = 0;
-    let actionsSent = 0;
-
-    for (const session of sessions) {
-        totalRtt += session.metrics.rttMs.length;
-        totalUpd += session.metrics.stateUpdateIntervalsMs.length;
-        errorCount += session.metrics.errorCount;
-        disconnectCount += session.metrics.disconnectCount;
-        actionsSent += session.metrics.actionsSent;
-    }
-
-    const rttMs: number[] = new Array(totalRtt);
-    const stateUpdateIntervalsMs: number[] = new Array(totalUpd);
-    const closes: CloseRecord[] = [];
-    let rttIndex = 0;
-    let updIndex = 0;
-
-    for (const session of sessions) {
-        for (let i = 0; i < session.metrics.rttMs.length; i += 1) {
-            rttMs[rttIndex++] = session.metrics.rttMs[i];
-        }
-        for (let i = 0; i < session.metrics.stateUpdateIntervalsMs.length; i += 1) {
-            stateUpdateIntervalsMs[updIndex++] = session.metrics.stateUpdateIntervalsMs[i];
-        }
-        for (const record of session.metrics.closes) {
-            closes.push(record);
-        }
-    }
-
+    const metrics = sessions.map((session) => session.metrics);
     return {
-        rttMs,
-        stateUpdateIntervalsMs,
-        errorCount,
-        disconnectCount,
-        actionsSent,
-        closes
+        rttMs: concatAll(metrics.map((m) => m.rttMs)),
+        rttAt: concatAll(metrics.map((m) => m.rttAt)),
+        stateUpdateIntervalsMs: concatAll(metrics.map((m) => m.stateUpdateIntervalsMs)),
+        updateAt: concatAll(metrics.map((m) => m.updateAt)),
+        sendLagMs: concatAll(metrics.map((m) => m.sendLagMs)),
+        sentAt: concatAll(metrics.map((m) => m.sentAt)),
+        errorCount: metrics.reduce((sum, m) => sum + m.errorCount, 0),
+        disconnectCount: metrics.reduce((sum, m) => sum + m.disconnectCount, 0),
+        actionsSent: metrics.reduce((sum, m) => sum + m.actionsSent, 0),
+        closes: concatAll(metrics.map((m) => m.closes))
     };
 }

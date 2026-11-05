@@ -11,6 +11,12 @@ import { makeRunId, planPhaseConnections, summarizeLayout } from "./layout";
 import type { ConnectionSpec, Layout, LayoutSummary } from "./layout";
 import { DEFAULT_CONNECT_RATE, connectingWorkers, rampDurationMs } from "./connect-schedule";
 import type { BoundaryMode, ConnectMode } from "./connect-schedule";
+import { DEFAULT_WINDOW_MS, defaultWarmupMs } from "./send-schedule";
+import type { SendMode } from "./send-schedule";
+import { concatAll, distribution, selectByTime, windowSamples } from "./samples";
+import type { Distribution, WindowSample } from "./samples";
+import { counterDelta, readListenCounters } from "./net-stats";
+import type { ListenCounters } from "./net-stats";
 
 export interface WorkerReport {
     rttMs: number[];
@@ -49,11 +55,42 @@ export interface CloseSummary {
     records: CloseRecord[];
 }
 
+/** How the phase was measured: the steady-state window, the send rate and per-window samples. */
+export interface PhaseMeasurement {
+    /** Phase origin, ms since epoch: send schedules and windows count from it. */
+    originAt: number;
+    /** Samples before `originAt + warmupMs` are excluded from the phase's RTT and update metrics. */
+    warmupMs: number;
+    windowMs: number;
+    /** Length of the measured window (phase duration minus warm-up). */
+    measuredMs: number;
+    excludedSamples: { rtt: number; update: number };
+    sendRate: {
+        /** Joined connections at the end × actionsPerSecond. */
+        targetPerSecond: number;
+        /** Actions actually sent per second in the measured window. */
+        achievedPerSecond: number;
+        sentInWindow: number;
+        /** Actual minus intended send time (0 in lockstep mode). */
+        lagMs: Distribution;
+        /** Sends more than one period late (a client-side stall). */
+        lateSends: number;
+    };
+    windows: WindowSample[];
+}
+
 export interface PhaseResult {
     name: PhaseName;
     config: PhaseConfig;
     layout: LayoutSummary;
     connections: PhaseConnections;
+    measurement: PhaseMeasurement;
+    /**
+     * `ListenOverflows`/`ListenDrops` increase during the phase (Linux `/proc/net/netstat`;
+     * absent elsewhere). Host- or namespace-wide: meaningful when the server shares the host.
+     */
+    listenQueue?: ListenCounters;
+    /** RTT and update samples from the measured window only. */
     report: WorkerReport;
 }
 
@@ -63,6 +100,8 @@ export interface RunConfig {
     runId: string;
     layout: Layout;
     boundaryMode: BoundaryMode;
+    sendMode: SendMode;
+    windowMs: number;
     connectMode: ConnectMode;
     /** Total new connections per second over all workers (ramp mode). */
     connectRatePerSecond: number;
@@ -75,6 +114,8 @@ export interface RunConfig {
         lands: number;
         /** Time the connect ramp needs for this phase's new connections. */
         rampMs: number;
+        /** Resolved warm-up excluded from the phase's metrics. */
+        warmupMs: number;
         durationSeconds: number;
         actionsPerSecond: number;
     }>;
@@ -88,6 +129,8 @@ export interface RunResult {
     phases: PhaseResult[];
     /** Closes at the end of the run (all client-initiated unless the server closed first). */
     shutdownCloses: CloseSummary;
+    /** `ListenOverflows`/`ListenDrops` increase over the whole run (see `PhaseResult.listenQueue`). */
+    listenQueue?: ListenCounters;
 }
 
 export interface RunOptions {
@@ -100,6 +143,10 @@ export interface RunOptions {
     allowPartialRamp?: boolean;
     /** Land id prefix; a new one per run by default. */
     runId?: string;
+    sendMode?: SendMode;
+    windowMs?: number;
+    /** Warm-up for every phase, overriding the scenario's and the default. */
+    warmupSeconds?: number;
     /** Where warnings go (default: stderr). */
     warn?: (message: string) => void;
 }
@@ -156,6 +203,8 @@ export async function runScenario(filePath: string, options: RunOptions | number
     const connectRatePerSecond = opts.connectRatePerSecond ?? DEFAULT_CONNECT_RATE;
     const boundaryMode = opts.boundaryMode ?? "clean";
     const runId = opts.runId ?? makeRunId();
+    const sendMode = opts.sendMode ?? "spread";
+    const windowMs = opts.windowMs ?? DEFAULT_WINDOW_MS;
     const warn = opts.warn ?? ((message: string) => console.warn(message));
 
     const scenario = loadScenario(filePath);
@@ -178,10 +227,17 @@ export async function runScenario(filePath: string, options: RunOptions | number
         }
         warn(`warning: ${message}`);
     }
+    const warmupsMs = phases.map((phase, i) => {
+        const durationMs = phase.config.durationSeconds * 1000;
+        const seconds = opts.warmupSeconds ?? phase.config.warmupSeconds;
+        return seconds !== undefined ? Math.min(Math.max(0, seconds) * 1000, durationMs) : defaultWarmupMs(rampsMs[i], durationMs);
+    });
     const runConfig: RunConfig = {
         runId,
         layout,
         boundaryMode,
+        sendMode,
+        windowMs,
         connectMode,
         connectRatePerSecond,
         workers,
@@ -194,12 +250,14 @@ export async function runScenario(filePath: string, options: RunOptions | number
                 connections: summary.connections,
                 lands: summary.lands,
                 rampMs: Math.round(rampsMs[i]),
+                warmupMs: Math.round(warmupsMs[i]),
                 durationSeconds: phase.config.durationSeconds,
                 actionsPerSecond: phase.config.actionsPerSecond
             };
         })
     };
 
+    const runCountersBefore = readListenCounters();
     const pool = startWorkers(workers);
     const results: PhaseResult[] = [];
     let shutdownRecords: CloseRecord[] = [];
@@ -209,6 +267,9 @@ export async function runScenario(filePath: string, options: RunOptions | number
             const plan = plans[p];
             const activeWorkers = connectingWorkers(newPerWorker[p]);
             const timeoutMs = (phase.config.durationSeconds + 60) * 1000;
+            // A short lead so every worker has the command before the origin.
+            const originAt = Date.now() + 200;
+            const countersBefore = readListenCounters();
             const reports = await Promise.all(
                 pool.map((worker, i) =>
                     worker.request<WorkerPhaseReport>(
@@ -226,7 +287,9 @@ export async function runScenario(filePath: string, options: RunOptions | number
                                 activeWorkers,
                                 actionsPerSecond: phase.config.actionsPerSecond,
                                 durationSeconds: phase.config.durationSeconds,
-                                joinPayloadTemplate: phase.config.joinPayloadTemplate
+                                joinPayloadTemplate: phase.config.joinPayloadTemplate,
+                                sendMode,
+                                originAt
                             }
                         },
                         "report",
@@ -234,6 +297,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
                     )
                 )
             );
+            const listenQueue = counterDelta(countersBefore, readListenCounters());
             const closes: CloseRecord[] = [];
             for (const r of reports) {
                 for (const record of r.closes) {
@@ -254,7 +318,16 @@ export async function runScenario(filePath: string, options: RunOptions | number
                     connectRampMs: reports.reduce((max, r) => Math.max(max, r.connectRampMs), 0),
                     closes: summarizeCloses(closes)
                 },
-                report: aggregateReports(reports)
+                listenQueue,
+                measurement: measurePhase(
+                    reports,
+                    originAt,
+                    phase.config.durationSeconds * 1000,
+                    warmupsMs[p],
+                    windowMs,
+                    phase.config.actionsPerSecond
+                ),
+                report: aggregateReports(reports, originAt + warmupsMs[p], originAt + phase.config.durationSeconds * 1000)
             });
         }
         const shutdowns = await Promise.all(
@@ -271,7 +344,8 @@ export async function runScenario(filePath: string, options: RunOptions | number
         syncIntervalMs: scenario.syncIntervalMs,
         runConfig,
         phases: results,
-        shutdownCloses: summarizeCloses(shutdownRecords)
+        shutdownCloses: summarizeCloses(shutdownRecords),
+        listenQueue: counterDelta(runCountersBefore, readListenCounters())
     };
 }
 
@@ -341,45 +415,66 @@ function startWorkers(count: number): WorkerHandle[] {
     return handles;
 }
 
-function aggregateReports(reports: WorkerPhaseReport[]): WorkerReport {
-    // IMPORTANT:
-    // Do NOT use `array.push(...bigArray)` here.
-    // With large loads, each worker can produce very large sample arrays; spreading them
-    // can overflow the JS call stack / argument limit ("Maximum call stack size exceeded").
-    let totalRtt = 0;
-    let totalUpd = 0;
-    let errorCount = 0;
-    let disconnectCount = 0;
-    let actionsSent = 0;
-
-    for (const r of reports) {
-        totalRtt += r.rttMs.length;
-        totalUpd += r.stateUpdateIntervalsMs.length;
-        errorCount += r.errorCount;
-        disconnectCount += r.disconnectCount;
-        actionsSent += r.actionsSent;
-    }
-
-    const rttMs: number[] = new Array(totalRtt);
-    const stateUpdateIntervalsMs: number[] = new Array(totalUpd);
-    let rttIndex = 0;
-    let updIndex = 0;
-
-    for (const r of reports) {
-        for (let i = 0; i < r.rttMs.length; i += 1) {
-            rttMs[rttIndex++] = r.rttMs[i];
-        }
-        for (let i = 0; i < r.stateUpdateIntervalsMs.length; i += 1) {
-            stateUpdateIntervalsMs[updIndex++] = r.stateUpdateIntervalsMs[i];
-        }
-    }
-
+/**
+ * Merges the workers' phase reports. RTT and update samples are kept only from the measured
+ * window `[measureFrom, measureTo)`; the earlier ones fall in the warm-up.
+ */
+function aggregateReports(reports: WorkerPhaseReport[], measureFrom: number, measureTo: number): WorkerReport {
     return {
-        rttMs,
-        stateUpdateIntervalsMs,
-        errorCount,
-        disconnectCount,
-        actionsSent
+        rttMs: concatAll(reports.map((r) => selectByTime(r.rttMs, r.rttAt, measureFrom, measureTo))),
+        stateUpdateIntervalsMs: concatAll(
+            reports.map((r) => selectByTime(r.stateUpdateIntervalsMs, r.updateAt, measureFrom, measureTo))
+        ),
+        errorCount: reports.reduce((sum, r) => sum + r.errorCount, 0),
+        disconnectCount: reports.reduce((sum, r) => sum + r.disconnectCount, 0),
+        actionsSent: reports.reduce((sum, r) => sum + r.actionsSent, 0)
+    };
+}
+
+/** The phase's measurement window, send rate and per-window samples. */
+export function measurePhase(
+    reports: WorkerPhaseReport[],
+    originAt: number,
+    durationMs: number,
+    warmupMs: number,
+    windowMs: number,
+    actionsPerSecond: number
+): PhaseMeasurement {
+    const measureFrom = originAt + warmupMs;
+    const measureTo = originAt + durationMs;
+    const measuredSeconds = Math.max(0, measureTo - measureFrom) / 1000;
+    const samples = {
+        rttMs: concatAll(reports.map((r) => r.rttMs)),
+        rttAt: concatAll(reports.map((r) => r.rttAt)),
+        stateUpdateIntervalsMs: concatAll(reports.map((r) => r.stateUpdateIntervalsMs)),
+        updateAt: concatAll(reports.map((r) => r.updateAt)),
+        sentAt: concatAll(reports.map((r) => r.sentAt))
+    };
+    const sendLagMs = concatAll(reports.map((r) => r.sendLagMs));
+    const sentInWindow = samples.sentAt.filter((t) => t >= measureFrom && t < measureTo).length;
+    const lagInWindow = selectByTime(sendLagMs, samples.sentAt, measureFrom, measureTo);
+    const joinedAtEnd = reports.reduce((sum, r) => sum + r.joinedAtEnd, 0);
+    const periodMs = actionsPerSecond > 0 ? 1000 / actionsPerSecond : 0;
+    const excluded = {
+        rtt: samples.rttMs.length - selectByTime(samples.rttMs, samples.rttAt, measureFrom, measureTo).length,
+        update:
+            samples.stateUpdateIntervalsMs.length -
+            selectByTime(samples.stateUpdateIntervalsMs, samples.updateAt, measureFrom, measureTo).length
+    };
+    return {
+        originAt,
+        warmupMs,
+        windowMs,
+        measuredMs: Math.round(measuredSeconds * 1000),
+        excludedSamples: excluded,
+        sendRate: {
+            targetPerSecond: joinedAtEnd * actionsPerSecond,
+            achievedPerSecond: measuredSeconds > 0 ? sentInWindow / measuredSeconds : 0,
+            sentInWindow,
+            lagMs: distribution(lagInWindow),
+            lateSends: periodMs > 0 ? lagInWindow.filter((lag) => lag > periodMs).length : 0
+        },
+        windows: windowSamples(samples, originAt, durationMs, windowMs, warmupMs)
     };
 }
 

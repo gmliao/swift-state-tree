@@ -46,13 +46,22 @@ export function rampDurationMs(newPerWorker: number[], mode: ConnectMode, ratePe
  */
 export const DEFAULT_CONNECT_RATE = 1000;
 
-/** Stable 32-bit FNV-1a hash, used for reproducible jitter. */
+/**
+ * Stable 32-bit hash for reproducible jitter: FNV-1a followed by the murmur3 finalizer. The
+ * finalizer matters because keys often differ only in their last characters (`...-s0`,
+ * `...-s1`), which plain FNV-1a barely spreads into the high bits that set the offset.
+ */
 export function hash32(text: string): number {
     let h = 0x811c9dc5;
     for (let i = 0; i < text.length; i += 1) {
         h ^= text.charCodeAt(i);
         h = Math.imul(h, 0x01000193) >>> 0;
     }
+    h ^= h >>> 16;
+    h = Math.imul(h, 0x85ebca6b) >>> 0;
+    h ^= h >>> 13;
+    h = Math.imul(h, 0xc2b2ae35) >>> 0;
+    h ^= h >>> 16;
     return h >>> 0;
 }
 
