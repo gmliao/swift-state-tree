@@ -161,12 +161,15 @@ struct TransportAdapterConcurrentStabilityBenchmarkRunner: BenchmarkRunner {
                 deviceID: "device-\(index)",
                 metadata: [:]
             )
-            _ = try? await adapter.performJoin(
+            if let joined = try? await adapter.performJoin(
                 playerSession: playerSession,
                 clientID: clientID,
                 sessionID: sessionID,
                 authInfo: nil as AuthenticatedInfo?
-            )
+            ) {
+                // A joined session gets diffs only after its first sync.
+                await adapter.syncStateForNewPlayer(playerID: joined.playerID, sessionID: sessionID)
+            }
         }
         
         // Initial sync to populate cache
@@ -195,7 +198,10 @@ struct TransportAdapterConcurrentStabilityBenchmarkRunner: BenchmarkRunner {
             }
         }
         
+        // Count from an empty writer: the warm-up's frames must not land in the window (#160).
+        await MeasuredSync.drain(adapter)
         await mockTransport.resetCounts()
+        let skipsBefore = await MeasuredSync.skipCount(adapter)
         
         // Track statistics
         var totalSyncTime: TimeInterval = 0
@@ -255,6 +261,8 @@ struct TransportAdapterConcurrentStabilityBenchmarkRunner: BenchmarkRunner {
             let endTime = ContinuousClock.now
             totalSyncTime += endTime.timeIntervalSince(startTime)
             #endif
+            // Untimed: count this iteration's frames, and start the next one from an empty writer.
+            await MeasuredSync.drain(adapter)
             
             // Verify consistency: state should not be corrupted
             let stateAfterSync = await keeper.currentState()
@@ -278,8 +286,11 @@ struct TransportAdapterConcurrentStabilityBenchmarkRunner: BenchmarkRunner {
         let averageTime = iterations > 0 ? totalSyncTime / Double(iterations) : 0
         let throughput = totalSyncTime > 0 ? Double(iterations) / totalSyncTime : 0
         let sendCounts = await mockTransport.snapshotCounts()
+        // Bytes per iteration, not per syncNow(): of the concurrent calls, the ones that find a
+        // cycle in flight are rejected (`skippedSyncs`) and coalesce into it.
         let totalBytesPerSync = iterations > 0 ? Double(sendCounts.bytes) / Double(iterations) : 0.0
         let bytesPerPlayer = playerIDs.count > 0 ? Int(totalBytesPerSync / Double(playerIDs.count)) : nil
+        let skippedSyncs = await MeasuredSync.skipCount(adapter) - skipsBefore
         
         // Calculate success rate
         let totalSyncOperations = iterations * concurrentSyncs
@@ -298,6 +309,7 @@ struct TransportAdapterConcurrentStabilityBenchmarkRunner: BenchmarkRunner {
         print("    Successful: \(successfulSyncs)")
         print("    Failed: \(failedSyncs)")
         print("    Consistency Errors: \(consistencyErrors)")
+        print("    Skipped (coalesced into a cycle in flight): \(skippedSyncs)")
         
         return BenchmarkResult(
             config: BenchmarkConfig(
