@@ -105,6 +105,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     
     private let enableLiveStateHashRecording: Bool
     private let enableLoopPhaseOffset: Bool
+    private let inTurnSync: Bool
     
     /// Initialize a LandManager.
     ///
@@ -116,6 +117,9 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     ///   - transportEncoding: Encoding configuration for transport messages and state updates.
     ///   - enableLoopPhaseOffset: Per-land phase offset of live lands' tick and sync loops
     ///     (`LandLoopPhase`). Defaults to on unless `LAND_LOOP_PHASE_OFFSET` is false.
+    ///   - inTurnSync: Run live lands' sync phases inside their keepers' turns (`InTurnSync`).
+    ///     Passed to each land's transport adapter, which also honours `IN_TURN_SYNC`; an
+    ///     explicit off in either place wins.
     ///   - logger: Optional logger instance.
     public init(
         landFactory: @escaping @Sendable (LandID) -> LandDefinition<State>,
@@ -132,6 +136,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         clientEventHashes: [String: Int]? = nil,
         keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)? = nil,
         enableLoopPhaseOffset: Bool = LandLoopPhase.isEnabled(),
+        inTurnSync: Bool = true,
         logger: Logger? = nil
     ) {
         self.landFactory = landFactory
@@ -142,6 +147,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         self.transportEncoding = transportEncoding
         self.enableLiveStateHashRecording = enableLiveStateHashRecording
         self.enableLoopPhaseOffset = enableLoopPhaseOffset
+        self.inTurnSync = inTurnSync
         self.pathHashes = pathHashes
         self.eventHashes = eventHashes
         self.clientEventHashes = clientEventHashes
@@ -308,6 +314,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             pathHashes: pathHashes,
             eventHashes: eventHashes,
             clientEventHashes: clientEventHashes,
+            inTurnSync: inTurnSync,
             logger: logger
         )
         

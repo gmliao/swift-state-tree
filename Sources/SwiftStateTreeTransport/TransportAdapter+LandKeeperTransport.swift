@@ -19,6 +19,34 @@ extension TransportAdapter: LandKeeperTransport {
     public func syncBroadcastOnlyFromTransport() async {
         await self.syncBroadcastOnly()
     }
+
+    /// `true` only with in-turn sync on and for this adapter's own keeper, whose executor it
+    /// then shares (`unownedExecutor`).
+    public nonisolated func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool {
+        inTurnSyncEnabled && isAttached(to: keeper)
+    }
+
+    /// Returns once the writer holds no sync cycle element (and, in tests, once the forced
+    /// back-pressure is off).
+    public func waitForWriterDrainForInTurnSync() async {
+        await outboundWriter.waitForSyncCycleDrain()
+        while writerBackPressureForcedForTesting() {
+            try? await safeTaskSleep(for: .milliseconds(1))
+        }
+    }
+
+    /// Called by the keeper inside its turn. `assumeIsolated` checks that this runs on the shared
+    /// executor (it traps otherwise) and enters the adapter's isolation without a hop.
+    public nonisolated func runSyncPhaseInTurn<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
+        includeSync: Bool
+    ) -> InTurnSyncResult {
+        guard inTurnSyncEnabled else { return .unsupported }
+        return assumeIsolated { adapter in
+            adapter.runSyncPhaseInTurnIsolated(state: state, events: events, includeSync: includeSync)
+        }
+    }
     
     /// Called by the keeper after its destroy handlers ran (no more sync cycles). Stops the
     /// outbound writer, waits (bounded) for queued frames to reach the transport, then runs the

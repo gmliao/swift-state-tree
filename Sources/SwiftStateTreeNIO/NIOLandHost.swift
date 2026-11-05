@@ -130,6 +130,11 @@ public struct NIOLandServerConfiguration: Sendable {
     /// on unless `LAND_LOOP_PHASE_OFFSET` is false.
     public var enableLoopPhaseOffset: Bool
 
+    /// Run each live land's sync phase inside its keeper's turns (`InTurnSync`). `false` keeps the
+    /// legacy sync path (the transport adapter on its own executor). The `IN_TURN_SYNC` environment
+    /// variable can also turn it off; an explicit off in either place wins. Default: on.
+    public var inTurnSync: Bool
+
     /// Suffix appended to base land type to form the replay land type (e.g. "-replay").
     public var replayLandSuffix: String
 
@@ -154,10 +159,12 @@ public struct NIOLandServerConfiguration: Sendable {
             LandServices()
         },
         keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)? = nil,
-        enableLoopPhaseOffset: Bool = LandLoopPhase.isEnabled()
+        enableLoopPhaseOffset: Bool = LandLoopPhase.isEnabled(),
+        inTurnSync: Bool = true
     ) {
         self.logger = logger
         self.enableLoopPhaseOffset = enableLoopPhaseOffset
+        self.inTurnSync = inTurnSync
         self.jwtConfig = jwtConfig
         self.jwtValidator = jwtValidator
         self.allowGuestMode = allowGuestMode
