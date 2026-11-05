@@ -165,9 +165,9 @@ W2–W4 stay as documented limits of this path.
 - **(ii)**: after its firstSync and before any 107 frame (both in the flip's writer element), the joiner gets a **broadcast key-table frame** with the **whole current broadcast table**: slot → key, not only the keys present in the state, because a key that was removed and re-added comes back as a bare slot.
   - The dump is taken **after the flip turn's 107 is encoded**, so keys first assigned in that turn are included.
   - This needs an encoder "dump without reset", a new frame kind, and TS SDK handling.
-- **Version gate**: the client advertises its SDK protocol version in the handshake (join metadata). For a client below that version, the server applies one of two fallbacks; which one is chosen when PR 5 is written:
-  - **(i) delayed reset (N3)**: set `keyScopeResetPending` for **the first commit after the flip**, which is that joiner's first 107. Setting it in the flip turn (rev 2) would not fix #90, because the joiner isn't a recipient of that turn's 107, so its first 107 would come a turn later with bare slots. The cost: every client's broadcast table is renumbered on that commit, so each broadcast key is re-sent with its full name once, for every client and per old-SDK join (one turn's worth of full-key encoding, about the size of a firstSync's key names, per recipient).
-  - **reject**: refuse an old SDK's join when the broadcast table isn't empty, with a version error. No cost to other clients.
+- **Version gate**: the client advertises its SDK protocol version in the handshake (join metadata). For a client below that version, the server applies the fallback below:
+  - **(i) delayed reset (N3), the default**: set `keyScopeResetPending` for **the first commit after the flip**, which is that joiner's first 107. Setting it in the flip turn (rev 2) would not fix #90, because the joiner isn't a recipient of that turn's 107, so its first 107 would come a turn later with bare slots. The cost: every client's broadcast table is renumbered on that commit, so each broadcast key is re-sent with its full name once, for every client and per old-SDK join (one turn's worth of full-key encoding, about the size of a firstSync's key names, per recipient).
+  - It keeps old SDKs working, and the cost only applies to old-SDK joins. PR 5 may revisit it if the cost shows up in runs; the alternative is to **reject** an old SDK's join when the broadcast table isn't empty, with a version error, at no cost to other clients.
 - **Reconnects** take the same path (a reconnect is a join with a new session), so the SDK clearing both maps on reconnect is covered.
 
 ## Tests
@@ -244,7 +244,7 @@ Interleavings are forced with holds at the awaits (keeper `joinHook`/`leaveHook`
 |---|---|
 | N1 admission callback traps off path / replay | §1 (two admission points, gated on `runsSyncPhaseInTurn(of:)`, protocol default no-op), off path, test 16 |
 | N2 tickless join can wait for the timeout | §2 (the sync-only turn is requested by the turn that consumes the sequence, repeated while eligible joiners remain; "consumed" flip condition; OnJoin throw fails at once), tests 8, 11 and 17 |
-| N3 the (i) fallback doesn't fix #90 | #90 (reset on the commit after the flip, or reject; bandwidth stated), test 15 |
+| N3 the (i) fallback doesn't fix #90 | #90 (default: reset on the commit after the flip, the joiner's first 107; cost stated; reject as the alternative), test 15 |
 | S4 intake check breaks direct callers | §4 (reject only on a differing `players[P]`; absent P, system IDs and non-live keepers exempt), §1 (`awaitTurn` parameter), test 10 |
 | Unbounded deferred inbound queue | §5 (256 messages / 256 KiB, `inboundOverflow`), test 13 |
 | Timeout path | §3 (close on timeout, idempotent cleanup per generation, retry works), test 8 |
@@ -274,5 +274,5 @@ Interleavings are forced with holds at the awaits (keeper `joinHook`/`leaveHook`
 
 1. **An OnJoin event targeted at the joiner: B.** It is delivered right after the firstSync, never dropped. The same holds for other events targeted at the joiner while it is `.joining`.
 2. **Off path:** only the admission fix (`.joining`, the generation check, the newest-wins kick). W2–W4 stay documented limits.
-3. **#90: option (ii).** A joiner-only key-table frame (a new frame kind plus TS SDK support), gated on an SDK version in the handshake. A client below that version gets a fallback (delayed reset, or reject), chosen in PR 5.
+3. **#90: option (ii).** A joiner-only key-table frame (a new frame kind plus TS SDK support), gated on an SDK version in the handshake. A client below that version gets the delayed reset on its first 107 (the default, with the stated cost; PR 5 may revisit it).
 4. **#92: one session per player, newest wins.** For the game this is OnLeave, then OnJoin.
