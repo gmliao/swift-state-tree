@@ -586,6 +586,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         nextTickDeadline = deadline
     }
 
+    /// Tests only: the cadence diagnostics in one call, without copying the state (a sampler's
+    /// probe on the keeper's executor stays small).
+    func cadenceCountersForTesting() -> (deferredTurns: Int, foldedSyncs: Int, ticksStarted: Int64) {
+        (inTurnDeferredTurns, foldedSyncs, nextTickId)
+    }
+
     /// Tests only: one sync loop iteration (`runSync`), as the loop runs it.
     func runSyncLoopIterationForTesting() async {
         await runSync()

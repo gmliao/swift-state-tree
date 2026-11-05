@@ -666,7 +666,7 @@ struct TransportAdapterInTurnSyncTests {
         // Counted on simulated time, so the result doesn't depend on the runner's scheduler
         // (#164); the wall-clock comparison belongs to the perf A/B.
         var frameTimes: [Bool: [Int]] = [:]
-        var foldedSyncs = 0
+        var foldedSyncs: [Bool: Int] = [:]
         for inTurn in [true, false] {
             let f = try await Self.makeTimedFixture(tick: .seconds(3600), sync: .seconds(3600), inTurn: inTurn)
             for _ in 0..<200 where await f.keeper.appliedSyncPhaseOffset == nil {
@@ -691,7 +691,7 @@ struct TransportAdapterInTurnSyncTests {
                 seen = messages.count
                 times += Array(repeating: t, count: stateFrames.count)
             }
-            if inTurn { foldedSyncs = await f.keeper.foldedSyncs }
+            foldedSyncs[inTurn] = await f.keeper.foldedSyncs
             await f.keeper.forceShutdown()
             frameTimes[inTurn] = times
         }
@@ -699,13 +699,12 @@ struct TransportAdapterInTurnSyncTests {
         #expect(frameTimes[true] == every50, "ON: one state frame per sync, at its instant: \(frameTimes[true] ?? [])")
         #expect(frameTimes[false] == every50, "OFF: \(frameTimes[false] ?? [])")
         // 100, 200, ... 1000: the syncs coincident with a tick folded into it.
-        #expect(foldedSyncs == 10)
+        #expect(foldedSyncs[true] == 10)
+        #expect(foldedSyncs[false] == 0, "the legacy path has no coincident fold")
     }
 
     @Test("cadence smoke (wall clock): with running loops, state frames come near the sync interval (ON and OFF)", arguments: [true, false])
     func cadenceSmokeWallClock(inTurn: Bool) async throws {
-        // `inTurnSync: true` only takes effect when `IN_TURN_SYNC` allows it.
-        guard !inTurn || InTurnSync.isEnabled() else { return }
         let report = try await Self.measureCadence(inTurn: inTurn, duration: .milliseconds(1200))
         if ProcessInfo.processInfo.environment["CADENCE_REPORT"] == "1" {
             print("CADENCE \(report.summary)")
@@ -725,7 +724,7 @@ struct TransportAdapterInTurnSyncTests {
         var busySkips: Int
         var deferredTurns: Int
         var foldedSyncs: Int
-        var ticks: Int
+        var ticks: Int64
     }
 
     /// A cadence run: the gaps between state frames, and each long one (over 1.5 sync intervals)
@@ -750,19 +749,24 @@ struct TransportAdapterInTurnSyncTests {
     static func measureCadence(inTurn: Bool, duration: Duration) async throws -> CadenceReport {
         let f = try await makeTimedFixture(tick: .milliseconds(20), sync: .milliseconds(50), inTurn: inTurn)
         let keeper = f.keeper, adapter = f.adapter
+        // The probe runs on the measured executors (ON: the keeper's, shared with the adapter),
+        // so it is kept small: two calls per sample (the adapter's skip counts; the keeper's
+        // counters in one call, no state copy), every 10 ms, about 200 calls/s. 10 ms still puts
+        // several samples inside any gap over 75 ms, the only ones labelled.
         let sampler = Task { () -> [CadenceSample] in
             var samples: [CadenceSample] = []
             while !Task.isCancelled {
                 let skips = await adapter.syncSkipCounts()
+                let counters = await keeper.cadenceCountersForTesting()
                 samples.append(CadenceSample(
                     at: .now,
                     backlogSkips: skips.outboundBacklog,
                     busySkips: skips.busy,
-                    deferredTurns: await keeper.inTurnDeferredTurns,
-                    foldedSyncs: await keeper.foldedSyncs,
-                    ticks: await keeper.currentState().ticks
+                    deferredTurns: counters.deferredTurns,
+                    foldedSyncs: counters.foldedSyncs,
+                    ticks: counters.ticksStarted
                 ))
-                guard (try? await safeTaskSleep(for: .milliseconds(2))) != nil else { break }
+                guard (try? await safeTaskSleep(for: .milliseconds(10))) != nil else { break }
             }
             return samples
         }
@@ -789,7 +793,7 @@ struct TransportAdapterInTurnSyncTests {
             if b.foldedSyncs > a.foldedSyncs { causes.append("fold×\(b.foldedSyncs - a.foldedSyncs)") }
             let ticks = b.ticks - a.ticks
             // At 20 ms a 75 ms window holds three or more ticks; fewer means the tick loop stalled.
-            if ticks * 20 < ms(to - from) - 30 { causes.append("tickStall(ticks=\(ticks))") }
+            if Int(ticks) * 20 < ms(to - from) - 30 { causes.append("tickStall(ticks=\(ticks))") }
             let label = causes.isEmpty ? "unattributed" : causes.joined(separator: "+")
             longGaps.append("@\(ms(from - start))ms \(ms(to - from))ms \(label)")
         }
