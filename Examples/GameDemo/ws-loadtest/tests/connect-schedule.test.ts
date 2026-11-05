@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { connectDelaysMs, DEFAULT_CONNECT_RATE } from "../src/connect-schedule";
+import { connectDelaysMs, DEFAULT_CONNECT_RATE, rampDurationMs } from "../src/connect-schedule";
 
 describe("connectDelaysMs", () => {
     const keys = Array.from({ length: 100 }, (_, i) => `room-p5-${i}-s0`);
@@ -31,5 +31,14 @@ describe("connectDelaysMs", () => {
         for (const d of all) perSecond.set(Math.floor(d / 1000), (perSecond.get(Math.floor(d / 1000)) ?? 0) + 1);
         expect(Math.max(...perSecond.values())).toBeLessThanOrEqual(DEFAULT_CONNECT_RATE);
         expect(Math.max(...all)).toBeLessThan(3000);
+    });
+});
+
+describe("rampDurationMs", () => {
+    it("is the busiest worker's share at the per-worker rate", () => {
+        // 1000/s over 4 active workers is 250/s each; 500 new connections take 2 s.
+        expect(rampDurationMs([500, 400, 300, 0, 200], "ramp", 1000)).toBe(2000);
+        expect(rampDurationMs([500, 400], "burst", 1000)).toBe(0);
+        expect(rampDurationMs([0, 0], "ramp", 1000)).toBe(0);
     });
 });

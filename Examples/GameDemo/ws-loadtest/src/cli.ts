@@ -6,8 +6,8 @@ import { buildReport, writeReportFiles } from "./report/render-html";
 import { readSystemMetrics } from "./system-metrics";
 import { LAYOUTS } from "./layout";
 import type { Layout } from "./layout";
-import { CONNECT_MODES, DEFAULT_CONNECT_RATE } from "./connect-schedule";
-import type { ConnectMode } from "./connect-schedule";
+import { BOUNDARY_MODES, CONNECT_MODES, DEFAULT_CONNECT_RATE } from "./connect-schedule";
+import type { BoundaryMode, ConnectMode } from "./connect-schedule";
 
 export interface CliArgs {
     scenarioPath: string;
@@ -21,6 +21,12 @@ export interface CliArgs {
     connectMode: ConnectMode;
     /** Ramp rate over all workers, connections per second. */
     connectRatePerSecond: number;
+    /** `clean` (default: close frames) or `abrupt` (drop sockets, as the old tool did). */
+    boundaryMode: BoundaryMode;
+    /** Run phases whose ramp is longer than the phase (a warning instead of an error). */
+    allowPartialRamp: boolean;
+    /** Land id prefix (default: a new id per run). */
+    runId?: string;
 }
 
 export function parseArgs(argv: string[]): CliArgs {
@@ -33,6 +39,9 @@ export function parseArgs(argv: string[]): CliArgs {
     let layout: Layout = "rooms";
     let connectMode: ConnectMode = "ramp";
     let connectRatePerSecond = DEFAULT_CONNECT_RATE;
+    let boundaryMode: BoundaryMode = "clean";
+    let allowPartialRamp = false;
+    let runId: string | undefined;
 
     for (let i = 0; i < args.length; i += 1) {
         const arg = args[i];
@@ -72,20 +81,67 @@ export function parseArgs(argv: string[]): CliArgs {
             }
             connectRatePerSecond = value;
             i += 1;
+        } else if (arg === "--boundary") {
+            const value = args[i + 1];
+            if (!BOUNDARY_MODES.includes(value as BoundaryMode)) {
+                throw new Error(`--boundary must be one of ${BOUNDARY_MODES.join(", ")} (got ${value})`);
+            }
+            boundaryMode = value as BoundaryMode;
+            i += 1;
+        } else if (arg === "--allow-partial-ramp") {
+            allowPartialRamp = true;
+        } else if (arg === "--run-id") {
+            const value = args[i + 1];
+            if (!value || !/^[A-Za-z0-9_-]+$/.test(value)) {
+                throw new Error(`--run-id must be letters, digits, '-' or '_' (got ${value})`);
+            }
+            runId = value;
+            i += 1;
         }
     }
 
-    return { scenarioPath, workers, systemMetricsPath, outputDir, outputName, layout, connectMode, connectRatePerSecond };
+    return {
+        scenarioPath,
+        workers,
+        systemMetricsPath,
+        outputDir,
+        outputName,
+        layout,
+        connectMode,
+        connectRatePerSecond,
+        boundaryMode,
+        allowPartialRamp,
+        runId
+    };
 }
 
 export async function main(): Promise<void> {
-    const { scenarioPath, workers, systemMetricsPath, outputDir, outputName, layout, connectMode, connectRatePerSecond } =
-        parseArgs(process.argv);
+    const {
+        scenarioPath,
+        workers,
+        systemMetricsPath,
+        outputDir,
+        outputName,
+        layout,
+        connectMode,
+        connectRatePerSecond,
+        boundaryMode,
+        allowPartialRamp,
+        runId
+    } = parseArgs(process.argv);
     const resolvedPath = path.resolve(process.cwd(), scenarioPath);
     if (!fs.existsSync(resolvedPath)) {
         throw new Error(`Scenario not found: ${resolvedPath}`);
     }
-    const result = await runScenario(resolvedPath, { workers, layout, connectMode, connectRatePerSecond });
+    const result = await runScenario(resolvedPath, {
+        workers,
+        layout,
+        connectMode,
+        connectRatePerSecond,
+        boundaryMode,
+        allowPartialRamp,
+        runId
+    });
     const metricsPath = systemMetricsPath ? path.resolve(process.cwd(), systemMetricsPath) : undefined;
     const systemMetrics = metricsPath && fs.existsSync(metricsPath) ? readSystemMetrics(metricsPath) : { system: [] };
     const report = buildReport(result, systemMetrics);

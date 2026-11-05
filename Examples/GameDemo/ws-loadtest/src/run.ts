@@ -7,10 +7,10 @@ import { buildPhases } from "./orchestrator";
 
 import type { CloseRecord } from "./worker";
 import type { WorkerPhaseReport } from "./worker-runner";
-import { planPhaseConnections, summarizeLayout } from "./layout";
-import type { Layout, LayoutSummary } from "./layout";
-import { DEFAULT_CONNECT_RATE } from "./connect-schedule";
-import type { ConnectMode } from "./connect-schedule";
+import { makeRunId, planPhaseConnections, summarizeLayout } from "./layout";
+import type { ConnectionSpec, Layout, LayoutSummary } from "./layout";
+import { DEFAULT_CONNECT_RATE, rampDurationMs } from "./connect-schedule";
+import type { BoundaryMode, ConnectMode } from "./connect-schedule";
 
 export interface WorkerReport {
     rttMs: number[];
@@ -22,6 +22,13 @@ export interface WorkerReport {
 
 /** How the phase's connections came about and ended. */
 export interface PhaseConnections {
+    /** Connections the phase is configured for (rooms × playersPerRoom). */
+    target: number;
+    /** New connections the ramp started before the phase ended (of `opened`). */
+    started: number;
+    /** Phase connections joined when the phase ended. */
+    joinedAtEnd: number;
+    /** New connections planned for this phase. */
     opened: number;
     /** Kept open from the previous phase. */
     reused: number;
@@ -52,7 +59,10 @@ export interface PhaseResult {
 
 /** The resolved run configuration, written into every report so a result describes itself. */
 export interface RunConfig {
+    /** Prefix of every land id in this run. */
+    runId: string;
     layout: Layout;
+    boundaryMode: BoundaryMode;
     connectMode: ConnectMode;
     /** Total new connections per second over all workers (ramp mode). */
     connectRatePerSecond: number;
@@ -63,6 +73,8 @@ export interface RunConfig {
         playersPerRoom: number;
         connections: number;
         lands: number;
+        /** Time the connect ramp needs for this phase's new connections. */
+        rampMs: number;
         durationSeconds: number;
         actionsPerSecond: number;
     }>;
@@ -83,6 +95,23 @@ export interface RunOptions {
     layout?: Layout;
     connectMode?: ConnectMode;
     connectRatePerSecond?: number;
+    boundaryMode?: BoundaryMode;
+    /** Run even when a phase's ramp is longer than the phase (a warning instead of an error). */
+    allowPartialRamp?: boolean;
+    /** Land id prefix; a new one per run by default. */
+    runId?: string;
+    /** Where warnings go (default: stderr). */
+    warn?: (message: string) => void;
+}
+
+/** New connections per worker in each phase: planned keys that the previous phase didn't hold. */
+export function newConnectionsPerWorker(plans: ConnectionSpec[][][]): number[][] {
+    return plans.map((plan, p) =>
+        plan.map((specs, w) => {
+            const previous = new Set((p > 0 ? plans[p - 1][w] : []).map((spec) => spec.key));
+            return specs.filter((spec) => !previous.has(spec.key)).length;
+        })
+    );
 }
 
 export const CLOSE_RECORD_LIMIT = 200;
@@ -125,12 +154,33 @@ export async function runScenario(filePath: string, options: RunOptions | number
     const layout = opts.layout ?? "rooms";
     const connectMode = opts.connectMode ?? "ramp";
     const connectRatePerSecond = opts.connectRatePerSecond ?? DEFAULT_CONNECT_RATE;
+    const boundaryMode = opts.boundaryMode ?? "clean";
+    const runId = opts.runId ?? makeRunId();
+    const warn = opts.warn ?? ((message: string) => console.warn(message));
 
     const scenario = loadScenario(filePath);
     const phases = buildPhases(scenario);
-    const plans = phases.map((phase) => planPhaseConnections(phase.name, phase.config, workers, layout));
+    const plans = phases.map((phase) => planPhaseConnections(phase.name, phase.config, workers, layout, runId));
+    const rampsMs = newConnectionsPerWorker(plans).map((perWorker) =>
+        rampDurationMs(perWorker, connectMode, connectRatePerSecond)
+    );
+    const tooShort = phases
+        .map((phase, i) => ({ phase, rampMs: rampsMs[i] }))
+        .filter(({ phase, rampMs }) => rampMs > phase.config.durationSeconds * 1000);
+    if (tooShort.length > 0) {
+        const detail = tooShort
+            .map(({ phase, rampMs }) => `${phase.name}: ramp ${(rampMs / 1000).toFixed(1)} s > phase ${phase.config.durationSeconds} s`)
+            .join("; ");
+        const message = `The connect ramp at ${connectRatePerSecond}/s is longer than the phase (${detail}), so the phase would run with fewer connections than configured. Raise --connect-rate, lengthen the phase, or pass --allow-partial-ramp.`;
+        if (!opts.allowPartialRamp) {
+            throw new Error(message);
+        }
+        warn(`warning: ${message}`);
+    }
     const runConfig: RunConfig = {
+        runId,
         layout,
+        boundaryMode,
         connectMode,
         connectRatePerSecond,
         workers,
@@ -142,6 +192,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
                 playersPerRoom: phase.config.playersPerRoom,
                 connections: summary.connections,
                 lands: summary.lands,
+                rampMs: Math.round(rampsMs[i]),
                 durationSeconds: phase.config.durationSeconds,
                 actionsPerSecond: phase.config.actionsPerSecond
             };
@@ -170,6 +221,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
                                 connections: plan[i],
                                 connectMode,
                                 connectRatePerSecond,
+                                boundaryMode,
                                 activeWorkers,
                                 actionsPerSecond: phase.config.actionsPerSecond,
                                 durationSeconds: phase.config.durationSeconds,
@@ -192,6 +244,9 @@ export async function runScenario(filePath: string, options: RunOptions | number
                 config: phase.config,
                 layout: summarizeLayout(plan, layout),
                 connections: {
+                    target: phase.config.rooms * phase.config.playersPerRoom,
+                    started: reports.reduce((sum, r) => sum + r.connectionsStarted, 0),
+                    joinedAtEnd: reports.reduce((sum, r) => sum + r.joinedAtEnd, 0),
                     opened: reports.reduce((sum, r) => sum + r.connectionsOpened, 0),
                     reused: reports.reduce((sum, r) => sum + r.connectionsReused, 0),
                     closedAtStart: reports.reduce((sum, r) => sum + r.connectionsClosed, 0),
@@ -202,7 +257,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
             });
         }
         const shutdowns = await Promise.all(
-            pool.map((worker) => worker.request<CloseRecord[]>({ type: "shutdown" }, "shutdownReport", 30_000, "closes"))
+            pool.map((worker) => worker.request<CloseRecord[]>({ type: "shutdown", boundaryMode }, "shutdownReport", 30_000, "closes"))
         );
         shutdownRecords = shutdowns.flat();
         await Promise.all(pool.map((worker) => worker.exited(10_000)));

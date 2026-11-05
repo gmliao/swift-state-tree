@@ -36,6 +36,8 @@ export interface CloseRecord {
     joined: boolean;
     /** The close handshake did not finish in time and the socket was terminated. */
     forced?: boolean;
+    /** Dropped without a close frame on purpose (`--boundary abrupt`). */
+    abrupt?: boolean;
 }
 
 /** Close frame code and timeout for closes this tool initiates. */
@@ -202,6 +204,7 @@ export class WorkerClient {
     private closed = false;
     private closeRequested = false;
     private closeWaiters: Array<() => void> = [];
+    private abrupt = false;
     private readonly session = new WorkerSession();
     private readonly now: () => number;
     private readonly createSocket: (url: string) => WebSocketLike;
@@ -240,6 +243,11 @@ export class WorkerClient {
         return this.joined;
     }
 
+    /** `connect()` was called (the connect ramp reached this client). */
+    isStarted(): boolean {
+        return this.socket !== undefined;
+    }
+
     /** Open and not closing: can be kept for the next phase. */
     isUsable(): boolean {
         return this.socket !== undefined && !this.closed && !this.closeRequested;
@@ -257,8 +265,11 @@ export class WorkerClient {
         if (!this.socket || this.closed) {
             return Promise.resolve();
         }
+        if (this.closeRequested) {
+            return new Promise<void>((resolve) => this.closeWaiters.push(resolve));
+        }
         const done = new Promise<void>((resolve) => this.closeWaiters.push(resolve));
-        if (!this.closeRequested) {
+        {
             this.closeRequested = true;
             const socket = this.socket;
             const timer = setTimeout(() => {
@@ -299,6 +310,21 @@ export class WorkerClient {
         }
     }
 
+    /**
+     * Drops the socket without a close frame (`--boundary abrupt`). Resolves at once; the record
+     * is client-initiated and marked `abrupt`.
+     */
+    drop(reason: string): Promise<void> {
+        if (!this.socket || this.closed) {
+            return Promise.resolve();
+        }
+        this.closeRequested = true;
+        this.abrupt = true;
+        this.socket.terminate?.();
+        this.finishClose(undefined, reason, false);
+        return Promise.resolve();
+    }
+
     private finishClose(code: number | undefined, reason: unknown, forced: boolean): void {
         if (this.closed) {
             return;
@@ -315,6 +341,9 @@ export class WorkerClient {
         };
         if (forced) {
             record.forced = true;
+        }
+        if (this.abrupt) {
+            record.abrupt = true;
         }
         this.session.recordClose(record);
         const waiters = this.closeWaiters;

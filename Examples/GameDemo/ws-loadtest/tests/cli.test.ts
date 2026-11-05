@@ -27,4 +27,14 @@ describe("parseArgs", () => {
         expect(() => parseArgs(["node", "cli", "--connect", "slow"])).toThrow(/--connect/);
         expect(() => parseArgs(["node", "cli", "--connect-rate", "0"])).toThrow(/--connect-rate/);
     });
+
+    it("parses --boundary, --allow-partial-ramp and --run-id", () => {
+        const defaults = parseArgs(["node", "cli"]);
+        expect(defaults).toMatchObject({ boundaryMode: "clean", allowPartialRamp: false, runId: undefined });
+        const parsed = parseArgs(["node", "cli", "--boundary", "abrupt", "--allow-partial-ramp", "--run-id", "ref-500_a"]);
+        expect(parsed).toMatchObject({ boundaryMode: "abrupt", allowPartialRamp: true, runId: "ref-500_a" });
+        expect(() => parseArgs(["node", "cli", "--boundary", "rst"])).toThrow(/--boundary/);
+        expect(() => parseArgs(["node", "cli", "--run-id", "a/b"])).toThrow(/--run-id/);
+    });
 });
+

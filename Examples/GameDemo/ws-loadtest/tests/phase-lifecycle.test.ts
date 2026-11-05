@@ -121,4 +121,48 @@ describe("phase lifecycle against a stub server", () => {
             server.off("connection", onConnection);
         }
     }, 30_000);
+
+    it("--boundary abrupt drops sockets at boundaries and at the end without a close frame", async () => {
+        connections.length = 0;
+        const phase = { durationSeconds: 1, rooms: 2, playersPerRoom: 2, actionsPerSecond: 0, verify: false };
+        const file = writeScenario({ preflight: phase, steady: phase, postflight: phase });
+        const result = await runScenario(file, { workers: 2, layout: "per-connection", connectMode: "burst", boundaryMode: "abrupt" });
+        await new Promise((resolve) => setTimeout(resolve, 300));
+
+        expect(connections.length).toBe(12);
+        // No close frame reached the server: 1006 is "closed without a close frame".
+        expect(connections.every((c) => c.closeCode === 1006)).toBe(true);
+        expect(result.runConfig.boundaryMode).toBe("abrupt");
+        expect(result.phases[1].connections.closes).toMatchObject({ clientInitiated: 4, serverInitiated: 0 });
+        expect(result.phases[1].connections.closes.records.every((r) => r.abrupt === true)).toBe(true);
+        expect(result.phases.every((p) => p.report.disconnectCount === 0)).toBe(true);
+    }, 30_000);
+
+    it("refuses a ramp longer than the phase unless partial ramps are allowed", async () => {
+        connections.length = 0;
+        // 3 × 4 = 12 new connections at 4/s need 3 s; the phase lasts 1 s.
+        const phase = { durationSeconds: 1, rooms: 3, playersPerRoom: 4, actionsPerSecond: 0, verify: false };
+        const file = writeScenario({ preflight: phase, steady: phase, postflight: phase });
+        await expect(
+            runScenario(file, { workers: 1, layout: "rooms", connectMode: "ramp", connectRatePerSecond: 4 })
+        ).rejects.toThrow(/preflight: ramp 3\.0 s > phase 1 s.*--allow-partial-ramp/);
+        expect(connections.length).toBe(0);
+
+        const warnings: string[] = [];
+        const result = await runScenario(file, {
+            workers: 1,
+            layout: "rooms",
+            connectMode: "ramp",
+            connectRatePerSecond: 4,
+            allowPartialRamp: true,
+            warn: (m) => warnings.push(m)
+        });
+        expect(warnings).toHaveLength(1);
+        expect(result.runConfig.phases[0].rampMs).toBe(3000);
+        const pre = result.phases[0].connections;
+        expect(pre.target).toBe(12);
+        expect(pre.opened).toBe(12);
+        expect(pre.started).toBeLessThan(12);
+        expect(pre.joinedAtEnd).toBeLessThan(12);
+    }, 30_000);
 });

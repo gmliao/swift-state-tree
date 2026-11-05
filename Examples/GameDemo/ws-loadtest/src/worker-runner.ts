@@ -3,7 +3,7 @@ import type { CloseRecord } from "./worker";
 import { sendMessageWithAck } from "./ipc";
 import { renderTemplateObject } from "./payload";
 import { connectDelaysMs } from "./connect-schedule";
-import type { ConnectMode } from "./connect-schedule";
+import type { BoundaryMode, ConnectMode } from "./connect-schedule";
 import type { ConnectionSpec } from "./layout";
 import type { ActionConfig } from "./types";
 
@@ -17,6 +17,7 @@ export interface PhaseStartConfig {
     connections: ConnectionSpec[];
     connectMode: ConnectMode;
     connectRatePerSecond: number;
+    boundaryMode: BoundaryMode;
     /** Workers opening connections in this phase; the ramp rate is shared between them. */
     activeWorkers: number;
     actionsPerSecond: number;
@@ -32,14 +33,19 @@ export interface WorkerPhaseReport {
     actionsSent: number;
     /** Every close seen during the phase, including the ones closing the previous phase's surplus. */
     closes: CloseRecord[];
+    /** New connections planned for this phase. */
     connectionsOpened: number;
+    /** New connections the ramp actually started before the phase ended. */
+    connectionsStarted: number;
+    /** Phase connections joined when the phase ended. */
+    joinedAtEnd: number;
     connectionsReused: number;
     connectionsClosed: number;
     /** Delay of the last new connection, ms after the phase start. */
     connectRampMs: number;
 }
 
-type InboundMessage = { type: "phase"; config: PhaseStartConfig } | { type: "shutdown" };
+type InboundMessage = { type: "phase"; config: PhaseStartConfig } | { type: "shutdown"; boundaryMode: BoundaryMode };
 
 const clients = new Map<string, WorkerClient>();
 let actionCounter = 0;
@@ -59,7 +65,7 @@ async function handle(message: InboundMessage): Promise<void> {
         const report = await runPhase(message.config);
         await send({ type: "report", report });
     } else if (message?.type === "shutdown") {
-        const closes = await closeClients([...clients.values()], "shutdown");
+        const closes = await closeClients([...clients.values()], "shutdown", message.boundaryMode);
         clients.clear();
         await send({ type: "shutdownReport", closes });
         process.exit(0);
@@ -76,9 +82,12 @@ function send(message: unknown): Promise<void> {
     );
 }
 
-/** Closes `toClose` with close frames, waits for every handshake, returns their close records. */
-async function closeClients(toClose: WorkerClient[], reason: string): Promise<CloseRecord[]> {
-    await Promise.all(toClose.map((client) => client.close(reason)));
+/**
+ * Closes `toClose` (close frames and handshakes, or dropped sockets with `abrupt`) and returns
+ * their close records, including any server close they saw since the last report.
+ */
+async function closeClients(toClose: WorkerClient[], reason: string, mode: BoundaryMode): Promise<CloseRecord[]> {
+    await Promise.all(toClose.map((client) => (mode === "abrupt" ? client.drop(reason) : client.close(reason))));
     const records: CloseRecord[] = [];
     for (const client of toClose) {
         records.push(...client.getSession().metrics.closes);
@@ -94,7 +103,7 @@ async function runPhase(config: PhaseStartConfig): Promise<WorkerPhaseReport> {
     for (const client of surplus) {
         clients.delete(client.getKey());
     }
-    const transitionCloses = await closeClients(surplus, "phase change");
+    const transitionCloses = await closeClients(surplus, "phase change", config.boundaryMode);
 
     const phaseClients: WorkerClient[] = [];
     const newClients: WorkerClient[] = [];
@@ -166,8 +175,12 @@ async function runPhase(config: PhaseStartConfig): Promise<WorkerPhaseReport> {
     phaseClients.forEach((client) => client.getSession().resetMetrics());
     return {
         ...report,
+        // A server close on a surplus connection between phases is still a disconnect.
+        disconnectCount: report.disconnectCount + transitionCloses.filter((c) => c.initiator === "server").length,
         closes: [...transitionCloses, ...report.closes],
         connectionsOpened: newClients.length,
+        connectionsStarted: newClients.filter((client) => client.isStarted()).length,
+        joinedAtEnd: phaseClients.filter((client) => client.isJoined() && client.isUsable()).length,
         connectionsReused: reused,
         connectionsClosed: surplus.length,
         connectRampMs: delays.length > 0 ? Math.round(delays[delays.length - 1]) : 0

@@ -7,6 +7,7 @@ import { computeAssignments } from "./orchestrator";
  *   (round-robin by room index, so a room stays on the same worker in every phase).
  * - `per-connection`: the legacy layout; every connection joins its own land
  *   (`${phase}-${worker}-${i}`), connections split evenly over workers.
+ * Every land id starts with the run id (`<runId>-...`).
  */
 export type Layout = "rooms" | "per-connection";
 
@@ -33,12 +34,23 @@ export interface LayoutSummary {
     connectionsPerWorker: number[];
 }
 
+/**
+ * A short id for one run, prefixed to every land id so back-to-back runs on one server never
+ * join each other's live or draining lands.
+ */
+export function makeRunId(now: number = Date.now(), random: number = Math.random()): string {
+    const time = (now % 36 ** 5).toString(36).padStart(5, "0");
+    const salt = Math.floor(random * 36 ** 2).toString(36).padStart(2, "0");
+    return `r${time}${salt}`;
+}
+
 /** The connections each worker holds in this phase, indexed by worker. */
 export function planPhaseConnections(
     phaseName: PhaseName,
     config: Pick<PhaseConfig, "rooms" | "playersPerRoom">,
     workers: number,
-    layout: Layout
+    layout: Layout,
+    runId: string
 ): ConnectionSpec[][] {
     if (workers <= 0) {
         return [];
@@ -53,7 +65,7 @@ export function planPhaseConnections(
         const assignments = computeAssignments(rooms * playersPerRoom, workers);
         assignments.forEach((count, worker) => {
             for (let i = 0; i < count; i += 1) {
-                const id = `${phaseName}-${worker}-${i}`;
+                const id = `${runId}-${phaseName}-${worker}-${i}`;
                 plan[worker].push({ key: id, landInstanceId: id, playerId: `${worker}-${i}` });
             }
         });
@@ -64,7 +76,7 @@ export function planPhaseConnections(
     // lands and connections; a phase with another size gets different lands.
     for (let room = 0; room < rooms; room += 1) {
         const worker = room % workers;
-        const landInstanceId = `room-p${playersPerRoom}-${room}`;
+        const landInstanceId = `${runId}-room-p${playersPerRoom}-${room}`;
         for (let slot = 0; slot < playersPerRoom; slot += 1) {
             plan[worker].push({
                 key: `${landInstanceId}-s${slot}`,

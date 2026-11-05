@@ -130,7 +130,7 @@ function runConfigLine(report: Report): string {
         return "";
     }
     const connect = config.connectMode === "ramp" ? `ramp ${config.connectRatePerSecond}/s` : "burst";
-    return `<p class="text-sm text-slate-400 mb-6">Layout <strong>${config.layout}</strong>, connect <strong>${connect}</strong>, ${config.workers} workers.</p>`;
+    return `<p class="text-sm text-slate-400 mb-6">Run <strong>${config.runId}</strong>: layout <strong>${config.layout}</strong>, connect <strong>${connect}</strong>, boundary <strong>${config.boundaryMode}</strong>, ${config.workers} workers.</p>`;
 }
 
 export function renderHtml(report: Report): string {
@@ -143,6 +143,7 @@ export function renderHtml(report: Report): string {
                     <td class="px-4 py-2 font-medium text-slate-200">${phase.name}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.connections}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.layout ? `${phase.layout.lands} × ${phase.layout.playersPerLand.min === phase.layout.playersPerLand.max ? phase.layout.playersPerLand.max : `${phase.layout.playersPerLand.min}–${phase.layout.playersPerLand.max}`}` : "–"}</td>
+                    <td class="px-4 py-2 text-slate-300">${phase.connectionLifecycle ? `${phase.connectionLifecycle.joinedAtEnd} / ${phase.connectionLifecycle.target}` : "–"}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.connectionLifecycle ? `${phase.connectionLifecycle.closes.clientInitiated} / ${phase.connectionLifecycle.closes.serverInitiated}` : "–"}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.actionsSent}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.errorRate.toFixed(4)}</td>
@@ -195,6 +196,7 @@ export function renderHtml(report: Report): string {
               <th class="px-4 py-3 font-semibold">Phase</th>
               <th class="px-4 py-3 font-semibold">Connections</th>
               <th class="px-4 py-3 font-semibold">Lands × players</th>
+              <th class="px-4 py-3 font-semibold">Joined / target</th>
               <th class="px-4 py-3 font-semibold">Closes client / server</th>
               <th class="px-4 py-3 font-semibold">Actions Sent</th>
               <th class="px-4 py-3 font-semibold">Error Rate</th>

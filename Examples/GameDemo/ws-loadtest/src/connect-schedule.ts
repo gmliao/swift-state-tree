@@ -9,6 +9,29 @@ export type ConnectMode = "ramp" | "burst";
 export const CONNECT_MODES: readonly ConnectMode[] = ["ramp", "burst"];
 
 /**
+ * How connections a phase no longer needs (and all connections at the end) are closed.
+ * - `clean` (default): a close frame, waiting for the handshake.
+ * - `abrupt`: the socket is dropped without a close frame, as the tool before the long-lived
+ *   workers did when each phase's workers exited; the server sees a reset.
+ */
+export type BoundaryMode = "clean" | "abrupt";
+
+export const BOUNDARY_MODES: readonly BoundaryMode[] = ["clean", "abrupt"];
+
+/**
+ * The longest time any worker needs to open its new connections, in ms: the worker with the
+ * most new connections opens them at `ratePerSecond / activeWorkers`. 0 in burst mode.
+ */
+export function rampDurationMs(newPerWorker: number[], mode: ConnectMode, ratePerSecond: number): number {
+    if (mode === "burst") {
+        return 0;
+    }
+    const active = newPerWorker.filter((n) => n > 0).length;
+    const most = Math.max(0, ...newPerWorker);
+    return (most * Math.max(active, 1) * 1000) / Math.max(ratePerSecond, 1);
+}
+
+/**
  * Default ramp rate over all workers. 1000/s keeps the accept queue far below the server's
  * default listen backlog of 4096: the queue only fills if accepts stall for about 4 s.
  */

@@ -69,6 +69,9 @@ ENABLE_PROFILING=false
 LAYOUT=""
 CONNECT_MODE=""
 CONNECT_RATE=""
+BOUNDARY=""
+ALLOW_PARTIAL_RAMP=false
+RUN_ID=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -104,10 +107,25 @@ while [[ $# -gt 0 ]]; do
       CONNECT_RATE="$2"
       shift 2
       ;;
+    --boundary)
+      BOUNDARY="$2"
+      shift 2
+      ;;
+    --allow-partial-ramp)
+      ALLOW_PARTIAL_RAMP=true
+      shift
+      ;;
+    --run-id)
+      RUN_ID="$2"
+      shift 2
+      ;;
     --help|-h)
       echo "Usage: $0 [--scenario <path>] [--workers <N>] [--output-dir <dir>] [--startup-timeout <seconds>] [--profile]"
       echo "          [--layout rooms|per-connection] [--connect ramp|burst] [--connect-rate <per second>]"
-      echo "  Legacy topology (one land per connection, all connections at once): --layout per-connection --connect burst"
+      echo "          [--boundary clean|abrupt] [--allow-partial-ramp] [--run-id <id>]"
+      echo "  --layout per-connection --connect burst: same topology and connect burst as the old tool;"
+      echo "    phase boundaries still close cleanly, unlike the old tool's resets. Add --boundary abrupt"
+      echo "    to drop sockets at boundaries as the old tool did."
       exit 0
       ;;
     *)
@@ -262,6 +280,15 @@ if [ -n "$CONNECT_MODE" ]; then
 fi
 if [ -n "$CONNECT_RATE" ]; then
   CMD+=(--connect-rate "$CONNECT_RATE")
+fi
+if [ -n "$BOUNDARY" ]; then
+  CMD+=(--boundary "$BOUNDARY")
+fi
+if [ "$ALLOW_PARTIAL_RAMP" = true ]; then
+  CMD+=(--allow-partial-ramp)
+fi
+if [ -n "$RUN_ID" ]; then
+  CMD+=(--run-id "$RUN_ID")
 fi
 
 echo "Running load test..."
