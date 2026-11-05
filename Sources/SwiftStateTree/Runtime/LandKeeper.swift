@@ -2605,6 +2605,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
     }
 
+    /// [measure] Start of the previous tick.
+    private var spikeLastTickStart: ContinuousClock.Instant?
+
     private func runTick(allowWhenNoTickTask: Bool) async {
         // Check if task was cancelled before executing tick
         // This prevents ticks from running after shutdown has started
@@ -2617,6 +2620,20 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         guard !debugFrozen else { return }
         debugBeginWork()
         defer { debugEndWork() }
+
+        // [measure] Whole tick ("tick") and tick-start interval, tick-handler lands only.
+        let spikeTickStart = SpikeMetrics.now()
+        if SpikeMetrics.isEnabled, definition.lifetimeHandlers.tickHandler != nil {
+            if let last = spikeLastTickStart {
+                SpikeMetrics.record("tickInterval", duration: spikeTickStart - last)
+            }
+            spikeLastTickStart = spikeTickStart
+        }
+        defer {
+            if definition.lifetimeHandlers.tickHandler != nil {
+                SpikeMetrics.record("tick", since: spikeTickStart)
+            }
+        }
 
         guard let handler = definition.lifetimeHandlers.tickHandler else {
             if usesInTurnSync {
@@ -2935,6 +2952,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         case .deferredBackPressure:
             inTurnSyncDue = false
             inTurnDeferredTurns += 1
+            SpikeMetrics.count("deferredTurns")
             if !hasPeriodicSync {
                 retrySyncOnlyTurnAfterWriterDrain(transport: transport)
             }
@@ -2965,6 +2983,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         tickId: Int64,
         transport: any LandKeeperTransport
     ) -> TickTurnOutput {
+        // [measure] Tick turn time ("turn"); "foldedTurn" when the turn ran the sync phase.
+        let spikeTurnStart = SpikeMetrics.now()
+        var spikeTurnSynced = false
+        defer {
+            let elapsed = ContinuousClock.now - spikeTurnStart
+            SpikeMetrics.record("turn", duration: elapsed)
+            if spikeTurnSynced { SpikeMetrics.record("foldedTurn", duration: elapsed) }
+        }
         // Sequence watermark W1 (before inputs).
         let sequenceBeforeInputs = outputCollector.nextSequence
         // A failing input fails alone; the others and the tick handler still run (`applyInputs`).
@@ -2995,6 +3021,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Always take this tick's requests, so a folded sync does not leave them in the collector.
         let requested = takeSyncRequest(forTick: tickId, applied: applied)
         let wantsSync = inTurnSyncDue || requested
+        spikeTurnSynced = wantsSync
         runTurnOutputs(transport: transport, events: emitted, wantsSync: wantsSync)
         inTurnProbeForTesting?("turn-end")
 
@@ -3179,6 +3206,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         inTurnProbeForTesting?("turn-begin")
         inTurnSyncTurnKind = .syncOnly
         defer { inTurnSyncTurnKind = .tick }
+        // [measure] Sync-only turn time ("syncTurn").
+        let spikeSyncTurnStart = SpikeMetrics.now()
+        defer { SpikeMetrics.record("syncTurn", since: spikeSyncTurnStart) }
         let result = transport.runSyncPhaseInTurn(state: state, events: [], includeSync: true)
         applyInTurnSyncResult(result, transport: transport)
         inTurnProbeForTesting?("turn-end")
@@ -3456,6 +3486,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // interval folds the next iteration into the same turn, which is one cycle.
                 if !inTurnSyncDue {
                     foldedSyncs += 1
+                    SpikeMetrics.count("foldedSyncs")
                     let overdue = deadline < now
                     if overdue { overdueFoldedSyncs += 1 }
                     if transportRecordsFolds { transport.noteInTurnSyncFold(overdue: overdue) }

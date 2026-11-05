@@ -673,6 +673,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         self.keeper = keeper
         let inTurnSyncEnabled = inTurnSync && InTurnSync.isEnabled()
         self.inTurnSyncEnabled = inTurnSyncEnabled
+        // [measure] The adapter decides in-turn sync; print its decision once per process.
+        SpikeMetrics.reportAdapterInTurnSyncOnce(inTurnSyncEnabled, landID: landID)
         self.ownExecutorHost = inTurnSyncEnabled ? nil : AdapterExecutorHost()
         self.transport = transport
         _ = transportSendQueue
@@ -1731,9 +1733,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
         }
         guard includeSync else { return .notRequested }
+        // [measure] In-turn sync phase time ("sync", as on the fold branch).
+        let spikeSyncStart = SpikeMetrics.now()
+        defer { SpikeMetrics.record("sync", since: spikeSyncStart) }
         // After teardown nothing is sent any more.
         guard !outboundWriter.isFinished else { return .skipped }
         if writerHoldsEarlierElementForInTurnSync() {
+            SpikeMetrics.count("backlogSkips")
             syncSkips.outboundBacklog += 1
             profilerCounters?.incrementSyncSkipsBacklog()
             profilerCounters?.incrementSyncDeferredTurns()
@@ -2111,7 +2117,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         errorLogMessage: String,
         phase: (State) throws -> Void
     ) async -> Bool {
+        // [measure] Legacy sync cycle time: "sync" (fold-branch name) and "legacySync".
+        let spikeSyncStart = SpikeMetrics.now()
+        defer {
+            let elapsed = ContinuousClock.now - spikeSyncStart
+            SpikeMetrics.record("sync", duration: elapsed)
+            SpikeMetrics.record("legacySync", duration: elapsed)
+        }
         if hasPendingStateElement {
+            SpikeMetrics.count("backlogSkips")
             syncSkips.outboundBacklog += 1
             profilerCounters?.incrementSyncSkipsBacklog()
             deferSyncForOutboundBacklog(broadcastOnly: broadcastOnly)
@@ -2119,6 +2133,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         beginSyncRequests += 1
         guard let (state, read) = await beginSyncLocatedIfRecording(clearDirtyFlags: clearDirtyFlags) else {
+            SpikeMetrics.count("busySkips")
             syncSkips.busy += 1
             profilerCounters?.incrementSyncSkipsBusy()
             // On a land without periodic sync this request may be the only one for changes
