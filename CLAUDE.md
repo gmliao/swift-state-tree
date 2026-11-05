@@ -98,7 +98,7 @@ The dependency chain flows: `SwiftStateTree` → `SwiftStateTreeTransport` → `
 - `Sources/SwiftStateTreeNIO/HTTP/NIOAdminRoutes.swift` — admin HTTP routes including replay start
 - `Sources/SwiftStateTree/Support/SafeTaskSleep.swift` — safe sleep wrapper
 - `Sources/SwiftStateTree/Support/EnvHelpers.swift` — env config helpers
-- `Notes/plans/` — task-specific implementation plans (AI agents should store plans here)
+- `Notes/plans/` — task-specific implementation plans (AI agents should store plans here; naming, the status index and when to update it are in AGENTS.md § Documentation)
 - `Notes/guides/DEBUGGING_TECHNIQUES.md` — debugging guide for complex issues
 - `Tools/CLI/scenarios/` — E2E test scenario JSON files
 

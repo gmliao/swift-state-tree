@@ -255,7 +255,12 @@ if let provBaseUrl = getEnvStringOptional(key: ProvisioningEnvKeys.baseUrl) {
 ## Documentation
 - `docs/`: Official, complete documentation for users and developers.
 - `Notes/`: Development notes and design documents; may contain outdated or incorrect information.
-- `Notes/plans/`: Implementation plans and technical memos for specific features or refactors. AI agents should store their task-specific plans here.
+- `Notes/plans/`: Implementation plans and technical memos for specific features or refactors. AI agents store their task-specific plans here:
+  - Name a plan `YYYY-MM-DD-<topic>.md` (an optional Chinese companion is `YYYY-MM-DD-<topic>.zh-TW.md`). Longer design specifications go in `Notes/plans/specs/`.
+  - Add a row for a new plan to the status index `Notes/plans/README.md` (status `open`), and update that row when the work merges (`done`, `partial` with the open steps, or `superseded` by a named plan), citing the PR or commit.
+  - A plan is a record, not maintained documentation. Don't rewrite an old plan to match the code; mark it superseded and write a new one.
+- `deep-research/`: Experiment data only, one folder per experiment with its own README. Plans for an experiment go in `Notes/plans/` like any other plan.
+- Drafts, plans and strategy notes for publications don't belong in this repository.
 
 ### Bilingual Documentation
 - **README**: `README.md` (English, default) and `README.zh-TW.md` (Traditional Chinese)
