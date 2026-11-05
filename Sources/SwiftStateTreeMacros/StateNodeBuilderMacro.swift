@@ -1160,9 +1160,9 @@ public struct StateNodeBuilderMacro: MemberMacro {
             }
         case "UInt":
             if isAnyType {
-                return (".int(Int(\(valueName) as! UInt))", false)
+                return ("SnapshotValue.unsigned(\(valueName) as! UInt)", false)
             } else {
-                return (".int(Int(\(valueName)))", false)
+                return ("SnapshotValue.unsigned(\(valueName))", false)
             }
         case "UInt8":
             if isAnyType {
@@ -1184,9 +1184,9 @@ public struct StateNodeBuilderMacro: MemberMacro {
             }
         case "UInt64":
             if isAnyType {
-                return (".int(Int(\(valueName) as! UInt64))", false)
+                return ("SnapshotValue.unsigned(\(valueName) as! UInt64)", false)
             } else {
-                return (".int(Int(\(valueName)))", false)
+                return ("SnapshotValue.unsigned(\(valueName))", false)
             }
         case "Double":
             if isAnyType {

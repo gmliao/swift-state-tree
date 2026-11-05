@@ -166,6 +166,15 @@ public protocol SnapshotValueConvertible {
 }
 
 public extension SnapshotValue {
+    /// An unsigned integer: `.int` when it fits in `Int`, else its decimal digits as `.string`.
+    /// A value above `Int.max` used to trap in `Int(_:)`; it is now sent and hashed losslessly.
+    static func unsigned<T: UnsignedInteger & FixedWidthInteger>(_ value: T) -> SnapshotValue {
+        if let fitting = Int(exactly: value) {
+            return .int(fitting)
+        }
+        return .string(String(value))
+    }
+
     static func make(from value: Any, for playerID: PlayerID? = nil) throws -> SnapshotValue {
         // Short-circuit if value is already a snapshot-friendly type
         if let snapshotValue = value as? SnapshotValue {
@@ -281,7 +290,7 @@ public extension SnapshotValue {
         case let int64Value as Int64:
             return .int(Int(int64Value))
         case let uintValue as UInt:
-            return .int(Int(uintValue))
+            return unsigned(uintValue)
         case let uint8Value as UInt8:
             return .int(Int(uint8Value))
         case let uint16Value as UInt16:
@@ -289,7 +298,7 @@ public extension SnapshotValue {
         case let uint32Value as UInt32:
             return .int(Int(uint32Value))
         case let uint64Value as UInt64:
-            return .int(Int(uint64Value))
+            return unsigned(uint64Value)
         case let doubleValue as Double:
             return .double(doubleValue)
         case let floatValue as Float:
@@ -373,6 +382,14 @@ public extension SnapshotValue {
 
 // MARK: - Full conversion (replay state hash)
 
+/// A value's conversion for the replay state hash (#180), when it differs from
+/// `toSnapshotValue()`: every stored property through `SnapshotValue.makeFull`, so state nodes
+/// it holds contribute their full state. `@SnapshotConvertible` generates it. A value with only
+/// a hand-written `toSnapshotValue()` is hashed through that, as clients see it.
+public protocol FullSnapshotValueConvertible {
+    func toFullSnapshotValue() throws -> SnapshotValue
+}
+
 public extension SnapshotValue {
     /// Converts `value` for the replay state hash (#180), ignoring every `@Sync` policy: a state
     /// node contributes `fullStateSnapshot()`, at any depth (maps, arrays, sets, optionals,
@@ -394,6 +411,9 @@ public extension SnapshotValue {
         }
         if let leaf = fullLeaf(value) {
             return leaf
+        }
+        if let full = value as? FullSnapshotValueConvertible {
+            return try full.toFullSnapshotValue()
         }
         if let convertible = value as? SnapshotValueConvertible {
             return try convertible.toSnapshotValue()
@@ -460,6 +480,15 @@ public extension SnapshotValue {
                 object[label] = try makeFull(from: child.value)
             }
             return .object(object)
+        case .enum:
+            // A case without a payload is its name; with one, `{name: payload}`. Payload nodes
+            // are converted in full like any other value.
+            guard let payload = mirror.children.first else {
+                return .string(String(describing: value))
+            }
+            return .object([payload.label ?? String(describing: value): try makeFull(from: payload.value)])
+        case .tuple:
+            return .array(try mirror.children.map { try makeFull(from: $0.value) })
         default:
             return try make(from: value)
         }
@@ -474,11 +503,11 @@ public extension SnapshotValue {
         case let v as Int16: return .int(Int(v))
         case let v as Int32: return .int(Int(v))
         case let v as Int64: return .int(Int(v))
-        case let v as UInt: return .int(Int(v))
+        case let v as UInt: return unsigned(v)
         case let v as UInt8: return .int(Int(v))
         case let v as UInt16: return .int(Int(v))
         case let v as UInt32: return .int(Int(v))
-        case let v as UInt64: return .int(Int(v))
+        case let v as UInt64: return unsigned(v)
         case let v as Double: return .double(v)
         case let v as Float: return .double(Double(v))
         case let v as String: return .string(v)
