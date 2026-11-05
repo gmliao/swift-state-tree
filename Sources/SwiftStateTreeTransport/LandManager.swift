@@ -34,7 +34,10 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         public let keeper: LandKeeper<State>
         public let transport: WebSocketTransport
         public let transportAdapter: TransportAdapter<State>
-        
+        /// Identifies this instance among all instances stored under `landID` over time, so a
+        /// callback of a destroyed instance never removes its replacement.
+        public let epoch: Epoch
+
         private let logger: Logger
         
         /// Initialize a Container with all required components.
@@ -44,18 +47,21 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         ///   - keeper: The LandKeeper actor managing the state.
         ///   - transport: The WebSocketTransport for connections.
         ///   - transportAdapter: The adapter connecting keeper and transport.
+        ///   - epoch: The instance's epoch (`LandManager` assigns one per created instance).
         ///   - logger: Optional logger instance.
         public init(
             landID: LandID,
             keeper: LandKeeper<State>,
             transport: WebSocketTransport,
             transportAdapter: TransportAdapter<State>,
+            epoch: Epoch = Epoch(rawValue: 0),
             logger: Logger? = nil
         ) {
             self.landID = landID
             self.keeper = keeper
             self.transport = transport
             self.transportAdapter = transportAdapter
+            self.epoch = epoch
             self.logger = logger ?? createColoredLogger(
                 loggerIdentifier: "com.swiftstatetree.runtime",
                 scope: "LandContainer"
@@ -87,6 +93,13 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     }
     
     private var lands: [LandID: Container] = [:]
+    /// Creations in progress, one per LandID: concurrent first joins share one creation.
+    private var creations = SingleFlight<LandID, Container>()
+    /// Mints each created instance's epoch.
+    private var epochs = EpochCounter<LandID>()
+    /// Test hook: awaited at the start of each creation, after the existence check, so a test
+    /// can hold a creation there and issue concurrent calls deterministically.
+    private var creationHook: (@Sendable (LandID) async -> Void)?
     private let landFactory: (LandID) -> LandDefinition<State>
     private let initialStateFactory: (LandID) -> State
     private let servicesFactory: (LandID, [String: String]) -> LandServices
@@ -170,21 +183,91 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     ///   - landID: The unique identifier for the land.
     ///   - definition: The Land definition to use if creating a new land.
     ///   - initialState: The initial state for the land if creating a new one.
+    /// Concurrent calls for an ID with no live land share one creation (single-flight): they
+    /// all get the same container, and exactly one keeper is created. A stored land that is
+    /// draining (`LandKeeper.isDraining`) counts as absent: a join after an empty land started
+    /// its destruction gets a fresh instance, created once that destruction has finished. A
+    /// creation that throws is not cached; the next call starts a new one.
+    ///
     /// - Returns: The LandContainer for the land (internal implementation detail, users should use LandManager methods instead).
     /// - Throws: When keeperModeResolver returns .reevaluation but the record file cannot be loaded.
+    ///   A caller that is cancelled stops waiting with `CancellationError`; the creation goes on
+    ///   for the other callers.
     public func getOrCreateLand(
         landID: LandID,
         definition: LandDefinition<State>,
         initialState: State,
         metadata: [String: String]
     ) async throws -> LandContainer<State> {
-        // Check if land already exists
-        if let existing = lands[landID] {
-            // Land exists, return it (monitoring task will auto-remove when destroyed)
+        if let existing = lands[landID], !existing.keeper.isDraining {
             return existing
         }
-        
-        // Create new land (use provided parameters)
+        // Reserve the creation before the first await (CLAUDE.md, "Actor reentrancy").
+        let creation = creations.flight(for: landID) { token in
+            Task {
+                try await self.createLand(
+                    landID: landID,
+                    definition: definition,
+                    initialState: initialState,
+                    metadata: metadata,
+                    token: token
+                )
+            }
+        }
+        return try await SingleFlight<LandID, Container>.value(of: creation)
+    }
+
+    /// One creation flight. Ends with the insert and `creations.finish` in one synchronous
+    /// segment, or with `creations.finish` when it throws.
+    private func createLand(
+        landID: LandID,
+        definition: LandDefinition<State>,
+        initialState: State,
+        metadata: [String: String],
+        token: SingleFlight<LandID, Container>.Token
+    ) async throws -> Container {
+        do {
+            // The stored instance is draining: let its destruction finish first, so its
+            // finalize (OnFinalize, AfterFinalize, persistence) never overlaps the new
+            // instance's initialize for the same LandID. Epoch removal alone prevents only the
+            // map ABA, not this overlap.
+            if let stored = lands[landID], stored.keeper.isDraining {
+                await stored.keeper.waitUntilDrained()
+            }
+            if let creationHook {
+                await creationHook(landID)
+            }
+            let container = try await buildLand(
+                landID: landID,
+                definition: definition,
+                initialState: initialState,
+                metadata: metadata
+            )
+            lands[landID] = container
+            landCreatedAt[landID] = Date()
+            landMetadata[landID] = metadata
+            creations.finish(landID, token: token)
+
+            logger.info("Created new land", metadata: [
+                "landID": .string(landID.stringValue),
+                "landType": .string(landID.landType),
+                "instanceId": .string(landID.instanceId)
+            ])
+            return container
+        } catch {
+            creations.finish(landID, token: token)
+            throw error
+        }
+    }
+
+    /// Builds a land instance (keeper, adapter, transport wiring) without publishing it.
+    private func buildLand(
+        landID: LandID,
+        definition: LandDefinition<State>,
+        initialState: State,
+        metadata: [String: String]
+    ) async throws -> Container {
+        let epoch = epochs.advance(landID)
         let landDefinition = definition
         let initial = initialState
 
@@ -301,8 +384,9 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             transport: transport,
             landID: landID.stringValue,
             createGuestSession: createGuestSession,
-            onLandDestroyed: { [landID] in
-                await self.removeLand(landID: landID)
+            onLandDestroyed: { [landID, epoch] in
+                // This instance only: a newer instance stored under the same ID stays.
+                await self.removeLand(landID: landID, epoch: epoch)
             },
             encodingConfig: transportEncoding,
             pathHashes: pathHashes,
@@ -327,19 +411,9 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             keeper: keeper,
             transport: transport,
             transportAdapter: transportAdapter,
+            epoch: epoch,
             logger: logger
         )
-        
-        lands[landID] = container
-        landCreatedAt[landID] = Date()
-        landMetadata[landID] = metadata
-        
-        logger.info("Created new land", metadata: [
-            "landID": .string(landID.stringValue),
-            "landType": .string(landID.landType),
-            "instanceId": .string(landID.instanceId)
-        ])
-        
         return container
     }
     
@@ -355,15 +429,48 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     ///
     /// - Parameter landID: The unique identifier for the land to remove.
     public func removeLand(landID: LandID) async {
+        removeStoredLand(landID: landID)
+    }
+
+    private func removeStoredLand(landID: LandID) {
         lands.removeValue(forKey: landID)
         landCreatedAt.removeValue(forKey: landID)
         landMetadata.removeValue(forKey: landID)
+        epochs.remove(landID)
         logger.info("Removed land: \(landID.stringValue)")
+    }
+
+    /// Removes the instance with `epoch` only. A destroyed instance's callback can run after a
+    /// newer instance was stored under the same ID (the old one was draining); that one stays.
+    func removeLand(landID: LandID, epoch: Epoch) async {
+        guard let stored = lands[landID], stored.epoch == epoch else {
+            logger.debug("Destroyed land instance already replaced", metadata: [
+                "landID": .string(landID.stringValue),
+                "epoch": .stringConvertible(epoch),
+            ])
+            return
+        }
+        // Same synchronous segment as the identity check.
+        removeStoredLand(landID: landID)
+    }
+
+    /// Installs the creation hook (tests).
+    func setCreationHook(_ hook: (@Sendable (LandID) async -> Void)?) {
+        creationHook = hook
+    }
+
+    /// Creations in progress (tests).
+    func creationsInFlight() -> Int {
+        creations.count
     }
 
     /// Force shutdown all active lands.
     /// Intended for benchmarks or test harnesses that need to end quickly.
     public func shutdownAllLands() async {
+        // Creations in progress finish (or fail) first, so their lands are shut down too.
+        for creation in creations.cancelAll() {
+            _ = try? await creation.value
+        }
         let containers = Array(lands.values)
         await withTaskGroup(of: Void.self) { group in
             for container in containers {

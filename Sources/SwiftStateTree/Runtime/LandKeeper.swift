@@ -288,6 +288,37 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private var tickTask: Task<Void, Never>?
     private var syncTask: Task<Void, Never>?
     private var destroyTask: Task<Void, Never>?
+    /// The destruction in progress (single-flight): `shutdownIfIdle` runs it once.
+    private var drainTask: Task<Void, Never>?
+    private let drainFlag = DrainFlag()
+
+    /// The land is being destroyed, or was: it became empty and its destruction started.
+    ///
+    /// Set synchronously right after the emptiness check, before the first await of the
+    /// destruction, and never cleared. A draining keeper rejects joins
+    /// (`JoinError.landShuttingDown`), and `LandManager` treats it as absent. Readable without
+    /// awaiting the keeper, so a caller can check it in the same synchronous segment as its act.
+    public nonisolated var isDraining: Bool { drainFlag.isSet }
+
+    /// Test hook: awaited at the start of the destruction, after `isDraining` is set and before
+    /// any destroy handler runs.
+    private var drainHook: (@Sendable () async -> Void)?
+
+    /// Waits until this keeper's destruction has finished, handlers and the transport's
+    /// `onLandDestroyed` included. Returns at once when no destruction started.
+    ///
+    /// `LandManager` awaits it before creating a new instance for the same LandID, so the old
+    /// instance's finalize never overlaps the new one's initialize.
+    public func waitUntilDrained() async {
+        if let drainTask {
+            await drainTask.value
+        }
+    }
+
+    /// Installs the drain hook (tests).
+    func setDrainHook(_ hook: (@Sendable () async -> Void)?) {
+        drainHook = hook
+    }
     private var initializationTask: Task<Void, Never>?
     private var didInitialize = false
 
@@ -893,6 +924,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         session.clientID = clientID
         session.lastSessionID = sessionID
         session.services = services
+        // Checked in the same synchronous segment as the insert: a destruction that started
+        // during this join's awaits must not get a player after it stopped the loops.
+        guard !isDraining else { throw JoinError.landShuttingDown }
         players[playerID] = session
 
         destroyTask?.cancel()
@@ -1052,6 +1086,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if !session.metadata.isEmpty {
             playerSession.metadata = session.metadata
         }
+        // Checked in the same synchronous segment as the insert: a destruction that started
+        // during this join's awaits must not get a player after it stopped the loops.
+        guard !isDraining else { throw JoinError.landShuttingDown }
         players[playerID] = playerSession
 
         destroyTask?.cancel()
@@ -2300,8 +2337,25 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     private func shutdownIfIdle() async {
+        // Destruction runs once; a second caller (the empty-room timer and `forceShutdown`)
+        // waits for the one in progress.
+        if let drainTask {
+            await drainTask.value
+            return
+        }
         guard players.isEmpty else { return }
+        // Same synchronous segment as the emptiness check: joins from now on are rejected.
+        drainFlag.set()
+        let task = Task { await self.drainAfterIdleCheck() }
+        drainTask = task
+        await task.value
+    }
 
+    /// The destruction proper: stop the loops, run the destroy handlers, notify the transport.
+    private func drainAfterIdleCheck() async {
+        if let drainHook {
+            await drainHook()
+        }
         // Cancel tick and sync tasks FIRST to prevent any new ticks/syncs from starting
         // This must be done before executing destroy handlers to ensure no ticks/syncs run after destroy
         tickTask?.cancel()
@@ -2412,6 +2466,24 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     // Note: isEventAllowed is no longer needed as we use registry-based validation
+}
+
+/// Set-once flag readable from any isolation (`LandKeeper.isDraining`).
+private final class DrainFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    var isSet: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func set() {
+        lock.lock()
+        value = true
+        lock.unlock()
+    }
 }
 
 private struct InternalPlayerSession: Sendable {

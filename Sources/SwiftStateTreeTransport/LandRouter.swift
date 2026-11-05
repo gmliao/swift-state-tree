@@ -525,6 +525,11 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 case .custom(let message):
                     errorCode = .joinDenied
                     errorMessage = message
+                case .landShuttingDown:
+                    // The land started its destruction during this join; a new join gets a
+                    // fresh instance for the same ID.
+                    errorCode = .joinDenied
+                    errorMessage = "Land is shutting down, retry the join"
                 }
             } else {
                 errorCode = .joinDenied
