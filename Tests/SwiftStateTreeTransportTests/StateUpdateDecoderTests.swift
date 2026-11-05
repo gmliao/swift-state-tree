@@ -114,3 +114,43 @@ func testOpcodeJSONDecoderLegacyFormat() throws {
         Issue.record("Unexpected noChange result")
     }
 }
+
+// MARK: - Numbers and booleans (#171)
+
+/// The value of the single set patch in `data`.
+private func decodedSetValue(_ data: Data) throws -> SnapshotValue? {
+    let decoded = try OpcodeJSONStateUpdateDecoder().decode(data: data)
+    guard case .diff(let patches) = decoded.update, patches.count == 1,
+          case .set(let value) = patches[0].operation else { return nil }
+    return value
+}
+
+@Test("OpcodeJSONStateUpdateDecoder keeps 0 and 1 as integers and true/false as booleans through an encode round trip (#171)")
+func testOpcodeJSONDecoderRoundTripsZeroOneAndBooleans() throws {
+    let values: [SnapshotValue] = [
+        .int(0), .int(1), .int(2), .int(-1),
+        .bool(false), .bool(true),
+        .double(1.5), .double(0.5),
+        .array([.int(0), .int(1), .bool(true)]),
+        .object(["zero": .int(0), "one": .int(1), "flag": .bool(false)])
+    ]
+    let encoder = OpcodeJSONStateUpdateEncoder()
+    for value in values {
+        let update = StateUpdate.diff([StatePatch(path: "/v", operation: .set(value))])
+        let data = try encoder.encode(update: update, landID: "land-1", playerID: PlayerID("p1"))
+        #expect(try decodedSetValue(data) == value, "round trip of \(value)")
+    }
+}
+
+@Test("OpcodeJSONStateUpdateDecoder reads JSON 0, 1, 1.0 as numbers and only true/false as booleans (#171)")
+func testOpcodeJSONDecoderRawNumbersAndBooleans() throws {
+    func frame(_ json: String) -> Data { Data("[2, [\"/v\", 1, \(json)]]".utf8) }
+    #expect(try decodedSetValue(frame("0")) == .int(0))
+    #expect(try decodedSetValue(frame("1")) == .int(1))
+    #expect(try decodedSetValue(frame("1.5")) == .double(1.5))
+    #expect(try decodedSetValue(frame("true")) == .bool(true))
+    #expect(try decodedSetValue(frame("false")) == .bool(false))
+    // A JSON 1.0 is a number, never a boolean; JSON does not keep 1.0 apart from 1
+    let one = try decodedSetValue(frame("1.0"))
+    #expect(one == .int(1) || one == .double(1.0))
+}
