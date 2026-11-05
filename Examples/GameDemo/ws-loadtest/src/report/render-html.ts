@@ -46,6 +46,8 @@ export interface PhaseSummary {
     thresholds?: Thresholds;
     passed: boolean;
     failures: string[];
+    /** Problems that don't fail the phase but make a metric meaningless (see `phaseWarningsOf`). */
+    warnings: string[];
 }
 
 export interface Report {
@@ -123,6 +125,20 @@ export function joinFailuresOf(phase: PhaseResult, runConfig?: Pick<RunConfig, "
     return failures;
 }
 
+/**
+ * Warnings that don't fail the phase. Joined clients with no state-update samples in the
+ * measured window mean the update metrics are empty (update p50/p95/p99 report 0), as when a
+ * frame kind isn't recognized (#138), not that updates were fast.
+ */
+export function phaseWarningsOf(phase: PhaseResult): string[] {
+    const warnings: string[] = [];
+    const joined = phase.connections?.joinedAtEnd ?? 0;
+    if (joined > 0 && phase.report.stateUpdateIntervalsMs.length === 0) {
+        warnings.push(`no state-update samples with ${joined} joined clients: update percentiles are empty`);
+    }
+    return warnings;
+}
+
 function summarizePhase(phase: PhaseResult, runConfig?: RunConfig): PhaseSummary {
     const connections = phase.layout?.connections ?? phase.config.rooms * phase.config.playersPerRoom;
     const actionsSent = phase.report.actionsSent;
@@ -174,7 +190,8 @@ function summarizePhase(phase: PhaseResult, runConfig?: RunConfig): PhaseSummary
         update: { p50: updateP50, p95: updateP95, p99: updateP99 },
         thresholds: phase.config.thresholds,
         passed,
-        failures
+        failures,
+        warnings: phaseWarningsOf(phase)
     };
 }
 
@@ -232,6 +249,15 @@ function joinedAtStartLine(measurement?: PhaseMeasurement): string {
 }
 
 /** Why a phase failed, listed under its status. */
+/** Warnings under the PASS/FAIL cell, in amber (they don't fail the phase). */
+export function warningsList(warnings: string[] | undefined): string {
+    if (!warnings || warnings.length === 0) {
+        return "";
+    }
+    const items = warnings.map((w) => `<li>warning: ${escapeHtml(w)}</li>`).join("");
+    return `<ul class="text-xs text-amber-400 list-disc ml-4 mt-1">${items}</ul>`;
+}
+
 export function failuresList(failures: string[]): string {
     if (failures.length === 0) {
         return "";
@@ -276,7 +302,7 @@ export function renderHtml(report: Report): string {
                     <td class="px-4 py-2 text-slate-300">${phase.rtt.p99.toFixed(2)}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.update.p95.toFixed(2)}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.update.p99.toFixed(2)}</td>
-                    <td class="px-4 py-2"><span class="${phase.passed ? "text-green-500 font-medium" : "text-red-500 font-medium"}">${phase.passed ? "PASS" : "FAIL"}</span>${failuresList(phase.failures)}</td>
+                    <td class="px-4 py-2"><span class="${phase.passed ? "text-green-500 font-medium" : "text-red-500 font-medium"}">${phase.passed ? "PASS" : "FAIL"}</span>${failuresList(phase.failures)}${warningsList(phase.warnings)}</td>
                   </tr>`
         )
         .join("");

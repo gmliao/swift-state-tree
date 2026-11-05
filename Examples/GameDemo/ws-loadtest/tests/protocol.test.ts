@@ -24,3 +24,47 @@ describe("protocol decoding", () => {
         expect((msg as any).kind).toBe("joinResponse");
     });
 });
+
+/** One state update per encoding (TRANSPORT_ENCODING json, opcodeJsonArray, messagepack). */
+describe("state update classification per encoding (#138)", () => {
+    const patches = [{ op: "replace", path: "/score", value: 1 }];
+
+    it("jsonObject: { type, patches } text frames are state updates", () => {
+        for (const type of ["noChange", "firstSync", "diff"]) {
+            const body = type === "noChange" ? { type } : { type, patches };
+            const msg = decodeMessage(JSON.stringify(body));
+            expect(msg.type).toBe("stateUpdate");
+            expect(msg.updateType).toBe(type);
+        }
+    });
+
+    it("opcodeJsonArray: opcode-array text frames are state updates", () => {
+        for (const opcode of [0, 1, 2]) {
+            expect(decodeMessage(JSON.stringify([opcode, patches])).type).toBe("stateUpdate");
+        }
+        expect(decodeMessage(JSON.stringify([107, [2, patches], []])).type).toBe("stateUpdateWithEvents");
+    });
+
+    it("messagepack: opcode-array binary frames are state updates", () => {
+        expect(decodeMessage(encode([2, patches])).type).toBe("stateUpdate");
+        expect(decodeMessage(encode([107, [2, patches], []])).type).toBe("stateUpdateWithEvents");
+    });
+
+    it("jsonObject transport messages the worker relies on keep their kind", () => {
+        const frames = {
+            actionResponse: { kind: "actionResponse", payload: { actionResponse: { requestID: "r1", response: {} } } },
+            error: { kind: "error", payload: { error: { code: "X", message: "m", details: { requestID: "r1" } } } },
+            joinResponse: { kind: "joinResponse", payload: { joinResponse: { requestID: "join-1", success: true } } },
+            event: { kind: "event", payload: { event: { type: "x" } } }
+        };
+        for (const [kind, body] of Object.entries(frames)) {
+            const msg = decodeMessage(JSON.stringify(body));
+            expect(msg.kind).toBe(kind);
+            expect(msg.type).toBeUndefined();
+        }
+    });
+
+    it("an object with a type that isn't a StateUpdate type isn't a state update", () => {
+        expect(decodeMessage(JSON.stringify({ type: "other" })).type).toBe("other");
+    });
+});
