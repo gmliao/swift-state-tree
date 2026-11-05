@@ -20,8 +20,5 @@ public enum LandError: Error {
     /// Not thrown by `LandKeeper`: mutations during a sync are allowed, and their dirty flags
     /// survive the sync because `beginSync(clearDirtyFlags:)` clears flags when it takes the snapshot.
     case syncInProgress
-    /// Thrown when an action or client event comes from a session that a newer join of the same
-    /// player replaced (one session per player, newest wins).
-    case senderSuperseded
 }
 

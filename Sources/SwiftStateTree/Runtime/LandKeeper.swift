@@ -1467,7 +1467,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Intake check for actions and client events (#92, newest wins): rejects a sender only when
     /// the player has an entry and that entry is another client or session, i.e. a newer join
     /// of the player replaced the sender's session. Called on `.live` keepers only (the intake
-    /// returns earlier otherwise), in the segment that queues the input.
+    /// returns earlier otherwise), at intake and again in the segment that queues the input
+    /// when an await (the action's resolvers) lies between them.
     ///
     /// Unchanged: a player with no entry (direct callers that send before or without a join),
     /// the system player and client, and a sender matching the entry (a join, then sends with the
@@ -1491,7 +1492,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             "input": .string(input),
             "rejectedTotal": .stringConvertible(supersededSenderRejections),
         ])
-        throw LandError.senderSuperseded
+        throw LandInputRejection.senderSuperseded
     }
 
     /// Handles a player/client leaving the Land.
@@ -1734,6 +1735,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
             // Bind to the tick that was current when resolvers completed (deterministic ordering)
             resolvedAtTick = lastCommittedTickId
+
+            // Re-checked after the resolver await, in the append's segment: a newer join of the
+            // player may have replaced the sender's session meanwhile.
+            try rejectSenderIfSuperseded(playerID: playerID, clientID: clientID, sessionID: sessionID, input: typeIdentifier)
         }
 
         // Create pending item and add to queue

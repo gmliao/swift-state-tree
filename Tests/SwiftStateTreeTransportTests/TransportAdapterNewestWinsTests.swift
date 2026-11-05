@@ -64,6 +64,30 @@ struct NewestWinsJoinResolver: ContextResolver {
 
 struct NewestWinsJoinOutput: ResolverOutput {}
 
+@Payload
+struct NewestWinsHeldBumpAction: ActionPayload {
+    typealias Response = NewestWinsBumpResponse
+    let by: Int
+}
+
+/// Holds the resolver of a held bump from a client registered with `NewestWinsActionHold`.
+private enum NewestWinsActionHold {
+    static let gates = NewestWinsJoinHold()
+}
+
+struct NewestWinsActionResolver: ContextResolver {
+    typealias Output = NewestWinsActionOutput
+
+    static func resolve(ctx: ResolverContext) async throws -> NewestWinsActionOutput {
+        if let gate = NewestWinsActionHold.gates.gate(for: ctx.clientID) {
+            await gate.arrive()
+        }
+        return NewestWinsActionOutput()
+    }
+}
+
+struct NewestWinsActionOutput: ResolverOutput {}
+
 /// Records frames (in send order) and closed sessions.
 private actor NewestWinsTransport: Transport {
     var delegate: TransportDelegate?
@@ -158,6 +182,11 @@ private func makeFixture(inTurn: Bool, legacyJoin: Bool = false, mode: LandMode 
                 state.bumps += action.by
                 return NewestWinsBumpResponse(bumps: state.bumps)
             }
+            HandleAction(NewestWinsHeldBumpAction.self, resolvers: NewestWinsActionResolver.self) {
+                (state: inout NewestWinsTestState, action: NewestWinsHeldBumpAction, _: LandContext) in
+                state.bumps += action.by
+                return NewestWinsBumpResponse(bumps: state.bumps)
+            }
         }
     }
     let transport = NewestWinsTransport()
@@ -233,7 +262,7 @@ struct TransportAdapterNewestWinsTests {
 
         // The keeper's entry is the new session: an input as the old session is rejected, by
         // session (the client ID is the same).
-        await #expect(throws: LandError.self) {
+        await #expect(throws: LandInputRejection.self) {
             _ = try await f.keeper.handleActionEnvelope(
                 ActionEnvelope(
                     typeIdentifier: String(describing: NewestWinsBumpAction.self),
@@ -271,6 +300,36 @@ struct TransportAdapterNewestWinsTests {
         #expect(await f.adapter.membershipSessionIDs(for: player) == [s2])
         try await f.bump(from: s2)
         #expect(await pollUntilAsync { await f.keeper.currentState().bumps == 1 })
+    }
+
+    @Test("An action whose resolver awaits across the kick is rejected, not applied to the new session", arguments: [true, false])
+    func actionHeldAcrossKickIsRejected(inTurn: Bool) async throws {
+        let f = await makeFixture(inTurn: inTurn)
+        let oldClient = ClientID("held-action-client-\(inTurn)")
+        let gate = NewestWinsActionHold.gates.register(oldClient)
+        await f.connect(s1, oldClient)
+        try await f.join(s1, oldClient, as: player)
+
+        // S1's action passes the intake check and is held in its resolver.
+        let envelope = ActionEnvelope(
+            typeIdentifier: String(describing: NewestWinsHeldBumpAction.self),
+            payload: AnyCodable(NewestWinsHeldBumpAction(by: 5))
+        )
+        let action = Task {
+            try await f.keeper.handleActionEnvelope(envelope, playerID: player, clientID: oldClient, sessionID: s1)
+        }
+        #expect(await gate.waitForArrivals(1))
+
+        // Meanwhile S2 joins (OnLeave, OnJoin), is admitted and supersedes S1.
+        await f.connect(s2, c2)
+        try await f.join(s2, c2, as: player)
+        #expect(await f.adapter.membershipSessionIDs(for: player) == [s2])
+
+        // Released, the action is rejected in its append segment: S2's state is untouched.
+        gate.open()
+        await #expect(throws: LandInputRejection.senderSuperseded) { _ = try await action.value }
+        #expect(await f.keeper.supersededSenderRejections == 1)
+        #expect(await f.keeper.currentState().bumps == 0)
     }
 
     @Test("Legacy join: the second join supersedes the first, OnLeave runs once", arguments: [true, false])
@@ -322,10 +381,10 @@ struct TransportAdapterNewestWinsTests {
         #expect(await f.keeper.supersededSenderRejections == 0)
 
         // Another client or another session than the entry's is rejected.
-        await #expect(throws: LandError.self) {
+        await #expect(throws: LandInputRejection.self) {
             _ = try await f.keeper.handleActionEnvelope(envelope, playerID: player, clientID: c2, sessionID: s1)
         }
-        await #expect(throws: LandError.self) {
+        await #expect(throws: LandInputRejection.self) {
             _ = try await f.keeper.handleActionEnvelope(envelope, playerID: player, clientID: c1, sessionID: s2)
         }
         #expect(await f.keeper.supersededSenderRejections == 2)

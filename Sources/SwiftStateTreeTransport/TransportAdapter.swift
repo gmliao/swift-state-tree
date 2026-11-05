@@ -918,6 +918,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Register a session that has been authenticated and joined via LandRouter.
     /// This bypasses the internal join handshake logic of TransportAdapter.
+    ///
+    /// It also bypasses the admission, and with it newest wins (#92): the player's other
+    /// sessions stay members. Joins through `performJoin` (the router and the legacy path)
+    /// supersede them.
     func _registerSessionImpl(
         sessionID: SessionID,
         clientID: ClientID,
