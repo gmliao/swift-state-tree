@@ -39,6 +39,9 @@ public struct TransportEncodingConfig: Sendable {
 
     /// `DYNAMIC_KEY_COMPRESSION` (default true), for servers that build their config from the
     /// environment: `config.withDynamicKeyCompression(TransportEncodingConfig.dynamicKeyCompressionFromEnvironment())`.
+    /// The environment key `dynamicKeyCompressionFromEnvironment` reads (`DYNAMIC_KEY_COMPRESSION`).
+    public static let dynamicKeyCompressionEnvironmentKey = TransportEnvKeys.dynamicKeyCompression
+
     public static func dynamicKeyCompressionFromEnvironment(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {

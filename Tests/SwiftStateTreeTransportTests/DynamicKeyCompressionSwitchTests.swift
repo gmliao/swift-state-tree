@@ -76,7 +76,7 @@ struct DynamicKeyCompressionSwitchTests {
         #expect(off.keyElements[0][2] as? [String] == ["r1", "alice"])
     }
 
-    @Test("Opcode MessagePack: off sends full key strings, with the same structure as opcode JSON off")
+    @Test("Opcode MessagePack: off sends the same patches as opcode JSON off, full keys in order")
     func opcodeMessagePackOff() throws {
         let messagePack = OpcodeMessagePackStateUpdateEncoder(
             pathHasher: PathHasher(pathHashes: pathHashes),
@@ -86,30 +86,51 @@ struct DynamicKeyCompressionSwitchTests {
             pathHasher: PathHasher(pathHashes: pathHashes),
             dynamicKeyCompression: false
         )
-        for update in [firstSync, diff] {
+        let expectedKeys: [[MessagePackValue]] = [
+            [.string("alice"), .string("bob"), .array([.string("r1"), .string("alice")])],
+            [.string("alice"), .string("bob"), .array([.string("r1"), .string("alice")]), .string("carol")]
+        ]
+        for (update, keys) in zip([firstSync, diff], expectedKeys) {
             let packed = try unpack(try messagePack.encode(update: update, landID: "land", playerID: player))
             guard case .array(let elements) = packed else {
                 Issue.record("expected a MessagePack array")
                 return
             }
-            let keys = elements.dropFirst().compactMap { element -> MessagePackValue? in
+            let packedKeys = elements.dropFirst().compactMap { element -> MessagePackValue? in
                 guard case .array(let patch) = element else { return nil }
                 return patch[1]
             }
-            for key in keys {
-                switch key {
-                case .string, .nil: break
-                case .array(let parts):
-                    #expect(parts.allSatisfy { if case .string = $0 { return true } else { return false } }, "\(parts)")
-                default:
-                    Issue.record("compression off sent a slot: \(key)")
-                }
-            }
+            #expect(packedKeys == keys)
+            // Path hashes, keys, opcodes and values all match opcode JSON off, element by element.
             let jsonPayload = try #require(
                 try JSONSerialization.jsonObject(with: json.encode(update: update, landID: "land", playerID: player)) as? [Any]
             )
-            #expect(keys.count == dynamicKeyElements(jsonPayload).count)
+            #expect((packed.toAny() as? NSArray)?.isEqual(to: jsonPayload) == true, "\(packed)")
         }
+    }
+
+    @Test("Golden bytes, compression on: unchanged from the encoders before the switch")
+    func goldenOn() throws {
+        // The default initializers, as before the switch: these pins also pass on the parent commit.
+        let json = OpcodeJSONStateUpdateEncoder(pathHasher: PathHasher(pathHashes: pathHashes))
+        let messagePack = OpcodeMessagePackStateUpdateEncoder(pathHasher: PathHasher(pathHashes: pathHashes))
+        let jsonText = try goldenJSON(json)
+        let hex = try goldenHex(messagePack)
+        #expect(jsonText == goldenOnJSON)
+        #expect(hex == goldenOnHex)
+    }
+
+    @Test("Golden bytes, compression off: full keys every time")
+    func goldenOff() throws {
+        let json = OpcodeJSONStateUpdateEncoder(pathHasher: PathHasher(pathHashes: pathHashes), dynamicKeyCompression: false)
+        let messagePack = OpcodeMessagePackStateUpdateEncoder(
+            pathHasher: PathHasher(pathHashes: pathHashes),
+            dynamicKeyCompression: false
+        )
+        let jsonText = try goldenJSON(json)
+        let hex = try goldenHex(messagePack)
+        #expect(jsonText == goldenOffJSON)
+        #expect(hex == goldenOffHex)
     }
 
     @Test("Compression on stays the default, in the encoders and in TransportEncodingConfig")
@@ -125,8 +146,8 @@ struct DynamicKeyCompressionSwitchTests {
     @Test("DYNAMIC_KEY_COMPRESSION turns it off; unset keeps it on")
     func environmentKey() {
         #expect(TransportEncodingConfig.dynamicKeyCompressionFromEnvironment(environment: [:]))
-        #expect(!TransportEncodingConfig.dynamicKeyCompressionFromEnvironment(environment: ["DYNAMIC_KEY_COMPRESSION": "false"]))
-        #expect(TransportEncodingConfig.dynamicKeyCompressionFromEnvironment(environment: ["DYNAMIC_KEY_COMPRESSION": "true"]))
+        #expect(!TransportEncodingConfig.dynamicKeyCompressionFromEnvironment(environment: [TransportEncodingConfig.dynamicKeyCompressionEnvironmentKey: "false"]))
+        #expect(TransportEncodingConfig.dynamicKeyCompressionFromEnvironment(environment: [TransportEncodingConfig.dynamicKeyCompressionEnvironmentKey: "true"]))
         #expect(!TransportEncodingConfig.messagepack.withDynamicKeyCompression(false).dynamicKeyCompression)
         #expect(TransportEncodingConfig.messagepack.withDynamicKeyCompression(false).stateUpdate == .opcodeMessagePack)
     }
@@ -152,6 +173,35 @@ struct DynamicKeyCompressionSwitchTests {
         }
     }
 }
+
+/// firstSync then diff from one encoder, as opcode JSON text.
+private func goldenJSON(_ encoder: StateUpdateEncoder) throws -> [String] {
+    try [firstSync, diff].map { String(decoding: try encoder.encode(update: $0, landID: "land", playerID: player), as: UTF8.self) }
+}
+
+/// firstSync then diff from one encoder, as lowercase hex.
+private func goldenHex(_ encoder: StateUpdateEncoder) throws -> [String] {
+    try [firstSync, diff].map { try encoder.encode(update: $0, landID: "land", playerID: player).map { String(format: "%02x", $0) }.joined() }
+}
+
+/// Slots on first use (`[slot,"key"]`), bare slots after; also what the parent commit produced.
+private let goldenOnJSON: [String] = [
+    #"[1,[300,[0,"alice"],1,{"score":5}],[301,[1,"bob"],1,2],[302,[[2,"r1"],[0,"alice"]],3,"seated"]]"#,
+    #"[2,[301,0,1,3],[300,1,2],[302,[2,0],2],[301,[3,"carol"],1,4]]"#,
+]
+private let goldenOnHex: [String] = [
+    "940194cd012c9200a5616c6963650181a573636f72650594cd012d9201a3626f62010294cd012e929202a272319200a5616c69636503a6736561746564",
+    "950294cd012d00010393cd012c010293cd012e9202000294cd012d9203a56361726f6c0104",
+]
+/// Full keys in every patch; the multi-key path as `["r1","alice"]`.
+private let goldenOffJSON: [String] = [
+    #"[1,[300,"alice",1,{"score":5}],[301,"bob",1,2],[302,["r1","alice"],3,"seated"]]"#,
+    #"[2,[301,"alice",1,3],[300,"bob",2],[302,["r1","alice"],2],[301,"carol",1,4]]"#,
+]
+private let goldenOffHex: [String] = [
+    "940194cd012ca5616c6963650181a573636f72650594cd012da3626f62010294cd012e92a27231a5616c69636503a6736561746564",
+    "950294cd012da5616c696365010393cd012ca3626f620293cd012e92a27231a5616c6963650294cd012da56361726f6c0104",
+]
 
 private extension MessagePackValue {
     /// JSON-like Foundation values (numbers as `NSNumber`), for comparing array structures.
