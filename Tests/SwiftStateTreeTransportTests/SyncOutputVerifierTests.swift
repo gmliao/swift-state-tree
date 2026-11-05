@@ -378,10 +378,12 @@ private func position(_ entry: ReevaluationSyncStreamEntry) -> (streamIndex: UIn
     }
 }
 
-/// JSON, except that every per-player update fails while `fails` is on (even an empty one).
+/// JSON, except that every per-player update (of `player`, if set) fails while `fails` is on,
+/// even an empty one.
 private struct VerifierFailingEncoder: StateUpdateEncoderWithScope {
     let inner = JSONStateUpdateEncoder()
     let fails: VerifierSwitch
+    var player: PlayerID?
 
     var encoding: StateUpdateEncoding { inner.encoding }
 
@@ -394,7 +396,7 @@ private struct VerifierFailingEncoder: StateUpdateEncoderWithScope {
     }
 
     func encode(update: StateUpdate, landID: String, playerID: PlayerID, playerSlot: Int32?, scope: StateUpdateKeyScope) throws -> Data {
-        if case .perPlayer = scope, fails.isOn { throw SyncStreamFault() }
+        if case .perPlayer = scope, fails.isOn, player == nil || player == playerID { throw SyncStreamFault() }
         return try inner.encode(update: update, landID: landID, playerID: playerID, playerSlot: playerSlot)
     }
 }
@@ -758,7 +760,13 @@ struct SyncOutputVerifierTests {
         fails.set(false)
         await f.tick()
         let ticks = try await f.stream().compactMap { if case .output(let o) = $0, o.turnKind == .tick { return o } else { return nil } }
-        #expect(ticks.map { $0.eventsNotMerged?.count ?? 0 } == [0, 3, 0])
+        let unmerged = ticks.map { $0.eventsNotMerged ?? ReevaluationUnmergedEvents() }
+        #expect(unmerged.map { $0.all.count } == [0, 3, 0])
+        if fault == .all {
+            #expect(unmerged[1].lost.count == 3 && unmerged[1].sentAlone.isEmpty)
+        } else {
+            #expect(unmerged[1].sentAlone.count == 3 && unmerged[1].lost.isEmpty)
+        }
         #expect(ticks[1].eventsNotQueued == nil, "an event to nobody that did not encode is not merged either")
         let sync = try await f.replay().syncOutput
         #expect(sync.verdict == .partial, "\(sync.summary)")
@@ -802,5 +810,38 @@ struct SyncOutputVerifierTests {
         let sync = try await f.replay(rewrite: markingUnsent(VerifierFixture.player(1), atTick: 1)).syncOutput
         #expect(sync.verdict == .partial, "\(sync.summary)")
         #expect(sync.skipReasons == [.perPlayerResendNotSeen: 1])
+    }
+
+    @Test("A joiner whose whole view never encodes is not benign; a later compared seed makes it so")
+    func unsentViewIsNotBenign() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        for seedsLater in [false, true] {
+            let fails = VerifierSwitch()
+            let f = await VerifierFixture.make(
+                encoding: .json,
+                encoder: VerifierFailingEncoder(fails: fails, player: VerifierFixture.player(2))
+            )
+            try await f.join(1)
+            await f.tick()
+            fails.set(true)
+            try await f.join(2)  // its firstSync does not encode, not even empty
+            await f.tick()       // nor does the retried full view
+            fails.set(false)
+            if seedsLater {
+                await f.tick()   // the full view goes out now: a seed with a view hash
+            }
+            let outputs = try await f.stream().compactMap { if case .output(let o) = $0, o.turnKind == .tick { return o } else { return nil } }
+            #expect(outputs[1].encodeDropScopes.contains(VerifierFixture.player(2).rawValue))
+            #expect(outputs[1].perPlayerUncommitted == nil, "it had no committed view to leave uncommitted")
+            let sync = try await f.replay().syncOutput
+            if seedsLater {
+                #expect(sync.verdict == .passed, "\(sync.summary)")
+                #expect(sync.skipReasons[.viewSentLater] == 1)
+                #expect(sync.skipReasons[.viewNotSent] == nil)
+            } else {
+                #expect(sync.verdict == .partial, "\(sync.summary)")
+                #expect(sync.skipReasons[.viewNotSent] == 1)
+            }
+        }
     }
 }

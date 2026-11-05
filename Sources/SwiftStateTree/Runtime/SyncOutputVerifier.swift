@@ -60,13 +60,19 @@ public enum SyncOutputSkipReason: String, Sendable, CaseIterable, Comparable {
     /// Opcode 107: a per-player update was not sent, and no later comparison saw it resent (the
     /// record ended, or the player left, first).
     case perPlayerResendNotSeen = "per-player update not sent, resend never compared"
+    /// A joiner's full view did not encode at all (no seed, nothing sent), and a later seed for
+    /// that player was compared: its client got a verified view after all. Benign.
+    case viewSentLater = "full view not sent (a later seed was compared)"
+    /// A joiner's full view did not encode at all, and no later seed for that player was
+    /// compared: its client may never have got any state.
+    case viewNotSent = "full view not sent, no later seed compared"
     /// An output without a broadcast hash: the broadcast scope was not committed.
     case broadcastNotCommitted = "broadcast not committed"
     /// An opcode 107 output without an events hash, and no events drop recorded.
     case eventsHashMissing = "events hash missing"
 
     /// The reasons that allow `passed`.
-    public static let benign: Set<SyncOutputSkipReason> = [.perPlayerResent]
+    public static let benign: Set<SyncOutputSkipReason> = [.perPlayerResent, .viewSentLater]
 
     public static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
 }
@@ -184,6 +190,11 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
     private var pendingResends: [PlayerID: Int] = [:]
     /// Skips whose player left before a comparison saw the resend.
     private var resendsNotSeen = 0
+    /// Players outside `seeded` whose full view did not encode (`encodeDropScopes`), with the
+    /// number of such outputs, until a compared seed for them.
+    private var pendingViews: [PlayerID: Int] = [:]
+    /// Those skips a compared seed resolved.
+    private var viewsSentLater = 0
 
     private var recordedSkipReasons: [SyncOutputSkipReason: Int] = [:]
     private(set) var broadcast = SyncOutputScopeCounts()
@@ -225,6 +236,7 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
         if replayed == recorded {
             seed.compared += 1
             pendingResends.removeValue(forKey: playerID)
+            viewsSentLater += pendingViews.removeValue(forKey: playerID) ?? 0
         } else {
             mismatch = SyncOutputMismatch(
                 outputIndex: nil,
@@ -262,6 +274,13 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
             staged: &staged
         )
         let encodeDrops = Set(output.encodeDropScopes)
+        // A joiner whose whole view did not encode: nothing reached it, and it has no seed.
+        for scope in output.encodeDropScopes where scope != SyncOutputScope.broadcast && scope != SyncOutputScope.events {
+            let playerID = PlayerID(scope)
+            guard !seeded.contains(playerID) else { continue }
+            skip(.viewNotSent, \.perPlayer)
+            pendingViews[playerID, default: 0] += 1
+        }
         if let recorded = output.broadcastHash {
             guard compare(recorded, CanonicalPatchList(broadcastDiff).hash, scope: "broadcast", output, observedTickId) else { return }
             if encodeDrops.contains(SyncOutputScope.broadcast) {
@@ -327,14 +346,14 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
 
         if mergedBroadcastFrame {
             notQueued.formUnion(output.eventsNotQueued ?? [])
-            notQueued.formUnion(output.eventsNotMerged ?? [])
+            notQueued.formUnion(output.eventsNotMerged?.all ?? [])
             pendingEvents.removeAll { notQueued.contains($0.sequence) }
             let through = output.eventsThroughSequence ?? Int64.min
             let consumed = pendingEvents.filter { $0.sequence <= through }.sorted { $0.sequence < $1.sequence }
             pendingEvents.removeAll { $0.sequence <= through }
             let canonical = consumed.compactMap(\.event)
             // Events sent alone or lost: what the clients got is not in any merged frame.
-            let notMerged = !(output.eventsNotMerged ?? []).isEmpty
+            let notMerged = !(output.eventsNotMerged?.isEmpty ?? true)
             if output.encodeDropScopes.contains(SyncOutputScope.events) || canonical.count != consumed.count || notMerged {
                 events.unverifiable += 1
             } else if let recorded = output.eventsHash {
@@ -354,14 +373,21 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
     }
 
     /// The skipped scopes per reason. Resend skips no comparison saw resolved (the player left,
-    /// or the record ended) count as `perPlayerResendNotSeen`.
+    /// or the record ended) count as `perPlayerResendNotSeen`; unsent views a compared seed
+    /// resolved count as `viewSentLater`.
     var skipReasons: [SyncOutputSkipReason: Int] {
         var reasons = recordedSkipReasons
         let notSeen = resendsNotSeen + pendingResends.values.reduce(0, +)
-        guard notSeen > 0 else { return reasons }
-        let resent = (reasons[.perPlayerResent] ?? 0) - notSeen
-        reasons[.perPlayerResent] = resent > 0 ? resent : nil
-        reasons[.perPlayerResendNotSeen] = notSeen
+        if notSeen > 0 {
+            let resent = (reasons[.perPlayerResent] ?? 0) - notSeen
+            reasons[.perPlayerResent] = resent > 0 ? resent : nil
+            reasons[.perPlayerResendNotSeen] = notSeen
+        }
+        if viewsSentLater > 0 {
+            let notSent = (reasons[.viewNotSent] ?? 0) - viewsSentLater
+            reasons[.viewNotSent] = notSent > 0 ? notSent : nil
+            reasons[.viewSentLater] = viewsSentLater
+        }
         return reasons
     }
 

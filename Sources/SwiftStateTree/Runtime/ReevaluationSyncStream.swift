@@ -51,11 +51,10 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
     /// recipient (nothing was queued or sent); the verifier does not expect them. Sorted; nil
     /// when empty.
     public let eventsNotQueued: [Int64]?
-    /// Opcode 107: sequences of in-turn events emitted since the previous output that were not
-    /// merged although they had recipients: the body did not encode, so the event went out as
-    /// its own frame, or was lost when that failed too. The verifier does not expect them in a
-    /// merged frame, and this output's events scope is unverifiable. Sorted; nil when empty.
-    public let eventsNotMerged: [Int64]?
+    /// Opcode 107: in-turn events emitted since the previous output that were not merged
+    /// although they had recipients (the body did not encode). The verifier does not expect them
+    /// in a merged frame, and this output's events scope is unverifiable. Nil when empty.
+    public let eventsNotMerged: ReevaluationUnmergedEvents?
     /// The plan reset its recipients' dynamic key scopes: every recipient got a `.firstSync`
     /// update, empty ones included. Empty updates carry no patches and are left out of
     /// `perPlayerHash` like a no-change; the verifier counts them. Nil when false.
@@ -81,7 +80,7 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
         eventsHash: UInt64? = nil,
         eventsThroughSequence: Int64? = nil,
         eventsNotQueued: [Int64]? = nil,
-        eventsNotMerged: [Int64]? = nil,
+        eventsNotMerged: ReevaluationUnmergedEvents? = nil,
         resetsKeyScopes: Bool? = nil,
         extractionDrops: [String: [String]] = [:],
         encodeDropScopes: [String] = [],
@@ -129,7 +128,7 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
         eventsHash = try container.decodeSyncHashIfPresent(forKey: .eventsHash)
         eventsThroughSequence = try container.decodeIfPresent(Int64.self, forKey: .eventsThroughSequence)
         eventsNotQueued = try container.decodeIfPresent([Int64].self, forKey: .eventsNotQueued)
-        eventsNotMerged = try container.decodeIfPresent([Int64].self, forKey: .eventsNotMerged)
+        eventsNotMerged = try container.decodeIfPresent(ReevaluationUnmergedEvents.self, forKey: .eventsNotMerged)
         resetsKeyScopes = try container.decodeIfPresent(Bool.self, forKey: .resetsKeyScopes)
         extractionDrops = try container.decode([String: [String]].self, forKey: .extractionDrops)
         encodeDropScopes = try container.decode([String].self, forKey: .encodeDropScopes)
@@ -156,6 +155,29 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
         try container.encode(extractionDrops, forKey: .extractionDrops)
         try container.encode(encodeDropScopes, forKey: .encodeDropScopes)
         try container.encodeIfPresent(patches, forKey: .patches)
+    }
+}
+
+/// Opcode 107 events that had recipients but did not reach a merged frame, by what became of
+/// them; keeper sequences, sorted.
+public struct ReevaluationUnmergedEvents: Codable, Sendable, Equatable {
+    /// Sent as their own frame.
+    public var sentAlone: [Int64]
+    /// Their own frame did not encode either: no client got them.
+    public var lost: [Int64]
+
+    public init(sentAlone: [Int64] = [], lost: [Int64] = []) {
+        self.sentAlone = sentAlone
+        self.lost = lost
+    }
+
+    public var isEmpty: Bool { sentAlone.isEmpty && lost.isEmpty }
+    /// Every sequence, sorted.
+    public var all: [Int64] { (sentAlone + lost).sorted() }
+
+    /// Both lists sorted.
+    public func sorted() -> ReevaluationUnmergedEvents {
+        ReevaluationUnmergedEvents(sentAlone: sentAlone.sorted(), lost: lost.sorted())
     }
 }
 
