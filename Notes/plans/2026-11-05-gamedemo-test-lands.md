@@ -110,6 +110,22 @@ GameDemo build, `test-e2e-game.sh` (all encodings, with reevaluation), and ws-lo
   clients (also Hero Defense's `players.lastFireTick`). The convergence check and the verifier
   do not catch it, since the projection shares the conversion.
 
+## Decisions for step 2 (2026-11-06)
+
+- `CallServiceAction { tag, delayMs?, fail?, deadlineMs? }`: the env settings
+  (`ResolverTestEnvKeys`) are the defaults, and the payload can override each one per call. One
+  GameServer can then run the success, failure and timeout cases in one scenario.
+- No `pending` state field: a resolver can't change land state, so the service counts its own
+  in-flight calls. The tick-rate check is in state instead: the resolver captures `tickCount`
+  when it starts, and the handler stores the advance (`lastTickAdvance`). The CLI asserts a
+  lower bound, about 10 ticks for a 500 ms call, and gets 0–1 if the keeper waited on the
+  resolver.
+- The deadline is the resolver's own: the service waits `min(delay, deadline)` and throws
+  `ResolverDeadlineExceeded` past it (#104 will add a built-in one).
+- The optional join resolver is not built.
+- The ws-loadtest land type and scenarios came before this step (`4de848c`), so the resolver
+  land adds only its scenarios.
+
 ## Open questions (resolved above)
 
 - Is the convergence check at freeze points, plus the verifier over every sync, enough for

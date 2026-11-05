@@ -1,4 +1,5 @@
 import type { ActionConfig } from "./types";
+import { InputLatencyTracker, echoPointOf, emptyInputLatencyMetrics, type InputLatencyMetrics } from "./input-latency";
 import { DynamicKeyTracker, MessageKindOpcode, classifyDecoded, decodeRaw, encodeMessageToMessagePack } from "./protocol";
 
 /** Extract requestID from actionResponse or error message. Handles both JSON (nested payload) and MessagePack (normalized top-level). */
@@ -68,6 +69,8 @@ export interface WorkerOptions {
     now?: () => number;
     /** How long a join may go unanswered before it counts as a `timeout` join failure. */
     joinTimeoutMs?: number;
+    /** Time move events until a state frame shows their point (`input-latency`). Default false. */
+    trackInputLatency?: boolean;
 }
 
 export interface JoinMessage {
@@ -177,7 +180,25 @@ export interface WorkerMetrics {
     updateBytes: number[];
     /** Connections opened with and without permessage-deflate negotiated (`ws` offers it). */
     permessageDeflate: PermessageDeflateCounts;
+    /** How plain state frames after a 107 frame were counted (`SYNC_FRAME_GROUP_MS`). */
+    syncFrameGrouping: SyncFrameGrouping;
+    /** Input-to-visible samples of move events (`input-latency`), by send time. */
+    inputLatency: InputLatencyMetrics;
     closes: CloseRecord[];
+}
+
+/**
+ * Plain state frames that came right after an opcode-107 frame (no state frame between).
+ * `grouped`: within `SYNC_FRAME_GROUP_MS`, counted as part of the 107 frame's sync.
+ * `ungroupedAfterBroadcast`: later than that, counted as their own update. That is right for a
+ * per-player-only sync (the server sends no 107 frame when the broadcast diff is empty and no
+ * event is queued) and wrong for the per-player half of a sync delayed by a stalled event loop;
+ * the frames carry no tick marker to tell them apart. A count that grows with load means the
+ * update rate and sizes are distorted for a land with per-player fields.
+ */
+export interface SyncFrameGrouping {
+    grouped: number;
+    ungroupedAfterBroadcast: number;
 }
 
 export interface PermessageDeflateCounts {
@@ -203,13 +224,15 @@ function emptyMetrics(): WorkerMetrics {
         eventSentAt: {},
         updateBytes: [],
         permessageDeflate: { negotiated: 0, notNegotiated: 0 },
+        syncFrameGrouping: { grouped: 0, ungroupedAfterBroadcast: 0 },
+        inputLatency: emptyInputLatencyMetrics(),
         closes: []
     };
 }
 
 /**
  * A plain state frame this soon after an opcode-107 frame, with no state frame between them, is
- * the per-player half of the same sync. In the opcode encodings a sync reaches a session as the
+ * the per-player half of the same sync. With opcodeMessagePack a sync reaches a session as the
  * merged broadcast frame (107), its targeted event frames, then its per-player state frame
  * (`TransportAdapter.planSyncPhase`); both frames come from one write, so they arrive together.
  */
@@ -221,9 +244,13 @@ export class WorkerSession {
     /** The last state frame was a 107 frame: when it arrived, and where its size went (if recorded). */
     private openBroadcastFrame?: { at: number; bytesIndex?: number };
     public metrics: WorkerMetrics = emptyMetrics();
+    /** Pending move events of this connection; writes into `metrics.inputLatency`. */
+    readonly inputLatency = new InputLatencyTracker();
 
     /** A response slower than this (ms) is a late response (a timeout in the report). */
-    constructor(private readonly lateAfterMs: number = RESPONSE_TIMEOUT_MS) {}
+    constructor(private readonly lateAfterMs: number = RESPONSE_TIMEOUT_MS) {
+        this.inputLatency.metrics = this.metrics.inputLatency;
+    }
 
     /**
      * Starts a new phase's metrics on a connection that stays open. The last update time carries
@@ -232,6 +259,7 @@ export class WorkerSession {
      */
     resetMetrics(): void {
         this.metrics = emptyMetrics();
+        this.inputLatency.metrics = this.metrics.inputLatency;
         if (this.openBroadcastFrame) {
             this.openBroadcastFrame = { at: this.openBroadcastFrame.at };
         }
@@ -272,10 +300,14 @@ export class WorkerSession {
                 this.openBroadcastFrame = undefined;
                 if (open && now - open.at <= SYNC_FRAME_GROUP_MS) {
                     // The per-player frame of the 107 frame's sync: one update, both frames' bytes.
+                    this.metrics.syncFrameGrouping.grouped += 1;
                     if (open.bytesIndex !== undefined && byteLength !== undefined) {
                         this.metrics.updateBytes[open.bytesIndex] += byteLength;
                     }
                 } else {
+                    if (open) {
+                        this.metrics.syncFrameGrouping.ungroupedAfterBroadcast += 1;
+                    }
                     this.recordStateUpdate(now, byteLength);
                 }
             }
@@ -381,6 +413,9 @@ export class WorkerClient {
     private abrupt = false;
     private joinedCallbacks: Array<(at: number) => void> = [];
     private joinedAt?: number;
+    /** When the socket opened (the join request goes out right after). */
+    private openedAt?: number;
+    private joinLatencyReported = false;
     private closedAt?: number;
     private joinFailure?: JoinFailure;
     private joinFailureReported = false;
@@ -391,10 +426,12 @@ export class WorkerClient {
     private keyTracker = new DynamicKeyTracker();
     private readonly now: () => number;
     private readonly createSocket: (url: string) => WebSocketLike;
+    private readonly trackInputLatency: boolean;
 
     constructor(private readonly config: WorkerConfig, options: WorkerOptions = {}) {
         this.now = options.now ?? (() => Date.now());
         this.joinTimeoutMs = options.joinTimeoutMs ?? RESPONSE_TIMEOUT_MS;
+        this.trackInputLatency = options.trackInputLatency ?? false;
         this.createSocket =
             options.createSocket ??
             ((url: string) => {
@@ -413,6 +450,7 @@ export class WorkerClient {
         }, this.joinTimeoutMs);
         (this.joinTimer as any).unref?.();
         this.socket.on("open", () => {
+            this.openedAt = this.now();
             this.session.recordOpen(this.socket?.extensions);
             this.sendJoin();
         });
@@ -538,7 +576,12 @@ export class WorkerClient {
             return;
         }
         const sentAt = this.session.metrics.eventSentAt;
-        (sentAt[eventName] ??= []).push(this.now());
+        const now = this.now();
+        (sentAt[eventName] ??= []).push(now);
+        const point = this.trackInputLatency ? echoPointOf(payload) : undefined;
+        if (point) {
+            this.session.inputLatency.recordSent(point, now);
+        }
         if (this.messageEncoding === "messagepack") {
             this.socket.send(encodeMessageToMessagePack(buildEventMessage(eventName, payload)));
         } else {
@@ -643,7 +686,11 @@ export class WorkerClient {
             );
             return;
         }
-        this.session.handleDecodedMessage(decoded, this.now(), frameByteLength(data));
+        const now = this.now();
+        if (decoded && (decoded.type === "stateUpdate" || decoded.type === "stateUpdateWithEvents")) {
+            this.session.inputLatency.observe(raw, now);
+        }
+        this.session.handleDecodedMessage(decoded, now, frameByteLength(data));
     }
 
     /**
@@ -677,6 +724,18 @@ export class WorkerClient {
     }
 
     /** The join failure not yet reported, if any; each failure is returned once. */
+    /**
+     * Socket open to the successful JoinResponse, ms, once per connection: a connection kept
+     * for the next phase reports its join only in the phase that opened it.
+     */
+    takeJoinLatency(): number | undefined {
+        if (this.joinLatencyReported || this.joinedAt === undefined || this.openedAt === undefined) {
+            return undefined;
+        }
+        this.joinLatencyReported = true;
+        return this.joinedAt - this.openedAt;
+    }
+
     takeJoinFailure(): JoinFailure | undefined {
         if (!this.joinFailure || this.joinFailureReported) {
             return undefined;

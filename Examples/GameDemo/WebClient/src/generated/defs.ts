@@ -15,6 +15,8 @@ export type Any = { [key: string]: any }
 export type AnyCodable = { base: { [key: string]: Any } }
 // @ts-ignore - DeterministicMath classes (Position2) are used in type definitions
 export type BaseState = { health: number; maxHealth: number; position: Position2; radius: number }
+export type CallServiceAction = { deadlineMs: number; delayMs: number; outcome: string; tag: string }
+export type CallServiceResponse = { applied: number; tickAdvance: number }
 export type HeroDefenseState = { base: BaseState; monsters: { [key: string]: MonsterState }; nextMonsterID: number; nextTurretID: number; players: { [key: string]: PlayerState }; score: number; turrets: { [key: string]: TurretState } }
 // @ts-ignore - DeterministicMath classes (Angle, Position2) are used in type definitions
 export type MonsterState = { health: number; id: number; maxHealth: number; pathProgress: number; position: Position2; reward: number; rotation: Angle; spawnPosition: Position2 }
@@ -38,6 +40,7 @@ export type PlayerShootEvent = { from: Position2; playerID: PlayerID; to: Positi
 // @ts-ignore - DeterministicMath classes (Angle, Position2) are used in type definitions
 export type PlayerState = { health: number; lastFireTick: number; maxHealth: number; position: Position2; resources: number; rotation: Angle; targetPosition: Optional<Position2>; weaponLevel: number }
 export type ReevaluationMonitorState = { correctTicks: number; currentActualHash: string; currentExpectedHash: string; currentIsMatch: boolean; currentTickId: number; errorMessage: string; isPaused: boolean; mismatchedTicks: number; processedTicks: number; recordFilePath: string; status: string; totalTicks: number }
+export type ResolverTestState = { applied: number; lastResult: string; lastTag: string; lastTickAdvance: number; tickCount: number }
 export type ResumeVerificationAction = { [key: string]: any }
 export type ResumeVerificationResponse = { [key: string]: any }
 export type SetMotionAction = { enabled: boolean }

@@ -17,7 +17,14 @@ private actor InterleavingProbe {
     var holds = HoldPoints<ProbePoint>()
     private(set) var calls = 0
 
-    func call() { calls += 1 }
+    /// Parked by `acrossRealSuspension`; only a `call` from another task resumes it.
+    private var parked: CheckedContinuation<Void, Never>?
+
+    func call() {
+        calls += 1
+        parked?.resume()
+        parked = nil
+    }
 
     /// Calls of other jobs that ran between the start and the end of 2000 empty hold points.
     func acrossEmptyHoldPoints() async -> Int {
@@ -26,10 +33,11 @@ private actor InterleavingProbe {
         return calls - start
     }
 
-    /// The control: 2000 yields, a real suspension, which lets the other task's calls in.
-    func acrossYields() async -> Int {
+    /// The control: a real suspension that only another task's `call` ends, so at least one
+    /// call runs inside it, whatever the scheduling (a yield may let none in under load, #193).
+    func acrossRealSuspension() async -> Int {
         let start = calls
-        for _ in 0..<2000 { await Task.yield() }
+        await withCheckedContinuation { parked = $0 }
         return calls - start
     }
 }
@@ -44,15 +52,13 @@ struct HoldIsolationState: StateNodeProtocol {
 
 @Suite("HoldPoints: no executor hop when nothing is installed")
 struct HoldPointsIsolationTests {
-    @Test("no other job of the actor runs across an empty hold point (a yield, the control, lets them in)")
+    @Test("no other job of the actor runs across an empty hold point (a real suspension, the control, lets them in)")
     func emptyHoldPointDoesNotInterleave() async {
         let probe = InterleavingProbe()
-        let caller = Task { for _ in 0..<50_000 where !Task.isCancelled { await probe.call() } }
+        // Keeps calling until cancelled: it also ends the control's suspension.
+        let caller = Task { while !Task.isCancelled { await probe.call() } }
         defer { caller.cancel() }
-        for _ in 0..<200 where await probe.calls == 0 {
-            try? await safeTaskSleep(for: .milliseconds(1))
-        }
-        let control = await probe.acrossYields()
+        let control = await probe.acrossRealSuspension()
         let acrossHolds = await probe.acrossEmptyHoldPoints()
         #expect(control > 0, "the probe must see interleaving across a real suspension")
         #expect(acrossHolds == 0)

@@ -48,7 +48,7 @@ Suppose there is a `MoveTo` Action:
 > **Difference**: Removed redundant keys like "kind", "payload", "action", "type", significantly reducing packet size.
 
 - **Source Code**:
-  - Server Encoder: [StateUpdateEncoder.swift:L140](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift#L140)
+  - Server Encoder: [OpcodeJSONStateUpdateEncoder.swift](../Sources/SwiftStateTreeTransport/OpcodeJSONStateUpdateEncoder.swift)
   - Client Decoder: [protocol.ts:L388](../sdk/ts/src/core/protocol.ts#L388)
 
 ---
@@ -101,7 +101,7 @@ When the server updates a player's position (using Diff as an example):
 
 - **Source Code**:
   - Path Hashing Logic: [PathHasher.swift](../Sources/SwiftStateTree/Core/PathHasher.swift)
-  - Server Usage: [StateUpdateEncoder.swift:L214](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift#L214)
+  - Server Usage: [OpcodeJSONStateUpdateEncoder.swift](../Sources/SwiftStateTreeTransport/OpcodeJSONStateUpdateEncoder.swift)
   - Client Reconstruction: [protocol.ts:L520](../sdk/ts/src/core/protocol.ts#L520)
 
 ---
@@ -119,7 +119,7 @@ To eliminate overhead caused by long strings (Dynamic Path Keys), the server mai
   - **Broadcast scope**: per `landID`, used only for opcode **107** broadcast updates.
   - **Per-player scope**: per `(landID, playerID)`, used for per-player state updates.
   Clients must keep **separate** dynamic key maps for these scopes and never mix them.
-- **Reset**: On `firstSync`, the **per-player** table is reset and keys are (re)defined to avoid unbounded growth and to keep decoding deterministic. Broadcast tables reset when the land is recreated (or if a broadcast firstSync is ever sent explicitly).
+- **Reset**: On `firstSync`, the **per-player** table is reset and keys are (re)defined to avoid unbounded growth and to keep decoding deterministic. The broadcast table resets when the land is recreated, and after a late joiner's firstSync: the next merged broadcast frame is typed firstSync and redefines its keys for every member (#189, see Q6).
 
 #### 1.1 Dynamic Key Wire Format (Opcode Patch)
 
@@ -172,7 +172,7 @@ Once the mapping is established, all subsequent updates (Diff) only need to tran
   > **Note**: This mechanism applies to **any wildcard segment** (e.g. `PlayerID`, `MonsterID`, `ItemKey`) as long as it appears under `*` in the schema path pattern.
 
 - **Source Code**:
-  - Server Tracking: [StateUpdateEncoder.swift:L221](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift#L221)
+  - Server Tracking: [OpcodeJSONStateUpdateEncoder.swift](../Sources/SwiftStateTreeTransport/OpcodeJSONStateUpdateEncoder.swift)
   - Client Resolution: [protocol.ts:L455](../sdk/ts/src/core/protocol.ts#L455)
 
 ---
@@ -213,7 +213,7 @@ Position update again (Diff):
 `OpcodeMessagePackStateUpdateEncoder` and `MessagePackSerializer` are both **`Sendable`** types, safe for use across concurrency domains. State updates are encoded serially per sync cycle.
 
 - **Source Code**:
-  - Server Encoder: [StateUpdateEncoder.swift](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift)
+  - Server Encoder: [OpcodeMessagePackStateUpdateEncoder.swift](../Sources/SwiftStateTreeTransport/OpcodeMessagePackStateUpdateEncoder.swift)
   - Client Decoder: [protocol.ts:L304](../sdk/ts/src/core/protocol.ts#L304)
 
 ---
@@ -332,7 +332,7 @@ Based on performance test results on `2026-01-15` (GameServer: hero-defense, dur
 - **Dynamic key scope**:
   - Broadcast updates use a **broadcast key table** (scoped by land).
   - Per-player updates use a **per-player key table** (scoped by land + player).
-- **Late-join rule**: A client that joins after broadcast keys already exist must receive **dynamic key definitions** before any slot-only broadcast updates. This can be done by forcing definitions or sending a broadcast firstSync after join.
+- **Late-join rule**: A client that joins after broadcast keys already exist must receive **dynamic key definitions** before any slot-only broadcast updates. Since #189 (2026-11-06) the server does this with a broadcast key scope reset: once a joiner's firstSync has committed after a 107 frame with state patches, the next cycle's frame is typed firstSync for every member and redefines the keys it uses. Before #189 late joiners could fail to decode merged broadcast frames ("Dynamic key slot N used before definition", #90).
 
 ---
 

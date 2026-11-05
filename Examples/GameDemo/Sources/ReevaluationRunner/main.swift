@@ -209,6 +209,18 @@ struct ReevaluationRunnerMain {
                     logger: logger
                 )
             }
+        case ResolverTestConfig.landType:
+            runEngine = { sink, exportJsonlPath, diffWithPath, logger in
+                try await ReevaluationEngine.run(
+                    definition: ResolverTest.makeLand(),
+                    initialState: ResolverTestState(),
+                    recordFilePath: inputFile,
+                    sink: sink,
+                    exportJsonlPath: exportJsonlPath,
+                    diffWithPath: diffWithPath,
+                    logger: logger
+                )
+            }
         default:
             print("Unsupported landType for GameDemo ReevaluationRunner: \(landType)")
             printHelpAndExit(exitCode: 2)

@@ -11,7 +11,50 @@ import SwiftStateTreeDeterministicMath
 import SwiftStateTreeMessagePack
 import SwiftStateTreeTransport
 
-func runMultiRoomBenchmarkCardGame(
+/// The benchmark rooms of `runMultiRoomBenchmarkLand`.
+struct LandRoomContext<State: StateNodeProtocol>: Sendable {
+    let landID: LandID
+    let keeper: LandKeeper<State>
+    let adapter: TransportAdapter<State>
+    let transport: CountingTransport
+}
+
+/// `runMultiRoomBenchmarkLand` for `gameType` (any but Hero Defense, which has its own runner).
+func runMultiRoomBenchmarkTestLand(
+    gameType: GameType,
+    format: EncodingFormat,
+    roomCount: Int,
+    playersPerRoom: Int,
+    iterations: Int,
+    parallel: Bool,
+    ticksPerSync: Int = 0,
+    progressEvery: Int = 0,
+    progressLabel: String? = nil
+) async -> BenchmarkResult {
+    switch gameType {
+    case .cardGame:
+        return await runMultiRoomBenchmarkLand(
+            landType: "card-game", makeLand: { CardGame.makeLand() }, makeState: { CardGameState() },
+            format: format, roomCount: roomCount, playersPerRoom: playersPerRoom, iterations: iterations,
+            parallel: parallel, ticksPerSync: ticksPerSync, progressEvery: progressEvery, progressLabel: progressLabel
+        )
+    case .visibilityTest:
+        return await runMultiRoomBenchmarkLand(
+            landType: VisibilityTestConfig.landType, makeLand: { VisibilityTest.makeLand() }, makeState: { VisibilityTestState() },
+            format: format, roomCount: roomCount, playersPerRoom: playersPerRoom, iterations: iterations,
+            parallel: parallel, ticksPerSync: ticksPerSync, progressEvery: progressEvery, progressLabel: progressLabel
+        )
+    case .heroDefense:
+        preconditionFailure("Hero Defense runs through runMultiRoomBenchmark")
+    }
+}
+
+/// Multi-room sync benchmark for a land other than Hero Defense: `playersPerRoom` players join
+/// each room, then every iteration steps `ticksPerSync` ticks and syncs every room.
+func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
+    landType: String,
+    makeLand: @Sendable () -> LandDefinition<State>,
+    makeState: @Sendable () -> State,
     format: EncodingFormat,
     roomCount: Int,
     playersPerRoom: Int,
@@ -22,9 +65,9 @@ func runMultiRoomBenchmarkCardGame(
     progressLabel: String? = nil
 ) async -> BenchmarkResult {
     // Extract pathHashes from schema
-    let landDef = CardGame.makeLand()
+    let landDef = makeLand()
     let schema = SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(landDef)])
-    let pathHashes = format.usesPathHash ? schema.lands["card-game"]?.pathHashes : nil
+    let pathHashes = format.usesPathHash ? schema.lands[landType]?.pathHashes : nil
 
     let benchmarkLogger = createGameLogger(
         scope: "EncodingBenchmark",
@@ -32,25 +75,25 @@ func runMultiRoomBenchmarkCardGame(
     )
 
     // Create rooms manually
-    var rooms: [CardGameRoomContext] = []
+    var rooms: [LandRoomContext<State>] = []
     rooms.reserveCapacity(roomCount)
 
     for roomIndex in 0 ..< roomCount {
-        let landID = LandID(landType: "card-game", instanceId: "benchmark-\(roomIndex)")
+        let landID = LandID(landType: landType, instanceId: "benchmark-\(roomIndex)")
         let transport = CountingTransport()
         
         let services = LandServices()
         
-        let keeper = LandKeeper<CardGameState>(
-            definition: CardGame.makeLand(),
-            initialState: CardGameState(),
+        let keeper = LandKeeper<State>(
+            definition: makeLand(),
+            initialState: makeState(),
             services: services,
             autoStartLoops: false,
             transport: nil,
             logger: benchmarkLogger
         )
         
-        let adapter = TransportAdapter<CardGameState>(
+        let adapter = TransportAdapter<State>(
             keeper: keeper,
             transport: transport,
             landID: landID.stringValue,
@@ -88,7 +131,7 @@ func runMultiRoomBenchmarkCardGame(
         // Initial sync
         await adapter.syncNow()
         
-        rooms.append(CardGameRoomContext(
+        rooms.append(LandRoomContext(
             landID: landID,
             keeper: keeper,
             adapter: adapter,
@@ -924,7 +967,8 @@ struct EncodingBenchmark {
         // Determine if multi-room mode
         // If rooms > 1, use multi-room mode
         // Otherwise, use single-room mode (backward compatibility)
-        let isMultiRoom = config.rooms > 1
+        // Lands other than Hero Defense run only through the multi-room path.
+        let isMultiRoom = config.rooms > 1 || config.gameType != .heroDefense
         
         if config.hashCost {
             await runHashCostMatrix(config: config)
@@ -1051,8 +1095,9 @@ struct EncodingBenchmark {
         for format in EncodingFormat.allCases {
             let result: BenchmarkResult
             
-            if config.gameType == .cardGame {
-                result = await runMultiRoomBenchmarkCardGame(
+            if config.gameType != .heroDefense {
+                result = await runMultiRoomBenchmarkTestLand(
+                    gameType: config.gameType,
                     format: format,
                     roomCount: config.rooms,
                     playersPerRoom: config.playersPerRoom,
@@ -1170,8 +1215,9 @@ struct EncodingBenchmark {
     
     static func runSingleFormatMultiRoom(config: BenchmarkConfig) async {
         let result: BenchmarkResult
-        if config.gameType == .cardGame {
-            result = await runMultiRoomBenchmarkCardGame(
+        if config.gameType != .heroDefense {
+            result = await runMultiRoomBenchmarkTestLand(
+                gameType: config.gameType,
                 format: config.format,
                 roomCount: config.rooms,
                 playersPerRoom: config.playersPerRoom,
@@ -1268,8 +1314,9 @@ struct EncodingBenchmark {
             let serialResult: BenchmarkResult
             let parallelResult: BenchmarkResult
             
-            if config.gameType == .cardGame {
-                serialResult = await runMultiRoomBenchmarkCardGame(
+            if config.gameType != .heroDefense {
+                serialResult = await runMultiRoomBenchmarkTestLand(
+                    gameType: config.gameType,
                     format: format,
                     roomCount: config.rooms,
                     playersPerRoom: config.playersPerRoom,
@@ -1279,7 +1326,8 @@ struct EncodingBenchmark {
                     progressEvery: config.progressEvery,
                     progressLabel: "compare/serial/\(format.rawValue)"
                 )
-                parallelResult = await runMultiRoomBenchmarkCardGame(
+                parallelResult = await runMultiRoomBenchmarkTestLand(
+                    gameType: config.gameType,
                     format: format,
                     roomCount: config.rooms,
                     playersPerRoom: config.playersPerRoom,
@@ -1387,8 +1435,9 @@ struct EncodingBenchmark {
             let serialResult: BenchmarkResult
             let parallelResult: BenchmarkResult
             
-            if config.gameType == .cardGame {
-                serialResult = await runMultiRoomBenchmarkCardGame(
+            if config.gameType != .heroDefense {
+                serialResult = await runMultiRoomBenchmarkTestLand(
+                    gameType: config.gameType,
                     format: bestSpeedup.format,
                     roomCount: config.rooms,
                     playersPerRoom: config.playersPerRoom,
@@ -1396,7 +1445,8 @@ struct EncodingBenchmark {
                     parallel: false,
                     ticksPerSync: config.ticksPerSync
                 )
-                parallelResult = await runMultiRoomBenchmarkCardGame(
+                parallelResult = await runMultiRoomBenchmarkTestLand(
+                    gameType: config.gameType,
                     format: bestSpeedup.format,
                     roomCount: config.rooms,
                     playersPerRoom: config.playersPerRoom,
@@ -1502,8 +1552,9 @@ struct EncodingBenchmark {
                     let serialResult: BenchmarkResult
                     let parallelResult: BenchmarkResult
 
-                    if config.gameType == .cardGame {
-                        serialResult = await runMultiRoomBenchmarkCardGame(
+                    if config.gameType != .heroDefense {
+                        serialResult = await runMultiRoomBenchmarkTestLand(
+                            gameType: config.gameType,
                             format: format,
                             roomCount: roomCount,
                             playersPerRoom: playersPerRoom,
@@ -1513,7 +1564,8 @@ struct EncodingBenchmark {
                             progressEvery: config.progressEvery,
                             progressLabel: "scalability/serial/\(format.rawValue)/rooms\(roomCount)/ppr\(playersPerRoom)"
                         )
-                        parallelResult = await runMultiRoomBenchmarkCardGame(
+                        parallelResult = await runMultiRoomBenchmarkTestLand(
+                            gameType: config.gameType,
                             format: format,
                             roomCount: roomCount,
                             playersPerRoom: playersPerRoom,

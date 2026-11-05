@@ -131,9 +131,11 @@ enum OutputFormat: String {
 
 // MARK: - Game Type
 
-enum GameType: String {
+enum GameType: String, CaseIterable {
     case heroDefense = "hero-defense"
     case cardGame = "card-game"
+    /// Per-player projection that changes every tick (#65): entities move only in ticks.
+    case visibilityTest = "visibility-test"
 }
 
 // MARK: - Benchmark Configuration
@@ -191,6 +193,7 @@ enum ArgumentParser {
     static func parseArguments() -> BenchmarkConfig {
     var config = BenchmarkConfig()
     let args = CommandLine.arguments
+    var ticksPerSyncGiven = false
 
     var i = 1
     while i < args.count {
@@ -271,9 +274,11 @@ enum ArgumentParser {
         case "--scalability":
             config.scalabilityTest = true
         case "--include-tick":
+            ticksPerSyncGiven = true
             // Backward-compatible sugar: tick once per sync
             config.ticksPerSync = max(config.ticksPerSync, 1)
         case "--ticks-per-sync":
+            ticksPerSyncGiven = true
             if i + 1 < args.count, let value = Int(args[i + 1]) {
                 config.ticksPerSync = max(0, value)
                 i += 1
@@ -284,10 +289,14 @@ enum ArgumentParser {
                 i += 1
             }
         case "--game-type":
-            if i + 1 < args.count, let gameType = GameType(rawValue: args[i + 1]) {
-                config.gameType = gameType
-                i += 1
+            guard i + 1 < args.count, let gameType = GameType(rawValue: args[i + 1]) else {
+                let given = i + 1 < args.count ? args[i + 1] : "nothing"
+                let allowed = GameType.allCases.map(\.rawValue).joined(separator: ", ")
+                FileHandle.standardError.write(Data("--game-type must be one of \(allowed) (got \(given))\n".utf8))
+                exit(2)
             }
+            config.gameType = gameType
+            i += 1
         case "--monster-cap":
             if i + 1 < args.count, let value = Int(args[i + 1]) {
                 config.monsterCap = max(0, value)
@@ -320,6 +329,22 @@ enum ArgumentParser {
         i += 1
     }
 
+        if config.gameType != .heroDefense {
+            // These modes build Hero Defense rooms only; they would silently measure the wrong land.
+            let unsupported = [
+                (config.hashCost, "--hash-cost"),
+                (config.compareWorkerPool, "--compare-worker-pool"),
+                (config.useWorkerPool, "--use-worker-pool"),
+            ].filter(\.0).map(\.1)
+            if !unsupported.isEmpty {
+                FileHandle.standardError.write(Data("\(unsupported.joined(separator: ", ")) supports only --game-type hero-defense\n".utf8))
+                exit(2)
+            }
+        }
+        if config.gameType == .visibilityTest, !ticksPerSyncGiven {
+            // Its entities move only in ticks: without one there is nothing to sync.
+            config.ticksPerSync = 1
+        }
         return config
     }
 
@@ -351,7 +376,11 @@ enum ArgumentParser {
       --iterations <count>    Number of iterations/syncs (default: 100)
       --output <format>       Output format: table or json (default: table)
       --parallel <bool>       Enable parallel execution across rooms (default: true)
-      --game-type <type>      Game type: hero-defense or card-game (default: hero-defense)
+      --game-type <type>      Game type: hero-defense, card-game or visibility-test (default:
+                              hero-defense). Other than hero-defense, runs use the multi-room
+                              path (--rooms, --players-per-room) even with one room, and not
+                              --hash-cost or the worker pool. visibility-test defaults to
+                              --ticks-per-sync 1 (its entities move only in ticks).
       --monster-cap <int>     Hero-defense: keep live monsters at ~this count (0 = default spawning)
       --active-players        Hero-defense: inject a deterministic move target per player per iteration
       --all                   Run benchmark for all formats
@@ -371,7 +400,8 @@ enum ArgumentParser {
       swift run EncodingBenchmark --format messagepack-pathhash --players 10
       swift run EncodingBenchmark --rooms 4 --players-per-room 10
       swift run EncodingBenchmark --rooms 50 --players-per-room 10 --ticks-per-sync 2
-      swift run EncodingBenchmark --game-type card-game --players 20 --parallel true
+      swift run EncodingBenchmark --game-type card-game --players-per-room 20 --parallel true
+      swift run EncodingBenchmark --game-type visibility-test --rooms 10 --players-per-room 4 --all
       swift run EncodingBenchmark --all --output json
       swift run EncodingBenchmark --compare-parallel --rooms 4
     """)

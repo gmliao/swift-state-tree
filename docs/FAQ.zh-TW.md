@@ -16,7 +16,7 @@ cd SwiftStateTree
 swift build
 ```
 
-詳細說明請參考 [README.md](../README.md#快速開始)。
+詳細說明請參考 [README.md](../README.zh-TW.md#-快速開始)。
 
 ### Q: 系統要求是什麼？
 

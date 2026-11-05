@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { parseArgs } from "../src/cli";
 
 describe("parseArgs", () => {
@@ -22,6 +22,13 @@ describe("parseArgs", () => {
         expect(parsed.connectRatePerSecond).toBe(250);
     });
 
+    it("leaves input latency off unless --input-latency on", () => {
+        expect(parseArgs(["node", "cli"]).inputLatency).toBe(false);
+        expect(parseArgs(["node", "cli", "--input-latency", "on"]).inputLatency).toBe(true);
+        expect(parseArgs(["node", "cli", "--input-latency", "off"]).inputLatency).toBe(false);
+        expect(() => parseArgs(["node", "cli", "--input-latency", "yes"])).toThrow(/--input-latency/);
+    });
+
     it("rejects unknown layouts, connect modes and rates", () => {
         expect(() => parseArgs(["node", "cli", "--layout", "rooms5"])).toThrow(/--layout/);
         expect(() => parseArgs(["node", "cli", "--connect", "slow"])).toThrow(/--connect/);
@@ -38,3 +45,33 @@ describe("parseArgs", () => {
     });
 });
 
+
+describe("help and unknown arguments start no run", () => {
+    it("parses --help and -h; any other unknown argument throws with the usage", () => {
+        expect(parseArgs(["node", "cli", "--help"]).help).toBe(true);
+        expect(parseArgs(["node", "cli", "-h"]).help).toBe(true);
+        expect(parseArgs(["node", "cli"]).help).toBe(false);
+        expect(() => parseArgs(["node", "cli", "--bogus"])).toThrow(/Unknown argument: --bogus[\s\S]*Usage:/);
+        expect(() => parseArgs(["node", "cli", "--scenario", "a.json", "stray"])).toThrow(/Unknown argument: stray/);
+        expect(() => parseArgs(["node", "cli", "--workerz", "3"])).toThrow(/Unknown argument: --workerz/);
+    });
+
+    it("main prints the usage for --help and rejects an unknown flag, never calling runScenario", async () => {
+        vi.resetModules();
+        const runScenario = vi.fn(async () => {
+            throw new Error("runScenario must not be called");
+        });
+        vi.doMock("../src/run", () => ({ runScenario }));
+        const cli = await import("../src/cli");
+        const log = vi.spyOn(console, "log").mockImplementation(() => {});
+        try {
+            await cli.main(["node", "cli", "--help"]);
+            expect(log).toHaveBeenCalledWith(cli.USAGE);
+            await expect(cli.main(["node", "cli", "--bogus"])).rejects.toThrow(/Unknown argument/);
+            expect(runScenario).not.toHaveBeenCalled();
+        } finally {
+            log.mockRestore();
+            vi.doUnmock("../src/run");
+        }
+    });
+});

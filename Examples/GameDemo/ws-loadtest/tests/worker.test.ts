@@ -158,3 +158,46 @@ class FakeWebSocket {
 
     close(): void {}
 }
+
+describe("join latency", () => {
+    const config = {
+        serverUrl: "ws://localhost:8080/game/hero-defense",
+        landType: "hero-defense",
+        landInstanceId: "room-1",
+        playerId: "0-0",
+        actions: []
+    };
+    const joined = JSON.stringify({ kind: "joinResponse", payload: { joinResponse: { success: true } } });
+
+    it("measures socket open to the successful JoinResponse, reported once", () => {
+        const fake = new FakeWebSocket();
+        let clock = 1000;
+        const client = new WorkerClient(config, { createSocket: () => fake, now: () => clock });
+        client.connect();
+        clock = 1010;
+        fake.emit("open");
+        clock = 1052;
+        fake.emit("message", joined);
+        expect(client.takeJoinLatency()).toBe(42);
+        // A kept connection doesn't report it again in the next phase.
+        expect(client.takeJoinLatency()).toBeUndefined();
+    });
+
+    it("reports none for a refused join", () => {
+        const fake = new FakeWebSocket();
+        const client = new WorkerClient(config, { createSocket: () => fake, now: () => 0 });
+        client.connect();
+        fake.emit("open");
+        fake.emit("message", JSON.stringify({ kind: "joinResponse", payload: { joinResponse: { success: false } } }));
+        expect(client.takeJoinLatency()).toBeUndefined();
+    });
+
+    it("summarizes a phase's joins over all workers", async () => {
+        const { summarizeJoinLatency } = await import("../src/run");
+        const summary = summarizeJoinLatency([{ joinLatenciesMs: [10, 20, 30] }, { joinLatenciesMs: [40] }]);
+        expect(summary.count).toBe(4);
+        expect(summary.max).toBe(40);
+        expect(summary.p50).toBeGreaterThanOrEqual(20);
+        expect(summary.p50).toBeLessThanOrEqual(30);
+    });
+});

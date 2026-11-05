@@ -74,9 +74,9 @@ SwiftStateTree 目前支援 **三種**傳輸編碼組合。建議預設使用 **
 |---|---|---|---|
 | **JSON（除錯用）** | `json` | `jsonObject` | 最好閱讀、最容易除錯 |
 | **Opcode JSON（精簡）** | `opcodeJsonArray` | `opcodeJsonArray` | JSON 陣列格式更精簡，適合作為過渡方案 |
-| **MessagePack（預設）** | `messagepack` | `opcodeMessagePack` | 封包最小、解析最快 |
+| **MessagePack（建議）** | `messagepack` | `opcodeMessagePack` | 封包最小、解析最快 |
 
-完整細節與效能數據請參考：[Transport Evolution](docs/transport_evolution.zh-TW.md)。
+函式庫預設（`NIOLandServerConfiguration`）為 JSON；GameServer 預設為 MessagePack。各預設組合及其預設值見 [Transport](docs/transport/README.zh-TW.md#狀態更新編碼state-update-encoding)。完整細節與效能數據請參考：[Transport Evolution](docs/transport_evolution.zh-TW.md)。
 
 ## 📦 系統要求
 

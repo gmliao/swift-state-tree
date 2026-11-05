@@ -16,7 +16,7 @@ cd SwiftStateTree
 swift build
 ```
 
-For detailed instructions, please refer to [README.md](../README.md#quick-start).
+For detailed instructions, please refer to [README.md](../README.md#-quick-start).
 
 ### Q: What are the system requirements?
 

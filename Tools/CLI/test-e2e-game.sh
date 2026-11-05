@@ -79,6 +79,21 @@ run_visibility_scenarios() {
         --state-update-encoding ${state_update_encoding}
 }
 
+# The resolver test land (#65): a slow resolver keeps the tick going, and a failed or timed-out
+# resolver leaves the state unchanged. Messagepack only: the resolver path does not depend on
+# the encoding.
+run_resolver_scenarios() {
+    local encoding=$1
+    local state_update_encoding
+    state_update_encoding=$(state_update_encoding_for "$encoding") || return 1
+    npx tsx src/cli.ts script \
+        -u ws://localhost:${SERVER_PORT}/game/resolver-test \
+        -l resolver-test \
+        -s scenarios/resolver-test/ \
+        --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
+        --state-update-encoding ${state_update_encoding}
+}
+
 # Function to run tests for a specific encoding
 run_encoding_tests() {
     local encoding=$1
@@ -104,6 +119,10 @@ run_encoding_tests() {
     if [ -z "$failed_step" ]; then
         print_step "Running visibility-test scenarios ($encoding, 3 clients)..."
         run_visibility_scenarios "$encoding" || failed_step="visibility-test scenarios"
+    fi
+    if [ -z "$failed_step" ] && [ "$encoding" = "messagepack" ]; then
+        print_step "Running resolver-test scenarios ($encoding)..."
+        run_resolver_scenarios "$encoding" || failed_step="resolver-test scenarios"
     fi
 
     # Negative test (#79), tick land and broadcast path in json: a client that drops the one
@@ -167,6 +186,19 @@ run_encoding_tests() {
                 --scenario scenarios/visibility-test/test-visibility-edges.json \
                 --clients 3 \
                 --state-update-encoding ${state_update_encoding} || failed_step="visibility-test re-evaluation record+verify"
+        fi
+
+        if [ -z "$failed_step" ]; then
+            # Successes and failures mixed: only applied actions are recorded, with their
+            # resolver outputs, so the replay matches without calling the service.
+            print_step "Running resolver-test re-evaluation record+verify ($encoding)..."
+            HERO_DEFENSE_ADMIN_KEY=${HERO_DEFENSE_ADMIN_KEY:-hero-defense-admin-key} npx tsx src/reevaluation-e2e-game.ts \
+                --ws-url ws://localhost:${SERVER_PORT}/game/resolver-test \
+                --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
+                --land-type resolver-test \
+                --scenario scenarios/resolver-test/test-resolver-outcomes.json \
+                --clients 1 \
+                --state-update-encoding ${state_update_encoding} || failed_step="resolver-test re-evaluation record+verify"
         fi
 
         if [ -z "$failed_step" ]; then

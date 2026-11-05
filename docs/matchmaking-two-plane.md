@@ -280,6 +280,6 @@ connectUrl to client: wss://game.example.com/game/hero-defense?landId=...
 
 ## Related Documents
 
-- [Matchmaking Control Plane Design](plans/2026-02-12-matchmaking-control-plane-design.md) – original design goals
+- [Matchmaking Control Plane Design](../Notes/plans/2026-02-12-matchmaking-control-plane-design.md) – original design goals
 - [Provisioning API Contract](contracts/provisioning-api.md) – REST contract
 - [Matchmaking Control Plane MVP Runbook](operations/matchmaking-control-plane-mvp.md) – runbook

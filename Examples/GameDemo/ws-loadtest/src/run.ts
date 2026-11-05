@@ -6,7 +6,7 @@ import type { PhaseName, Scenario, PhaseConfig } from "./types";
 import { parseScenario } from "./scenario";
 import { buildPhases } from "./orchestrator";
 
-import type { CloseRecord, JoinFailure, PermessageDeflateCounts } from "./worker";
+import type { CloseRecord, JoinFailure, PermessageDeflateCounts, SyncFrameGrouping } from "./worker";
 import type { WorkerPhaseReport, WorkerPrepared } from "./worker-runner";
 import { RESPONSE_TIMEOUT_MS } from "./worker";
 import { makeRunId, planPhaseConnections, summarizeLayout } from "./layout";
@@ -25,6 +25,7 @@ import { measureClientCpu, startCpuSampler, type CpuSample } from "./client-cpu"
 import { summarizeLoopDelay, type ClientLoopDelay } from "./loop-delay";
 import type { ClientCpu } from "./client-cpu";
 import { timerAt } from "./timer-at";
+import { measureInputLatency, type InputLatencyMeasurement } from "./input-latency";
 
 /** The phase's measured window `[origin + warm-up, phase end)`: thresholds apply to these. */
 export interface WorkerReport {
@@ -117,6 +118,11 @@ export interface PhaseConnections {
     joinFailures: { phase: number; measured: number; byReason: Record<string, number> };
     /** The first `CLOSE_RECORD_LIMIT` join failures, by time. */
     joinFailureRecords: JoinFailure[];
+    /**
+     * Join latency of the connections that joined in this phase: socket open to the successful
+     * JoinResponse, ms (p50/p95/p99/max over the phase, ramp included).
+     */
+    joinLatencyMs: Distribution;
     /** New connections planned for this phase. */
     opened: number;
     /** Kept open from the previous phase. */
@@ -186,14 +192,24 @@ export interface PhaseMeasurement {
         achievedPerSecond: number;
         perPlayerPerSecond: number;
     }>;
-    /** State updates received in the measured window: frames per second and frame size in bytes. */
+    /**
+     * State updates received in the measured window: updates (syncs) per second and update size in
+     * bytes. `syncFrameGrouping` covers the whole phase, not only the window.
+     */
     stateUpdates: {
         inWindow: number;
         perSecond: number;
         perPlayerPerSecond: number;
         bytesMean: number;
         bytes: Distribution;
+        syncFrameGrouping: SyncFrameGrouping;
     };
+    /**
+     * Input-to-visible latency of move events sent in the measured window (`input-latency`):
+     * from the send to the first state update that shows the event's point. Absent when no move
+     * event was tracked (no MoveTo / MoveViewer events, or `--input-latency off`).
+     */
+    inputToVisible?: InputLatencyMeasurement;
     /**
      * Joined, open connections. `average`: time-weighted over the measured window (connections
      * that joined or dropped mid-window count partly), reported only. `atEnd`: at the phase end.
@@ -230,6 +246,8 @@ export interface RunConfig {
     layout: Layout;
     boundaryMode: BoundaryMode;
     sendMode: SendMode;
+    /** Move events are timed until a state frame shows their point (`--input-latency`). */
+    inputLatency: boolean;
     windowMs: number;
     connectMode: ConnectMode;
     /** Total new connections per second over all workers (ramp mode). */
@@ -287,6 +305,8 @@ export interface RunOptions {
     /** Land id prefix; a new one per run by default. */
     runId?: string;
     sendMode?: SendMode;
+    /** Time move events until visible (default false). */
+    inputLatency?: boolean;
     windowMs?: number;
     /** Warm-up for every phase, overriding the scenario's and the default. */
     warmupSeconds?: number;
@@ -351,6 +371,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
     const boundaryMode = opts.boundaryMode ?? "clean";
     const runId = opts.runId ?? makeRunId();
     const sendMode = opts.sendMode ?? "spread";
+    const inputLatency = opts.inputLatency ?? false;
     const windowMs = opts.windowMs ?? DEFAULT_WINDOW_MS;
     const warn = opts.warn ?? ((message: string) => console.warn(message));
 
@@ -386,6 +407,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
         layout,
         boundaryMode,
         sendMode,
+        inputLatency,
         windowMs,
         connectMode,
         connectRatePerSecond,
@@ -447,7 +469,8 @@ export async function runScenario(filePath: string, options: RunOptions | number
                                 actionsPerSecond: phase.config.actionsPerSecond,
                                 durationSeconds: phase.config.durationSeconds,
                                 joinPayloadTemplate: phase.config.joinPayloadTemplate,
-                                sendMode
+                                sendMode,
+                                inputLatency
                             }
                         },
                         "prepared",
@@ -497,6 +520,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
                     started: reports.reduce((sum, r) => sum + r.connectionsStarted, 0),
                     joinedAtEnd: reports.reduce((sum, r) => sum + r.joinedAtEnd, 0),
                     ...summarizeJoinFailures(reports, measureFrom, measureTo),
+                    joinLatencyMs: summarizeJoinLatency(reports),
                     opened: reports.reduce((sum, r) => sum + r.connectionsOpened, 0),
                     reused: reports.reduce((sum, r) => sum + r.connectionsReused, 0),
                     closedAtStart: reports.reduce((sum, r) => sum + r.connectionsClosed, 0),
@@ -677,7 +701,7 @@ export function measureEvents(
  * payload size. A report whose sizes are not parallel to `updateAt` adds to the rate only.
  */
 export function measureStateUpdates(
-    reports: Array<Pick<WorkerPhaseReport, "updateAt" | "updateBytes">>,
+    reports: Array<Pick<WorkerPhaseReport, "updateAt" | "updateBytes"> & { syncFrameGrouping?: SyncFrameGrouping }>,
     from: number,
     to: number,
     averageActive: number
@@ -701,8 +725,21 @@ export function measureStateUpdates(
         perSecond: round2(rate),
         perPlayerPerSecond: averageActive > 0 ? round2(rate / averageActive) : 0,
         bytesMean: bytes.length > 0 ? round2(bytes.reduce((sum, b) => sum + b, 0) / bytes.length) : 0,
-        bytes: distribution(bytes)
+        bytes: distribution(bytes),
+        syncFrameGrouping: {
+            grouped: reports.reduce((sum, r) => sum + (r.syncFrameGrouping?.grouped ?? 0), 0),
+            ungroupedAfterBroadcast: reports.reduce((sum, r) => sum + (r.syncFrameGrouping?.ungroupedAfterBroadcast ?? 0), 0)
+        }
     };
+}
+
+function inputToVisibleOf(
+    reports: Array<Partial<Pick<WorkerPhaseReport, "inputLatency">>>,
+    from: number,
+    to: number
+): { inputToVisible?: InputLatencyMeasurement } {
+    const measured = measureInputLatency(reports.map((r) => r.inputLatency ?? {}), from, to);
+    return measured ? { inputToVisible: measured } : {};
 }
 
 function sumDeflate(counts: Array<PermessageDeflateCounts | undefined>): PermessageDeflateCounts {
@@ -726,6 +763,11 @@ function unanswered(reports: WorkerPhaseReport[], endAt: number, from: number, t
         lateResponses += countInRange(r.lateResponseOrigins, from, to);
     }
     return { pendingAtEnd, timedOutAtEnd, lateResponses };
+}
+
+/** Join latency of a phase's new joins over all workers (`PhaseConnections.joinLatencyMs`). */
+export function summarizeJoinLatency(reports: Array<Pick<WorkerPhaseReport, "joinLatenciesMs">>): Distribution {
+    return distribution(concatAll(reports.map((r) => r.joinLatenciesMs ?? [])));
 }
 
 /** Join failures of a phase: counts over the phase and the measured window, by reason, records. */
@@ -831,6 +873,7 @@ export function measurePhase(
         windows: windowSamples(samples, originAt, durationMs, windowMs, warmupMs),
         events: measureEvents(reports, events, measureFrom, measureTo, averageActive),
         stateUpdates: measureStateUpdates(reports, measureFrom, measureTo, averageActive),
+        ...inputToVisibleOf(reports, measureFrom, measureTo),
         joined: {
             average: Math.round(averageActive * 100) / 100,
             atEnd: reports.reduce((sum, r) => sum + r.joinedAtEnd, 0),
