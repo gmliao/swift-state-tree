@@ -216,6 +216,13 @@ try {
 }
 ```
 
+### 連線與重新連線
+
+- 對同一個 URL 的 connect 進行中時再呼叫 `connect(url)`，會回傳同一個 promise，不會開第二個 socket；連到其他 URL 則會被拒絕（`Already connecting to <url>`）。請等它完成，或先呼叫 `disconnect()`。
+- connect 進行中呼叫 `disconnect()` 會中止它：該 connect 以 `ConnectionClosedError`（`kind: 'disconnect'`）reject，尚在建立中的 socket 建立完成時即被關閉。
+- `disconnect()` 之後，舊 socket 晚到的事件（open、message、error、close）都會被忽略，因此 `disconnect()` 後立即 `connect()` 是安全的；live／replay 切換就是這樣做的。
+- 目前連線仍開啟時（包含 server 正在關閉的連線）呼叫 connect 會被拒絕（`Already connected`）。
+
 ## 選擇正確的層級
 
 | 使用場景 | 建議層級 |

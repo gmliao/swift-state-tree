@@ -216,6 +216,13 @@ try {
 }
 ```
 
+### Connecting and Reconnecting
+
+- `connect(url)` while a connect to the same URL is in progress returns the same promise and opens no second socket; a connect to another URL is refused (`Already connecting to <url>`). Wait for it, or call `disconnect()` first.
+- `disconnect()` during a connect aborts it: the connect rejects with `ConnectionClosedError` (`kind: 'disconnect'`), and a socket still being created is closed when it arrives.
+- After `disconnect()`, the old socket's late events (open, message, error, close) are ignored, so `disconnect()` followed at once by `connect()` is safe; this is what a live/replay switch does.
+- A connect while the current connection is still open (including one the server is closing) is refused with `Already connected`.
+
 ## Choosing the Right Layer
 
 | Use Case | Recommended Layer |
