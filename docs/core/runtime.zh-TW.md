@@ -352,10 +352,8 @@ HandleAction(AttackAction.self) { state, action, ctx in
 ```swift
 // 初始化時啟動 Tick
 Task {
-    // 執行 OnInitialize（如果定義）
-    if let onInitializeHandler = definition.lifetimeHandlers.onInitialize {
-        await executeOnInitialize(handler: onInitializeHandler)
-    }
+    // 執行一次 OnInitialize（如果定義），先跑 resolver
+    await ensureInitialized()
 
     // 啟動 Tick loop
     if let interval = definition.lifetimeHandlers.tickInterval {

@@ -69,6 +69,47 @@ public enum DeterministicHash {
         Int32(bitPattern: fnv1a32(string) & 0x7FFFFFFF)
     }
     
+    // MARK: - Streaming FNV-1a
+
+    /// A 64-bit FNV-1a hash fed incrementally, so structured values can be hashed without first
+    /// building one byte buffer. Feeding the bytes of `data` one by one gives `fnv1a64(data)`.
+    ///
+    /// Multi-byte values are fed in little-endian order and strings with a length prefix, so
+    /// two different sequences of fields never feed the same bytes.
+    public struct FNV1a64: Sendable {
+        /// The hash of everything fed so far.
+        public private(set) var value: UInt64 = DeterministicHash.fnv64OffsetBasis
+
+        public init() {}
+
+        public mutating func combine(byte: UInt8) {
+            value ^= UInt64(byte)
+            value = value &* DeterministicHash.fnv64Prime
+        }
+
+        public mutating func combine<Bytes: Sequence>(bytes: Bytes) where Bytes.Element == UInt8 {
+            for byte in bytes {
+                combine(byte: byte)
+            }
+        }
+
+        /// Feeds the 8 bytes of `number`, least significant first.
+        public mutating func combine(_ number: UInt64) {
+            var remaining = number
+            for _ in 0..<8 {
+                combine(byte: UInt8(truncatingIfNeeded: remaining))
+                remaining >>= 8
+            }
+        }
+
+        /// Feeds the UTF-8 byte count of `string`, then its UTF-8 bytes.
+        public mutating func combine(_ string: String) {
+            let utf8 = string.utf8
+            combine(UInt64(utf8.count))
+            combine(bytes: utf8)
+        }
+    }
+
     // MARK: - Hex String Conversion
 
     private static func paddedLowerHex<T: FixedWidthInteger & UnsignedInteger>(

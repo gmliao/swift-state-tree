@@ -352,10 +352,8 @@ Deterministic methods provided by `LandContext`:
 ```swift
 // Start Tick on initialization
 Task {
-    // Execute OnInitialize (if defined)
-    if let onInitializeHandler = definition.lifetimeHandlers.onInitialize {
-        await executeOnInitialize(handler: onInitializeHandler)
-    }
+    // Execute OnInitialize once (if defined), resolvers first
+    await ensureInitialized()
 
     // Start Tick loop
     if let interval = definition.lifetimeHandlers.tickInterval {
