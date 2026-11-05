@@ -5,6 +5,7 @@
 
 import Foundation
 import GameContent
+import LoadTestPacing
 import Logging
 import ProfileRecorderServer
 import SwiftStateTree
@@ -111,9 +112,11 @@ func runServerLoadTest() async throws {
         messageKindRecorder: messageKindRecorder
     )
 
-    // Start client simulation in background task
+    // Generator and sampler share one origin and deadline-based seconds: second t of the
+    // generator is [origin + t, origin + t + 1), and sample t is taken at its end.
+    let origin = ContinuousClock.now + .milliseconds(100)
     let clientTask = Task {
-        await clientSimulator.run()
+        await clientSimulator.run(origin: origin)
     }
 
     // Main loop: sample traffic every second (runs independently)
@@ -122,17 +125,28 @@ func runServerLoadTest() async throws {
     var seconds: [SecondSample] = []
     seconds.reserveCapacity(totalSeconds + 10)
     var lastTraffic = await traffic.snapshot()
+    var lastActionsSent = 0
+    var lastActionsCompleted = 0
+    var actionsCompletedPerSecond: [Int] = []
 
-    func logProgress(sample: SecondSample) {
+    func logProgress(sample: SecondSample, pacing: (late: Int, skipped: Int, inFlight: Int)?) {
         let sentKB = Double(sample.sentBytesPerSecond) / 1024.0
         let recvKB = Double(sample.recvBytesPerSecond) / 1024.0
         let message = "t=\(sample.t)/\(totalSeconds) rooms=\(sample.roomsCreated)/\(sample.roomsTarget) players=\(sample.playersActiveExpected) " +
             "sent=\(String(format: "%.1f", sentKB))KB/s recv=\(String(format: "%.1f", recvKB))KB/s " +
-            "msgsOut=\(sample.sentMessagesPerSecond)/s msgsIn=\(sample.recvMessagesPerSecond)/s"
-        logger.info(Logger.Message(stringLiteral: message))
+            "msgsOut=\(sample.sentMessagesPerSecond)/s msgsIn=\(sample.recvMessagesPerSecond)/s" +
+            (pacing.map { " late=\($0.late) skipped=\($0.skipped) inFlight=\($0.inFlight)" } ?? "")
+        if let pacing, pacing.late > 0 || pacing.skipped > 0 {
+            logger.warning(Logger.Message(stringLiteral: message))
+        } else {
+            logger.info(Logger.Message(stringLiteral: message))
+        }
     }
 
     for t in 0 ..< totalSeconds {
+        // Sample t covers second t: taken at its deadline, not one sleep after the last sample.
+        await LoadTestPacing.sleep(until: origin + .seconds(t + 1))
+
         // Get current state from room manager
         let connectedSessions = await roomManager.getJoinedSessions()
         let activeRoomCount = await roomManager.getActiveRoomCount()
@@ -144,6 +158,13 @@ func runServerLoadTest() async throws {
         let sentDeltaMsgs = nowTraffic.sentMessages - lastTraffic.sentMessages
         let recvDeltaMsgs = nowTraffic.recvMessages - lastTraffic.recvMessages
         lastTraffic = nowTraffic
+        // Delta of the cumulative count, so a sample never catches 0 or 2 periods' sends.
+        let actionsSent = await clientSimulator.totalActionsSent
+        let actionsSentThisSecond = actionsSent - lastActionsSent
+        lastActionsSent = actionsSent
+        let actionsCompleted = await clientSimulator.totalActionsCompleted
+        actionsCompletedPerSecond.append(actionsCompleted - lastActionsCompleted)
+        lastActionsCompleted = actionsCompleted
 
         // Performance metrics
         let tickIntervalMs = 50.0
@@ -160,7 +181,7 @@ func runServerLoadTest() async throws {
             roomsCreated: activeRoomCount,
             roomsActiveExpected: Int(ceil(Double(connectedSessions.count) / Double(config.playersPerRoom))),
             playersActiveExpected: connectedSessions.count,
-            actionsSentThisSecond: await clientSimulator.getAndResetActionCount(),
+            actionsSentThisSecond: actionsSentThisSecond,
             sentBytesPerSecond: sentDeltaBytes,
             recvBytesPerSecond: recvDeltaBytes,
             sentMessagesPerSecond: sentDeltaMsgs,
@@ -173,18 +194,43 @@ func runServerLoadTest() async throws {
             estimatedUpdatesPerSecond: estimatedUpdatesPerSecond
         )
         seconds.append(sample)
-        logProgress(sample: sample)
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        // Running totals so far (the current second's stats land once its sends are issued).
+        let pacing: (late: Int, skipped: Int, inFlight: Int)? = config.pacing == .legacy ? nil : (
+            late: await clientSimulator.lateSecondsSoFar,
+            skipped: await clientSimulator.skippedByCapSoFar,
+            inFlight: await clientSimulator.inFlight.current
+        )
+        logProgress(sample: sample, pacing: pacing)
     }
 
-    // Stop client simulation
+    // Stop client simulation and let started sends finish, so the pacing stats are complete.
     await clientSimulator.stop()
-    clientTask.cancel()
+    await clientTask.value
+    let periodStats = await clientSimulator.periodStats
+    let statsBySecond = Dictionary(periodStats.map { ($0.period, $0) }, uniquingKeysWith: { first, _ in first })
+    let peakInFlight = await clientSimulator.inFlight.peak
+    let totalActionsSent = await clientSimulator.totalActionsSent
+    let totalActionsCompleted = await clientSimulator.totalActionsCompleted
+    // One pacing line for the run; a warning when the generator fell behind or hit the cap.
+    if config.pacing != .legacy {
+        let lateSeconds = periodStats.filter(\.late).count
+        let skipped = periodStats.reduce(0) { $0 + $1.skippedByCap }
+        let maxLagMs = periodStats.map { LoadTestPacing.milliseconds($0.startLag) }.max() ?? 0
+        let line = "pacing \(config.pacing.rawValue): lateSeconds=\(lateSeconds) skippedByCap=\(skipped) " +
+            "maxInFlight=\(config.maxInFlight) peakInFlight=\(peakInFlight) maxStartLagMs=\(String(format: "%.1f", maxLagMs))"
+        if lateSeconds > 0 || skipped > 0 {
+            logger.warning(Logger.Message(stringLiteral: line))
+        } else {
+            logger.info(Logger.Message(stringLiteral: line))
+        }
+    } else {
+        logger.info("pacing legacy: legacy generator, deadline sampler; no per-second pacing stats")
+    }
 
     // Final cleanup
     await server.landManager.shutdownAllLands()
     try? await transport.stop()
-    try? await Task.sleep(nanoseconds: 2_000_000_000)
+    try? await safeTaskSleep(for: .seconds(2))
 
     // Generate summary and save results
     let finalTraffic = await traffic.snapshot()
@@ -217,8 +263,8 @@ func runServerLoadTest() async throws {
     }
 
     let results: [String: Any] = [
-        "seconds": seconds.map { sample in
-            [
+        "seconds": seconds.map { sample -> [String: Any] in
+            var entry: [String: Any] = [
                 "t": sample.t,
                 "phase": getPhase(for: sample.t),
                 "roomsTarget": sample.roomsTarget,
@@ -226,6 +272,7 @@ func runServerLoadTest() async throws {
                 "roomsActiveExpected": sample.roomsActiveExpected,
                 "playersActiveExpected": sample.playersActiveExpected,
                 "actionsSentThisSecond": sample.actionsSentThisSecond,
+                "actionsCompletedThisSecond": sample.t < actionsCompletedPerSecond.count ? actionsCompletedPerSecond[sample.t] : 0,
                 "sentBytesPerSecond": sample.sentBytesPerSecond,
                 "recvBytesPerSecond": sample.recvBytesPerSecond,
                 "sentMessagesPerSecond": sample.sentMessagesPerSecond,
@@ -234,7 +281,19 @@ func runServerLoadTest() async throws {
                 "estimatedTicksPerSecond": sample.estimatedTicksPerSecond,
                 "estimatedSyncsPerSecond": sample.estimatedSyncsPerSecond,
                 "estimatedUpdatesPerSecond": sample.estimatedUpdatesPerSecond,
-            ] as [String: Any]
+            ]
+            // Pacing stats for the generator's second t (spread and aligned modes).
+            if let stats = statsBySecond[sample.t] {
+                entry["pacing"] = [
+                    "startLagMs": LoadTestPacing.milliseconds(stats.startLag),
+                    "inFlightAtDeadline": stats.inFlightAtDeadline,
+                    "planned": stats.planned,
+                    "started": stats.started,
+                    "skippedByCap": stats.skippedByCap,
+                    "late": stats.late,
+                ] as [String: Any]
+            }
+            return entry
         },
         "summary": [
             "totalSeconds": summary.totalSeconds,
@@ -250,6 +309,17 @@ func runServerLoadTest() async throws {
             "avgSentMessagesPerSecond": summary.avgSentMessagesPerSecond,
             "avgRecvBytesPerSecond": summary.avgRecvBytesPerSecond,
             "avgRecvMessagesPerSecond": summary.avgRecvMessagesPerSecond,
+            "totalActionsSent": totalActionsSent,
+            "totalActionsCompleted": totalActionsCompleted,
+            // Legacy mode has no per-second pacing stats, so only the mode is reported for it.
+            "pacing": config.pacing == .legacy ? ["mode": config.pacing.rawValue] as [String: Any] : [
+                "mode": config.pacing.rawValue,
+                "maxInFlight": config.maxInFlight,
+                "peakInFlight": peakInFlight,
+                "lateSeconds": periodStats.filter(\.late).count,
+                "skippedByCap": periodStats.reduce(0) { $0 + $1.skippedByCap },
+                "maxStartLagMs": periodStats.map { LoadTestPacing.milliseconds($0.startLag) }.max() ?? 0,
+            ] as [String: Any],
         ] as [String: Any],
     ]
 
@@ -270,6 +340,8 @@ func runServerLoadTest() async throws {
             "steadySeconds": steadySeconds,
             "rampDownSeconds": config.rampDownSeconds,
             "actionsPerPlayerPerSecond": config.actionsPerPlayerPerSecond,
+            "pacing": config.pacing.rawValue,
+            "maxInFlight": config.maxInFlight,
             "tui": config.tui,
             "logLevel": String(describing: config.logLevel),
             "transportEncoding": [

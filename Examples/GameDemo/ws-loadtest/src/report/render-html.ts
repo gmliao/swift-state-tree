@@ -1,8 +1,18 @@
 import fs from "node:fs";
 import path from "node:path";
 import { percentile, evaluateThresholds } from "../metrics";
-import type { RunResult, PhaseResult, RunConfig, PhaseConnections, CloseSummary } from "../run";
+import type {
+    RunResult,
+    PhaseResult,
+    RunConfig,
+    PhaseConnections,
+    CloseSummary,
+    PhaseMeasurement,
+    ListenQueueDeltas,
+    PhaseTotals
+} from "../run";
 import type { LayoutSummary } from "../layout";
+import type { ListenCounters } from "../net-stats";
 import type { Thresholds } from "../types";
 import type { SystemMetrics } from "../system-metrics";
 
@@ -13,7 +23,17 @@ export interface PhaseSummary {
     layout?: LayoutSummary;
     /** Opened, reused and closed connections, and every close seen in the phase. */
     connectionLifecycle?: PhaseConnections;
+    /** Warm-up, measured window, send rate and per-window samples. RTT and update use the measured window. */
+    measurement?: PhaseMeasurement;
+    /**
+     * Kernel listen-queue overflow and drop increase, host- or netns-wide (Linux only): over the
+     * whole phase and over the measured window.
+     */
+    listenQueue?: ListenQueueDeltas;
+    /** Actions, error rate and disconnect rate below are for the measured window. */
     actionsSent: number;
+    /** Whole-phase counts, including the warm-up and the transition. */
+    phaseTotals?: PhaseTotals;
     errorRate: number;
     disconnectRate: number;
     rtt: { p50: number; p95: number; p99: number };
@@ -33,6 +53,8 @@ export interface Report {
         runConfig?: RunConfig;
         /** Closes when the run ended. */
         shutdownCloses?: CloseSummary;
+        /** Kernel listen-queue overflow and drop increase over the run, host- or netns-wide (Linux only). */
+        listenQueue?: { scope: "host-or-netns"; run?: ListenCounters };
     };
     phases: PhaseSummary[];
     system: SystemMetrics["system"];
@@ -46,7 +68,8 @@ export function buildReport(run: RunResult, systemMetrics: SystemMetrics): Repor
             generatedAt: new Date().toISOString(),
             syncIntervalMs: run.syncIntervalMs,
             runConfig: run.runConfig,
-            shutdownCloses: run.shutdownCloses
+            shutdownCloses: run.shutdownCloses,
+            listenQueue: run.listenQueue
         },
         phases,
         system: systemMetrics.system
@@ -89,7 +112,10 @@ function summarizePhase(phase: PhaseResult): PhaseSummary {
         connections,
         layout: phase.layout,
         connectionLifecycle: phase.connections,
+        measurement: phase.measurement,
+        listenQueue: phase.listenQueue,
         actionsSent,
+        phaseTotals: phase.phaseTotals,
         errorRate,
         disconnectRate,
         rtt: { p50: rttP50, p95: rttP95, p99: rttP99 },
@@ -130,7 +156,8 @@ function runConfigLine(report: Report): string {
         return "";
     }
     const connect = config.connectMode === "ramp" ? `ramp ${config.connectRatePerSecond}/s` : "burst";
-    return `<p class="text-sm text-slate-400 mb-6">Run <strong>${config.runId}</strong>: layout <strong>${config.layout}</strong>, connect <strong>${connect}</strong>, boundary <strong>${config.boundaryMode}</strong>, ${config.workers} workers.</p>`;
+    const warmups = config.phases.map((p) => `${p.name} ${(p.warmupMs / 1000).toFixed(1)} s`).join(", ");
+    return `<p class="text-sm text-slate-400 mb-6">Run <strong>${config.runId}</strong>: layout <strong>${config.layout}</strong>, connect <strong>${connect}</strong>, boundary <strong>${config.boundaryMode}</strong>, send <strong>${config.sendMode}</strong>, ${config.workers} workers. RTT and update exclude the warm-up (${warmups}); per-${config.windowMs} ms windows are in the JSON report.</p>`;
 }
 
 export function renderHtml(report: Report): string {
@@ -145,9 +172,15 @@ export function renderHtml(report: Report): string {
                     <td class="px-4 py-2 text-slate-300">${phase.layout ? `${phase.layout.lands} × ${phase.layout.playersPerLand.min === phase.layout.playersPerLand.max ? phase.layout.playersPerLand.max : `${phase.layout.playersPerLand.min}–${phase.layout.playersPerLand.max}`}` : "–"}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.connectionLifecycle ? `${phase.connectionLifecycle.joinedAtEnd} / ${phase.connectionLifecycle.target}` : "–"}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.connectionLifecycle ? `${phase.connectionLifecycle.closes.clientInitiated} / ${phase.connectionLifecycle.closes.serverInitiated}` : "–"}</td>
+                    <td class="px-4 py-2 text-slate-300">${phase.connectionLifecycle?.transitionMs !== undefined ? `${phase.connectionLifecycle.transitionMs} ms` : "–"}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.actionsSent}</td>
+                    <td class="px-4 py-2 text-slate-300">${phase.measurement ? `${phase.measurement.sendRate.achievedPerSecond.toFixed(1)} / ${phase.measurement.sendRate.targetPerSecond}` : "–"}</td>
+                    <td class="px-4 py-2 text-slate-300">${phase.measurement ? phase.measurement.sendRate.lagMs.p99.toFixed(1) : "–"}</td>
+                    <td class="px-4 py-2 text-slate-300">${listenCell(phase.listenQueue)}</td>
+                    <td class="px-4 py-2 text-slate-300">${unansweredCell(phase.measurement)}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.errorRate.toFixed(4)}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.disconnectRate.toFixed(4)}</td>
+                    <td class="px-4 py-2 text-slate-300">${phase.phaseTotals ? `${phase.phaseTotals.errorCount} / ${phase.phaseTotals.disconnectCount}` : "–"}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.rtt.p95.toFixed(2)}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.rtt.p99.toFixed(2)}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.update.p95.toFixed(2)}</td>
@@ -198,9 +231,15 @@ export function renderHtml(report: Report): string {
               <th class="px-4 py-3 font-semibold">Lands × players</th>
               <th class="px-4 py-3 font-semibold">Joined / target</th>
               <th class="px-4 py-3 font-semibold">Closes client / server</th>
+              <th class="px-4 py-3 font-semibold">Transition</th>
               <th class="px-4 py-3 font-semibold">Actions Sent</th>
+              <th class="px-4 py-3 font-semibold">Sent/s vs target</th>
+              <th class="px-4 py-3 font-semibold">Send lag p99</th>
+              <th class="px-4 py-3 font-semibold">Listen overflows / drops, host-wide (measured · phase)</th>
+              <th class="px-4 py-3 font-semibold">Unanswered / timed out (measured)</th>
               <th class="px-4 py-3 font-semibold">Error Rate</th>
               <th class="px-4 py-3 font-semibold">Disconnect Rate</th>
+              <th class="px-4 py-3 font-semibold">Errors / disconnects (whole phase)</th>
               <th class="px-4 py-3 font-semibold">RTT p95</th>
               <th class="px-4 py-3 font-semibold">RTT p99</th>
               <th class="px-4 py-3 font-semibold">Update p95</th>
@@ -232,4 +271,20 @@ export function writeReportFiles(report: Report, outputDir: string, baseName: st
     const htmlPath = path.join(outputDir, `${baseName}.html`);
     fs.writeFileSync(jsonPath, JSON.stringify(report, null, 2));
     fs.writeFileSync(htmlPath, renderHtml(report));
+}
+
+function listenCell(deltas?: ListenQueueDeltas): string {
+    const pair = (c?: ListenCounters) => (c ? `${c.listenOverflows} / ${c.listenDrops}` : "n/a");
+    if (!deltas || (!deltas.phase && !deltas.measured)) {
+        return "n/a";
+    }
+    return `${pair(deltas.measured)} · ${pair(deltas.phase)}`;
+}
+
+function unansweredCell(measurement?: PhaseMeasurement): string {
+    if (!measurement?.unanswered) {
+        return "–";
+    }
+    const m = measurement.unanswered.measured;
+    return `${m.pendingAtEnd} / ${m.timedOutAtEnd + m.lateResponses}`;
 }

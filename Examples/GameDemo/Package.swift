@@ -81,10 +81,18 @@ let package = Package(
             ],
             path: "Sources/EncodingBenchmark"
         ),
+        .target(
+            name: "LoadTestPacing",
+            dependencies: [
+                .product(name: "SwiftStateTree", package: "SwiftStateTree"),
+            ],
+            path: "Sources/LoadTestPacing"
+        ),
         .executableTarget(
             name: "ServerLoadTest",
             dependencies: [
                 "GameContent",
+                "LoadTestPacing",
                 .product(name: "SwiftStateTree", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeNIO", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeTransport", package: "SwiftStateTree"),
@@ -97,6 +105,7 @@ let package = Package(
             name: "GameContentTests",
             dependencies: [
                 "GameContent",
+                "LoadTestPacing",
                 .product(name: "SwiftStateTreeDeterministicMath", package: "SwiftStateTree"),
             ],
             path: "Tests"

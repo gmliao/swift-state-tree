@@ -8,6 +8,8 @@ import { LAYOUTS } from "./layout";
 import type { Layout } from "./layout";
 import { BOUNDARY_MODES, CONNECT_MODES, DEFAULT_CONNECT_RATE } from "./connect-schedule";
 import type { BoundaryMode, ConnectMode } from "./connect-schedule";
+import { DEFAULT_WINDOW_MS, SEND_MODES } from "./send-schedule";
+import type { SendMode } from "./send-schedule";
 
 export interface CliArgs {
     scenarioPath: string;
@@ -27,6 +29,12 @@ export interface CliArgs {
     allowPartialRamp: boolean;
     /** Land id prefix (default: a new id per run). */
     runId?: string;
+    /** `spread` (default: per-client offsets, RTT from the intended send) or `lockstep` (legacy). */
+    sendMode: SendMode;
+    /** Per-window sample length in ms. */
+    windowMs: number;
+    /** Warm-up for every phase, overriding the scenario and the default. */
+    warmupSeconds?: number;
 }
 
 export function parseArgs(argv: string[]): CliArgs {
@@ -42,6 +50,9 @@ export function parseArgs(argv: string[]): CliArgs {
     let boundaryMode: BoundaryMode = "clean";
     let allowPartialRamp = false;
     let runId: string | undefined;
+    let sendMode: SendMode = "spread";
+    let windowMs = DEFAULT_WINDOW_MS;
+    let warmupSeconds: number | undefined;
 
     for (let i = 0; i < args.length; i += 1) {
         const arg = args[i];
@@ -97,6 +108,27 @@ export function parseArgs(argv: string[]): CliArgs {
             }
             runId = value;
             i += 1;
+        } else if (arg === "--send") {
+            const value = args[i + 1];
+            if (!SEND_MODES.includes(value as SendMode)) {
+                throw new Error(`--send must be one of ${SEND_MODES.join(", ")} (got ${value})`);
+            }
+            sendMode = value as SendMode;
+            i += 1;
+        } else if (arg === "--window-ms") {
+            const value = Number(args[i + 1]);
+            if (!Number.isFinite(value) || value <= 0) {
+                throw new Error(`--window-ms must be a positive number (got ${args[i + 1]})`);
+            }
+            windowMs = value;
+            i += 1;
+        } else if (arg === "--warmup-seconds") {
+            const value = Number(args[i + 1]);
+            if (!Number.isFinite(value) || value < 0) {
+                throw new Error(`--warmup-seconds must be 0 or more (got ${args[i + 1]})`);
+            }
+            warmupSeconds = value;
+            i += 1;
         }
     }
 
@@ -111,7 +143,10 @@ export function parseArgs(argv: string[]): CliArgs {
         connectRatePerSecond,
         boundaryMode,
         allowPartialRamp,
-        runId
+        runId,
+        sendMode,
+        windowMs,
+        warmupSeconds
     };
 }
 
@@ -127,7 +162,10 @@ export async function main(): Promise<void> {
         connectRatePerSecond,
         boundaryMode,
         allowPartialRamp,
-        runId
+        runId,
+        sendMode,
+        windowMs,
+        warmupSeconds
     } = parseArgs(process.argv);
     const resolvedPath = path.resolve(process.cwd(), scenarioPath);
     if (!fs.existsSync(resolvedPath)) {
@@ -140,7 +178,10 @@ export async function main(): Promise<void> {
         connectRatePerSecond,
         boundaryMode,
         allowPartialRamp,
-        runId
+        runId,
+        sendMode,
+        windowMs,
+        warmupSeconds
     });
     const metricsPath = systemMetricsPath ? path.resolve(process.cwd(), systemMetricsPath) : undefined;
     const systemMetrics = metricsPath && fs.existsSync(metricsPath) ? readSystemMetrics(metricsPath) : { system: [] };
