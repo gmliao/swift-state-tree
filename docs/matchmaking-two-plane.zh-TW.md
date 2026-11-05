@@ -280,6 +280,6 @@ Runtime 綁定：        0.0.0.0:8080
 
 ## 相關文件
 
-- [Matchmaking Control Plane Design](plans/2026-02-12-matchmaking-control-plane-design.md) – 原始設計目標
+- [Matchmaking Control Plane Design](../Notes/plans/2026-02-12-matchmaking-control-plane-design.md) – 原始設計目標
 - [Provisioning API Contract](contracts/provisioning-api.md) – REST 合約
 - [Matchmaking Control Plane MVP Runbook](operations/matchmaking-control-plane-mvp.md) – 操作手冊

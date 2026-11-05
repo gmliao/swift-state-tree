@@ -348,3 +348,26 @@ describe("one sync, one update (#65)", () => {
         expect(session.metrics.updateBytes).toEqual([]);
     });
 });
+
+describe("sync frame grouping counts", () => {
+    it("counts plain frames after a 107 frame as grouped or not, and sums them per phase", () => {
+        const session = new WorkerSession();
+        session.handleDecodedMessage({ type: "stateUpdateWithEvents" }, 0, 14);
+        session.handleDecodedMessage({ type: "stateUpdate", opcode: 2 }, 3, 68); // grouped
+        session.handleDecodedMessage({ type: "stateUpdateWithEvents" }, 50, 14);
+        session.handleDecodedMessage({ type: "stateUpdate", opcode: 2 }, 75, 68); // late: ungrouped
+        session.handleDecodedMessage({ type: "stateUpdate", opcode: 2 }, 100, 68); // after a plain frame: neither
+        expect(session.metrics.syncFrameGrouping).toEqual({ grouped: 1, ungroupedAfterBroadcast: 1 });
+        const updates = measureStateUpdates(
+            [
+                { updateAt: [], updateBytes: [], syncFrameGrouping: { grouped: 3, ungroupedAfterBroadcast: 1 } },
+                { updateAt: [], updateBytes: [], syncFrameGrouping: { grouped: 2, ungroupedAfterBroadcast: 0 } },
+                { updateAt: [], updateBytes: [] }
+            ],
+            0,
+            1_000,
+            1
+        );
+        expect(updates.syncFrameGrouping).toEqual({ grouped: 5, ungroupedAfterBroadcast: 1 });
+    });
+});

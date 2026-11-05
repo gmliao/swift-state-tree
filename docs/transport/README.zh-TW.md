@@ -55,10 +55,13 @@ PlayerSession 欄位優先序：
 
 ### Broadcast 與 Per-Player 更新
 
-- **Broadcast**：每次 sync 只編碼一次並送給所有 session（MessagePack 時為 opcode **107**）。
-- **Per-player**：以標準 StateUpdate opcode（0/1/2）逐玩家送出，與 broadcast 分離。
-- **firstSync**：仍維持單一合併更新（該玩家完整狀態）。
-- **Events**：broadcast events 可合併進 opcode 107；targeted events 仍獨立送出。
+每個 session 每個 sync cycle 的 frame，依此順序（outbound writer 會維持順序）：
+
+- **opcodeMessagePack**：合併的 broadcast frame（opcode **107**：broadcast diff 對所有 session 只編碼一次，加上 broadcast events），接著是該 session 的 targeted event frame，最後是它的 per-player state frame（opcode 0/1/2）。只有在 broadcast diff 非空或有排隊中的 event 時才會送 107 frame；只改變 per-player 狀態的 cycle 只送 per-player frame。
+- **jsonObject / opcodeJsonArray**：每個 session 一個合併的 state frame。Event 不合併；每個 event 在送出（emit）時即傳送。
+- **firstSync**：單一合併更新（該玩家的完整狀態）。
+
+晚加入者（#189）：使用合併 broadcast frame 時，broadcast dynamic-key 表由 land 的所有 session 共用。當 joiner 的 firstSync 在一個含 state patch 的 107 frame 之後 commit，下一個 cycle 會為所有成員重設 key scope：該 frame 標記為 firstSync 並重新定義它用到的 key，因此 joiner 不會看到在它加入前定義的 slot。代價是每次 join 後第一次同步每位成員約 13 bytes，加上每個 key 重新定義一次；broadcast 表為空，或 encoder 不保留 key 表（關閉 dynamic-key compression 或 path hashing）時不會重設。
 
 ## 錯誤處理
 
@@ -72,6 +75,15 @@ PlayerSession 欄位優先序：
 - multi-room 模式下 join 會依 landType + instanceId 進行路由
 
 ## 狀態更新編碼（State Update Encoding）
+
+| `TransportEncodingConfig` | Message | State update | 預設於 |
+|---|---|---|---|
+| `.json` | `json` | `jsonObject` | `NIOLandServerConfiguration.transportEncoding`；DemoServer（`TRANSPORT_ENCODING=json`） |
+| `.jsonOpcode` | `json` | `opcodeJsonArray` | `TRANSPORT_ENCODING=jsonOpcode` |
+| `.opcode` | `opcodeJsonArray` | `opcodeJsonArray` | `TRANSPORT_ENCODING=opcode` |
+| `.messagepack` | `messagepack` | `opcodeMessagePack` | GameServer（`TRANSPORT_ENCODING=messagepack`）；建議用於正式環境 |
+
+`TransportEncodingConfig(message:stateUpdate:)` 本身預設為 `json` message 搭配 `opcodeJsonArray` state update；在每種使用 path hash 的 opcode state update 編碼中，dynamic-key compression 預設開啟。兩個範例 server 都讀取 `TRANSPORT_ENCODING`（`json`、`jsonOpcode`、`opcode`、`messagepack` 或 `msgpack`，不分大小寫）；無法辨識的值會回退為 `json`。
 
 狀態更新在每個 sync 週期內以串行方式編碼。同一房間內每位玩家的更新依序編碼；多房間場景下，每個 `TransportAdapter` 獨立管理一個房間。
 
@@ -95,5 +107,26 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 | `TRANSPORT_PROFILE_INTERVAL_MS` | Int | 1000 | Profiling 寫入間隔 (ms)，最小 100 |
 | `TRANSPORT_PROFILE_SAMPLE_RATE` | Double | 0.01 | Latency 採樣率 (0.001–1.0) |
 | `TRANSPORT_PROFILE_MAX_SAMPLES_PER_INTERVAL` | Int | 500 | 每間隔最大 latency 採樣數 (10–10000) |
+| `OUTBOUND_WRITER_MAX_BYTES` | Int | 67108864 (64 MiB) | 每個 land 的 outbound writer 排隊位元組上限（最小 1024）。超過上限的 frame 會被丟棄，受影響的 session 會被斷線 |
+
+由其他地方讀取：
+
+- `DYNAMIC_KEY_COMPRESSION`（Bool，預設 true）：使用 path hash 的 opcode state update 在 dynamic key 第一次使用後改送 table slot（true），或一律送完整字串（false）。只有以 `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有）。
+- `IN_TURN_SYNC` 與 `LAND_LOOP_PHASE_OFFSET`（runtime，預設開啟）：見 [Runtime](../core/runtime.zh-TW.md#in-turn-sync預設)。
 
 布林解析：truthy = `1`, `true`, `yes`, `y`, `on`；falsy = `0`, `false`, `no`, `n`, `off`。
+
+## Profiling
+
+設定 `TRANSPORT_PROFILE_JSONL_PATH` 後，adapter 每個間隔寫一行 JSON。除了訊息計數與 latency 採樣（`decode_ms`、`handle_ms`、`encode_ms`、`send_ms`），每行也計算該時窗的 sync cycle：
+
+| 計數器 | 意義 |
+|---|---|
+| `syncCycles` | commit 了 plan 的 sync cycle（兩種路徑皆計）：其他計數器的分母 |
+| `syncSkipsBacklog` | 因 writer back-pressure 而略過的 cycle |
+| `syncDeferredTurns` | `syncSkipsBacklog` 中：因 back-pressure 而延後的 in-turn sync phase |
+| `syncSkipsBusy` | 因已有 cycle 進行中而被拒的請求（legacy 路徑） |
+| `syncFolds` | 併入下一個 tick turn 的 in-turn sync cycle（coincident sync），每個 cycle 最多一次 |
+| `syncOverdueFolds` | `syncFolds` 中：其 tick 已逾時、frame 須等待遲到 tick 的併入 |
+| `syncFailedPlans` | 拋出錯誤、什麼都沒 commit 的 sync plan |
+| `syncDroppedUpdates` | 因無法編碼或擷取而被丟棄的 patch、update 或欄位 |

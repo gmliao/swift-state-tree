@@ -565,10 +565,15 @@ async function togglePause() {
   if (!monitorClient.value) return;
 
   const isPaused = monitorState.value?.isPaused;
-  if (isPaused) {
-    await monitorClient.value.sendAction("ResumeVerification", {});
-  } else {
-    await monitorClient.value.sendAction("PauseVerification", {});
+  try {
+    if (isPaused) {
+      await monitorClient.value.sendAction("ResumeVerification", {});
+    } else {
+      await monitorClient.value.sendAction("PauseVerification", {});
+    }
+  } catch (error) {
+    // An error frame, or the connection closed before the response (#109)
+    console.error("Pause/resume failed:", error);
   }
 }
 

@@ -1,5 +1,6 @@
 import { WorkerClient, WorkerSession, selectAction, type PermessageDeflateCounts } from "./worker";
-import type { CloseRecord, JoinFailure } from "./worker";
+import type { CloseRecord, JoinFailure, SyncFrameGrouping } from "./worker";
+import type { InputLatencyMetrics } from "./input-latency";
 import { sendMessageWithAck } from "./ipc";
 import { renderTemplateObject } from "./payload";
 import { connectDelaysMs } from "./connect-schedule";
@@ -35,6 +36,8 @@ export interface PhaseStartConfig {
     durationSeconds: number;
     joinPayloadTemplate?: Record<string, unknown>;
     sendMode: SendMode;
+    /** Time move events until visible (`WorkerOptions.trackInputLatency`); absent means false. */
+    inputLatency?: boolean;
 }
 
 
@@ -60,6 +63,10 @@ export interface WorkerPhaseReport {
     updateBytes: number[];
     /** Connections opened in this phase, by whether permessage-deflate was negotiated. */
     permessageDeflate: PermessageDeflateCounts;
+    /** Plain state frames after a 107 frame, grouped into its sync or not (`SyncFrameGrouping`). */
+    syncFrameGrouping: SyncFrameGrouping;
+    /** Move events' input-to-visible samples, concatenated over connections (`InputLatencyMetrics`). */
+    inputLatency: InputLatencyMetrics;
     /** This worker process's CPU time through the phase (`client-cpu`). */
     cpuSamples: CpuSample[];
     /** This worker's event-loop delay in the measured window (`loop-delay`); null without a window. */
@@ -86,6 +93,8 @@ export interface WorkerPhaseReport {
     activeIntervals: Array<[number, number]>;
     /** Joins of this phase's connections that failed, reported in the phase they happened in. */
     joinFailures: JoinFailure[];
+    /** Socket open to JoinResponse, ms, of each connection that joined in this phase. */
+    joinLatenciesMs: number[];
 }
 
 /** Reply to `prepare`: the previous phase's surplus is closed and this phase's clients exist. */
@@ -205,7 +214,7 @@ async function preparePhase(config: PhaseStartConfig): Promise<PreparedPhase> {
             playerId: spec.playerId,
             actions: config.actions,
             joinMetadata
-        });
+        }, { trackInputLatency: config.inputLatency ?? false });
         clients.set(spec.key, client);
         phaseClients.push(client);
         newClients.push(client);
@@ -277,6 +286,10 @@ async function runPhase(phase: PreparedPhase, originAt: number, measureFrom: num
         activeIntervals,
         cpuSamples,
         loopDelay,
+        joinLatenciesMs: phaseClients.flatMap((client) => {
+            const latency = client.takeJoinLatency();
+            return latency === undefined ? [] : [latency];
+        }),
         joinFailures: phaseClients.flatMap((client) => {
             const failure = client.takeJoinFailure();
             return failure ? [failure] : [];
@@ -453,6 +466,16 @@ function aggregateSessions(sessions: WorkerSession[]) {
         permessageDeflate: {
             negotiated: metrics.reduce((sum, m) => sum + m.permessageDeflate.negotiated, 0),
             notNegotiated: metrics.reduce((sum, m) => sum + m.permessageDeflate.notNegotiated, 0)
+        },
+        syncFrameGrouping: {
+            grouped: metrics.reduce((sum, m) => sum + m.syncFrameGrouping.grouped, 0),
+            ungroupedAfterBroadcast: metrics.reduce((sum, m) => sum + m.syncFrameGrouping.ungroupedAfterBroadcast, 0)
+        },
+        inputLatency: {
+            latencyMs: concatAll(metrics.map((m) => m.inputLatency.latencyMs)),
+            latencySentAt: concatAll(metrics.map((m) => m.inputLatency.latencySentAt)),
+            supersededSentAt: concatAll(metrics.map((m) => m.inputLatency.supersededSentAt)),
+            timedOutSentAt: concatAll(metrics.map((m) => m.inputLatency.timedOutSentAt))
         },
         closes: concatAll(metrics.map((m) => m.closes))
     };

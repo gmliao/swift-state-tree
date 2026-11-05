@@ -3,7 +3,7 @@
 
 import { ref, computed } from 'vue'
 import type { Ref, ComputedRef } from 'vue'
-import type { SessionMode } from '@swiftstatetree/sdk/core'
+import { ConnectionClosedError, type SessionMode } from '@swiftstatetree/sdk/core'
 import { useVisibilityTest } from './useVisibilityTest.js'
 import type { VisibilityTestComposableReturn } from './useVisibilityTest.js'
 import { useVisibilityTestReplay } from '../visibility-test-replay/useVisibilityTestReplay.js'
@@ -16,6 +16,9 @@ const liveClient = useVisibilityTest()
 const replayClient = useVisibilityTestReplay()
 const mode = ref<SessionMode>('live')
 const isSwitching = ref(false)
+/** Switches run one at a time, in call order; disconnect() bumps the generation to cancel them (#143). */
+let switchChain: Promise<void> = Promise.resolve()
+let switchGeneration = 0
 const sessionError = ref<string | null>(null)
 const liveConnectOptions = ref<LiveConnectOptions | null>(null)
 const replayConnectOptions = ref<ReplayConnectOptions | null>(null)
@@ -52,37 +55,55 @@ function asErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/** Queues a switch behind the previous one; a disconnect() since it was queued cancels it. */
+function enqueueSwitch(run: (isCurrent: () => boolean) => Promise<void>): Promise<void> {
+  const generation = switchGeneration
+  const isCurrent = () => generation === switchGeneration
+  const next = switchChain.then(() => {
+    if (!isCurrent()) throw new ConnectionClosedError('disconnect')
+    return run(isCurrent)
+  })
+  switchChain = next.catch(() => {})
+  return next
+}
+
 export function useVisibilityTestSession(): SessionComposableReturn {
-  async function connectLive(options: LiveConnectOptions): Promise<void> {
-    isSwitching.value = true
-    sessionError.value = null
-    liveConnectOptions.value = options
-    try {
-      await replayClient.disconnect()
-      await liveClient.connect(options)
-      mode.value = 'live'
-    } catch (error) {
-      sessionError.value = asErrorMessage(error)
-      throw error
-    } finally {
-      isSwitching.value = false
-    }
+  function connectLive(options: LiveConnectOptions): Promise<void> {
+    return enqueueSwitch(async (isCurrent) => {
+      isSwitching.value = true
+      sessionError.value = null
+      liveConnectOptions.value = options
+      try {
+        await replayClient.disconnect()
+        await liveClient.connect(options)
+        if (!isCurrent()) throw new ConnectionClosedError('disconnect')
+        mode.value = 'live'
+      } catch (error) {
+        if (isCurrent()) sessionError.value = asErrorMessage(error)
+        throw error
+      } finally {
+        if (isCurrent()) isSwitching.value = false
+      }
+    })
   }
 
-  async function connectReplay(options: ReplayConnectOptions): Promise<void> {
-    isSwitching.value = true
-    sessionError.value = null
-    replayConnectOptions.value = options
-    try {
-      await liveClient.disconnect()
-      await replayClient.connect(options)
-      mode.value = 'replay'
-    } catch (error) {
-      sessionError.value = asErrorMessage(error)
-      throw error
-    } finally {
-      isSwitching.value = false
-    }
+  function connectReplay(options: ReplayConnectOptions): Promise<void> {
+    return enqueueSwitch(async (isCurrent) => {
+      isSwitching.value = true
+      sessionError.value = null
+      replayConnectOptions.value = options
+      try {
+        await liveClient.disconnect()
+        await replayClient.connect(options)
+        if (!isCurrent()) throw new ConnectionClosedError('disconnect')
+        mode.value = 'replay'
+      } catch (error) {
+        if (isCurrent()) sessionError.value = asErrorMessage(error)
+        throw error
+      } finally {
+        if (isCurrent()) isSwitching.value = false
+      }
+    })
   }
 
   async function switchToReplay(options?: ReplayConnectOptions): Promise<void> {
@@ -102,6 +123,8 @@ export function useVisibilityTestSession(): SessionComposableReturn {
   }
 
   async function disconnect(): Promise<void> {
+    // Cancels the running switch at its next await and every queued one (#143)
+    switchGeneration += 1
     await liveClient.disconnect()
     await replayClient.disconnect()
     mode.value = 'live'

@@ -168,6 +168,6 @@ gameServers:
 ## Implementation Status (MVP)
 
 - **Control Plane**: NestJS service in `Packages/control-plane` with InMemory storage, JWT/JWKS, and built-in provisioning (in-memory server registry).
-- **Two-plane architecture**: See [Matchmaking Two-Plane Architecture](../matchmaking-two-plane.md) for system design and plane relationship.
+- **Two-plane architecture**: See [Matchmaking Two-Plane Architecture](../../docs/matchmaking-two-plane.md) for system design and plane relationship.
 - **Provisioning**: Game servers register via `POST /v1/provisioning/servers/register`. Allocate is internal (no external HTTP).
 - **Runbook**: See `docs/operations/matchmaking-control-plane-mvp.md`.

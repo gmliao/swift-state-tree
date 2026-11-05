@@ -1,0 +1,147 @@
+{
+  "maxDuration": 60000,
+  "steps": [
+    {
+      "type": "log",
+      "message": "Resolver test land: 50 ms tick; CallService waits delayMs, fails when fail is set, and throws at deadlineMs"
+    },
+    {
+      "type": "waitForState",
+      "waitForState": {
+        "path": "tickCount",
+        "greaterThanOrEqual": 1,
+        "timeout": 3000,
+        "interval": 20,
+        "message": "the first state has arrived"
+      }
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "applied",
+        "equals": 0,
+        "message": "Nothing applied yet"
+      }
+    },
+    {
+      "type": "action",
+      "action": "CallService",
+      "payload": {
+        "tag": "slow-ok",
+        "delayMs": 500,
+        "deadlineMs": 2000,
+        "outcome": "succeed"
+      }
+    },
+    {
+      "type": "wait",
+      "wait": 200
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "applied",
+        "equals": 1,
+        "message": "The slow call was applied"
+      }
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "lastTag",
+        "equals": "slow-ok",
+        "message": "Its tag is the last applied"
+      }
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "lastTickAdvance",
+        "greaterThanOrEqual": 7,
+        "message": "Ticks kept coming while the 500 ms resolver was pending (about 10 at 50 ms)"
+      }
+    },
+    {
+      "type": "action",
+      "action": "CallService",
+      "payload": {
+        "tag": "failed",
+        "delayMs": 100,
+        "deadlineMs": -1,
+        "outcome": "fail"
+      },
+      "expectError": true
+    },
+    {
+      "type": "action",
+      "action": "CallService",
+      "payload": {
+        "tag": "timed-out",
+        "delayMs": 800,
+        "deadlineMs": 200,
+        "outcome": "succeed"
+      },
+      "expectError": true
+    },
+    {
+      "type": "wait",
+      "wait": 200
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "applied",
+        "equals": 1,
+        "message": "The failed and the timed-out calls were not applied"
+      }
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "lastTag",
+        "equals": "slow-ok",
+        "message": "lastTag unchanged"
+      }
+    },
+    {
+      "type": "assertConverged"
+    },
+    {
+      "type": "action",
+      "action": "CallService",
+      "payload": {
+        "tag": "fast-ok",
+        "delayMs": 0,
+        "deadlineMs": -1,
+        "outcome": "succeed"
+      }
+    },
+    {
+      "type": "wait",
+      "wait": 200
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "applied",
+        "equals": 2,
+        "message": "A call after the failures is applied"
+      }
+    },
+    {
+      "type": "assert",
+      "assert": {
+        "path": "lastTag",
+        "equals": "fast-ok",
+        "message": "Its tag is the last applied"
+      }
+    },
+    {
+      "type": "assertConverged"
+    },
+    {
+      "type": "log",
+      "message": "Resolver outcomes: PASS"
+    }
+  ]
+}

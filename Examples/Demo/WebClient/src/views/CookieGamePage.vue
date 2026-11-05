@@ -79,7 +79,11 @@ async function handleClick() {
 }
 
 async function handleBuy(upgradeID: string) {
-  await buyUpgrade({ upgradeID })
+  try {
+    await buyUpgrade({ upgradeID })
+  } catch {
+    // useCookie already logged it and set lastError (an error frame, or the connection closed)
+  }
 }
 
 async function handleLeave() {

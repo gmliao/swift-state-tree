@@ -91,13 +91,14 @@ struct GameServer {
         let liveLand = HeroDefense.makeLand(maxPlayers: maxPlayers)
         // Test lands (#65), each on its own path; Hero Defense's registration is unchanged.
         let visibilityLand = VisibilityTest.makeLand()
-        let testLands = [AnyLandDefinition(visibilityLand)]
+        let resolverLand = ResolverTest.makeLand()
+        let testLands = [AnyLandDefinition(visibilityLand), AnyLandDefinition(resolverLand)]
         let schemaLands: [AnyLandDefinition] = enableReevaluation
             ? [AnyLandDefinition(liveLand), AnyLandDefinition(ReevaluationMonitor.makeLand())] + testLands
             : [AnyLandDefinition(liveLand)] + testLands
         let schema = SchemaGenCLI.generateSchema(
             landDefinitions: schemaLands,
-            replayLandTypes: enableReevaluation ? ["hero-defense", VisibilityTestConfig.landType] : nil
+            replayLandTypes: enableReevaluation ? ["hero-defense", VisibilityTestConfig.landType, ResolverTestConfig.landType] : nil
         )
         let pathHashes = schema.lands["hero-defense"]?.pathHashes
         logPathHashes(pathHashes, logger: logger)
@@ -156,6 +157,35 @@ struct GameServer {
             liveInitialState: VisibilityTestState(),
             liveWebSocketPath: "/game/\(VisibilityTestConfig.landType)",
             configuration: visibilityConfig,
+            reevaluation: ReevaluationFeatureConfiguration(
+                enabled: enableReevaluation,
+                replayEventPolicy: .projectedOnly,
+                runnerServiceFactory: { ReevaluationRunnerService(factory: GameServerReevaluationFactory(requiredRecordVersion: requiredReplayRecordVersion, maxPlayers: maxPlayers)) }
+            )
+        )
+
+        // The resolver test land reads its simulated service's settings once, here.
+        let resolverServiceSettings = SimulatedServiceSettings.fromEnvironment()
+        let resolverConfig = NIOLandServerConfiguration(
+            logger: logger,
+            allowAutoCreateOnJoin: true,
+            transportEncoding: transportEncoding,
+            enableLiveStateHashRecording: enableReevaluation,
+            pathHashes: schema.lands[ResolverTestConfig.landType]?.pathHashes,
+            eventHashes: nil,
+            clientEventHashes: nil,
+            servicesFactory: { _, _ in
+                var services = makeTestLandServices(enableReevaluation: enableReevaluation, requiredRecordVersion: requiredReplayRecordVersion, maxPlayers: maxPlayers)
+                services.merge(ResolverTest.makeServices(settings: resolverServiceSettings))
+                return services
+            }
+        )
+        try await nioHost.registerWithGenericReplay(
+            landType: ResolverTestConfig.landType,
+            liveLand: resolverLand,
+            liveInitialState: ResolverTestState(),
+            liveWebSocketPath: "/game/\(ResolverTestConfig.landType)",
+            configuration: resolverConfig,
             reevaluation: ReevaluationFeatureConfiguration(
                 enabled: enableReevaluation,
                 replayEventPolicy: .projectedOnly,
@@ -255,6 +285,15 @@ private struct GameServerReevaluationFactory: ReevaluationTargetFactory {
             return try await ConcreteReevaluationRunner(
                 definition: VisibilityTest.makeLand(),
                 initialState: VisibilityTestState(),
+                recordFilePath: recordFilePath,
+                requiredRecordVersion: requiredRecordVersion,
+                services: LandServices()
+            )
+        case ResolverTestConfig.landType:
+            // Replay applies the recorded resolver outputs and never calls the service.
+            return try await ConcreteReevaluationRunner(
+                definition: ResolverTest.makeLand(),
+                initialState: ResolverTestState(),
                 recordFilePath: recordFilePath,
                 requiredRecordVersion: requiredRecordVersion,
                 services: LandServices()

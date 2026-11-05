@@ -13,6 +13,7 @@ import { MessageEncodingValues } from '../types/transport'
 import { StateTreeRuntime } from './runtime'
 import { createJoinMessage, createActionMessage, createEventMessage, generateRequestID, encodeMessage, encodeMessageArray, pathHashReverseLookup, eventHashReverseLookup, clientEventHashReverseLookup, eventHashLookup, clientEventHashLookup, eventFieldOrder, clientEventFieldOrder, actionFieldOrder } from './protocol'
 import { NoOpLogger, type Logger } from './logger'
+import { ConnectionClosedError } from './errors'
 import { IVec2, IVec3, Angle, Position2, Velocity2, Acceleration2 } from './deterministic-math'
 import type { ProtocolSchema, SchemaDef, SchemaProperty } from '../codegen/schema'
 import { unwrapOptionalType } from '../codegen/schema'
@@ -83,6 +84,8 @@ export class StateTreeView {
   private actionCallbacks = new Map<string, (response: any) => void>()
   private actionRejectCallbacks = new Map<string, (error: Error) => void>()
   private joinCallbacks = new Map<string, (result: { success: boolean; playerID?: string; reason?: string; landType?: string; landInstanceId?: string; landID?: string }) => void>()
+  /** Rejects a pending join when no answer can arrive (#109); kept in step with `joinCallbacks`. */
+  private joinRejectCallbacks = new Map<string, (error: Error) => void>()
   private eventHandlers = new Map<string, Set<(payload: any) => void>>()
   private logger: Logger
   private playerID?: string
@@ -256,7 +259,7 @@ export class StateTreeView {
       throw new Error('Runtime not connected')
     }
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const requestID = generateRequestID('join')
       
       // Parse landID as "landType:instanceId" or treat as landType
@@ -275,6 +278,7 @@ export class StateTreeView {
       })
 
       this.joinCallbacks.set(requestID, resolve)
+      this.joinRejectCallbacks.set(requestID, reject)
       try {
         // Join messages always use JSON format (before we know the server's encoding preference)
         this.runtime.sendRawMessage(message, MessageEncodingValues.json)
@@ -285,6 +289,7 @@ export class StateTreeView {
           const err = new Error(`Failed to send join message: ${String(error)}`)
           this.onErrorCallback(err, { source: 'join' })
         }
+        this.forgetJoin(requestID)
         resolve({ success: false, reason: `Failed to send: ${error}` })
       }
     })
@@ -405,17 +410,37 @@ export class StateTreeView {
     return { ...this.currentState }
   }
 
+  /** Drops a join's callbacks once it has settled. */
+  private forgetJoin(requestID: string): void {
+    this.joinCallbacks.delete(requestID)
+    this.joinRejectCallbacks.delete(requestID)
+  }
+
+  /**
+   * Rejects every join and action still waiting for a response (#109). Each entry is taken out of
+   * its map before it is settled, so a response that arrives later finds nothing and a request
+   * is never settled twice.
+   */
+  private rejectPending(error: ConnectionClosedError): void {
+    const joins = [...this.joinRejectCallbacks.values()]
+    const actions = [...this.actionRejectCallbacks.values()]
+    this.joinCallbacks.clear()
+    this.joinRejectCallbacks.clear()
+    this.actionCallbacks.clear()
+    this.actionRejectCallbacks.clear()
+    for (const reject of joins) reject(error)
+    for (const reject of actions) reject(error)
+  }
+
   /**
    * Destroy the view
    * Note: This should be called by runtime.removeView(), not directly.
    * If called directly, it will clean up the view but won't remove it from runtime.
    */
-  destroy(): void {
+  destroy(reason: ConnectionClosedError = new ConnectionClosedError('viewRemoved')): void {
     // Don't call runtime.removeView() here to avoid infinite recursion
     // The runtime.removeView() will call this method, so we just clean up
-    this.actionCallbacks.clear()
-    this.actionRejectCallbacks.clear()
-    this.joinCallbacks.clear()
+    this.rejectPending(reason)
     this.eventHandlers.clear()
     this.currentState = {}
     this.isJoined = false
@@ -504,7 +529,7 @@ export class StateTreeView {
           const callback = this.joinCallbacks.get(payload.requestID)
           if (callback) {
             callback(result)
-            this.joinCallbacks.delete(payload.requestID)
+            this.forgetJoin(payload.requestID)
             return
           }
         }
@@ -515,7 +540,7 @@ export class StateTreeView {
           if (firstEntry) {
             const [requestID, callback] = firstEntry
             callback(result)
-            this.joinCallbacks.delete(requestID)
+            this.forgetJoin(requestID)
           }
         }
         break
@@ -620,7 +645,7 @@ export class StateTreeView {
             const callback = this.joinCallbacks.get(requestID)
             if (callback) {
               callback({ success: false, reason: errorMessage })
-              this.joinCallbacks.delete(requestID)
+              this.forgetJoin(requestID)
               return
             }
           }
@@ -631,7 +656,7 @@ export class StateTreeView {
             if (firstEntry) {
               const [requestID, callback] = firstEntry
               callback({ success: false, reason: errorMessage })
-              this.joinCallbacks.delete(requestID)
+              this.forgetJoin(requestID)
               return
             }
           }
@@ -643,7 +668,7 @@ export class StateTreeView {
           const callback = this.joinCallbacks.get(requestID)
           if (callback) {
             callback({ success: false, reason: errorMessage })
-            this.joinCallbacks.delete(requestID)
+            this.forgetJoin(requestID)
             return
           }
         }
@@ -1181,52 +1206,24 @@ export class StateTreeView {
       return
     }
 
-    const parts = path.split('/').filter((p: string) => p !== '')
-    if (parts.length === 0) {
+    // Components stay escaped (RFC 6901) so restPath is still a pointer; keys are unescaped where used (#121)
+    const parts = splitPointer(path)
+    if (parts.length === 0 || path === '/') {
       this.logger.error(`Empty patch path: ${path}`)
       return
     }
 
-    const key = parts[0]
+    const key = unescapePointerToken(parts[0])
     const restPath = '/' + parts.slice(1).join('/')
 
-    // Check if key is an array index (e.g., "positions[0]") - check this first, even for top-level
-    const arrayIndexMatch = key.match(/^(.+)\[(\d+)\]$/)
-    
-    if (arrayIndexMatch && parts.length === 1) {
-      // Top-level array element (e.g., "/positions[1]")
-      const arrayKey = arrayIndexMatch[1]
-      const index = parseInt(arrayIndexMatch[2], 10)
-      
-      // Ensure array exists
-      if (!(arrayKey in this.currentState) || !Array.isArray(this.currentState[arrayKey])) {
-        this.currentState[arrayKey] = []
-      }
-      
-      const array = this.currentState[arrayKey] as any[]
-      
+    // Every component is a key, as RFC 6901 says: the server never sends `name[n]` element
+    // paths (a changed array is replaced whole), so a key like "x[1]" is a key (#202)
+    if (parts.length === 1) {
+      // Top-level property
       switch (patch.op) {
         case 'replace':
         case 'add':
-          const elementPath = `/${arrayKey}[${index}]`
-          const decodedValue = this.decodeSnapshotValue(patch.value, elementPath)
-          // For 'add' operation, ensure array is long enough
-          if (patch.op === 'add' && index >= array.length) {
-            // Extend array to accommodate the new index
-            array.length = index + 1
-          }
-          array[index] = decodedValue
-          break
-        case 'remove':
-          array.splice(index, 1)
-          break
-      }
-    } else if (parts.length === 1) {
-      // Top-level property (not array)
-      switch (patch.op) {
-        case 'replace':
-        case 'add':
-          const topLevelPath = `/${key}`
+          const topLevelPath = `/${escapePointerToken(key)}`
           this.currentState[key] = this.decodeSnapshotValue(patch.value, topLevelPath)
           break
         case 'remove':
@@ -1234,59 +1231,12 @@ export class StateTreeView {
           break
       }
     } else {
-      // Check if key is an array index (e.g., "positions[0]")
-      if (arrayIndexMatch) {
-        const arrayKey = arrayIndexMatch[1]
-        const index = parseInt(arrayIndexMatch[2], 10)
-        
-        // Ensure array exists
-        if (!(arrayKey in this.currentState) || !Array.isArray(this.currentState[arrayKey])) {
-          this.currentState[arrayKey] = []
-        }
-        
-        const array = this.currentState[arrayKey] as any[]
-        
-        switch (patch.op) {
-          case 'replace':
-          case 'add':
-            if (restPath && restPath.length > 1) {
-              // Nested property within array element
-              if (!array[index] || typeof array[index] !== 'object' || array[index] === null) {
-                array[index] = {}
-              }
-              this.applyNestedPatch(array[index], { ...patch, path: restPath }, array, String(index), `/${arrayKey}[${index}]`)
-            } else {
-              // Replace or add entire array element
-              const elementPath = `/${arrayKey}[${index}]`
-              const decodedValue = this.decodeSnapshotValue(patch.value, elementPath)
-              // For 'add' operation, ensure array is long enough
-              if (patch.op === 'add' && index >= array.length) {
-                // Extend array to accommodate the new index
-                array.length = index + 1
-              }
-              array[index] = decodedValue
-            }
-            break
-          case 'remove':
-            if (restPath && restPath.length > 1) {
-              // Remove nested property
-              if (array[index] && typeof array[index] === 'object') {
-                this.applyNestedPatch(array[index], { ...patch, path: restPath }, array, String(index), `/${arrayKey}[${index}]`)
-              }
-            } else {
-              // Remove array element
-              array.splice(index, 1)
-            }
-            break
-        }
-      } else {
-        // Nested property (not array)
-        if (!(key in this.currentState) || typeof this.currentState[key] !== 'object' || this.currentState[key] === null) {
-          this.currentState[key] = {}
-        }
-        // applyNestedPatch now handles conversion internally, so we don't need redecodeObject
-        this.applyNestedPatch(this.currentState[key], { ...patch, path: restPath }, this.currentState, key, key)
+      // Nested property
+      if (!(key in this.currentState) || typeof this.currentState[key] !== 'object' || this.currentState[key] === null) {
+        this.currentState[key] = {}
       }
+      // applyNestedPatch now handles conversion internally, so we don't need redecodeObject
+      this.applyNestedPatch(this.currentState[key], { ...patch, path: restPath }, this.currentState, key, escapePointerToken(key))
     }
 
     // Trigger patch callbacks after applying
@@ -1500,86 +1450,34 @@ export class StateTreeView {
   private applyNestedPatch(obj: any, patch: StatePatch, parent?: any, parentKey?: string, pathPrefix: string = ''): void {
     const path = patch.path
     const fullPath = pathPrefix + path
-    const parts = path.split('/').filter((p: string) => p !== '')
+    const parts = splitPointer(path)
 
+    // Every component is a key; `name[n]` is not an array index (#202)
+    const key = unescapePointerToken(parts[0])
     if (parts.length === 1) {
-      const key = parts[0]
-      
-      // Check if key is an array index (e.g., "items[0]")
-      const arrayIndexMatch = key.match(/^(.+)\[(\d+)\]$/)
-      if (arrayIndexMatch) {
-        const arrayKey = arrayIndexMatch[1]
-        const index = parseInt(arrayIndexMatch[2], 10)
-        
-        // Ensure array exists
-        if (!(arrayKey in obj) || !Array.isArray(obj[arrayKey])) {
-          obj[arrayKey] = []
-        }
-        
-        const array = obj[arrayKey] as any[]
-        
-        switch (patch.op) {
-          case 'replace':
-          case 'add':
-            const elementPath = pathPrefix ? `${pathPrefix}/${arrayKey}[${index}]` : `/${arrayKey}[${index}]`
-            array[index] = this.decodeSnapshotValue(patch.value, elementPath)
-            break
-          case 'remove':
-            array.splice(index, 1)
-            break
-        }
-      } else {
-        // Regular property
-        switch (patch.op) {
-          case 'replace':
-          case 'add':
-            // With atomic types, server always sends whole objects (e.g., entire IVec2, not just x or y)
-            // Use decodeSnapshotValue to create class instances based on schema
-            const updatePath = pathPrefix ? `${pathPrefix}/${key}` : `/${key}`
-            obj[key] = this.decodeSnapshotValue(patch.value, updatePath)
-            break
-          case 'remove':
-            delete obj[key]
-            break
-        }
+      switch (patch.op) {
+        case 'replace':
+        case 'add':
+          // With atomic types, server always sends whole objects (e.g., entire IVec2, not just x or y)
+          // Use decodeSnapshotValue to create class instances based on schema
+          const updatePath = pathPrefix ? `${pathPrefix}/${escapePointerToken(key)}` : `/${escapePointerToken(key)}`
+          obj[key] = this.decodeSnapshotValue(patch.value, updatePath)
+          break
+        case 'remove':
+          delete obj[key]
+          break
       }
     } else {
-      const key = parts[0]
-      
-      // Check if key is an array index
-      const arrayIndexMatch = key.match(/^(.+)\[(\d+)\]$/)
-      if (arrayIndexMatch) {
-        const arrayKey = arrayIndexMatch[1]
-        const index = parseInt(arrayIndexMatch[2], 10)
-        const restPath = '/' + parts.slice(1).join('/')
-        
-        // Ensure array exists
-        if (!(arrayKey in obj) || !Array.isArray(obj[arrayKey])) {
-          obj[arrayKey] = []
-        }
-        
-        const array = obj[arrayKey] as any[]
-        
-        // Ensure array element exists as an object for nested updates
-        if (!array[index] || typeof array[index] !== 'object' || array[index] === null) {
-          array[index] = {}
-        }
-        
-        const newPathPrefix = pathPrefix ? `${pathPrefix}/${arrayKey}[${index}]` : `/${arrayKey}[${index}]`
-        this.applyNestedPatch(array[index], { ...patch, path: restPath }, array, String(index), newPathPrefix)
-      } else {
-        // Regular nested property
-        const restPath = '/' + parts.slice(1).join('/')
-        
-        // Ensure the key exists as an object for nested updates
-        if (!(key in obj) || typeof obj[key] !== 'object' || obj[key] === null) {
-          obj[key] = {}
-        }
-        
-        // Pass current obj as parent, and key as parentKey for the recursive call
-        const newPathPrefix = (pathPrefix ? pathPrefix + '/' : '') + key
-        this.applyNestedPatch(obj[key], { ...patch, path: restPath }, obj, key, newPathPrefix)
+      const restPath = '/' + parts.slice(1).join('/')
+
+      // Ensure the key exists as an object for nested updates
+      if (!(key in obj) || typeof obj[key] !== 'object' || obj[key] === null) {
+        obj[key] = {}
       }
+
+      // Pass current obj as parent, and key as parentKey for the recursive call
+      const newPathPrefix = (pathPrefix ? pathPrefix + '/' : '') + escapePointerToken(key)
+      this.applyNestedPatch(obj[key], { ...patch, path: restPath }, obj, key, newPathPrefix)
     }
   }
 
@@ -1610,4 +1508,22 @@ export class StateTreeView {
   get joined(): boolean {
     return this.isJoined
   }
+}
+
+/**
+ * Splits a JSON Pointer into its components, still escaped. Empty components are kept, so an
+ * empty-string key (`/items/`) is a key, not dropped (#121).
+ */
+function splitPointer(path: string): string[] {
+  return path.split('/').slice(1)
+}
+
+/** Unescapes one JSON Pointer component: `~1` → `/`, then `~0` → `~` (RFC 6901, #121). */
+function unescapePointerToken(token: string): string {
+  return token.includes('~') ? token.replace(/~1/g, '/').replace(/~0/g, '~') : token
+}
+
+/** Escapes a key as a JSON Pointer component: `~` → `~0`, then `/` → `~1`. */
+function escapePointerToken(key: string): string {
+  return key.replace(/~/g, '~0').replace(/\//g, '~1')
 }

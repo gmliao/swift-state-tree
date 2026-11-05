@@ -55,10 +55,13 @@ PlayerSession field priority:
 
 ### Broadcast vs Per-Player Updates
 
-- **Broadcast**: Encoded once per sync tick and sent to all sessions (opcode **107** when using MessagePack).
-- **Per-player**: Sent as standard StateUpdate opcodes (0/1/2) per player, separate from broadcast.
-- **firstSync**: Remains a single combined update (full state for that player).
-- **Events**: Broadcast events can be merged into opcode 107; targeted events are sent separately.
+Frames per session and sync cycle, in this order (the outbound writer keeps it):
+
+- **opcodeMessagePack**: the merged broadcast frame (opcode **107**: the broadcast diff, encoded once for all sessions, plus the broadcast events), then the session's targeted event frames, then its per-player state frame (opcode 0/1/2). A 107 frame is sent only when the broadcast diff is non-empty or events are queued; a cycle that changes only per-player state sends the per-player frame alone.
+- **jsonObject / opcodeJsonArray**: one combined state frame per session. Events are not merged; each is sent when emitted.
+- **firstSync**: a single combined update (the player's full state).
+
+Late joiners (#189): with merged broadcast frames, the broadcast dynamic-key table is shared by the land's sessions. When a joiner's firstSync has committed after a 107 frame with state patches, the next cycle resets the key scope for every member: its frame is typed firstSync and redefines the keys it uses, so the joiner never sees a slot defined before it joined. This costs about 13 bytes per member on the first sync after each join, plus one redefinition of each key; there is no reset while the broadcast table is empty, or when the encoder keeps no key tables (dynamic-key compression or path hashing off).
 
 ## Error Handling
 
@@ -80,6 +83,15 @@ Server accepts both:
 Client must send Join with `landID: "landType:instanceId"`. See [Deploy & LB](../deploy/README.md).
 
 ## State Update Encoding
+
+| `TransportEncodingConfig` | Message | State update | Default where |
+|---|---|---|---|
+| `.json` | `json` | `jsonObject` | `NIOLandServerConfiguration.transportEncoding`; DemoServer (`TRANSPORT_ENCODING=json`) |
+| `.jsonOpcode` | `json` | `opcodeJsonArray` | `TRANSPORT_ENCODING=jsonOpcode` |
+| `.opcode` | `opcodeJsonArray` | `opcodeJsonArray` | `TRANSPORT_ENCODING=opcode` |
+| `.messagepack` | `messagepack` | `opcodeMessagePack` | GameServer (`TRANSPORT_ENCODING=messagepack`); recommended for production |
+
+`TransportEncodingConfig(message:stateUpdate:)` itself defaults to `json` messages with `opcodeJsonArray` state updates; dynamic-key compression is on by default in every opcode state-update encoding with path hashes. Both example servers read `TRANSPORT_ENCODING` (`json`, `jsonOpcode`, `opcode`, `messagepack` or `msgpack`, case-insensitive); an unknown value falls back to `json`.
 
 State updates are encoded serially per sync cycle. Per-player updates within a room are encoded one after another; for multi-room scenarios, each `TransportAdapter` manages one room independently.
 
@@ -103,5 +115,26 @@ Transport-related behavior can be tuned via environment variables. All variables
 | `TRANSPORT_PROFILE_INTERVAL_MS` | Int | 1000 | Profiling write interval in ms (min 100) |
 | `TRANSPORT_PROFILE_SAMPLE_RATE` | Double | 0.01 | Latency sample rate (0.001–1.0) |
 | `TRANSPORT_PROFILE_MAX_SAMPLES_PER_INTERVAL` | Int | 500 | Max latency samples per interval (10–10000) |
+| `OUTBOUND_WRITER_MAX_BYTES` | Int | 67108864 (64 MiB) | Per-land ceiling for bytes queued in the outbound writer (min 1024). Frames over it are dropped and the affected sessions are disconnected |
+
+Read elsewhere:
+
+- `DYNAMIC_KEY_COMPRESSION` (Bool, default true): opcode state updates with path hashes send dynamic keys as table slots after their first use (true) or always as full strings (false). Read only by servers that build their encoding config with `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()` (the Demo and Game servers do).
+- `IN_TURN_SYNC` and `LAND_LOOP_PHASE_OFFSET` (runtime, default on): see [Runtime](../core/runtime.md#in-turn-sync-default).
 
 Boolean parsing: truthy = `1`, `true`, `yes`, `y`, `on`; falsy = `0`, `false`, `no`, `n`, `off`.
+
+## Profiling
+
+With `TRANSPORT_PROFILE_JSONL_PATH` set, the adapter writes one JSON line per interval. Besides message counts and latency samples (`decode_ms`, `handle_ms`, `encode_ms`, `send_ms`), each line counts the sync cycles of that window:
+
+| Counter | Meaning |
+|---|---|
+| `syncCycles` | sync cycles that committed their plan (both paths): the denominator for the others |
+| `syncSkipsBacklog` | cycles skipped for writer back-pressure |
+| `syncDeferredTurns` | of `syncSkipsBacklog`: in-turn sync phases deferred by back-pressure |
+| `syncSkipsBusy` | requests rejected because another cycle was in flight (legacy path) |
+| `syncFolds` | in-turn sync cycles folded into the next tick turn (coincident sync), at most one per cycle |
+| `syncOverdueFolds` | of `syncFolds`: folds whose tick was already overdue, so the frame waited for a late tick |
+| `syncFailedPlans` | sync plans that threw and committed nothing |
+| `syncDroppedUpdates` | patches, updates or fields dropped because they did not encode or extract |

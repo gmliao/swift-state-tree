@@ -38,6 +38,16 @@ public struct AnyCodable: Codable, @unchecked Sendable {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
+        // A JSONSerialization NSNumber holding 0 or 1 would match `as Bool` below (#171)
+        if let number = JSONSerializationNumber(base) {
+            switch number {
+            case .bool(let value): try container.encode(value)
+            case .int(let value): try container.encode(value)
+            case .unsigned(let value): try container.encode(value)
+            case .double(let value): try container.encode(value)
+            }
+            return
+        }
         switch base {
         case is Void:
             try container.encodeNil()

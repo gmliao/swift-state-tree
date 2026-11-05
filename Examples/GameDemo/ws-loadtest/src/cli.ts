@@ -12,7 +12,35 @@ import type { BoundaryMode, ConnectMode } from "./connect-schedule";
 import { DEFAULT_WINDOW_MS, SEND_MODES } from "./send-schedule";
 import type { SendMode } from "./send-schedule";
 
+/** Printed for `--help` and after an unknown argument. */
+export const USAGE = `Usage: node dist/cli.js [options]
+
+Runs the scenario's phases against its server and writes a JSON + HTML report.
+
+  --scenario <path>            Scenario JSON (default: scenarios/hero-defense/default.json)
+  --workers <n>                Worker processes (default: CPU count)
+  --layout <rooms|per-connection>
+  --connect <ramp|burst>       Connect mode (default: ramp)
+  --connect-rate <n>           Ramp rate over all workers, connections/s (default: 1000)
+  --boundary <clean|abrupt>    Phase boundary closes (default: clean)
+  --allow-partial-ramp         Warn instead of failing when the ramp outlasts a phase
+  --allow-join-failures        Join failures do not fail a phase
+  --run-id <id>                Land id prefix (letters, digits, '-', '_')
+  --send <spread|lockstep>     Send mode (default: spread)
+  --input-latency <on|off>     Time move events until a state update shows them (default: off)
+  --window-ms <n>              Per-window sample length, ms
+  --warmup-seconds <n>         Warm-up of every phase, overriding the scenario
+  --move-to-rate <n>           MoveTo events per player per second; 0 removes them
+  --event-seed <n>             Seed of the event payload generators
+  --system-metrics <path>      System metrics JSONL to include in the report
+  --transport-profile <path>   Server transport profile JSONL to include in the report
+  --output-dir <dir>           Report directory (default: results)
+  --output-name <name>         Report base name (default: ws-loadtest-<timestamp>)
+  -h, --help                   Print this help and exit`;
+
 export interface CliArgs {
+    /** `--help` / `-h`: print the usage and start no run. */
+    help: boolean;
     scenarioPath: string;
     workers: number;
     systemMetricsPath?: string;
@@ -36,6 +64,8 @@ export interface CliArgs {
     runId?: string;
     /** `spread` (default: per-client offsets, RTT from the intended send) or `lockstep` (legacy). */
     sendMode: SendMode;
+    /** `--input-latency`: time MoveTo/MoveViewer events until visible (default off: it costs load-client CPU). */
+    inputLatency: boolean;
     /** Per-window sample length in ms. */
     windowMs: number;
     /** Warm-up for every phase, overriding the scenario and the default. */
@@ -62,14 +92,18 @@ export function parseArgs(argv: string[]): CliArgs {
     let allowJoinFailures = false;
     let runId: string | undefined;
     let sendMode: SendMode = "spread";
+    let inputLatency = false;
     let windowMs = DEFAULT_WINDOW_MS;
     let warmupSeconds: number | undefined;
     let moveToRate: number | undefined;
     let eventSeed: number | undefined;
+    let help = false;
 
     for (let i = 0; i < args.length; i += 1) {
         const arg = args[i];
-        if (arg === "--scenario") {
+        if (arg === "--help" || arg === "-h") {
+            help = true;
+        } else if (arg === "--scenario") {
             scenarioPath = args[i + 1];
             i += 1;
         } else if (arg === "--workers") {
@@ -133,6 +167,13 @@ export function parseArgs(argv: string[]): CliArgs {
             }
             sendMode = value as SendMode;
             i += 1;
+        } else if (arg === "--input-latency") {
+            const value = args[i + 1];
+            if (value !== "on" && value !== "off") {
+                throw new Error(`--input-latency must be on or off (got ${value})`);
+            }
+            inputLatency = value === "on";
+            i += 1;
         } else if (arg === "--window-ms") {
             const value = Number(args[i + 1]);
             if (!Number.isFinite(value) || value <= 0) {
@@ -161,10 +202,14 @@ export function parseArgs(argv: string[]): CliArgs {
             }
             eventSeed = value;
             i += 1;
+        } else {
+            // An unknown flag or a stray value must not fall through to a default-scenario run.
+            throw new Error(`Unknown argument: ${arg}\n\n${USAGE}`);
         }
     }
 
     return {
+        help,
         scenarioPath,
         workers,
         systemMetricsPath,
@@ -179,6 +224,7 @@ export function parseArgs(argv: string[]): CliArgs {
         allowJoinFailures,
         runId,
         sendMode,
+        inputLatency,
         windowMs,
         warmupSeconds,
         moveToRate,
@@ -186,8 +232,9 @@ export function parseArgs(argv: string[]): CliArgs {
     };
 }
 
-export async function main(): Promise<void> {
+export async function main(argv: string[] = process.argv): Promise<void> {
     const {
+        help,
         scenarioPath,
         workers,
         systemMetricsPath,
@@ -202,11 +249,16 @@ export async function main(): Promise<void> {
         allowJoinFailures,
         runId,
         sendMode,
+        inputLatency,
         windowMs,
         warmupSeconds,
         moveToRate,
         eventSeed
-    } = parseArgs(process.argv);
+    } = parseArgs(argv);
+    if (help) {
+        console.log(USAGE);
+        return;
+    }
     const resolvedPath = path.resolve(process.cwd(), scenarioPath);
     if (!fs.existsSync(resolvedPath)) {
         throw new Error(`Scenario not found: ${resolvedPath}`);
@@ -221,6 +273,7 @@ export async function main(): Promise<void> {
         allowJoinFailures,
         runId,
         sendMode,
+        inputLatency,
         windowMs,
         warmupSeconds,
         moveToRate,

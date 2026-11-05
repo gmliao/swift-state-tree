@@ -184,6 +184,46 @@ class HeroDefenseLand {
 }
 ```
 
+## Errors and Connection Loss
+
+How each request settles:
+
+| Situation | `view.join()` | `view.sendAction()` |
+|---|---|---|
+| Server answers | resolves `{ success: true, playerID, ... }` | resolves the response |
+| Server refuses or reports an error | resolves `{ success: false, reason }` | rejects with an `Error` (`code`, `details` from the error frame) |
+| Runtime not connected / view not joined | rejects (`Runtime not connected`) | rejects (`Not joined to land`) |
+| The connection closes, `runtime.disconnect()`, or `runtime.removeView()` while waiting | rejects with `ConnectionClosedError` | rejects with `ConnectionClosedError` |
+
+`ConnectionClosedError` (exported from `@swiftstatetree/sdk`) means no answer can arrive any more:
+
+- `kind`: `'close'` (the WebSocket closed), `'disconnect'` (the client called `disconnect()`) or `'viewRemoved'`;
+- `closeCode`, `closeReason`, `wasClean`: the WebSocket close details, when `kind` is `'close'`.
+
+Every pending request settles exactly once: a response that arrives after the close is ignored. On close, the runtime destroys its views, so a view from before a reconnect is no longer joined and its `sendAction()` rejects; create and join a new view on the new connection. There is no per-request timeout yet; wrap a call in your own deadline if you need one.
+
+```typescript
+import { ConnectionClosedError } from '@swiftstatetree/sdk'
+
+try {
+  await view.sendAction('Move', payload)
+} catch (error) {
+  if (error instanceof ConnectionClosedError) {
+    // reconnect, then create and join a new view
+  } else {
+    // the server rejected the action
+  }
+}
+```
+
+### Connecting and Reconnecting
+
+- `connect(url)` while a connect to the same URL is in progress returns the same promise and opens no second socket; a connect to another URL is refused (`Already connecting to <url>`). Wait for it, or call `disconnect()` first.
+- `disconnect()` during a connect aborts it: the connect rejects with `ConnectionClosedError` (`kind: 'disconnect'`), and a socket still being created is closed when it arrives.
+- After `disconnect()`, the old socket's late events (open, message, error, close) are ignored, so `disconnect()` followed at once by `connect()` is safe; this is what a live/replay switch does.
+- A connect while the current connection is still open (including one the server is closing) is refused with `Already connected`.
+- `StateTreeSession` runs mode switches one at a time, in call order. `session.disconnect()` cancels the running switch and every queued one: each rejects with `ConnectionClosedError` (`kind: 'disconnect'`) and the mode stays as it was. The generated Vue composables do the same: `connect()` while one is in progress returns it, `disconnect()` stops a connect at its next await, and a close while joining rejects the connect and sets `lastError`.
+
 ## Choosing the Right Layer
 
 | Use Case | Recommended Layer |

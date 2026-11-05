@@ -186,11 +186,11 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
                 patches.append(StatePatch(path: path, operation: .delete))
             case .set:
                 let rawValue = try extractPatchValue(from: patchPayload, startIndex: opcodeIndex + 1)
-                let value = try SnapshotValue.make(from: rawValue)
+                let value = try Self.snapshotValue(fromJSON: rawValue)
                 patches.append(StatePatch(path: path, operation: .set(value)))
             case .add:
                 let rawValue = try extractPatchValue(from: patchPayload, startIndex: opcodeIndex + 1)
-                let value = try SnapshotValue.make(from: rawValue)
+                let value = try Self.snapshotValue(fromJSON: rawValue)
                 patches.append(StatePatch(path: path, operation: .add(value)))
             }
         }
@@ -270,6 +270,31 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
         }
         
         return "/" + components.joined(separator: "/")
+    }
+
+    /// Converts a `JSONSerialization` value to a `SnapshotValue` (#171).
+    ///
+    /// `JSONSerialization` returns JSON numbers and booleans as `NSNumber`, and an `NSNumber`
+    /// holding 0 or 1 casts to `Bool`, so `SnapshotValue.make` would read a JSON 0 or 1 as a
+    /// boolean. Here `JSONSerializationNumber` classifies them: only a JSON `true`/`false` is a
+    /// boolean. Arrays and objects are converted element by element; anything else (strings,
+    /// `NSNull`) goes through `SnapshotValue.make`.
+    static func snapshotValue(fromJSON value: Any) throws -> SnapshotValue {
+        if let number = JSONSerializationNumber(value) {
+            switch number {
+            case .bool(let bool): return .bool(bool)
+            case .int(let int): return .int(int)
+            case .unsigned(let unsigned): return try SnapshotValue.make(from: unsigned)
+            case .double(let double): return .double(double)
+            }
+        }
+        if let array = value as? [Any] {
+            return .array(try array.map { try snapshotValue(fromJSON: $0) })
+        }
+        if let object = value as? [String: Any] {
+            return .object(try object.mapValues { try snapshotValue(fromJSON: $0) })
+        }
+        return try SnapshotValue.make(from: value)
     }
 
     private func extractPatchValue(from payload: [Any], startIndex: Int) throws -> Any {

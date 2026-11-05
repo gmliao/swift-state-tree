@@ -47,6 +47,10 @@ In Reevaluation mode, `LandKeeper`:
 3. Executes handlers with same inputs
 4. Compares state hash after each tick
 
+Inputs are recorded before their handler runs, so an input whose handler throws is in the record too, in order; replay runs it again and it fails the same way.
+
+> **Tick lands only, for now (#167).** A land without a tick handler records correctly, but replay never loads its recorded inputs, so stepping it applies nothing. Replay fidelity (recorded inputs re-applied, hashes and server events compared) currently holds for lands with a `Tick`.
+
 ```swift
 let keeper = LandKeeper(
     definition: myLand,
@@ -159,6 +163,23 @@ Hashes are still compared for every record. Whether a land is affected is decide
 When `enableLiveStateHashRecording: true`, the server also records server events (`ctx.emitEvent()`) per tick. During reevaluation with `--verify`, the runner compares recorded vs emitted server events. A mismatch indicates non-determinism in event emission (e.g., ordering or payload differences).
 
 Actions, client events, lifecycle events and server events share one `sequence` counter. Live ticks of a ticked land record two watermarks of that counter on the tick frame (`sequenceBeforeInputs`, `sequenceBeforeTickHandler`), and reevaluation moves the counter forward to them, so replayed server events get the recorded `sequence` values. The comparison is decided per tick: a tick whose frame has watermarks must match exactly, including `sequence`, and is compared even when its recorded list is empty, so an extra replay event is reported. Ticks from older records without watermarks keep the previous rule: they are compared only when events were recorded, and a difference in `sequence` alone is reported as a warning, not a failure (`ReevaluationEngine.RunResult.serverEventVerification`).
+
+### Sync-Output Verification
+
+Each committed sync plan records, per scope (the broadcast scope and each player's), a hash of its canonical patch list, plus the events that rode with it. Encoded bytes are not compared: dynamic-key slots, frame order and the wire encoding are not canonical. Replay re-plans every recorded sync output with a shadow sync engine fed the replay state, and compares the hashes (`ReevaluationRunner --verify` exits with code 8 on a mismatch).
+
+What it catches:
+
+- dirty-tracking misses: the live plan extracts dirty fields only and the shadow extracts everything, so a changed field the live run did not mark shows up as a missing patch;
+- nondeterminism in what reaches the sync phase (state, membership, the event queue);
+- cache management: a cache the live run staged, unstaged or reset differently from what its plan committed (key-scope resets, recovery plans);
+- event consumption: events consumed twice, skipped or reordered (opcode 107 mode).
+
+A patch-apply oracle also applies each scope's patches to a reference client view and compares the result with the replay state's view of that scope, which catches a diff that produces wrong, missing or extra patches from correct snapshots.
+
+What it does not prove: live and shadow run the same `SyncEngine` extraction and the same policy filters, so a field a filter wrongly shows or hides is wrong on both sides and in the expected view too. It verifies that the sync phase is deterministic and consistent with its own projection, not that the projection is right.
+
+For diagnosis, `REEVALUATION_RECORD_SYNC_DETAILS=true` records each committed player's hash, so a per-player mismatch names the player, and `REEVALUATION_RECORD_SYNC_PATCHES=true` records each scope's canonical patch list, so a mismatch names the first differing path. Both are off by default; the patch lists are as large as the state updates, so use them for short runs only.
 
 ### Field-Level State Diff (Debug)
 

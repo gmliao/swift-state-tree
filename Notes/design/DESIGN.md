@@ -118,7 +118,7 @@ swift-state-tree/
 
 ## 相關文檔
 
-- **[APP_APPLICATION.md](./APP_APPLICATION.md)**：StateTree 在 App 開發中的應用
+- **[APP_APPLICATION.md](../guides/APP_APPLICATION.md)**：StateTree 在 App 開發中的應用
   - SNS App 完整範例
   - 與現有方案比較（Redux、MVVM、TCA）
   - 跨平台實現（Android/Kotlin、TypeScript）

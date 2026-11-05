@@ -3,7 +3,7 @@
 
 import { ref, reactive, computed } from 'vue'
 import type { Ref, ComputedRef } from 'vue'
-import { StateTreeRuntime } from '@swiftstatetree/sdk/core'
+import { StateTreeRuntime, ConnectionClosedError } from '@swiftstatetree/sdk/core'
 import { DeterministicMathDemoStateTree } from './index.js'
 import { LAND_TYPE } from './bindings.js'
 import type { DeterministicMathDemoState } from '../defs.js'
@@ -27,6 +27,9 @@ const isConnecting = ref(false)
 const isConnected = ref(false)
 const isJoined = ref(false)
 const lastError = ref<string | null>(null)
+/** Bumped by every connect() and disconnect(); a connect that resumes after either stops (#143). */
+let connectGeneration = 0
+let connectInFlight: Promise<void> | null = null
 
 export interface DeterministicMathDemoComposableReturn {
   state: Ref<DeterministicMathDemoState | null>
@@ -43,16 +46,36 @@ export interface DeterministicMathDemoComposableReturn {
 export function useDeterministicMathDemo(): DeterministicMathDemoComposableReturn {
 
   async function connect(opts: ConnectOptions): Promise<void> {
-    if (isConnecting.value || isConnected.value) return
-
+    // Single flight (#143): a connect while one is in progress shares it
+    if (connectInFlight) return connectInFlight
+    if (isConnected.value) return
+    const attempt = runConnect(opts, ++connectGeneration)
+    connectInFlight = attempt
+    try {
+      await attempt
+    } finally {
+      if (connectInFlight === attempt) connectInFlight = null
+    }
+  }
+  async function runConnect(opts: ConnectOptions, generation: number): Promise<void> {
+    const isCurrent = () => generation === connectGeneration
     isConnecting.value = true
     lastError.value = null
 
     try {
       const r = new StateTreeRuntime()
-      await r.connect(opts.wsUrl)
+      // Installed before the awaits, so a disconnect() during connect or join closes this runtime
       runtime.value = r
+      await r.connect(opts.wsUrl)
+      if (!isCurrent()) throw new ConnectionClosedError('disconnect')
       isConnected.value = true
+      // Registered before the join, so a close while joining is seen (#143)
+      r.onDisconnect(() => {
+        if (!isCurrent()) return
+        if (isConnecting.value) lastError.value = 'Connection closed while joining'
+        isConnected.value = false
+        void disconnect()
+      })
 
       const metadata: Record<string, any> = opts.metadata ?? {}
       if (opts.playerName && opts.playerName.trim().length > 0) {
@@ -81,6 +104,7 @@ export function useDeterministicMathDemo(): DeterministicMathDemoComposableRetur
       tree.value = t
 
       const joinResult = await t.join()
+      if (!isCurrent()) throw new ConnectionClosedError('disconnect')
       if (!joinResult.success) {
         throw new Error(joinResult.reason ?? 'Join failed')
       }
@@ -103,30 +127,25 @@ export function useDeterministicMathDemo(): DeterministicMathDemoComposableRetur
         configurable: true
       })
       
-      // Set up disconnect callback for automatic cleanup
-      r.onDisconnect(() => {
-        if (isConnected.value || isJoined.value) {
-          console.warn('⚠️ WebSocket disconnected, cleaning up...')
-          // Update state immediately so watchers can react
-          isConnected.value = false
-          // disconnect() will set isJoined.value = false, triggering watchers
-          disconnect()
-        }
-      })
-      
       isJoined.value = true
     } catch (error) {
+      // A disconnect() or a newer connect took over: leave their state alone
+      if (!isCurrent()) throw error
       const message = (error as Error).message ?? String(error)
       lastError.value = message
       console.error('Connect/join failed:', error)
       await disconnect()
       throw error
     } finally {
-      isConnecting.value = false
+      if (isCurrent()) isConnecting.value = false
     }
   }
 
   async function disconnect(): Promise<void> {
+    // Stops a connect in progress at its next await (#143)
+    connectGeneration += 1
+    connectInFlight = null
+    isConnecting.value = false
     if (tree.value) {
       tree.value.destroy()
     }

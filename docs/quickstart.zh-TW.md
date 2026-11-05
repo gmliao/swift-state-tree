@@ -93,16 +93,16 @@ let land = Land("demo", using: GameState.self) {
 }
 ```
 
-### 3) 使用 Hummingbird Hosting
+### 3) 以 SwiftNIO 架設 Server
 
 ```swift
-import SwiftStateTreeHummingbird
+import SwiftStateTreeNIO
 
 @main
 struct DemoServer {
     static func main() async throws {
-        // Create LandHost to manage HTTP server and game logic
-        let host = LandHost(configuration: LandHost.HostConfiguration(
+        // Create NIOLandHost to manage the HTTP/WebSocket server and game logic
+        let host = NIOLandHost(configuration: NIOLandHostConfiguration(
             host: "localhost",
             port: 8080
         ))
@@ -112,10 +112,11 @@ struct DemoServer {
             landType: "demo",
             land: land,
             initialState: GameState(),
-            webSocketPath: "/game",
-            configuration: LandServerConfiguration(
+            webSocketPath: "/game/demo",
+            configuration: NIOLandServerConfiguration(
                 allowGuestMode: true,
-                allowAutoCreateOnJoin: true
+                allowAutoCreateOnJoin: true,
+                transportEncoding: .messagepack
             )
         )
 

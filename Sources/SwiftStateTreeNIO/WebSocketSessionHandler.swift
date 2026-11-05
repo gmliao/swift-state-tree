@@ -26,6 +26,12 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
     let authInfo: AuthenticatedInfo?
     let logger: Logger
 
+    /// The channel's event loop. Every `var` below is read and written only on it: `send` and
+    /// `close`, called from any thread, hop here before they look at `context` or `isClosed`
+    /// (#144).
+    private let eventLoop: any EventLoop
+    /// Set in `handlerAdded`, cleared in `handlerRemoved`: a write never goes through the
+    /// context of a removed handler.
     private var context: ChannelHandlerContext?
     private var connection: NIOWebSocketConnection?
     private var isClosed: Bool = false
@@ -64,8 +70,10 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         path: String,
         transport: WebSocketTransport,
         authInfo: AuthenticatedInfo? = nil,
+        eventLoop: any EventLoop,
         logger: Logger
     ) {
+        self.eventLoop = eventLoop
         self.sessionID = sessionID
         self.path = path
         self.transport = transport
@@ -76,6 +84,7 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
     // MARK: - ChannelInboundHandler
 
     func handlerAdded(context: ChannelHandlerContext) {
+        precondition(context.eventLoop === eventLoop, "WebSocketSessionHandler added to a channel on another event loop")
         self.context = context
 
         // Create connection wrapper
@@ -110,7 +119,8 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         // Cancel ping task
         pingTask?.cancel()
         pingTask = nil
-        
+        self.context = nil
+
         // Also after a close this handler started (`close(code:)`, e.g. a pong timeout) or a
         // client close frame: the transport must learn the session ended in every case.
         isClosed = true
@@ -265,7 +275,9 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
     }
     
     /// Send a ping frame to the client
+    /// Runs on the event loop (a scheduled task).
     private func sendPing() {
+        eventLoop.assertInEventLoop()
         guard let context = context, !isClosed else { return }
         
         // Check if we're still waiting for a previous pong
@@ -277,7 +289,7 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
                     "sessionID": .string(sessionID.rawValue),
                 ]
             )
-            close(code: .goingAway)
+            closeOnLoop(code: .goingAway)
             return
         }
         
@@ -285,14 +297,7 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         waitingForPong = true
         let buffer = context.channel.allocator.buffer(capacity: 0)
         let frame = WebSocketFrame(fin: true, opcode: .ping, data: buffer)
-        
-        if context.eventLoop.inEventLoop {
-            context.writeAndFlush(wrapOutboundOut(frame), promise: nil)
-        } else {
-            context.eventLoop.execute {
-                context.writeAndFlush(self.wrapOutboundOut(frame), promise: nil)
-            }
-        }
+        context.writeAndFlush(wrapOutboundOut(frame), promise: nil)
         
         logger.trace(
             "Sent ping",
@@ -320,44 +325,44 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
 
     // MARK: - Outbound
 
-    /// Sends a binary frame to the client.
-    /// Optimized: check if already on EventLoop to avoid unnecessary hop.
+    /// Sends a binary frame to the client. Callable from any thread: off the event loop it hops
+    /// there, and the closed check runs in the same loop task as the write, so a send that races
+    /// the handler's removal writes nothing. Calls from one thread keep their order.
     func send(_ buffer: ByteBuffer) {
-        guard let context = context, !isClosed else { return }
-
-        let frame = WebSocketFrame(fin: true, opcode: .binary, data: buffer)
-
-        if context.eventLoop.inEventLoop {
-            // Fast path: already on correct EventLoop
-            context.writeAndFlush(self.wrapOutboundOut(frame), promise: nil)
+        if eventLoop.inEventLoop {
+            sendOnLoop(buffer)
         } else {
-            // Slow path: hop to EventLoop
-            context.eventLoop.execute {
-                context.writeAndFlush(self.wrapOutboundOut(frame), promise: nil)
-            }
+            eventLoop.execute { self.sendOnLoop(buffer) }
         }
     }
 
-    /// Closes the WebSocket connection.
+    private func sendOnLoop(_ buffer: ByteBuffer) {
+        eventLoop.assertInEventLoop()
+        guard let context = context, !isClosed else { return }
+        let frame = WebSocketFrame(fin: true, opcode: .binary, data: buffer)
+        context.writeAndFlush(wrapOutboundOut(frame), promise: nil)
+    }
+
+    /// Closes the WebSocket connection (a close frame, then the channel). Callable from any
+    /// thread, like `send`; a close after the handler's removal does nothing.
     func close(code: WebSocketErrorCode = .normalClosure) {
+        if eventLoop.inEventLoop {
+            closeOnLoop(code: code)
+        } else {
+            eventLoop.execute { self.closeOnLoop(code: code) }
+        }
+    }
+
+    private func closeOnLoop(code: WebSocketErrorCode) {
+        eventLoop.assertInEventLoop()
         guard let context = context, !isClosed else { return }
         isClosed = true
 
         var buffer = context.channel.allocator.buffer(capacity: 2)
         buffer.write(webSocketErrorCode: code)
-
         let frame = WebSocketFrame(fin: true, opcode: .connectionClose, data: buffer)
-        
-        if context.eventLoop.inEventLoop {
-            context.writeAndFlush(self.wrapOutboundOut(frame)).whenComplete { _ in
-                context.close(promise: nil)
-            }
-        } else {
-            context.eventLoop.execute {
-                context.writeAndFlush(self.wrapOutboundOut(frame)).whenComplete { _ in
-                    context.close(promise: nil)
-                }
-            }
+        context.writeAndFlush(wrapOutboundOut(frame)).whenComplete { _ in
+            context.close(promise: nil)
         }
     }
 }

@@ -107,6 +107,50 @@
         }
       }
     },
+    "CallServiceAction" : {
+      "properties" : {
+        "deadlineMs" : {
+          "type" : "integer"
+        },
+        "delayMs" : {
+          "type" : "integer"
+        },
+        "outcome" : {
+          "type" : "string"
+        },
+        "tag" : {
+          "type" : "string"
+        }
+      },
+      "required" : [
+        "deadlineMs",
+        "delayMs",
+        "outcome",
+        "tag"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
+    "CallServiceResponse" : {
+      "properties" : {
+        "applied" : {
+          "type" : "integer"
+        },
+        "tickAdvance" : {
+          "type" : "integer"
+        }
+      },
+      "required" : [
+        "applied",
+        "tickAdvance"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "leaf"
+      }
+    },
     "HeroDefenseState" : {
       "properties" : {
         "base" : {
@@ -789,6 +833,71 @@
         "currentActualHash",
         "currentIsMatch",
         "errorMessage"
+      ],
+      "type" : "object",
+      "x-stateTree" : {
+        "nodeKind" : "object"
+      }
+    },
+    "ResolverTestState" : {
+      "properties" : {
+        "applied" : {
+          "default" : 0,
+          "type" : "integer",
+          "x-stateTree" : {
+            "nodeKind" : "leaf",
+            "sync" : {
+              "policy" : "broadcast"
+            }
+          }
+        },
+        "lastResult" : {
+          "default" : "",
+          "type" : "string",
+          "x-stateTree" : {
+            "nodeKind" : "leaf",
+            "sync" : {
+              "policy" : "broadcast"
+            }
+          }
+        },
+        "lastTag" : {
+          "default" : "",
+          "type" : "string",
+          "x-stateTree" : {
+            "nodeKind" : "leaf",
+            "sync" : {
+              "policy" : "broadcast"
+            }
+          }
+        },
+        "lastTickAdvance" : {
+          "default" : 0,
+          "type" : "integer",
+          "x-stateTree" : {
+            "nodeKind" : "leaf",
+            "sync" : {
+              "policy" : "broadcast"
+            }
+          }
+        },
+        "tickCount" : {
+          "default" : 0,
+          "type" : "integer",
+          "x-stateTree" : {
+            "nodeKind" : "leaf",
+            "sync" : {
+              "policy" : "broadcast"
+            }
+          }
+        }
+      },
+      "required" : [
+        "applied",
+        "lastTag",
+        "lastResult",
+        "lastTickAdvance",
+        "tickCount"
       ],
       "type" : "object",
       "x-stateTree" : {
@@ -1653,6 +1762,76 @@
         }
       }
     },
+    "resolver-test" : {
+      "actions" : {
+        "CallService" : {
+          "$ref" : "#\/defs\/CallServiceAction"
+        }
+      },
+      "clientEventHashes" : {
+
+      },
+      "clientEvents" : {
+
+      },
+      "eventHashes" : {
+
+      },
+      "events" : {
+
+      },
+      "pathHashes" : {
+        "applied" : 707093323,
+        "lastResult" : 402733132,
+        "lastTag" : 752692850,
+        "lastTickAdvance" : 3031497782,
+        "tickCount" : 1649279712
+      },
+      "stateType" : "ResolverTestState",
+      "sync" : {
+        "diff" : {
+          "$ref" : "#\/defs\/StateDiff"
+        },
+        "snapshot" : {
+          "$ref" : "#\/defs\/ResolverTestState"
+        }
+      }
+    },
+    "resolver-test-replay" : {
+      "actions" : {
+        "CallService" : {
+          "$ref" : "#\/defs\/CallServiceAction"
+        }
+      },
+      "clientEventHashes" : {
+
+      },
+      "clientEvents" : {
+
+      },
+      "eventHashes" : {
+
+      },
+      "events" : {
+
+      },
+      "pathHashes" : {
+        "applied" : 707093323,
+        "lastResult" : 402733132,
+        "lastTag" : 752692850,
+        "lastTickAdvance" : 3031497782,
+        "tickCount" : 1649279712
+      },
+      "stateType" : "ResolverTestState",
+      "sync" : {
+        "diff" : {
+          "$ref" : "#\/defs\/StateDiff"
+        },
+        "snapshot" : {
+          "$ref" : "#\/defs\/ResolverTestState"
+        }
+      }
+    },
     "visibility-test" : {
       "actions" : {
         "ParkEntities" : {
@@ -1766,6 +1945,6 @@
       }
     }
   },
-  "schemaHash" : "fe81402d9f384064",
+  "schemaHash" : "9271f476cc86bf03",
   "version" : "0.1.0"
 }

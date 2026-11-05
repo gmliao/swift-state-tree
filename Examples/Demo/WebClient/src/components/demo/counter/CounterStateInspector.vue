@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import MetricGrid from '../MetricGrid.vue'
-import type { CounterSnapshot } from '../../../generated/counter'
+import type { CounterState } from '../../../generated/defs'
 import { formatSince } from '../../../utils/time'
 import { useNow } from '../../../utils/useNow'
 
 interface Props {
-  snapshot: CounterSnapshot | null
+  snapshot: CounterState | null
   lastUpdatedAt?: Date
 }
 

@@ -841,5 +841,5 @@ const events = generateEvents(schema.lands)
 ## 參考資料
 
 - [JSON Schema Specification](https://json-schema.org/)
-- [SwiftStateTree Protocol Schema 設計](./DESIGN_PROTOCOL_SCHEMA.md)
+- [SwiftStateTree Protocol Schema 設計](../design/DESIGN_PROTOCOL_SCHEMA.md)
 - [Transport Protocol](./TRANSPORT_PROTOCOL.md)

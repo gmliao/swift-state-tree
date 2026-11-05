@@ -48,7 +48,7 @@
 > **差異**：移除了 "kind", "payload", "action", "type" 等重複 Key，大幅減少封包大小。
 
 - **相關分析程式碼**:
-  - Server 端編碼: [StateUpdateEncoder.swift:L140](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift#L140)
+  - Server 端編碼: [OpcodeJSONStateUpdateEncoder.swift](../Sources/SwiftStateTreeTransport/OpcodeJSONStateUpdateEncoder.swift)
   - Client 端解碼: [protocol.ts:L388](../sdk/ts/src/core/protocol.ts#L388)
 
 ---
@@ -101,7 +101,7 @@
 
 - **相關分析程式碼**:
   - 路徑雜湊邏輯: [PathHasher.swift](../Sources/SwiftStateTree/Core/PathHasher.swift)
-  - Server 端應用: [StateUpdateEncoder.swift:L214](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift#L214)
+  - Server 端應用: [OpcodeJSONStateUpdateEncoder.swift](../Sources/SwiftStateTreeTransport/OpcodeJSONStateUpdateEncoder.swift)
   - Client 端路徑重建: [protocol.ts:L520](../sdk/ts/src/core/protocol.ts#L520)
 
 ---
@@ -119,7 +119,7 @@
   - **Broadcast scope**：以 `landID` 為範圍，**只**用於 opcode **107** 的 broadcast 更新。
   - **Per-player scope**：以 `(landID, playerID)` 為範圍，使用於 per‑player state update。
   客戶端必須為這兩個 scope **分開**維護 dynamic key map，不能互相混用。
-- **Reset**：`firstSync` 只會重置 **per‑player** table 並重新定義 keys，避免無限制成長，並確保解碼決定性。Broadcast table 會在 land 重新建立時重置（或當有明確 broadcast firstSync 時）。
+- **Reset**：`firstSync` 只會重置 **per‑player** table 並重新定義 keys，避免無限制成長，並確保解碼決定性。Broadcast table 會在 land 重新建立時重置，以及在晚加入者的 firstSync 之後重置：下一個合併 broadcast frame 會標記為 firstSync，並為所有成員重新定義其 key（#189，見 Q6）。
 
 #### 1.1 Dynamic Key 封包格式（Opcode Patch）
 
@@ -172,7 +172,7 @@
   > **註**：此機制可用於 **任何** 出現在 `*` 的動態片段（例如 `PlayerID`、`MonsterID`、`ItemKey`），不限於 `players` 字典。
 
 - **相關分析程式碼**:
-  - Server 端管理: [StateUpdateEncoder.swift:L221](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift#L221)
+  - Server 端管理: [OpcodeJSONStateUpdateEncoder.swift](../Sources/SwiftStateTreeTransport/OpcodeJSONStateUpdateEncoder.swift)
   - Client 端映射解析: [protocol.ts:L455](../sdk/ts/src/core/protocol.ts#L455)
 
 ---
@@ -213,7 +213,7 @@
 `OpcodeMessagePackStateUpdateEncoder` 和 `MessagePackSerializer` 都是 **`Sendable`** 類型，可在不同並發域中安全使用。狀態更新在每個 sync 週期內以串行方式編碼。
 
 - **相關程式碼**:
-  - Server 端編碼: [StateUpdateEncoder.swift](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift)
+  - Server 端編碼: [OpcodeMessagePackStateUpdateEncoder.swift](../Sources/SwiftStateTreeTransport/OpcodeMessagePackStateUpdateEncoder.swift)
   - Client 端解碼: [protocol.ts:L304](../sdk/ts/src/core/protocol.ts#L304)
 
 ---
@@ -332,7 +332,7 @@
 - **Dynamic key scope**：
   - broadcast 更新使用 **broadcast key table**（以 land 為範圍）
   - per-player 更新使用 **per-player key table**（以 land + player 為範圍）
-- **Late-join 規則**：新加入的 client 若在 broadcast keys 已存在之後加入，必須先收到 **dynamic key 定義**，才能接收 slot-only broadcast 更新。可透過強制定義或 join 後傳一次 broadcast firstSync。
+- **Late-join 規則**：新加入的 client 若在 broadcast keys 已存在之後加入，必須先收到 **dynamic key 定義**，才能接收 slot-only broadcast 更新。自 #189（2026-11-06）起，server 以重設 broadcast key scope 達成：joiner 的 firstSync 在含 state patch 的 107 frame 之後 commit 後，下一個 cycle 的 frame 對所有成員標記為 firstSync，並重新定義它用到的 key。#189 之前，晚加入者可能無法解碼合併的 broadcast frame（"Dynamic key slot N used before definition"，#90）。
 
 ---
 

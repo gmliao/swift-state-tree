@@ -4,6 +4,7 @@ import { createWebSocket, type WebSocketConnection } from './websocket'
 import { decodeMessage, encodeMessageToFormat } from './protocol'
 import { NoOpLogger, type Logger } from './logger'
 import { StateTreeView, type ViewOptions } from './view'
+import { ConnectionClosedError } from './errors'
 
 export interface RuntimeOptions {
   logger?: Logger
@@ -36,7 +37,10 @@ export type StatisticsCallback = (stats: MessageStatistics) => void
 export interface DecodeErrorStats {
   /** Messages that failed to decode before `disconnect()`. */
   beforeLeave: number
-  /** Messages that failed to decode after `disconnect()` (frames still in flight, #190). */
+  /**
+   * Messages that failed to decode after `disconnect()` (#190): frames received before it whose
+   * decode finished after it. Frames that arrive on the dropped socket are ignored (#143).
+   */
   afterLeave: number
   /** The first few errors, prefixed with when they happened. */
   samples: string[]
@@ -47,6 +51,10 @@ const DECODE_ERROR_SAMPLE_LIMIT = 5
 export class StateTreeRuntime {
   private ws: WebSocketConnection | null = null
   private isConnected = false
+  /** The connect in progress (#143): a second `connect()` to the same URL joins it. */
+  private connecting: { url: string; promise: Promise<void>; abort: (error: Error) => void } | null = null
+  /** Bumped by every `connect()` and `disconnect()`; a connect whose socket arrives late checks it. */
+  private connectGeneration = 0
   private views = new Map<string, StateTreeView>()
   private logger: Logger
   private transportEncoding: TransportEncodingConfig
@@ -131,37 +139,68 @@ export class StateTreeRuntime {
    * @throws {Error} If connection fails, the error will have `closeCode`, `closeReason`, and `wasClean` properties
    *                 if the failure occurred during WebSocket handshake (connection was closed before opening)
    */
-  async connect(url: string): Promise<void> {
-    this.leaving = false
-    if (this.isConnected) {
-      throw new Error('Already connected')
+  connect(url: string): Promise<void> {
+    // Single flight (#143): a connect to the same URL while one is in progress shares its promise;
+    // a different URL is refused instead of opening a second socket.
+    if (this.connecting) {
+      if (this.connecting.url === url) return this.connecting.promise
+      return Promise.reject(new Error(`Already connecting to ${this.connecting.url}`))
     }
+    if (this.isConnected) {
+      return Promise.reject(new Error('Already connected'))
+    }
+    this.leaving = false
+    const generation = ++this.connectGeneration
 
-    return new Promise(async (resolve, reject) => {
-      this.logger.info(`Connecting to ${url}...`)
+    let resolve!: () => void
+    let reject!: (error: any) => void
+    const promise = new Promise<void>((res, rej) => {
+      resolve = res
+      reject = rej
+    })
+    const attempt = { url, promise, abort: (error: Error) => reject(error) }
+    this.connecting = attempt
+    const finish = () => {
+      if (this.connecting === attempt) this.connecting = null
+    }
+    promise.then(finish, finish)
 
+    this.logger.info(`Connecting to ${url}...`)
+    void (async () => {
+      let socket: WebSocketConnection
       try {
-        // createWebSocket is now async (returns Promise)
         // Set binaryType to 'arraybuffer' for MessagePack binary support
-    this.ws = await createWebSocket(url, { binaryType: 'arraybuffer' })
-
-        this.setupWebSocketHandlers(resolve, reject)
+        socket = await createWebSocket(url, { binaryType: 'arraybuffer' })
       } catch (error) {
         this.logger.error(`Failed to create WebSocket: ${error}`)
         reject(error)
+        return
       }
-    })
+      // disconnect() (or another connect after it) ran while the socket was being created: this
+      // attempt was already rejected, so drop the socket instead of installing it.
+      if (generation !== this.connectGeneration) {
+        socket.close()
+        return
+      }
+      this.ws = socket
+      this.setupWebSocketHandlers(socket, resolve, reject)
+    })()
+    return promise
   }
 
-  private setupWebSocketHandlers(resolve: () => void, reject: (error: any) => void): void {
-    if (!this.ws) return
+  /**
+   * Every handler first checks that its socket is still the current one (#143): a socket that
+   * `disconnect()` dropped or a later `connect()` replaced must not touch the next connection.
+   */
+  private setupWebSocketHandlers(socket: WebSocketConnection, resolve: () => void, reject: (error: any) => void): void {
 
     let connectionResolved = false
     let closeCode: number | null = null
     let closeReason: string = ''
     let wasClean: boolean = false
 
-    this.ws.onopen = () => {
+    socket.onopen = () => {
+      if (this.ws !== socket) return
       this.isConnected = true
       this.logger.info('WebSocket connected')
       // Reset dynamic key map on new connection
@@ -171,17 +210,23 @@ export class StateTreeRuntime {
       resolve()
     }
 
-    this.ws.onerror = (event) => {
+    socket.onerror = (event) => {
+      if (this.ws !== socket) return
       // Note: onerror doesn't provide detailed error info in browsers
       // The actual error details will be in onclose event
       this.logger.error('WebSocket error event triggered')
       // Don't reject here - wait for onclose to get the actual error code and reason
     }
 
-    this.ws.onclose = (event) => {
-      this.isConnected = false
-      this.broadcastDynamicKeyMap.clear()
-      this.perPlayerDynamicKeyMap.clear()
+    socket.onclose = (event) => {
+      // A socket that disconnect() already dropped or a later connect() replaced: its cleanup is
+      // done, and the connection state, key maps and views now belong to the next connection.
+      const isCurrent = this.ws === socket
+      if (isCurrent) {
+        this.isConnected = false
+        this.broadcastDynamicKeyMap.clear()
+        this.perPlayerDynamicKeyMap.clear()
+      }
       closeCode = event.code
       closeReason = event.reason || 'No reason provided'
       wasClean = event.wasClean
@@ -214,16 +259,20 @@ export class StateTreeRuntime {
         error.wasClean = wasClean
         reject(error)
       }
-      
-      // Clean up all views
-      this.views.clear()
+
+      if (!isCurrent) return
+
+      // Settle every pending request, then drop the views (#109)
+      this.destroyAllViews(new ConnectionClosedError('close', { closeCode, closeReason, wasClean }))
       // Notify disconnect callback with close details
       if (this.onDisconnectCallback) {
         this.onDisconnectCallback(closeCode, closeReason, wasClean)
       }
     }
 
-    this.ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
+      // A late frame from a dropped socket would be decoded against the next connection's key maps
+      if (this.ws !== socket) return
       void this.handleMessage(event.data)
     }
   }
@@ -233,17 +282,23 @@ export class StateTreeRuntime {
    */
   disconnect(): void {
     this.leaving = true
+    // Abort a connect in progress (#143): its socket is dropped when it arrives or closed here
+    this.connectGeneration += 1
+    const attempt = this.connecting
+    this.connecting = null
     if (this.ws) {
-      this.ws.close()
+      const socket = this.ws
       this.ws = null
+      socket.close()
     }
     this.isConnected = false
     this.broadcastDynamicKeyMap.clear()
     this.perPlayerDynamicKeyMap.clear()
-    // Clean up all views
-    this.views.clear()
+    // Settle every pending request, then drop the views (#109)
+    this.destroyAllViews(new ConnectionClosedError('disconnect'))
     // Clear disconnect callback
     this.onDisconnectCallback = null
+    attempt?.abort(new ConnectionClosedError('disconnect'))
   }
 
   /**
@@ -287,6 +342,13 @@ export class StateTreeRuntime {
 
     this.views.set(landID, view)
     return view
+  }
+
+  /** Destroys every view (rejecting its pending requests with `reason`) and clears the map. */
+  private destroyAllViews(reason: ConnectionClosedError): void {
+    const views = [...this.views.values()]
+    this.views.clear()
+    for (const view of views) view.destroy(reason)
   }
 
   /**
@@ -510,7 +572,8 @@ export class StateTreeRuntime {
   /**
    * Messages that failed to decode (for example `Dynamic key slot N used before definition`).
    * `beforeLeave` counts errors before `disconnect()`; `afterLeave` counts errors after it, when
-   * frames still in flight are decoded against cleared key maps (#190).
+   * frames received before it are decoded against cleared key maps (#190). Frames that arrive
+   * on the dropped socket afterwards are ignored, not decoded (#143).
    */
   decodeErrorStats(): DecodeErrorStats {
     return { ...this.decodeErrors, samples: [...this.decodeErrors.samples] }

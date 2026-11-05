@@ -295,7 +295,7 @@ final class OutboundWriter: @unchecked Sendable {
 }
 
 /// Resumes a continuation once; later calls are ignored.
-private final class OutboundResumeOnce: @unchecked Sendable {
+final class OutboundResumeOnce: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Bool, Never>?
 

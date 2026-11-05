@@ -76,9 +76,9 @@ SwiftStateTree supports **three** transport encoding combinations. The recommend
 |---|---|---|---|
 | **JSON (debug)** | `json` | `jsonObject` | Most readable, easiest to debug |
 | **Opcode JSON (compact)** | `opcodeJsonArray` | `opcodeJsonArray` | Compact JSON arrays; good transition path |
-| **MessagePack (default)** | `messagepack` | `opcodeMessagePack` | Smallest packets + fastest parsing |
+| **MessagePack (recommended)** | `messagepack` | `opcodeMessagePack` | Smallest packets + fastest parsing |
 
-For details and performance results, see: [Transport Evolution](docs/transport_evolution.md).
+The library default (`NIOLandServerConfiguration`) is JSON; GameServer defaults to MessagePack. See [Transport](docs/transport/README.md#state-update-encoding) for every preset and its default. For details and performance results, see: [Transport Evolution](docs/transport_evolution.md).
 
 ## 📦 System Requirements
 

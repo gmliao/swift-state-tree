@@ -293,6 +293,7 @@ public actor NIOWebSocketServer {
                                 path: path,
                                 transport: transport,
                                 authInfo: authInfo,
+                                eventLoop: channel.eventLoop,
                                 logger: logger
                             ))
                         }
@@ -307,6 +308,7 @@ public actor NIOWebSocketServer {
                     path: path,
                     transport: transport,
                     authInfo: nil,
+                    eventLoop: channel.eventLoop,
                     logger: logger
                 )
                 return channel.pipeline.addHandler(handler)

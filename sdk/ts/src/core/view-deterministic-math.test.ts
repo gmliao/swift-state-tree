@@ -795,7 +795,7 @@ describe('StateTreeView DeterministicMath Integration', () => {
       expect(state.nestedArray.items[1].v.y).toBe(40.0)
     })
 
-    it('handles patch update for array element', () => {
+    it('decodes array elements after a whole-array replace that changes one', () => {
       // First set up initial state
       const snapshot: StateSnapshot = {
         values: {
@@ -808,14 +808,14 @@ describe('StateTreeView DeterministicMath Integration', () => {
 
       view.handleSnapshot(snapshot)
       
-      // Update first element via patch
+      // The server replaces a changed array whole (it never sends element paths, #202)
       const update: StateUpdate = {
         type: 'diff',
         patches: [
           {
-            path: '/positions[0]/v',
+            path: '/positions',
             op: 'replace',
-            value: { x: 50000, y: 60000 }
+            value: [{ v: { x: 50000, y: 60000 } }, { v: { x: 30000, y: 40000 } }]
           }
         ]
       }
@@ -833,7 +833,7 @@ describe('StateTreeView DeterministicMath Integration', () => {
       expect(state.positions[1].v.y).toBe(40.0)
     })
 
-    it('handles patch add for array element', () => {
+    it('decodes array elements after a whole-array replace that appends one', () => {
       // First set up initial state
       const snapshot: StateSnapshot = {
         values: {
@@ -845,14 +845,14 @@ describe('StateTreeView DeterministicMath Integration', () => {
 
       view.handleSnapshot(snapshot)
       
-      // Add new element via patch
+      // An appended element arrives as the whole array (#202)
       const update: StateUpdate = {
         type: 'diff',
         patches: [
           {
-            path: '/positions[1]',
-            op: 'add',
-            value: { v: { x: 30000, y: 40000 } }
+            path: '/positions',
+            op: 'replace',
+            value: [{ v: { x: 10000, y: 20000 } }, { v: { x: 30000, y: 40000 } }]
           }
         ]
       }
@@ -867,7 +867,7 @@ describe('StateTreeView DeterministicMath Integration', () => {
       expect(state.positions[1].v.y).toBe(40.0)
     })
 
-    it('handles patch remove for array element', () => {
+    it('decodes array elements after a whole-array replace that removes one', () => {
       // First set up initial state
       const snapshot: StateSnapshot = {
         values: {
@@ -881,13 +881,14 @@ describe('StateTreeView DeterministicMath Integration', () => {
 
       view.handleSnapshot(snapshot)
       
-      // Remove middle element via patch
+      // A removed element arrives as the whole array (#202)
       const update: StateUpdate = {
         type: 'diff',
         patches: [
           {
-            path: '/positions[1]',
-            op: 'remove'
+            path: '/positions',
+            op: 'replace',
+            value: [{ v: { x: 10000, y: 20000 } }, { v: { x: 50000, y: 60000 } }]
           }
         ]
       }
