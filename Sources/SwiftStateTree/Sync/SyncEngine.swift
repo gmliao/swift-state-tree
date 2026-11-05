@@ -347,6 +347,7 @@ public struct SyncEngine: Sendable {
         
         // If values are equal, no change. NaN equals NaN here: an unchanged NaN is not a change,
         // whether or not the field was marked dirty (live and replay mark different fields).
+        // 0.0 and -0.0 are equal too, so a change from one to the other sends no patch.
         if SnapshotValue.sameValue(oldValue, newValue) {
             return patches
         }

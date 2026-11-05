@@ -571,6 +571,15 @@ struct SyncOutputVerifierTests {
     }
     #endif
 
+    @Test("The JSON-safe form keeps a non-finite double distinct from the string with its name")
+    func nonFiniteFormIsTagged() {
+        for (value, name) in [(Double.nan, "NaN"), (.infinity, "Infinity"), (-.infinity, "-Infinity")] {
+            #expect(SnapshotValue.double(value).jsonSafe == .object([SnapshotValue.nonFiniteTag: .string(name)]))
+            #expect(SnapshotValue.double(value).jsonSafe != SnapshotValue.string(name).jsonSafe)
+        }
+        #expect(SnapshotValue.double(1.5).jsonSafe == .double(1.5))
+    }
+
     @Test("A NaN in the state verifies: an unchanged NaN is not resent, and the view equals itself")
     func nanPassesTheApplyCheck() async throws {
         guard InTurnSync.isEnabled() else { return }
@@ -600,8 +609,8 @@ struct SyncOutputVerifierTests {
             if case .output(let o) = entry { return o.patches?[player] ?? [] } else { return [] }
         }
         let json = String(decoding: try JSONEncoder().encode(sent), as: UTF8.self)
-        #expect(json.contains("\"Infinity\""), "\(json)")
-        #expect(json.contains("\"NaN\""), "\(json)")
+        #expect(json.contains("{\"$nonFinite\":\"Infinity\"}"), "\(json)")
+        #expect(json.contains("{\"$nonFinite\":\"NaN\"}"), "\(json)")
         let sync = try await f.replay().syncOutput  // saves the record as JSON first
         #expect(sync.verdict == .passed, "\(sync.summary)")
     }

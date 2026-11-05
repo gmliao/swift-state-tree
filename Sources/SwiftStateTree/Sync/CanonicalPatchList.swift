@@ -103,9 +103,10 @@ package struct CanonicalPatchList: Sendable {
 }
 
 extension StatePatch {
-    /// The patch with every non-finite double (which JSON cannot hold) written as the string
-    /// "NaN", "Infinity" or "-Infinity". Diagnostic patch lists in records use it, so they always
-    /// save; the verifier compares its replayed patches in the same form.
+    /// The patch with every non-finite double (which JSON cannot hold) written in a tagged form,
+    /// `{"$nonFinite": "NaN" | "Infinity" | "-Infinity"}`, so a NaN double and the string "NaN"
+    /// stay distinct. Diagnostic patch lists in records use it, so they always save; the verifier
+    /// compares its replayed patches in the same form.
     package var jsonSafe: StatePatch {
         switch operation {
         case .set(let value): return StatePatch(path: path, operation: .set(value.jsonSafe))
@@ -116,11 +117,15 @@ extension StatePatch {
 }
 
 extension SnapshotValue {
+    /// The key of the tagged form `StatePatch.jsonSafe` writes a non-finite double in.
+    package static let nonFiniteTag = "$nonFinite"
+
     /// `StatePatch.jsonSafe` for one value.
     package var jsonSafe: SnapshotValue {
         switch self {
         case .double(let value) where !value.isFinite:
-            return .string(value.isNaN ? "NaN" : (value > 0 ? "Infinity" : "-Infinity"))
+            let name = value.isNaN ? "NaN" : (value > 0 ? "Infinity" : "-Infinity")
+            return .object([Self.nonFiniteTag: .string(name)])
         case .array(let elements):
             return .array(elements.map(\.jsonSafe))
         case .object(let fields):
@@ -130,7 +135,8 @@ extension SnapshotValue {
         }
     }
 
-    /// `==`, except that NaN equals NaN (at any depth): a view holding NaN equals itself.
+    /// `==`, except that NaN equals NaN (at any depth): a view holding NaN equals itself. As with
+    /// `==`, `0.0` equals `-0.0`, so a change between them is no change (the diff sends nothing).
     package static func sameValue(_ lhs: SnapshotValue?, _ rhs: SnapshotValue?) -> Bool {
         switch (lhs, rhs) {
         case (nil, nil):
