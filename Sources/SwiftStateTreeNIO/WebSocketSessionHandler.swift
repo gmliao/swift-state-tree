@@ -37,6 +37,12 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
     /// Maximum messages per batch before immediate flush
     private static let maxBatchSize = 64
 
+    /// Connect, message batches and disconnect reach the transport in this order (a join sent
+    /// right after the upgrade must not overtake the connection's registration).
+    private let inbound = InboundTaskChain()
+    /// The disconnect went into `inbound` (exactly once, whoever started the close).
+    private var disconnectEnqueued = false
+
     /// Fragment reassembly: buffer for accumulating fragmented message payloads
     private var fragmentBuffer: ByteBuffer?
 
@@ -80,7 +86,7 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         self.connection = connection
 
         // Register with transport
-        Task {
+        inbound.enqueue {
             await self.transport.handleConnection(
                 sessionID: self.sessionID,
                 connection: connection,
@@ -105,10 +111,20 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         pingTask?.cancel()
         pingTask = nil
         
-        guard !isClosed else { return }
+        // Also after a close this handler started (`close(code:)`, e.g. a pong timeout) or a
+        // client close frame: the transport must learn the session ended in every case.
         isClosed = true
+        enqueueDisconnect()
+    }
 
-        Task {
+    /// Hands the session's disconnect to the transport after every message read before it.
+    private func enqueueDisconnect() {
+        guard !disconnectEnqueued else { return }
+        disconnectEnqueued = true
+        // A batch smaller than `maxBatchSize` is flushed from a later event-loop task; a frame
+        // read in the same turn as the close would otherwise be enqueued after the disconnect.
+        flushPendingMessages()
+        inbound.enqueue {
             await self.transport.handleDisconnection(sessionID: self.sessionID)
 
             self.logger.info(
@@ -184,6 +200,9 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
     }
 
     private func enqueueMessage(_ data: Data, context: ChannelHandlerContext) {
+        // A data frame read after the close (same read) would reach the transport after the
+        // session's disconnect, as a message from an unknown session: drop it.
+        guard !disconnectEnqueued else { return }
         pendingMessages.append(data)
 
         if pendingMessages.count >= Self.maxBatchSize {
@@ -204,7 +223,7 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         let messages = pendingMessages
         pendingMessages = []
 
-        Task {
+        inbound.enqueue {
             for data in messages {
                 await self.transport.handleIncomingMessage(
                     sessionID: self.sessionID,
@@ -296,9 +315,7 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         _ = context.writeAndFlush(wrapOutboundOut(closeFrame))
         context.close(promise: nil)
 
-        Task {
-            await self.transport.handleDisconnection(sessionID: self.sessionID)
-        }
+        enqueueDisconnect()
     }
 
     // MARK: - Outbound
