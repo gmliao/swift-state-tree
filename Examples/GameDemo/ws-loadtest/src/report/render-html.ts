@@ -84,9 +84,9 @@ export function buildReport(run: RunResult, systemMetrics: SystemMetrics): Repor
 /**
  * Join checks, independent of the scenario's thresholds. A phase fails when any join failed, or
  * when fewer connections than the target were joined over the measured window (time-weighted;
- * with no measured window, at the phase end). `--allow-join-failures` turns both off;
- * `--allow-partial-ramp` turns off the joined-count check only, since a partial ramp joins
- * fewer connections by design.
+ * with no measured window, at the phase end). `--allow-join-failures` turns both off. With
+ * `--allow-partial-ramp`, which opens fewer connections than the target by design, the joined
+ * count at the phase end is compared with the connections the phase held (kept or started).
  */
 export function joinFailuresOf(phase: PhaseResult, runConfig?: Pick<RunConfig, "allowJoinFailures" | "allowPartialRamp">): string[] {
     if (runConfig?.allowJoinFailures) {
@@ -101,7 +101,14 @@ export function joinFailuresOf(phase: PhaseResult, runConfig?: Pick<RunConfig, "
             .join(", ");
         failures.push(`joinFailures ${joinFailures} > 0 (${reasons})`);
     }
-    if (!runConfig?.allowPartialRamp && connections) {
+    if (connections && runConfig?.allowPartialRamp) {
+        // A partial ramp opens fewer connections than the target by design: every connection
+        // the phase holds (kept or started by the ramp) must still have joined by the end.
+        const held = connections.reused + connections.started;
+        if (connections.joinedAtEnd < held) {
+            failures.push(`joined ${connections.joinedAtEnd} < opened ${held} (at the phase end, partial ramp)`);
+        }
+    } else if (connections) {
         const target = connections.target;
         const measured = phase.measurement?.measuredMs ?? 0;
         const joined = measured > 0 ? phase.measurement.joined?.average : connections.joinedAtEnd;
@@ -193,6 +200,34 @@ function clientJitterHint(report: Report): string {
   <p>No direct metric for client processing delay (Node.js <code>ws</code> does not expose packet arrival time). For phases <strong>${phaseNames}</strong>: RTT p95 is low (&lt; ${RTT_LOW_MS}ms) and update p50 ≈ sync interval (${syncMs}ms) → server is on time; update p95 above ${syncMs}ms is consistent with client event-loop jitter, not systematic client delay.</p>`;
 }
 
+function escapeHtml(text: string): string {
+    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/** Join failures over the phase, with their reasons, e.g. `80 (error 80)`. */
+export function joinFailuresCell(connections?: PhaseConnections): string {
+    const failures = connections?.joinFailures;
+    if (!failures) {
+        return "–";
+    }
+    if (failures.phase === 0) {
+        return "0";
+    }
+    const reasons = Object.entries(failures.byReason)
+        .map(([reason, count]) => `${reason} ${count}`)
+        .join(", ");
+    return `<span class="text-red-400">${failures.phase} (${escapeHtml(reasons)})</span>`;
+}
+
+/** Why a phase failed, listed under its status. */
+export function failuresList(failures: string[]): string {
+    if (failures.length === 0) {
+        return "";
+    }
+    const items = failures.map((f) => `<li>${escapeHtml(f)}</li>`).join("");
+    return `<ul class="mt-1 text-xs text-red-300 list-disc list-inside">${items}</ul>`;
+}
+
 function runConfigLine(report: Report): string {
     const config = report.meta.runConfig;
     if (!config) {
@@ -214,6 +249,7 @@ export function renderHtml(report: Report): string {
                     <td class="px-4 py-2 text-slate-300">${phase.connections}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.layout ? `${phase.layout.lands} × ${phase.layout.playersPerLand.min === phase.layout.playersPerLand.max ? phase.layout.playersPerLand.max : `${phase.layout.playersPerLand.min}–${phase.layout.playersPerLand.max}`}` : "–"}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.connectionLifecycle ? `${phase.connectionLifecycle.joinedAtEnd} / ${phase.connectionLifecycle.target}` : "–"}</td>
+                    <td class="px-4 py-2 text-slate-300">${joinFailuresCell(phase.connectionLifecycle)}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.connectionLifecycle ? `${phase.connectionLifecycle.closes.clientInitiated} / ${phase.connectionLifecycle.closes.serverInitiated}` : "–"}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.connectionLifecycle?.transitionMs !== undefined ? `${phase.connectionLifecycle.transitionMs} ms` : "–"}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.actionsSent}</td>
@@ -228,7 +264,7 @@ export function renderHtml(report: Report): string {
                     <td class="px-4 py-2 text-slate-300">${phase.rtt.p99.toFixed(2)}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.update.p95.toFixed(2)}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.update.p99.toFixed(2)}</td>
-                    <td class="px-4 py-2"><span class="${phase.passed ? "text-green-500 font-medium" : "text-red-500 font-medium"}">${phase.passed ? "PASS" : "FAIL"}</span></td>
+                    <td class="px-4 py-2"><span class="${phase.passed ? "text-green-500 font-medium" : "text-red-500 font-medium"}">${phase.passed ? "PASS" : "FAIL"}</span>${failuresList(phase.failures)}</td>
                   </tr>`
         )
         .join("");
@@ -273,6 +309,7 @@ export function renderHtml(report: Report): string {
               <th class="px-4 py-3 font-semibold">Connections</th>
               <th class="px-4 py-3 font-semibold">Lands × players</th>
               <th class="px-4 py-3 font-semibold">Joined / target</th>
+              <th class="px-4 py-3 font-semibold">Join failures (phase)</th>
               <th class="px-4 py-3 font-semibold">Closes client / server</th>
               <th class="px-4 py-3 font-semibold">Transition</th>
               <th class="px-4 py-3 font-semibold">Actions Sent</th>

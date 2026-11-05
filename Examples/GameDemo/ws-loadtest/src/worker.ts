@@ -64,6 +64,8 @@ export interface WorkerConfig {
 export interface WorkerOptions {
     createSocket?: (url: string) => WebSocketLike;
     now?: () => number;
+    /** How long a join may go unanswered before it counts as a `timeout` join failure. */
+    joinTimeoutMs?: number;
 }
 
 export interface JoinMessage {
@@ -263,9 +265,11 @@ export interface JoinFailure {
     /**
      * `rejected`: a join response with `success: false`. `error`: an error frame before the
      * connection joined (how SwiftStateTree rejects a join, e.g. a full room). `closed`: the
-     * connection closed before it joined, without the client asking.
+     * connection closed before it joined, without the client asking. `timeout`: no answer to the
+     * join within `RESPONSE_TIMEOUT_MS` of connecting, or by the end of the phase if that is
+     * sooner (a connection whose socket never opened counts too).
      */
-    reason: "rejected" | "error" | "closed";
+    reason: "rejected" | "error" | "closed" | "timeout";
     code?: string;
     message?: string;
 }
@@ -286,12 +290,15 @@ export class WorkerClient {
     private closedAt?: number;
     private joinFailure?: JoinFailure;
     private joinFailureReported = false;
+    private joinTimer?: ReturnType<typeof setTimeout>;
+    private readonly joinTimeoutMs: number;
     private readonly session = new WorkerSession();
     private readonly now: () => number;
     private readonly createSocket: (url: string) => WebSocketLike;
 
     constructor(private readonly config: WorkerConfig, options: WorkerOptions = {}) {
         this.now = options.now ?? (() => Date.now());
+        this.joinTimeoutMs = options.joinTimeoutMs ?? RESPONSE_TIMEOUT_MS;
         this.createSocket =
             options.createSocket ??
             ((url: string) => {
@@ -302,6 +309,11 @@ export class WorkerClient {
 
     connect(): void {
         this.socket = this.createSocket(this.config.serverUrl);
+        this.joinTimer = setTimeout(() => {
+            this.joinTimer = undefined;
+            this.recordJoinFailure("timeout", undefined, `no join response within ${this.joinTimeoutMs} ms`);
+        }, this.joinTimeoutMs);
+        (this.joinTimer as any).unref?.();
         this.socket.on("open", () => {
             this.sendJoin();
         });
@@ -353,9 +365,13 @@ export class WorkerClient {
         return end > start ? [start, end] : undefined;
     }
 
-    /** Open and not closing: can be kept for the next phase. */
+    /**
+     * Joined, open and not closing: can be kept for the next phase. A connection that didn't join
+     * (refused, unanswered or still pending) is closed at the transition, and the next phase opens
+     * a new one that joins again.
+     */
     isUsable(): boolean {
-        return this.socket !== undefined && !this.closed && !this.closeRequested;
+        return this.joined && this.socket !== undefined && !this.closed && !this.closeRequested;
     }
 
     getKey(): string {
@@ -438,6 +454,7 @@ export class WorkerClient {
         }
         this.closed = true;
         this.closedAt = this.now();
+        this.clearJoinTimer();
         if (!this.joined && !this.closeRequested && this.socket !== undefined) {
             this.recordJoinFailure("closed", code, reason === undefined ? undefined : String(reason));
         }
@@ -484,7 +501,8 @@ export class WorkerClient {
                 this.recordJoinFailure("rejected", undefined, response?.reason ?? response?.message);
             }
             if (success) {
-                if (!this.joined) {
+                if (!this.joined && !this.joinFailure) {
+                    this.clearJoinTimer();
                     this.joined = true;
                     this.joinedAt = this.now();
                     const callbacks = this.joinedCallbacks;
@@ -509,10 +527,28 @@ export class WorkerClient {
         this.session.handleDecodedMessage(decoded, this.now());
     }
 
+    /**
+     * At the phase end: a connection the ramp started that has neither joined nor failed yet
+     * counts as a `timeout` join failure now.
+     */
+    noteJoinUnansweredAtPhaseEnd(): void {
+        if (this.socket !== undefined) {
+            this.recordJoinFailure("timeout", undefined, "no join response by the phase end");
+        }
+    }
+
+    private clearJoinTimer(): void {
+        if (this.joinTimer !== undefined) {
+            clearTimeout(this.joinTimer);
+            this.joinTimer = undefined;
+        }
+    }
+
     private recordJoinFailure(reason: JoinFailure["reason"], code?: unknown, message?: unknown): void {
         if (this.joined || this.joinFailure) {
             return;
         }
+        this.clearJoinTimer();
         this.joinFailure = {
             t: this.now(),
             reason,

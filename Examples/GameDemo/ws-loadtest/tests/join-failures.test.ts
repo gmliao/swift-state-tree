@@ -5,14 +5,14 @@ import path from "node:path";
 import { WebSocketServer } from "ws";
 import type { AddressInfo } from "node:net";
 import { runScenario } from "../src/run";
-import { buildReport } from "../src/report/render-html";
+import { buildReport, renderHtml } from "../src/report/render-html";
 
 /**
  * Stub game server that admits `capacity` players per land. Further joins are refused the way
  * `rejectMode` says: an error frame (as SwiftStateTree rejects a full room), a join response with
- * `success: false`, or a server close.
+ * `success: false`, a server close, or no answer at all.
  */
-type RejectMode = "error" | "response" | "close";
+type RejectMode = "error" | "response" | "close" | "silent";
 
 describe("join failures against a stub server", () => {
     let server: WebSocketServer;
@@ -48,9 +48,10 @@ describe("join failures against a stub server", () => {
                             kind: "joinResponse",
                             payload: { joinResponse: { requestID, success: false, reason: "room is full" } }
                         }));
-                    } else {
+                    } else if (rejectMode === "close") {
                         socket.close(4000, "room is full");
                     }
+                    // "silent": the join is never answered.
                 } else if (msg.kind === "action") {
                     socket.send(JSON.stringify({
                         kind: "actionResponse",
@@ -76,13 +77,14 @@ describe("join failures against a stub server", () => {
         return file;
     }
 
-    async function run(playersPerRoom: number, allowJoinFailures = false) {
+    async function run(playersPerRoom: number, allowJoinFailures = false, extra: Record<string, unknown> = {}) {
         joinedPerLand.clear();
         const result = await runScenario(writeScenario(playersPerRoom), {
             workers: 1,
             layout: "rooms",
             warmupSeconds: 0.3,
-            allowJoinFailures
+            allowJoinFailures,
+            ...extra
         });
         return { result, report: buildReport(result, { system: [] }) };
     }
@@ -98,7 +100,7 @@ describe("join failures against a stub server", () => {
         expect(report.phases.every((p) => p.passed)).toBe(true);
     }, 30_000);
 
-    it("rejected joins fail the phase although the error rate stays 0; reused phases fail on the joined count", async () => {
+    it("rejected joins fail the phase although the error rate stays 0; the next phase rejoins and fails again", async () => {
         capacity = 2;
         rejectMode = "error";
         const { result, report } = await run(4);
@@ -112,14 +114,25 @@ describe("join failures against a stub server", () => {
         expect(report.phases[0].passed).toBe(false);
         expect(report.phases[0].failures.some((f) => f.startsWith("joinFailures 2 > 0 (error 2)"))).toBe(true);
         expect(report.phases[0].failures.some((f) => f.startsWith("joined 2 < target 4"))).toBe(true);
-        // The refused connections stay open and are kept without joining again: no new failure,
-        // but only 2 of 4 joined, so the later phases fail too.
+        // The HTML shows the join failures with reasons and why each FAIL row failed.
+        const html = renderHtml(report);
+        expect(html).toContain("Join failures (phase)");
+        expect(html).toContain("2 (error 2)</span>");
+        expect(html).toContain("<li>joinFailures 2 &gt; 0 (error 2)</li>");
+        expect(html).toContain("<li>joined 2 &lt; target 4 (time-weighted over the measured window)</li>");
+        // Only joined connections are kept: the 2 refused ones are closed at the transition, and
+        // the next phase opens 2 new ones that join again (and are refused again).
         for (const [i, phase] of [steady, post].entries()) {
-            expect(phase.connections.reused).toBe(4);
-            expect(phase.connections.joinFailures.phase).toBe(0);
+            expect(phase.connections.reused).toBe(2);
+            expect(phase.connections.closedAtStart).toBe(2);
+            expect(phase.connections.opened).toBe(2);
+            expect(phase.connections.joinFailures.byReason).toEqual({ error: 2 });
             expect(phase.measurement.joined.average).toBe(2);
             expect(report.phases[i + 1].passed).toBe(false);
-            expect(report.phases[i + 1].failures).toEqual(["joined 2 < target 4 (time-weighted over the measured window)"]);
+            expect(report.phases[i + 1].failures).toEqual([
+                "joinFailures 2 > 0 (error 2)",
+                "joined 2 < target 4 (time-weighted over the measured window)"
+            ]);
         }
     }, 30_000);
 
@@ -148,5 +161,31 @@ describe("join failures against a stub server", () => {
         expect(closed.report.phases[0].passed).toBe(false);
         // The closed connection isn't reused: the next phase opens a new one, which is refused again.
         expect(closed.result.phases[1].connections.joinFailures.byReason).toEqual({ closed: 1 });
+    }, 60_000);
+
+    it("a join the server never answers is a timeout join failure at the phase end", async () => {
+        capacity = 3;
+        rejectMode = "silent";
+        const { result, report } = await run(4);
+        const [pre, steady] = result.phases;
+        expect(pre.connections.joinFailures.byReason).toEqual({ timeout: 1 });
+        expect(pre.connections.joinFailureRecords[0].message).toBe("no join response by the phase end");
+        expect(report.phases[0].passed).toBe(false);
+        // The unanswered connection is closed at the transition and the next phase tries again.
+        expect(steady.connections.opened).toBe(1);
+        expect(steady.connections.joinFailures.byReason).toEqual({ timeout: 1 });
+    }, 30_000);
+
+    it("with --allow-partial-ramp the joined count is checked against the connections the phase held", async () => {
+        capacity = 3;
+        rejectMode = "error";
+        const { report } = await run(4, false, { allowPartialRamp: true });
+        expect(report.phases[0].failures).toEqual([
+            "joinFailures 1 > 0 (error 1)",
+            "joined 3 < opened 4 (at the phase end, partial ramp)"
+        ]);
+        capacity = 4;
+        const healthy = await run(4, false, { allowPartialRamp: true });
+        expect(healthy.report.phases.every((p) => p.passed)).toBe(true);
     }, 60_000);
 });

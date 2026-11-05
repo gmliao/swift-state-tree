@@ -208,6 +208,7 @@ async function runPhase(phase: PreparedPhase, originAt: number): Promise<WorkerP
     stopSending();
     connectTimers.forEach((t) => clearTimeout(t));
     phaseClients.forEach((client) => client.clearJoinedCallbacks());
+    phaseClients.forEach((client) => client.noteJoinUnansweredAtPhaseEnd());
 
     const report = aggregateSessions(phaseClients.map((client) => client.getSession()));
     const pendingAtEnd = concatAll(phaseClients.map((client) => client.getSession().takePending()));
