@@ -14,7 +14,7 @@ import Foundation
 import Testing
 import SwiftStateTreeMessagePack
 @testable import SwiftStateTree
-@testable import SwiftStateTreeTransport
+@_spi(Diagnostics) @testable import SwiftStateTreeTransport
 
 // MARK: - Test state, action and event
 

@@ -107,7 +107,8 @@ extension TransportAdapter {
     /// passes. Returns whether the backlog drained. For tests and diagnostics: a sync cycle
     /// never waits for the writer. Only covers frames enqueued so far: a follow-up cycle that
     /// has not run yet enqueues later, so wait for its frames before asserting exact counts.
-    func waitForOutboundDrain(timeout: Duration = .seconds(5)) async -> Bool {
+    /// Not a supported API: a benchmark uses it to count bytes only after they were handed over.
+    @_spi(Diagnostics) public func waitForOutboundDrain(timeout: Duration = .seconds(5)) async -> Bool {
         let deadline = ContinuousClock.now + timeout
         while outboundWriter.backlog.elements > 0 {
             guard ContinuousClock.now < deadline else { return false }

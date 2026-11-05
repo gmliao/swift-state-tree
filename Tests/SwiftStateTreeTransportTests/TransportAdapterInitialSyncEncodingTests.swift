@@ -5,7 +5,7 @@
 import Foundation
 import Testing
 @testable import SwiftStateTree
-@testable import SwiftStateTreeTransport
+@_spi(Diagnostics) @testable import SwiftStateTreeTransport
 
 @StateNodeBuilder
 struct InitialSyncEncodingTestState: StateNodeProtocol {

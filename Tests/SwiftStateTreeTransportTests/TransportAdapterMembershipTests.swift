@@ -2,7 +2,7 @@ import Foundation
 import Testing
 import SwiftStateTreeMessagePack
 @testable import SwiftStateTree
-@testable import SwiftStateTreeTransport
+@_spi(Diagnostics) @testable import SwiftStateTreeTransport
 
 @StateNodeBuilder
 private struct MembershipTestState: StateNodeProtocol {

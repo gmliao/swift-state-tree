@@ -2027,8 +2027,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-    /// Sync cycles skipped so far (tests and diagnostics).
-    func syncSkipCounts() -> SyncSkipCounts {
+    /// Sync cycles skipped so far (tests and diagnostics, such as a benchmark checking that every
+    /// cycle it requested ran). Not a supported API.
+    @_spi(Diagnostics) public func syncSkipCounts() -> SyncSkipCounts {
         syncSkips
     }
 

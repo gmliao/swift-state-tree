@@ -185,6 +185,10 @@ enum ResultsManager {
             "memory": ProcessMemory.report(),
             // `--dirty-tracking`, for every mode (single results also carry it per result).
             "dirtyTracking": DirtyTrackingMode.current,
+            // Bytes counted after the outbound writer drained, with no skipped cycle (#160).
+            "bytesCountedAfterDrain": true,
+            // timeMs covers ticks and syncs only: the drain is never timed, in every mode.
+            "syncTimingExcludesDrain": true,
             "commandLine": CommandLine.arguments,
             "build": [
                 "configuration": Self.buildConfigurationName(),

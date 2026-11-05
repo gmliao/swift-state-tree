@@ -265,12 +265,15 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
                 deviceID: "device-\(index)",
                 metadata: [:]
             )
-            _ = try? await adapter.performJoin(
+            if let joined = try? await adapter.performJoin(
                 playerSession: playerSession,
                 clientID: clientID,
                 sessionID: sessionID,
                 authInfo: nil as AuthenticatedInfo?
-            )
+            ) {
+                // A joined session gets diffs only after its first sync.
+                await adapter.syncStateForNewPlayer(playerID: joined.playerID, sessionID: sessionID)
+            }
         }
 
         // Initial sync to populate cache
@@ -298,7 +301,10 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
             }
         }
 
+        // Count from an empty writer: the warm-up's frames must not land in the window (#160).
+        await MeasuredSync.drain(adapter)
         await mockTransport.resetCounts()
+        let skipsBefore = await MeasuredSync.skipCount(adapter)
 
         var totalSyncTime: TimeInterval = 0
         for i in 0..<iterations {
@@ -330,7 +336,11 @@ struct TransportAdapterSyncBenchmarkRunner: BenchmarkRunner {
             let endTime = ContinuousClock.now
             totalSyncTime += endTime.timeIntervalSince(startTime)
             #endif
+            // Untimed: the frames reach the transport asynchronously; the next cycle would be
+            // skipped while the writer still holds this one.
+            await MeasuredSync.drain(adapter)
         }
+        MeasuredSync.requireNoSkips(await MeasuredSync.skipCount(adapter) - skipsBefore, label: "Sync")
 
         let averageTime = iterations > 0 ? totalSyncTime / Double(iterations) : 0
         let throughput = totalSyncTime > 0 ? Double(iterations) / totalSyncTime : 0
