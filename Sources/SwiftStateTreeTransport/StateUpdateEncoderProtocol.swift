@@ -40,6 +40,13 @@ public protocol StateUpdateEncoder: Sendable {
 }
 
 /// Encoders that support broadcast/per-player scoped dynamic key tables.
+/// An encoder that says whether it keeps dynamic key tables (`[slot, key]` definitions and bare
+/// slots). Without tables a key scope reset only costs frames, so the adapter skips the resets it
+/// would request for late joiners (#90). An encoder that doesn't conform is assumed to keep them.
+package protocol DynamicKeyTableReporting {
+    var keepsDynamicKeyTables: Bool { get }
+}
+
 public protocol StateUpdateEncoderWithScope: StateUpdateEncoder {
     func encode(
         update: StateUpdate,

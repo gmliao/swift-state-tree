@@ -346,3 +346,7 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
         }
     }
 }
+
+extension OpcodeMessagePackStateUpdateEncoder: DynamicKeyTableReporting {
+    package var keepsDynamicKeyTables: Bool { dynamicKeyCompression && pathHasher != nil }
+}
