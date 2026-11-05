@@ -307,7 +307,7 @@ struct ReevaluationRunnerMain {
             createdAt: Date(timeIntervalSince1970: 1_700_000_000),
             metadata: ["seedId": "\(seedId)"],
             rngSeed: DeterministicSeed.fromLandID(landID),
-            version: "1.0"
+            version: "2.0"
         ))
         for p in 0 ..< players {
             try await keeper.join(

@@ -72,6 +72,9 @@ CONNECT_RATE=""
 BOUNDARY=""
 ALLOW_PARTIAL_RAMP=false
 RUN_ID=""
+SEND_MODE=""
+WINDOW_MS=""
+WARMUP_SECONDS=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -119,14 +122,28 @@ while [[ $# -gt 0 ]]; do
       RUN_ID="$2"
       shift 2
       ;;
+    --send)
+      SEND_MODE="$2"
+      shift 2
+      ;;
+    --window-ms)
+      WINDOW_MS="$2"
+      shift 2
+      ;;
+    --warmup-seconds)
+      WARMUP_SECONDS="$2"
+      shift 2
+      ;;
     --help|-h)
       echo "Usage: $0 [--scenario <path>] [--workers <N>] [--output-dir <dir>] [--startup-timeout <seconds>] [--profile]"
       echo "          [--layout rooms|per-connection] [--connect ramp|burst] [--connect-rate <per second>]"
       echo "          [--boundary clean|abrupt] [--allow-partial-ramp] [--run-id <id>]"
+      echo "          [--send spread|lockstep] [--window-ms <ms>] [--warmup-seconds <s>]"
       echo "  --layout per-connection --connect burst: same topology and connect burst as the old tool;"
       echo "    phase boundaries still close cleanly, unlike the old tool's resets. Add --boundary abrupt"
       echo "    to drop sockets at boundaries without a close frame, as the old tool did"
-      echo "    (the server sees FIN or RST, depending on unread data)."
+      echo "    (the server sees FIN or RST, depending on unread data), and --send lockstep"
+      echo "    --warmup-seconds 0 for the old send timer and RTT origin with no warm-up exclusion."
       exit 0
       ;;
     *)
@@ -290,6 +307,15 @@ if [ "$ALLOW_PARTIAL_RAMP" = true ]; then
 fi
 if [ -n "$RUN_ID" ]; then
   CMD+=(--run-id "$RUN_ID")
+fi
+if [ -n "$SEND_MODE" ]; then
+  CMD+=(--send "$SEND_MODE")
+fi
+if [ -n "$WINDOW_MS" ]; then
+  CMD+=(--window-ms "$WINDOW_MS")
+fi
+if [ -n "$WARMUP_SECONDS" ]; then
+  CMD+=(--warmup-seconds "$WARMUP_SECONDS")
 fi
 
 echo "Running load test..."
