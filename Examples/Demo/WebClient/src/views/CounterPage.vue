@@ -53,7 +53,11 @@ onUnmounted(async () => {
 })
 
 async function handleIncrement() {
-  await increment({})
+  try {
+    await increment({})
+  } catch {
+    // useCounter already logged it and set lastError (an error frame, or the connection closed)
+  }
 }
 
 async function handleLeave() {
