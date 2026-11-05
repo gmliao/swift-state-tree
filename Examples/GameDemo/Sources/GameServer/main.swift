@@ -86,6 +86,14 @@ struct GameServer {
         FileHandle.standardError.write(Data(
             "GameServer effective maxPlayers=\(maxPlayers) (\(GameServerEnvKeys.maxPlayers), default 10)\n".utf8
         ))
+        // The listen backlog the kernel will queue (#124): the requested value capped at somaxconn
+        let backlog = NIOWebSocketServerConfiguration.listenBacklogCheck(
+            requested: NIOWebSocketServerConfiguration.listenBacklog()
+        )
+        FileHandle.standardError.write(Data(
+            ("GameServer effective listenBacklog=\(backlog.effective) (requested \(backlog.requested) via "
+                + "\(EnvKeys.Server.listenBacklog), somaxconn \(backlog.systemCap.map(String.init) ?? "unchecked"))\n").utf8
+        ))
 
         // Schema and path hashes (replay land types only when reevaluation enabled)
         let liveLand = HeroDefense.makeLand(maxPlayers: maxPlayers)
