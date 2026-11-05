@@ -31,8 +31,11 @@ A client-driven record with a lifecycle join and leave, a `PlaceTurret` client e
 cd Examples/GameDemo && ENABLE_REEVALUATION=true swift run GameServer   # localhost:8080
 # in another shell
 cd Tools/CLI && npx tsx src/cli.ts script -u ws://localhost:8080/game/hero-defense -l hero-defense \
-  -s scenarios/game/test-replay-near-base-shoot.json
+  -s scenarios/game/test-replay-near-base-shoot.json --state-update-encoding messagepack
 ```
+
+The `--state-update-encoding` must match the server's encoding (GameServer defaults to
+messagepack); the CLI's own default is `jsonObject`.
 
 The scenario's client leaves at the end, the land is destroyed and the server writes
 `reevaluation-records/hero-defense-<timestamp>-<id>.json`. Rename that file to
