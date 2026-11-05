@@ -1,5 +1,5 @@
 import { WorkerClient, WorkerSession, selectAction } from "./worker";
-import type { CloseRecord } from "./worker";
+import type { CloseRecord, JoinFailure } from "./worker";
 import { sendMessageWithAck } from "./ipc";
 import { renderTemplateObject } from "./payload";
 import { connectDelaysMs } from "./connect-schedule";
@@ -60,6 +60,8 @@ export interface WorkerPhaseReport {
     lateResponseOrigins: number[];
     /** Per phase connection, `[from, to)` while it was joined and open, clipped to the phase. */
     activeIntervals: Array<[number, number]>;
+    /** Joins of this phase's connections that failed, reported in the phase they happened in. */
+    joinFailures: JoinFailure[];
 }
 
 /** Reply to `prepare`: the previous phase's surplus is closed and this phase's clients exist. */
@@ -232,7 +234,11 @@ async function runPhase(phase: PreparedPhase, originAt: number): Promise<WorkerP
         connectionsClosed: phase.surplus,
         connectRampMs: delays.length > 0 ? Math.round(delays[delays.length - 1]) : 0,
         pendingAtEnd,
-        activeIntervals
+        activeIntervals,
+        joinFailures: phaseClients.flatMap((client) => {
+            const failure = client.takeJoinFailure();
+            return failure ? [failure] : [];
+        })
     };
 }
 

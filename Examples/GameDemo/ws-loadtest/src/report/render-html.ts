@@ -34,6 +34,11 @@ export interface PhaseSummary {
     actionsSent: number;
     /** Whole-phase counts, including the warm-up and the transition. */
     phaseTotals?: PhaseTotals;
+    /**
+     * Error frames and socket errors received in the measured window divided by the actions sent
+     * in it (0 when none were sent). Join failures are not errors here; they fail the phase on
+     * their own (`connectionLifecycle.joinFailures`), so a large action count can't dilute them.
+     */
     errorRate: number;
     disconnectRate: number;
     rtt: { p50: number; p95: number; p99: number };
@@ -61,7 +66,7 @@ export interface Report {
 }
 
 export function buildReport(run: RunResult, systemMetrics: SystemMetrics): Report {
-    const phases = run.phases.map((phase) => summarizePhase(phase));
+    const phases = run.phases.map((phase) => summarizePhase(phase, run.runConfig));
     return {
         meta: {
             scenarioName: run.scenarioName,
@@ -76,7 +81,40 @@ export function buildReport(run: RunResult, systemMetrics: SystemMetrics): Repor
     };
 }
 
-function summarizePhase(phase: PhaseResult): PhaseSummary {
+/**
+ * Join checks, independent of the scenario's thresholds. A phase fails when any join failed, or
+ * when fewer connections than the target were joined over the measured window (time-weighted;
+ * with no measured window, at the phase end). `--allow-join-failures` turns both off;
+ * `--allow-partial-ramp` turns off the joined-count check only, since a partial ramp joins
+ * fewer connections by design.
+ */
+export function joinFailuresOf(phase: PhaseResult, runConfig?: Pick<RunConfig, "allowJoinFailures" | "allowPartialRamp">): string[] {
+    if (runConfig?.allowJoinFailures) {
+        return [];
+    }
+    const failures: string[] = [];
+    const connections = phase.connections;
+    const joinFailures = connections?.joinFailures?.phase ?? 0;
+    if (joinFailures > 0) {
+        const reasons = Object.entries(connections.joinFailures.byReason)
+            .map(([reason, count]) => `${reason} ${count}`)
+            .join(", ");
+        failures.push(`joinFailures ${joinFailures} > 0 (${reasons})`);
+    }
+    if (!runConfig?.allowPartialRamp && connections) {
+        const target = connections.target;
+        const measured = phase.measurement?.measuredMs ?? 0;
+        const joined = measured > 0 ? phase.measurement.joined?.average : connections.joinedAtEnd;
+        // 0.01 absorbs the rounding of the average (two decimals).
+        if (joined !== undefined && joined < target - 0.01) {
+            const what = measured > 0 ? "time-weighted over the measured window" : "at the phase end";
+            failures.push(`joined ${joined} < target ${target} (${what})`);
+        }
+    }
+    return failures;
+}
+
+function summarizePhase(phase: PhaseResult, runConfig?: RunConfig): PhaseSummary {
     const connections = phase.layout?.connections ?? phase.config.rooms * phase.config.playersPerRoom;
     const actionsSent = phase.report.actionsSent;
     const errorRate = actionsSent > 0 ? phase.report.errorCount / actionsSent : 0;
@@ -105,6 +143,11 @@ function summarizePhase(phase: PhaseResult): PhaseSummary {
         );
         passed = evaluated.passed;
         failures = evaluated.failures;
+    }
+    const joinFailures = joinFailuresOf(phase, runConfig);
+    if (joinFailures.length > 0) {
+        passed = false;
+        failures = [...failures, ...joinFailures];
     }
 
     return {

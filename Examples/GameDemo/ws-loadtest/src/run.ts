@@ -5,7 +5,7 @@ import type { PhaseName, Scenario, PhaseConfig } from "./types";
 import { parseScenario } from "./scenario";
 import { buildPhases } from "./orchestrator";
 
-import type { CloseRecord } from "./worker";
+import type { CloseRecord, JoinFailure } from "./worker";
 import type { WorkerPhaseReport, WorkerPrepared } from "./worker-runner";
 import { RESPONSE_TIMEOUT_MS } from "./worker";
 import { makeRunId, planPhaseConnections, summarizeLayout } from "./layout";
@@ -73,6 +73,13 @@ export interface PhaseConnections {
     started: number;
     /** Phase connections joined when the phase ended. */
     joinedAtEnd: number;
+    /**
+     * Joins that failed in this phase (rejected, answered with an error, or closed before
+     * joining), over the whole phase and in the measured window. Not counted in `errorCount`.
+     */
+    joinFailures: { phase: number; measured: number; byReason: Record<string, number> };
+    /** The first `CLOSE_RECORD_LIMIT` join failures, by time. */
+    joinFailureRecords: JoinFailure[];
     /** New connections planned for this phase. */
     opened: number;
     /** Kept open from the previous phase. */
@@ -126,6 +133,11 @@ export interface PhaseMeasurement {
         lateSends: number;
     };
     windows: WindowSample[];
+    /**
+     * Joined, open connections over the measured window: time-weighted average (`average`;
+     * connections that joined or dropped mid-window count partly) and the count at its end.
+     */
+    joined: { average: number; atEnd: number };
 }
 
 export interface PhaseResult {
@@ -153,6 +165,10 @@ export interface RunConfig {
     /** Total new connections per second over all workers (ramp mode). */
     connectRatePerSecond: number;
     workers: number;
+    /** `--allow-join-failures`: join failures and a joined count below target don't fail a phase. */
+    allowJoinFailures: boolean;
+    /** `--allow-partial-ramp`: a joined count below target doesn't fail a phase (join failures still do). */
+    allowPartialRamp: boolean;
     phases: Array<{
         name: PhaseName;
         rooms: number;
@@ -188,6 +204,8 @@ export interface RunOptions {
     boundaryMode?: BoundaryMode;
     /** Run even when a phase's ramp is longer than the phase (a warning instead of an error). */
     allowPartialRamp?: boolean;
+    /** Join failures and a joined count below target don't fail a phase. */
+    allowJoinFailures?: boolean;
     /** Land id prefix; a new one per run by default. */
     runId?: string;
     sendMode?: SendMode;
@@ -288,6 +306,8 @@ export async function runScenario(filePath: string, options: RunOptions | number
         connectMode,
         connectRatePerSecond,
         workers,
+        allowJoinFailures: opts.allowJoinFailures ?? false,
+        allowPartialRamp: opts.allowPartialRamp ?? false,
         phases: phases.map((phase, i) => {
             const summary = summarizeLayout(plans[i], layout);
             return {
@@ -382,6 +402,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
                     target: phase.config.rooms * phase.config.playersPerRoom,
                     started: reports.reduce((sum, r) => sum + r.connectionsStarted, 0),
                     joinedAtEnd: reports.reduce((sum, r) => sum + r.joinedAtEnd, 0),
+                    ...summarizeJoinFailures(reports, measureFrom, measureTo),
                     opened: reports.reduce((sum, r) => sum + r.connectionsOpened, 0),
                     reused: reports.reduce((sum, r) => sum + r.connectionsReused, 0),
                     closedAtStart: reports.reduce((sum, r) => sum + r.connectionsClosed, 0),
@@ -526,6 +547,27 @@ function unanswered(reports: WorkerPhaseReport[], endAt: number, from: number, t
     return { pendingAtEnd, timedOutAtEnd, lateResponses };
 }
 
+/** Join failures of a phase: counts over the phase and the measured window, by reason, records. */
+export function summarizeJoinFailures(
+    reports: Array<Pick<WorkerPhaseReport, "joinFailures">>,
+    measureFrom: number,
+    measureTo: number
+): Pick<PhaseConnections, "joinFailures" | "joinFailureRecords"> {
+    const all = reports.flatMap((r) => r.joinFailures ?? []).sort((a, b) => a.t - b.t);
+    const byReason: Record<string, number> = {};
+    for (const failure of all) {
+        byReason[failure.reason] = (byReason[failure.reason] ?? 0) + 1;
+    }
+    return {
+        joinFailures: {
+            phase: all.length,
+            measured: all.filter((f) => f.t >= measureFrom && f.t < measureTo).length,
+            byReason
+        },
+        joinFailureRecords: all.slice(0, CLOSE_RECORD_LIMIT)
+    };
+}
+
 /** The phase's measurement window, send rate and per-window samples. */
 export function measurePhase(
     reports: WorkerPhaseReport[],
@@ -575,7 +617,11 @@ export function measurePhase(
             lagMs: distribution(lagInWindow),
             lateSends: periodMs > 0 ? lagInWindow.filter((lag) => lag > periodMs).length : 0
         },
-        windows: windowSamples(samples, originAt, durationMs, windowMs, warmupMs)
+        windows: windowSamples(samples, originAt, durationMs, windowMs, warmupMs),
+        joined: {
+            average: Math.round(averageActive * 100) / 100,
+            atEnd: reports.reduce((sum, r) => sum + r.joinedAtEnd, 0)
+        }
     };
 }
 
