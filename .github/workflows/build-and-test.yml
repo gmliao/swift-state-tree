@@ -53,6 +53,47 @@ jobs:
       run: swift test
       timeout-minutes: 30
 
+  # The Examples packages have their own test targets and builds, which the root `swift test`
+  # does not cover. One configuration: the GameDemo tests drive keepers without a transport.
+  examples:
+    runs-on: ubuntu-22.04
+    container:
+      image: swift:6.2.4-noble
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Show toolchain
+      run: swift --version
+
+    - name: GameDemo tests
+      working-directory: Examples/GameDemo
+      run: swift test
+      timeout-minutes: 30
+
+    - name: Demo build
+      working-directory: Examples/Demo
+      run: swift build
+      timeout-minutes: 30
+
+    - name: Tracked files unchanged by the tests
+      run: |
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        status="$(git status --porcelain)"
+        if [ -n "$status" ]; then
+          echo "The Examples tests or builds changed the working tree:"
+          echo "$status"
+          exit 1
+        fi
+        # Ignored files too: records written into reevaluation-records/ are gitignored (a local
+        # backstop), so the check above would not see a test that writes there again.
+        ignored="$(git status --porcelain --ignored -- Examples/GameDemo/reevaluation-records | grep '^!!' || true)"
+        if [ -n "$ignored" ]; then
+          echo "The Examples tests wrote files into Examples/GameDemo/reevaluation-records/:"
+          echo "$ignored"
+          exit 1
+        fi
+
   test-typescript-sdk:
     runs-on: ubuntu-22.04
     container:

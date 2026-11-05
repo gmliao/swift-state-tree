@@ -36,6 +36,22 @@ struct PendingEventManager: Sendable {
         targetedEvents.count
     }
 
+    /// Queued events targeted at `playerID` (`.player` or `.players`) whose stamp is still
+    /// current: the events a membership change of that player invalidates.
+    func currentPlayerEventCount(for playerID: PlayerID, isPlayerCurrent: (PlayerID, UInt64) -> Bool) -> Int {
+        targetedEvents.reduce(into: 0) { count, event in
+            let targetsPlayer: Bool
+            switch event.target {
+            case .player(let p): targetsPlayer = p == playerID
+            case .players(let ps): targetsPlayer = ps.contains(playerID)
+            default: targetsPlayer = false
+            }
+            if targetsPlayer, let stamp = event.stamp, isPlayerCurrent(playerID, stamp.version) {
+                count += 1
+            }
+        }
+    }
+
     /// Number of queued broadcast events (same append-only rule as `targetedEventCount`).
     var broadcastEventCount: Int {
         broadcastEvents.count

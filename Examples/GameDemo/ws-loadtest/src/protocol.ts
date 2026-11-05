@@ -16,7 +16,16 @@ export const StateUpdateOpcode = {
     diff: 2
 } as const;
 
-function classifyDecoded(decoded: any): any {
+/** `StateUpdate.type` values in the jsonObject encoding (`{ type, patches? }`, no `kind`). */
+const JSON_OBJECT_STATE_UPDATE_TYPES = new Set(["noChange", "firstSync", "diff"]);
+
+/**
+ * Normalizes a decoded frame. Opcode arrays (opcodeJsonArray, messagepack) become
+ * `{ kind, ... }` or `{ type: "stateUpdate" | "stateUpdateWithEvents", ... }`. jsonObject
+ * state updates become `{ type: "stateUpdate", updateType, patches }`. Transport messages
+ * (`{ kind, payload }`) are returned as they are.
+ */
+export function classifyDecoded(decoded: any): any {
     if (Array.isArray(decoded) && decoded.length > 0 && typeof decoded[0] === "number") {
         const opcode = decoded[0];
         if (opcode === MessageKindOpcode.actionResponse) {
@@ -51,6 +60,15 @@ function classifyDecoded(decoded: any): any {
 
     if (decoded && typeof decoded === "object" && "kind" in decoded) {
         return decoded;
+    }
+
+    if (
+        decoded &&
+        typeof decoded === "object" &&
+        !Array.isArray(decoded) &&
+        JSON_OBJECT_STATE_UPDATE_TYPES.has(decoded.type)
+    ) {
+        return { type: "stateUpdate", updateType: decoded.type, patches: decoded.patches };
     }
 
     return decoded;

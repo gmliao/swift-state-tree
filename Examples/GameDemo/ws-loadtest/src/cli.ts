@@ -27,6 +27,8 @@ export interface CliArgs {
     boundaryMode: BoundaryMode;
     /** Run phases whose ramp is longer than the phase (a warning instead of an error). */
     allowPartialRamp: boolean;
+    /** Join failures and a joined count below target don't fail a phase. */
+    allowJoinFailures: boolean;
     /** Land id prefix (default: a new id per run). */
     runId?: string;
     /** `spread` (default: per-client offsets, RTT from the intended send) or `lockstep` (legacy). */
@@ -49,6 +51,7 @@ export function parseArgs(argv: string[]): CliArgs {
     let connectRatePerSecond = DEFAULT_CONNECT_RATE;
     let boundaryMode: BoundaryMode = "clean";
     let allowPartialRamp = false;
+    let allowJoinFailures = false;
     let runId: string | undefined;
     let sendMode: SendMode = "spread";
     let windowMs = DEFAULT_WINDOW_MS;
@@ -101,6 +104,8 @@ export function parseArgs(argv: string[]): CliArgs {
             i += 1;
         } else if (arg === "--allow-partial-ramp") {
             allowPartialRamp = true;
+        } else if (arg === "--allow-join-failures") {
+            allowJoinFailures = true;
         } else if (arg === "--run-id") {
             const value = args[i + 1];
             if (!value || !/^[A-Za-z0-9_-]+$/.test(value)) {
@@ -143,6 +148,7 @@ export function parseArgs(argv: string[]): CliArgs {
         connectRatePerSecond,
         boundaryMode,
         allowPartialRamp,
+        allowJoinFailures,
         runId,
         sendMode,
         windowMs,
@@ -162,6 +168,7 @@ export async function main(): Promise<void> {
         connectRatePerSecond,
         boundaryMode,
         allowPartialRamp,
+        allowJoinFailures,
         runId,
         sendMode,
         windowMs,
@@ -178,6 +185,7 @@ export async function main(): Promise<void> {
         connectRatePerSecond,
         boundaryMode,
         allowPartialRamp,
+        allowJoinFailures,
         runId,
         sendMode,
         windowMs,

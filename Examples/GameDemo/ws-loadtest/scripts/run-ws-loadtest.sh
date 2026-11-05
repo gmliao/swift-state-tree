@@ -71,6 +71,7 @@ CONNECT_MODE=""
 CONNECT_RATE=""
 BOUNDARY=""
 ALLOW_PARTIAL_RAMP=false
+ALLOW_JOIN_FAILURES=false
 RUN_ID=""
 SEND_MODE=""
 WINDOW_MS=""
@@ -118,6 +119,10 @@ while [[ $# -gt 0 ]]; do
       ALLOW_PARTIAL_RAMP=true
       shift
       ;;
+    --allow-join-failures)
+      ALLOW_JOIN_FAILURES=true
+      shift
+      ;;
     --run-id)
       RUN_ID="$2"
       shift 2
@@ -137,7 +142,7 @@ while [[ $# -gt 0 ]]; do
     --help|-h)
       echo "Usage: $0 [--scenario <path>] [--workers <N>] [--output-dir <dir>] [--startup-timeout <seconds>] [--profile]"
       echo "          [--layout rooms|per-connection] [--connect ramp|burst] [--connect-rate <per second>]"
-      echo "          [--boundary clean|abrupt] [--allow-partial-ramp] [--run-id <id>]"
+      echo "          [--boundary clean|abrupt] [--allow-partial-ramp] [--allow-join-failures] [--run-id <id>]"
       echo "          [--send spread|lockstep] [--window-ms <ms>] [--warmup-seconds <s>]"
       echo "  --layout per-connection --connect burst: same topology and connect burst as the old tool;"
       echo "    phase boundaries still close cleanly, unlike the old tool's resets. Add --boundary abrupt"
@@ -222,6 +227,8 @@ if [ "$ENABLE_PROFILING" = true ]; then
 fi
 
 echo "Starting GameServer (release, LOG_LEVEL=error, ENABLE_REEVALUATION=false; log file: /tmp/ws-loadtest-gameserver.log)..."
+# Rooms larger than 10 players need HERO_DEFENSE_MAX_PLAYERS; an exported value reaches the server.
+echo "HERO_DEFENSE_MAX_PLAYERS=${HERO_DEFENSE_MAX_PLAYERS:-<unset, server default 10>}"
 cd "$GAMEDEMO_DIR"
 # NOTE: Use the built product directly instead of `swift run` so the environment
 # variables above are guaranteed to reach the GameServer process.
@@ -304,6 +311,9 @@ if [ -n "$BOUNDARY" ]; then
 fi
 if [ "$ALLOW_PARTIAL_RAMP" = true ]; then
   CMD+=(--allow-partial-ramp)
+fi
+if [ "$ALLOW_JOIN_FAILURES" = true ]; then
+  CMD+=(--allow-join-failures)
 fi
 if [ -n "$RUN_ID" ]; then
   CMD+=(--run-id "$RUN_ID")
