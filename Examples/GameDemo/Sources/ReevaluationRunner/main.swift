@@ -213,8 +213,9 @@ struct ReevaluationRunnerMain {
         if let last = first.tickHashes[first.maxTickId] {
             print("   Final Tick Hash: \(last)")
         }
-        // Not a sync-output verdict: until it is verified, this only says whether a stream exists.
         print("   Sync Stream: \(first.syncStreamPresence.summary)")
+        print("   Sync Output: \(first.syncOutput.summary)")
+        print("   Initialize: \(first.initialize.summary)")
         print("")
         
         guard verify else { return }
@@ -257,6 +258,20 @@ struct ReevaluationRunnerMain {
                 print("  tick \(tickId) [\(mode)]: expected \(expected.count) events \(describe(expected)), got \(actual.count) events \(describe(actual))")
             }
             exit(6)
+        }
+
+        // Sync outputs and OnInitialize: `failed` and `malformed` fail verification; `partial` and
+        // `skipped` are reported, since older records and degraded views cannot be fully compared.
+        switch first.syncOutput.verdict {
+        case .failed, .malformed:
+            print("❌ Verification failed: sync output \(first.syncOutput.summary)")
+            exit(8)
+        case .passed, .partial, .skipped:
+            break
+        }
+        if case .failed(let reason) = first.initialize {
+            print("❌ Verification failed: OnInitialize \(reason)")
+            exit(9)
         }
         
         let second = try await ReevaluationEngine.run(
