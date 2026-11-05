@@ -106,8 +106,10 @@ public enum InTurnSyncResult: Sendable, Equatable {
     /// planned and the request is consumed.
     case skipped
     /// A sync phase was requested but deferred because the land's outbound writer still holds a
-    /// state element from an earlier phase (back-pressure). Nothing was planned: the keeper keeps
-    /// the dirty flags and the request due, and opcode 107 events stay queued.
+    /// state element from an earlier phase (back-pressure). Nothing was planned: the dirty flags
+    /// and the queued events (opcode 107) are kept, and the turn's request is consumed. A land
+    /// with periodic sync re-syncs on its next sync-only turn; a land without one retries once
+    /// after the writer drains.
     case deferredBackPressure
     /// The sync phase committed. `clearDirtyFlags`: the plan diffed every synced field, so the
     /// keeper clears the dirty flags now, in the same turn (clearing is part of the commit).
