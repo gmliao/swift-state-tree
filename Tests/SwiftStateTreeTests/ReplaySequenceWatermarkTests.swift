@@ -233,7 +233,7 @@ private func watermarkMetadata(landType: String = "watermark-test") -> Reevaluat
         metadata: [:],
         landDefinitionID: landType,
         rngSeed: DeterministicSeed.fromLandID(watermarkLandID),
-        version: "1.0"
+        version: "2.0"
     )
 }
 

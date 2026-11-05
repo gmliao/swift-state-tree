@@ -110,10 +110,16 @@ public enum ReevaluationEngine {
         exportJsonlPath: String? = nil,
         includeStateHashInExport: Bool = true,
         diffWithPath: String? = nil,
+        requiredRecordVersion: String = ReevaluationRecordVersion.current,
         logger: Logger? = nil
     ) async throws -> RunResult {
         let source = try JSONReevaluationSource(filePath: recordFilePath)
         let metadata = try await source.getMetadata()
+        // Same rule as the runner and the replay start route: same major version only. Checked
+        // before anything is replayed.
+        guard ReevaluationRecordVersion.isCompatible(recorded: metadata.version, required: requiredRecordVersion) else {
+            throw ReevaluationRecordVersionError.incompatible(recorded: metadata.version, required: requiredRecordVersion)
+        }
         let maxTickId = try await source.getMaxTickId()
         let capturingSink = CapturingSink(downstream: sink)
 

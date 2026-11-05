@@ -41,4 +41,65 @@ struct ReevaluationRecordVersionTests {
         #expect(ReevaluationRecordVersion.minor(of: nil) == nil)
         #expect(ReevaluationRecordVersion.minor(of: "2.x") == nil)
     }
+
+    @Test("ReevaluationEngine.run rejects a decodable record of another major version before replaying")
+    func engineRejectsOtherMajor() async throws {
+        for version in ["3.0", "1.0", "", "x"] as [String] {
+            let url = try Self.writeEmptyRecord(version: version)
+            defer { try? FileManager.default.removeItem(at: url) }
+            // The record decodes: only the version gate rejects it.
+            #expect(try await JSONReevaluationSource(filePath: url.path).getMetadata().version == version)
+            await #expect(throws: ReevaluationRecordVersionError.incompatible(recorded: version, required: ReevaluationRecordVersion.current)) {
+                _ = try await ReevaluationEngine.run(
+                    definition: makeReevaluationEngineTestDefinition(),
+                    initialState: ReevaluationEngineTestState(),
+                    recordFilePath: url.path
+                )
+            }
+        }
+        let missing = try Self.writeEmptyRecord(version: nil)
+        defer { try? FileManager.default.removeItem(at: missing) }
+        await #expect(throws: ReevaluationRecordVersionError.incompatible(recorded: nil, required: ReevaluationRecordVersion.current)) {
+            _ = try await ReevaluationEngine.run(
+                definition: makeReevaluationEngineTestDefinition(),
+                initialState: ReevaluationEngineTestState(),
+                recordFilePath: missing.path
+            )
+        }
+    }
+
+    @Test("ReevaluationEngine.run accepts a 2.0 record")
+    func engineAcceptsSameMajor() async throws {
+        let url = try Self.writeEmptyRecord(version: "2.0")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let result = try await ReevaluationEngine.run(
+            definition: makeReevaluationEngineTestDefinition(),
+            initialState: ReevaluationEngineTestState(),
+            recordFilePath: url.path
+        )
+        #expect(result.syncStreamPresence == .absent(reason: "record version 2.0 predates sync-output recording"))
+    }
+
+    private static func writeEmptyRecord(version: String?) throws -> URL {
+        struct File: Codable {
+            let recordMetadata: ReevaluationRecordMetadata
+            let tickFrames: [ReevaluationTickFrame]
+        }
+        let file = File(
+            recordMetadata: ReevaluationRecordMetadata(
+                landID: "reeval-engine-test:version",
+                landType: "reeval-engine-test",
+                createdAt: Date(timeIntervalSince1970: 0),
+                metadata: [:],
+                version: version
+            ),
+            tickFrames: [ReevaluationTickFrame(tickId: 0, actions: [], clientEvents: [], lifecycleEvents: [])]
+        )
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("record-version-\(UUID().uuidString).json")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(file).write(to: url)
+        return url
+    }
 }

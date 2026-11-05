@@ -91,6 +91,11 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
     }
 }
 
+/// A record whose version a reader cannot read (different major, missing or malformed).
+public enum ReevaluationRecordVersionError: Error, Equatable, Sendable {
+    case incompatible(recorded: String?, required: String)
+}
+
 /// Record format versions, `"<major>.<minor>"`.
 ///
 /// Readers accept any record with their major version: a newer minor adds keys an older reader

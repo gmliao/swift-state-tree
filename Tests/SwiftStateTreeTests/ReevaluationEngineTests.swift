@@ -90,7 +90,7 @@ func testReevaluationEngineRunMatchesRecordedHashes() async throws {
         rngSeed: expectedSeed,
         ruleVariantId: nil,
         ruleParams: nil,
-        version: "1.0",
+        version: "2.0",
         extensions: nil
     )
     await recorder.setMetadata(meta)
@@ -178,7 +178,7 @@ func testStateSnapshotRecordingWritesJsonl() async throws {
         metadata: [:],
         landDefinitionID: definition.id,
         rngSeed: expectedSeed,
-        version: "1.0"
+        version: "2.0"
     )
     await recorder.setMetadata(meta)
 
@@ -282,7 +282,7 @@ func testServerEventRecordingAndVerification() async throws {
         metadata: [:],
         landDefinitionID: definition.id,
         rngSeed: expectedSeed,
-        version: "1.0"
+        version: "2.0"
     )
     await recorder.setMetadata(meta)
 
