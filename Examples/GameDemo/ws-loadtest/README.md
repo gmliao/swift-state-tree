@@ -37,6 +37,8 @@ Options: `--runs <N>`, `--no-scale-by-rooms`, `--room-counts "N1 N2 N3"` (scale 
 
 ## CLI
 
+`node dist/cli.js --help` prints every option. An unknown argument exits non-zero with the usage and starts no run; before 2026-11-06 unknown arguments, `--help` included, were ignored and ran the default scenario.
+
 ```bash
 node dist/cli.js \
   --scenario scenarios/hero-defense/default.json \
