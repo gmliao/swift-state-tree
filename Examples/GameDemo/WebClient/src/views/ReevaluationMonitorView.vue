@@ -328,13 +328,14 @@ import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 import { LandClient } from "@/utils/LandClient";
 import { useGameClient } from "@/utils/gameClient";
+import { adminAPIKey, httpOrigin, webSocketOrigin } from "@/utils/serverConfig";
 import StateTreeDiffView from "../components/StateTreeDiffView.vue";
 import "@/styles/ui-tokens.css";
 
 const router = useRouter();
 const { connectReplay: connectGameReplay, isConnecting: isConnectingGame } = useGameClient();
-const adminBaseURL = "http://localhost:8080";
-const adminAPIKey = "hero-defense-admin-key";
+// Same host and port as the connect URL entered on the connect screen.
+const adminBaseURL = computed(() => httpOrigin());
 
 const records = ref<string[]>([]);
 const selectedRecord = ref<string | null>(null);
@@ -420,7 +421,7 @@ function showTickDetail(tick: any) {
 async function loadRecords() {
   try {
     recordLoadErrorMessage.value = null;
-    const response = await fetch(`${adminBaseURL}/admin/reevaluation/records`, {
+    const response = await fetch(`${adminBaseURL.value}/admin/reevaluation/records`, {
       headers: {
         "X-API-Key": adminAPIKey,
       },
@@ -457,7 +458,7 @@ async function startVerification() {
   monitorState.value = null;
 
   try {
-    const response = await fetch(`${adminBaseURL}/admin/reevaluation/start`, {
+    const response = await fetch(`${adminBaseURL.value}/admin/reevaluation/start`, {
       method: "POST",
       headers: {
         "X-API-Key": adminAPIKey,
@@ -466,7 +467,7 @@ async function startVerification() {
     const data = await response.json();
     const monitorLandID = data.data.monitorLandID;
 
-    const wsUrl = "ws://localhost:8080/reevaluation-monitor";
+    const wsUrl = `${webSocketOrigin()}/reevaluation-monitor`;
     monitorClient.value = new LandClient(wsUrl, monitorLandID);
 
     await monitorClient.value.connect();
@@ -501,7 +502,7 @@ async function startReplay() {
   isStartingReplay.value = true;
   try {
     const replayResponse = await fetch(
-      `${adminBaseURL}/admin/reevaluation/replay/start`,
+      `${adminBaseURL.value}/admin/reevaluation/replay/start`,
       {
         method: "POST",
         headers: {
@@ -531,7 +532,7 @@ async function startReplay() {
       throw new Error("Replay start response missing replayLandID or webSocketPath");
     }
 
-    const replayWsUrl = `${adminBaseURL.replace(/^http/, "ws")}${webSocketPath}`;
+    const replayWsUrl = `${webSocketOrigin()}${webSocketPath}`;
 
     await connectGameReplay({
       wsUrl: replayWsUrl,

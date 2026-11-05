@@ -2,6 +2,15 @@ import Phaser from 'phaser'
 import type { HeroDefenseStateTree } from '../generated/hero-defense/index'
 import type { Unsubscribe } from '../generated/hero-defense/bindings'
 import { ShootEffect } from '../effects/ShootEffect'
+import type { PlayerID } from '../generated/defs'
+
+/**
+ * The player ID string of an event field. The generated type says `{ rawValue }`, but the
+ * server sends a `PlayerID` in an event payload as a plain string, so read both shapes.
+ */
+function playerIDString(id: PlayerID | string | undefined): string | undefined {
+  return typeof id === 'string' ? id : id?.rawValue
+}
 
 /**
  * Manages visual effects triggered by server events.
@@ -37,9 +46,10 @@ export class EffectManager {
     const unsubPlayerShoot = tree.playerShoot.subscribe((event) => {
       // Check if this is the current player's shot
       const currentPlayerID = tree.currentPlayerID
+      const shooterID = playerIDString(event.playerID)
       const isCurrentPlayer =
         currentPlayerID !== undefined &&
-        event.playerID.rawValue === currentPlayerID
+        shooterID === currentPlayerID
 
       // Show shoot effect for all players (including current player)
       // Auto-shoot is server-side, so we show effects from server events
@@ -53,7 +63,7 @@ export class EffectManager {
         const toY = event.to.v.y
 
         console.log('📢 Showing shoot effect', {
-          playerID: event.playerID.rawValue,
+          playerID: shooterID,
           isCurrentPlayer,
           from: { x: fromX, y: fromY },
           to: { x: toX, y: toY }

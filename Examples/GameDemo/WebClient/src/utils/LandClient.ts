@@ -1,4 +1,5 @@
 import { StateTreeRuntime, StateTreeView } from "@swiftstatetree/sdk/core";
+import { httpOrigin } from "./serverConfig";
 
 export class LandClient {
   private runtime: StateTreeRuntime;
@@ -25,7 +26,8 @@ export class LandClient {
       await this.runtime.connect(this.wsUrl);
 
       // Fetch schema explicitly
-      const schemaResponse = await fetch("http://localhost:8080/schema");
+      // The schema is served over HTTP by the same server (same host and port).
+      const schemaResponse = await fetch(`${httpOrigin(this.wsUrl)}/schema`);
       if (!schemaResponse.ok) {
         throw new Error(`Failed to fetch schema: ${schemaResponse.statusText}`);
       }
