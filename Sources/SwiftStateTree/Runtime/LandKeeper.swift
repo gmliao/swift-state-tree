@@ -1544,6 +1544,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // A sync folded into the next tick (`inTurnSyncDue`) must not run ahead of that tick
             // (coincident-sync rule): the tick turn's cadence sync flips the ready joins.
             guard periodicJoinSyncAllowed, !inTurnSyncDue else { return }
+            SpikeMetrics.count("joinSyncOnlyTurns")  // [measure] of "syncTurn": run for a registration
             runSyncOnlyTurn(transport: transport, joinSyncOnly: true)
         } else {
             runSyncOnlyTurn(transport: transport)
@@ -2668,6 +2669,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
     }
 
+    /// [measure] Start of the previous tick.
+    private var spikeLastTickStart: ContinuousClock.Instant?
+
     private func runTick(allowWhenNoTickTask: Bool) async {
         // Check if task was cancelled before executing tick
         // This prevents ticks from running after shutdown has started
@@ -2680,6 +2684,20 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         guard !debugFrozen else { return }
         debugBeginWork()
         defer { debugEndWork() }
+
+        // [measure] Whole tick ("tick") and tick-start interval, tick-handler lands only.
+        let spikeTickStart = SpikeMetrics.now()
+        if SpikeMetrics.isEnabled, definition.lifetimeHandlers.tickHandler != nil {
+            if let last = spikeLastTickStart {
+                SpikeMetrics.record("tickInterval", duration: spikeTickStart - last)
+            }
+            spikeLastTickStart = spikeTickStart
+        }
+        defer {
+            if definition.lifetimeHandlers.tickHandler != nil {
+                SpikeMetrics.record("tick", since: spikeTickStart)
+            }
+        }
 
         guard let handler = definition.lifetimeHandlers.tickHandler else {
             if usesInTurnSync {
@@ -3011,6 +3029,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             inTurnSyncDue = false
             inTurnDeferredTurns += 1
             if joinSyncOnly { joinSyncWaitsForCommit = true }
+            SpikeMetrics.count("deferredTurns")
             if !hasPeriodicSync {
                 retrySyncOnlyTurnAfterWriterDrain(transport: transport)
             }
@@ -3049,6 +3068,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         tickId: Int64,
         transport: any LandKeeperTransport
     ) -> TickTurnOutput {
+        // [measure] Tick turn time ("turn"); "foldedTurn" when the turn ran the sync phase.
+        let spikeTurnStart = SpikeMetrics.now()
+        var spikeTurnSynced = false
+        var spikeJoinSyncTurn = false
+        defer {
+            let elapsed = ContinuousClock.now - spikeTurnStart
+            SpikeMetrics.record("turn", duration: elapsed)
+            if spikeTurnSynced { SpikeMetrics.record("foldedTurn", duration: elapsed) }
+            if spikeJoinSyncTurn { SpikeMetrics.record("joinSyncTurn", duration: elapsed) }
+        }
         // Sequence watermark W1 (before inputs).
         let sequenceBeforeInputs = outputCollector.nextSequence
         // A failing input fails alone; the others and the tick handler still run (`applyInputs`).
@@ -3089,8 +3118,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // Tick and sync work in one turn that is not a fold: counted apart, so turn timing
             // can tell these turns from folded ones.
             joinSyncTicks += 1
+            SpikeMetrics.count("joinSyncTicks")
             if transportRecordsFolds { transport.noteInTurnJoinSyncTick() }
         }
+        // [measure] "foldedTurn" for a cadence sync in the tick turn, "joinSyncTurn" for one run
+        // only for ready joins.
+        spikeTurnSynced = cadenceSync
+        spikeJoinSyncTurn = joinSync
         runTurnOutputs(transport: transport, events: emitted, wantsSync: cadenceSync || joinSync, joinSyncOnly: joinSync)
         inTurnProbeForTesting?("turn-end")
 
@@ -3275,6 +3309,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         inTurnProbeForTesting?("turn-begin")
         inTurnSyncTurnKind = .syncOnly
         defer { inTurnSyncTurnKind = .tick }
+        // [measure] Sync-only turn time ("syncTurn").
+        let spikeSyncTurnStart = SpikeMetrics.now()
+        defer { SpikeMetrics.record("syncTurn", since: spikeSyncTurnStart) }
         let result = transport.runSyncPhaseInTurn(state: state, events: [], includeSync: true)
         applyInTurnSyncResult(result, transport: transport, joinSyncOnly: joinSyncOnly)
         inTurnProbeForTesting?("turn-end")
@@ -3581,6 +3618,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // interval folds the next iteration into the same turn, which is one cycle.
                 if !inTurnSyncDue {
                     foldedSyncs += 1
+                    SpikeMetrics.count("foldedSyncs")
                     let overdue = deadline < now
                     if overdue { overdueFoldedSyncs += 1 }
                     if transportRecordsFolds { transport.noteInTurnSyncFold(overdue: overdue) }
