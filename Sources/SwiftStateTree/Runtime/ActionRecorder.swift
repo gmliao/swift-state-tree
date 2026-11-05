@@ -35,7 +35,10 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
 
     /// Optional RNG seed used for deterministic random number generation.
     /// This is critical for deterministic re-evaluation when RNG is used in game logic.
-    public let rngSeed: UInt64?
+    public var rngSeed: UInt64? { rngSeedCoding?.value }
+    /// Written as 16 hex digits (a JSON number above 2^53 does not survive JavaScript readers);
+    /// a number, as older records wrote it, is still read.
+    private let rngSeedCoding: SyncHashCoding?
 
     /// Optional rule variant identifier (reserved for future Rule Re-evaluation).
     public let ruleVariantId: String?
@@ -86,7 +89,7 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
         self.landDefinitionID = landDefinitionID
         self.initialStateHash = initialStateHash
         self.landConfig = landConfig
-        self.rngSeed = rngSeed
+        self.rngSeedCoding = rngSeed.map(SyncHashCoding.init)
         self.ruleVariantId = ruleVariantId
         self.ruleParams = ruleParams
         self.version = version
@@ -94,6 +97,12 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
         self.hardwareInfo = hardwareInfo
         self.recordsSyncStream = recordsSyncStream
         self.syncConfig = syncConfig
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case landID, landType, createdAt, metadata, landDefinitionID, initialStateHash, landConfig
+        case rngSeedCoding = "rngSeed"
+        case ruleVariantId, ruleParams, version, extensions, hardwareInfo, recordsSyncStream, syncConfig
     }
 }
 

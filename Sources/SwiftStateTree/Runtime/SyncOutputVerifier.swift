@@ -12,11 +12,11 @@ import Foundation
 public struct SyncOutputScopeCounts: Sendable, Equatable {
     /// Hashes compared (and equal, unless the run failed on this scope).
     public var compared = 0
-    /// Comparisons the record does not allow: a seed without `viewHash`, a player whose latest
-    /// seed had none, an events scope without a hash.
+    /// Comparisons that cannot vouch for what a client got: a seed without `viewHash`; a player
+    /// whose latest seed had none; a scope whose encode dropped patches, and a player whose
+    /// client has diverged since (until a seed with `viewHash`); events without a canonical form.
     public var unverifiable = 0
-    /// Scopes the live plan did not commit (a broadcast scope without a hash, a player whose
-    /// update was not sent).
+    /// Scopes the live plan did not commit, each with a `SyncOutputSkipReason`.
     public var skipped = 0
 
     public init(compared: Int = 0, unverifiable: Int = 0, skipped: Int = 0) {
@@ -50,18 +50,39 @@ public struct SyncOutputMismatch: Sendable, Equatable {
     }
 }
 
+/// Why a scope was skipped. Only `benign` reasons allow `passed`: the others leave a gap the
+/// record cannot explain.
+public enum SyncOutputSkipReason: String, Sendable, CaseIterable, Comparable {
+    /// Opcode 107: a per-player update was not sent. Its cache was not committed, so the next
+    /// diff resends the change: the client does not diverge. Benign.
+    case perPlayerResent = "per-player update not sent (resent by the next diff)"
+    /// An output without a broadcast hash: the broadcast scope was not committed.
+    case broadcastNotCommitted = "broadcast not committed"
+    /// An opcode 107 output without an events hash, and no events drop recorded.
+    case eventsHashMissing = "events hash missing"
+
+    /// The reasons that allow `passed`.
+    public static let benign: Set<SyncOutputSkipReason> = [.perPlayerResent]
+
+    public static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+}
+
 /// Overall verdict of a sync-output verification.
 public enum SyncOutputVerdict: Sendable, Equatable {
-    /// Every scope compared at least once, nothing unverifiable, no mismatch.
+    /// No mismatch, every scope compared at least once (not every output: a broadcast-only cycle
+    /// has no per-player scope), nothing unverifiable, and every skip has a benign reason
+    /// (`SyncOutputSkipReason.benign`).
     case passed
-    /// No mismatch, but some scope was never compared or had unverifiable comparisons.
+    /// No mismatch, but some scope was never compared, had unverifiable comparisons, or was
+    /// skipped for a reason that is not benign.
     case partial
     /// A recorded hash was not reproduced; verification stopped there.
     case failed(SyncOutputMismatch)
     /// The record cannot be verified at all (no sync stream, no sync config, an unsupported
     /// strategy).
     case skipped(reason: String)
-    /// The sync stream contradicts itself (an output without a position, a tick past the end).
+    /// The sync stream contradicts itself (stream indices not exactly `0..<n`, an output without
+    /// a position, a tick past the end).
     case malformed(reason: String)
 }
 
@@ -79,6 +100,13 @@ public struct SyncOutputVerification: Sendable, Equatable {
     /// Outputs that reset their recipients' key scopes. Their empty updates carry no patches and
     /// are compared as no change, on both sides.
     public let keyScopeResets: Int
+    /// The skipped scopes per reason.
+    public let skipReasons: [SyncOutputSkipReason: Int]
+    /// Opcode 107: replayed events no output consumed, all after the last output's
+    /// `eventsThroughSequence` (a run that ends between an event and the next sync). Events
+    /// that were never queued count here too when no output follows them, since an output lists
+    /// those (`eventsNotQueued`).
+    public let eventsAfterLastOutput: Int
 
     public init(
         verdict: SyncOutputVerdict,
@@ -87,7 +115,9 @@ public struct SyncOutputVerification: Sendable, Equatable {
         events: SyncOutputScopeCounts = .init(),
         seed: SyncOutputScopeCounts = .init(),
         eventsApplicable: Bool = false,
-        keyScopeResets: Int = 0
+        keyScopeResets: Int = 0,
+        skipReasons: [SyncOutputSkipReason: Int] = [:],
+        eventsAfterLastOutput: Int = 0
     ) {
         self.verdict = verdict
         self.broadcast = broadcast
@@ -96,6 +126,8 @@ public struct SyncOutputVerification: Sendable, Equatable {
         self.seed = seed
         self.eventsApplicable = eventsApplicable
         self.keyScopeResets = keyScopeResets
+        self.skipReasons = skipReasons
+        self.eventsAfterLastOutput = eventsAfterLastOutput
     }
 
     /// One line for the CLIs.
@@ -112,7 +144,12 @@ public struct SyncOutputVerification: Sendable, Equatable {
         if eventsApplicable { scopes.append("events \(events.summary)") }
         scopes.append("seed \(seed.summary)")
         var line = "\(head) [compared/unverifiable/skipped: \(scopes.joined(separator: ", "))]"
-        if keyScopeResets > 0 { line += ", \(keyScopeResets) key scope resets" }
+        if !skipReasons.isEmpty {
+            let reasons = skipReasons.sorted { $0.key < $1.key }.map { "\($0.key.rawValue): \($0.value)" }
+            line += "; skipped: \(reasons.joined(separator: ", "))"
+        }
+        if keyScopeResets > 0 { line += "; \(keyScopeResets) key scope resets" }
+        if eventsAfterLastOutput > 0 { line += "; \(eventsAfterLastOutput) events after the last output" }
         return line
     }
 }
@@ -130,7 +167,15 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
     /// has no canonical form.
     private var pendingEvents: [(sequence: Int64, event: CanonicalSyncEvent?)] = []
     private let mergedBroadcastFrame: Bool
+    /// Players whose client no longer matches the live cache (an encode dropped patches of a
+    /// committed update, or a combined-mode update was not sent while the broadcast cache was
+    /// committed), until a seed with `viewHash`. Their hashes are still compared, since the live
+    /// hash covers what the diff planned; their counts are unverifiable.
+    private var diverged: Set<PlayerID> = []
+    /// Opcode 107: sequences the live adapter never queued (`eventsNotQueued`).
+    private var notQueued: Set<Int64> = []
 
+    private(set) var skipReasons: [SyncOutputSkipReason: Int] = [:]
     private(set) var broadcast = SyncOutputScopeCounts()
     private(set) var perPlayer = SyncOutputScopeCounts()
     private(set) var events = SyncOutputScopeCounts()
@@ -165,6 +210,7 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
             seed.unverifiable += 1
             return
         }
+        diverged.remove(playerID)
         let replayed = CanonicalPatchList(patches).hash
         if replayed == recorded {
             seed.compared += 1
@@ -185,6 +231,7 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
     package mutating func clear(_ playerID: PlayerID) {
         engine.clearCacheForDisconnectedPlayer(playerID)
         seeded.remove(playerID)
+        diverged.remove(playerID)
     }
 
     package mutating func output(_ output: ReevaluationRecordedSyncOutput, observedTickId: Int64, state: State) {
@@ -202,11 +249,16 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
             baseline: .cached,
             staged: &staged
         )
+        let encodeDrops = Set(output.encodeDropScopes)
         if let recorded = output.broadcastHash {
             guard compare(recorded, CanonicalPatchList(broadcastDiff).hash, scope: "broadcast", output, observedTickId) else { return }
-            broadcast.compared += 1
+            if encodeDrops.contains(SyncOutputScope.broadcast) {
+                broadcast.unverifiable += 1
+            } else {
+                broadcast.compared += 1
+            }
         } else {
-            broadcast.skipped += 1
+            skip(.broadcastNotCommitted, \.broadcast)
             staged.broadcast = nil
         }
 
@@ -228,14 +280,28 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
                         perPlayerMode: .all, staged: &staged)
                 if uncommitted.contains(playerID.rawValue) {
                     staged.perPlayer.removeValue(forKey: playerID)
-                    perPlayer.skipped += 1
+                    if mergedBroadcastFrame {
+                        skip(.perPlayerResent, \.perPlayer)
+                    } else {
+                        // The combined update carried the broadcast changes, whose cache was
+                        // committed: this client missed them.
+                        diverged.insert(playerID)
+                        perPlayer.unverifiable += 1
+                    }
                     continue
                 }
                 if unverified.contains(playerID.rawValue) {
                     perPlayer.unverifiable += 1
                     continue
                 }
-                perPlayer.compared += 1
+                if encodeDrops.contains(playerID.rawValue) {
+                    diverged.insert(playerID)
+                }
+                if diverged.contains(playerID) {
+                    perPlayer.unverifiable += 1
+                } else {
+                    perPlayer.compared += 1
+                }
                 let patches = update.patches
                 if !patches.isEmpty {
                     pairs.append((playerID.rawValue, CanonicalPatchList(patches).hash))
@@ -246,6 +312,8 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
         }
 
         if mergedBroadcastFrame {
+            notQueued.formUnion(output.eventsNotQueued ?? [])
+            pendingEvents.removeAll { notQueued.contains($0.sequence) }
             let through = output.eventsThroughSequence ?? Int64.min
             let consumed = pendingEvents.filter { $0.sequence <= through }.sorted { $0.sequence < $1.sequence }
             pendingEvents.removeAll { $0.sequence <= through }
@@ -256,11 +324,21 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
                 guard compare(recorded, CanonicalSyncEvent.hash(canonical), scope: "events", output, observedTickId) else { return }
                 events.compared += 1
             } else {
-                events.skipped += 1
+                skip(.eventsHashMissing, \.events)
             }
         }
 
         engine.applyStaged(staged)
+    }
+
+    /// Replayed events no output consumed (never queued ones left out).
+    package var unconsumedEvents: Int {
+        pendingEvents.filter { !notQueued.contains($0.sequence) }.count
+    }
+
+    private mutating func skip(_ reason: SyncOutputSkipReason, _ counts: WritableKeyPath<Self, SyncOutputScopeCounts>) {
+        self[keyPath: counts].skipped += 1
+        skipReasons[reason, default: 0] += 1
     }
 
     /// Records the mismatch and returns false when `replayed` differs.
@@ -352,6 +430,12 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
         shadow = SyncOutputShadow(mergedBroadcastFrame: merged)
         eventsApplicable = merged
         entries = skipReason == nil ? stream : []
+        // The keeper's stream counter is dense: a gap or a repeat is a lost or duplicated entry.
+        if entries.map(\.streamIndex) != Array(0 ..< UInt64(entries.count)) {
+            let indices = entries.map(\.streamIndex)
+            let firstBad = indices.enumerated().first { $0.element != UInt64($0.offset) }
+            malformed = "sync stream indices are not 0..<\(entries.count) (first difference at position \(firstBad?.offset ?? 0): \(firstBad.map { "\($0.element)" } ?? "?"))"
+        }
         // Without an initialize marker OnInitialize was not a turn: it ran before the adapter
         // existed, so every recorded entry read the state after it.
         hasInitializeMarker = entries.contains {
@@ -400,7 +484,9 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
         } else {
             var scopes = [shadow.broadcast, shadow.perPlayer, shadow.seed]
             if eventsApplicable { scopes.append(shadow.events) }
-            verdict = scopes.allSatisfy({ $0.compared > 0 && $0.unverifiable == 0 }) ? .passed : .partial
+            let complete = scopes.allSatisfy { $0.compared > 0 && $0.unverifiable == 0 }
+            let benignSkips = shadow.skipReasons.keys.allSatisfy { SyncOutputSkipReason.benign.contains($0) }
+            verdict = complete && benignSkips ? .passed : .partial
         }
         return SyncOutputVerification(
             verdict: verdict,
@@ -409,7 +495,9 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
             events: shadow.events,
             seed: shadow.seed,
             eventsApplicable: eventsApplicable,
-            keyScopeResets: shadow.keyScopeResets
+            keyScopeResets: shadow.keyScopeResets,
+            skipReasons: shadow.skipReasons,
+            eventsAfterLastOutput: shadow.unconsumedEvents
         )
     }
 

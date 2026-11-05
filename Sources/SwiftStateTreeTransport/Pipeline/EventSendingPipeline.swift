@@ -36,34 +36,42 @@ struct EventSendingPipeline: Sendable {
     ///   - target: Event target
     ///   - pendingEventManager: Manager to queue the event
     ///   - membershipCoordinator: Coordinator to get membership stamps
+    /// Returns whether anything was queued: nothing is for `.players([])` or a client without a
+    /// session.
+    @discardableResult
     func queueForMergedSend(
         eventBody: MessagePackValue,
         target: SwiftStateTree.EventTarget,
         pendingEventManager: inout PendingEventManager,
         membershipCoordinator: MembershipCoordinator,
         digest: CanonicalSyncEvent? = nil
-    ) {
+    ) -> Bool {
         switch target {
         case .all:
             pendingEventManager.queueBroadcast(body: eventBody, digest: digest)
-            
+            return true
+
         case .players(let playerIDs):
             for playerID in playerIDs {
                 let stamp = membershipCoordinator.currentMembershipStamp(for: playerID)
                 pendingEventManager.queueTargeted(target: .player(playerID), body: eventBody, stamp: stamp, digest: digest)
             }
-            
+            return !playerIDs.isEmpty
+
         case .client(let clientID):
             if let sessionID = membershipCoordinator.sessionID(for: clientID) {
                 let stamp = membershipCoordinator.currentMembershipStamp(for: sessionID)
                 pendingEventManager.queueTargeted(target: .session(sessionID), body: eventBody, stamp: stamp, digest: digest)
+                return true
             } else {
                 logger.warning("No session found for client: \(clientID.rawValue)")
+                return false
             }
-            
+
         default:
             let stamp = membershipCoordinator.currentMembershipStamp(for: target)
             pendingEventManager.queueTargeted(target: target, body: eventBody, stamp: stamp, digest: digest)
+            return true
         }
     }
     

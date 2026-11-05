@@ -456,6 +456,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Players whose latest seed was not verifiable (`viewDrops` not empty), until a verifiable
     /// seed or a clear: left out of `perPlayerHash` (`perPlayerUnverified`).
     private var syncStreamUnverifiedPlayers: Set<PlayerID> = []
+    /// Opcode 107: sequences of in-turn events that were not queued for a merged frame (no
+    /// recipient, or sent as their own frame), until the next recorded output lists them.
+    private var syncStreamUnqueuedEvents: [Int64] = []
     /// Tests only: plans that filled a `SyncOutputDigestInput`.
     private(set) var syncOutputDigestCountForTesting = 0
 
@@ -1361,25 +1364,28 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// The synchronous core of `sendEvent`: opcode 107 queues the event body for the next merged
     /// frame; otherwise the event is encoded and enqueued to the outbound writer now, so events
     /// reach the writer in the order they are passed here.
+    ///
+    /// Returns whether the event was queued for a merged frame (opcode 107).
+    @discardableResult
     func enqueueEventSynchronously(
         _ event: AnyServerEvent,
         to target: SwiftStateTree.EventTarget,
         digest: CanonicalSyncEvent? = nil
-    ) {
+    ) -> Bool {
         // Queue mode (opcode 107)
         if useStateUpdateWithEvents, let body = encodeServerEventBody(event) {
-            eventSendingPipeline.queueForMergedSend(
+            return eventSendingPipeline.queueForMergedSend(
                 eventBody: body,
                 target: target,
                 pendingEventManager: &pendingEventManager,
                 membershipCoordinator: membershipCoordinator,
                 digest: digest
             )
-            return
         }
 
         // Fallback to immediate mode: encoded and enqueued now
         sendEventImmediately(event, to: target)
+        return false
     }
 
     // MARK: - In-turn sync phase
@@ -1409,7 +1415,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let digestsEvents = useStateUpdateWithEvents && !events.isEmpty && keeperRecordsSyncStream()
         for item in events {
             let digest = digestsEvents ? Self.canonicalEvent(item) : nil
-            enqueueEventSynchronously(item.event, to: item.target, digest: digest)
+            let queued = enqueueEventSynchronously(item.event, to: item.target, digest: digest)
+            if digestsEvents, !queued, let sequence = item.sequence {
+                syncStreamUnqueuedEvents.append(sequence)
+            }
         }
         guard includeSync else { return .notRequested }
         // After teardown nothing is sent any more.
@@ -1942,6 +1951,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
             let eventsHash = digest.events.map(CanonicalSyncEvent.hash)
             let eventsThroughSequence = digest.eventsThroughSequence
+            let eventsNotQueued = syncStreamUnqueuedEvents.isEmpty ? nil : syncStreamUnqueuedEvents.sorted()
+            syncStreamUnqueuedEvents.removeAll()
             let extractionDrops = digest.extractionDrops
             let encodeDropScopes = digest.encodeDropScopes.sorted { SnapshotValue.utf8Less($0, $1) }
             let turnKind = read.turnKind
@@ -1959,6 +1970,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         perPlayerUncommitted: perPlayerUncommitted,
                         eventsHash: eventsHash,
                         eventsThroughSequence: eventsThroughSequence,
+                        eventsNotQueued: eventsNotQueued,
                         resetsKeyScopes: digest.resetsKeyScopes ? true : nil,
                         extractionDrops: extractionDrops,
                         encodeDropScopes: encodeDropScopes

@@ -47,6 +47,10 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
     /// Opcode 107 mode only: the largest keeper sequence among the events the plan consumed; nil
     /// when it consumed none with a sequence. The verifier consumes its replayed events up to it.
     public let eventsThroughSequence: Int64?
+    /// Opcode 107: sequences of in-turn events emitted since the previous output that were never
+    /// queued (no recipient, or sent as their own frame); the verifier does not expect them in
+    /// any merged frame. Sorted; nil when empty.
+    public let eventsNotQueued: [Int64]?
     /// The plan reset its recipients' dynamic key scopes: every recipient got a `.firstSync`
     /// update, empty ones included. Empty updates carry no patches and are left out of
     /// `perPlayerHash` like a no-change; the verifier counts them. Nil when false.
@@ -71,6 +75,7 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
         perPlayerHashes: [String: UInt64]? = nil,
         eventsHash: UInt64? = nil,
         eventsThroughSequence: Int64? = nil,
+        eventsNotQueued: [Int64]? = nil,
         resetsKeyScopes: Bool? = nil,
         extractionDrops: [String: [String]] = [:],
         encodeDropScopes: [String] = [],
@@ -88,6 +93,7 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
         self.perPlayerHashes = perPlayerHashes
         self.eventsHash = eventsHash
         self.eventsThroughSequence = eventsThroughSequence
+        self.eventsNotQueued = eventsNotQueued
         self.resetsKeyScopes = resetsKeyScopes
         self.extractionDrops = extractionDrops
         self.encodeDropScopes = encodeDropScopes
@@ -96,7 +102,7 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case index, turnKind, observedTickId, streamIndex, sequence, broadcastHash, perPlayerHash
-        case perPlayerUnverified, perPlayerUncommitted, perPlayerHashes, eventsHash, eventsThroughSequence
+        case perPlayerUnverified, perPlayerUncommitted, perPlayerHashes, eventsHash, eventsThroughSequence, eventsNotQueued
         case resetsKeyScopes, extractionDrops, encodeDropScopes, patches
     }
 
@@ -115,6 +121,7 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
             .mapValues(\.value)
         eventsHash = try container.decodeSyncHashIfPresent(forKey: .eventsHash)
         eventsThroughSequence = try container.decodeIfPresent(Int64.self, forKey: .eventsThroughSequence)
+        eventsNotQueued = try container.decodeIfPresent([Int64].self, forKey: .eventsNotQueued)
         resetsKeyScopes = try container.decodeIfPresent(Bool.self, forKey: .resetsKeyScopes)
         extractionDrops = try container.decode([String: [String]].self, forKey: .extractionDrops)
         encodeDropScopes = try container.decode([String].self, forKey: .encodeDropScopes)
@@ -135,6 +142,7 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
         try container.encodeIfPresent(perPlayerHashes?.mapValues(SyncHashCoding.init), forKey: .perPlayerHashes)
         try container.encodeSyncHashIfPresent(eventsHash, forKey: .eventsHash)
         try container.encodeIfPresent(eventsThroughSequence, forKey: .eventsThroughSequence)
+        try container.encodeIfPresent(eventsNotQueued, forKey: .eventsNotQueued)
         try container.encodeIfPresent(resetsKeyScopes, forKey: .resetsKeyScopes)
         try container.encode(extractionDrops, forKey: .extractionDrops)
         try container.encode(encodeDropScopes, forKey: .encodeDropScopes)
@@ -145,12 +153,12 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
 /// A sync hash in a record: written as 16 lowercase hex digits (like the state hashes), since
 /// JSON numbers above 2^53 do not survive JavaScript readers (the admin download, the CLI
 /// tools). Read from hex, or from a JSON number as 2.1 records wrote it.
-struct SyncHashCoding: Codable {
-    let value: UInt64
+package struct SyncHashCoding: Codable, Sendable {
+    package let value: UInt64
 
-    init(_ value: UInt64) { self.value = value }
+    package init(_ value: UInt64) { self.value = value }
 
-    init(from decoder: Decoder) throws {
+    package init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         if let hex = try? container.decode(String.self) {
             guard hex.count == 16, let value = UInt64(hex, radix: 16) else {
@@ -162,7 +170,7 @@ struct SyncHashCoding: Codable {
         }
     }
 
-    func encode(to encoder: Encoder) throws {
+    package func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
         try container.encode(DeterministicHash.toHex64(value))
     }

@@ -166,6 +166,23 @@ struct ReevaluationSyncHashCodingTests {
         #expect(try JSONDecoder().decode(ReevaluationRecordedSyncMarker.self, from: markerData).viewHash == Self.large)
     }
 
+    @Test("The RNG seed is written as hex and read from hex or a number")
+    func rngSeedIsHex() throws {
+        let metadata = ReevaluationRecordMetadata(landID: "l", landType: "t", createdAt: Date(timeIntervalSince1970: 0), metadata: [:], rngSeed: Self.large)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let object = try #require(try JSONSerialization.jsonObject(with: encoder.encode(metadata)) as? [String: Any])
+        #expect(object["rngSeed"] as? String == "2245a69d3f598f55")
+        let roundTripped = try JSONSerialization.data(withJSONObject: object)
+        #expect(try decoder.decode(ReevaluationRecordMetadata.self, from: roundTripped).rngSeed == Self.large)
+        let numeric = #"{"landID":"l","landType":"t","createdAt":"1970-01-01T00:00:00Z","metadata":{},"rngSeed":2469563164985495381}"#
+        #expect(try decoder.decode(ReevaluationRecordMetadata.self, from: Data(numeric.utf8)).rngSeed == Self.large)
+        let absent = #"{"landID":"l","landType":"t","createdAt":"1970-01-01T00:00:00Z","metadata":{}}"#
+        #expect(try decoder.decode(ReevaluationRecordMetadata.self, from: Data(absent.utf8)).rngSeed == nil)
+    }
+
     @Test("A 2.1 record's numeric hashes still decode")
     func numericHashesDecode() throws {
         let json = #"{"index":0,"turnKind":"tick","observedTickId":3,"streamIndex":7,"sequence":11,"broadcastHash":2469563164985495381,"extractionDrops":{},"encodeDropScopes":[]}"#

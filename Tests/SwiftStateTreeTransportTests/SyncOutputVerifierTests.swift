@@ -26,12 +26,19 @@ struct VerifierState: StateNodeProtocol {
     @Sync(.broadcast) var fragile = SyncStreamFragile()
     @Sync(.broadcast) var box = VerifierBox()
     @Sync(.perPlayerSlice()) var scores: [PlayerID: Int] = [:]
+    @Sync(.perPlayerSlice()) var speeds: [PlayerID: Double] = [:]
+    @Sync(.perPlayerSlice()) var boxes: [PlayerID: VerifierBox] = [:]
     @Sync(.serverOnly) var missesDirty = false
+    @Sync(.serverOnly) var missesPerPlayerDirty = false
+    @Sync(.serverOnly) var quiet = false
     init() {}
 }
 
 /// "score": the caller's score is `value`; "break" / "fix": broadcast `fragile`; "miss": from
-/// the next tick on, the tick also changes `box` in place.
+/// the next tick on, the tick also changes `box` in place; "box": the caller gets a box;
+/// "missPerPlayer": the tick changes every player's box in place and rewrites `scores`
+/// unchanged (dirty, no patch); "inf": the caller's speed is infinity (json cannot encode it);
+/// "speed": the caller's speed is `value`; "quiet": ticks stop requesting a sync.
 @Payload
 struct VerifierSetAction: ActionPayload {
     typealias Response = SyncStreamSetResponse
@@ -40,7 +47,8 @@ struct VerifierSetAction: ActionPayload {
 }
 
 /// OnInitialize writes the board and emits an event. Each tick advances `ticks`, writes one
-/// board entry, emits two events to everyone and requests a sync.
+/// board entry, emits two events to everyone and one to nobody (never queued), and requests a
+/// sync.
 private func makeVerifierLand() -> LandDefinition<VerifierState> {
     Land("sync-output-verifier-test", using: VerifierState.self) {
         ServerEvents { Register(SyncStreamTestEvent.self) }
@@ -55,9 +63,17 @@ private func makeVerifierLand() -> LandDefinition<VerifierState> {
                 if state.missesDirty {
                     state.box.value += 1
                 }
+                if state.missesPerPlayerDirty {
+                    let boxes = state.boxes
+                    for box in boxes.values { box.value += 1 }
+                    state.scores = state.scores
+                }
                 ctx.emitEvent(SyncStreamTestEvent(message: "a-\(state.ticks)"), to: .all)
+                ctx.emitEvent(SyncStreamTestEvent(message: "nobody-\(state.ticks)"), to: .players([]))
                 ctx.emitEvent(SyncStreamTestEvent(message: "b-\(state.ticks)"), to: .all)
-                ctx.requestSyncNow()
+                if !state.quiet {
+                    ctx.requestSyncNow()
+                }
             }
         }
         Rules {
@@ -66,6 +82,11 @@ private func makeVerifierLand() -> LandDefinition<VerifierState> {
                 case "break": state.fragile.broken = true
                 case "fix": state.fragile.broken = false
                 case "miss": state.missesDirty = true
+                case "missPerPlayer": state.missesPerPlayerDirty = true
+                case "box": state.boxes[ctx.playerID] = VerifierBox()
+                case "inf": state.speeds[ctx.playerID] = .infinity
+                case "speed": state.speeds[ctx.playerID] = Double(action.value)
+                case "quiet": state.quiet = true
                 default: state.scores[ctx.playerID] = action.value
                 }
                 return SyncStreamSetResponse(ok: true)
@@ -75,7 +96,7 @@ private func makeVerifierLand() -> LandDefinition<VerifierState> {
 }
 
 private let verifierPathHashes: [String: UInt32] = Dictionary(
-    uniqueKeysWithValues: ["ticks", "board", "fragile", "box", "scores", "missesDirty"].map { ($0, DeterministicHash.fnv1a32($0)) }
+    uniqueKeysWithValues: ["ticks", "board", "fragile", "box", "scores", "speeds", "boxes", "missesDirty", "missesPerPlayerDirty", "quiet"].map { ($0, DeterministicHash.fnv1a32($0)) }
 )
 
 private actor VerifierTransport: Transport {
@@ -92,7 +113,16 @@ private struct VerifierFixture {
     let adapter: TransportAdapter<VerifierState>
     let definition = makeVerifierLand()
 
-    static func make(encoding: InTurnEncoding) async -> VerifierFixture {
+    /// With `encoder`, the adapter encodes json through it (it ignores `encoding`).
+    ///
+    /// `initializeFirst` waits for OnInitialize before attaching the adapter, so the stream has
+    /// no initialize marker and its indices are the same in every run. Without it, OnInitialize
+    /// may run before or after the adapter is attached (with or without a marker).
+    static func make(
+        encoding: InTurnEncoding,
+        encoder: (any StateUpdateEncoder)? = nil,
+        initializeFirst: Bool = true
+    ) async -> VerifierFixture {
         let definition = makeVerifierLand()
         let keeper = LandKeeper<VerifierState>(
             definition: definition,
@@ -101,15 +131,29 @@ private struct VerifierFixture {
             autoStartLoops: false
         )
         let transport = VerifierTransport()
-        let adapter = TransportAdapter<VerifierState>(
-            keeper: keeper,
-            transport: transport,
-            landID: "sync-output-verifier-test",
-            encodingConfig: encoding.config,
-            pathHashes: encoding == .json ? nil : verifierPathHashes,
-            inTurnSync: true
-        )
+        let adapter: TransportAdapter<VerifierState>
+        if let encoder {
+            adapter = TransportAdapter<VerifierState>(
+                keeper: keeper,
+                transport: transport,
+                landID: "sync-output-verifier-test",
+                stateUpdateEncoder: encoder,
+                inTurnSync: true
+            )
+        } else {
+            adapter = TransportAdapter<VerifierState>(
+                keeper: keeper,
+                transport: transport,
+                landID: "sync-output-verifier-test",
+                encodingConfig: encoding.config,
+                pathHashes: encoding == .json ? nil : verifierPathHashes,
+                inTurnSync: true
+            )
+        }
         await transport.setDelegate(adapter)
+        if initializeFirst {
+            await keeper.awaitInitialization()
+        }
         await keeper.setTransport(adapter)
         return VerifierFixture(keeper: keeper, adapter: adapter)
     }
@@ -141,6 +185,13 @@ private struct VerifierFixture {
             clientID: ClientID("c\(n)"),
             sessionID: SessionID("s\(n)")
         )
+    }
+
+    /// The recorded sync stream so far.
+    func stream() async throws -> [ReevaluationSyncStreamEntry] {
+        await keeper.waitForRecorderSubmissionsForTesting()
+        let recorder = try #require(await keeper.getReevaluationRecorder())
+        return ReevaluationSyncStreamEntry.stream(of: await recorder.getAllFrames())
     }
 
     func tick(_ count: Int = 1) async {
@@ -246,12 +297,75 @@ private func playScript(_ f: VerifierFixture) async throws {
     await f.tick()
 }
 
+/// The first entry where a faulted run's stream differs from a clean run of the same script:
+/// where the fault fired, which is where the verifier must report it.
+private func faultLocation(
+    encoding: InTurnEncoding,
+    fault: DigestFault,
+    script: (VerifierFixture) async throws -> Void = playScript
+) async throws -> (mismatch: SyncOutputMismatch?, expected: ReevaluationSyncStreamEntry) {
+    let clean = await VerifierFixture.make(encoding: encoding)
+    try await script(clean)
+    let faulted = await VerifierFixture.make(encoding: encoding)
+    await faulted.adapter.setSyncOutputDigestFaultForTesting { fault.run(&$0) }
+    try await script(faulted)
+    #expect(fault.hasFired)
+    let cleanStream = try await clean.stream()
+    let faultedStream = try await faulted.stream()
+    #expect(cleanStream.count == faultedStream.count)
+    let index = try #require(faultedStream.indices.first { $0 >= cleanStream.count || cleanStream[$0] != faultedStream[$0] })
+    let result = try await faulted.replay()
+    guard case .failed(let mismatch) = result.syncOutput.verdict else {
+        Issue.record("expected a failed verdict, got \(result.syncOutput.summary)")
+        return (nil, faultedStream[index])
+    }
+    return (mismatch, faultedStream[index])
+}
+
+private func position(_ entry: ReevaluationSyncStreamEntry) -> (streamIndex: UInt64, observedTickId: Int64?) {
+    switch entry {
+    case .output(let output): return (output.streamIndex, output.observedTickId)
+    case .marker(let marker): return (marker.streamIndex, marker.observedTickId)
+    }
+}
+
+/// JSON, except that every per-player update fails while `fails` is on (even an empty one).
+private struct VerifierFailingEncoder: StateUpdateEncoderWithScope {
+    let inner = JSONStateUpdateEncoder()
+    let fails: VerifierSwitch
+
+    var encoding: StateUpdateEncoding { inner.encoding }
+
+    func encode(update: StateUpdate, landID: String, playerID: PlayerID) throws -> Data {
+        try encode(update: update, landID: landID, playerID: playerID, playerSlot: nil, scope: .perPlayer)
+    }
+
+    func encode(update: StateUpdate, landID: String, playerID: PlayerID, playerSlot: Int32?) throws -> Data {
+        try encode(update: update, landID: landID, playerID: playerID, playerSlot: playerSlot, scope: .perPlayer)
+    }
+
+    func encode(update: StateUpdate, landID: String, playerID: PlayerID, playerSlot: Int32?, scope: StateUpdateKeyScope) throws -> Data {
+        if case .perPlayer = scope, fails.isOn { throw SyncStreamFault() }
+        return try inner.encode(update: update, landID: landID, playerID: playerID, playerSlot: playerSlot)
+    }
+}
+
+private final class VerifierSwitch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var on = false
+    var isOn: Bool { lock.lock(); defer { lock.unlock() }; return on }
+    func set(_ value: Bool) { lock.lock(); on = value; lock.unlock() }
+}
+
 @Suite("Sync-output verifier", .timeLimit(.minutes(1)))
 struct SyncOutputVerifierTests {
-    @Test("A deterministic run passes: every scope compared, nothing unverifiable", arguments: InTurnEncoding.allCases)
-    func deterministicRunPasses(encoding: InTurnEncoding) async throws {
+    @Test(
+        "A deterministic run passes: every scope compared, nothing unverifiable",
+        arguments: InTurnEncoding.allCases, [true, false]
+    )
+    func deterministicRunPasses(encoding: InTurnEncoding, initializeFirst: Bool) async throws {
         guard InTurnSync.isEnabled() else { return }
-        let f = await VerifierFixture.make(encoding: encoding)
+        let f = await VerifierFixture.make(encoding: encoding, initializeFirst: initializeFirst)
         try await playScript(f)
         let result = try await f.replay()
         let sync = result.syncOutput
@@ -270,27 +384,21 @@ struct SyncOutputVerifierTests {
     @Test("A broadcast patch the live diff dropped is detected", arguments: InTurnEncoding.allCases)
     func droppedBroadcastPatch(encoding: InTurnEncoding) async throws {
         guard InTurnSync.isEnabled() else { return }
-        let f = await VerifierFixture.make(encoding: encoding)
         let fault = DigestFault { digest in
             guard var patches = digest.broadcastPatches, !patches.isEmpty else { return false }
             patches.removeLast()
             digest.broadcastPatches = patches
             return true
         }
-        await f.adapter.setSyncOutputDigestFaultForTesting { fault.run(&$0) }
-        try await playScript(f)
-        #expect(fault.hasFired)
-        guard case .failed(let mismatch) = try await f.replay().syncOutput.verdict else {
-            Issue.record("expected a failed verdict")
-            return
-        }
-        #expect(mismatch.scope == "broadcast")
+        let (mismatch, expected) = try await faultLocation(encoding: encoding, fault: fault)
+        #expect(mismatch?.scope == "broadcast")
+        #expect(mismatch?.streamIndex == position(expected).streamIndex)
+        #expect(mismatch?.observedTickId == position(expected).observedTickId)
     }
 
     @Test("A changed per-player value is detected", arguments: InTurnEncoding.allCases)
     func changedPerPlayerValue(encoding: InTurnEncoding) async throws {
         guard InTurnSync.isEnabled() else { return }
-        let f = await VerifierFixture.make(encoding: encoding)
         let fault = DigestFault { digest in
             guard let (player, patches) = digest.perPlayerPatches.first(where: { digest.seeds[$0.key] == nil && !$0.value.isEmpty }) else {
                 return false
@@ -300,20 +408,15 @@ struct SyncOutputVerifierTests {
             digest.perPlayerPatches[player] = changed
             return true
         }
-        await f.adapter.setSyncOutputDigestFaultForTesting { fault.run(&$0) }
-        try await playScript(f)
-        #expect(fault.hasFired)
-        guard case .failed(let mismatch) = try await f.replay().syncOutput.verdict else {
-            Issue.record("expected a failed verdict")
-            return
-        }
-        #expect(mismatch.scope == "per-player (combined)")
+        let (mismatch, expected) = try await faultLocation(encoding: encoding, fault: fault)
+        #expect(mismatch?.scope == "per-player (combined)")
+        #expect(mismatch?.streamIndex == position(expected).streamIndex)
+        #expect(mismatch?.observedTickId == position(expected).observedTickId)
     }
 
     @Test("Opcode 107: a dropped event and two swapped events are detected", arguments: ["drop", "swap"])
     func droppedOrSwappedEvent(kind: String) async throws {
         guard InTurnSync.isEnabled() else { return }
-        let f = await VerifierFixture.make(encoding: .messagepack)
         let fault = DigestFault { digest in
             guard var events = digest.events, events.count >= 2 else { return false }
             if kind == "drop" {
@@ -327,14 +430,10 @@ struct SyncOutputVerifierTests {
             digest.events = events
             return true
         }
-        await f.adapter.setSyncOutputDigestFaultForTesting { fault.run(&$0) }
-        try await playScript(f)
-        #expect(fault.hasFired)
-        guard case .failed(let mismatch) = try await f.replay().syncOutput.verdict else {
-            Issue.record("expected a failed verdict")
-            return
-        }
-        #expect(mismatch.scope == "events")
+        let (mismatch, expected) = try await faultLocation(encoding: .messagepack, fault: fault)
+        #expect(mismatch?.scope == "events")
+        #expect(mismatch?.streamIndex == position(expected).streamIndex)
+        #expect(mismatch?.observedTickId == position(expected).observedTickId)
     }
 
     @Test("Patches on unrelated paths in another order are not a mismatch", arguments: InTurnEncoding.allCases)
@@ -477,5 +576,117 @@ struct SyncOutputVerifierTests {
         #expect(result.initialize == .notRecorded)
         #expect(!result.recordedStateHashes.isEmpty)
         #expect(result.tickHashes == result.recordedStateHashes, "tick 0 still applies OnInitialize")
+    }
+
+    @Test("Opcode 107: a per-player dirty-tracking miss in an output with no other per-player change is detected")
+    func perPlayerDirtyTrackingMiss() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await VerifierFixture.make(encoding: .messagepack)
+        try await f.join(1)
+        try await f.set(1, "box")
+        await f.tick()
+        try await f.set(1, "missPerPlayer")
+        await f.tick()  // every box changes in place; `scores` is dirty but unchanged
+        let tick = try #require(try await f.stream().compactMap {
+            if case .output(let o) = $0, o.turnKind == .tick, o.observedTickId == 1 { return o } else { return nil }
+        }.first)
+        #expect(tick.perPlayerHash == CanonicalPatchList.combinedHash([]), "the live plan saw no per-player change")
+        let result = try await f.replay()
+        #expect(result.tickHashes == result.recordedStateHashes)
+        guard case .failed(let mismatch) = result.syncOutput.verdict else {
+            Issue.record("expected a failed verdict, got \(result.syncOutput.summary)")
+            return
+        }
+        #expect(mismatch.scope == "per-player (combined)")
+        #expect(mismatch.streamIndex == tick.streamIndex)
+        #expect(mismatch.observedTickId == 1)
+    }
+
+    @Test("A per-player encode drop makes that player unverifiable until a verifiable seed: partial, never passed")
+    func perPlayerEncodeDropIsUnverifiable() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await VerifierFixture.make(encoding: .json)
+        try await f.join(1)
+        try await f.join(2)
+        await f.tick()
+        try await f.set(1, "inf")
+        await f.tick()      // player 1's frame goes out without the infinite speed
+        try await f.set(1, "speed", 3)
+        await f.tick()      // still diverged: its client never got the dropped value
+        let ticks = try await f.stream().compactMap { if case .output(let o) = $0, o.turnKind == .tick { return o } else { return nil } }
+        #expect(ticks[1].encodeDropScopes == [VerifierFixture.player(1).rawValue])
+        let sync = try await f.replay().syncOutput
+        #expect(sync.verdict == .partial, "\(sync.summary)")
+        // Player 1: compared on tick 0, unverifiable on ticks 1 and 2. Player 2: compared on all.
+        #expect(sync.perPlayer.compared == 4)
+        #expect(sync.perPlayer.unverifiable == 2)
+        #expect(sync.broadcast.unverifiable == 0)
+    }
+
+    @Test("Combined mode: an update that was not sent is a divergence (unverifiable), not a skip")
+    func combinedUncommittedIsUnverifiable() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let fails = VerifierSwitch()
+        let f = await VerifierFixture.make(encoding: .json, encoder: VerifierFailingEncoder(fails: fails))
+        try await f.join(1)
+        await f.tick()
+        fails.set(true)
+        await f.tick()      // no player gets its combined update; the broadcast cache is committed
+        fails.set(false)
+        await f.tick()
+        let ticks = try await f.stream().compactMap { if case .output(let o) = $0, o.turnKind == .tick { return o } else { return nil } }
+        #expect(ticks[1].perPlayerUncommitted == [VerifierFixture.player(1).rawValue])
+        let sync = try await f.replay().syncOutput
+        #expect(sync.verdict == .partial, "\(sync.summary)")
+        #expect(sync.perPlayer.compared == 1)
+        #expect(sync.perPlayer.unverifiable == 2, "the unsent tick and the one after it")
+        #expect(sync.perPlayer.skipped == 0)
+    }
+
+    @Test("A gap in the stream indices is malformed")
+    func streamGapIsMalformed() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await VerifierFixture.make(encoding: .json)
+        try await playScript(f)
+        let result = try await f.replay { frames in
+            guard let index = frames.firstIndex(where: { !$0.syncOutputs.isEmpty }) else { return }
+            let frame = frames[index]
+            frames[index] = ReevaluationTickFrame(
+                tickId: frame.tickId,
+                stateHash: frame.stateHash,
+                actions: frame.actions,
+                clientEvents: frame.clientEvents,
+                lifecycleEvents: frame.lifecycleEvents,
+                serverEvents: frame.serverEvents,
+                sequenceBeforeInputs: frame.sequenceBeforeInputs,
+                sequenceBeforeTickHandler: frame.sequenceBeforeTickHandler,
+                syncOutputs: Array(frame.syncOutputs.dropFirst()),
+                syncMarkers: frame.syncMarkers,
+                initialize: frame.initialize
+            )
+        }
+        guard case .malformed(let reason) = result.syncOutput.verdict else {
+            Issue.record("expected malformed, got \(result.syncOutput.summary)")
+            return
+        }
+        #expect(reason.contains("not 0..<"))
+    }
+
+    @Test("Opcode 107: events after the last output are reported; events nobody receives are not expected")
+    func eventsAfterLastOutputAreReported() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await VerifierFixture.make(encoding: .messagepack)
+        try await f.join(1)
+        await f.tick(2)
+        try await f.set(1, "quiet")
+        await f.tick()  // three events, no sync after them
+        let outputs = try await f.stream().compactMap { if case .output(let o) = $0 { return o } else { return nil } }
+        #expect(outputs.allSatisfy { $0.eventsNotQueued?.count == 1 }, "each tick's event to nobody")
+        let sync = try await f.replay().syncOutput
+        #expect(sync.verdict == .passed, "\(sync.summary)")
+        // The last tick's two queued events, and its event to nobody: only an output lists the
+        // events that were never queued, and none follows it.
+        #expect(sync.eventsAfterLastOutput == 3)
+        #expect(sync.summary.contains("3 events after the last output"))
     }
 }
