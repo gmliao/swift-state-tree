@@ -199,6 +199,17 @@ struct SnapshotPatchApplierTests {
         #expect(view.fields == ["inventories": .object(["p1": .object(["sword": .int(1)])])])
     }
 
+    @Test("Delimiters followed by a combining mark are still delimiters")
+    func combiningMarks() throws {
+        // A key that starts with a combining mark: "/\u{301}x" is one grapheme cluster "/́".
+        #expect(try SnapshotClientView.keys(of: "/a/\u{301}x") == ["a", "\u{301}x"])
+        // "~1" followed by a combining mark: the escape is still "/", the mark stays in the key.
+        #expect(try SnapshotClientView.keys(of: "/a~1\u{301}b") == ["a/\u{301}b"])
+        var view = SnapshotClientView()
+        try view.apply(set("/items/\u{301}x", .int(1)))
+        #expect(view.fields == ["items": .object(["\u{301}x": .int(1)])])
+    }
+
     @Test("An empty key is a valid component")
     func emptyKey() throws {
         #expect(try SnapshotClientView.keys(of: "/a/") == ["a", ""])

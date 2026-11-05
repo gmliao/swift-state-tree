@@ -26,12 +26,18 @@ package struct SnapshotClientView: Equatable, Sendable {
         self.fields = fields
     }
 
-    /// Applies `patches` in order, as the TypeScript client does where a correct diff can lead:
+    /// Applies `patches` in order, mirroring the TypeScript client (`sdk/ts/src/core/view.ts`)
+    /// where a correct diff can lead:
     /// a set below a missing parent creates it as an empty object (a per-player field's parent
     /// can be absent from the view until its first entry). Where only a wrong diff can lead, it
     /// throws instead of guessing: a set below a parent that is not an object, and a delete of a
     /// field (or below a parent) that is missing. Arrays are replaced whole (the diff never
     /// patches inside an array).
+    ///
+    /// Two deliberate differences from `view.ts`, both client path-parsing bugs (#121): this
+    /// applier unescapes `~1`/`~0`, and it reads a component such as `items[0]` as a key, where
+    /// the client reads it as an array element. A passing check through this applier therefore
+    /// does not show that the client converges for keys containing `/`, `~` or `[n]`.
     package mutating func apply(_ patches: [StatePatch]) throws {
         for patch in patches {
             try apply(patch)
@@ -49,31 +55,35 @@ package struct SnapshotClientView: Equatable, Sendable {
     }
 
     /// The unescaped keys of a JSON Pointer (RFC 6901): `~1` is `/`, then `~0` is `~`.
+    ///
+    /// Parsed over Unicode scalars, not `Character`s: a `/` or `~1` followed by a combining mark
+    /// is one grapheme cluster, and splitting on characters would miss the delimiter.
     package static func keys(of path: String) throws -> [String] {
-        guard path.hasPrefix("/"), path.count > 1 else {
+        let scalars = Array(path.unicodeScalars)
+        guard scalars.count > 1, scalars[0] == "/" else {
             throw SnapshotPatchError.invalidPath(path)
         }
         var keys: [String] = []
-        var current = ""
-        var index = path.index(after: path.startIndex)
-        while index < path.endIndex {
-            let character = path[index]
-            if character == "/" {
-                keys.append(current)
-                current = ""
-            } else if character == "~" {
-                let next = path.index(after: index)
-                guard next < path.endIndex, path[next] == "0" || path[next] == "1" else {
+        var current = String.UnicodeScalarView()
+        var index = 1
+        while index < scalars.count {
+            let scalar = scalars[index]
+            if scalar == "/" {
+                keys.append(String(current))
+                current = String.UnicodeScalarView()
+            } else if scalar == "~" {
+                let next = index + 1
+                guard next < scalars.count, scalars[next] == "0" || scalars[next] == "1" else {
                     throw SnapshotPatchError.invalidPath(path)
                 }
-                current.append(path[next] == "1" ? "/" : "~")
+                current.append(scalars[next] == "1" ? "/" : "~")
                 index = next
             } else {
-                current.append(character)
+                current.append(scalar)
             }
-            index = path.index(after: index)
+            index += 1
         }
-        keys.append(current)
+        keys.append(String(current))
         return keys
     }
 
