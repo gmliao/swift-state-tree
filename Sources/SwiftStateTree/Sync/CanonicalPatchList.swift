@@ -78,11 +78,12 @@ package struct CanonicalPatchList: Sendable {
     }
 
     private static func isPrefix(_ prefix: [Substring], of path: [Substring]) -> Bool {
-        prefix.count <= path.count && zip(prefix, path).allSatisfy { $0 == $1 }
+        prefix.count <= path.count && zip(prefix, path).allSatisfy { $0.utf8.elementsEqual($1.utf8) }
     }
 
     private static func componentsLess(_ lhs: [Substring], _ rhs: [Substring]) -> Bool {
-        for (left, right) in zip(lhs, rhs) where left != right {
+        // Byte equality, not `Substring ==` (canonical equivalence), so equality and order agree.
+        for (left, right) in zip(lhs, rhs) where !left.utf8.elementsEqual(right.utf8) {
             return left.utf8.lexicographicallyPrecedes(right.utf8)
         }
         return lhs.count < rhs.count

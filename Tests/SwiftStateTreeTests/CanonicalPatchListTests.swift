@@ -126,6 +126,18 @@ struct CanonicalPatchListTests {
         #expect(CanonicalPatchList(patches).hash != CanonicalPatchList(swappedClass).hash)
     }
 
+    @Test("NFC and NFD forms of a key are different components")
+    func canonicallyEquivalentKeys() {
+        let nfc = set("/k/\u{00E9}", .int(1))
+        let nfd = set("/k/e\u{0301}", .int(2))
+        let forward = CanonicalPatchList([nfc, nfd])
+        let backward = CanonicalPatchList([nfd, nfc])
+        // Byte-wise both ways: not one prefix class, and the same order for either input order.
+        #expect(!forward.hasPrefixPairs)
+        #expect(forward.patches == backward.patches)
+        #expect(forward.hash == backward.hash)
+    }
+
     @Test("A changed value, operation or missing patch changes the hash")
     func contentChanges() {
         let base = CanonicalPatchList([set("/a", .int(1)), delete("/b")]).hash
