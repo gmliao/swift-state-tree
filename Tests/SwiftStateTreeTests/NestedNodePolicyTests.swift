@@ -163,6 +163,8 @@ private func patchViolations(_ update: StateUpdate, for playerID: PlayerID) -> [
         if leaf == "aliceOnly", playerID != alice { found.append("patch \(patch.path) (perPlayer) to \(playerID.rawValue)") }
         switch patch.operation {
         case .set(let value), .add(let value):
+            // A scalar patch of the masked field itself, not only one inside an object value.
+            if leaf == "masked", value != .int(0) { found.append("patch \(patch.path) masked unmasked: \(value)") }
             found += violations(in: value, for: playerID, at: "patch \(patch.path)")
         case .delete:
             break
@@ -188,25 +190,69 @@ private func allViolations<Root: StateNodeProtocol>(
         found += snapshotViolations(snapshot, for: player).map { "snapshotForSync \(player.rawValue) \($0)" }
     }
     for useDirtyTracking in [true, false] {
-        var engine = SyncEngine()
-        var state = root
         for player in [alice, bob] {
+            // A fresh engine per player: with a shared one, the first player's diff consumes the
+            // broadcast changes, and a per-player field leaked into a broadcast patch would never
+            // reach the second player's diff.
+            var engine = SyncEngine()
+            var state = root
+            let label = "\(player.rawValue) dirty=\(useDirtyTracking)"
             // The joiner's full state (what a late join or a first sync sends).
-            found += snapshotViolations(try engine.lateJoinSnapshot(for: player, from: state), for: player)
-                .map { "lateJoinSnapshot \(player.rawValue) \($0)" }
-        }
-        for player in [alice, bob] {
-            found += patchViolations(try engine.generateDiff(for: player, from: state, useDirtyTracking: useDirtyTracking), for: player)
-                .map { "firstSync \(player.rawValue) dirty=\(useDirtyTracking) \($0)" }
-        }
-        state.clearDirty()
-        change(&state)
-        for player in [alice, bob] {
-            found += patchViolations(try engine.generateDiff(for: player, from: state, useDirtyTracking: useDirtyTracking), for: player)
-                .map { "diff \(player.rawValue) dirty=\(useDirtyTracking) \($0)" }
+            let joined = try engine.lateJoinSnapshot(for: player, from: state)
+            found += snapshotViolations(joined, for: player).map { "lateJoinSnapshot \(label) \($0)" }
+            var view = SnapshotClientView(fields: joined.values)
+
+            let first = try engine.generateDiff(for: player, from: state, useDirtyTracking: useDirtyTracking)
+            found += patchViolations(first, for: player).map { "firstSync \(label) \($0)" }
+            try view.apply(patches(of: first))
+            found += viewDifferences(view, try state.snapshot(for: player, dirtyFields: nil)).map { "firstSync \(label) \($0)" }
+
+            state.clearDirty()
+            change(&state)
+            let diff = try engine.generateDiff(for: player, from: state, useDirtyTracking: useDirtyTracking)
+            found += patchViolations(diff, for: player).map { "diff \(label) \($0)" }
+            // The client's copy after the patches must be the player's own view of the state.
+            try view.apply(patches(of: diff))
+            found += viewDifferences(view, try state.snapshot(for: player, dirtyFields: nil)).map { "diff \(label) \($0)" }
         }
     }
     return found
+}
+
+private func patches(of update: StateUpdate) -> [StatePatch] {
+    switch update {
+    case .firstSync(let p), .diff(let p): return p
+    case .noChange: return []
+    }
+}
+
+/// The top-level fields where a client's patched copy differs from `snapshot(for:)`.
+private func viewDifferences(_ view: SnapshotClientView, _ expected: StateSnapshot) -> [String] {
+    Set(view.fields.keys).union(expected.values.keys).sorted().compactMap { field in
+        view.fields[field] == expected.values[field] ? nil : "view differs from snapshot(for:) at \(field)"
+    }
+}
+
+/// The #179 entries, exactly. A broadcast field's diff is computed from the view without a
+/// player, so after a change:
+/// - a nested per-player field's new value never reaches its player (Alice's copy keeps the old
+///   `aliceOnly` in every broadcast container);
+/// - an array element, replaced whole, loses its nested per-player and masked fields (Alice's
+///   and Bob's copies).
+/// Any other entry, under-sends in the per-player parents included, still fails.
+private let issue179: Set<String> = {
+    var entries: Set<String> = ["diff bob view differs from snapshot(for:) at array", "diff alice patch /array[0].aliceOnly missing for alice"]
+    for field in ["array", "byInt", "byPlayer", "byString", "deep", "optional", "single"] {
+        entries.insert("diff alice view differs from snapshot(for:) at \(field)")
+    }
+    return entries
+}()
+
+private func isIssue179(_ entry: String) -> Bool {
+    // Entries read "diff <player> dirty=<bool> <what>"; the known set holds them without the
+    // dirty flag, since both modes behave the same.
+    let unflagged = entry.replacingOccurrences(of: #" dirty=(true|false)"#, with: "", options: .regularExpression)
+    return issue179.contains(unflagged)
 }
 
 private func changeConvertible(_ node: inout ConvertibleProbeNode, _ step: Int) {
@@ -223,7 +269,7 @@ struct NestedNodePolicyTests {
     func convertibleNode() throws {
         var root = ConvertibleProbeRoot()
         let found = try allViolations(&root, change: changeConvertibleRoot)
-        let leaks = found.filter { !$0.contains("missing for alice") }
+        let leaks = found.filter { !isIssue179($0) }
         #expect(leaks.isEmpty, "\(leaks.count) violations:\n\(leaks.joined(separator: "\n"))")
     }
 
@@ -231,19 +277,19 @@ struct NestedNodePolicyTests {
     func plainNode() throws {
         var root = PlainProbeRoot()
         let found = try allViolations(&root, change: changePlainRoot)
-        let leaks = found.filter { !$0.contains("missing for alice") }
+        let leaks = found.filter { !isIssue179($0) }
         #expect(leaks.isEmpty, "\(leaks.count) violations:\n\(leaks.joined(separator: "\n"))")
     }
 
-    /// The other direction: a per-player field nested under a broadcast parent is diffed from
-    /// the shared broadcast snapshot, which has no player, so its own player loses it when a
-    /// diff replaces the whole node (an array element). Not #175; tracked in #179.
-    @Test("A per-player field nested under a broadcast array reaches its player in diffs")
+    /// The other direction: per-player and masked fields nested under a broadcast parent are
+    /// diffed from the broadcast view, which has no player (`issue179`). Not #175; tracked in
+    /// #179.
+    @Test("Per-player and masked fields nested under a broadcast parent reach their players in diffs")
     func nestedPerPlayerUnderBroadcastArray() throws {
         for (name, missing) in [
             ("convertible", try { var root = ConvertibleProbeRoot(); return try allViolations(&root, change: changeConvertibleRoot) }()),
             ("plain", try { var root = PlainProbeRoot(); return try allViolations(&root, change: changePlainRoot) }()),
-        ].map({ ($0.0, $0.1.filter { $0.contains("missing for alice") }) }) {
+        ].map({ ($0.0, $0.1.filter(isIssue179)) }) {
             withKnownIssue("nested per-player fields under a broadcast parent are diffed without a player") {
                 #expect(missing.isEmpty, "\(name): \(missing.joined(separator: "\n"))")
             }
