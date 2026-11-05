@@ -2,10 +2,10 @@
 //
 // WebSocket keepalive (#108). Each session pings at its own phase of the ping interval: its first
 // ping comes at a stable offset from a hash of its session ID, so sessions that connect together
-// don't ping together. A ping with no pong closes the connection after the pong timeout, not at
-// the next ping; a pong cancels that deadline. The timeout is configurable (provisional 10 s
-// default) and each close is counted in the transport profiler's counters. Time is the embedded
-// event loop's, advanced by hand.
+// don't ping together. A ping followed by no inbound frame closes the connection after the pong
+// timeout, not at the next ping; any frame from the peer (a pong, or a text or binary message)
+// cancels that deadline. The timeout is configurable (default 20 s) and each close is counted in
+// the transport profiler's counters. Time is the embedded event loop's, advanced by hand.
 
 import Foundation
 import Logging
@@ -88,8 +88,9 @@ struct WebSocketSessionHandlerKeepaliveTests {
         }
     }
 
-    @Test("A ping without a pong closes the connection at the pong timeout, not at the next ping")
+    @Test("A ping with no inbound frame closes the connection at the pong timeout (20 s), not at the next ping")
     func missingPongClosesAtTimeout() throws {
+        #expect(WebSocketSessionHandler.defaultPongTimeout == .seconds(20))
         let channel = try makeSession("silent-peer")
         channel.embeddedEventLoop.advanceTime(by: WebSocketSessionHandler.initialPingDelay(for: SessionID("silent-peer")))
         #expect(try written(channel) == [.ping])
@@ -101,6 +102,29 @@ struct WebSocketSessionHandlerKeepaliveTests {
         channel.embeddedEventLoop.advanceTime(by: millisecond)
         #expect(try written(channel) == [.connectionClose])
         #expect(!channel.isActive, "closed after the close frame")
+    }
+
+    @Test("Any inbound frame answers an outstanding ping: a text or binary frame before the deadline keeps it open", arguments: [WebSocketOpcode.text, .binary])
+    func inboundFrameCountsAsLiveness(opcode: WebSocketOpcode) throws {
+        let channel = try makeSession("busy-peer")
+        let timeout = WebSocketSessionHandler.defaultPongTimeout
+        channel.embeddedEventLoop.advanceTime(by: WebSocketSessionHandler.initialPingDelay(for: SessionID("busy-peer")))
+        #expect(try written(channel) == [.ping])
+
+        // No pong, but a message from the peer just before the deadline.
+        channel.embeddedEventLoop.advanceTime(by: timeout - millisecond)
+        try channel.writeInbound(WebSocketFrame(fin: true, opcode: opcode, data: ByteBuffer(string: "x")))
+        // Past the deadline (+1 ms) and up to the next ping, one interval after the first.
+        channel.embeddedEventLoop.advanceTime(by: WebSocketSessionHandler.pingInterval - timeout + millisecond)
+        #expect(try written(channel) == [.ping], "still open: the next ping, one interval after the first")
+        #expect(channel.isActive)
+
+        // That ping goes unanswered and nothing else comes in: closed at its deadline.
+        channel.embeddedEventLoop.advanceTime(by: timeout - millisecond)
+        #expect(channel.isActive)
+        channel.embeddedEventLoop.advanceTime(by: millisecond)
+        #expect(try written(channel) == [.connectionClose])
+        #expect(!channel.isActive)
     }
 
     @Test("A configured pong timeout is the one enforced, and the close is counted")

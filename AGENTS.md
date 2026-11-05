@@ -80,7 +80,7 @@ Use the unified env pattern instead of scattered `ProcessInfo.processInfo.enviro
 
 - **EnvHelpers** (`Sources/SwiftStateTree/Support/EnvHelpers.swift`): Core parsing (`getEnvString`, `getEnvBool`, `getEnvInt`, `getEnvUInt16`, etc.).
 - **Env keys**: Use constants from `*EnvKeys` enums to avoid typos and enable refactoring:
-  - `EnvKeys` (SwiftStateTree): Reevaluation, Logging
+  - `EnvKeys` (SwiftStateTree): Reevaluation, Logging, Server (`LISTEN_BACKLOG`, `EVENT_LOOP_THREADS`, `WS_PONG_TIMEOUT_MS`: WebSocket keepalive, default 20000 ms, below the 30 s ping interval)
   - `NIOEnvKeys` (SwiftStateTreeNIO): JWT
   - `ProvisioningEnvKeys` (SwiftStateTreeNIOProvisioning): Provisioning
   - `TransportEnvKeys` (SwiftStateTreeTransport): Transport config

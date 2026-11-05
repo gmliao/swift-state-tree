@@ -33,12 +33,13 @@ public struct NIOWebSocketServerConfiguration: Sendable {
     /// `defaultListenBacklog`. An explicit value of 0 or below also gives `defaultListenBacklog`
     /// (as `LISTEN_BACKLOG` does), and values above `Int32.max` are capped.
     public var listenBacklog: Int
-    /// How long a keepalive ping may go unanswered before the connection is closed with 1001
-    /// (going away). The clock starts when the ping is written to the channel, not when it
-    /// reaches the wire: with a slow reader the ping waits behind every frame queued before it,
-    /// so a live but backed-up peer can hit the timeout too. Must be positive and below the ping
-    /// interval (`WebSocketSessionHandler.pingInterval`, 30 s). Defaults to `WS_PONG_TIMEOUT_MS`,
-    /// else `defaultPongTimeout`. Provisional default; see #108.
+    /// How long after a keepalive ping the peer may send nothing before the connection is closed
+    /// with 1001 (going away). Any inbound frame counts, not only the pong. The clock starts when
+    /// the ping is written to the channel, not when it reaches the wire: with a slow reader the
+    /// ping waits behind every frame queued before it, so a backed-up peer that sends nothing can
+    /// hit the timeout too. Must be positive and below the ping interval
+    /// (`WebSocketSessionHandler.pingInterval`, 30 s). Defaults to `WS_PONG_TIMEOUT_MS`, else
+    /// `defaultPongTimeout` (20 s). See #108.
     public var pongTimeout: TimeAmount
 
     /// The CPUs this process may use: the smaller of NIO's `System.coreCount` (cgroup quota and

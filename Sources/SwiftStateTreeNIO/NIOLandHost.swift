@@ -69,7 +69,7 @@ public struct NIOLandHostConfiguration: Sendable {
     /// Defaults to `LISTEN_BACKLOG`, else 4096; 0 or below gives 4096.
     public var listenBacklog: Int
     /// Keepalive pong timeout; see `NIOWebSocketServerConfiguration.pongTimeout`.
-    /// Defaults to `WS_PONG_TIMEOUT_MS`, else 10 s. Must be positive and below the 30 s ping interval.
+    /// Defaults to `WS_PONG_TIMEOUT_MS`, else 20 s. Must be positive and below the 30 s ping interval.
     public var pongTimeout: TimeAmount
 
     public init(

@@ -57,14 +57,14 @@ struct NIOWebSocketServerConfigurationTests {
 
 @Suite("NIOWebSocketServerConfiguration: pong timeout (#108)")
 struct NIOWebSocketServerPongTimeoutConfigurationTests {
-    @Test("WS_PONG_TIMEOUT_MS unset or invalid gives the default of 10 s")
+    @Test("WS_PONG_TIMEOUT_MS unset or invalid gives the default of 20 s")
     func defaultPongTimeout() {
-        #expect(NIOWebSocketServerConfiguration.defaultPongTimeout == .seconds(10))
-        #expect(NIOWebSocketServerConfiguration.pongTimeout(environment: [:]) == .seconds(10))
+        #expect(NIOWebSocketServerConfiguration.defaultPongTimeout == .seconds(20))
+        #expect(NIOWebSocketServerConfiguration.pongTimeout(environment: [:]) == .seconds(20))
         // Not a number, not positive, or not below the 30 s ping interval.
         for raw in ["", "abc", "0", "-5", "12.5", "30000", "45000"] {
             #expect(
-                NIOWebSocketServerConfiguration.pongTimeout(environment: [EnvKeys.Server.pongTimeoutMs: raw]) == .seconds(10),
+                NIOWebSocketServerConfiguration.pongTimeout(environment: [EnvKeys.Server.pongTimeoutMs: raw]) == .seconds(20),
                 "WS_PONG_TIMEOUT_MS=\(raw)"
             )
         }
@@ -72,7 +72,7 @@ struct NIOWebSocketServerPongTimeoutConfigurationTests {
 
     @Test("WS_PONG_TIMEOUT_MS sets the timeout, up to just below the ping interval")
     func environmentOverride() {
-        #expect(NIOWebSocketServerConfiguration.pongTimeout(environment: [EnvKeys.Server.pongTimeoutMs: "20000"]) == .seconds(20))
+        #expect(NIOWebSocketServerConfiguration.pongTimeout(environment: [EnvKeys.Server.pongTimeoutMs: "10000"]) == .seconds(10))
         #expect(NIOWebSocketServerConfiguration.pongTimeout(environment: [EnvKeys.Server.pongTimeoutMs: "29999"]) == .milliseconds(29_999))
         #expect(NIOWebSocketServerConfiguration.pongTimeout(environment: [EnvKeys.Server.pongTimeoutMs: "1"]) == .milliseconds(1))
     }

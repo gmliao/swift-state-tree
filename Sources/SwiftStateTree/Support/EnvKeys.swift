@@ -55,8 +55,8 @@ public enum EnvKeys: Sendable {
         /// may use (its CPU affinity and cgroup quota).
         public static let eventLoopThreads = "EVENT_LOOP_THREADS"
         /// WebSocket pong timeout in milliseconds (`NIOWebSocketServerConfiguration.pongTimeout`):
-        /// a keepalive ping not answered within it closes the connection with 1001 (going away).
-        /// Must be below the 30 s ping interval. Default: 10000.
+        /// a keepalive ping followed by no inbound frame within it closes the connection with 1001
+        /// (going away). Must be below the 30 s ping interval. Default: 20000.
         public static let pongTimeoutMs = "WS_PONG_TIMEOUT_MS"
     }
 

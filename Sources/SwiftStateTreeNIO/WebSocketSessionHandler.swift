@@ -57,9 +57,11 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
     /// Time between pings.
     static let pingInterval: TimeAmount = .seconds(30)
     /// The pong timeout without configuration (`NIOWebSocketServerConfiguration.pongTimeout`).
-    static let defaultPongTimeout: TimeAmount = .seconds(10)
-    /// A ping not answered by a pong within this closes the connection with 1001 (#108). The
-    /// clock starts when the ping is written to the channel, not when it reaches the wire. Below
+    static let defaultPongTimeout: TimeAmount = .seconds(20)
+    /// A ping followed by no inbound frame within this closes the connection with 1001 (#108).
+    /// Any frame read from the peer counts as liveness, not only the pong (as in MQTT keepalive),
+    /// so a live client whose pong is late but which keeps sending actions stays open. The clock
+    /// starts when the ping is written to the channel, not when it reaches the wire. Below
     /// `pingInterval`, so each ping's deadline fires before the next ping.
     let pongTimeout: TimeAmount
     /// Counts pong-timeout closes when transport profiling is on.
@@ -166,6 +168,8 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         let frame = unwrapInboundIn(data)
+        // Any frame from the peer shows it is alive: it answers an outstanding ping (#108).
+        notePeerAlive()
 
         switch frame.opcode {
         case .binary, .text, .continuation:
@@ -268,12 +272,18 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         context.writeAndFlush(wrapOutboundOut(pongFrame), promise: nil)
     }
     
-    private func handlePong(_ frame: WebSocketFrame, context: ChannelHandlerContext) {
-        // Update pong received state
+    /// The peer sent a frame: an outstanding ping is answered and its deadline cancelled. Runs
+    /// on the event loop (`channelRead`).
+    private func notePeerAlive() {
+        guard waitingForPong else { return }
         waitingForPong = false
-        lastPongTime = .now()
         pongDeadline?.cancel()
         pongDeadline = nil
+    }
+
+    private func handlePong(_ frame: WebSocketFrame, context: ChannelHandlerContext) {
+        // `channelRead` already answered the outstanding ping (`notePeerAlive`).
+        lastPongTime = .now()
         
         logger.trace(
             "Received pong",
@@ -338,7 +348,7 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         schedulePing(context: context)
     }
 
-    /// Runs on the event loop, `pongTimeout` after a ping: no pong since, so the peer is gone.
+    /// Runs on the event loop, `pongTimeout` after a ping: no frame from the peer since, so it is gone.
     private func closeIfPongMissing() {
         eventLoop.assertInEventLoop()
         pongDeadline = nil
