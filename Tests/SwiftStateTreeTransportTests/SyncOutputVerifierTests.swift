@@ -38,8 +38,9 @@ struct VerifierState: StateNodeProtocol {
 /// the next tick on, the tick also changes `box` in place; "box": the caller gets a box;
 /// "missPerPlayer": the tick changes every player's box in place and rewrites `scores`
 /// unchanged (dirty, no patch); "inf": the caller's speed is infinity (json cannot encode it);
-/// "speed": the caller's speed is `value`; "quiet": ticks stop requesting a sync; "burst":
-/// `value` events to the caller and `value` to everyone, in the action's turn.
+/// "speed": the caller's speed is `value`; "nan": the caller's speed is NaN; "quiet": ticks stop
+/// requesting a sync; "burst": `value` events to the caller and `value` to everyone, in the
+/// action's turn.
 ///
 /// The golden recordings (`SyncOutputGoldenTests`) replay against this land: a change to it
 /// that changes its sync output needs them regenerated.
@@ -90,6 +91,7 @@ func makeVerifierLand() -> LandDefinition<VerifierState> {
                 case "box": state.boxes[ctx.playerID] = VerifierBox()
                 case "inf": state.speeds[ctx.playerID] = .infinity
                 case "speed": state.speeds[ctx.playerID] = Double(action.value)
+                case "nan": state.speeds[ctx.playerID] = .nan
                 case "quiet": state.quiet = true
                 case "burst":
                     for n in 0..<action.value {
@@ -540,6 +542,7 @@ struct SyncOutputVerifierTests {
         #expect(broadcastDetail.contains("first differing patch #"), "\(broadcastDetail)")
     }
 
+    #if DEBUG  // The diff fault hook exists in debug builds only.
     @Test("A diff-engine bug both sides share passes every hash and fails the apply check", arguments: InTurnEncoding.allCases)
     func diffEngineFaultIsCaughtByTheApplyCheck(encoding: InTurnEncoding) async throws {
         guard InTurnSync.isEnabled() else { return }
@@ -562,6 +565,42 @@ struct SyncOutputVerifierTests {
         #expect(mismatch.turnKind == .tick)
         #expect(mismatch.detail == "first differing path: /ticks")
         #expect(result.syncOutput.broadcast.compared > 0, "the hashes matched up to the failing output")
+    }
+    #endif
+
+    @Test("A NaN in the state verifies: an unchanged NaN is not resent, and the view equals itself")
+    func nanPassesTheApplyCheck() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await VerifierFixture.make(encoding: .messagepack)
+        try await f.join(1)
+        await f.tick()
+        try await f.set(1, "nan")
+        await f.tick()
+        await f.tick()
+        let sync = try await f.replay().syncOutput
+        #expect(sync.verdict == .passed, "\(sync.summary)")
+    }
+
+    @Test("Recorded patch lists with non-finite values still save, and still match")
+    func nonFinitePatchesSave() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await VerifierFixture.make(encoding: .messagepack)
+        await f.adapter.setSyncStreamDetail([.perPlayerHashes, .patches])
+        try await f.join(1)
+        await f.tick()
+        try await f.set(1, "inf")
+        await f.tick()
+        try await f.set(1, "nan")
+        await f.tick()
+        let player = VerifierFixture.player(1).rawValue
+        let sent = try await f.stream().flatMap { entry -> [StatePatch] in
+            if case .output(let o) = entry { return o.patches?[player] ?? [] } else { return [] }
+        }
+        let json = String(decoding: try JSONEncoder().encode(sent), as: UTF8.self)
+        #expect(json.contains("\"Infinity\""), "\(json)")
+        #expect(json.contains("\"NaN\""), "\(json)")
+        let sync = try await f.replay().syncOutput  // saves the record as JSON first
+        #expect(sync.verdict == .passed, "\(sync.summary)")
     }
 
     @Test("Without a fault, the apply check runs on every seed and diffed scope", arguments: InTurnEncoding.allCases)

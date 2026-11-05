@@ -102,6 +102,56 @@ package struct CanonicalPatchList: Sendable {
     }
 }
 
+extension StatePatch {
+    /// The patch with every non-finite double (which JSON cannot hold) written as the string
+    /// "NaN", "Infinity" or "-Infinity". Diagnostic patch lists in records use it, so they always
+    /// save; the verifier compares its replayed patches in the same form.
+    package var jsonSafe: StatePatch {
+        switch operation {
+        case .set(let value): return StatePatch(path: path, operation: .set(value.jsonSafe))
+        case .add(let value): return StatePatch(path: path, operation: .add(value.jsonSafe))
+        case .delete: return self
+        }
+    }
+}
+
+extension SnapshotValue {
+    /// `StatePatch.jsonSafe` for one value.
+    package var jsonSafe: SnapshotValue {
+        switch self {
+        case .double(let value) where !value.isFinite:
+            return .string(value.isNaN ? "NaN" : (value > 0 ? "Infinity" : "-Infinity"))
+        case .array(let elements):
+            return .array(elements.map(\.jsonSafe))
+        case .object(let fields):
+            return .object(fields.mapValues(\.jsonSafe))
+        default:
+            return self
+        }
+    }
+
+    /// `==`, except that NaN equals NaN (at any depth): a view holding NaN equals itself.
+    package static func sameValue(_ lhs: SnapshotValue?, _ rhs: SnapshotValue?) -> Bool {
+        switch (lhs, rhs) {
+        case (nil, nil):
+            return true
+        case (.double(let a)?, .double(let b)?):
+            return a == b || (a.isNaN && b.isNaN)
+        case (.array(let a)?, .array(let b)?):
+            return a.count == b.count && zip(a, b).allSatisfy { sameValue($0, $1) }
+        case (.object(let a)?, .object(let b)?):
+            return sameFields(a, b)
+        default:
+            return lhs == rhs
+        }
+    }
+
+    /// `sameValue` over two objects' fields.
+    package static func sameFields(_ lhs: [String: SnapshotValue], _ rhs: [String: SnapshotValue]) -> Bool {
+        lhs.count == rhs.count && lhs.allSatisfy { key, value in sameValue(value, rhs[key]) }
+    }
+}
+
 /// One consumed event, as the events scope of a sync output hashes it.
 package struct CanonicalSyncEvent: Sendable, Equatable {
     /// The keeper's output sequence of the event.

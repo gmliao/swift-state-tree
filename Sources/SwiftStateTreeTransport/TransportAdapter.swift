@@ -2032,7 +2032,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             var perPlayerHashes: [String: UInt64]?
             var patches: [String: [StatePatch]]?
             if syncStreamDetail.contains(.patches), broadcastCommitted, let broadcast = digest.broadcastPatches {
-                patches = [SyncOutputDigestInput.broadcastScope: CanonicalPatchList(broadcast).patches]
+                patches = [SyncOutputDigestInput.broadcastScope: CanonicalPatchList(broadcast).patches.map(\.jsonSafe)]
             }
             if digest.commitsPerPlayer {
                 // Players with patches only: an empty update (a key scope reset sends one) is
@@ -2047,7 +2047,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 if syncStreamDetail.contains(.patches) {
                     var scopes = patches ?? [:]
                     for (playerID, playerPatches) in hashed {
-                        scopes[playerID.rawValue] = CanonicalPatchList(playerPatches).patches
+                        scopes[playerID.rawValue] = CanonicalPatchList(playerPatches).patches.map(\.jsonSafe)
                     }
                     patches = scopes
                 }

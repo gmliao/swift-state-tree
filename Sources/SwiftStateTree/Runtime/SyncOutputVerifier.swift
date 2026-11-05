@@ -35,6 +35,11 @@ public enum SyncOutputCheck: String, Sendable, Equatable {
     case hash
     /// The patch-apply oracle: the replay's patches, applied to the replay's previous view of the
     /// scope, do not give its new view (a diff bug both sides share, which no hash shows).
+    ///
+    /// The oracle is an RFC 6901 reference client (`SnapshotClientView`), not the TypeScript SDK's
+    /// `view.ts`: it unescapes `~0`/`~1`, reads `[n]` as a key, and rejects removing a missing
+    /// field or writing below a non-object, where `view.ts` does not (#121). A passing check
+    /// proves the patches are correct; it does not prove that the TypeScript client converges.
     case apply
 }
 
@@ -124,6 +129,9 @@ public enum SyncOutputVerdict: Sendable, Equatable {
     /// No mismatch, every scope compared at least once (not every output: a broadcast-only cycle
     /// has no per-player scope), nothing unverifiable, every skip has a benign reason
     /// (`SyncOutputSkipReason.benign`), and no replayed event is left after the last output.
+    ///
+    /// The apply scope's part proves the patches correct against a reference client
+    /// (`SyncOutputCheck.apply`), not that the TypeScript SDK converges (#121).
     case passed
     /// No mismatch, but some scope was never compared, had unverifiable comparisons, was skipped
     /// for a reason that is not benign, or events were left after the last output.
@@ -565,7 +573,7 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
         let detail: String
         do {
             try view.apply(patches)
-            guard view.fields != expected else { return nil }
+            guard !SnapshotValue.sameFields(view.fields, expected) else { return nil }
             detail = "first differing path: \(firstDifference(expected, view.fields) ?? "?")"
         } catch {
             detail = "a patch does not apply: \(error)"
@@ -588,7 +596,7 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
             case (.object(let lhs)?, .object(let rhs)?):
                 if let found = firstDifference(lhs, rhs, under: child) { return found }
             case (let lhs, let rhs):
-                if lhs != rhs { return child }
+                if !SnapshotValue.sameValue(lhs, rhs) { return child }
             }
         }
         return nil
@@ -597,6 +605,7 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
     /// The first patch where a recorded canonical list differs from the replayed one, or the hint
     /// to record the lists.
     private static func locate(recorded: [StatePatch]?, replayed: [StatePatch]) -> String {
+        let replayed = replayed.map(\.jsonSafe)
         guard let recorded else {
             return "rerun with \(EnvKeys.Reevaluation.recordSyncPatches)=true for the first differing patch"
         }
