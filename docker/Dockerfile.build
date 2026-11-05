@@ -6,7 +6,7 @@
 #   docker build -f docker/Dockerfile.build -t swift-state-tree:build .
 #   docker run --rm -v $(pwd):/workspace swift-state-tree:build swift build -c release -C Examples/Demo
 
-FROM swift:6.2
+FROM swift:6.2.4-noble
 
 # Install minimal build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
