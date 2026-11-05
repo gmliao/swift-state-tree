@@ -512,3 +512,14 @@ All findings accepted; no disagreements.
      the three values still describe the same point.
 3. Shadow verifier, apply oracle, report, perturbation tests, initialize verification (closes
    #115), E2E `compared > 0` assertion.
+   Golden replay recordings in CI, in the same PR:
+   - a few representative recordings checked in: multi-player, a mid-run join and leave,
+     freeze and resume, event-heavy, and each of the three encodings where their output differs;
+   - a CI job replays them on every PR and requires identical sync-output hashes and state
+     hashes;
+   - an intentional output change re-baselines them through an explicit script, and the PR says
+     why;
+   - each file is a short run, kept small, with the regeneration steps documented next to them.
+
+   An independent per-player view oracle and randomized property tests are tracked separately,
+   after PR 3.
