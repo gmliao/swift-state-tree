@@ -8,6 +8,7 @@ TREE=$1; SC=$2; OUT=$3; ENC=$4; shift 4
 mkdir -p "$OUT"
 [ -n "${LOADTEST_DIAG_DIR:-}" ] && mkdir -p "$LOADTEST_DIAG_DIR"
 BIN=$(cd $M/$TREE/Examples/GameDemo && swift build -c release --show-bin-path)/GameServer
+[ -x "$BIN" ] || { echo "missing binary $BIN: build it first (setup.sh)"; exit 1; }
 kill_port
 ( cd $M/$TREE/Examples/GameDemo && env LOG_LEVEL=error NO_COLOR=1 ENABLE_REEVALUATION=false \
     REEVALUATION_RECORDS_DIR=/tmp/spike-reeval TRANSPORT_ENCODING=$ENC SPIKE_MAX_PLAYERS=64 \

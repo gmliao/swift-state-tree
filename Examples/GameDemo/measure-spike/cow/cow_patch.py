@@ -51,9 +51,16 @@ rep('        isSyncing = true\n', '        isSyncing = true\n        SpikeCow.be
 rep('        isSyncing = false\n', '        isSyncing = false\n        SpikeCow.endCycle(spikeCowCycle)\n')
 rep('''        // Directly execute synchronous body - no copying, no async overhead
         return try body(&state)''', '''        // Directly execute synchronous body - no copying, no async overhead
-        return try SpikeCow.with(spikeCowCycle) { try body(&state) }''')
+        let spikeCowPrevious = SpikeCow.enter(spikeCowCycle)
+        defer { SpikeCow.exit(spikeCowPrevious) }
+        return try body(&state)''')
 n = s.count('        handler(&state, ctx)\n')
 assert n >= 1
-s = s.replace('        handler(&state, ctx)\n', '        SpikeCow.with(spikeCowCycle) { handler(&state, ctx) }\n')
+s = s.replace('        handler(&state, ctx)\n', '''        do {
+            let spikeCowPrevious = SpikeCow.enter(spikeCowCycle)
+            defer { SpikeCow.exit(spikeCowPrevious) }
+            handler(&state, ctx)
+        }
+''')
 open(p, 'w').write(s)
 print('patched', t, 'tick sites', n)

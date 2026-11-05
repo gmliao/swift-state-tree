@@ -6,6 +6,7 @@ O=$R/arms
 # smoke: B must record clientDecode and clientRTT
 mkdir -p $O/smoke
 BIN=$(cd $M/base/Examples/GameDemo && swift build -c release --show-bin-path)/ServerLoadTest
+[ -x "$BIN" ] || { echo "missing binary $BIN: build it first (setup.sh)"; exit 1; }
 (cd $O/smoke && LOADTEST_SEND=action LOADTEST_CLIENT_DECODE=1 SPIKE_METRICS_PATH=$O/smoke/metrics.jsonl SPIKE_METRICS_INTERVAL_S=2 \
   "$BIN" --rooms 2 --players-per-room 5 --ramp-up-seconds 2 --duration-seconds 6 --ramp-down-seconds 1 --log-level error > $O/smoke/slt.log 2>&1)
 grep -q clientDecode $O/smoke/metrics.jsonl && grep -q clientRTT $O/smoke/metrics.jsonl || { echo "SMOKE FAILED (see $O/smoke)"; exit 1; }

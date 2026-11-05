@@ -65,13 +65,23 @@ public enum SpikeCow {
         return k
     }()
 
+    /// Installs `cycle` as the thread's current accumulator and returns the previous one, to be
+    /// passed to `exit` (with `defer`) around a synchronous mutation. No closure: Swift 6.2's
+    /// region checker rejects passing an actor-isolated closure (one capturing `inout` state) to
+    /// a nonisolated function.
     @inline(__always)
-    public static func with<R>(_ cycle: Cycle, _ body: () throws -> R) rethrows -> R {
-        guard enabled else { return try body() }
+    public static func enter(_ cycle: Cycle) -> UnsafeMutableRawPointer? {
+        guard enabled else { return nil }
         let previous = pthread_getspecific(key)
         pthread_setspecific(key, Unmanaged.passUnretained(cycle).toOpaque())
-        defer { pthread_setspecific(key, previous) }
-        return try body()
+        return previous
+    }
+
+    /// Restores the accumulator `enter` returned.
+    @inline(__always)
+    public static func exit(_ previous: UnsafeMutableRawPointer?) {
+        guard enabled else { return }
+        pthread_setspecific(key, previous)
     }
 
     private static func ns(_ d: Duration) -> Int {

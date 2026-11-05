@@ -6,6 +6,7 @@ set -u
 source "$(dirname "$0")/lib.sh"
 ARM=$1; N=$2; OUT=$3; mkdir -p $OUT
 BIN=$(cd $M/base/Examples/GameDemo && swift build -c release --show-bin-path)/ServerLoadTest
+[ -x "$BIN" ] || { echo "missing binary $BIN: build it first (setup.sh)"; exit 1; }
 DEC=0; [ "$ARM" = B ] && DEC=1
 date +%s > $OUT/start
 ( cd $OUT && env LOADTEST_SEND=action LOADTEST_CLIENT_DECODE=$DEC SPIKE_METRICS_PATH=$OUT/metrics.jsonl SPIKE_METRICS_INTERVAL_S=5 \
