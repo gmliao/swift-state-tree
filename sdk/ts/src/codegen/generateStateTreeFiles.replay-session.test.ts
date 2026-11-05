@@ -93,4 +93,24 @@ describe('generateStateTreeFiles replay session composable', () => {
     expect(aliasTestHelpersSource).toContain("export { createMockState } from '../hero-defense/testHelpers.js'")
     expect(aliasTestHelpersSource).not.toContain('createMockHeroDefense')
   })
+
+  it('guards connect against a disconnect and serializes session switches (#143)', async () => {
+    const outputDir = await mkdtemp(join(tmpdir(), 'sst-codegen-lifecycle-'))
+    await generateStateTreeFiles(makeSchema(true), outputDir, 'vue')
+
+    const composable = await readFile(join(outputDir, 'hero-defense', 'useHeroDefense.ts'), 'utf8')
+    // Single flight, and a generation each await re-checks
+    expect(composable).toContain('if (connectInFlight) return connectInFlight')
+    expect(composable).not.toContain('if (isConnecting.value || isConnected.value) return')
+    expect(composable.match(/if \(!isCurrent\(\)\) throw new ConnectionClosedError\('disconnect'\)/g)).toHaveLength(2)
+    // onDisconnect is registered before the join, and the runtime is installed before the first await
+    expect(composable.indexOf('r.onDisconnect(')).toBeLessThan(composable.indexOf('await t.join()'))
+    expect(composable.indexOf('runtime.value = r')).toBeLessThan(composable.indexOf('await r.connect('))
+    expect(composable).toContain('connectGeneration += 1')
+
+    const session = await readFile(join(outputDir, 'hero-defense', 'useHeroDefenseSession.ts'), 'utf8')
+    expect(session).toContain('function enqueueSwitch(')
+    expect(session.match(/return enqueueSwitch\(/g)).toHaveLength(2)
+    expect(session).toContain('switchGeneration += 1')
+  })
 })
