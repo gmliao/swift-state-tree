@@ -142,6 +142,7 @@ let package = Package(
                 "SwiftStateTreeNIO",
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "AsyncHTTPClient", package: "async-http-client"),
+                .product(name: "NIOPosix", package: "swift-nio"),
             ],
             path: "Sources/SwiftStateTreeNIOProvisioning"
         ),
