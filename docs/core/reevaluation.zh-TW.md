@@ -138,7 +138,7 @@ await client.sendAction("resumeVerification", {});
 
 ### 可讀取的最舊錄製（2.5）
 
-錄製格式 2.5（#154）將 `PlayerID`、`ClientID` 與 `SessionID` 寫成字串，並將以它們為 key 的 dictionary 寫成以該字串為 key 的 object，與所有 encoder 現在送出的形狀一致。較舊的錄製把它們存成 `{"rawValue": ...}` object，已無法 decode，也不會被轉換：讀取端在 replay 之前就把早於 2.5 的錄製視為不支援而拒絕（`ReevaluationRecordVersionError.unsupported`）。`ReevaluationRunner --verify` 會印出「unsupported record version ...; re-record with the current server」並以 exit code 10 結束（無法比對，絕不視為 replay 差異），admin 的 replay start route 則回應 409 `RECORD_VERSION_UNSUPPORTED`。請用目前版本的 server 重新錄製這類 session。下方關於較舊格式的段落說明的是這些錄製當時如何驗證。
+錄製格式 2.5（#154）將 `PlayerID`、`ClientID`、`SessionID` 與 `LandID` 寫成字串，並將以它們為 key 的 dictionary 寫成以該字串為 key 的 object，與所有 encoder 現在送出的形狀一致。因此含有 `ClientID`、`SessionID` 或 `LandID` 的 state，其 hash 與 2.4 不同（`PlayerID` 在 2.4 已是字串）。較舊的錄製把它們存成 object（`{"rawValue": ...}`），已無法 decode，也不會被轉換：讀取端在 replay 之前就把早於 2.5 的錄製視為不支援而拒絕（`ReevaluationRecordVersionError.unsupported`）。`ReevaluationRunner --verify` 會印出「unsupported record version ...; re-record with the current server」並以 exit code 10 結束（無法比對，絕不視為 replay 差異），admin 的 replay start route 則回應 409 `RECORD_VERSION_UNSUPPORTED`。請用目前版本的 server 重新錄製這類 session。下方關於較舊格式的段落說明的是這些錄製當時如何驗證。
 
 ### 錄製所含的 Hash
 
