@@ -1,6 +1,6 @@
 # Keeper state changes only in turns; helpers for the outer layer
 
-Status: plan, rev 2 (2026-11-05). Rev 1's adversarial check: 2 blocking, 5 should; all addressed (see § Changes in rev 2). One maintainer decision is open (§ K-b, a throwing OnLeave resolver).
+Status: plan, rev 2 (2026-11-05). Rev 1's adversarial check: 2 blocking, 5 should; all addressed (see § Changes in rev 2). The maintainer decided the throwing-OnLeave-resolver case: a new `OnLeaveFailed` callback (§ K-b).
 
 ## Problem
 
@@ -66,11 +66,17 @@ Rev 4 already makes OnJoin a turn input with the flip at a committed sync. Again
   - **An OnLeave delivery is never rejected for a stale entry**: a leave always ends in OnLeave for the game, even if the player re-joined meanwhile.
   - **P's OnJoin is gated on any outstanding OnLeave of P**, not just a kick's. A join of P while a leave of P is resolving waits for that leave's delivery, then runs its admission segment. Otherwise a slow OnLeave resolver followed by a reconnect would give OnJoin the lower `resolvedAtTick`: OnJoin would apply first and OnLeave would then remove the rejoined player.
   - Held tests: a slow OnLeave resolver followed by a reconnect; a kick with a slow OnLeave resolver.
-- **A throwing OnLeave resolver (maintainer decision).** Today `leave` removes `players[P]` before its resolvers, and on a throw never appends OnLeave. The game state keeps a ghost, and a later kick fails the new join. The options:
-  - **(i) Recommended:** append OnLeave anyway, with empty resolver outputs and a failure flag on the context (`ctx.resolverFailure`), so the handler runs and can clean up. **This changes what handlers see**: an OnLeave handler can run without its resolver outputs, where today it never runs on failure. Handlers already read outputs as optionals (`ctx.x as Output?`), so typical handlers degrade, but it's a semantic change.
-  - **(ii)** Surface the failure before removing anything. A disconnect can't really fail, so this means keeping the entry and retrying OnLeave's resolvers, or leaving the player until the land closes. The game sees a disconnected player as present.
-
-  Recommendation (i). It's flagged for the maintainer through Main; PR 4 waits for the answer.
+- **A throwing OnLeave resolver (decided by the maintainer: a new callback).** Today `leave` removes `players[P]` before its resolvers, and on a throw never appends OnLeave: the game state keeps a ghost, and a later kick fails the new join. The change:
+  - **A new optional DSL handler, `OnLeaveFailed { state, ctx, error in … }`**, next to `OnLeave` in `Rules` (named like the existing lifecycle DSL in `LandDSL.swift`/`LandBuilder.swift`). It runs **instead of** OnLeave when OnLeave's resolvers throw. It gets the resolver error and has no resolver outputs. OnLeave's own contract is unchanged: it always has its outputs.
+  - **Without OnLeaveFailed**, OnLeave runs with empty outputs and `ctx.resolverFailure` set, so a land never keeps a ghost by default.
+  - Either way the player is removed from the keeper, and the delivery is a normal lifecycle input: recorded with its sequence and `resolvedAtTick`. Replay consumes the recorded failure and never re-runs the resolver. The error is recorded as a stable code and description (`ResolverFailure { code, description }`), not the raw error.
+  - Schema/codegen: lifecycle handlers aren't in the schema (`SchemaGen` lists none), so there's nothing to add there.
+  - Tests:
+    - a throwing resolver with OnLeaveFailed defined: it runs, and OnLeave doesn't;
+    - the same without OnLeaveFailed: OnLeave runs with the flag;
+    - a replay of both on a tick land (0 mismatches);
+    - a reconnect after it: the join succeeds.
+  - It lands with K-b (PR 4).
 - **Latency:** a join waits for its resolvers (and a kick's OnLeave resolvers, concurrently) as today. A join behind an outstanding leave of the same player waits for that leave's resolvers. No extra turn before the OnJoin turn; the flip adds rev 4's wait for the next committed sync.
 - **Replay (tick lands):** OnLeave and OnJoin are recorded as today, in sequence order. The kick's pair shares a `resolvedAtTick`.
 - **`discardIfFailedJoin`:** compares the entry generation (`joinSequence` becomes that generation in PR b1).
@@ -197,7 +203,7 @@ The assertion isn't loosened. If it doesn't reproduce in about 200 loops under l
 - **(b1) K-a, resolver as input**, with `joinSequence` → entry generation and the rejection table. About half a day.
 - **(b2) #88**, per-input results on the off path, with ON/OFF parity. About half a day.
 - **(b3) Drain/finalize, K4, K5, #73.** About half a day.
-- **(c) PR 4, join as a turn input:** K-b (resolve-first admission, the leave gate, the OnLeave-throw decision) and K-c. It depends on (b1) and (b3), and on the maintainer's OnLeave answer. As planned (about 1–1.5 days), with its 7600X runs before merge.
+- **(c) PR 4, join as a turn input:** K-b (resolve-first admission, the leave gate, the OnLeave-throw decision) and K-c. It depends on (b1) and (b3), and includes `OnLeaveFailed`. As planned (about 1–1.5 days), with its 7600X runs before merge.
 - **(d1–d3) Outer-layer retrofits**, after (a), in parallel with (b) and (c):
   - d1, join and session (#97, #98, #99 and the A/W sweep sites): about half a day;
   - d2, lifecycle (#100, #101, #102, R3, M1/M2, N1–N4, S1–S3): about one day;
