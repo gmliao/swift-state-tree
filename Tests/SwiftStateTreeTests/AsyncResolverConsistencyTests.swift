@@ -285,12 +285,18 @@ private func runLive(
                             typeIdentifier: String(describing: IncrementCounterConsistencyAction.self),
                             payload: AnyCodable(IncrementCounterConsistencyAction(amount: amount))
                         )
-                        _ = try await keeper.handleActionEnvelope(
-                            envelope,
-                            playerID: PlayerID(player),
-                            clientID: ClientID("c-\(player)"),
-                            sessionID: SessionID("s-\(player)")
-                        )
+                        do {
+                            _ = try await keeper.handleActionEnvelope(
+                                envelope,
+                                playerID: PlayerID(player),
+                                clientID: ClientID("c-\(player)"),
+                                sessionID: SessionID("s-\(player)")
+                            )
+                        } catch LandInputRejection.senderSuperseded {
+                            // The player left while the action's resolvers ran: the action is
+                            // rejected at delivery and never recorded (a sequence gap replay
+                            // must step over).
+                        }
                     })
                 }
             }
