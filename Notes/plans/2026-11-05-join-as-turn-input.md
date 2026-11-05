@@ -1,11 +1,11 @@
 # Join as a turn input: firstSync with OnJoin in one turn (#69, with #90 and #92)
 
-Status: plan **rev 3**, not started; decisions recorded (maintainer, 2026-11-05). Base: main 1d5e861.
+Status: plan **rev 4**; decisions recorded (maintainer, 2026-11-05). PRs 1–3 may start. Base: main 1d5e861.
 
 History:
 - Rev 1's review found 3 blocking, 7 should and 3 nits; rev 2 answered them.
 - Rev 2's check closed B2 and S5, partly closed the rest, and found 3 new blocking items (N1–N3), 6 shoulds and 2 nits. None of them changes the design.
-- "Changes in rev 3" maps each item to its answer.
+- Rev 3's final check closed everything except N2's dependency, and asked for 4 local amendments and 3 nits (rev 4). "Changes in rev 4" and "Changes in rev 3" map each item to its answer.
 
 ## Problem
 
@@ -42,17 +42,20 @@ Windows:
   - the adapter has its own executor (`ownExecutorHost`), so `assumeIsolated` from the keeper would trap. The keeper never calls the callback here; it is gated on `runsSyncPhaseInTurn(of:)`;
   - the adapter admits right after `keeper.join` returns, inside the membership queue, before any other await (rev 1's shape).
 - `admitJoiningSession` defaults to a no-op in the protocol extension, so other and mock transports are unaffected.
+- **Exactly once (rev 4 S4).** The keeper's gate (in-turn transport, `.live` keeper, transport set) and the adapter's own view can differ, for example a non-`.live` keeper on an in-turn adapter, or a join before `setTransport`. So the keeper decides, and `keeper.join` returns `admitted: Bool`: `true` when it called `admitJoiningSession`. The adapter admits after `keeper.join` returns **only when `admitted` is false**. Neither side admits twice, and neither skips.
 
 **What admission records.** The adapter records the session as `.joining` with:
 - session, clientID, playerID, generation;
 - the join input's sequence (or `nil`);
-- the router-built JSON JoinResponse frame and the player slot, allocated in that segment;
+- the player slot, allocated in that segment;
+- the JSON JoinResponse frame, **built in the admission segment** from the final playerID (CanJoin may have rewritten it) and that slot. The router passes a builder `(playerID, playerSlot) -> Data` with the join, since the router can't know either value before admission;
 - `transportRegistered = false`.
 
 A `.joining` session holds its slot but is **not** a sync or event recipient. This replaces the late `initialSyncingPlayers.insert` and closes W1.
 
 **The keeper doesn't await the turn for adapter-originated joins (S4).** `keeper.join` gets a parameter (`awaitTurn: Bool`, default `true`):
 - the adapter passes `false` on the in-turn path, so tickless lands no longer block inside `keeper.join`, and the caller awaits `awaitJoined(sessionID)` instead;
+- with `awaitTurn: false`, `keeper.join` still calls `scheduleInputDrain()` after the append (today only `awaitInputTurn` does), so a tickless land with no other input pending runs the join's input turn (rev 4 S2);
 - direct callers (tests, `E2EStateSnapshotDiffTests`, `ReevaluationRunner`) keep today's behaviour: after `join` returns, OnJoin has run.
 
 **After admission.**
@@ -67,7 +70,10 @@ A `.joining` session holds its slot but is **not** a sync or event recipient. Th
 - its generation is current;
 - it is within the turn's flip budget (S6: default 64 per land per turn, configurable). Eligible joiners are picked in FIFO admission order.
 
-**OnJoin throws.** If the join input's OnJoin throws, the waiter fails at once with `onJoinFailed`, and the session is cleaned up (§3). It doesn't flip.
+**OnJoin throws (rev 4 S1).** Today a throw in `applyInputsInTurn` aborts the whole pass and leaves every item pending, on tick and tickless lands alike. A throwing OnJoin would then never be consumed: it reruns every turn, blocks the inputs behind it (including the cleanup's OnLeave), and the join only fails at the timeout. So, on both land kinds:
+- in the abort segment, when the throwing item is a join input, the keeper removes **that item** from `pendingItems`, marks its sequence consumed, and fails its waiter with `onJoinFailed`. The rest of the pass stays pending, as today, and is retried in the next turn;
+- the session is then cleaned up (§3); it doesn't flip;
+- a throwing OnJoin's partial state mutations are **not rolled back** until per-input savepoints exist (#87). This is documented on `OnJoin`.
 
 **What the flip commit carries.** The joiner's **firstSync** (end-of-turn state) is planned with the other recipients' diffs. The joiner's frames go after theirs, in the turn's writer element: the **JoinResponse**, then the **firstSync**, then (decision 1) its targeted events, then (decision 3) the key-table frame.
 
@@ -88,7 +94,7 @@ A `.joining` session holds its slot but is **not** a sync or event recipient. Th
 | `.deferredBackPressure` | no; the joiner waits for the next commit (re-requested on tickless lands) |
 | freeze (`debugDeferSyncIfFrozen`) | no |
 | `outboundWriter.isFinished` | no; the joiner's waiter fails (teardown, §3) |
-| no joined members | **flip-only commit**: the shared `membershipCoordinator.isEmpty` guard is unchanged (it also gates freeze `hasMembers` and the key-reset path), and a separate predicate `hasEligibleJoiners` lets the turn run a commit for joiners alone, so the first joiner on an empty land flips |
+| no joined members | **flip-only commit**: the shared `membershipCoordinator.isEmpty` guard is unchanged (it also gates freeze `hasMembers` and the key-reset path), and a separate predicate `hasEligibleJoiners` lets the turn run a commit for joiners alone, so the first joiner on an empty land flips. That commit writes the broadcast cache from the full snapshot before clearing dirty flags, and a pending `keyScopeResetPending` counts the joiner as a recipient, so the reset is consumed by it |
 
 **Back-pressure.** `hasPendingStateElement` is writer-wide, so a backlogged writer delays every join. Over the join timeout (10 s), every pending join is rejected. That's acceptable. The rejection reason (`timeout`, with `deferredBackPressure` as the last deferral cause) is logged and counted, and a test covers it. The deferral count is reported (`deferredTurns` on the measure branch), and the 7600X runs check it.
 
@@ -119,7 +125,11 @@ A `.joining` session holds its slot but is **not** a sync or event recipient. Th
 **What a failure does.**
 - On `timeout`, `onJoinFailed` and `inboundOverflow`, the router sends a join error and **closes the session**.
 - On `superseded` and `disconnected`, the session is already closing.
-- **Cleanup is idempotent per generation.** The first cleanup for (session, generation) runs it. A later disconnect callback, or a timeout firing after a kick, finds the generation already cleaned and does nothing. So there's no double `keeper.leave`. A retry on a new connection is a new session, and doesn't get `joinAlreadyJoined`, because the old session's `players[P]` entry was removed by that one cleanup.
+- **Cleanup is idempotent per generation.** The first cleanup for (session, generation) runs it, and marks it **on the session record** (no growing set of cleaned generations). A later disconnect callback, or a timeout firing after a kick, finds the record already cleaned, or gone, and does nothing. So there's no double `keeper.leave`.
+- **The timeout's cleanup runs through the membership queue**, like a disconnect, so it is ordered with the session's joins and disconnects.
+- **A retry on a new connection** is a new session. Two different checks apply, and neither trips:
+  - the router's `joinAlreadyJoined` is per session (this session already joined), so it can't fire for a new session;
+  - the keeper's `players[P]` entry belongs to the old session; the one cleanup removed it, or, if the retry comes first, newest-wins (§4) replaces it.
 
 **Freeze.**
 - No sync commits while frozen, so joins admitted before the freeze wait, and the timeout keeps running. A join that times out under freeze is rejected and cleaned up.
@@ -191,7 +201,7 @@ Interleavings are forced with holds at the awaits (keeper `joinHook`/`leaveHook`
    - freeze: the flip is deferred, the timeout rejects with cleanup, and the freeze settle isn't blocked by `.joining` sessions;
    - the first joiner on an empty land flips, while freeze `hasMembers` and the key-reset path still see an empty land;
    - `!includeSync` turns don't flip.
-8. **B3 failures**: a disconnect while `.joining` (`disconnected`), a kick while `.joining` (`superseded`), destroy/recreate while `.joining` (`landClosed`), a timeout (`timeout`, and the session is closed), and OnJoin throwing (`onJoinFailed`, failed at once, not at the timeout).
+8. **B3 failures**: a disconnect while `.joining` (`disconnected`), a kick while `.joining` (`superseded`), destroy/recreate while `.joining` (`landClosed`), a timeout (`timeout`, and the session is closed, with the cleanup going through the membership queue), and OnJoin throwing (`onJoinFailed`, failed at once, not at the timeout) **on a tick land and on a tickless land**: the failed item is removed, other inputs of that pass are applied in the next turn, and the cleanup's OnLeave isn't blocked.
    - Each one: the waiter fails with that reason, the router sends a join error where §3 says so, and the slot, membership, transport registration and `keeper.players[P]` are cleaned up exactly once, with OnLeave after OnJoin.
    - A retry on a new connection then joins normally.
 9. **Old session's disconnect (#92 comment 1)**: covered by PR 1's tests (including the hold at `keeper.leave`), extended with the generation.
@@ -206,13 +216,13 @@ Interleavings are forced with holds at the awaits (keeper `joinHook`/`leaveHook`
     - a MessagePack action arriving right after the JoinResponse is applied, in order;
     - one arriving while `.joining` is applied after the flip;
     - overflowing the deferred queue (count, then bytes) fails the join with `inboundOverflow` and closes the session.
-14. **Recorder (S3)**: a merged plan with a joiner records the turn plus the joiner's seed. A joiner-only commit records a sync-only turn. Replay of a recorded run with late joins has 0 mismatches.
+14. **Recorder (S3)**: a merged plan with a joiner records the turn plus the joiner's seed. A joiner-only commit records a sync-only turn. Replay of a recorded run with late joins has 0 mismatches, **including a first join on an empty land** (a flip-only commit). The check confirms that the verifier recomputes the broadcast state from the recorded positions, rather than reading the recorded result back.
 15. **#90**: the issue's reproduction (opcodeMessagePack plus path hashes, a broadcast `[String: T]`, a key removed and re-added) for the late joiner and for a reconnect.
     - The key-table dump includes a key first assigned in the flip turn.
     - SDK runtime test with the captured frames.
     - The old-SDK fallback: the joiner's first 107 decodes.
-16. **Off path**: tests 1, 9, 10 and 12 with `IN_TURN_SYNC=false`, plus **a replay-viewer join on a reevaluation land** (no trap, admitted after `keeper.join` returns).
-17. **N2 ordering**: a tickless land where the join's input turn and a pending sync-only turn are both queued, in each order. The join flips in the first commit after its sequence is consumed, well before the timeout.
+16. **Off path**: tests 1, 9, 10 and 12 with `IN_TURN_SYNC=false`, plus **a replay-viewer join on a reevaluation land** (no trap, admitted after `keeper.join` returns). **Exactly-once admission**: a non-`.live` keeper on an in-turn adapter, and a join before `setTransport`. Each is admitted once (`admitted` false, so the adapter admits), and an ordinary in-turn join is admitted once by the keeper.
+17. **N2 ordering**: a tickless land where the join's input turn and a pending sync-only turn are both queued, in each order. The join flips in the first commit after its sequence is consumed, well before the timeout. Also with **no other input pending**: `awaitTurn: false` still schedules the drain, and the join flips.
 18. **E2E** (`Tools/CLI/scenarios/`): a late joiner after monsters spawned, a reconnect, and two clients with one playerID, under messagepack with gating `assertConverged`, on both CI matrix legs.
 
 ## PR split (duplicate login before the turn work)
@@ -221,13 +231,13 @@ Interleavings are forced with holds at the awaits (keeper `joinHook`/`leaveHook`
 2. **`.joining` at admission** (Refs #69), on both paths:
    - the in-turn append-segment callback, gated on `runsSyncPhaseInTurn(of:)`;
    - the off-path admission after `keeper.join`;
-   - the `awaitTurn` parameter.
+   - the `awaitTurn` parameter (still scheduling the drain), `admitted: Bool`, and the JoinResponse builder.
 
-   Tests 1 (on and off), 6 (first two hops), and 16 (the replay-viewer join).
+   Tests 1 (on and off), 6 (first two hops), 16 (the replay-viewer join and exactly-once admission), and 17 (the no-other-input case).
 3. **Newest wins** (Closes #92): the admission-segment kick for router and legacy, the keeper intake rule (§4), the `leave` session check, and idempotent cleanup per generation. Tests 10 and 16 (part).
 4. **Join as a turn input** (Closes #69):
    - the flip at a committed sync, the flip conditions, budget, and N2's request rules;
-   - `awaitJoined`, failure reasons and timeout, and freeze;
+   - `awaitJoined`, failure reasons and timeout, freeze, and removing a throwing OnJoin item (S1 of rev 4);
    - the router `.joinPending` phase, adapter inbound deferral and its cap;
    - the recorder changes, and the targeted-event exception.
 
@@ -237,6 +247,18 @@ Interleavings are forced with holds at the awaits (keeper `joinHook`/`leaveHook`
 **Before PR 4 merges** (7600X):
 - json50 and ramp runs with zero join failures under the new ws-loadtest checks;
 - turn p99, `deferredTurns` and join latency (JoinResponse arrival − connect) against the current baseline, from the measure branch.
+
+## Changes in rev 4 (from rev 3's final check)
+
+| Item | Answered in |
+|---|---|
+| S1 `onJoinFailed` fail-fast only on tickless lands; poisoned OnJoin reruns | §2 "OnJoin throws" (remove the failed join item in the abort segment, both land kinds; no rollback until #87), test 8 |
+| S2 `awaitTurn: false` must schedule the drain | §1, test 17 |
+| S3 the JoinResponse can't be router-built before admission | §1 (builder `(playerID, playerSlot) -> Data`, built in the admission segment) |
+| S4 exactly-once admission | §1 (`keeper.join` returns `admitted`; the adapter admits only when false), test 16 |
+| Nit: flip-only commit, broadcast cache, key reset; verifier | §2 table, test 14 |
+| Nit: cleanup mark on the session record; timeout cleanup through the membership queue | §3, test 8 |
+| Nit: `joinAlreadyJoined` vs `players[P]` | §3 |
 
 ## Changes in rev 3 (from rev 2's check)
 
