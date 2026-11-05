@@ -7,6 +7,7 @@ import GameContent
 import SwiftStateTree
 import SwiftStateTreeDeterministicMath
 import SwiftStateTreeTransport
+import LoadTestPacing
 
 // MARK: - Client Simulator
 
@@ -29,8 +30,8 @@ actor ClientSimulator {
     private var isRunning = true
     private(set) var phase: Phase = .rampUp
     private(set) var totalPlayersAssigned = 0
+    /// Actions sent so far, counted as each one is sent; samplers take deltas of it.
     private(set) var totalActionsSent = 0
-    private var actionsSentInWindow = 0
     private(set) var elapsedSeconds = 0
 
     init(
@@ -58,13 +59,18 @@ actor ClientSimulator {
 
     /// Run the client simulation loop asynchronously.
     /// This function runs independently and does not block the main measurement loop.
-    func run() async {
+    ///
+    /// Second `t` starts at `origin + t s` (deadline-based: work time doesn't push later seconds
+    /// back). Within a second, joins are spread evenly and each session's actions sit at a stable
+    /// per-session offset (see `LoadTestPacing`), so the server sees no once-per-second burst.
+    func run(origin: ContinuousClock.Instant) async {
         let totalPlayers = config.totalPlayers
         let steadySeconds = config.durationSeconds
         let totalSeconds = config.totalSeconds
         for t in 0 ..< totalSeconds {
             guard isRunning else { break }
             elapsedSeconds = t
+            let secondStart = origin + .seconds(t)
             // Determine phase
             let isRampUp = t < config.rampUpSeconds
             let isSteady = t >= config.rampUpSeconds && t < (config.rampUpSeconds + steadySeconds)
@@ -72,9 +78,9 @@ actor ClientSimulator {
 
             // Ramp up: Players join gradually until all are assigned
             // Continue even beyond rampUpSeconds if needed to ensure all players join
-            if totalPlayersAssigned < totalPlayers {
+            let joining = totalPlayersAssigned < totalPlayers
+            if joining {
                 phase = .rampUp
-                await performRampUp(t: t, totalPlayers: totalPlayers)
             } else if isRampUp {
                 phase = .rampUp
             } else if isSteady {
@@ -83,119 +89,94 @@ actor ClientSimulator {
                 phase = .rampDown
             }
 
-            // Steady + ramp down: inject client events spread over the second
-            if isSteady || isRampDown {
-                await performActions(t: t)
-            }
+            // Joins and actions for this second run side by side, each paced over the second.
+            async let joins: Void = joining ? performRampUp(totalPlayers: totalPlayers, from: secondStart) : ()
+            async let actions: Void = (isSteady || isRampDown) ? performActions(from: secondStart) : ()
+            _ = await (joins, actions)
 
             // Ramp down: disconnect players gradually
             if isRampDown {
                 await performRampDown()
             }
 
-            // Wait for the next second
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            await LoadTestPacing.sleep(until: secondStart + .seconds(1))
         }
         phase = .done
     }
 
     // MARK: - Private Methods
 
-    private func performRampUp(t _: Int, totalPlayers: Int) async {
-        let playersPerSecondUp = config.playersPerSecondUp
-        let targetPlayersThisSecond = min(totalPlayers, totalPlayersAssigned + playersPerSecondUp)
+    private func performRampUp(totalPlayers: Int, from secondStart: ContinuousClock.Instant) async {
+        let targetPlayersThisSecond = min(totalPlayers, totalPlayersAssigned + config.playersPerSecondUp)
         let playersToJoinThisSecond = targetPlayersThisSecond - totalPlayersAssigned
-
         guard playersToJoinThisSecond > 0 else { return }
-        // Calculate maxConcurrentJoins based on target join rate
-        // Use 1.5x multiplier to ensure we can meet the target rate even with network latency
-        let maxConcurrentJoins = max(20, Int(Double(playersPerSecondUp) * 1.5))
 
-        var successfulAssignments = 0
-
-        // Worker pool pattern: limit concurrent tasks
-        await withTaskGroup(of: Bool.self) { group in
-            var submitted = 0
-            var completed = 0
-            var lastLoggedCompleted = -1
-
-            while submitted < playersToJoinThisSecond || completed < submitted {
-                if completed > lastLoggedCompleted && (completed % 50 == 0 || completed == submitted) {
-                    lastLoggedCompleted = completed
-                }
-                // Fill worker pool up to maxConcurrentJoins
-                while submitted < playersToJoinThisSecond, (submitted - completed) < maxConcurrentJoins {
-                    group.addTask { [self] in
-                        guard let (roomIndex, playerIndexInRoom, sessionID) = await roomManager.assignPlayer() else {
-                            return false // Assignment failed
-                        }
-
-                        // Create connection with join success callback
-                        let conn = CountingWebSocketConnection(
-                            counter: traffic,
-                            sessionID: sessionID,
-                            onJoinSuccess: { [roomManager] sessionID in
-                                await roomManager.markPlayerJoined(sessionID: sessionID)
-                            },
-                            messageKindRecorder: messageKindRecorder
-                        )
-                        await transport.handleConnection(sessionID: sessionID, connection: conn, authInfo: nil)
-
-                        do {
-                            let joinData = try makeJoinData(roomIndex, playerIndexInRoom)
-                            await traffic.recordSent(bytes: joinData.count) // Client sends Join
-                            await transport.handleIncomingMessage(sessionID: sessionID, data: joinData)
-                            return true // Assignment succeeded
-                        } catch {
-                            return false // Join data creation failed
-                        }
-                    }
-                    submitted += 1
-                }
-
-                // Wait for one worker to complete
-                if let success = await group.next() {
-                    if success { successfulAssignments += 1 }
-                    completed += 1
-                }
+        let plan = LoadTestPacing.joinPlan(count: playersToJoinThisSecond, period: .seconds(1), mode: config.pacing)
+        await LoadTestPacing.run(plan, from: secondStart) { [self] _ in
+            if await joinOnePlayer() {
+                await noteJoined()
             }
         }
-        totalPlayersAssigned += successfulAssignments
     }
 
-    private func performActions(t: Int) async {
+    private func noteJoined() {
+        totalPlayersAssigned += 1
+    }
+
+    /// Assigns, connects and joins one player; false when assignment or the join data failed.
+    private nonisolated func joinOnePlayer() async -> Bool {
+        guard let (roomIndex, playerIndexInRoom, sessionID) = await roomManager.assignPlayer() else {
+            return false
+        }
+        let conn = CountingWebSocketConnection(
+            counter: traffic,
+            sessionID: sessionID,
+            onJoinSuccess: { [roomManager] sessionID in
+                await roomManager.markPlayerJoined(sessionID: sessionID)
+            },
+            messageKindRecorder: messageKindRecorder
+        )
+        await transport.handleConnection(sessionID: sessionID, connection: conn, authInfo: nil)
+        do {
+            let joinData = try makeJoinData(roomIndex, playerIndexInRoom)
+            await traffic.recordSent(bytes: joinData.count) // Client sends Join
+            await transport.handleIncomingMessage(sessionID: sessionID, data: joinData)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func performActions(from secondStart: ContinuousClock.Instant) async {
         guard config.actionsPerPlayerPerSecond > 0 else { return }
 
         let connectedSessions = await roomManager.getJoinedSessions()
         guard !connectedSessions.isEmpty else { return }
 
-        let actionsPerPlayer = config.actionsPerPlayerPerSecond
-
+        let payloadData: Data
         do {
-            let payloadData = try makeClientEventData(t)
-
-            for _ in 0 ..< actionsPerPlayer {
-                await withTaskGroup(of: Void.self) { group in
-                    for sessionID in connectedSessions {
-                        group.addTask { [self] in
-                            await traffic.recordSent(bytes: payloadData.count) // Client sends Action
-                            await transport.handleIncomingMessage(sessionID: sessionID, data: payloadData)
-                        }
-                    }
-                }
-            }
-
-            totalActionsSent += connectedSessions.count * actionsPerPlayer
-            actionsSentInWindow += connectedSessions.count * actionsPerPlayer
+            payloadData = try makeClientEventData(elapsedSeconds)
         } catch {
-            // Log error but continue
+            return
+        }
+        let plan = LoadTestPacing.actionPlan(
+            keys: connectedSessions.map(\.rawValue),
+            perKey: config.actionsPerPlayerPerSecond,
+            period: .seconds(1),
+            mode: config.pacing
+        )
+        let traffic = traffic
+        let transport = transport
+        await LoadTestPacing.run(plan, from: secondStart) { [self] index in
+            let sessionID = connectedSessions[index]
+            await traffic.recordSent(bytes: payloadData.count) // Client sends Action
+            await transport.handleIncomingMessage(sessionID: sessionID, data: payloadData)
+            await noteActionSent()
         }
     }
 
-    func getAndResetActionCount() -> Int {
-        let count = actionsSentInWindow
-        actionsSentInWindow = 0
-        return count
+    private func noteActionSent() {
+        totalActionsSent += 1
     }
 
     private func performRampDown() async {

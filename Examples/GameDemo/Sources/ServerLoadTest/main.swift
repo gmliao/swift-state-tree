@@ -5,6 +5,7 @@
 
 import Foundation
 import GameContent
+import LoadTestPacing
 import Logging
 import ProfileRecorderServer
 import SwiftStateTree
@@ -111,9 +112,11 @@ func runServerLoadTest() async throws {
         messageKindRecorder: messageKindRecorder
     )
 
-    // Start client simulation in background task
+    // Generator and sampler share one origin and deadline-based seconds: second t of the
+    // generator is [origin + t, origin + t + 1), and sample t is taken at its end.
+    let origin = ContinuousClock.now + .milliseconds(100)
     let clientTask = Task {
-        await clientSimulator.run()
+        await clientSimulator.run(origin: origin)
     }
 
     // Main loop: sample traffic every second (runs independently)
@@ -122,6 +125,7 @@ func runServerLoadTest() async throws {
     var seconds: [SecondSample] = []
     seconds.reserveCapacity(totalSeconds + 10)
     var lastTraffic = await traffic.snapshot()
+    var lastActionsSent = 0
 
     func logProgress(sample: SecondSample) {
         let sentKB = Double(sample.sentBytesPerSecond) / 1024.0
@@ -133,6 +137,9 @@ func runServerLoadTest() async throws {
     }
 
     for t in 0 ..< totalSeconds {
+        // Sample t covers second t: taken at its deadline, not one sleep after the last sample.
+        await LoadTestPacing.sleep(until: origin + .seconds(t + 1))
+
         // Get current state from room manager
         let connectedSessions = await roomManager.getJoinedSessions()
         let activeRoomCount = await roomManager.getActiveRoomCount()
@@ -144,6 +151,10 @@ func runServerLoadTest() async throws {
         let sentDeltaMsgs = nowTraffic.sentMessages - lastTraffic.sentMessages
         let recvDeltaMsgs = nowTraffic.recvMessages - lastTraffic.recvMessages
         lastTraffic = nowTraffic
+        // Delta of the cumulative count, so a sample never catches 0 or 2 periods' sends.
+        let actionsSent = await clientSimulator.totalActionsSent
+        let actionsSentThisSecond = actionsSent - lastActionsSent
+        lastActionsSent = actionsSent
 
         // Performance metrics
         let tickIntervalMs = 50.0
@@ -160,7 +171,7 @@ func runServerLoadTest() async throws {
             roomsCreated: activeRoomCount,
             roomsActiveExpected: Int(ceil(Double(connectedSessions.count) / Double(config.playersPerRoom))),
             playersActiveExpected: connectedSessions.count,
-            actionsSentThisSecond: await clientSimulator.getAndResetActionCount(),
+            actionsSentThisSecond: actionsSentThisSecond,
             sentBytesPerSecond: sentDeltaBytes,
             recvBytesPerSecond: recvDeltaBytes,
             sentMessagesPerSecond: sentDeltaMsgs,
@@ -174,7 +185,6 @@ func runServerLoadTest() async throws {
         )
         seconds.append(sample)
         logProgress(sample: sample)
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
     }
 
     // Stop client simulation
@@ -184,7 +194,7 @@ func runServerLoadTest() async throws {
     // Final cleanup
     await server.landManager.shutdownAllLands()
     try? await transport.stop()
-    try? await Task.sleep(nanoseconds: 2_000_000_000)
+    try? await safeTaskSleep(for: .seconds(2))
 
     // Generate summary and save results
     let finalTraffic = await traffic.snapshot()
@@ -270,6 +280,7 @@ func runServerLoadTest() async throws {
             "steadySeconds": steadySeconds,
             "rampDownSeconds": config.rampDownSeconds,
             "actionsPerPlayerPerSecond": config.actionsPerPlayerPerSecond,
+            "pacing": config.pacing.rawValue,
             "tui": config.tui,
             "logLevel": String(describing: config.logLevel),
             "transportEncoding": [

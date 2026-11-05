@@ -3,6 +3,7 @@
 // Configuration and argument parsing for ServerLoadTest.
 
 import Foundation
+import LoadTestPacing
 import Logging
 
 // MARK: - Configuration
@@ -15,6 +16,8 @@ struct LoadTestConfig: Sendable {
     var rampUpSeconds: Int = 5
     var rampDownSeconds: Int = 5
     var actionsPerPlayerPerSecond: Int = 1
+    /// `spread` (default) or `burst` (each second's joins and actions at once, the earlier pattern).
+    var pacing: LoadTestPacing.Mode = .spread
     var createRoomsFirst: Bool = false
     var tui: Bool = false
     var logLevel: Logger.Level = .info
@@ -57,6 +60,8 @@ func parseArguments() -> LoadTestConfig {
             if let next, let v = readInt(next) { config.rampDownSeconds = v; i += 1 }
         case "--actions-per-player-per-second":
             if let next, let v = readInt(next) { config.actionsPerPlayerPerSecond = v; i += 1 }
+        case "--pacing":
+            if let next, let v = LoadTestPacing.Mode(rawValue: next.lowercased()) { config.pacing = v; i += 1 }
         case "--tui":
             if let next, let v = readBool(next) { config.tui = v; i += 1 }
         case "--log-level":
@@ -95,6 +100,9 @@ func printUsageAndExit() -> Never {
       --ramp-up-seconds <seconds>               Ramp-up duration (default: 5)
       --ramp-down-seconds <seconds>             Ramp-down duration (default: 5)
       --actions-per-player-per-second <count>   Actions per player per second (default: 1)
+      --pacing <spread|burst>                   spread: each session's actions at a stable offset
+                                                in the second, joins evenly spaced (default);
+                                                burst: each second's joins and actions at once
       --log-level <level>                       Log level (default: info)
       --help, -h                                Show this help message
 
