@@ -98,7 +98,7 @@ graph TB
 - 使用 Land DSL 語法定義
 
 **相關文檔**：
-- [Land DSL](../core/land-dsl.zh-TW.md)
+- [Land DSL](core/land-dsl.zh-TW.md)
 
 ### 2. LandKeeper<State> - 狀態管理層
 
@@ -119,7 +119,7 @@ graph TB
 - Request-scoped LandContext：每次請求建立新的 Context
 
 **相關文檔**：
-- [Runtime 運作機制](../core/runtime.zh-TW.md)
+- [Runtime 運作機制](core/runtime.zh-TW.md)
 
 ### 3. LandRouter<State> - 路由層級
 

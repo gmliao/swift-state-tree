@@ -48,7 +48,7 @@ Suppose there is a `MoveTo` Action:
 > **Difference**: Removed redundant keys like "kind", "payload", "action", "type", significantly reducing packet size.
 
 - **Source Code**:
-  - Server Encoder: [StateUpdateEncoder.swift:L140](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift#L140)
+  - Server Encoder: [OpcodeJSONStateUpdateEncoder.swift](../Sources/SwiftStateTreeTransport/OpcodeJSONStateUpdateEncoder.swift)
   - Client Decoder: [protocol.ts:L388](../sdk/ts/src/core/protocol.ts#L388)
 
 ---
@@ -101,7 +101,7 @@ When the server updates a player's position (using Diff as an example):
 
 - **Source Code**:
   - Path Hashing Logic: [PathHasher.swift](../Sources/SwiftStateTree/Core/PathHasher.swift)
-  - Server Usage: [StateUpdateEncoder.swift:L214](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift#L214)
+  - Server Usage: [OpcodeJSONStateUpdateEncoder.swift](../Sources/SwiftStateTreeTransport/OpcodeJSONStateUpdateEncoder.swift)
   - Client Reconstruction: [protocol.ts:L520](../sdk/ts/src/core/protocol.ts#L520)
 
 ---
@@ -172,7 +172,7 @@ Once the mapping is established, all subsequent updates (Diff) only need to tran
   > **Note**: This mechanism applies to **any wildcard segment** (e.g. `PlayerID`, `MonsterID`, `ItemKey`) as long as it appears under `*` in the schema path pattern.
 
 - **Source Code**:
-  - Server Tracking: [StateUpdateEncoder.swift:L221](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift#L221)
+  - Server Tracking: [OpcodeJSONStateUpdateEncoder.swift](../Sources/SwiftStateTreeTransport/OpcodeJSONStateUpdateEncoder.swift)
   - Client Resolution: [protocol.ts:L455](../sdk/ts/src/core/protocol.ts#L455)
 
 ---
@@ -213,7 +213,7 @@ Position update again (Diff):
 `OpcodeMessagePackStateUpdateEncoder` and `MessagePackSerializer` are both **`Sendable`** types, safe for use across concurrency domains. State updates are encoded serially per sync cycle.
 
 - **Source Code**:
-  - Server Encoder: [StateUpdateEncoder.swift](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift)
+  - Server Encoder: [OpcodeMessagePackStateUpdateEncoder.swift](../Sources/SwiftStateTreeTransport/OpcodeMessagePackStateUpdateEncoder.swift)
   - Client Decoder: [protocol.ts:L304](../sdk/ts/src/core/protocol.ts#L304)
 
 ---

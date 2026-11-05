@@ -48,7 +48,7 @@
 > **差異**：移除了 "kind", "payload", "action", "type" 等重複 Key，大幅減少封包大小。
 
 - **相關分析程式碼**:
-  - Server 端編碼: [StateUpdateEncoder.swift:L140](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift#L140)
+  - Server 端編碼: [OpcodeJSONStateUpdateEncoder.swift](../Sources/SwiftStateTreeTransport/OpcodeJSONStateUpdateEncoder.swift)
   - Client 端解碼: [protocol.ts:L388](../sdk/ts/src/core/protocol.ts#L388)
 
 ---
@@ -101,7 +101,7 @@
 
 - **相關分析程式碼**:
   - 路徑雜湊邏輯: [PathHasher.swift](../Sources/SwiftStateTree/Core/PathHasher.swift)
-  - Server 端應用: [StateUpdateEncoder.swift:L214](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift#L214)
+  - Server 端應用: [OpcodeJSONStateUpdateEncoder.swift](../Sources/SwiftStateTreeTransport/OpcodeJSONStateUpdateEncoder.swift)
   - Client 端路徑重建: [protocol.ts:L520](../sdk/ts/src/core/protocol.ts#L520)
 
 ---
@@ -172,7 +172,7 @@
   > **註**：此機制可用於 **任何** 出現在 `*` 的動態片段（例如 `PlayerID`、`MonsterID`、`ItemKey`），不限於 `players` 字典。
 
 - **相關分析程式碼**:
-  - Server 端管理: [StateUpdateEncoder.swift:L221](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift#L221)
+  - Server 端管理: [OpcodeJSONStateUpdateEncoder.swift](../Sources/SwiftStateTreeTransport/OpcodeJSONStateUpdateEncoder.swift)
   - Client 端映射解析: [protocol.ts:L455](../sdk/ts/src/core/protocol.ts#L455)
 
 ---
@@ -213,7 +213,7 @@
 `OpcodeMessagePackStateUpdateEncoder` 和 `MessagePackSerializer` 都是 **`Sendable`** 類型，可在不同並發域中安全使用。狀態更新在每個 sync 週期內以串行方式編碼。
 
 - **相關程式碼**:
-  - Server 端編碼: [StateUpdateEncoder.swift](../Sources/SwiftStateTreeTransport/StateUpdateEncoder.swift)
+  - Server 端編碼: [OpcodeMessagePackStateUpdateEncoder.swift](../Sources/SwiftStateTreeTransport/OpcodeMessagePackStateUpdateEncoder.swift)
   - Client 端解碼: [protocol.ts:L304](../sdk/ts/src/core/protocol.ts#L304)
 
 ---

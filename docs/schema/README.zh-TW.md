@@ -403,6 +403,6 @@ A: 可以考慮：
 
 ## 相關文檔
 
-- [Macros](macros/README.zh-TW.md) - 了解 macro 的使用
+- [Macros](../macros/README.zh-TW.md) - 了解 macro 的使用
 - [核心概念](../core/README.zh-TW.md) - 了解 StateNode 和 Land DSL
 - [設計文檔](../../Notes/protocol/SCHEMA_DEFINITION.md) - Schema 格式詳細說明
