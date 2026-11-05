@@ -36,12 +36,25 @@ public protocol ReevaluationSource: Sendable {
     /// (including `sequence`) even when that list is empty, so a source that returns watermarks
     /// but drops server events reports false mismatches.
     func getSequenceWatermarks(for tickId: Int64) async throws -> ReevaluationSequenceWatermarks?
+
+    /// Every recorded sync output and marker, in stream order (`streamIndex`).
+    func getSyncStream() async throws -> [ReevaluationSyncStreamEntry]
 }
 
 extension ReevaluationSource {
     /// Default for conformers that do not record watermarks.
     public func getSequenceWatermarks(for tickId: Int64) async throws -> ReevaluationSequenceWatermarks? {
         nil
+    }
+
+    /// Default for conformers that do not record a sync stream.
+    public func getSyncStream() async throws -> [ReevaluationSyncStreamEntry] {
+        []
+    }
+
+    /// Whether the record carries a sync stream (see `ReevaluationSyncStreamPresence`).
+    public func getSyncStreamPresence() async throws -> ReevaluationSyncStreamPresence {
+        ReevaluationSyncStreamPresence.of(metadata: try await getMetadata(), stream: try await getSyncStream())
     }
 }
 
@@ -114,5 +127,9 @@ public actor JSONReevaluationSource: ReevaluationSource {
 
     public func getSequenceWatermarks(for tickId: Int64) async throws -> ReevaluationSequenceWatermarks? {
         framesByTickId[tickId]?.sequenceWatermarks
+    }
+
+    public func getSyncStream() async throws -> [ReevaluationSyncStreamEntry] {
+        ReevaluationSyncStreamEntry.stream(of: frames)
     }
 }

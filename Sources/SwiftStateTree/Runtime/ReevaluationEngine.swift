@@ -35,6 +35,9 @@ public enum ReevaluationEngine {
         ///
         /// Server events of these ticks must match exactly, including `sequence`.
         public let watermarkedTicks: Set<Int64>
+        /// Whether the record carries a sync stream. `absent` is never a pass: the sync output
+        /// check has nothing to compare.
+        public let syncStreamPresence: ReevaluationSyncStreamPresence
 
         /// Verdict on `serverEventMismatches`, decided per tick (see `classifyServerEventMismatches`).
         public var serverEventVerification: ServerEventVerification {
@@ -107,10 +110,16 @@ public enum ReevaluationEngine {
         exportJsonlPath: String? = nil,
         includeStateHashInExport: Bool = true,
         diffWithPath: String? = nil,
+        requiredRecordVersion: String = ReevaluationRecordVersion.current,
         logger: Logger? = nil
     ) async throws -> RunResult {
         let source = try JSONReevaluationSource(filePath: recordFilePath)
         let metadata = try await source.getMetadata()
+        // Same rule as the runner and the replay start route: same major version only. Checked
+        // before anything is replayed.
+        guard ReevaluationRecordVersion.isCompatible(recorded: metadata.version, required: requiredRecordVersion) else {
+            throw ReevaluationRecordVersionError.incompatible(recorded: metadata.version, required: requiredRecordVersion)
+        }
         let maxTickId = try await source.getMaxTickId()
         let capturingSink = CapturingSink(downstream: sink)
 
@@ -225,7 +234,8 @@ public enum ReevaluationEngine {
             tickHashes: hashes,
             recordedStateHashes: recordedHashes,
             serverEventMismatches: serverEventMismatches,
-            watermarkedTicks: watermarkedTicks
+            watermarkedTicks: watermarkedTicks,
+            syncStreamPresence: try await source.getSyncStreamPresence()
         )
     }
     

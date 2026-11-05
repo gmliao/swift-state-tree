@@ -53,6 +53,11 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
     /// Used to verify deterministic behavior across different CPU architectures.
     public let hardwareInfo: HardwareInfo?
 
+    /// Whether the live run recorded its sync stream (`syncOutputs`, `syncMarkers`): true with
+    /// in-turn sync on, false with it off, nil in records older than 2.1. A reader tells "no sync
+    /// outputs because none were recorded" from "recorded, and there were none" by it.
+    public let recordsSyncStream: Bool?
+
     public init(
         landID: String,
         landType: String,
@@ -66,7 +71,8 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
         ruleParams: [String: AnyCodable]? = nil,
         version: String? = nil,
         extensions: [String: AnyCodable]? = nil,
-        hardwareInfo: HardwareInfo? = nil
+        hardwareInfo: HardwareInfo? = nil,
+        recordsSyncStream: Bool? = nil
     ) {
         self.landID = landID
         self.landType = landType
@@ -81,6 +87,47 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
         self.version = version
         self.extensions = extensions
         self.hardwareInfo = hardwareInfo
+        self.recordsSyncStream = recordsSyncStream
+    }
+}
+
+/// A record whose version a reader cannot read (different major, missing or malformed).
+public enum ReevaluationRecordVersionError: Error, Equatable, Sendable {
+    case incompatible(recorded: String?, required: String)
+}
+
+/// Record format versions, `"<major>.<minor>"`.
+///
+/// Readers accept any record with their major version: a newer minor adds keys an older reader
+/// ignores, and an older minor lacks features a newer reader reports as skipped. Only a different
+/// major (or a missing or malformed version) is incompatible.
+public enum ReevaluationRecordVersion {
+    /// The version this package writes. 2.1 adds the sync stream (`syncOutputs`, `syncMarkers`,
+    /// `recordsSyncStream`) and the initialize record.
+    public static let current = "2.1"
+
+    /// Whether a record written as `recorded` can be read by a reader that requires `required`.
+    public static func isCompatible(recorded: String?, required: String) -> Bool {
+        guard let recorded,
+              let recordedMajor = parse(recorded)?.major,
+              let requiredMajor = parse(required)?.major
+        else { return false }
+        return recordedMajor == requiredMajor
+    }
+
+    /// The minor version of `version` (0 when it has none), nil when missing or malformed.
+    public static func minor(of version: String?) -> Int? {
+        version.flatMap(parse)?.minor
+    }
+
+    private static func parse(_ version: String) -> (major: Int, minor: Int)? {
+        let parts = version.split(separator: ".", omittingEmptySubsequences: false)
+        guard (1...2).contains(parts.count),
+              parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) }),
+              let major = Int(parts[0])
+        else { return nil }
+        let minor = parts.count == 2 ? Int(parts[1]) : 0
+        return minor.map { (major, $0) }
     }
 }
 
@@ -157,6 +204,14 @@ public struct ReevaluationTickFrame: Codable, Sendable {
     public let sequenceBeforeInputs: Int64?
     /// Sequence counter right before the tick handler ran (ticked lands only; nil in older records).
     public let sequenceBeforeTickHandler: Int64?
+    /// Sync outputs whose plan read state after this tick (`observedTickId`), in any order: the
+    /// stream order is `streamIndex`. Outputs with `observedTickId == -1` are in frame 0.
+    /// Empty in records older than 2.1 and in records without a sync stream.
+    public let syncOutputs: [ReevaluationRecordedSyncOutput]
+    /// Seed, clear and initialize markers merged into this frame, ordered by `streamIndex`.
+    public let syncMarkers: [ReevaluationRecordedSyncMarker]
+    /// Frame 0 only, in records from 2.1: what OnInitialize did.
+    public let initialize: ReevaluationRecordedInitialize?
 
     public init(
         tickId: Int64,
@@ -166,7 +221,10 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         lifecycleEvents: [ReevaluationRecordedLifecycleEvent],
         serverEvents: [ReevaluationRecordedServerEvent] = [],
         sequenceBeforeInputs: Int64? = nil,
-        sequenceBeforeTickHandler: Int64? = nil
+        sequenceBeforeTickHandler: Int64? = nil,
+        syncOutputs: [ReevaluationRecordedSyncOutput] = [],
+        syncMarkers: [ReevaluationRecordedSyncMarker] = [],
+        initialize: ReevaluationRecordedInitialize? = nil
     ) {
         self.tickId = tickId
         self.stateHash = stateHash
@@ -176,6 +234,9 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         self.serverEvents = serverEvents
         self.sequenceBeforeInputs = sequenceBeforeInputs
         self.sequenceBeforeTickHandler = sequenceBeforeTickHandler
+        self.syncOutputs = syncOutputs
+        self.syncMarkers = syncMarkers
+        self.initialize = initialize
     }
 
     public init(from decoder: Decoder) throws {
@@ -188,6 +249,9 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         serverEvents = try container.decodeIfPresent([ReevaluationRecordedServerEvent].self, forKey: .serverEvents) ?? []
         sequenceBeforeInputs = try container.decodeIfPresent(Int64.self, forKey: .sequenceBeforeInputs)
         sequenceBeforeTickHandler = try container.decodeIfPresent(Int64.self, forKey: .sequenceBeforeTickHandler)
+        syncOutputs = try container.decodeIfPresent([ReevaluationRecordedSyncOutput].self, forKey: .syncOutputs) ?? []
+        syncMarkers = try container.decodeIfPresent([ReevaluationRecordedSyncMarker].self, forKey: .syncMarkers) ?? []
+        initialize = try container.decodeIfPresent(ReevaluationRecordedInitialize.self, forKey: .initialize)
     }
 
     /// The frame's sequence watermarks, or nil when the frame carries none (older records, tickless lands).
@@ -207,7 +271,10 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         lifecycleEvents: [ReevaluationRecordedLifecycleEvent]? = nil,
         serverEvents: [ReevaluationRecordedServerEvent]? = nil,
         sequenceBeforeInputs: Int64? = nil,
-        sequenceBeforeTickHandler: Int64? = nil
+        sequenceBeforeTickHandler: Int64? = nil,
+        syncOutputs: [ReevaluationRecordedSyncOutput]? = nil,
+        syncMarkers: [ReevaluationRecordedSyncMarker]? = nil,
+        initialize: ReevaluationRecordedInitialize? = nil
     ) -> ReevaluationTickFrame {
         ReevaluationTickFrame(
             tickId: tickId,
@@ -217,13 +284,33 @@ public struct ReevaluationTickFrame: Codable, Sendable {
             lifecycleEvents: lifecycleEvents ?? self.lifecycleEvents,
             serverEvents: serverEvents ?? self.serverEvents,
             sequenceBeforeInputs: sequenceBeforeInputs ?? self.sequenceBeforeInputs,
-            sequenceBeforeTickHandler: sequenceBeforeTickHandler ?? self.sequenceBeforeTickHandler
+            sequenceBeforeTickHandler: sequenceBeforeTickHandler ?? self.sequenceBeforeTickHandler,
+            syncOutputs: syncOutputs ?? self.syncOutputs,
+            syncMarkers: syncMarkers ?? self.syncMarkers,
+            initialize: initialize ?? self.initialize
         )
     }
 
     private enum CodingKeys: String, CodingKey {
         case tickId, stateHash, actions, clientEvents, lifecycleEvents, serverEvents
         case sequenceBeforeInputs, sequenceBeforeTickHandler
+        case syncOutputs, syncMarkers, initialize
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(tickId, forKey: .tickId)
+        try container.encodeIfPresent(stateHash, forKey: .stateHash)
+        try container.encode(actions, forKey: .actions)
+        try container.encode(clientEvents, forKey: .clientEvents)
+        try container.encode(lifecycleEvents, forKey: .lifecycleEvents)
+        try container.encode(serverEvents, forKey: .serverEvents)
+        try container.encodeIfPresent(sequenceBeforeInputs, forKey: .sequenceBeforeInputs)
+        try container.encodeIfPresent(sequenceBeforeTickHandler, forKey: .sequenceBeforeTickHandler)
+        // Omitted when empty, so frames without a sync stream stay as before.
+        if !syncOutputs.isEmpty { try container.encode(syncOutputs, forKey: .syncOutputs) }
+        if !syncMarkers.isEmpty { try container.encode(syncMarkers, forKey: .syncMarkers) }
+        try container.encodeIfPresent(initialize, forKey: .initialize)
     }
 }
 
@@ -239,6 +326,9 @@ public struct ReevaluationTickRecord: Sendable {
     public var stateSnapshot: StateSnapshot?
     public var sequenceBeforeInputs: Int64?
     public var sequenceBeforeTickHandler: Int64?
+    public var syncOutputs: [ReevaluationRecordedSyncOutput]
+    public var syncMarkers: [ReevaluationRecordedSyncMarker]
+    public var initialize: ReevaluationRecordedInitialize?
 
     public init(
         tickId: Int64,
@@ -249,7 +339,10 @@ public struct ReevaluationTickRecord: Sendable {
         stateHash: String? = nil,
         stateSnapshot: StateSnapshot? = nil,
         sequenceBeforeInputs: Int64? = nil,
-        sequenceBeforeTickHandler: Int64? = nil
+        sequenceBeforeTickHandler: Int64? = nil,
+        syncOutputs: [ReevaluationRecordedSyncOutput] = [],
+        syncMarkers: [ReevaluationRecordedSyncMarker] = [],
+        initialize: ReevaluationRecordedInitialize? = nil
     ) {
         self.tickId = tickId
         self.actions = actions
@@ -260,6 +353,9 @@ public struct ReevaluationTickRecord: Sendable {
         self.stateSnapshot = stateSnapshot
         self.sequenceBeforeInputs = sequenceBeforeInputs
         self.sequenceBeforeTickHandler = sequenceBeforeTickHandler
+        self.syncOutputs = syncOutputs
+        self.syncMarkers = syncMarkers
+        self.initialize = initialize
     }
 }
 
@@ -268,6 +364,7 @@ extension ReevaluationTickRecord {
     public var isEmpty: Bool {
         actions.isEmpty && clientEvents.isEmpty && lifecycleEvents.isEmpty && serverEvents.isEmpty
             && stateHash == nil && sequenceBeforeInputs == nil && sequenceBeforeTickHandler == nil
+            && syncOutputs.isEmpty && syncMarkers.isEmpty && initialize == nil
     }
 }
 
@@ -281,7 +378,10 @@ extension ReevaluationTickFrame {
             lifecycleEvents: lifecycleEvents + record.lifecycleEvents,
             serverEvents: serverEvents + record.serverEvents,
             sequenceBeforeInputs: record.sequenceBeforeInputs,
-            sequenceBeforeTickHandler: record.sequenceBeforeTickHandler
+            sequenceBeforeTickHandler: record.sequenceBeforeTickHandler,
+            syncOutputs: syncOutputs + record.syncOutputs,
+            syncMarkers: syncMarkers + record.syncMarkers,
+            initialize: record.initialize
         )
     }
 }

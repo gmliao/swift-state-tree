@@ -213,6 +213,8 @@ struct ReevaluationRunnerMain {
         if let last = first.tickHashes[first.maxTickId] {
             print("   Final Tick Hash: \(last)")
         }
+        // Not a sync-output verdict: until it is verified, this only says whether a stream exists.
+        print("   Sync Stream: \(first.syncStreamPresence.summary)")
         print("")
         
         guard verify else { return }
@@ -223,7 +225,7 @@ struct ReevaluationRunnerMain {
         }
         let recordedMismatches = diffAgainstRecorded(computed: first.tickHashes, recorded: first.recordedStateHashes)
         if recordedMismatches.isEmpty {
-            print("✅ Verified: computed hashes match recorded ground truth")
+            print("✅ Verified state hashes: computed hashes match recorded ground truth")
             if let recordedHardware = metadata.hardwareInfo {
                 let hardwareMatch = recordedHardware.cpuArchitecture == currentHardware.cpuArchitecture
                 if hardwareMatch {
@@ -267,7 +269,7 @@ struct ReevaluationRunnerMain {
         
         let mismatches = diffHashes(a: first.tickHashes, b: second.tickHashes)
         if mismatches.isEmpty {
-            print("✅ Verified: hashes are identical across two re-evaluation runs")
+            print("✅ Verified state hashes: identical across two re-evaluation runs")
         } else {
             print("❌ Verification failed: mismatched ticks=\(mismatches.count)")
             for (tickId, ha, hb) in mismatches.prefix(10) {

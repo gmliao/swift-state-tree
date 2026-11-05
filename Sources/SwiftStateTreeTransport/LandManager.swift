@@ -410,7 +410,32 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         // This also covers the re-evaluation keeper, whose RNG seed comes from the record.
         await keeper.setLandID(landID.stringValue)
 
-        // Configure record metadata (deterministic re-evaluation)
+        // Debug: Check if pathHashes is available
+        if let pathHashes = pathHashes {
+            logger.info("🔍 PathHashes available for land", metadata: ["count": .stringConvertible(pathHashes.count)])
+        } else {
+            logger.warning("⚠️  PathHashes is nil for land")
+        }
+        
+        let transportAdapter = TransportAdapter<State>(
+            keeper: keeper,
+            transport: transport,
+            landID: landID.stringValue,
+            createGuestSession: createGuestSession,
+            onLandDestroyed: { [landID, epoch] in
+                // This instance only: a newer instance stored under the same ID stays.
+                await self.removeLand(landID: landID, epoch: epoch)
+            },
+            encodingConfig: transportEncoding,
+            pathHashes: pathHashes,
+            eventHashes: eventHashes,
+            clientEventHashes: clientEventHashes,
+            inTurnSync: inTurnSync && !isReevaluationKeeper,
+            logger: logger
+        )
+        
+        // Configure record metadata (deterministic re-evaluation). After the adapter exists: the
+        // sync stream is recorded only with in-turn sync on, which the adapter decides.
         if let recorder = await keeper.getReevaluationRecorder() {
             // Extract RNG seed from LandKeeper's services for deterministic re-evaluation
             // RNG seed is critical when RNG is used in game logic (e.g., monster spawning, player positioning)
@@ -438,36 +463,13 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                 rngSeed: rngSeed,
                 ruleVariantId: nil,
                 ruleParams: nil,
-                version: "2.0",
+                version: ReevaluationRecordVersion.current,
                 extensions: nil,
-                hardwareInfo: hardwareInfo
+                hardwareInfo: hardwareInfo,
+                recordsSyncStream: transportAdapter.inTurnSyncEnabled
             )
             await recorder.setMetadata(recordingMetadata)
         }
-        
-        // Debug: Check if pathHashes is available
-        if let pathHashes = pathHashes {
-            logger.info("🔍 PathHashes available for land", metadata: ["count": .stringConvertible(pathHashes.count)])
-        } else {
-            logger.warning("⚠️  PathHashes is nil for land")
-        }
-        
-        let transportAdapter = TransportAdapter<State>(
-            keeper: keeper,
-            transport: transport,
-            landID: landID.stringValue,
-            createGuestSession: createGuestSession,
-            onLandDestroyed: { [landID, epoch] in
-                // This instance only: a newer instance stored under the same ID stays.
-                await self.removeLand(landID: landID, epoch: epoch)
-            },
-            encodingConfig: transportEncoding,
-            pathHashes: pathHashes,
-            eventHashes: eventHashes,
-            clientEventHashes: clientEventHashes,
-            inTurnSync: inTurnSync && !isReevaluationKeeper,
-            logger: logger
-        )
         
         await keeper.setTransport(transportAdapter)
         

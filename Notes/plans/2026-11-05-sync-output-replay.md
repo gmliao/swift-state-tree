@@ -250,13 +250,33 @@ then names no player; the report says to rerun with `recordSyncDetails` (per-pla
 
 ## Live producer
 
-- Counter owner (adapter or keeper) is decided in PR 2 and written back here. Either way, the
-  counter is incremented only on the executor the keeper and adapter share under in-turn sync,
-  and with in-turn sync off nothing is recorded: no `assumeIsolated` is reachable on that path.
-- Recording runs only when the land records reevaluation data. The adapter holds a synchronous
-  flag, `recordsSyncStream`, set once when the keeper's recorder is attached. With it off,
-  `SyncOutputDigestInput` stays nil, the counter does not advance, and nothing is hashed or
-  submitted.
+- **Counter owner: the keeper** (decided in PR 2a). It already owns `lastCommittedTickId`, the
+  output sequence, the recorder and the submission chain (`recorderSubmissionTail`). The adapter
+  reaches it only while in-turn sync is on (shared executor), through one synchronous
+  `keeper.assumeIsolated` call at commit that takes the `streamIndex` and submits the entry onto
+  the chain without awaiting. With in-turn sync off nothing is recorded, so no `assumeIsolated`
+  runs off the shared executor.
+- `observedTickId` and the sequence: in tick and sync-only turns, read and commit are one segment,
+  so that same call gives them. Legacy cycles, the freeze settle and the firstSync read their state
+  through a located read that returns `(state, lastCommittedTickId, sequence)` from one keeper
+  job; their `streamIndex` is still taken at commit.
+- Entries go into `ReevaluationTickRecord.syncOutputs` / `syncMarkers` and through the existing
+  `recordTick` merge, so their order relative to turn records comes from the one chain. An entry
+  with `observedTickId == -1` (the initialize turn, a sync-only turn before tick 0) goes into
+  frame 0 and keeps its own `observedTickId`; no frame -1 is created. Within and across frames the
+  stream order is `streamIndex` alone (`ReevaluationSyncStreamEntry.stream(of:)`).
+- Recording runs only when the keeper has a recorder, checked in the same `assumeIsolated` call
+  at plan time; no separate flag. Without one, `SyncOutputDigestInput` stays nil, the counter
+  does not advance, and nothing is hashed or submitted.
+- The header records whether the stream was recorded: `ReevaluationRecordMetadata.recordsSyncStream`,
+  true with in-turn sync on, false with it off, nil before 2.1. `ReevaluationSyncStreamPresence`
+  reads it: `absent(reason)` (nil or false) is never reported as a pass; `recorded(outputs:markers:)`
+  can be empty.
+- The initialize marker is taken only when OnInitialize runs as a turn (in-turn sync on and the
+  adapter attached by then). A keeper starts OnInitialize eagerly, before `LandManager` attaches
+  the adapter, so without resolvers it usually runs before any adapter exists; then no sync
+  output can precede it and no marker is recorded. Rule for the verifier: no initialize marker
+  means OnInitialize precedes the whole stream.
 - The producer is in the shared `commitSyncPhase`, so every commit records an output: tick and
   sync-only turns, and the legacy cycles that still commit while in-turn sync is on (freeze
   settle, `deferredSyncNow` on resume). A legacy cycle's plan reads a state copy; it records the
@@ -479,7 +499,16 @@ All findings accepted; no disagreements.
 1. Hash primitives (`FNV1a64`, `SnapshotValue` walker), canonical patch list, package-level
    applier (the two generic test copies move onto it); removal of `executeOnInitialize` as its own
    commit. No behaviour change.
-2. Record format (`syncOutputs`, `syncMarkers`, initialize record), producer, markers, stream
-   counter, version check. Recording only; the verifier reports `skipped`.
+2. Split in two:
+   - 2a: record format (`syncOutputs`, `syncMarkers`, initialize record, header
+     `recordsSyncStream`), major/minor version check with the producer writing 2.1, the keeper's
+     stream counter, the initialize record on both paths and the initialize marker; the runner
+     and engine report `ReevaluationSyncStreamPresence` (absent vs recorded).
+   - 2b: the producer in `commitSyncPhase` (hashes, drops, events hash with the sequence carried
+     through `PendingEventManager`), located reads, seed and clear markers, the debug prefix-pair
+     assertion, "off path records nothing" and "no recorder, no work". The located read returns
+     state, `lastCommittedTickId` and sequence from one synchronous segment of one keeper job; its
+     test holds a tick turn between what would otherwise be two separate reads and checks that
+     the three values still describe the same point.
 3. Shadow verifier, apply oracle, report, perturbation tests, initialize verification (closes
    #115), E2E `compared > 0` assertion.

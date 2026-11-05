@@ -562,7 +562,7 @@ private func validateReplayCompatibility(
     }
 
     if let expectedRecordVersion,
-       metadata.version != expectedRecordVersion {
+       !ReevaluationRecordVersion.isCompatible(recorded: metadata.version, required: expectedRecordVersion) {
         throw ReplayStartCompatibilityError.recordVersionMismatch(
             expectedVersion: expectedRecordVersion,
             recordedVersion: metadata.version

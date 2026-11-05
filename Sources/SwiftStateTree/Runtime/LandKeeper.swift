@@ -243,6 +243,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Recorder for deterministic re-evaluation (only in .live mode).
     private var reevaluationRecorder: ReevaluationRecorder?
+    /// Position of the next sync-stream entry (output or marker). Advanced only while the land
+    /// records its sync stream (a recorder and in-turn sync), in the same synchronous segment as
+    /// the entry it numbers; replay orders the stream by it.
+    private var syncStreamCounter: UInt64 = 0
 
     /// Source for reading recorded inputs during re-evaluation (only in .reevaluation mode).
     private var reevaluationSource: (any ReevaluationSource)?
@@ -736,8 +740,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     "error": .string(String(describing: error)),
                 ])
             }
-            // In-turn sync: OnInitialize is a turn; its events and sync request go out in it.
             let initializeIsTurn = usesInTurnSync
+            // Recorded in the same synchronous segment as the state write: sync outputs before
+            // this point read the state before OnInitialize, outputs after it the state after.
+            let initializeRecord = reevaluationRecorder == nil ? nil : makeInitializeRecord(
+                sequence: sequence,
+                tickId: ctx.tickId ?? lastCommittedTickId
+            )
+            let initializeMarker = initializeIsTurn && reevaluationRecorder != nil
+                ? ReevaluationRecordedSyncMarker(kind: .initialize, streamIndex: takeSyncStreamIndex(), sequence: sequence)
+                : nil
+            // In-turn sync: OnInitialize is a turn; its events and sync request go out in it.
             if initializeIsTurn, let transport {
                 let emitted = takeEmittedEvents(forTick: ctx.tickId ?? lastCommittedTickId)
                 let wantsSync = takeSyncRequest(forTick: ctx.tickId ?? lastCommittedTickId, applied: nil)
@@ -765,9 +778,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     resolvedAtTick: lastCommittedTickId
                 )
                 if initializeIsTurn {
-                    // Like the legacy path, the record holds only the lifecycle event: OnInitialize's
-                    // server events belong to tick -1, which no frame records.
-                    await submitTurnRecord(ReevaluationTickRecord(tickId: 0, lifecycleEvents: [recorded]))
+                    // OnInitialize's server events belong to tick -1, which no frame's
+                    // `serverEvents` records; the initialize record keeps them for verification.
+                    await submitTurnRecord(ReevaluationTickRecord(
+                        tickId: 0,
+                        lifecycleEvents: [recorded],
+                        syncMarkers: initializeMarker.map { [$0] } ?? [],
+                        initialize: initializeRecord
+                    ))
                 } else {
                     await recorder.record(
                         tickId: 0,
@@ -775,6 +793,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         clientEvents: [],
                         lifecycleEvents: [recorded]
                     )
+                    await recorder.recordTick(ReevaluationTickRecord(tickId: 0, initialize: initializeRecord))
                 }
             }
         }
@@ -2687,6 +2706,41 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 )
             }
         )
+    }
+
+    /// What OnInitialize did, read right after it: the server events emitted for `tickId` after
+    /// its lifecycle `sequence` (not removed from the collector) and the state hash.
+    private func makeInitializeRecord(sequence: Int64, tickId: Int64) -> ReevaluationRecordedInitialize {
+        let events = outputCollector.emittedEvents
+            .filter { $0.tickId == tickId && $0.sequence > sequence }
+            .sorted { $0.sequence < $1.sequence }
+        return ReevaluationRecordedInitialize(
+            sequence: sequence,
+            serverEvents: events.map { item in
+                ReevaluationRecordedServerEvent(
+                    kind: "serverEvent",
+                    sequence: item.sequence,
+                    tickId: item.tickId,
+                    typeIdentifier: item.event.type,
+                    payload: item.event.payload,
+                    target: ReevaluationEventTargetRecord.from(item.target)
+                )
+            },
+            stateHash: enableLiveStateHashRecording ? ReevaluationEngine.calculateStateHash(state) : nil
+        )
+    }
+
+    /// The next sync-stream position. Callers take it only while the land records its sync
+    /// stream, in the same synchronous segment as the entry.
+    private func takeSyncStreamIndex() -> UInt64 {
+        let index = syncStreamCounter
+        syncStreamCounter += 1
+        return index
+    }
+
+    /// Tests only: the next sync-stream position (how many entries were numbered).
+    func syncStreamCounterForTesting() -> UInt64 {
+        syncStreamCounter
     }
 
     /// Submits `record` after every earlier submission (turn order) and returns once it is
