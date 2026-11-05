@@ -351,11 +351,13 @@ private func playScript(_ f: VerifierFixture) async throws {
 private func faultLocation(
     encoding: InTurnEncoding,
     fault: DigestFault,
+    detail: SyncStreamRecordingDetail = [],
     script: (VerifierFixture) async throws -> Void = playScript
 ) async throws -> (mismatch: SyncOutputMismatch?, expected: ReevaluationSyncStreamEntry) {
     let clean = await VerifierFixture.make(encoding: encoding)
     try await script(clean)
     let faulted = await VerifierFixture.make(encoding: encoding)
+    await faulted.adapter.setSyncStreamDetail(detail)
     await faulted.adapter.setSyncOutputDigestFaultForTesting { fault.run(&$0) }
     try await script(faulted)
     #expect(fault.hasFired)
@@ -440,9 +442,11 @@ struct SyncOutputVerifierTests {
             return true
         }
         let (mismatch, expected) = try await faultLocation(encoding: encoding, fault: fault)
+        #expect(mismatch?.check == .hash)
         #expect(mismatch?.scope == "broadcast")
         #expect(mismatch?.streamIndex == position(expected).streamIndex)
         #expect(mismatch?.observedTickId == position(expected).observedTickId)
+        #expect(mismatch?.detail?.contains(EnvKeys.Reevaluation.recordSyncPatches) == true, "\(mismatch?.detail ?? "")")
     }
 
     @Test("A changed per-player value is detected", arguments: InTurnEncoding.allCases)
@@ -461,6 +465,83 @@ struct SyncOutputVerifierTests {
         #expect(mismatch?.scope == "per-player (combined)")
         #expect(mismatch?.streamIndex == position(expected).streamIndex)
         #expect(mismatch?.observedTickId == position(expected).observedTickId)
+        #expect(mismatch?.detail?.contains(EnvKeys.Reevaluation.recordSyncDetails) == true, "\(mismatch?.detail ?? "")")
+    }
+
+    @Test("Recorded per-player hashes and patches name the player and the first differing patch")
+    func recordingDetailLocatesTheMismatch() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let perPlayer = DigestFault { digest in
+            guard let (player, patches) = digest.perPlayerPatches.first(where: { digest.seeds[$0.key] == nil && !$0.value.isEmpty }) else {
+                return false
+            }
+            digest.perPlayerPatches[player] = patches.map { StatePatch(path: $0.path, operation: .set(.int(999))) }
+            return true
+        }
+        let (playerMismatch, _) = try await faultLocation(encoding: .json, fault: perPlayer, detail: [.perPlayerHashes, .patches])
+        let playerDetail = try #require(playerMismatch?.detail)
+        #expect(playerDetail.hasPrefix("player p"), "\(playerDetail)")
+        #expect(playerDetail.contains("first differing patch #0 at /"), "\(playerDetail)")
+
+        let hashesOnly = DigestFault { digest in
+            guard let (player, patches) = digest.perPlayerPatches.first(where: { digest.seeds[$0.key] == nil && !$0.value.isEmpty }) else {
+                return false
+            }
+            digest.perPlayerPatches[player] = patches.map { StatePatch(path: $0.path, operation: .set(.int(999))) }
+            return true
+        }
+        let (hashMismatch, _) = try await faultLocation(encoding: .json, fault: hashesOnly, detail: [.perPlayerHashes])
+        let hashDetail = try #require(hashMismatch?.detail)
+        #expect(hashDetail.hasPrefix("player p"), "\(hashDetail)")
+        #expect(hashDetail.contains(EnvKeys.Reevaluation.recordSyncPatches), "\(hashDetail)")
+
+        let broadcast = DigestFault { digest in
+            guard var patches = digest.broadcastPatches, !patches.isEmpty else { return false }
+            patches = CanonicalPatchList(patches).patches
+            patches.removeLast()
+            digest.broadcastPatches = patches
+            return true
+        }
+        let (broadcastMismatch, _) = try await faultLocation(encoding: .messagepack, fault: broadcast, detail: [.patches])
+        let broadcastDetail = try #require(broadcastMismatch?.detail)
+        #expect(broadcastDetail.contains("first differing patch #"), "\(broadcastDetail)")
+    }
+
+    @Test("A diff-engine bug both sides share passes every hash and fails the apply check", arguments: InTurnEncoding.allCases)
+    func diffEngineFaultIsCaughtByTheApplyCheck(encoding: InTurnEncoding) async throws {
+        guard InTurnSync.isEnabled() else { return }
+        // A wrong value for `ticks` in every diff against a previous value, live and replay alike.
+        let fault: @Sendable (StateSnapshot, [StatePatch]) -> [StatePatch] = { old, patches in
+            guard old.values["ticks"] != nil else { return patches }
+            return patches.map { $0.path == "/ticks" ? StatePatch(path: $0.path, operation: .set(.string("wrong"))) : $0 }
+        }
+        let result = try await SyncEngineDiffFaultForTesting.$current.withValue(fault) {
+            let f = await VerifierFixture.make(encoding: encoding)
+            try await playScript(f)
+            return try await f.replay()
+        }
+        guard case .failed(let mismatch) = result.syncOutput.verdict else {
+            Issue.record("expected a failed verdict, got \(result.syncOutput.summary)")
+            return
+        }
+        #expect(mismatch.check == .apply)
+        #expect(mismatch.scope == "broadcast")
+        #expect(mismatch.turnKind == .tick)
+        #expect(mismatch.detail == "first differing path: /ticks")
+        #expect(result.syncOutput.broadcast.compared > 0, "the hashes matched up to the failing output")
+    }
+
+    @Test("Without a fault, the apply check runs on every seed and diffed scope", arguments: InTurnEncoding.allCases)
+    func applyCheckRuns(encoding: InTurnEncoding) async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await VerifierFixture.make(encoding: encoding)
+        try await playScript(f)
+        let sync = try await f.replay().syncOutput
+        #expect(sync.verdict == .passed, "\(sync.summary)")
+        // Every seed, every broadcast diff after the first, and every seeded player's diff.
+        #expect(sync.apply.compared >= sync.seed.compared + sync.broadcast.compared - 1 + sync.perPlayer.compared)
+        #expect(sync.apply.unverifiable == 0)
+        #expect(sync.summary.contains("apply \(sync.apply.compared)/0/0"))
     }
 
     @Test("Opcode 107: a dropped event and two swapped events are detected", arguments: ["drop", "swap"])
@@ -534,6 +615,8 @@ struct SyncOutputVerifierTests {
         let stream = ReevaluationSyncStreamEntry.stream(of: await f.keeper.getReevaluationRecorder()!.getAllFrames())
         let lastTick = try #require(stream.compactMap { if case .output(let o) = $0, o.turnKind == .tick { return o } else { return nil } }.last)
         #expect(lastTick.perPlayerUnverified == [VerifierFixture.player(2).rawValue])
+        let seeds = stream.compactMap { if case .marker(let m) = $0, m.kind == .seed { return m } else { return nil } }
+        #expect(seeds.map(\.viewDropFields) == [nil, ["fragile"]], "the degraded seed names the dropped field")
 
         let sync = try await f.replay().syncOutput
         #expect(sync.verdict == .partial, "\(sync.summary)")

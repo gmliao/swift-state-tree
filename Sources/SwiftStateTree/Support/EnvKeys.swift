@@ -11,6 +11,12 @@ public enum EnvKeys: Sendable {
     /// Reevaluation record storage. Used by SwiftStateTreeReevaluationMonitor and SwiftStateTreeNIO.
     public enum Reevaluation: Sendable {
         public static let recordsDir = "REEVALUATION_RECORDS_DIR"
+        /// `true` records each committed player's hash on sync outputs (`perPlayerHashes`), so a
+        /// per-player mismatch names the player. Default: off.
+        public static let recordSyncDetails = "REEVALUATION_RECORD_SYNC_DETAILS"
+        /// `true` records each scope's canonical patch list on sync outputs (`patches`), so a
+        /// mismatch names the first differing path. Records grow with every patch. Default: off.
+        public static let recordSyncPatches = "REEVALUATION_RECORD_SYNC_PATCHES"
     }
 
     /// Debug state routes (E2E convergence checks). These expose full land state and let a

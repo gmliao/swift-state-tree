@@ -252,6 +252,21 @@ public struct SyncEngine: Sendable {
         onlyPaths: Set<String>? = nil,
         dirtyFields: Set<String>?
     ) -> [StatePatch] {
+        let patches = compareSnapshotsUnfaulted(from: oldSnapshot, to: newSnapshot, onlyPaths: onlyPaths, dirtyFields: dirtyFields)
+        #if DEBUG
+        if let fault = SyncEngineDiffFaultForTesting.current {
+            return fault(oldSnapshot, patches)
+        }
+        #endif
+        return patches
+    }
+
+    private func compareSnapshotsUnfaulted(
+        from oldSnapshot: StateSnapshot,
+        to newSnapshot: StateSnapshot,
+        onlyPaths: Set<String>?,
+        dirtyFields: Set<String>?
+    ) -> [StatePatch] {
         var patches: [StatePatch] = []
         // Get all keys from both snapshots to detect additions, deletions, and changes
         let allKeys = Set(oldSnapshot.values.keys).union(Set(newSnapshot.values.keys))
@@ -1311,6 +1326,13 @@ extension SyncEngine {
 // MARK: - Extraction that drops fields whose conversion throws
 
 /// Top-level fields a sync plan's extraction left out because their snapshot conversion threw.
+/// Tests only (debug builds): a fault in every top-level diff (`compareSnapshots`) of the tasks
+/// that bind it, live and replay alike, standing in for a diff-engine bug that both sides share.
+/// Receives the old snapshot and the patches, returns the patches to use.
+package enum SyncEngineDiffFaultForTesting {
+    @TaskLocal package static var current: (@Sendable (StateSnapshot, [StatePatch]) -> [StatePatch])?
+}
+
 package struct ExtractionDrops: Sendable {
     /// Dropped field extractions (one per field and extracted snapshot).
     package var count = 0
@@ -1318,6 +1340,8 @@ package struct ExtractionDrops: Sendable {
     package var broadcastFields: Set<String> = []
     /// The per-player fields dropped, per player (from that player's per-player snapshot).
     package var perPlayerFields: [PlayerID: Set<String>] = [:]
+    /// The fields dropped from whole views (late join), in the order first dropped.
+    package var viewFields: [String] = []
     /// The first conversion error, for the dropped-updates log.
     package var firstError: String?
 
@@ -1336,7 +1360,7 @@ package struct ExtractionDrops: Sendable {
         switch scope {
         case .broadcast: broadcastFields.insert(field)
         case .perPlayer(let playerID): perPlayerFields[playerID, default: []].insert(field)
-        case .view: break
+        case .view: viewFields.append(field)
         }
         if firstError == nil {
             firstError = "field \(field): \(error)"
