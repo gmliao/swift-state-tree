@@ -13,16 +13,27 @@ struct ReevaluationRecordVersionTests {
         #expect(ReevaluationRecordVersion.current == "2.3")
     }
 
-    @Test("Hashes of a record older than 2.3 are reported as not comparable (#175)")
+    @Test("Only an affected land's record older than 2.3 has a not-comparable hash (#175)")
     func hashIncomparability() {
         for old in ["2", "2.0", "2.1", "2.2"] {
-            let reason = ReevaluationRecordVersion.hashIncomparability(recorded: old)
+            let reason = ReevaluationRecordVersion.hashIncomparability(recorded: old, stateType: HashPinState.self)
             #expect(reason?.contains("recorded before #175") == true, "\(old): \(reason ?? "nil")")
             #expect(reason?.contains("hash not comparable") == true)
+            // Any other land's older record must still reproduce its hashes.
+            #expect(ReevaluationRecordVersion.hashIncomparability(recorded: old, stateType: UnaffectedHashState.self) == nil)
         }
-        #expect(ReevaluationRecordVersion.hashIncomparability(recorded: "2.3") == nil)
-        #expect(ReevaluationRecordVersion.hashIncomparability(recorded: "2.4") == nil)
-        #expect(ReevaluationRecordVersion.hashIncomparability(recorded: ReevaluationRecordVersion.current) == nil)
+        for current in ["2.3", "2.4", ReevaluationRecordVersion.current] {
+            #expect(ReevaluationRecordVersion.hashIncomparability(recorded: current, stateType: HashPinState.self) == nil)
+        }
+    }
+
+    @Test("The #175 shape is found from the state type, at any depth")
+    func changedShape() {
+        let changed = ReevaluationRecordVersion.hashChangedByNestedNodePolicies
+        #expect(changed(HashPinState.self), "[String: convertible node]")
+        #expect(changed(PlayerKeyedHashState.self), "[PlayerID: convertible node]")
+        #expect(changed(NestedHashState.self), "inside a node in an array in an optional")
+        #expect(!changed(UnaffectedHashState.self), "Int keys, plain nodes, convertible values that are not nodes")
     }
 
     @Test("An older record's differing initialize hash is not comparable; a 2.3 record's fails")
@@ -31,7 +42,7 @@ struct ReevaluationRecordVersionTests {
         let record = ReevaluationRecordedInitialize(sequence: 0, serverEvents: [], stateHash: "0000000000000000")
         let old = ReevaluationEngine.verifyInitialize(
             record: record, emitted: [], state: state,
-            hashIncomparability: ReevaluationRecordVersion.hashIncomparability(recorded: "2.2")
+            hashIncomparability: ReevaluationRecordVersion.hashIncomparability(recorded: "2.2", stateType: HashPinState.self)
         )
         guard case .notComparable(let reason) = old else {
             Issue.record("expected notComparable, got \(old)")
@@ -40,7 +51,7 @@ struct ReevaluationRecordVersionTests {
         #expect(reason.contains("recorded before #175"))
         let current = ReevaluationEngine.verifyInitialize(
             record: record, emitted: [], state: state,
-            hashIncomparability: ReevaluationRecordVersion.hashIncomparability(recorded: ReevaluationRecordVersion.current)
+            hashIncomparability: ReevaluationRecordVersion.hashIncomparability(recorded: ReevaluationRecordVersion.current, stateType: HashPinState.self)
         )
         guard case .failed = current else {
             Issue.record("expected failed, got \(current)")
@@ -50,8 +61,17 @@ struct ReevaluationRecordVersionTests {
         let matching = ReevaluationRecordedInitialize(sequence: 0, serverEvents: [], stateHash: ReevaluationEngine.calculateStateHash(state))
         #expect(ReevaluationEngine.verifyInitialize(
             record: matching, emitted: [], state: state,
-            hashIncomparability: ReevaluationRecordVersion.hashIncomparability(recorded: "2.2")
+            hashIncomparability: ReevaluationRecordVersion.hashIncomparability(recorded: "2.2", stateType: HashPinState.self)
         ) == .passed)
+        // An unaffected land's older record that differs is a real failure.
+        let unaffected = ReevaluationEngine.verifyInitialize(
+            record: record, emitted: [], state: UnaffectedHashState(),
+            hashIncomparability: ReevaluationRecordVersion.hashIncomparability(recorded: "2.2", stateType: UnaffectedHashState.self)
+        )
+        guard case .failed = unaffected else {
+            Issue.record("expected failed, got \(unaffected)")
+            return
+        }
     }
 
     @Test("The state hash of a state node in a String map leaves out its server-only fields (#175)")
@@ -172,6 +192,51 @@ struct HashPinNode: StateNodeProtocol {
 @StateNodeBuilder
 struct HashPinState: StateNodeProtocol {
     @Sync(.broadcast) var nodes: [String: HashPinNode] = [:]
+
+    init() {}
+}
+
+@StateNodeBuilder
+struct PlainHashNode: StateNodeProtocol {
+    @Sync(.serverOnly) var secret: Int = 0
+
+    init() {}
+}
+
+@SnapshotConvertible
+struct ConvertibleHashValue: StateProtocol {
+    var value: Int = 0
+
+    init() {}
+}
+
+@StateNodeBuilder
+struct PlayerKeyedHashState: StateNodeProtocol {
+    @Sync(.broadcast) var players: [PlayerID: HashPinNode] = [:]
+
+    init() {}
+}
+
+@StateNodeBuilder
+struct ArrayHolderNode: StateNodeProtocol {
+    @Sync(.broadcast) var inner: [String: HashPinNode] = [:]
+
+    init() {}
+}
+
+@StateNodeBuilder
+struct NestedHashState: StateNodeProtocol {
+    @Sync(.broadcast) var holders: [ArrayHolderNode]? = nil
+
+    init() {}
+}
+
+@StateNodeBuilder
+struct UnaffectedHashState: StateNodeProtocol {
+    @Sync(.broadcast) var byInt: [Int: HashPinNode] = [:]
+    @Sync(.broadcast) var plain: [String: PlainHashNode] = [:]
+    @Sync(.broadcast) var values: [String: ConvertibleHashValue] = [:]
+    @Sync(.broadcast) var single: HashPinNode = HashPinNode()
 
     init() {}
 }

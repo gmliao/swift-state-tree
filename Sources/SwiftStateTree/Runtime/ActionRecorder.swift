@@ -145,13 +145,46 @@ public enum ReevaluationRecordVersion {
     /// converted with every field, server-only ones included (#175).
     public static let nestedNodePoliciesMinor = 3
 
-    /// Why a hash mismatch in a record written as `recorded` does not mean a replay
-    /// difference, or nil for a record this build's hashes must reproduce. Only records of lands
-    /// with such maps hashed differently; an older record of any other land still matches and
-    /// is verified as before. Only meaningful for a compatible record (`isCompatible`).
-    public static func hashIncomparability(recorded: String?) -> String? {
-        guard let minor = minor(of: recorded), minor < nestedNodePoliciesMinor else { return nil }
+    /// Why a state hash mismatch in a record written as `recorded` does not mean a replay
+    /// difference, or nil when it does. Only a record older than 2.3 of a land whose state type
+    /// has the shape #175 changed (`hashChangedByNestedNodePolicies`) qualifies; every other
+    /// mismatch is a real failure. Only meaningful for a compatible record (`isCompatible`).
+    public static func hashIncomparability(recorded: String?, stateType: any StateNodeProtocol.Type) -> String? {
+        guard let minor = minor(of: recorded), minor < nestedNodePoliciesMinor,
+              hashChangedByNestedNodePolicies(stateType)
+        else { return nil }
         return "recorded before #175 (record \(recorded ?? "?")), hash not comparable"
+    }
+
+    /// Whether `stateType` has, at any depth, a state node that is also `SnapshotValueConvertible`
+    /// (`@SnapshotConvertible`) as the value of a `[String: X]` or `[PlayerID: X]` map: the only
+    /// shape whose broadcast view, and so whose state hash, #175 changed. Decided from the type,
+    /// not from a recording.
+    public static func hashChangedByNestedNodePolicies(_ stateType: any StateNodeProtocol.Type) -> Bool {
+        var visited: Set<ObjectIdentifier> = []
+        return containsChangedShape(stateType, visited: &visited)
+    }
+
+    private static func containsChangedShape(_ type: Any.Type, visited: inout Set<ObjectIdentifier>) -> Bool {
+        if let wrapped = OptionalTypeHelper.wrappedType(of: type) {
+            return containsChangedShape(wrapped, visited: &visited)
+        }
+        if let valueType = SchemaHelper.dictionaryValueType(from: type) {
+            let keyType = SchemaHelper.dictionaryKeyType(from: type)
+            let stringKeyed = keyType == String.self || keyType == PlayerID.self
+            if stringKeyed, valueType is any StateNodeProtocol.Type, valueType is any SnapshotValueConvertible.Type {
+                return true
+            }
+            return containsChangedShape(valueType, visited: &visited)
+        }
+        if let elementType = SchemaHelper.arrayElementType(from: type) {
+            return containsChangedShape(elementType, visited: &visited)
+        }
+        if let nodeType = type as? any StateNodeProtocol.Type {
+            guard visited.insert(ObjectIdentifier(nodeType)).inserted else { return false }
+            return nodeType.getFieldMetadata().contains { containsChangedShape($0.type, visited: &visited) }
+        }
+        return false
     }
 
     /// Whether a record written as `recorded` can be read by a reader that requires `required`.
@@ -910,5 +943,20 @@ public actor ReevaluationRecorder {
             allFrames.append(frame)
         }
         return allFrames.sorted { $0.tickId < $1.tickId }
+    }
+}
+
+/// Unwraps `Optional<T>` to `T` at the type level.
+private protocol OptionalTypeProtocol {
+    static var wrappedType: Any.Type { get }
+}
+
+extension Optional: OptionalTypeProtocol {
+    fileprivate static var wrappedType: Any.Type { Wrapped.self }
+}
+
+private enum OptionalTypeHelper {
+    static func wrappedType(of type: Any.Type) -> Any.Type? {
+        (type as? any OptionalTypeProtocol.Type)?.wrappedType
     }
 }

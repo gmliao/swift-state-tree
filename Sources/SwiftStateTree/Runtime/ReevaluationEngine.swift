@@ -42,10 +42,11 @@ public enum ReevaluationEngine {
         public let syncOutput: SyncOutputVerification
         /// The check of OnInitialize's events and post-initialize state hash.
         public let initialize: InitializeVerification
-        /// For a record older than 2.3, why a hash mismatch is not a replay difference (#175);
-        /// nil for a record whose hashes this build must reproduce. Hashes are compared either
-        /// way: a reader reports a mismatch with this reason instead of as a failure, and an
-        /// older record that matches is verified.
+        /// For a record older than 2.3 of a land whose state type has the shape #175 changed,
+        /// why a state hash mismatch is not a replay difference; nil otherwise, and then every
+        /// mismatch is a failure. Hashes are compared either way: a reader reports a mismatch
+        /// with this reason instead of as a failure, and an older record that matches is
+        /// verified. Sync-output failures are failures regardless.
         public let hashIncomparability: String?
 
         /// Verdict on `serverEventMismatches`, decided per tick (see `classifyServerEventMismatches`).
@@ -209,7 +210,7 @@ public enum ReevaluationEngine {
         let initializeRecord = try await source.getInitializeRecord()
         let stateAfterInitialize = await keeper.currentState()
         let initializeEvents = await capturingSink.takeEmittedEvents(for: -1)
-        let hashIncomparability = ReevaluationRecordVersion.hashIncomparability(recorded: metadata.version)
+        let hashIncomparability = ReevaluationRecordVersion.hashIncomparability(recorded: metadata.version, stateType: State.self)
         let initialize = verifyInitialize(
             record: initializeRecord,
             emitted: initializeEvents,
