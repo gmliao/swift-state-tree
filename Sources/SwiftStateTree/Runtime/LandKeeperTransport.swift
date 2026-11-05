@@ -89,10 +89,13 @@ public protocol LandKeeperTransport: Sendable {
 public struct InTurnServerEvent: Sendable {
     public let event: AnyServerEvent
     public let target: EventTarget
+    /// The keeper's output sequence of the event (for the recorded sync stream's events hash).
+    public let sequence: Int64?
 
-    public init(event: AnyServerEvent, target: EventTarget) {
+    public init(event: AnyServerEvent, target: EventTarget, sequence: Int64? = nil) {
         self.event = event
         self.target = target
+        self.sequence = sequence
     }
 }
 

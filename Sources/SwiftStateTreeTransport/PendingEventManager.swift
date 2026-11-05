@@ -18,6 +18,11 @@ struct PendingEventManager: Sendable {
     
     private var targetedEvents: [TargetedEvent] = []
     private var broadcastEvents: [MessagePackValue] = []
+    /// Per queued event, its canonical form for the sync stream's events hash (record format
+    /// 2.1), parallel to the queues; nil when the sync stream is not recorded or the event has no
+    /// keeper sequence.
+    private var targetedDigests: [CanonicalSyncEvent?] = []
+    private var broadcastDigests: [CanonicalSyncEvent?] = []
     
     /// Whether any targeted events are queued.
     var hasTargetedEvents: Bool {
@@ -47,14 +52,34 @@ struct PendingEventManager: Sendable {
     mutating func queueTargeted(
         target: SwiftStateTree.EventTarget,
         body: MessagePackValue,
-        stamp: MembershipStamp?
+        stamp: MembershipStamp?,
+        digest: CanonicalSyncEvent? = nil
     ) {
         targetedEvents.append(TargetedEvent(target: target, body: body, stamp: stamp))
+        targetedDigests.append(digest)
     }
     
     /// Queue a broadcast event for later delivery.
-    mutating func queueBroadcast(body: MessagePackValue) {
+    mutating func queueBroadcast(body: MessagePackValue, digest: CanonicalSyncEvent? = nil) {
         broadcastEvents.append(body)
+        broadcastDigests.append(digest)
+    }
+
+    /// The events of the first `targeted` targeted and `broadcast` broadcast entries (what a plan
+    /// consumes), once per event and in sequence (emit) order; `complete` is false when one of
+    /// them has no digest. An event queued for several players counts once.
+    func consumedEventDigests(targeted: Int, broadcast: Int) -> (events: [CanonicalSyncEvent], complete: Bool) {
+        let entries = targetedDigests.prefix(max(targeted, 0)) + broadcastDigests.prefix(max(broadcast, 0))
+        var bySequence: [Int64: CanonicalSyncEvent] = [:]
+        var complete = true
+        for entry in entries {
+            guard let entry else {
+                complete = false
+                continue
+            }
+            bySequence[entry.sequence] = entry
+        }
+        return (bySequence.values.sorted { $0.sequence < $1.sequence }, complete)
     }
     
     // MARK: - Filtering
@@ -137,5 +162,7 @@ struct PendingEventManager: Sendable {
         assert(broadcast <= broadcastEvents.count, "removing more broadcast events than are queued")
         targetedEvents.removeFirst(min(max(targeted, 0), targetedEvents.count))
         broadcastEvents.removeFirst(min(max(broadcast, 0), broadcastEvents.count))
+        targetedDigests.removeFirst(min(max(targeted, 0), targetedDigests.count))
+        broadcastDigests.removeFirst(min(max(broadcast, 0), broadcastDigests.count))
     }
 }
