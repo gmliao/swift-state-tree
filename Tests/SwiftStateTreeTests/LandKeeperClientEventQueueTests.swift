@@ -108,7 +108,7 @@ func testTicklessLandRecordsWithValidTickId() async throws {
             rngSeed: 0,
             ruleVariantId: nil,
             ruleParams: nil,
-            version: "2.0",
+            version: ReevaluationRecordVersion.current,
             extensions: nil
         )
         await recorder.setMetadata(meta)

@@ -47,6 +47,9 @@ public struct StateNodeBuilderMacro: MemberMacro {
         // Generate broadcastSnapshot() method
         let broadcastSnapshotMethod = try generateBroadcastSnapshotMethod(propertiesWithNodes: propertiesWithNodes)
 
+        // Generate fullStateSnapshot() (every @Sync field, no policy; for the replay hash)
+        let fullStateSnapshotMethod = try generateFullStateSnapshotMethod(propertiesWithNodes: propertiesWithNodes)
+
         // Generate snapshotForSync() method (one-pass broadcast + per-player extraction)
         let snapshotForSyncMethod = try generateSnapshotForSyncMethod(propertiesWithNodes: propertiesWithNodes)
 
@@ -63,6 +66,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
             DeclSyntax(validateSyncFieldsMethod),
             DeclSyntax(snapshotMethod),
             DeclSyntax(broadcastSnapshotMethod),
+            DeclSyntax(fullStateSnapshotMethod),
             DeclSyntax(snapshotForSyncMethod),
             DeclSyntax(isDirtyMethod),
             DeclSyntax(getDirtyFieldsMethod),
@@ -319,6 +323,32 @@ public struct StateNodeBuilderMacro: MemberMacro {
         return try FunctionDeclSyntax(
             """
             public func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>? = nil) throws -> StateSnapshot {
+                \(raw: body)
+            }
+            """
+        )
+    }
+
+    /// Generate fullStateSnapshot(): every `@Sync` field by name, whatever its policy, converted by
+    /// `SnapshotValue.makeFull(from:)`. `@Internal` properties are left out. Used only by the
+    /// replay state hash.
+    private static func generateFullStateSnapshotMethod(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> FunctionDeclSyntax {
+        let syncProperties = propertiesWithNodes.filter { $0.0.hasSync }
+        var codeLines: [String] = []
+        if syncProperties.isEmpty {
+            codeLines.append("let result: [String: SnapshotValue] = [:]")
+        } else {
+            codeLines.append("var result: [String: SnapshotValue] = [:]")
+            codeLines.append("result.reserveCapacity(\(syncProperties.count))")
+        }
+        for (property, _) in syncProperties {
+            codeLines.append("result[\"\(property.name)\"] = try SnapshotValue.makeFull(from: self._\(property.name).wrappedValue as Any)")
+        }
+        codeLines.append("return StateSnapshot(values: result)")
+        let body = codeLines.joined(separator: "\n")
+        return try FunctionDeclSyntax(
+            """
+            public func fullStateSnapshot() throws -> StateSnapshot {
                 \(raw: body)
             }
             """
@@ -1130,9 +1160,9 @@ public struct StateNodeBuilderMacro: MemberMacro {
             }
         case "UInt":
             if isAnyType {
-                return (".int(Int(\(valueName) as! UInt))", false)
+                return ("SnapshotValue.unsigned(\(valueName) as! UInt)", false)
             } else {
-                return (".int(Int(\(valueName)))", false)
+                return ("SnapshotValue.unsigned(\(valueName))", false)
             }
         case "UInt8":
             if isAnyType {
@@ -1154,9 +1184,9 @@ public struct StateNodeBuilderMacro: MemberMacro {
             }
         case "UInt64":
             if isAnyType {
-                return (".int(Int(\(valueName) as! UInt64))", false)
+                return ("SnapshotValue.unsigned(\(valueName) as! UInt64)", false)
             } else {
-                return (".int(Int(\(valueName)))", false)
+                return ("SnapshotValue.unsigned(\(valueName))", false)
             }
         case "Double":
             if isAnyType {

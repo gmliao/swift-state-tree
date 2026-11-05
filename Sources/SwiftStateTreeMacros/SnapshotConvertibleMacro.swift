@@ -73,11 +73,16 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
         // Generate toSnapshotValue() method
         let toSnapshotValueMethod = try generateToSnapshotValueMethod(properties: properties)
 
-        // Create extension that conforms to SnapshotValueConvertible
+        let toFullSnapshotValueMethod = try generateToFullSnapshotValueMethod(properties: properties)
+
+        // Create extension that conforms to SnapshotValueConvertible, and to
+        // FullSnapshotValueConvertible for the replay state hash (#180)
         let convertibleExtension = try ExtensionDeclSyntax(
             """
-            extension \(type.trimmed): SnapshotValueConvertible {
+            extension \(type.trimmed): SnapshotValueConvertible, FullSnapshotValueConvertible {
                 \(toSnapshotValueMethod)
+
+                \(toFullSnapshotValueMethod)
             }
             """
         )
@@ -173,6 +178,20 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
         return properties
     }
 
+    /// Generate toFullSnapshotValue(): every stored property through `SnapshotValue.makeFull`, so a
+    /// state node held by this value contributes its full state to the replay hash.
+    private static func generateToFullSnapshotValueMethod(properties: [PropertyInfo]) throws -> FunctionDeclSyntax {
+        let entries = properties.map { "\"\($0.name)\": try SnapshotValue.makeFull(from: self.\($0.name) as Any)" }
+        let body = entries.isEmpty ? "return .object([:])" : "return .object([\n    " + entries.joined(separator: ",\n    ") + "\n])"
+        return try FunctionDeclSyntax(
+            """
+            public func toFullSnapshotValue() throws -> SnapshotValue {
+                \(raw: body)
+            }
+            """
+        )
+    }
+
     /// Generate toSnapshotValue() method implementation
     private static func generateToSnapshotValueMethod(properties: [PropertyInfo]) throws -> FunctionDeclSyntax {
         guard !properties.isEmpty else {
@@ -246,7 +265,7 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
         case "Int64":
             return ".int(Int(\(propertyName)))"
         case "UInt":
-            return ".int(Int(\(propertyName)))"
+            return "SnapshotValue.unsigned(\(propertyName))"
         case "UInt8":
             return ".int(Int(\(propertyName)))"
         case "UInt16":
@@ -254,7 +273,7 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
         case "UInt32":
             return ".int(Int(\(propertyName)))"
         case "UInt64":
-            return ".int(Int(\(propertyName)))"
+            return "SnapshotValue.unsigned(\(propertyName))"
         case "Double":
             return ".double(\(propertyName))"
         case "Float":

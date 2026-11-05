@@ -12,7 +12,7 @@
       "fullSnapshot" : false,
       "mergedBroadcastFrame" : true
     },
-    "version" : "2.3"
+    "version" : "2.4"
   },
   "tickFrames" : [
     {
@@ -41,7 +41,7 @@
             "typeIdentifier" : "SyncStreamTest"
           }
         ],
-        "stateHash" : "80521007aaf62a89"
+        "stateHash" : "775f220a15f950ba"
       },
       "lifecycleEvents" : [
         {
@@ -106,7 +106,7 @@
           "typeIdentifier" : "SyncStreamTest"
         }
       ],
-      "stateHash" : "3caf96fc8d06f428",
+      "stateHash" : "e9654ad0eee9898b",
       "syncMarkers" : [
         {
           "kind" : "seed",
@@ -541,7 +541,7 @@
           "typeIdentifier" : "SyncStreamTest"
         }
       ],
-      "stateHash" : "aa5c94aceb81f741",
+      "stateHash" : "93b36ca95f3bd17e",
       "syncOutputs" : [
         {
           "broadcastHash" : "b1c59ace262562d3",
@@ -730,7 +730,7 @@
           "typeIdentifier" : "SyncStreamTest"
         }
       ],
-      "stateHash" : "7676f986e6d4ce90",
+      "stateHash" : "addb91aafbef5b47",
       "syncOutputs" : [
         {
           "broadcastHash" : "790225d73fa0c09c",
@@ -814,7 +814,7 @@
           "typeIdentifier" : "SyncStreamTest"
         }
       ],
-      "stateHash" : "f519a3dbb780887d",
+      "stateHash" : "b4f12da41bd92a2e",
       "syncOutputs" : [
         {
           "broadcastHash" : "2c1c121e36deb3e9",

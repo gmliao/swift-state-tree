@@ -156,7 +156,15 @@ extension Int64: SnapshotValueDecodable {
 }
 
 extension UInt: SnapshotValueDecodable {
+    /// `.int`, or the decimal `.string` that `SnapshotValue.unsigned(_:)` writes above `Int.max`.
     public init(fromSnapshotValue value: SnapshotValue) throws {
+        if case .string(let digits) = value {
+            guard let r = UInt(digits), r > UInt(Int.max), String(r) == digits else {
+                throw SnapshotDecodeError.typeMismatch(expected: "UInt (.int, or a decimal .string above Int.max)", got: value)
+            }
+            self = r
+            return
+        }
         guard case .int(let v) = value else {
             throw SnapshotDecodeError.typeMismatch(expected: "UInt (.int)", got: value)
         }
@@ -204,7 +212,15 @@ extension UInt32: SnapshotValueDecodable {
 }
 
 extension UInt64: SnapshotValueDecodable {
+    /// `.int`, or the decimal `.string` that `SnapshotValue.unsigned(_:)` writes above `Int.max`.
     public init(fromSnapshotValue value: SnapshotValue) throws {
+        if case .string(let digits) = value {
+            guard let r = UInt64(digits), r > UInt64(Int.max), String(r) == digits else {
+                throw SnapshotDecodeError.typeMismatch(expected: "UInt64 (.int, or a decimal .string above Int.max)", got: value)
+            }
+            self = r
+            return
+        }
         guard case .int(let v) = value else {
             throw SnapshotDecodeError.typeMismatch(expected: "UInt64 (.int)", got: value)
         }

@@ -157,6 +157,9 @@ struct BenchmarkConfig {
     var runAll: Bool = false
     var compareParallel: Bool = false
     var scalabilityTest: Bool = false
+    /// `--hash-cost`: time the replay state hash per tick, full state vs broadcast view.
+    var hashCost: Bool = false
+    var hashCostWarmupTicks: Int = 200
     /// Number of ticks to run per sync iteration. For tick=20Hz & sync=10Hz, use 2.
     /// Set to 0 to disable tick simulation.
     var ticksPerSync: Int = 0
@@ -301,6 +304,13 @@ enum ArgumentParser {
             }
         case "--compare-worker-pool":
             config.compareWorkerPool = true
+        case "--hash-cost":
+            config.hashCost = true
+        case "--hash-warmup":
+            if i + 1 < args.count, let value = Int(args[i + 1]) {
+                config.hashCostWarmupTicks = value
+                i += 1
+            }
         case "--help", "-h":
             printUsage()
             exit(0)
@@ -321,6 +331,11 @@ enum ArgumentParser {
       --format <format>       Encoding format (default: messagepack-pathhash)
                               Values: json-object, opcode-json, opcode-json-pathhash,
                                       messagepack, messagepack-pathhash
+      --hash-cost             Time the replay state hash per tick on Hero Defense: full state (record
+                              2.4) vs broadcast view (older records). Rooms from --room-counts
+                              (default 1,10,50,100), players from --players-per-room(-list),
+                              measured ticks from --iterations, after --hash-warmup <n> ticks
+                              (default 200). Release builds only.
       --sync-strategy <s>     Sync strategy: delta (default) or full-snapshot (send full view every sync)
       --dirty-tracking <m>    on, off or auto (default: auto). on/off fix dirty tracking for the run
                               (auto switching off); auto keeps the adapter default (on, switching

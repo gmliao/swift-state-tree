@@ -46,7 +46,9 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
     /// Optional rule parameters overlay (reserved for future Rule Re-evaluation).
     public let ruleParams: [String: AnyCodable]?
 
-    /// Optional record format version.
+    /// Record format version. The recorder writes `ReevaluationRecordVersion.current` whatever a
+    /// caller passes (`ReevaluationRecorder.setMetadata`): the build decides how hashes are
+    /// defined, so the version must be the writer's. Only records built directly carry another.
     public let version: String?
 
     /// Optional extensions for future land-specific data.
@@ -99,6 +101,27 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
         self.syncConfig = syncConfig
     }
 
+    /// This metadata with `version` set to the version this build writes.
+    func stampedWithCurrentVersion() -> ReevaluationRecordMetadata {
+        ReevaluationRecordMetadata(
+            landID: landID,
+            landType: landType,
+            createdAt: createdAt,
+            metadata: metadata,
+            landDefinitionID: landDefinitionID,
+            initialStateHash: initialStateHash,
+            landConfig: landConfig,
+            rngSeed: rngSeed,
+            ruleVariantId: ruleVariantId,
+            ruleParams: ruleParams,
+            version: ReevaluationRecordVersion.current,
+            extensions: extensions,
+            hardwareInfo: hardwareInfo,
+            recordsSyncStream: recordsSyncStream,
+            syncConfig: syncConfig
+        )
+    }
+
     private enum CodingKeys: String, CodingKey {
         case landID, landType, createdAt, metadata, landDefinitionID, initialStateHash, landConfig
         case rngSeedCoding = "rngSeed"
@@ -126,6 +149,15 @@ public enum ReevaluationRecordVersionError: Error, Equatable, Sendable {
     case incompatible(recorded: String?, required: String)
 }
 
+/// What a recorded state or initialize hash covers.
+public enum ReevaluationHashDefinition: Sendable, Equatable {
+    /// Every `@Sync` field at every depth, whatever its policy (`fullStateSnapshot()`); not
+    /// `@Internal` properties. Records from 2.4 on.
+    case fullState
+    /// The broadcast view, `snapshot(for: nil)`: what the hash covered before 2.4.
+    case broadcastView
+}
+
 /// Record format versions, `"<major>.<minor>"`.
 ///
 /// Readers accept any record with their major version: a newer minor adds keys an older reader
@@ -138,7 +170,21 @@ public enum ReevaluationRecordVersion {
     /// `eventsThroughSequence`). A 2.1 record is still read; its sync outputs are not verified.
     /// 2.3 marks hashes computed with nested state nodes' own `@Sync` policies applied (#175);
     /// an older record's state and sync-output hashes are not comparable with this build's.
-    public static let current = "2.3"
+    /// 2.4 records full-state hashes (`ReevaluationHashDefinition.fullState`, #180) and
+    /// `stateHashUnavailable`; older records hold broadcast-view hashes and are verified
+    /// against those.
+    public static let current = "2.4"
+
+    /// The first minor whose state and initialize hashes cover the full state (#180).
+    public static let fullStateHashMinor = 4
+
+    /// The hash a record written as `recorded` holds: the full state from 2.4 on, the broadcast
+    /// view before. A missing or malformed version (an incompatible record) maps to the
+    /// current definition.
+    public static func hashDefinition(recorded: String?) -> ReevaluationHashDefinition {
+        guard let minor = minor(of: recorded), minor < fullStateHashMinor else { return .fullState }
+        return .broadcastView
+    }
 
     /// The first minor whose state and sync-output hashes this build can reproduce: before it,
     /// a `@SnapshotConvertible` state node in a `[String: X]` / `[PlayerID: X]` map was
@@ -640,9 +686,10 @@ public actor ReevaluationRecorder {
         self.flushInterval = flushInterval
     }
 
-    /// Set record metadata (required before saving).
+    /// Set record metadata (required before saving). The version is always stamped as
+    /// `ReevaluationRecordVersion.current`: the hashes this recorder receives are this build's.
     public func setMetadata(_ metadata: ReevaluationRecordMetadata) {
-        self.metadata = metadata
+        self.metadata = metadata.stampedWithCurrentVersion()
     }
 
     public func getMetadata() -> ReevaluationRecordMetadata? {

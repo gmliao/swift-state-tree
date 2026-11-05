@@ -926,7 +926,9 @@ struct EncodingBenchmark {
         // Otherwise, use single-room mode (backward compatibility)
         let isMultiRoom = config.rooms > 1
         
-        if config.compareWorkerPool {
+        if config.hashCost {
+            await runHashCostMatrix(config: config)
+        } else if config.compareWorkerPool {
             await runWorkerPoolComparison(config: config)
         } else if config.scalabilityTest {
             await runScalabilityTest(config: config)

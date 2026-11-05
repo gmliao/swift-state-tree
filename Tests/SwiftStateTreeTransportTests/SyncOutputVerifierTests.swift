@@ -247,6 +247,9 @@ struct VerifierFixture {
             .appendingPathComponent("sync-output-verifier-\(UUID().uuidString).json").path
         defer { try? FileManager.default.removeItem(atPath: path) }
         try await recorder.save(to: path)
+        if version != ReevaluationRecordVersion.current {
+            try relabelRecordVersion(atPath: path, to: version)
+        }
         if let rewrite {
             try VerifierRecordFile.rewrite(path, rewrite)
         }
@@ -759,6 +762,27 @@ struct SyncOutputVerifierTests {
         #expect(sync.verdict == .passed, "\(sync.summary)")
     }
 
+    @Test("A tick recorded with an unavailable state hash is unverifiable, never a match (#180)")
+    func unavailableHashIsUnverifiable() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await VerifierFixture.make(encoding: .json)
+        try await playScript(f)
+        let result = try await f.replay { frames in
+            guard let index = frames.firstIndex(where: { $0.tickId == 1 && $0.stateHash != nil }) else { return }
+            frames[index] = frames[index].replacing(stateHash: .some(ReevaluationEngine.unavailableHash(SyncError.unsupportedKey("collision"))))
+        }
+        #expect(result.unverifiableStateHashes.keys.sorted() == [1])
+        #expect(result.unverifiableStateHashes[1]?.contains("unavailable: ") == true)
+        let legacy = try await f.replay { frames in
+            guard let index = frames.firstIndex(where: { $0.tickId == 1 && $0.stateHash != nil }) else { return }
+            frames[index] = frames[index].replacing(stateHash: .some("error"))
+        }
+        #expect(legacy.unverifiableStateHashes.keys.sorted() == [1], "an older build's \"error\" is not a match either")
+        let clean = try await f.replay()
+        #expect(clean.unverifiableStateHashes.isEmpty)
+        #expect(clean.hashDefinition == .fullState)
+    }
+
     @Test("A record without syncConfig (2.1) is skipped, never guessed")
     func missingSyncConfigIsSkipped() async throws {
         guard InTurnSync.isEnabled() else { return }
@@ -766,7 +790,11 @@ struct SyncOutputVerifierTests {
         try await playScript(f)
         let result = try await f.replay(version: "2.1", withSyncConfig: false)
         #expect(result.syncOutput.verdict == .skipped(reason: "record 2.1 predates syncConfig"))
-        #expect(result.tickHashes == result.recordedStateHashes)
+        // The fixture records 2.4 full-state hashes; relabeled as 2.1 the reader expects
+        // broadcast-view hashes, so the hashes are checked without the relabel.
+        #expect(result.hashDefinition == .broadcastView)
+        let unrelabeled = try await f.replay(withSyncConfig: false)
+        #expect(unrelabeled.tickHashes == unrelabeled.recordedStateHashes)
     }
 
     @Test("A tampered initialize record fails the initialize check")
@@ -800,7 +828,14 @@ struct SyncOutputVerifierTests {
         }
         #expect(result.initialize == .notRecorded)
         #expect(!result.recordedStateHashes.isEmpty)
-        #expect(result.tickHashes == result.recordedStateHashes, "tick 0 still applies OnInitialize")
+        #expect(result.hashDefinition == .broadcastView)
+        // The fixture records 2.4 full-state hashes, so the hashes are checked without the
+        // version relabel, still without an initialize record.
+        let unrelabeled = try await f.replay(withSyncConfig: false) { frames in
+            frames = frames.map { replacingInitialize($0, with: nil) }
+        }
+        #expect(unrelabeled.initialize == .notRecorded)
+        #expect(unrelabeled.tickHashes == unrelabeled.recordedStateHashes, "tick 0 still applies OnInitialize")
     }
 
     @Test("Opcode 107: a per-player dirty-tracking miss in an output with no other per-player change is detected")
@@ -1026,4 +1061,15 @@ struct SyncOutputVerifierTests {
             }
         }
     }
+}
+
+/// Rewrites a saved record's `recordMetadata.version`, to build an older-format record from a
+/// live recording: the recorder always stamps the version this build writes.
+func relabelRecordVersion(atPath path: String, to version: String?) throws {
+    let url = URL(fileURLWithPath: path)
+    var root = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    var metadata = try #require(root["recordMetadata"] as? [String: Any])
+    metadata["version"] = version
+    root["recordMetadata"] = metadata
+    try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys]).write(to: url)
 }

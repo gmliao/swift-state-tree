@@ -157,7 +157,12 @@ struct ReevaluationRunnerMain {
             print("❌ Verification failed: record does not contain any per-tick stateHash (enable live recording on the server)")
             exit(4)
         }
-        let recordedMismatches = diffAgainstRecorded(computed: first.tickHashes, recorded: first.recordedStateHashes)
+        // Ticks recorded as unavailable are not compared here; they are reported (exit 11) only
+        // after every definite failure below.
+        let recordedMismatches = diffAgainstRecorded(
+            computed: first.tickHashes,
+            recorded: first.recordedStateHashes.filter { first.unverifiableStateHashes[$0.key] == nil }
+        )
         if recordedMismatches.isEmpty {
             print("✅ Verified state hashes: computed hashes match recorded ground truth")
             if let recordedHardware = metadata.hardwareInfo {
@@ -213,6 +218,19 @@ struct ReevaluationRunnerMain {
                 print("  tick \(tickId): run1=\(ha) run2=\(hb)")
             }
             exit(3)
+        }
+
+        // Only after every definite failure: hashes the live run could not compute.
+        var unverifiable: [String] = []
+        if let (tickId, reason) = first.unverifiableStateHashes.min(by: { $0.key < $1.key }) {
+            unverifiable.append("\(first.unverifiableStateHashes.count) ticks recorded without a state hash, first at tick \(tickId) (\(reason))")
+        }
+        if case .unverifiable(let reason) = first.initialize {
+            unverifiable.append("OnInitialize \(reason)")
+        }
+        if !unverifiable.isEmpty {
+            print("❌ Verification not possible: \(unverifiable.joined(separator: "; "))")
+            exit(11)
         }
     }
 

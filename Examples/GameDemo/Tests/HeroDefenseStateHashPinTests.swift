@@ -37,9 +37,14 @@ struct HeroDefenseStateHashPinTests {
         return state
     }
 
-    @Test("The recorded state hash of a fixed state is pinned (record 2.3)")
-    func pinnedHash() {
-        #expect(ReevaluationEngine.calculateStateHash(Self.fixedState()) == "58d147d2cbc90616")
+    @Test("The broadcast-view hash of a fixed state is pinned (records 2.3)")
+    func pinnedBroadcastViewHash() {
+        #expect(ReevaluationEngine.calculateBroadcastViewHash(Self.fixedState()) == "58d147d2cbc90616")
+    }
+
+    @Test("The full-state hash of a fixed state is pinned (records 2.4)")
+    func pinnedFullStateHash() {
+        #expect(ReevaluationEngine.calculateStateHash(Self.fixedState()) == "252ba74117aa4c9c")
     }
 
     @Test("Hero Defense has the shape #175 changed; visibility-test's map is per-player, so it does not")
@@ -49,13 +54,37 @@ struct HeroDefenseStateHashPinTests {
         #expect(!ReevaluationRecordVersion.hashChangedByNestedNodePolicies(VisibilityTestState.self))
     }
 
-    @Test("Server-only fields of nested nodes do not enter the hash")
-    func serverOnlyFieldsDoNotEnterHash() {
-        var changed = Self.fixedState()
-        changed.players[PlayerID("p1")]?.lastFireTick = 1_000
-        changed.monsters[7]?.reward = 1_000
-        changed.turrets[3]?.lastFireTick = 1_000
-        changed.nextMonsterID = 1_000
-        #expect(ReevaluationEngine.calculateStateHash(changed) == ReevaluationEngine.calculateStateHash(Self.fixedState()))
+    @Test("Visibility-test's full-state hash covers the per-player map and server-only entity fields")
+    func visibilityFullStateHash() {
+        var state = VisibilityTestState()
+        var entity = VisibleEntity()
+        entity.id = "e1"
+        entity.position = Position2(x: 3, y: 4)
+        entity.step = IVec2(x: 1, y: -1)
+        entity.visibleTo = [PlayerID("p1")]
+        state.entities["e1"] = entity
+        #expect(ReevaluationEngine.calculateStateHash(state) == "48a94b4939ae2ee8")
+        var changed = state
+        changed.entities["e1"]?.step = IVec2(x: 2, y: -1)
+        #expect(ReevaluationEngine.calculateStateHash(changed) != ReevaluationEngine.calculateStateHash(state))
+        #expect(ReevaluationEngine.calculateBroadcastViewHash(changed) == ReevaluationEngine.calculateBroadcastViewHash(state))
+    }
+
+    @Test("Every server-only field enters the full-state hash, none the broadcast-view hash")
+    func serverOnlyFields() {
+        let base = Self.fixedState()
+        let mutations: [(String, (inout HeroDefenseState) -> Void)] = [
+            ("player lastFireTick", { $0.players[PlayerID("p1")]?.lastFireTick = 1_000 }),
+            ("monster reward", { $0.monsters[7]?.reward = 1_000 }),
+            ("monster pathProgress", { $0.monsters[7]?.pathProgress += 0.5 }),
+            ("turret lastFireTick", { $0.turrets[3]?.lastFireTick = 1_000 }),
+            ("nextMonsterID", { $0.nextMonsterID = 1_000 }),
+        ]
+        for (name, mutate) in mutations {
+            var changed = base
+            mutate(&changed)
+            #expect(ReevaluationEngine.calculateStateHash(changed) != ReevaluationEngine.calculateStateHash(base), "\(name)")
+            #expect(ReevaluationEngine.calculateBroadcastViewHash(changed) == ReevaluationEngine.calculateBroadcastViewHash(base), "\(name)")
+        }
     }
 }

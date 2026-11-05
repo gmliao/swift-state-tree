@@ -78,7 +78,8 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
 
     private let keeper: LandKeeper<State>
     private let source: JSONReevaluationSource
-    private let syncEngine = SyncEngine()
+    /// What the record's state hashes cover, from its version.
+    private let hashDefinition: ReevaluationHashDefinition
     private let snapshotEncoder: JSONEncoder
     private let capturingSink = CapturingSink()
 
@@ -106,6 +107,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             requiredRecordVersion: requiredRecordVersion
         )
         syncStreamPresence = try await source.getSyncStreamPresence()
+        hashDefinition = ReevaluationRecordVersion.hashDefinition(recorded: metadata.version)
         syncOutputDriver = SyncOutputReplayDriver(metadata: metadata, stream: try await source.getSyncStream())
         maxTickId = try await source.getMaxTickId()
 
@@ -162,6 +164,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             requiredRecordVersion: requiredRecordVersion
         )
         syncStreamPresence = try await source.getSyncStreamPresence()
+        hashDefinition = ReevaluationRecordVersion.hashDefinition(recorded: metadata.version)
         syncOutputDriver = SyncOutputReplayDriver(metadata: metadata, stream: try await source.getSyncStream())
         maxTickId = try await source.getMaxTickId()
 
@@ -205,7 +208,8 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         initialize = ReevaluationEngine.verifyInitialize(
             record: try await source.getInitializeRecord(),
             emitted: initializeEvents,
-            state: stateAfterInitialize
+            state: stateAfterInitialize,
+            hashDefinition: hashDefinition
         )
         syncOutputDriver.begin(
             beforeInitialize: initialState,
@@ -247,24 +251,31 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         currentTickId += 1
         let tickId = currentTickId
 
-        // Calculate hash
-        let snapshot = try syncEngine.snapshot(from: state, mode: .all)
+        // The hash the record holds (`hashDefinition`), the same one `ReevaluationEngine` checks.
         let stateHash: String
         var actualStatePayload: AnyCodable?
-        if let snapshotData = try? snapshotEncoder.encode(snapshot) {
-            stateHash = DeterministicHash.toHex64(DeterministicHash.fnv1a64(snapshotData))
-            if let jsonText = String(data: snapshotData, encoding: .utf8) {
+        do {
+            let (hash, snapshot) = try ReevaluationEngine.stateHashAndSnapshot(state, definition: hashDefinition)
+            stateHash = hash
+            if let data = try? snapshotEncoder.encode(snapshot), let jsonText = String(data: data, encoding: .utf8) {
                 actualStatePayload = AnyCodable(jsonText)
             }
-        } else {
-            stateHash = "error"
+        } catch {
+            stateHash = ReevaluationEngine.unavailableHash(error)
         }
 
         // Get recorded hash
         let recordedHash = try? await source.getStateHash(for: tickId)
 
-        // Determine match
-        let isMatch = (recordedHash == nil) || (recordedHash == stateHash)
+        // A hash that could not be computed, live or here, is never a match.
+        let isMatch: Bool
+        if let recordedHash {
+            isMatch = recordedHash == stateHash
+                && !ReevaluationEngine.isUnavailableHash(recordedHash)
+                && !ReevaluationEngine.isUnavailableHash(stateHash)
+        } else {
+            isMatch = true
+        }
         let emittedServerEvents = await capturingSink.takeEmittedEvents(for: tickId)
         syncOutputDriver.stepped(tickId: tickId, state: state, events: emittedServerEvents)
         let recordedServerEvents = (try? await source.getServerEvents(for: tickId)) ?? []

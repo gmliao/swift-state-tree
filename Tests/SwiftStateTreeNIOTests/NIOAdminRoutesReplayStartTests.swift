@@ -418,6 +418,10 @@ private struct DummyReplayState: StateNodeProtocol {
         StateSnapshot()
     }
 
+    func fullStateSnapshot() throws -> StateSnapshot {
+        StateSnapshot()
+    }
+
     func isDirty() -> Bool {
         false
     }

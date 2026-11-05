@@ -166,6 +166,15 @@ public protocol SnapshotValueConvertible {
 }
 
 public extension SnapshotValue {
+    /// An unsigned integer: `.int` when it fits in `Int`, else its decimal digits as `.string`.
+    /// A value above `Int.max` used to trap in `Int(_:)`; it is now sent and hashed losslessly.
+    static func unsigned<T: UnsignedInteger & FixedWidthInteger>(_ value: T) -> SnapshotValue {
+        if let fitting = Int(exactly: value) {
+            return .int(fitting)
+        }
+        return .string(String(value))
+    }
+
     static func make(from value: Any, for playerID: PlayerID? = nil) throws -> SnapshotValue {
         // Short-circuit if value is already a snapshot-friendly type
         if let snapshotValue = value as? SnapshotValue {
@@ -281,7 +290,7 @@ public extension SnapshotValue {
         case let int64Value as Int64:
             return .int(Int(int64Value))
         case let uintValue as UInt:
-            return .int(Int(uintValue))
+            return unsigned(uintValue)
         case let uint8Value as UInt8:
             return .int(Int(uint8Value))
         case let uint16Value as UInt16:
@@ -289,7 +298,7 @@ public extension SnapshotValue {
         case let uint32Value as UInt32:
             return .int(Int(uint32Value))
         case let uint64Value as UInt64:
-            return .int(Int(uint64Value))
+            return unsigned(uint64Value)
         case let doubleValue as Double:
             return .double(doubleValue)
         case let floatValue as Float:
@@ -368,6 +377,174 @@ public extension SnapshotValue {
             return convertible.description
         }
         throw SyncError.unsupportedKey("Unsupported dictionary key type: \(type(of: value))")
+    }
+}
+
+// MARK: - Full conversion (replay state hash)
+
+/// A value's conversion for the replay state hash (#180), when it differs from
+/// `toSnapshotValue()`: every stored property through `SnapshotValue.makeFull`, so state nodes
+/// it holds contribute their full state. `@SnapshotConvertible` generates it. A value with only
+/// a hand-written `toSnapshotValue()` is hashed through that, as clients see it.
+public protocol FullSnapshotValueConvertible {
+    func toFullSnapshotValue() throws -> SnapshotValue
+}
+
+public extension SnapshotValue {
+    /// Converts `value` for the replay state hash (#180), ignoring every `@Sync` policy: a state
+    /// node contributes `fullStateSnapshot()`, at any depth (maps, arrays, sets, optionals,
+    /// nested nodes); everything else converts as for clients.
+    ///
+    /// The result is deterministic for equal state: map keys become strings as for clients and
+    /// two keys that collide as strings throw, and set elements are ordered by their canonical
+    /// encoding under this conversion. Never used on a client path.
+    static func makeFull(from value: Any) throws -> SnapshotValue {
+        if let snapshotValue = value as? SnapshotValue {
+            return snapshotValue
+        }
+        if let snapshot = value as? StateSnapshot {
+            return .object(snapshot.values)
+        }
+        if let stateNode = value as? any StateNodeProtocol {
+            FullStateConversionProbe.record()
+            return .object(try stateNode.fullStateSnapshot().values)
+        }
+        if let leaf = fullLeaf(value) {
+            return leaf
+        }
+        if let full = value as? FullSnapshotValueConvertible {
+            return try full.toFullSnapshotValue()
+        }
+        if let convertible = value as? SnapshotValueConvertible {
+            return try convertible.toSnapshotValue()
+        }
+        // Common containers without Mirror.
+        if let dict = value as? [String: Any] {
+            var object: [String: SnapshotValue] = [:]
+            object.reserveCapacity(dict.count)
+            for (key, element) in dict {
+                object[key] = try makeFull(from: element)
+            }
+            return .object(object)
+        }
+        if let dict = value as? [PlayerID: Any] {
+            var object: [String: SnapshotValue] = [:]
+            object.reserveCapacity(dict.count)
+            for (key, element) in dict {
+                object[key.rawValue] = try makeFull(from: element)
+            }
+            return .object(object)
+        }
+
+        let mirror = Mirror(reflecting: value)
+        switch mirror.displayStyle {
+        case .optional:
+            guard let child = mirror.children.first else { return .null }
+            return try makeFull(from: child.value)
+        case .collection:
+            var array: [SnapshotValue] = []
+            array.reserveCapacity(Int(mirror.children.count))
+            for child in mirror.children {
+                array.append(try makeFull(from: child.value))
+            }
+            return .array(array)
+        case .set:
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            var keyed: [(key: [UInt8], value: SnapshotValue)] = []
+            for child in mirror.children {
+                let converted = try makeFull(from: child.value)
+                keyed.append((Array(try encoder.encode(converted)), converted))
+            }
+            keyed.sort { $0.key.lexicographicallyPrecedes($1.key) }
+            return .array(keyed.map(\.value))
+        case .dictionary:
+            var object: [String: SnapshotValue] = [:]
+            object.reserveCapacity(Int(mirror.children.count))
+            for child in mirror.children {
+                let pair = Array(Mirror(reflecting: child.value).children)
+                guard pair.count == 2 else {
+                    throw SyncError.unsupportedValue("Dictionary entry must contain exactly two children.")
+                }
+                let key = try makeKeyString(from: pair[0].value)
+                guard object[key] == nil else {
+                    throw SyncError.unsupportedKey("Two keys of \(type(of: value)) convert to \"\(key)\"")
+                }
+                object[key] = try makeFull(from: pair[1].value)
+            }
+            return .object(object)
+        case .struct, .class:
+            var object: [String: SnapshotValue] = [:]
+            for child in mirror.children {
+                guard let label = child.label else { continue }
+                object[label] = try makeFull(from: child.value)
+            }
+            return .object(object)
+        case .enum:
+            // A case without a payload is its name; with one, `{name: payload}`. Payload nodes
+            // are converted in full like any other value.
+            guard let payload = mirror.children.first else {
+                return .string(String(describing: value))
+            }
+            return .object([payload.label ?? String(describing: value): try makeFull(from: payload.value)])
+        case .tuple:
+            return .array(try mirror.children.map { try makeFull(from: $0.value) })
+        default:
+            return try make(from: value)
+        }
+    }
+
+    /// Scalars, converted as `make(from:for:)` converts them.
+    private static func fullLeaf(_ value: Any) -> SnapshotValue? {
+        switch value {
+        case let v as Bool: return .bool(v)
+        case let v as Int: return .int(v)
+        case let v as Int8: return .int(Int(v))
+        case let v as Int16: return .int(Int(v))
+        case let v as Int32: return .int(Int(v))
+        case let v as Int64: return .int(Int(v))
+        case let v as UInt: return unsigned(v)
+        case let v as UInt8: return .int(Int(v))
+        case let v as UInt16: return .int(Int(v))
+        case let v as UInt32: return .int(Int(v))
+        case let v as UInt64: return unsigned(v)
+        case let v as Double: return .double(v)
+        case let v as Float: return .double(Double(v))
+        case let v as String: return .string(v)
+        case let v as PlayerID: return .string(v.rawValue)
+        default: return nil
+        }
+    }
+}
+
+/// Counts the state nodes the full conversion visits inside `count`, so tests can show that no
+/// client path runs it. Outside `count` it reads one unset task-local per node.
+package enum FullStateConversionProbe {
+    package final class Counter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+        func increment() {
+            lock.lock()
+            value += 1
+            lock.unlock()
+        }
+        var count: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+    }
+
+    @TaskLocal package static var counter: Counter?
+
+    static func record() {
+        counter?.increment()
+    }
+
+    package static func count(_ body: () throws -> Void) rethrows -> Int {
+        let counter = Counter()
+        try $counter.withValue(counter) { try body() }
+        return counter.count
     }
 }
 

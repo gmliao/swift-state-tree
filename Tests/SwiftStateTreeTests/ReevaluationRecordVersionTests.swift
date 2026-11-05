@@ -8,9 +8,9 @@ import Testing
 
 @Suite("Re-evaluation record version")
 struct ReevaluationRecordVersionTests {
-    @Test("The producer writes 2.3")
+    @Test("The producer writes 2.4")
     func currentVersion() {
-        #expect(ReevaluationRecordVersion.current == "2.3")
+        #expect(ReevaluationRecordVersion.current == "2.4")
     }
 
     @Test("Only an affected land's record older than 2.3 has a not-comparable hash (#175)")
@@ -42,7 +42,7 @@ struct ReevaluationRecordVersionTests {
         let state = HashPinState()
         let record = ReevaluationRecordedInitialize(sequence: 0, serverEvents: [], stateHash: "0000000000000000")
         let old = ReevaluationEngine.verifyInitialize(
-            record: record, emitted: [], state: state,
+            record: record, emitted: [], state: state, hashDefinition: .broadcastView,
             hashIncomparability: ReevaluationRecordVersion.hashIncomparability(recorded: "2.2", stateType: HashPinState.self)
         )
         guard case .notComparable(let reason) = old else {
@@ -59,14 +59,14 @@ struct ReevaluationRecordVersionTests {
             return
         }
         // A matching hash verifies whatever the version: older records of other lands still do.
-        let matching = ReevaluationRecordedInitialize(sequence: 0, serverEvents: [], stateHash: ReevaluationEngine.calculateStateHash(state))
+        let matching = ReevaluationRecordedInitialize(sequence: 0, serverEvents: [], stateHash: ReevaluationEngine.calculateBroadcastViewHash(state))
         #expect(ReevaluationEngine.verifyInitialize(
-            record: matching, emitted: [], state: state,
+            record: matching, emitted: [], state: state, hashDefinition: .broadcastView,
             hashIncomparability: ReevaluationRecordVersion.hashIncomparability(recorded: "2.2", stateType: HashPinState.self)
         ) == .passed)
         // An unaffected land's older record that differs is a real failure.
         let unaffected = ReevaluationEngine.verifyInitialize(
-            record: record, emitted: [], state: UnaffectedHashState(),
+            record: record, emitted: [], state: UnaffectedHashState(), hashDefinition: .broadcastView,
             hashIncomparability: ReevaluationRecordVersion.hashIncomparability(recorded: "2.2", stateType: UnaffectedHashState.self)
         )
         guard case .failed = unaffected else {
@@ -75,14 +75,15 @@ struct ReevaluationRecordVersionTests {
         }
     }
 
-    @Test("The state hash of a state node in a String map leaves out its server-only fields (#175)")
+    @Test("The broadcast-view hash (records before 2.4) of a node in a String map leaves out its server-only fields (#175)")
     func pinnedHash() {
         var state = HashPinState()
         state.nodes["a"] = HashPinNode(shown: 1, secret: 2)
-        let hash = ReevaluationEngine.calculateStateHash(state)
+        let hash = ReevaluationEngine.calculateBroadcastViewHash(state)
         #expect(hash == "abbe170f091e4dd9")
         state.nodes["a"]?.secret = 99
-        #expect(ReevaluationEngine.calculateStateHash(state) == hash)
+        #expect(ReevaluationEngine.calculateBroadcastViewHash(state) == hash)
+        #expect(ReevaluationEngine.calculateStateHash(state) != ReevaluationEngine.calculateStateHash(HashPinState()))
     }
 
     @Test("Same major, any minor, is compatible in both directions")
@@ -248,4 +249,21 @@ struct PerPlayerHashState: StateNodeProtocol {
     var nodes: [String: HashPinNode] = [:]
 
     init() {}
+}
+
+@Test("The recorder stamps the version this build writes, whatever the caller passes")
+func recorderStampsCurrentVersion() async throws {
+    let recorder = ReevaluationRecorder()
+    for passed in [nil, "1.0", "2.0", "2.3", "9.9"] as [String?] {
+        await recorder.setMetadata(ReevaluationRecordMetadata(
+            landID: "stamp:local", landType: "stamp", createdAt: Date(timeIntervalSince1970: 0),
+            metadata: [:], version: passed
+        ))
+        #expect(await recorder.getMetadata()?.version == ReevaluationRecordVersion.current, "\(String(describing: passed))")
+    }
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent("stamp-\(UUID().uuidString).json").path
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    try await recorder.save(to: path)
+    let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: path))) as? [String: Any]
+    #expect((saved?["recordMetadata"] as? [String: Any])?["version"] as? String == ReevaluationRecordVersion.current)
 }

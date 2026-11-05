@@ -154,7 +154,7 @@ private func makeDeliveryKeeper(tick: Bool, inTurn: Bool = false) async -> LandK
             metadata: [:],
             landDefinitionID: "delivery-test",
             rngSeed: DeterministicSeed.fromLandID(deliveryLandID),
-            version: "2.0"
+            version: ReevaluationRecordVersion.current
         ))
     }
     return keeper
@@ -435,7 +435,7 @@ struct ResolverDeliveryTests {
             metadata: [:],
             landDefinitionID: "delivery-test",
             rngSeed: DeterministicSeed.fromLandID(deliveryLandID),
-            version: "2.0"
+            version: ReevaluationRecordVersion.current
         ))
         let path = FileManager.default.temporaryDirectory
             .appendingPathComponent("delivery-w1w2-\(UUID().uuidString).json").path
@@ -505,7 +505,7 @@ struct ResolverDeliveryTests {
             metadata: [:],
             landDefinitionID: "delivery-test",
             rngSeed: DeterministicSeed.fromLandID(deliveryLandID),
-            version: "2.0"
+            version: ReevaluationRecordVersion.current
         ))
         let path = FileManager.default.temporaryDirectory
             .appendingPathComponent("delivery-midtick-\(UUID().uuidString).json").path

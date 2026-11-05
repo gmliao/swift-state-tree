@@ -243,7 +243,12 @@ struct ReevaluationRunnerMain {
             print("❌ Verification failed: record does not contain any per-tick stateHash (enable live recording on the server)")
             exit(4)
         }
-        let recordedMismatches = diffAgainstRecorded(computed: first.tickHashes, recorded: first.recordedStateHashes)
+        // Ticks recorded as unavailable are not compared here; they are reported (exit 11) only
+        // after every definite failure below.
+        let recordedMismatches = diffAgainstRecorded(
+            computed: first.tickHashes,
+            recorded: first.recordedStateHashes.filter { first.unverifiableStateHashes[$0.key] == nil }
+        )
         if recordedMismatches.isEmpty {
             print("✅ Verified state hashes: computed hashes match recorded ground truth")
             if let recordedHardware = metadata.hardwareInfo {
@@ -314,6 +319,19 @@ struct ReevaluationRunnerMain {
             }
             exit(3)
         }
+
+        // Only after every definite failure: hashes the live run could not compute.
+        var unverifiable: [String] = []
+        if let (tickId, reason) = first.unverifiableStateHashes.min(by: { $0.key < $1.key }) {
+            unverifiable.append("\(first.unverifiableStateHashes.count) ticks recorded without a state hash, first at tick \(tickId) (\(reason))")
+        }
+        if case .unverifiable(let reason) = first.initialize {
+            unverifiable.append("OnInitialize \(reason)")
+        }
+        if !unverifiable.isEmpty {
+            print("❌ Verification not possible: \(unverifiable.joined(separator: "; "))")
+            exit(11)
+        }
     }
 
     /// Headless batch recording: live keeper + deterministic MoveTo injection, saved as a
@@ -344,7 +362,7 @@ struct ReevaluationRunnerMain {
             createdAt: Date(timeIntervalSince1970: 1_700_000_000),
             metadata: ["seedId": "\(seedId)"],
             rngSeed: DeterministicSeed.fromLandID(landID),
-            version: "2.0"
+            version: ReevaluationRecordVersion.current
         ))
         for p in 0 ..< players {
             try await keeper.join(
@@ -462,6 +480,11 @@ struct ReevaluationRunnerMain {
           is reported as "recorded before #175, hash not comparable" and --verify exits 10;
           re-record with this build. Any other mismatch, and every sync-output failure, still
           fails (exit 5, 9 or 8).
+        State hash: from record format 2.4, every @Sync field at every depth, whatever its
+          policy (not @Internal); older records hold the broadcast view and are compared with
+          that. A tick recorded without a hash (the live run could not compute it) is
+          unverifiable: --verify exits 11, after every definite failure (5, 6, 8, 9). A valid
+          recorded hash this replay cannot compute is a mismatch (exit 5).
         """)
         exit(exitCode)
     }
