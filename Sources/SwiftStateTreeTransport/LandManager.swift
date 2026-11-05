@@ -96,10 +96,23 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// Creations in progress, one per LandID: concurrent first joins share one creation.
     private var creations = SingleFlight<LandID, Container>()
     /// Mints each created instance's epoch.
-    private var epochs = EpochCounter<LandID>()
+    private var epochs = EpochCounter()
+    /// Instances removed by ID (`removeLand(landID:)`) while they may still drain, held weakly
+    /// until their own `onLandDestroyed` runs. A creation for the same ID waits for any of them
+    /// that is draining, as for a stored draining instance.
+    private var detached: [LandID: [Epoch: DetachedKeeper<State>]] = [:]
+    /// Set once by `shutdownAllLands`, before its first await; from then on no creation starts.
+    private var isShuttingDown = false
+    /// How long a creation waits for the previous instance's destruction before it fails with
+    /// `JoinError.landShuttingDown` (not cached; the next join waits again).
+    private var drainWaitTimeout: Duration = landDrainWaitTimeout
     /// Test hook: awaited at the start of each creation, after the existence check, so a test
     /// can hold a creation there and issue concurrent calls deterministically.
     private var creationHook: (@Sendable (LandID) async -> Void)?
+    /// Test hook: awaited right before a creation waits for a draining previous instance.
+    private var drainWaitHook: (@Sendable (LandID) async -> Void)?
+    /// Calls that joined a creation already in flight (tests: proves the calls shared it).
+    private var creationJoins = 0
     private let landFactory: (LandID) -> LandDefinition<State>
     private let initialStateFactory: (LandID) -> State
     private let servicesFactory: (LandID, [String: String]) -> LandServices
@@ -189,6 +202,11 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// its destruction gets a fresh instance, created once that destruction has finished. A
     /// creation that throws is not cached; the next call starts a new one.
     ///
+    /// The wait for the previous instance's destruction is bounded (`landDrainWaitTimeout`): if
+    /// its finalize hangs, the creation fails with `JoinError.landShuttingDown` and the ID stays
+    /// joinable once the destruction finishes. After `shutdownAllLands` started, a call that
+    /// would create a land throws `JoinError.landShuttingDown`.
+    ///
     /// - Returns: The LandContainer for the land (internal implementation detail, users should use LandManager methods instead).
     /// - Throws: When keeperModeResolver returns .reevaluation but the record file cannot be loaded.
     ///   A caller that is cancelled stops waiting with `CancellationError`; the creation goes on
@@ -201,6 +219,10 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     ) async throws -> LandContainer<State> {
         if let existing = lands[landID], !existing.keeper.isDraining {
             return existing
+        }
+        guard !isShuttingDown else { throw JoinError.landShuttingDown }
+        if creations.inFlight(landID) != nil {
+            creationJoins += 1
         }
         // Reserve the creation before the first await (CLAUDE.md, "Actor reentrancy").
         let creation = creations.flight(for: landID) { token in
@@ -227,12 +249,16 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         token: SingleFlight<LandID, Container>.Token
     ) async throws -> Container {
         do {
-            // The stored instance is draining: let its destruction finish first, so its
-            // finalize (OnFinalize, AfterFinalize, persistence) never overlaps the new
-            // instance's initialize for the same LandID. Epoch removal alone prevents only the
-            // map ABA, not this overlap.
-            if let stored = lands[landID], stored.keeper.isDraining {
-                await stored.keeper.waitUntilDrained()
+            // A previous instance is draining (stored, or removed by ID): let its destruction
+            // finish first, so its finalize (OnFinalize, AfterFinalize, persistence) never
+            // overlaps the new instance's initialize for the same LandID. Epoch removal alone
+            // prevents only the map ABA, not this overlap.
+            let previous = drainingInstances(of: landID)
+            if !previous.isEmpty {
+                if let drainWaitHook {
+                    await drainWaitHook(landID)
+                }
+                try await waitForDrains(of: previous, landID: landID)
             }
             if let creationHook {
                 await creationHook(landID)
@@ -260,6 +286,40 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         }
     }
 
+    /// The previous instances of `landID` whose destruction is in progress: the stored one if it
+    /// is draining, and detached ones that are draining. A detached instance that is not
+    /// draining still has players; nothing waits for it.
+    private func drainingInstances(of landID: LandID) -> [LandKeeper<State>] {
+        var keepers: [LandKeeper<State>] = []
+        if let stored = lands[landID], stored.keeper.isDraining {
+            keepers.append(stored.keeper)
+        }
+        if let entries = detached[landID] {
+            for entry in entries.values {
+                if let keeper = entry.keeper, keeper.isDraining {
+                    keepers.append(keeper)
+                }
+            }
+        }
+        return keepers
+    }
+
+    /// Waits for every keeper's destruction within one `drainWaitTimeout`.
+    /// - Throws: `JoinError.landShuttingDown` on timeout; `CancellationError` when cancelled.
+    private func waitForDrains(of keepers: [LandKeeper<State>], landID: LandID) async throws {
+        let deadline = ContinuousClock.now + drainWaitTimeout
+        for keeper in keepers {
+            let remaining = deadline - ContinuousClock.now
+            if await waitUntilDrained(keeper, timeout: remaining) { continue }
+            try Task.checkCancellation()
+            logger.warning("Previous land instance did not finish its destruction in time", metadata: [
+                "landID": .string(landID.stringValue),
+                "timeout": .stringConvertible(drainWaitTimeout),
+            ])
+            throw JoinError.landShuttingDown
+        }
+    }
+
     /// Builds a land instance (keeper, adapter, transport wiring) without publishing it.
     private func buildLand(
         landID: LandID,
@@ -267,7 +327,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         initialState: State,
         metadata: [String: String]
     ) async throws -> Container {
-        let epoch = epochs.advance(landID)
+        let epoch = epochs.next()
         let landDefinition = definition
         let initial = initialState
 
@@ -428,7 +488,13 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// Remove a land from the manager.
     ///
     /// - Parameter landID: The unique identifier for the land to remove.
+    /// Removes by ID, whatever instance is stored (admin). The removed instance stays known as
+    /// detached until its own `onLandDestroyed` runs, so a later creation for the ID still waits
+    /// for its destruction if it is draining.
     public func removeLand(landID: LandID) async {
+        if let stored = lands[landID] {
+            detached[landID, default: [:]][stored.epoch] = DetachedKeeper(stored.keeper)
+        }
         removeStoredLand(landID: landID)
     }
 
@@ -436,13 +502,14 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         lands.removeValue(forKey: landID)
         landCreatedAt.removeValue(forKey: landID)
         landMetadata.removeValue(forKey: landID)
-        epochs.remove(landID)
         logger.info("Removed land: \(landID.stringValue)")
     }
 
     /// Removes the instance with `epoch` only. A destroyed instance's callback can run after a
     /// newer instance was stored under the same ID (the old one was draining); that one stays.
     func removeLand(landID: LandID, epoch: Epoch) async {
+        // Its destruction is over: a detached instance needs no more waiting for.
+        dropDetached(landID: landID, epoch: epoch)
         guard let stored = lands[landID], stored.epoch == epoch else {
             logger.debug("Destroyed land instance already replaced", metadata: [
                 "landID": .string(landID.stringValue),
@@ -454,9 +521,37 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         removeStoredLand(landID: landID)
     }
 
+    private func dropDetached(landID: LandID, epoch: Epoch) {
+        guard var entries = detached[landID] else { return }
+        entries.removeValue(forKey: epoch)
+        // Instances already released need no tracking either.
+        entries = entries.filter { $0.value.keeper != nil }
+        detached[landID] = entries.isEmpty ? nil : entries
+    }
+
     /// Installs the creation hook (tests).
     func setCreationHook(_ hook: (@Sendable (LandID) async -> Void)?) {
         creationHook = hook
+    }
+
+    /// Installs the drain-wait hook (tests).
+    func setDrainWaitHook(_ hook: (@Sendable (LandID) async -> Void)?) {
+        drainWaitHook = hook
+    }
+
+    /// Sets the bound on waiting for a previous instance's destruction (tests).
+    func setDrainWaitTimeout(_ timeout: Duration) {
+        drainWaitTimeout = timeout
+    }
+
+    /// Calls that joined a creation already in flight (tests).
+    func creationJoinCount() -> Int {
+        creationJoins
+    }
+
+    /// Whether `shutdownAllLands` started (tests).
+    func isShutdownStarted() -> Bool {
+        isShuttingDown
     }
 
     /// Creations in progress (tests).
@@ -466,10 +561,16 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
 
     /// Force shutdown all active lands.
     /// Intended for benchmarks or test harnesses that need to end quickly.
+    ///
+    /// Creations are rejected from the start (`JoinError.landShuttingDown`); creations already in
+    /// progress finish or fail first, so every land they publish is shut down too.
     public func shutdownAllLands() async {
-        // Creations in progress finish (or fail) first, so their lands are shut down too.
-        for creation in creations.cancelAll() {
-            _ = try? await creation.value
+        // Before the first await: no creation starts after this point.
+        isShuttingDown = true
+        while creations.count > 0 {
+            for creation in creations.cancelAll() {
+                _ = try? await creation.value
+            }
         }
         let containers = Array(lands.values)
         await withTaskGroup(of: Void.self) { group in
@@ -529,3 +630,88 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
 /// This typealias provides backward compatibility while `LandContainer` is now
 /// a nested type within `LandManager`.
 public typealias LandContainer<State: StateNodeProtocol> = LandManager<State>.Container
+
+/// The bound on waiting for a previous instance's destruction before a recreate fails
+/// (`LandManager.getOrCreateLand`). Long enough for slow persistence in `AfterFinalize`.
+let landDrainWaitTimeout: Duration = .seconds(30)
+
+/// An instance removed by ID, held weakly: a released keeper has nothing left to wait for.
+private struct DetachedKeeper<State: StateNodeProtocol>: @unchecked Sendable {
+    weak var keeper: LandKeeper<State>?
+
+    init(_ keeper: LandKeeper<State>) {
+        self.keeper = keeper
+    }
+}
+
+/// Waits for `keeper`'s destruction for at most `timeout`. Returns false on timeout or when the
+/// calling task is cancelled; the destruction itself is never cancelled.
+private func waitUntilDrained<State: StateNodeProtocol>(
+    _ keeper: LandKeeper<State>,
+    timeout: Duration
+) async -> Bool {
+    // A spent budget (several previous instances) waits no longer.
+    let timeout = max(timeout, .zero)
+    let outcome = DrainWaitOutcome()
+    return await withTaskCancellationHandler {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            guard outcome.install(continuation) else { return }
+            let timer = Task {
+                try? await safeTaskSleep(for: timeout)
+                outcome.resume(false)
+            }
+            outcome.setTimer(timer)
+            Task {
+                await keeper.waitUntilDrained()
+                outcome.resume(true)
+            }
+        }
+    } onCancel: {
+        outcome.resume(false)
+    }
+}
+
+/// The result of one bounded drain wait, delivered exactly once.
+private final class DrainWaitOutcome: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+    private var timer: Task<Void, Never>?
+    private var result: Bool?
+
+    /// Stores the continuation, or resumes it at once if the outcome is already known.
+    func install(_ continuation: CheckedContinuation<Bool, Never>) -> Bool {
+        lock.lock()
+        if let result {
+            lock.unlock()
+            continuation.resume(returning: result)
+            return false
+        }
+        self.continuation = continuation
+        lock.unlock()
+        return true
+    }
+
+    func setTimer(_ timer: Task<Void, Never>) {
+        lock.lock()
+        let finished = result != nil
+        if !finished { self.timer = timer }
+        lock.unlock()
+        if finished { timer.cancel() }
+    }
+
+    func resume(_ value: Bool) {
+        lock.lock()
+        guard result == nil else {
+            lock.unlock()
+            return
+        }
+        result = value
+        let continuation = self.continuation
+        let timer = self.timer
+        self.continuation = nil
+        self.timer = nil
+        lock.unlock()
+        timer?.cancel()
+        continuation?.resume(returning: value)
+    }
+}

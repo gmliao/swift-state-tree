@@ -319,6 +319,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     func setDrainHook(_ hook: (@Sendable () async -> Void)?) {
         drainHook = hook
     }
+
+    /// Test hook: awaited in both `join` variants after their checks and before the player
+    /// insert, so a test can start a destruction while a join is suspended there.
+    private var joinHook: (@Sendable () async -> Void)?
+
+    /// Installs the join hook (tests).
+    func setJoinHook(_ hook: (@Sendable () async -> Void)?) {
+        joinHook = hook
+    }
     private var initializationTask: Task<Void, Never>?
     private var didInitialize = false
 
@@ -910,6 +919,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         services: LandServices = LandServices()
     ) async throws {
         await ensureInitialized()
+        if let joinHook {
+            await joinHook()
+        }
         // Check for duplicate playerID login (Kick Old strategy)
         if let existingSession = players[playerID], let oldClientID = existingSession.clientID {
             logger.info("Duplicate playerID login detected: \(playerID.rawValue), kicking old client: \(oldClientID.rawValue)")
@@ -1058,6 +1070,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
         }
 
+        if let joinHook {
+            await joinHook()
+        }
         // Check for duplicate playerID login (Kick Old strategy)
         if let existingSession = players[playerID], let oldClientID = existingSession.clientID {
             logger.info("Duplicate playerID login detected: \(playerID.rawValue), kicking old client: \(oldClientID.rawValue)")

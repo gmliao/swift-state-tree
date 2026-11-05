@@ -108,6 +108,29 @@ private func concurrentCreations(
     }
 }
 
+/// Waits until `count` calls joined the creation in flight, so every call is known to share it
+/// before the test releases it.
+private func waitForCreationJoins(
+    _ count: Int,
+    manager: LandManager<SingleFlightTestState>
+) async -> Bool {
+    await pollUntilAsync { await manager.creationJoinCount() >= count }
+}
+
+/// Whether `error` is `JoinError.landShuttingDown`.
+private func isLandShuttingDown(_ error: Error) -> Bool {
+    if case .landShuttingDown? = error as? JoinError { return true }
+    return false
+}
+
+/// A gate that is open from the start: it only counts arrivals (a "this point was reached"
+/// signal for hooks that must not block).
+private func signal() -> TestGate {
+    let gate = TestGate()
+    gate.open()
+    return gate
+}
+
 /// The record file layout `JSONReevaluationSource` reads.
 private struct SingleFlightRecordFile: Codable {
     let recordMetadata: ReevaluationRecordMetadata
@@ -175,8 +198,8 @@ struct LandManagerSingleFlightTests {
 
         let calls = concurrentCreations(8, manager: manager, landID: landID)
         #expect(await gate.waitForArrivals(1))
-        // Give the other seven calls time to reach the manager while the first creation is held.
-        try await Task.sleep(for: .milliseconds(100))
+        // The other seven calls joined the held creation.
+        #expect(await waitForCreationJoins(7, manager: manager))
         let creationsStarted = gate.arrivalCount
         gate.open()
         var containers: [LandContainer<SingleFlightTestState>] = []
@@ -204,7 +227,7 @@ struct LandManagerSingleFlightTests {
 
         let calls = concurrentCreations(2, manager: manager, landID: landID)
         #expect(await gate.waitForArrivals(1))
-        try await Task.sleep(for: .milliseconds(100))
+        #expect(await waitForCreationJoins(1, manager: manager))
         let creationsStarted = gate.arrivalCount
         gate.open()
         let first = try await calls[0].value
@@ -225,7 +248,8 @@ struct LandManagerSingleFlightTests {
 
         let calls = concurrentCreations(3, manager: manager, landID: landID)
         #expect(await gate.waitForArrivals(1))
-        try await Task.sleep(for: .milliseconds(50))
+        // All three callers wait on the held creation before it fails.
+        #expect(await waitForCreationJoins(2, manager: manager))
         gate.open()
         for call in calls {
             await #expect(throws: ReevaluationReplayError.self) { _ = try await call.value }
@@ -248,7 +272,7 @@ struct LandManagerSingleFlightTests {
 
         let calls = concurrentCreations(2, manager: manager, landID: landID)
         #expect(await gate.waitForArrivals(1))
-        try await Task.sleep(for: .milliseconds(50))
+        #expect(await waitForCreationJoins(1, manager: manager))
         calls[0].cancel()
         await #expect(throws: CancellationError.self) { _ = try await calls[0].value }
 
@@ -264,6 +288,8 @@ struct LandManagerSingleFlightTests {
         let drainGate = TestGate()
         let landID = LandID(landType: "sf-game", instanceId: "reused-a")
         let manager = makeManager()
+        let reachedWait = signal()
+        await manager.setDrainWaitHook { _ in await reachedWait.arrive() }
         let old = try await manager.getOrCreateLand(
             landID: landID,
             definition: oldInstanceLand(landID, log: log, afterFinalizeGate: nil),
@@ -288,7 +314,9 @@ struct LandManagerSingleFlightTests {
                 metadata: [:]
             )
         }
-        try await Task.sleep(for: .milliseconds(100))
+        // The recreate reached the drain wait while the drain is held, so the ordering below
+        // proves it waited.
+        #expect(await reachedWait.waitForArrivals(1))
         #expect(!log.events.contains("new-initialize"), "the new instance initialized during the old one's drain")
 
         drainGate.open()
@@ -305,12 +333,14 @@ struct LandManagerSingleFlightTests {
         #expect(ObjectIdentifier(stored.keeper) == ObjectIdentifier(fresh.keeper))
     }
 
-    @Test("A recreate during a drain held in AfterFinalize gets a new instance that the old one's removal keeps")
+    @Test("A recreate during a drain held in AfterFinalize gets a new instance, published after the old one's removal")
     func destroyAndRecreateKeepTheNewInstance() async throws {
         let log = LifecycleLog()
         let afterFinalizeGate = TestGate()
         let landID = LandID(landType: "sf-game", instanceId: "reused-b")
         let manager = makeManager()
+        let reachedWait = signal()
+        await manager.setDrainWaitHook { _ in await reachedWait.arrive() }
         let old = try await manager.getOrCreateLand(
             landID: landID,
             definition: oldInstanceLand(landID, log: log, afterFinalizeGate: afterFinalizeGate),
@@ -335,15 +365,15 @@ struct LandManagerSingleFlightTests {
                 metadata: [:]
             )
         }
-        try await Task.sleep(for: .milliseconds(100))
+        #expect(await reachedWait.waitForArrivals(1))
         afterFinalizeGate.open()
         await destruction.value
         let fresh = try await recreate.value
 
         #expect(ObjectIdentifier(fresh.keeper) != ObjectIdentifier(old.keeper))
         #expect(fresh.epoch != old.epoch)
-        // The old instance's removal ran: the new one stays stored.
-        try await Task.sleep(for: .milliseconds(50))
+        // The drain, the old instance's removal included, finished before the new one was
+        // published: the new one stays stored.
         let stored = try #require(await manager.getLand(landID: landID), "the new instance was removed")
         #expect(ObjectIdentifier(stored.keeper) == ObjectIdentifier(fresh.keeper))
     }
@@ -356,6 +386,203 @@ struct LandManagerSingleFlightTests {
         await container.keeper.forceShutdown()
         let removed = await pollUntilAsync { await manager.getLand(landID: landID) == nil }
         #expect(removed)
+    }
+
+    @Test("Removal by an older epoch leaves the newer instance stored")
+    func olderEpochRemovalKeepsTheNewerInstance() async throws {
+        let manager = makeManager()
+        let landID = LandID(landType: "sf-game", instanceId: "epochs")
+        let old = try await concurrentCreations(1, manager: manager, landID: landID)[0].value
+        await manager.removeLand(landID: landID)
+        let fresh = try await concurrentCreations(1, manager: manager, landID: landID)[0].value
+        #expect(fresh.epoch != old.epoch)
+
+        await manager.removeLand(landID: landID, epoch: old.epoch)
+        let stored = try #require(await manager.getLand(landID: landID), "the older epoch removed the newer instance")
+        #expect(ObjectIdentifier(stored.keeper) == ObjectIdentifier(fresh.keeper))
+
+        await manager.removeLand(landID: landID, epoch: fresh.epoch)
+        #expect(await manager.getLand(landID: landID) == nil)
+    }
+
+    @Test("An instance removed by ID while live keeps the newer instance stored when it is destroyed later")
+    func adminRemovedLiveInstanceKeepsTheNewerOne() async throws {
+        let manager = makeManager()
+        let landID = LandID(landType: "sf-game", instanceId: "admin-live")
+        let old = try await concurrentCreations(1, manager: manager, landID: landID)[0].value
+        try await old.keeper.join(playerID: PlayerID("p"), clientID: ClientID("c"), sessionID: SessionID("s"))
+        await manager.removeLand(landID: landID)
+
+        // The old instance still has a player, so the recreate does not wait for it.
+        let fresh = try await concurrentCreations(1, manager: manager, landID: landID)[0].value
+        // Its destruction runs now, and its callback meets the newer instance.
+        await old.keeper.forceShutdown()
+
+        let stored = try #require(await manager.getLand(landID: landID), "the old instance's callback removed the newer one")
+        #expect(ObjectIdentifier(stored.keeper) == ObjectIdentifier(fresh.keeper))
+    }
+
+    @Test("A recreate after an admin removal of a draining instance still waits for its drain")
+    func recreateWaitsForAdminRemovedDrain() async throws {
+        let log = LifecycleLog()
+        let drainGate = TestGate()
+        let landID = LandID(landType: "sf-game", instanceId: "admin-draining")
+        let manager = makeManager()
+        let reachedWait = signal()
+        await manager.setDrainWaitHook { _ in await reachedWait.arrive() }
+        let old = try await manager.getOrCreateLand(
+            landID: landID,
+            definition: oldInstanceLand(landID, log: log, afterFinalizeGate: nil),
+            initialState: SingleFlightTestState(),
+            metadata: [:]
+        )
+        await old.keeper.setDrainHook { await drainGate.arrive() }
+        let destruction = Task { await old.keeper.forceShutdown() }
+        #expect(await drainGate.waitForArrivals(1))
+
+        // The admin removes it by ID mid-drain: the manager no longer stores it.
+        await manager.removeLand(landID: landID)
+        #expect(await manager.getLand(landID: landID) == nil)
+
+        let recreate = Task {
+            try await manager.getOrCreateLand(
+                landID: landID,
+                definition: newInstanceLand(landID, log: log),
+                initialState: SingleFlightTestState(),
+                metadata: [:]
+            )
+        }
+        #expect(await reachedWait.waitForArrivals(1), "the recreate did not wait for the detached drain")
+        #expect(!log.events.contains("new-initialize"))
+
+        drainGate.open()
+        await destruction.value
+        let fresh = try await recreate.value
+        #expect(await pollUntil { log.events.contains("new-initialize") })
+        #expect(log.isOrdered("old-finalize", before: "new-initialize"), "events: \(log.events)")
+        let stored = try #require(await manager.getLand(landID: landID))
+        #expect(ObjectIdentifier(stored.keeper) == ObjectIdentifier(fresh.keeper))
+    }
+
+    @Test("A drain held past the bound fails the recreate with landShuttingDown, and a later join succeeds")
+    func boundedDrainWait() async throws {
+        let drainGate = TestGate()
+        let landID = LandID(landType: "sf-game", instanceId: "hung-finalize")
+        let manager = makeManager()
+        await manager.setDrainWaitTimeout(.milliseconds(200))
+        let old = try await concurrentCreations(1, manager: manager, landID: landID)[0].value
+        await old.keeper.setDrainHook { await drainGate.arrive() }
+        let destruction = Task { await old.keeper.forceShutdown() }
+        #expect(await drainGate.waitForArrivals(1))
+
+        do {
+            _ = try await concurrentCreations(1, manager: manager, landID: landID)[0].value
+            Issue.record("the recreate did not time out")
+        } catch {
+            #expect(isLandShuttingDown(error), "unexpected error: \(error)")
+        }
+        // The failure is not cached.
+        #expect(await manager.creationsInFlight() == 0)
+
+        drainGate.open()
+        await destruction.value
+        let fresh = try await concurrentCreations(1, manager: manager, landID: landID)[0].value
+        #expect(ObjectIdentifier(fresh.keeper) != ObjectIdentifier(old.keeper))
+    }
+
+    @Test("shutdownAllLands rejects creations during its awaits and shuts down what its flights published")
+    func shutdownRejectsNewCreations() async throws {
+        let manager = makeManager()
+        let gate = TestGate()
+        await manager.setCreationHook { _ in await gate.arrive() }
+        let held = LandID(landType: "sf-game", instanceId: "held")
+        let late = LandID(landType: "sf-game", instanceId: "late")
+
+        let heldCall = concurrentCreations(1, manager: manager, landID: held)[0]
+        #expect(await gate.waitForArrivals(1))
+        let shutdown = Task { await manager.shutdownAllLands() }
+        #expect(await pollUntilAsync { await manager.isShutdownStarted() })
+        // The shutdown is awaiting the held creation: a new creation is rejected.
+        do {
+            _ = try await concurrentCreations(1, manager: manager, landID: late)[0].value
+            Issue.record("a creation started during the shutdown")
+        } catch {
+            #expect(isLandShuttingDown(error), "unexpected error: \(error)")
+        }
+        #expect(gate.arrivalCount == 1, "a creation started during the shutdown")
+
+        gate.open()
+        let heldResult = await heldCall.result
+        await shutdown.value
+        #expect(await manager.creationsInFlight() == 0)
+        #expect(await manager.getLand(landID: late) == nil)
+        switch heldResult {
+        case .success(let container):
+            #expect(container.keeper.isDraining, "the held creation's land was published but not shut down")
+        case .failure:
+            #expect(await manager.getLand(landID: held) == nil)
+        }
+    }
+
+    @Test("A second destruction caller waits for the one in progress; the destruction runs once")
+    func secondShutdownWaitsForTheFirst() async throws {
+        let log = LifecycleLog()
+        let drainGate = TestGate()
+        let landID = LandID(landType: "sf-game", instanceId: "twice")
+        let manager = makeManager()
+        let old = try await manager.getOrCreateLand(
+            landID: landID,
+            definition: oldInstanceLand(landID, log: log, afterFinalizeGate: nil),
+            initialState: SingleFlightTestState(),
+            metadata: [:]
+        )
+        await old.keeper.setDrainHook { await drainGate.arrive() }
+        let first = Task { await old.keeper.forceShutdown() }
+        #expect(await drainGate.waitForArrivals(1))
+        let second = Task {
+            await old.keeper.forceShutdown()
+            log.record("second-returned")
+        }
+
+        drainGate.open()
+        await first.value
+        await second.value
+        #expect(drainGate.arrivalCount == 1, "the destruction ran \(drainGate.arrivalCount) times")
+        #expect(log.events.filter { $0 == "old-finalize" }.count == 1, "events: \(log.events)")
+        #expect(log.isOrdered("old-afterFinalize-end", before: "second-returned"), "events: \(log.events)")
+    }
+
+    @Test("A join suspended before its insert when the destruction starts is rejected")
+    func joinSuspendedBeforeInsertIsRejected() async throws {
+        let manager = makeManager()
+        let landID = LandID(landType: "sf-game", instanceId: "join-vs-drain")
+        let container = try await concurrentCreations(1, manager: manager, landID: landID)[0].value
+        let joinGate = TestGate()
+        await container.keeper.setJoinHook { await joinGate.arrive() }
+
+        let join = Task {
+            try await container.keeper.join(playerID: PlayerID("p"), clientID: ClientID("c"), sessionID: SessionID("s"))
+        }
+        #expect(await joinGate.waitForArrivals(1))
+        // The land is still empty: the destruction starts and finishes while the join waits.
+        await container.keeper.forceShutdown()
+        #expect(container.keeper.isDraining)
+
+        joinGate.open()
+        do {
+            try await join.value
+            Issue.record("the join reached a destroyed keeper")
+        } catch {
+            #expect(isLandShuttingDown(error), "unexpected error: \(error)")
+        }
+        #expect(await container.keeper.playerCount() == 0)
+    }
+
+    @Test("landShuttingDown is answered with a retryable JOIN_DENIED")
+    func landShuttingDownMapsToJoinDenied() {
+        let (code, message) = LandRouter<SingleFlightTestState>.joinErrorResponse(.landShuttingDown)
+        #expect(code == .joinDenied)
+        #expect(message.contains("retry"))
     }
 }
 

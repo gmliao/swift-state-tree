@@ -152,35 +152,16 @@ public struct Epoch: Hashable, Comparable, Sendable, CustomStringConvertible {
     public var description: String { "epoch \(rawValue)" }
 }
 
-/// The current epoch per key. Every `advance(_:)` returns a value never handed out before by
-/// this counter (for any key), so an older owner can tell it has been replaced, also after the
-/// key was removed and started again.
-public struct EpochCounter<Key: Hashable & Sendable>: Sendable {
-    private var current: [Key: Epoch] = [:]
+/// Mints epochs. Every `next()` returns a value never handed out before by this counter, so an
+/// older owner can tell it has been replaced, also after its key was removed and started again.
+public struct EpochCounter: Sendable {
     private var last: UInt64 = 0
 
     public init() {}
 
-    /// Starts a new epoch for `key` and returns it.
-    public mutating func advance(_ key: Key) -> Epoch {
+    /// A new epoch, greater than every epoch minted before.
+    public mutating func next() -> Epoch {
         last += 1
-        let next = Epoch(rawValue: last)
-        current[key] = next
-        return next
-    }
-
-    /// Forgets `key` (its owner is gone). No later epoch equals the removed one.
-    public mutating func remove(_ key: Key) {
-        current.removeValue(forKey: key)
-    }
-
-    /// The latest epoch for `key`, if one was started.
-    public func current(_ key: Key) -> Epoch? {
-        current[key]
-    }
-
-    /// Whether `epoch` is still the latest one for `key`.
-    public func isCurrent(_ epoch: Epoch, for key: Key) -> Bool {
-        current[key] == epoch
+        return Epoch(rawValue: last)
     }
 }
