@@ -47,6 +47,10 @@ let keeper = LandKeeper(
 3. 用相同的輸入執行 handlers
 4. 每個 tick 後比對 state hash
 
+Input 在其 handler 執行前就被錄製，因此 handler 拋出錯誤的 input 也會依序出現在錄製中；replay 會再執行它，並以相同方式失敗。
+
+> **目前僅限 tick land（#167）。** 沒有 tick handler 的 land 錄製正確，但 replay 不會載入它錄製的 input，因此逐步執行時什麼都不會套用。Replay 的忠實度（重新套用錄製的 input、比對 hash 與 server event）目前只對有 `Tick` 的 land 成立。
+
 ```swift
 let keeper = LandKeeper(
     definition: myLand,
@@ -159,6 +163,23 @@ await client.sendAction("resumeVerification", {});
 當 `enableLiveStateHashRecording: true` 時，伺服器也會記錄每 tick 的 server events（`ctx.emitEvent()`）。在帶 `--verify` 的 reevaluation 中，runner 會比對錄製與發送的 server events。若 mismatch 表示 event 發送有非決定性（例如順序或 payload 差異）。
 
 Action、client event、lifecycle event 與 server event 共用同一個 `sequence` 計數器。有 tick 的 Land 在 live 模式下，每個 tick 會在 tick frame 記下該計數器的兩個 watermark（`sequenceBeforeInputs`、`sequenceBeforeTickHandler`）；reevaluation 時把計數器往前推到這兩個值，因此重播的 server event 會拿到與錄製相同的 `sequence`。比對以 tick 為單位判定：frame 帶有 watermark 的 tick 必須完全一致（包含 `sequence`），且即使錄製的事件清單為空也會比對，因此重播多出的 event 會被回報。沒有 watermark 的舊格式錄製維持原規則：只有錄到事件時才比對，僅 `sequence` 不同時回報為警告而非失敗（`ReevaluationEngine.RunResult.serverEventVerification`）。
+
+### Sync Output 驗證
+
+每個 commit 的 sync plan 會依 scope（broadcast scope 與每位玩家的 scope）錄製其 canonical patch list 的 hash，以及隨之送出的 event。不比對編碼後的位元組：dynamic-key slot、frame 順序與 wire encoding 都不是 canonical 的。Replay 以餵入 replay 狀態的 shadow sync engine 重新規劃每個錄製的 sync output，並比對 hash（不符時 `ReevaluationRunner --verify` 以 exit code 8 結束）。
+
+它能抓到：
+
+- dirty tracking 漏標：live plan 只擷取 dirty 欄位，shadow 擷取全部，因此 live 沒標記到的變更欄位會顯示為缺少的 patch；
+- 進入 sync phase 的內容（狀態、成員、event 佇列）不具決定性；
+- cache 管理：live 執行 stage、unstage 或重設 cache 的方式與其 plan commit 的內容不同（key-scope 重設、recovery plan）；
+- event 消耗：event 被消耗兩次、略過或順序錯亂（opcode 107 模式）。
+
+另有 patch-apply oracle：把每個 scope 的 patch 套用到參考 client view，與 replay 狀態中該 scope 的 view 比對，可抓到 diff 在 snapshot 正確時仍產生錯誤、缺少或多餘 patch 的情況。
+
+它無法證明的：live 與 shadow 執行相同的 `SyncEngine` 擷取與相同的 policy filter，因此 filter 錯誤顯示或隱藏的欄位，兩邊與預期 view 都一樣是錯的。它驗證的是 sync phase 具決定性、且與自身的 projection 一致，而不是 projection 本身正確。
+
+診斷用：`REEVALUATION_RECORD_SYNC_DETAILS=true` 會錄製每位 commit 玩家的 hash，讓 per-player 不符時能指出是哪位玩家；`REEVALUATION_RECORD_SYNC_PATCHES=true` 會錄製每個 scope 的 canonical patch list，讓不符時能指出第一個不同的 path。兩者預設關閉；patch list 與 state update 一樣大，只適合短時間執行。
 
 ### 欄位級 State Diff（Debug 用）
 

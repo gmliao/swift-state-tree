@@ -19,6 +19,29 @@ StateTree 同步依賴 `@Sync` + `SyncPolicy`，由 SyncEngine 產生 snapshot/d
 - `.masked((Value) -> Value)`：同型別遮罩（所有玩家看到相同遮罩值）
 - `.custom((PlayerID, Value) -> Value?)`：完全自定義
 
+### Filter 看得到什麼
+
+`.perPlayer` filter 只會收到該欄位的值與玩家 ID，無法讀取狀態的其他欄位、land 或 service。Filter 也必須是這兩個參數的純函式，因為每次同步都會對每位玩家執行。當可見性取決於其他狀態（位置、隊伍、戰爭迷霧）時，請在該狀態改變的地方計算（通常是 tick 或 handler），並存放在資料旁邊，讓 filter 讀得到：
+
+```swift
+@StateNodeBuilder
+struct Entity: StateNodeProtocol {
+    @Sync(.broadcast) var position: Position2 = Position2(x: 0, y: 0)
+    @Sync(.serverOnly) var visibleTo: [PlayerID] = []  // 由 tick 設定，不會送出
+}
+
+@StateNodeBuilder
+struct ArenaState: StateNodeProtocol {
+    // 每位玩家只會收到 visibleTo 包含自己的 entity。
+    @Sync(.perPlayer({ (entities: [String: Entity], playerID: PlayerID) in
+        entities.filter { $0.value.visibleTo.contains(playerID) }
+    }))
+    var entities: [String: Entity] = [:]
+}
+```
+
+Filter 從收到的值讀取 `visibleTo`，而 `visibleTo` 本身留在 server 上。GameDemo 的 visibility-test land（`VisibilityTestLand.swift`）是完整範例。
+
 ### 巢狀 State Node
 
 State node 不論位於何處，都套用其欄位自身的 policy：作為欄位、在 optional 中、在 array 中，或作為 `[String: X]`、`[PlayerID: X]` map 的值，任何深度皆然。每個 client 只會收到這些 policy 允許的內容，因此 per-player 的可見性可以放在 map 的值裡：

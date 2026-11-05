@@ -170,6 +170,18 @@ sequenceDiagram
     Adapter-->>Client: 回傳 Response
 ```
 
+### Input 與 Turn
+
+Handler（action、client event、lifecycle、`Tick`）都是同步的：`(inout State, …, LandContext) throws`。狀態只在 handler 內改變，一次一個 input，依 keeper 套用的順序，而 reevaluation 錄製保留的正是這個順序。Handler 不能 await。非同步工作（讀資料庫、呼叫其他服務）請放在 resolver：resolver 在 handler 之前、turn 之外執行，其輸出透過 `ctx` 交給 handler 並被錄製，因此 replay 會重用輸出，而不是再呼叫一次服務。見 [Resolver 機制](resolver.zh-TW.md)。
+
+Handler 拋出錯誤的 input 單獨失敗：
+
+- 呼叫者收到錯誤，其後的 input 在同一輪照常套用；
+- 它發出的 server event 會被丟棄；
+- `OnJoin` 拋出錯誤的 join 會被捨棄；
+- handler 在拋出前寫入狀態的內容會保留，下一次同步會送出（沒有逐 input 的 rollback，#87）；
+- 它和其他 input 一樣被錄製，因此 replay 會再執行它，並以相同方式失敗。
+
 ### Event Handler 流程
 
 Event handler 的流程類似，但沒有返回值：

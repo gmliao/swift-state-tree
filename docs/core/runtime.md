@@ -170,6 +170,18 @@ sequenceDiagram
     Adapter-->>Client: Return Response
 ```
 
+### Inputs and Turns
+
+Handlers (actions, client events, lifecycle, `Tick`) are synchronous: `(inout State, …, LandContext) throws`. State changes only inside them, one input at a time, in the order the keeper applied them, and that order is what the reevaluation record keeps. A handler cannot await. Async work (a database read, a call to another service) goes in a resolver: resolvers run before the handler, outside the turn, and their outputs reach the handler through `ctx` and are recorded, so replay reuses them instead of calling the service again. See [Resolver Mechanism](resolver.md).
+
+An input whose handler throws fails alone:
+
+- its caller gets the error, and the inputs after it are applied in the same pass;
+- the server events it emitted are dropped;
+- a join whose `OnJoin` throws is discarded;
+- what the handler wrote to the state before the throw stays, and the next sync sends it (there is no per-input rollback, #87);
+- it is recorded like any other input, so replay runs it again and it fails the same way.
+
 ### Event Handler Flow
 
 Event handler flow is similar, but has no return value:
