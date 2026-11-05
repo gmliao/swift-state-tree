@@ -125,7 +125,8 @@ while [[ $# -gt 0 ]]; do
       echo "          [--boundary clean|abrupt] [--allow-partial-ramp] [--run-id <id>]"
       echo "  --layout per-connection --connect burst: same topology and connect burst as the old tool;"
       echo "    phase boundaries still close cleanly, unlike the old tool's resets. Add --boundary abrupt"
-      echo "    to drop sockets at boundaries as the old tool did."
+      echo "    to drop sockets at boundaries without a close frame, as the old tool did"
+      echo "    (the server sees FIN or RST, depending on unread data)."
       exit 0
       ;;
     *)

@@ -12,23 +12,32 @@ export const CONNECT_MODES: readonly ConnectMode[] = ["ramp", "burst"];
  * How connections a phase no longer needs (and all connections at the end) are closed.
  * - `clean` (default): a close frame, waiting for the handshake.
  * - `abrupt`: the socket is dropped without a close frame, as the tool before the long-lived
- *   workers did when each phase's workers exited; the server sees a reset.
+ *   workers did when each phase's workers exited; the server sees FIN or RST, depending on
+ *   unread data.
  */
 export type BoundaryMode = "clean" | "abrupt";
 
 export const BOUNDARY_MODES: readonly BoundaryMode[] = ["clean", "abrupt"];
 
 /**
+ * Workers that open new connections in a phase. The ramp rate is split over these only, so the
+ * total stays at `--connect-rate` when a phase adds connections on just some workers. Both the
+ * scheduler (`connectDelaysMs`) and the ramp check (`rampDurationMs`) use this count.
+ */
+export function connectingWorkers(newPerWorker: number[]): number {
+    return newPerWorker.filter((n) => n > 0).length;
+}
+
+/**
  * The longest time any worker needs to open its new connections, in ms: the worker with the
- * most new connections opens them at `ratePerSecond / activeWorkers`. 0 in burst mode.
+ * most new connections opens them at `ratePerSecond / connectingWorkers`. 0 in burst mode.
  */
 export function rampDurationMs(newPerWorker: number[], mode: ConnectMode, ratePerSecond: number): number {
     if (mode === "burst") {
         return 0;
     }
-    const active = newPerWorker.filter((n) => n > 0).length;
     const most = Math.max(0, ...newPerWorker);
-    return (most * Math.max(active, 1) * 1000) / Math.max(ratePerSecond, 1);
+    return (most * Math.max(connectingWorkers(newPerWorker), 1) * 1000) / Math.max(ratePerSecond, 1);
 }
 
 /**
@@ -49,7 +58,8 @@ export function hash32(text: string): number {
 
 /**
  * Delay in ms before each of a worker's new connections opens, in the given order. With `ramp`,
- * this worker's share of the rate is `ratePerSecond / activeWorkers`; connection i opens in slot
+ * this worker's share of the rate is `ratePerSecond / connectingWorkers` (see `connectingWorkers`);
+ * connection i opens in slot
  * i with a jitter inside the slot derived from its key, so delays are increasing and
  * reproducible.
  */
@@ -57,12 +67,12 @@ export function connectDelaysMs(
     keys: string[],
     mode: ConnectMode,
     ratePerSecond: number,
-    activeWorkers: number
+    connectingWorkerCount: number
 ): number[] {
     if (mode === "burst" || keys.length === 0) {
         return keys.map(() => 0);
     }
-    const workerRate = Math.max(ratePerSecond, 1) / Math.max(activeWorkers, 1);
+    const workerRate = Math.max(ratePerSecond, 1) / Math.max(connectingWorkerCount, 1);
     const slotMs = 1000 / workerRate;
     return keys.map((key, i) => (i + hash32(key) / 0x1_0000_0000) * slotMs);
 }

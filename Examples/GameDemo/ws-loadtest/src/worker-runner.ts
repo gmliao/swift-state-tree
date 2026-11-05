@@ -18,7 +18,7 @@ export interface PhaseStartConfig {
     connectMode: ConnectMode;
     connectRatePerSecond: number;
     boundaryMode: BoundaryMode;
-    /** Workers opening connections in this phase; the ramp rate is shared between them. */
+    /** Workers opening new connections in this phase (`connectingWorkers`); they share the ramp rate. */
     activeWorkers: number;
     actionsPerSecond: number;
     durationSeconds: number;

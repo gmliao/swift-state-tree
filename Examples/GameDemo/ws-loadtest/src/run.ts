@@ -9,7 +9,7 @@ import type { CloseRecord } from "./worker";
 import type { WorkerPhaseReport } from "./worker-runner";
 import { makeRunId, planPhaseConnections, summarizeLayout } from "./layout";
 import type { ConnectionSpec, Layout, LayoutSummary } from "./layout";
-import { DEFAULT_CONNECT_RATE, rampDurationMs } from "./connect-schedule";
+import { DEFAULT_CONNECT_RATE, connectingWorkers, rampDurationMs } from "./connect-schedule";
 import type { BoundaryMode, ConnectMode } from "./connect-schedule";
 
 export interface WorkerReport {
@@ -161,7 +161,8 @@ export async function runScenario(filePath: string, options: RunOptions | number
     const scenario = loadScenario(filePath);
     const phases = buildPhases(scenario);
     const plans = phases.map((phase) => planPhaseConnections(phase.name, phase.config, workers, layout, runId));
-    const rampsMs = newConnectionsPerWorker(plans).map((perWorker) =>
+    const newPerWorker = newConnectionsPerWorker(plans);
+    const rampsMs = newPerWorker.map((perWorker) =>
         rampDurationMs(perWorker, connectMode, connectRatePerSecond)
     );
     const tooShort = phases
@@ -206,7 +207,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
         for (let p = 0; p < phases.length; p += 1) {
             const phase = phases[p];
             const plan = plans[p];
-            const activeWorkers = plan.filter((specs) => specs.length > 0).length;
+            const activeWorkers = connectingWorkers(newPerWorker[p]);
             const timeoutMs = (phase.config.durationSeconds + 60) * 1000;
             const reports = await Promise.all(
                 pool.map((worker, i) =>

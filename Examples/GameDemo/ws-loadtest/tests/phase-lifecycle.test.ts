@@ -165,4 +165,22 @@ describe("phase lifecycle against a stub server", () => {
         expect(pre.started).toBeLessThan(12);
         expect(pre.joinedAtEnd).toBeLessThan(12);
     }, 30_000);
+
+    it("a phase that adds rooms on one worker ramps at the full rate (20 → 21 rooms, 3 workers)", async () => {
+        connections.length = 0;
+        // 50/s: preflight's busiest worker (7 rooms × 5) needs 35 × 3 / 50 = 2.1 s of its 3 s.
+        const phase = (rooms: number, durationSeconds: number) => ({ durationSeconds, rooms, playersPerRoom: 5, actionsPerSecond: 0, verify: false });
+        const file = writeScenario({ preflight: phase(20, 3), steady: phase(21, 1), postflight: phase(21, 1) });
+        const result = await runScenario(file, { workers: 3, layout: "rooms", connectMode: "ramp", connectRatePerSecond: 50 });
+        const steady = result.phases[1];
+        expect(result.phases[0].connections).toMatchObject({ target: 100, started: 100, joinedAtEnd: 100 });
+        expect(steady.connections).toMatchObject({ opened: 5, reused: 100, started: 5, joinedAtEnd: 105 });
+        // 5 new connections on the one connecting worker at the full 50/s: 100 ms.
+        expect(result.runConfig.phases[1].rampMs).toBe(100);
+        // The worker's last connect delay is in the ramp's last 20 ms slot; with the rate split
+        // over all 3 workers it would be 240–300 ms.
+        expect(steady.connections.connectRampMs).toBeGreaterThanOrEqual(80);
+        expect(steady.connections.connectRampMs).toBeLessThanOrEqual(100);
+    }, 60_000);
 });
+
