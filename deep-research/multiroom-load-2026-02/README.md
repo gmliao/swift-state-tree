@@ -13,8 +13,8 @@ This folder was called `emse-artifacts/` until 2026-11-05. Links pinned to older
 |---|---|
 | `evidence-2026-02-06-nio-stage3-100-300-500/scalability-2026-02-06T14-24-28/` | ws-loadtest suite: `run-1..3` (+ logs), `summary.json`, `summary.html` |
 | `evidence-2026-02-06-nio-stage3-100-300-500/encoding-benchmark/` | EncodingBenchmark envelopes (metadata + results) for `json-object` and `messagepack-pathhash`, 5 players per room, 200 iterations, 2 ticks per sync |
-| `artifacts/` | Tables (`*.md`, `*.csv`) and an SVG figure generated from the envelopes |
-| `generate_tables.py` | Rebuilds `artifacts/` (stdlib only) |
+| `artifacts/` | Tables (`*.md`, `*.csv`) and an SVG figure for **10/30/50 rooms**, from the 2026-01-25 EncodingBenchmark run (MessagePack 4,572 / 13,612 / 22,713 B per sync). Those input envelopes are not in this folder. |
+| `generate_tables.py` | Builds those tables from two EncodingBenchmark envelopes (stdlib only). It keeps only 5 players per room at 10, 30 and 50 rooms. |
 
 ## Commands
 
@@ -22,13 +22,12 @@ This folder was called `emse-artifacts/` until 2026-11-05. Links pinned to older
 # Load test (as recorded in evidence-*/README.txt)
 cd Examples/GameDemo/ws-loadtest && bash scripts/run-scalability-test.sh --room-counts "100 300 500" --runs 3 --output-dir results
 
-# Rebuild the tables and figure
+# Tables from an EncodingBenchmark scalability run that includes 10/30/50 rooms
 cd deep-research/multiroom-load-2026-02
-E=evidence-2026-02-06-nio-stage3-100-300-500/encoding-benchmark
-python3 generate_tables.py --out-dir artifacts \
-  --json-object $E/scalability-matrix-json-object-ppr5-200iterations-tick2-2026-02-06T14-11-36Z.json \
-  --messagepack $E/scalability-matrix-messagepack-pathhash-ppr5-200iterations-tick2-2026-02-06T14-13-32Z.json
+python3 generate_tables.py --out-dir <dir> --json-object <json-object envelope> --messagepack <messagepack-pathhash envelope>
 ```
+
+The 2026-02-06 envelopes in `evidence-*/encoding-benchmark/` cover 100/300/500 rooms, so `generate_tables.py` produces empty tables from them (checked 2026-11-05). Read those envelopes directly. `../snapshot-baseline/` re-measures both room ranges at one commit with its own `regenerate.py --check`.
 
 ## Caveats
 
