@@ -93,6 +93,91 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
         self.encodeDropScopes = encodeDropScopes
         self.patches = patches
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case index, turnKind, observedTickId, streamIndex, sequence, broadcastHash, perPlayerHash
+        case perPlayerUnverified, perPlayerUncommitted, perPlayerHashes, eventsHash, eventsThroughSequence
+        case resetsKeyScopes, extractionDrops, encodeDropScopes, patches
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        index = try container.decode(Int.self, forKey: .index)
+        turnKind = try container.decode(TurnKind.self, forKey: .turnKind)
+        observedTickId = try container.decodeIfPresent(Int64.self, forKey: .observedTickId)
+        streamIndex = try container.decode(UInt64.self, forKey: .streamIndex)
+        sequence = try container.decode(Int64.self, forKey: .sequence)
+        broadcastHash = try container.decodeSyncHashIfPresent(forKey: .broadcastHash)
+        perPlayerHash = try container.decodeSyncHashIfPresent(forKey: .perPlayerHash)
+        perPlayerUnverified = try container.decodeIfPresent([String].self, forKey: .perPlayerUnverified)
+        perPlayerUncommitted = try container.decodeIfPresent([String].self, forKey: .perPlayerUncommitted)
+        perPlayerHashes = try container.decodeIfPresent([String: SyncHashCoding].self, forKey: .perPlayerHashes)?
+            .mapValues(\.value)
+        eventsHash = try container.decodeSyncHashIfPresent(forKey: .eventsHash)
+        eventsThroughSequence = try container.decodeIfPresent(Int64.self, forKey: .eventsThroughSequence)
+        resetsKeyScopes = try container.decodeIfPresent(Bool.self, forKey: .resetsKeyScopes)
+        extractionDrops = try container.decode([String: [String]].self, forKey: .extractionDrops)
+        encodeDropScopes = try container.decode([String].self, forKey: .encodeDropScopes)
+        patches = try container.decodeIfPresent([String: [StatePatch]].self, forKey: .patches)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(index, forKey: .index)
+        try container.encode(turnKind, forKey: .turnKind)
+        try container.encodeIfPresent(observedTickId, forKey: .observedTickId)
+        try container.encode(streamIndex, forKey: .streamIndex)
+        try container.encode(sequence, forKey: .sequence)
+        try container.encodeSyncHashIfPresent(broadcastHash, forKey: .broadcastHash)
+        try container.encodeSyncHashIfPresent(perPlayerHash, forKey: .perPlayerHash)
+        try container.encodeIfPresent(perPlayerUnverified, forKey: .perPlayerUnverified)
+        try container.encodeIfPresent(perPlayerUncommitted, forKey: .perPlayerUncommitted)
+        try container.encodeIfPresent(perPlayerHashes?.mapValues(SyncHashCoding.init), forKey: .perPlayerHashes)
+        try container.encodeSyncHashIfPresent(eventsHash, forKey: .eventsHash)
+        try container.encodeIfPresent(eventsThroughSequence, forKey: .eventsThroughSequence)
+        try container.encodeIfPresent(resetsKeyScopes, forKey: .resetsKeyScopes)
+        try container.encode(extractionDrops, forKey: .extractionDrops)
+        try container.encode(encodeDropScopes, forKey: .encodeDropScopes)
+        try container.encodeIfPresent(patches, forKey: .patches)
+    }
+}
+
+/// A sync hash in a record: written as 16 lowercase hex digits (like the state hashes), since
+/// JSON numbers above 2^53 do not survive JavaScript readers (the admin download, the CLI
+/// tools). Read from hex, or from a JSON number as 2.1 records wrote it.
+struct SyncHashCoding: Codable {
+    let value: UInt64
+
+    init(_ value: UInt64) { self.value = value }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let hex = try? container.decode(String.self) {
+            guard hex.count == 16, let value = UInt64(hex, radix: 16) else {
+                throw DecodingError.dataCorruptedError(in: container, debugDescription: "sync hash \(hex) is not 16 hex digits")
+            }
+            self.value = value
+        } else {
+            value = try container.decode(UInt64.self)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(DeterministicHash.toHex64(value))
+    }
+}
+
+extension KeyedDecodingContainer {
+    fileprivate func decodeSyncHashIfPresent(forKey key: Key) throws -> UInt64? {
+        try decodeIfPresent(SyncHashCoding.self, forKey: key)?.value
+    }
+}
+
+extension KeyedEncodingContainer {
+    fileprivate mutating func encodeSyncHashIfPresent(_ value: UInt64?, forKey key: Key) throws {
+        try encodeIfPresent(value.map(SyncHashCoding.init), forKey: key)
+    }
 }
 
 /// A point in the sync stream that is not an output.
@@ -160,7 +245,7 @@ public struct ReevaluationRecordedSyncMarker: Codable, Sendable, Equatable {
         streamIndex = try container.decode(UInt64.self, forKey: .streamIndex)
         sequence = try container.decode(Int64.self, forKey: .sequence)
         rejoin = try container.decode(Bool.self, forKey: .rejoin)
-        viewHash = try container.decodeIfPresent(UInt64.self, forKey: .viewHash)
+        viewHash = try container.decodeSyncHashIfPresent(forKey: .viewHash)
         viewDrops = try container.decodeIfPresent([ViewDrop].self, forKey: .viewDrops) ?? []
     }
 
@@ -172,7 +257,7 @@ public struct ReevaluationRecordedSyncMarker: Codable, Sendable, Equatable {
         try container.encode(streamIndex, forKey: .streamIndex)
         try container.encode(sequence, forKey: .sequence)
         try container.encode(rejoin, forKey: .rejoin)
-        try container.encodeIfPresent(viewHash, forKey: .viewHash)
+        try container.encodeSyncHashIfPresent(viewHash, forKey: .viewHash)
         if !viewDrops.isEmpty {
             try container.encode(viewDrops, forKey: .viewDrops)
         }
