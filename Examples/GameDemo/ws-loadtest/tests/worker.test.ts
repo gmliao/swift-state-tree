@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildActionMessage, buildJoinMessage, WorkerClient, WorkerSession } from "../src/worker";
+import { decodeMessage } from "../src/protocol";
 
 describe("worker helpers", () => {
     it("builds join message object", () => {
@@ -58,6 +59,14 @@ describe("worker helpers", () => {
         session.handleDecodedMessage({ type: "stateUpdate" }, 1000);
         session.handleDecodedMessage({ type: "stateUpdate" }, 1100);
         expect(session.metrics.stateUpdateIntervalsMs).toEqual([100]);
+    });
+
+    it("records state update cadence from jsonObject frames (#138)", () => {
+        const session = new WorkerSession();
+        session.handleDecodedMessage(decodeMessage(JSON.stringify({ type: "firstSync", patches: [] })), 1000);
+        session.handleDecodedMessage(decodeMessage(JSON.stringify({ type: "noChange" })), 1100);
+        session.handleDecodedMessage(decodeMessage(JSON.stringify({ type: "diff", patches: [] })), 1250);
+        expect(session.metrics.stateUpdateIntervalsMs).toEqual([100, 150]);
     });
 
     it("sends join on open and updates encoding on joinResponse", () => {
